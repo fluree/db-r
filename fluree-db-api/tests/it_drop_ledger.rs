@@ -360,3 +360,52 @@ async fn drop_ledger_hard_mode_deletes_even_when_retracted() {
         "Files should be deleted after hard drop"
     );
 }
+
+/// Test that drop_ledger disconnects the ledger from cache (Clojure release-ledger parity).
+///
+/// This ensures dropped ledgers don't remain in the LedgerManager cache,
+/// which could serve stale data for queries against a deleted ledger.
+#[tokio::test]
+async fn drop_ledger_disconnects_from_cache() {
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path = tmp.path().to_string_lossy().to_string();
+
+    // Build with ledger caching enabled
+    let fluree = FlureeBuilder::file(&path)
+        .with_ledger_caching()
+        .build()
+        .expect("build");
+
+    let alias = "drop-cache-test:main";
+
+    // Create a ledger (publishes to nameservice)
+    let ledger = fluree.create_ledger(alias).await.expect("create");
+    assert_eq!(ledger.t(), 0);
+
+    // Cache the ledger by loading it through the manager
+    let handle = fluree.ledger_cached(alias).await.expect("cache load");
+    let snapshot = handle.snapshot().await;
+    assert_eq!(snapshot.t, 0);
+
+    // Verify it's in the cache
+    let mgr = fluree.ledger_manager().expect("caching enabled");
+    let cached_before = mgr.cached_aliases().await;
+    assert!(
+        cached_before.contains(&alias.to_string()),
+        "Ledger should be cached before drop"
+    );
+
+    // Drop the ledger (should disconnect from cache)
+    let report = fluree
+        .drop_ledger(alias, DropMode::Soft)
+        .await
+        .expect("drop");
+    assert_eq!(report.status, DropStatus::Dropped);
+
+    // Verify ledger is NO LONGER in the cache
+    let cached_after = mgr.cached_aliases().await;
+    assert!(
+        !cached_after.contains(&alias.to_string()),
+        "Ledger should be evicted from cache after drop"
+    );
+}

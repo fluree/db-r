@@ -305,7 +305,7 @@ where
     // NOTE: These trait bounds make drop_ledger native/admin-only.
     // Not available on read-only/WASM storage.
     S: Storage + StorageDelete + StorageList + Clone + 'static,
-    N: NameService + Publisher,
+    N: NameService + Publisher + Send + Sync + 'static,
 {
     /// Drop a ledger
     ///
@@ -315,6 +315,7 @@ where
     /// 3. Waits for in-progress indexing to complete
     /// 4. In Hard mode: deletes all storage artifacts (commits + indexes)
     /// 5. Retracts from nameservice
+    /// 6. Disconnects from ledger cache (if caching enabled)
     ///
     /// # Arguments
     ///
@@ -405,6 +406,14 @@ where
             // Log but don't fail - retract may fail if truly not found
             warn!(alias = %alias, error = %e, "Nameservice retract warning");
             report.warnings.push(format!("Nameservice retract: {}", e));
+        }
+
+        // 6. Disconnect from ledger cache (if caching enabled)
+        // This evicts the ledger from the LedgerManager so stale state isn't served.
+        // Equivalent to Clojure's `release-ledger` at the end of drop-ledger.
+        if let Some(mgr) = &self.ledger_manager {
+            info!(alias = %alias, "Disconnecting ledger from cache");
+            mgr.disconnect(&alias).await;
         }
 
         info!(alias = %alias, status = ?report.status, "Ledger dropped");

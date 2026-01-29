@@ -508,6 +508,92 @@ curl -X POST http://localhost:8090/ledgers \
   -d '{"alias": "mydb:main"}'
 ```
 
+### POST /fluree/drop
+
+Drop (delete) a ledger.
+
+**URL:**
+```
+POST /fluree/drop
+```
+
+**Request Body:**
+
+```json
+{
+  "ledger": "mydb:main",
+  "hard": false
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `ledger` | string | Yes | Ledger alias (e.g., "mydb" or "mydb:main") |
+| `hard` | boolean | No | If `true`, permanently delete all storage files. Default: `false` (soft drop) |
+
+**Drop Modes:**
+
+- **Soft drop** (`hard: false`, default): Retracts the ledger from the nameservice but preserves all data files. The ledger can potentially be recovered.
+- **Hard drop** (`hard: true`): Permanently deletes all commit and index files. **This is irreversible.**
+
+**Response:**
+
+```json
+{
+  "ledger": "mydb:main",
+  "status": "dropped",
+  "files_deleted": {
+    "commit": 15,
+    "index": 8
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `ledger` | Normalized ledger alias |
+| `status` | One of: `"dropped"`, `"already_retracted"`, `"not_found"` |
+| `files_deleted` | File counts (only populated for hard drop) |
+
+**Status Codes:**
+- `200 OK` - Drop successful (or already dropped/not found)
+- `400 Bad Request` - Invalid request body
+- `500 Internal Server Error` - Server error
+
+**Drop Sequence:**
+
+1. Normalizes the alias (ensures branch suffix like `:main`)
+2. Cancels any pending background indexing
+3. Waits for in-progress indexing to complete
+4. In hard mode: deletes all storage artifacts (commits + indexes)
+5. Retracts from nameservice
+6. Disconnects from ledger cache
+
+**Idempotency:**
+
+Safe to call multiple times:
+- Returns `"already_retracted"` if the ledger was previously dropped
+- Hard mode still attempts file deletion even for already-retracted ledgers (useful for cleanup)
+
+**Examples:**
+
+```bash
+# Soft drop (retract only, preserve files)
+curl -X POST http://localhost:8090/fluree/drop \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb:main"}'
+
+# Hard drop (delete all files - IRREVERSIBLE)
+curl -X POST http://localhost:8090/fluree/drop \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb:main", "hard": true}'
+
+# Drop with short alias (auto-resolves to :main)
+curl -X POST http://localhost:8090/fluree/drop \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb"}'
+```
+
 ## System Endpoints
 
 ### GET /health

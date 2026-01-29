@@ -504,6 +504,78 @@ async fn main() -> Result<()> {
 
 **Note:** If caching is disabled (no `with_ledger_caching()` on builder), `disconnect_ledger` is a no-op.
 
+#### Dropping Ledgers
+
+Use `drop_ledger` to permanently remove a ledger. This is the Rust equivalent of Clojure's `fluree.db.api/drop`:
+
+```rust
+use fluree_db_api::{FlureeBuilder, DropMode, DropStatus, Result};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let fluree = FlureeBuilder::file("./data")
+        .with_ledger_caching()
+        .build()?;
+
+    // Soft drop: retract from nameservice, preserve files
+    let report = fluree.drop_ledger("mydb:main", DropMode::Soft).await?;
+    match report.status {
+        DropStatus::Dropped => println!("Ledger dropped"),
+        DropStatus::AlreadyRetracted => println!("Already dropped"),
+        DropStatus::NotFound => println!("Ledger not found"),
+    }
+
+    // Hard drop: delete all files (IRREVERSIBLE)
+    let report = fluree.drop_ledger("mydb:main", DropMode::Hard).await?;
+    println!("Deleted {} commit files, {} index files",
+        report.commit_files_deleted,
+        report.index_files_deleted);
+
+    Ok(())
+}
+```
+
+**Drop Modes:**
+
+| Mode | Behavior | Reversible |
+|------|----------|------------|
+| `DropMode::Soft` (default) | Retracts from nameservice only, files remain | Yes |
+| `DropMode::Hard` | Retracts + deletes all storage artifacts | **No** |
+
+**Drop Sequence:**
+
+1. Normalizes the alias (ensures `:main` suffix)
+2. Cancels any pending background indexing
+3. Waits for in-progress indexing to complete
+4. In hard mode: deletes all commit and index files
+5. Retracts from nameservice
+6. Disconnects from ledger cache (if caching enabled)
+
+**When to use `drop_ledger`:**
+
+- **Cleanup**: Remove test ledgers or unused data
+- **Data lifecycle**: Permanently delete ledgers that are no longer needed
+- **Admin operations**: Clean up after migrations or failures
+
+**Idempotency:**
+
+Safe to call multiple times:
+- Returns `DropStatus::AlreadyRetracted` if previously dropped
+- Hard mode still attempts deletion for `NotFound`/`AlreadyRetracted` (useful for admin cleanup)
+
+**Warnings:**
+
+The `DropReport` includes a `warnings` field for any non-fatal errors encountered during the operation (e.g., failed to delete a specific file). Always check this for hard drops:
+
+```rust
+let report = fluree.drop_ledger("mydb:main", DropMode::Hard).await?;
+if !report.warnings.is_empty() {
+    for warning in &report.warnings {
+        eprintln!("Warning: {}", warning);
+    }
+}
+```
+
 #### Refreshing Cached Ledgers
 
 Use `refresh` to poll-check whether a cached ledger is stale and update it if needed. This is the Rust equivalent of Clojure's `fluree.db.api/refresh`:
