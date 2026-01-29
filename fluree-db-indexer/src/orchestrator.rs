@@ -6,11 +6,11 @@
 //!
 //! # Trait Bounds
 //!
-//! The orchestrator requires storage to implement `Send + Sync + StorageDelete`
+//! The orchestrator requires storage to implement `Storage + Send + Sync`
 //! because it uses the unified indexing pipeline (`build_index_for_ledger`) which
 //! can fall back to batched rebuild with checkpoint cleanup.
 //!
-//! For lighter trait bounds (refresh-only, no `StorageDelete` or `Send` required),
+//! For lighter trait bounds (refresh-only, no `Send` required),
 //! use `refresh_index_for_ledger` directly instead of the orchestrator.
 //!
 //! # Thread Safety Note
@@ -47,7 +47,7 @@
 use crate::config::IndexerConfig;
 use crate::error::Result;
 use crate::{publish_index_result, IndexResult};
-use fluree_db_core::{Storage, StorageDelete, StorageWrite};
+use fluree_db_core::Storage;
 use fluree_db_nameservice::{NameService, Publisher};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -236,7 +236,7 @@ pub struct IndexerOrchestrator<S, N> {
 
 impl<S, N> IndexerOrchestrator<S, N>
 where
-    S: Storage + StorageWrite + fluree_db_core::ContentAddressedWrite + StorageDelete + Clone + Send + Sync + 'static,
+    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Publisher + 'static,
 {
     /// Create a new indexer orchestrator
@@ -518,7 +518,7 @@ pub struct BackgroundIndexerWorker<S, N> {
 
 impl<S, N> BackgroundIndexerWorker<S, N>
 where
-    S: Storage + StorageWrite + fluree_db_core::ContentAddressedWrite + StorageDelete + Clone + Send + Sync + 'static,
+    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Publisher + 'static,
 {
     /// Create a new worker and its associated handle
@@ -1064,7 +1064,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::{Flake, FlakeValue, MemoryStorage, Sid};
+    use fluree_db_core::{Flake, FlakeValue, MemoryStorage, Sid, StorageWrite};
     use fluree_db_nameservice::memory::MemoryNameService;
     use fluree_db_novelty::Commit;
     use std::collections::HashMap;

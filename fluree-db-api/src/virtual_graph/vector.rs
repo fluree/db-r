@@ -16,7 +16,7 @@ use crate::virtual_graph::result::{
 #[cfg(feature = "vector")]
 use crate::{QueryResult as ApiQueryResult, Result, SimpleCache};
 #[cfg(feature = "vector")]
-use fluree_db_core::{alias as core_alias, OverlayProvider, Storage, StorageDelete, StorageWrite};
+use fluree_db_core::{alias as core_alias, OverlayProvider, Storage};
 #[cfg(feature = "vector")]
 use fluree_db_ledger::LedgerState;
 #[cfg(feature = "vector")]

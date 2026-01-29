@@ -331,7 +331,7 @@ Design your application to check for and resume incomplete reindexes:
 ```rust
 async fn ensure_reindex_complete<S, N>(fluree: &Fluree<S, SimpleCache, N>, alias: &str) -> Result<()>
 where
-    S: Storage + StorageWrite + StorageDelete + Clone + Send + Sync + 'static,
+    S: Storage + Clone + Send + Sync + 'static,
     N: NameService,
 {
     // Check for interrupted reindex

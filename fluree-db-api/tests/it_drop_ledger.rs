@@ -13,7 +13,7 @@ use fluree_db_api::{
     DropMode, DropStatus, FlureeBuilder, IndexConfig, LedgerState, Novelty,
 };
 use fluree_db_core::address_path::alias_to_path_prefix;
-use fluree_db_core::{Db, SimpleCache, StorageList};
+use fluree_db_core::{Db, SimpleCache, StorageRead};
 use fluree_db_nameservice::NameService;
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::json;

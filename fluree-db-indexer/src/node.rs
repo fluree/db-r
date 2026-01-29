@@ -196,7 +196,8 @@ async fn build_branch_level<S: ContentAddressedWrite>(
 mod tests {
     use super::*;
     use fluree_db_core::serde::json::parse_branch_node;
-    use fluree_db_core::{FlakeValue, MemoryStorage, Sid, Storage};
+    use fluree_db_core::prelude::*;
+    use fluree_db_core::{FlakeValue, Sid};
 
     fn make_flake(name: &str, t: i64) -> Flake {
         Flake::new(

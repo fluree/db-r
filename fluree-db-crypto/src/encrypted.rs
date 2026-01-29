@@ -48,10 +48,11 @@ use crate::key::KeyProvider;
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use async_trait::async_trait;
-use fluree_db_core::address_path::alias_to_path_prefix;
-use fluree_db_core::{ContentAddressedWrite, ContentKind, ContentWriteResult, Storage, StorageDelete, StorageList, StorageWrite};
+use fluree_db_core::{
+    content_address, sha256_hex, ContentAddressedWrite, ContentKind, ContentWriteResult,
+    StorageRead, StorageWrite,
+};
 use rand_core::{OsRng, RngCore};
-use sha2::Digest;
 use std::fmt::{self, Debug};
 use std::sync::Arc;
 
@@ -211,9 +212,9 @@ impl<S: Clone, K> Clone for EncryptedStorage<S, K> {
 // ============================================================================
 
 #[async_trait]
-impl<S, K> Storage for EncryptedStorage<S, K>
+impl<S, K> StorageRead for EncryptedStorage<S, K>
 where
-    S: Storage,
+    S: StorageRead,
     K: KeyProvider,
 {
     async fn read_bytes(&self, address: &str) -> fluree_db_core::error::Result<Vec<u8>> {
@@ -227,6 +228,11 @@ where
     async fn exists(&self, address: &str) -> fluree_db_core::error::Result<bool> {
         // Pass through - existence check doesn't need decryption
         self.inner.exists(address).await
+    }
+
+    async fn list_prefix(&self, prefix: &str) -> fluree_db_core::error::Result<Vec<String>> {
+        // Pass through - listing doesn't need encryption
+        self.inner.list_prefix(prefix).await
     }
 }
 
@@ -243,40 +249,11 @@ where
         // Write encrypted bytes to underlying storage
         self.inner.write_bytes(address, &encrypted).await
     }
-}
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(bytes);
-    let digest = hasher.finalize();
-    hex::encode(digest)
-}
-
-fn alias_prefix_for_path(alias: &str) -> String {
-    alias_to_path_prefix(alias).unwrap_or_else(|_| alias.replace(':', "/"))
-}
-
-fn content_path(kind: ContentKind, alias: &str, hash_hex: &str) -> String {
-    let prefix = alias_prefix_for_path(alias);
-    match kind {
-        ContentKind::Commit => format!("{}/commit/{}.json", prefix, hash_hex),
-        ContentKind::Txn => format!("{}/txn/{}.json", prefix, hash_hex),
-        ContentKind::IndexNode { index_type } => {
-            format!("{}/index/{}/{}.json", prefix, index_type.name(), hash_hex)
-        }
-        ContentKind::IndexRoot => format!("{}/index/root/{}.json", prefix, hash_hex),
-        ContentKind::GarbageRecord => format!("{}/index/garbage/{}.json", prefix, hash_hex),
-        ContentKind::ReindexCheckpoint => format!("{}/index/reindex-checkpoint.json", prefix),
-        // Forward-compatibility for future ContentKind variants.
-        _ => format!("{}/blob/{}.bin", prefix, hash_hex),
+    async fn delete(&self, address: &str) -> fluree_db_core::error::Result<()> {
+        // Pass through - deletion doesn't need encryption
+        self.inner.delete(address).await
     }
-}
-
-fn content_address(kind: ContentKind, alias: &str, hash_hex: &str) -> String {
-    // Today, encryption is only wired for filesystem storage. If we later want
-    // encrypted S3/memory storage, this needs to become configurable.
-    let path = content_path(kind, alias, hash_hex);
-    format!("fluree:file://{}", path)
 }
 
 #[async_trait]
@@ -293,7 +270,8 @@ where
         bytes: &[u8],
     ) -> fluree_db_core::error::Result<ContentWriteResult> {
         // Compute address from the provided hash (stable) and write ciphertext.
-        let address = content_address(kind, ledger_alias, content_hash_hex);
+        // Encrypted storage currently only supports file backend
+        let address = content_address("file", kind, ledger_alias, content_hash_hex);
 
         let encrypted = self.encrypt(bytes).map_err(fluree_db_core::error::Error::from)?;
         self.inner.write_bytes(&address, &encrypted).await?;
@@ -314,30 +292,6 @@ where
         let hash_hex = sha256_hex(bytes);
         self.content_write_bytes_with_hash(kind, ledger_alias, &hash_hex, bytes)
             .await
-    }
-}
-
-#[async_trait]
-impl<S, K> StorageDelete for EncryptedStorage<S, K>
-where
-    S: StorageDelete,
-    K: KeyProvider,
-{
-    async fn delete(&self, address: &str) -> fluree_db_core::error::Result<()> {
-        // Pass through - deletion doesn't need encryption
-        self.inner.delete(address).await
-    }
-}
-
-#[async_trait]
-impl<S, K> StorageList for EncryptedStorage<S, K>
-where
-    S: StorageList,
-    K: KeyProvider,
-{
-    async fn list_prefix(&self, prefix: &str) -> fluree_db_core::error::Result<Vec<String>> {
-        // Pass through - listing doesn't need encryption
-        self.inner.list_prefix(prefix).await
     }
 }
 

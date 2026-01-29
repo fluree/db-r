@@ -8,6 +8,10 @@ Design documents are located in the `/docs/design/` directory and various planni
 
 ### Core Architecture
 
+**Storage Traits:**
+- Location: `/docs/design/storage-traits.md`
+- Covers: Storage trait hierarchy, implementing backends, type erasure
+
 **History Queries (Implemented):**
 - History queries are now part of the standard query API using time range specifiers
 - JSON-LD: Use `@t` and `@op` annotations with time range in `from` clause
@@ -187,18 +191,31 @@ Add design docs to:
 Each crate has clear responsibility:
 - **fluree-db-query:** Query execution only
 - **fluree-db-transact:** Transaction processing only
-- **fluree-db-storage:** Storage abstraction only
+- **fluree-db-core:** Core types, traits (including storage), and runtime-agnostic logic
+- **fluree-db-storage-aws:** AWS-specific storage implementations (S3, DynamoDB)
 
 ### Interface-Driven Design
 
 Define traits for major abstractions:
 
 ```rust
-pub trait Storage {
-    async fn read(&self, address: &str) -> Result<Vec<u8>>;
-    async fn write(&self, address: &str, data: &[u8]) -> Result<()>;
+// Layered trait hierarchy for storage
+pub trait StorageRead: Debug + Send + Sync {
+    async fn read_bytes(&self, address: &str) -> Result<Vec<u8>>;
+    async fn exists(&self, address: &str) -> Result<bool>;
+    async fn list_prefix(&self, prefix: &str) -> Result<Vec<String>>;
 }
+
+pub trait StorageWrite: Debug + Send + Sync {
+    async fn write_bytes(&self, address: &str, bytes: &[u8]) -> Result<()>;
+    async fn delete(&self, address: &str) -> Result<()>;
+}
+
+// Marker trait for full capability (blanket impl)
+pub trait Storage: StorageRead + ContentAddressedWrite {}
 ```
+
+See [Storage Traits Design](../design/storage-traits.md) for the complete architecture.
 
 ### Performance by Design
 

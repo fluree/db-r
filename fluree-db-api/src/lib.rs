@@ -130,7 +130,7 @@ pub use fluree_db_indexer::{
 pub use fluree_db_connection::{ConnectionConfig, StorageType};
 pub use fluree_db_core::{
     ContentAddressedWrite, ContentKind, ContentWriteResult, MemoryStorage, NodeCache,
-    OverlayProvider, SimpleCache, Storage, StorageDelete, StorageList, StorageWrite,
+    OverlayProvider, SimpleCache, Storage, StorageRead, StorageWrite,
 };
 #[cfg(feature = "native")]
 pub use fluree_db_core::FileStorage;
@@ -200,11 +200,10 @@ pub use fluree_graph_json_ld::ParsedContext;
 ///
 /// This allows `connect_json_ld` to return a single concrete Fluree type regardless of
 /// whether the config selects memory, filesystem, or S3 storage.
-pub trait StorageReadWrite: Storage + StorageWrite + ContentAddressedWrite + StorageDelete + StorageList {}
-impl<T: Storage + StorageWrite + ContentAddressedWrite + StorageDelete + StorageList> StorageReadWrite for T {}
-
+///
+/// Wraps `Arc<dyn Storage>` where `Storage = StorageRead + ContentAddressedWrite`.
 #[derive(Clone)]
-pub struct AnyStorage(Arc<dyn StorageReadWrite>);
+pub struct AnyStorage(Arc<dyn Storage>);
 
 impl std::fmt::Debug for AnyStorage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -213,13 +212,13 @@ impl std::fmt::Debug for AnyStorage {
 }
 
 impl AnyStorage {
-    pub fn new(inner: Arc<dyn StorageReadWrite>) -> Self {
+    pub fn new(inner: Arc<dyn Storage>) -> Self {
         Self(inner)
     }
 }
 
 #[async_trait]
-impl Storage for AnyStorage {
+impl StorageRead for AnyStorage {
     async fn read_bytes(&self, address: &str) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
         self.0.read_bytes(address).await
     }
@@ -235,12 +234,20 @@ impl Storage for AnyStorage {
     async fn exists(&self, address: &str) -> std::result::Result<bool, fluree_db_core::Error> {
         self.0.exists(address).await
     }
+
+    async fn list_prefix(&self, prefix: &str) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
+        self.0.list_prefix(prefix).await
+    }
 }
 
 #[async_trait]
 impl StorageWrite for AnyStorage {
     async fn write_bytes(&self, address: &str, bytes: &[u8]) -> std::result::Result<(), fluree_db_core::Error> {
         self.0.write_bytes(address, bytes).await
+    }
+
+    async fn delete(&self, address: &str) -> std::result::Result<(), fluree_db_core::Error> {
+        self.0.delete(address).await
     }
 }
 
@@ -265,20 +272,6 @@ impl ContentAddressedWrite for AnyStorage {
         bytes: &[u8],
     ) -> std::result::Result<ContentWriteResult, fluree_db_core::Error> {
         self.0.content_write_bytes(kind, ledger_alias, bytes).await
-    }
-}
-
-#[async_trait]
-impl StorageDelete for AnyStorage {
-    async fn delete(&self, address: &str) -> std::result::Result<(), fluree_db_core::Error> {
-        self.0.delete(address).await
-    }
-}
-
-#[async_trait]
-impl StorageList for AnyStorage {
-    async fn list_prefix(&self, prefix: &str) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
-        self.0.list_prefix(prefix).await
     }
 }
 
@@ -495,9 +488,9 @@ impl<S> TieredStorage<S> {
 }
 
 #[async_trait]
-impl<S> Storage for TieredStorage<S>
+impl<S> StorageRead for TieredStorage<S>
 where
-    S: Storage + StorageWrite + ContentAddressedWrite + Clone + Send + Sync,
+    S: Storage + Clone + Send + Sync,
 {
     async fn read_bytes(&self, address: &str) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
         if Self::route_to_commit(address) {
@@ -526,12 +519,21 @@ where
             self.index.exists(address).await
         }
     }
+
+    async fn list_prefix(&self, prefix: &str) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
+        // Route based on prefix - commit/txn prefixes go to commit storage
+        if Self::route_to_commit(prefix) {
+            self.commit.list_prefix(prefix).await
+        } else {
+            self.index.list_prefix(prefix).await
+        }
+    }
 }
 
 #[async_trait]
 impl<S> StorageWrite for TieredStorage<S>
 where
-    S: Storage + StorageWrite + ContentAddressedWrite + Clone + Send + Sync,
+    S: Storage + Clone + Send + Sync,
 {
     async fn write_bytes(&self, address: &str, bytes: &[u8]) -> std::result::Result<(), fluree_db_core::Error> {
         if Self::route_to_commit(address) {
@@ -540,12 +542,20 @@ where
             self.index.write_bytes(address, bytes).await
         }
     }
+
+    async fn delete(&self, address: &str) -> std::result::Result<(), fluree_db_core::Error> {
+        if Self::route_to_commit(address) {
+            self.commit.delete(address).await
+        } else {
+            self.index.delete(address).await
+        }
+    }
 }
 
 #[async_trait]
 impl<S> ContentAddressedWrite for TieredStorage<S>
 where
-    S: Storage + StorageWrite + ContentAddressedWrite + Clone + Send + Sync,
+    S: Storage + Clone + Send + Sync,
 {
     async fn content_write_bytes_with_hash(
         &self,
@@ -581,35 +591,6 @@ where
                 self.commit.content_write_bytes(kind, ledger_alias, bytes).await
             }
             _ => self.index.content_write_bytes(kind, ledger_alias, bytes).await,
-        }
-    }
-}
-
-#[async_trait]
-impl<S> StorageDelete for TieredStorage<S>
-where
-    S: Storage + StorageWrite + ContentAddressedWrite + StorageDelete + Clone + Send + Sync,
-{
-    async fn delete(&self, address: &str) -> std::result::Result<(), fluree_db_core::Error> {
-        if Self::route_to_commit(address) {
-            self.commit.delete(address).await
-        } else {
-            self.index.delete(address).await
-        }
-    }
-}
-
-#[async_trait]
-impl<S> StorageList for TieredStorage<S>
-where
-    S: Storage + StorageWrite + ContentAddressedWrite + StorageList + Clone + Send + Sync,
-{
-    async fn list_prefix(&self, prefix: &str) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
-        // Route based on prefix - commit/txn prefixes go to commit storage
-        if Self::route_to_commit(prefix) {
-            self.commit.list_prefix(prefix).await
-        } else {
-            self.index.list_prefix(prefix).await
         }
     }
 }
@@ -675,7 +656,7 @@ impl AddressIdentifierResolverStorage {
 }
 
 #[async_trait]
-impl Storage for AddressIdentifierResolverStorage {
+impl StorageRead for AddressIdentifierResolverStorage {
     async fn read_bytes(&self, address: &str) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
         self.route(address).read_bytes(address).await
     }
@@ -691,6 +672,11 @@ impl Storage for AddressIdentifierResolverStorage {
     async fn exists(&self, address: &str) -> std::result::Result<bool, fluree_db_core::Error> {
         self.route(address).exists(address).await
     }
+
+    /// List always uses the default storage
+    async fn list_prefix(&self, prefix: &str) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
+        self.default.list_prefix(prefix).await
+    }
 }
 
 #[async_trait]
@@ -702,6 +688,11 @@ impl StorageWrite for AddressIdentifierResolverStorage {
         bytes: &[u8],
     ) -> std::result::Result<(), fluree_db_core::Error> {
         self.default.write_bytes(address, bytes).await
+    }
+
+    /// Deletes always go to the default storage
+    async fn delete(&self, address: &str) -> std::result::Result<(), fluree_db_core::Error> {
+        self.default.delete(address).await
     }
 }
 
@@ -729,22 +720,6 @@ impl ContentAddressedWrite for AddressIdentifierResolverStorage {
         self.default
             .content_write_bytes(kind, ledger_alias, bytes)
             .await
-    }
-}
-
-#[async_trait]
-impl StorageDelete for AddressIdentifierResolverStorage {
-    /// Deletes always go to the default storage
-    async fn delete(&self, address: &str) -> std::result::Result<(), fluree_db_core::Error> {
-        self.default.delete(address).await
-    }
-}
-
-#[async_trait]
-impl StorageList for AddressIdentifierResolverStorage {
-    /// List always uses the default storage
-    async fn list_prefix(&self, prefix: &str) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
-        self.default.list_prefix(prefix).await
     }
 }
 
@@ -818,7 +793,7 @@ async fn build_s3_storage_from_config(
 #[cfg(feature = "native")]
 fn build_local_storage_from_config(
     storage_config: &fluree_db_connection::config::StorageConfig,
-) -> Result<Arc<dyn StorageReadWrite>> {
+) -> Result<Arc<dyn Storage>> {
     use fluree_db_connection::config::StorageType;
 
     match &storage_config.storage_type {
@@ -852,7 +827,7 @@ fn build_local_storage_from_config(
 #[cfg(not(feature = "native"))]
 fn build_local_storage_from_config(
     storage_config: &fluree_db_connection::config::StorageConfig,
-) -> Result<Arc<dyn StorageReadWrite>> {
+) -> Result<Arc<dyn Storage>> {
     use fluree_db_connection::config::StorageType;
 
     match &storage_config.storage_type {
@@ -891,7 +866,7 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
         // Decide whether to use tiered commit/index routing.
         let index = aws_handle.index_storage().clone();
         let commit = aws_handle.commit_storage().clone();
-        let base_storage: Arc<dyn StorageReadWrite> = if index.bucket() != commit.bucket()
+        let base_storage: Arc<dyn Storage> = if index.bucket() != commit.bucket()
             || index.prefix() != commit.prefix()
         {
             Arc::new(TieredStorage::new(commit, index))
@@ -903,7 +878,7 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
         let storage: AnyStorage = if let Some(addr_ids) = &aws_handle.config().address_identifiers {
             let mut identifier_map = std::collections::HashMap::new();
             for (identifier, storage_config) in addr_ids.iter() {
-                let id_storage: Arc<dyn StorageReadWrite> = match &storage_config.storage_type {
+                let id_storage: Arc<dyn Storage> = match &storage_config.storage_type {
                     StorageType::S3(_) => Arc::new(build_s3_storage_from_config(storage_config).await?),
                     _ => build_local_storage_from_config(storage_config)?,
                 };
@@ -957,7 +932,7 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
     // --- Local (memory/filesystem) ---
     match &parsed.index_storage.storage_type {
         StorageType::Memory => {
-            let base_storage: Arc<dyn StorageReadWrite> = Arc::new(MemoryStorage::new());
+            let base_storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
             let cache = Arc::new(SimpleCache::new(parsed.cache.max_entries));
 
             // Build address identifier resolver if configured
@@ -1014,7 +989,7 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
                     .clone()
                     .ok_or_else(|| ApiError::config("File storage requires filePath"))?;
                 let file_storage = FileStorage::new(path.as_ref());
-                let base_storage: Arc<dyn StorageReadWrite> = if let Some(key_str) =
+                let base_storage: Arc<dyn Storage> = if let Some(key_str) =
                     parsed.index_storage.aes256_key.as_ref()
                 {
                     // Note: This encrypts storage reads/writes (index/commit blobs). The file-based

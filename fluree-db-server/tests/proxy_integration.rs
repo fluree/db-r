@@ -6,6 +6,7 @@
 //! - Creating ledgers on tx server, querying through peer
 
 use axum::body::Body;
+use fluree_db_core::StorageRead;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::{SigningKey, Signer};
 use fluree_db_core::serde::flakes_transport::{decode_flakes, MAGIC as FLKB_MAGIC};
@@ -1325,7 +1326,7 @@ async fn test_block_content_negotiation_returns_flkb_for_leaf() {
 /// This test starts a real HTTP server to exercise the full network path.
 #[tokio::test]
 async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
-    use fluree_db_core::{ReadHint, Storage};
+    use fluree_db_core::ReadHint;
     use fluree_db_server::peer::ProxyStorage;
     use tokio::net::TcpListener;
 
@@ -1433,7 +1434,6 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
 /// only read_bytes_hint with PreferLeafFlakes does.
 #[tokio::test]
 async fn test_proxy_storage_read_bytes_returns_raw_not_flkb() {
-    use fluree_db_core::Storage;
     use fluree_db_server::peer::ProxyStorage;
     use tokio::net::TcpListener;
 

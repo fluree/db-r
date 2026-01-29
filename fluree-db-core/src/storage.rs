@@ -1,38 +1,48 @@
 //! Storage traits for reading and writing index data
 //!
-//! This module defines the `Storage` and `StorageWrite` traits that apps
-//! must implement to provide access to index files. The traits are
-//! runtime-agnostic and use `async_trait(?Send)` for WASM compatibility.
+//! This module defines storage traits that apps must implement to provide
+//! access to index files. The traits are runtime-agnostic and use
+//! `async_trait` for async support.
 //!
 //! ## Traits
 //!
-//! - `Storage`: Read-only access to stored data
-//! - `StorageWrite`: Write access for transactions (separate trait for WASM compatibility)
+//! - `StorageRead`: Read-only access to stored data (read, exists, list)
+//! - `StorageWrite`: Mutating operations (write, delete)
+//! - `ContentAddressedWrite`: Content-addressed writes (extends StorageWrite)
+//! - `Storage`: Marker trait combining all capabilities
 //!
 //! ## Implementations
 //!
 //! Apps provide their own implementations:
-//! - `fluree-db-native`: FileStore (tokio::fs)
-//! - `fluree-db-wasm`: FetchStore (browser fetch API)
+//! - `fluree-db-native`: FileStorage (tokio::fs)
+//! - `fluree-db-wasm`: Custom implementations (browser fetch API)
 //!
 //! ## Example
 //!
 //! ```ignore
-//! use fluree_db_core::{Storage, StorageWrite};
+//! use fluree_db_core::{StorageRead, StorageWrite, ContentAddressedWrite};
 //!
 //! struct MyStorage { /* ... */ }
 //!
 //! #[async_trait]
-//! impl Storage for MyStorage {
+//! impl StorageRead for MyStorage {
 //!     async fn read_bytes(&self, address: &str) -> Result<Vec<u8>> {
 //!         // Your implementation
 //!     }
-//!     // ...
+//!     async fn exists(&self, address: &str) -> Result<bool> {
+//!         // Your implementation
+//!     }
+//!     async fn list_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+//!         // Your implementation
+//!     }
 //! }
 //!
 //! #[async_trait]
 //! impl StorageWrite for MyStorage {
 //!     async fn write_bytes(&self, address: &str, bytes: &[u8]) -> Result<()> {
+//!         // Your implementation
+//!     }
+//!     async fn delete(&self, address: &str) -> Result<()> {
 //!         // Your implementation
 //!     }
 //! }
@@ -46,17 +56,15 @@ use sha2::Digest;
 use std::fmt::Debug;
 use std::sync::{Arc, RwLock};
 
+// ============================================================================
+// Read Hints
+// ============================================================================
+
 /// Hint to storage implementation about expected content type
 ///
 /// This enum allows callers to signal format preferences to storage implementations
 /// that support content negotiation (e.g., ProxyStorage). The default implementation
 /// ignores the hint and returns raw bytes.
-///
-/// # Design
-///
-/// This is a non-breaking extension to the Storage trait. Implementations that don't
-/// support content negotiation simply ignore the hint via the default `read_bytes_hint()`
-/// implementation.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ReadHint {
@@ -74,21 +82,19 @@ pub enum ReadHint {
     ///
     /// If the storage can provide filtered flakes, it returns FLKB-encoded bytes.
     /// If not available (e.g., for branch nodes), it falls back to raw bytes.
-    ///
-    /// This allows efficient leaf-only content negotiation without doubling
-    /// HTTP requests for branch nodes.
     PreferLeafFlakes,
 }
 
-/// Storage trait for reading index data
+// ============================================================================
+// Core Traits
+// ============================================================================
+
+/// Read-only storage operations
 ///
-/// This trait is intentionally minimal - it only provides byte-level access.
-/// JSON parsing is done in the core crate after bytes are loaded.
-///
-/// Note: Uses `async_trait(?Send)` for WASM compatibility.
-/// Apps that need `Send + Sync` can wrap their implementation.
+/// This trait provides all non-mutating storage operations: reading bytes,
+/// checking existence, and listing by prefix.
 #[async_trait]
-pub trait Storage: Debug + Send + Sync {
+pub trait StorageRead: Debug + Send + Sync {
     /// Read raw bytes from the given address
     ///
     /// The address format is typically:
@@ -103,22 +109,6 @@ pub trait Storage: Debug + Send + Sync {
     /// implementations that support content negotiation (e.g., ProxyStorage).
     ///
     /// The default implementation ignores the hint and delegates to `read_bytes()`.
-    /// Storage implementations can override this to implement format-specific behavior.
-    ///
-    /// # Arguments
-    ///
-    /// * `address` - The storage address to read from
-    /// * `hint` - A hint about the preferred format
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // For leaf nodes, request filtered flakes format if available
-    /// let bytes = storage.read_bytes_hint(&leaf_address, ReadHint::PreferLeafFlakes).await?;
-    ///
-    /// // For branch nodes, use default (no special negotiation)
-    /// let bytes = storage.read_bytes_hint(&branch_address, ReadHint::AnyBytes).await?;
-    /// ```
     async fn read_bytes_hint(&self, address: &str, hint: ReadHint) -> Result<Vec<u8>> {
         let _ = hint; // Default implementation ignores hint
         self.read_bytes(address).await
@@ -126,17 +116,23 @@ pub trait Storage: Debug + Send + Sync {
 
     /// Check if a resource exists at the given address
     async fn exists(&self, address: &str) -> Result<bool>;
+
+    /// List all objects under a prefix
+    ///
+    /// Returns all matching keys. May be expensive for large prefixes.
+    ///
+    /// # Warning
+    ///
+    /// This can be expensive for large prefixes. Use only for:
+    /// - Development/debugging
+    /// - Admin operations
+    /// - Small, bounded prefixes
+    async fn list_prefix(&self, prefix: &str) -> Result<Vec<String>>;
 }
 
-/// Storage trait for writing data
+/// Mutating storage operations
 ///
-/// This trait is separate from `Storage` to maintain read-only compatibility
-/// for WASM environments that only need query capabilities.
-///
-/// For content-addressed storage, writes are idempotent: writing the same
-/// content to the same address is a no-op.
-///
-/// Note: Uses `async_trait(?Send)` for WASM compatibility.
+/// This trait provides basic write and delete operations.
 #[async_trait]
 pub trait StorageWrite: Debug + Send + Sync {
     /// Write bytes to the given address
@@ -144,7 +140,18 @@ pub trait StorageWrite: Debug + Send + Sync {
     /// For content-addressed storage, this should be idempotent:
     /// if content already exists at address, this is a no-op.
     async fn write_bytes(&self, address: &str, bytes: &[u8]) -> Result<()>;
+
+    /// Delete an object by address
+    ///
+    /// Returns `Ok(())` if the object was deleted or did not exist.
+    /// This is idempotent: deleting a non-existent object succeeds.
+    /// Only returns an error for actual failures (network, permissions, etc).
+    async fn delete(&self, address: &str) -> Result<()>;
 }
+
+// ============================================================================
+// Content-Addressed Write (Extension)
+// ============================================================================
 
 /// What a blob "is", so storage can choose its layout.
 ///
@@ -179,9 +186,12 @@ pub struct ContentWriteResult {
     pub size_bytes: usize,
 }
 
-/// Storage trait for writing bytes while letting storage determine the address.
+/// Content-addressed write operations
+///
+/// This trait extends `StorageWrite` with the ability to write bytes while
+/// letting storage determine the address based on content hash.
 #[async_trait]
-pub trait ContentAddressedWrite: Debug + Send + Sync {
+pub trait ContentAddressedWrite: StorageWrite {
     /// Write bytes using a caller-provided content hash (hex).
     ///
     /// This allows higher layers to control the hashing algorithm for certain
@@ -196,6 +206,7 @@ pub trait ContentAddressedWrite: Debug + Send + Sync {
         bytes: &[u8],
     ) -> Result<ContentWriteResult>;
 
+    /// Write bytes, computing the content hash automatically (SHA-256).
     async fn content_write_bytes(
         &self,
         kind: ContentKind,
@@ -208,18 +219,48 @@ pub trait ContentAddressedWrite: Debug + Send + Sync {
     }
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+// ============================================================================
+// Marker Trait
+// ============================================================================
+
+/// Full storage capability marker
+///
+/// This trait combines `StorageRead` and `ContentAddressedWrite` (which itself
+/// requires `StorageWrite`), providing a single bound for storage backends
+/// that support all operations.
+///
+/// Used for type erasure in `AnyStorage`.
+pub trait Storage: StorageRead + ContentAddressedWrite {}
+impl<T: StorageRead + ContentAddressedWrite> Storage for T {}
+
+// ============================================================================
+// Helper Functions (Public for use by other storage implementations)
+// ============================================================================
+
+/// Compute SHA-256 hash of bytes and return as hex string.
+///
+/// This is the standard hash function used for content-addressed storage.
+pub fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = sha2::Sha256::new();
     hasher.update(bytes);
     let digest = hasher.finalize();
     hex::encode(digest)
 }
 
-fn alias_prefix_for_path(alias: &str) -> String {
+/// Convert a ledger alias to a path prefix.
+///
+/// Handles the standard alias format (e.g., "mydb:main" -> "mydb/main").
+pub fn alias_prefix_for_path(alias: &str) -> String {
     alias_to_path_prefix(alias).unwrap_or_else(|_| alias.replace(':', "/"))
 }
 
-fn content_path(kind: ContentKind, alias: &str, hash_hex: &str) -> String {
+/// Build a storage path for content-addressed data.
+///
+/// This determines the directory structure for different content types:
+/// - Commits: `{alias}/commit/{hash}.json`
+/// - Index nodes: `{alias}/index/{ordering}/{hash}.json`
+/// - etc.
+pub fn content_path(kind: ContentKind, alias: &str, hash_hex: &str) -> String {
     let prefix = alias_prefix_for_path(alias);
     match kind {
         ContentKind::Commit => format!("{}/commit/{}.json", prefix, hash_hex),
@@ -229,46 +270,40 @@ fn content_path(kind: ContentKind, alias: &str, hash_hex: &str) -> String {
         }
         ContentKind::IndexRoot => format!("{}/index/root/{}.json", prefix, hash_hex),
         ContentKind::GarbageRecord => format!("{}/index/garbage/{}.json", prefix, hash_hex),
-        // Checkpoints are mutable; don't embed hash in path.
         ContentKind::ReindexCheckpoint => format!("{}/index/reindex-checkpoint.json", prefix),
+        // Forward-compatibility: unknown kinds go to a generic blob directory
+        #[allow(unreachable_patterns)]
+        _ => format!("{}/blob/{}.bin", prefix, hash_hex),
     }
 }
 
-fn content_address(method: &str, kind: ContentKind, alias: &str, hash_hex: &str) -> String {
+/// Build a Fluree address for content-addressed data.
+///
+/// # Arguments
+///
+/// * `method` - Storage method identifier (e.g., "file", "s3", "memory")
+/// * `kind` - The type of content being stored
+/// * `alias` - Ledger alias (e.g., "mydb:main")
+/// * `hash_hex` - Content hash as hex string
+///
+/// # Returns
+///
+/// A Fluree address like `fluree:file://mydb/main/commit/{hash}.json`
+pub fn content_address(method: &str, kind: ContentKind, alias: &str, hash_hex: &str) -> String {
     let path = content_path(kind, alias, hash_hex);
     format!("fluree:{}://{}", method, path)
 }
 
-/// Storage trait for deleting data
-#[async_trait]
-pub trait StorageDelete: Debug + Send + Sync {
-    /// Delete an object by address
-    ///
-    /// Returns `Ok(())` if the object was deleted or did not exist.
-    /// This is idempotent: deleting a non-existent object succeeds.
-    /// Only returns an error for actual failures (network, permissions, etc).
-    async fn delete(&self, address: &str) -> Result<()>;
+/// Decode JSON from bytes
+///
+/// Helper function for storage implementations.
+pub fn decode_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+    Ok(serde_json::from_slice(bytes)?)
 }
 
-/// Storage trait for listing objects by prefix
-///
-/// This trait provides listing capabilities for storage backends.
-///
-/// # Warning
-///
-/// `list_prefix` can be expensive for large prefixes. Use only for:
-/// - Development/debugging
-/// - Admin operations
-/// - Small, bounded prefixes
-///
-/// Note: Uses `async_trait(?Send)` for WASM compatibility.
-#[async_trait]
-pub trait StorageList: Debug + Send + Sync {
-    /// List all objects under a prefix
-    ///
-    /// Returns all matching keys. May be expensive for large prefixes.
-    async fn list_prefix(&self, prefix: &str) -> Result<Vec<String>>;
-}
+// ============================================================================
+// MemoryStorage Implementation
+// ============================================================================
 
 /// A simple in-memory storage for testing
 ///
@@ -319,7 +354,7 @@ impl MemoryStorage {
 }
 
 #[async_trait]
-impl Storage for MemoryStorage {
+impl StorageRead for MemoryStorage {
     async fn read_bytes(&self, address: &str) -> Result<Vec<u8>> {
         self.data
             .read()
@@ -336,6 +371,15 @@ impl Storage for MemoryStorage {
             .expect("RwLock poisoned")
             .contains_key(address))
     }
+
+    async fn list_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        let data = self.data.read().expect("RwLock poisoned");
+        Ok(data
+            .keys()
+            .filter(|k| k.starts_with(prefix))
+            .cloned()
+            .collect())
+    }
 }
 
 #[async_trait]
@@ -345,6 +389,15 @@ impl StorageWrite for MemoryStorage {
             .write()
             .expect("RwLock poisoned")
             .insert(address.to_string(), bytes.to_vec());
+        Ok(())
+    }
+
+    async fn delete(&self, address: &str) -> Result<()> {
+        // Idempotent: ok even if not found
+        self.data
+            .write()
+            .expect("RwLock poisoned")
+            .remove(address);
         Ok(())
     }
 }
@@ -368,42 +421,15 @@ impl ContentAddressedWrite for MemoryStorage {
     }
 }
 
-#[async_trait]
-impl StorageDelete for MemoryStorage {
-    async fn delete(&self, address: &str) -> Result<()> {
-        // Idempotent: ok even if not found
-        self.data
-            .write()
-            .expect("RwLock poisoned")
-            .remove(address);
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl StorageList for MemoryStorage {
-    async fn list_prefix(&self, prefix: &str) -> Result<Vec<String>> {
-        let data = self.data.read().expect("RwLock poisoned");
-        Ok(data
-            .keys()
-            .filter(|k| k.starts_with(prefix))
-            .cloned()
-            .collect())
-    }
-}
-
-/// Decode JSON from bytes
-///
-/// Helper function for storage implementations.
-pub fn decode_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
-    Ok(serde_json::from_slice(bytes)?)
-}
+// ============================================================================
+// FileStorage Implementation (native only)
+// ============================================================================
 
 /// File-based storage for reading index files from disk (native targets only).
 ///
 /// This implementation is intentionally behind the `native` feature because it
 /// depends on filesystem access and `tokio::fs`. WASM callers are expected to
-/// provide their own `Storage` implementation (e.g., fetch-based).
+/// provide their own `StorageRead` implementation (e.g., fetch-based).
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 #[derive(Debug, Clone)]
 pub struct FileStorage {
@@ -428,24 +454,32 @@ impl FileStorage {
         &self.base_path
     }
 
+    /// Extract the path portion from a Fluree address.
+    ///
+    /// Handles formats like:
+    /// - `fluree:file://path/to/file.json` -> `Some("path/to/file.json")`
+    /// - `fluree:memory://path/to/file.json` -> `Some("path/to/file.json")`
+    /// - `raw/path` -> `None` (not a fluree address)
+    fn extract_path_from_address(address: &str) -> Option<&str> {
+        if let Some(path) = address.strip_prefix("fluree:file://") {
+            return Some(path);
+        }
+        if address.starts_with("fluree:") {
+            if let Some(path_start) = address.find("://") {
+                return Some(&address[path_start + 3..]);
+            }
+        }
+        None
+    }
+
     /// Resolve an address to a file path
     ///
     /// Handles both raw file paths and Fluree address format.
     /// Address format: `fluree:file://path/to/file.json`
     fn resolve_path(&self, address: &str) -> Result<std::path::PathBuf> {
-        // Handle fluree:file:// address format
-        if let Some(path) = address.strip_prefix("fluree:file://") {
+        if let Some(path) = Self::extract_path_from_address(address) {
             return self.resolve_relative_path(path);
         }
-
-        // Handle other fluree: address formats (extract path after ://)
-        if address.starts_with("fluree:") {
-            if let Some(path_start) = address.find("://") {
-                let path = &address[path_start + 3..];
-                return self.resolve_relative_path(path);
-            }
-        }
-
         // Simple case: just a node ID, look for it as a .json file
         self.resolve_relative_path(&format!("{}.json", address))
     }
@@ -470,7 +504,7 @@ impl FileStorage {
 
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 #[async_trait]
-impl Storage for FileStorage {
+impl StorageRead for FileStorage {
     async fn read_bytes(&self, address: &str) -> Result<Vec<u8>> {
         let path = self.resolve_path(address)?;
         tokio::fs::read(&path).await.map_err(|e| {
@@ -494,86 +528,10 @@ impl Storage for FileStorage {
             ))),
         }
     }
-}
 
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-#[async_trait]
-impl StorageWrite for FileStorage {
-    async fn write_bytes(&self, address: &str, bytes: &[u8]) -> Result<()> {
-        let path = self.resolve_path(address)?;
-
-        // Ensure parent directory exists
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                crate::error::Error::io(format!(
-                    "Failed to create directory {}: {}",
-                    parent.display(),
-                    e
-                ))
-            })?;
-        }
-
-        // Write file (overwrites if exists - idempotent for content-addressed)
-        tokio::fs::write(&path, bytes).await.map_err(|e| {
-            crate::error::Error::io(format!("Failed to write {}: {}", path.display(), e))
-        })
-    }
-}
-
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-#[async_trait]
-impl ContentAddressedWrite for FileStorage {
-    async fn content_write_bytes_with_hash(
-        &self,
-        kind: ContentKind,
-        ledger_alias: &str,
-        content_hash_hex: &str,
-        bytes: &[u8],
-    ) -> Result<ContentWriteResult> {
-        let address = content_address("file", kind, ledger_alias, content_hash_hex);
-        self.write_bytes(&address, bytes).await?;
-        Ok(ContentWriteResult {
-            address,
-            content_hash: content_hash_hex.to_string(),
-            size_bytes: bytes.len(),
-        })
-    }
-}
-
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-#[async_trait]
-impl StorageDelete for FileStorage {
-    async fn delete(&self, address: &str) -> Result<()> {
-        let path = self.resolve_path(address)?;
-        match tokio::fs::remove_file(&path).await {
-            Ok(()) => Ok(()),
-            // Idempotent: not found is OK
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(crate::error::Error::io(format!(
-                "Failed to delete {}: {}",
-                path.display(),
-                e
-            ))),
-        }
-    }
-}
-
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-#[async_trait]
-impl StorageList for FileStorage {
     async fn list_prefix(&self, prefix: &str) -> Result<Vec<String>> {
         // Extract the path from the prefix (handle fluree:file:// format)
-        let path_prefix = if let Some(path) = prefix.strip_prefix("fluree:file://") {
-            path
-        } else if prefix.starts_with("fluree:") {
-            if let Some(path_start) = prefix.find("://") {
-                &prefix[path_start + 3..]
-            } else {
-                prefix
-            }
-        } else {
-            prefix
-        };
+        let path_prefix = Self::extract_path_from_address(prefix).unwrap_or(prefix);
 
         // Get the directory to list from and the file prefix to match
         let full_path = self.base_path.join(path_prefix);
@@ -642,6 +600,68 @@ impl StorageList for FileStorage {
     }
 }
 
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+#[async_trait]
+impl StorageWrite for FileStorage {
+    async fn write_bytes(&self, address: &str, bytes: &[u8]) -> Result<()> {
+        let path = self.resolve_path(address)?;
+
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                crate::error::Error::io(format!(
+                    "Failed to create directory {}: {}",
+                    parent.display(),
+                    e
+                ))
+            })?;
+        }
+
+        // Write file (overwrites if exists - idempotent for content-addressed)
+        tokio::fs::write(&path, bytes).await.map_err(|e| {
+            crate::error::Error::io(format!("Failed to write {}: {}", path.display(), e))
+        })
+    }
+
+    async fn delete(&self, address: &str) -> Result<()> {
+        let path = self.resolve_path(address)?;
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => Ok(()),
+            // Idempotent: not found is OK
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(crate::error::Error::io(format!(
+                "Failed to delete {}: {}",
+                path.display(),
+                e
+            ))),
+        }
+    }
+}
+
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+#[async_trait]
+impl ContentAddressedWrite for FileStorage {
+    async fn content_write_bytes_with_hash(
+        &self,
+        kind: ContentKind,
+        ledger_alias: &str,
+        content_hash_hex: &str,
+        bytes: &[u8],
+    ) -> Result<ContentWriteResult> {
+        let address = content_address("file", kind, ledger_alias, content_hash_hex);
+        self.write_bytes(&address, bytes).await?;
+        Ok(ContentWriteResult {
+            address,
+            content_hash: content_hash_hex.to_string(),
+            size_bytes: bytes.len(),
+        })
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -702,6 +722,31 @@ mod tests {
         storage.write_bytes("write/test", b"overwritten").await.unwrap();
         let bytes = storage.read_bytes("write/test").await.unwrap();
         assert_eq!(bytes, b"overwritten");
+    }
+
+    #[tokio::test]
+    async fn test_memory_storage_delete() {
+        let storage = MemoryStorage::new();
+        storage.insert("delete/test", b"data".to_vec());
+
+        assert!(storage.exists("delete/test").await.unwrap());
+        storage.delete("delete/test").await.unwrap();
+        assert!(!storage.exists("delete/test").await.unwrap());
+
+        // Idempotent: deleting non-existent is OK
+        storage.delete("delete/test").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_memory_storage_list_prefix() {
+        let storage = MemoryStorage::new();
+        storage.insert("prefix/a", b"a".to_vec());
+        storage.insert("prefix/b", b"b".to_vec());
+        storage.insert("other/c", b"c".to_vec());
+
+        let mut results = storage.list_prefix("prefix/").await.unwrap();
+        results.sort();
+        assert_eq!(results, vec!["prefix/a", "prefix/b"]);
     }
 
     #[tokio::test]

@@ -26,7 +26,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use fluree_db_core::alias as core_alias;
-use fluree_db_core::{Error as CoreError, Storage, StorageWrite};
+use fluree_db_core::{Error as CoreError, StorageRead, StorageWrite};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
@@ -273,7 +273,7 @@ impl<S> StorageNameService<S> {
 
 impl<S> StorageNameService<S>
 where
-    S: Storage + StorageWrite + StorageList + StorageCas + Debug,
+    S: StorageRead + StorageWrite + StorageList + StorageCas + Debug,
 {
     /// Create a new storage-backed nameservice
     ///
@@ -654,7 +654,7 @@ enum CasUpdateOutcome {
 #[async_trait]
 impl<S> NameService for StorageNameService<S>
 where
-    S: Storage + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
+    S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
 {
     async fn lookup(&self, ledger_address: &str) -> Result<Option<NsRecord>> {
         let (ledger_name, branch) = parse_alias(ledger_address)?;
@@ -673,9 +673,7 @@ where
         };
 
         // List all files under ns@v2
-        let keys = self
-            .storage
-            .list_prefix(&prefix)
+        let keys = StorageList::list_prefix(&self.storage, &prefix)
             .await
             .map_err(|e| NameServiceError::storage(format!("Failed to list records: {}", e)))?;
 
@@ -719,7 +717,7 @@ where
 #[async_trait]
 impl<S> Publisher for StorageNameService<S>
 where
-    S: Storage + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
+    S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
 {
     async fn publish_ledger_init(&self, alias: &str) -> Result<()> {
         let (ledger_name, branch) = parse_alias(alias)?;
@@ -851,7 +849,7 @@ where
 #[async_trait]
 impl<S> AdminPublisher for StorageNameService<S>
 where
-    S: Storage + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
+    S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
 {
     async fn publish_index_allow_equal(
         &self,
@@ -892,7 +890,7 @@ where
 #[async_trait]
 impl<S> RefPublisher for StorageNameService<S>
 where
-    S: Storage + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
+    S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
 {
     async fn get_ref(&self, alias: &str, kind: RefKind) -> Result<Option<RefValue>> {
         let (ledger_name, branch) = parse_alias(alias)?;
@@ -1101,7 +1099,7 @@ where
 #[async_trait]
 impl<S> VirtualGraphPublisher for StorageNameService<S>
 where
-    S: Storage + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
+    S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
 {
     async fn publish_vg(
         &self,
@@ -1315,9 +1313,7 @@ where
         };
 
         // List all files under ns@v2
-        let keys = self
-            .storage
-            .list_prefix(&prefix)
+        let keys = StorageList::list_prefix(&self.storage, &prefix)
             .await
             .map_err(|e| NameServiceError::storage(format!("Failed to list records: {}", e)))?;
 
@@ -1400,7 +1396,7 @@ where
 #[async_trait]
 impl<S> StatusPublisher for StorageNameService<S>
 where
-    S: Storage + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
+    S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
 {
     async fn get_status(&self, alias: &str) -> Result<Option<StatusValue>> {
         let (ledger_name, branch) = parse_alias(alias)?;
@@ -1535,7 +1531,7 @@ where
 #[async_trait]
 impl<S> ConfigPublisher for StorageNameService<S>
 where
-    S: Storage + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
+    S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
 {
     async fn get_config(&self, alias: &str) -> Result<Option<ConfigValue>> {
         let (ledger_name, branch) = parse_alias(alias)?;
@@ -1763,7 +1759,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl fluree_db_core::Storage for MemoryCasStorage {
+    impl fluree_db_core::StorageRead for MemoryCasStorage {
         async fn read_bytes(&self, address: &str) -> fluree_db_core::Result<Vec<u8>> {
             self.data
                 .read()
@@ -1776,6 +1772,11 @@ mod tests {
         async fn exists(&self, address: &str) -> fluree_db_core::Result<bool> {
             Ok(self.data.read().unwrap().contains_key(address))
         }
+
+        async fn list_prefix(&self, prefix: &str) -> fluree_db_core::Result<Vec<String>> {
+            let data = self.data.read().unwrap();
+            Ok(data.keys().filter(|k| k.starts_with(prefix)).cloned().collect())
+        }
     }
 
     #[async_trait]
@@ -1785,6 +1786,29 @@ mod tests {
             let version = data.get(address).map(|(_, v)| v + 1).unwrap_or(1);
             data.insert(address.to_string(), (bytes.to_vec(), version));
             Ok(())
+        }
+
+        async fn delete(&self, address: &str) -> fluree_db_core::Result<()> {
+            self.data.write().unwrap().remove(address);
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl fluree_db_core::ContentAddressedWrite for MemoryCasStorage {
+        async fn content_write_bytes_with_hash(
+            &self,
+            _kind: fluree_db_core::ContentKind,
+            _ledger_alias: &str,
+            content_hash_hex: &str,
+            bytes: &[u8],
+        ) -> fluree_db_core::Result<fluree_db_core::ContentWriteResult> {
+            fluree_db_core::StorageWrite::write_bytes(self, content_hash_hex, bytes).await?;
+            Ok(fluree_db_core::ContentWriteResult {
+                address: content_hash_hex.to_string(),
+                content_hash: content_hash_hex.to_string(),
+                size_bytes: bytes.len(),
+            })
         }
     }
 
@@ -1880,27 +1904,50 @@ mod tests {
     }
 
     #[async_trait]
-    impl fluree_db_core::Storage for FlakyCasStorage {
+    impl fluree_db_core::StorageRead for FlakyCasStorage {
         async fn read_bytes(&self, address: &str) -> fluree_db_core::Result<Vec<u8>> {
-            self.inner.read_bytes(address).await
+            fluree_db_core::StorageRead::read_bytes(&self.inner, address).await
         }
 
         async fn exists(&self, address: &str) -> fluree_db_core::Result<bool> {
-            self.inner.exists(address).await
+            fluree_db_core::StorageRead::exists(&self.inner, address).await
+        }
+
+        async fn list_prefix(&self, prefix: &str) -> fluree_db_core::Result<Vec<String>> {
+            fluree_db_core::StorageRead::list_prefix(&self.inner, prefix).await
         }
     }
 
     #[async_trait]
     impl fluree_db_core::StorageWrite for FlakyCasStorage {
         async fn write_bytes(&self, address: &str, bytes: &[u8]) -> fluree_db_core::Result<()> {
-            self.inner.write_bytes(address, bytes).await
+            fluree_db_core::StorageWrite::write_bytes(&self.inner, address, bytes).await
+        }
+
+        async fn delete(&self, address: &str) -> fluree_db_core::Result<()> {
+            fluree_db_core::StorageWrite::delete(&self.inner, address).await
+        }
+    }
+
+    #[async_trait]
+    impl fluree_db_core::ContentAddressedWrite for FlakyCasStorage {
+        async fn content_write_bytes_with_hash(
+            &self,
+            kind: fluree_db_core::ContentKind,
+            ledger_alias: &str,
+            content_hash_hex: &str,
+            bytes: &[u8],
+        ) -> fluree_db_core::Result<fluree_db_core::ContentWriteResult> {
+            fluree_db_core::ContentAddressedWrite::content_write_bytes_with_hash(
+                &self.inner, kind, ledger_alias, content_hash_hex, bytes
+            ).await
         }
     }
 
     #[async_trait]
     impl StorageList for FlakyCasStorage {
         async fn list_prefix(&self, prefix: &str) -> StorageExtResult<Vec<String>> {
-            self.inner.list_prefix(prefix).await
+            StorageList::list_prefix(&self.inner, prefix).await
         }
 
         async fn list_prefix_paginated(

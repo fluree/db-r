@@ -48,7 +48,7 @@ mod http_tests {
     use fluree_search_service::error::{Result as ServiceResult, ServiceError};
     use fluree_search_service::sync::SyncConfig;
     use fluree_db_query::bm25::{deserialize, Bm25Index};
-    use fluree_db_core::Storage;
+    use fluree_db_core::StorageRead;
     use async_trait::async_trait;
     use std::sync::Arc;
     use tower::ServiceExt;

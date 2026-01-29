@@ -124,11 +124,19 @@ fn parse_query_ast_internal(
     // Determine select mode based on which key is present.
     //
     // Clojure parity:
-    // - Support `select-distinct` (kebab-case) as a distinct-select shorthand.
+    // - Support both camelCase and kebab-case variants:
+    //   - `selectOne` / `select-one`
+    //   - `selectDistinct` / `select-distinct`
     let mut implied_distinct = false;
-    let (select, select_mode) = if let Some(select_one) = obj.get("selectOne") {
+    let (select, select_mode) = if let Some(select_one) = obj
+        .get("selectOne")
+        .or_else(|| obj.get("select-one"))
+    {
         (select_one, SelectMode::One)
-    } else if let Some(select_distinct) = obj.get("select-distinct") {
+    } else if let Some(select_distinct) = obj
+        .get("selectDistinct")
+        .or_else(|| obj.get("select-distinct"))
+    {
         implied_distinct = true;
         (select_distinct, SelectMode::Many)
     } else if let Some(select) = obj.get("select") {
@@ -139,7 +147,9 @@ fn parse_query_ast_internal(
             (select, SelectMode::Many)
         }
     } else {
-        return Err(ParseError::MissingField("select, selectOne, or construct"));
+        return Err(ParseError::MissingField(
+            "select, selectOne, select-one, selectDistinct, select-distinct, or construct",
+        ));
     };
 
     // Parse select clause (skip for wildcard)
@@ -1080,7 +1090,12 @@ mod tests {
         });
 
         let result = parse_query_ast(&json);
-        assert!(matches!(result.unwrap_err(), ParseError::MissingField("select, selectOne, or construct")));
+        assert!(matches!(
+            result.unwrap_err(),
+            ParseError::MissingField(
+                "select, selectOne, select-one, selectDistinct, select-distinct, or construct"
+            )
+        ));
     }
 
     #[test]

@@ -562,7 +562,8 @@ mod tests {
     use crate::config::IndexerConfig;
     use fluree_db_core::cache::NoCache;
     use fluree_db_core::serde::json::parse_branch_node;
-    use fluree_db_core::{range, Db, FlakeValue, MemoryStorage, RangeMatch, RangeOptions, RangeTest, Sid, Storage};
+    use fluree_db_core::prelude::*;
+    use fluree_db_core::{range, Db, FlakeValue, RangeMatch, RangeOptions, RangeTest, Sid};
     use fluree_db_novelty::Novelty;
     use std::collections::BTreeMap;
 
