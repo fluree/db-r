@@ -664,13 +664,13 @@ where
                 }
                 None => self.fluree.query_connection_jsonld_tracked(json).await,
             },
-            QueryInput::Sparql(_sparql) => {
-                // SPARQL tracked queries not yet implemented in existing API
-                Err(TrackedErrorResponse::new(
-                    501,
-                    "Tracked SPARQL FROM-driven queries not yet supported",
-                    None,
-                ))
+            QueryInput::Sparql(sparql) => match &self.policy {
+                Some(policy) => {
+                    self.fluree
+                        .query_connection_sparql_tracked_with_policy(sparql, policy)
+                        .await
+                }
+                None => self.fluree.query_connection_sparql_tracked(sparql).await,
             }
         }
     }

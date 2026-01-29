@@ -463,3 +463,87 @@ WHERE {
     );
 }
 
+#[tokio::test]
+async fn query_connection_jsonld_tracked_single_ledger() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let _ledger = seed_people_ledger(&fluree, "people:main").await;
+
+    let query = json!({
+        "@context": context_ex_schema(),
+        "from": "people:main",
+        "select": ["?name"],
+        "where": {
+            "@id": "?person",
+            "@type": "ex:Person",
+            "schema:name": "?name"
+        }
+    });
+
+    let tracked = fluree
+        .query_connection_tracked(&query)
+        .await
+        .expect("query_connection_tracked should succeed");
+
+    // Tracked response returns formatted result directly
+    assert_eq!(
+        normalize_flat_results(&tracked.result),
+        normalize_flat_results(&json!(["Alice", "Bob"]))
+    );
+
+    // Verify response status is successful
+    assert_eq!(tracked.status, 200);
+
+    // Verify fuel tracking returns an integer value
+    assert!(
+        tracked.fuel.is_some(),
+        "fuel should be present in tracked response"
+    );
+    assert!(
+        tracked.fuel.unwrap() > 0,
+        "fuel should be a positive integer"
+    );
+}
+
+#[tokio::test]
+async fn query_connection_sparql_tracked_uses_from_clause() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let _ledger = seed_people_ledger(&fluree, "people:main").await;
+
+    let sparql = r#"
+PREFIX ex: <http://example.org/ns/>
+PREFIX schema: <http://schema.org/>
+SELECT ?name
+FROM <people:main>
+WHERE {
+  ?person a ex:Person ;
+          schema:name ?name .
+}
+"#;
+
+    let tracked = fluree
+        .query_connection_sparql_tracked(sparql)
+        .await
+        .expect("query_connection_sparql_tracked should succeed");
+
+    // Tracked response returns formatted result directly
+    assert_eq!(
+        normalize_flat_results(&tracked.result),
+        normalize_flat_results(&json!(["Alice", "Bob"]))
+    );
+
+    // Verify response status is successful
+    assert_eq!(tracked.status, 200);
+
+    // Verify fuel tracking returns an integer value
+    assert!(
+        tracked.fuel.is_some(),
+        "fuel should be present in tracked response"
+    );
+    assert!(
+        tracked.fuel.unwrap() > 0,
+        "fuel should be a positive integer"
+    );
+}
+

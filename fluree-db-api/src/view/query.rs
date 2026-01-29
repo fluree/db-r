@@ -5,7 +5,7 @@
 
 use crate::query::helpers::{
     build_query_result, parse_and_validate_sparql, parse_jsonld_query, parse_sparql_to_ir,
-    prepare_for_execution, status_for_query_error, tracker_for_limits, tracker_from_query_json,
+    prepare_for_execution, status_for_query_error, tracker_for_limits, tracker_for_tracked_endpoint,
 };
 use crate::view::{FlureeView, QueryInput};
 use crate::{
@@ -100,10 +100,10 @@ where
     {
         let input = q.into();
 
-        // Get tracker from input (SPARQL uses default tracking instead of disabled)
+        // Get tracker - use tracked endpoint helpers that default to all tracking enabled
         let tracker = match &input {
-            QueryInput::JsonLd(json) => tracker_from_query_json(json),
-            QueryInput::Sparql(_) => Tracker::new(TrackingOptions::default()),
+            QueryInput::JsonLd(json) => tracker_for_tracked_endpoint(json),
+            QueryInput::Sparql(_) => Tracker::new(TrackingOptions::all_enabled()),
         };
 
         // Parse
