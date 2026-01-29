@@ -483,13 +483,14 @@ Query historical data using time specifiers in `from`:
 
 ## History Queries
 
-History queries let you see all changes (assertions and retractions) within a time range. Specify the range using two time-specced endpoints in the `from` clause:
+History queries let you see all changes (assertions and retractions) within a time range. Specify the range using `from` and `to` keys with time-specced endpoints:
 
 ### Time Range Syntax
 
 ```json
 {
-  "from": ["ledger:main@t:1", "ledger:main@t:latest"]
+  "from": "ledger:main@t:1",
+  "to": "ledger:main@t:latest"
 }
 ```
 
@@ -505,7 +506,8 @@ Use `@t` and `@op` annotations on value objects to capture metadata:
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "from": ["ledger:main@t:1", "ledger:main@t:latest"],
+  "from": "ledger:main@t:1",
+  "to": "ledger:main@t:latest",
   "select": ["?name", "?age", "?t", "?op"],
   "where": [
     { "@id": "ex:alice", "ex:name": { "@value": "?name", "@t": "?t", "@op": "?op" } },
@@ -520,7 +522,8 @@ Use `@t` and `@op` annotations on value objects to capture metadata:
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "from": ["ledger:main@t:1", "ledger:main@t:100"],
+  "from": "ledger:main@t:1",
+  "to": "ledger:main@t:100",
   "select": ["?age", "?t", "?op"],
   "where": [
     { "@id": "ex:alice", "ex:age": { "@value": "?age", "@t": "?t", "@op": "?op" } }
@@ -534,10 +537,8 @@ Use `@t` and `@op` annotations on value objects to capture metadata:
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "from": [
-    "ledger:main@iso:2024-01-01T00:00:00Z",
-    "ledger:main@iso:2024-12-31T23:59:59Z"
-  ],
+  "from": "ledger:main@iso:2024-01-01T00:00:00Z",
+  "to": "ledger:main@iso:2024-12-31T23:59:59Z",
   "select": ["?name", "?t", "?op"],
   "where": [
     { "@id": "ex:alice", "ex:name": { "@value": "?name", "@t": "?t", "@op": "?op" } }
@@ -550,7 +551,8 @@ Use `@t` and `@op` annotations on value objects to capture metadata:
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "from": ["ledger:main@t:1", "ledger:main@t:latest"],
+  "from": "ledger:main@t:1",
+  "to": "ledger:main@t:latest",
   "select": ["?name", "?t"],
   "where": [
     { "@id": "ex:alice", "ex:name": { "@value": "?name", "@t": "?t", "@op": "?op" } },
@@ -564,7 +566,8 @@ Use `@t` and `@op` annotations on value objects to capture metadata:
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "from": ["ledger:main@t:1", "ledger:main@t:latest"],
+  "from": "ledger:main@t:1",
+  "to": "ledger:main@t:latest",
   "select": ["?property", "?value", "?t", "?op"],
   "where": [
     { "@id": "ex:alice", "?property": { "@value": "?value", "@t": "?t", "@op": "?op" } }

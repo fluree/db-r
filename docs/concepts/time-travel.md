@@ -170,7 +170,7 @@ This provides:
 
 ## History Queries for Change Tracking
 
-History queries let you see all changes (assertions and retractions) within a time range. Specify the range using two time-specced endpoints in the `from` clause.
+History queries let you see all changes (assertions and retractions) within a time range. Specify the range using `from` and `to` keys with time-specced endpoints.
 
 ### Entity History (JSON-LD)
 
@@ -179,7 +179,8 @@ Track all changes to a specific entity over time by specifying a time range:
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "from": ["ledger:main@t:1", "ledger:main@t:latest"],
+  "from": "ledger:main@t:1",
+  "to": "ledger:main@t:latest",
   "select": ["?name", "?t", "?op"],
   "where": [
     { "@id": "ex:alice", "ex:name": { "@value": "?name", "@t": "?t", "@op": "?op" } }
@@ -227,7 +228,8 @@ Query changes for specific properties:
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "from": ["ledger:main@t:1", "ledger:main@t:100"],
+  "from": "ledger:main@t:1",
+  "to": "ledger:main@t:100",
   "select": ["?age", "?t", "?op"],
   "where": [
     { "@id": "ex:alice", "ex:age": { "@value": "?age", "@t": "?t", "@op": "?op" } }
@@ -243,7 +245,8 @@ Query all property changes for an entity:
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "from": ["ledger:main@t:1", "ledger:main@t:latest"],
+  "from": "ledger:main@t:1",
+  "to": "ledger:main@t:latest",
   "select": ["?p", "?v", "?t", "?op"],
   "where": [
     { "@id": "ex:alice", "?p": { "@value": "?v", "@t": "?t", "@op": "?op" } }
@@ -259,10 +262,8 @@ Query history using ISO 8601 datetime strings:
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "from": [
-    "ledger:main@iso:2024-01-01T00:00:00Z",
-    "ledger:main@iso:2024-12-31T23:59:59Z"
-  ],
+  "from": "ledger:main@iso:2024-01-01T00:00:00Z",
+  "to": "ledger:main@iso:2024-12-31T23:59:59Z",
   "select": ["?name", "?t", "?op"],
   "where": [
     { "@id": "ex:alice", "ex:name": { "@value": "?name", "@t": "?t", "@op": "?op" } }
@@ -277,7 +278,8 @@ Filter to show only assertions or only retractions:
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "from": ["ledger:main@t:1", "ledger:main@t:latest"],
+  "from": "ledger:main@t:1",
+  "to": "ledger:main@t:latest",
   "select": ["?name", "?t"],
   "where": [
     { "@id": "ex:alice", "ex:name": { "@value": "?name", "@t": "?t", "@op": "?op" } },
@@ -293,7 +295,8 @@ Query changes for a specific property across all subjects:
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "from": ["ledger:main@t:1", "ledger:main@t:latest"],
+  "from": "ledger:main@t:1",
+  "to": "ledger:main@t:latest",
   "select": ["?person", "?status", "?t", "?op"],
   "where": [
     { "@id": "?person", "ex:status": { "@value": "?status", "@t": "?t", "@op": "?op" } }
@@ -383,10 +386,8 @@ Track how data evolved over time:
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "from": [
-    "sales:main@iso:2024-01-01T00:00:00Z",
-    "sales:main@iso:2024-12-31T23:59:59Z"
-  ],
+  "from": "sales:main@iso:2024-01-01T00:00:00Z",
+  "to": "sales:main@iso:2024-12-31T23:59:59Z",
   "select": ["?order", "?amount", "?t", "?op"],
   "where": [
     { "@id": "?order", "ex:amount": { "@value": "?amount", "@t": "?t", "@op": "?op" } }
@@ -483,7 +484,8 @@ Use history queries to identify when a specific change happened:
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "from": ["ledger:main@t:1", "ledger:main@t:latest"],
+  "from": "ledger:main@t:1",
+  "to": "ledger:main@t:latest",
   "select": ["?status", "?t", "?op"],
   "where": [
     { "@id": "ex:product-123", "ex:status": { "@value": "?status", "@t": "?t", "@op": "?op" } }
@@ -501,10 +503,8 @@ Generate a complete audit trail for a sensitive entity:
 ```json
 {
   "@context": { "schema": "http://schema.org/" },
-  "from": [
-    "users:main@iso:2024-01-01T00:00:00Z",
-    "users:main@t:latest"
-  ],
+  "from": "users:main@iso:2024-01-01T00:00:00Z",
+  "to": "users:main@t:latest",
   "select": ["?property", "?value", "?t", "?op"],
   "where": [
     { "@id": "schema:Person/12345", "?property": { "@value": "?value", "@t": "?t", "@op": "?op" } }
@@ -522,7 +522,8 @@ Find what changed after a specific commit:
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "from": ["config:main@t:50", "config:main@t:latest"],
+  "from": "config:main@t:50",
+  "to": "config:main@t:latest",
   "select": ["?setting", "?value", "?t", "?op"],
   "where": [
     { "@id": "?setting", "ex:config": { "@value": "?value", "@t": "?t", "@op": "?op" } }
@@ -566,7 +567,7 @@ This recreates the exact state across multiple ledgers at the time the bug occur
 ### History Query Patterns
 
 1. **Narrow Your Scope**: Use specific property patterns rather than wildcard `?p` when you only need certain properties
-2. **Limit Time Ranges**: Specify realistic time ranges in the `from` array rather than `@t:1` to `@t:latest`
+2. **Limit Time Ranges**: Specify realistic time ranges with `from` and `to` rather than `@t:1` to `@t:latest`
 3. **Use Filters**: Filter by `@op` to show only assertions or retractions when you don't need both
 4. **Order Results**: Use `orderBy: "?t"` to see changes in chronological order
 
@@ -612,7 +613,7 @@ When you query with `@t:`, `@iso:`, or `@sha:`:
 
 ### History Query Execution
 
-1. **Time Range Detection**: The `from` array with two time-specced endpoints activates history mode
+1. **Time Range Detection**: The `from` and `to` keys with time-specced endpoints activates history mode
 2. **Pattern Resolution**: WHERE patterns are executed with history mode enabled
 3. **Metadata Capture**: Transaction time (`@t`) and operation (`@op`) are captured for each binding
 4. **Result Generation**: Results include both assertions and retractions within the time range

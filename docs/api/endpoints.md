@@ -198,7 +198,7 @@ curl -X POST http://localhost:8090/query \
 
 ### History Queries via POST /query
 
-Query the history of entities using the standard `/query` endpoint with a time range in the `from` clause.
+Query the history of entities using the standard `/query` endpoint with `from` and `to` keys specifying the time range.
 
 **Request Body:**
 
@@ -207,7 +207,8 @@ Query the history of entities using the standard `/query` endpoint with a time r
   "@context": {
     "ex": "http://example.org/ns/"
   },
-  "from": ["mydb:main@t:1", "mydb:main@t:latest"],
+  "from": "mydb:main@t:1",
+  "to": "mydb:main@t:latest",
   "select": ["?name", "?age", "?t", "?op"],
   "where": [
     { "@id": "ex:alice", "ex:name": { "@value": "?name", "@t": "?t", "@op": "?op" } },
@@ -238,7 +239,8 @@ curl -X POST http://localhost:8090/query \
   -H "Content-Type: application/json" \
   -d '{
     "@context": { "ex": "http://example.org/ns/" },
-    "from": ["mydb:main@t:1", "mydb:main@t:latest"],
+    "from": "mydb:main@t:1",
+    "to": "mydb:main@t:latest",
     "select": ["?name", "?t", "?op"],
     "where": [
       { "@id": "ex:alice", "ex:name": { "@value": "?name", "@t": "?t", "@op": "?op" } }
@@ -592,6 +594,65 @@ curl -X POST http://localhost:8090/fluree/drop \
 curl -X POST http://localhost:8090/fluree/drop \
   -H "Content-Type: application/json" \
   -d '{"ledger": "mydb"}'
+```
+
+### GET /fluree/exists
+
+Check if a ledger exists in the nameservice.
+
+**URL:**
+```
+GET /fluree/exists?ledger={ledger-alias}
+```
+
+**Query Parameters:**
+- `ledger`: Ledger alias (e.g., "mydb" or "mydb:main")
+
+**Alternative:** Use the `fluree-ledger` header instead of query parameter.
+
+**Response:**
+
+```json
+{
+  "ledger": "mydb:main",
+  "exists": true
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ledger` | string | Ledger alias (echoed back) |
+| `exists` | boolean | Whether the ledger is registered in the nameservice |
+
+**Status Codes:**
+- `200 OK` - Check completed successfully (regardless of whether ledger exists)
+- `400 Bad Request` - Missing ledger parameter
+- `500 Internal Server Error` - Server error
+
+**Usage Notes:**
+
+This is a lightweight check that only queries the nameservice without loading the ledger data. Use this to:
+
+- Check if a ledger exists before attempting to load it
+- Implement conditional create-or-load logic
+- Validate ledger aliases in application code
+
+**Examples:**
+
+```bash
+# Check via query parameter
+curl "http://localhost:8090/fluree/exists?ledger=mydb:main"
+
+# Check via header
+curl http://localhost:8090/fluree/exists \
+  -H "fluree-ledger: mydb:main"
+
+# Conditional create-or-load in shell
+if curl -s "http://localhost:8090/fluree/exists?ledger=mydb" | jq -e '.exists == false' > /dev/null; then
+  curl -X POST http://localhost:8090/fluree/create \
+    -H "Content-Type: application/json" \
+    -d '{"ledger": "mydb"}'
+fi
 ```
 
 ## System Endpoints
