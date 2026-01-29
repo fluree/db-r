@@ -585,6 +585,35 @@ where
     }
 }
 
+#[async_trait]
+impl<S> StorageDelete for TieredStorage<S>
+where
+    S: Storage + StorageWrite + ContentAddressedWrite + StorageDelete + Clone + Send + Sync,
+{
+    async fn delete(&self, address: &str) -> std::result::Result<(), fluree_db_core::Error> {
+        if Self::route_to_commit(address) {
+            self.commit.delete(address).await
+        } else {
+            self.index.delete(address).await
+        }
+    }
+}
+
+#[async_trait]
+impl<S> StorageList for TieredStorage<S>
+where
+    S: Storage + StorageWrite + ContentAddressedWrite + StorageList + Clone + Send + Sync,
+{
+    async fn list_prefix(&self, prefix: &str) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
+        // Route based on prefix - commit/txn prefixes go to commit storage
+        if Self::route_to_commit(prefix) {
+            self.commit.list_prefix(prefix).await
+        } else {
+            self.index.list_prefix(prefix).await
+        }
+    }
+}
+
 // ============================================================================
 // Address Identifier Resolver Storage
 // ============================================================================

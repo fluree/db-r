@@ -35,7 +35,10 @@ use aws_smithy_types::retry::RetryConfig;
 use aws_smithy_types::timeout::TimeoutConfig;
 use fluree_db_core::error::Error as CoreError;
 use fluree_db_core::address_path::alias_to_path_prefix;
-use fluree_db_core::{ContentAddressedWrite, ContentKind, ContentWriteResult, Storage, StorageWrite};
+use fluree_db_core::{
+    ContentAddressedWrite, ContentKind, ContentWriteResult, Storage, StorageWrite,
+    StorageDelete as CoreStorageDelete, StorageList as CoreStorageList,
+};
 use fluree_db_nameservice::{
     ListResult as NsListResult, StorageCas, StorageDelete, StorageExtError, StorageExtResult,
     StorageList,
@@ -653,6 +656,39 @@ fn is_precondition_failed_sdk<E: std::fmt::Debug>(err: &aws_sdk_s3::error::SdkEr
             service_err.raw().status().as_u16() == 412
         }
         _ => false,
+    }
+}
+
+/// Convert StorageExtError to CoreError
+fn ext_error_to_core(err: StorageExtError) -> CoreError {
+    match err {
+        StorageExtError::Io(msg) => CoreError::io(msg),
+        StorageExtError::NotFound(msg) => CoreError::not_found(msg),
+        StorageExtError::Unauthorized(msg) => CoreError::storage(format!("Unauthorized: {}", msg)),
+        StorageExtError::Forbidden(msg) => CoreError::storage(format!("Forbidden: {}", msg)),
+        StorageExtError::Throttled(msg) => CoreError::io(format!("Throttled: {}", msg)),
+        StorageExtError::PreconditionFailed => CoreError::storage("Precondition failed"),
+        StorageExtError::Other(msg) => CoreError::other(msg),
+    }
+}
+
+// Core storage trait implementations (for AnyStorage compatibility)
+
+#[async_trait]
+impl CoreStorageDelete for S3Storage {
+    async fn delete(&self, address: &str) -> fluree_db_core::error::Result<()> {
+        StorageDelete::delete(self, address)
+            .await
+            .map_err(ext_error_to_core)
+    }
+}
+
+#[async_trait]
+impl CoreStorageList for S3Storage {
+    async fn list_prefix(&self, prefix: &str) -> fluree_db_core::error::Result<Vec<String>> {
+        StorageList::list_prefix(self, prefix)
+            .await
+            .map_err(ext_error_to_core)
     }
 }
 
