@@ -8,7 +8,7 @@ Query tracking provides visibility into query execution, helping you understand 
 
 ### Enable Tracking
 
-Enable tracking in queries:
+Enable tracking via the `opts` object. Use `"meta": true` to enable all tracking, or selectively enable specific metrics:
 
 ```json
 {
@@ -17,18 +17,30 @@ Enable tracking in queries:
   "where": [
     { "@id": "?person", "ex:name": "?name" }
   ],
-  "track": true
+  "opts": { "meta": true }
+}
+```
+
+Or enable specific metrics:
+
+```json
+{
+  "opts": {
+    "meta": {
+      "time": true,
+      "fuel": true,
+      "policy": true
+    }
+  }
 }
 ```
 
 ### Tracked Information
 
 Tracking provides:
-- **Execution Time**: Query execution duration
-- **Rows Processed**: Number of rows processed
-- **Index Scans**: Number of index scans performed
-- **Joins**: Number of joins executed
-- **Filters Applied**: Number of filters evaluated
+- **time**: Query execution duration (formatted as "12.34ms")
+- **fuel**: Number of items/flakes processed
+- **policy**: Policy evaluation statistics (`{policy-id: {executed: N, allowed: M}}`)
 
 ## Fuel Limits
 
@@ -36,15 +48,14 @@ Fuel limits control resource consumption, preventing runaway queries from consum
 
 ### What Is Fuel?
 
-Fuel is a measure of query execution cost:
-- **Index Scans**: Each scan consumes fuel
-- **Joins**: Each join consumes fuel
-- **Filter Evaluations**: Each filter consumes fuel
-- **Row Processing**: Each row processed consumes fuel
+Fuel is a measure of query execution cost. One unit of fuel is consumed for each item emitted:
+- Each flake/triple matched during index scans
+- Each item expanded during graph crawl formatting
+- Each non-schema flake staged during transactions
 
 ### Setting Fuel Limits
 
-Set fuel limits in queries:
+Set fuel limits via `opts.max-fuel`. Setting a fuel limit implicitly enables fuel tracking:
 
 ```json
 {
@@ -53,9 +64,11 @@ Set fuel limits in queries:
   "where": [
     { "@id": "?person", "ex:name": "?name" }
   ],
-  "fuel": 10000
+  "opts": { "max-fuel": 10000 }
 }
 ```
+
+You can also use `"maxFuel"` or `"max_fuel"` as alternative key names.
 
 ### Fuel Limit Behavior
 
@@ -64,11 +77,30 @@ When fuel limit is exceeded:
 - Error returned to client
 - Partial results not returned
 
+## Response Format
+
+When tracking is enabled, the response includes tracking information as top-level siblings:
+
+```json
+{
+  "status": 200,
+  "result": [...],
+  "time": "12.34ms",
+  "fuel": 42,
+  "policy": {
+    "http://example.org/myPolicy": {
+      "executed": 10,
+      "allowed": 8
+    }
+  }
+}
+```
+
 ## Best Practices
 
 ### Tracking
 
-1. **Enable for Debugging**: Use tracking to debug slow queries
+1. **Enable for Debugging**: Use `"opts": {"meta": true}` to debug slow queries
 2. **Monitor Performance**: Track query performance over time
 3. **Identify Bottlenecks**: Use tracking to identify performance bottlenecks
 

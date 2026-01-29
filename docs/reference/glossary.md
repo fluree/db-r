@@ -349,6 +349,24 @@ Converting full IRIs to compact form using @context.
 
 Example: `http://schema.org/name` compacts to `schema:name`
 
+## Query Execution Terms
+
+### Fuel
+
+A measure of query/transaction execution cost. One unit of fuel is consumed for each item processed (flakes matched, items expanded during graph crawl, etc.). Used to prevent runaway queries from consuming excessive resources.
+
+Example: `"opts": {"max-fuel": 10000}` limits query to 10,000 fuel units.
+
+### Tracking
+
+Query/transaction execution monitoring that provides visibility into performance metrics. When enabled, returns time (execution duration), fuel (items processed), and policy statistics.
+
+Example: `"opts": {"meta": true}` enables all tracking metrics.
+
+### TrackingTally
+
+The result of tracking, containing time (formatted as "12.34ms"), fuel (total count), and policy stats (`{policy-id: {executed, allowed}}`).
+
 ## Acronyms
 
 - **ANN:** Approximate Nearest Neighbor

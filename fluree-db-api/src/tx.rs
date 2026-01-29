@@ -28,6 +28,23 @@ fn ledger_alias_from_txn(txn_json: &JsonValue) -> Result<&str> {
         .ok_or_else(|| ApiError::config("Invalid transaction, missing required key: ledger."))
 }
 
+/// Create a tracker for fuel limits only (no time/policy tracking).
+///
+/// This mirrors query behavior: even non-tracked transactions respect max-fuel.
+fn tracker_for_limits(txn_json: &JsonValue) -> Tracker {
+    let opts = txn_json.as_object().and_then(|o| o.get("opts"));
+    let tracking = TrackingOptions::from_opts_value(opts);
+    match tracking.max_fuel.filter(|limit| *limit > 0) {
+        Some(limit) => Tracker::new(TrackingOptions {
+            track_time: false,
+            track_fuel: true,
+            track_policy: false,
+            max_fuel: Some(limit),
+        }),
+        None => Tracker::disabled(),
+    }
+}
+
 // =============================================================================
 // Indexing Mode Configuration
 // =============================================================================
@@ -160,6 +177,8 @@ where
     }
 
     /// Stage a transaction against a ledger (no persistence).
+    ///
+    /// Respects `opts.max-fuel` in the transaction JSON for fuel limits (consistent with query behavior).
     pub async fn stage_transaction(
         &self,
         ledger: LedgerState<S, SimpleCache>,
@@ -170,6 +189,10 @@ where
     ) -> Result<StageResult<S>> {
         let mut ns_registry = NamespaceRegistry::from_db(&ledger.db);
         let txn = parse_transaction(txn_json, txn_type, txn_opts, &mut ns_registry)?;
+
+        // Check for max-fuel in opts and create tracker if present (same pattern as queries)
+        let tracker = tracker_for_limits(txn_json);
+
         #[cfg(feature = "shacl")]
         let (view, ns_registry) = {
             // Use from_db_with_overlay to include novelty flakes (shapes committed but not yet indexed)
@@ -177,18 +200,24 @@ where
                 .await
                 .map_err(fluree_db_transact::TransactError::from)?;
             let shacl_cache = engine.cache().clone();
-            let options = match index_config {
+            let mut options = match index_config {
                 Some(cfg) => StageOptions::new().with_index_config(cfg),
                 None => StageOptions::default(),
             };
+            if tracker.is_enabled() {
+                options = options.with_tracker(&tracker);
+            }
             stage_with_shacl(ledger, txn, ns_registry, options, &shacl_cache).await?
         };
         #[cfg(not(feature = "shacl"))]
         let (view, ns_registry) = {
-            let options = match index_config {
+            let mut options = match index_config {
                 Some(cfg) => StageOptions::new().with_index_config(cfg),
                 None => StageOptions::default(),
             };
+            if tracker.is_enabled() {
+                options = options.with_tracker(&tracker);
+            }
             stage_txn(ledger, txn, ns_registry, options).await?
         };
         Ok(StageResult { view, ns_registry })
