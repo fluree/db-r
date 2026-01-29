@@ -745,10 +745,14 @@ fn decode_encryption_key_base64(key_str: &str) -> Result<[u8; 32]> {
 }
 
 /// Build an S3 storage instance from a StorageConfig.
+///
+/// Returns an `Arc<dyn Storage>` which may be either:
+/// - `S3Storage` directly (if no encryption key is configured)
+/// - `EncryptedStorage<S3Storage, ...>` (if `aes256_key` is set)
 #[cfg(feature = "aws")]
 async fn build_s3_storage_from_config(
     storage_config: &fluree_db_connection::config::StorageConfig,
-) -> Result<fluree_db_storage_aws::S3Storage> {
+) -> Result<Arc<dyn Storage>> {
     use fluree_db_connection::config::StorageType;
     use fluree_db_storage_aws::{S3Config as RawS3Config, S3Storage};
 
@@ -784,9 +788,19 @@ async fn build_s3_storage_from_config(
         retry_max_delay_ms: s3_config.retry_max_delay_ms,
     };
 
-    S3Storage::new(sdk_config, raw_config)
+    let storage = S3Storage::new(sdk_config, raw_config)
         .await
-        .map_err(|e| ApiError::config(format!("Failed to create S3 storage: {}", e)))
+        .map_err(|e| ApiError::config(format!("Failed to create S3 storage: {}", e)))?;
+
+    // Wrap with encryption if key is configured
+    if let Some(key_str) = storage_config.aes256_key.as_ref() {
+        let key = decode_encryption_key_base64(key_str.as_ref())?;
+        let encryption_key = EncryptionKey::new(key, 0);
+        let key_provider = StaticKeyProvider::new(encryption_key);
+        Ok(Arc::new(EncryptedStorage::new(storage, key_provider)))
+    } else {
+        Ok(Arc::new(storage))
+    }
 }
 
 /// Build a local (memory/file) storage instance from a StorageConfig.
@@ -932,7 +946,7 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
             let mut identifier_map = std::collections::HashMap::new();
             for (identifier, storage_config) in addr_ids.iter() {
                 let id_storage: Arc<dyn Storage> = match &storage_config.storage_type {
-                    StorageType::S3(_) => Arc::new(build_s3_storage_from_config(storage_config).await?),
+                    StorageType::S3(_) => build_s3_storage_from_config(storage_config).await?,
                     _ => build_local_storage_from_config(storage_config)?,
                 };
                 identifier_map.insert(identifier.to_string(), AnyStorage::new(id_storage));
@@ -1839,6 +1853,89 @@ impl FlureeBuilder {
         )
         .await
         .map_err(|e| ApiError::config(format!("Failed to create S3 storage: {}", e)))?;
+
+        let cache = Arc::new(SimpleCache::new(self.config.cache.max_entries));
+        let connection = Connection::new(self.config, storage.clone(), Arc::clone(&cache));
+
+        // Empty prefix: S3Storage already applies its own key prefix.
+        let nameservice = StorageNameService::new(storage, "");
+
+        Ok(Fluree {
+            connection,
+            nameservice,
+            indexing_mode: tx::IndexingMode::Disabled,
+            r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
+            #[cfg(feature = "native")]
+            prefetch: PrefetchService::start(PrefetchConfig::default()),
+            ledger_manager: None,
+        })
+    }
+
+    /// Build an S3-backed Fluree instance with AES-256-GCM encryption.
+    ///
+    /// All data written to S3 is transparently encrypted before upload,
+    /// and decrypted on read.
+    ///
+    /// Notes:
+    /// - Requires the `aws` feature.
+    /// - Uses the AWS default credential/region chain.
+    /// - Ledger caching is currently not enabled for this builder path.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - 32-byte AES-256 encryption key
+    #[cfg(feature = "aws")]
+    pub async fn build_s3_encrypted(
+        self,
+        key: [u8; 32],
+    ) -> Result<
+        Fluree<
+            EncryptedStorage<fluree_db_storage_aws::S3Storage, StaticKeyProvider>,
+            SimpleCache,
+            StorageNameService<EncryptedStorage<fluree_db_storage_aws::S3Storage, StaticKeyProvider>>,
+        >,
+    > {
+        use fluree_db_connection::aws;
+        use fluree_db_connection::config::S3StorageConfig;
+        use fluree_db_storage_aws::{S3Config, S3Storage};
+
+        let s3_cfg: &S3StorageConfig = match &self.config.index_storage.storage_type {
+            StorageType::S3(s3) => s3,
+            _ => {
+                return Err(ApiError::config(
+                    "build_s3_encrypted requires FlureeBuilder::s3(...) or an S3 indexStorage config",
+                ))
+            }
+        };
+
+        let timeout_ms = s3_cfg
+            .read_timeout_ms
+            .into_iter()
+            .chain(s3_cfg.write_timeout_ms.into_iter())
+            .chain(s3_cfg.list_timeout_ms.into_iter())
+            .max();
+
+        let sdk_config = aws::get_or_init_sdk_config().await?;
+
+        let s3_storage = S3Storage::new(
+            sdk_config,
+            S3Config {
+                bucket: s3_cfg.bucket.to_string(),
+                prefix: s3_cfg.prefix.as_ref().map(|s| s.to_string()),
+                endpoint: s3_cfg.endpoint.as_ref().map(|s| s.to_string()),
+                timeout_ms,
+                max_retries: s3_cfg.max_retries.map(|n| n as u32),
+                retry_base_delay_ms: s3_cfg.retry_base_delay_ms,
+                retry_max_delay_ms: s3_cfg.retry_max_delay_ms,
+            },
+        )
+        .await
+        .map_err(|e| ApiError::config(format!("Failed to create S3 storage: {}", e)))?;
+
+        // Wrap with encryption
+        let encryption_key = EncryptionKey::new(key, 0);
+        let key_provider = StaticKeyProvider::new(encryption_key);
+        let storage = EncryptedStorage::new(s3_storage, key_provider);
 
         let cache = Arc::new(SimpleCache::new(self.config.cache.max_entries));
         let connection = Connection::new(self.config, storage.clone(), Arc::clone(&cache));

@@ -37,7 +37,7 @@ full = ["native", "credential", "iceberg", "shacl"]
 
 [dependencies]
 fluree-db-core = { path = "../fluree-db-core" }
-fluree-db-crypto = { path = "../fluree-db-crypto" }
+fluree-db-crypto = { path = "../fluree-db-crypto", features = ["nameservice"] }
 fluree-db-connection = { path = "../fluree-db-connection" }
 fluree-db-policy = { path = "../fluree-db-policy" }
 fluree-db-query = { path = "../fluree-db-query" }

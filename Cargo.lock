@@ -2104,6 +2104,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "fluree-db-core",
+ "fluree-db-nameservice",
  "hex",
  "rand_core 0.6.4",
  "sha2",
