@@ -130,7 +130,7 @@ pub use fluree_db_indexer::{
 pub use fluree_db_connection::{ConnectionConfig, StorageType};
 pub use fluree_db_core::{
     ContentAddressedWrite, ContentKind, ContentWriteResult, MemoryStorage, NodeCache,
-    OverlayProvider, SimpleCache, Storage, StorageWrite,
+    OverlayProvider, SimpleCache, Storage, StorageDelete, StorageList, StorageWrite,
 };
 #[cfg(feature = "native")]
 pub use fluree_db_core::FileStorage;
@@ -200,8 +200,8 @@ pub use fluree_graph_json_ld::ParsedContext;
 ///
 /// This allows `connect_json_ld` to return a single concrete Fluree type regardless of
 /// whether the config selects memory, filesystem, or S3 storage.
-pub trait StorageReadWrite: Storage + StorageWrite + ContentAddressedWrite {}
-impl<T: Storage + StorageWrite + ContentAddressedWrite> StorageReadWrite for T {}
+pub trait StorageReadWrite: Storage + StorageWrite + ContentAddressedWrite + StorageDelete + StorageList {}
+impl<T: Storage + StorageWrite + ContentAddressedWrite + StorageDelete + StorageList> StorageReadWrite for T {}
 
 #[derive(Clone)]
 pub struct AnyStorage(Arc<dyn StorageReadWrite>);
@@ -265,6 +265,20 @@ impl ContentAddressedWrite for AnyStorage {
         bytes: &[u8],
     ) -> std::result::Result<ContentWriteResult, fluree_db_core::Error> {
         self.0.content_write_bytes(kind, ledger_alias, bytes).await
+    }
+}
+
+#[async_trait]
+impl StorageDelete for AnyStorage {
+    async fn delete(&self, address: &str) -> std::result::Result<(), fluree_db_core::Error> {
+        self.0.delete(address).await
+    }
+}
+
+#[async_trait]
+impl StorageList for AnyStorage {
+    async fn list_prefix(&self, prefix: &str) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
+        self.0.list_prefix(prefix).await
     }
 }
 
@@ -686,6 +700,22 @@ impl ContentAddressedWrite for AddressIdentifierResolverStorage {
         self.default
             .content_write_bytes(kind, ledger_alias, bytes)
             .await
+    }
+}
+
+#[async_trait]
+impl StorageDelete for AddressIdentifierResolverStorage {
+    /// Deletes always go to the default storage
+    async fn delete(&self, address: &str) -> std::result::Result<(), fluree_db_core::Error> {
+        self.default.delete(address).await
+    }
+}
+
+#[async_trait]
+impl StorageList for AddressIdentifierResolverStorage {
+    /// List always uses the default storage
+    async fn list_prefix(&self, prefix: &str) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
+        self.default.list_prefix(prefix).await
     }
 }
 

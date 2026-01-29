@@ -240,13 +240,6 @@ fn content_address(method: &str, kind: ContentKind, alias: &str, hash_hex: &str)
 }
 
 /// Storage trait for deleting data
-///
-/// This trait is separate from `StorageWrite` because:
-/// 1. Not all storage backends support deletion
-/// 2. Deletion is rarely needed in normal operation (append-only data model)
-/// 3. Deletion has security implications that warrant separate consideration
-///
-/// Note: Uses `async_trait(?Send)` for WASM compatibility.
 #[async_trait]
 pub trait StorageDelete: Debug + Send + Sync {
     /// Delete an object by address
