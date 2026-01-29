@@ -25,7 +25,7 @@ use crate::{
 use fluree_db_core::ContentAddressedWrite;
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::Publisher;
-use fluree_db_transact::{CommitOpts, NamespaceRegistry, TxnOpts, TxnType};
+use fluree_db_transact::{CommitOpts, NamespaceRegistry, Txn, TxnOpts, TxnType};
 
 // ============================================================================
 // TransactOperation (private)
@@ -77,6 +77,8 @@ impl<'a> TransactOperation<'a> {
 /// Shared fields for both transaction builders.
 pub(crate) struct TransactCore<'a> {
     pub(crate) operation: Option<TransactOperation<'a>>,
+    /// Pre-built transaction IR (bypasses parsing, used for SPARQL UPDATE)
+    pub(crate) pre_built_txn: Option<Txn>,
     pub(crate) txn_opts: TxnOpts,
     pub(crate) commit_opts: CommitOpts,
     pub(crate) index_config: Option<IndexConfig>,
@@ -89,12 +91,24 @@ impl<'a> TransactCore<'a> {
     pub(crate) fn new() -> Self {
         Self {
             operation: None,
+            pre_built_txn: None,
             txn_opts: TxnOpts::default(),
             commit_opts: CommitOpts::default(),
             index_config: None,
             tracking: None,
             policy: None,
             errors: Vec::new(),
+        }
+    }
+
+    pub(crate) fn set_pre_built_txn(&mut self, txn: Txn) {
+        if self.operation.is_some() || self.pre_built_txn.is_some() {
+            self.errors.push(BuilderError::Conflict {
+                field: "operation",
+                message: "Transaction operation already set; cannot set pre-built txn".to_string(),
+            });
+        } else {
+            self.pre_built_txn = Some(txn);
         }
     }
 
@@ -112,10 +126,11 @@ impl<'a> TransactCore<'a> {
 
     pub(crate) fn validate(&self) -> std::result::Result<(), BuilderErrors> {
         let mut errors = self.errors.clone();
-        if self.operation.is_none() {
+        // Either operation or pre_built_txn must be set
+        if self.operation.is_none() && self.pre_built_txn.is_none() {
             errors.push(BuilderError::Missing {
                 field: "operation",
-                hint: "Call .insert(), .upsert(), .update(), .insert_turtle(), or .upsert_turtle()",
+                hint: "Call .insert(), .upsert(), .update(), .insert_turtle(), .upsert_turtle(), or .txn()",
             });
         }
         if errors.is_empty() {
@@ -241,6 +256,15 @@ where
     pub fn upsert_turtle(mut self, turtle: &'a str) -> Self {
         self.core
             .set_operation(TransactOperation::UpsertTurtle(turtle));
+        self
+    }
+
+    /// Set a pre-built transaction IR (bypasses JSON/Turtle parsing).
+    ///
+    /// This is used for SPARQL UPDATE where the transaction is already
+    /// lowered to the IR representation.
+    pub fn txn(mut self, txn: Txn) -> Self {
+        self.core.set_pre_built_txn(txn);
         self
     }
 
@@ -471,6 +495,15 @@ where
         self
     }
 
+    /// Set a pre-built transaction IR (bypasses JSON/Turtle parsing).
+    ///
+    /// This is used for SPARQL UPDATE where the transaction is already
+    /// lowered to the IR representation.
+    pub fn txn(mut self, txn: Txn) -> Self {
+        self.core.set_pre_built_txn(txn);
+        self
+    }
+
     // -- Option setters --
 
     /// Set transaction options (author, context, etc.).
@@ -535,55 +568,69 @@ where
 {
     core.validate().map_err(|e| ApiError::Builder(e))?;
 
-    let op = core.operation.unwrap();
-    let txn_type = op.txn_type();
-    let txn_json = op.to_json()?;
     let index_config = core.index_config.unwrap_or_default();
 
     // Acquire write lock
     let mut write_guard = handle.lock_for_write().await;
     let ledger_state = write_guard.clone_state();
 
-    // Attach raw_txn if not already set
-    let commit_opts = if core.commit_opts.raw_txn.is_none() {
-        core.commit_opts.with_raw_txn(txn_json.clone().into_owned())
+    // Handle pre-built Txn (SPARQL UPDATE) vs operation-based transaction
+    let (stage_result, txn_type, commit_opts) = if let Some(txn) = core.pre_built_txn {
+        let txn_type = txn.txn_type;
+        // For pre-built Txn, don't attach raw_txn (we don't have the original format)
+        let stage_result = fluree
+            .stage_transaction_from_txn(ledger_state, txn, Some(&index_config))
+            .await?;
+        (stage_result, txn_type, core.commit_opts)
     } else {
-        core.commit_opts
+        let op = core.operation.unwrap(); // safe: validate checks
+        let txn_type = op.txn_type();
+        let txn_json = op.to_json()?;
+
+        // Attach raw_txn if not already set
+        let commit_opts = if core.commit_opts.raw_txn.is_none() {
+            core.commit_opts.with_raw_txn(txn_json.clone().into_owned())
+        } else {
+            core.commit_opts
+        };
+
+        // Stage
+        let stage_result = if let Some(policy) = &core.policy {
+            let tracker = Tracker::new(
+                core.tracking.unwrap_or_else(|| TrackingOptions {
+                    track_time: true,
+                    track_fuel: true,
+                    track_policy: true,
+                    max_fuel: None,
+                }),
+            );
+            fluree
+                .stage_transaction_tracked_with_policy(
+                    ledger_state,
+                    txn_type,
+                    &txn_json,
+                    core.txn_opts,
+                    Some(&index_config),
+                    policy,
+                    &tracker,
+                )
+                .await
+                .map_err(|e: TrackedErrorResponse| ApiError::http(e.status, e.error))?
+        } else {
+            fluree
+                .stage_transaction(
+                    ledger_state,
+                    txn_type,
+                    &txn_json,
+                    core.txn_opts,
+                    Some(&index_config),
+                )
+                .await?
+        };
+        (stage_result, txn_type, commit_opts)
     };
 
-    // Stage
-    let StageResult { view, ns_registry } = if let Some(policy) = &core.policy {
-        let tracker = Tracker::new(
-            core.tracking.unwrap_or_else(|| TrackingOptions {
-                track_time: true,
-                track_fuel: true,
-                track_policy: true,
-                max_fuel: None,
-            }),
-        );
-        fluree
-            .stage_transaction_tracked_with_policy(
-                ledger_state,
-                txn_type,
-                &txn_json,
-                core.txn_opts,
-                Some(&index_config),
-                policy,
-                &tracker,
-            )
-            .await
-            .map_err(|e: TrackedErrorResponse| ApiError::http(e.status, e.error))?
-    } else {
-        fluree
-            .stage_transaction(
-                ledger_state,
-                txn_type,
-                &txn_json,
-                core.txn_opts,
-                Some(&index_config),
-            )
-            .await?
-    };
+    let StageResult { view, ns_registry } = stage_result;
 
     // Handle no-op
     let (receipt, new_state) = if !view.has_staged()

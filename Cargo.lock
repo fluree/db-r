@@ -2456,6 +2456,7 @@ dependencies = [
  "fluree-db-policy",
  "fluree-db-query",
  "fluree-db-shacl",
+ "fluree-db-sparql",
  "fluree-graph-ir",
  "fluree-graph-json-ld",
  "fluree-vocab",

@@ -542,6 +542,175 @@ WHERE {
 }
 ```
 
+## SPARQL UPDATE
+
+Fluree supports SPARQL 1.1 Update for modifying data using standard SPARQL syntax. SPARQL UPDATE requests use the `application/sparql-update` content type and are sent to the transact endpoints.
+
+### INSERT DATA
+
+Insert ground triples (no variables):
+
+```sparql
+PREFIX ex: <http://example.org/ns/>
+
+INSERT DATA {
+  ex:alice ex:name "Alice" .
+  ex:alice ex:age 30 .
+  ex:alice ex:email "alice@example.org" .
+}
+```
+
+**HTTP Request:**
+
+```bash
+curl -X POST http://localhost:8090/ledger/mydb:main/transact \
+  -H "Content-Type: application/sparql-update" \
+  -d 'PREFIX ex: <http://example.org/ns/>
+      INSERT DATA { ex:alice ex:name "Alice" }'
+```
+
+### DELETE DATA
+
+Delete specific ground triples:
+
+```sparql
+PREFIX ex: <http://example.org/ns/>
+
+DELETE DATA {
+  ex:alice ex:email "alice@example.org" .
+}
+```
+
+### DELETE WHERE
+
+Delete triples matching a pattern:
+
+```sparql
+PREFIX ex: <http://example.org/ns/>
+
+DELETE WHERE {
+  ex:alice ex:age ?age .
+}
+```
+
+This finds all `ex:age` values for `ex:alice` and deletes them.
+
+### DELETE/INSERT (Modify)
+
+The most powerful form combines WHERE, DELETE, and INSERT clauses:
+
+```sparql
+PREFIX ex: <http://example.org/ns/>
+
+DELETE {
+  ?person ex:age ?oldAge .
+}
+INSERT {
+  ?person ex:age ?newAge .
+}
+WHERE {
+  ?person ex:name "Alice" .
+  ?person ex:age ?oldAge .
+  BIND(?oldAge + 1 AS ?newAge)
+}
+```
+
+**Update multiple properties:**
+
+```sparql
+PREFIX ex: <http://example.org/ns/>
+
+DELETE {
+  ?person ex:name ?oldName .
+  ?person ex:status ?oldStatus .
+}
+INSERT {
+  ?person ex:name "Alicia" .
+  ?person ex:status ex:Active .
+}
+WHERE {
+  ?person ex:name "Alice" .
+  OPTIONAL { ?person ex:name ?oldName }
+  OPTIONAL { ?person ex:status ?oldStatus }
+}
+```
+
+### Blank Nodes in INSERT
+
+Blank nodes can be used in INSERT templates to create new entities:
+
+```sparql
+PREFIX ex: <http://example.org/ns/>
+
+INSERT DATA {
+  _:newPerson ex:name "Bob" .
+  _:newPerson ex:age 25 .
+}
+```
+
+### Typed Literals
+
+Specify datatypes explicitly:
+
+```sparql
+PREFIX ex: <http://example.org/ns/>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
+INSERT DATA {
+  ex:alice ex:birthDate "1990-05-15"^^xsd:date .
+  ex:alice ex:salary "75000.00"^^xsd:decimal .
+  ex:alice ex:active "true"^^xsd:boolean .
+}
+```
+
+### Language-Tagged Strings
+
+Insert strings with language tags:
+
+```sparql
+PREFIX ex: <http://example.org/ns/>
+
+INSERT DATA {
+  ex:alice ex:name "Alice"@en .
+  ex:alice ex:name "Alicia"@es .
+  ex:alice ex:name "アリス"@ja .
+}
+```
+
+### SPARQL UPDATE Restrictions
+
+Current MVP restrictions:
+
+- **WHERE patterns**: Only basic triple patterns are supported. OPTIONAL, FILTER, UNION, and VALUES in WHERE clauses are not yet supported.
+- **Blank nodes in WHERE**: Blank nodes cannot be used in WHERE patterns (use variables instead).
+- **WITH/USING clauses**: Graph scoping via WITH and USING is not yet supported.
+
+### Endpoint Usage
+
+SPARQL UPDATE uses the transact endpoints with `Content-Type: application/sparql-update`:
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /fluree/transact` | Connection-scoped, requires `Fluree-Ledger` header |
+| `POST /:ledger/transact` | Ledger-scoped, ledger from URL path |
+
+**Examples:**
+
+```bash
+# Ledger-scoped (recommended)
+curl -X POST http://localhost:8090/ledger/mydb:main/transact \
+  -H "Content-Type: application/sparql-update" \
+  -d 'PREFIX ex: <http://example.org/ns/>
+      INSERT DATA { ex:alice ex:name "Alice" }'
+
+# Connection-scoped with header
+curl -X POST http://localhost:8090/fluree/transact \
+  -H "Content-Type: application/sparql-update" \
+  -H "Fluree-Ledger: mydb:main" \
+  -d 'PREFIX ex: <http://example.org/ns/>
+      INSERT DATA { ex:alice ex:name "Alice" }'
+```
+
 ## Best Practices
 
 1. **Use PREFIX Declarations**: Makes queries readable
@@ -556,3 +725,4 @@ WHERE {
 - [CONSTRUCT Queries](construct.md): Generating RDF graphs
 - [Datasets](datasets.md): Multi-graph queries
 - [Output Formats](output-formats.md): Query result formats
+- [Transactions](../transactions/overview.md): JSON-LD transaction format

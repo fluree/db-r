@@ -364,6 +364,87 @@ async fn main() -> Result<()> {
 }
 ```
 
+### SPARQL UPDATE
+
+Use SPARQL UPDATE syntax for transactions:
+
+```rust
+use fluree_db_api::{
+    FlureeBuilder, Result,
+    parse_sparql, lower_sparql_update, NamespaceRegistry, TxnOpts,
+    SparqlQueryBody,
+};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let fluree = FlureeBuilder::file("./data")
+        .with_ledger_caching()
+        .build()?;
+
+    // Get a cached ledger handle
+    let handle = fluree.ledger_cached("mydb:main").await?;
+
+    // SPARQL UPDATE string
+    let sparql = r#"
+        PREFIX ex: <http://example.org/ns/>
+
+        DELETE {
+            ?person ex:age ?oldAge .
+        }
+        INSERT {
+            ?person ex:age 31 .
+        }
+        WHERE {
+            ?person ex:name "Alice" .
+            ?person ex:age ?oldAge .
+        }
+    "#;
+
+    // Parse SPARQL
+    let parse_output = parse_sparql(sparql);
+    if parse_output.has_errors() {
+        // Handle parse errors
+        for diag in parse_output.diagnostics.iter().filter(|d| d.is_error()) {
+            eprintln!("Parse error: {}", diag.message);
+        }
+        return Err(fluree_db_api::ApiError::Internal("SPARQL parse error".into()));
+    }
+
+    let ast = parse_output.ast.unwrap();
+
+    // Extract the UPDATE operation
+    let update_op = match &ast.body {
+        SparqlQueryBody::Update(op) => op,
+        _ => return Err(fluree_db_api::ApiError::Internal("Expected SPARQL UPDATE".into())),
+    };
+
+    // Get namespace registry from the ledger
+    let snapshot = handle.snapshot().await;
+    let mut ns = NamespaceRegistry::from_db(&snapshot.db);
+
+    // Lower SPARQL UPDATE to Txn IR
+    let txn = lower_sparql_update(update_op, &ast.prologue, &mut ns, TxnOpts::default())?;
+
+    // Execute the transaction
+    let result = fluree.stage(&handle)
+        .txn(txn)
+        .execute()
+        .await?;
+
+    println!("SPARQL UPDATE committed at t={}", result.receipt.t);
+
+    Ok(())
+}
+```
+
+**Supported SPARQL UPDATE operations:**
+- `INSERT DATA` - Insert ground triples
+- `DELETE DATA` - Delete specific triples
+- `DELETE WHERE` - Delete matching patterns
+- `DELETE/INSERT WHERE` - Full update with patterns
+
+See [SPARQL UPDATE](../query/sparql.md#sparql-update) for syntax details.
+
 ### Stage and Preview Changes
 
 ```rust

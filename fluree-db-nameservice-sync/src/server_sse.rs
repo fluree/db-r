@@ -12,8 +12,6 @@ use fluree_db_nameservice::{NsRecord, VgNsRecord, VgType};
 pub enum ServerSseParseError {
     #[error("invalid JSON: {0}")]
     InvalidJson(#[from] serde_json::Error),
-    #[error("missing/invalid fields: {0}")]
-    InvalidShape(String),
 }
 
 /// Parse a single raw SSE event from the server into an optional `RemoteEvent`.

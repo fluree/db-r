@@ -6,27 +6,36 @@ Complete reference for all Fluree HTTP API endpoints.
 
 ### POST /transact
 
-Submit a transaction to write data to a ledger.
+Submit a transaction to write data to a ledger. Supports both JSON-LD and SPARQL UPDATE formats.
 
 **URL:**
 ```
 POST /transact?ledger={ledger-alias}&mode={mode}
+POST /:ledger/transact
 ```
 
 **Query Parameters:**
-- `ledger` (required): Target ledger (format: `name:branch`)
-- `mode` (optional): Transaction mode
+- `ledger` (required for /transact): Target ledger (format: `name:branch`)
+- `mode` (optional): Transaction mode (JSON-LD only)
   - `default` - Normal insert/update (default)
   - `replace` - Upsert mode (replaces all entity properties)
 - `context` (optional): URL to default JSON-LD context
 
 **Request Headers:**
+
+For JSON-LD transactions:
 ```http
 Content-Type: application/json
 Accept: application/json
 ```
 
-**Request Body:**
+For SPARQL UPDATE:
+```http
+Content-Type: application/sparql-update
+Accept: application/json
+```
+
+**Request Body (JSON-LD):**
 
 JSON-LD transaction document:
 ```json
@@ -58,6 +67,34 @@ Or WHERE/DELETE/INSERT update:
 }
 ```
 
+**Request Body (SPARQL UPDATE):**
+
+```sparql
+PREFIX ex: <http://example.org/ns/>
+
+INSERT DATA {
+  ex:alice ex:name "Alice" .
+  ex:alice ex:age 30 .
+}
+```
+
+Or with DELETE/INSERT:
+
+```sparql
+PREFIX ex: <http://example.org/ns/>
+
+DELETE {
+  ?person ex:age ?oldAge .
+}
+INSERT {
+  ?person ex:age 31 .
+}
+WHERE {
+  ?person ex:name "Alice" .
+  ?person ex:age ?oldAge .
+}
+```
+
 **Response:**
 
 ```json
@@ -81,8 +118,9 @@ Or WHERE/DELETE/INSERT update:
 - `413 Payload Too Large` - Transaction exceeds size limit
 - `500 Internal Server Error` - Server error
 
-**Example:**
+**Examples:**
 
+JSON-LD transaction:
 ```bash
 curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
   -H "Content-Type: application/json" \
@@ -90,6 +128,24 @@ curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
     "@context": { "ex": "http://example.org/ns/" },
     "@graph": [{ "@id": "ex:alice", "ex:name": "Alice" }]
   }'
+```
+
+SPARQL UPDATE (ledger-scoped endpoint):
+```bash
+curl -X POST http://localhost:8090/ledger/mydb:main/transact \
+  -H "Content-Type: application/sparql-update" \
+  -d 'PREFIX ex: <http://example.org/ns/>
+      INSERT DATA { ex:alice ex:name "Alice" }'
+```
+
+SPARQL UPDATE (connection-scoped with header):
+```bash
+curl -X POST http://localhost:8090/fluree/transact \
+  -H "Content-Type: application/sparql-update" \
+  -H "Fluree-Ledger: mydb:main" \
+  -d 'PREFIX ex: <http://example.org/ns/>
+      DELETE { ?s ex:age ?old } INSERT { ?s ex:age 31 }
+      WHERE { ?s ex:name "Alice" . ?s ex:age ?old }'
 ```
 
 ## Query Endpoints

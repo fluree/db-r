@@ -1,4 +1,10 @@
 //! Query endpoints: /fluree/query, /fluree/explain, /:ledger/query
+//!
+//! Supports both JSON (FQL) and SPARQL query content types:
+//! - `application/json`: FQL query format (JSON body with "from" field)
+//! - `application/sparql-query`: SPARQL query syntax (raw SPARQL string in body)
+//!
+//! For SPARQL UPDATE operations, use the transact endpoints instead.
 
 use crate::config::ServerRole;
 use crate::error::{Result, ServerError};
@@ -127,13 +133,13 @@ pub async fn query(
     let _guard = span.enter();
 
     tracing::info!(status = "start", "query request received");
-    // Check for SPARQL update (not supported)
-    if headers.is_sparql_update() {
-        let error = ServerError::not_implemented(
-            "SPARQL UPDATE not yet supported",
+    // SPARQL UPDATE should use the transact endpoint, not query
+    if headers.is_sparql_update() || credential.is_sparql_update {
+        let error = ServerError::bad_request(
+            "SPARQL UPDATE requests should use the /fluree/transact endpoint, not /fluree/query",
         );
-        set_span_error_code(&span, "error:NotImplemented");
-        tracing::warn!(error = %error, "unsupported operation");
+        set_span_error_code(&span, "error:BadRequest");
+        tracing::warn!(error = %error, "SPARQL UPDATE sent to query endpoint");
         return Err(error);
     }
 
@@ -227,12 +233,13 @@ pub async fn query_ledger(
 
     tracing::info!(status = "start", "ledger query request received");
 
-    if headers.is_sparql_update() {
-        let error = ServerError::not_implemented(
-            "SPARQL UPDATE not yet supported",
+    // SPARQL UPDATE should use the transact endpoint, not query
+    if headers.is_sparql_update() || credential.is_sparql_update {
+        let error = ServerError::bad_request(
+            "SPARQL UPDATE requests should use the /:ledger/transact endpoint, not /:ledger/query",
         );
-        set_span_error_code(&span, "error:NotImplemented");
-        tracing::warn!(error = %error, "unsupported operation");
+        set_span_error_code(&span, "error:BadRequest");
+        tracing::warn!(error = %error, "SPARQL UPDATE sent to query endpoint");
         return Err(error);
     }
 

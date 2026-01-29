@@ -223,6 +223,40 @@ where
         Ok(StageResult { view, ns_registry })
     }
 
+    /// Stage a pre-built transaction IR (bypasses JSON/Turtle parsing).
+    ///
+    /// This is used for SPARQL UPDATE where the transaction has already been
+    /// lowered to the IR representation.
+    pub async fn stage_transaction_from_txn(
+        &self,
+        ledger: LedgerState<S, SimpleCache>,
+        txn: fluree_db_transact::Txn,
+        index_config: Option<&IndexConfig>,
+    ) -> Result<StageResult<S>> {
+        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        #[cfg(feature = "shacl")]
+        let (view, ns_registry) = {
+            let engine = ShaclEngine::from_db_with_overlay(&ledger.db, &*ledger.novelty, ledger.alias())
+                .await
+                .map_err(fluree_db_transact::TransactError::from)?;
+            let shacl_cache = engine.cache().clone();
+            let options = match index_config {
+                Some(cfg) => StageOptions::new().with_index_config(cfg),
+                None => StageOptions::default(),
+            };
+            stage_with_shacl(ledger, txn, ns_registry, options, &shacl_cache).await?
+        };
+        #[cfg(not(feature = "shacl"))]
+        let (view, ns_registry) = {
+            let options = match index_config {
+                Some(cfg) => StageOptions::new().with_index_config(cfg),
+                None => StageOptions::default(),
+            };
+            stage_txn(ledger, txn, ns_registry, options).await?
+        };
+        Ok(StageResult { view, ns_registry })
+    }
+
     /// Stage a transaction with policy enforcement + tracking (opts.meta / opts.max-fuel).
     ///
     /// This is the transaction-side equivalent of `query_connection_tracked_with_policy`.

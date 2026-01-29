@@ -518,10 +518,12 @@ async fn sparql_query_ledger_scoped_path_finds_value_without_from() {
 }
 
 #[tokio::test]
-async fn sparql_update_returns_501() {
+async fn sparql_update_on_query_endpoint_returns_bad_request() {
     let (_tmp, state) = test_state();
     let app = build_router(state);
 
+    // SPARQL UPDATE requests should go to /fluree/transact, not /fluree/query.
+    // The query endpoint returns 400 Bad Request with a helpful message.
     let sparql_update = r#"
         PREFIX ex: <http://example.org/>
         INSERT DATA { <http://example.org/alice> ex:name "Alice" }
@@ -538,7 +540,16 @@ async fn sparql_update_returns_501() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // Verify the error message guides users to the correct endpoint
+    let (_, json) = json_body(resp).await;
+    let error_msg = json["error"].as_str().unwrap_or("");
+    assert!(
+        error_msg.contains("/fluree/transact"),
+        "Expected error to mention /fluree/transact endpoint, got: {}",
+        error_msg
+    );
 }
 
 #[tokio::test]

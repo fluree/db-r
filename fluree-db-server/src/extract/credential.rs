@@ -59,8 +59,10 @@ pub struct MaybeCredential {
     pub credential: Option<ExtractedCredential>,
     /// The body to use for processing (unwrapped if signed, original if not)
     pub body: Bytes,
-    /// Whether this was a SPARQL content type
+    /// Whether this was a SPARQL query content type
     pub is_sparql: bool,
+    /// Whether this was a SPARQL UPDATE content type
+    pub is_sparql_update: bool,
 }
 
 impl MaybeCredential {
@@ -79,10 +81,15 @@ impl MaybeCredential {
         serde_json::from_slice(&self.body).map_err(ServerError::from)
     }
 
-    /// Get the body as string (for SPARQL queries)
+    /// Get the body as string (for SPARQL queries/updates)
     pub fn body_string(&self) -> Result<String> {
         String::from_utf8(self.body.to_vec())
             .map_err(|_| ServerError::bad_request("Invalid UTF-8 in request body"))
+    }
+
+    /// Check if this is a SPARQL UPDATE request (Content-Type: application/sparql-update)
+    pub fn is_sparql_update(&self) -> bool {
+        self.is_sparql_update
     }
 
     /// Extract credential from a request (manual extraction, same as FromRequest)
@@ -143,7 +150,9 @@ async fn extract_credential(req: Request<axum::body::Body>) -> Result<MaybeCrede
         .unwrap_or("");
 
     let is_jwt_content_type = content_type.contains("application/jwt");
-    let is_sparql_content_type = content_type.contains("application/sparql-query");
+    let is_sparql_query_content_type = content_type.contains("application/sparql-query");
+    let is_sparql_update_content_type = content_type.contains("application/sparql-update");
+    let is_sparql_content_type = is_sparql_query_content_type || is_sparql_update_content_type;
 
     // Read the body
     let body = axum::body::to_bytes(req.into_body(), usize::MAX)
@@ -176,6 +185,7 @@ async fn extract_credential(req: Request<axum::body::Body>) -> Result<MaybeCrede
                 }),
                 body: Bytes::from(result.payload),
                 is_sparql: true,
+                is_sparql_update: is_sparql_update_content_type,
             });
         } else {
             // JSON JWS - payload is JSON query/transaction
@@ -191,6 +201,7 @@ async fn extract_credential(req: Request<axum::body::Body>) -> Result<MaybeCrede
                 }),
                 body: Bytes::from(payload_bytes),
                 is_sparql: false,
+                is_sparql_update: false,
             });
         }
     }
@@ -211,6 +222,7 @@ async fn extract_credential(req: Request<axum::body::Body>) -> Result<MaybeCrede
                     }),
                     body: Bytes::from(payload_bytes),
                     is_sparql: false,
+                    is_sparql_update: false,
                 });
             }
         }
@@ -221,7 +233,8 @@ async fn extract_credential(req: Request<axum::body::Body>) -> Result<MaybeCrede
         headers,
         credential: None,
         body,
-        is_sparql: is_sparql_content_type,
+        is_sparql: is_sparql_query_content_type,
+        is_sparql_update: is_sparql_update_content_type,
     })
 }
 
@@ -229,13 +242,14 @@ async fn extract_credential(req: Request<axum::body::Body>) -> Result<MaybeCrede
 #[cfg(not(feature = "credential"))]
 async fn extract_credential(req: Request<axum::body::Body>) -> Result<MaybeCredential> {
     let headers = req.headers().clone();
-    
+
     let content_type = headers
         .get(CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    let is_sparql_content_type = content_type.contains("application/sparql-query");
+    let is_sparql_query_content_type = content_type.contains("application/sparql-query");
+    let is_sparql_update_content_type = content_type.contains("application/sparql-update");
 
     // Read the body
     let body = axum::body::to_bytes(req.into_body(), usize::MAX)
@@ -247,7 +261,8 @@ async fn extract_credential(req: Request<axum::body::Body>) -> Result<MaybeCrede
         headers,
         credential: None,
         body,
-        is_sparql: is_sparql_content_type,
+        is_sparql: is_sparql_query_content_type,
+        is_sparql_update: is_sparql_update_content_type,
     })
 }
 

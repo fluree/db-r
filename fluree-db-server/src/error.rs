@@ -2,7 +2,7 @@
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use fluree_db_api::ApiError;
+use fluree_db_api::{ApiError, SparqlUpdateLowerError};
 use fluree_db_nameservice::NameServiceError;
 use fluree_db_query::parse::ParseError;
 use serde::Serialize;
@@ -46,6 +46,10 @@ pub enum ServerError {
     /// Not Acceptable (406) - content negotiation failure
     #[error("{0}")]
     NotAcceptable(String),
+
+    /// SPARQL UPDATE lowering error
+    #[error("SPARQL UPDATE error: {0}")]
+    SparqlUpdateLower(#[from] SparqlUpdateLowerError),
 }
 
 impl ServerError {
@@ -96,6 +100,7 @@ impl ServerError {
             ServerError::Unauthorized(_) => errors::UNAUTHORIZED,
             ServerError::NotFound(_) => errors::NOT_FOUND,
             ServerError::NotAcceptable(_) => errors::NOT_ACCEPTABLE,
+            ServerError::SparqlUpdateLower(_) => errors::SPARQL_LOWER,
             
             // Auth/Policy (requires credential feature)
             #[cfg(feature = "credential")]
@@ -149,6 +154,7 @@ impl ServerError {
             ServerError::Json(_) => StatusCode::BAD_REQUEST,
             ServerError::BadRequest(_) => StatusCode::BAD_REQUEST,
             ServerError::InvalidHeader(_) => StatusCode::BAD_REQUEST,
+            ServerError::SparqlUpdateLower(_) => StatusCode::BAD_REQUEST,
 
             // 501 - Not Implemented
             ServerError::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,

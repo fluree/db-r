@@ -1,4 +1,8 @@
 //! Transaction endpoints: /fluree/transact, /fluree/update, /fluree/insert, /fluree/upsert
+//!
+//! Supports both JSON-LD (FQL) and SPARQL UPDATE content types:
+//! - `application/json`: JSON-LD transaction format
+//! - `application/sparql-update`: SPARQL UPDATE syntax
 
 use crate::config::ServerRole;
 use crate::error::{Result, ServerError};
@@ -10,7 +14,9 @@ use crate::telemetry::{
 use axum::extract::{Path, Request, State};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use fluree_db_api::{TxnOpts, TxnType};
+use fluree_db_api::{
+    lower_sparql_update, parse_sparql, NamespaceRegistry, SparqlQueryBody, TxnOpts, TxnType,
+};
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
@@ -46,6 +52,12 @@ pub struct TransactResponse {
 fn compute_tx_id(body: &JsonValue) -> String {
     let json_bytes = serde_json::to_vec(body).unwrap_or_default();
     let hash = Sha256::digest(&json_bytes);
+    format!("fluree:tx:sha256:{}", hex::encode(hash))
+}
+
+/// Compute transaction ID from SPARQL UPDATE string
+fn compute_tx_id_sparql(sparql: &str) -> String {
+    let hash = Sha256::digest(sparql.as_bytes());
     format!("fluree:tx:sha256:{}", hex::encode(hash))
 }
 
@@ -123,6 +135,12 @@ async fn transact_local(
     );
     let _guard = span.enter();
 
+    // Check if this is a SPARQL UPDATE request
+    if credential.is_sparql_update() {
+        tracing::info!(status = "start", format = "sparql-update", "SPARQL UPDATE request received");
+        return execute_sparql_update_request(&state, None, &headers, &credential, &span).await;
+    }
+
     tracing::info!(status = "start", "transaction request received");
 
     let body_json = match credential.body_json() {
@@ -196,6 +214,13 @@ async fn transact_ledger_local(
         None,
     );
     let _guard = span.enter();
+
+    // Check if this is a SPARQL UPDATE request
+    if credential.is_sparql_update() {
+        tracing::info!(status = "start", format = "sparql-update", "SPARQL UPDATE request received");
+        return execute_sparql_update_request(&state, Some(&ledger), &headers, &credential, &span)
+            .await;
+    }
 
     tracing::info!(status = "start", "ledger transaction request received");
 
@@ -575,6 +600,164 @@ async fn execute_transaction(
 
     Ok(Json(TransactResponse {
         ledger: alias.to_string(),
+        t: result.receipt.t,
+        tx_id,
+        commit: CommitInfo {
+            address: result.receipt.address,
+            hash: result.receipt.commit_id,
+        },
+    }))
+}
+
+// ===== SPARQL UPDATE execution =====
+
+/// Execute a SPARQL UPDATE request
+///
+/// This function:
+/// 1. Parses the SPARQL UPDATE string
+/// 2. Extracts the UpdateOperation from the AST
+/// 3. Lowers to Txn IR using lower_sparql_update
+/// 4. Executes via the stage/commit pipeline
+async fn execute_sparql_update_request(
+    state: &AppState,
+    path_ledger: Option<&str>,
+    headers: &FlureeHeaders,
+    credential: &MaybeCredential,
+    parent_span: &tracing::Span,
+) -> Result<Json<TransactResponse>> {
+    // Extract SPARQL string from body
+    let sparql = match credential.body_string() {
+        Ok(s) => s,
+        Err(e) => {
+            set_span_error_code(parent_span, "error:BadRequest");
+            tracing::warn!(error = %e, "invalid SPARQL UPDATE body");
+            return Err(e);
+        }
+    };
+
+    // Compute tx-id from SPARQL string
+    let tx_id = compute_tx_id_sparql(&sparql);
+
+    // Get ledger alias from path or header (SPARQL UPDATE body doesn't contain ledger)
+    let alias = match path_ledger {
+        Some(ledger) => ledger.to_string(),
+        None => match &headers.ledger {
+            Some(ledger) => ledger.clone(),
+            None => {
+                set_span_error_code(parent_span, "error:BadRequest");
+                tracing::warn!("missing ledger alias for SPARQL UPDATE");
+                return Err(ServerError::MissingLedger);
+            }
+        },
+    };
+
+    parent_span.record("ledger_alias", &alias.as_str());
+
+    // Parse SPARQL
+    let parse_output = parse_sparql(&sparql);
+    if parse_output.has_errors() {
+        let errors: Vec<String> = parse_output
+            .diagnostics
+            .iter()
+            .filter(|d| d.is_error())
+            .map(|d| d.message.clone())
+            .collect();
+        set_span_error_code(parent_span, "error:SparqlParse");
+        tracing::warn!(errors = ?errors, "SPARQL UPDATE parse errors");
+        return Err(ServerError::bad_request(format!(
+            "SPARQL UPDATE parse error: {}",
+            errors.join("; ")
+        )));
+    }
+
+    let ast = match parse_output.ast {
+        Some(ast) => ast,
+        None => {
+            set_span_error_code(parent_span, "error:SparqlParse");
+            return Err(ServerError::bad_request("Failed to parse SPARQL UPDATE"));
+        }
+    };
+
+    // Verify this is an UPDATE operation
+    let update_op = match &ast.body {
+        SparqlQueryBody::Update(op) => op,
+        _ => {
+            set_span_error_code(parent_span, "error:BadRequest");
+            tracing::warn!("Expected SPARQL UPDATE, got query");
+            return Err(ServerError::bad_request(
+                "Expected SPARQL UPDATE operation, got query. Use the /query endpoint for SELECT/CONSTRUCT/ASK/DESCRIBE.",
+            ));
+        }
+    };
+
+    // Get ledger handle
+    let handle = match state.fluree.as_file().ledger_cached(&alias).await {
+        Ok(handle) => handle,
+        Err(e) => {
+            let server_error = ServerError::Api(e);
+            set_span_error_code(parent_span, "error:NotFound");
+            tracing::error!(error = %server_error, "ledger not found");
+            return Err(server_error);
+        }
+    };
+
+    // Get namespace registry from the ledger's DB
+    let snapshot = handle.snapshot().await;
+    let mut ns = NamespaceRegistry::from_db(&snapshot.db);
+
+    // Build transaction options
+    let did = credential.did().map(String::from);
+    let txn_opts = match did {
+        Some(d) => TxnOpts::default().author(d),
+        None => TxnOpts::default(),
+    };
+
+    // Lower SPARQL UPDATE to Txn IR
+    let txn = match lower_sparql_update(update_op, &ast.prologue, &mut ns, txn_opts) {
+        Ok(txn) => txn,
+        Err(e) => {
+            set_span_error_code(parent_span, "error:SparqlLower");
+            tracing::warn!(error = %e, "SPARQL UPDATE lowering failed");
+            return Err(ServerError::SparqlUpdateLower(e));
+        }
+    };
+
+    tracing::debug!(
+        tx_id = %tx_id,
+        txn_type = ?txn.txn_type,
+        where_patterns = txn.where_patterns.len(),
+        delete_templates = txn.delete_templates.len(),
+        insert_templates = txn.insert_templates.len(),
+        "SPARQL UPDATE lowered to Txn IR"
+    );
+
+    // Execute the transaction using the Txn IR directly
+    let fluree = state.fluree.as_file();
+    let mut builder = fluree.stage(&handle).txn(txn);
+    if let Some(config) = &state.index_config {
+        builder = builder.index_config(config.clone());
+    }
+
+    let result = match builder.execute().await {
+        Ok(result) => {
+            tracing::info!(
+                status = "success",
+                commit_t = result.receipt.t,
+                commit_address = %result.receipt.address,
+                "SPARQL UPDATE committed"
+            );
+            result
+        }
+        Err(e) => {
+            let server_error = ServerError::Api(e);
+            set_span_error_code(parent_span, "error:InvalidTransaction");
+            tracing::error!(error = %server_error, "SPARQL UPDATE failed");
+            return Err(server_error);
+        }
+    };
+
+    Ok(Json(TransactResponse {
+        ledger: alias,
         t: result.receipt.t,
         tx_id,
         commit: CommitInfo {

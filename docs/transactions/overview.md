@@ -15,8 +15,9 @@ A **transaction** in Fluree is a set of changes to the database, represented as 
 
 ### 1. Submission
 
-Client submits transaction to Fluree:
+Client submits transaction to Fluree using either JSON-LD or SPARQL UPDATE:
 
+**JSON-LD Transaction:**
 ```bash
 POST /transact?ledger=mydb:main
 Content-Type: application/json
@@ -25,6 +26,15 @@ Content-Type: application/json
   "@context": { "ex": "http://example.org/ns/" },
   "@graph": [{ "@id": "ex:alice", "ex:name": "Alice" }]
 }
+```
+
+**SPARQL UPDATE:**
+```bash
+POST /ledger/mydb:main/transact
+Content-Type: application/sparql-update
+
+PREFIX ex: <http://example.org/ns/>
+INSERT DATA { ex:alice ex:name "Alice" }
 ```
 
 ### 2. Parsing
@@ -164,6 +174,33 @@ For updates, specify what to match, delete, and insert:
   ]
 }
 ```
+
+### SPARQL UPDATE
+
+Alternatively, use SPARQL UPDATE syntax with `Content-Type: application/sparql-update`:
+
+```sparql
+PREFIX ex: <http://example.org/ns/>
+
+DELETE {
+  ?person ex:age ?oldAge .
+}
+INSERT {
+  ?person ex:age 31 .
+}
+WHERE {
+  ?person ex:name "Alice" .
+  ?person ex:age ?oldAge .
+}
+```
+
+SPARQL UPDATE supports:
+- `INSERT DATA` - Insert ground triples
+- `DELETE DATA` - Delete specific triples
+- `DELETE WHERE` - Delete matching patterns
+- `DELETE/INSERT WHERE` - Full update with patterns
+
+See [SPARQL UPDATE](../query/sparql.md#sparql-update) for complete documentation.
 
 ## Transaction Modes
 

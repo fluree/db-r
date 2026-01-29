@@ -148,13 +148,17 @@ pub use fluree_db_query::{
 pub use fluree_db_query::{Term, TriplePattern};
 // Re-export parse types for query results
 pub use fluree_db_query::parse::{ParseError, ParsedQuery};
-pub use fluree_db_transact::{CommitOpts, CommitReceipt, NamespaceRegistry, TxnOpts, TxnType};
+pub use fluree_db_transact::{
+    lower_sparql_update, lower_sparql_update_ast, CommitOpts, CommitReceipt,
+    LowerError as SparqlUpdateLowerError, NamespaceRegistry, TxnOpts, TxnType,
+};
 
 // Re-export SPARQL types (product feature; always enabled)
 pub use fluree_db_sparql::{
     parse_sparql, validate as validate_sparql, lower_sparql, Capabilities as SparqlCapabilities,
     Diagnostic as SparqlDiagnostic, LowerError as SparqlLowerError, ParseOutput as SparqlParseOutput,
-    Severity as SparqlSeverity, SourceSpan as SparqlSourceSpan, SparqlAst,
+    Prologue as SparqlPrologue, QueryBody as SparqlQueryBody, Severity as SparqlSeverity,
+    SourceSpan as SparqlSourceSpan, SparqlAst, UpdateOperation as SparqlUpdateOperation,
 };
 
 // Re-export policy types for access control

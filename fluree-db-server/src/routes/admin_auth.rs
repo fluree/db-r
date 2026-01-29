@@ -71,6 +71,7 @@ pub async fn require_admin_token(
 
     tracing::debug!(
         issuer = %principal.issuer,
+        subject = ?principal.subject,
         identity = ?principal.identity,
         "Admin token verified"
     );
