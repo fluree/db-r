@@ -395,6 +395,76 @@ pub struct LedgerInfoQuery {
     pub ledger: Option<String>,
 }
 
+/// Ledger exists response
+#[derive(Serialize)]
+pub struct ExistsResponse {
+    /// Ledger alias (echoed back)
+    pub ledger: String,
+    /// Whether the ledger exists
+    pub exists: bool,
+}
+
+/// Check if a ledger exists
+///
+/// GET /fluree/exists?ledger=<alias>
+/// or with fluree-ledger header
+///
+/// Returns a simple boolean response indicating whether the ledger
+/// is registered in the nameservice. This is a lightweight check
+/// that does not load the ledger data.
+pub async fn exists(
+    State(state): State<Arc<AppState>>,
+    headers: FlureeHeaders,
+    query: axum::extract::Query<LedgerInfoQuery>,
+) -> Result<Json<ExistsResponse>> {
+    // Create request span
+    let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
+    let trace_id = extract_trace_id(&headers.raw);
+
+    let span = create_request_span(
+        "ledger_exists",
+        request_id.as_deref(),
+        trace_id.as_deref(),
+        None,
+        None,
+    );
+    let _guard = span.enter();
+
+    tracing::info!(status = "start", "ledger exists check requested");
+
+    // Get ledger alias from query param or header
+    let alias = match query
+        .ledger
+        .as_ref()
+        .or(headers.ledger.as_ref())
+        .ok_or(ServerError::MissingLedger)
+    {
+        Ok(alias) => {
+            span.record("ledger_alias", &alias.as_str());
+            alias.clone()
+        }
+        Err(e) => {
+            set_span_error_code(&span, "error:BadRequest");
+            tracing::warn!(error = %e, "missing ledger alias in exists request");
+            return Err(e);
+        }
+    };
+
+    // Check if ledger exists via nameservice lookup
+    let exists = match state.fluree.ledger_exists(&alias).await {
+        Ok(exists) => exists,
+        Err(e) => {
+            let server_error = ServerError::Api(e);
+            set_span_error_code(&span, "error:InternalError");
+            tracing::error!(error = %server_error, "ledger exists check failed");
+            return Err(server_error);
+        }
+    };
+
+    tracing::info!(status = "success", exists = exists, "ledger exists check completed");
+    Ok(Json(ExistsResponse { ledger: alias, exists }))
+}
+
 /// Forward a write request to the transaction server (peer mode)
 async fn forward_write_request(state: &AppState, request: Request) -> Response {
     let client = match state.forwarding_client.as_ref() {

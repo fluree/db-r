@@ -29,6 +29,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/fluree/create", post(ledger::create))
         .route("/fluree/drop", post(ledger::drop))
         .route("/fluree/ledger-info", get(ledger::info))
+        .route("/fluree/exists", get(ledger::exists))
         // Query endpoints
         .route("/fluree/query", get(query::query).post(query::query))
         .route("/fluree/explain", get(query::explain).post(query::explain))

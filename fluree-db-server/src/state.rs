@@ -99,6 +99,18 @@ impl FlureeInstance {
         }
     }
 
+    /// Check if a ledger exists by alias or address
+    ///
+    /// Returns `true` if the ledger is registered in the nameservice,
+    /// `false` otherwise. This is a lightweight check that only queries
+    /// the nameservice without loading the ledger data.
+    pub async fn ledger_exists(&self, alias: &str) -> fluree_db_api::Result<bool> {
+        match self {
+            FlureeInstance::File(f) => f.ledger_exists(alias).await,
+            FlureeInstance::Proxy(p) => p.ledger_exists(alias).await,
+        }
+    }
+
     // === Connection-level query methods (no ledger loading required) ===
 
     /// Execute a SPARQL query against a connection (dataset specified via FROM clause)

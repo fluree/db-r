@@ -1997,6 +1997,28 @@ where
         ledger_info::LedgerInfoBuilder::new(self, alias.to_string())
     }
 
+    /// Check if a ledger exists by alias or address.
+    ///
+    /// Returns `true` if the ledger is registered in the nameservice,
+    /// `false` otherwise. This is a lightweight check that only queries
+    /// the nameservice without loading the ledger data.
+    ///
+    /// # Arguments
+    /// * `alias` - Ledger alias (e.g., "my/ledger") or full address
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// if fluree.ledger_exists("my/ledger").await? {
+    ///     let ledger = fluree.ledger("my/ledger").await?;
+    /// } else {
+    ///     let ledger = fluree.create_ledger(&config).await?;
+    /// }
+    /// ```
+    pub async fn ledger_exists(&self, alias: &str) -> Result<bool> {
+        Ok(self.nameservice.lookup(alias).await?.is_some())
+    }
+
     /// Enable connection-level ledger caching on an already-constructed Fluree instance.
     ///
     /// This is primarily intended for servers/peers that construct Fluree with custom
