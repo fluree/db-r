@@ -293,7 +293,8 @@ curl -X POST http://localhost:8090/query \
       "ex": "http://example.org/ns/",
       "schema": "http://schema.org/"
     },
-    "from": ["mydb:main@t:1", "mydb:main@t:latest"],
+    "from": "mydb:main@t:1",
+    "to": "mydb:main@t:latest",
     "select": ["?name", "?age", "?t", "?op"],
     "where": [
       { "@id": "ex:alice", "schema:name": { "@value": "?name", "@t": "?t", "@op": "?op" } },
@@ -327,7 +328,8 @@ curl -X POST http://localhost:8090/query \
       "ex": "http://example.org/ns/",
       "schema": "http://schema.org/"
     },
-    "from": ["mydb:main@t:1", "mydb:main@t:latest"],
+    "from": "mydb:main@t:1",
+    "to": "mydb:main@t:latest",
     "select": ["?age", "?t", "?op"],
     "where": [
       { "@id": "ex:alice", "schema:age": { "@value": "?age", "@t": "?t", "@op": "?op" } }

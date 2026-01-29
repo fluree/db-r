@@ -332,7 +332,8 @@ Query the history to see both assertions and retractions:
 curl -X POST http://localhost:8090/query \
   -d '{
     "@context": { "schema": "http://schema.org/" },
-    "from": ["mydb:main@t:1", "mydb:main@t:latest"],
+    "from": "mydb:main@t:1",
+    "to": "mydb:main@t:latest",
     "select": ["?name", "?t", "?op"],
     "where": [
       { "@id": "ex:alice", "schema:name": { "@value": "?name", "@t": "?t", "@op": "?op" } }

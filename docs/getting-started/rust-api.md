@@ -504,6 +504,40 @@ async fn main() -> Result<()> {
 
 **Note:** If caching is disabled (no `with_ledger_caching()` on builder), `disconnect_ledger` is a no-op.
 
+#### Checking Ledger Existence
+
+Use `ledger_exists` to check if a ledger is registered in the nameservice without loading it:
+
+```rust
+use fluree_db_api::{FlureeBuilder, Result};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let fluree = FlureeBuilder::file("./data").build()?;
+
+    // Check if ledger exists (lightweight nameservice lookup)
+    if fluree.ledger_exists("mydb:main").await? {
+        // Ledger exists - load it
+        let ledger = fluree.ledger("mydb:main").await?;
+        println!("Loaded ledger at t={}", ledger.t());
+    } else {
+        // Ledger doesn't exist - create it
+        let ledger = fluree.create_ledger("mydb").await?;
+        println!("Created new ledger");
+    }
+
+    Ok(())
+}
+```
+
+**When to use `ledger_exists`:**
+
+- **Conditional create-or-load**: Check before deciding whether to create or load
+- **Validation**: Verify ledger aliases exist before operations
+- **Defensive programming**: Avoid `NotFound` errors in application logic
+
+**Performance note:** This is a lightweight check that only queries the nameservice - it does NOT load the ledger data, indexes, or novelty. Much faster than attempting to load and catching `NotFound` errors.
+
 #### Dropping Ledgers
 
 Use `drop_ledger` to permanently remove a ledger. This is the Rust equivalent of Clojure's `fluree.db.api/drop`:
