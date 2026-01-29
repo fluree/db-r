@@ -2,6 +2,8 @@
 
 Fluree integrates with Apache Iceberg to query data lake tables as virtual graphs. This enables querying large-scale analytical data stored in Parquet format using the same RDF query interface.
 
+**Note:** Requires the `iceberg` feature flag. See [Compatibility and Feature Flags](../reference/compatibility.md#fluree-db-api-features).
+
 ## What is Apache Iceberg?
 
 Apache Iceberg is an open table format for huge analytical datasets. It provides:

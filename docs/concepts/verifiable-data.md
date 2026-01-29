@@ -2,6 +2,8 @@
 
 **Differentiator**: Fluree supports cryptographically signed transactions using industry-standard formats (JWS and Verifiable Credentials), enabling tamper-proof audit trails and trustless data exchange. Every transaction can be cryptographically verified, providing cryptographic proof of data provenance and integrity.
 
+**Note:** Requires the `credential` feature flag. See [Compatibility and Feature Flags](../reference/compatibility.md#fluree-db-api-features).
+
 ## What Is Verifiable Data?
 
 **Verifiable data** in Fluree refers to transactions that are cryptographically signed, providing proof of:

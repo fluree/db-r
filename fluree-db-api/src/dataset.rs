@@ -92,8 +92,8 @@ pub struct DatasetSpec {
     pub named_graphs: Vec<GraphSource>,
     /// History mode time range (if detected)
     ///
-    /// Set when `from` is an array with exactly two elements pointing to the
-    /// same ledger with different time specs (e.g., `["ledger@t:1", "ledger@t:latest"]`).
+    /// Set when explicit `from` and `to` keys are provided with time-specced endpoints
+    /// for the same ledger (e.g., `"from": "ledger@t:1", "to": "ledger@t:latest"`).
     /// This indicates a history/changes query rather than a point-in-time query.
     pub history_range: Option<HistoryTimeRange>,
 }
@@ -128,10 +128,10 @@ impl DatasetSpec {
 
     /// Check if this is a history/changes query
     ///
-    /// History mode is detected when `from` contains two time-specced
-    /// endpoints for the same ledger, e.g.:
+    /// History mode is detected when explicit `from` and `to` keys are provided
+    /// with time-specced endpoints for the same ledger, e.g.:
     /// ```json
-    /// "from": ["ledger:main@t:1", "ledger:main@t:latest"]
+    /// { "from": "ledger:main@t:1", "to": "ledger:main@t:latest" }
     /// ```
     pub fn is_history_mode(&self) -> bool {
         self.history_range.is_some()

@@ -141,10 +141,14 @@ These features are controlled at compile time via Cargo:
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `native` | Yes | File storage support |
+| `aws` | No | AWS-backed storage support (S3, storage-backed nameservice). Enables `connect_s3` and `connect_json_ld` configs that use S3. |
 | `credential` | No | DID/JWS/VerifiableCredential support for signed queries/transactions. Pulls in crypto dependencies (`ed25519-dalek`, `bs58`). |
 | `iceberg` | No | Apache Iceberg/R2RML virtual graph support |
-| `search-remote-client` | No | HTTP client for remote BM25 search service |
-| `full` | No | Enable all features |
+| `shacl` | No | SHACL validation support (requires fluree-db-transact + fluree-db-shacl) |
+| `vector` | No | Embedded vector similarity search (HNSW indexes via usearch) |
+| `search-remote-client` | No | HTTP client for remote BM25 and vector search services |
+| `aws-testcontainers` | No | Opt-in LocalStack-backed S3/DynamoDB tests (auto-start via testcontainers) |
+| `full` | No | Enable all features (`native`, `credential`, `iceberg`, `shacl`) |
 
 Example:
 ```toml

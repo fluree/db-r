@@ -1,6 +1,7 @@
 //! HTTP route handlers and router configuration
 
 mod admin;
+mod admin_auth;
 mod events;
 mod ledger;
 mod nameservice_refs;
@@ -11,6 +12,7 @@ mod transact;
 
 use crate::state::AppState;
 use axum::{
+    middleware,
     routing::{get, post},
     Router,
 };
@@ -20,16 +22,26 @@ use tower_http::trace::TraceLayer;
 
 /// Build the main application router
 pub fn build_router(state: Arc<AppState>) -> Router {
+    // Admin-protected routes (create, drop) - require admin token when configured
+    let admin_protected_routes = Router::new()
+        .route("/fluree/create", post(ledger::create))
+        .route("/fluree/drop", post(ledger::drop))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            admin_auth::require_admin_token,
+        ))
+        .with_state(state.clone());
+
     let mut router = Router::new()
         // Health check
         .route("/health", get(admin::health))
-        // Admin endpoints
+        // Admin endpoints (stats is read-only, no auth required)
         .route("/fluree/stats", get(admin::stats))
-        // Ledger management
-        .route("/fluree/create", post(ledger::create))
-        .route("/fluree/drop", post(ledger::drop))
+        // Ledger management (read-only)
         .route("/fluree/ledger-info", get(ledger::info))
         .route("/fluree/exists", get(ledger::exists))
+        // Merge admin-protected routes
+        .merge(admin_protected_routes)
         // Query endpoints
         .route("/fluree/query", get(query::query).post(query::query))
         .route("/fluree/explain", get(query::explain).post(query::explain))

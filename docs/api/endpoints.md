@@ -508,6 +508,77 @@ curl -X POST http://localhost:8090/ledgers \
   -d '{"alias": "mydb:main"}'
 ```
 
+### POST /fluree/create
+
+Create a new ledger.
+
+**URL:**
+```
+POST /fluree/create
+```
+
+**Authentication:** When admin auth is enabled (`--admin-auth-mode=required`), requires Bearer token from a trusted issuer. See [Admin Authentication](#admin-authentication).
+
+**Request Body:**
+
+```json
+{
+  "ledger": "mydb:main"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `ledger` | string | Yes | Ledger alias (e.g., "mydb" or "mydb:main") |
+
+**Response:**
+
+```json
+{
+  "ledger": "mydb:main",
+  "t": 0,
+  "tx-id": "fluree:tx:sha256:abc123...",
+  "commit": {
+    "address": "fluree:memory://mydb/main/head",
+    "hash": ""
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `ledger` | Normalized ledger alias |
+| `t` | Transaction time (0 for new ledger) |
+| `tx-id` | Transaction ID (SHA-256 hash of request) |
+| `commit` | Commit information |
+
+**Status Codes:**
+- `201 Created` - Ledger created successfully
+- `400 Bad Request` - Invalid request body
+- `401 Unauthorized` - Bearer token required (when admin auth enabled)
+- `409 Conflict` - Ledger already exists
+- `500 Internal Server Error` - Server error
+
+**Examples:**
+
+```bash
+# Create ledger (no auth required in default mode)
+curl -X POST http://localhost:8090/fluree/create \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb:main"}'
+
+# Create ledger with auth token (when admin auth enabled)
+curl -X POST http://localhost:8090/fluree/create \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJ..." \
+  -d '{"ledger": "mydb:main"}'
+
+# Create with short alias (auto-resolves to :main)
+curl -X POST http://localhost:8090/fluree/create \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb"}'
+```
+
 ### POST /fluree/drop
 
 Drop (delete) a ledger.
@@ -516,6 +587,8 @@ Drop (delete) a ledger.
 ```
 POST /fluree/drop
 ```
+
+**Authentication:** When admin auth is enabled (`--admin-auth-mode=required`), requires Bearer token from a trusted issuer. See [Admin Authentication](#admin-authentication).
 
 **Request Body:**
 
@@ -558,6 +631,7 @@ POST /fluree/drop
 **Status Codes:**
 - `200 OK` - Drop successful (or already dropped/not found)
 - `400 Bad Request` - Invalid request body
+- `401 Unauthorized` - Bearer token required (when admin auth enabled)
 - `500 Internal Server Error` - Server error
 
 **Drop Sequence:**
@@ -586,6 +660,12 @@ curl -X POST http://localhost:8090/fluree/drop \
 # Hard drop (delete all files - IRREVERSIBLE)
 curl -X POST http://localhost:8090/fluree/drop \
   -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb:main", "hard": true}'
+
+# Drop with auth token (when admin auth enabled)
+curl -X POST http://localhost:8090/fluree/drop \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJ..." \
   -d '{"ledger": "mydb:main", "hard": true}'
 
 # Drop with short alias (auto-resolves to :main)
@@ -788,6 +868,82 @@ Get detailed server statistics.
 ```
 GET /admin/stats
 ```
+
+## Admin Authentication
+
+Administrative endpoints (`/fluree/create`, `/fluree/drop`) can be protected with Bearer token authentication.
+
+### Configuration
+
+Enable admin authentication with CLI flags:
+
+```bash
+# Production: require trusted tokens
+fluree-server \
+  --admin-auth-mode=required \
+  --admin-auth-trusted-issuer=did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK
+
+# Development: no authentication (default)
+fluree-server --admin-auth-mode=none
+```
+
+**Environment Variables:**
+- `FLUREE_ADMIN_AUTH_MODE`: `none` (default) or `required`
+- `FLUREE_ADMIN_AUTH_TRUSTED_ISSUERS`: Comma-separated list of trusted did:key identifiers
+
+### Token Format
+
+Admin tokens use the same JWS format as other Fluree tokens. Required claims:
+
+```json
+{
+  "iss": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+  "exp": 1705932000,
+  "sub": "admin@example.com"
+}
+```
+
+| Claim | Required | Description |
+|-------|----------|-------------|
+| `iss` | Yes | Issuer did:key (must be in trusted issuers list) |
+| `exp` | Yes | Expiration timestamp (Unix seconds) |
+| `sub` | No | Subject identifier |
+| `fluree.identity` | No | Identity for audit logging |
+
+### Making Authenticated Requests
+
+Include the token in the Authorization header:
+
+```bash
+curl -X POST http://localhost:8090/fluree/create \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIsImp3ayI6ey..." \
+  -d '{"ledger": "mydb:main"}'
+```
+
+### Issuer Trust
+
+Tokens must be signed by a trusted issuer. Configure trusted issuers:
+
+```bash
+# Single issuer
+--admin-auth-trusted-issuer=did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK
+
+# Multiple issuers
+--admin-auth-trusted-issuer=did:key:z6Mk... \
+--admin-auth-trusted-issuer=did:key:z6Mn...
+
+# Fallback to events auth issuers
+--events-auth-trusted-issuer=did:key:z6Mk...
+```
+
+If no admin-specific issuers are configured, admin auth falls back to `--events-auth-trusted-issuer`.
+
+### Response Codes
+
+- `401 Unauthorized`: Missing or invalid Bearer token
+- `401 Unauthorized`: Token expired
+- `401 Unauthorized`: Untrusted issuer
 
 ## Error Responses
 

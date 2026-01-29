@@ -2,6 +2,8 @@
 
 Fluree supports cryptographically signed requests using **JSON Web Signatures (JWS)** and **Verifiable Credentials (VC)**. This provides tamper-proof authentication and enables trustless data exchange.
 
+**Note:** Requires the `credential` feature flag. See [Compatibility and Feature Flags](../reference/compatibility.md#fluree-db-api-features).
+
 ## Why Sign Requests?
 
 Signed requests provide:

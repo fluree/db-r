@@ -223,6 +223,75 @@ impl McpAuthConfig {
     }
 }
 
+/// Authentication mode for admin endpoints (/fluree/create, /fluree/drop)
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum AdminAuthMode {
+    /// No authentication required (open access - development only)
+    #[default]
+    None,
+    /// Require valid Bearer token from trusted issuer (production)
+    Required,
+}
+
+/// Configuration for admin endpoint authentication (/fluree/create, /fluree/drop)
+#[derive(Debug, Clone, Default)]
+pub struct AdminAuthConfig {
+    /// Authentication mode
+    pub mode: AdminAuthMode,
+    /// Trusted issuer did:key identifiers for admin tokens
+    pub trusted_issuers: Vec<String>,
+    /// DANGEROUS: Accept any valid signature regardless of issuer.
+    /// Only for development/testing.
+    pub insecure_accept_any_issuer: bool,
+}
+
+impl AdminAuthConfig {
+    /// Validate configuration at startup
+    pub fn validate(&self, events_auth: &EventsAuthConfig) -> Result<(), String> {
+        if self.mode == AdminAuthMode::Required {
+            // Must have some trusted issuers (own or from events_auth)
+            let has_trusted = !self.trusted_issuers.is_empty()
+                || !events_auth.trusted_issuers.is_empty()
+                || self.insecure_accept_any_issuer;
+
+            if !has_trusted {
+                return Err(
+                    "admin_auth.mode=required requires --admin-auth-trusted-issuer, \
+                     --events-auth-trusted-issuer, or --admin-auth-insecure flag"
+                        .to_string(),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Get effective trusted issuers (own list or fallback to events_auth)
+    pub fn effective_trusted_issuers<'a>(&'a self, events_auth: &'a EventsAuthConfig) -> &'a [String] {
+        if !self.trusted_issuers.is_empty() {
+            &self.trusted_issuers
+        } else {
+            &events_auth.trusted_issuers
+        }
+    }
+
+    /// Check if an issuer is trusted for admin endpoints.
+    pub fn is_issuer_trusted(&self, issuer: &str, events_auth: &EventsAuthConfig) -> bool {
+        if self.insecure_accept_any_issuer {
+            return true;
+        }
+        let trusted = self.effective_trusted_issuers(events_auth);
+        if trusted.is_empty() {
+            return false;
+        }
+        trusted.iter().any(|i| i == issuer)
+    }
+
+    /// Whether authentication is required
+    pub fn is_required(&self) -> bool {
+        self.mode == AdminAuthMode::Required
+    }
+}
+
 /// Fluree DB HTTP Server configuration
 #[derive(Parser, Debug, Clone)]
 #[command(name = "fluree-server")]
@@ -373,6 +442,21 @@ pub struct ServerConfig {
     /// DANGEROUS: Accept any valid MCP signature regardless of issuer (dev only)
     #[arg(long, env = "FLUREE_MCP_AUTH_INSECURE", hide = true)]
     pub mcp_auth_insecure_accept_any_issuer: bool,
+
+    // === Admin endpoint authentication options ===
+
+    /// Authentication mode for admin endpoints (/fluree/create, /fluree/drop)
+    #[arg(long, env = "FLUREE_ADMIN_AUTH_MODE", default_value = "none", value_enum)]
+    pub admin_auth_mode: AdminAuthMode,
+
+    /// Trusted issuer did:key for admin tokens (can be specified multiple times).
+    /// Falls back to events-auth-trusted-issuer if not specified.
+    #[arg(long = "admin-auth-trusted-issuer", env = "FLUREE_ADMIN_AUTH_TRUSTED_ISSUERS")]
+    pub admin_auth_trusted_issuers: Vec<String>,
+
+    /// DANGEROUS: Accept any valid admin signature regardless of issuer (dev only)
+    #[arg(long, env = "FLUREE_ADMIN_AUTH_INSECURE", hide = true)]
+    pub admin_auth_insecure_accept_any_issuer: bool,
 }
 
 impl Default for ServerConfig {
@@ -415,6 +499,10 @@ impl Default for ServerConfig {
             mcp_enabled: false,
             mcp_auth_trusted_issuers: Vec::new(),
             mcp_auth_insecure_accept_any_issuer: false,
+            // Admin auth defaults
+            admin_auth_mode: AdminAuthMode::None,
+            admin_auth_trusted_issuers: Vec::new(),
+            admin_auth_insecure_accept_any_issuer: false,
         }
     }
 }
@@ -473,6 +561,15 @@ impl ServerConfig {
         }
     }
 
+    /// Get the admin authentication configuration
+    pub fn admin_auth(&self) -> AdminAuthConfig {
+        AdminAuthConfig {
+            mode: self.admin_auth_mode,
+            trusted_issuers: self.admin_auth_trusted_issuers.clone(),
+            insecure_accept_any_issuer: self.admin_auth_insecure_accept_any_issuer,
+        }
+    }
+
     /// Validate all configuration at startup
     pub fn validate(&self) -> Result<(), String> {
         // Validate events auth
@@ -484,6 +581,9 @@ impl ServerConfig {
 
         // Validate MCP auth
         self.mcp_auth().validate(self.mcp_enabled, &events_auth)?;
+
+        // Validate admin auth
+        self.admin_auth().validate(&events_auth)?;
 
         // Storage proxy is only intended for transaction servers (peers consume from it)
         if self.storage_proxy_enabled && self.server_role == ServerRole::Peer {
