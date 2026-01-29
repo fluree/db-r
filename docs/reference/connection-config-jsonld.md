@@ -63,7 +63,6 @@ Supported:
 - `indexStorage` (required): reference to a `Storage` node
 - `commitStorage` (optional): reference to a `Storage` node
 - `primaryPublisher` (optional): reference to a `Publisher` node
-- `secondaryPublishers` (optional): list of `Publisher` references
 - `addressIdentifiers` (read routing): map of identifier → storage reference
 - `defaults` (partial):
   - `defaults.indexing.reindexMinBytes` / `reindexMaxBytes` are applied as the default `IndexConfig` for writes

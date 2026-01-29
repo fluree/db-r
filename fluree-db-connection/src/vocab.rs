@@ -103,10 +103,6 @@ pub const FIELD_ADDRESS_IDENTIFIERS: &str = "https://ns.flur.ee/system#addressId
 /// Primary publisher reference
 pub const FIELD_PRIMARY_PUBLISHER: &str = "https://ns.flur.ee/system#primaryPublisher";
 
-/// Secondary publishers reference list
-pub const FIELD_SECONDARY_PUBLISHERS: &str =
-    "https://ns.flur.ee/system#secondaryPublishers";
-
 /// Storage reference field on Publisher nodes
 pub const FIELD_STORAGE: &str = "https://ns.flur.ee/system#storage";
 

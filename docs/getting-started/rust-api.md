@@ -148,7 +148,7 @@ Connection node:
 - `parallelism`
 - `cacheMaxMb`
 - `indexStorage`, `commitStorage`
-- `primaryPublisher`, `secondaryPublishers` (publisher nodes)
+- `primaryPublisher` (publisher node)
 
 Storage node:
 - File: `filePath`, `AES256Key`

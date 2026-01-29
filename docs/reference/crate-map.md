@@ -6,70 +6,185 @@ Fluree is organized into multiple Rust crates, each with a specific purpose. Thi
 
 ```text
 fluree-db/
-├── fluree-db-api/          # Public API and high-level operations
-├── fluree-db-query/        # Query engine (JSON-LD Query)
-├── fluree-db-sparql/       # SPARQL parser and lowering
-├── fluree-db-transact/     # Transaction processing
-├── fluree-db-storage/      # Storage backends
-├── fluree-db-index/        # Indexing and data structures
-├── fluree-db-nameservice/  # Nameservice implementations
-├── fluree-db-virtual/      # Virtual graph implementations
-├── fluree-db-policy/       # Policy enforcement
-├── fluree-db-common/       # Shared types and utilities
-├── fluree-db-json-ld/      # JSON-LD processing
-└── fluree-db-server/       # HTTP server (binary)
+├── Core
+│   ├── fluree-vocab/              # RDF vocabulary constants and namespace codes
+│   ├── fluree-db-core/            # Runtime-agnostic core types and queries
+│   └── fluree-db-novelty/         # Novelty overlay and commit types
+│
+├── Graph Processing
+│   ├── fluree-graph-ir/           # Format-agnostic RDF intermediate representation
+│   ├── fluree-graph-json-ld/      # JSON-LD processing
+│   ├── fluree-graph-turtle/       # Turtle parser
+│   └── fluree-graph-format/       # RDF formatters (JSON-LD, Turtle, etc.)
+│
+├── Query & Transaction
+│   ├── fluree-db-query/           # Query engine (JSON-LD Query)
+│   ├── fluree-db-sparql/          # SPARQL parser and lowering
+│   └── fluree-db-transact/        # Transaction processing
+│
+├── Storage & Connection
+│   ├── fluree-db-connection/      # Storage backends and connection management
+│   ├── fluree-db-storage-aws/     # AWS storage (S3, S3 Express, DynamoDB)
+│   ├── fluree-db-nameservice/     # Nameservice implementations
+│   └── fluree-db-nameservice-sync/# Git-like remote sync for nameservice
+│
+├── Indexing
+│   ├── fluree-db-indexer/         # Index building
+│   └── fluree-db-ledger/          # Ledger state (indexed DB + novelty)
+│
+├── Security & Validation
+│   ├── fluree-db-policy/          # Policy enforcement
+│   ├── fluree-db-credential/      # JWS/VerifiableCredential verification
+│   ├── fluree-db-crypto/          # Storage encryption (AES-256-GCM)
+│   └── fluree-db-shacl/           # SHACL validation engine
+│
+├── Reasoning
+│   └── fluree-db-reasoner/        # OWL2-RL reasoning engine
+│
+├── Virtual Graphs
+│   ├── fluree-db-tabular/         # Tabular column batch types
+│   ├── fluree-db-iceberg/         # Apache Iceberg integration
+│   └── fluree-db-r2rml/           # R2RML mapping support
+│
+├── Search
+│   ├── fluree-search-protocol/    # Search service protocol types
+│   ├── fluree-search-service/     # Search backend implementations
+│   └── fluree-search-httpd/       # Standalone HTTP search server
+│
+├── Networking
+│   ├── fluree-sse/                # Server-Sent Events parser
+│   └── fluree-db-peer/            # SSE protocol for peer mode
+│
+└── Top-Level
+    ├── fluree-db-api/             # Public API and high-level operations
+    └── fluree-db-server/          # HTTP server (binary)
 ```
 
-## Core Crates
+## Foundation Crates
 
-### fluree-db-api
+### fluree-vocab
 
-**Purpose:** Public API and orchestration
+**Purpose:** RDF vocabulary constants and namespace codes
 
 **Responsibilities:**
-- Ledger lifecycle (create, load, drop)
-- Query execution coordination
-- Transaction execution (insert, upsert, update)
-- Time travel resolution
-- Policy application
-- Dataset and view composition
+- Standard RDF namespace definitions (rdf:, rdfs:, xsd:, owl:, etc.)
+- Fluree-specific namespace codes
+- IRI constants for common predicates
+
+**Dependencies:** None (foundation crate)
+
+### fluree-db-core
+
+**Purpose:** Runtime-agnostic core library for Fluree DB
+
+**Responsibilities:**
+- Core types (Flake, Sid, IndexType, etc.)
+- Index structures (SPOT, POST, OPST, PSOT)
+- Range query operations
+- Database snapshot representation
+- Statistics and cardinality tracking
 
 **Key Types:**
-- `Fluree` - Main entry point (connection + nameservice + storage)
-- `Graph` - Lazy handle (alias + time) for chaining queries/transactions
-- `GraphSnapshot` - Materialized snapshot bound to `Fluree` (query without passing `&fluree`)
-- `LedgerState` - Loaded ledger snapshot (indexed DB + novelty overlay)
-- `FlureeView` - Composable query/view primitive (policy + reasoning wrappers; underlying type used by `GraphSnapshot`)
-- `QueryResult` - Query results with formatting methods
-- `TransactResult` - Commit receipt + updated ledger state
+- `Flake` - Indexed triple representation
+- `Sid` - Subject identifier
+- `Db` - Database snapshot
+- `IndexType` - Index selection enum
+- `StatsView` - Query statistics
 
 **Dependencies:**
-- fluree-db-query
-- fluree-db-sparql
-- fluree-db-transact
-- fluree-db-storage
-- fluree-db-nameservice
+- fluree-vocab
+
+### fluree-db-novelty
+
+**Purpose:** Novelty overlay and commit types
+
+**Responsibilities:**
+- In-memory novelty (uncommitted/unindexed flakes)
+- Commit metadata and structure
+- Novelty application and slicing
+
+**Key Types:**
+- `Novelty` - In-memory flake overlay
+- `Commit` - Commit metadata
+- `FlakeId` - Novelty flake identifier
+
+**Dependencies:**
+- fluree-db-core
+- fluree-vocab
+
+## Graph Processing Crates
+
+### fluree-graph-ir
+
+**Purpose:** Format-agnostic RDF intermediate representation
+
+**Responsibilities:**
+- Generic graph IR for RDF data
+- Triple/quad representation
+- Format-independent graph operations
+
+**Dependencies:**
+- fluree-vocab
+
+### fluree-graph-json-ld
+
+**Purpose:** Minimal JSON-LD processing
+
+**Responsibilities:**
+- JSON-LD expansion
+- JSON-LD compaction
+- @context handling
+- IRI resolution
+
+**Dependencies:**
+- fluree-graph-ir
+- fluree-vocab
+
+### fluree-graph-turtle
+
+**Purpose:** Turtle (TTL) parser
+
+**Responsibilities:**
+- Turtle syntax parsing
+- Triple generation from Turtle
+
+**Dependencies:**
+- fluree-graph-ir
+- fluree-vocab
+
+### fluree-graph-format
+
+**Purpose:** RDF graph formatters
+
+**Responsibilities:**
+- Output formatting (JSON-LD, Turtle, N-Triples)
+- Serialization utilities
+
+**Dependencies:**
+- fluree-graph-ir
+
+## Query & Transaction Crates
 
 ### fluree-db-query
 
 **Purpose:** Query engine for JSON-LD Query
 
 **Responsibilities:**
-- Query parsing
-- Query planning
+- Query parsing and planning
 - Query execution
 - Join optimization
 - Filter evaluation
+- Aggregations
+- BM25 and vector search integration
 
 **Key Types:**
 - `Query` - Parsed query
-- `ExecutionPlan` - Query plan
-- `Binding` - Variable binding
-- `Solution` - Query solution
+- `VarRegistry` - Variable management
+- `Pattern` - Query patterns
+- `Term` - Query terms
 
 **Dependencies:**
-- fluree-db-index
-- fluree-db-common
+- fluree-db-core
 
 ### fluree-db-sparql
 
@@ -79,74 +194,66 @@ fluree-db/
 - SPARQL lexing and parsing
 - AST construction
 - Lowering to internal IR
-- SPARQL-specific optimizations
+- Diagnostic reporting
 
 **Key Types:**
 - `Query` - SPARQL query AST
 - `Pattern` - Graph pattern
-- `Expression` - Filter expression
+- `Diagnostic` - Parse/validation errors
 
 **Dependencies:**
 - fluree-db-query
-- fluree-db-common
+- fluree-db-core
 
 ### fluree-db-transact
 
 **Purpose:** Transaction processing
 
 **Responsibilities:**
-- JSON-LD parsing
+- JSON-LD transaction parsing
 - RDF triple generation
-- Validation
 - Flake generation
 - Commit creation
 
-**Key Types:**
-- `Transaction` - Parsed transaction
-- `Flake` - Internal triple representation
-- `Commit` - Commit metadata
-
 **Dependencies:**
-- fluree-db-json-ld
-- fluree-db-storage
-- fluree-db-common
+- fluree-graph-json-ld
+- fluree-db-core
 
-### fluree-db-storage
+## Storage & Connection Crates
 
-**Purpose:** Storage abstraction
+### fluree-db-connection
+
+**Purpose:** Storage backends and connection management
 
 **Responsibilities:**
-- Storage backend abstraction
-- Commit storage
-- Index storage
+- Storage abstraction trait
+- Memory, file, and cloud storage
 - Address resolution
+- Commit storage and retrieval
 
 **Key Types:**
-- `Storage` - Storage trait
-- `MemoryStorage` - In-memory implementation
-- `FileStorage` - File system implementation
-- `AwsStorage` - S3/DynamoDB implementation
+- `Storage` trait
+- `MemoryStorage`
+- `FileStorage`
 
 **Dependencies:**
-- fluree-db-common
+- fluree-db-core
+- fluree-graph-json-ld
+- fluree-db-storage-aws (optional)
+- fluree-db-nameservice
 
-### fluree-db-index
+### fluree-db-storage-aws
 
-**Purpose:** Index structures and operations
+**Purpose:** AWS storage backends
 
 **Responsibilities:**
-- SPOT, POST, OPST, PSOT indexes
-- Index building
-- Index scanning
-- Range queries
-
-**Key Types:**
-- `Index` - Index trait
-- `Flake` - Indexed triple
-- `IndexScan` - Scan iterator
+- S3 storage implementation
+- S3 Express One Zone support
+- DynamoDB integration
 
 **Dependencies:**
-- fluree-db-common
+- fluree-db-core
+- fluree-db-nameservice
 
 ### fluree-db-nameservice
 
@@ -156,120 +263,191 @@ fluree-db/
 - Nameservice abstraction
 - Ledger metadata management
 - Publish/lookup operations
-- Storage backend coordination
+- File and DynamoDB backends
 
 **Key Types:**
-- `NameService` - Trait
+- `NameService` trait
 - `NsRecord` - Nameservice record
-- `FileNameService` - File-based implementation
-- `AwsNameService` - DynamoDB-based implementation
+- `FileNameService`
 
 **Dependencies:**
-- fluree-db-common
-- fluree-db-storage
+- fluree-db-core
 
-## Specialized Crates
+### fluree-db-nameservice-sync
 
-### fluree-db-virtual
-
-**Purpose:** Virtual graph implementations
+**Purpose:** Git-like remote sync for nameservice
 
 **Responsibilities:**
-- BM25 indexing
-- Vector search integration
-- Iceberg integration
-- R2RML mapping
-
-**Key Types:**
-- `VirtualGraph` - Virtual graph trait
-- `Bm25Index` - BM25 implementation
-- `VectorIndex` - Vector search wrapper
-- `IcebergSource` - Iceberg reader
-- `R2rmlMapping` - R2RML mapper
+- Remote nameservice synchronization
+- SSE-based change streaming
 
 **Dependencies:**
-- fluree-db-api
-- fluree-db-query
-- External: tantivy (BM25), iceberg-rust
+- fluree-db-nameservice
+- fluree-sse
+
+## Indexing Crates
+
+### fluree-db-indexer
+
+**Purpose:** Index building for Fluree DB
+
+**Responsibilities:**
+- Incremental index updates
+- Full reindexing
+- Index refresh orchestration
+
+**Dependencies:**
+- fluree-db-core
+- fluree-db-novelty
+- fluree-db-nameservice
+- fluree-vocab
+
+### fluree-db-ledger
+
+**Purpose:** Ledger state management
+
+**Responsibilities:**
+- Combining indexed DB with novelty overlay
+- Ledger snapshot creation
+- State transitions
+
+**Key Types:**
+- `LedgerState` - Complete ledger snapshot
+
+**Dependencies:**
+- fluree-db-core
+- fluree-db-novelty
+- fluree-db-nameservice
+
+## Security & Validation Crates
 
 ### fluree-db-policy
 
 **Purpose:** Policy enforcement
 
 **Responsibilities:**
-- Policy parsing
-- Policy evaluation
-- Query augmentation
+- Policy parsing and evaluation
+- Query augmentation for policy
 - Transaction authorization
-
-**Key Types:**
-- `Policy` - Policy definition
-- `PolicyEngine` - Evaluation engine
-- `PolicyContext` - Evaluation context
 
 **Dependencies:**
 - fluree-db-query
-- fluree-db-common
+- fluree-db-core
 
-### fluree-db-json-ld
+### fluree-db-credential
 
-**Purpose:** JSON-LD processing
-
-**Responsibilities:**
-- JSON-LD expansion
-- JSON-LD compaction
-- @context handling
-- IRI resolution
-
-**Key Types:**
-- `JsonLdContext` - Context definition
-- `JsonLdExpander` - Expansion logic
-- `JsonLdCompactor` - Compaction logic
-
-**Dependencies:**
-- json-ld (external)
-
-### fluree-db-common
-
-**Purpose:** Shared types and utilities
+**Purpose:** Credential verification
 
 **Responsibilities:**
-- Common types (IRI, Literal, etc.)
-- Error types
-- Utility functions
-- Constants
+- JWS signature verification
+- VerifiableCredential processing
+- DID resolution
 
-**Key Types:**
-- `Iri` - IRI representation
-- `Literal` - Typed literal
-- `Error` - Error types
-- `Namespace` - Namespace mappings
+**Dependencies:** None (standalone)
+
+### fluree-db-crypto
+
+**Purpose:** Storage encryption
+
+**Responsibilities:**
+- AES-256-GCM encryption/decryption
+- Key management
+- Encrypted storage layer
 
 **Dependencies:**
-- None (foundation crate)
+- fluree-db-core
+
+### fluree-db-shacl
+
+**Purpose:** SHACL validation engine
+
+**Responsibilities:**
+- SHACL shapes parsing
+- Constraint validation
+- Validation reports
+
+**Dependencies:**
+- fluree-db-core
+- fluree-db-query
+- fluree-vocab
+
+## Reasoning
+
+### fluree-db-reasoner
+
+**Purpose:** OWL2-RL reasoning engine
+
+**Responsibilities:**
+- OWL2-RL rule application
+- Inference generation
+- Materialization
+
+**Dependencies:**
+- fluree-db-core
+- fluree-vocab
+
+## Virtual Graph Crates
+
+### fluree-db-tabular
+
+**Purpose:** Tabular column batch types
+
+**Responsibilities:**
+- Arrow-compatible column batches
+- Virtual graph data abstraction
+
+**Dependencies:** None (foundation for virtual graphs)
+
+### fluree-db-iceberg
+
+**Purpose:** Apache Iceberg integration
+
+**Responsibilities:**
+- Iceberg REST catalog support
+- Iceberg table scanning
+- Parquet file reading
+
+**Dependencies:**
+- fluree-db-core
+- fluree-db-tabular
+
+### fluree-db-r2rml
+
+**Purpose:** R2RML mapping support
+
+**Responsibilities:**
+- R2RML mapping parsing
+- Relational-to-RDF mapping
+- Virtual graph generation
+
+**Dependencies:**
+- fluree-graph-ir
+- fluree-graph-turtle (optional)
+- fluree-db-tabular
+- fluree-vocab
+
+## Search Crates
 
 ### fluree-search-protocol
 
 **Purpose:** Search service protocol types
 
 **Responsibilities:**
-- Request/response structs (serde-serializable)
-- Error model and error codes
+- Request/response structs
+- Error model and codes
 - Protocol version constants
-- Query variant definitions (BM25, Vector)
+- BM25 and vector query definitions
 
-**Dependencies:**
-- serde, serde_json, thiserror
+**Dependencies:** serde, thiserror
 
 ### fluree-search-service
 
-**Purpose:** Search service backend implementations
+**Purpose:** Search backend implementations
 
 **Responsibilities:**
-- `SearchBackend` trait and dispatch
-- BM25 backend (index loading, caching, search)
-- Vector backend (index loading, caching, search) — feature-gated on `vector`
-- Composite backend for multi-type dispatch
+- `SearchBackend` trait
+- BM25 backend (tantivy)
+- Vector backend (usearch, feature-gated)
 - Index caching with TTL
 
 **Dependencies:**
@@ -277,67 +455,113 @@ fluree-db/
 - fluree-db-query
 - fluree-db-core
 
-## Binary Crates
-
 ### fluree-search-httpd
 
 **Purpose:** Standalone HTTP search server
 
 **Responsibilities:**
-- HTTP API for remote search queries (BM25 + vector)
-- Index loading from storage/nameservice
+- HTTP API for search queries
+- Index loading from storage
 - Health and capabilities endpoints
-- Configurable via CLI flags
 
 **Dependencies:**
 - fluree-search-protocol
 - fluree-search-service
-- axum, tokio, clap
+- axum, tokio
+
+## Networking Crates
+
+### fluree-sse
+
+**Purpose:** Lightweight SSE parser
+
+**Responsibilities:**
+- Server-Sent Events parsing
+- Event stream handling
+
+**Dependencies:** None (foundation)
+
+### fluree-db-peer
+
+**Purpose:** SSE protocol for peer mode
+
+**Responsibilities:**
+- Peer protocol types
+- SSE client for peer communication
+
+**Dependencies:**
+- fluree-sse
+
+## Top-Level Crates
+
+### fluree-db-api
+
+**Purpose:** Public API and orchestration
+
+**Responsibilities:**
+- Ledger lifecycle (create, load, drop)
+- Query execution coordination
+- Transaction execution
+- Time travel resolution
+- Policy application
+- Dataset and view composition
+
+**Key Types:**
+- `Fluree` - Main entry point
+- `Graph` - Lazy handle for chaining
+- `GraphSnapshot` - Materialized snapshot
+- `LedgerState` - Loaded ledger state
+- `QueryResult` - Query results
+- `TransactResult` - Commit receipt
+
+**Dependencies:**
+- fluree-db-query
+- fluree-db-sparql
+- fluree-db-transact
+- fluree-db-connection
+- fluree-db-nameservice
+- fluree-db-policy
+- fluree-db-reasoner
+- fluree-db-shacl
 
 ### fluree-db-server
 
-**Purpose:** HTTP server
+**Purpose:** HTTP server (binary)
 
 **Responsibilities:**
 - HTTP API endpoints
 - Request routing
 - Response formatting
-- TLS/SSL
-- CORS handling
+- TLS/SSL, CORS handling
 
 **Dependencies:**
 - fluree-db-api
-- fluree-db-transact
-- fluree-db-query
-- axum (web framework)
+- axum
 
-## Dependency Graph
+## Dependency Layers
 
 ```text
-fluree-db-server
-    └── fluree-db-api
-        ├── fluree-db-query
-        │   ├── fluree-db-index
-        │   │   └── fluree-db-common
-        │   └── fluree-db-common
-        ├── fluree-db-sparql
-        │   ├── fluree-db-query
-        │   └── fluree-db-common
-        ├── fluree-db-transact
-        │   ├── fluree-db-json-ld
-        │   ├── fluree-db-storage
-        │   └── fluree-db-common
-        ├── fluree-db-storage
-        │   └── fluree-db-common
-        ├── fluree-db-nameservice
-        │   ├── fluree-db-storage
-        │   └── fluree-db-common
-        ├── fluree-db-virtual
-        │   ├── fluree-db-query
-        │   └── fluree-db-common
-        └── fluree-db-policy
-            ├── fluree-db-query
-            └── fluree-db-common
+Layer 5 (Top)        fluree-db-server
+                            │
+                     fluree-db-api
+                            │
+Layer 4 (Features)   ┌──────┼──────┬──────────┬───────────┐
+                     │      │      │          │           │
+                  policy  shacl reasoner  credential  crypto
+                     │      │      │
+Layer 3 (Query)      └──────┴──────┴──────────┐
+                                              │
+                     fluree-db-query ←── fluree-db-sparql
+                            │
+Layer 2 (Data)       ┌──────┼──────┬──────────┐
+                     │      │      │          │
+                  ledger indexer novelty  connection
+                     │      │      │          │
+Layer 1 (Core)       └──────┴──────┴──────────┘
+                            │
+                     fluree-db-core
+                            │
+Layer 0 (Foundation) fluree-vocab, fluree-sse, fluree-db-tabular
 ```
 
 ## External Dependencies
@@ -354,13 +578,11 @@ fluree-db-server
 - `serde_json` - JSON support
 
 **RDF:**
-- `json-ld` - JSON-LD processing
 - `oxiri` - IRI parsing and validation
 
 **Storage:**
 - `aws-sdk-s3` - AWS S3 client
 - `aws-sdk-dynamodb` - AWS DynamoDB client
-- `rocksdb` - Embedded database (planned)
 
 **Search:**
 - `tantivy` - BM25 full-text search
@@ -374,26 +596,12 @@ fluree-db-server
 - `ed25519-dalek` - Ed25519 signatures
 - `ring` - Cryptographic operations
 
-## Building Specific Crates
+## Building
 
-### Build Individual Crate
+### Build All
 
 ```bash
-cd fluree-db-query
 cargo build --release
-```
-
-### Run Tests
-
-```bash
-cd fluree-db-query
-cargo test
-```
-
-### Build with Features
-
-```bash
-cargo build --features experimental
 ```
 
 ### Build Server Only
@@ -402,55 +610,30 @@ cargo build --features experimental
 cargo build --release --bin fluree-db-server
 ```
 
+### Run Tests
+
+```bash
+cargo test
+```
+
+### Build with Features
+
+```bash
+cargo build --features native,vector
+```
+
 ## Crate Versions
 
-All crates use synchronized versioning:
-- Current: 0.1.0
-- Updated together
-- Version parity maintained
+All crates use synchronized versioning and are updated together.
 
 Check versions:
 
 ```bash
-cargo tree | grep fluree-db
+cargo tree | grep fluree
 ```
-
-## Development
-
-### Adding New Features
-
-Typical development flow:
-
-1. **Add to appropriate crate:**
-   - New query feature → fluree-db-query
-   - New transaction feature → fluree-db-transact
-   - New storage backend → fluree-db-storage
-
-2. **Update dependencies:**
-   ```toml
-   [dependencies]
-   fluree-db-common = { path = "../fluree-db-common" }
-   ```
-
-3. **Add tests:**
-   ```bash
-   cargo test
-   ```
-
-4. **Update API if needed:**
-   Expose in fluree-db-api if public
-
-### Crate Guidelines
-
-- **Single responsibility:** Each crate has clear purpose
-- **Minimal dependencies:** Depend only on what's needed
-- **Clear interfaces:** Well-defined public APIs
-- **Comprehensive tests:** Unit and integration tests
-- **Documentation:** Rustdoc for public APIs
 
 ## Related Documentation
 
 - [Contributing: Dev Setup](../contributing/dev-setup.md) - Development environment
 - [Contributing: Tests](../contributing/tests.md) - Testing guide
 - [Glossary](glossary.md) - Term definitions
-- [Compatibility](compatibility.md) - Standards compliance

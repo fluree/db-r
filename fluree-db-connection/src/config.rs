@@ -200,8 +200,6 @@ pub struct ConnectionConfig {
     pub commit_storage: Option<StorageConfig>,
     /// Optional primary publisher (nameservice) configuration
     pub primary_publisher: Option<PublisherConfig>,
-    /// Optional secondary publishers (nameservice) configuration
-    pub secondary_publishers: Vec<PublisherConfig>,
     /// Optional connection defaults (identity + indexing options)
     pub defaults: Option<DefaultsConfig>,
     /// Optional address identifier resolver map (identifier -> StorageConfig).
@@ -221,7 +219,6 @@ impl Default for ConnectionConfig {
             index_storage: StorageConfig::default(),
             commit_storage: None,
             primary_publisher: None,
-            secondary_publishers: vec![],
             defaults: None,
             address_identifiers: None,
         }
@@ -375,14 +372,6 @@ impl ConnectionConfig {
             .map(|n| parse_publisher_node(&graph, n))
             .transpose()?;
 
-        let secondary_publishers = conn_node
-            .get(vocab::FIELD_SECONDARY_PUBLISHERS)
-            .map(|v| graph.resolve_all(v))
-            .unwrap_or_default()
-            .into_iter()
-            .map(|n| parse_publisher_node(&graph, n))
-            .collect::<Result<Vec<_>>>()?;
-
         // 7. Parse defaults (identity + indexing options)
         let defaults = conn_node
             .get(vocab::FIELD_DEFAULTS)
@@ -402,7 +391,6 @@ impl ConnectionConfig {
             })?,
             commit_storage,
             primary_publisher,
-            secondary_publishers,
             defaults,
             address_identifiers,
         })
