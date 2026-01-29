@@ -1,0 +1,1137 @@
+//! Unresolved AST types for JSON FQL query parsing
+//!
+//! These types represent the parsed query before IRI resolution.
+//! They use `Arc<str>` for efficient string handling and deduplication.
+//!
+//! The AST supports ordered patterns in the where clause:
+//! - Triple patterns (basic graph patterns)
+//! - Filter expressions (inline or standalone)
+//! - Optional clauses (left join semantics)
+//! - Bind expressions (computed values)
+//! - Values blocks (inline data)
+
+use fluree_graph_json_ld::ParsedContext;
+use std::sync::Arc;
+
+/// Literal value from JSON (before resolution)
+#[derive(Clone, Debug, PartialEq)]
+pub enum LiteralValue {
+    /// String literal
+    String(Arc<str>),
+    /// Integer literal (parsed from JSON number)
+    Long(i64),
+    /// Float literal (parsed from JSON number)
+    Double(f64),
+    /// Boolean literal
+    Boolean(bool),
+    /// Vector literal (fluree:vector)
+    Vector(Vec<f64>),
+}
+
+impl LiteralValue {
+    /// Create a string literal
+    pub fn string(s: impl AsRef<str>) -> Self {
+        LiteralValue::String(Arc::from(s.as_ref()))
+    }
+
+    /// Create a vector literal
+    pub fn vector(v: Vec<f64>) -> Self {
+        LiteralValue::Vector(v)
+    }
+}
+
+/// Unresolved VALUES cell - supports typed literals, language tags, and IRIs.
+#[derive(Clone, Debug, PartialEq)]
+pub enum UnresolvedValue {
+    /// UNDEF / null in VALUES
+    Unbound,
+    /// IRI value (e.g. {"@id": "..."} or {"@value":"...","@type":"@id"})
+    Iri(Arc<str>),
+    /// Literal value with optional explicit datatype and language
+    Literal {
+        value: LiteralValue,
+        /// Expanded datatype IRI (e.g. "http://www.w3.org/2001/XMLSchema#string")
+        dt_iri: Option<Arc<str>>,
+        /// Language tag (e.g. "en")
+        lang: Option<Arc<str>>,
+    },
+}
+
+/// Unresolved term - before IRI encoding
+///
+/// Uses `Arc<str>` to reduce allocations when the same IRI/variable
+/// appears multiple times in a query.
+#[derive(Clone, Debug, PartialEq)]
+pub enum UnresolvedTerm {
+    /// Variable binding (e.g., "?name")
+    Var(Arc<str>),
+    /// Expanded IRI (e.g., "http://schema.org/name")
+    Iri(Arc<str>),
+    /// Literal value from JSON
+    Literal(LiteralValue),
+}
+
+impl UnresolvedTerm {
+    /// Create a variable term
+    pub fn var(name: impl AsRef<str>) -> Self {
+        UnresolvedTerm::Var(Arc::from(name.as_ref()))
+    }
+
+    /// Create an IRI term
+    pub fn iri(iri: impl AsRef<str>) -> Self {
+        UnresolvedTerm::Iri(Arc::from(iri.as_ref()))
+    }
+
+    /// Create a string literal term
+    pub fn string(s: impl AsRef<str>) -> Self {
+        UnresolvedTerm::Literal(LiteralValue::String(Arc::from(s.as_ref())))
+    }
+
+    /// Create a long literal term
+    pub fn long(v: i64) -> Self {
+        UnresolvedTerm::Literal(LiteralValue::Long(v))
+    }
+
+    /// Create a double literal term
+    pub fn double(v: f64) -> Self {
+        UnresolvedTerm::Literal(LiteralValue::Double(v))
+    }
+
+    /// Create a boolean literal term
+    pub fn boolean(v: bool) -> Self {
+        UnresolvedTerm::Literal(LiteralValue::Boolean(v))
+    }
+
+    /// Check if this term is a variable
+    pub fn is_var(&self) -> bool {
+        matches!(self, UnresolvedTerm::Var(_))
+    }
+
+    /// Get the variable name if this is a variable
+    pub fn as_var(&self) -> Option<&str> {
+        match self {
+            UnresolvedTerm::Var(name) => Some(name.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+/// Unresolved triple pattern - before IRI encoding
+#[derive(Clone, Debug)]
+pub struct UnresolvedTriplePattern {
+    /// Subject term
+    pub s: UnresolvedTerm,
+    /// Predicate term
+    pub p: UnresolvedTerm,
+    /// Object term
+    pub o: UnresolvedTerm,
+    /// Optional datatype IRI for the object (from context)
+    pub dt_iri: Option<Arc<str>>,
+    /// Optional language tag for the object (from @language in value object)
+    pub lang: Option<Arc<str>>,
+}
+
+impl UnresolvedTriplePattern {
+    /// Create a new unresolved triple pattern
+    pub fn new(s: UnresolvedTerm, p: UnresolvedTerm, o: UnresolvedTerm) -> Self {
+        Self {
+            s,
+            p,
+            o,
+            dt_iri: None,
+            lang: None,
+        }
+    }
+
+    /// Create with a datatype IRI
+    pub fn with_dt(
+        s: UnresolvedTerm,
+        p: UnresolvedTerm,
+        o: UnresolvedTerm,
+        dt_iri: impl AsRef<str>,
+    ) -> Self {
+        Self {
+            s,
+            p,
+            o,
+            dt_iri: Some(Arc::from(dt_iri.as_ref())),
+            lang: None,
+        }
+    }
+
+    /// Set language tag
+    pub fn with_lang(mut self, lang: impl AsRef<str>) -> Self {
+        self.lang = Some(Arc::from(lang.as_ref()));
+        self
+    }
+}
+
+/// Property path modifier (transitive operators)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathModifier {
+    /// + : one or more (at least one hop)
+    OneOrMore,
+    /// * : zero or more (includes starting node)
+    ZeroOrMore,
+}
+
+/// Unresolved property path pattern (before lowering)
+///
+/// Represents a transitive property path like `<ex:knows+>` or `<ex:knows*>`.
+/// The predicate IRI should already be expanded via @context.
+#[derive(Debug, Clone)]
+pub struct UnresolvedPropertyPathPattern {
+    /// Subject term (variable or IRI)
+    pub subject: UnresolvedTerm,
+    /// Predicate IRI (already expanded via @context)
+    pub predicate_iri: Arc<str>,
+    /// Path modifier (+ or *)
+    pub modifier: PathModifier,
+    /// Object term (variable or IRI)
+    pub object: UnresolvedTerm,
+}
+
+impl UnresolvedPropertyPathPattern {
+    /// Create a new unresolved property path pattern
+    pub fn new(
+        subject: UnresolvedTerm,
+        predicate_iri: impl AsRef<str>,
+        modifier: PathModifier,
+        object: UnresolvedTerm,
+    ) -> Self {
+        Self {
+            subject,
+            predicate_iri: Arc::from(predicate_iri.as_ref()),
+            modifier,
+            object,
+        }
+    }
+}
+
+// ============================================================================
+// Index Search Pattern (BM25 Full-Text Search)
+// ============================================================================
+
+/// Target for index search - can be a constant query string or variable.
+#[derive(Debug, Clone, PartialEq)]
+pub enum UnresolvedIndexSearchTarget {
+    /// Constant search query string
+    Const(Arc<str>),
+    /// Variable reference (bound at runtime)
+    Var(Arc<str>),
+}
+
+/// Unresolved index search pattern for BM25 full-text queries.
+///
+/// Represents a search against a virtual graph (e.g., BM25 index) with
+/// result bindings for document ID, score, and optional ledger alias.
+///
+/// # Example Query Syntax
+///
+/// Direct variable result:
+/// ```json
+/// {
+///   "graph": "my-search:main",
+///   "idx:target": "software engineer",
+///   "idx:limit": 10,
+///   "idx:result": "?doc"
+/// }
+/// ```
+///
+/// Nested result with score:
+/// ```json
+/// {
+///   "graph": "my-search:main",
+///   "idx:target": "software engineer",
+///   "idx:result": {
+///     "idx:id": "?doc",
+///     "idx:score": "?score",
+///     "idx:ledger": "?source"
+///   }
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct UnresolvedIndexSearchPattern {
+    /// Virtual graph alias (e.g., "my-search:main")
+    pub vg_alias: Arc<str>,
+
+    /// Search query target - can be a constant string or variable
+    pub target: UnresolvedIndexSearchTarget,
+
+    /// Maximum number of results (optional)
+    pub limit: Option<usize>,
+
+    /// Variable to bind the document IRI (required)
+    pub id_var: Arc<str>,
+
+    /// Variable to bind the BM25 score (optional)
+    pub score_var: Option<Arc<str>>,
+
+    /// Variable to bind the source ledger alias (optional, for multi-ledger)
+    pub ledger_var: Option<Arc<str>>,
+
+    /// Whether to sync before query (default: false)
+    pub sync: bool,
+
+    /// Query timeout in milliseconds (optional)
+    pub timeout: Option<u64>,
+}
+
+impl UnresolvedIndexSearchPattern {
+    /// Create a new index search pattern with just ID binding
+    pub fn new(
+        vg_alias: impl AsRef<str>,
+        target: UnresolvedIndexSearchTarget,
+        id_var: impl AsRef<str>,
+    ) -> Self {
+        Self {
+            vg_alias: Arc::from(vg_alias.as_ref()),
+            target,
+            limit: None,
+            id_var: Arc::from(id_var.as_ref()),
+            score_var: None,
+            ledger_var: None,
+            sync: false,
+            timeout: None,
+        }
+    }
+
+    /// Set the result limit
+    pub fn with_limit(mut self, limit: usize) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    /// Set the score binding variable
+    pub fn with_score_var(mut self, var: impl AsRef<str>) -> Self {
+        self.score_var = Some(Arc::from(var.as_ref()));
+        self
+    }
+
+    /// Set the ledger binding variable
+    pub fn with_ledger_var(mut self, var: impl AsRef<str>) -> Self {
+        self.ledger_var = Some(Arc::from(var.as_ref()));
+        self
+    }
+
+    /// Set sync mode
+    pub fn with_sync(mut self, sync: bool) -> Self {
+        self.sync = sync;
+        self
+    }
+
+    /// Set timeout
+    pub fn with_timeout(mut self, timeout: u64) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+}
+
+/// Target for vector search - can be a constant vector or variable.
+#[derive(Debug, Clone, PartialEq)]
+pub enum UnresolvedVectorSearchTarget {
+    /// Constant vector (f32 for efficiency)
+    Const(Vec<f32>),
+    /// Variable reference (bound at runtime to a fluree:vector value)
+    Var(Arc<str>),
+}
+
+/// Unresolved vector search pattern - before variable resolution
+///
+/// Used for vector similarity search against a vector virtual graph.
+///
+/// # Example
+///
+/// ```json
+/// {
+///   "idx:graph": "embeddings:main",
+///   "idx:vector": [0.1, 0.2, 0.3],
+///   "idx:metric": "cosine",
+///   "idx:limit": 10,
+///   "idx:result": {"idx:id": "?doc", "idx:score": "?score"}
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnresolvedVectorSearchPattern {
+    /// Virtual graph alias (e.g., "embeddings:main")
+    pub vg_alias: Arc<str>,
+
+    /// Search target - can be a constant vector or variable
+    pub target: UnresolvedVectorSearchTarget,
+
+    /// Distance metric (cosine, dot, euclidean)
+    pub metric: Arc<str>,
+
+    /// Maximum number of results (optional, defaults to 10)
+    pub limit: Option<usize>,
+
+    /// Variable to bind the document IRI (required)
+    pub id_var: Arc<str>,
+
+    /// Variable to bind the similarity score (optional)
+    pub score_var: Option<Arc<str>>,
+
+    /// Variable to bind the source ledger alias (optional, for multi-ledger)
+    pub ledger_var: Option<Arc<str>>,
+
+    /// Whether to sync before query (default: false)
+    pub sync: bool,
+
+    /// Query timeout in milliseconds (optional)
+    pub timeout: Option<u64>,
+}
+
+impl UnresolvedVectorSearchPattern {
+    /// Create a new vector search pattern with just ID binding
+    pub fn new(
+        vg_alias: impl AsRef<str>,
+        target: UnresolvedVectorSearchTarget,
+        metric: impl AsRef<str>,
+        id_var: impl AsRef<str>,
+    ) -> Self {
+        Self {
+            vg_alias: Arc::from(vg_alias.as_ref()),
+            target,
+            metric: Arc::from(metric.as_ref()),
+            limit: None,
+            id_var: Arc::from(id_var.as_ref()),
+            score_var: None,
+            ledger_var: None,
+            sync: false,
+            timeout: None,
+        }
+    }
+
+    /// Set the result limit
+    pub fn with_limit(mut self, limit: usize) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    /// Set the score binding variable
+    pub fn with_score_var(mut self, var: impl AsRef<str>) -> Self {
+        self.score_var = Some(Arc::from(var.as_ref()));
+        self
+    }
+
+    /// Set the ledger binding variable
+    pub fn with_ledger_var(mut self, var: impl AsRef<str>) -> Self {
+        self.ledger_var = Some(Arc::from(var.as_ref()));
+        self
+    }
+
+    /// Set sync mode
+    pub fn with_sync(mut self, sync: bool) -> Self {
+        self.sync = sync;
+        self
+    }
+
+    /// Set timeout
+    pub fn with_timeout(mut self, timeout: u64) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+}
+
+/// Comparison operators for filter expressions
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnresolvedCompareOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+/// Arithmetic operators for filter expressions
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnresolvedArithmeticOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+/// Filter value (constant) before resolution
+#[derive(Debug, Clone, PartialEq)]
+pub enum UnresolvedFilterValue {
+    Long(i64),
+    Double(f64),
+    String(Arc<str>),
+    Bool(bool),
+}
+
+impl UnresolvedFilterValue {
+    /// Create a string filter value
+    pub fn string(s: impl AsRef<str>) -> Self {
+        UnresolvedFilterValue::String(Arc::from(s.as_ref()))
+    }
+}
+
+/// Unresolved filter expression - before variable resolution
+///
+/// Uses string variable names instead of VarIds.
+#[derive(Debug, Clone, PartialEq)]
+pub enum UnresolvedFilterExpr {
+    /// Variable reference (e.g., "?age")
+    Var(Arc<str>),
+    /// Constant value
+    Const(UnresolvedFilterValue),
+    /// Comparison operation
+    Compare {
+        op: UnresolvedCompareOp,
+        left: Box<UnresolvedFilterExpr>,
+        right: Box<UnresolvedFilterExpr>,
+    },
+    /// Arithmetic operation
+    Arithmetic {
+        op: UnresolvedArithmeticOp,
+        left: Box<UnresolvedFilterExpr>,
+        right: Box<UnresolvedFilterExpr>,
+    },
+    /// Unary negation
+    Negate(Box<UnresolvedFilterExpr>),
+    /// Logical AND
+    And(Vec<UnresolvedFilterExpr>),
+    /// Logical OR
+    Or(Vec<UnresolvedFilterExpr>),
+    /// Logical NOT
+    Not(Box<UnresolvedFilterExpr>),
+    /// IN expression (?x IN (1, 2, 3))
+    In {
+        expr: Box<UnresolvedFilterExpr>,
+        values: Vec<UnresolvedFilterExpr>,
+        negated: bool,
+    },
+    /// Function call
+    Function {
+        name: Arc<str>,
+        args: Vec<UnresolvedFilterExpr>,
+    },
+}
+
+impl UnresolvedFilterExpr {
+    /// Create a variable reference
+    pub fn var(name: impl AsRef<str>) -> Self {
+        UnresolvedFilterExpr::Var(Arc::from(name.as_ref()))
+    }
+
+    /// Create a long constant
+    pub fn long(v: i64) -> Self {
+        UnresolvedFilterExpr::Const(UnresolvedFilterValue::Long(v))
+    }
+
+    /// Create a double constant
+    pub fn double(v: f64) -> Self {
+        UnresolvedFilterExpr::Const(UnresolvedFilterValue::Double(v))
+    }
+
+    /// Create a boolean constant
+    pub fn boolean(v: bool) -> Self {
+        UnresolvedFilterExpr::Const(UnresolvedFilterValue::Bool(v))
+    }
+
+    /// Create a string constant
+    pub fn string(s: impl AsRef<str>) -> Self {
+        UnresolvedFilterExpr::Const(UnresolvedFilterValue::string(s))
+    }
+}
+
+// ============================================================================
+// Query modifier types (unresolved)
+// ============================================================================
+
+/// Sort direction (unresolved)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UnresolvedSortDirection {
+    #[default]
+    Asc,
+    Desc,
+}
+
+/// Sort specification (unresolved)
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnresolvedSortSpec {
+    /// Variable to sort by
+    pub var: Arc<str>,
+    /// Sort direction
+    pub direction: UnresolvedSortDirection,
+}
+
+impl UnresolvedSortSpec {
+    /// Create a new sort specification
+    pub fn new(var: impl AsRef<str>, direction: UnresolvedSortDirection) -> Self {
+        Self {
+            var: Arc::from(var.as_ref()),
+            direction,
+        }
+    }
+
+    /// Create an ascending sort specification
+    pub fn asc(var: impl AsRef<str>) -> Self {
+        Self::new(var, UnresolvedSortDirection::Asc)
+    }
+
+    /// Create a descending sort specification
+    pub fn desc(var: impl AsRef<str>) -> Self {
+        Self::new(var, UnresolvedSortDirection::Desc)
+    }
+}
+
+/// Aggregate function (unresolved)
+#[derive(Debug, Clone, PartialEq)]
+pub enum UnresolvedAggregateFn {
+    Count,
+    CountDistinct,
+    Sum,
+    Avg,
+    Min,
+    Max,
+    Median,
+    Variance,
+    Stddev,
+    GroupConcat { separator: String },
+    Sample,
+}
+
+/// Aggregate specification (unresolved)
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnresolvedAggregateSpec {
+    /// Aggregate function to apply
+    pub function: UnresolvedAggregateFn,
+    /// Input variable (the variable being aggregated)
+    pub input_var: Arc<str>,
+    /// Output variable (the result variable name)
+    pub output_var: Arc<str>,
+}
+
+impl UnresolvedAggregateSpec {
+    /// Create a new aggregate specification
+    pub fn new(
+        function: UnresolvedAggregateFn,
+        input_var: impl AsRef<str>,
+        output_var: impl AsRef<str>,
+    ) -> Self {
+        Self {
+            function,
+            input_var: Arc::from(input_var.as_ref()),
+            output_var: Arc::from(output_var.as_ref()),
+        }
+    }
+}
+
+/// Query options (unresolved)
+///
+/// Contains all solution modifiers before variable resolution.
+#[derive(Debug, Clone)]
+pub struct UnresolvedOptions {
+    /// Maximum rows to return
+    pub limit: Option<usize>,
+    /// Rows to skip before returning results
+    pub offset: Option<usize>,
+    /// Whether to deduplicate results
+    pub distinct: bool,
+    /// Sort specifications
+    pub order_by: Vec<UnresolvedSortSpec>,
+    /// GROUP BY variables
+    pub group_by: Vec<Arc<str>>,
+    /// Aggregate specifications
+    pub aggregates: Vec<UnresolvedAggregateSpec>,
+    /// HAVING filter expression
+    pub having: Option<UnresolvedFilterExpr>,
+    /// Reasoning modes (RDFS, OWL2-QL, etc.)
+    ///
+    /// Parsed from `"reasoning"` key in query JSON. None means use defaults
+    /// (auto-enable RDFS when hierarchy exists).
+    pub reasoning: Option<crate::rewrite::ReasoningModes>,
+    /// Whether to treat bare "?var" object strings as variables in WHERE.
+    ///
+    /// Clojure parity: when false, bare "?x" object values are literals unless
+    /// explicitly wrapped as {"@variable": "?x"}.
+    pub object_var_parsing: bool,
+}
+
+impl UnresolvedOptions {
+    /// Create new options with defaults
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Default for UnresolvedOptions {
+    fn default() -> Self {
+        Self {
+            limit: None,
+            offset: None,
+            distinct: false,
+            order_by: Vec::new(),
+            group_by: Vec::new(),
+            aggregates: Vec::new(),
+            having: None,
+            reasoning: None,
+            object_var_parsing: true,
+        }
+    }
+}
+
+// ============================================================================
+// CONSTRUCT query types
+// ============================================================================
+
+/// Unresolved CONSTRUCT template
+///
+/// Contains the template patterns that will be instantiated with query bindings
+/// to produce output triples. Templates use the same node-map format as WHERE
+/// clauses but are interpreted as output patterns rather than match patterns.
+#[derive(Debug, Clone)]
+pub struct UnresolvedConstructTemplate {
+    /// Template patterns (only Triple patterns are valid in templates)
+    pub patterns: Vec<UnresolvedPattern>,
+}
+
+impl UnresolvedConstructTemplate {
+    /// Create a new construct template from patterns
+    pub fn new(patterns: Vec<UnresolvedPattern>) -> Self {
+        Self { patterns }
+    }
+}
+
+// ============================================================================
+// Graph crawl select types
+// ============================================================================
+
+/// Root of a graph crawl select - can be variable or IRI constant
+///
+/// Supports both syntax forms:
+/// - Variable root: `{"?person": ["*", ...]}`
+/// - IRI constant root: `{"ex:alice": ["*", ...]}`
+#[derive(Debug, Clone, PartialEq)]
+pub enum UnresolvedRoot {
+    /// Variable root (e.g., "?person")
+    Var(Arc<str>),
+    /// IRI constant root (expanded IRI, e.g., "http://example.org/alice")
+    Iri(String),
+}
+
+/// Nested selection specification for sub-crawls
+///
+/// This type captures the full selection state for nested property expansion,
+/// including both forward and reverse properties. It's used when a property
+/// has nested selections like `{"ex:friend": ["*", {"friended": ["*"]}]}`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnresolvedNestedSelectSpec {
+    /// Forward property selections
+    pub forward: Vec<UnresolvedSelectionSpec>,
+    /// Reverse property selections (expanded IRI → optional nested spec)
+    /// None means no sub-selections (just return @id), Some means nested expansion
+    pub reverse: std::collections::HashMap<String, Option<Box<UnresolvedNestedSelectSpec>>>,
+    /// Whether wildcard was specified at this level
+    pub has_wildcard: bool,
+}
+
+impl UnresolvedNestedSelectSpec {
+    /// Create a new nested select spec
+    pub fn new(
+        forward: Vec<UnresolvedSelectionSpec>,
+        reverse: std::collections::HashMap<String, Option<Box<UnresolvedNestedSelectSpec>>>,
+        has_wildcard: bool,
+    ) -> Self {
+        Self {
+            forward,
+            reverse,
+            has_wildcard,
+        }
+    }
+
+    /// Check if this spec is empty (no selections)
+    pub fn is_empty(&self) -> bool {
+        self.forward.is_empty() && self.reverse.is_empty()
+    }
+}
+
+/// Selection specification within a graph crawl
+///
+/// Defines what properties to include at each level of the expansion.
+#[derive(Debug, Clone, PartialEq)]
+pub enum UnresolvedSelectionSpec {
+    /// Explicit @id selection (include @id even when wildcard is not specified)
+    Id,
+    /// Wildcard - select all properties at this level ("*")
+    Wildcard,
+    /// Property selection - optionally with nested sub-selections
+    ///
+    /// Examples:
+    /// - `"ex:name"` → Property with no sub_spec
+    /// - `{"ex:friend": ["*"]}` → Property with sub_spec containing forward selections
+    /// - `{"ex:friend": ["*", {"@reverse:friended": ["*"]}]}` → Property with both forward and reverse
+    Property {
+        /// Predicate IRI (expanded)
+        predicate: String,
+        /// Optional nested selection spec for expanding this property's values
+        /// Uses Box to avoid infinite type recursion
+        sub_spec: Option<Box<UnresolvedNestedSelectSpec>>,
+    },
+}
+
+/// Graph crawl selection specification (formatting-time only)
+///
+/// This captures the graph crawl select syntax for nested JSON-LD object expansion.
+/// It is used only during result formatting, not during query execution.
+///
+/// # Examples
+///
+/// ```json
+/// // Simple crawl with wildcard
+/// {"select": {"?person": ["*"]}}
+///
+/// // Nested crawl
+/// {"select": {"?person": ["*", {"ex:friend": ["*"]}]}}
+///
+/// // With depth parameter
+/// {"select": {"?s": ["*"]}, "depth": 3}
+///
+/// // IRI constant root (no WHERE needed)
+/// {"select": {"ex:alice": ["*"]}}
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnresolvedGraphSelectSpec {
+    /// Root of the crawl - variable or IRI constant
+    pub root: UnresolvedRoot,
+    /// Forward property selections
+    pub selections: Vec<UnresolvedSelectionSpec>,
+    /// Reverse property selections (expanded IRI → optional nested spec)
+    /// None means no sub-selections (just return @id), Some means nested expansion
+    ///
+    /// Populated from `@reverse` context entries
+    pub reverse: std::collections::HashMap<String, Option<Box<UnresolvedNestedSelectSpec>>>,
+    /// Max depth for auto-expansion (0 = no auto-expand, only explicit)
+    pub depth: usize,
+    /// Whether wildcard was specified (controls @id inclusion)
+    pub has_wildcard: bool,
+}
+
+impl UnresolvedGraphSelectSpec {
+    /// Create a new graph select spec with default values
+    pub fn new(root: UnresolvedRoot, selections: Vec<UnresolvedSelectionSpec>) -> Self {
+        let has_wildcard = selections
+            .iter()
+            .any(|s| matches!(s, UnresolvedSelectionSpec::Wildcard));
+        Self {
+            root,
+            selections,
+            reverse: std::collections::HashMap::new(),
+            depth: 0,
+            has_wildcard,
+        }
+    }
+}
+
+/// Ordered pattern in where clause
+///
+/// Each variant represents a different pattern type. The order in the
+/// where clause is preserved to enable proper filter placement and
+/// join ordering.
+#[derive(Debug, Clone)]
+pub enum UnresolvedPattern {
+    /// Basic triple pattern
+    Triple(UnresolvedTriplePattern),
+    /// Filter expression (positioned in where clause order)
+    Filter(UnresolvedFilterExpr),
+    /// Optional clause - left join semantics
+    Optional(Vec<UnresolvedPattern>),
+    /// Union of pattern branches - any branch may match
+    ///
+    /// Each branch is a list of patterns executed as a correlated subquery against
+    /// the current solution stream.
+    Union(Vec<Vec<UnresolvedPattern>>),
+    /// Bind a computed value to a variable
+    Bind {
+        var: Arc<str>,
+        expr: UnresolvedFilterExpr,
+    },
+    /// Inline VALUES block - constant rows to join with the current solution stream
+    Values {
+        /// Variables defined by VALUES (column order)
+        vars: Vec<Arc<str>>,
+        /// Rows of bindings (each row has one cell per var)
+        rows: Vec<Vec<UnresolvedValue>>,
+    },
+    /// MINUS clause - anti-join semantics (set difference)
+    Minus(Vec<UnresolvedPattern>),
+    /// EXISTS clause - filter rows where subquery matches
+    Exists(Vec<UnresolvedPattern>),
+    /// NOT EXISTS clause - filter rows where subquery does NOT match
+    NotExists(Vec<UnresolvedPattern>),
+    /// Property path pattern (transitive traversal)
+    PropertyPath(UnresolvedPropertyPathPattern),
+    /// Subquery pattern - runs an inner query and merges results with parent
+    ///
+    /// Syntax: `["query", { "select": [...], "where": {...} }]`
+    ///
+    /// Variables shared between parent and subquery are correlated.
+    /// The subquery's select list determines which variables are returned.
+    Subquery(Box<UnresolvedQuery>),
+
+    /// Index search pattern - BM25 full-text search against a virtual graph
+    ///
+    /// Syntax:
+    /// ```json
+    /// {
+    ///   "graph": "my-search:main",
+    ///   "idx:target": "software engineer",
+    ///   "idx:result": "?doc"
+    /// }
+    /// ```
+    IndexSearch(UnresolvedIndexSearchPattern),
+
+    /// Vector search pattern - similarity search against a vector virtual graph
+    ///
+    /// Syntax:
+    /// ```json
+    /// {
+    ///   "idx:graph": "embeddings:main",
+    ///   "idx:vector": [0.1, 0.2, 0.3],
+    ///   "idx:metric": "cosine",
+    ///   "idx:limit": 10,
+    ///   "idx:result": {"idx:id": "?doc", "idx:score": "?score"}
+    /// }
+    /// ```
+    VectorSearch(UnresolvedVectorSearchPattern),
+
+    /// GRAPH pattern - scope inner patterns to a named graph
+    ///
+    /// Syntax: `["graph", "graph-name", pattern1, pattern2, ...]`
+    ///
+    /// - First argument is the graph name (string or variable)
+    /// - Remaining arguments are patterns to execute within that graph
+    ///
+    /// Example:
+    /// ```json
+    /// ["graph", "test/movies", {"@id": "?movie", "name": "?name"}]
+    /// ```
+    Graph {
+        /// Graph name (IRI string or variable like "?g")
+        name: Arc<str>,
+        /// Patterns to execute within the graph
+        patterns: Vec<UnresolvedPattern>,
+    },
+}
+
+impl UnresolvedPattern {
+    /// Create a triple pattern
+    pub fn triple(pattern: UnresolvedTriplePattern) -> Self {
+        UnresolvedPattern::Triple(pattern)
+    }
+
+    /// Create a filter pattern
+    pub fn filter(expr: UnresolvedFilterExpr) -> Self {
+        UnresolvedPattern::Filter(expr)
+    }
+
+    /// Create an optional pattern
+    pub fn optional(patterns: Vec<UnresolvedPattern>) -> Self {
+        UnresolvedPattern::Optional(patterns)
+    }
+
+    /// Create a union pattern
+    pub fn union(branches: Vec<Vec<UnresolvedPattern>>) -> Self {
+        UnresolvedPattern::Union(branches)
+    }
+
+    /// Create a values pattern
+    pub fn values(vars: Vec<Arc<str>>, rows: Vec<Vec<UnresolvedValue>>) -> Self {
+        UnresolvedPattern::Values { vars, rows }
+    }
+
+    /// Create a graph pattern
+    pub fn graph(name: impl Into<Arc<str>>, patterns: Vec<UnresolvedPattern>) -> Self {
+        UnresolvedPattern::Graph {
+            name: name.into(),
+            patterns,
+        }
+    }
+
+    /// Check if this is a triple pattern
+    pub fn is_triple(&self) -> bool {
+        matches!(self, UnresolvedPattern::Triple(_))
+    }
+
+    /// Get the triple pattern if this is a Triple
+    pub fn as_triple(&self) -> Option<&UnresolvedTriplePattern> {
+        match self {
+            UnresolvedPattern::Triple(tp) => Some(tp),
+            _ => None,
+        }
+    }
+}
+
+/// Unresolved query - the result of parsing before IRI resolution
+#[derive(Debug, Clone)]
+pub struct UnresolvedQuery {
+    /// Parsed JSON-LD context (for result formatting and further expansion)
+    pub context: ParsedContext,
+    /// Original JSON context from the query (for CONSTRUCT output)
+    pub orig_context: Option<serde_json::Value>,
+    /// Selected variables (e.g., ["?name", "?age"])
+    ///
+    /// For graph crawl queries, this still contains the root variable(s)
+    /// needed for execution. The graph_select field controls formatting.
+    pub select: Vec<Arc<str>>,
+    /// Ordered patterns in where clause (triples, filters, optionals, etc.)
+    pub patterns: Vec<UnresolvedPattern>,
+    /// Query options (limit, offset, order by, group by, etc.)
+    pub options: UnresolvedOptions,
+    /// CONSTRUCT template (None for SELECT queries)
+    pub construct_template: Option<UnresolvedConstructTemplate>,
+    /// Graph crawl select specification (None for flat SELECT or CONSTRUCT)
+    ///
+    /// When present, controls nested JSON-LD object expansion during formatting.
+    /// Only one graph-select object is allowed per query.
+    pub graph_select: Option<UnresolvedGraphSelectSpec>,
+}
+
+impl UnresolvedQuery {
+    /// Create a new unresolved query
+    pub fn new(context: ParsedContext) -> Self {
+        Self {
+            context,
+            orig_context: None,
+            select: Vec::new(),
+            patterns: Vec::new(),
+            options: UnresolvedOptions::default(),
+            construct_template: None,
+            graph_select: None,
+        }
+    }
+
+    /// Add a selected variable
+    pub fn add_select(&mut self, var: impl AsRef<str>) {
+        self.select.push(Arc::from(var.as_ref()));
+    }
+
+    /// Add a triple pattern (convenience method that wraps in UnresolvedPattern)
+    pub fn add_pattern(&mut self, pattern: UnresolvedTriplePattern) {
+        self.patterns.push(UnresolvedPattern::Triple(pattern));
+    }
+
+    /// Add a filter expression
+    pub fn add_filter(&mut self, expr: UnresolvedFilterExpr) {
+        self.patterns.push(UnresolvedPattern::Filter(expr));
+    }
+
+    /// Add an optional block
+    pub fn add_optional(&mut self, patterns: Vec<UnresolvedPattern>) {
+        self.patterns.push(UnresolvedPattern::Optional(patterns));
+    }
+
+    /// Get all triple patterns (flattening nested structures)
+    pub fn triple_patterns(&self) -> Vec<&UnresolvedTriplePattern> {
+        fn collect<'a>(patterns: &'a [UnresolvedPattern], out: &mut Vec<&'a UnresolvedTriplePattern>) {
+            for p in patterns {
+                match p {
+                    UnresolvedPattern::Triple(tp) => out.push(tp),
+                    UnresolvedPattern::Optional(inner)
+                    | UnresolvedPattern::Minus(inner)
+                    | UnresolvedPattern::Exists(inner)
+                    | UnresolvedPattern::NotExists(inner) => collect(inner, out),
+                    UnresolvedPattern::Union(branches) => {
+                        for branch in branches {
+                            collect(branch, out);
+                        }
+                    }
+                    UnresolvedPattern::Graph { patterns: inner, .. } => collect(inner, out),
+                    UnresolvedPattern::Filter(_)
+                    | UnresolvedPattern::Bind { .. }
+                    | UnresolvedPattern::Values { .. }
+                    | UnresolvedPattern::PropertyPath(_)
+                    | UnresolvedPattern::Subquery(_)
+                    | UnresolvedPattern::IndexSearch(_)
+                    | UnresolvedPattern::VectorSearch(_) => {}
+                }
+            }
+        }
+
+        let mut result = Vec::new();
+        collect(&self.patterns, &mut result);
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_literal_value_creation() {
+        let s = LiteralValue::string("hello");
+        assert!(matches!(s, LiteralValue::String(_)));
+
+        let l = LiteralValue::Long(42);
+        assert_eq!(l, LiteralValue::Long(42));
+
+        let d = LiteralValue::Double(3.14);
+        assert!(matches!(d, LiteralValue::Double(_)));
+
+        let b = LiteralValue::Boolean(true);
+        assert_eq!(b, LiteralValue::Boolean(true));
+
+        let v = LiteralValue::vector(vec![0.1, 0.2]);
+        assert!(matches!(v, LiteralValue::Vector(_)));
+    }
+
+    #[test]
+    fn test_unresolved_term_creation() {
+        let var = UnresolvedTerm::var("?name");
+        assert!(var.is_var());
+        assert_eq!(var.as_var(), Some("?name"));
+
+        let iri = UnresolvedTerm::iri("http://schema.org/name");
+        assert!(!iri.is_var());
+        assert_eq!(iri.as_var(), None);
+
+        let lit = UnresolvedTerm::long(42);
+        assert!(!lit.is_var());
+    }
+
+    #[test]
+    fn test_unresolved_pattern_creation() {
+        let pattern = UnresolvedTriplePattern::new(
+            UnresolvedTerm::var("?s"),
+            UnresolvedTerm::iri("http://schema.org/name"),
+            UnresolvedTerm::var("?name"),
+        );
+
+        assert!(pattern.s.is_var());
+        assert!(!pattern.p.is_var());
+        assert!(pattern.o.is_var());
+        assert!(pattern.dt_iri.is_none());
+    }
+
+    #[test]
+    fn test_unresolved_pattern_with_dt() {
+        let pattern = UnresolvedTriplePattern::with_dt(
+            UnresolvedTerm::var("?s"),
+            UnresolvedTerm::iri("http://schema.org/age"),
+            UnresolvedTerm::var("?age"),
+            "http://www.w3.org/2001/XMLSchema#integer",
+        );
+
+        assert!(pattern.dt_iri.is_some());
+        assert_eq!(
+            pattern.dt_iri.as_ref().map(|s| s.as_ref()),
+            Some("http://www.w3.org/2001/XMLSchema#integer")
+        );
+    }
+
+    #[test]
+    fn test_arc_sharing() {
+        let var1 = UnresolvedTerm::var("?name");
+        let var2 = var1.clone();
+
+        // Both should share the same Arc
+        if let (UnresolvedTerm::Var(a1), UnresolvedTerm::Var(a2)) = (&var1, &var2) {
+            assert!(Arc::ptr_eq(a1, a2));
+        }
+    }
+}

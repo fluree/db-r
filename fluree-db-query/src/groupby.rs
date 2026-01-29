@@ -1,0 +1,634 @@
+//! GROUP BY operator - partitions solutions by group key
+//!
+//! Implements SPARQL GROUP BY semantics:
+//! - Partitions solutions by group key variables
+//! - Non-grouped variables become `Grouped(Vec<Binding>)` containing all values within the group
+//! - Grouped values are consumed by aggregate functions
+//!
+//! # Example
+//!
+//! ```text
+//! Input (from WHERE):
+//!   ?person  ?age  ?city
+//!   alice    30    NYC
+//!   bob      25    NYC
+//!   carol    35    LA
+//!
+//! GROUP BY ?city:
+//!   ?city  ?person             ?age
+//!   NYC    Grouped([alice,bob]) Grouped([30,25])
+//!   LA     Grouped([carol])     Grouped([35])
+//! ```
+//!
+//! This is a **blocking** operator: it must consume all input before producing output.
+
+use crate::binding::{Batch, Binding};
+use crate::context::ExecutionContext;
+use crate::error::Result;
+use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::var_registry::VarId;
+use async_trait::async_trait;
+use fluree_db_core::{NodeCache, Storage};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+/// GROUP BY operator - partitions solutions by group key variables.
+///
+/// For each unique combination of group key values, collects all rows into a single
+/// output row where:
+/// - Group key variables retain their single value
+/// - Non-grouped variables become `Grouped(Vec<Binding>)` containing all values
+pub struct GroupByOperator<S: Storage + 'static, C: NodeCache + 'static> {
+    /// Child operator providing input solutions
+    child: BoxedOperator<S, C>,
+    /// Output schema (same as input schema)
+    schema: Arc<[VarId]>,
+    /// Operator state
+    state: OperatorState,
+    /// Accumulated groups: group_key -> list of complete rows
+    groups: HashMap<Vec<Binding>, Vec<Vec<Binding>>>,
+    /// Iterator for emitting grouped results
+    emit_iter: Option<std::vec::IntoIter<(Vec<Binding>, Vec<Vec<Binding>>)>>,
+    /// Indices of group key columns in the schema
+    group_key_indices: Vec<usize>,
+}
+
+impl<S: Storage + 'static, C: NodeCache + 'static> GroupByOperator<S, C> {
+    /// Create a new GROUP BY operator.
+    ///
+    /// # Arguments
+    ///
+    /// * `child` - Input solutions operator
+    /// * `group_vars` - Variables to group by (if empty, all rows become one group)
+    ///
+    /// # Panics
+    ///
+    /// Panics if any group variable is not in the child schema.
+    pub fn new(child: BoxedOperator<S, C>, group_vars: Vec<VarId>) -> Self {
+        let schema: Arc<[VarId]> = Arc::from(child.schema().to_vec().into_boxed_slice());
+
+        // Compute indices for group key columns
+        let group_key_indices: Vec<usize> = group_vars
+            .iter()
+            .map(|v| {
+                schema
+                    .iter()
+                    .position(|sv| sv == v)
+                    .unwrap_or_else(|| panic!("GROUP BY variable {:?} not in schema", v))
+            })
+            .collect();
+
+        Self {
+            child,
+            schema,
+            state: OperatorState::Created,
+            groups: HashMap::new(),
+            emit_iter: None,
+            group_key_indices,
+        }
+    }
+
+    /// Extract group key from a row
+    fn extract_group_key(&self, row: &[Binding]) -> Vec<Binding> {
+        self.group_key_indices
+            .iter()
+            .map(|&idx| row[idx].clone())
+            .collect()
+    }
+
+    /// Transform accumulated groups into output rows.
+    ///
+    /// For each group:
+    /// - Group key columns keep their single value
+    /// - Non-grouped columns become Grouped(Vec<Binding>)
+    fn transform_groups(&self) -> Vec<(Vec<Binding>, Vec<Vec<Binding>>)> {
+        self.groups
+            .iter()
+            .map(|(key, rows)| (key.clone(), rows.clone()))
+            .collect()
+    }
+
+    /// Build an output row from a group
+    fn build_output_row(
+        schema_len: usize,
+        group_key_indices: &[usize],
+        group_key: &[Binding],
+        group_rows: &[Vec<Binding>],
+    ) -> Vec<Binding> {
+        let mut output = Vec::with_capacity(schema_len);
+
+        for col_idx in 0..schema_len {
+            if group_key_indices.contains(&col_idx) {
+                // Group key column - find the value from the group key
+                let key_pos = group_key_indices
+                    .iter()
+                    .position(|&idx| idx == col_idx)
+                    .unwrap();
+                output.push(group_key[key_pos].clone());
+            } else {
+                // Non-grouped column - collect all values into Grouped
+                let values: Vec<Binding> = group_rows.iter().map(|row| row[col_idx].clone()).collect();
+                output.push(Binding::Grouped(values));
+            }
+        }
+
+        output
+    }
+}
+
+#[async_trait]
+impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for GroupByOperator<S, C> {
+    fn schema(&self) -> &[VarId] {
+        &self.schema
+    }
+
+    async fn open(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+        self.child.open(ctx).await?;
+        self.state = OperatorState::Open;
+        self.groups.clear();
+        self.emit_iter = None;
+        Ok(())
+    }
+
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+        if self.state != OperatorState::Open {
+            return Ok(None);
+        }
+
+        // If we haven't consumed all input yet, do so now
+        if self.emit_iter.is_none() {
+            // Drain all input from child
+            while let Some(batch) = self.child.next_batch(ctx).await? {
+                if batch.is_empty() {
+                    continue;
+                }
+
+                // Process each row
+                for row_idx in 0..batch.len() {
+                    // Extract the complete row
+                    let row: Vec<Binding> = (0..self.schema.len())
+                        .map(|col| batch.get_by_col(row_idx, col).clone())
+                        .collect();
+
+                    // Extract group key
+                    let group_key = self.extract_group_key(&row);
+
+                    // Add row to group
+                    self.groups.entry(group_key).or_default().push(row);
+                }
+            }
+
+            // Handle empty group case (no group vars = implicit single group)
+            // If there's no input at all, produce no output
+            // If group_vars is empty but we have input, we produce 1 row with all values grouped
+
+            // Transform groups into output format
+            let groups_vec = self.transform_groups();
+            self.emit_iter = Some(groups_vec.into_iter());
+        }
+
+        // Emit batches from the accumulated groups
+        let batch_size = ctx.batch_size;
+        let schema_len = self.schema.len();
+        let group_key_indices = self.group_key_indices.clone();
+        let mut output_columns: Vec<Vec<Binding>> = (0..schema_len)
+            .map(|_| Vec::with_capacity(batch_size))
+            .collect();
+        let mut rows_added = 0;
+
+        if let Some(ref mut iter) = self.emit_iter {
+            while rows_added < batch_size {
+                match iter.next() {
+                    Some((group_key, group_rows)) => {
+                        let output_row = Self::build_output_row(
+                            schema_len,
+                            &group_key_indices,
+                            &group_key,
+                            &group_rows,
+                        );
+                        for (col, val) in output_row.into_iter().enumerate() {
+                            output_columns[col].push(val);
+                        }
+                        rows_added += 1;
+                    }
+                    None => {
+                        self.state = OperatorState::Exhausted;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if rows_added == 0 {
+            return Ok(None);
+        }
+
+        Ok(Some(Batch::new(self.schema.clone(), output_columns)?))
+    }
+
+    fn close(&mut self) {
+        self.child.close();
+        self.groups.clear();
+        self.emit_iter = None;
+        self.state = OperatorState::Closed;
+    }
+
+    fn estimated_rows(&self) -> Option<usize> {
+        // Worst case: every input row is its own group
+        // Best case (no group vars): 1 row
+        // We don't know without running, so return None
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::seed::SeedOperator;
+    use fluree_db_core::{Db, FlakeValue, MemoryStorage, NoCache, Sid};
+
+    fn xsd_long() -> Sid {
+        Sid::new(2, "long")
+    }
+
+    fn xsd_string() -> Sid {
+        Sid::new(2, "string")
+    }
+
+    fn make_test_db() -> Db<MemoryStorage, NoCache> {
+        Db::genesis(MemoryStorage::new(), NoCache, "test/main")
+    }
+
+    #[test]
+    fn test_group_by_schema() {
+        // Create a seed with schema [?city, ?person, ?age]
+        let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1), VarId(2)].into_boxed_slice());
+        let columns = vec![
+            vec![Binding::lit(FlakeValue::String("NYC".into()), xsd_string())],
+            vec![Binding::Sid(Sid::new(100, "alice"))],
+            vec![Binding::lit(FlakeValue::Long(30), xsd_long())],
+        ];
+        let batch = Batch::new(schema.clone(), columns).unwrap();
+        let seed: BoxedOperator<MemoryStorage, NoCache> =
+            Box::new(SeedOperator::from_batch_row(&batch, 0));
+
+        // GROUP BY ?city
+        let op = GroupByOperator::new(seed, vec![VarId(0)]);
+
+        // Schema should remain the same
+        assert_eq!(op.schema().len(), 3);
+        assert_eq!(op.schema()[0], VarId(0));
+        assert_eq!(op.schema()[1], VarId(1));
+        assert_eq!(op.schema()[2], VarId(2));
+    }
+
+    #[test]
+    fn test_group_key_indices() {
+        let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1), VarId(2)].into_boxed_slice());
+        let columns = vec![
+            vec![Binding::Unbound],
+            vec![Binding::Unbound],
+            vec![Binding::Unbound],
+        ];
+        let batch = Batch::new(schema.clone(), columns).unwrap();
+        let seed: BoxedOperator<MemoryStorage, NoCache> =
+            Box::new(SeedOperator::from_batch_row(&batch, 0));
+
+        // GROUP BY ?city (?city is VarId(0), column 0)
+        let op = GroupByOperator::new(seed, vec![VarId(0)]);
+
+        // Check that group_key_indices is computed correctly
+        assert!(op.group_key_indices.contains(&0));
+        assert!(!op.group_key_indices.contains(&1));
+        assert!(!op.group_key_indices.contains(&2));
+    }
+
+    #[test]
+    fn test_extract_group_key() {
+        let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1), VarId(2)].into_boxed_slice());
+        let columns = vec![
+            vec![Binding::lit(FlakeValue::String("NYC".into()), xsd_string())],
+            vec![Binding::Sid(Sid::new(100, "alice"))],
+            vec![Binding::lit(FlakeValue::Long(30), xsd_long())],
+        ];
+        let batch = Batch::new(schema.clone(), columns).unwrap();
+        let seed: BoxedOperator<MemoryStorage, NoCache> =
+            Box::new(SeedOperator::from_batch_row(&batch, 0));
+
+        let op = GroupByOperator::new(seed, vec![VarId(0)]);
+
+        let row = vec![
+            Binding::lit(FlakeValue::String("NYC".into()), xsd_string()),
+            Binding::Sid(Sid::new(100, "alice")),
+            Binding::lit(FlakeValue::Long(30), xsd_long()),
+        ];
+
+        let key = op.extract_group_key(&row);
+        assert_eq!(key.len(), 1);
+        assert_eq!(
+            key[0],
+            Binding::lit(FlakeValue::String("NYC".into()), xsd_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_group_by_single_group() {
+        use crate::context::ExecutionContext;
+        use crate::var_registry::VarRegistry;
+
+        let db = make_test_db();
+        let vars = VarRegistry::new();
+        let ctx = ExecutionContext::new(&db, &vars);
+
+        // Create input with 3 rows, all same city
+        let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1), VarId(2)].into_boxed_slice());
+        let columns = vec![
+            vec![
+                Binding::lit(FlakeValue::String("NYC".into()), xsd_string()),
+                Binding::lit(FlakeValue::String("NYC".into()), xsd_string()),
+                Binding::lit(FlakeValue::String("NYC".into()), xsd_string()),
+            ],
+            vec![
+                Binding::Sid(Sid::new(100, "alice")),
+                Binding::Sid(Sid::new(100, "bob")),
+                Binding::Sid(Sid::new(100, "carol")),
+            ],
+            vec![
+                Binding::lit(FlakeValue::Long(30), xsd_long()),
+                Binding::lit(FlakeValue::Long(25), xsd_long()),
+                Binding::lit(FlakeValue::Long(35), xsd_long()),
+            ],
+        ];
+        let batch = Batch::new(schema.clone(), columns).unwrap();
+
+        // Use a custom operator that yields this batch
+        struct BatchOperator {
+            schema: Arc<[VarId]>,
+            batch: Option<Batch>,
+        }
+        #[async_trait]
+        impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for BatchOperator {
+            fn schema(&self) -> &[VarId] {
+                &self.schema
+            }
+            async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
+                Ok(())
+            }
+            async fn next_batch(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+                Ok(self.batch.take())
+            }
+            fn close(&mut self) {}
+        }
+
+        let child: BoxedOperator<MemoryStorage, NoCache> = Box::new(BatchOperator {
+            schema: schema.clone(),
+            batch: Some(batch),
+        });
+
+        // GROUP BY ?city
+        let mut op = GroupByOperator::new(child, vec![VarId(0)]);
+        op.open(&ctx).await.unwrap();
+
+        let result = op.next_batch(&ctx).await.unwrap();
+        assert!(result.is_some());
+
+        let result = result.unwrap();
+        // Should have 1 group (all NYC)
+        assert_eq!(result.len(), 1);
+
+        // City column should be a single value
+        let city = result.get_by_col(0, 0);
+        assert!(!city.is_grouped());
+        assert_eq!(
+            *city,
+            Binding::lit(FlakeValue::String("NYC".into()), xsd_string())
+        );
+
+        // Person and age columns should be Grouped
+        let person = result.get_by_col(0, 1);
+        assert!(person.is_grouped());
+        let persons = person.as_grouped().unwrap();
+        assert_eq!(persons.len(), 3);
+
+        let age = result.get_by_col(0, 2);
+        assert!(age.is_grouped());
+        let ages = age.as_grouped().unwrap();
+        assert_eq!(ages.len(), 3);
+
+        op.close();
+    }
+
+    #[tokio::test]
+    async fn test_group_by_multiple_groups() {
+        use crate::context::ExecutionContext;
+        use crate::var_registry::VarRegistry;
+
+        let db = make_test_db();
+        let vars = VarRegistry::new();
+        let ctx = ExecutionContext::new(&db, &vars);
+
+        // Create input with 4 rows, 2 cities
+        let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1), VarId(2)].into_boxed_slice());
+        let columns = vec![
+            vec![
+                Binding::lit(FlakeValue::String("NYC".into()), xsd_string()),
+                Binding::lit(FlakeValue::String("LA".into()), xsd_string()),
+                Binding::lit(FlakeValue::String("NYC".into()), xsd_string()),
+                Binding::lit(FlakeValue::String("LA".into()), xsd_string()),
+            ],
+            vec![
+                Binding::Sid(Sid::new(100, "alice")),
+                Binding::Sid(Sid::new(100, "bob")),
+                Binding::Sid(Sid::new(100, "carol")),
+                Binding::Sid(Sid::new(100, "dan")),
+            ],
+            vec![
+                Binding::lit(FlakeValue::Long(30), xsd_long()),
+                Binding::lit(FlakeValue::Long(25), xsd_long()),
+                Binding::lit(FlakeValue::Long(35), xsd_long()),
+                Binding::lit(FlakeValue::Long(40), xsd_long()),
+            ],
+        ];
+        let batch = Batch::new(schema.clone(), columns).unwrap();
+
+        struct BatchOperator {
+            schema: Arc<[VarId]>,
+            batch: Option<Batch>,
+        }
+        #[async_trait]
+        impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for BatchOperator {
+            fn schema(&self) -> &[VarId] {
+                &self.schema
+            }
+            async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
+                Ok(())
+            }
+            async fn next_batch(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+                Ok(self.batch.take())
+            }
+            fn close(&mut self) {}
+        }
+
+        let child: BoxedOperator<MemoryStorage, NoCache> = Box::new(BatchOperator {
+            schema: schema.clone(),
+            batch: Some(batch),
+        });
+
+        let mut op = GroupByOperator::new(child, vec![VarId(0)]);
+        op.open(&ctx).await.unwrap();
+
+        // Collect all output
+        let mut total_rows = 0;
+        while let Some(batch) = op.next_batch(&ctx).await.unwrap() {
+            total_rows += batch.len();
+            for row_idx in 0..batch.len() {
+                // City column should be a single value
+                let city = batch.get_by_col(row_idx, 0);
+                assert!(!city.is_grouped());
+
+                // Person and age columns should be Grouped
+                let person = batch.get_by_col(row_idx, 1);
+                assert!(person.is_grouped());
+                let persons = person.as_grouped().unwrap();
+                assert_eq!(persons.len(), 2); // 2 persons per city
+
+                let age = batch.get_by_col(row_idx, 2);
+                assert!(age.is_grouped());
+            }
+        }
+
+        // Should have 2 groups (NYC and LA)
+        assert_eq!(total_rows, 2);
+
+        op.close();
+    }
+
+    #[tokio::test]
+    async fn test_group_by_empty_input() {
+        use crate::context::ExecutionContext;
+        use crate::var_registry::VarRegistry;
+
+        let db = make_test_db();
+        let vars = VarRegistry::new();
+        let ctx = ExecutionContext::new(&db, &vars);
+
+        // Create an operator that produces zero rows
+        struct NoRowsOperator {
+            schema: Arc<[VarId]>,
+        }
+        #[async_trait]
+        impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for NoRowsOperator {
+            fn schema(&self) -> &[VarId] {
+                &self.schema
+            }
+            async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
+                Ok(())
+            }
+            async fn next_batch(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+                Ok(None) // Truly no rows
+            }
+            fn close(&mut self) {}
+        }
+
+        let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
+        let child: BoxedOperator<MemoryStorage, NoCache> = Box::new(NoRowsOperator {
+            schema: schema.clone(),
+        });
+
+        // GROUP BY ?x
+        let mut op = GroupByOperator::new(child, vec![VarId(0)]);
+        op.open(&ctx).await.unwrap();
+
+        let result = op.next_batch(&ctx).await.unwrap();
+        // Empty input should produce no output
+        assert!(result.is_none());
+
+        op.close();
+    }
+
+    #[tokio::test]
+    async fn test_group_by_no_group_vars() {
+        use crate::context::ExecutionContext;
+        use crate::var_registry::VarRegistry;
+
+        let db = make_test_db();
+        let vars = VarRegistry::new();
+        let ctx = ExecutionContext::new(&db, &vars);
+
+        // Create input with 3 rows
+        let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
+        let columns = vec![
+            vec![
+                Binding::lit(FlakeValue::Long(1), xsd_long()),
+                Binding::lit(FlakeValue::Long(2), xsd_long()),
+                Binding::lit(FlakeValue::Long(3), xsd_long()),
+            ],
+            vec![
+                Binding::lit(FlakeValue::Long(10), xsd_long()),
+                Binding::lit(FlakeValue::Long(20), xsd_long()),
+                Binding::lit(FlakeValue::Long(30), xsd_long()),
+            ],
+        ];
+        let batch = Batch::new(schema.clone(), columns).unwrap();
+
+        struct BatchOperator {
+            schema: Arc<[VarId]>,
+            batch: Option<Batch>,
+        }
+        #[async_trait]
+        impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for BatchOperator {
+            fn schema(&self) -> &[VarId] {
+                &self.schema
+            }
+            async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
+                Ok(())
+            }
+            async fn next_batch(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+                Ok(self.batch.take())
+            }
+            fn close(&mut self) {}
+        }
+
+        let child: BoxedOperator<MemoryStorage, NoCache> = Box::new(BatchOperator {
+            schema: schema.clone(),
+            batch: Some(batch),
+        });
+
+        // GROUP BY (nothing) - all rows become one implicit group
+        let mut op = GroupByOperator::new(child, vec![]);
+        op.open(&ctx).await.unwrap();
+
+        let result = op.next_batch(&ctx).await.unwrap();
+        assert!(result.is_some());
+
+        let result = result.unwrap();
+        // Should have 1 row (the implicit single group)
+        assert_eq!(result.len(), 1);
+
+        // All columns should be Grouped (no group key)
+        let col0 = result.get_by_col(0, 0);
+        assert!(col0.is_grouped());
+        let values0 = col0.as_grouped().unwrap();
+        assert_eq!(values0.len(), 3);
+
+        let col1 = result.get_by_col(0, 1);
+        assert!(col1.is_grouped());
+        let values1 = col1.as_grouped().unwrap();
+        assert_eq!(values1.len(), 3);
+
+        op.close();
+    }
+
+    #[test]
+    #[should_panic(expected = "GROUP BY variable")]
+    fn test_group_by_invalid_var() {
+        let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
+        let columns = vec![vec![Binding::Unbound], vec![Binding::Unbound]];
+        let batch = Batch::new(schema.clone(), columns).unwrap();
+        let seed: BoxedOperator<MemoryStorage, NoCache> =
+            Box::new(SeedOperator::from_batch_row(&batch, 0));
+
+        // GROUP BY ?unknown (VarId(99) not in schema)
+        let _op = GroupByOperator::new(seed, vec![VarId(99)]);
+    }
+}

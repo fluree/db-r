@@ -1,0 +1,257 @@
+# JSON-LD Connection Configuration (Rust)
+
+This page documents the **Clojure-style JSON-LD connection config** supported by the Rust implementation.
+
+If you’ve used Fluree’s Clojure `connect` / `connect-s3` / `connect-file`, this is the same `@context` + `@graph` model.
+
+## Entry points
+
+- `connect_json_ld(&json).await`: **single source of truth** (parses and instantiates backends)
+- Convenience helpers (just generate JSON-LD and delegate):
+  - `connect_memory().await`
+  - `connect_filesystem(path).await` (requires `native`)
+  - `connect_s3(bucket, endpoint).await` (requires `aws`)
+
+## JSON-LD shape
+
+At minimum, your document contains:
+
+- `@context` with `@base` and `@vocab`
+- `@graph` with:
+  - one `Connection` node
+  - one or more `Storage` nodes
+  - optional `Publisher` nodes (nameservice backends)
+
+```json
+{
+  "@context": {
+    "@base": "https://ns.flur.ee/config/connection/",
+    "@vocab": "https://ns.flur.ee/system#"
+  },
+  "@graph": [
+    { "@id": "storage1", "@type": "Storage", "filePath": "./data" },
+    {
+      "@id": "connection",
+      "@type": "Connection",
+      "indexStorage": { "@id": "storage1" }
+    }
+  ]
+}
+```
+
+## ConfigurationValue (env var indirection)
+
+Many fields can be provided as direct literals **or** as a `ConfigurationValue` object:
+
+```json
+{
+  "s3Bucket": { "envVar": "FLUREE_S3_BUCKET", "defaultVal": "my-bucket" },
+  "cacheMaxMb": { "envVar": "FLUREE_CACHE_MAX_MB", "defaultVal": "1024" }
+}
+```
+
+Notes:
+- `envVar`: reads from environment (non-wasm targets)
+- `defaultVal`: fallback string value
+- `javaProp`: accepted for parity; Rust treats it like another env var key (best-effort)
+
+## Connection node fields
+
+Supported:
+- `parallelism` (default 4)
+- `cacheMaxMb` (supports `ConfigurationValue`)
+- `indexStorage` (required): reference to a `Storage` node
+- `commitStorage` (optional): reference to a `Storage` node
+- `primaryPublisher` (optional): reference to a `Publisher` node
+- `secondaryPublishers` (optional): list of `Publisher` references
+- `addressIdentifiers` (read routing): map of identifier → storage reference
+- `defaults` (partial):
+  - `defaults.indexing.reindexMinBytes` / `reindexMaxBytes` are applied as the default `IndexConfig` for writes
+  - `defaults.indexing.indexingEnabled=false` suppresses background index triggers
+
+### addressIdentifiers (read routing)
+
+The `addressIdentifiers` field maps identifier strings to storage backends, enabling read routing based on the identifier segment in Fluree addresses.
+
+```json
+{
+  "@id": "connection",
+  "@type": "Connection",
+  "indexStorage": {"@id": "indexS3"},
+  "commitStorage": {"@id": "commitS3"},
+  "addressIdentifiers": {
+    "commit-storage": {"@id": "commitS3"},
+    "index-storage": {"@id": "indexS3"}
+  }
+}
+```
+
+**Routing behavior:**
+- `fluree:commit-storage:s3://db/commit/abc.json` → routes to `commitS3`
+- `fluree:index-storage:s3://db/index/xyz.json` → routes to `indexS3`
+- `fluree:s3://db/index/xyz.json` (no identifier) → routes to default storage
+- `fluree:unknown-id:s3://db/file.json` (unknown identifier) → fallback to default storage
+
+**Notes:**
+- Writes always go to the default storage (TieredStorage or indexStorage), regardless of identifier
+- This is a read-only routing mechanism for addresses that already contain identifiers
+- Use `addressIdentifier` (singular) on storage nodes to **write** addresses with identifier segments
+
+Not yet supported (parsed/ignored or absent):
+- `remoteSystems` — not supported
+
+## Storage node fields
+
+### Memory storage
+
+```json
+{ "@id": "mem", "@type": "Storage" }
+```
+
+### File storage (requires `native`)
+
+Supported:
+- `filePath`
+- `AES256Key` (supports `ConfigurationValue`)
+
+Notes:
+- Rust expects `AES256Key` to be **base64-encoded** and decode to exactly 32 bytes.
+- This encrypts the **index/commit blobs** written via the storage layer. The file-based
+  nameservice remains plaintext, matching the existing builder behavior.
+
+```json
+{
+  "@id": "fileStorage",
+  "@type": "Storage",
+  "filePath": "/var/lib/fluree",
+  "AES256Key": { "envVar": "FLUREE_ENCRYPTION_KEY" }
+}
+```
+
+### S3 storage (requires `aws`)
+
+Supported fields (parsed and **applied** by Rust):
+- `s3Bucket`
+- `s3Prefix`
+- `s3Endpoint` (optional; recommended **only** for LocalStack/MinIO/custom endpoints)
+- `s3ReadTimeoutMs`, `s3WriteTimeoutMs`, `s3ListTimeoutMs`
+  - Rust applies a single **operation timeout** of `max(read, write, list)`
+- `s3MaxRetries`, `s3RetryBaseDelayMs`, `s3RetryMaxDelayMs`
+  - Rust maps `s3MaxRetries` to AWS SDK `max_attempts = max_retries + 1`
+
+#### Standard S3 (AWS)
+
+```json
+{
+  "@id": "s3",
+  "@type": "Storage",
+  "s3Bucket": "fluree-prod-data",
+  "s3Prefix": "fluree/"
+}
+```
+
+#### LocalStack / MinIO (custom endpoint)
+
+```json
+{
+  "@id": "s3",
+  "@type": "Storage",
+  "s3Bucket": "fluree-test",
+  "s3Endpoint": "http://localhost:4566",
+  "s3Prefix": "fluree/"
+}
+```
+
+#### S3 Express One Zone
+
+Rust relies on the AWS SDK’s native support for directory buckets. We also provide bucket-name
+detection (`--x-s3` + `-azN`) for diagnostics.
+
+```json
+{
+  "@id": "s3Express",
+  "@type": "Storage",
+  "s3Bucket": "my-index--use1-az1--x-s3",
+  "s3Prefix": "indexes/"
+}
+```
+
+Note: some Clojure docs recommend omitting `s3Endpoint` for Express; Rust supports that when using
+`connect_json_ld`. For parity with the Clojure helper surface area, Rust also exposes
+`connect_s3(bucket, endpoint)`, but it **omits** `s3Endpoint` automatically when the bucket name
+looks like an Express directory bucket (to avoid `SignatureDoesNotMatch` / endpoint issues).
+
+Guidance:
+- **Standard S3 in AWS**: omit `s3Endpoint` (let the SDK pick defaults)
+- **Express One Zone**: omit `s3Endpoint`
+- **LocalStack/MinIO/custom**: set `s3Endpoint`
+
+#### addressIdentifier
+
+Rust parses `addressIdentifier` on storage nodes and uses it to rewrite **published**
+commit/index addresses so they include the identifier segment (Clojure parity), e.g.:
+`fluree:{addressIdentifier}:s3://...`.
+
+This is mainly useful when you have multiple storage backends and want addresses to
+carry an explicit storage identifier.
+
+## Split commit vs index storage (tiered S3)
+
+Rust supports Clojure’s tiered `commitStorage` + `indexStorage` format **when using JSON-LD**.
+Internally, Rust routes:
+- `.../commit/...` and `.../txn/...` → commit storage
+- everything else → index storage
+
+```json
+{
+  "@context": {"@base": "https://ns.flur.ee/config/connection/", "@vocab": "https://ns.flur.ee/system#"},
+  "@graph": [
+    { "@id": "commitStorage", "@type": "Storage", "s3Bucket": "commits-bucket", "s3Prefix": "fluree-data/" },
+    { "@id": "indexStorage",  "@type": "Storage", "s3Bucket": "index--use1-az1--x-s3" },
+    { "@id": "publisher", "@type": "Publisher", "dynamodbTable": "fluree-nameservice", "dynamodbRegion": "us-east-1" },
+    {
+      "@id": "connection",
+      "@type": "Connection",
+      "commitStorage": {"@id": "commitStorage"},
+      "indexStorage":  {"@id": "indexStorage"},
+      "primaryPublisher": {"@id": "publisher"}
+    }
+  ]
+}
+```
+
+## Publisher (nameservice) node fields
+
+### Storage-backed nameservice
+
+Supported:
+- `storage` (reference to a `Storage` node)
+
+```json
+{
+  "@id": "publisher",
+  "@type": "Publisher",
+  "storage": { "@id": "s3" }
+}
+```
+
+### DynamoDB nameservice (requires `aws`)
+
+Supported (and applied):
+- `dynamodbTable`
+- `dynamodbRegion`
+- `dynamodbEndpoint`
+- `dynamodbTimeoutMs`
+
+## Parity notes vs Clojure
+
+This Rust JSON-LD model is intended to stay in parity with `../db` docs:
+- `../db/docs/S3_STORAGE_GUIDE.md`
+- `../db/docs/FILE_STORAGE_GUIDE.md`
+- `../db/docs/DYNAMODB_NAMESERVICE_GUIDE.md`
+
+Current intentional gaps in Rust:
+- `remoteSystems` not supported
+- `defaults.identity` is parsed but not currently applied
+- `defaults.indexing.trackClassStats` and `defaults.indexing.maxOldIndexes` are parsed but not currently applied
+

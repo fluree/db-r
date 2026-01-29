@@ -1,0 +1,18 @@
+[package]
+name = "fluree-db-ledger"
+version = "0.1.0"
+edition = "2021"
+description = "Ledger state combining indexed Db with novelty overlay"
+license = "Apache-2.0"
+
+[dependencies]
+fluree-db-core = { path = "../fluree-db-core" }
+fluree-db-novelty = { path = "../fluree-db-novelty" }
+fluree-db-nameservice = { path = "../fluree-db-nameservice" }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+serde_json = { workspace = true }

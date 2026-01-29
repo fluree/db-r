@@ -1,0 +1,41 @@
+[package]
+name = "fluree-db-indexer"
+description = "Index building for Fluree DB"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["hll-stats"]
+# Enable the embedded orchestrator (post-commit indexing helpers)
+embedded-orchestrator = ["dep:fluree-db-ledger"]
+# Enable HLL-based property statistics (NDV estimation)
+# Uses our own minimal HllSketch256 implementation (no external HLL crate needed)
+hll-stats = ["fluree-db-core/hll-stats"]
+
+[dependencies]
+fluree-db-core = { path = "../fluree-db-core" }
+fluree-db-novelty = { path = "../fluree-db-novelty" }
+fluree-vocab = { path = "../fluree-vocab" }
+fluree-db-nameservice = { path = "../fluree-db-nameservice" }
+fluree-db-ledger = { path = "../fluree-db-ledger", optional = true }
+
+# Core dependencies
+futures.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+# For content addressing
+sha2.workspace = true
+hex.workspace = true
+
+# Observability
+tracing.workspace = true
+
+[dev-dependencies]
+# For HLL tests (proper hash distribution)
+xxhash-rust.workspace = true

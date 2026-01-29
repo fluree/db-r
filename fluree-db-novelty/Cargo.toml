@@ -1,0 +1,19 @@
+[package]
+name = "fluree-db-novelty"
+version = "0.1.0"
+edition = "2021"
+description = "Novelty overlay and commit types for Fluree DB"
+license = "Apache-2.0"
+
+[dependencies]
+fluree-db-core = { path = "../fluree-db-core" }
+fluree-vocab = { path = "../fluree-vocab" }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+futures = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }

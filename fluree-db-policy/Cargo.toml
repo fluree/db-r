@@ -1,0 +1,16 @@
+[package]
+name = "fluree-db-policy"
+version = "0.1.0"
+edition = "2021"
+description = "Policy enforcement for Fluree DB queries and transactions"
+license = "Apache-2.0"
+
+[dependencies]
+fluree-db-core = { path = "../fluree-db-core" }
+fluree-vocab = { path = "../fluree-vocab" }
+thiserror = { workspace = true }
+uuid = { version = "1.0", features = ["v4"] }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }

@@ -1,0 +1,46 @@
+[package]
+name = "fluree-db-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Runtime-agnostic core library for Fluree DB queries"
+
+[features]
+# Default to runtime-agnostic behavior.
+# Enable `native` for filesystem-backed implementations that depend on tokio.
+# Enable `hll-stats` for HLL-based property statistics (canonical hashing).
+default = ["hll-stats"]
+native = ["tokio", "moka", "dashmap"]
+hll-stats = ["dep:xxhash-rust"]
+
+[dependencies]
+fluree-vocab = { path = "../fluree-vocab" }
+futures = { workspace = true }
+async-trait = { workspace = true }
+hashbrown = { workspace = true }
+once_cell = { workspace = true }
+parking_lot = "0.12"
+serde = { workspace = true }
+serde_json = { workspace = true }
+simd-json = { workspace = true }
+smallvec = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+tokio = { workspace = true, features = ["fs"], optional = true }
+xxhash-rust = { workspace = true, optional = true }
+moka = { workspace = true, optional = true }
+dashmap = { workspace = true, optional = true }
+
+# Numeric and temporal types for Clojure parity
+num-bigint = { version = "0.4", features = ["serde"] }
+num-traits = "0.2"
+bigdecimal = { version = "0.4", features = ["serde"] }
+chrono.workspace = true
+
+# Binary serialization for flakes transport
+ciborium = "0.2"
+
+[dev-dependencies]
+tokio = { workspace = true }

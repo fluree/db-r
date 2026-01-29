@@ -1,0 +1,176 @@
+//! Policy + query-connection integration tests (Clojure parity)
+//!
+//! Ports high-signal view-policy enforcement cases from:
+//! - `db-clojure/test/fluree/db/policy/identity_based_test.clj`
+//!
+//! Focus:
+//! - identity-based policy loading via `f:policyClass` on the identity subject
+//! - view policy enforcement on direct selects and graph crawl formatting
+
+mod support;
+
+use fluree_db_api::FlureeBuilder;
+use serde_json::json;
+use support::{assert_index_defaults, genesis_ledger, normalize_rows, MemoryFluree};
+
+async fn seed_people_with_ssn(fluree: &MemoryFluree, alias: &str) {
+    let ledger0 = genesis_ledger(fluree, alias);
+
+    let txn = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/",
+            "f": "https://ns.flur.ee/ledger#"
+        },
+        "@graph": [
+            {
+                "@id": "ex:alice",
+                "@type": "ex:User",
+                "schema:name": "Alice",
+                "schema:email": "alice@flur.ee",
+                "schema:birthDate": "2022-08-17",
+                "schema:ssn": "111-11-1111"
+            },
+            {
+                "@id": "ex:john",
+                "@type": "ex:User",
+                "schema:name": "John",
+                "schema:email": "john@flur.ee",
+                "schema:birthDate": "2021-08-17",
+                "schema:ssn": "888-88-8888"
+            }
+        ]
+    });
+
+    let _ = fluree.insert(ledger0, &txn).await.expect("seed should succeed");
+}
+
+#[tokio::test]
+async fn policy_inline_denies_restricted_property_in_direct_select() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+
+    seed_people_with_ssn(&fluree, "policy/inline:main").await;
+
+    // Inline policy: deny viewing `schema:ssn` for everyone.
+    //
+    // We set `default-allow: true` so other properties remain visible (Clojure parity:
+    // default_allow only applies when *no* policies apply for a flake).
+    // NOTE: Rust `opts.policy` expects **a policy object or array of policy objects**,
+    // not a JSON-LD wrapper like `{"@graph":[...]}`.
+    let policy = json!([{
+        "@id": "ex:ssnRestriction",
+        "f:required": true,
+        // Use fully-expanded IRI here to avoid any namespace/term-resolution ambiguity.
+        "f:onProperty": [{"@id": "http://schema.org/ssn"}],
+        "f:action": "f:view",
+        "f:allow": false
+    }]);
+
+    let query = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "from": "policy/inline:main",
+        "opts": {
+            "policy": policy,
+            "default-allow": true
+        },
+        "select": ["?s", "?ssn"],
+        "where": {
+            "@id": "?s",
+            "@type": "ex:User",
+            "schema:ssn": "?ssn"
+        }
+    });
+
+    let result = fluree.query_connection(&query).await.expect("query_connection");
+    let ledger = fluree.ledger("policy/inline:main").await.expect("ledger");
+    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+
+    // Denying schema:ssn removes all solutions to a query that requires schema:ssn.
+    assert_eq!(jsonld, json!([]));
+}
+
+#[tokio::test]
+async fn policy_inline_denies_restricted_property_in_graph_crawl() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+
+    seed_people_with_ssn(&fluree, "policy/inline:main").await;
+
+    // NOTE: Rust `opts.policy` expects **a policy object or array of policy objects**,
+    // not a JSON-LD wrapper like `{"@graph":[...]}`.
+    let policy = json!([{
+        "@id": "ex:ssnRestriction",
+        "f:required": true,
+        // Use fully-expanded IRI here to avoid any namespace/term-resolution ambiguity.
+        "f:onProperty": [{"@id": "http://schema.org/ssn"}],
+        "f:action": "f:view",
+        "f:allow": false
+    }]);
+
+    let query = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "from": "policy/inline:main",
+        "opts": {
+            "policy": policy,
+            "default-allow": true
+        },
+        "select": { "?s": ["*"] },
+        "where": { "@id": "?s", "@type": "ex:User" }
+    });
+
+    // Sanity check: flat selects should still work (default-allow allows all non-SSN predicates).
+    let sanity = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "from": "policy/inline:main",
+        "opts": {
+            "policy": query["opts"]["policy"].clone(),
+            "default-allow": true
+        },
+        "select": ["?name"],
+        "where": { "@id": "?s", "@type": "ex:User", "schema:name": "?name" }
+    });
+    let sanity_result = fluree.query_connection(&sanity).await.expect("sanity query_connection");
+    let ledger = fluree.ledger("policy/inline:main").await.expect("ledger");
+    let sanity_jsonld = sanity_result.to_jsonld(&ledger.db).expect("sanity to_jsonld");
+    assert_eq!(normalize_rows(&sanity_jsonld), normalize_rows(&json!(["Alice", "John"])));
+
+    // Use the tracked connection query entrypoint, which performs **policy-aware**
+    // graph crawl formatting (Clojure parity).
+    let tracked = fluree
+        .query_connection_tracked(&query)
+        .await
+        .expect("query_connection_tracked");
+    let jsonld = tracked.result;
+
+    // In a crawl, `schema:ssn` is removed everywhere, while other fields remain.
+    assert_eq!(
+        normalize_rows(&jsonld),
+        normalize_rows(&json!([
+            {
+                "@id": "ex:alice",
+                "@type": "ex:User",
+                "schema:name": "Alice",
+                "schema:email": "alice@flur.ee",
+                "schema:birthDate": "2022-08-17"
+            },
+            {
+                "@id": "ex:john",
+                "@type": "ex:User",
+                "schema:name": "John",
+                "schema:email": "john@flur.ee",
+                "schema:birthDate": "2021-08-17"
+            }
+        ]))
+    );
+}
+

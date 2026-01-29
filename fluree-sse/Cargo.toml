@@ -1,0 +1,10 @@
+[package]
+name = "fluree-sse"
+description = "Lightweight SSE (Server-Sent Events) parser for Fluree DB"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tracing = { workspace = true }
+
+[dev-dependencies]

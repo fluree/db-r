@@ -1,0 +1,136 @@
+[workspace]
+resolver = "2"
+members = [
+    "fluree-vocab",
+    "fluree-graph-ir",
+    "fluree-graph-format",
+    "fluree-graph-turtle",
+    "fluree-graph-json-ld",
+    "fluree-db-core",
+    "fluree-db-crypto",
+    "fluree-db-connection",
+    "fluree-db-query",
+    "fluree-db-sparql",
+    "fluree-db-nameservice",
+    "fluree-db-novelty",
+    "fluree-db-ledger",
+    "fluree-db-transact",
+    "fluree-db-indexer",
+    "fluree-db-policy",
+    "fluree-db-shacl",
+    "fluree-db-reasoner",
+    "fluree-db-credential",
+    "fluree-db-api",
+    "fluree-db-storage-aws",
+    "fluree-db-iceberg",
+    "fluree-db-tabular",
+    "fluree-db-r2rml",
+    "fluree-db-server",
+    "fluree-db-peer",
+    "fluree-sse",
+    "fluree-db-nameservice-sync",
+    "fluree-search-protocol",
+    "fluree-search-service",
+    "fluree-search-httpd",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/fluree/db-rust"
+
+[workspace.dependencies]
+# Core dependencies (runtime-agnostic)
+futures = "0.3"
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+simd-json = "0.14"
+mimalloc = { version = "0.1", default-features = false }
+thiserror = "1.0"
+winnow = "0.7"
+
+# For content addressing and hashing
+postcard = { version = "1.0", features = ["alloc", "use-std"] }
+sha2 = "0.10"
+hex = "0.4"
+
+# For unique ID generation
+ulid = "1.1"
+
+# For HLL statistics (property NDV estimation)
+hyperloglogplus = "0.4"
+xxhash-rust = { version = "0.8", features = ["xxh64"] }
+
+# Observability (logging + tracing spans)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# For testing
+tokio = { version = "1", features = ["full", "test-util"] }
+
+# AWS SDK dependencies (for fluree-db-storage-aws)
+aws-config = "1.6"
+aws-sdk-s3 = "1.120"
+aws-sdk-dynamodb = "1.70"
+aws-credential-types = "1.2"
+aws-smithy-types = "1.3"
+once_cell = "1.19"
+smallvec = "1.13"
+chrono = { version = "0.4", features = ["serde"] }
+rand = "0.8"
+
+# System info for memory detection (cache sizing)
+sysinfo = "0.32"
+
+# Fast hash map with raw_entry API for efficient lookups
+hashbrown = "0.16"
+
+# HTTP server dependencies
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip"] }
+
+# Concurrent collections
+dashmap = "6"
+
+# API documentation
+utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "8", features = ["axum"] }
+
+# CLI argument parsing
+clap = { version = "4", features = ["derive", "env"] }
+
+# HTTP types
+http = "1.1"
+http-body-util = "0.1"
+bytes = "1.4"
+
+# HTTP client for REST catalog (Iceberg)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+urlencoding = "2"
+
+# HTTP mocking for tests
+wiremock = "0.6"
+
+# Iceberg format support (manifest Avro, data Parquet)
+apache-avro = "0.17"
+parquet = { version = "54", default-features = false, features = ["zstd"] }
+
+# LRU cache for Parquet footers
+lru = "0.12"
+
+# High-performance concurrent cache with TinyLFU eviction
+moka = { version = "0.12", features = ["sync"] }
+
+# JSON Schema generation (for MCP tool parameters)
+schemars = "1.0"
+
+# MCP (Model Context Protocol) server support
+rmcp = { git = "https://github.com/fluree/rust-sdk-fork", rev = "ed14e6d6f0e23707e5a1ebbded7245b980a5098d", features = [
+    "server",
+    "macros",
+    "transport-streamable-http-server",
+    "tower",
+] }

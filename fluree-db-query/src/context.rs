@@ -1,0 +1,624 @@
+//! Execution context for query operators
+//!
+//! The `ExecutionContext` provides access to database state and configuration
+//! needed by operators during execution.
+
+use crate::bm25::{Bm25IndexProvider, Bm25SearchProvider};
+use crate::dataset::{ActiveGraph, ActiveGraphs, DataSet};
+use crate::policy::QueryPolicyEnforcer;
+use crate::r2rml::{R2rmlProvider, R2rmlTableProvider};
+use crate::var_registry::VarRegistry;
+use crate::vector::VectorIndexProvider;
+use fluree_db_core::{Db, NoOverlay, NodeCache, OverlayProvider, Sid, Storage, Tracker};
+#[cfg(feature = "native")]
+use fluree_db_core::PrefetchService;
+use fluree_vocab::namespaces::{JSON_LD, XSD};
+use fluree_vocab::xsd_names;
+use std::sync::Arc;
+
+/// Execution context providing access to database and query state
+///
+/// Generic over the same storage and cache types as `Db`.
+///
+/// # Dataset Support
+///
+/// When `dataset` is `Some`, the context supports multi-graph queries:
+/// - `active_graph` indicates which graph(s) are currently being scanned
+/// - `with_active_graph()` creates a new context targeting a specific named graph
+/// - Operators should use `active_graphs()` to get the appropriate graph(s) to scan
+///
+/// When `dataset` is `None`, this is single-db mode and operators use `db`/`overlay()`/`to_t`.
+///
+/// # Lifetime Bounds
+///
+/// The `'static` bounds on `S` and `C` are required for the native prefetch service,
+/// which spawns background tasks that need `'static` types. In practice, storage and
+/// cache implementations are always `'static` (they don't borrow from local data).
+pub struct ExecutionContext<'a, S: Storage + 'static, C: NodeCache + 'static> {
+    /// Reference to the primary database (for encoding/decoding, single-db fallback)
+    pub db: &'a Db<S, C>,
+    /// Variable registry for this query
+    pub vars: &'a VarRegistry,
+    /// Target transaction time (for time-travel queries)
+    pub to_t: i64,
+    /// Optional start time for history range queries
+    pub from_t: Option<i64>,
+    /// Optional overlay provider (novelty); None means no overlay
+    pub overlay: Option<&'a dyn OverlayProvider>,
+    /// Maximum batch size for operators
+    pub batch_size: usize,
+    /// Optional policy enforcer for async policy evaluation with f:query support
+    /// 
+    /// When present, scan operators should use this for per-leaf batch filtering
+    /// via `filter_flakes`. This provides full f:query support without deadlocks.
+    pub policy_enforcer: Option<Arc<QueryPolicyEnforcer>>,
+    /// Optional BM25 index provider for `Pattern::IndexSearch` (legacy, returns raw index)
+    pub bm25_provider: Option<&'a dyn Bm25IndexProvider>,
+    /// Optional BM25 search provider for `Pattern::IndexSearch` (preferred, returns search results)
+    ///
+    /// This is the preferred provider for the search service protocol. When set, the operator
+    /// uses this instead of `bm25_provider`. Use [`EmbeddedBm25SearchProvider`] to wrap
+    /// a `Bm25IndexProvider` for embedded mode.
+    pub bm25_search_provider: Option<&'a dyn Bm25SearchProvider>,
+    /// Optional vector index provider for `Pattern::VectorSearch`
+    pub vector_provider: Option<&'a dyn VectorIndexProvider>,
+    /// Optional R2RML mapping provider for `Pattern::R2rml`
+    pub r2rml_provider: Option<&'a dyn R2rmlProvider>,
+    /// Optional R2RML table provider for Iceberg table scanning
+    pub r2rml_table_provider: Option<&'a dyn R2rmlTableProvider>,
+    /// Optional dataset for multi-graph queries
+    pub dataset: Option<&'a DataSet<'a, S, C>>,
+    /// Currently active graph (Default or Named) - only meaningful when dataset is Some
+    pub active_graph: ActiveGraph,
+    /// Optional execution tracker (time/fuel/policy)
+    pub tracker: Tracker,
+    /// History mode flag - when true, includes both assertions and retractions
+    /// and captures the op (operation) metadata in bindings for @op support.
+    pub history_mode: bool,
+    /// When true, bind evaluation errors are treated as query errors.
+    pub strict_bind_errors: bool,
+    /// Optional prefetch service for background leaf warming (native only).
+    ///
+    /// When present, operators can enqueue upcoming index nodes for prefetch,
+    /// which warms the cache before the mainline query needs them.
+    #[cfg(feature = "native")]
+    pub prefetch: Option<Arc<PrefetchService<S, C>>>,
+    /// Arc-wrapped database for prefetch requests (native only).
+    ///
+    /// Required for background prefetch tasks which need `'static` data.
+    /// Set this when `prefetch` is set, using the same db that's referenced by `db`.
+    #[cfg(feature = "native")]
+    pub prefetch_db: Option<Arc<Db<S, C>>>,
+    /// Arc-wrapped overlay for prefetch requests (native only).
+    ///
+    /// Required for background prefetch tasks which need `'static` data.
+    /// Set this when `prefetch` is set.
+    #[cfg(feature = "native")]
+    pub prefetch_overlay: Option<Arc<dyn OverlayProvider>>,
+}
+
+impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C> {
+    /// Create a new execution context
+    pub fn new(db: &'a Db<S, C>, vars: &'a VarRegistry) -> Self {
+        Self {
+            db,
+            vars,
+            to_t: db.t,
+            from_t: None,
+            overlay: None,
+            batch_size: 1000, // Default batch size
+            policy_enforcer: None,
+            bm25_provider: None,
+            bm25_search_provider: None,
+            vector_provider: None,
+            r2rml_provider: None,
+            r2rml_table_provider: None,
+            dataset: None,
+            active_graph: ActiveGraph::Default,
+            tracker: Tracker::disabled(),
+            history_mode: false,
+            strict_bind_errors: false,
+            #[cfg(feature = "native")]
+            prefetch: None,
+            #[cfg(feature = "native")]
+            prefetch_db: None,
+            #[cfg(feature = "native")]
+            prefetch_overlay: None,
+        }
+    }
+
+    /// Create context with specific time-travel settings
+    pub fn with_time(db: &'a Db<S, C>, vars: &'a VarRegistry, to_t: i64, from_t: Option<i64>) -> Self {
+        Self {
+            db,
+            vars,
+            to_t,
+            from_t,
+            overlay: None,
+            batch_size: 1000,
+            policy_enforcer: None,
+            bm25_provider: None,
+            bm25_search_provider: None,
+            vector_provider: None,
+            r2rml_provider: None,
+            r2rml_table_provider: None,
+            dataset: None,
+            active_graph: ActiveGraph::Default,
+            tracker: Tracker::disabled(),
+            history_mode: false,
+            strict_bind_errors: false,
+            #[cfg(feature = "native")]
+            prefetch: None,
+            #[cfg(feature = "native")]
+            prefetch_db: None,
+            #[cfg(feature = "native")]
+            prefetch_overlay: None,
+        }
+    }
+
+    /// Enable history mode (include assertions and retractions, capture op metadata)
+    pub fn with_history_mode(mut self) -> Self {
+        self.history_mode = true;
+        self
+    }
+
+    /// Create a new execution context with an overlay provider (novelty)
+    pub fn with_overlay(
+        db: &'a Db<S, C>,
+        vars: &'a VarRegistry,
+        overlay: &'a dyn OverlayProvider,
+    ) -> Self {
+        Self {
+            db,
+            vars,
+            to_t: db.t,
+            from_t: None,
+            overlay: Some(overlay),
+            batch_size: 1000,
+            policy_enforcer: None,
+            bm25_provider: None,
+            bm25_search_provider: None,
+            vector_provider: None,
+            r2rml_provider: None,
+            r2rml_table_provider: None,
+            dataset: None,
+            active_graph: ActiveGraph::Default,
+            tracker: Tracker::disabled(),
+            history_mode: false,
+            strict_bind_errors: false,
+            #[cfg(feature = "native")]
+            prefetch: None,
+            #[cfg(feature = "native")]
+            prefetch_db: None,
+            #[cfg(feature = "native")]
+            prefetch_overlay: None,
+        }
+    }
+
+    /// Create context with time-travel settings and an overlay provider
+    pub fn with_time_and_overlay(
+        db: &'a Db<S, C>,
+        vars: &'a VarRegistry,
+        to_t: i64,
+        from_t: Option<i64>,
+        overlay: &'a dyn OverlayProvider,
+    ) -> Self {
+        Self {
+            db,
+            vars,
+            to_t,
+            from_t,
+            overlay: Some(overlay),
+            batch_size: 1000,
+            policy_enforcer: None,
+            bm25_provider: None,
+            bm25_search_provider: None,
+            vector_provider: None,
+            r2rml_provider: None,
+            r2rml_table_provider: None,
+            dataset: None,
+            active_graph: ActiveGraph::Default,
+            tracker: Tracker::disabled(),
+            history_mode: false,
+            strict_bind_errors: false,
+            #[cfg(feature = "native")]
+            prefetch: None,
+            #[cfg(feature = "native")]
+            prefetch_db: None,
+            #[cfg(feature = "native")]
+            prefetch_overlay: None,
+        }
+    }
+
+    /// Attach a BM25 index provider to this context (for IndexSearch patterns).
+    ///
+    /// This is the legacy provider that returns the raw index. For the search service
+    /// protocol, prefer using [`with_bm25_search_provider`] instead.
+    pub fn with_bm25_provider(mut self, provider: &'a dyn Bm25IndexProvider) -> Self {
+        self.bm25_provider = Some(provider);
+        self
+    }
+
+    /// Attach a BM25 search provider to this context (for IndexSearch patterns).
+    ///
+    /// This is the preferred provider for the search service protocol. It returns
+    /// search results directly, supporting both embedded and remote backends.
+    pub fn with_bm25_search_provider(mut self, provider: &'a dyn Bm25SearchProvider) -> Self {
+        self.bm25_search_provider = Some(provider);
+        self
+    }
+
+    /// Attach a vector index provider to this context (for VectorSearch patterns).
+    pub fn with_vector_provider(mut self, provider: &'a dyn VectorIndexProvider) -> Self {
+        self.vector_provider = Some(provider);
+        self
+    }
+
+    /// Attach R2RML providers to this context (for R2rml patterns).
+    ///
+    /// Both providers are required for R2RML scans:
+    /// - `mapping_provider`: Loads compiled R2RML mappings for virtual graphs
+    /// - `table_provider`: Executes Iceberg table scans
+    pub fn with_r2rml_providers(
+        mut self,
+        mapping_provider: &'a dyn R2rmlProvider,
+        table_provider: &'a dyn R2rmlTableProvider,
+    ) -> Self {
+        self.r2rml_provider = Some(mapping_provider);
+        self.r2rml_table_provider = Some(table_provider);
+        self
+    }
+
+    /// Add policy enforcer to this execution context
+    /// 
+    /// This enables per-leaf batch filtering with full f:query policy support.
+    /// The enforcer wraps a PolicyContext and provides async evaluation.
+    /// Access the raw PolicyContext via `enforcer.policy()` if needed.
+    pub fn with_policy_enforcer(mut self, enforcer: Arc<QueryPolicyEnforcer>) -> Self {
+        self.policy_enforcer = Some(enforcer);
+        self
+    }
+
+    /// Attach an execution tracker to this context.
+    pub fn with_tracker(mut self, tracker: Tracker) -> Self {
+        self.tracker = tracker;
+        self
+    }
+
+    /// Enable strict bind error handling.
+    pub fn with_strict_bind_errors(mut self) -> Self {
+        self.strict_bind_errors = true;
+        self
+    }
+
+    /// Check if this context has an active (non-root) policy
+    pub fn has_policy(&self) -> bool {
+        self.policy_enforcer
+            .as_ref()
+            .map(|e| !e.is_root())
+            .unwrap_or(false)
+    }
+
+    /// Get the effective overlay (NoOverlay if none set)
+    pub fn overlay(&self) -> &dyn OverlayProvider {
+        self.overlay.unwrap_or(&NoOverlay)
+    }
+
+    /// Set the batch size
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
+        self
+    }
+
+    /// Encode an IRI to a SID using the database's namespace codes
+    pub fn encode_iri(&self, iri: &str) -> Option<Sid> {
+        self.db.encode_iri(iri)
+    }
+
+    /// Decode a SID to an IRI using the database's namespace codes
+    pub fn decode_sid(&self, sid: &Sid) -> Option<String> {
+        self.db.decode_sid(sid)
+    }
+
+    /// Check if we're in multi-ledger (dataset) mode
+    ///
+    /// Returns true if a dataset is attached, meaning cross-ledger joins may occur
+    /// and IriMatch bindings should be used instead of plain Sid bindings.
+    pub fn is_multi_ledger(&self) -> bool {
+        self.dataset.is_some()
+    }
+
+    /// Decode a SID to an IRI using a specific ledger's namespace table
+    ///
+    /// Used in multi-ledger mode to decode SIDs from the correct ledger.
+    /// Falls back to the primary db if the ledger is not found.
+    pub fn decode_sid_in_ledger(&self, sid: &Sid, ledger_alias: &str) -> Option<String> {
+        if let Some(ds) = &self.dataset {
+            // Search all graphs (default and named) by ledger_alias
+            if let Some(graph) = ds.find_by_ledger_alias(ledger_alias) {
+                return graph.db.decode_sid(sid);
+            }
+        }
+        // Fallback to primary db
+        self.db.decode_sid(sid)
+    }
+
+    /// Encode an IRI to a SID using a specific ledger's namespace table
+    ///
+    /// Used in multi-ledger mode when re-encoding an IRI for a target ledger.
+    /// This is needed when an IriMatch from one ledger needs to be used in
+    /// a scan against a different ledger.
+    pub fn encode_iri_in_ledger(&self, iri: &str, ledger_alias: &str) -> Option<Sid> {
+        if let Some(ds) = &self.dataset {
+            // Search all graphs (default and named) by ledger_alias
+            if let Some(graph) = ds.find_by_ledger_alias(ledger_alias) {
+                return graph.db.encode_iri(iri);
+            }
+        }
+        // Fallback to primary db
+        self.db.encode_iri(iri)
+    }
+
+    /// Get the ledger alias for the currently active graph (if in dataset mode)
+    ///
+    /// Returns the ledger alias when a single named graph is active,
+    /// or None for single-db mode or when multiple default graphs are active.
+    pub fn active_ledger_alias(&self) -> Option<&str> {
+        match (&self.dataset, &self.active_graph) {
+            (Some(ds), ActiveGraph::Named(iri)) => {
+                ds.named_graph(iri).map(|g| g.ledger_alias.as_ref())
+            }
+            _ => None,
+        }
+    }
+
+    /// Attach a dataset to this execution context for multi-graph queries
+    pub fn with_dataset(mut self, dataset: &'a DataSet<'a, S, C>) -> Self {
+        self.dataset = Some(dataset);
+        self
+    }
+
+    /// Get active graphs for scanning
+    ///
+    /// Returns `Single` when no dataset is present (callers should use `ctx.db`),
+    /// or `Many` with the active graph(s) from the dataset.
+    ///
+    /// Returns `Single` when no dataset is present, or `Many` with the relevant graph references to iterate over.
+    pub fn active_graphs(&self) -> ActiveGraphs<'a, '_, S, C> {
+        match (&self.dataset, &self.active_graph) {
+            (None, _) => ActiveGraphs::Single,
+            (Some(ds), ActiveGraph::Default) => {
+                ActiveGraphs::Many(ds.default_graphs().iter().collect())
+            }
+            (Some(ds), ActiveGraph::Named(iri)) => {
+                ActiveGraphs::Many(ds.named_graph(iri).into_iter().collect())
+            }
+        }
+    }
+
+    /// Get the default graphs slice without allocation (for scan hot path).
+    ///
+    /// Returns `Some(&[GraphRef])` if in dataset mode with default graph active,
+    /// `None` otherwise (single-db mode or named graph active).
+    ///
+    /// Use this instead of `active_graphs()` in tight loops to avoid Vec allocation.
+    pub fn default_graphs_slice(&self) -> Option<&[crate::dataset::GraphRef<'a, S, C>]> {
+        match (&self.dataset, &self.active_graph) {
+            (Some(ds), ActiveGraph::Default) => Some(ds.default_graphs()),
+            _ => None,
+        }
+    }
+
+    /// Create a new context with a specific named graph active
+    ///
+    /// This is cheap: just creates a new context with a different `active_graph` enum.
+    /// Used by `GraphOperator` to switch graph context during GRAPH pattern execution.
+    pub fn with_active_graph(&self, iri: Arc<str>) -> Self {
+        Self {
+            db: self.db,
+            vars: self.vars,
+            to_t: self.to_t,
+            from_t: self.from_t,
+            overlay: self.overlay,
+            batch_size: self.batch_size,
+            policy_enforcer: self.policy_enforcer.clone(),
+            bm25_provider: self.bm25_provider,
+            bm25_search_provider: self.bm25_search_provider,
+            vector_provider: self.vector_provider,
+            r2rml_provider: self.r2rml_provider,
+            r2rml_table_provider: self.r2rml_table_provider,
+            dataset: self.dataset,
+            active_graph: ActiveGraph::Named(iri),
+            tracker: self.tracker.clone(),
+            history_mode: self.history_mode,
+            strict_bind_errors: self.strict_bind_errors,
+            #[cfg(feature = "native")]
+            prefetch: self.prefetch.clone(),
+            #[cfg(feature = "native")]
+            prefetch_db: self.prefetch_db.clone(),
+            #[cfg(feature = "native")]
+            prefetch_overlay: self.prefetch_overlay.clone(),
+        }
+    }
+
+    /// Create a new context with the default graph(s) active
+    ///
+    /// Returns to querying the default graph(s) after a GRAPH pattern.
+    pub fn with_default_graph(&self) -> Self {
+        Self {
+            db: self.db,
+            vars: self.vars,
+            to_t: self.to_t,
+            from_t: self.from_t,
+            overlay: self.overlay,
+            batch_size: self.batch_size,
+            policy_enforcer: self.policy_enforcer.clone(),
+            bm25_provider: self.bm25_provider,
+            bm25_search_provider: self.bm25_search_provider,
+            vector_provider: self.vector_provider,
+            r2rml_provider: self.r2rml_provider,
+            r2rml_table_provider: self.r2rml_table_provider,
+            dataset: self.dataset,
+            active_graph: ActiveGraph::Default,
+            tracker: self.tracker.clone(),
+            history_mode: self.history_mode,
+            strict_bind_errors: self.strict_bind_errors,
+            #[cfg(feature = "native")]
+            prefetch: self.prefetch.clone(),
+            #[cfg(feature = "native")]
+            prefetch_db: self.prefetch_db.clone(),
+            #[cfg(feature = "native")]
+            prefetch_overlay: self.prefetch_overlay.clone(),
+        }
+    }
+
+    /// Attach a prefetch service to this context for background leaf warming (native only).
+    ///
+    /// When present, operators can enqueue upcoming index nodes for prefetch,
+    /// which warms the cache before the mainline query needs them.
+    ///
+    /// Also requires `prefetch_db` and `prefetch_overlay` to be set for the prefetch
+    /// tasks to have `'static` data. Use `with_prefetch_resources` to set all three.
+    ///
+    #[cfg(feature = "native")]
+    pub fn with_prefetch(mut self, prefetch: Arc<PrefetchService<S, C>>) -> Self {
+        self.prefetch = Some(prefetch);
+        self
+    }
+
+    /// Attach prefetch service with required Arc-wrapped resources (native only).
+    ///
+    /// This is the recommended way to enable prefetch. It sets:
+    /// - `prefetch`: The service that processes background requests
+    /// - `prefetch_db`: Arc'd database for `'static` lifetime in spawned tasks
+    /// - `prefetch_overlay`: Arc'd overlay for `'static` lifetime in spawned tasks
+    ///
+    #[cfg(feature = "native")]
+    pub fn with_prefetch_resources(
+        mut self,
+        prefetch: Arc<PrefetchService<S, C>>,
+        db: Arc<Db<S, C>>,
+        overlay: Arc<dyn OverlayProvider>,
+    ) -> Self {
+        self.prefetch = Some(prefetch);
+        self.prefetch_db = Some(db);
+        self.prefetch_overlay = Some(overlay);
+        self
+    }
+}
+
+/// Well-known datatype SIDs
+///
+/// These are common XSD datatypes used in Fluree.
+/// 
+/// Also provides fast datatype family equivalence checking for the scan loop.
+/// Integer family: xsd:integer, xsd:long, xsd:int, xsd:short, xsd:byte
+/// Float family: xsd:double, xsd:float
+#[derive(Debug, Clone)]
+pub struct WellKnownDatatypes {
+    /// xsd:string (namespace code 2)
+    pub xsd_string: Sid,
+    /// xsd:long (namespace code 2)
+    pub xsd_long: Sid,
+    /// xsd:integer (namespace code 2) - arbitrary precision integer
+    pub xsd_integer: Sid,
+    /// xsd:int (namespace code 2) - 32-bit integer
+    pub xsd_int: Sid,
+    /// xsd:short (namespace code 2) - 16-bit integer
+    pub xsd_short: Sid,
+    /// xsd:byte (namespace code 2) - 8-bit integer
+    pub xsd_byte: Sid,
+    /// xsd:double (namespace code 2)
+    pub xsd_double: Sid,
+    /// xsd:float (namespace code 2) - 32-bit float
+    pub xsd_float: Sid,
+    /// xsd:decimal (namespace code 2) - arbitrary precision decimal
+    pub xsd_decimal: Sid,
+    /// xsd:boolean (namespace code 2)
+    pub xsd_boolean: Sid,
+    /// xsd:dateTime (namespace code 2)
+    pub xsd_datetime: Sid,
+    /// xsd:date (namespace code 2)
+    pub xsd_date: Sid,
+    /// xsd:time (namespace code 2)
+    pub xsd_time: Sid,
+    /// $id (reference type) - returned by DATATYPE() for IRIs
+    pub id_type: Sid,
+    /// fluree:vector (https://ns.flur.ee/ledger#vector)
+    pub fluree_vector: Sid,
+    /// rdf:JSON (@json datatype)
+    pub rdf_json: Sid,
+}
+
+impl Default for WellKnownDatatypes {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WellKnownDatatypes {
+    /// Create with standard Fluree namespace codes
+    pub fn new() -> Self {
+        Self {
+            xsd_string: Sid::new(XSD, xsd_names::STRING),
+            xsd_long: Sid::new(XSD, xsd_names::LONG),
+            xsd_integer: Sid::new(XSD, xsd_names::INTEGER),
+            xsd_int: Sid::new(XSD, xsd_names::INT),
+            xsd_short: Sid::new(XSD, xsd_names::SHORT),
+            xsd_byte: Sid::new(XSD, xsd_names::BYTE),
+            xsd_double: Sid::new(XSD, xsd_names::DOUBLE),
+            xsd_float: Sid::new(XSD, xsd_names::FLOAT),
+            xsd_decimal: Sid::new(XSD, xsd_names::DECIMAL),
+            xsd_boolean: Sid::new(XSD, xsd_names::BOOLEAN),
+            xsd_datetime: Sid::new(XSD, xsd_names::DATE_TIME),
+            xsd_date: Sid::new(XSD, xsd_names::DATE),
+            xsd_time: Sid::new(XSD, xsd_names::TIME),
+            id_type: Sid::new(JSON_LD, "id"), // @ namespace for internal types
+            // Reserved Fluree ledger namespace code is 8 (https://ns.flur.ee/ledger#)
+            fluree_vector: Sid::new(8, "vector"),
+            // RDF namespace code is 3
+            rdf_json: Sid::new(3, "JSON"),
+        }
+    }
+
+    /// Check if a SID is in the integer family (xsd:integer, long, int, short, byte)
+    #[inline]
+    pub fn is_integer_family(&self, sid: &Sid) -> bool {
+        *sid == self.xsd_integer
+            || *sid == self.xsd_long
+            || *sid == self.xsd_int
+            || *sid == self.xsd_short
+            || *sid == self.xsd_byte
+    }
+
+    /// Check if a SID is in the float family (xsd:double, float)
+    #[inline]
+    pub fn is_float_family(&self, sid: &Sid) -> bool {
+        *sid == self.xsd_double || *sid == self.xsd_float
+    }
+
+    /// Check if two SIDs are equivalent for datatype matching
+    ///
+    /// Two datatypes are equivalent if:
+    /// 1. They are exactly equal, OR
+    /// 2. They are both in the integer family (xsd:integer ≈ xsd:int ≈ xsd:long ≈ xsd:short ≈ xsd:byte)
+    /// 3. They are both in the float family (xsd:double ≈ xsd:float)
+    ///
+    /// This is a **fast SID-based check** (no string comparisons) for use in the scan hot path.
+    #[inline]
+    pub fn datatypes_equivalent(&self, a: &Sid, b: &Sid) -> bool {
+        // Fast path: exact match
+        if a == b {
+            return true;
+        }
+        // Integer family equivalence
+        if self.is_integer_family(a) && self.is_integer_family(b) {
+            return true;
+        }
+        // Float family equivalence
+        if self.is_float_family(a) && self.is_float_family(b) {
+            return true;
+        }
+        false
+    }
+}

@@ -1,0 +1,375 @@
+//! State tracking for the query peer
+//!
+//! Maintains an in-memory view of ledger and virtual graph metadata
+//! based on events received from the SSE stream.
+
+use std::collections::HashMap;
+use std::time::Instant;
+
+use tokio::sync::RwLock;
+
+use crate::sse::{LedgerRecord, VgRecord};
+
+/// Tracked state for a ledger
+#[derive(Debug, Clone)]
+pub struct LedgerState {
+    pub alias: String,
+    pub commit_t: i64,
+    pub index_t: i64,
+    pub commit_address: Option<String>,
+    pub index_address: Option<String>,
+    /// Needs refresh (state changed since last query operation)
+    pub dirty: bool,
+    pub last_updated: Instant,
+}
+
+/// Tracked state for a virtual graph
+#[derive(Debug, Clone)]
+pub struct VgState {
+    pub alias: String,
+    pub index_t: i64,
+    pub config_hash: String,
+    pub index_address: Option<String>,
+    pub dependencies: Vec<String>,
+    /// Needs refresh
+    pub dirty: bool,
+    pub last_updated: Instant,
+}
+
+/// Central state tracker for the peer
+pub struct PeerState {
+    ledgers: RwLock<HashMap<String, LedgerState>>,
+    vgs: RwLock<HashMap<String, VgState>>,
+    snapshot_hash: RwLock<Option<String>>,
+    /// Whether we've received the initial snapshot
+    snapshot_received: RwLock<bool>,
+}
+
+impl PeerState {
+    /// Create a new empty state tracker
+    pub fn new() -> Self {
+        Self {
+            ledgers: RwLock::new(HashMap::new()),
+            vgs: RwLock::new(HashMap::new()),
+            snapshot_hash: RwLock::new(None),
+            snapshot_received: RwLock::new(false),
+        }
+    }
+
+    /// Handle a ledger record from SSE
+    /// Returns true if the state changed (needs action)
+    pub async fn handle_ledger_record(&self, record: &LedgerRecord) -> bool {
+        let mut ledgers = self.ledgers.write().await;
+
+        let changed = match ledgers.get(&record.alias) {
+            Some(existing) => {
+                // Check if watermarks advanced
+                record.commit_t > existing.commit_t || record.index_t > existing.index_t
+            }
+            None => true, // New ledger
+        };
+
+        if changed {
+            ledgers.insert(
+                record.alias.clone(),
+                LedgerState {
+                    alias: record.alias.clone(),
+                    commit_t: record.commit_t,
+                    index_t: record.index_t,
+                    commit_address: record.commit_address.clone(),
+                    index_address: record.index_address.clone(),
+                    dirty: true,
+                    last_updated: Instant::now(),
+                },
+            );
+        }
+
+        changed
+    }
+
+    /// Handle a VG record from SSE
+    /// Returns true if the state changed
+    pub async fn handle_vg_record(&self, record: &VgRecord) -> bool {
+        let mut vgs = self.vgs.write().await;
+
+        let config_hash = record.config_hash();
+
+        let changed = match vgs.get(&record.alias) {
+            Some(existing) => {
+                record.index_t > existing.index_t || config_hash != existing.config_hash
+            }
+            None => true,
+        };
+
+        if changed {
+            vgs.insert(
+                record.alias.clone(),
+                VgState {
+                    alias: record.alias.clone(),
+                    index_t: record.index_t,
+                    config_hash,
+                    index_address: record.index_address.clone(),
+                    dependencies: record.dependencies.clone(),
+                    dirty: true,
+                    last_updated: Instant::now(),
+                },
+            );
+        }
+
+        changed
+    }
+
+    /// Handle retraction (remove from state)
+    pub async fn handle_retracted(&self, kind: &str, alias: &str) {
+        match kind {
+            "ledger" => {
+                self.ledgers.write().await.remove(alias);
+            }
+            "virtual-graph" => {
+                self.vgs.write().await.remove(alias);
+            }
+            _ => {
+                tracing::warn!(kind, alias, "Unknown retraction kind");
+            }
+        }
+    }
+
+    /// Mark snapshot complete
+    pub async fn set_snapshot_hash(&self, hash: String) {
+        *self.snapshot_hash.write().await = Some(hash);
+        *self.snapshot_received.write().await = true;
+    }
+
+    /// Mark snapshot as received (even without hash)
+    pub async fn mark_snapshot_received(&self) {
+        *self.snapshot_received.write().await = true;
+    }
+
+    /// Check if initial snapshot has been received
+    pub async fn is_snapshot_received(&self) -> bool {
+        *self.snapshot_received.read().await
+    }
+
+    /// Clear all state (on reconnect, before new snapshot)
+    pub async fn clear(&self) {
+        self.ledgers.write().await.clear();
+        self.vgs.write().await.clear();
+        *self.snapshot_hash.write().await = None;
+        *self.snapshot_received.write().await = false;
+    }
+
+    /// Get current ledger state
+    pub async fn get_ledger(&self, alias: &str) -> Option<LedgerState> {
+        self.ledgers.read().await.get(alias).cloned()
+    }
+
+    /// Get current VG state
+    pub async fn get_vg(&self, alias: &str) -> Option<VgState> {
+        self.vgs.read().await.get(alias).cloned()
+    }
+
+    /// Get all ledger states
+    pub async fn all_ledgers(&self) -> Vec<LedgerState> {
+        self.ledgers.read().await.values().cloned().collect()
+    }
+
+    /// Get all VG states
+    pub async fn all_vgs(&self) -> Vec<VgState> {
+        self.vgs.read().await.values().cloned().collect()
+    }
+
+    /// Get all dirty ledgers (need refresh)
+    pub async fn dirty_ledgers(&self) -> Vec<LedgerState> {
+        self.ledgers
+            .read()
+            .await
+            .values()
+            .filter(|l| l.dirty)
+            .cloned()
+            .collect()
+    }
+
+    /// Get all dirty VGs
+    pub async fn dirty_vgs(&self) -> Vec<VgState> {
+        self.vgs
+            .read()
+            .await
+            .values()
+            .filter(|v| v.dirty)
+            .cloned()
+            .collect()
+    }
+
+    /// Mark ledger as clean (after refresh)
+    pub async fn mark_ledger_clean(&self, alias: &str) {
+        if let Some(ledger) = self.ledgers.write().await.get_mut(alias) {
+            ledger.dirty = false;
+        }
+    }
+
+    /// Mark VG as clean
+    pub async fn mark_vg_clean(&self, alias: &str) {
+        if let Some(vg) = self.vgs.write().await.get_mut(alias) {
+            vg.dirty = false;
+        }
+    }
+
+    /// Get ledger count
+    pub async fn ledger_count(&self) -> usize {
+        self.ledgers.read().await.len()
+    }
+
+    /// Get VG count
+    pub async fn vg_count(&self) -> usize {
+        self.vgs.read().await.len()
+    }
+
+    /// Get the current snapshot hash
+    pub async fn snapshot_hash(&self) -> Option<String> {
+        self.snapshot_hash.read().await.clone()
+    }
+}
+
+impl Default for PeerState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_ledger_record(alias: &str, commit_t: i64, index_t: i64) -> LedgerRecord {
+        LedgerRecord {
+            alias: alias.to_string(),
+            branch: Some("main".to_string()),
+            commit_address: Some(format!("commit:{}", commit_t)),
+            commit_t,
+            index_address: Some(format!("index:{}", index_t)),
+            index_t,
+            retracted: false,
+        }
+    }
+
+    fn make_vg_record(alias: &str, index_t: i64) -> VgRecord {
+        VgRecord {
+            alias: alias.to_string(),
+            name: Some("test".to_string()),
+            branch: Some("main".to_string()),
+            vg_type: Some("fulltext".to_string()),
+            config: Some(r#"{"analyzer": "standard"}"#.to_string()),
+            dependencies: vec![],
+            index_address: Some(format!("vg:{}", index_t)),
+            index_t,
+            retracted: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_ledger_record_new() {
+        let state = PeerState::new();
+        let record = make_ledger_record("books:main", 5, 3);
+
+        let changed = state.handle_ledger_record(&record).await;
+        assert!(changed);
+
+        let ledger = state.get_ledger("books:main").await.unwrap();
+        assert_eq!(ledger.commit_t, 5);
+        assert_eq!(ledger.index_t, 3);
+        assert!(ledger.dirty);
+    }
+
+    #[tokio::test]
+    async fn test_handle_ledger_record_update() {
+        let state = PeerState::new();
+
+        // Initial record
+        let record1 = make_ledger_record("books:main", 5, 3);
+        state.handle_ledger_record(&record1).await;
+
+        // Same watermarks - no change
+        let record2 = make_ledger_record("books:main", 5, 3);
+        let changed = state.handle_ledger_record(&record2).await;
+        assert!(!changed);
+
+        // Higher commit_t - change
+        let record3 = make_ledger_record("books:main", 6, 3);
+        let changed = state.handle_ledger_record(&record3).await;
+        assert!(changed);
+
+        // Higher index_t - change
+        let record4 = make_ledger_record("books:main", 6, 5);
+        let changed = state.handle_ledger_record(&record4).await;
+        assert!(changed);
+    }
+
+    #[tokio::test]
+    async fn test_handle_vg_record() {
+        let state = PeerState::new();
+        let record = make_vg_record("search:main", 2);
+
+        let changed = state.handle_vg_record(&record).await;
+        assert!(changed);
+
+        let vg = state.get_vg("search:main").await.unwrap();
+        assert_eq!(vg.index_t, 2);
+        assert!(vg.dirty);
+    }
+
+    #[tokio::test]
+    async fn test_handle_retracted() {
+        let state = PeerState::new();
+
+        // Add a ledger
+        let record = make_ledger_record("books:main", 5, 3);
+        state.handle_ledger_record(&record).await;
+        assert!(state.get_ledger("books:main").await.is_some());
+
+        // Retract it
+        state.handle_retracted("ledger", "books:main").await;
+        assert!(state.get_ledger("books:main").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_clear() {
+        let state = PeerState::new();
+
+        // Add some state
+        let ledger = make_ledger_record("books:main", 5, 3);
+        let vg = make_vg_record("search:main", 2);
+        state.handle_ledger_record(&ledger).await;
+        state.handle_vg_record(&vg).await;
+        state.set_snapshot_hash("abc123".to_string()).await;
+
+        assert_eq!(state.ledger_count().await, 1);
+        assert_eq!(state.vg_count().await, 1);
+        assert!(state.is_snapshot_received().await);
+
+        // Clear
+        state.clear().await;
+
+        assert_eq!(state.ledger_count().await, 0);
+        assert_eq!(state.vg_count().await, 0);
+        assert!(!state.is_snapshot_received().await);
+    }
+
+    #[tokio::test]
+    async fn test_dirty_ledgers() {
+        let state = PeerState::new();
+
+        // Add two ledgers
+        let record1 = make_ledger_record("books:main", 5, 3);
+        let record2 = make_ledger_record("users:main", 2, 1);
+        state.handle_ledger_record(&record1).await;
+        state.handle_ledger_record(&record2).await;
+
+        // Both dirty
+        assert_eq!(state.dirty_ledgers().await.len(), 2);
+
+        // Mark one clean
+        state.mark_ledger_clean("books:main").await;
+        assert_eq!(state.dirty_ledgers().await.len(), 1);
+        assert_eq!(state.dirty_ledgers().await[0].alias, "users:main");
+    }
+}

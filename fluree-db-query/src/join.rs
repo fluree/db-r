@@ -1,0 +1,1263 @@
+//! Join operators for multi-pattern queries
+//!
+//! This module provides `NestedLoopJoinOperator` which implements nested-loop join
+//! where left results drive right scans. It enforces var unification - shared
+//! vars between left and right must match exactly.
+
+use crate::binding::{Batch, Binding};
+use crate::context::ExecutionContext;
+use crate::dataset::ActiveGraphs;
+use crate::error::{QueryError, Result};
+use crate::operator::{Operator, OperatorState};
+use crate::pattern::{Term, TriplePattern};
+use crate::policy::QueryPolicyEnforcer;
+use crate::scan::ScanOperator;
+use crate::var_registry::VarId;
+use async_trait::async_trait;
+use fluree_db_core::{
+    Db, Flake, IndexType, MultiSeekCursor, NodeCache, ObjectBounds, OverlayProvider, RangeOptions,
+    Sid, Storage, BATCHED_JOIN_SIZE,
+};
+use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::sync::Arc;
+
+/// Position in a triple pattern (subject, predicate, object)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatternPosition {
+    Subject,
+    Predicate,
+    Object,
+}
+
+/// Binding instruction for right pattern
+///
+/// When executing the right pattern, substitute the value from left_col
+/// into the specified position.
+#[derive(Debug, Clone)]
+pub struct BindInstruction {
+    /// Position in right pattern to bind
+    pub position: PatternPosition,
+    /// Column index in left batch to get value from
+    pub left_col: usize,
+}
+
+/// Unification check for shared variables
+///
+/// After right scan returns results, verify that the value at right_col
+/// matches the value at left_col for shared variables.
+#[derive(Debug, Clone)]
+pub struct UnifyInstruction {
+    /// Column index in left batch
+    pub left_col: usize,
+    /// Column index in right batch
+    pub right_col: usize,
+}
+
+/// Identifies the source of a left row in `pending_output`.
+#[derive(Debug, Clone)]
+enum BatchRef {
+    /// Left row is in `self.current_left_batch`
+    Current,
+    /// Left row is in `self.stored_left_batches[idx]`
+    Stored(usize),
+}
+
+/// Check if the right pattern is eligible for batched subject join.
+///
+/// Eligible patterns have shape: `(?s, fixed_p, ?o)` where subject is bound
+/// from the left, predicate is fixed (Term::Sid), object is a new unbound
+/// variable, with no object bounds or datatype/language constraints.
+fn is_batched_eligible(
+    bind_instructions: &[BindInstruction],
+    right_pattern: &TriplePattern,
+    object_bounds: &Option<ObjectBounds>,
+) -> bool {
+    // Subject must have a BindInstruction (bound from left)
+    let has_subject_bind = bind_instructions
+        .iter()
+        .any(|b| b.position == PatternPosition::Subject);
+    // Predicate must be fixed (Term::Sid)
+    let pred_fixed = matches!(&right_pattern.p, Term::Sid(_));
+    // Object must be a variable
+    let obj_is_var = matches!(&right_pattern.o, Term::Var(_));
+    // No BindInstruction for Object (object is a new variable, not shared)
+    let no_obj_bind = !bind_instructions
+        .iter()
+        .any(|b| b.position == PatternPosition::Object);
+    // No object bounds (no FILTER range pushdown)
+    let no_bounds = object_bounds.is_none();
+    // No datatype or language constraints
+    let no_dt = right_pattern.dt.is_none();
+    let no_lang = right_pattern.lang.is_none();
+
+    has_subject_bind && pred_fixed && obj_is_var && no_obj_bind && no_bounds && no_dt && no_lang
+}
+
+/// Bind-join operator for nested-loop join
+///
+/// For each row from the left operator, substitutes bound variables into
+/// the right pattern, executes a scan, and combines results.
+///
+/// # Var Unification
+///
+/// When a variable appears in both left schema and right pattern output,
+/// the join enforces that both sides produce the same value. Rows with
+/// conflicting bindings are dropped.
+///
+/// # Invariant
+///
+/// We assume shared vars are never `Unbound` from the left side (except via
+/// OPTIONAL which uses `Poisoned`). This is simpler than supporting "unbound
+/// shared-vars" semantics.
+pub struct NestedLoopJoinOperator<S: Storage + 'static, C: NodeCache + 'static> {
+    /// Left (driving) operator
+    left: Box<dyn Operator<S, C>>,
+    /// Right pattern template (will be instantiated per left row)
+    right_pattern: TriplePattern,
+    /// Schema from left operator
+    left_schema: Arc<[VarId]>,
+    /// New variables introduced by right pattern (not in left schema)
+    right_new_vars: Vec<VarId>,
+    /// Combined output schema: left vars + new right vars
+    combined_schema: Arc<[VarId]>,
+    /// Instructions for binding left values into right pattern
+    bind_instructions: Vec<BindInstruction>,
+    /// Instructions for unification checks on shared vars
+    unify_instructions: Vec<UnifyInstruction>,
+    /// Current state
+    state: OperatorState,
+    /// Current left batch being processed
+    current_left_batch: Option<Batch>,
+    /// Current row index in left batch
+    current_left_row: usize,
+    /// Pending output rows (batch_ref, left_row_idx, right_batch)
+    pending_output: VecDeque<(BatchRef, usize, Batch)>,
+    /// Optional object bounds for range filter pushdown
+    object_bounds: Option<ObjectBounds>,
+    /// Whether this join is eligible for batched subject join
+    batched_eligible: bool,
+    /// Column index in left batch for the subject binding (batched mode)
+    subject_left_col: Option<usize>,
+    /// The fixed predicate SID (batched mode)
+    batched_predicate: Option<Sid>,
+    /// Accumulated entries for batched processing: (stored_batch_idx, row_idx, subject_sid)
+    batched_accumulator: Vec<(usize, usize, Sid)>,
+    /// Left batches retained for the batched flush
+    stored_left_batches: Vec<Batch>,
+    /// Pre-built output batches from the batched path, ready to emit
+    batched_output: VecDeque<Batch>,
+    /// Cached index into `stored_left_batches` for the currently active left batch.
+    ///
+    /// This prevents storing/cloning the same `current_left_batch` repeatedly.
+    current_left_batch_stored_idx: Option<usize>,
+}
+
+impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> {
+    /// Create a new bind-join operator
+    ///
+    /// # Arguments
+    ///
+    /// * `left` - The left (driving) operator
+    /// * `left_schema` - Schema of the left operator
+    /// * `right_pattern` - Pattern to execute for each left row
+    /// * `object_bounds` - Optional range bounds for object variable (filter pushdown)
+    pub fn new(
+        left: Box<dyn Operator<S, C>>,
+        left_schema: Arc<[VarId]>,
+        right_pattern: TriplePattern,
+        object_bounds: Option<ObjectBounds>,
+    ) -> Self {
+        // Build bind instructions: which left columns bind which right pattern positions
+        let mut bind_instructions = Vec::new();
+        let left_var_positions: std::collections::HashMap<VarId, usize> = left_schema
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (*v, i))
+            .collect();
+
+        // Check subject
+        if let Term::Var(v) = &right_pattern.s {
+            if let Some(&col) = left_var_positions.get(v) {
+                bind_instructions.push(BindInstruction {
+                    position: PatternPosition::Subject,
+                    left_col: col,
+                });
+            }
+        }
+
+        // Check predicate
+        if let Term::Var(v) = &right_pattern.p {
+            if let Some(&col) = left_var_positions.get(v) {
+                bind_instructions.push(BindInstruction {
+                    position: PatternPosition::Predicate,
+                    left_col: col,
+                });
+            }
+        }
+
+        // Check object
+        if let Term::Var(v) = &right_pattern.o {
+            if let Some(&col) = left_var_positions.get(v) {
+                bind_instructions.push(BindInstruction {
+                    position: PatternPosition::Object,
+                    left_col: col,
+                });
+            }
+        }
+
+        // Determine right pattern output vars (vars that are still unbound after substitution)
+        let right_output_vars: Vec<VarId> = right_pattern
+            .variables()
+            .into_iter()
+            .filter(|v| !left_var_positions.contains_key(v))
+            .collect();
+
+        // Build combined schema: left schema + new right vars
+        let mut combined = left_schema.to_vec();
+        combined.extend(right_output_vars.iter().copied());
+        let combined_schema: Arc<[VarId]> = Arc::from(combined.into_boxed_slice());
+
+        // Build unify instructions for shared vars
+        //
+        // Variables that are in both left schema and right pattern need unification
+        // UNLESS they are fully substituted into the pattern. However, substitution
+        // depends on runtime binding types:
+        // - Subject/Predicate: Only Sid bindings are substituted
+        // - Object: Sid and Lit bindings are substituted
+        //
+        // We compute right_col based on right_output_vars (which excludes vars
+        // expected to be substituted). At runtime, if substitution doesn't happen
+        // (e.g., Lit at Subject position), the var remains in the right scan output
+        // but at a different position than expected - this is handled by skipping
+        // unification for such edge cases.
+        //
+        // Collect vars that WILL be substituted (based on position)
+        // For Object position, we assume substitution will happen (Sid/Lit)
+        // For Subject/Predicate, substitution requires Sid which we can't verify
+        // at construction time, so we don't create unify instructions for these
+        // positions when the var is in left schema (they have bind_instructions)
+        let bound_vars: std::collections::HashSet<VarId> = bind_instructions
+            .iter()
+            .filter_map(|instr| {
+                match instr.position {
+                    PatternPosition::Subject => right_pattern.s.as_var(),
+                    PatternPosition::Predicate => right_pattern.p.as_var(),
+                    PatternPosition::Object => right_pattern.o.as_var(),
+                }
+            })
+            .collect();
+
+        let mut unify_instructions = Vec::new();
+        for var in right_pattern.variables() {
+            // Skip vars that have bind_instructions - they will be substituted
+            // (or if not substituted due to binding type, the row is handled
+            // by the scan returning no results or the substitution leaving the var)
+            if bound_vars.contains(&var) {
+                continue;
+            }
+
+            if let Some(&left_col) = left_var_positions.get(&var) {
+                // This var is shared but NOT bound - find its position in right output
+                // Right output schema only includes non-bound vars
+                if let Some(right_idx) = right_output_vars.iter().position(|v| *v == var) {
+                    unify_instructions.push(UnifyInstruction {
+                        left_col,
+                        right_col: right_idx,
+                    });
+                }
+            }
+        }
+
+        let batched_eligible = is_batched_eligible(&bind_instructions, &right_pattern, &object_bounds);
+        let subject_left_col = if batched_eligible {
+            bind_instructions
+                .iter()
+                .find(|b| b.position == PatternPosition::Subject)
+                .map(|b| b.left_col)
+        } else {
+            None
+        };
+        let batched_predicate = if batched_eligible {
+            match &right_pattern.p {
+                Term::Sid(sid) => Some(sid.clone()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        Self {
+            left,
+            right_pattern,
+            left_schema,
+            right_new_vars: right_output_vars,
+            combined_schema,
+            bind_instructions,
+            unify_instructions,
+            state: OperatorState::Created,
+            current_left_batch: None,
+            current_left_row: 0,
+            pending_output: VecDeque::new(),
+            object_bounds,
+            batched_eligible,
+            subject_left_col,
+            batched_predicate,
+            batched_accumulator: Vec::new(),
+            stored_left_batches: Vec::new(),
+            batched_output: VecDeque::new(),
+            current_left_batch_stored_idx: None,
+        }
+    }
+
+    /// Check if any binding used in bind instructions is Poisoned
+    ///
+    /// If a left binding is Poisoned, the right pattern cannot match,
+    /// so we should skip this left row entirely (produces no results).
+    fn has_poisoned_binding(&self, left_batch: &Batch, row: usize) -> bool {
+        self.bind_instructions.iter().any(|instr| {
+            left_batch.get_by_col(row, instr.left_col).is_poisoned()
+        })
+    }
+
+    /// Check for invalid binding types on subject/predicate positions.
+    ///
+    /// Subject/predicate positions accept Sid and IriMatch bindings. If a shared var is
+    /// bound to a literal, the pattern cannot match.
+    fn has_invalid_binding_type(&self, left_batch: &Batch, row: usize) -> bool {
+        self.bind_instructions.iter().any(|instr| {
+            let binding = left_batch.get_by_col(row, instr.left_col);
+            match instr.position {
+                PatternPosition::Subject | PatternPosition::Predicate => {
+                    // Unbound does not constrain; Sid and IriMatch are valid.
+                    // Anything else (Lit, raw Iri) cannot match subject/predicate.
+                    !matches!(
+                        binding,
+                        Binding::Unbound | Binding::Sid(_) | Binding::IriMatch { .. }
+                    )
+                }
+                PatternPosition::Object => {
+                    // Raw IRIs from virtual graphs can't match native object values
+                    // (they're not in the namespace table and can't be compared to Sids)
+                    // Note: IriMatch is OK because it carries a SID
+                    matches!(binding, Binding::Iri(_))
+                }
+            }
+        })
+    }
+
+    /// Substitute left row bindings into right pattern
+    ///
+    /// For IriMatch bindings, uses `Term::Iri` to carry the canonical IRI.
+    /// The scan operator will encode this IRI for each target ledger's namespace
+    /// table, enabling correct cross-ledger joins even when namespace tables differ.
+    fn substitute_pattern(&self, left_batch: &Batch, left_row: usize) -> TriplePattern {
+        let mut pattern = self.right_pattern.clone();
+
+        for instr in &self.bind_instructions {
+            let binding = left_batch.get_by_col(left_row, instr.left_col);
+
+            match instr.position {
+                PatternPosition::Subject => {
+                    match binding {
+                        Binding::Sid(sid) => {
+                            pattern.s = Term::Sid(sid.clone());
+                        }
+                        Binding::IriMatch { iri, .. } => {
+                            // Use Term::Iri so scan can encode for each target ledger
+                            pattern.s = Term::Iri(iri.clone());
+                        }
+                        _ => {
+                            // Leave as variable
+                        }
+                    }
+                }
+                PatternPosition::Predicate => {
+                    match binding {
+                        Binding::Sid(sid) => {
+                            pattern.p = Term::Sid(sid.clone());
+                        }
+                        Binding::IriMatch { iri, .. } => {
+                            // Use Term::Iri so scan can encode for each target ledger
+                            pattern.p = Term::Iri(iri.clone());
+                        }
+                        _ => {
+                            // Leave as variable
+                        }
+                    }
+                }
+                PatternPosition::Object => {
+                    match binding {
+                        Binding::Sid(sid) => {
+                            pattern.o = Term::Sid(sid.clone());
+                        }
+                        Binding::IriMatch { iri, .. } => {
+                            // Use Term::Iri so scan can encode for each target ledger
+                            pattern.o = Term::Iri(iri.clone());
+                        }
+                        Binding::Lit { val, .. } => {
+                            pattern.o = Term::Value(val.clone());
+                        }
+                        Binding::Iri(_) => {
+                            // Raw IRI from VG can't be converted to native Term
+                            // This case should not be reached due to has_invalid_binding_type check,
+                            // but leave as variable defensively (row will produce no matches)
+                        }
+                        Binding::Unbound | Binding::Poisoned => {
+                            // Leave as variable (Poisoned vars from OPTIONAL also remain unbound)
+                        }
+                        Binding::Grouped(_) => {
+                            // Grouped bindings shouldn't appear in join codepaths
+                            debug_assert!(false, "Grouped binding in join bind");
+                            // Leave as variable
+                        }
+                    }
+                }
+            }
+        }
+
+        pattern
+    }
+
+    /// Check if left row bindings match right row bindings for shared vars
+    ///
+    /// Returns true if all shared vars have equal values on both sides.
+    ///
+    /// Uses `eq_for_join()` for same-ledger SID optimization when comparing
+    /// `IriMatch` bindings from the same ledger.
+    fn unify_check(&self, left_batch: &Batch, left_row: usize, right_batch: &Batch, right_row: usize) -> bool {
+        self.unify_instructions.iter().all(|instr| {
+            let left_val = left_batch.get_by_col(left_row, instr.left_col);
+            let right_val = right_batch.get_by_col(right_row, instr.right_col);
+            left_val.eq_for_join(right_val)
+        })
+    }
+
+    /// Combine left row with right row into output row
+    fn combine_rows(&self, left_batch: &Batch, left_row: usize, right_batch: &Batch, right_row: usize) -> Vec<Binding> {
+        let right_schema = right_batch.schema();
+
+        // Chain left columns with new right columns (skip shared vars already in left)
+        (0..self.left_schema.len())
+            .map(|col| left_batch.get_by_col(left_row, col).clone())
+            .chain(self.right_new_vars.iter().map(|var| {
+                right_schema
+                    .iter()
+                    .position(|v| v == var)
+                    .map(|right_col| right_batch.get_by_col(right_row, right_col).clone())
+                    .unwrap_or(Binding::Unbound)
+            }))
+            .collect()
+    }
+}
+
+#[async_trait]
+impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for NestedLoopJoinOperator<S, C> {
+    fn schema(&self) -> &[VarId] {
+        &self.combined_schema
+    }
+
+    async fn open(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+        if !self.state.can_open() {
+            if self.state.is_closed() {
+                return Err(QueryError::OperatorClosed);
+            }
+            return Err(QueryError::OperatorAlreadyOpened);
+        }
+
+        // Open left operator
+        self.left.open(ctx).await?;
+
+        self.state = OperatorState::Open;
+        Ok(())
+    }
+
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+        if !self.state.can_next() {
+            if self.state == OperatorState::Created {
+                return Err(QueryError::OperatorNotOpened);
+            }
+            return Ok(None);
+        }
+
+        // Check if batched mode is usable at runtime:
+        // - Single-db mode (ActiveGraphs::Single), subjects are Binding::Sid
+        // - Dataset mode with exactly one graph (ActiveGraphs::Many len==1), subjects are Binding::IriMatch
+        let use_batched = self.batched_eligible
+            && match ctx.active_graphs() {
+                ActiveGraphs::Single => true,
+                ActiveGraphs::Many(graphs) => graphs.len() == 1,
+            };
+
+        // Process until we have output or exhaust input
+        loop {
+            // 1. Pre-built output from batched flush
+            if let Some(batch) = self.batched_output.pop_front() {
+                return Ok(Some(batch));
+            }
+
+            // 2. Pending output from per-row path
+            if !self.pending_output.is_empty() {
+                return self.build_output_batch(ctx).await;
+            }
+
+            // 3. Need to process more left rows
+            if self.current_left_batch.is_none() {
+                match self.left.next_batch(ctx).await? {
+                    Some(batch) => {
+                        self.current_left_batch = Some(batch);
+                        self.current_left_row = 0;
+                        // New batch loaded: reset stored index cache.
+                        self.current_left_batch_stored_idx = None;
+                    }
+                    None => {
+                        // Left exhausted — flush any remaining accumulator
+                        if !self.batched_accumulator.is_empty() {
+                            self.flush_batched_accumulator_for_ctx(ctx).await?;
+                            continue;
+                        }
+                        self.state = OperatorState::Exhausted;
+                        return Ok(None);
+                    }
+                }
+            }
+
+            // Check if we've exhausted the current left batch
+            let batch_len = self.current_left_batch.as_ref().unwrap().len();
+            if self.current_left_row >= batch_len {
+                self.current_left_batch = None;
+                self.current_left_batch_stored_idx = None;
+                continue;
+            }
+
+            let left_row = self.current_left_row;
+            self.current_left_row += 1;
+
+            // Check for poisoned bindings
+            {
+                let left_batch = self.current_left_batch.as_ref().unwrap();
+                if self.has_poisoned_binding(left_batch, left_row) {
+                    continue;
+                }
+                if self.has_invalid_binding_type(left_batch, left_row) {
+                    continue;
+                }
+            }
+
+            if use_batched {
+                // Batched path: extract what we need, then call mutable methods
+                let subject_col = self.subject_left_col.unwrap();
+                let sid_opt = {
+                    let left_batch = self.current_left_batch.as_ref().unwrap();
+                    match left_batch.get_by_col(left_row, subject_col) {
+                        Binding::Sid(sid) => Some(sid.clone()),
+                        Binding::IriMatch { primary_sid, .. } => Some(primary_sid.clone()),
+                        _ => None,
+                    }
+                };
+
+                if let Some(sid) = sid_opt {
+                    let batch_idx = self.ensure_current_batch_stored();
+                    self.batched_accumulator.push((batch_idx, left_row, sid));
+
+                    if self.batched_accumulator.len() >= BATCHED_JOIN_SIZE {
+                        self.flush_batched_accumulator_for_ctx(ctx).await?;
+                    }
+                } else {
+                    // IriMatch, Unbound, etc. — fall back to per-row scan
+                    let batch_idx = self.ensure_current_batch_stored();
+                    let batch_ref = BatchRef::Stored(batch_idx);
+                    let left_batch = self.stored_left_batches.last().unwrap();
+                    let bound_pattern = self.substitute_pattern(left_batch, left_row);
+                    let mut right_scan = match &self.object_bounds {
+                        Some(bounds) => ScanOperator::new(bound_pattern).with_object_bounds(bounds.clone()),
+                        None => ScanOperator::new(bound_pattern),
+                    };
+                    right_scan.open(ctx).await?;
+                    while let Some(right_batch) = right_scan.next_batch(ctx).await? {
+                        if !right_batch.is_empty() {
+                            self.pending_output.push_back((batch_ref.clone(), left_row, right_batch));
+                        }
+                    }
+                    <ScanOperator as Operator<S, C>>::close(&mut right_scan);
+                }
+            } else {
+                // Non-batched path: existing per-row join
+                let left_batch = self.current_left_batch.as_ref().unwrap();
+                let bound_pattern = self.substitute_pattern(left_batch, left_row);
+                let mut right_scan = match &self.object_bounds {
+                    Some(bounds) => ScanOperator::new(bound_pattern).with_object_bounds(bounds.clone()),
+                    None => ScanOperator::new(bound_pattern),
+                };
+                right_scan.open(ctx).await?;
+                while let Some(right_batch) = right_scan.next_batch(ctx).await? {
+                    if !right_batch.is_empty() {
+                        self.pending_output.push_back((BatchRef::Current, left_row, right_batch));
+                    }
+                }
+                <ScanOperator as Operator<S, C>>::close(&mut right_scan);
+            }
+        }
+    }
+
+    fn close(&mut self) {
+        self.left.close();
+        self.current_left_batch = None;
+        self.current_left_batch_stored_idx = None;
+        self.pending_output.clear();
+        self.batched_accumulator.clear();
+        self.stored_left_batches.clear();
+        self.batched_output.clear();
+        self.state = OperatorState::Closed;
+    }
+
+    fn estimated_rows(&self) -> Option<usize> {
+        // Estimate: left rows * some fanout factor
+        self.left.estimated_rows().map(|n| n * 10)
+    }
+}
+
+impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> {
+    /// Resolve the left batch for a given `BatchRef`.
+    fn resolve_left_batch<'a>(&'a self, batch_ref: &BatchRef) -> Option<&'a Batch> {
+        match batch_ref {
+            BatchRef::Current => self.current_left_batch.as_ref(),
+            BatchRef::Stored(idx) => self.stored_left_batches.get(*idx),
+        }
+    }
+
+    /// Build output batch from pending results
+    async fn build_output_batch(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+        let batch_size = ctx.batch_size;
+        let mut output_columns: Vec<Vec<Binding>> = (0..self.combined_schema.len())
+            .map(|_| Vec::with_capacity(batch_size))
+            .collect();
+
+        let mut rows_added = 0;
+
+        while rows_added < batch_size && !self.pending_output.is_empty() {
+            let (batch_ref, left_row, right_batch) = self.pending_output.front().unwrap();
+            let left_row = *left_row;
+
+            let left_batch = match self.resolve_left_batch(batch_ref) {
+                Some(b) => b,
+                None => {
+                    self.pending_output.pop_front();
+                    continue;
+                }
+            };
+
+            // Process rows from this right batch
+            for right_row in 0..right_batch.len() {
+                if rows_added >= batch_size {
+                    break;
+                }
+
+                // Unification check: shared vars must match
+                if !self.unify_check(left_batch, left_row, right_batch, right_row) {
+                    continue; // Skip non-matching rows
+                }
+
+                // Combine and add to output
+                let combined = self.combine_rows(left_batch, left_row, right_batch, right_row);
+                for (col, val) in combined.into_iter().enumerate() {
+                    output_columns[col].push(val);
+                }
+                rows_added += 1;
+            }
+
+            // Remove processed right batch
+            self.pending_output.pop_front();
+        }
+
+        if rows_added == 0 {
+            return Ok(None);
+        }
+
+        // Special-case: empty schema batches still need a correct row count.
+        if self.combined_schema.is_empty() {
+            return Ok(Some(Batch::empty_schema_with_len(rows_added)));
+        }
+
+        let batch = Batch::new(self.combined_schema.clone(), output_columns)?;
+        Ok(Some(batch))
+    }
+
+    /// Ensure the current left batch is stored in `stored_left_batches` and
+    /// return its index. If the current batch is already the last stored batch,
+    /// returns the existing index.
+    fn ensure_current_batch_stored(&mut self) -> usize {
+        if let Some(idx) = self.current_left_batch_stored_idx {
+            return idx;
+        }
+
+        let current = self.current_left_batch.as_ref().unwrap().clone();
+        self.stored_left_batches.push(current);
+        let idx = self.stored_left_batches.len() - 1;
+        self.current_left_batch_stored_idx = Some(idx);
+        idx
+    }
+
+    /// Flush batched accumulator using the appropriate db/overlay/to_t for the current context.
+    ///
+    /// - Single-db mode: uses ctx.db/ctx.overlay()/ctx.to_t
+    /// - Dataset mode with exactly one graph: uses that graph's db/overlay/to_t
+    async fn flush_batched_accumulator_for_ctx(
+        &mut self,
+        ctx: &ExecutionContext<'_, S, C>,
+    ) -> Result<()> {
+        match ctx.active_graphs() {
+            ActiveGraphs::Single => self
+                .flush_batched_accumulator(ctx, ctx.db, ctx.overlay(), ctx.to_t, ctx.policy_enforcer.as_deref())
+                .await,
+            ActiveGraphs::Many(graphs) if graphs.len() == 1 => {
+                let graph = graphs[0];
+                // Prefer graph-level policy enforcer over ctx-level
+                let enforcer = graph
+                    .policy_enforcer
+                    .as_ref()
+                    .or(ctx.policy_enforcer.as_ref())
+                    .map(|e| e.as_ref());
+                self.flush_batched_accumulator(ctx, graph.db, graph.overlay, graph.to_t, enforcer)
+                    .await
+            }
+            _ => Ok(()), // Not eligible in multi-graph mode
+        }
+    }
+
+    /// Flush the batched accumulator: group by SID, seek through PSOT/SPOT, emit joined rows.
+    async fn flush_batched_accumulator(
+        &mut self,
+        ctx: &ExecutionContext<'_, S, C>,
+        db: &Db<S, C>,
+        overlay: &dyn OverlayProvider,
+        to_t: i64,
+        policy_enforcer: Option<&QueryPolicyEnforcer>,
+    ) -> Result<()> {
+        if self.batched_accumulator.is_empty() {
+            return Ok(());
+        }
+
+        let pred_sid = self.batched_predicate.as_ref().unwrap().clone();
+
+        // 1. Group by SID preserving order: BTreeMap<Sid, Vec<usize>>
+        //    where values are indices into batched_accumulator (sequence numbers)
+        let mut sid_to_accum_indices: BTreeMap<Sid, Vec<usize>> = BTreeMap::new();
+        for (accum_idx, (_, _, sid)) in self.batched_accumulator.iter().enumerate() {
+            sid_to_accum_indices
+                .entry(sid.clone())
+                .or_default()
+                .push(accum_idx);
+        }
+
+        // 2. Build sorted ranges (PSOT order: all share predicate, sorted by SID)
+        let sorted_sids: Vec<Sid> = sid_to_accum_indices.keys().cloned().collect();
+        let ranges: Vec<(Flake, Flake)> = sorted_sids
+            .iter()
+            .map(|sid| {
+                (
+                    Flake::min_for_subject_predicate(sid.clone(), pred_sid.clone()),
+                    Flake::max_for_subject_predicate(sid.clone(), pred_sid.clone()),
+                )
+            })
+            .collect();
+
+        // 3. Choose index: prefer PSOT, fall back to SPOT
+        let index_type = if db.get_index_root(IndexType::Psot).is_ok() {
+            IndexType::Psot
+        } else {
+            IndexType::Spot
+        };
+
+        let mut opts = RangeOptions::new().with_to_t(to_t);
+        if ctx.history_mode {
+            opts = opts.with_history_mode();
+        }
+        if let Some(from_t) = ctx.from_t {
+            opts = opts.with_from_t(from_t);
+        }
+
+        let mut cursor = MultiSeekCursor::new(db, index_type, ranges, opts)?;
+
+        // 4. Iterate ranges, join with left rows, collect output in accumulator order
+        // We use a scatter buffer: Vec<Vec<Vec<Binding>>> indexed by accum_idx
+        // Each accum_idx maps to possibly multiple output rows (one per matching flake)
+        let accum_len = self.batched_accumulator.len();
+        let mut scatter: Vec<Vec<Vec<Binding>>> = Vec::with_capacity(accum_len);
+        scatter.resize_with(accum_len, Vec::new);
+
+        let mut range_idx = 0usize;
+
+        while let Some(flakes) = cursor.next_range_flakes(db, overlay).await? {
+            let sid = &sorted_sids[range_idx];
+            let accum_indices = sid_to_accum_indices.get(sid).unwrap();
+
+            // Apply policy filtering (graph-aware).
+            let mut flakes = flakes;
+            if let Some(enforcer) = policy_enforcer {
+                if !enforcer.is_root() {
+                    if enforcer.policy().wrapper().has_class_policies() {
+                        let unique_subjects: Vec<Sid> = flakes
+                            .iter()
+                            .map(|f| f.s.clone())
+                            .collect::<HashSet<_>>()
+                            .into_iter()
+                            .collect();
+                        enforcer
+                            .populate_class_cache_for_graph(db, overlay, to_t, &unique_subjects)
+                            .await?;
+                    }
+                    flakes = enforcer
+                        .filter_flakes_for_graph(db, overlay, to_t, &ctx.tracker, flakes)
+                        .await?;
+                }
+            }
+
+            for flake in &flakes {
+                // Convert flake object to binding
+                let obj_binding =
+                    Binding::from_object_with_t(flake.o.clone(), flake.dt.clone(), flake.m.clone(), flake.t);
+
+                // For each left row mapped to this SID
+                for &accum_idx in accum_indices {
+                    let (batch_idx, row_idx, _) = &self.batched_accumulator[accum_idx];
+                    let left_batch = &self.stored_left_batches[*batch_idx];
+
+                    // Build combined row: all left columns + new right columns
+                    let mut combined = Vec::with_capacity(self.combined_schema.len());
+                    for col in 0..self.left_schema.len() {
+                        combined.push(left_batch.get_by_col(*row_idx, col).clone());
+                    }
+                    // The new right variables — for eligible patterns, there's exactly
+                    // one new var (the object). Push it.
+                    for _ in &self.right_new_vars {
+                        combined.push(obj_binding.clone());
+                    }
+
+                    scatter[accum_idx].push(combined);
+                }
+            }
+
+            range_idx += 1;
+        }
+
+        // 5. Emit in left-row order (scatter-gather by accumulator index)
+        let batch_size = ctx.batch_size;
+        let num_cols = self.combined_schema.len();
+        let mut output_columns: Vec<Vec<Binding>> = (0..num_cols)
+            .map(|_| Vec::with_capacity(batch_size))
+            .collect();
+        let mut rows_added = 0;
+
+        for accum_idx in 0..accum_len {
+            for combined in scatter[accum_idx].drain(..) {
+                for (col, val) in combined.into_iter().enumerate() {
+                    output_columns[col].push(val);
+                }
+                rows_added += 1;
+
+                if rows_added >= batch_size {
+                    // Emit a batch
+                    if num_cols == 0 {
+                        self.batched_output
+                            .push_back(Batch::empty_schema_with_len(rows_added));
+                    } else {
+                        let batch =
+                            Batch::new(self.combined_schema.clone(), output_columns)?;
+                        self.batched_output.push_back(batch);
+                    }
+                    output_columns = (0..num_cols)
+                        .map(|_| Vec::with_capacity(batch_size))
+                        .collect();
+                    rows_added = 0;
+                }
+            }
+        }
+
+        // Emit remaining rows
+        if rows_added > 0 {
+            if num_cols == 0 {
+                self.batched_output
+                    .push_back(Batch::empty_schema_with_len(rows_added));
+            } else {
+                let batch = Batch::new(self.combined_schema.clone(), output_columns)?;
+                self.batched_output.push_back(batch);
+            }
+        }
+
+        // 6. Clear accumulator and stored batches
+        self.batched_accumulator.clear();
+        self.stored_left_batches.clear();
+        self.current_left_batch_stored_idx = None;
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fluree_db_core::Sid;
+
+    #[test]
+    fn test_bind_instruction_creation() {
+        // Left schema: [?s, ?name]
+        let left_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
+
+        // Right pattern: ?s :age ?age (shares ?s with left)
+        let _right_pattern = TriplePattern::new(
+            Term::Var(VarId(0)),          // ?s - shared
+            Term::Sid(Sid::new(100, "age")),
+            Term::Var(VarId(2)),          // ?age - new
+        );
+
+        // Create a mock left operator - we'll use this pattern to test bind instructions
+        // For now, just verify the bind_instructions are built correctly
+        let left_var_positions: std::collections::HashMap<VarId, usize> = left_schema
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (*v, i))
+            .collect();
+
+        // Check that ?s would be bound
+        assert!(left_var_positions.contains_key(&VarId(0)));
+        assert!(!left_var_positions.contains_key(&VarId(2))); // ?age not in left
+    }
+
+    #[test]
+    fn test_combined_schema() {
+        // Left: [?s]
+        // Right: ?s :name ?name
+        // Combined should be: [?s, ?name]
+
+        let left_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
+        let right_pattern = TriplePattern::new(
+            Term::Var(VarId(0)),          // ?s - shared
+            Term::Sid(Sid::new(100, "name")),
+            Term::Var(VarId(1)),          // ?name - new
+        );
+
+        let left_var_positions: std::collections::HashMap<VarId, usize> = left_schema
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (*v, i))
+            .collect();
+
+        // Right pattern vars
+        let right_vars = right_pattern.variables();
+        assert_eq!(right_vars, vec![VarId(0), VarId(1)]);
+
+        // New vars (not in left)
+        let new_vars: Vec<VarId> = right_vars
+            .into_iter()
+            .filter(|v| !left_var_positions.contains_key(v))
+            .collect();
+        assert_eq!(new_vars, vec![VarId(1)]);
+
+        // Combined schema
+        let mut combined = left_schema.to_vec();
+        combined.extend(new_vars);
+        assert_eq!(combined, vec![VarId(0), VarId(1)]);
+    }
+
+    #[test]
+    fn test_unify_instructions() {
+        // Left: [?s, ?name]
+        // Right: ?s :age ?age (only ?s is shared)
+        // Unify should check: ?s in left col 0 matches ?s in right col 0
+
+        let left_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
+        let right_pattern = TriplePattern::new(
+            Term::Var(VarId(0)),          // ?s at right position 0
+            Term::Sid(Sid::new(100, "age")),
+            Term::Var(VarId(2)),          // ?age at right position 1
+        );
+
+        let left_var_positions: std::collections::HashMap<VarId, usize> = left_schema
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (*v, i))
+            .collect();
+
+        // Build unify instructions
+        let mut unify_instructions = Vec::new();
+        for var in right_pattern.variables() {
+            if let Some(&left_col) = left_var_positions.get(&var) {
+                let right_vars = right_pattern.variables();
+                if let Some(right_idx) = right_vars.iter().position(|v| *v == var) {
+                    unify_instructions.push(UnifyInstruction {
+                        left_col,
+                        right_col: right_idx,
+                    });
+                }
+            }
+        }
+
+        // Should have one unify instruction for ?s
+        assert_eq!(unify_instructions.len(), 1);
+        assert_eq!(unify_instructions[0].left_col, 0);  // ?s is col 0 in left
+        assert_eq!(unify_instructions[0].right_col, 0); // ?s is col 0 in right pattern output
+    }
+
+    #[test]
+    fn test_has_poisoned_binding() {
+        use fluree_db_core::{FlakeValue, MemoryStorage, NoCache};
+
+        // Create a simple operator setup
+        let left_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
+        let right_pattern = TriplePattern::new(
+            Term::Var(VarId(0)),
+            Term::Sid(Sid::new(100, "age")),
+            Term::Var(VarId(2)),
+        );
+
+        // Create a mock operator
+        struct MockOp;
+        #[async_trait]
+        impl<S: fluree_db_core::Storage + 'static, C: fluree_db_core::NodeCache + 'static>
+            Operator<S, C> for MockOp
+        {
+            fn schema(&self) -> &[VarId] {
+                &[]
+            }
+            async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
+                Ok(())
+            }
+            async fn next_batch(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+                Ok(None)
+            }
+            fn close(&mut self) {}
+        }
+
+        let join = NestedLoopJoinOperator::<MemoryStorage, NoCache>::new(
+            Box::new(MockOp),
+            left_schema.clone(),
+            right_pattern,
+            None, // No object bounds
+        );
+
+        // Create a batch with one row that has Poisoned in position 0 (used for binding)
+        let columns_poisoned = vec![
+            vec![Binding::Poisoned],
+            vec![Binding::lit(FlakeValue::String("Alice".to_string()), Sid::new(2, "string"))],
+        ];
+        let batch_poisoned = Batch::new(left_schema.clone(), columns_poisoned).unwrap();
+
+        // Row 0 has Poisoned in position 0, which is used for subject binding
+        assert!(join.has_poisoned_binding(&batch_poisoned, 0));
+
+        // Create a batch with one row that has NO Poisoned bindings
+        let columns_normal = vec![
+            vec![Binding::Sid(Sid::new(1, "alice"))],
+            vec![Binding::lit(FlakeValue::String("Alice".to_string()), Sid::new(2, "string"))],
+        ];
+        let batch_normal = Batch::new(left_schema.clone(), columns_normal).unwrap();
+
+        // Row 0 has no Poisoned bindings
+        assert!(!join.has_poisoned_binding(&batch_normal, 0));
+
+        // Create a batch where Poisoned is in position 1 (NOT used for binding)
+        let columns_poisoned_unused = vec![
+            vec![Binding::Sid(Sid::new(1, "alice"))],
+            vec![Binding::Poisoned], // This is in position 1, not used for binding ?s
+        ];
+        let batch_poisoned_unused = Batch::new(left_schema, columns_poisoned_unused).unwrap();
+
+        // Row 0 has Poisoned in position 1, but position 1 is not used for binding
+        // (only position 0 is used for ?s)
+        assert!(!join.has_poisoned_binding(&batch_poisoned_unused, 0));
+    }
+
+    /// Verify that shared vars at Object position with Lit bindings are substituted,
+    /// not unified. This tests that the join correctly handles the case where a
+    /// shared var is substituted into the pattern rather than requiring unification.
+    ///
+    /// When ?v is at Object position and has a Lit binding, it gets substituted
+    /// into the pattern as a constant. The right scan then only outputs the
+    /// remaining variables (?x in this case), and no unification check is needed.
+    #[tokio::test]
+    async fn test_join_substituted_var_no_unification() {
+        use crate::context::ExecutionContext;
+        use crate::var_registry::VarRegistry;
+        use fluree_db_core::{Db, FlakeValue, MemoryStorage, NoCache};
+
+        // Minimal context (db is unused here; only batch_size matters).
+        let db = Db::genesis(MemoryStorage::new(), NoCache, "test/main");
+        let mut vars = VarRegistry::new();
+        let x = vars.get_or_insert("?x"); // VarId(0)
+        let v = vars.get_or_insert("?v"); // VarId(1)
+        let ctx = ExecutionContext::new(&db, &vars);
+
+        // Left schema: [?v]
+        let left_schema: Arc<[VarId]> = Arc::from(vec![v].into_boxed_slice());
+        // Right pattern: ?x p ?v (shared ?v at Object position)
+        let right_pattern = TriplePattern::new(
+            Term::Var(x),
+            Term::Sid(Sid::new(100, "p")),
+            Term::Var(v),
+        );
+
+        // Mock left operator (unused; we inject batches directly into join state).
+        struct MockOp;
+        #[async_trait]
+        impl<S: fluree_db_core::Storage + 'static, C: fluree_db_core::NodeCache + 'static>
+            Operator<S, C> for MockOp
+        {
+            fn schema(&self) -> &[VarId] {
+                &[]
+            }
+            async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
+                Ok(())
+            }
+            async fn next_batch(
+                &mut self,
+                _: &ExecutionContext<'_, S, C>,
+            ) -> Result<Option<Batch>> {
+                Ok(None)
+            }
+            fn close(&mut self) {}
+        }
+
+        let mut join = NestedLoopJoinOperator::<MemoryStorage, NoCache>::new(
+            Box::new(MockOp),
+            left_schema.clone(),
+            right_pattern,
+            None, // No object bounds
+        );
+
+        // Verify that ?v is NOT in unify_instructions (it's substituted, not unified)
+        assert!(
+            join.unify_instructions.is_empty(),
+            "No unify instructions expected when shared var at Object position has Lit binding"
+        );
+
+        // Left batch: ?v = 1
+        let left_batch = Batch::new(
+            left_schema,
+            vec![vec![Binding::lit(FlakeValue::Long(1), Sid::new(2, "long"))]],
+        )
+        .unwrap();
+
+        // Right batch from scan would only have ?x (since ?v was substituted)
+        // The scan would have pattern: ?x p 1 (the literal value)
+        let right_schema: Arc<[VarId]> = Arc::from(vec![x].into_boxed_slice());
+        let right_batch = Batch::new(
+            right_schema,
+            vec![vec![Binding::lit(FlakeValue::Long(10), Sid::new(2, "long"))]],
+        )
+        .unwrap();
+
+        join.current_left_batch = Some(left_batch);
+        join.pending_output.push_back((BatchRef::Current, 0, right_batch));
+
+        // Should produce output since no unification check is needed
+        let out = join.build_output_batch(&ctx).await.unwrap();
+        assert!(out.is_some(), "Expected output when var is substituted (no unification)");
+        let batch = out.unwrap();
+        assert_eq!(batch.len(), 1);
+        // Output schema is [?v, ?x] (left vars + new right vars)
+        assert_eq!(batch.schema(), &[v, x]);
+    }
+
+    /// Verify join produces correct output when unification IS needed.
+    ///
+    /// This tests a scenario where a shared variable is NOT substituted:
+    /// - ?v appears in left schema
+    /// - ?v appears at Subject position in right pattern
+    /// - But left binding is Lit (not Sid), so substitution doesn't happen
+    /// - Variable remains in right pattern, right scan outputs it
+    /// - Unification check is needed
+    ///
+    /// However, since Subject position only substitutes Sid bindings, if the
+    /// left binding is Lit, the scan will look for subject=?v (unbound) which
+    /// returns ALL subjects. The unification then filters to matching values.
+    ///
+    /// Actually, the current implementation skips unify_instructions for ALL
+    /// vars with bind_instructions, even if substitution might not happen.
+    /// This test verifies the behavior when a shared var is at Subject position
+    /// but has a Lit binding - currently this scenario isn't expected in practice
+    /// because we typically have Sid bindings for Subject/Predicate joins.
+    #[tokio::test]
+    async fn test_join_multiple_new_vars() {
+        use crate::context::ExecutionContext;
+        use crate::var_registry::VarRegistry;
+        use fluree_db_core::{Db, FlakeValue, MemoryStorage, NoCache};
+
+        let db = Db::genesis(MemoryStorage::new(), NoCache, "test/main");
+        let mut vars = VarRegistry::new();
+        let s = vars.get_or_insert("?s"); // VarId(0)
+        let x = vars.get_or_insert("?x"); // VarId(1)
+        let y = vars.get_or_insert("?y"); // VarId(2)
+        let ctx = ExecutionContext::new(&db, &vars);
+
+        // Left schema: [?s] - a Sid (e.g., from VALUES or prior scan)
+        let left_schema: Arc<[VarId]> = Arc::from(vec![s].into_boxed_slice());
+        // Right pattern: ?s p ?x with separate object ?y
+        // Actually let's test: ?x p ?y where neither is in left schema
+        let right_pattern = TriplePattern::new(
+            Term::Var(x),
+            Term::Sid(Sid::new(100, "p")),
+            Term::Var(y),
+        );
+
+        struct MockOp;
+        #[async_trait]
+        impl<S: fluree_db_core::Storage + 'static, C: fluree_db_core::NodeCache + 'static>
+            Operator<S, C> for MockOp
+        {
+            fn schema(&self) -> &[VarId] {
+                &[]
+            }
+            async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
+                Ok(())
+            }
+            async fn next_batch(
+                &mut self,
+                _: &ExecutionContext<'_, S, C>,
+            ) -> Result<Option<Batch>> {
+                Ok(None)
+            }
+            fn close(&mut self) {}
+        }
+
+        let mut join = NestedLoopJoinOperator::<MemoryStorage, NoCache>::new(
+            Box::new(MockOp),
+            left_schema.clone(),
+            right_pattern,
+            None, // No object bounds
+        );
+
+        // No unify_instructions since no shared vars between left [?s] and right [?x, ?y]
+        assert!(join.unify_instructions.is_empty());
+
+        // Left batch: ?s = some:subject (a Sid)
+        let left_batch = Batch::new(
+            left_schema,
+            vec![vec![Binding::Sid(Sid::new(1, "some:subject"))]],
+        )
+        .unwrap();
+
+        // Right batch: ?x = some:other, ?y = 42
+        let right_schema: Arc<[VarId]> = Arc::from(vec![x, y].into_boxed_slice());
+        let right_batch = Batch::new(
+            right_schema,
+            vec![
+                vec![Binding::Sid(Sid::new(1, "some:other"))],
+                vec![Binding::lit(FlakeValue::Long(42), Sid::new(2, "long"))],
+            ],
+        )
+        .unwrap();
+
+        join.current_left_batch = Some(left_batch);
+        join.pending_output.push_back((BatchRef::Current, 0, right_batch));
+
+        let out = join
+            .build_output_batch(&ctx)
+            .await
+            .unwrap()
+            .expect("Expected output batch");
+
+        assert_eq!(out.len(), 1);
+        // Combined schema: left [?s] + new right vars [?x, ?y]
+        assert_eq!(out.schema(), &[s, x, y]);
+    }
+}

@@ -1,0 +1,45 @@
+//! Explain API integration tests (Clojure parity)
+//!
+//! Mirrors `db-clojure/test/fluree/db/query/explain_test.clj` in spirit.
+//! The native/statistics-backed tests live in `it_query_explain_native.rs`.
+
+mod support;
+
+use fluree_db_api::FlureeBuilder;
+use serde_json::json;
+use support::genesis_ledger;
+
+#[tokio::test]
+async fn explain_no_stats_reports_none_and_reason() {
+    // Clojure: explain-no-stats-test
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "no-stats:main");
+
+    // Ensure the `ex` namespace is allocated (so query parsing can encode IRIs),
+    // but do NOT run indexing so stats remain unavailable.
+    let ledger = fluree
+        .insert(
+            ledger0,
+            &json!({
+                "@context": {"ex":"http://example.org/"},
+                "@id":"ex:alice",
+                "ex:name":"Alice"
+            }),
+        )
+        .await
+        .expect("seed")
+        .ledger;
+
+    let q = json!({
+        "@context": {"ex":"http://example.org/"},
+        "select": ["?person"],
+        "where": [{"@id":"?person","ex:name":"?name"}]
+    });
+
+    let resp = fluree.explain(&ledger, &q).await.expect("explain");
+    assert_eq!(resp["plan"]["optimization"], "none");
+    assert_eq!(resp["plan"]["reason"], "No statistics available");
+    assert!(resp.get("query").is_some());
+    assert!(resp["plan"].get("where-clause").is_some());
+}
+

@@ -1,0 +1,297 @@
+use crate::{
+    ApiError, Fluree, HistoricalLedgerView, LedgerState, NameService, Result, SimpleCache, Storage,
+};
+use fluree_db_nameservice::{NameServiceError, Publisher};
+
+impl<S, N> Fluree<S, SimpleCache, N>
+where
+    S: Storage + Clone + 'static,
+    N: NameService,
+{
+    /// Resolve a datetime to a `t` value by walking commits (fallback implementation).
+    ///
+    /// Note: The primary implementation now uses index-based lookup via `time_resolve::datetime_to_t`.
+    /// This walking implementation is kept as a fallback for edge cases or testing.
+    #[allow(dead_code)]
+    async fn resolve_datetime_to_t_walking(
+        &self,
+        head_commit_address: &str,
+        target_iso: &str,
+        default_t: i64,
+    ) -> Result<i64> {
+        use chrono::DateTime;
+        use futures::StreamExt;
+
+        let target = DateTime::parse_from_rfc3339(target_iso).map_err(|e| {
+            ApiError::internal(format!(
+                "Invalid ISO-8601 timestamp for time travel: {} ({})",
+                target_iso, e
+            ))
+        })?;
+
+        // Walk commits newest -> oldest. Return the first commit whose timestamp is <= target.
+        //
+        // This matches Clojure behavior: find the first commit after the target, then use its
+        // previous t. Returning latest <= target is equivalent under monotonic t/time.
+        let mut saw_any_timestamp = false;
+        let stream = fluree_db_novelty::trace_commits(
+            self.connection.storage().clone(),
+            head_commit_address.to_string(),
+            0,
+        );
+        futures::pin_mut!(stream);
+
+        while let Some(result) = stream.next().await {
+            let commit = result.map_err(|e| {
+                ApiError::internal(format!(
+                    "Failed to read commit during datetime->t resolution: {}",
+                    e
+                ))
+            })?;
+            let Some(commit_time) = commit.time.as_deref() else {
+                continue;
+            };
+
+            let Ok(dt) = DateTime::parse_from_rfc3339(commit_time) else {
+                // Skip invalid timestamps rather than failing dataset load.
+                continue;
+            };
+            saw_any_timestamp = true;
+
+            if dt <= target {
+                return Ok(commit.t);
+            }
+        }
+
+        if !saw_any_timestamp {
+            // If commits have no timestamps (or all timestamps are invalid), fall back to head.
+            return Ok(default_t);
+        }
+
+        Err(ApiError::internal(format!(
+            "There is no data as of {}",
+            target_iso
+        )))
+    }
+
+    /// Resolve a SHA prefix to a `t` value by walking commits (fallback implementation).
+    ///
+    /// This walks through the commit chain looking for a commit whose ID
+    /// matches the given SHA prefix.
+    ///
+    /// Note: The primary implementation now uses index-based lookup via `time_resolve::sha_to_t`.
+    /// This walking implementation is kept as a fallback for edge cases or testing.
+    ///
+    /// # Arguments
+    /// * `head_commit_address` - The address of the head commit to start from
+    /// * `sha_prefix` - The SHA prefix to match (with or without 'sha256:' prefix)
+    ///
+    /// # Returns
+    /// * `Ok(t)` - The `t` value of the matching commit
+    /// * `Err` - If no commit matches, or if multiple commits match (ambiguous)
+    #[allow(dead_code)]
+    async fn resolve_sha_to_t_walking(
+        &self,
+        head_commit_address: &str,
+        sha_prefix: &str,
+    ) -> Result<i64> {
+        use futures::StreamExt;
+
+        // Normalize the SHA prefix:
+        // - Strip "fluree:commit:" prefix if present
+        // - Strip "sha256:" prefix if present
+        // - Result should be the hex hash (or prefix thereof)
+        let sha_normalized = sha_prefix
+            .strip_prefix("fluree:commit:")
+            .unwrap_or(sha_prefix);
+        let sha_normalized = sha_normalized
+            .strip_prefix("sha256:")
+            .unwrap_or(sha_normalized);
+
+        // Validation: minimum 6 characters for useful prefix matching
+        if sha_normalized.len() < 6 {
+            return Err(ApiError::query(format!(
+                "SHA prefix must be at least 6 characters, got {}",
+                sha_normalized.len()
+            )));
+        }
+
+        // SHA-256 in hex is 64 characters
+        if sha_normalized.len() > 64 {
+            return Err(ApiError::query(format!(
+                "SHA prefix too long ({} chars). SHA-256 in hex is 64 characters.",
+                sha_normalized.len()
+            )));
+        }
+
+        // Walk commits looking for matching SHA
+        let mut matching_commits: Vec<(String, i64)> = Vec::new();
+        let stream = fluree_db_novelty::trace_commits(
+            self.connection.storage().clone(),
+            head_commit_address.to_string(),
+            0,
+        );
+        futures::pin_mut!(stream);
+
+        while let Some(result) = stream.next().await {
+            let commit = result.map_err(|e| {
+                ApiError::internal(format!(
+                    "Failed to read commit during sha->t resolution: {}",
+                    e
+                ))
+            })?;
+
+            // Check if this commit's ID matches the prefix
+            if let Some(commit_id) = &commit.id {
+                // commit_id format: "fluree:commit:sha256:<hex>"
+                let commit_sha = commit_id
+                    .strip_prefix("fluree:commit:sha256:")
+                    .unwrap_or(commit_id);
+
+                if commit_sha.starts_with(sha_normalized) {
+                    matching_commits.push((commit_id.clone(), commit.t));
+
+                    // If we have an exact match (full SHA), we're done
+                    if commit_sha == sha_normalized {
+                        break;
+                    }
+                }
+            }
+
+            // Stop after finding multiple matches (prefix is ambiguous)
+            if matching_commits.len() > 1 {
+                break;
+            }
+        }
+
+        match matching_commits.len() {
+            0 => Err(ApiError::query(format!(
+                "No commit found with SHA prefix: {}",
+                sha_normalized
+            ))),
+            1 => {
+                let (_, t) = &matching_commits[0];
+                Ok(*t)
+            }
+            _ => {
+                // Multiple matches - ambiguous prefix
+                let commit_ids: Vec<&str> = matching_commits
+                    .iter()
+                    .take(5)
+                    .map(|(id, _)| id.as_str())
+                    .collect();
+                Err(ApiError::query(format!(
+                    "Ambiguous SHA prefix: {}. Multiple commits match: {:?}{}",
+                    sha_normalized,
+                    commit_ids,
+                    if matching_commits.len() > 5 { " ..." } else { "" }
+                )))
+            }
+        }
+    }
+
+    /// Load a ledger by alias (e.g., "mydb:main")
+    ///
+    /// This loads the ledger state using the connection-wide cache.
+    /// The ledger state combines the indexed database with any uncommitted novelty transactions.
+    pub async fn ledger(&self, alias: &str) -> Result<LedgerState<S, SimpleCache>> {
+        let cache = std::sync::Arc::clone(self.connection.cache());
+        let state = LedgerState::load(
+            &self.nameservice,
+            alias,
+            self.connection.storage().clone(),
+            cache,
+        )
+        .await?;
+
+        Ok(state)
+    }
+
+    /// Load a historical view of a ledger at a specific time
+    ///
+    /// This provides time-travel capability by loading the ledger state
+    /// as it existed at `target_t`. The view is read-only and time-bounded.
+    pub async fn ledger_view_at(
+        &self,
+        alias: &str,
+        target_t: i64,
+    ) -> Result<HistoricalLedgerView<S, SimpleCache>> {
+        let cache = std::sync::Arc::clone(self.connection.cache());
+
+        let view = HistoricalLedgerView::load_at(
+            &self.nameservice,
+            alias,
+            self.connection.storage().clone(),
+            cache,
+            target_t,
+        )
+        .await?;
+
+        Ok(view)
+    }
+}
+
+// =============================================================================
+// Ledger Creation
+// =============================================================================
+
+impl<S, N> Fluree<S, SimpleCache, N>
+where
+    S: Storage + Clone + 'static,
+    N: NameService + Publisher,
+{
+    /// Create a new empty ledger with genesis state
+    ///
+    /// This operation:
+    /// 1. Normalizes the alias (ensures branch suffix like `:main`)
+    /// 2. Registers the ledger in the nameservice (fails if already exists)
+    /// 3. Creates a genesis database with t=0 (no transactions yet)
+    /// 4. Returns the new LedgerState ready for transactions
+    ///
+    /// # Arguments
+    ///
+    /// * `alias` - Ledger alias (e.g., "mydb" or "mydb:main")
+    ///
+    /// # Errors
+    ///
+    /// Returns `ApiError::LedgerExists` (HTTP 409) if:
+    /// - The ledger already exists
+    /// - The ledger was previously dropped (retracted) - must use hard drop to reuse alias
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let ledger = fluree.create_ledger("mydb").await?;
+    /// // Now you can transact: fluree.insert(ledger, &data).await?
+    /// ```
+    pub async fn create_ledger(&self, alias: &str) -> Result<LedgerState<S, SimpleCache>> {
+        use fluree_db_core::alias::normalize_alias;
+        use fluree_db_novelty::Novelty;
+        use tracing::info;
+
+        // 1. Normalize alias (ensure branch suffix)
+        let alias = normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
+        info!(alias = %alias, "Creating ledger");
+
+        // 2. Register in nameservice via Publisher (fails if already exists)
+        match self.nameservice.publish_ledger_init(&alias).await {
+            Ok(()) => {}
+            Err(NameServiceError::LedgerAlreadyExists(a)) => {
+                return Err(ApiError::ledger_exists(a));
+            }
+            Err(e) => {
+                return Err(e.into());
+            }
+        }
+
+        // 3. Create genesis Db with empty state at t=0 using the connection-wide cache
+        let cache = std::sync::Arc::clone(self.connection.cache());
+        let db = fluree_db_core::Db::genesis(self.connection.storage().clone(), cache, &alias);
+
+        // 4. Create LedgerState with empty Novelty (t=0)
+        let ledger = LedgerState::new(db, Novelty::new(0));
+
+        info!(alias = %alias, "Ledger created successfully");
+        Ok(ledger)
+    }
+}

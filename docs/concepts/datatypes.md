@@ -1,0 +1,284 @@
+# Datatypes and Typed Values
+
+Fluree enforces strong typing for all literal values, ensuring data consistency and enabling efficient indexing and querying. Every literal value has an explicit datatype, following RDF and XSD standards.
+
+## Core Principle: No Untyped Literals
+
+Unlike some databases that allow "plain" strings, Fluree requires every literal to have a datatype. This design provides:
+
+- **Type Safety**: Prevents type confusion in queries and applications
+- **Consistent Comparisons**: Typed values compare predictably
+- **Standards Compliance**: Follows RDF and SPARQL specifications
+- **Query Optimization**: Enables efficient indexing and query planning
+
+## XSD Datatypes
+
+Fluree supports the core XML Schema Definition (XSD) datatypes:
+
+### String Types
+
+```json
+{
+  "@context": {
+    "xsd": "http://www.w3.org/2001/XMLSchema#",
+    "ex": "http://example.org/ns/"
+  },
+  "@graph": [
+    {
+      "@id": "ex:book1",
+      "ex:title": "The Great Gatsby",
+      "ex:author": {
+        "@value": "F. Scott Fitzgerald",
+        "@type": "xsd:string"
+      }
+    }
+  ]
+}
+```
+
+**xsd:string** is the default for plain string literals when no type is specified.
+
+### Numeric Types
+
+```json
+{
+  "@graph": [
+    {
+      "@id": "ex:product1",
+      "ex:price": {
+        "@value": "29.99",
+        "@type": "xsd:decimal"
+      },
+      "ex:quantity": {
+        "@value": "100",
+        "@type": "xsd:integer"
+      },
+      "ex:rating": {
+        "@value": "4.5",
+        "@type": "xsd:double"
+      }
+    }
+  ]
+}
+```
+
+Supported numeric types:
+- **xsd:integer**: Whole numbers (-∞, ∞)
+- **xsd:long**: 64-bit integers
+- **xsd:int**: 32-bit integers
+- **xsd:short**: 16-bit integers
+- **xsd:byte**: 8-bit integers
+- **xsd:decimal**: Arbitrary precision decimals
+- **xsd:double**: 64-bit floating point
+- **xsd:float**: 32-bit floating point
+
+### Boolean Type
+
+```json
+{
+  "@graph": [
+    {
+      "@id": "ex:user1",
+      "ex:isActive": {
+        "@value": "true",
+        "@type": "xsd:boolean"
+      },
+      "ex:hasVerifiedEmail": {
+        "@value": "false",
+        "@type": "xsd:boolean"
+      }
+    }
+  ]
+}
+```
+
+**xsd:boolean** accepts: `true`, `false`, `1`, `0`.
+
+### Date and Time Types
+
+```json
+{
+  "@graph": [
+    {
+      "@id": "ex:event1",
+      "ex:startDate": {
+        "@value": "2024-01-15",
+        "@type": "xsd:date"
+      },
+      "ex:startTime": {
+        "@value": "14:30:00Z",
+        "@type": "xsd:time"
+      },
+      "ex:createdAt": {
+        "@value": "2024-01-15T14:30:00Z",
+        "@type": "xsd:dateTime"
+      }
+    }
+  ]
+}
+```
+
+Temporal types:
+- **xsd:date**: Dates without time (e.g., `2024-01-15`)
+- **xsd:time**: Times without date (e.g., `14:30:00Z`)
+- **xsd:dateTime**: Full timestamps (e.g., `2024-01-15T14:30:00Z`)
+
+### Other XSD Types
+
+```json
+{
+  "@graph": [
+    {
+      "@id": "ex:resource1",
+      "ex:homepage": {
+        "@value": "https://example.com",
+        "@type": "xsd:anyURI"
+      },
+      "ex:duration": {
+        "@value": "PT1H30M",
+        "@type": "xsd:duration"
+      }
+    }
+  ]
+}
+```
+
+Additional types include:
+- **xsd:anyURI**: Web addresses and identifiers
+- **xsd:duration**: Time periods (ISO 8601 format)
+- **xsd:gYear**, **xsd:gMonth**, **xsd:gDay**: Partial date components
+
+## RDF Datatypes
+
+Beyond XSD, Fluree supports RDF-specific datatypes:
+
+### Language-Tagged Strings
+
+```json
+{
+  "@graph": [
+    {
+      "@id": "ex:book1",
+      "ex:title": {
+        "@value": "The Great Gatsby",
+        "@language": "en"
+      },
+      "ex:titel": {
+        "@value": "Der große Gatsby",
+        "@language": "de"
+      }
+    }
+  ]
+}
+```
+
+**rdf:langString** represents strings with language tags. This is distinct from plain strings and enables language-aware queries.
+
+### JSON Data
+
+```json
+{
+  "@graph": [
+    {
+      "@id": "ex:config1",
+      "ex:settings": {
+        "@value": "{\"theme\": \"dark\", \"notifications\": true}",
+        "@type": "@json"
+      }
+    }
+  ]
+}
+```
+
+**rdf:JSON** stores JSON data as typed literals. This is useful for storing complex structured data that doesn't fit the RDF model.
+
+## Type Coercion and Compatibility
+
+### Automatic Type Promotion
+
+Fluree handles type compatibility intelligently:
+
+```sparql
+# This works - integer can be used where decimal is expected
+SELECT ?price
+WHERE {
+  ?product ex:price ?price .
+  FILTER(?price > 10.0)  # decimal comparison
+}
+```
+
+### Type Casting in Queries
+
+SPARQL provides functions for type conversion:
+
+```sparql
+SELECT ?name (xsd:string(?id) AS ?idString)
+WHERE {
+  ?person ex:name ?name ;
+          ex:id ?id .
+}
+```
+
+## Best Practices
+
+### Choosing Datatypes
+
+1. **Be Specific**: Use the most appropriate type for your data
+   - Use `xsd:integer` for whole numbers that will be used in calculations
+   - Use `xsd:string` for identifiers and labels
+   - Use `xsd:dateTime` for timestamps
+
+2. **Consider Query Patterns**: Choose types that support your intended queries
+   - Numeric types enable range queries and aggregations
+   - Date types enable temporal queries
+   - String types support text search
+
+3. **Standards Alignment**: Use standard datatypes where possible
+   - Prefer XSD types over custom types
+   - Use established vocabularies with well-defined ranges
+
+### Type Consistency
+
+1. **Consistent Usage**: Use the same datatype for equivalent properties across your data
+2. **Migration Planning**: Plan for type changes in data evolution
+3. **Validation**: Validate data types at ingestion time
+
+### Performance Considerations
+
+1. **Index Efficiency**: Different types have different indexing characteristics
+   - Numeric types support efficient range queries
+   - String types support prefix and substring matching
+   - Date types enable temporal range queries
+
+2. **Storage Size**: Some types are more storage-efficient than others
+   - `xsd:integer` is more compact than `xsd:string`
+   - `xsd:boolean` is more efficient than string representations
+
+## Type System Architecture
+
+### Internal Representation
+
+Fluree stores all typed values with their datatype information:
+
+- **Value Storage**: The literal value as a string
+- **Type Metadata**: The datatype IRI
+- **Comparison Logic**: Type-aware comparison functions
+
+### Query Processing
+
+The type system affects query processing:
+
+- **Type Checking**: Ensures type compatibility in filters and joins
+- **Index Selection**: Chooses appropriate indexes based on types
+- **Result Formatting**: Formats results according to datatype rules
+
+### Standards Compliance
+
+Fluree's type system is fully compliant with:
+
+- **RDF 1.1 Concepts**: Literal typing requirements
+- **SPARQL 1.1**: Type promotion and compatibility rules
+- **XSD 1.1**: Datatype definitions and constraints
+- **JSON-LD 1.1**: Typed value syntax
+
+This strong typing foundation ensures data consistency, enables optimization, and maintains interoperability with the broader semantic web ecosystem.

@@ -1,0 +1,1867 @@
+//! SPARQL Lowering.
+//!
+//! This module lowers the SPARQL AST to the query algebra defined in
+//! `fluree-db-query`. This involves:
+//!
+//! - Prefix expansion (resolving prefixed names to full IRIs)
+//! - IRI encoding via `IriEncoder` trait
+//! - Variable registration via `VarRegistry`
+//! - Graph pattern lowering to `Pattern`
+//! - Expression lowering to `FilterExpr`
+//!
+//! ## Usage
+//!
+//! ```
+//! use fluree_db_sparql::{parse_sparql, lower_sparql};
+//! use fluree_db_query::parse::encode::MemoryEncoder;
+//! use fluree_db_query::var_registry::VarRegistry;
+//!
+//! let output = parse_sparql("SELECT ?name WHERE { ?s <http://example.org/name> ?name }");
+//! let ast = output.ast.unwrap();
+//!
+//! let mut encoder = MemoryEncoder::with_common_namespaces();
+//! encoder.add_namespace("http://example.org/", 100);
+//! let mut vars = VarRegistry::new();
+//! let query = lower_sparql(&ast, &encoder, &mut vars).unwrap();
+//! ```
+//!
+//! ## Integration
+//!
+//! After lowering, the query can be executed by the existing
+//! `fluree-db-query` execution pipeline.
+//!
+//! ## Module Structure
+//!
+//! Lowering logic is split across focused submodules:
+//!
+//! - [`term`] — Variables, IRIs, literals, blank nodes
+//! - [`expression`] — Filter expressions and function calls
+//! - [`aggregate`] — Aggregate extraction and HAVING
+//! - [`pattern`] — Graph pattern dispatch (BGP, OPTIONAL, UNION, etc.)
+//! - [`path`] — Property path lowering
+//! - [`rdf_star`] — RDF-star quoted triple expansion
+//! - [`construct`] — CONSTRUCT query lowering
+//! - [`select`] — SELECT clause, solution modifiers, subqueries
+
+mod aggregate;
+mod construct;
+mod error;
+mod expression;
+mod path;
+mod pattern;
+mod rdf_star;
+mod select;
+mod term;
+
+pub use error::{LowerError, Result};
+
+use crate::ast::query::{QueryBody, SelectVariables, SparqlAst};
+
+use fluree_db_query::parse::encode::IriEncoder;
+use fluree_db_query::parse::{ParsedQuery, SelectMode};
+use fluree_db_query::var_registry::{VarId, VarRegistry};
+
+use fluree_graph_json_ld::{parse_context, ParsedContext};
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+/// Lower a SPARQL AST to a ParsedQuery.
+///
+/// This produces a `ParsedQuery` that can be directly executed by the
+/// fluree-db-query engine via `ExecutableQuery`.
+///
+/// # Arguments
+///
+/// * `ast` - The parsed SPARQL AST
+/// * `encoder` - IRI encoder for converting IRIs to Sids
+/// * `vars` - Variable registry (caller provides to enable sharing across subqueries)
+///
+/// # Returns
+///
+/// A `ParsedQuery` ready for execution, or a `LowerError`.
+pub fn lower_sparql<E: IriEncoder>(
+    ast: &SparqlAst,
+    encoder: &E,
+    vars: &mut VarRegistry,
+) -> Result<ParsedQuery> {
+    let span = tracing::debug_span!("sparql_lower");
+    let _guard = span.enter();
+
+    tracing::debug!("lowering SPARQL AST to query algebra");
+
+    let mut ctx = LoweringContext::new(ast, encoder, vars);
+    let result = ctx.lower();
+
+    match &result {
+        Ok(query) => {
+            tracing::debug!(
+                pattern_count = query.patterns.len(),
+                var_count = vars.len(),
+                "SPARQL lowering completed"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "SPARQL lowering failed");
+        }
+    }
+
+    result
+}
+
+/// Context for lowering operations.
+///
+/// Maintains prefix mappings and provides methods for lowering each AST type.
+/// Methods are split across submodules but all operate on this shared context.
+struct LoweringContext<'a, E> {
+    ast: &'a SparqlAst,
+    encoder: &'a E,
+    vars: &'a mut VarRegistry,
+    /// Prefix → IRI namespace mapping from prologue
+    prefixes: HashMap<Arc<str>, Arc<str>>,
+    /// Base IRI for relative IRI resolution
+    base: Option<Arc<str>>,
+    /// Aggregate expression → alias variable mapping (for HAVING)
+    aggregate_aliases: Option<HashMap<String, VarId>>,
+}
+
+impl<'a, E: IriEncoder> LoweringContext<'a, E> {
+    fn new(ast: &'a SparqlAst, encoder: &'a E, vars: &'a mut VarRegistry) -> Self {
+        // Build prefix map from prologue
+        let mut prefixes = HashMap::new();
+        for decl in &ast.prologue.prefixes {
+            prefixes.insert(decl.prefix.clone(), decl.iri.clone());
+        }
+
+        // Get base IRI
+        let base = ast.prologue.base.as_ref().map(|b| b.iri.clone());
+
+        Self {
+            ast,
+            encoder,
+            vars,
+            prefixes,
+            base,
+            aggregate_aliases: None,
+        }
+    }
+
+    /// Main entry point for lowering.
+    fn lower(&mut self) -> Result<ParsedQuery> {
+        match &self.ast.body {
+            QueryBody::Select(select_query) => {
+                // Lower WHERE clause patterns
+                let mut patterns = self.lower_graph_pattern(&select_query.where_clause.pattern)?;
+
+                // Lower SELECT clause to get selected variables
+                let select = self.lower_select_clause(&select_query.select)?;
+
+                // Aggregate aliases referenced by SELECT expressions (for post-aggregation binds)
+                let aggregate_aliases = self.collect_aggregate_alias_names(&select_query.select);
+
+                // Lower SELECT expression bindings (e.g., SELECT (SHA512(?x) AS ?hash))
+                let (select_binds, post_binds) =
+                    self.lower_select_expression_binds(&select_query.select, &aggregate_aliases)?;
+                patterns.extend(select_binds);
+
+                // Lower solution modifiers to QueryOptions
+                let mut options =
+                    self.lower_solution_modifiers(&select_query.modifiers, &select_query.select)?;
+                options.post_binds = post_binds;
+
+                // Build a JSON-LD-like context from SPARQL prologue prefixes so formatters can compact IRIs.
+                let ctx = self.build_jsonld_context()?;
+
+                // SELECT * should behave like "wildcard select" for JSON-LD-style outputs.
+                // This lets formatters emit object rows keyed by variable name (Clojure parity).
+                let select_mode = match &select_query.select.variables {
+                    SelectVariables::Star => SelectMode::Wildcard,
+                    _ => SelectMode::Many,
+                };
+
+                Ok(ParsedQuery {
+                    context: ctx,
+                    orig_context: None, // SPARQL doesn't originate from JSON context
+                    select,
+                    patterns,
+                    options,
+                    select_mode,
+                    construct_template: None,
+                    graph_select: None, // SPARQL doesn't support graph crawl
+                })
+            }
+            QueryBody::Construct(construct_query) => self.lower_construct(construct_query),
+            QueryBody::Ask(_) => Err(LowerError::unsupported_form("ASK", self.ast.span)),
+            QueryBody::Describe(_) => {
+                Err(LowerError::unsupported_form("DESCRIBE", self.ast.span))
+            }
+            QueryBody::Update(_) => Err(LowerError::unsupported_form("UPDATE", self.ast.span)),
+        }
+    }
+
+    /// Build a JSON-LD ParsedContext from the SPARQL prologue.
+    ///
+    /// This is used only for result formatting (IRI compaction), not for parsing.
+    /// Delegates to `build_jsonld_context_value` for the raw JSON value, then
+    /// parses it into a `ParsedContext`.
+    fn build_jsonld_context(&self) -> Result<ParsedContext> {
+        let value = self.build_jsonld_context_value();
+        // Context parsing should not fail for simple prefix maps; if it does,
+        // fall back to an empty context (formatters will emit full IRIs).
+        match parse_context(&value) {
+            Ok(ctx) => Ok(ctx),
+            Err(_) => Ok(ParsedContext::default()),
+        }
+    }
+
+    /// Build a JSON-LD context object from the SPARQL prologue.
+    fn build_jsonld_context_value(&self) -> serde_json::Value {
+        use serde_json::{Map, Value as JsonValue};
+
+        let mut obj = Map::new();
+
+        // BASE becomes @base and (for parity) @vocab when present.
+        if let Some(base) = &self.base {
+            obj.insert(
+                "@base".to_string(),
+                JsonValue::String(base.as_ref().to_string()),
+            );
+            obj.insert(
+                "@vocab".to_string(),
+                JsonValue::String(base.as_ref().to_string()),
+            );
+        }
+
+        // PREFIX declarations map directly to JSON-LD prefix entries.
+        for (prefix, iri) in &self.prefixes {
+            obj.insert(
+                prefix.as_ref().to_string(),
+                JsonValue::String(iri.as_ref().to_string()),
+            );
+        }
+
+        JsonValue::Object(obj)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse::parse_sparql;
+    use fluree_db_query::aggregate::AggregateFn;
+    use fluree_db_query::ir::{PathModifier, Pattern};
+    use fluree_db_query::parse::encode::MemoryEncoder;
+    use fluree_db_query::pattern::Term;
+    use fluree_db_query::sort::SortDirection;
+
+    fn test_encoder() -> MemoryEncoder {
+        let mut encoder = MemoryEncoder::with_common_namespaces();
+        encoder.add_namespace("http://example.org/", 100);
+        encoder.add_namespace("http://schema.org/", 101);
+        encoder.add_namespace("http://xmlns.com/foaf/0.1/", 102);
+        encoder
+    }
+
+    fn lower_query(sparql: &str) -> Result<ParsedQuery> {
+        let output = parse_sparql(sparql);
+        assert!(
+            output.ast.is_some(),
+            "Parse failed: {:?}",
+            output.diagnostics
+        );
+        let ast = output.ast.unwrap();
+        let encoder = test_encoder();
+        let mut vars = VarRegistry::new();
+        lower_sparql(&ast, &encoder, &mut vars)
+    }
+
+    // =========================================================================
+    // Basic SELECT tests
+    // =========================================================================
+
+    #[test]
+    fn test_simple_select() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?name WHERE { ?s ex:name ?name }",
+        )
+        .unwrap();
+
+        assert_eq!(query.select.len(), 2);
+        assert_eq!(query.patterns.len(), 1);
+        assert!(matches!(query.patterns[0], Pattern::Triple(_)));
+    }
+
+    #[test]
+    fn test_select_star() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT * WHERE { ?s ex:name ?name }",
+        )
+        .unwrap();
+
+        // SELECT * should include all variables from WHERE
+        assert!(!query.select.is_empty());
+    }
+
+    #[test]
+    fn test_multiple_patterns() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?name ?age WHERE {
+               ?s ex:name ?name .
+               ?s ex:age ?age
+             }",
+        )
+        .unwrap();
+
+        assert_eq!(query.select.len(), 3);
+        assert_eq!(query.patterns.len(), 2);
+    }
+
+    // =========================================================================
+    // Pattern tests
+    // =========================================================================
+
+    #[test]
+    fn test_optional_pattern() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?name ?age WHERE {
+               ?s ex:name ?name .
+               OPTIONAL { ?s ex:age ?age }
+             }",
+        )
+        .unwrap();
+
+        // Should have: Triple, Optional
+        assert_eq!(query.patterns.len(), 2);
+        assert!(matches!(query.patterns[1], Pattern::Optional(_)));
+    }
+
+    #[test]
+    fn test_union_pattern() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?name WHERE {
+               { ?s ex:firstName ?name } UNION { ?s ex:lastName ?name }
+             }",
+        )
+        .unwrap();
+
+        // Should have a Union pattern
+        assert!(!query.patterns.is_empty());
+        let has_union = query.patterns.iter().any(|p| matches!(p, Pattern::Union(_)));
+        assert!(has_union, "Expected Union pattern");
+    }
+
+    #[test]
+    fn test_filter_pattern() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?age WHERE {
+               ?s ex:age ?age .
+               FILTER(?age > 18)
+             }",
+        )
+        .unwrap();
+
+        // Should have: Triple, Filter
+        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        assert!(has_filter, "Expected Filter pattern");
+    }
+
+    #[test]
+    fn test_bind_pattern() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?name ?upper WHERE {
+               ?s ex:name ?name .
+               BIND(UCASE(?name) AS ?upper)
+             }",
+        )
+        .unwrap();
+
+        let has_bind = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Bind { .. }));
+        assert!(has_bind, "Expected Bind pattern");
+    }
+
+    #[test]
+    fn test_values_pattern() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?x WHERE {
+               ?s ex:value ?x .
+               VALUES ?x { 1 2 3 }
+             }",
+        )
+        .unwrap();
+
+        let has_values = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Values { .. }));
+        assert!(has_values, "Expected Values pattern");
+    }
+
+    // =========================================================================
+    // Expression tests
+    // =========================================================================
+
+    #[test]
+    fn test_comparison_operators() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?age WHERE {
+               ?s ex:age ?age .
+               FILTER(?age >= 18 && ?age <= 65)
+             }",
+        )
+        .unwrap();
+
+        // Should parse and lower the AND of comparisons
+        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        assert!(has_filter);
+    }
+
+    #[test]
+    fn test_function_calls() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?name WHERE {
+               ?s ex:name ?name .
+               FILTER(STRLEN(?name) > 5)
+             }",
+        )
+        .unwrap();
+
+        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        assert!(has_filter);
+    }
+
+    // =========================================================================
+    // Prefix resolution tests
+    // =========================================================================
+
+    #[test]
+    fn test_prefix_resolution() {
+        let query = lower_query(
+            "PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+             SELECT ?s ?name WHERE { ?s foaf:name ?name }",
+        )
+        .unwrap();
+
+        // Should successfully resolve foaf prefix
+        assert_eq!(query.patterns.len(), 1);
+        if let Pattern::Triple(tp) = &query.patterns[0] {
+            if let Term::Sid(sid) = &tp.p {
+                assert_eq!(sid.namespace_code, 102); // foaf namespace
+                assert_eq!(sid.name.as_ref(), "name");
+            } else {
+                panic!("Expected Sid for predicate");
+            }
+        } else {
+            panic!("Expected Triple pattern");
+        }
+    }
+
+    #[test]
+    fn test_undefined_prefix_error() {
+        let result = lower_query("SELECT ?s ?name WHERE { ?s unknown:name ?name }");
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            LowerError::UndefinedPrefix { .. }
+        ));
+    }
+
+    #[test]
+    fn test_unknown_namespace_error() {
+        let result = lower_query(
+            "PREFIX other: <http://other.example.org/>
+             SELECT ?s ?name WHERE { ?s other:name ?name }",
+        );
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            LowerError::UnknownNamespace { .. }
+        ));
+    }
+
+    // =========================================================================
+    // MINUS Pattern Tests
+    // =========================================================================
+
+    #[test]
+    fn test_minus_pattern() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s WHERE { ?s ex:a ?o MINUS { ?s ex:b ?o } }",
+        )
+        .unwrap();
+
+        // Should have Triple, Minus patterns
+        assert_eq!(query.patterns.len(), 2);
+        assert!(matches!(query.patterns[0], Pattern::Triple(_)));
+        assert!(matches!(query.patterns[1], Pattern::Minus(_)));
+
+        // Check the MINUS contains a triple
+        if let Pattern::Minus(inner) = &query.patterns[1] {
+            assert_eq!(inner.len(), 1);
+            assert!(matches!(inner[0], Pattern::Triple(_)));
+        } else {
+            panic!("Expected Minus pattern");
+        }
+    }
+
+    // =========================================================================
+    // EXISTS/NOT EXISTS Tests
+    // =========================================================================
+
+    #[test]
+    fn test_filter_exists() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s WHERE { ?s ex:a ?o . FILTER EXISTS { ?s ex:b ?val } }",
+        )
+        .unwrap();
+
+        // Should have Triple, Exists patterns
+        let has_exists = query.patterns.iter().any(|p| matches!(p, Pattern::Exists(_)));
+        assert!(has_exists, "Expected Exists pattern");
+    }
+
+    #[test]
+    fn test_filter_not_exists() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s WHERE { ?s ex:a ?o . FILTER NOT EXISTS { ?s ex:deleted true } }",
+        )
+        .unwrap();
+
+        // Should have Triple, NotExists patterns
+        let has_not_exists = query.patterns.iter().any(|p| matches!(p, Pattern::NotExists(_)));
+        assert!(has_not_exists, "Expected NotExists pattern");
+    }
+
+    // =========================================================================
+    // New Function Tests
+    // =========================================================================
+
+    #[test]
+    fn test_string_functions_regex() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?name WHERE { ?s ex:name ?name . FILTER(REGEX(?name, \"^A\")) }",
+        )
+        .unwrap();
+
+        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        assert!(has_filter, "Expected Filter pattern with REGEX");
+    }
+
+    #[test]
+    fn test_string_functions_concat() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?full WHERE {
+               ?s ex:first ?f .
+               ?s ex:last ?l .
+               BIND(CONCAT(?f, \" \", ?l) AS ?full)
+             }",
+        )
+        .unwrap();
+
+        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        assert!(has_bind, "Expected Bind pattern with CONCAT");
+    }
+
+    #[test]
+    fn test_string_functions_strbefore_strafter() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s WHERE { ?s ex:name ?name . FILTER(STRBEFORE(?name, \"@\") != \"\") }",
+        )
+        .unwrap();
+
+        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        assert!(has_filter);
+
+        let query2 = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s WHERE { ?s ex:name ?name . FILTER(STRAFTER(?name, \"@\") != \"\") }",
+        )
+        .unwrap();
+
+        let has_filter2 = query2.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        assert!(has_filter2);
+    }
+
+    #[test]
+    fn test_string_functions_replace() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?clean WHERE {
+               ?s ex:text ?text .
+               BIND(REPLACE(?text, \"\\\\s+\", \" \") AS ?clean)
+             }",
+        )
+        .unwrap();
+
+        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        assert!(has_bind, "Expected Bind pattern with REPLACE");
+    }
+
+    #[test]
+    fn test_datetime_functions() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s WHERE {
+               ?s ex:created ?dt .
+               FILTER(YEAR(?dt) = 2024)
+             }",
+        )
+        .unwrap();
+
+        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        assert!(has_filter, "Expected Filter with YEAR function");
+    }
+
+    #[test]
+    fn test_datetime_function_now() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s WHERE {
+               ?s ex:expires ?dt .
+               FILTER(?dt > NOW())
+             }",
+        )
+        .unwrap();
+
+        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        assert!(has_filter, "Expected Filter with NOW function");
+    }
+
+    #[test]
+    fn test_rdf_term_functions_lang() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?name WHERE {
+               ?s ex:name ?name .
+               FILTER(LANG(?name) = \"en\")
+             }",
+        )
+        .unwrap();
+
+        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        assert!(has_filter, "Expected Filter with LANG function");
+    }
+
+    #[test]
+    fn test_rdf_term_functions_datatype() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+             SELECT ?s ?val WHERE {
+               ?s ex:value ?val .
+               FILTER(DATATYPE(?val) = xsd:integer)
+             }",
+        )
+        .unwrap();
+
+        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        assert!(has_filter, "Expected Filter with DATATYPE function");
+    }
+
+    // =========================================================================
+    // CONSTRUCT Query Tests
+    // =========================================================================
+
+    #[test]
+    fn test_construct_basic() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             CONSTRUCT { ?s ex:newProp ?o } WHERE { ?s ex:oldProp ?o }",
+        )
+        .unwrap();
+
+        // Verify select mode is Construct
+        assert_eq!(query.select_mode, fluree_db_query::SelectMode::Construct);
+
+        // Verify template is present
+        assert!(query.construct_template.is_some());
+        let template = query.construct_template.unwrap();
+        assert_eq!(template.patterns.len(), 1);
+
+        // Verify WHERE patterns are lowered
+        assert_eq!(query.patterns.len(), 1);
+        assert!(matches!(query.patterns[0], Pattern::Triple(_)));
+    }
+
+    #[test]
+    fn test_construct_multiple_template_triples() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             CONSTRUCT {
+               ?s ex:name ?name .
+               ?s ex:type ex:Person
+             }
+             WHERE { ?s ex:oldName ?name }",
+        )
+        .unwrap();
+
+        assert!(query.construct_template.is_some());
+        let template = query.construct_template.unwrap();
+        assert_eq!(template.patterns.len(), 2);
+    }
+
+    #[test]
+    fn test_construct_where_shorthand() {
+        // CONSTRUCT WHERE { ... } uses WHERE patterns as template
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             CONSTRUCT WHERE { ?s ex:name ?name }",
+        )
+        .unwrap();
+
+        assert_eq!(query.select_mode, fluree_db_query::SelectMode::Construct);
+        assert!(query.construct_template.is_some());
+
+        let template = query.construct_template.unwrap();
+        // Template should contain the WHERE patterns
+        assert_eq!(template.patterns.len(), 1);
+    }
+
+    #[test]
+    fn test_construct_with_limit_offset() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             CONSTRUCT { ?s ex:p ?o }
+             WHERE { ?s ex:q ?o }
+             LIMIT 10 OFFSET 5",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.limit, Some(10));
+        assert_eq!(query.options.offset, Some(5));
+    }
+
+    #[test]
+    fn test_construct_with_order_by() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             CONSTRUCT { ?s ex:p ?o }
+             WHERE { ?s ex:q ?o }
+             ORDER BY ?o",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.order_by.len(), 1);
+    }
+
+    #[test]
+    fn test_construct_empty_select() {
+        // CONSTRUCT queries don't project - select should be empty
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             CONSTRUCT { ?s ex:p ?o } WHERE { ?s ex:q ?o }",
+        )
+        .unwrap();
+
+        // CONSTRUCT doesn't project variables like SELECT does
+        assert!(query.select.is_empty());
+    }
+
+    // =========================================================================
+    // Extended expression tests (Phase 9b)
+    // =========================================================================
+
+    #[test]
+    fn test_arithmetic_expression() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?total WHERE {
+               ?s ex:price ?price .
+               ?s ex:qty ?qty .
+               FILTER(?price * ?qty > 100)
+             }",
+        )
+        .unwrap();
+
+        // Should have Triple, Triple, Filter patterns
+        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        assert!(has_filter, "Expected Filter pattern with arithmetic");
+    }
+
+    #[test]
+    fn test_unary_negation() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?val WHERE {
+               ?s ex:value ?val .
+               FILTER(-?val < 0)
+             }",
+        )
+        .unwrap();
+
+        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        assert!(has_filter, "Expected Filter pattern with unary negation");
+    }
+
+    #[test]
+    fn test_in_expression() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?status WHERE {
+               ?s ex:status ?status .
+               FILTER(?status IN (\"active\", \"pending\"))
+             }",
+        )
+        .unwrap();
+
+        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        assert!(has_filter, "Expected Filter pattern with IN expression");
+    }
+
+    #[test]
+    fn test_not_in_expression() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?status WHERE {
+               ?s ex:status ?status .
+               FILTER(?status NOT IN (\"deleted\", \"archived\"))
+             }",
+        )
+        .unwrap();
+
+        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        assert!(has_filter, "Expected Filter pattern with NOT IN expression");
+    }
+
+    #[test]
+    fn test_if_expression() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?label WHERE {
+               ?s ex:value ?val .
+               BIND(IF(?val > 0, \"positive\", \"non-positive\") AS ?label)
+             }",
+        )
+        .unwrap();
+
+        let has_bind = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Bind { .. }));
+        assert!(has_bind, "Expected Bind pattern with IF expression");
+    }
+
+    #[test]
+    fn test_complex_arithmetic() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s WHERE {
+               ?s ex:a ?a .
+               ?s ex:b ?b .
+               ?s ex:c ?c .
+               FILTER((?a + ?b) * ?c > 100)
+             }",
+        )
+        .unwrap();
+
+        // Should parse complex arithmetic without error
+        assert_eq!(query.select.len(), 1);
+        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        assert!(has_filter);
+    }
+
+    // =========================================================================
+    // Solution Modifiers Tests
+    // =========================================================================
+
+    #[test]
+    fn test_limit() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s WHERE { ?s ex:p ?o } LIMIT 10",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.limit, Some(10));
+        assert_eq!(query.options.offset, None);
+    }
+
+    #[test]
+    fn test_offset() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s WHERE { ?s ex:p ?o } OFFSET 5",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.offset, Some(5));
+        assert_eq!(query.options.limit, None);
+    }
+
+    #[test]
+    fn test_limit_offset() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s WHERE { ?s ex:p ?o } LIMIT 10 OFFSET 5",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.limit, Some(10));
+        assert_eq!(query.options.offset, Some(5));
+    }
+
+    #[test]
+    fn test_distinct() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT DISTINCT ?s WHERE { ?s ex:p ?o }",
+        )
+        .unwrap();
+
+        assert!(query.options.distinct);
+    }
+
+    #[test]
+    fn test_order_by_var() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?o WHERE { ?s ex:p ?o } ORDER BY ?o",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.order_by.len(), 1);
+        assert_eq!(query.options.order_by[0].direction, SortDirection::Ascending);
+    }
+
+    #[test]
+    fn test_order_by_desc() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?o WHERE { ?s ex:p ?o } ORDER BY DESC(?o)",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.order_by.len(), 1);
+        assert_eq!(query.options.order_by[0].direction, SortDirection::Descending);
+    }
+
+    #[test]
+    fn test_order_by_bracketed_var() {
+        // ORDER BY ASC((?var)) with extra parentheses should work
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?o WHERE { ?s ex:p ?o } ORDER BY ASC((?o))",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.order_by.len(), 1);
+        assert_eq!(query.options.order_by[0].direction, SortDirection::Ascending);
+    }
+
+    #[test]
+    fn test_order_by_expr_unsupported() {
+        let result = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?o WHERE { ?s ex:p ?o } ORDER BY (?o + 1)",
+        );
+
+        assert!(matches!(
+            result,
+            Err(LowerError::UnsupportedOrderByExpression { .. })
+        ));
+    }
+
+    #[test]
+    fn test_group_by_var() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?type WHERE { ?s ex:type ?type } GROUP BY ?type",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.group_by.len(), 1);
+    }
+
+    #[test]
+    fn test_group_by_bracketed_var() {
+        // GROUP BY (?var) with parentheses should work
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?type WHERE { ?s ex:type ?type } GROUP BY (?type)",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.group_by.len(), 1);
+    }
+
+    #[test]
+    fn test_group_by_expr_unsupported() {
+        let result = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?x WHERE { ?s ex:p ?x } GROUP BY (?x + 1 AS ?y)",
+        );
+
+        assert!(matches!(
+            result,
+            Err(LowerError::UnsupportedGroupByExpression { .. })
+        ));
+    }
+
+    #[test]
+    fn test_having() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?type WHERE { ?s ex:type ?type } GROUP BY ?type HAVING (?cnt > 5)",
+        )
+        .unwrap();
+
+        assert!(query.options.having.is_some());
+    }
+
+    #[test]
+    fn test_all_modifiers() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT DISTINCT ?type WHERE { ?s ex:type ?type }
+             GROUP BY ?type
+             HAVING (?cnt > 0)
+             ORDER BY ?type
+             LIMIT 10
+             OFFSET 5",
+        )
+        .unwrap();
+
+        assert!(query.options.distinct);
+        assert_eq!(query.options.group_by.len(), 1);
+        assert!(query.options.having.is_some());
+        assert_eq!(query.options.order_by.len(), 1);
+        assert_eq!(query.options.limit, Some(10));
+        assert_eq!(query.options.offset, Some(5));
+    }
+
+    // =========================================================================
+    // Aggregate Extraction Tests (Step 6 & 7)
+    // =========================================================================
+
+    #[test]
+    fn test_aggregate_count_with_alias() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT (COUNT(?s) AS ?count) WHERE { ?s ex:p ?o }",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.aggregates.len(), 1);
+        let agg = &query.options.aggregates[0];
+        assert!(matches!(agg.function, AggregateFn::Count));
+    }
+
+    #[test]
+    fn test_aggregate_count_distinct() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT (COUNT(DISTINCT ?s) AS ?count) WHERE { ?s ex:p ?o }",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.aggregates.len(), 1);
+        let agg = &query.options.aggregates[0];
+        assert!(matches!(agg.function, AggregateFn::CountDistinct));
+    }
+
+    #[test]
+    fn test_aggregate_count_distinct_bracketed_var() {
+        // COUNT(DISTINCT(?var)) with extra parentheses around the variable
+        // is valid SPARQL and should be treated the same as COUNT(DISTINCT ?var)
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT (COUNT(DISTINCT(?s)) AS ?count) WHERE { ?s ex:p ?o }",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.aggregates.len(), 1);
+        let agg = &query.options.aggregates[0];
+        assert!(matches!(agg.function, AggregateFn::CountDistinct));
+        assert!(agg.input_var.is_some()); // Should have resolved the variable
+    }
+
+    #[test]
+    fn test_aggregate_count_distinct_bracketed_var_with_whitespace() {
+        // COUNT(DISTINCT( ?var )) with whitespace inside parentheses
+        // Whitespace is stripped by the lexer, so this should work identically
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ( COUNT( DISTINCT( ?s ) ) AS ?count ) WHERE { ?s ex:p ?o }",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.aggregates.len(), 1);
+        let agg = &query.options.aggregates[0];
+        assert!(matches!(agg.function, AggregateFn::CountDistinct));
+        assert!(agg.input_var.is_some());
+    }
+
+    #[test]
+    fn test_aggregate_sum_bracketed_var() {
+        // SUM((?var)) with extra parentheses
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT (SUM((?val)) AS ?total) WHERE { ?s ex:value ?val }",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.aggregates.len(), 1);
+        assert!(matches!(query.options.aggregates[0].function, AggregateFn::Sum));
+        assert!(query.options.aggregates[0].input_var.is_some());
+    }
+
+    #[test]
+    fn test_aggregate_sum() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT (SUM(?val) AS ?total) WHERE { ?s ex:value ?val }",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.aggregates.len(), 1);
+        assert!(matches!(query.options.aggregates[0].function, AggregateFn::Sum));
+    }
+
+    #[test]
+    fn test_aggregate_avg() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT (AVG(?val) AS ?average) WHERE { ?s ex:value ?val }",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.aggregates.len(), 1);
+        assert!(matches!(query.options.aggregates[0].function, AggregateFn::Avg));
+    }
+
+    #[test]
+    fn test_aggregate_min_max() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT (MIN(?val) AS ?minVal) (MAX(?val) AS ?maxVal) WHERE { ?s ex:value ?val }",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.aggregates.len(), 2);
+        assert!(matches!(query.options.aggregates[0].function, AggregateFn::Min));
+        assert!(matches!(query.options.aggregates[1].function, AggregateFn::Max));
+    }
+
+    #[test]
+    fn test_aggregate_group_concat() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT (GROUP_CONCAT(?name; SEPARATOR=\", \") AS ?names) WHERE { ?s ex:name ?name }",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.aggregates.len(), 1);
+        match &query.options.aggregates[0].function {
+            AggregateFn::GroupConcat { separator } => {
+                assert_eq!(separator, ", ");
+            }
+            _ => panic!("Expected GroupConcat"),
+        }
+    }
+
+    #[test]
+    fn test_aggregate_sample() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT (SAMPLE(?name) AS ?sampleName) WHERE { ?s ex:name ?name }",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.aggregates.len(), 1);
+        assert!(matches!(query.options.aggregates[0].function, AggregateFn::Sample));
+    }
+
+    #[test]
+    fn test_count_star() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT (COUNT(*) AS ?count) WHERE { ?s ex:p ?o }",
+        )
+        .unwrap();
+
+        // Verify COUNT(*) aggregate was created
+        assert_eq!(query.options.aggregates.len(), 1);
+        let agg = &query.options.aggregates[0];
+        assert!(matches!(agg.function, AggregateFn::CountAll));
+        assert!(agg.input_var.is_none(), "COUNT(*) should have no input var");
+    }
+
+    #[test]
+    fn test_auto_group_by_with_aggregate() {
+        // When aggregates present but no explicit GROUP BY,
+        // non-aggregate SELECT vars should be auto-added to GROUP BY
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?type (COUNT(?s) AS ?count) WHERE { ?s ex:type ?type }",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.aggregates.len(), 1);
+        // ?type should be auto-added to GROUP BY
+        assert_eq!(query.options.group_by.len(), 1);
+    }
+
+    #[test]
+    fn test_explicit_group_by_not_modified() {
+        // When explicit GROUP BY present, don't auto-populate
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?type (COUNT(?s) AS ?count) WHERE { ?s ex:type ?type } GROUP BY ?type",
+        )
+        .unwrap();
+
+        assert_eq!(query.options.aggregates.len(), 1);
+        // Only the explicit GROUP BY var, not duplicated
+        assert_eq!(query.options.group_by.len(), 1);
+    }
+
+    #[test]
+    fn test_aggregate_with_mixed_select() {
+        // Mix of plain vars and aggregates
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?cat ?brand (COUNT(?product) AS ?cnt) (AVG(?price) AS ?avgPrice)
+             WHERE { ?product ex:category ?cat ; ex:brand ?brand ; ex:price ?price }",
+        )
+        .unwrap();
+
+        // 2 aggregates: COUNT and AVG
+        assert_eq!(query.options.aggregates.len(), 2);
+        // 2 non-aggregate vars auto-added to GROUP BY: ?cat, ?brand
+        assert_eq!(query.options.group_by.len(), 2);
+    }
+
+    // =========================================================================
+    // Property Path Tests
+    // =========================================================================
+
+    #[test]
+    fn test_property_path_one_or_more() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?ancestor WHERE { ?s ex:parent+ ?ancestor }",
+        )
+        .unwrap();
+
+        // Should have one PropertyPath pattern
+        assert_eq!(query.patterns.len(), 1);
+        assert!(matches!(query.patterns[0], Pattern::PropertyPath(_)));
+
+        // Verify the modifier
+        if let Pattern::PropertyPath(pp) = &query.patterns[0] {
+            assert!(matches!(pp.modifier, PathModifier::OneOrMore));
+        } else {
+            panic!("Expected PropertyPath pattern");
+        }
+    }
+
+    #[test]
+    fn test_property_path_zero_or_more() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?member WHERE { ?s ex:hasMember* ?member }",
+        )
+        .unwrap();
+
+        // Should have one PropertyPath pattern
+        assert_eq!(query.patterns.len(), 1);
+        assert!(matches!(query.patterns[0], Pattern::PropertyPath(_)));
+
+        // Verify the modifier
+        if let Pattern::PropertyPath(pp) = &query.patterns[0] {
+            assert!(matches!(pp.modifier, PathModifier::ZeroOrMore));
+        } else {
+            panic!("Expected PropertyPath pattern");
+        }
+    }
+
+    #[test]
+    fn test_property_path_with_bound_subject() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?descendant WHERE { ex:alice ex:parent+ ?descendant }",
+        )
+        .unwrap();
+
+        // Verify subject is bound
+        if let Pattern::PropertyPath(pp) = &query.patterns[0] {
+            assert!(pp.subject.is_bound());
+            assert!(!pp.object.is_bound());
+        } else {
+            panic!("Expected PropertyPath pattern");
+        }
+    }
+
+    #[test]
+    fn test_property_path_with_bound_object() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?ancestor WHERE { ?ancestor ex:parent+ ex:bob }",
+        )
+        .unwrap();
+
+        // Verify object is bound
+        if let Pattern::PropertyPath(pp) = &query.patterns[0] {
+            assert!(!pp.subject.is_bound());
+            assert!(pp.object.is_bound());
+        } else {
+            panic!("Expected PropertyPath pattern");
+        }
+    }
+
+    #[test]
+    fn test_property_path_both_constants_error() {
+        let result = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT * WHERE { ex:alice ex:parent+ ex:bob }",
+        );
+
+        // Should error because both subject and object are bound
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, LowerError::InvalidPropertyPath { .. }));
+    }
+
+    #[test]
+    fn test_property_path_inverse_not_implemented() {
+        let result = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?child WHERE { ?child ^ex:parent ?parent }",
+        );
+
+        // Should error because inverse paths aren't supported yet
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, LowerError::NotImplemented { .. }));
+    }
+
+    #[test]
+    fn test_property_path_sequence_not_implemented() {
+        let result = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?grandchild WHERE { ?s ex:parent/ex:parent ?grandchild }",
+        );
+
+        // Should error because sequence paths aren't supported yet
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, LowerError::NotImplemented { .. }));
+    }
+
+    #[test]
+    fn test_property_path_alternative_not_implemented() {
+        let result = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?related WHERE { ?s ex:friend|ex:colleague ?related }",
+        );
+
+        // Should error because alternative paths aren't supported yet
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, LowerError::NotImplemented { .. }));
+    }
+
+    #[test]
+    fn test_property_path_rdf_type() {
+        // Test a+ where a is the rdf:type shorthand
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?type WHERE { ex:thing a+ ?type }",
+        )
+        .unwrap();
+
+        // Should lower to PropertyPath with rdf:type predicate
+        assert_eq!(query.patterns.len(), 1);
+        assert!(matches!(query.patterns[0], Pattern::PropertyPath(_)));
+    }
+
+    #[test]
+    fn test_property_path_with_filter() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?ancestor WHERE {
+               ?s ex:parent+ ?ancestor .
+               FILTER(?ancestor != ex:root)
+             }",
+        )
+        .unwrap();
+
+        // Should have PropertyPath and Filter patterns
+        assert_eq!(query.patterns.len(), 2);
+        assert!(matches!(query.patterns[0], Pattern::PropertyPath(_)));
+        assert!(matches!(query.patterns[1], Pattern::Filter(_)));
+    }
+
+    #[test]
+    fn test_property_path_in_optional() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?ancestor WHERE {
+               ?s ex:name ?name .
+               OPTIONAL { ?s ex:parent+ ?ancestor }
+             }",
+        )
+        .unwrap();
+
+        // Should have Triple and Optional patterns
+        assert_eq!(query.patterns.len(), 2);
+        assert!(matches!(query.patterns[0], Pattern::Triple(_)));
+        assert!(matches!(query.patterns[1], Pattern::Optional(_)));
+
+        // Check that Optional contains a PropertyPath
+        if let Pattern::Optional(inner) = &query.patterns[1] {
+            assert_eq!(inner.len(), 1);
+            assert!(matches!(inner[0], Pattern::PropertyPath(_)));
+        } else {
+            panic!("Expected Optional pattern");
+        }
+    }
+
+    // =========================================================================
+    // Subquery Tests
+    // =========================================================================
+
+    #[test]
+    fn test_subquery_basic() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?name ?age WHERE {
+               ?s ex:name ?name .
+               { SELECT ?s ?age WHERE { ?s ex:age ?age } }
+             }",
+        )
+        .unwrap();
+
+        // Should have Triple and Subquery patterns
+        assert_eq!(query.patterns.len(), 2);
+        assert!(matches!(query.patterns[0], Pattern::Triple(_)));
+        assert!(matches!(query.patterns[1], Pattern::Subquery(_)));
+
+        // Check the subquery structure
+        if let Pattern::Subquery(sq) = &query.patterns[1] {
+            assert_eq!(sq.select.len(), 2); // ?s and ?age
+            assert_eq!(sq.patterns.len(), 1); // One triple pattern
+            assert!(matches!(sq.patterns[0], Pattern::Triple(_)));
+        } else {
+            panic!("Expected Subquery pattern");
+        }
+    }
+
+    #[test]
+    fn test_subquery_with_limit() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?name WHERE {
+               ?s ex:name ?name .
+               { SELECT ?s WHERE { ?s ex:type ex:Person } LIMIT 10 }
+             }",
+        )
+        .unwrap();
+
+        // Check the subquery has limit
+        if let Pattern::Subquery(sq) = &query.patterns[1] {
+            assert_eq!(sq.limit, Some(10));
+        } else {
+            panic!("Expected Subquery pattern");
+        }
+    }
+
+    #[test]
+    fn test_subquery_with_limit_offset() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?score WHERE {
+               ?s ex:name ?name .
+               { SELECT ?s ?score WHERE { ?s ex:score ?score } LIMIT 5 OFFSET 10 }
+             }",
+        )
+        .unwrap();
+
+        // Check the subquery has limit and offset
+        if let Pattern::Subquery(sq) = &query.patterns[1] {
+            assert_eq!(sq.limit, Some(5));
+            assert_eq!(sq.offset, Some(10));
+        } else {
+            panic!("Expected Subquery pattern");
+        }
+    }
+
+    #[test]
+    fn test_subquery_select_star_populates_select_list() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?name WHERE {
+               { SELECT * WHERE { ?s ex:name ?name } }
+             }",
+        )
+        .unwrap();
+
+        let sub = query.patterns.iter().find_map(|p| match p {
+            Pattern::Subquery(sq) => Some(sq),
+            _ => None,
+        });
+        let sub = sub.expect("Expected Subquery pattern");
+
+        // `SELECT *` should select all variables referenced in the subquery patterns.
+        // We don't assert exact order here; just that the important vars are present.
+        assert!(
+            sub.select.len() >= 2,
+            "Expected SELECT * subquery to include ?s and ?name in select list"
+        );
+    }
+
+    #[test]
+    fn test_subquery_with_order_by() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s WHERE {
+               ?s ex:name ?name .
+               { SELECT ?s WHERE { ?s ex:age ?age } ORDER BY ?age }
+             }",
+        )
+        .unwrap();
+
+        // Check the subquery has order_by
+        if let Pattern::Subquery(sq) = &query.patterns[1] {
+            assert_eq!(sq.order_by.len(), 1, "Expected 1 ORDER BY spec");
+            assert_eq!(
+                sq.order_by[0].direction,
+                SortDirection::Ascending,
+                "Expected ascending order"
+            );
+        } else {
+            panic!("Expected Subquery pattern");
+        }
+    }
+
+    #[test]
+    fn test_subquery_with_order_by_desc() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s WHERE {
+               ?s ex:name ?name .
+               { SELECT ?s WHERE { ?s ex:age ?age } ORDER BY DESC(?age) }
+             }",
+        )
+        .unwrap();
+
+        // Check the subquery has order_by with descending direction
+        if let Pattern::Subquery(sq) = &query.patterns[1] {
+            assert_eq!(sq.order_by.len(), 1, "Expected 1 ORDER BY spec");
+            assert_eq!(
+                sq.order_by[0].direction,
+                SortDirection::Descending,
+                "Expected descending order"
+            );
+        } else {
+            panic!("Expected Subquery pattern");
+        }
+    }
+
+    #[test]
+    fn test_subquery_with_multiple_order_by() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s WHERE {
+               ?s ex:name ?name .
+               { SELECT ?s ?age ?score WHERE { ?s ex:age ?age . ?s ex:score ?score } ORDER BY ?age DESC(?score) }
+             }",
+        )
+        .unwrap();
+
+        // Check the subquery has multiple order_by specs
+        if let Pattern::Subquery(sq) = &query.patterns[1] {
+            assert_eq!(sq.order_by.len(), 2, "Expected 2 ORDER BY specs");
+            assert_eq!(
+                sq.order_by[0].direction,
+                SortDirection::Ascending,
+                "First should be ascending"
+            );
+            assert_eq!(
+                sq.order_by[1].direction,
+                SortDirection::Descending,
+                "Second should be descending"
+            );
+        } else {
+            panic!("Expected Subquery pattern");
+        }
+    }
+
+    #[test]
+    fn test_subquery_with_distinct() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?type WHERE {
+               ?s ex:name ?name .
+               { SELECT DISTINCT ?s ?type WHERE { ?s ex:type ?type } }
+             }",
+        )
+        .unwrap();
+
+        // Check the subquery has distinct
+        if let Pattern::Subquery(sq) = &query.patterns[1] {
+            assert!(sq.distinct);
+        } else {
+            panic!("Expected Subquery pattern");
+        }
+    }
+
+    #[test]
+    fn test_subquery_nested_in_optional() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?name ?score WHERE {
+               ?s ex:name ?name .
+               OPTIONAL {
+                 { SELECT ?s ?score WHERE { ?s ex:score ?score } }
+               }
+             }",
+        )
+        .unwrap();
+
+        // Should have Triple and Optional patterns
+        assert_eq!(query.patterns.len(), 2);
+        assert!(matches!(query.patterns[0], Pattern::Triple(_)));
+        assert!(matches!(query.patterns[1], Pattern::Optional(_)));
+
+        // Check that Optional contains a Subquery
+        if let Pattern::Optional(inner) = &query.patterns[1] {
+            assert_eq!(inner.len(), 1);
+            assert!(matches!(inner[0], Pattern::Subquery(_)));
+        } else {
+            panic!("Expected Optional pattern");
+        }
+    }
+
+    #[test]
+    fn test_subquery_with_filter() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?topScore WHERE {
+               ?s ex:name ?name .
+               {
+                 SELECT ?s ?topScore WHERE {
+                   ?s ex:score ?topScore .
+                   FILTER(?topScore > 90)
+                 }
+               }
+             }",
+        )
+        .unwrap();
+
+        // Check the subquery contains patterns
+        if let Pattern::Subquery(sq) = &query.patterns[1] {
+            // Should have Triple and Filter patterns
+            assert_eq!(sq.patterns.len(), 2);
+            assert!(matches!(sq.patterns[0], Pattern::Triple(_)));
+            assert!(matches!(sq.patterns[1], Pattern::Filter(_)));
+        } else {
+            panic!("Expected Subquery pattern");
+        }
+    }
+
+    // =========================================================================
+    // Newly Implemented Function Tests
+    // =========================================================================
+
+    #[test]
+    fn test_function_str() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?strVal WHERE {
+               ?s ex:value ?val .
+               BIND(STR(?val) AS ?strVal)
+             }",
+        )
+        .unwrap();
+
+        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        assert!(has_bind, "Expected Bind pattern with STR function");
+    }
+
+    #[test]
+    fn test_function_substr() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?part WHERE {
+               ?s ex:name ?name .
+               BIND(SUBSTR(?name, 2, 3) AS ?part)
+             }",
+        )
+        .unwrap();
+
+        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        assert!(has_bind, "Expected Bind pattern with SUBSTR function");
+    }
+
+    #[test]
+    fn test_function_encode_for_uri() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?encoded WHERE {
+               ?s ex:label ?label .
+               BIND(ENCODE_FOR_URI(?label) AS ?encoded)
+             }",
+        )
+        .unwrap();
+
+        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        assert!(has_bind, "Expected Bind pattern with ENCODE_FOR_URI function");
+    }
+
+    #[test]
+    fn test_function_langmatches() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?name WHERE {
+               ?s ex:name ?name .
+               FILTER(LANGMATCHES(LANG(?name), \"en\"))
+             }",
+        )
+        .unwrap();
+
+        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        assert!(has_filter, "Expected Filter with LANGMATCHES function");
+    }
+
+    #[test]
+    fn test_function_sameterm() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s WHERE {
+               ?s ex:a ?a .
+               ?s ex:b ?b .
+               FILTER(SAMETERM(?a, ?b))
+             }",
+        )
+        .unwrap();
+
+        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        assert!(has_filter, "Expected Filter with SAMETERM function");
+    }
+
+    #[test]
+    fn test_function_md5() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?hash WHERE {
+               ?s ex:data ?data .
+               BIND(MD5(?data) AS ?hash)
+             }",
+        )
+        .unwrap();
+
+        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        assert!(has_bind, "Expected Bind pattern with MD5 function");
+    }
+
+    #[test]
+    fn test_function_sha1() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?hash WHERE {
+               ?s ex:data ?data .
+               BIND(SHA1(?data) AS ?hash)
+             }",
+        )
+        .unwrap();
+
+        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        assert!(has_bind, "Expected Bind pattern with SHA1 function");
+    }
+
+    #[test]
+    fn test_function_sha256() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?hash WHERE {
+               ?s ex:data ?data .
+               BIND(SHA256(?data) AS ?hash)
+             }",
+        )
+        .unwrap();
+
+        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        assert!(has_bind, "Expected Bind pattern with SHA256 function");
+    }
+
+    #[test]
+    fn test_function_sha384() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?hash WHERE {
+               ?s ex:data ?data .
+               BIND(SHA384(?data) AS ?hash)
+             }",
+        )
+        .unwrap();
+
+        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        assert!(has_bind, "Expected Bind pattern with SHA384 function");
+    }
+
+    #[test]
+    fn test_function_sha512() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?hash WHERE {
+               ?s ex:data ?data .
+               BIND(SHA512(?data) AS ?hash)
+             }",
+        )
+        .unwrap();
+
+        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        assert!(has_bind, "Expected Bind pattern with SHA512 function");
+    }
+
+    #[test]
+    fn test_function_uuid() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?id WHERE {
+               ?s ex:name ?name .
+               BIND(UUID() AS ?id)
+             }",
+        )
+        .unwrap();
+
+        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        assert!(has_bind, "Expected Bind pattern with UUID function");
+    }
+
+    #[test]
+    fn test_function_struuid() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?id WHERE {
+               ?s ex:name ?name .
+               BIND(STRUUID() AS ?id)
+             }",
+        )
+        .unwrap();
+
+        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        assert!(has_bind, "Expected Bind pattern with STRUUID function");
+    }
+}

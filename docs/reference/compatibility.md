@@ -1,0 +1,493 @@
+# Compatibility and Feature Flags
+
+This document covers Fluree's compliance with standards, feature flags, and compatibility considerations.
+
+## Standards Compliance
+
+### RDF 1.1
+
+**Status:** Fully compliant
+
+Fluree implements the W3C RDF 1.1 specification:
+- RDF triples (subject-predicate-object)
+- IRI identifiers
+- Typed literals
+- Language tags
+- Blank nodes
+- RDF datasets
+
+**Specification:** https://www.w3.org/TR/rdf11-concepts/
+
+### JSON-LD 1.1
+
+**Status:** Fully compliant
+
+Fluree supports JSON-LD 1.1:
+- @context for namespace mappings
+- @id for resource identification
+- @type for type specification
+- @graph for multiple entities
+- @value and @type for literals
+- @language for language tags
+- Nested objects
+- Arrays
+
+**Specification:** https://www.w3.org/TR/json-ld11/
+
+### SPARQL 1.1 Query
+
+**Status:** Fully compliant
+
+Supported SPARQL features:
+- SELECT queries
+- CONSTRUCT queries
+- ASK queries (planned)
+- DESCRIBE queries (planned)
+- FROM and FROM NAMED clauses
+- GRAPH patterns
+- OPTIONAL patterns
+- UNION patterns
+- FILTER expressions
+- BIND expressions
+- Aggregations (COUNT, SUM, AVG, MIN, MAX)
+- GROUP BY
+- ORDER BY
+- LIMIT and OFFSET
+- Subqueries
+- Property paths (planned)
+
+**Specification:** https://www.w3.org/TR/sparql11-query/
+
+### SPARQL 1.1 Update
+
+**Status:** Partial support
+
+Supported:
+- INSERT DATA (via JSON-LD transactions)
+- DELETE/INSERT WHERE (via WHERE/DELETE/INSERT)
+
+Not yet supported:
+- DELETE DATA
+- LOAD
+- CLEAR
+- DROP
+- COPY, MOVE, ADD
+
+Use JSON-LD transactions for write operations.
+
+**Specification:** https://www.w3.org/TR/sparql11-update/
+
+### Turtle
+
+**Status:** Fully supported
+
+Fluree parses Turtle 1.1:
+- @prefix declarations
+- Base IRIs
+- Abbreviated syntax (a, ;, ,)
+- Literals with datatypes and language tags
+- Collections
+- Blank nodes
+
+**Specification:** https://www.w3.org/TR/turtle/
+
+### JSON Web Signature (JWS)
+
+**Status:** Partial (EdDSA only)
+
+Supported algorithms:
+- EdDSA (Ed25519) - **Only supported algorithm**
+
+Not yet supported:
+- ES256, ES384, ES512 (ECDSA)
+- RS256 (RSA)
+- HS256, HS384, HS512 (HMAC)
+
+**Specification:** RFC 7515
+
+**Note:** Requires the `credential` feature flag.
+
+### Verifiable Credentials
+
+**Status:** Planned (not yet implemented)
+
+The credential module currently supports JWS verification only. Full VC support
+(proof verification, JSON-LD canonicalization) is planned but not yet available.
+
+**Specification:** https://www.w3.org/TR/vc-data-model/
+
+### Decentralized Identifiers (DIDs)
+
+**Status:** Partial support
+
+Supported DID methods:
+- did:key (Ed25519 keys only)
+
+Not yet supported:
+- did:web
+- did:ion
+- did:ethr
+
+**Specification:** https://www.w3.org/TR/did-core/
+
+**Note:** Requires the `credential` feature flag.
+
+## Compile-Time Feature Flags (Cargo)
+
+These features are controlled at compile time via Cargo:
+
+### `fluree-db-api` Features
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `native` | Yes | File storage support |
+| `credential` | No | DID/JWS/VerifiableCredential support for signed queries/transactions. Pulls in crypto dependencies (`ed25519-dalek`, `bs58`). |
+| `iceberg` | No | Apache Iceberg/R2RML virtual graph support |
+| `search-remote-client` | No | HTTP client for remote BM25 search service |
+| `full` | No | Enable all features |
+
+Example:
+```toml
+[dependencies]
+fluree-db-api = { path = "../fluree-db-api", features = ["native", "credential"] }
+```
+
+### `fluree-db-server` Features
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `native` | Yes | File storage support (forwards to `fluree-db-api/native`) |
+| `credential` | Yes | Signed request verification (forwards to `fluree-db-api/credential`) |
+| `swagger-ui` | No | Swagger UI endpoint |
+| `otel` | No | OpenTelemetry tracing |
+
+To build the server without credential support (faster compile):
+```bash
+cargo build -p fluree-db-server --no-default-features --features native
+```
+
+## Runtime Feature Flags
+
+### Experimental Features
+
+Enable experimental features:
+
+```bash
+./fluree-db-server --features experimental
+```
+
+Or in config:
+```toml
+[features]
+experimental = true
+```
+
+**Current Experimental Features:**
+- SPARQL property paths
+- GeoSPARQL support
+- Reasoning and inference
+- Additional DID methods
+
+### Feature-Specific Flags
+
+Enable specific features:
+
+```bash
+./fluree-db-server \
+  --enable-property-paths \
+  --enable-reasoning
+```
+
+```toml
+[features]
+property_paths = true
+reasoning = false
+geosparql = false
+```
+
+## Compatibility Modes
+
+### Strict Mode (Default)
+
+Enforces strict compliance with standards:
+- Invalid IRIs rejected
+- Type mismatches rejected
+- Strict JSON-LD parsing
+
+```bash
+./fluree-db-server --strict-mode true
+```
+
+### Lenient Mode
+
+More permissive parsing:
+- Attempts to fix malformed IRIs
+- Coerces types when possible
+- Accepts non-standard syntax
+
+```bash
+./fluree-db-server --strict-mode false
+```
+
+Use lenient mode only during migration or with legacy data.
+
+## Version Compatibility
+
+### API Versioning
+
+Current API version: v1
+
+Future versions may introduce breaking changes with major version bump.
+
+**Version Header:**
+```http
+X-Fluree-API-Version: 1
+```
+
+### Backward Compatibility
+
+Within major versions:
+- New features added
+- Deprecated features marked
+- Breaking changes avoided
+
+Between major versions:
+- Breaking changes allowed
+- Migration guides provided
+- Overlap period for transition
+
+## Data Format Compatibility
+
+### JSON-LD
+
+Supported JSON-LD versions:
+- JSON-LD 1.0: Yes
+- JSON-LD 1.1: Yes
+
+### SPARQL
+
+Supported SPARQL versions:
+- SPARQL 1.0: Yes
+- SPARQL 1.1: Yes
+
+### RDF Formats
+
+| Format | Read | Write |
+|--------|------|-------|
+| JSON-LD | Yes | Yes |
+| Turtle | Yes | Yes |
+| N-Triples | Planned | Planned |
+| N-Quads | Planned | Planned |
+| RDF/XML | Planned | No |
+| TriG | Planned | Planned |
+
+## Protocol Compatibility
+
+### HTTP Versions
+
+- HTTP/1.1: Fully supported
+- HTTP/2: Supported
+- HTTP/3: Planned
+
+### TLS Versions
+
+- TLS 1.2: Supported
+- TLS 1.3: Supported
+- SSL 3.0: Not supported (deprecated)
+- TLS 1.0/1.1: Not supported (deprecated)
+
+## Client Compatibility
+
+Fluree works with:
+
+**HTTP Clients:**
+- curl
+- Postman
+- Insomnia
+- Any HTTP client library
+
+**RDF Libraries:**
+- Apache Jena (Java)
+- RDF4J (Java)
+- rdflib (Python)
+- N3.js (JavaScript)
+
+**SPARQL Clients:**
+- Apache Jena ARQ
+- RDF4J SPARQLRepository
+- Any SPARQL 1.1 client
+
+## Platform Support
+
+### Operating Systems
+
+**Server:**
+- Linux (x86_64, aarch64)
+- macOS (Intel, Apple Silicon)
+- Windows (x86_64)
+
+**Clients:**
+- Any OS with HTTP support
+
+### Cloud Platforms
+
+- AWS (native support)
+- Google Cloud Platform (via file storage)
+- Azure (via file storage)
+- Self-hosted / on-premises
+
+### Container Support
+
+- Docker: Full support
+- Kubernetes: Full support
+- Podman: Compatible
+- Docker Compose: Full support
+
+## Database Compatibility
+
+### Migration From
+
+Fluree can import from:
+
+**RDF Databases:**
+- Apache Jena TDB
+- Virtuoso
+- Stardog
+- GraphDB
+- Any RDF export
+
+**Graph Databases:**
+- Neo4j (via RDF export)
+- Amazon Neptune (via RDF export)
+
+**Relational Databases:**
+- Via R2RML mapping
+- Direct SQL query
+
+### Migration To
+
+Export Fluree data to:
+- Turtle files
+- JSON-LD documents
+- SPARQL CONSTRUCT results
+- Any RDF format
+
+## Deprecation Policy
+
+### Deprecation Process
+
+1. **Announce:** Feature marked deprecated in release notes
+2. **Warn:** Deprecation warnings in logs when used
+3. **Support:** Deprecated feature supported for 6-12 months
+4. **Remove:** Feature removed in next major version
+
+### Currently Deprecated
+
+None at this time (v1.0)
+
+## Feature Roadmap
+
+### Planned Features
+
+**Query:**
+- SPARQL property paths
+- GeoSPARQL
+- SPARQL 1.1 Federation
+- Full SPARQL UPDATE
+
+**Storage:**
+- Additional cloud providers (GCP, Azure)
+- Hybrid storage modes
+
+**Security:**
+- OAuth 2.0 integration
+- SAML support
+- Additional DID methods
+
+**Virtual Graphs:**
+- BigQuery integration
+- Snowflake integration
+- Elasticsearch integration
+
+### Experimental Status
+
+Track feature status:
+
+```bash
+curl http://localhost:8090/features
+```
+
+Response:
+```json
+{
+  "stable": [
+    "sparql-1.1-query",
+    "json-ld-1.1",
+    "time-travel",
+    "bm25-search",
+    "vector-search"
+  ],
+  "experimental": [
+    "property-paths",
+    "reasoning"
+  ],
+  "planned": [
+    "geosparql",
+    "sparql-federation"
+  ]
+}
+```
+
+## Browser Compatibility
+
+For web applications using Fluree API:
+
+**Supported Browsers:**
+- Chrome/Edge 90+
+- Firefox 88+
+- Safari 14+
+
+**Requirements:**
+- Fetch API support
+- CORS support
+- WebSocket support (for future streaming)
+
+## Tool Compatibility
+
+### RDF Tools
+
+Compatible with standard RDF tools:
+- Protégé (ontology editor)
+- TopBraid Composer
+- RDF validators
+- SPARQL editors
+
+### Data Tools
+
+Works with data engineering tools:
+- Apache Airflow (via HTTP operators)
+- dbt (via SQL proxy with R2RML)
+- Apache Spark (via Iceberg)
+- Pandas (via query API)
+
+## Version Requirements
+
+### Rust Version
+
+Building from source requires:
+- Rust 1.75.0 or later
+- Cargo 1.75.0 or later
+
+### Dependencies
+
+Runtime dependencies:
+- None (statically linked binary)
+
+Optional dependencies:
+- AWS SDK (for AWS storage)
+
+## Related Documentation
+
+- [Glossary](glossary.md) - Term definitions
+- [Crate Map](crate-map.md) - Code architecture
+- [Getting Started](../getting-started/README.md) - Installation

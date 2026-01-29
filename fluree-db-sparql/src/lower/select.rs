@@ -1,0 +1,334 @@
+//! SELECT clause, solution modifiers, and subquery lowering.
+//!
+//! Handles lowering of SELECT variables, DISTINCT, LIMIT, OFFSET, ORDER BY,
+//! GROUP BY, HAVING, and subquery patterns.
+
+use crate::ast::expr::Expression;
+use crate::ast::pattern::SubSelect;
+use crate::ast::query::{
+    GroupCondition, OrderCondition, OrderDirection, OrderExpr, SelectClause, SelectModifier,
+    SelectVariable, SelectVariables, SolutionModifiers,
+};
+use crate::span::SourceSpan;
+
+use fluree_db_query::aggregate::AggregateSpec;
+use fluree_db_query::ir::{FilterExpr, FilterValue, Pattern, SubqueryPattern};
+use fluree_db_query::options::QueryOptions;
+use fluree_db_query::parse::encode::IriEncoder;
+use fluree_db_query::sort::{SortDirection, SortSpec};
+use fluree_db_query::var_registry::VarId;
+
+use std::collections::HashSet;
+use std::sync::Arc;
+
+use super::{LowerError, LoweringContext, Result};
+
+impl<'a, E: IriEncoder> LoweringContext<'a, E> {
+    /// Lower SELECT clause to a list of VarIds.
+    pub(super) fn lower_select_clause(&mut self, clause: &SelectClause) -> Result<Vec<VarId>> {
+        match &clause.variables {
+            SelectVariables::Star => {
+                // SELECT * - return all variables in the WHERE clause
+                // For now, return what we have registered
+                Ok(self.vars.iter().map(|(_, id)| id).collect())
+            }
+            SelectVariables::Explicit(vars) => {
+                let mut result = Vec::with_capacity(vars.len());
+                for var in vars {
+                    match var {
+                        SelectVariable::Var(v) => {
+                            result.push(self.register_var(v));
+                        }
+                        SelectVariable::Expr { alias, .. } => {
+                            // For now, just register the alias variable
+                            // The expression is handled via BIND in the pattern
+                            result.push(self.register_var(alias));
+                        }
+                    }
+                }
+                Ok(result)
+            }
+        }
+    }
+
+    pub(super) fn collect_aggregate_alias_names(
+        &self,
+        clause: &SelectClause,
+    ) -> HashSet<Arc<str>> {
+        let mut names = HashSet::new();
+        if let SelectVariables::Explicit(vars) = &clause.variables {
+            for var in vars {
+                if let SelectVariable::Expr { expr, alias, .. } = var {
+                    if matches!(expr, Expression::Aggregate { .. }) {
+                        names.insert(alias.name.clone());
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    /// Lower non-aggregate SELECT expressions to BIND patterns (pre or post aggregation).
+    pub(super) fn lower_select_expression_binds(
+        &mut self,
+        clause: &SelectClause,
+        aggregate_aliases: &HashSet<Arc<str>>,
+    ) -> Result<(Vec<Pattern>, Vec<(VarId, FilterExpr)>)> {
+        let mut pre_binds = Vec::new();
+        let mut post_binds = Vec::new();
+
+        if let SelectVariables::Explicit(vars) = &clause.variables {
+            for var in vars {
+                if let SelectVariable::Expr { expr, alias, .. } = var {
+                    if matches!(expr, Expression::Aggregate { .. }) {
+                        continue;
+                    }
+                    let filter_expr = self.lower_expression(expr)?;
+                    let var_id = self.register_var(alias);
+                    if self.expr_references_vars(expr, aggregate_aliases) {
+                        post_binds.push((var_id, filter_expr));
+                    } else {
+                        pre_binds.push(Pattern::Bind {
+                            var: var_id,
+                            expr: filter_expr,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok((pre_binds, post_binds))
+    }
+
+    /// Lower solution modifiers (DISTINCT, LIMIT, OFFSET, ORDER BY, GROUP BY, HAVING)
+    pub(super) fn lower_solution_modifiers(
+        &mut self,
+        modifiers: &SolutionModifiers,
+        select: &SelectClause,
+    ) -> Result<QueryOptions> {
+        let mut options = QueryOptions::default();
+
+        // DISTINCT from SelectClause modifier
+        options.distinct = select.modifier == Some(SelectModifier::Distinct);
+
+        // LIMIT, OFFSET, ORDER BY
+        self.lower_base_modifiers(modifiers, &mut options)?;
+
+        // GROUP BY (vars-only MVP)
+        if let Some(ref group_by) = modifiers.group_by {
+            let mut group_vars = Vec::with_capacity(group_by.conditions.len());
+            for cond in &group_by.conditions {
+                let var_id = self.lower_group_condition(cond)?;
+                group_vars.push(var_id);
+            }
+            options.group_by = group_vars;
+        }
+
+        // HAVING (may reference aggregate expressions)
+        let mut having_aggregates: Vec<AggregateSpec> = Vec::new();
+        if let Some(ref having) = modifiers.having {
+            let mut aggregate_aliases = self.build_aggregate_aliases(select)?;
+            for cond in &having.conditions {
+                self.collect_having_aggregates(
+                    cond,
+                    &mut aggregate_aliases,
+                    &mut having_aggregates,
+                )?;
+            }
+            self.aggregate_aliases = Some(aggregate_aliases);
+            // Combine all HAVING conditions with AND
+            let filter = self.lower_having_conditions(&having.conditions)?;
+            options.having = Some(filter);
+            self.aggregate_aliases = None;
+        }
+
+        // Extract aggregates from SELECT clause
+        options.aggregates = self.extract_aggregates(select)?;
+        if !having_aggregates.is_empty() {
+            options.aggregates.extend(having_aggregates);
+        }
+
+        // Auto-populate GROUP BY when aggregates present but no explicit GROUP BY
+        // Per SPARQL semantics, all non-aggregated SELECT variables must be in GROUP BY
+        if !options.aggregates.is_empty() && options.group_by.is_empty() {
+            options.group_by = self.collect_non_aggregate_select_vars(select);
+        }
+
+        Ok(options)
+    }
+
+    /// Lower LIMIT, OFFSET, and ORDER BY modifiers (shared by SELECT and CONSTRUCT).
+    pub(super) fn lower_base_modifiers(
+        &mut self,
+        modifiers: &SolutionModifiers,
+        options: &mut QueryOptions,
+    ) -> Result<()> {
+        // LIMIT
+        if let Some(ref limit_clause) = modifiers.limit {
+            options.limit = Some(limit_clause.value as usize);
+        }
+
+        // OFFSET
+        if let Some(ref offset_clause) = modifiers.offset {
+            options.offset = Some(offset_clause.value as usize);
+        }
+
+        // ORDER BY (vars-only MVP)
+        if let Some(ref order_by) = modifiers.order_by {
+            let mut sort_specs = Vec::with_capacity(order_by.conditions.len());
+            for cond in &order_by.conditions {
+                sort_specs.push(self.lower_order_condition(cond)?);
+            }
+            options.order_by = sort_specs;
+        }
+
+        Ok(())
+    }
+
+    /// Lower an ORDER BY condition (vars-only MVP)
+    fn lower_order_condition(&mut self, cond: &OrderCondition) -> Result<SortSpec> {
+        let direction = match cond.direction {
+            OrderDirection::Asc => SortDirection::Ascending,
+            OrderDirection::Desc => SortDirection::Descending,
+        };
+
+        match &cond.expr {
+            OrderExpr::Var(var) => {
+                let var_id = self.register_var(var);
+                Ok(SortSpec {
+                    var: var_id,
+                    direction,
+                })
+            }
+            // Handle ASC(?var) / DESC(?var) / ASC((?var)) which parses as Expr
+            // Unwrap any bracketed expressions first
+            OrderExpr::Expr(expr) => match expr.unwrap_bracketed() {
+                Expression::Var(var) => {
+                    let var_id = self.register_var(var);
+                    Ok(SortSpec {
+                        var: var_id,
+                        direction,
+                    })
+                }
+                _ => {
+                    // Complex expression-based ORDER BY not yet supported
+                    Err(LowerError::unsupported_order_by_expr(cond.span))
+                }
+            },
+        }
+    }
+
+    /// Lower a GROUP BY condition (vars-only MVP)
+    fn lower_group_condition(&mut self, cond: &GroupCondition) -> Result<VarId> {
+        match cond {
+            GroupCondition::Var(var) => Ok(self.register_var(var)),
+            // Handle GROUP BY (?var) or GROUP BY ((?var)) - bracketed variables
+            GroupCondition::Expr { expr, span, .. } => match expr.unwrap_bracketed() {
+                Expression::Var(var) => Ok(self.register_var(var)),
+                _ => {
+                    // Expression-based GROUP BY not yet supported
+                    Err(LowerError::unsupported_group_by_expr(*span))
+                }
+            },
+        }
+    }
+
+    /// Lower HAVING conditions to a single FilterExpr (ANDed together)
+    fn lower_having_conditions(&mut self, conditions: &[Expression]) -> Result<FilterExpr> {
+        if conditions.is_empty() {
+            // Should not happen - HAVING requires at least one condition
+            return Ok(FilterExpr::Const(FilterValue::Bool(true)));
+        }
+
+        let mut exprs: Vec<FilterExpr> = Vec::with_capacity(conditions.len());
+        for cond in conditions {
+            exprs.push(self.lower_expression(cond)?);
+        }
+
+        // Combine with AND if multiple conditions
+        if exprs.len() == 1 {
+            Ok(exprs.pop().unwrap())
+        } else {
+            // FilterExpr::And takes Vec<FilterExpr>
+            Ok(FilterExpr::And(exprs))
+        }
+    }
+
+    /// Lower a SPARQL subquery (SubSelect) to the IR.
+    ///
+    /// Subqueries have the form: `{ SELECT ?vars WHERE { ... } LIMIT n }`
+    pub(super) fn lower_subselect(
+        &mut self,
+        subselect: &SubSelect,
+        _span: SourceSpan,
+    ) -> Result<Vec<Pattern>> {
+        // Lower WHERE patterns
+        let patterns = self.lower_graph_pattern(&subselect.pattern)?;
+
+        // Lower SELECT variables
+        //
+        // IMPORTANT: In the query engine, an empty select list does NOT mean "SELECT *".
+        // It means "select no variables", which yields no output schema and therefore no rows.
+        //
+        // For SPARQL `SELECT *`, we approximate the spec by selecting all variables referenced
+        // by the subquery's WHERE patterns (in stable encounter order).
+        let select: Vec<VarId> = match &subselect.variables {
+            Some(vars) => vars.iter().map(|v| self.register_var(v)).collect(),
+            None => {
+                let mut seen: HashSet<VarId> = HashSet::new();
+                let mut select: Vec<VarId> = Vec::new();
+                for p in &patterns {
+                    for v in p.variables() {
+                        if seen.insert(v) {
+                            select.push(v);
+                        }
+                    }
+                }
+                select
+            }
+        };
+
+        // Build SubqueryPattern
+        let mut sq = SubqueryPattern::new(select, patterns);
+
+        // Apply LIMIT
+        if let Some(limit) = subselect.limit {
+            sq = sq.with_limit(limit as usize);
+        }
+
+        // Apply OFFSET
+        if let Some(offset) = subselect.offset {
+            sq = sq.with_offset(offset as usize);
+        }
+
+        // Apply DISTINCT
+        if subselect.distinct {
+            sq = sq.with_distinct();
+        }
+
+        // Note: REDUCED is treated as DISTINCT for simplicity
+        if subselect.reduced {
+            sq = sq.with_distinct();
+        }
+
+        // Apply ORDER BY
+        if !subselect.order_by.is_empty() {
+            let mut sort_specs = Vec::with_capacity(subselect.order_by.len());
+            for order in &subselect.order_by {
+                let var_id = self.register_var(&order.var);
+                let direction = if order.descending {
+                    SortDirection::Descending
+                } else {
+                    SortDirection::Ascending
+                };
+                sort_specs.push(SortSpec {
+                    var: var_id,
+                    direction,
+                });
+            }
+            sq = sq.with_order_by(sort_specs);
+        }
+
+        Ok(vec![Pattern::Subquery(sq)])
+    }
+}
