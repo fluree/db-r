@@ -845,6 +845,59 @@ fn build_local_storage_from_config(
     }
 }
 
+/// Check if background indexing is enabled in the parsed connection config.
+fn is_indexing_enabled(config: &ConnectionConfig) -> bool {
+    config
+        .defaults
+        .as_ref()
+        .and_then(|d| d.indexing.as_ref())
+        .and_then(|i| i.indexing_enabled)
+        .unwrap_or(false)
+}
+
+/// Build IndexerConfig from connection defaults, falling back to defaults.
+fn build_indexer_config(config: &ConnectionConfig) -> fluree_db_indexer::IndexerConfig {
+    let mut indexer_config = fluree_db_indexer::IndexerConfig::default();
+
+    // Apply gc_max_old_indexes from config if present
+    if let Some(max_old) = config
+        .defaults
+        .as_ref()
+        .and_then(|d| d.indexing.as_ref())
+        .and_then(|i| i.max_old_indexes)
+    {
+        indexer_config.gc_max_old_indexes = max_old as u32;
+    }
+
+    indexer_config
+}
+
+/// Start background indexing if enabled in the config.
+///
+/// Creates a BackgroundIndexerWorker and spawns it on the tokio runtime.
+/// Returns the appropriate IndexingMode (Background with handle, or Disabled).
+fn start_background_indexing_if_enabled(
+    config: &ConnectionConfig,
+    storage: AnyStorage,
+    nameservice: AnyNameService,
+) -> tx::IndexingMode {
+    if !is_indexing_enabled(config) {
+        return tx::IndexingMode::Disabled;
+    }
+
+    let indexer_config = build_indexer_config(config);
+    let (worker, handle) = fluree_db_indexer::BackgroundIndexerWorker::new(
+        storage,
+        Arc::new(nameservice),
+        indexer_config,
+    );
+
+    // Spawn the worker on the tokio runtime
+    tokio::spawn(worker.run());
+
+    tx::IndexingMode::Background(handle)
+}
+
 /// Connect using the Clojure-style JSON-LD connection config.
 ///
 /// This is the **single source of truth** entrypoint: all convenience helpers
@@ -918,10 +971,17 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
         );
         let nameservice = AnyNameService::new(Arc::new(nameservice_wrapped));
 
+        // Start background indexing if enabled in config
+        let indexing_mode = start_background_indexing_if_enabled(
+            aws_handle.config(),
+            connection.storage().clone(),
+            nameservice.clone(),
+        );
+
         return Ok(Fluree {
             connection,
             nameservice,
-            indexing_mode: tx::IndexingMode::Disabled,
+            indexing_mode,
             r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
             #[cfg(feature = "native")]
             prefetch: PrefetchService::start(PrefetchConfig::default()),
@@ -966,10 +1026,17 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
                 "memory",
             )));
 
+            // Start background indexing if enabled in config
+            let indexing_mode = start_background_indexing_if_enabled(
+                connection.config(),
+                connection.storage().clone(),
+                nameservice.clone(),
+            );
+
             Ok(Fluree {
                 connection,
                 nameservice,
-                indexing_mode: tx::IndexingMode::Disabled,
+                indexing_mode,
                 r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
                 #[cfg(feature = "native")]
                 prefetch: PrefetchService::start(PrefetchConfig::default()),
@@ -1034,10 +1101,17 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
                     "file",
                 )));
 
+                // Start background indexing if enabled in config
+                let indexing_mode = start_background_indexing_if_enabled(
+                    connection.config(),
+                    connection.storage().clone(),
+                    nameservice.clone(),
+                );
+
                 Ok(Fluree {
                     connection,
                     nameservice,
-                    indexing_mode: tx::IndexingMode::Disabled,
+                    indexing_mode,
                     r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
                     #[cfg(feature = "native")]
                     prefetch: PrefetchService::start(PrefetchConfig::default()),
