@@ -7,6 +7,7 @@ Fluree supports transparent encryption of data at rest using AES-256-GCM authent
 **Key Features:**
 - **AES-256-GCM**: Industry-standard authenticated encryption with integrity protection
 - **Transparent Operation**: Encryption/decryption happens automatically on read/write
+- **All Storage Backends**: Works natively with file, S3, and memory storage
 - **Portable Ciphertext**: Encrypted data can be moved between storage backends (file ↔ S3)
 - **Environment Variable Support**: Keys can be loaded from environment variables
 - **Secure Key Handling**: Key material in `EncryptionKey` is zeroized on drop

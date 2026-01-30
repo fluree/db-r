@@ -17,7 +17,7 @@ use super::{load_garbage_record, CleanGarbageConfig, CleanGarbageResult};
 use super::{DEFAULT_MAX_OLD_INDEXES, DEFAULT_MIN_TIME_GARBAGE_MINS};
 use crate::error::Result;
 use fluree_db_core::serde::json::{parse_db_root, DbRoot};
-use fluree_db_core::{Storage, StorageDelete, StorageWrite};
+use fluree_db_core::Storage;
 
 /// Entry in the prev-index chain
 struct IndexChainEntry {
@@ -128,7 +128,7 @@ pub async fn clean_garbage<S>(
     config: CleanGarbageConfig,
 ) -> Result<CleanGarbageResult>
 where
-    S: Storage + StorageWrite + StorageDelete,
+    S: Storage,
 {
     let max_old_indexes = config.max_old_indexes.unwrap_or(DEFAULT_MAX_OLD_INDEXES) as usize;
     let min_age_mins = config.min_time_garbage_mins.unwrap_or(DEFAULT_MIN_TIME_GARBAGE_MINS);
@@ -286,7 +286,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::MemoryStorage;
+    use fluree_db_core::prelude::*;
 
     #[test]
     fn test_current_timestamp_ms() {

@@ -59,8 +59,10 @@ pub use flake::{Flake, FlakeMeta};
 pub use comparator::IndexType;
 pub use index::{IndexNode, ChildRef, ResolvedNode};
 pub use storage::{
-    ContentAddressedWrite, ContentKind, ContentWriteResult, MemoryStorage, ReadHint, Storage,
-    StorageDelete, StorageList, StorageWrite,
+    ContentAddressedWrite, ContentKind, ContentWriteResult, MemoryStorage, ReadHint,
+    Storage, StorageRead, StorageWrite,
+    // Helper functions for storage implementations
+    alias_prefix_for_path, content_address, content_path, sha256_hex,
 };
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use storage::FileStorage;
@@ -88,3 +90,24 @@ pub use stats_view::{PropertyStatData, StatsView};
 pub use tracking::{FuelExceededError, PolicyStats, Tracker, TrackingOptions, TrackingTally};
 pub use coerce::{coerce_value, coerce_json_value, CoercionError, CoercionResult};
 pub use address::{ParsedFlureeAddress, parse_fluree_address, extract_identifier, extract_path};
+
+/// Prelude module for convenient imports of storage traits and common types.
+///
+/// # Example
+///
+/// ```ignore
+/// use fluree_db_core::prelude::*;
+///
+/// async fn example<S: Storage>(storage: &S) {
+///     let bytes = storage.read_bytes("address").await?;
+///     storage.write_bytes("address", &bytes).await?;
+/// }
+/// ```
+pub mod prelude {
+    pub use crate::storage::{
+        ContentAddressedWrite, ContentKind, ContentWriteResult, MemoryStorage, ReadHint, Storage,
+        StorageRead, StorageWrite,
+    };
+    #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+    pub use crate::storage::FileStorage;
+}

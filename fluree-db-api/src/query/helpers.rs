@@ -188,6 +188,23 @@ pub(crate) fn tracker_from_query_json(query_json: &JsonValue) -> Tracker {
     Tracker::new(TrackingOptions::from_opts_value(opts))
 }
 
+/// Creates a tracker for "tracked" query endpoints.
+///
+/// If the query specifies tracking options via `opts.meta`, those are used.
+/// Otherwise, all tracking (time, fuel, policy) is enabled by default since
+/// the caller explicitly used a "tracked" endpoint.
+pub(crate) fn tracker_for_tracked_endpoint(query_json: &JsonValue) -> Tracker {
+    let opts = query_json.as_object().and_then(|o| o.get("opts"));
+    let tracking = TrackingOptions::from_opts_value(opts);
+
+    // If no tracking options were specified, enable all tracking by default
+    if tracking.any_enabled() {
+        Tracker::new(tracking)
+    } else {
+        Tracker::new(TrackingOptions::all_enabled())
+    }
+}
+
 pub(crate) fn tracker_for_limits(query_json: &JsonValue) -> Tracker {
     let opts = query_json.as_object().and_then(|o| o.get("opts"));
     let tracking = TrackingOptions::from_opts_value(opts);

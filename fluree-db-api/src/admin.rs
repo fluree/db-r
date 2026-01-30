@@ -5,11 +5,9 @@
 //!
 //! # Note
 //!
-//! These operations require `S: Storage + StorageDelete + StorageList`, making
-//! them native/admin-only. They work with memory/file/S3 admin backends but are
-//! not available on read-only/WASM storage.
-
-// TEMP CHANGE UPDATE AGAIN!! - to check debug linking times, remove later
+//! These operations require `S: Storage`, which provides full read/write/delete
+//! capabilities. They work with memory/file/S3 admin backends but are not
+//! available on read-only storage.
 
 use crate::{error::ApiError, tx::IndexingMode, Result};
 use fluree_db_core::{
@@ -17,9 +15,6 @@ use fluree_db_core::{
     alias as core_alias,
     SimpleCache,
     Storage,
-    StorageDelete,
-    StorageList,
-    StorageWrite,
 };
 use fluree_db_indexer::{
     BatchedRebuildConfig, CleanGarbageConfig, ReindexCheckpoint,
@@ -302,9 +297,8 @@ fn normalize_alias(alias: &str) -> String {
 
 impl<S, N> crate::Fluree<S, SimpleCache, N>
 where
-    // NOTE: These trait bounds make drop_ledger native/admin-only.
-    // Not available on read-only/WASM storage.
-    S: Storage + StorageDelete + StorageList + Clone + 'static,
+    // NOTE: Storage trait provides full read/write/delete capabilities.
+    S: Storage + Clone + 'static,
     N: NameService + Publisher + Send + Sync + 'static,
 {
     /// Drop a ledger
@@ -458,7 +452,7 @@ where
 
 impl<S, N> crate::Fluree<S, SimpleCache, N>
 where
-    S: Storage + StorageDelete + StorageList + Clone + 'static,
+    S: Storage + Clone + 'static,
     N: NameService + Publisher + VirtualGraphPublisher,
 {
     /// Drop a virtual graph
@@ -661,7 +655,7 @@ where
 
 impl<S, N> crate::Fluree<S, SimpleCache, N>
 where
-    S: Storage + StorageWrite + fluree_db_core::ContentAddressedWrite + StorageDelete + Clone + Send + Sync + 'static,
+    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + AdminPublisher,
 {
     /// Full offline reindex from commit history

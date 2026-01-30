@@ -133,7 +133,7 @@ pub struct StorageConfig {
     pub storage_type: StorageType,
     /// Base path for file storage
     pub path: Option<Arc<str>>,
-    /// Optional AES-256 encryption key for file storage
+    /// Optional AES-256 encryption key (works with any storage backend: file, S3, memory)
     pub aes256_key: Option<Arc<str>>,
     /// Optional address identifier (Clojure parity)
     pub address_identifier: Option<Arc<str>>,

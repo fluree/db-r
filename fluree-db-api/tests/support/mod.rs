@@ -78,14 +78,7 @@ pub fn start_background_indexer_local<S, N>(
     config: fluree_db_indexer::IndexerConfig,
 ) -> (LocalSet, fluree_db_indexer::IndexerHandle)
 where
-    S: fluree_db_core::Storage
-        + fluree_db_core::StorageWrite
-        + fluree_db_core::ContentAddressedWrite
-        + fluree_db_core::StorageDelete
-        + Clone
-        + Send
-        + Sync
-        + 'static,
+    S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
     N: fluree_db_nameservice::NameService + fluree_db_nameservice::Publisher + Clone + 'static,
 {
     let (worker, handle) = fluree_db_api::BackgroundIndexerWorker::new(

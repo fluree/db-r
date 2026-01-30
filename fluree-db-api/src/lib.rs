@@ -130,7 +130,7 @@ pub use fluree_db_indexer::{
 pub use fluree_db_connection::{ConnectionConfig, StorageType};
 pub use fluree_db_core::{
     ContentAddressedWrite, ContentKind, ContentWriteResult, MemoryStorage, NodeCache,
-    OverlayProvider, SimpleCache, Storage, StorageDelete, StorageList, StorageWrite,
+    OverlayProvider, SimpleCache, Storage, StorageRead, StorageWrite,
 };
 #[cfg(feature = "native")]
 pub use fluree_db_core::FileStorage;
@@ -200,11 +200,10 @@ pub use fluree_graph_json_ld::ParsedContext;
 ///
 /// This allows `connect_json_ld` to return a single concrete Fluree type regardless of
 /// whether the config selects memory, filesystem, or S3 storage.
-pub trait StorageReadWrite: Storage + StorageWrite + ContentAddressedWrite + StorageDelete + StorageList {}
-impl<T: Storage + StorageWrite + ContentAddressedWrite + StorageDelete + StorageList> StorageReadWrite for T {}
-
+///
+/// Wraps `Arc<dyn Storage>` where `Storage = StorageRead + ContentAddressedWrite`.
 #[derive(Clone)]
-pub struct AnyStorage(Arc<dyn StorageReadWrite>);
+pub struct AnyStorage(Arc<dyn Storage>);
 
 impl std::fmt::Debug for AnyStorage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -213,13 +212,13 @@ impl std::fmt::Debug for AnyStorage {
 }
 
 impl AnyStorage {
-    pub fn new(inner: Arc<dyn StorageReadWrite>) -> Self {
+    pub fn new(inner: Arc<dyn Storage>) -> Self {
         Self(inner)
     }
 }
 
 #[async_trait]
-impl Storage for AnyStorage {
+impl StorageRead for AnyStorage {
     async fn read_bytes(&self, address: &str) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
         self.0.read_bytes(address).await
     }
@@ -235,12 +234,20 @@ impl Storage for AnyStorage {
     async fn exists(&self, address: &str) -> std::result::Result<bool, fluree_db_core::Error> {
         self.0.exists(address).await
     }
+
+    async fn list_prefix(&self, prefix: &str) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
+        self.0.list_prefix(prefix).await
+    }
 }
 
 #[async_trait]
 impl StorageWrite for AnyStorage {
     async fn write_bytes(&self, address: &str, bytes: &[u8]) -> std::result::Result<(), fluree_db_core::Error> {
         self.0.write_bytes(address, bytes).await
+    }
+
+    async fn delete(&self, address: &str) -> std::result::Result<(), fluree_db_core::Error> {
+        self.0.delete(address).await
     }
 }
 
@@ -265,20 +272,6 @@ impl ContentAddressedWrite for AnyStorage {
         bytes: &[u8],
     ) -> std::result::Result<ContentWriteResult, fluree_db_core::Error> {
         self.0.content_write_bytes(kind, ledger_alias, bytes).await
-    }
-}
-
-#[async_trait]
-impl StorageDelete for AnyStorage {
-    async fn delete(&self, address: &str) -> std::result::Result<(), fluree_db_core::Error> {
-        self.0.delete(address).await
-    }
-}
-
-#[async_trait]
-impl StorageList for AnyStorage {
-    async fn list_prefix(&self, prefix: &str) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
-        self.0.list_prefix(prefix).await
     }
 }
 
@@ -495,9 +488,9 @@ impl<S> TieredStorage<S> {
 }
 
 #[async_trait]
-impl<S> Storage for TieredStorage<S>
+impl<S> StorageRead for TieredStorage<S>
 where
-    S: Storage + StorageWrite + ContentAddressedWrite + Clone + Send + Sync,
+    S: Storage + Clone + Send + Sync,
 {
     async fn read_bytes(&self, address: &str) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
         if Self::route_to_commit(address) {
@@ -526,12 +519,21 @@ where
             self.index.exists(address).await
         }
     }
+
+    async fn list_prefix(&self, prefix: &str) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
+        // Route based on prefix - commit/txn prefixes go to commit storage
+        if Self::route_to_commit(prefix) {
+            self.commit.list_prefix(prefix).await
+        } else {
+            self.index.list_prefix(prefix).await
+        }
+    }
 }
 
 #[async_trait]
 impl<S> StorageWrite for TieredStorage<S>
 where
-    S: Storage + StorageWrite + ContentAddressedWrite + Clone + Send + Sync,
+    S: Storage + Clone + Send + Sync,
 {
     async fn write_bytes(&self, address: &str, bytes: &[u8]) -> std::result::Result<(), fluree_db_core::Error> {
         if Self::route_to_commit(address) {
@@ -540,12 +542,20 @@ where
             self.index.write_bytes(address, bytes).await
         }
     }
+
+    async fn delete(&self, address: &str) -> std::result::Result<(), fluree_db_core::Error> {
+        if Self::route_to_commit(address) {
+            self.commit.delete(address).await
+        } else {
+            self.index.delete(address).await
+        }
+    }
 }
 
 #[async_trait]
 impl<S> ContentAddressedWrite for TieredStorage<S>
 where
-    S: Storage + StorageWrite + ContentAddressedWrite + Clone + Send + Sync,
+    S: Storage + Clone + Send + Sync,
 {
     async fn content_write_bytes_with_hash(
         &self,
@@ -581,35 +591,6 @@ where
                 self.commit.content_write_bytes(kind, ledger_alias, bytes).await
             }
             _ => self.index.content_write_bytes(kind, ledger_alias, bytes).await,
-        }
-    }
-}
-
-#[async_trait]
-impl<S> StorageDelete for TieredStorage<S>
-where
-    S: Storage + StorageWrite + ContentAddressedWrite + StorageDelete + Clone + Send + Sync,
-{
-    async fn delete(&self, address: &str) -> std::result::Result<(), fluree_db_core::Error> {
-        if Self::route_to_commit(address) {
-            self.commit.delete(address).await
-        } else {
-            self.index.delete(address).await
-        }
-    }
-}
-
-#[async_trait]
-impl<S> StorageList for TieredStorage<S>
-where
-    S: Storage + StorageWrite + ContentAddressedWrite + StorageList + Clone + Send + Sync,
-{
-    async fn list_prefix(&self, prefix: &str) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
-        // Route based on prefix - commit/txn prefixes go to commit storage
-        if Self::route_to_commit(prefix) {
-            self.commit.list_prefix(prefix).await
-        } else {
-            self.index.list_prefix(prefix).await
         }
     }
 }
@@ -675,7 +656,7 @@ impl AddressIdentifierResolverStorage {
 }
 
 #[async_trait]
-impl Storage for AddressIdentifierResolverStorage {
+impl StorageRead for AddressIdentifierResolverStorage {
     async fn read_bytes(&self, address: &str) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
         self.route(address).read_bytes(address).await
     }
@@ -691,6 +672,11 @@ impl Storage for AddressIdentifierResolverStorage {
     async fn exists(&self, address: &str) -> std::result::Result<bool, fluree_db_core::Error> {
         self.route(address).exists(address).await
     }
+
+    /// List always uses the default storage
+    async fn list_prefix(&self, prefix: &str) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
+        self.default.list_prefix(prefix).await
+    }
 }
 
 #[async_trait]
@@ -702,6 +688,11 @@ impl StorageWrite for AddressIdentifierResolverStorage {
         bytes: &[u8],
     ) -> std::result::Result<(), fluree_db_core::Error> {
         self.default.write_bytes(address, bytes).await
+    }
+
+    /// Deletes always go to the default storage
+    async fn delete(&self, address: &str) -> std::result::Result<(), fluree_db_core::Error> {
+        self.default.delete(address).await
     }
 }
 
@@ -732,22 +723,6 @@ impl ContentAddressedWrite for AddressIdentifierResolverStorage {
     }
 }
 
-#[async_trait]
-impl StorageDelete for AddressIdentifierResolverStorage {
-    /// Deletes always go to the default storage
-    async fn delete(&self, address: &str) -> std::result::Result<(), fluree_db_core::Error> {
-        self.default.delete(address).await
-    }
-}
-
-#[async_trait]
-impl StorageList for AddressIdentifierResolverStorage {
-    /// List always uses the default storage
-    async fn list_prefix(&self, prefix: &str) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
-        self.default.list_prefix(prefix).await
-    }
-}
-
 /// Fluree runtime type returned by `connect_json_ld`.
 pub type FlureeClient = Fluree<AnyStorage, SimpleCache, AnyNameService>;
 
@@ -770,10 +745,14 @@ fn decode_encryption_key_base64(key_str: &str) -> Result<[u8; 32]> {
 }
 
 /// Build an S3 storage instance from a StorageConfig.
+///
+/// Returns an `Arc<dyn Storage>` which may be either:
+/// - `S3Storage` directly (if no encryption key is configured)
+/// - `EncryptedStorage<S3Storage, ...>` (if `aes256_key` is set)
 #[cfg(feature = "aws")]
 async fn build_s3_storage_from_config(
     storage_config: &fluree_db_connection::config::StorageConfig,
-) -> Result<fluree_db_storage_aws::S3Storage> {
+) -> Result<Arc<dyn Storage>> {
     use fluree_db_connection::config::StorageType;
     use fluree_db_storage_aws::{S3Config as RawS3Config, S3Storage};
 
@@ -809,16 +788,26 @@ async fn build_s3_storage_from_config(
         retry_max_delay_ms: s3_config.retry_max_delay_ms,
     };
 
-    S3Storage::new(sdk_config, raw_config)
+    let storage = S3Storage::new(sdk_config, raw_config)
         .await
-        .map_err(|e| ApiError::config(format!("Failed to create S3 storage: {}", e)))
+        .map_err(|e| ApiError::config(format!("Failed to create S3 storage: {}", e)))?;
+
+    // Wrap with encryption if key is configured
+    if let Some(key_str) = storage_config.aes256_key.as_ref() {
+        let key = decode_encryption_key_base64(key_str.as_ref())?;
+        let encryption_key = EncryptionKey::new(key, 0);
+        let key_provider = StaticKeyProvider::new(encryption_key);
+        Ok(Arc::new(EncryptedStorage::new(storage, key_provider)))
+    } else {
+        Ok(Arc::new(storage))
+    }
 }
 
 /// Build a local (memory/file) storage instance from a StorageConfig.
 #[cfg(feature = "native")]
 fn build_local_storage_from_config(
     storage_config: &fluree_db_connection::config::StorageConfig,
-) -> Result<Arc<dyn StorageReadWrite>> {
+) -> Result<Arc<dyn Storage>> {
     use fluree_db_connection::config::StorageType;
 
     match &storage_config.storage_type {
@@ -852,7 +841,7 @@ fn build_local_storage_from_config(
 #[cfg(not(feature = "native"))]
 fn build_local_storage_from_config(
     storage_config: &fluree_db_connection::config::StorageConfig,
-) -> Result<Arc<dyn StorageReadWrite>> {
+) -> Result<Arc<dyn Storage>> {
     use fluree_db_connection::config::StorageType;
 
     match &storage_config.storage_type {
@@ -868,6 +857,59 @@ fn build_local_storage_from_config(
             type_iri
         ))),
     }
+}
+
+/// Check if background indexing is enabled in the parsed connection config.
+fn is_indexing_enabled(config: &ConnectionConfig) -> bool {
+    config
+        .defaults
+        .as_ref()
+        .and_then(|d| d.indexing.as_ref())
+        .and_then(|i| i.indexing_enabled)
+        .unwrap_or(false)
+}
+
+/// Build IndexerConfig from connection defaults, falling back to defaults.
+fn build_indexer_config(config: &ConnectionConfig) -> fluree_db_indexer::IndexerConfig {
+    let mut indexer_config = fluree_db_indexer::IndexerConfig::default();
+
+    // Apply gc_max_old_indexes from config if present
+    if let Some(max_old) = config
+        .defaults
+        .as_ref()
+        .and_then(|d| d.indexing.as_ref())
+        .and_then(|i| i.max_old_indexes)
+    {
+        indexer_config.gc_max_old_indexes = max_old as u32;
+    }
+
+    indexer_config
+}
+
+/// Start background indexing if enabled in the config.
+///
+/// Creates a BackgroundIndexerWorker and spawns it on the tokio runtime.
+/// Returns the appropriate IndexingMode (Background with handle, or Disabled).
+fn start_background_indexing_if_enabled(
+    config: &ConnectionConfig,
+    storage: AnyStorage,
+    nameservice: AnyNameService,
+) -> tx::IndexingMode {
+    if !is_indexing_enabled(config) {
+        return tx::IndexingMode::Disabled;
+    }
+
+    let indexer_config = build_indexer_config(config);
+    let (worker, handle) = fluree_db_indexer::BackgroundIndexerWorker::new(
+        storage,
+        Arc::new(nameservice),
+        indexer_config,
+    );
+
+    // Spawn the worker on the tokio runtime
+    tokio::spawn(worker.run());
+
+    tx::IndexingMode::Background(handle)
 }
 
 /// Connect using the Clojure-style JSON-LD connection config.
@@ -891,7 +933,7 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
         // Decide whether to use tiered commit/index routing.
         let index = aws_handle.index_storage().clone();
         let commit = aws_handle.commit_storage().clone();
-        let base_storage: Arc<dyn StorageReadWrite> = if index.bucket() != commit.bucket()
+        let base_storage: Arc<dyn Storage> = if index.bucket() != commit.bucket()
             || index.prefix() != commit.prefix()
         {
             Arc::new(TieredStorage::new(commit, index))
@@ -903,8 +945,8 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
         let storage: AnyStorage = if let Some(addr_ids) = &aws_handle.config().address_identifiers {
             let mut identifier_map = std::collections::HashMap::new();
             for (identifier, storage_config) in addr_ids.iter() {
-                let id_storage: Arc<dyn StorageReadWrite> = match &storage_config.storage_type {
-                    StorageType::S3(_) => Arc::new(build_s3_storage_from_config(storage_config).await?),
+                let id_storage: Arc<dyn Storage> = match &storage_config.storage_type {
+                    StorageType::S3(_) => build_s3_storage_from_config(storage_config).await?,
                     _ => build_local_storage_from_config(storage_config)?,
                 };
                 identifier_map.insert(identifier.to_string(), AnyStorage::new(id_storage));
@@ -943,10 +985,17 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
         );
         let nameservice = AnyNameService::new(Arc::new(nameservice_wrapped));
 
+        // Start background indexing if enabled in config
+        let indexing_mode = start_background_indexing_if_enabled(
+            aws_handle.config(),
+            connection.storage().clone(),
+            nameservice.clone(),
+        );
+
         return Ok(Fluree {
             connection,
             nameservice,
-            indexing_mode: tx::IndexingMode::Disabled,
+            indexing_mode,
             r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
             #[cfg(feature = "native")]
             prefetch: PrefetchService::start(PrefetchConfig::default()),
@@ -957,7 +1006,7 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
     // --- Local (memory/filesystem) ---
     match &parsed.index_storage.storage_type {
         StorageType::Memory => {
-            let base_storage: Arc<dyn StorageReadWrite> = Arc::new(MemoryStorage::new());
+            let base_storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
             let cache = Arc::new(SimpleCache::new(parsed.cache.max_entries));
 
             // Build address identifier resolver if configured
@@ -991,10 +1040,17 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
                 "memory",
             )));
 
+            // Start background indexing if enabled in config
+            let indexing_mode = start_background_indexing_if_enabled(
+                connection.config(),
+                connection.storage().clone(),
+                nameservice.clone(),
+            );
+
             Ok(Fluree {
                 connection,
                 nameservice,
-                indexing_mode: tx::IndexingMode::Disabled,
+                indexing_mode,
                 r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
                 #[cfg(feature = "native")]
                 prefetch: PrefetchService::start(PrefetchConfig::default()),
@@ -1014,7 +1070,7 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
                     .clone()
                     .ok_or_else(|| ApiError::config("File storage requires filePath"))?;
                 let file_storage = FileStorage::new(path.as_ref());
-                let base_storage: Arc<dyn StorageReadWrite> = if let Some(key_str) =
+                let base_storage: Arc<dyn Storage> = if let Some(key_str) =
                     parsed.index_storage.aes256_key.as_ref()
                 {
                     // Note: This encrypts storage reads/writes (index/commit blobs). The file-based
@@ -1059,10 +1115,17 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
                     "file",
                 )));
 
+                // Start background indexing if enabled in config
+                let indexing_mode = start_background_indexing_if_enabled(
+                    connection.config(),
+                    connection.storage().clone(),
+                    nameservice.clone(),
+                );
+
                 Ok(Fluree {
                     connection,
                     nameservice,
-                    indexing_mode: tx::IndexingMode::Disabled,
+                    indexing_mode,
                     r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
                     #[cfg(feature = "native")]
                     prefetch: PrefetchService::start(PrefetchConfig::default()),
@@ -1790,6 +1853,89 @@ impl FlureeBuilder {
         )
         .await
         .map_err(|e| ApiError::config(format!("Failed to create S3 storage: {}", e)))?;
+
+        let cache = Arc::new(SimpleCache::new(self.config.cache.max_entries));
+        let connection = Connection::new(self.config, storage.clone(), Arc::clone(&cache));
+
+        // Empty prefix: S3Storage already applies its own key prefix.
+        let nameservice = StorageNameService::new(storage, "");
+
+        Ok(Fluree {
+            connection,
+            nameservice,
+            indexing_mode: tx::IndexingMode::Disabled,
+            r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
+            #[cfg(feature = "native")]
+            prefetch: PrefetchService::start(PrefetchConfig::default()),
+            ledger_manager: None,
+        })
+    }
+
+    /// Build an S3-backed Fluree instance with AES-256-GCM encryption.
+    ///
+    /// All data written to S3 is transparently encrypted before upload,
+    /// and decrypted on read.
+    ///
+    /// Notes:
+    /// - Requires the `aws` feature.
+    /// - Uses the AWS default credential/region chain.
+    /// - Ledger caching is currently not enabled for this builder path.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - 32-byte AES-256 encryption key
+    #[cfg(feature = "aws")]
+    pub async fn build_s3_encrypted(
+        self,
+        key: [u8; 32],
+    ) -> Result<
+        Fluree<
+            EncryptedStorage<fluree_db_storage_aws::S3Storage, StaticKeyProvider>,
+            SimpleCache,
+            StorageNameService<EncryptedStorage<fluree_db_storage_aws::S3Storage, StaticKeyProvider>>,
+        >,
+    > {
+        use fluree_db_connection::aws;
+        use fluree_db_connection::config::S3StorageConfig;
+        use fluree_db_storage_aws::{S3Config, S3Storage};
+
+        let s3_cfg: &S3StorageConfig = match &self.config.index_storage.storage_type {
+            StorageType::S3(s3) => s3,
+            _ => {
+                return Err(ApiError::config(
+                    "build_s3_encrypted requires FlureeBuilder::s3(...) or an S3 indexStorage config",
+                ))
+            }
+        };
+
+        let timeout_ms = s3_cfg
+            .read_timeout_ms
+            .into_iter()
+            .chain(s3_cfg.write_timeout_ms.into_iter())
+            .chain(s3_cfg.list_timeout_ms.into_iter())
+            .max();
+
+        let sdk_config = aws::get_or_init_sdk_config().await?;
+
+        let s3_storage = S3Storage::new(
+            sdk_config,
+            S3Config {
+                bucket: s3_cfg.bucket.to_string(),
+                prefix: s3_cfg.prefix.as_ref().map(|s| s.to_string()),
+                endpoint: s3_cfg.endpoint.as_ref().map(|s| s.to_string()),
+                timeout_ms,
+                max_retries: s3_cfg.max_retries.map(|n| n as u32),
+                retry_base_delay_ms: s3_cfg.retry_base_delay_ms,
+                retry_max_delay_ms: s3_cfg.retry_max_delay_ms,
+            },
+        )
+        .await
+        .map_err(|e| ApiError::config(format!("Failed to create S3 storage: {}", e)))?;
+
+        // Wrap with encryption
+        let encryption_key = EncryptionKey::new(key, 0);
+        let key_provider = StaticKeyProvider::new(encryption_key);
+        let storage = EncryptedStorage::new(s3_storage, key_provider);
 
         let cache = Arc::new(SimpleCache::new(self.config.cache.max_entries));
         let connection = Connection::new(self.config, storage.clone(), Arc::clone(&cache));

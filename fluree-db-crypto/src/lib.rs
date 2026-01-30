@@ -105,7 +105,7 @@ pub use envelope::{
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use fluree_db_core::{MemoryStorage, Storage, StorageWrite};
+    use fluree_db_core::prelude::*;
 
     /// Test that data encrypted with one storage can be decrypted
     /// by another storage with the same key (portability).

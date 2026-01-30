@@ -9,7 +9,7 @@ use crate::virtual_graph::result::{
     Bm25CreateResult, Bm25DropResult, Bm25StalenessCheck, Bm25SyncResult, SnapshotSelection,
 };
 use crate::{QueryResult as ApiQueryResult, Result, SimpleCache};
-use fluree_db_core::{alias as core_alias, OverlayProvider, Storage, StorageDelete, StorageWrite};
+use fluree_db_core::{alias as core_alias, OverlayProvider, Storage, StorageWrite};
 use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{NameService, Publisher, VgType, VirtualGraphPublisher};
 use fluree_db_query::bm25::{Bm25IndexBuilder, PropertyDeps};
@@ -981,7 +981,7 @@ where
     /// 2. Deletes all snapshot files from storage
     pub async fn drop_full_text_index(&self, vg_alias: &str) -> Result<Bm25DropResult>
     where
-        S: StorageDelete,
+        S: StorageWrite,
     {
         info!(vg_alias = %vg_alias, "Dropping BM25 full-text index");
 

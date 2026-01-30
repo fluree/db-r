@@ -17,7 +17,7 @@
 use async_trait::async_trait;
 use fluree_db_core::error::{Error as CoreError, Result};
 use fluree_db_core::storage::ReadHint;
-use fluree_db_core::{ContentAddressedWrite, ContentKind, ContentWriteResult, Storage};
+use fluree_db_core::{ContentAddressedWrite, ContentKind, ContentWriteResult, StorageRead, StorageWrite};
 use reqwest::{Client, StatusCode};
 use serde::Serialize;
 use std::fmt::Debug;
@@ -196,7 +196,7 @@ impl ProxyStorage {
 }
 
 #[async_trait]
-impl Storage for ProxyStorage {
+impl StorageRead for ProxyStorage {
     async fn read_bytes(&self, address: &str) -> Result<Vec<u8>> {
         // Always request raw bytes (no content negotiation)
         match self
@@ -233,6 +233,28 @@ impl Storage for ProxyStorage {
             Err(CoreError::NotFound(_)) => Ok(false),
             Err(e) => Err(e),
         }
+    }
+
+    async fn list_prefix(&self, _prefix: &str) -> Result<Vec<String>> {
+        // ProxyStorage is read-only and doesn't support listing
+        Err(CoreError::storage(
+            "ProxyStorage does not support list_prefix".to_string(),
+        ))
+    }
+}
+
+#[async_trait]
+impl StorageWrite for ProxyStorage {
+    async fn write_bytes(&self, _address: &str, _bytes: &[u8]) -> Result<()> {
+        Err(CoreError::storage(
+            "ProxyStorage is read-only (writes must go to the transaction server)".to_string(),
+        ))
+    }
+
+    async fn delete(&self, _address: &str) -> Result<()> {
+        Err(CoreError::storage(
+            "ProxyStorage is read-only (deletes must go to the transaction server)".to_string(),
+        ))
     }
 }
 

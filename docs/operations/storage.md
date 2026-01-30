@@ -156,7 +156,7 @@ Fluree supports transparent AES-256-GCM encryption for data at rest. When enable
 export FLUREE_ENCRYPTION_KEY=$(openssl rand -base64 32)
 ```
 
-Configure via JSON-LD:
+Configure via JSON-LD (file storage):
 
 ```json
 {
@@ -172,10 +172,28 @@ Configure via JSON-LD:
 }
 ```
 
+For S3 storage with encryption:
+
+```json
+{
+  "@context": {"@vocab": "https://ns.flur.ee/system#"},
+  "@graph": [{
+    "@type": "Connection",
+    "indexStorage": {
+      "@type": "Storage",
+      "s3Bucket": "my-fluree-bucket",
+      "s3Endpoint": "https://s3.us-east-1.amazonaws.com",
+      "AES256Key": {"envVar": "FLUREE_ENCRYPTION_KEY"}
+    }
+  }]
+}
+```
+
 **Key Features:**
 - AES-256-GCM authenticated encryption
+- Works natively with all storage backends (memory, file, S3)
 - Transparent encryption/decryption on read/write
-- Portable ciphertext format (works across file and S3 storage)
+- Portable ciphertext format (encrypted data can be moved between backends)
 - Environment variable support for key configuration
 
 See [Storage Encryption](../security/encryption.md) for full documentation.

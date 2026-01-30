@@ -4,7 +4,7 @@
 //! with the full Fluree API.
 
 use fluree_db_api::FlureeBuilder;
-use fluree_db_core::Storage; // For read_bytes trait method
+use fluree_db_core::prelude::*; // For storage traits
 use serde_json::json;
 
 /// Test that we can create an encrypted memory instance and perform basic operations
@@ -68,7 +68,7 @@ async fn test_encrypted_memory_create_and_query() {
 /// (data encrypted with one key can't be read without the key)
 #[tokio::test]
 async fn test_encrypted_data_requires_key() {
-    use fluree_db_core::{MemoryStorage, Storage, StorageWrite};
+    use fluree_db_core::prelude::*;
     use fluree_db_api::{EncryptedStorage, EncryptionKey, StaticKeyProvider};
 
     let key: [u8; 32] = [0x42; 32];
@@ -94,7 +94,7 @@ async fn test_encrypted_data_requires_key() {
 /// Test that the encryption envelope is portable (magic bytes present)
 #[tokio::test]
 async fn test_encryption_envelope_format() {
-    use fluree_db_core::{MemoryStorage, Storage, StorageWrite};
+    use fluree_db_core::prelude::*;
     use fluree_db_api::{EncryptedStorage, EncryptionKey, StaticKeyProvider};
 
     let key: [u8; 32] = [0x42; 32];
@@ -117,7 +117,6 @@ async fn test_encryption_envelope_format() {
 /// Test that different keys produce different ciphertext
 #[tokio::test]
 async fn test_different_keys_different_ciphertext() {
-    use fluree_db_core::{MemoryStorage, StorageWrite};
     use fluree_db_api::{EncryptedStorage, EncryptionKey, StaticKeyProvider};
 
     let key1: [u8; 32] = [0x01; 32];

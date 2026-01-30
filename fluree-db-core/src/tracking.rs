@@ -67,6 +67,19 @@ impl TrackingOptions {
     pub fn any_enabled(&self) -> bool {
         self.track_time || self.track_fuel || self.track_policy
     }
+
+    /// Returns tracking options with all tracking enabled (time, fuel, policy).
+    ///
+    /// This is the default for "tracked" query endpoints where the user expects
+    /// tracking information in the response.
+    pub fn all_enabled() -> Self {
+        Self {
+            track_time: true,
+            track_fuel: true,
+            track_policy: true,
+            max_fuel: None,
+        }
+    }
 }
 
 /// Policy execution statistics (Clojure parity: `{:executed N :allowed M}`)

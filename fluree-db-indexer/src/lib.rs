@@ -114,7 +114,7 @@ pub use gc::{
 };
 
 // Note: The following types/functions are defined in this module and are automatically public:
-// - build_index_for_ledger (heavy bounds: StorageDelete + Send), refresh_index_for_ledger (light bounds)
+// - build_index_for_ledger (heavy bounds: Storage + Send), refresh_index_for_ledger (light bounds)
 // - BatchedRebuildConfig, BatchedRebuildResult, batched_rebuild_from_commits, batched_rebuild_resume
 // - ReindexCheckpoint, IndexerConfigSnapshot, checkpoint_address, load_checkpoint, write_checkpoint, delete_checkpoint
 // - ReindexProgress, ProgressCallback (for observability)
@@ -122,7 +122,7 @@ pub use gc::{
 
 use fluree_db_core::cache::NoCache;
 use fluree_db_core::serde::json::PrevIndexRef;
-use fluree_db_core::{ContentAddressedWrite, Db, Storage, StorageDelete, StorageWrite};
+use fluree_db_core::{ContentAddressedWrite, Db, Storage, StorageWrite};
 use fluree_db_nameservice::{NameService, Publisher};
 use fluree_db_novelty::{
     load_commit, trace_commit_envelopes, trace_commits,
@@ -428,7 +428,7 @@ pub async fn write_checkpoint<S: fluree_db_core::StorageWrite>(
 }
 
 /// Delete a reindex checkpoint from storage
-pub async fn delete_checkpoint<S: StorageDelete>(
+pub async fn delete_checkpoint<S: StorageWrite>(
     storage: &S,
     alias: &str,
 ) -> Result<()> {
@@ -657,7 +657,7 @@ pub async fn batched_rebuild_from_commits<S>(
     config: BatchedRebuildConfig,
 ) -> Result<BatchedRebuildResult>
 where
-    S: Storage + StorageWrite + ContentAddressedWrite + StorageDelete + Clone + Send + Sync + 'static,
+    S: Storage + Clone + Send + Sync + 'static,
 {
     let span = tracing::info_span!("batched_rebuild", ledger_alias = alias);
     let _guard = span.enter();
@@ -1026,7 +1026,7 @@ pub async fn batched_rebuild_resume<S>(
     indexer_config_override: IndexerConfig,
 ) -> Result<BatchedRebuildResult>
 where
-    S: Storage + StorageWrite + ContentAddressedWrite + StorageDelete + Clone + Send + Sync + 'static,
+    S: Storage + Clone + Send + Sync + 'static,
 {
     let span = tracing::info_span!("batched_rebuild_resume", ledger_alias = %checkpoint.alias);
     let _guard = span.enter();
@@ -1282,7 +1282,7 @@ where
 ///
 /// Attempts incremental refresh from an existing index. This function has
 /// lighter trait bounds than [`build_index_for_ledger`] because it doesn't
-/// require `StorageDelete` or `Send`.
+/// require `Storage` or `Send`.
 ///
 /// Use this when:
 /// - You know an existing index exists
@@ -1375,7 +1375,7 @@ where
 /// This provides efficient incremental updates when possible, with reliable
 /// full rebuilds as a fallback.
 ///
-/// **Note**: This function requires heavier trait bounds (`StorageDelete + Send`)
+/// **Note**: This function requires heavier trait bounds (`Storage + Send`)
 /// because the fallback path uses batched rebuild with checkpoint cleanup.
 /// For lighter bounds (refresh-only), use [`refresh_index_for_ledger`] instead.
 pub async fn build_index_for_ledger<S, N>(
@@ -1385,7 +1385,7 @@ pub async fn build_index_for_ledger<S, N>(
     config: IndexerConfig,
 ) -> Result<IndexResult>
 where
-    S: Storage + StorageWrite + ContentAddressedWrite + StorageDelete + Clone + Send + Sync + 'static,
+    S: Storage + Clone + Send + Sync + 'static,
     N: NameService,
 {
     let span = tracing::info_span!("index_build", ledger_alias = alias);

@@ -24,7 +24,7 @@ use axum::{
     response::Response,
     Json,
 };
-use fluree_db_api::{policy_builder, NameService, QueryConnectionOptions, Storage};
+use fluree_db_api::{policy_builder, NameService, QueryConnectionOptions, StorageRead};
 use fluree_db_core::flake::Flake;
 use fluree_db_core::{NoOverlay, OverlayProvider, SidInterner, Tracker};
 use fluree_db_query::QueryPolicyEnforcer;

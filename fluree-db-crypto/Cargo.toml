@@ -8,9 +8,12 @@ description = "Storage encryption layer for Fluree DB using AES-256-GCM"
 
 [features]
 default = []
+# Enable nameservice trait implementations (StorageList, StorageCas, StorageDelete)
+nameservice = ["fluree-db-nameservice"]
 
 [dependencies]
 fluree-db-core = { path = "../fluree-db-core" }
+fluree-db-nameservice = { path = "../fluree-db-nameservice", optional = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 sha2 = { workspace = true }

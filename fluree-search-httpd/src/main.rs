@@ -33,7 +33,7 @@ use axum::{
     Json, Router,
 };
 use clap::Parser;
-use fluree_db_core::{FileStorage, Storage};
+use fluree_db_core::{FileStorage, StorageRead};
 use fluree_db_nameservice::file::FileNameService;
 use fluree_db_nameservice::VirtualGraphPublisher;
 use fluree_db_query::bm25::{deserialize, Bm25Index};

@@ -34,16 +34,14 @@ use aws_sdk_s3::Client;
 use aws_smithy_types::retry::RetryConfig;
 use aws_smithy_types::timeout::TimeoutConfig;
 use fluree_db_core::error::Error as CoreError;
-use fluree_db_core::address_path::alias_to_path_prefix;
 use fluree_db_core::{
-    ContentAddressedWrite, ContentKind, ContentWriteResult, Storage, StorageWrite,
-    StorageDelete as CoreStorageDelete, StorageList as CoreStorageList,
+    content_address, sha256_hex, ContentAddressedWrite, ContentKind, ContentWriteResult,
+    StorageRead, StorageWrite,
 };
 use fluree_db_nameservice::{
     ListResult as NsListResult, StorageCas, StorageDelete, StorageExtError, StorageExtResult,
     StorageList,
 };
-use sha2::Digest;
 use std::fmt::Debug;
 use std::time::Duration;
 
@@ -248,7 +246,7 @@ impl S3Storage {
 }
 
 #[async_trait]
-impl Storage for S3Storage {
+impl StorageRead for S3Storage {
     async fn read_bytes(&self, address: &str) -> std::result::Result<Vec<u8>, CoreError> {
         let key = self.to_key(address)?;
 
@@ -302,6 +300,13 @@ impl Storage for S3Storage {
             }
         }
     }
+
+    async fn list_prefix(&self, prefix: &str) -> std::result::Result<Vec<String>, CoreError> {
+        // Delegate to the nameservice trait impl and convert the error
+        StorageList::list_prefix(self, prefix)
+            .await
+            .map_err(ext_error_to_core)
+    }
 }
 
 #[async_trait]
@@ -320,38 +325,13 @@ impl StorageWrite for S3Storage {
 
         Ok(())
     }
-}
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(bytes);
-    let digest = hasher.finalize();
-    hex::encode(digest)
-}
-
-fn alias_prefix_for_path(alias: &str) -> String {
-    alias_to_path_prefix(alias).unwrap_or_else(|_| alias.replace(':', "/"))
-}
-
-fn content_path(kind: ContentKind, alias: &str, hash_hex: &str) -> String {
-    let prefix = alias_prefix_for_path(alias);
-    match kind {
-        ContentKind::Commit => format!("{}/commit/{}.json", prefix, hash_hex),
-        ContentKind::Txn => format!("{}/txn/{}.json", prefix, hash_hex),
-        ContentKind::IndexNode { index_type } => {
-            format!("{}/index/{}/{}.json", prefix, index_type.name(), hash_hex)
-        }
-        ContentKind::IndexRoot => format!("{}/index/root/{}.json", prefix, hash_hex),
-        ContentKind::GarbageRecord => format!("{}/index/garbage/{}.json", prefix, hash_hex),
-        ContentKind::ReindexCheckpoint => format!("{}/index/reindex-checkpoint.json", prefix),
-        // Forward-compatibility for future ContentKind variants.
-        _ => format!("{}/blob/{}.bin", prefix, hash_hex),
+    async fn delete(&self, address: &str) -> std::result::Result<(), CoreError> {
+        // Delegate to the nameservice trait impl and convert the error
+        StorageDelete::delete(self, address)
+            .await
+            .map_err(ext_error_to_core)
     }
-}
-
-fn content_address(kind: ContentKind, alias: &str, hash_hex: &str) -> String {
-    let path = content_path(kind, alias, hash_hex);
-    format!("fluree:s3://{}", path)
 }
 
 #[async_trait]
@@ -363,7 +343,7 @@ impl ContentAddressedWrite for S3Storage {
         content_hash_hex: &str,
         bytes: &[u8],
     ) -> std::result::Result<ContentWriteResult, CoreError> {
-        let address = content_address(kind, ledger_alias, content_hash_hex);
+        let address = content_address("s3", kind, ledger_alias, content_hash_hex);
         self.write_bytes(&address, bytes).await?;
         Ok(ContentWriteResult {
             address,
@@ -669,26 +649,6 @@ fn ext_error_to_core(err: StorageExtError) -> CoreError {
         StorageExtError::Throttled(msg) => CoreError::io(format!("Throttled: {}", msg)),
         StorageExtError::PreconditionFailed => CoreError::storage("Precondition failed"),
         StorageExtError::Other(msg) => CoreError::other(msg),
-    }
-}
-
-// Core storage trait implementations (for AnyStorage compatibility)
-
-#[async_trait]
-impl CoreStorageDelete for S3Storage {
-    async fn delete(&self, address: &str) -> fluree_db_core::error::Result<()> {
-        StorageDelete::delete(self, address)
-            .await
-            .map_err(ext_error_to_core)
-    }
-}
-
-#[async_trait]
-impl CoreStorageList for S3Storage {
-    async fn list_prefix(&self, prefix: &str) -> fluree_db_core::error::Result<Vec<String>> {
-        StorageList::list_prefix(self, prefix)
-            .await
-            .map_err(ext_error_to_core)
     }
 }
 
