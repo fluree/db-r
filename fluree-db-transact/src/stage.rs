@@ -27,6 +27,7 @@ use fluree_db_query::{
 };
 use std::collections::HashSet;
 use std::sync::Arc;
+use tracing::Instrument;
 
 #[cfg(feature = "shacl")]
 use fluree_db_shacl::{ShaclCache, ShaclEngine, ValidationReport};
@@ -133,8 +134,7 @@ pub async fn stage<S: Storage + Clone + 'static, C: NodeCache + 'static>(
         insert_count = txn.insert_templates.len(),
         delete_count = txn.delete_templates.len()
     );
-    let _guard = span.enter();
-
+    async {
     tracing::info!("starting transaction staging");
 
     // 1. Check backpressure - reject early if novelty is at max
@@ -150,32 +150,27 @@ pub async fn stage<S: Storage + Clone + 'static, C: NodeCache + 'static>(
 
     // Execute WHERE patterns to get bindings
     // This lowers UnresolvedPattern to Pattern, assigning VarIds to variables
-    let bindings = {
-        let span = tracing::debug_span!(
-            "where_exec",
-            pattern_count = txn.where_patterns.len(),
-            binding_rows = tracing::field::Empty,
-        );
-        let _guard = span.enter();
+    let where_pattern_count = txn.where_patterns.len();
+    let bindings = async {
         let bindings = execute_where(&ledger, &mut txn).await?;
         tracing::Span::current().record("binding_rows", bindings.len());
-        bindings
-    };
+        Ok::<_, TransactError>(bindings)
+    }
+    .instrument(tracing::debug_span!(
+        "where_exec",
+        pattern_count = where_pattern_count,
+        binding_rows = tracing::field::Empty,
+    ))
+    .await?;
 
     // Generate transaction ID for blank node skolemization
     let txn_id = generate_txn_id();
 
     // Generate retractions from DELETE templates
+    let delete_template_count = txn.delete_templates.len();
     let mut generator = FlakeGenerator::new(new_t, &mut ns_registry, txn_id);
 
-    let retractions = {
-        let span = tracing::debug_span!(
-            "delete_gen",
-            template_count = txn.delete_templates.len(),
-            retraction_count = tracing::field::Empty,
-        );
-        let _guard = span.enter();
-
+    let retractions = async {
         let mut retractions = generator.generate_retractions(&txn.delete_templates, &bindings)?;
 
         // Clojure parity: DELETE templates often omit list indices even when retracting `@list` values.
@@ -189,8 +184,14 @@ pub async fn stage<S: Storage + Clone + 'static, C: NodeCache + 'static>(
         }
 
         tracing::Span::current().record("retraction_count", retractions.len());
-        retractions
-    };
+        Ok::<_, TransactError>(retractions)
+    }
+    .instrument(tracing::debug_span!(
+        "delete_gen",
+        template_count = delete_template_count,
+        retraction_count = tracing::field::Empty,
+    ))
+    .await?;
 
     // Generate assertions from INSERT templates
     let assertions = {
@@ -241,9 +242,14 @@ pub async fn stage<S: Storage + Clone + 'static, C: NodeCache + 'static>(
     // 3. Enforce modify policies (if policy context provided and not root)
     if let Some(policy) = options.policy_ctx {
         if !policy.wrapper().is_root() {
-            let span = tracing::debug_span!("policy_enforce", flakes_checked = flakes.len(),);
-            let _guard = span.enter();
-            enforce_modify_policies(&flakes, policy, &ledger, options.tracker).await?;
+            async {
+                enforce_modify_policies(&flakes, policy, &ledger, options.tracker).await
+            }
+            .instrument(tracing::debug_span!(
+                "policy_enforce",
+                flakes_checked = flakes.len(),
+            ))
+            .await?;
         }
     }
 
@@ -259,6 +265,9 @@ pub async fn stage<S: Storage + Clone + 'static, C: NodeCache + 'static>(
     );
 
     Ok((LedgerView::stage(ledger, flakes), ns_registry))
+    }
+    .instrument(span)
+    .await
 }
 
 async fn hydrate_list_index_meta_for_retractions<

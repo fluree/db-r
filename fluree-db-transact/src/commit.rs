@@ -16,6 +16,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// Hashable commit representation (excludes address/id/time to avoid self-reference and nondeterminism)
 #[derive(Serialize)]
@@ -133,8 +134,7 @@ where
         flake_count = tracing::field::Empty,
         bytes_written = tracing::field::Empty,
     );
-    let _guard = span.enter();
-
+    async {
     // 1. Extract flakes from view
     let (mut base, flakes) = view.into_parts();
 
@@ -251,9 +251,8 @@ where
         .unwrap_or(commit_id.as_str());
 
     let bytes = serde_json::to_vec(&commit_record)?;
-    let address = {
-        let span = tracing::debug_span!("storage_write", bytes_written = bytes.len(),);
-        let _guard = span.enter();
+    let storage_write_bytes = bytes.len();
+    let address = async {
         let write_res = storage
             .content_write_bytes_with_hash(
                 ContentKind::Commit,
@@ -262,21 +261,26 @@ where
                 &bytes,
             )
             .await?;
-        write_res.address
-    };
+        Ok::<_, TransactError>(write_res.address)
+    }
+    .instrument(tracing::debug_span!(
+        "storage_write",
+        bytes_written = storage_write_bytes,
+    ))
+    .await?;
 
     // Update in-memory commit with its address and content ID
     commit_record.address = address.clone();
     commit_record.id = Some(format!("fluree:commit:{}", commit_id));
 
     // 8. Publish to nameservice
-    {
-        let span = tracing::debug_span!("ns_publish");
-        let _guard = span.enter();
+    async {
         nameservice
             .publish_commit(base.alias(), &address, new_t)
-            .await?;
+            .await
     }
+    .instrument(tracing::debug_span!("ns_publish"))
+    .await?;
 
     // 9. Generate commit metadata flakes (Clojure parity)
     // Note: We merge these into novelty only, not into commit_record.flakes
@@ -305,6 +309,9 @@ where
     };
 
     Ok((receipt, new_state))
+    }
+    .instrument(span)
+    .await
 }
 
 /// Verify that this commit follows the expected sequence

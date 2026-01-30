@@ -21,6 +21,7 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// Commit information in transaction response
 #[derive(Serialize)]
@@ -127,44 +128,48 @@ async fn transact_local(state: Arc<AppState>, request: Request) -> Result<Json<T
         None, // ledger alias determined later
         None, // tenant_id not yet supported
     );
-    let _guard = span.enter();
 
-    // Check if this is a SPARQL UPDATE request
-    if credential.is_sparql_update() {
-        tracing::info!(
-            status = "start",
-            format = "sparql-update",
-            "SPARQL UPDATE request received"
-        );
-        return execute_sparql_update_request(&state, None, &headers, &credential, &span).await;
+    async {
+        // Check if this is a SPARQL UPDATE request
+        if credential.is_sparql_update() {
+            tracing::info!(
+                status = "start",
+                format = "sparql-update",
+                "SPARQL UPDATE request received"
+            );
+            return execute_sparql_update_request(&state, None, &headers, &credential, &tracing::Span::current())
+                .await;
+        }
+
+        tracing::info!(status = "start", "transaction request received");
+
+        let body_json = match credential.body_json() {
+            Ok(json) => json,
+            Err(e) => {
+                set_span_error_code(&tracing::Span::current(), "error:BadRequest");
+                tracing::warn!(error = %e, "invalid JSON in transaction body");
+                return Err(e);
+            }
+        };
+
+        let alias = match get_ledger_alias(None, &headers, &body_json) {
+            Ok(alias) => {
+                tracing::Span::current().record("ledger_alias", &alias.as_str());
+                alias
+            }
+            Err(e) => {
+                set_span_error_code(&tracing::Span::current(), "error:BadRequest");
+                tracing::warn!(error = %e, "missing ledger alias");
+                return Err(e);
+            }
+        };
+
+        let did = credential.did().map(String::from);
+
+        execute_transaction(&state, &alias, TxnType::Update, &body_json, did).await
     }
-
-    tracing::info!(status = "start", "transaction request received");
-
-    let body_json = match credential.body_json() {
-        Ok(json) => json,
-        Err(e) => {
-            set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "invalid JSON in transaction body");
-            return Err(e);
-        }
-    };
-
-    let alias = match get_ledger_alias(None, &headers, &body_json) {
-        Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
-            alias
-        }
-        Err(e) => {
-            set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "missing ledger alias");
-            return Err(e);
-        }
-    };
-
-    let did = credential.did().map(String::from);
-
-    execute_transaction(&state, &alias, TxnType::Update, &body_json, did).await
+    .instrument(span)
+    .await
 }
 
 /// Execute a transaction with ledger in path
@@ -211,45 +216,54 @@ async fn transact_ledger_local(
         Some(&ledger),
         None,
     );
-    let _guard = span.enter();
 
-    // Check if this is a SPARQL UPDATE request
-    if credential.is_sparql_update() {
-        tracing::info!(
-            status = "start",
-            format = "sparql-update",
-            "SPARQL UPDATE request received"
-        );
-        return execute_sparql_update_request(&state, Some(&ledger), &headers, &credential, &span)
+    async {
+        // Check if this is a SPARQL UPDATE request
+        if credential.is_sparql_update() {
+            tracing::info!(
+                status = "start",
+                format = "sparql-update",
+                "SPARQL UPDATE request received"
+            );
+            return execute_sparql_update_request(
+                &state,
+                Some(&ledger),
+                &headers,
+                &credential,
+                &tracing::Span::current(),
+            )
             .await;
+        }
+
+        tracing::info!(status = "start", "ledger transaction request received");
+
+        let body_json = match credential.body_json() {
+            Ok(json) => json,
+            Err(e) => {
+                set_span_error_code(&tracing::Span::current(), "error:BadRequest");
+                tracing::warn!(error = %e, "invalid JSON in transaction body");
+                return Err(e);
+            }
+        };
+
+        let alias = match get_ledger_alias(Some(&ledger), &headers, &body_json) {
+            Ok(alias) => {
+                tracing::Span::current().record("ledger_alias", &alias.as_str());
+                alias
+            }
+            Err(e) => {
+                set_span_error_code(&tracing::Span::current(), "error:BadRequest");
+                tracing::warn!(error = %e, "ledger alias mismatch");
+                return Err(e);
+            }
+        };
+
+        let did = credential.did().map(String::from);
+
+        execute_transaction(&state, &alias, TxnType::Update, &body_json, did).await
     }
-
-    tracing::info!(status = "start", "ledger transaction request received");
-
-    let body_json = match credential.body_json() {
-        Ok(json) => json,
-        Err(e) => {
-            set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "invalid JSON in transaction body");
-            return Err(e);
-        }
-    };
-
-    let alias = match get_ledger_alias(Some(&ledger), &headers, &body_json) {
-        Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
-            alias
-        }
-        Err(e) => {
-            set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "ledger alias mismatch");
-            return Err(e);
-        }
-    };
-
-    let did = credential.did().map(String::from);
-
-    execute_transaction(&state, &alias, TxnType::Update, &body_json, did).await
+    .instrument(span)
+    .await
 }
 
 /// Insert data
@@ -287,34 +301,37 @@ async fn insert_local(state: Arc<AppState>, request: Request) -> Result<Json<Tra
         None,
         None,
     );
-    let _guard = span.enter();
 
-    tracing::info!(status = "start", "insert transaction requested");
+    async {
+        tracing::info!(status = "start", "insert transaction requested");
 
-    let body_json = match credential.body_json() {
-        Ok(json) => json,
-        Err(e) => {
-            set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "invalid JSON in insert request body");
-            return Err(e);
-        }
-    };
+        let body_json = match credential.body_json() {
+            Ok(json) => json,
+            Err(e) => {
+                set_span_error_code(&tracing::Span::current(), "error:BadRequest");
+                tracing::warn!(error = %e, "invalid JSON in insert request body");
+                return Err(e);
+            }
+        };
 
-    let alias = match get_ledger_alias(None, &headers, &body_json) {
-        Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
-            alias
-        }
-        Err(e) => {
-            set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "missing ledger alias");
-            return Err(e);
-        }
-    };
+        let alias = match get_ledger_alias(None, &headers, &body_json) {
+            Ok(alias) => {
+                tracing::Span::current().record("ledger_alias", &alias.as_str());
+                alias
+            }
+            Err(e) => {
+                set_span_error_code(&tracing::Span::current(), "error:BadRequest");
+                tracing::warn!(error = %e, "missing ledger alias");
+                return Err(e);
+            }
+        };
 
-    let did = credential.did().map(String::from);
+        let did = credential.did().map(String::from);
 
-    execute_transaction(&state, &alias, TxnType::Insert, &body_json, did).await
+        execute_transaction(&state, &alias, TxnType::Insert, &body_json, did).await
+    }
+    .instrument(span)
+    .await
 }
 
 /// Upsert data
@@ -352,34 +369,37 @@ async fn upsert_local(state: Arc<AppState>, request: Request) -> Result<Json<Tra
         None,
         None,
     );
-    let _guard = span.enter();
 
-    tracing::info!(status = "start", "upsert transaction requested");
+    async {
+        tracing::info!(status = "start", "upsert transaction requested");
 
-    let body_json = match credential.body_json() {
-        Ok(json) => json,
-        Err(e) => {
-            set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "invalid JSON in upsert request body");
-            return Err(e);
-        }
-    };
+        let body_json = match credential.body_json() {
+            Ok(json) => json,
+            Err(e) => {
+                set_span_error_code(&tracing::Span::current(), "error:BadRequest");
+                tracing::warn!(error = %e, "invalid JSON in upsert request body");
+                return Err(e);
+            }
+        };
 
-    let alias = match get_ledger_alias(None, &headers, &body_json) {
-        Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
-            alias
-        }
-        Err(e) => {
-            set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "missing ledger alias");
-            return Err(e);
-        }
-    };
+        let alias = match get_ledger_alias(None, &headers, &body_json) {
+            Ok(alias) => {
+                tracing::Span::current().record("ledger_alias", &alias.as_str());
+                alias
+            }
+            Err(e) => {
+                set_span_error_code(&tracing::Span::current(), "error:BadRequest");
+                tracing::warn!(error = %e, "missing ledger alias");
+                return Err(e);
+            }
+        };
 
-    let did = credential.did().map(String::from);
+        let did = credential.did().map(String::from);
 
-    execute_transaction(&state, &alias, TxnType::Upsert, &body_json, did).await
+        execute_transaction(&state, &alias, TxnType::Upsert, &body_json, did).await
+    }
+    .instrument(span)
+    .await
 }
 
 /// Insert data with ledger in path
@@ -425,34 +445,37 @@ async fn insert_ledger_local(
         Some(&ledger),
         None,
     );
-    let _guard = span.enter();
 
-    tracing::info!(status = "start", "ledger insert transaction requested");
+    async {
+        tracing::info!(status = "start", "ledger insert transaction requested");
 
-    let body_json = match credential.body_json() {
-        Ok(json) => json,
-        Err(e) => {
-            set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "invalid JSON in insert request body");
-            return Err(e);
-        }
-    };
+        let body_json = match credential.body_json() {
+            Ok(json) => json,
+            Err(e) => {
+                set_span_error_code(&tracing::Span::current(), "error:BadRequest");
+                tracing::warn!(error = %e, "invalid JSON in insert request body");
+                return Err(e);
+            }
+        };
 
-    let alias = match get_ledger_alias(Some(&ledger), &headers, &body_json) {
-        Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
-            alias
-        }
-        Err(e) => {
-            set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "ledger alias mismatch");
-            return Err(e);
-        }
-    };
+        let alias = match get_ledger_alias(Some(&ledger), &headers, &body_json) {
+            Ok(alias) => {
+                tracing::Span::current().record("ledger_alias", &alias.as_str());
+                alias
+            }
+            Err(e) => {
+                set_span_error_code(&tracing::Span::current(), "error:BadRequest");
+                tracing::warn!(error = %e, "ledger alias mismatch");
+                return Err(e);
+            }
+        };
 
-    let did = credential.did().map(String::from);
+        let did = credential.did().map(String::from);
 
-    execute_transaction(&state, &alias, TxnType::Insert, &body_json, did).await
+        execute_transaction(&state, &alias, TxnType::Insert, &body_json, did).await
+    }
+    .instrument(span)
+    .await
 }
 
 /// Upsert data with ledger in path
@@ -498,34 +521,37 @@ async fn upsert_ledger_local(
         Some(&ledger),
         None,
     );
-    let _guard = span.enter();
 
-    tracing::info!(status = "start", "ledger upsert transaction requested");
+    async {
+        tracing::info!(status = "start", "ledger upsert transaction requested");
 
-    let body_json = match credential.body_json() {
-        Ok(json) => json,
-        Err(e) => {
-            set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "invalid JSON in upsert request body");
-            return Err(e);
-        }
-    };
+        let body_json = match credential.body_json() {
+            Ok(json) => json,
+            Err(e) => {
+                set_span_error_code(&tracing::Span::current(), "error:BadRequest");
+                tracing::warn!(error = %e, "invalid JSON in upsert request body");
+                return Err(e);
+            }
+        };
 
-    let alias = match get_ledger_alias(Some(&ledger), &headers, &body_json) {
-        Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
-            alias
-        }
-        Err(e) => {
-            set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "ledger alias mismatch");
-            return Err(e);
-        }
-    };
+        let alias = match get_ledger_alias(Some(&ledger), &headers, &body_json) {
+            Ok(alias) => {
+                tracing::Span::current().record("ledger_alias", &alias.as_str());
+                alias
+            }
+            Err(e) => {
+                set_span_error_code(&tracing::Span::current(), "error:BadRequest");
+                tracing::warn!(error = %e, "ledger alias mismatch");
+                return Err(e);
+            }
+        };
 
-    let did = credential.did().map(String::from);
+        let did = credential.did().map(String::from);
 
-    execute_transaction(&state, &alias, TxnType::Upsert, &body_json, did).await
+        execute_transaction(&state, &alias, TxnType::Upsert, &body_json, did).await
+    }
+    .instrument(span)
+    .await
 }
 
 /// Execute a transaction with the given type
@@ -544,71 +570,74 @@ async fn execute_transaction(
         tracker_time = tracing::field::Empty,
         tracker_fuel = tracing::field::Empty,
     );
-    let _guard = span.enter();
 
-    // Compute tx-id from request body (before any modification)
-    let tx_id = compute_tx_id(body);
+    async {
+        // Compute tx-id from request body (before any modification)
+        let tx_id = compute_tx_id(body);
 
-    tracing::debug!(tx_id = %tx_id, "computed transaction ID");
+        tracing::debug!(tx_id = %tx_id, "computed transaction ID");
 
-    // Get cached ledger handle (loads if not cached)
-    // Transaction execution is only in transaction mode (peers forward)
-    let handle = match state.fluree.as_file().ledger_cached(alias).await {
-        Ok(handle) => handle,
-        Err(e) => {
-            let server_error = ServerError::Api(e);
-            set_span_error_code(&span, "error:NotFound");
-            tracing::error!(error = %server_error, "ledger not found");
-            return Err(server_error);
+        // Get cached ledger handle (loads if not cached)
+        // Transaction execution is only in transaction mode (peers forward)
+        let handle = match state.fluree.as_file().ledger_cached(alias).await {
+            Ok(handle) => handle,
+            Err(e) => {
+                let server_error = ServerError::Api(e);
+                set_span_error_code(&tracing::Span::current(), "error:NotFound");
+                tracing::error!(error = %server_error, "ledger not found");
+                return Err(server_error);
+            }
+        };
+
+        // Build transaction options with DID as author if credential was signed
+        let txn_opts = match did {
+            Some(d) => TxnOpts::default().author(d),
+            None => TxnOpts::default(),
+        };
+
+        // Build and execute the transaction via the builder API
+        let fluree = state.fluree.as_file();
+        let builder = fluree.stage(&handle);
+        let builder = match txn_type {
+            TxnType::Insert => builder.insert(body),
+            TxnType::Upsert => builder.upsert(body),
+            TxnType::Update => builder.update(body),
+        };
+        let mut builder = builder.txn_opts(txn_opts);
+        if let Some(config) = &state.index_config {
+            builder = builder.index_config(config.clone());
         }
-    };
 
-    // Build transaction options with DID as author if credential was signed
-    let txn_opts = match did {
-        Some(d) => TxnOpts::default().author(d),
-        None => TxnOpts::default(),
-    };
+        let result = match builder.execute().await {
+            Ok(result) => {
+                tracing::info!(
+                    status = "success",
+                    commit_t = result.receipt.t,
+                    commit_address = %result.receipt.address,
+                    "transaction committed"
+                );
+                result
+            }
+            Err(e) => {
+                let server_error = ServerError::Api(e);
+                set_span_error_code(&tracing::Span::current(), "error:InvalidTransaction");
+                tracing::error!(error = %server_error, "transaction failed");
+                return Err(server_error);
+            }
+        };
 
-    // Build and execute the transaction via the builder API
-    let fluree = state.fluree.as_file();
-    let builder = fluree.stage(&handle);
-    let builder = match txn_type {
-        TxnType::Insert => builder.insert(body),
-        TxnType::Upsert => builder.upsert(body),
-        TxnType::Update => builder.update(body),
-    };
-    let mut builder = builder.txn_opts(txn_opts);
-    if let Some(config) = &state.index_config {
-        builder = builder.index_config(config.clone());
+        Ok(Json(TransactResponse {
+            ledger: alias.to_string(),
+            t: result.receipt.t,
+            tx_id,
+            commit: CommitInfo {
+                address: result.receipt.address,
+                hash: result.receipt.commit_id,
+            },
+        }))
     }
-
-    let result = match builder.execute().await {
-        Ok(result) => {
-            tracing::info!(
-                status = "success",
-                commit_t = result.receipt.t,
-                commit_address = %result.receipt.address,
-                "transaction committed"
-            );
-            result
-        }
-        Err(e) => {
-            let server_error = ServerError::Api(e);
-            set_span_error_code(&span, "error:InvalidTransaction");
-            tracing::error!(error = %server_error, "transaction failed");
-            return Err(server_error);
-        }
-    };
-
-    Ok(Json(TransactResponse {
-        ledger: alias.to_string(),
-        t: result.receipt.t,
-        tx_id,
-        commit: CommitInfo {
-            address: result.receipt.address,
-            hash: result.receipt.commit_id,
-        },
-    }))
+    .instrument(span)
+    .await
 }
 
 // ===== SPARQL UPDATE execution =====

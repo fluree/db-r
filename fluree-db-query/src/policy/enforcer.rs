@@ -8,6 +8,7 @@ use crate::graph_view::ResolvedGraphView;
 use fluree_db_core::{Db, Flake, NodeCache, OverlayProvider, Storage, Tracker};
 use fluree_db_policy::{is_schema_flake, PolicyContext};
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// Policy enforcer for query execution
 ///
@@ -72,17 +73,12 @@ impl QueryPolicyEnforcer {
             return Ok(flakes);
         }
 
-        let span = tracing::debug_span!(
-            "policy_eval",
-            flakes_checked = flakes.len(),
-            flakes_allowed = tracing::field::Empty,
-        );
-        let _guard = span.enter();
-
+        let flakes_checked = flakes.len();
+        async {
         // Create executor using the GRAPH's db/overlay/to_t (not ctx-level!)
         let executor = QueryPolicyExecutor::with_overlay(db, overlay, to_t);
 
-        let mut result = Vec::with_capacity(flakes.len());
+        let mut result = Vec::with_capacity(flakes_checked);
 
         for flake in flakes {
             // Schema flakes always allowed
@@ -119,6 +115,13 @@ impl QueryPolicyEnforcer {
         tracing::Span::current().record("flakes_allowed", result.len());
 
         Ok(result)
+        }
+        .instrument(tracing::debug_span!(
+            "policy_eval",
+            flakes_checked = flakes_checked,
+            flakes_allowed = tracing::field::Empty,
+        ))
+        .await
     }
 
     /// Filter flakes using a resolved graph view.

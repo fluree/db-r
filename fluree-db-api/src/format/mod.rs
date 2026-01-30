@@ -41,6 +41,7 @@ use fluree_db_core::{Db, NodeCache, Storage};
 use fluree_db_core::{FuelExceededError, Tracker};
 use fluree_graph_json_ld::ParsedContext;
 use serde_json::Value as JsonValue;
+use tracing::Instrument;
 
 /// Error type for formatting operations
 #[derive(Debug, thiserror::Error)]
@@ -191,8 +192,7 @@ pub async fn format_results_async<S: Storage, C: NodeCache>(
         output_format = ?config.format,
         result_count = result.batches.iter().map(|b| b.len()).sum::<usize>(),
     );
-    let _guard = span.enter();
-
+    async {
     let compactor = IriCompactor::new(db.namespaces(), context);
 
     // CONSTRUCT queries have dedicated output format (sync, no DB access needed)
@@ -235,6 +235,9 @@ pub async fn format_results_async<S: Storage, C: NodeCache>(
         OutputFormat::SparqlJson => sparql::format(result, &compactor, config),
         OutputFormat::TypedJson => typed::format(result, &compactor, config),
     }
+    }
+    .instrument(span)
+    .await
 }
 
 /// Format query results to a JSON string using async database access

@@ -131,6 +131,7 @@ use fluree_db_novelty::{
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tracing::Instrument;
 
 /// Normalize an alias for comparison purposes
 ///
@@ -660,8 +661,8 @@ where
     S: Storage + Clone + Send + Sync + 'static,
 {
     let span = tracing::info_span!("batched_rebuild", ledger_alias = alias);
-    let _guard = span.enter();
 
+    async {
     tracing::info!(
         batch_bytes = config.batch_bytes,
         max_batch_commits = config.max_batch_commits,
@@ -785,8 +786,7 @@ where
                 from_t = last_processed_t,
                 to_t = commit.t,
             );
-            let _batch_guard = batch_span.enter();
-
+            async {
             tracing::info!(
                 batch = batches_flushed + 1,
                 commits_in_batch = commits_in_batch,
@@ -874,6 +874,9 @@ where
                 write_checkpoint(storage, &checkpoint).await?;
                 batches_since_checkpoint = 0;
             }
+
+            Ok::<_, IndexerError>(())
+            }.instrument(batch_span).await?;
         }
     }
 
@@ -894,8 +897,7 @@ where
             novelty_bytes = batch_novelty_bytes,
             final = true,
         );
-        let _batch_guard = batch_span.enter();
-
+        return async {
         tracing::info!(
             commits_in_batch = commits_in_batch,
             novelty_size = batch_novelty_bytes,
@@ -956,10 +958,11 @@ where
             "Batched rebuild complete"
         );
 
-        return Ok(BatchedRebuildResult {
+        Ok(BatchedRebuildResult {
             index_result: create_index_result_from_refresh(&refresh_result, alias),
             batches_flushed,
-        });
+        })
+        }.instrument(batch_span).await;
     }
 
     // Edge case: no commits to process (index was already current)
@@ -983,6 +986,7 @@ where
         },
         batches_flushed,
     })
+    }.instrument(span).await
 }
 
 /// Resume a batched rebuild from a checkpoint
@@ -1029,8 +1033,8 @@ where
     S: Storage + Clone + Send + Sync + 'static,
 {
     let span = tracing::info_span!("batched_rebuild_resume", ledger_alias = %checkpoint.alias);
-    let _guard = span.enter();
 
+    async {
     // Restore indexer config from checkpoint, or use override
     let config_from_checkpoint = checkpoint.indexer_config.is_some();
     let indexer_config = checkpoint
@@ -1276,6 +1280,7 @@ where
         },
         batches_flushed,
     })
+    }.instrument(span).await
 }
 
 /// Refresh-only entry point with lighter trait bounds
@@ -1307,8 +1312,8 @@ where
     N: NameService,
 {
     let span = tracing::info_span!("index_refresh", ledger_alias = alias);
-    let _guard = span.enter();
 
+    async {
     tracing::info!("refreshing index for ledger (refresh-only mode)");
 
     // Look up the ledger record
@@ -1363,6 +1368,7 @@ where
         &config,
     )
     .await
+    }.instrument(span).await
 }
 
 /// External indexer entry point - refresh-first with rebuild fallback
@@ -1389,8 +1395,8 @@ where
     N: NameService,
 {
     let span = tracing::info_span!("index_build", ledger_alias = alias);
-    let _guard = span.enter();
 
+    async {
     tracing::info!("building index for ledger");
 
     // Look up the ledger record
@@ -1462,6 +1468,7 @@ where
     batched_rebuild_from_commits(storage, head_address, alias, batched_config)
         .await
         .map(|r| r.index_result)
+    }.instrument(span).await
 }
 
 /// Attempt incremental refresh from an existing index
@@ -1481,8 +1488,8 @@ where
     S: Storage + StorageWrite + ContentAddressedWrite + Sync + Clone + 'static,
 {
     let span = tracing::debug_span!("index_refresh", ledger_alias = alias, from_t = index_t, to_t = commit_t);
-    let _guard = span.enter();
 
+    async {
     // 1. Load existing Db from the index
     tracing::debug!("loading existing index");
     let mut db: Db<S, NoCache> = Db::load(storage.clone(), NoCache, index_address).await?;
@@ -1541,6 +1548,7 @@ where
     );
 
     Ok(create_index_result_from_refresh(&refresh_result, alias))
+    }.instrument(span).await
 }
 
 /// Publish index result to nameservice

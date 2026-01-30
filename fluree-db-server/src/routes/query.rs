@@ -23,6 +23,7 @@ use fluree_db_api::{FlureeView, FreshnessCheck, FreshnessSource, LedgerState, Tr
 use serde_json::Value as JsonValue;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// Check if tracking is requested in query opts
 fn has_tracking_opts(query_json: &JsonValue) -> bool {
@@ -130,80 +131,83 @@ pub async fn query(
         None, // ledger alias determined later
         None, // tenant_id not yet supported
     );
-    let _guard = span.enter();
 
-    tracing::info!(status = "start", "query request received");
-    // SPARQL UPDATE should use the transact endpoint, not query
-    if headers.is_sparql_update() || credential.is_sparql_update {
-        let error = ServerError::bad_request(
-            "SPARQL UPDATE requests should use the /fluree/transact endpoint, not /fluree/query",
-        );
-        set_span_error_code(&span, "error:BadRequest");
-        tracing::warn!(error = %error, "SPARQL UPDATE sent to query endpoint");
-        return Err(error);
+    async {
+        tracing::info!(status = "start", "query request received");
+        // SPARQL UPDATE should use the transact endpoint, not query
+        if headers.is_sparql_update() || credential.is_sparql_update {
+            let error = ServerError::bad_request(
+                "SPARQL UPDATE requests should use the /fluree/transact endpoint, not /fluree/query",
+            );
+            set_span_error_code(&tracing::Span::current(), "error:BadRequest");
+            tracing::warn!(error = %error, "SPARQL UPDATE sent to query endpoint");
+            return Err(error);
+        }
+
+        // Handle SPARQL query
+        if headers.is_sparql_query() || credential.is_sparql {
+            let sparql = credential.body_string()?;
+
+            // Log query text according to configuration
+            log_query_text(&sparql, &state.telemetry_config, &tracing::Span::current());
+
+            // Connection-scoped SPARQL requires a FROM/FROM NAMED clause to specify the ledger.
+            //
+            // NOTE: We intentionally do NOT fall back to the fluree-ledger header here.
+            // Ledger-scoped SPARQL without FROM is supported via the /:ledger/query route.
+            match state.fluree.query_connection_sparql_jsonld(&sparql).await {
+                Ok(result) => {
+                    tracing::info!(
+                        status = "success",
+                        query_kind = "sparql",
+                        result_count = result.as_array().map(|a| a.len()).unwrap_or(0)
+                    );
+                    Ok((HeaderMap::new(), Json(result)))
+                }
+                Err(e) => {
+                    let server_error = ServerError::Api(e);
+                    set_span_error_code(&tracing::Span::current(), "error:InvalidQuery");
+                    tracing::error!(error = %server_error, query_kind = "sparql", "query failed");
+                    Err(server_error)
+                }
+            }
+        } else {
+            // Handle FQL query (JSON body)
+            let mut query_json: JsonValue = credential.body_json()?;
+
+            // Log query text according to configuration (only serialize if needed)
+            if should_log_query_text(&state.telemetry_config) {
+                if let Ok(query_text) = serde_json::to_string(&query_json) {
+                    log_query_text(&query_text, &state.telemetry_config, &tracing::Span::current());
+                }
+            }
+
+            // Get ledger alias
+            let alias = match get_ledger_alias(None, &headers, &query_json) {
+                Ok(alias) => {
+                    tracing::Span::current().record("ledger_alias", &alias.as_str());
+                    alias
+                }
+                Err(e) => {
+                    set_span_error_code(&tracing::Span::current(), "error:BadRequest");
+                    tracing::warn!(error = %e, "missing ledger alias");
+                    return Err(e);
+                }
+            };
+
+            // Inject header values into query opts
+            inject_headers_into_query(&mut query_json, &headers);
+
+            // If request was signed, credential DID takes precedence as identity
+            if let Some(did) = credential.did() {
+                inject_credential_did(&mut query_json, did);
+            }
+
+            execute_query(&state, &alias, &query_json).await
+        }
     }
-
-    // Handle SPARQL query
-    if headers.is_sparql_query() || credential.is_sparql {
-        let sparql = credential.body_string()?;
-
-        // Log query text according to configuration
-        log_query_text(&sparql, &state.telemetry_config, &span);
-
-        // Connection-scoped SPARQL requires a FROM/FROM NAMED clause to specify the ledger.
-        //
-        // NOTE: We intentionally do NOT fall back to the fluree-ledger header here.
-        // Ledger-scoped SPARQL without FROM is supported via the /:ledger/query route.
-        match state.fluree.query_connection_sparql_jsonld(&sparql).await {
-            Ok(result) => {
-                tracing::info!(
-                    status = "success",
-                    query_kind = "sparql",
-                    result_count = result.as_array().map(|a| a.len()).unwrap_or(0)
-                );
-                Ok((HeaderMap::new(), Json(result)))
-            }
-            Err(e) => {
-                let server_error = ServerError::Api(e);
-                set_span_error_code(&span, "error:InvalidQuery");
-                tracing::error!(error = %server_error, query_kind = "sparql", "query failed");
-                Err(server_error)
-            }
-        }
-    } else {
-        // Handle FQL query (JSON body)
-        let mut query_json: JsonValue = credential.body_json()?;
-
-        // Log query text according to configuration (only serialize if needed)
-        if should_log_query_text(&state.telemetry_config) {
-            if let Ok(query_text) = serde_json::to_string(&query_json) {
-                log_query_text(&query_text, &state.telemetry_config, &span);
-            }
-        }
-
-        // Get ledger alias
-        let alias = match get_ledger_alias(None, &headers, &query_json) {
-            Ok(alias) => {
-                span.record("ledger_alias", &alias.as_str());
-                alias
-            }
-            Err(e) => {
-                set_span_error_code(&span, "error:BadRequest");
-                tracing::warn!(error = %e, "missing ledger alias");
-                return Err(e);
-            }
-        };
-
-        // Inject header values into query opts
-        inject_headers_into_query(&mut query_json, &headers);
-
-        // If request was signed, credential DID takes precedence as identity
-        if let Some(did) = credential.did() {
-            inject_credential_did(&mut query_json, did);
-        }
-
-        execute_query(&state, &alias, &query_json).await
-    }
+    .instrument(span)
+    .await
 }
 
 /// Execute a query with ledger in path
@@ -233,62 +237,65 @@ pub async fn query_ledger(
         Some(&ledger),
         None, // tenant_id not yet supported
     );
-    let _guard = span.enter();
 
-    tracing::info!(status = "start", "ledger query request received");
+    async {
+        tracing::info!(status = "start", "ledger query request received");
 
-    // SPARQL UPDATE should use the transact endpoint, not query
-    if headers.is_sparql_update() || credential.is_sparql_update {
-        let error = ServerError::bad_request(
-            "SPARQL UPDATE requests should use the /:ledger/transact endpoint, not /:ledger/query",
-        );
-        set_span_error_code(&span, "error:BadRequest");
-        tracing::warn!(error = %error, "SPARQL UPDATE sent to query endpoint");
-        return Err(error);
-    }
-
-    // Handle SPARQL query - ledger is known from path
-    if headers.is_sparql_query() || credential.is_sparql {
-        let sparql = credential.body_string()?;
-
-        // Log query text according to configuration
-        log_query_text(&sparql, &state.telemetry_config, &span);
-
-        return execute_sparql_ledger(&state, &ledger, &sparql).await;
-    }
-
-    // Handle FQL query (JSON body)
-    let mut query_json: JsonValue = credential.body_json()?;
-
-    // Log query text according to configuration (only serialize if needed)
-    if should_log_query_text(&state.telemetry_config) {
-        if let Ok(query_text) = serde_json::to_string(&query_json) {
-            log_query_text(&query_text, &state.telemetry_config, &span);
+        // SPARQL UPDATE should use the transact endpoint, not query
+        if headers.is_sparql_update() || credential.is_sparql_update {
+            let error = ServerError::bad_request(
+                "SPARQL UPDATE requests should use the /:ledger/transact endpoint, not /:ledger/query",
+            );
+            set_span_error_code(&tracing::Span::current(), "error:BadRequest");
+            tracing::warn!(error = %error, "SPARQL UPDATE sent to query endpoint");
+            return Err(error);
         }
-    }
 
-    // Get ledger alias (path takes precedence)
-    let alias = match get_ledger_alias(Some(&ledger), &headers, &query_json) {
-        Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
-            alias
+        // Handle SPARQL query - ledger is known from path
+        if headers.is_sparql_query() || credential.is_sparql {
+            let sparql = credential.body_string()?;
+
+            // Log query text according to configuration
+            log_query_text(&sparql, &state.telemetry_config, &tracing::Span::current());
+
+            return execute_sparql_ledger(&state, &ledger, &sparql).await;
         }
-        Err(e) => {
-            set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "ledger alias mismatch");
-            return Err(e);
+
+        // Handle FQL query (JSON body)
+        let mut query_json: JsonValue = credential.body_json()?;
+
+        // Log query text according to configuration (only serialize if needed)
+        if should_log_query_text(&state.telemetry_config) {
+            if let Ok(query_text) = serde_json::to_string(&query_json) {
+                log_query_text(&query_text, &state.telemetry_config, &tracing::Span::current());
+            }
         }
-    };
 
-    // Inject header values into query opts
-    inject_headers_into_query(&mut query_json, &headers);
+        // Get ledger alias (path takes precedence)
+        let alias = match get_ledger_alias(Some(&ledger), &headers, &query_json) {
+            Ok(alias) => {
+                tracing::Span::current().record("ledger_alias", &alias.as_str());
+                alias
+            }
+            Err(e) => {
+                set_span_error_code(&tracing::Span::current(), "error:BadRequest");
+                tracing::warn!(error = %e, "ledger alias mismatch");
+                return Err(e);
+            }
+        };
 
-    // If request was signed, credential DID takes precedence as identity
-    if let Some(did) = credential.did() {
-        inject_credential_did(&mut query_json, did);
+        // Inject header values into query opts
+        inject_headers_into_query(&mut query_json, &headers);
+
+        // If request was signed, credential DID takes precedence as identity
+        if let Some(did) = credential.did() {
+            inject_credential_did(&mut query_json, did);
+        }
+
+        execute_query(&state, &alias, &query_json).await
     }
-
-    execute_query(&state, &alias, &query_json).await
+    .instrument(span)
+    .await
 }
 
 /// Execute an FQL query and return JSON result with tracking headers
@@ -309,100 +316,105 @@ async fn execute_query(
         tracker_time = tracing::field::Empty,
         tracker_fuel = tracing::field::Empty,
     );
-    let _guard = span.enter();
 
-    // In proxy mode, use the unified FlureeInstance methods (no local freshness checking)
-    if state.config.is_proxy_storage_mode() {
-        return execute_query_proxy(state, alias, query_json, &span).await;
-    }
+    async {
+        // In proxy mode, use the unified FlureeInstance methods (no local freshness checking)
+        if state.config.is_proxy_storage_mode() {
+            return execute_query_proxy(state, alias, query_json, &tracing::Span::current()).await;
+        }
 
-    // Check for history query: explicit "to" key indicates history mode
-    // History queries must go through the dataset/connection path for correct index selection
-    if query_json.get("to").is_some() {
-        return execute_history_query(state, alias, query_json, &span).await;
-    }
+        // Check for history query: explicit "to" key indicates history mode
+        // History queries must go through the dataset/connection path for correct index selection
+        if query_json.get("to").is_some() {
+            return execute_history_query(state, alias, query_json, &tracing::Span::current())
+                .await;
+        }
 
-    // Shared storage mode: use load_ledger_for_query with freshness checking
-    let ledger = load_ledger_for_query(state, alias, &span).await?;
-    let graph = FlureeView::from_ledger_state(&ledger);
-    let fluree = state.fluree.as_file();
+        // Shared storage mode: use load_ledger_for_query with freshness checking
+        let ledger =
+            load_ledger_for_query(state, alias, &tracing::Span::current()).await?;
+        let graph = FlureeView::from_ledger_state(&ledger);
+        let fluree = state.fluree.as_file();
 
-    // Check if tracking is requested
-    if has_tracking_opts(query_json) {
-        // Execute tracked query via builder
-        let response = match graph
+        // Check if tracking is requested
+        if has_tracking_opts(query_json) {
+            // Execute tracked query via builder
+            let response = match graph
+                .query(fluree.as_ref())
+                .jsonld(query_json)
+                .execute_tracked()
+                .await
+            {
+                Ok(response) => response,
+                Err(e) => {
+                    // TrackedErrorResponse has status and error fields
+                    let server_error =
+                        ServerError::Api(fluree_db_api::ApiError::http(e.status, e.error));
+                    set_span_error_code(&tracing::Span::current(), "error:InvalidQuery");
+                    tracing::error!(error = %server_error, "tracked query failed");
+                    return Err(server_error);
+                }
+            };
+
+            // Extract tracking info for headers
+            let tally = TrackingTally {
+                time: response.time.clone(),
+                time_ms: None,
+                fuel: response.fuel,
+                policy: response.policy.clone(),
+            };
+            let headers = tracking_headers(&tally);
+
+            // Bridge tracker metrics to span for OTEL export
+            if let Some(ref time) = response.time {
+                tracing::Span::current().record("tracker_time", time.as_str());
+            }
+            if let Some(fuel) = response.fuel {
+                tracing::Span::current().record("tracker_fuel", fuel);
+            }
+
+            // Serialize TrackedQueryResponse to JSON
+            let json = match serde_json::to_value(&response) {
+                Ok(json) => json,
+                Err(e) => {
+                    let server_error =
+                        ServerError::internal(format!("Failed to serialize response: {}", e));
+                    set_span_error_code(&tracing::Span::current(), "error:InternalError");
+                    tracing::error!(error = %server_error, "response serialization failed");
+                    return Err(server_error);
+                }
+            };
+
+            tracing::info!(status = "success", tracked = true, time = ?response.time, fuel = response.fuel);
+            return Ok((headers, Json(json)));
+        }
+
+        // Execute query via builder - formatted JSON-LD output
+        let result = match graph
             .query(fluree.as_ref())
             .jsonld(query_json)
-            .execute_tracked()
+            .execute_formatted()
             .await
         {
-            Ok(response) => response,
+            Ok(result) => {
+                tracing::info!(
+                    status = "success",
+                    tracked = false,
+                    result_count = result.as_array().map(|a| a.len()).unwrap_or(0)
+                );
+                result
+            }
             Err(e) => {
-                // TrackedErrorResponse has status and error fields
-                let server_error =
-                    ServerError::Api(fluree_db_api::ApiError::http(e.status, e.error));
-                set_span_error_code(&span, "error:InvalidQuery");
-                tracing::error!(error = %server_error, "tracked query failed");
+                let server_error = ServerError::Api(e);
+                set_span_error_code(&tracing::Span::current(), "error:InvalidQuery");
+                tracing::error!(error = %server_error, "query execution failed");
                 return Err(server_error);
             }
         };
-
-        // Extract tracking info for headers
-        let tally = TrackingTally {
-            time: response.time.clone(),
-            time_ms: None,
-            fuel: response.fuel,
-            policy: response.policy.clone(),
-        };
-        let headers = tracking_headers(&tally);
-
-        // Bridge tracker metrics to span for OTEL export
-        if let Some(ref time) = response.time {
-            span.record("tracker_time", time.as_str());
-        }
-        if let Some(fuel) = response.fuel {
-            span.record("tracker_fuel", fuel);
-        }
-
-        // Serialize TrackedQueryResponse to JSON
-        let json = match serde_json::to_value(&response) {
-            Ok(json) => json,
-            Err(e) => {
-                let server_error =
-                    ServerError::internal(format!("Failed to serialize response: {}", e));
-                set_span_error_code(&span, "error:InternalError");
-                tracing::error!(error = %server_error, "response serialization failed");
-                return Err(server_error);
-            }
-        };
-
-        tracing::info!(status = "success", tracked = true, time = ?response.time, fuel = response.fuel);
-        return Ok((headers, Json(json)));
+        Ok((HeaderMap::new(), Json(result)))
     }
-
-    // Execute query via builder - formatted JSON-LD output
-    let result = match graph
-        .query(fluree.as_ref())
-        .jsonld(query_json)
-        .execute_formatted()
-        .await
-    {
-        Ok(result) => {
-            tracing::info!(
-                status = "success",
-                tracked = false,
-                result_count = result.as_array().map(|a| a.len()).unwrap_or(0)
-            );
-            result
-        }
-        Err(e) => {
-            let server_error = ServerError::Api(e);
-            set_span_error_code(&span, "error:InvalidQuery");
-            tracing::error!(error = %server_error, "query execution failed");
-            return Err(server_error);
-        }
-    };
-    Ok((HeaderMap::new(), Json(result)))
+    .instrument(span)
+    .await
 }
 
 /// Execute an FQL query in proxy mode (uses FlureeInstance wrapper methods)
@@ -487,30 +499,34 @@ async fn execute_sparql_ledger(
 ) -> Result<(HeaderMap, Json<JsonValue>)> {
     // Create span for peer mode loading
     let span = tracing::info_span!("sparql_execute", ledger_alias = alias);
-    let _guard = span.enter();
 
-    // In proxy mode, use the unified FlureeInstance method
-    if state.config.is_proxy_storage_mode() {
-        let result = state
-            .fluree
-            .query_ledger_sparql_jsonld(alias, sparql)
+    async {
+        // In proxy mode, use the unified FlureeInstance method
+        if state.config.is_proxy_storage_mode() {
+            let result = state
+                .fluree
+                .query_ledger_sparql_jsonld(alias, sparql)
+                .await?;
+            return Ok((HeaderMap::new(), Json(result)));
+        }
+
+        // Shared storage mode: use load_ledger_for_query with freshness checking
+        let ledger =
+            load_ledger_for_query(state, alias, &tracing::Span::current()).await?;
+        let graph = FlureeView::from_ledger_state(&ledger);
+        let fluree = state.fluree.as_file();
+
+        // Execute SPARQL query via builder
+        // Note: SPARQL tracking not yet implemented - returns empty headers
+        let result = graph
+            .query(fluree.as_ref())
+            .sparql(sparql)
+            .execute_formatted()
             .await?;
-        return Ok((HeaderMap::new(), Json(result)));
+        Ok((HeaderMap::new(), Json(result)))
     }
-
-    // Shared storage mode: use load_ledger_for_query with freshness checking
-    let ledger = load_ledger_for_query(state, alias, &span).await?;
-    let graph = FlureeView::from_ledger_state(&ledger);
-    let fluree = state.fluree.as_file();
-
-    // Execute SPARQL query via builder
-    // Note: SPARQL tracking not yet implemented - returns empty headers
-    let result = graph
-        .query(fluree.as_ref())
-        .sparql(sparql)
-        .execute_formatted()
-        .await?;
-    Ok((HeaderMap::new(), Json(result)))
+    .instrument(span)
+    .await
 }
 
 /// Explain a query
@@ -536,81 +552,85 @@ pub async fn explain(
         None, // ledger alias determined later
         None, // tenant_id not yet supported
     );
-    let _guard = span.enter();
 
-    tracing::info!(status = "start", "explain request received");
+    async {
+        tracing::info!(status = "start", "explain request received");
 
-    // Parse body as JSON
-    let mut query_json = match credential.body_json() {
-        Ok(json) => json,
-        Err(e) => {
-            set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "invalid JSON in request body");
-            return Err(e);
+        // Parse body as JSON
+        let mut query_json = match credential.body_json() {
+            Ok(json) => json,
+            Err(e) => {
+                set_span_error_code(&tracing::Span::current(), "error:BadRequest");
+                tracing::warn!(error = %e, "invalid JSON in request body");
+                return Err(e);
+            }
+        };
+
+        // Log query text according to configuration (only serialize if needed)
+        if should_log_query_text(&state.telemetry_config) {
+            if let Ok(query_text) = serde_json::to_string(&query_json) {
+                log_query_text(&query_text, &state.telemetry_config, &tracing::Span::current());
+            }
         }
-    };
 
-    // Log query text according to configuration (only serialize if needed)
-    if should_log_query_text(&state.telemetry_config) {
-        if let Ok(query_text) = serde_json::to_string(&query_json) {
-            log_query_text(&query_text, &state.telemetry_config, &span);
-        }
-    }
-
-    // Get ledger alias
-    let alias = match get_ledger_alias(None, &headers, &query_json) {
-        Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
-            alias
-        }
-        Err(e) => {
-            set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "missing ledger alias");
-            return Err(e);
-        }
-    };
-
-    // Inject header values into query opts
-    inject_headers_into_query(&mut query_json, &headers);
-
-    // If request was signed, credential DID takes precedence as identity
-    if let Some(did) = credential.did() {
-        inject_credential_did(&mut query_json, did);
-    }
-
-    // Execute explain
-    let result = if state.config.is_proxy_storage_mode() {
-        // Proxy mode: use FlureeInstance wrapper
-        match state.fluree.explain_ledger(&alias, &query_json).await {
-            Ok(result) => {
-                tracing::info!(status = "success", "explain completed (proxy)");
-                result
+        // Get ledger alias
+        let alias = match get_ledger_alias(None, &headers, &query_json) {
+            Ok(alias) => {
+                tracing::Span::current().record("ledger_alias", &alias.as_str());
+                alias
             }
             Err(e) => {
-                let server_error = ServerError::Api(e);
-                set_span_error_code(&span, "error:InvalidQuery");
-                tracing::error!(error = %server_error, "explain execution failed (proxy)");
-                return Err(server_error);
+                set_span_error_code(&tracing::Span::current(), "error:BadRequest");
+                tracing::warn!(error = %e, "missing ledger alias");
+                return Err(e);
             }
-        }
-    } else {
-        // Shared storage mode: use load_ledger_for_query with freshness checking
-        let ledger = load_ledger_for_query(&state, &alias, &span).await?;
-        match state.fluree.as_file().explain(&ledger, &query_json).await {
-            Ok(result) => {
-                tracing::info!(status = "success", "explain completed");
-                result
-            }
-            Err(e) => {
-                let server_error = ServerError::Api(e);
-                set_span_error_code(&span, "error:InvalidQuery");
-                tracing::error!(error = %server_error, "explain execution failed");
-                return Err(server_error);
-            }
-        }
-    };
+        };
 
-    Ok(Json(result))
+        // Inject header values into query opts
+        inject_headers_into_query(&mut query_json, &headers);
+
+        // If request was signed, credential DID takes precedence as identity
+        if let Some(did) = credential.did() {
+            inject_credential_did(&mut query_json, did);
+        }
+
+        // Execute explain
+        let result = if state.config.is_proxy_storage_mode() {
+            // Proxy mode: use FlureeInstance wrapper
+            match state.fluree.explain_ledger(&alias, &query_json).await {
+                Ok(result) => {
+                    tracing::info!(status = "success", "explain completed (proxy)");
+                    result
+                }
+                Err(e) => {
+                    let server_error = ServerError::Api(e);
+                    set_span_error_code(&tracing::Span::current(), "error:InvalidQuery");
+                    tracing::error!(error = %server_error, "explain execution failed (proxy)");
+                    return Err(server_error);
+                }
+            }
+        } else {
+            // Shared storage mode: use load_ledger_for_query with freshness checking
+            let ledger =
+                load_ledger_for_query(&state, &alias, &tracing::Span::current()).await?;
+            match state.fluree.as_file().explain(&ledger, &query_json).await {
+                Ok(result) => {
+                    tracing::info!(status = "success", "explain completed");
+                    result
+                }
+                Err(e) => {
+                    let server_error = ServerError::Api(e);
+                    set_span_error_code(&tracing::Span::current(), "error:InvalidQuery");
+                    tracing::error!(error = %server_error, "explain execution failed");
+                    return Err(server_error);
+                }
+            }
+        };
+
+        Ok(Json(result))
+    }
+    .instrument(span)
+    .await
 }
 
 // ===== Peer mode support =====

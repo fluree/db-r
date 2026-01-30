@@ -61,6 +61,7 @@ use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarRegistry;
 use fluree_db_core::{Db, NodeCache, StatsView, Storage, Tracker};
 use std::sync::Arc;
+use tracing::Instrument;
 
 use operator_tree::build_operator_tree;
 use reasoning_prep::effective_reasoning_modes;
@@ -100,22 +101,13 @@ pub async fn execute<S: Storage + 'static, C: NodeCache + 'static>(
         db_t = db.t,
         pattern_count = query.query.patterns.len()
     );
-    let _guard = span.enter();
-
+    async {
     tracing::debug!("starting query execution");
 
     let ctx = ExecutionContext::new(db, vars).with_strict_bind_errors();
 
     // Steps 1-2: Reasoning preparation (hierarchy, modes, ontology)
-    let (hierarchy, reasoning, ontology) = {
-        let span = tracing::debug_span!(
-            "reasoning_prep",
-            rdfs = tracing::field::Empty,
-            owl2ql = tracing::field::Empty,
-            owl2rl = tracing::field::Empty,
-        );
-        let _guard = span.enter();
-
+    let (hierarchy, reasoning, ontology) = async {
         let hierarchy = db.schema_hierarchy();
 
         // Compute effective reasoning modes (auto-RDFS when hierarchy exists)
@@ -137,8 +129,15 @@ pub async fn execute<S: Storage + 'static, C: NodeCache + 'static>(
             None
         };
 
-        (hierarchy, reasoning, ontology)
-    };
+        Ok::<_, crate::error::QueryError>((hierarchy, reasoning, ontology))
+    }
+    .instrument(tracing::debug_span!(
+        "reasoning_prep",
+        rdfs = tracing::field::Empty,
+        owl2ql = tracing::field::Empty,
+        owl2rl = tracing::field::Empty,
+    ))
+    .await?;
 
     // Step 3: Pattern rewriting for reasoning (RDFS/OWL expansion)
     let rewritten_patterns = {
@@ -243,6 +242,9 @@ pub async fn execute<S: Storage + 'static, C: NodeCache + 'static>(
 
     // Execute: open, drain batches, close
     run_operator(operator, &ctx).await
+    }
+    .instrument(span)
+    .await
 }
 
 /// Execute a parsed query with default options

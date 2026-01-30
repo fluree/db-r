@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// Commit information in create response
 #[derive(Serialize)]
@@ -94,56 +95,58 @@ async fn create_local(state: Arc<AppState>, request: Request) -> Result<impl Int
         None, // ledger alias determined later
         None,
     );
-    let _guard = span.enter();
+    async {
+        tracing::info!(status = "start", "ledger creation requested");
 
-    tracing::info!(status = "start", "ledger creation requested");
+        // Extract ledger alias from body
+        let alias = match body
+            .get("ledger")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ServerError::bad_request("Missing required field: ledger"))
+        {
+            Ok(alias) => {
+                tracing::Span::current().record("ledger_alias", &alias);
+                alias.to_string()
+            }
+            Err(e) => {
+                set_span_error_code(&tracing::Span::current(), "error:BadRequest");
+                tracing::warn!(error = %e, "missing ledger alias in create request");
+                return Err(e);
+            }
+        };
 
-    // Extract ledger alias from body
-    let alias = match body
-        .get("ledger")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| ServerError::bad_request("Missing required field: ledger"))
-    {
-        Ok(alias) => {
-            span.record("ledger_alias", &alias);
-            alias.to_string()
-        }
-        Err(e) => {
-            set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "missing ledger alias in create request");
-            return Err(e);
-        }
-    };
+        // Compute tx-id from the request body
+        let tx_id = compute_tx_id(&body);
 
-    // Compute tx-id from the request body
-    let tx_id = compute_tx_id(&body);
+        // Create the ledger (empty, t=0)
+        // Ledger creation is only in transaction mode (peers forward)
+        let ledger = match state.fluree.as_file().create_ledger(&alias).await {
+            Ok(ledger) => ledger,
+            Err(e) => {
+                let server_error = ServerError::Api(e);
+                set_span_error_code(&tracing::Span::current(), "error:AlreadyExists");
+                tracing::error!(error = %server_error, "ledger creation failed");
+                return Err(server_error);
+            }
+        };
+        let ledger_alias = ledger.alias().to_string();
 
-    // Create the ledger (empty, t=0)
-    // Ledger creation is only in transaction mode (peers forward)
-    let ledger = match state.fluree.as_file().create_ledger(&alias).await {
-        Ok(ledger) => ledger,
-        Err(e) => {
-            let server_error = ServerError::Api(e);
-            set_span_error_code(&span, "error:AlreadyExists");
-            tracing::error!(error = %server_error, "ledger creation failed");
-            return Err(server_error);
-        }
-    };
-    let ledger_alias = ledger.alias().to_string();
+        let response = CreateResponse {
+            ledger: ledger_alias.clone(),
+            t: 0,
+            tx_id,
+            commit: CommitInfo {
+                // Genesis state address
+                address: format!("fluree:memory://{}/main/head", ledger_alias),
+                hash: String::new(),
+            },
+        };
 
-    let response = CreateResponse {
-        ledger: ledger_alias.clone(),
-        t: 0,
-        tx_id,
-        commit: CommitInfo {
-            // Genesis state address
-            address: format!("fluree:memory://{}/main/head", ledger_alias),
-            hash: String::new(),
-        },
-    };
-
-    tracing::info!(status = "success", "ledger created");
-    Ok((StatusCode::CREATED, Json(response)))
+        tracing::info!(status = "success", "ledger created");
+        Ok((StatusCode::CREATED, Json(response)))
+    }
+    .instrument(span)
+    .await
 }
 
 /// Drop ledger request body
@@ -236,29 +239,31 @@ async fn drop_local(state: Arc<AppState>, request: Request) -> Result<Json<DropR
         Some(&req.ledger),
         None,
     );
-    let _guard = span.enter();
+    async {
+        tracing::info!(status = "start", hard_drop = req.hard, "ledger drop requested");
 
-    tracing::info!(status = "start", hard_drop = req.hard, "ledger drop requested");
+        let mode = if req.hard {
+            DropMode::Hard
+        } else {
+            DropMode::Soft
+        };
 
-    let mode = if req.hard {
-        DropMode::Hard
-    } else {
-        DropMode::Soft
-    };
+        // Ledger drop is only in transaction mode (peers forward)
+        let report = match state.fluree.as_file().drop_ledger(&req.ledger, mode).await {
+            Ok(report) => report,
+            Err(e) => {
+                let server_error = ServerError::Api(e);
+                set_span_error_code(&tracing::Span::current(), "error:NotFound");
+                tracing::error!(error = %server_error, "ledger drop failed");
+                return Err(server_error);
+            }
+        };
 
-    // Ledger drop is only in transaction mode (peers forward)
-    let report = match state.fluree.as_file().drop_ledger(&req.ledger, mode).await {
-        Ok(report) => report,
-        Err(e) => {
-            let server_error = ServerError::Api(e);
-            set_span_error_code(&span, "error:NotFound");
-            tracing::error!(error = %server_error, "ledger drop failed");
-            return Err(server_error);
-        }
-    };
-
-    tracing::info!(status = "success", drop_status = ?report.status, "ledger dropped");
-    Ok(Json(DropResponse::from(report)))
+        tracing::info!(status = "success", drop_status = ?report.status, "ledger dropped");
+        Ok(Json(DropResponse::from(report)))
+    }
+    .instrument(span)
+    .await
 }
 
 /// Ledger info response (simplified, used in proxy storage mode fallback)
@@ -303,57 +308,59 @@ pub async fn info(
         None, // ledger alias determined later
         None,
     );
-    let _guard = span.enter();
+    async {
+        tracing::info!(status = "start", "ledger info requested");
 
-    tracing::info!(status = "start", "ledger info requested");
+        // Get ledger alias from query param or header
+        let alias = match query
+            .ledger
+            .as_ref()
+            .or(headers.ledger.as_ref())
+            .ok_or(ServerError::MissingLedger)
+        {
+            Ok(alias) => {
+                tracing::Span::current().record("ledger_alias", &alias.as_str());
+                alias
+            }
+            Err(e) => {
+                set_span_error_code(&tracing::Span::current(), "error:BadRequest");
+                tracing::warn!(error = %e, "missing ledger alias in info request");
+                return Err(e);
+            }
+        };
 
-    // Get ledger alias from query param or header
-    let alias = match query
-        .ledger
-        .as_ref()
-        .or(headers.ledger.as_ref())
-        .ok_or(ServerError::MissingLedger)
-    {
-        Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
-            alias
+        // In proxy storage mode, return simplified nameservice-only response
+        // (peer doesn't have local ledger state to compute full stats)
+        if state.config.is_proxy_storage_mode() {
+            return info_simplified(&state, alias, &tracing::Span::current()).await;
         }
-        Err(e) => {
-            set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "missing ledger alias in info request");
-            return Err(e);
+
+        // Non-proxy mode: load ledger and return comprehensive info
+        let ledger_state = super::query::load_ledger_for_query(&state, alias, &tracing::Span::current()).await?;
+
+        // Get t value for backwards compatibility
+        let t = ledger_state.db.t;
+
+        // Build comprehensive ledger info (at parity with Clojure)
+        let mut info = fluree_db_api::ledger_info::build_ledger_info(&ledger_state, None)
+            .await
+            .map_err(|e| {
+                set_span_error_code(&tracing::Span::current(), "error:InternalError");
+                tracing::error!(error = %e, "failed to build ledger info");
+                ServerError::internal(format!("Failed to build ledger info: {}", e))
+            })?;
+
+        // Add top-level ledger alias and t for backwards compatibility
+        if let Some(obj) = info.as_object_mut() {
+            obj.insert("ledger".to_string(), serde_json::Value::String(alias.to_string()));
+            obj.insert("t".to_string(), serde_json::Value::Number(t.into()));
         }
-    };
 
-    // In proxy storage mode, return simplified nameservice-only response
-    // (peer doesn't have local ledger state to compute full stats)
-    if state.config.is_proxy_storage_mode() {
-        return info_simplified(&state, alias, &span).await;
+        tracing::info!(status = "success", "ledger info retrieved");
+        Ok(Json(info).into_response())
     }
-
-    // Non-proxy mode: load ledger and return comprehensive info
-    let ledger_state = super::query::load_ledger_for_query(&state, alias, &span).await?;
-
-    // Get t value for backwards compatibility
-    let t = ledger_state.db.t;
-
-    // Build comprehensive ledger info (at parity with Clojure)
-    let mut info = fluree_db_api::ledger_info::build_ledger_info(&ledger_state, None)
-        .await
-        .map_err(|e| {
-            set_span_error_code(&span, "error:InternalError");
-            tracing::error!(error = %e, "failed to build ledger info");
-            ServerError::internal(format!("Failed to build ledger info: {}", e))
-        })?;
-
-    // Add top-level ledger alias and t for backwards compatibility
-    if let Some(obj) = info.as_object_mut() {
-        obj.insert("ledger".to_string(), serde_json::Value::String(alias.to_string()));
-        obj.insert("t".to_string(), serde_json::Value::Number(t.into()));
-    }
-
-    tracing::info!(status = "success", "ledger info retrieved");
-    Ok(Json(info).into_response())
+    .instrument(span)
+    .await
 }
 
 /// Simplified ledger info for proxy storage mode (nameservice lookup only)
@@ -428,41 +435,43 @@ pub async fn exists(
         None,
         None,
     );
-    let _guard = span.enter();
+    async {
+        tracing::info!(status = "start", "ledger exists check requested");
 
-    tracing::info!(status = "start", "ledger exists check requested");
+        // Get ledger alias from query param or header
+        let alias = match query
+            .ledger
+            .as_ref()
+            .or(headers.ledger.as_ref())
+            .ok_or(ServerError::MissingLedger)
+        {
+            Ok(alias) => {
+                tracing::Span::current().record("ledger_alias", &alias.as_str());
+                alias.clone()
+            }
+            Err(e) => {
+                set_span_error_code(&tracing::Span::current(), "error:BadRequest");
+                tracing::warn!(error = %e, "missing ledger alias in exists request");
+                return Err(e);
+            }
+        };
 
-    // Get ledger alias from query param or header
-    let alias = match query
-        .ledger
-        .as_ref()
-        .or(headers.ledger.as_ref())
-        .ok_or(ServerError::MissingLedger)
-    {
-        Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
-            alias.clone()
-        }
-        Err(e) => {
-            set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "missing ledger alias in exists request");
-            return Err(e);
-        }
-    };
+        // Check if ledger exists via nameservice lookup
+        let exists = match state.fluree.ledger_exists(&alias).await {
+            Ok(exists) => exists,
+            Err(e) => {
+                let server_error = ServerError::Api(e);
+                set_span_error_code(&tracing::Span::current(), "error:InternalError");
+                tracing::error!(error = %server_error, "ledger exists check failed");
+                return Err(server_error);
+            }
+        };
 
-    // Check if ledger exists via nameservice lookup
-    let exists = match state.fluree.ledger_exists(&alias).await {
-        Ok(exists) => exists,
-        Err(e) => {
-            let server_error = ServerError::Api(e);
-            set_span_error_code(&span, "error:InternalError");
-            tracing::error!(error = %server_error, "ledger exists check failed");
-            return Err(server_error);
-        }
-    };
-
-    tracing::info!(status = "success", exists = exists, "ledger exists check completed");
-    Ok(Json(ExistsResponse { ledger: alias, exists }))
+        tracing::info!(status = "success", exists = exists, "ledger exists check completed");
+        Ok(Json(ExistsResponse { ledger: alias, exists }))
+    }
+    .instrument(span)
+    .await
 }
 
 /// Forward a write request to the transaction server (peer mode)

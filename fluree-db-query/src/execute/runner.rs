@@ -23,6 +23,7 @@ use fluree_db_core::PrefetchService;
 use fluree_db_core::{Db, NodeCache, StatsView, Storage, Tracker};
 use fluree_db_reasoner::DerivedFactsOverlay;
 use std::sync::Arc;
+use tracing::Instrument;
 
 use super::operator_tree::build_operator_tree;
 use super::reasoning_prep::{
@@ -101,21 +102,11 @@ pub async fn prepare_execution<S: Storage + 'static, C: NodeCache + 'static>(
         to_t = to_t,
         pattern_count = query.query.patterns.len()
     );
-    let _guard = span.enter();
-
+    async {
     tracing::debug!("preparing query execution");
 
     // Steps 1-4: Reasoning preparation (hierarchy, modes, derived facts, ontology)
-    let (hierarchy, reasoning, derived_overlay, ontology) = {
-        let span = tracing::debug_span!(
-            "reasoning_prep",
-            rdfs = tracing::field::Empty,
-            owl2ql = tracing::field::Empty,
-            owl2rl = tracing::field::Empty,
-            datalog = tracing::field::Empty,
-        );
-        let _guard = span.enter();
-
+    let (hierarchy, reasoning, derived_overlay, ontology) = async {
         // Step 1: Compute schema hierarchy from overlay
         let hierarchy = schema_hierarchy_with_overlay(db, overlay, to_t);
 
@@ -161,8 +152,16 @@ pub async fn prepare_execution<S: Storage + 'static, C: NodeCache + 'static>(
             None
         };
 
-        (hierarchy, reasoning, derived_overlay, ontology)
-    };
+        Ok::<_, crate::error::QueryError>((hierarchy, reasoning, derived_overlay, ontology))
+    }
+    .instrument(tracing::debug_span!(
+        "reasoning_prep",
+        rdfs = tracing::field::Empty,
+        owl2ql = tracing::field::Empty,
+        owl2rl = tracing::field::Empty,
+        datalog = tracing::field::Empty,
+    ))
+    .await?;
 
     // Step 5: Rewrite patterns for reasoning
     //
@@ -272,6 +271,9 @@ pub async fn prepare_execution<S: Storage + 'static, C: NodeCache + 'static>(
         operator,
         derived_overlay,
     })
+    }
+    .instrument(span)
+    .await
 }
 
 /// Run an operator tree to completion and collect all result batches
@@ -283,8 +285,7 @@ pub async fn run_operator<S: Storage + 'static, C: NodeCache + 'static>(
     ctx: &ExecutionContext<'_, S, C>,
 ) -> Result<Vec<Batch>> {
     let span = tracing::debug_span!("query_run");
-    let _guard = span.enter();
-
+    async {
     tracing::debug!("opening operator");
     operator.open(ctx).await?;
 
@@ -309,6 +310,9 @@ pub async fn run_operator<S: Storage + 'static, C: NodeCache + 'static>(
     );
 
     Ok(results)
+    }
+    .instrument(span)
+    .await
 }
 
 /// Execution context configuration
