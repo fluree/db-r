@@ -176,7 +176,8 @@ pub fn init_logging(config: &TelemetryConfig) {
             .with_target("fluree_db_query", tracing::Level::DEBUG)
             .with_target("fluree_db_indexer", tracing::Level::DEBUG)
             .with_target("fluree_db_sparql", tracing::Level::DEBUG)
-            .with_target("fluree_db_core", tracing::Level::DEBUG);
+            .with_target("fluree_db_core", tracing::Level::DEBUG)
+            .with_target("fluree_db_novelty", tracing::Level::TRACE);
         Some(init_otel_layer(config).with_filter(otel_filter))
     } else {
         None

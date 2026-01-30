@@ -16,6 +16,7 @@ use fluree_db_core::{ContentAddressedWrite, IndexType, Storage};
 use fluree_db_novelty::Novelty;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// Input for incremental index refresh
 pub struct RefreshInput<'a, S> {
@@ -150,130 +151,158 @@ pub async fn integrate_novelty<S: Storage + ContentAddressedWrite>(
 
     let mut stats = RefreshStats::default();
 
-    // Result stack: stores Vec<ChildRef> produced by processing each node
-    let mut result_stack: Vec<Vec<ChildRef>> = Vec::new();
-
-    // Work stack for traversal
-    let mut work_stack: Vec<StackEntry> = Vec::new();
-
     // Initialize with root
-    let root_node = load_node(input.storage, input.root.clone()).await?;
-    work_stack.push(StackEntry::ProcessNode { node: root_node });
+    let root_node = load_node(input.storage, input.root.clone())
+        .instrument(tracing::debug_span!("node_load"))
+        .await?;
 
-    while let Some(entry) = work_stack.pop() {
-        match entry {
-            StackEntry::ProcessNode { node } => {
-                stats.nodes_visited += 1;
+    // Tree walk: stack-based DFS with novelty integration
+    // Uses .instrument() rather than span.enter() because the loop contains .await points
+    let tree_walk_span = tracing::debug_span!(
+        "tree_walk",
+        nodes_visited = tracing::field::Empty,
+        leaves_modified = tracing::field::Empty,
+        branches_modified = tracing::field::Empty,
+        nodes_written = tracing::field::Empty,
+        nodes_reused = tracing::field::Empty,
+    );
 
-                match &node.content {
-                    ResolvedContent::Leaf(flakes) => {
-                        // Process leaf: merge novelty, dedup, split if needed
-                        let new_children =
-                            process_leaf(&node.child_ref, flakes, &input, writer, &mut stats)
-                                .await?;
-                        result_stack.push(new_children);
-                    }
-                    ResolvedContent::Branch(children) => {
-                        // Find which children are affected by novelty
-                        let affected = find_affected_children_for_novelty(children, &input);
+    let final_children = async {
+        let mut result_stack: Vec<Vec<ChildRef>> = Vec::new();
+        let mut work_stack: Vec<StackEntry> = vec![StackEntry::ProcessNode { node: root_node }];
 
-                        if affected.is_empty() {
-                            // No children affected - reuse this branch
-                            stats.nodes_reused += 1;
-                            result_stack.push(vec![node.child_ref.clone()]);
-                        } else {
-                            // Push reconstruction entry (will be processed after children)
-                            work_stack.push(StackEntry::ReconstructBranch {
-                                child_ref: node.child_ref.clone(),
-                                original_children: children.clone(),
-                                affected_indices: affected.clone(),
-                            });
+        while let Some(entry) = work_stack.pop() {
+            match entry {
+                StackEntry::ProcessNode { node } => {
+                    stats.nodes_visited += 1;
 
-                            // Push descent entry
-                            work_stack.push(StackEntry::DescendBranch {
-                                child_ref: node.child_ref.clone(),
-                                children: children.clone(),
-                                affected_indices: affected,
-                                next_to_process: 0,
-                            });
+                    match &node.content {
+                        ResolvedContent::Leaf(flakes) => {
+                            // Process leaf: merge novelty, dedup, split if needed
+                            let new_children =
+                                process_leaf(&node.child_ref, flakes, &input, writer, &mut stats)
+                                    .await?;
+                            result_stack.push(new_children);
+                        }
+                        ResolvedContent::Branch(children) => {
+                            // Find which children are affected by novelty
+                            let affected =
+                                find_affected_children_for_novelty(children, &input);
+
+                            if affected.is_empty() {
+                                // No children affected - reuse this branch
+                                stats.nodes_reused += 1;
+                                result_stack.push(vec![node.child_ref.clone()]);
+                            } else {
+                                // Push reconstruction entry (will be processed after children)
+                                work_stack.push(StackEntry::ReconstructBranch {
+                                    child_ref: node.child_ref.clone(),
+                                    original_children: children.clone(),
+                                    affected_indices: affected.clone(),
+                                });
+
+                                // Push descent entry
+                                work_stack.push(StackEntry::DescendBranch {
+                                    child_ref: node.child_ref.clone(),
+                                    children: children.clone(),
+                                    affected_indices: affected,
+                                    next_to_process: 0,
+                                });
+                            }
                         }
                     }
                 }
-            }
 
-            StackEntry::DescendBranch {
-                child_ref,
-                children,
-                affected_indices,
-                next_to_process,
-            } => {
-                if next_to_process < affected_indices.len() {
-                    // More children to process
-                    let child_idx = affected_indices[next_to_process];
-                    let child = &children[child_idx];
+                StackEntry::DescendBranch {
+                    child_ref,
+                    children,
+                    affected_indices,
+                    next_to_process,
+                } => {
+                    if next_to_process < affected_indices.len() {
+                        // More children to process
+                        let child_idx = affected_indices[next_to_process];
+                        let child = &children[child_idx];
 
-                    // Push self back with incremented index
-                    work_stack.push(StackEntry::DescendBranch {
-                        child_ref,
-                        children: children.clone(),
-                        affected_indices: affected_indices.clone(),
-                        next_to_process: next_to_process + 1,
-                    });
+                        // Push self back with incremented index
+                        work_stack.push(StackEntry::DescendBranch {
+                            child_ref,
+                            children: children.clone(),
+                            affected_indices: affected_indices.clone(),
+                            next_to_process: next_to_process + 1,
+                        });
 
-                    // Load and process the child
-                    let child_node = load_node(input.storage, child.clone()).await?;
-                    work_stack.push(StackEntry::ProcessNode { node: child_node });
-                }
-                // If all children processed, DescendBranch just falls through
-            }
-
-            StackEntry::ReconstructBranch {
-                child_ref,
-                original_children,
-                affected_indices,
-            } => {
-                // Collect results for affected children (in reverse order since stack)
-                let num_affected = affected_indices.len();
-                let mut replacements: HashMap<usize, Vec<ChildRef>> = HashMap::new();
-
-                for i in (0..num_affected).rev() {
-                    let child_idx = affected_indices[i];
-                    if let Some(result) = result_stack.pop() {
-                        replacements.insert(child_idx, result);
+                        // Load and process the child
+                        let child_node = load_node(input.storage, child.clone())
+                            .instrument(tracing::debug_span!("node_load"))
+                            .await?;
+                        work_stack.push(StackEntry::ProcessNode { node: child_node });
                     }
+                    // If all children processed, DescendBranch just falls through
                 }
 
-                // Reconstruct children
-                let new_children = reconstruct_children(&original_children, replacements);
+                StackEntry::ReconstructBranch {
+                    child_ref,
+                    original_children,
+                    affected_indices,
+                } => {
+                    // Collect results for affected children (in reverse order since stack)
+                    let num_affected = affected_indices.len();
+                    let mut replacements: HashMap<usize, Vec<ChildRef>> = HashMap::new();
 
-                // Split if needed
-                let original_has_rhs = child_ref.rhs.is_some();
-                let final_children = split_branch_if_needed(
-                    new_children,
-                    child_ref.leftmost,
-                    original_has_rhs,
-                    input.config,
-                    writer,
-                )
-                .await?;
+                    for i in (0..num_affected).rev() {
+                        let child_idx = affected_indices[i];
+                        if let Some(result) = result_stack.pop() {
+                            replacements.insert(child_idx, result);
+                        }
+                    }
 
-                stats.branches_modified += 1;
-                stats.nodes_written += final_children.len();
-                // Track the old branch address as garbage (it was replaced, not reused)
-                stats.replaced_nodes.push(child_ref.id.clone());
+                    // Reconstruct children
+                    let new_children =
+                        reconstruct_children(&original_children, replacements);
 
-                result_stack.push(final_children);
+                    // Split if needed
+                    let original_has_rhs = child_ref.rhs.is_some();
+                    let final_children = split_branch_if_needed(
+                        new_children,
+                        child_ref.leftmost,
+                        original_has_rhs,
+                        input.config,
+                        writer,
+                    )
+                    .await?;
+
+                    stats.branches_modified += 1;
+                    stats.nodes_written += final_children.len();
+                    // Track the old branch address as garbage (it was replaced, not reused)
+                    stats.replaced_nodes.push(child_ref.id.clone());
+
+                    result_stack.push(final_children);
+                }
             }
         }
-    }
 
-    // Final result should be on the stack
-    let final_children = result_stack
-        .pop()
-        .expect("Result stack should have one entry");
+        // Record stats on the tree_walk span
+        let span = tracing::Span::current();
+        span.record("nodes_visited", stats.nodes_visited as u64);
+        span.record("leaves_modified", stats.leaves_modified as u64);
+        span.record("branches_modified", stats.branches_modified as u64);
+        span.record("nodes_written", stats.nodes_written as u64);
+        span.record("nodes_reused", stats.nodes_reused as u64);
+
+        // Final result should be on the stack
+        let final_children = result_stack
+            .pop()
+            .expect("Result stack should have one entry");
+        Ok::<_, crate::error::IndexerError>(final_children)
+    }
+    .instrument(tree_walk_span)
+    .await?;
 
     // Finalize root with invariant checks
-    let new_root = finalize_root(final_children, input.config, writer).await?;
+    let new_root = async { finalize_root(final_children, input.config, writer).await }
+        .instrument(tracing::debug_span!("finalize_root"))
+        .await?;
 
     Ok(RefreshResult { new_root, stats })
 }
@@ -304,27 +333,37 @@ async fn process_leaf<S: ContentAddressedWrite>(
         input.to_t,
     );
 
-    // Merge and dedup
-    let merged = merge_and_dedup(existing_flakes, novelty_iter.cloned(), input.index_type);
+    // Merge, dedup, and split (traced together as leaf_merge)
+    let (new_children, flake_bytes_delta) = async {
+        let merged = merge_and_dedup(existing_flakes, novelty_iter.cloned(), input.index_type);
 
-    let new_bytes: u64 = if input.index_type == IndexType::Spot {
-        size_flakes_estimate(&merged)
-    } else {
-        0
-    };
-    if input.index_type == IndexType::Spot {
-        stats.flake_bytes_delta += new_bytes as i64 - old_bytes as i64;
+        let new_bytes: u64 = if input.index_type == IndexType::Spot {
+            size_flakes_estimate(&merged)
+        } else {
+            0
+        };
+        let delta = if input.index_type == IndexType::Spot {
+            new_bytes as i64 - old_bytes as i64
+        } else {
+            0
+        };
+
+        let children = split_leaf_if_needed(
+            merged,
+            child_ref.leftmost,
+            child_ref.rhs.clone(),
+            input.config,
+            writer,
+        )
+        .await?;
+        Ok::<_, crate::error::IndexerError>((children, delta))
     }
-
-    // Split if needed
-    let new_children = split_leaf_if_needed(
-        merged,
-        child_ref.leftmost,
-        child_ref.rhs.clone(),
-        input.config,
-        writer,
-    )
+    .instrument(tracing::debug_span!("leaf_merge"))
     .await?;
+
+    if input.index_type == IndexType::Spot {
+        stats.flake_bytes_delta += flake_bytes_delta;
+    }
 
     stats.leaves_modified += 1;
     stats.nodes_written += new_children.len();

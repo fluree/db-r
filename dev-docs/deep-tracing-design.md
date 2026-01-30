@@ -94,6 +94,7 @@ Tier 2 (debug_span! - opt-in detail):
     '-- format           (output_format, result_count)
 
   transact_execute
+    |-- ledger_load      (ledger_alias)
     |-- parse            (input_format, template_count)
     |-- stage
     |   |-- where_exec   (pattern_count, binding_rows)
@@ -102,10 +103,34 @@ Tier 2 (debug_span! - opt-in detail):
     |   |-- cancellation (cancelled_count)
     |   '-- policy_enforce (flakes_checked, flakes_allowed)
     |-- commit
-    |   |-- content_addr [trace_span!] (bytes_hashed)
+    |   |-- verify_seq
+    |   |-- raw_txn_write
     |   |-- storage_write (bytes_written)
-    |   '-- ns_publish
+    |   |-- ns_publish
+    |   '-- state_build
+    |       |-- novelty_clone
+    |       '-- novelty_apply  (flake_count)
+    |           |-- merge_spot   [trace_span!]
+    |           |-- merge_psot   [trace_span!]
+    |           |-- merge_post   [trace_span!]
+    |           |-- merge_opst   [trace_span!]
+    |           '-- merge_tspo   [trace_span!]
     '-- index_status     (novelty_bytes, needs_reindex)
+
+  index_build            (ledger_alias)
+    |-- ns_lookup
+    |-- [incremental path]
+    |   |-- novelty_build  (commit_count, novelty_flakes)
+    |   '-- refresh_spot, refresh_psot, refresh_post, refresh_opst, refresh_tspo (concurrent)
+    |       |-- tree_walk   (nodes_visited, leaves_modified, branches_modified, nodes_written, nodes_reused)
+    |       |   |-- node_load*   [debug_span!] per-node storage I/O
+    |       |   '-- leaf_merge*  [debug_span!] merge + dedup + split per leaf
+    |       |-- finalize_root
+    |       |-- gc_collect
+    |       '-- root_write
+    '-- [rebuild path]
+        '-- commit_scan
+            reindex_batch (batch_num, commits_in_batch, novelty_bytes)
 ```
 
 **Tier 3 (trace_span! - maximum detail):** Individual operator `next_batch()`
@@ -439,3 +464,42 @@ updated to use the current API:
 
 This revision affects only `fluree-db-server/src/telemetry.rs` and
 `fluree-db-server/Cargo.toml`. No span instrumentation code was changed.
+
+### Rev 2: Async span propagation fix
+
+Replaced `span.enter()` with `.instrument(span)` wherever the guard's scope
+contained an `.await` point. The `Entered` guard from `.enter()` is `!Send` and
+does not survive `.await` — when the async runtime suspends, the span context is
+lost and child spans become orphaned root traces in Jaeger. This affected all
+files instrumented in Phases 1-5 (stage.rs, commit.rs, runner.rs,
+execute/mod.rs, format/mod.rs, transact.rs, query.rs, ledger.rs, admin.rs).
+
+### Rev 3: Expanded commit, transaction, and indexer child spans
+
+Added child spans to close visibility gaps identified in production traces:
+
+**Transaction path:**
+- `ledger_load` — wraps `ledger_cached().await` in `transact.rs` (both FQL and
+  SPARQL UPDATE paths). Accounts for the dominant wall-clock gap before `parse`.
+- `verify_seq` — wraps nameservice lookup + sequencing check in `commit.rs`.
+- `raw_txn_write` — wraps raw transaction JSON storage write in `commit.rs`.
+- `state_build` — wraps commit metadata flake generation + novelty merge in
+  `commit.rs` (sync block, uses `span.enter()`).
+
+**Indexer path (previously out of scope, now instrumented):**
+- `ns_lookup` — wraps nameservice lookup in `build_index_for_ledger`.
+- `commit_scan` — wraps Phase 1 backward metadata stream in `batched_rebuild`.
+- `refresh_spot`, `refresh_psot`, `refresh_post`, `refresh_opst`, `refresh_tspo`
+  — per-index-type spans on the 5 concurrent futures in `refresh_index_with_prev`.
+- `gc_collect` — wraps garbage address collection + storage write.
+- `root_write` — wraps DbRoot serialization + storage write.
+
+### Rev 4: OTEL export filter and tower-http span level
+
+- Added a `tracing_subscriber::filter::Targets` filter on the OTEL layer that
+  only exports spans from `fluree_*` crates. Prevents debug noise from hyper,
+  h2, tokio, tower-http from flooding the batch exporter when `RUST_LOG=debug`.
+- Raised tower-http's `TraceLayer` per-request span from DEBUG to TRACE level
+  via `DefaultMakeSpan::new().level(tracing::Level::TRACE)`. This prevents a
+  duplicate `request` span from appearing at `RUST_LOG=debug` that would collide
+  with the handler-level `request` info_span.

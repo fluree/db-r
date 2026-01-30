@@ -81,7 +81,9 @@ Design documents are located in the `/docs/design/` directory and various planni
   for new phase spans. Use `trace_span!` with manual guards for hot-path operators
   (scan, join, filter, sort). Record deferred fields via
   `tracing::Span::current().record("field", value)`.
-- Status: Implemented (Phases 0-5 complete)
+- Status: Implemented (Phases 0-5 complete, plus post-phase enhancements:
+  async span propagation fix, expanded commit/indexer child spans, OTEL export
+  filter). See Rev 2-4 in the design doc.
 
 **Logging Implementation:**
 - Location: `/LOGGING_IMPLEMENTATION_SUMMARY.md`

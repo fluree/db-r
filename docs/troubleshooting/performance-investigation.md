@@ -159,6 +159,7 @@ produces this span hierarchy:
 ```
 request
   └─ transact_execute (ledger_alias, txn_type, tracker_time, tracker_fuel)
+       ├─ ledger_load (ledger_alias)
        ├─ parse (input_format, txn_type)
        ├─ txn_stage (txn_type, insert_count)
        │    ├─ where_exec (pattern_count, binding_rows)
@@ -167,21 +168,35 @@ request
        │    ├─ cancellation (flakes_before, cancelled_count)
        │    └─ policy_enforce (flakes_checked)
        └─ commit (flake_count, bytes_written)
+            ├─ verify_seq
+            ├─ raw_txn_write
             ├─ storage_write (bytes_written)
-            └─ ns_publish
+            ├─ ns_publish
+            └─ state_build
+                 ├─ novelty_clone
+                 └─ novelty_apply (flake_count)
+                      ├─ merge_spot   [trace level]
+                      ├─ merge_psot   [trace level]
+                      ├─ merge_post   [trace level]
+                      ├─ merge_opst   [trace level]
+                      └─ merge_tspo   [trace level]
 ```
 
 ### Common transaction bottlenecks
 
 | Phase            | What it does                                                            | When it's slow                                             |
 | ---------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `ledger_load`    | Loads ledger state from cache or storage                                | First access (cold cache), slow storage backend            |
 | `where_exec`     | Evaluates the WHERE clause to find matching bindings                    | Large WHERE clauses or broad patterns scanning many flakes |
 | `delete_gen`     | Generates retraction flakes from DELETE templates                       | Many retractions (large batch deletes)                     |
 | `insert_gen`     | Generates assertion flakes from INSERT templates                        | Large batch inserts with many triples                      |
 | `cancellation`   | Removes flakes that cancel each other (assert + retract of same triple) | Many overlapping inserts and deletes                       |
 | `policy_enforce` | Checks transaction flakes against policy rules                          | Complex policies with many flakes to check                 |
+| `verify_seq`     | Looks up nameservice record and verifies commit sequencing              | Nameservice latency (network, DynamoDB)                    |
+| `raw_txn_write`  | Writes original transaction JSON to storage                             | Large transaction payloads, slow storage backend           |
 | `storage_write`  | Writes commit data to storage (file, S3, etc.)                          | Large commits, slow storage backend, network I/O to S3     |
 | `ns_publish`     | Publishes the new commit to the nameservice                             | Nameservice latency (network, DynamoDB, etc.)              |
+| `state_build`    | Generates commit metadata flakes and merges into novelty. Child spans: `novelty_clone` (deep-clones novelty) and `novelty_apply` (5-index LSM merge) | Very large transactions with many flakes, or large accumulated novelty |
 
 ### Investigation steps
 
@@ -284,8 +299,8 @@ it is not affected by system load, I/O wait, or scheduling.
 | Level                  | `RUST_LOG` setting                                                         | What you see                                                                  | Overhead                                                        |
 | ---------------------- | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | --------------------------------------------------------------- |
 | Info (default)         | `info`                                                                     | Top-level request and operation spans only. No internal phase detail.         | Negligible                                                      |
-| Debug (investigation)  | `info,fluree_db_query=debug,fluree_db_transact=debug`                      | Full phase waterfall: parse, reasoning, plan, execute, format, stage, commit. | Low — one span per phase per operation                          |
-| Trace (maximum detail) | `info,fluree_db_query=trace,fluree_db_transact=trace,fluree_db_core=trace` | Per-operator spans (scan, join, filter, sort, etc.) with row/flake counts.    | Moderate — many spans per query, proportional to operator count |
+| Debug (investigation)  | `info,fluree_db_query=debug,fluree_db_transact=debug,fluree_db_indexer=debug` | Full phase waterfall: parse, reasoning, plan, execute, format, stage, commit, index tree_walk/finalize. | Low — one span per phase per operation                          |
+| Trace (maximum detail) | `info,fluree_db_query=trace,fluree_db_transact=trace,fluree_db_core=trace,fluree_db_indexer=trace` | Per-operator spans (scan, join, filter, sort, etc.) with row/flake counts. Per-node index spans (node_load, leaf_merge). | Moderate — many spans per query/index, proportional to operator/node count |
 
 > **Production guidance:** `debug` level is safe for production investigation.
 > `trace` level generates many spans per query and should only be enabled
@@ -302,6 +317,7 @@ Use underscore-separated crate names (not hyphens) in `RUST_LOG` filters:
 | `fluree-db-core`     | `fluree_db_core`     | Core index operations, range scans, tracking  |
 | `fluree-db-server`   | `fluree_db_server`   | HTTP server, routing, request handling        |
 | `fluree-db-sparql`   | `fluree_db_sparql`   | SPARQL parsing and lowering                   |
+| `fluree-db-indexer`  | `fluree_db_indexer`  | Index refresh, tree traversal, rebuild        |
 | `fluree-db-api`      | `fluree_db_api`      | API orchestration, result formatting          |
 
 ## OTEL Environment Variables Reference

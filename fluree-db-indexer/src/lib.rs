@@ -1531,30 +1531,38 @@ where
 
         // 2. Build novelty from commits since index_t
         // trace_commits streams HEAD→oldest, so we collect and process
-        tracing::debug!("building novelty from commits");
-        let mut novelty = Novelty::new(index_t);
-        let mut namespace_delta: HashMap<i32, String> = HashMap::new();
+        let (novelty, namespace_delta) = async {
+            let mut novelty = Novelty::new(index_t);
+            let mut namespace_delta: HashMap<i32, String> = HashMap::new();
 
-        let stream = trace_commits(storage.clone(), head_commit_address.to_string(), index_t);
-        futures::pin_mut!(stream);
+            let stream =
+                trace_commits(storage.clone(), head_commit_address.to_string(), index_t);
+            futures::pin_mut!(stream);
 
-        let mut commit_count = 0;
-        while let Some(result) = stream.next().await {
-            let commit = result?;
-            commit_count += 1;
-            novelty.apply_commit(commit.flakes, commit.t)?;
-            // trace_commits streams HEAD→oldest, so newer commits come first
-            // Use or_insert to keep the first (newest) value for each key
-            for (code, prefix) in commit.namespace_delta {
-                namespace_delta.entry(code).or_insert(prefix);
+            let mut commit_count: u64 = 0;
+            while let Some(result) = stream.next().await {
+                let commit = result?;
+                commit_count += 1;
+                novelty.apply_commit(commit.flakes, commit.t)?;
+                // trace_commits streams HEAD→oldest, so newer commits come first
+                // Use or_insert to keep the first (newest) value for each key
+                for (code, prefix) in commit.namespace_delta {
+                    namespace_delta.entry(code).or_insert(prefix);
+                }
             }
-        }
 
-        tracing::debug!(
-            commit_count = commit_count,
-            novelty_flake_count = novelty.len(),
-            "novelty built"
-        );
+            let span = tracing::Span::current();
+            span.record("commit_count", commit_count);
+            span.record("novelty_flakes", novelty.len() as u64);
+
+            Ok::<_, crate::error::IndexerError>((novelty, namespace_delta))
+        }
+        .instrument(tracing::debug_span!(
+            "novelty_build",
+            commit_count = tracing::field::Empty,
+            novelty_flakes = tracing::field::Empty,
+        ))
+        .await?;
 
         // 3. Apply namespace deltas to Db BEFORE refresh
         // This ensures the refreshed DbRoot has the correct namespace_codes

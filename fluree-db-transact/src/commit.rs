@@ -305,9 +305,17 @@ where
             // Build new state - merge commit_metadata_flakes with transaction flakes
             let mut all_flakes = flakes;
             all_flakes.extend(commit_metadata_flakes);
+            let flake_count = all_flakes.len();
 
-            let mut new_novelty = (*base.novelty).clone();
-            new_novelty.apply_commit(all_flakes, new_t)?;
+            let mut new_novelty = {
+                let _guard = tracing::debug_span!("novelty_clone").entered();
+                (*base.novelty).clone()
+            };
+            {
+                let span = tracing::debug_span!("novelty_apply", flake_count);
+                let _guard = span.enter();
+                new_novelty.apply_commit(all_flakes, new_t)?;
+            }
 
             LedgerState {
                 db: base.db,

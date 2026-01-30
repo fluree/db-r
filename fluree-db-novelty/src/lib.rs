@@ -181,11 +181,26 @@ impl Novelty {
         let batch_ids: Vec<FlakeId> = (base_id..self.store.len() as FlakeId).collect();
 
         // Merge batch into each index (LSM-style merge)
-        self.merge_into_index(&batch_ids, IndexType::Spot);
-        self.merge_into_index(&batch_ids, IndexType::Psot);
-        self.merge_into_index(&batch_ids, IndexType::Post);
-        self.merge_into_index_refs_only(&batch_ids);
-        self.merge_into_index(&batch_ids, IndexType::Tspo);
+        {
+            let _guard = tracing::trace_span!("merge_spot").entered();
+            self.merge_into_index(&batch_ids, IndexType::Spot);
+        }
+        {
+            let _guard = tracing::trace_span!("merge_psot").entered();
+            self.merge_into_index(&batch_ids, IndexType::Psot);
+        }
+        {
+            let _guard = tracing::trace_span!("merge_post").entered();
+            self.merge_into_index(&batch_ids, IndexType::Post);
+        }
+        {
+            let _guard = tracing::trace_span!("merge_opst").entered();
+            self.merge_into_index_refs_only(&batch_ids);
+        }
+        {
+            let _guard = tracing::trace_span!("merge_tspo").entered();
+            self.merge_into_index(&batch_ids, IndexType::Tspo);
+        }
 
         Ok(())
     }

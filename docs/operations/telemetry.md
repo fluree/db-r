@@ -286,6 +286,7 @@ request
 ```
 request
   └─ transact_execute (ledger_alias, txn_type, tracker_time, tracker_fuel)
+       ├─ ledger_load (ledger_alias)
        ├─ parse (input_format, txn_type)
        ├─ txn_stage (txn_type, insert_count)
        │    ├─ where_exec (pattern_count, binding_rows)
@@ -294,8 +295,33 @@ request
        │    ├─ cancellation (flakes_before, cancelled_count)
        │    └─ policy_enforce (flakes_checked)
        └─ commit (flake_count, bytes_written)
+            ├─ verify_seq
+            ├─ raw_txn_write
             ├─ storage_write (bytes_written)
-            └─ ns_publish
+            ├─ ns_publish
+            └─ state_build
+```
+
+#### Indexer waterfall (`RUST_LOG=info,fluree_db_indexer=debug`)
+
+```
+index_build (ledger_alias)
+  ├─ ns_lookup
+  └─ [incremental refresh path:]
+       index_refresh (ledger_alias, from_t, to_t)
+         ├─ refresh_spot           (concurrent)
+         ├─ refresh_psot           (concurrent)
+         ├─ refresh_post           (concurrent)
+         ├─ refresh_opst           (concurrent)
+         ├─ refresh_tspo           (concurrent)
+         ├─ gc_collect
+         └─ root_write
+  └─ [full rebuild path:]
+       batched_rebuild (ledger_alias)
+         ├─ commit_scan
+         ├─ reindex_batch (batch_num, commits_in_batch, novelty_bytes)
+         ├─ reindex_batch ...
+         └─ reindex_batch (final)
 ```
 
 ### Recommended RUST_LOG Settings
@@ -307,9 +333,19 @@ RUST_LOG=info
 # Investigation mode: full query/transaction waterfall
 RUST_LOG=info,fluree_db_query=debug,fluree_db_transact=debug
 
+# With indexer visibility
+RUST_LOG=info,fluree_db_query=debug,fluree_db_transact=debug,fluree_db_indexer=debug
+
 # Maximum detail: per-batch operator traces (scan, join, filter, etc.)
 RUST_LOG=info,fluree_db_query=trace,fluree_db_transact=trace,fluree_db_core=trace
 ```
+
+> **Note:** Avoid using `RUST_LOG=debug` (global debug) with OTEL export. This
+> enables debug spans from `hyper`, `h2`, `tokio`, and `tower-http`, which can
+> flood the OTEL batch exporter. Instead, enable debug selectively per crate as
+> shown above. The OTEL layer includes a target filter that only exports spans
+> from `fluree_*` crates, but the global `RUST_LOG=debug` setting still affects
+> the console log output.
 
 ### Tracker Bridge
 
@@ -328,9 +364,15 @@ OTLP-compatible collector (Jaeger, Tempo, Datadog, etc.):
 OTEL_SERVICE_NAME=fluree \
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 \
 OTEL_TRACES_SAMPLER=always_on \
-RUST_LOG=info,fluree_db_query=debug \
+RUST_LOG=info,fluree_db_query=debug,fluree_db_transact=debug,fluree_db_indexer=debug \
   ./fluree-server
 ```
+
+The OTEL layer includes a built-in target filter that only exports spans from
+Fluree crates (`fluree_db_server`, `fluree_db_api`, `fluree_db_transact`,
+`fluree_db_query`, `fluree_db_indexer`, `fluree_db_sparql`, `fluree_db_core`).
+This prevents debug noise from third-party dependencies (hyper, tokio,
+tower-http, etc.) from reaching the collector, even if `RUST_LOG` enables them.
 
 ### Interpreting Span Fields
 
