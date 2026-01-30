@@ -19,7 +19,10 @@ use crate::config::{ServerConfig, ServerRole};
 use crate::peer::{ForwardingClient, PeerState, ProxyNameService, ProxyStorage};
 use crate::registry::LedgerRegistry;
 use crate::telemetry::TelemetryConfig;
-use fluree_db_api::{Fluree, FlureeBuilder, IndexConfig, QueryConnectionOptions, SimpleCache};
+use fluree_db_api::{
+    BackgroundIndexerWorker, Fluree, FlureeBuilder, IndexConfig, IndexerConfig, IndexingMode,
+    QueryConnectionOptions, SimpleCache,
+};
 use fluree_db_connection::{Connection, ConnectionConfig};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -430,12 +433,20 @@ impl AppState {
             (None, None)
         };
 
+        // Build IndexConfig from reindex threshold flags. This is applied to
+        // every commit via the transact route handler, raising the novelty hard
+        // limit above the default 1 MB.
+        let index_config = Some(IndexConfig {
+            reindex_min_bytes: config.reindex_min_bytes as usize,
+            reindex_max_bytes: config.reindex_max_bytes as usize,
+        });
+
         Ok(Self {
             fluree,
             config,
             telemetry_config,
             start_time: Instant::now(),
-            index_config: None,
+            index_config,
             registry,
             peer_state,
             forwarding_client,
@@ -444,6 +455,9 @@ impl AppState {
     }
 
     /// Create a file-backed Fluree instance
+    ///
+    /// When `config.indexing_enabled` is true, starts a
+    /// `BackgroundIndexerWorker` that drains novelty between commits.
     fn create_file_fluree(config: &ServerConfig) -> Result<FlureeInstance, fluree_db_api::ApiError> {
         let path = config.storage_path.clone().unwrap_or_else(|| {
             std::env::temp_dir().join("fluree-server-data")
@@ -456,7 +470,20 @@ impl AppState {
             .cache_max_entries(config.cache_max_entries)
             .with_ledger_caching(); // Enable connection-level ledger caching
 
-        let fluree = builder.build()?;
+        let mut fluree = builder.build()?;
+
+        // Start background indexer if enabled
+        if config.indexing_enabled {
+            let storage = fluree.connection().storage().clone();
+            let nameservice = Arc::new(fluree.nameservice().clone());
+            let indexer_config = IndexerConfig::default();
+
+            let (worker, handle) =
+                BackgroundIndexerWorker::new(storage, nameservice, indexer_config);
+            tokio::spawn(worker.run());
+            fluree.set_indexing_mode(IndexingMode::Background(handle));
+        }
+
         Ok(FlureeInstance::File(Arc::new(fluree)))
     }
 

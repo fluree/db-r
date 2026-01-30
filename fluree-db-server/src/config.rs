@@ -313,6 +313,16 @@ pub struct ServerConfig {
     #[arg(long, env = "FLUREE_INDEXING_ENABLED", default_value = "false")]
     pub indexing_enabled: bool,
 
+    /// Novelty size (bytes) that triggers background indexing. Only meaningful
+    /// when `--indexing-enabled` is set. Default 1 MB.
+    #[arg(long, env = "FLUREE_REINDEX_MIN_BYTES", default_value_t = 1_000_000)]
+    pub reindex_min_bytes: u64,
+
+    /// Novelty size (bytes) that blocks new commits until indexing catches up.
+    /// Must be larger than `--reindex-min-bytes`. Default 10 MB.
+    #[arg(long, env = "FLUREE_REINDEX_MAX_BYTES", default_value_t = 10_000_000)]
+    pub reindex_max_bytes: u64,
+
     /// Maximum cache entries per ledger
     #[arg(long, env = "FLUREE_CACHE_MAX_ENTRIES", default_value = "10000")]
     pub cache_max_entries: usize,
@@ -466,6 +476,8 @@ impl Default for ServerConfig {
             storage_path: None,
             cors_enabled: true,
             indexing_enabled: false,
+            reindex_min_bytes: 1_000_000,
+            reindex_max_bytes: 10_000_000,
             cache_max_entries: 10000,
             body_limit: 50 * 1024 * 1024, // 50MB
             log_level: "info".to_string(),
