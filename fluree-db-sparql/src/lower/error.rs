@@ -15,6 +15,16 @@ pub enum LowerError {
     #[error("Unknown namespace for IRI '{iri}'")]
     UnknownNamespace { iri: String, span: SourceSpan },
 
+    /// Full IRI looks like a prefixed name (e.g., <prefix:local> instead of prefix:local)
+    #[error("IRI '<{iri}>' looks like a prefixed name wrapped in angle brackets. \
+             Prefixed names should not be wrapped in <...>. \
+             Either use the full IRI <{expanded}> or remove the angle brackets: {iri}")]
+    MisusedPrefixSyntax {
+        iri: String,
+        expanded: String,
+        span: SourceSpan,
+    },
+
     /// Feature not yet implemented in lowering
     #[error("{feature} lowering is not yet implemented")]
     NotImplemented { feature: String, span: SourceSpan },
@@ -65,6 +75,19 @@ impl LowerError {
     pub fn unknown_namespace(iri: impl Into<String>, span: SourceSpan) -> Self {
         Self::UnknownNamespace {
             iri: iri.into(),
+            span,
+        }
+    }
+
+    /// Create a misused prefix syntax error (e.g., <prefix:local> instead of prefix:local).
+    pub fn misused_prefix_syntax(
+        iri: impl Into<String>,
+        expanded: impl Into<String>,
+        span: SourceSpan,
+    ) -> Self {
+        Self::MisusedPrefixSyntax {
+            iri: iri.into(),
+            expanded: expanded.into(),
             span,
         }
     }
@@ -134,6 +157,7 @@ impl LowerError {
         match self {
             Self::UndefinedPrefix { span, .. } => *span,
             Self::UnknownNamespace { span, .. } => *span,
+            Self::MisusedPrefixSyntax { span, .. } => *span,
             Self::NotImplemented { span, .. } => *span,
             Self::UnsupportedQueryForm { span, .. } => *span,
             Self::InvalidDecimal { span, .. } => *span,

@@ -493,6 +493,61 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn test_misused_prefix_syntax_error() {
+        // Common mistake: wrapping prefixed name in angle brackets <prefix:local>
+        // This should give a helpful error message explaining the issue
+        let result = lower_query(
+            "PREFIX hsc: <http://example.org/schema/>
+             SELECT ?name WHERE { <hsc:product/123> hsc:name ?name }",
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, LowerError::MisusedPrefixSyntax { .. }),
+            "Expected MisusedPrefixSyntax error, got: {:?}",
+            err
+        );
+
+        // Verify the error message contains helpful information
+        let msg = err.to_string();
+        assert!(
+            msg.contains("angle brackets"),
+            "Error should mention angle brackets: {}",
+            msg
+        );
+        assert!(
+            msg.contains("http://example.org/schema/product/123"),
+            "Error should show the expanded IRI: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_prefixed_name_with_slash() {
+        // Test that prefixed names with '/' in the local part work
+        // e.g., hsc:product/123 should expand to http://example.org/schema/product/123
+        let result = lower_query(
+            "PREFIX hsc: <http://example.org/>
+             SELECT ?name WHERE { hsc:product/123 hsc:name ?name }",
+        );
+
+        // If this fails at parse time, we need to update the lexer
+        // If this fails at lowering time, we need to check prefix expansion
+        match &result {
+            Ok(query) => {
+                // Success - verify the pattern was created
+                assert_eq!(query.patterns.len(), 1);
+                println!("Prefixed name with slash works!");
+            }
+            Err(e) => {
+                println!("Prefixed name with slash failed: {:?}", e);
+                panic!("Expected prefixed name with '/' to work, got error: {}", e);
+            }
+        }
+    }
+
     // =========================================================================
     // MINUS Pattern Tests
     // =========================================================================
