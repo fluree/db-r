@@ -21,7 +21,7 @@ use fluree_db_query::{
     execute_pattern_with_overlay_at, Batch, Binding, Pattern, Term, TriplePattern,
     VarId, VarRegistry, QueryPolicyExecutor,
 };
-use fluree_db_query::parse::{lower_unresolved_pattern, UnresolvedPattern};
+use fluree_db_query::parse::{lower_unresolved_patterns, UnresolvedPattern};
 use fluree_db_core::Tracker;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -446,13 +446,9 @@ fn lower_where_patterns<S: Storage + 'static, C: NodeCache + 'static>(
     db: &fluree_db_core::Db<S, C>,
     vars: &mut VarRegistry,
 ) -> Result<Vec<Pattern>> {
-    patterns
-        .iter()
-        .map(|p| {
-            lower_unresolved_pattern(p, db, vars)
-                .map_err(|e| TransactError::Parse(format!("WHERE pattern lowering: {}", e)))
-        })
-        .collect()
+    let mut pp_counter: u32 = 0;
+    lower_unresolved_patterns(patterns, db, vars, &mut pp_counter)
+        .map_err(|e| TransactError::Parse(format!("WHERE pattern lowering: {}", e)))
 }
 
 /// Merge multiple batches into a single batch

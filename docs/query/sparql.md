@@ -113,43 +113,118 @@ Combine patterns with AND semantics:
 
 ### Property Paths
 
-Express relationships:
+SPARQL property paths allow complex traversal patterns in the predicate position of a triple pattern.
 
-**Simple Path:**
+#### Supported Operators
+
+| Syntax | Name | Description |
+|--------|------|-------------|
+| `p+` | One or more | Transitive closure (follows `p` one or more hops) |
+| `p*` | Zero or more | Reflexive transitive closure (includes self) |
+| `^p` | Inverse | Traverses `p` in reverse direction |
+| `p\|q` | Alternative | Matches either `p` or `q` (UNION semantics) |
+| `p/q` | Sequence | Follows `p` then `q` (property chain) |
+
+**One or More (`+`):**
+
+```sparql
+?person ex:parent+ ?ancestor .
+```
+
+**Zero or More (`*`):**
+
+```sparql
+?person ex:parent* ?ancestorOrSelf .
+```
+
+**Inverse (`^`):**
+
+```sparql
+?child ^ex:parent ?parent .
+```
+
+This is equivalent to `?parent ex:parent ?child` — it reverses the traversal direction.
+
+Inverse can also be applied to complex paths (sequences and alternatives):
+
+```sparql
+?s ^(ex:friend/ex:name) ?o .   -- inverse of a sequence
+?s ^(ex:name|ex:nick) ?o .     -- inverse of an alternative
+```
+
+- `^(ex:friend/ex:name)` reverses the step order and inverts each step: `(^ex:name)/(^ex:friend)`
+- `^(ex:name|ex:nick)` distributes inverse into each branch: `(^ex:name)|(^ex:nick)`
+- Double inverse cancels: `^(^ex:p)` simplifies to `ex:p`
+
+**Alternative (`|`):**
+
+```sparql
+?person ex:friend|ex:colleague ?related .
+```
+
+This produces UNION semantics: results from both `ex:friend` and `ex:colleague` are combined (bag semantics, so duplicates are preserved).
+
+Three-way and inverse alternatives are supported:
+
+```sparql
+?s ex:a|ex:b|ex:c ?o .
+?s ex:friend|^ex:colleague ?related .
+```
+
+Alternative branches can also be sequence chains. For example, to get the name via either the friend or colleague path:
+
+```sparql
+?s (ex:friend/ex:name)|(ex:colleague/ex:name) ?name .
+```
+
+Branches can freely mix simple predicates, inverse predicates, and sequence chains:
+
+```sparql
+?s ex:name|(ex:friend/ex:name)|^ex:colleague ?val .
+```
+
+**Sequence (`/`) — Property Chains:**
 
 ```sparql
 ?person ex:friend/ex:name ?friendName .
 ```
 
-**Alternative Paths:**
+This follows `ex:friend` then `ex:name`, expanding into a chain of triple patterns joined by internal variables. Multi-step chains are supported:
 
 ```sparql
-?person (ex:friend|ex:colleague) ?other .
+?person ex:friend/ex:friend/ex:name ?fofName .
 ```
 
-**Inverse Paths:**
+Sequence steps can include inverse predicates:
 
 ```sparql
-?person ^ex:friend ?other .
+?person ^ex:friend/ex:name ?name .
 ```
 
-**Zero or More:**
+This traverses `ex:friend` backwards (finding who links to `?person`), then follows `ex:name` forward.
+
+Sequence steps can also be alternatives. For example, `ex:friend/(ex:name|ex:nick)` distributes the alternative into a union of chains (`ex:friend/ex:name` and `ex:friend/ex:nick`):
 
 ```sparql
-?person ex:ancestor* ?ancestor .
+?person ex:friend/(ex:name|ex:nick) ?label .
 ```
 
-**One or More:**
+Multiple alternative steps are supported: `(ex:a|ex:b)/(ex:c|ex:d)` expands to 4 chains. A safety limit of 64 expanded chains is enforced to prevent combinatorial explosion.
 
-```sparql
-?person ex:ancestor+ ?ancestor .
-```
+**Rules:**
 
-**Zero or One:**
+- Transitive paths (`+`, `*`) require at least one variable (both subject and object cannot be constants).
+- Sequence (`/`) steps must be simple predicates (`ex:p`), inverse simple predicates (`^ex:p`), or alternatives of simple predicates (`(ex:a|ex:b)`). Transitive (`+`/`*`) and nested sequence modifiers are not allowed inside sequence steps.
+- Variable names starting with `?__` are reserved for internal use and will not appear in `SELECT *` (wildcard) output.
 
-```sparql
-?person ex:optional? ?value .
-```
+#### Not Yet Supported
+
+The following operators are parsed but not yet supported for execution:
+
+| Syntax | Name |
+|--------|------|
+| `p?` | Zero or one (optional step) |
+| `!p` or `!(p\|q)` | Negated property set |
 
 ## Query Modifiers
 

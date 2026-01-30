@@ -167,6 +167,8 @@ impl UnresolvedTriplePattern {
 }
 
 /// Property path modifier (transitive operators)
+///
+/// Used by the resolved IR layer (`PropertyPathPattern`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathModifier {
     /// + : one or more (at least one hop)
@@ -175,37 +177,29 @@ pub enum PathModifier {
     ZeroOrMore,
 }
 
-/// Unresolved property path pattern (before lowering)
+/// Unresolved property path expression (before lowering).
 ///
-/// Represents a transitive property path like `<ex:knows+>` or `<ex:knows*>`.
-/// The predicate IRI should already be expanded via @context.
-#[derive(Debug, Clone)]
-pub struct UnresolvedPropertyPathPattern {
-    /// Subject term (variable or IRI)
-    pub subject: UnresolvedTerm,
-    /// Predicate IRI (already expanded via @context)
-    pub predicate_iri: Arc<str>,
-    /// Path modifier (+ or *)
-    pub modifier: PathModifier,
-    /// Object term (variable or IRI)
-    pub object: UnresolvedTerm,
-}
-
-impl UnresolvedPropertyPathPattern {
-    /// Create a new unresolved property path pattern
-    pub fn new(
-        subject: UnresolvedTerm,
-        predicate_iri: impl AsRef<str>,
-        modifier: PathModifier,
-        object: UnresolvedTerm,
-    ) -> Self {
-        Self {
-            subject,
-            predicate_iri: Arc::from(predicate_iri.as_ref()),
-            modifier,
-            object,
-        }
-    }
+/// Represents the full SPARQL 1.1 property path algebra using expanded IRI
+/// strings. Created during parse phase from `@path` context entries.
+///
+/// `Sequence` and `Alternative` are n-ary (Vec) rather than binary so that
+/// expressions like `a/b/c` produce a flat list instead of nested pairs.
+#[derive(Debug, Clone, PartialEq)]
+pub enum UnresolvedPathExpr {
+    /// Simple predicate IRI (already expanded via @context)
+    Iri(Arc<str>),
+    /// Inverse path: `^path`
+    Inverse(Box<UnresolvedPathExpr>),
+    /// Sequence path: `path1 / path2 / ...` (n-ary)
+    Sequence(Vec<UnresolvedPathExpr>),
+    /// Alternative path: `path1 | path2 | ...` (n-ary)
+    Alternative(Vec<UnresolvedPathExpr>),
+    /// Zero or more: `path*`
+    ZeroOrMore(Box<UnresolvedPathExpr>),
+    /// One or more: `path+`
+    OneOrMore(Box<UnresolvedPathExpr>),
+    /// Zero or one: `path?`
+    ZeroOrOne(Box<UnresolvedPathExpr>),
 }
 
 // ============================================================================
@@ -863,8 +857,12 @@ pub enum UnresolvedPattern {
     Exists(Vec<UnresolvedPattern>),
     /// NOT EXISTS clause - filter rows where subquery does NOT match
     NotExists(Vec<UnresolvedPattern>),
-    /// Property path pattern (transitive traversal)
-    PropertyPath(UnresolvedPropertyPathPattern),
+    /// Property path pattern (parsed from `@path` context alias)
+    Path {
+        subject: UnresolvedTerm,
+        path: UnresolvedPathExpr,
+        object: UnresolvedTerm,
+    },
     /// Subquery pattern - runs an inner query and merges results with parent
     ///
     /// Syntax: `["query", { "select": [...], "where": {...} }]`
@@ -1044,7 +1042,7 @@ impl UnresolvedQuery {
                     UnresolvedPattern::Filter(_)
                     | UnresolvedPattern::Bind { .. }
                     | UnresolvedPattern::Values { .. }
-                    | UnresolvedPattern::PropertyPath(_)
+                    | UnresolvedPattern::Path { .. }
                     | UnresolvedPattern::Subquery(_)
                     | UnresolvedPattern::IndexSearch(_)
                     | UnresolvedPattern::VectorSearch(_) => {}

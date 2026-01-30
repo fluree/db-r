@@ -54,7 +54,7 @@ Supported SPARQL features:
 - ORDER BY
 - LIMIT and OFFSET
 - Subqueries
-- Property paths (planned)
+- Property paths (partial: `+`, `*`, `^`, `|`, `/`; see [SPARQL docs](../query/sparql.md#property-paths))
 
 **Specification:** https://www.w3.org/TR/sparql11-query/
 
@@ -394,7 +394,7 @@ None at this time (v1.0)
 ### Planned Features
 
 **Query:**
-- SPARQL property paths
+- SPARQL property paths: remaining operators (`?` zero-or-one, `!` negated set)
 - GeoSPARQL
 - SPARQL 1.1 Federation
 - Full SPARQL UPDATE

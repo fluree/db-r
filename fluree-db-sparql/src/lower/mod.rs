@@ -123,6 +123,8 @@ struct LoweringContext<'a, E> {
     base: Option<Arc<str>>,
     /// Aggregate expression → alias variable mapping (for HAVING)
     aggregate_aliases: Option<HashMap<String, VarId>>,
+    /// Monotonic counter for generating intermediate property-path join variables (`?__pp0`, `?__pp1`, …).
+    pp_counter: u32,
 }
 
 impl<'a, E: IriEncoder> LoweringContext<'a, E> {
@@ -143,6 +145,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             prefixes,
             base,
             aggregate_aliases: None,
+            pp_counter: 0,
         }
     }
 
@@ -1398,42 +1401,192 @@ mod tests {
     }
 
     #[test]
-    fn test_property_path_inverse_not_implemented() {
-        let result = lower_query(
+    fn test_property_path_inverse() {
+        let query = lower_query(
             "PREFIX ex: <http://example.org/>
              SELECT ?child WHERE { ?child ^ex:parent ?parent }",
-        );
+        )
+        .unwrap();
 
-        // Should error because inverse paths aren't supported yet
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, LowerError::NotImplemented { .. }));
+        // Inverse compiles to a Triple with subject/object swapped
+        assert_eq!(query.patterns.len(), 1);
+        if let Pattern::Triple(tp) = &query.patterns[0] {
+            // ^ex:parent swaps: triple is (?parent, ex:parent, ?child)
+            assert!(tp.o.is_var()); // ?child in object position
+            assert!(tp.s.is_var()); // ?parent in subject position
+            assert!(matches!(tp.p, Term::Iri(_)));
+        } else {
+            panic!("Expected Triple pattern for inverse path, got {:?}", query.patterns[0]);
+        }
     }
 
     #[test]
-    fn test_property_path_sequence_not_implemented() {
+    fn test_property_path_inverse_one_or_more() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?x WHERE { ex:b ^ex:knows+ ?x }",
+        )
+        .unwrap();
+
+        // ^p+ → PropertyPathPattern with swapped subject/object
+        // Original: s=ex:b, o=?x  →  pp.subject=?x, pp.object=ex:b
+        assert_eq!(query.patterns.len(), 1);
+        if let Pattern::PropertyPath(pp) = &query.patterns[0] {
+            assert!(matches!(pp.modifier, PathModifier::OneOrMore));
+            assert!(!pp.subject.is_bound()); // ?x (original object)
+            assert!(pp.object.is_bound()); // ex:b (original subject)
+        } else {
+            panic!(
+                "Expected PropertyPath pattern for ^p+, got {:?}",
+                query.patterns[0]
+            );
+        }
+    }
+
+    #[test]
+    fn test_property_path_inverse_zero_or_more() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?x WHERE { ex:b ^ex:knows* ?x }",
+        )
+        .unwrap();
+
+        // ^p* → PropertyPathPattern with swapped subject/object
+        assert_eq!(query.patterns.len(), 1);
+        if let Pattern::PropertyPath(pp) = &query.patterns[0] {
+            assert!(matches!(pp.modifier, PathModifier::ZeroOrMore));
+            assert!(!pp.subject.is_bound()); // ?x (original object)
+            assert!(pp.object.is_bound()); // ex:b (original subject)
+        } else {
+            panic!(
+                "Expected PropertyPath pattern for ^p*, got {:?}",
+                query.patterns[0]
+            );
+        }
+    }
+
+    #[test]
+    fn test_property_path_inverse_transitive_both_constants_error() {
         let result = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT * WHERE { ex:alice ^ex:knows+ ex:bob }",
+        );
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            LowerError::InvalidPropertyPath { .. }
+        ));
+    }
+
+    #[test]
+    fn test_property_path_sequence_two_step() {
+        let query = lower_query(
             "PREFIX ex: <http://example.org/>
              SELECT ?grandchild WHERE { ?s ex:parent/ex:parent ?grandchild }",
-        );
+        )
+        .unwrap();
 
-        // Should error because sequence paths aren't supported yet
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, LowerError::NotImplemented { .. }));
+        // Sequence compiles to 2 triple patterns joined by ?__pp0
+        assert_eq!(query.patterns.len(), 2);
+        assert!(matches!(query.patterns[0], Pattern::Triple(_)));
+        assert!(matches!(query.patterns[1], Pattern::Triple(_)));
+
+        // First triple: ?s → ?__pp0
+        if let Pattern::Triple(tp) = &query.patterns[0] {
+            assert!(tp.s.is_var()); // ?s
+            assert!(matches!(tp.p, Term::Iri(_)));
+            assert!(tp.o.is_var()); // ?__pp0
+        }
+        // Second triple: ?__pp0 → ?grandchild
+        if let Pattern::Triple(tp) = &query.patterns[1] {
+            assert!(tp.s.is_var()); // ?__pp0
+            assert!(matches!(tp.p, Term::Iri(_)));
+            assert!(tp.o.is_var()); // ?grandchild
+        }
     }
 
     #[test]
-    fn test_property_path_alternative_not_implemented() {
-        let result = lower_query(
+    fn test_property_path_alternative() {
+        let query = lower_query(
             "PREFIX ex: <http://example.org/>
              SELECT ?related WHERE { ?s ex:friend|ex:colleague ?related }",
+        )
+        .unwrap();
+
+        // Alternative compiles to Union of triple branches
+        assert_eq!(query.patterns.len(), 1);
+        if let Pattern::Union(branches) = &query.patterns[0] {
+            assert_eq!(branches.len(), 2);
+            assert!(matches!(branches[0][0], Pattern::Triple(_)));
+            assert!(matches!(branches[1][0], Pattern::Triple(_)));
+        } else {
+            panic!("Expected Union pattern for alternative path, got {:?}", query.patterns[0]);
+        }
+    }
+
+    #[test]
+    fn test_property_path_alternative_with_inverse() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?related WHERE { ?s ex:friend|^ex:colleague ?related }",
+        )
+        .unwrap();
+
+        // Alternative with inverse: Union of two branches
+        assert_eq!(query.patterns.len(), 1);
+        if let Pattern::Union(branches) = &query.patterns[0] {
+            assert_eq!(branches.len(), 2);
+            // First branch: forward ex:friend → (?s, ex:friend, ?related)
+            if let Pattern::Triple(tp) = &branches[0][0] {
+                assert!(tp.s.is_var());
+                assert!(tp.o.is_var());
+            } else {
+                panic!("Expected Triple in first branch");
+            }
+            // Second branch: inverse ex:colleague → (?related, ex:colleague, ?s)
+            if let Pattern::Triple(tp) = &branches[1][0] {
+                assert!(tp.s.is_var()); // ?related
+                assert!(tp.o.is_var()); // ?s
+            } else {
+                panic!("Expected Triple in second branch");
+            }
+        } else {
+            panic!("Expected Union pattern, got {:?}", query.patterns[0]);
+        }
+    }
+
+    #[test]
+    fn test_property_path_alternative_three_way() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?related WHERE { ?s ex:a|ex:b|ex:c ?related }",
+        )
+        .unwrap();
+
+        // Three-way alternative flattens to Union with 3 branches
+        assert_eq!(query.patterns.len(), 1);
+        if let Pattern::Union(branches) = &query.patterns[0] {
+            assert_eq!(branches.len(), 3);
+            for branch in branches {
+                assert!(matches!(branch[0], Pattern::Triple(_)));
+            }
+        } else {
+            panic!("Expected Union pattern, got {:?}", query.patterns[0]);
+        }
+    }
+
+    #[test]
+    fn test_property_path_nested_alternative_under_transitive_errors() {
+        let result = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?x WHERE { ?s (ex:a|ex:b)+ ?x }",
         );
 
-        // Should error because alternative paths aren't supported yet
+        // Transitive requires simple predicate, not complex expression
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, LowerError::NotImplemented { .. }));
+        assert!(matches!(err, LowerError::InvalidPropertyPath { .. }));
     }
 
     #[test]
@@ -1918,5 +2071,568 @@ mod tests {
 
         let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
         assert!(has_bind, "Expected Bind pattern with STRUUID function");
+    }
+
+    // =========================================================================
+    // Property Path Sequence Tests
+    // =========================================================================
+
+    #[test]
+    fn test_property_path_sequence_three_step() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?great WHERE { ?s ex:parent/ex:parent/ex:parent ?great }",
+        )
+        .unwrap();
+
+        // 3-step sequence → 3 triple patterns, 2 join variables
+        assert_eq!(query.patterns.len(), 3);
+        for p in &query.patterns {
+            assert!(matches!(p, Pattern::Triple(_)));
+        }
+    }
+
+    #[test]
+    fn test_property_path_sequence_with_inverse() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?name WHERE { ?s ^ex:friend/ex:name ?name }",
+        )
+        .unwrap();
+
+        // 2-step: ^ex:friend then ex:name → 2 triples
+        assert_eq!(query.patterns.len(), 2);
+
+        // First triple: inverse means (?__pp0, ex:friend, ?s)
+        if let Pattern::Triple(tp) = &query.patterns[0] {
+            assert!(tp.s.is_var()); // ?__pp0
+            assert!(matches!(tp.p, Term::Iri(_)));
+            assert!(tp.o.is_var()); // ?s
+        }
+        // Second triple: forward (?__pp0, ex:name, ?name)
+        if let Pattern::Triple(tp) = &query.patterns[1] {
+            assert!(tp.s.is_var()); // ?__pp0
+            assert!(matches!(tp.p, Term::Iri(_)));
+            assert!(tp.o.is_var()); // ?name
+        }
+    }
+
+    #[test]
+    fn test_property_path_sequence_with_rdf_type() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+             SELECT ?type WHERE { ?s ex:knows/rdf:type ?type }",
+        )
+        .unwrap();
+
+        // 2-step: ex:knows then rdf:type
+        assert_eq!(query.patterns.len(), 2);
+        assert!(matches!(query.patterns[0], Pattern::Triple(_)));
+        assert!(matches!(query.patterns[1], Pattern::Triple(_)));
+    }
+
+    #[test]
+    fn test_property_path_sequence_in_optional() {
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?s ?name ?gp WHERE {
+               ?s ex:name ?name .
+               OPTIONAL { ?s ex:parent/ex:parent ?gp }
+             }",
+        )
+        .unwrap();
+
+        // The sequence expands to 2 triple patterns inside the optional.
+        // split_optional_groups splits each triple into its own optional group,
+        // producing: Triple(?s, ex:name, ?name), Optional([triple1]), Optional([triple2])
+        assert_eq!(query.patterns.len(), 3);
+        assert!(matches!(query.patterns[0], Pattern::Triple(_)));
+        assert!(matches!(query.patterns[1], Pattern::Optional(_)));
+        assert!(matches!(query.patterns[2], Pattern::Optional(_)));
+    }
+
+    #[test]
+    fn test_property_path_sequence_transitive_step_errors() {
+        // Transitive modifier inside a sequence step should error
+        let result = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?x WHERE { ?s ex:parent+/ex:name ?x }",
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, LowerError::InvalidPropertyPath { .. }));
+    }
+
+    #[test]
+    fn test_property_path_sequence_with_alternative_step_distributes() {
+        // (ex:a|ex:b)/ex:name → Union of two two-step chains
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?x WHERE { ?s (ex:a|ex:b)/ex:name ?x }",
+        )
+        .unwrap();
+
+        assert_eq!(query.patterns.len(), 1);
+        if let Pattern::Union(branches) = &query.patterns[0] {
+            assert_eq!(branches.len(), 2);
+
+            // Each branch should have 2 triple patterns
+            for (i, branch) in branches.iter().enumerate() {
+                assert_eq!(
+                    branch.len(),
+                    2,
+                    "Branch {} should have 2 triple patterns, got {}",
+                    i,
+                    branch.len()
+                );
+                assert!(
+                    matches!(branch[0], Pattern::Triple(_)),
+                    "Branch {} pattern 0 should be Triple",
+                    i
+                );
+                assert!(
+                    matches!(branch[1], Pattern::Triple(_)),
+                    "Branch {} pattern 1 should be Triple",
+                    i
+                );
+            }
+        } else {
+            panic!("Expected Pattern::Union, got {:?}", query.patterns[0]);
+        }
+    }
+
+    // =========================================================================
+    // Sequence-in-Alternative Property Path Tests
+    // =========================================================================
+
+    #[test]
+    fn test_property_path_alternative_with_sequence_branches() {
+        // ex:friend/ex:name | ex:colleague/ex:name
+        // Each branch is a two-step sequence → Union of two triple-chains
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?name WHERE { ?s (ex:friend/ex:name)|(ex:colleague/ex:name) ?name }",
+        )
+        .unwrap();
+
+        assert_eq!(query.patterns.len(), 1);
+        if let Pattern::Union(branches) = &query.patterns[0] {
+            assert_eq!(branches.len(), 2);
+
+            // Each branch should have 2 triple patterns (two-step chain)
+            for (i, branch) in branches.iter().enumerate() {
+                assert_eq!(
+                    branch.len(),
+                    2,
+                    "Branch {} should have 2 triple patterns, got {}",
+                    i,
+                    branch.len()
+                );
+                assert!(
+                    matches!(branch[0], Pattern::Triple(_)),
+                    "Branch {} pattern 0 should be Triple",
+                    i
+                );
+                assert!(
+                    matches!(branch[1], Pattern::Triple(_)),
+                    "Branch {} pattern 1 should be Triple",
+                    i
+                );
+            }
+        } else {
+            panic!(
+                "Expected Union pattern, got {:?}",
+                query.patterns[0]
+            );
+        }
+    }
+
+    #[test]
+    fn test_property_path_alternative_mixed_simple_and_sequence() {
+        // ex:name | ex:friend/ex:name — one simple IRI, one sequence
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?name WHERE { ?s ex:name|(ex:friend/ex:name) ?name }",
+        )
+        .unwrap();
+
+        assert_eq!(query.patterns.len(), 1);
+        if let Pattern::Union(branches) = &query.patterns[0] {
+            assert_eq!(branches.len(), 2);
+            // First branch: single triple (simple IRI)
+            assert_eq!(branches[0].len(), 1);
+            assert!(matches!(branches[0][0], Pattern::Triple(_)));
+            // Second branch: two triples (sequence chain)
+            assert_eq!(branches[1].len(), 2);
+            assert!(matches!(branches[1][0], Pattern::Triple(_)));
+            assert!(matches!(branches[1][1], Pattern::Triple(_)));
+        } else {
+            panic!(
+                "Expected Union pattern, got {:?}",
+                query.patterns[0]
+            );
+        }
+    }
+
+    #[test]
+    fn test_property_path_alternative_three_way_with_sequence() {
+        // ex:name | ex:friend/ex:name | ^ex:colleague
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?val WHERE { ?s ex:name|(ex:friend/ex:name)|^ex:colleague ?val }",
+        )
+        .unwrap();
+
+        assert_eq!(query.patterns.len(), 1);
+        if let Pattern::Union(branches) = &query.patterns[0] {
+            assert_eq!(branches.len(), 3);
+            // Branch 0: simple IRI → 1 triple
+            assert_eq!(branches[0].len(), 1);
+            // Branch 1: sequence → 2 triples
+            assert_eq!(branches[1].len(), 2);
+            // Branch 2: inverse → 1 triple
+            assert_eq!(branches[2].len(), 1);
+        } else {
+            panic!(
+                "Expected Union pattern, got {:?}",
+                query.patterns[0]
+            );
+        }
+    }
+
+    // =========================================================================
+    // Alternative-in-Sequence Distribution Tests
+    // =========================================================================
+
+    #[test]
+    fn test_property_path_sequence_middle_alternative() {
+        // ex:a/(ex:b|ex:c)/ex:d → Union of 2 three-step chains
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?x WHERE { ?s ex:a/(ex:b|ex:c)/ex:d ?x }",
+        )
+        .unwrap();
+
+        assert_eq!(query.patterns.len(), 1);
+        if let Pattern::Union(branches) = &query.patterns[0] {
+            assert_eq!(branches.len(), 2);
+
+            // Each branch should be a 3-step chain (3 triples)
+            for (i, branch) in branches.iter().enumerate() {
+                assert_eq!(
+                    branch.len(),
+                    3,
+                    "Branch {} should have 3 triple patterns, got {}",
+                    i,
+                    branch.len()
+                );
+                for (j, pat) in branch.iter().enumerate() {
+                    assert!(
+                        matches!(pat, Pattern::Triple(_)),
+                        "Branch {} pattern {} should be Triple",
+                        i,
+                        j
+                    );
+                }
+            }
+        } else {
+            panic!("Expected Pattern::Union, got {:?}", query.patterns[0]);
+        }
+    }
+
+    #[test]
+    fn test_property_path_sequence_multiple_alternatives() {
+        // (ex:a|ex:b)/(ex:c|ex:d) → Union of 4 two-step chains
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?x WHERE { ?s (ex:a|ex:b)/(ex:c|ex:d) ?x }",
+        )
+        .unwrap();
+
+        assert_eq!(query.patterns.len(), 1);
+        if let Pattern::Union(branches) = &query.patterns[0] {
+            assert_eq!(branches.len(), 4);
+
+            for (i, branch) in branches.iter().enumerate() {
+                assert_eq!(
+                    branch.len(),
+                    2,
+                    "Branch {} should have 2 triple patterns, got {}",
+                    i,
+                    branch.len()
+                );
+            }
+        } else {
+            panic!("Expected Pattern::Union, got {:?}", query.patterns[0]);
+        }
+    }
+
+    #[test]
+    fn test_property_path_sequence_alternative_with_inverse() {
+        // (ex:a|^ex:b)/ex:c → Union of 2 chains, one with inverse
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?x WHERE { ?s (ex:a|^ex:b)/ex:c ?x }",
+        )
+        .unwrap();
+
+        assert_eq!(query.patterns.len(), 1);
+        if let Pattern::Union(branches) = &query.patterns[0] {
+            assert_eq!(branches.len(), 2);
+
+            // Both branches should have 2 triples
+            for (i, branch) in branches.iter().enumerate() {
+                assert_eq!(
+                    branch.len(),
+                    2,
+                    "Branch {} should have 2 triple patterns",
+                    i
+                );
+            }
+
+            // Branch 0 first triple: forward — subject is a var (the ?s)
+            if let Pattern::Triple(t0) = &branches[0][0] {
+                assert!(matches!(&t0.s, Term::Var(_)), "Branch 0 first triple subject should be a var");
+                // Predicate should be ex:a
+                assert!(matches!(&t0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/a"));
+            }
+
+            // Branch 1 first triple: inverse — object is the ?s var (swapped)
+            if let Pattern::Triple(t1) = &branches[1][0] {
+                assert!(matches!(&t1.o, Term::Var(_)), "Branch 1 first triple object should be a var (inverse)");
+                // Predicate should be ex:b
+                assert!(matches!(&t1.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/b"));
+            }
+        } else {
+            panic!("Expected Pattern::Union, got {:?}", query.patterns[0]);
+        }
+    }
+
+    #[test]
+    fn test_property_path_sequence_expansion_limit() {
+        // Build (a0|b0)/(a1|b1)/(a2|b2)/(a3|b3)/(a4|b4)/(a5|b5)/(a6|b6)
+        // 2^7 = 128 > 64 limit
+        let predicates: String = (0..7)
+            .map(|i| format!("(ex:a{}|ex:b{})", i, i))
+            .collect::<Vec<_>>()
+            .join("/");
+        let sparql = format!(
+            "PREFIX ex: <http://example.org/>\nSELECT ?x WHERE {{ ?s {} ?x }}",
+            predicates
+        );
+        let result = lower_query(&sparql);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, LowerError::InvalidPropertyPath { .. }));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("expands to 128") && msg.contains("limit 64"),
+            "Unexpected error: {}",
+            msg,
+        );
+    }
+
+    // ======================================================================
+    // Inverse of complex paths
+    // ======================================================================
+
+    #[test]
+    fn test_property_path_inverse_of_sequence() {
+        // ^(ex:a/ex:b) → 2 triples with predicates reversed (b, a),
+        // each with swapped s/o (inverse)
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?x WHERE { ?s ^(ex:a/ex:b) ?x }",
+        )
+        .unwrap();
+
+        // Rewrite: Sequence([^b, ^a]) → 2 triple patterns
+        assert_eq!(query.patterns.len(), 2);
+        assert!(matches!(query.patterns[0], Pattern::Triple(_)));
+        assert!(matches!(query.patterns[1], Pattern::Triple(_)));
+
+        // Predicates in reversed order: b, a
+        if let Pattern::Triple(tp0) = &query.patterns[0] {
+            assert!(
+                matches!(&tp0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/b"),
+                "First predicate should be ex:b (reversed), got {:?}",
+                tp0.p
+            );
+        }
+        if let Pattern::Triple(tp1) = &query.patterns[1] {
+            assert!(
+                matches!(&tp1.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/a"),
+                "Second predicate should be ex:a (reversed), got {:?}",
+                tp1.p
+            );
+        }
+    }
+
+    #[test]
+    fn test_property_path_inverse_of_alternative() {
+        // ^(ex:a|ex:b) → Union of 2 branches, each with swapped s/o
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?x WHERE { ?s ^(ex:a|ex:b) ?x }",
+        )
+        .unwrap();
+
+        assert_eq!(query.patterns.len(), 1);
+        if let Pattern::Union(branches) = &query.patterns[0] {
+            assert_eq!(branches.len(), 2);
+            for (i, branch) in branches.iter().enumerate() {
+                assert_eq!(branch.len(), 1, "Branch {} should have 1 triple", i);
+                assert!(
+                    matches!(&branch[0], Pattern::Triple(_)),
+                    "Branch {} should be a Triple",
+                    i
+                );
+            }
+        } else {
+            panic!("Expected Union, got {:?}", query.patterns[0]);
+        }
+    }
+
+    #[test]
+    fn test_property_path_inverse_of_three_step_sequence() {
+        // ^(ex:a/ex:b/ex:c) → 3 triples, predicates reversed (c, b, a)
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?x WHERE { ?s ^(ex:a/ex:b/ex:c) ?x }",
+        )
+        .unwrap();
+
+        assert_eq!(query.patterns.len(), 3);
+        let expected_preds = [
+            "http://example.org/c",
+            "http://example.org/b",
+            "http://example.org/a",
+        ];
+        for (i, exp) in expected_preds.iter().enumerate() {
+            if let Pattern::Triple(tp) = &query.patterns[i] {
+                assert!(
+                    matches!(&tp.p, Term::Iri(iri) if iri.as_ref() == *exp),
+                    "Step {}: expected predicate {}, got {:?}",
+                    i,
+                    exp,
+                    tp.p
+                );
+            } else {
+                panic!("Step {}: expected Triple, got {:?}", i, query.patterns[i]);
+            }
+        }
+    }
+
+    #[test]
+    fn test_property_path_inverse_of_sequence_with_alternative() {
+        // ^(ex:a/(ex:b|ex:c)) →
+        //   Rewrite: Sequence([Alternative([^b, ^c]), ^a])
+        //   Distribution: Union of 2 two-step chains
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?x WHERE { ?s ^(ex:a/(ex:b|ex:c)) ?x }",
+        )
+        .unwrap();
+
+        assert_eq!(query.patterns.len(), 1);
+        if let Pattern::Union(branches) = &query.patterns[0] {
+            assert_eq!(branches.len(), 2);
+            for (i, branch) in branches.iter().enumerate() {
+                assert_eq!(
+                    branch.len(),
+                    2,
+                    "Branch {} should have 2 triples",
+                    i
+                );
+            }
+        } else {
+            panic!("Expected Union, got {:?}", query.patterns[0]);
+        }
+    }
+
+    #[test]
+    fn test_property_path_double_inverse_in_sequence() {
+        // ^(^ex:a/ex:b) → Sequence([^b, a])
+        // The ^ex:a step: Inverse(Inverse(a)) cancels to a (forward)
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?x WHERE { ?s ^(^ex:a/ex:b) ?x }",
+        )
+        .unwrap();
+
+        assert_eq!(query.patterns.len(), 2);
+        // Step 0: ^b (reversed, inverted) — inverse triple
+        if let Pattern::Triple(tp0) = &query.patterns[0] {
+            assert!(
+                matches!(&tp0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/b"),
+                "First predicate should be ex:b, got {:?}",
+                tp0.p
+            );
+        }
+        // Step 1: a (^(^a) cancelled to forward a)
+        if let Pattern::Triple(tp1) = &query.patterns[1] {
+            assert!(
+                matches!(&tp1.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/a"),
+                "Second predicate should be ex:a, got {:?}",
+                tp1.p
+            );
+        }
+    }
+
+    #[test]
+    fn test_property_path_double_inverse_in_alternative() {
+        // ^(ex:a|^ex:b) → Alternative([^a, b])
+        // The ^ex:b branch: Inverse(Inverse(b)) cancels to b (forward)
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?x WHERE { ?s ^(ex:a|^ex:b) ?x }",
+        )
+        .unwrap();
+
+        assert_eq!(query.patterns.len(), 1);
+        if let Pattern::Union(branches) = &query.patterns[0] {
+            assert_eq!(branches.len(), 2);
+            // Branch 0: ^a — inverse triple (?x, a, ?s)
+            if let Pattern::Triple(tp0) = &branches[0][0] {
+                assert!(
+                    matches!(&tp0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/a"),
+                    "Branch 0 predicate should be ex:a, got {:?}",
+                    tp0.p
+                );
+                // Inverse: subject should be ?x (the object var), object should be ?s
+                // (swapped compared to forward)
+            }
+            // Branch 1: b — forward triple (?s, b, ?x)
+            if let Pattern::Triple(tp1) = &branches[1][0] {
+                assert!(
+                    matches!(&tp1.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/b"),
+                    "Branch 1 predicate should be ex:b, got {:?}",
+                    tp1.p
+                );
+                // Forward: subject should be ?s, object should be ?x (not swapped)
+            }
+        } else {
+            panic!("Expected Union, got {:?}", query.patterns[0]);
+        }
+    }
+
+    #[test]
+    fn test_existing_inverse_transitive_unchanged() {
+        // ^ex:knows+ should still produce PropertyPathPattern (no regression)
+        let query = lower_query(
+            "PREFIX ex: <http://example.org/>
+             SELECT ?x WHERE { ex:b ^ex:knows+ ?x }",
+        )
+        .unwrap();
+
+        assert_eq!(query.patterns.len(), 1);
+        assert!(
+            matches!(query.patterns[0], Pattern::PropertyPath(_)),
+            "Expected PropertyPath, got {:?}",
+            query.patterns[0]
+        );
     }
 }

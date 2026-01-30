@@ -4,12 +4,11 @@
 //! (with Sids and VarIds) using an IriEncoder.
 
 use super::ast::{
-    LiteralValue, PathModifier as AstPathModifier, UnresolvedAggregateFn, UnresolvedAggregateSpec,
-    UnresolvedConstructTemplate, UnresolvedFilterExpr, UnresolvedGraphSelectSpec,
-    UnresolvedNestedSelectSpec, UnresolvedOptions, UnresolvedPattern,
-    UnresolvedPropertyPathPattern, UnresolvedQuery, UnresolvedRoot, UnresolvedSelectionSpec,
-    UnresolvedSortDirection, UnresolvedSortSpec, UnresolvedTerm, UnresolvedTriplePattern,
-    UnresolvedValue,
+    LiteralValue, UnresolvedAggregateFn, UnresolvedAggregateSpec, UnresolvedConstructTemplate,
+    UnresolvedFilterExpr, UnresolvedGraphSelectSpec, UnresolvedNestedSelectSpec,
+    UnresolvedOptions, UnresolvedPathExpr, UnresolvedPattern, UnresolvedQuery, UnresolvedRoot,
+    UnresolvedSelectionSpec, UnresolvedSortDirection, UnresolvedSortSpec, UnresolvedTerm,
+    UnresolvedTriplePattern, UnresolvedValue,
 };
 use super::encode::IriEncoder;
 use super::error::{ParseError, Result};
@@ -29,6 +28,7 @@ use crate::sort::{SortDirection, SortSpec};
 use crate::var_registry::{VarId, VarRegistry};
 use fluree_db_core::{FlakeValue, Sid};
 use fluree_graph_json_ld::ParsedContext;
+use std::sync::Arc;
 
 /// Select mode determines result shape
 ///
@@ -202,6 +202,7 @@ pub fn lower_query<E: IriEncoder>(
     select_mode: SelectMode,
 ) -> Result<ParsedQuery> {
     let mut query = ParsedQuery::with_select_mode(ast.context, select_mode);
+    let mut pp_counter: u32 = 0;
 
     // Copy original context JSON for CONSTRUCT output
     query.orig_context = ast.orig_context;
@@ -214,8 +215,9 @@ pub fn lower_query<E: IriEncoder>(
 
     // Lower patterns
     for unresolved_pattern in ast.patterns {
-        let pattern = lower_unresolved_pattern(&unresolved_pattern, encoder, vars)?;
-        query.patterns.push(pattern);
+        let patterns =
+            lower_unresolved_pattern(&unresolved_pattern, encoder, vars, &mut pp_counter)?;
+        query.patterns.extend(patterns);
     }
 
     // Lower options
@@ -234,51 +236,46 @@ pub fn lower_query<E: IriEncoder>(
     Ok(query)
 }
 
-/// Lower an unresolved pattern to a resolved Pattern
-/// Lower an unresolved pattern to a resolved Pattern
+/// Lower an unresolved pattern to resolved Pattern(s).
 ///
 /// This converts string IRIs to encoded Sids using the provided encoder.
+/// Returns a `Vec<Pattern>` because some patterns (e.g., sequence property paths)
+/// expand into multiple triple patterns joined by intermediate variables.
+///
 /// Also used by fluree-db-transact for lowering WHERE clause patterns.
 pub fn lower_unresolved_pattern<E: IriEncoder>(
     pattern: &UnresolvedPattern,
     encoder: &E,
     vars: &mut VarRegistry,
-) -> Result<Pattern> {
+    pp_counter: &mut u32,
+) -> Result<Vec<Pattern>> {
     match pattern {
         UnresolvedPattern::Triple(tp) => {
             let lowered = lower_triple_pattern(tp, encoder, vars)?;
-            Ok(Pattern::Triple(lowered))
+            Ok(vec![Pattern::Triple(lowered)])
         }
         UnresolvedPattern::Filter(expr) => {
             let lowered = lower_filter_expr(expr, vars)?;
-            Ok(Pattern::Filter(lowered))
+            Ok(vec![Pattern::Filter(lowered)])
         }
         UnresolvedPattern::Optional(inner) => {
-            let lowered: Result<Vec<Pattern>> = inner
-                .iter()
-                .map(|p| lower_unresolved_pattern(p, encoder, vars))
-                .collect();
-            Ok(Pattern::Optional(lowered?))
+            let lowered = lower_unresolved_patterns(inner, encoder, vars, pp_counter)?;
+            Ok(vec![Pattern::Optional(lowered)])
         }
         UnresolvedPattern::Union(branches) => {
             let lowered_branches: Result<Vec<Vec<Pattern>>> = branches
                 .iter()
-                .map(|branch| {
-                    branch
-                        .iter()
-                        .map(|p| lower_unresolved_pattern(p, encoder, vars))
-                        .collect()
-                })
+                .map(|branch| lower_unresolved_patterns(branch, encoder, vars, pp_counter))
                 .collect();
-            Ok(Pattern::Union(lowered_branches?))
+            Ok(vec![Pattern::Union(lowered_branches?)])
         }
         UnresolvedPattern::Bind { var, expr } => {
             let var_id = vars.get_or_insert(var);
             let lowered_expr = lower_filter_expr(expr, vars)?;
-            Ok(Pattern::Bind {
+            Ok(vec![Pattern::Bind {
                 var: var_id,
                 expr: lowered_expr,
-            })
+            }])
         }
         UnresolvedPattern::Values { vars: v, rows } => {
             let var_ids: Vec<VarId> = v.iter().map(|name| vars.get_or_insert(name)).collect();
@@ -290,39 +287,31 @@ pub fn lower_unresolved_pattern<E: IriEncoder>(
                         .collect::<Result<Vec<_>>>()
                 })
                 .collect();
-            Ok(Pattern::Values {
+            Ok(vec![Pattern::Values {
                 vars: var_ids,
                 rows: rows?,
-            })
+            }])
         }
         UnresolvedPattern::Minus(inner) => {
-            let lowered: Result<Vec<Pattern>> = inner
-                .iter()
-                .map(|p| lower_unresolved_pattern(p, encoder, vars))
-                .collect();
-            Ok(Pattern::Minus(lowered?))
+            let lowered = lower_unresolved_patterns(inner, encoder, vars, pp_counter)?;
+            Ok(vec![Pattern::Minus(lowered)])
         }
         UnresolvedPattern::Exists(inner) => {
-            let lowered: Result<Vec<Pattern>> = inner
-                .iter()
-                .map(|p| lower_unresolved_pattern(p, encoder, vars))
-                .collect();
-            Ok(Pattern::Exists(lowered?))
+            let lowered = lower_unresolved_patterns(inner, encoder, vars, pp_counter)?;
+            Ok(vec![Pattern::Exists(lowered)])
         }
         UnresolvedPattern::NotExists(inner) => {
-            let lowered: Result<Vec<Pattern>> = inner
-                .iter()
-                .map(|p| lower_unresolved_pattern(p, encoder, vars))
-                .collect();
-            Ok(Pattern::NotExists(lowered?))
+            let lowered = lower_unresolved_patterns(inner, encoder, vars, pp_counter)?;
+            Ok(vec![Pattern::NotExists(lowered)])
         }
-        UnresolvedPattern::PropertyPath(pp) => {
-            let lowered = lower_property_path(pp, encoder, vars)?;
-            Ok(Pattern::PropertyPath(lowered))
-        }
+        UnresolvedPattern::Path {
+            subject,
+            path,
+            object,
+        } => lower_path_to_patterns(subject, path, object, encoder, vars, pp_counter),
         UnresolvedPattern::Subquery(subquery) => {
-            let lowered = lower_subquery(subquery, encoder, vars)?;
-            Ok(Pattern::Subquery(lowered))
+            let lowered = lower_subquery(subquery, encoder, vars, pp_counter)?;
+            Ok(vec![Pattern::Subquery(lowered)])
         }
         UnresolvedPattern::IndexSearch(isp) => {
             // Lower index search (BM25 / virtual graph search) pattern.
@@ -346,7 +335,7 @@ pub fn lower_unresolved_pattern<E: IriEncoder>(
             pat.sync = isp.sync;
             pat.timeout = isp.timeout;
 
-            Ok(Pattern::IndexSearch(pat))
+            Ok(vec![Pattern::IndexSearch(pat)])
         }
         UnresolvedPattern::VectorSearch(vsp) => {
             // Lower vector search (similarity search) pattern.
@@ -384,7 +373,7 @@ pub fn lower_unresolved_pattern<E: IriEncoder>(
                 pat = pat.with_timeout(t);
             }
 
-            Ok(Pattern::VectorSearch(pat))
+            Ok(vec![Pattern::VectorSearch(pat)])
         }
         UnresolvedPattern::Graph { name, patterns } => {
             // Lower GRAPH pattern - scope inner patterns to a named graph
@@ -400,17 +389,32 @@ pub fn lower_unresolved_pattern<E: IriEncoder>(
                 GraphName::Iri(Arc::from(name.as_ref()))
             };
 
-            let lowered_patterns: Result<Vec<Pattern>> = patterns
-                .iter()
-                .map(|p| lower_unresolved_pattern(p, encoder, vars))
-                .collect();
+            let lowered_patterns =
+                lower_unresolved_patterns(patterns, encoder, vars, pp_counter)?;
 
-            Ok(Pattern::Graph {
+            Ok(vec![Pattern::Graph {
                 name: ir_name,
-                patterns: lowered_patterns?,
-            })
+                patterns: lowered_patterns,
+            }])
         }
     }
+}
+
+/// Lower a slice of unresolved patterns to a flat `Vec<Pattern>`.
+///
+/// Handles the flattening needed when individual patterns may expand into
+/// multiple resolved patterns (e.g., sequence property paths).
+pub fn lower_unresolved_patterns<E: IriEncoder>(
+    patterns: &[UnresolvedPattern],
+    encoder: &E,
+    vars: &mut VarRegistry,
+    pp_counter: &mut u32,
+) -> Result<Vec<Pattern>> {
+    let mut result = Vec::new();
+    for p in patterns {
+        result.extend(lower_unresolved_pattern(p, encoder, vars, pp_counter)?);
+    }
+    Ok(result)
 }
 
 fn lower_values_cell<E: IriEncoder>(cell: &UnresolvedValue, encoder: &E) -> Result<Binding> {
@@ -550,55 +554,476 @@ fn lower_triple_pattern<E: IriEncoder>(
     Ok(tp)
 }
 
-/// Lower a path modifier from AST to IR
-fn lower_path_modifier(modifier: AstPathModifier) -> PathModifier {
-    match modifier {
-        AstPathModifier::OneOrMore => PathModifier::OneOrMore,
-        AstPathModifier::ZeroOrMore => PathModifier::ZeroOrMore,
-    }
-}
-
-/// Lower an unresolved property path pattern to a resolved PropertyPathPattern
+/// Lower a property path pattern (from `@path` alias) to resolved Pattern(s).
 ///
-/// Performs validation:
-/// - Rejects both-constant patterns (both subject and object are IRIs)
-/// - Rejects literal values in subject or object positions
-fn lower_property_path<E: IriEncoder>(
-    pattern: &UnresolvedPropertyPathPattern,
+/// Different path expressions compile to different pattern types:
+/// - `p+` / `p*` → `Pattern::PropertyPath` (existing transitive operator)
+/// - `^p` → `Pattern::Triple` with subject/object swapped
+/// - `a|b|...` → `Pattern::Union` of triple branches (bag semantics)
+/// - `a/b/c` → chain of `Pattern::Triple` joined by `?__pp{n}` variables
+/// - `^p` inside `|` and `/` steps is supported
+///
+/// Validates subject/object are not literals.
+fn lower_path_to_patterns<E: IriEncoder>(
+    subject: &UnresolvedTerm,
+    path: &UnresolvedPathExpr,
+    object: &UnresolvedTerm,
     encoder: &E,
     vars: &mut VarRegistry,
-) -> Result<PropertyPathPattern> {
-    // Lower subject
-    let subject = lower_term(&pattern.subject, encoder, vars)?;
-
-    // Validate subject is not a literal
-    if matches!(subject, Term::Value(_)) {
+    pp_counter: &mut u32,
+) -> Result<Vec<Pattern>> {
+    let s = lower_term(subject, encoder, vars)?;
+    if matches!(s, Term::Value(_)) {
         return Err(ParseError::InvalidWhere(
             "Property path subject cannot be a literal value".to_string(),
         ));
     }
 
-    // Lower predicate (always an IRI)
-    let predicate = encoder
-        .encode_iri(&pattern.predicate_iri)
-        .ok_or_else(|| ParseError::UnknownNamespace(pattern.predicate_iri.to_string()))?;
-
-    // Lower object
-    let object = lower_term(&pattern.object, encoder, vars)?;
-
-    // Validate object is not a literal
-    if matches!(object, Term::Value(_)) {
+    let o = lower_term(object, encoder, vars)?;
+    if matches!(o, Term::Value(_)) {
         return Err(ParseError::InvalidWhere(
             "Property path object cannot be a literal value".to_string(),
         ));
     }
 
-    // Note: we allow both-constant property paths (reachability check).
-    // This is used by Clojure integration tests and is safe (returns either 0 or 1 empty row).
+    // Rewrite complex inverses (^(a/b), ^(a|b), ^(^x)) before dispatching.
+    let rewritten;
+    let effective_path = if let Some(r) = rewrite_inverse_of_complex(path) {
+        rewritten = r;
+        &rewritten
+    } else {
+        path
+    };
 
-    let modifier = lower_path_modifier(pattern.modifier);
+    match effective_path {
+        // Transitive: keep existing PropertyPath operator
+        UnresolvedPathExpr::OneOrMore(inner) | UnresolvedPathExpr::ZeroOrMore(inner) => {
+            let iri = expect_simple_iri(inner)?;
+            let modifier = match path {
+                UnresolvedPathExpr::OneOrMore(_) => PathModifier::OneOrMore,
+                _ => PathModifier::ZeroOrMore,
+            };
+            let predicate = encoder
+                .encode_iri(iri)
+                .ok_or_else(|| ParseError::UnknownNamespace(iri.to_string()))?;
+            Ok(vec![Pattern::PropertyPath(PropertyPathPattern::new(
+                s, predicate, modifier, o,
+            ))])
+        }
 
-    Ok(PropertyPathPattern::new(subject, predicate, modifier, object))
+        // Inverse: ^path
+        UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
+            // Inverse-transitive: ^p+ or ^p* → PropertyPathPattern with swapped s/o
+            UnresolvedPathExpr::OneOrMore(tp_inner)
+            | UnresolvedPathExpr::ZeroOrMore(tp_inner) => {
+                let iri = expect_simple_iri(tp_inner)?;
+                let modifier = match inner.as_ref() {
+                    UnresolvedPathExpr::OneOrMore(_) => PathModifier::OneOrMore,
+                    _ => PathModifier::ZeroOrMore,
+                };
+                let predicate = encoder
+                    .encode_iri(iri)
+                    .ok_or_else(|| ParseError::UnknownNamespace(iri.to_string()))?;
+                // Swap subject/object for inverse traversal
+                Ok(vec![Pattern::PropertyPath(PropertyPathPattern::new(
+                    o, predicate, modifier, s,
+                ))])
+            }
+            // Simple inverse: ^p → Triple with s/o swapped
+            _ => {
+                let iri = expect_simple_iri(inner)?;
+                Ok(vec![Pattern::Triple(TriplePattern::new(
+                    o,
+                    Term::Iri(iri.clone()),
+                    s,
+                ))])
+            }
+        },
+
+        // Alternative: compile to Union of triple branches (bag semantics)
+        UnresolvedPathExpr::Alternative(alts) => {
+            let branches: Vec<Vec<Pattern>> = alts
+                .iter()
+                .map(|alt| lower_alternative_branch(alt, &s, &o, vars, pp_counter))
+                .collect::<Result<_>>()?;
+            Ok(vec![Pattern::Union(branches)])
+        }
+
+        // Sequence: compile to chain of triple patterns with join variables
+        UnresolvedPathExpr::Sequence(steps) => {
+            lower_sequence_chain(&s, steps, &o, vars, pp_counter)
+        }
+
+        // Unsupported operators
+        UnresolvedPathExpr::Iri(_) => Err(ParseError::InvalidWhere(
+            "@path with plain IRI (no modifier) is not a valid property path; \
+             use a regular predicate or add + or *"
+                .to_string(),
+        )),
+        UnresolvedPathExpr::ZeroOrOne(_) => Err(ParseError::InvalidWhere(
+            "Optional (?) property paths are parsed but not yet supported for execution"
+                .to_string(),
+        )),
+    }
+}
+
+/// Recursively rewrite `Inverse(Sequence/Alternative)` so that `Inverse` only
+/// appears directly around leaf IRIs. Also cancels double-inverse (`^(^x)` → `x`).
+///
+/// Rewrite rules (applied recursively):
+///   `^(^x)`    → `normalize(x)` — double-inverse cancellation
+///   `^(a/b/c)` → `(^c)/(^b)/(^a)` — reverse sequence, invert each step
+///   `^(a|b|c)` → `(^a)|(^b)|(^c)` — distribute inverse into each branch
+///
+/// Returns `Some(rewritten)` if the input was a complex inverse that was
+/// transformed, `None` if no rewrite was needed (simple/transitive inverse).
+fn rewrite_inverse_of_complex(path: &UnresolvedPathExpr) -> Option<UnresolvedPathExpr> {
+    match path {
+        UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
+            // Double inverse: ^(^x) → x (then normalize in case x is also complex)
+            UnresolvedPathExpr::Inverse(inner_inner) => {
+                let cancelled = inner_inner.as_ref().clone();
+                Some(rewrite_inverse_of_complex(&cancelled).unwrap_or(cancelled))
+            }
+            // ^(a/b/c) → (^c)/(^b)/(^a)
+            UnresolvedPathExpr::Sequence(steps) => {
+                Some(UnresolvedPathExpr::Sequence(
+                    steps
+                        .iter()
+                        .rev()
+                        .map(|step| {
+                            let inv =
+                                UnresolvedPathExpr::Inverse(Box::new(step.clone()));
+                            rewrite_inverse_of_complex(&inv).unwrap_or(inv)
+                        })
+                        .collect(),
+                ))
+            }
+            // ^(a|b|c) → (^a)|(^b)|(^c)
+            UnresolvedPathExpr::Alternative(branches) => {
+                Some(UnresolvedPathExpr::Alternative(
+                    branches
+                        .iter()
+                        .map(|branch| {
+                            let inv =
+                                UnresolvedPathExpr::Inverse(Box::new(branch.clone()));
+                            rewrite_inverse_of_complex(&inv).unwrap_or(inv)
+                        })
+                        .collect(),
+                ))
+            }
+            // Simple inverse (^p), transitive (^p+, ^p*), etc. — existing handling
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Maximum number of expanded chains when distributing alternatives in a
+/// sequence path. Prevents combinatorial explosion from expressions like
+/// `(a|b)/(c|d)/(e|f)/...`.
+const MAX_SEQUENCE_EXPANSION: usize = 64;
+
+/// Lower a sequence (/) property path into a chain of triple patterns.
+///
+/// Each step produces a triple pattern, with adjacent steps joined by generated
+/// intermediate variables (`?__pp0`, `?__pp1`, ...).
+///
+/// Example: `Sequence([a, b, c])` with subject `?s` and object `?o`:
+/// ```text
+///   Triple(?s,     a, ?__pp0)
+///   Triple(?__pp0, b, ?__pp1)
+///   Triple(?__pp1, c, ?o)
+/// ```
+///
+/// Steps can be forward (`Iri(p)`) or inverse (`Inverse(Iri(p))`).
+/// Alternative steps (`(a|b)`) are distributed into a `Union` of simple chains.
+/// All other step types are rejected with a clear error.
+fn lower_sequence_chain(
+    s: &Term,
+    steps: &[UnresolvedPathExpr],
+    o: &Term,
+    vars: &mut VarRegistry,
+    pp_counter: &mut u32,
+) -> Result<Vec<Pattern>> {
+    debug_assert!(
+        !steps.is_empty(),
+        "BUG: parser produced empty Sequence — this should never happen"
+    );
+
+    // Degenerate single-step sequence (parser should collapse, but guard)
+    if steps.len() == 1 {
+        return lower_sequence_step(&steps[0], s, o);
+    }
+
+    // Build step choices: each step → vec of simple alternatives.
+    // Non-alternative steps → single-element vec. Alternative steps → branches.
+    let mut step_choices: Vec<Vec<&UnresolvedPathExpr>> = Vec::with_capacity(steps.len());
+    let mut has_alt = false;
+
+    for step in steps {
+        match step {
+            UnresolvedPathExpr::Alternative(branches) => {
+                has_alt = true;
+                for branch in branches {
+                    validate_simple_step(branch)?;
+                }
+                step_choices.push(branches.iter().collect());
+            }
+            _ => {
+                step_choices.push(vec![step]);
+            }
+        }
+    }
+
+    if has_alt {
+        return lower_distributed_sequence(s, &step_choices, o, vars, pp_counter);
+    }
+
+    // Fast path: no alternatives — generate simple triple chain
+    let mut patterns = Vec::with_capacity(steps.len());
+    let mut prev = s.clone();
+
+    for (i, step) in steps.iter().enumerate() {
+        let is_last = i == steps.len() - 1;
+        let next = if is_last {
+            o.clone()
+        } else {
+            let var_name = format!("?__pp{}", *pp_counter);
+            *pp_counter += 1;
+            Term::Var(vars.get_or_insert(&var_name))
+        };
+
+        let triple = lower_sequence_step_triple(step, &prev, &next)?;
+        patterns.push(Pattern::Triple(triple));
+
+        prev = next;
+    }
+
+    Ok(patterns)
+}
+
+/// Validate that a step inside an Alternative (within a sequence) is a simple
+/// step: `Iri(p)` or `Inverse(Iri(p))`.
+fn validate_simple_step(step: &UnresolvedPathExpr) -> Result<()> {
+    match step {
+        UnresolvedPathExpr::Iri(_) => Ok(()),
+        UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
+            UnresolvedPathExpr::Iri(_) => Ok(()),
+            other => Err(ParseError::InvalidWhere(format!(
+                "Alternative steps within a sequence must be simple predicates or \
+                 inverse simple predicates (^ex:p); got inverse of {}",
+                path_expr_name(other),
+            ))),
+        },
+        other => Err(ParseError::InvalidWhere(format!(
+            "Alternative steps within a sequence must be simple predicates or \
+             inverse simple predicates (^ex:p); got {}",
+            path_expr_name(other),
+        ))),
+    }
+}
+
+/// Compute the Cartesian product of step choices.
+///
+/// Given `[[a, b], [c], [d, e]]`, produces:
+/// `[[a, c, d], [a, c, e], [b, c, d], [b, c, e]]`
+fn cartesian_product<'a>(
+    step_choices: &'a [Vec<&'a UnresolvedPathExpr>],
+) -> Vec<Vec<&'a UnresolvedPathExpr>> {
+    let mut result: Vec<Vec<&UnresolvedPathExpr>> = vec![vec![]];
+    for choices in step_choices {
+        let mut new_result = Vec::new();
+        for existing in &result {
+            for choice in choices {
+                let mut combo = existing.clone();
+                combo.push(choice);
+                new_result.push(combo);
+            }
+        }
+        result = new_result;
+    }
+    result
+}
+
+/// Lower a distributed sequence (containing alternative steps) into a Union.
+///
+/// Expands the Cartesian product of step choices into individual simple chains,
+/// each becoming a branch of a `Pattern::Union`.
+fn lower_distributed_sequence(
+    s: &Term,
+    step_choices: &[Vec<&UnresolvedPathExpr>],
+    o: &Term,
+    vars: &mut VarRegistry,
+    pp_counter: &mut u32,
+) -> Result<Vec<Pattern>> {
+    let combos = cartesian_product(step_choices);
+    let n = combos.len();
+    if n > MAX_SEQUENCE_EXPANSION {
+        return Err(ParseError::InvalidWhere(format!(
+            "Property path sequence expands to {} chains (limit {})",
+            n, MAX_SEQUENCE_EXPANSION,
+        )));
+    }
+
+    let branches: Vec<Vec<Pattern>> = combos
+        .into_iter()
+        .map(|combo| lower_simple_sequence_chain(s, &combo, o, vars, pp_counter))
+        .collect::<Result<_>>()?;
+
+    Ok(vec![Pattern::Union(branches)])
+}
+
+/// Lower a simple sequence chain (no alternative steps) to a list of triple patterns.
+///
+/// Each step must be `Iri(p)` or `Inverse(Iri(p))`. Adjacent steps are joined
+/// by generated intermediate variables (`?__pp{n}`).
+fn lower_simple_sequence_chain(
+    s: &Term,
+    steps: &[&UnresolvedPathExpr],
+    o: &Term,
+    vars: &mut VarRegistry,
+    pp_counter: &mut u32,
+) -> Result<Vec<Pattern>> {
+    let mut patterns = Vec::with_capacity(steps.len());
+    let mut prev = s.clone();
+
+    for (i, step) in steps.iter().enumerate() {
+        let is_last = i == steps.len() - 1;
+        let next = if is_last {
+            o.clone()
+        } else {
+            let var_name = format!("?__pp{}", *pp_counter);
+            *pp_counter += 1;
+            Term::Var(vars.get_or_insert(&var_name))
+        };
+
+        let triple = lower_sequence_step_triple(step, &prev, &next)?;
+        patterns.push(Pattern::Triple(triple));
+
+        prev = next;
+    }
+
+    Ok(patterns)
+}
+
+/// Lower a single step of a sequence path to a triple pattern.
+///
+/// Forward step `p`: `Triple(prev, p, next)`
+/// Inverse step `^p`: `Triple(next, p, prev)` (swapped)
+///
+/// Note: Alternative steps (`(a|b)`) are handled by distribution in
+/// `lower_sequence_chain` before this function is called.
+fn lower_sequence_step_triple(
+    step: &UnresolvedPathExpr,
+    prev: &Term,
+    next: &Term,
+) -> Result<TriplePattern> {
+    match step {
+        UnresolvedPathExpr::Iri(iri) => {
+            let p = Term::Iri(iri.clone());
+            Ok(TriplePattern::new(prev.clone(), p, next.clone()))
+        }
+        UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
+            UnresolvedPathExpr::Iri(iri) => {
+                let p = Term::Iri(iri.clone());
+                Ok(TriplePattern::new(next.clone(), p, prev.clone()))
+            }
+            other => Err(ParseError::InvalidWhere(format!(
+                "Sequence (/) steps must be simple predicates, inverse simple \
+                 predicates (^ex:p), or alternatives of simple predicates \
+                 ((ex:a|ex:b)); got inverse of {}",
+                path_expr_name(other),
+            ))),
+        },
+        other => Err(ParseError::InvalidWhere(format!(
+            "Sequence (/) steps must be simple predicates, inverse simple \
+             predicates (^ex:p), or alternatives of simple predicates \
+             ((ex:a|ex:b)); got {}",
+            path_expr_name(other),
+        ))),
+    }
+}
+
+/// Lower a degenerate single-step sequence to a pattern list.
+fn lower_sequence_step(
+    step: &UnresolvedPathExpr,
+    s: &Term,
+    o: &Term,
+) -> Result<Vec<Pattern>> {
+    let triple = lower_sequence_step_triple(step, s, o)?;
+    Ok(vec![Pattern::Triple(triple)])
+}
+
+/// Lower a single branch of an Alternative path to a pattern list.
+///
+/// Each branch becomes one or more patterns. Supports:
+/// - `Iri(p)` → `Pattern::Triple(s, p, o)`
+/// - `Inverse(Iri(p))` → `Pattern::Triple(o, p, s)` (swapped)
+/// - `Sequence([...])` → chain of `Pattern::Triple` joined by `?__pp{n}` variables
+fn lower_alternative_branch(
+    alt: &UnresolvedPathExpr,
+    s: &Term,
+    o: &Term,
+    vars: &mut VarRegistry,
+    pp_counter: &mut u32,
+) -> Result<Vec<Pattern>> {
+    match alt {
+        UnresolvedPathExpr::Iri(iri) => {
+            let p = Term::Iri(iri.clone());
+            Ok(vec![Pattern::Triple(TriplePattern::new(
+                s.clone(),
+                p,
+                o.clone(),
+            ))])
+        }
+        UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
+            UnresolvedPathExpr::Iri(iri) => {
+                let p = Term::Iri(iri.clone());
+                Ok(vec![Pattern::Triple(TriplePattern::new(
+                    o.clone(),
+                    p,
+                    s.clone(),
+                ))])
+            }
+            other => Err(ParseError::InvalidWhere(format!(
+                "Alternative (|) branches support simple predicates, inverse simple \
+                 predicates (^ex:p), or sequence chains (ex:a/ex:b); got inverse of {}",
+                path_expr_name(other),
+            ))),
+        },
+        UnresolvedPathExpr::Sequence(steps) => {
+            lower_sequence_chain(s, steps, o, vars, pp_counter)
+        }
+        other => Err(ParseError::InvalidWhere(format!(
+            "Alternative (|) branches support simple predicates, inverse simple \
+             predicates (^ex:p), or sequence chains (ex:a/ex:b); got {}",
+            path_expr_name(other),
+        ))),
+    }
+}
+
+/// Human-readable name for an `UnresolvedPathExpr` variant (for error messages).
+fn path_expr_name(expr: &UnresolvedPathExpr) -> &'static str {
+    match expr {
+        UnresolvedPathExpr::Iri(_) => "IRI",
+        UnresolvedPathExpr::Inverse(_) => "Inverse (^)",
+        UnresolvedPathExpr::Sequence(_) => "Sequence (/)",
+        UnresolvedPathExpr::Alternative(_) => "Alternative (|)",
+        UnresolvedPathExpr::ZeroOrMore(_) => "ZeroOrMore (*)",
+        UnresolvedPathExpr::OneOrMore(_) => "OneOrMore (+)",
+        UnresolvedPathExpr::ZeroOrOne(_) => "ZeroOrOne (?)",
+    }
+}
+
+/// Expect a path expression to be a simple IRI. Returns the Arc'd IRI string.
+fn expect_simple_iri(path: &UnresolvedPathExpr) -> Result<&Arc<str>> {
+    match path {
+        UnresolvedPathExpr::Iri(iri) => Ok(iri),
+        _ => Err(ParseError::InvalidWhere(
+            "Transitive paths (+ or *) currently require a simple predicate IRI".to_string(),
+        )),
+    }
 }
 
 /// Lower an unresolved subquery to a resolved SubqueryPattern
@@ -608,6 +1033,7 @@ fn lower_subquery<E: IriEncoder>(
     subquery: &UnresolvedQuery,
     encoder: &E,
     vars: &mut VarRegistry,
+    pp_counter: &mut u32,
 ) -> Result<SubqueryPattern> {
     // Lower select list to VarIds
     let select: Vec<VarId> = subquery
@@ -617,12 +1043,8 @@ fn lower_subquery<E: IriEncoder>(
         .collect();
 
     // Lower WHERE patterns
-    let patterns: Result<Vec<Pattern>> = subquery
-        .patterns
-        .iter()
-        .map(|p| lower_unresolved_pattern(p, encoder, vars))
-        .collect();
-    let patterns = patterns?;
+    let patterns =
+        lower_unresolved_patterns(&subquery.patterns, encoder, vars, pp_counter)?;
 
     // Build SubqueryPattern with options
     let mut sq = SubqueryPattern::new(select, patterns);
@@ -1483,5 +1905,1000 @@ mod tests {
         );
         assert!(result2.is_ok());
         assert_eq!(result2.unwrap(), FlakeValue::String("hello".to_string()));
+    }
+
+    // ==========================================================================
+    // Inverse-transitive (^p+ / ^p*) property path lowering tests
+    // ==========================================================================
+
+    #[test]
+    fn test_inverse_one_or_more() {
+        let encoder = test_encoder();
+        let mut vars = VarRegistry::new();
+        let mut pp_counter: u32 = 0;
+
+        // ^ex:knows+ — inverse of one-or-more
+        let path = UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::OneOrMore(
+            Box::new(UnresolvedPathExpr::Iri(Arc::from(
+                "http://example.org/knows",
+            ))),
+        )));
+        let pattern = UnresolvedPattern::Path {
+            subject: UnresolvedTerm::var("?s"),
+            path,
+            object: UnresolvedTerm::var("?o"),
+        };
+
+        let results =
+            lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter).unwrap();
+
+        assert_eq!(results.len(), 1);
+        if let Pattern::PropertyPath(pp) = &results[0] {
+            assert!(matches!(pp.modifier, PathModifier::OneOrMore));
+            // Subject/object are swapped: pp.subject = ?o, pp.object = ?s
+            assert!(matches!(&pp.subject, Term::Var(vid) if vars.name(*vid) == "?o"));
+            assert!(matches!(&pp.object, Term::Var(vid) if vars.name(*vid) == "?s"));
+        } else {
+            panic!("Expected PropertyPath, got {:?}", results[0]);
+        }
+    }
+
+    #[test]
+    fn test_inverse_zero_or_more() {
+        let encoder = test_encoder();
+        let mut vars = VarRegistry::new();
+        let mut pp_counter: u32 = 0;
+
+        // ^ex:knows* — inverse of zero-or-more
+        let path = UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::ZeroOrMore(
+            Box::new(UnresolvedPathExpr::Iri(Arc::from(
+                "http://example.org/knows",
+            ))),
+        )));
+        let pattern = UnresolvedPattern::Path {
+            subject: UnresolvedTerm::var("?s"),
+            path,
+            object: UnresolvedTerm::var("?o"),
+        };
+
+        let results =
+            lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter).unwrap();
+
+        assert_eq!(results.len(), 1);
+        if let Pattern::PropertyPath(pp) = &results[0] {
+            assert!(matches!(pp.modifier, PathModifier::ZeroOrMore));
+            // Subject/object swapped
+            assert!(matches!(&pp.subject, Term::Var(vid) if vars.name(*vid) == "?o"));
+            assert!(matches!(&pp.object, Term::Var(vid) if vars.name(*vid) == "?s"));
+        } else {
+            panic!("Expected PropertyPath, got {:?}", results[0]);
+        }
+    }
+
+    // ==========================================================================
+    // Sequence (/) property path lowering tests
+    // ==========================================================================
+
+    fn make_sequence_path(iris: &[&str]) -> UnresolvedPathExpr {
+        UnresolvedPathExpr::Sequence(
+            iris.iter()
+                .map(|iri| UnresolvedPathExpr::Iri(Arc::from(*iri)))
+                .collect(),
+        )
+    }
+
+    fn make_path_pattern(
+        subject: &str,
+        path: UnresolvedPathExpr,
+        object: &str,
+    ) -> UnresolvedPattern {
+        UnresolvedPattern::Path {
+            subject: UnresolvedTerm::var(subject),
+            path,
+            object: UnresolvedTerm::var(object),
+        }
+    }
+
+    fn extract_triple(pattern: &Pattern) -> &TriplePattern {
+        match pattern {
+            Pattern::Triple(tp) => tp,
+            other => panic!("Expected Pattern::Triple, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_sequence_two_step() {
+        let encoder = test_encoder();
+        let mut vars = VarRegistry::new();
+        let mut pp_counter: u32 = 0;
+
+        let path = make_sequence_path(&[
+            "http://example.org/friend",
+            "http://example.org/name",
+        ]);
+        let pattern = make_path_pattern("?s", path, "?name");
+
+        let results =
+            lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter).unwrap();
+
+        assert_eq!(results.len(), 2);
+
+        // First triple: ?s --ex:friend--> ?__pp0
+        let t0 = extract_triple(&results[0]);
+        assert!(matches!(&t0.s, Term::Var(_)));
+        assert!(matches!(&t0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/friend"));
+        assert!(matches!(&t0.o, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
+
+        // Second triple: ?__pp0 --ex:name--> ?name
+        let t1 = extract_triple(&results[1]);
+        assert!(matches!(&t1.s, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
+        assert!(matches!(&t1.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/name"));
+        assert!(matches!(&t1.o, Term::Var(vid) if vars.name(*vid) == "?name"));
+
+        assert_eq!(pp_counter, 1);
+    }
+
+    #[test]
+    fn test_sequence_three_step() {
+        let encoder = test_encoder();
+        let mut vars = VarRegistry::new();
+        let mut pp_counter: u32 = 0;
+
+        let path = make_sequence_path(&[
+            "http://example.org/a",
+            "http://example.org/b",
+            "http://example.org/c",
+        ]);
+        let pattern = make_path_pattern("?s", path, "?o");
+
+        let results =
+            lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter).unwrap();
+
+        assert_eq!(results.len(), 3);
+
+        // First: ?s --a--> ?__pp0
+        let t0 = extract_triple(&results[0]);
+        assert!(matches!(&t0.o, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
+
+        // Second: ?__pp0 --b--> ?__pp1
+        let t1 = extract_triple(&results[1]);
+        assert!(matches!(&t1.s, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
+        assert!(matches!(&t1.o, Term::Var(vid) if vars.name(*vid) == "?__pp1"));
+
+        // Third: ?__pp1 --c--> ?o
+        let t2 = extract_triple(&results[2]);
+        assert!(matches!(&t2.s, Term::Var(vid) if vars.name(*vid) == "?__pp1"));
+        assert!(matches!(&t2.o, Term::Var(vid) if vars.name(*vid) == "?o"));
+
+        assert_eq!(pp_counter, 2);
+    }
+
+    #[test]
+    fn test_sequence_inverse_step() {
+        let encoder = test_encoder();
+        let mut vars = VarRegistry::new();
+        let mut pp_counter: u32 = 0;
+
+        // ^ex:parent / ex:name
+        let path = UnresolvedPathExpr::Sequence(vec![
+            UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::Iri(Arc::from(
+                "http://example.org/parent",
+            )))),
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/name")),
+        ]);
+        let pattern = make_path_pattern("?s", path, "?name");
+
+        let results =
+            lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter).unwrap();
+
+        assert_eq!(results.len(), 2);
+
+        // First triple is inverse: ?__pp0 --ex:parent--> ?s (swapped)
+        let t0 = extract_triple(&results[0]);
+        assert!(matches!(&t0.s, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
+        assert!(matches!(&t0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/parent"));
+        assert!(matches!(&t0.o, Term::Var(vid) if vars.name(*vid) == "?s"));
+
+        // Second triple is forward: ?__pp0 --ex:name--> ?name
+        let t1 = extract_triple(&results[1]);
+        assert!(matches!(&t1.s, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
+        assert!(matches!(&t1.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/name"));
+    }
+
+    #[test]
+    fn test_sequence_all_inverse() {
+        let encoder = test_encoder();
+        let mut vars = VarRegistry::new();
+        let mut pp_counter: u32 = 0;
+
+        // ^ex:a / ^ex:b
+        let path = UnresolvedPathExpr::Sequence(vec![
+            UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::Iri(Arc::from(
+                "http://example.org/a",
+            )))),
+            UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::Iri(Arc::from(
+                "http://example.org/b",
+            )))),
+        ]);
+        let pattern = make_path_pattern("?s", path, "?o");
+
+        let results =
+            lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter).unwrap();
+
+        assert_eq!(results.len(), 2);
+
+        // First: ?__pp0 --a--> ?s (swapped)
+        let t0 = extract_triple(&results[0]);
+        assert!(matches!(&t0.s, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
+        assert!(matches!(&t0.o, Term::Var(vid) if vars.name(*vid) == "?s"));
+
+        // Second: ?o --b--> ?__pp0 (swapped)
+        let t1 = extract_triple(&results[1]);
+        assert!(matches!(&t1.s, Term::Var(vid) if vars.name(*vid) == "?o"));
+        assert!(matches!(&t1.o, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
+    }
+
+    #[test]
+    fn test_sequence_transitive_step_errors() {
+        let encoder = test_encoder();
+        let mut vars = VarRegistry::new();
+        let mut pp_counter: u32 = 0;
+
+        // ex:a+ / ex:b — transitive modifier inside sequence is invalid
+        let path = UnresolvedPathExpr::Sequence(vec![
+            UnresolvedPathExpr::OneOrMore(Box::new(UnresolvedPathExpr::Iri(Arc::from(
+                "http://example.org/a",
+            )))),
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/b")),
+        ]);
+        let pattern = make_path_pattern("?s", path, "?o");
+
+        let result =
+            lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Sequence (/) steps must be simple predicates"),
+            "Unexpected error: {}",
+            err,
+        );
+    }
+
+    #[test]
+    fn test_sequence_with_alternative_step_distributes() {
+        let encoder = test_encoder();
+        let mut vars = VarRegistry::new();
+        let mut pp_counter: u32 = 0;
+
+        // (ex:a|ex:b) / ex:c → Union([ a/c, b/c ])
+        let path = UnresolvedPathExpr::Sequence(vec![
+            UnresolvedPathExpr::Alternative(vec![
+                UnresolvedPathExpr::Iri(Arc::from("http://example.org/a")),
+                UnresolvedPathExpr::Iri(Arc::from("http://example.org/b")),
+            ]),
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/c")),
+        ]);
+        let pattern = make_path_pattern("?s", path, "?o");
+
+        let results =
+            lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter).unwrap();
+
+        // Should produce a single Union with 2 branches
+        assert_eq!(results.len(), 1);
+        if let Pattern::Union(branches) = &results[0] {
+            assert_eq!(branches.len(), 2);
+
+            // Branch 0: a/c → Triple(?s, a, ?__pp0), Triple(?__pp0, c, ?o)
+            assert_eq!(branches[0].len(), 2);
+            let t0 = extract_triple(&branches[0][0]);
+            assert!(matches!(&t0.s, Term::Var(vid) if vars.name(*vid) == "?s"));
+            assert!(matches!(&t0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/a"));
+            assert!(matches!(&t0.o, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
+
+            let t1 = extract_triple(&branches[0][1]);
+            assert!(matches!(&t1.s, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
+            assert!(matches!(&t1.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/c"));
+            assert!(matches!(&t1.o, Term::Var(vid) if vars.name(*vid) == "?o"));
+
+            // Branch 1: b/c → Triple(?s, b, ?__pp1), Triple(?__pp1, c, ?o)
+            assert_eq!(branches[1].len(), 2);
+            let t2 = extract_triple(&branches[1][0]);
+            assert!(matches!(&t2.s, Term::Var(vid) if vars.name(*vid) == "?s"));
+            assert!(matches!(&t2.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/b"));
+            assert!(matches!(&t2.o, Term::Var(vid) if vars.name(*vid) == "?__pp1"));
+
+            let t3 = extract_triple(&branches[1][1]);
+            assert!(matches!(&t3.s, Term::Var(vid) if vars.name(*vid) == "?__pp1"));
+            assert!(matches!(&t3.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/c"));
+            assert!(matches!(&t3.o, Term::Var(vid) if vars.name(*vid) == "?o"));
+        } else {
+            panic!("Expected Pattern::Union, got {:?}", results[0]);
+        }
+    }
+
+    // ==========================================================================
+    // Sequence-in-Alternative property path lowering tests
+    // ==========================================================================
+
+    #[test]
+    fn test_alternative_with_sequence_branches() {
+        let encoder = test_encoder();
+        let mut vars = VarRegistry::new();
+        let mut pp_counter: u32 = 0;
+
+        // ex:friend/ex:name | ex:colleague/ex:name
+        let path = UnresolvedPathExpr::Alternative(vec![
+            UnresolvedPathExpr::Sequence(vec![
+                UnresolvedPathExpr::Iri(Arc::from("http://example.org/friend")),
+                UnresolvedPathExpr::Iri(Arc::from("http://example.org/name")),
+            ]),
+            UnresolvedPathExpr::Sequence(vec![
+                UnresolvedPathExpr::Iri(Arc::from("http://example.org/colleague")),
+                UnresolvedPathExpr::Iri(Arc::from("http://example.org/name")),
+            ]),
+        ]);
+        let pattern = make_path_pattern("?s", path, "?name");
+
+        let results =
+            lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter).unwrap();
+
+        // Should produce a single Union with 2 branches
+        assert_eq!(results.len(), 1);
+        if let Pattern::Union(branches) = &results[0] {
+            assert_eq!(branches.len(), 2);
+
+            // Each branch should have 2 triple patterns (two-step chain)
+            for (i, branch) in branches.iter().enumerate() {
+                assert_eq!(
+                    branch.len(), 2,
+                    "Branch {} should have 2 triples, got {}", i, branch.len()
+                );
+                assert!(matches!(branch[0], Pattern::Triple(_)));
+                assert!(matches!(branch[1], Pattern::Triple(_)));
+            }
+
+            // First branch: ?s --friend--> ?__pp0 --name--> ?name
+            let t0 = extract_triple(&branches[0][0]);
+            assert!(matches!(&t0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/friend"));
+            assert!(matches!(&t0.o, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
+            let t1 = extract_triple(&branches[0][1]);
+            assert!(matches!(&t1.s, Term::Var(vid) if vars.name(*vid) == "?__pp0"));
+            assert!(matches!(&t1.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/name"));
+
+            // Second branch: ?s --colleague--> ?__pp1 --name--> ?name
+            let t2 = extract_triple(&branches[1][0]);
+            assert!(matches!(&t2.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/colleague"));
+            assert!(matches!(&t2.o, Term::Var(vid) if vars.name(*vid) == "?__pp1"));
+            let t3 = extract_triple(&branches[1][1]);
+            assert!(matches!(&t3.s, Term::Var(vid) if vars.name(*vid) == "?__pp1"));
+            assert!(matches!(&t3.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/name"));
+        } else {
+            panic!("Expected Union, got {:?}", results[0]);
+        }
+
+        assert_eq!(pp_counter, 2);
+    }
+
+    #[test]
+    fn test_alternative_mixed_simple_and_sequence() {
+        let encoder = test_encoder();
+        let mut vars = VarRegistry::new();
+        let mut pp_counter: u32 = 0;
+
+        // ex:name | ex:friend/ex:name — one simple IRI, one sequence
+        let path = UnresolvedPathExpr::Alternative(vec![
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/name")),
+            UnresolvedPathExpr::Sequence(vec![
+                UnresolvedPathExpr::Iri(Arc::from("http://example.org/friend")),
+                UnresolvedPathExpr::Iri(Arc::from("http://example.org/name")),
+            ]),
+        ]);
+        let pattern = make_path_pattern("?s", path, "?val");
+
+        let results =
+            lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter).unwrap();
+
+        assert_eq!(results.len(), 1);
+        if let Pattern::Union(branches) = &results[0] {
+            assert_eq!(branches.len(), 2);
+            // First: simple IRI → 1 triple
+            assert_eq!(branches[0].len(), 1);
+            assert!(matches!(branches[0][0], Pattern::Triple(_)));
+            // Second: sequence → 2 triples
+            assert_eq!(branches[1].len(), 2);
+            assert!(matches!(branches[1][0], Pattern::Triple(_)));
+            assert!(matches!(branches[1][1], Pattern::Triple(_)));
+        } else {
+            panic!("Expected Union, got {:?}", results[0]);
+        }
+
+        assert_eq!(pp_counter, 1);
+    }
+
+    #[test]
+    fn test_alternative_with_three_way_sequence() {
+        let encoder = test_encoder();
+        let mut vars = VarRegistry::new();
+        let mut pp_counter: u32 = 0;
+
+        // ex:name | ex:friend/ex:name | ^ex:colleague
+        let path = UnresolvedPathExpr::Alternative(vec![
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/name")),
+            UnresolvedPathExpr::Sequence(vec![
+                UnresolvedPathExpr::Iri(Arc::from("http://example.org/friend")),
+                UnresolvedPathExpr::Iri(Arc::from("http://example.org/name")),
+            ]),
+            UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::Iri(Arc::from(
+                "http://example.org/colleague",
+            )))),
+        ]);
+        let pattern = make_path_pattern("?s", path, "?val");
+
+        let results =
+            lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter).unwrap();
+
+        assert_eq!(results.len(), 1);
+        if let Pattern::Union(branches) = &results[0] {
+            assert_eq!(branches.len(), 3);
+            // Branch 0: simple IRI → 1 triple
+            assert_eq!(branches[0].len(), 1);
+            // Branch 1: sequence → 2 triples
+            assert_eq!(branches[1].len(), 2);
+            // Branch 2: inverse → 1 triple
+            assert_eq!(branches[2].len(), 1);
+        } else {
+            panic!("Expected Union, got {:?}", results[0]);
+        }
+    }
+
+    // ==========================================================================
+    // Alternative-in-Sequence distribution tests
+    // ==========================================================================
+
+    #[test]
+    fn test_sequence_with_middle_alternative() {
+        let encoder = test_encoder();
+        let mut vars = VarRegistry::new();
+        let mut pp_counter: u32 = 0;
+
+        // a / (b|c) / d → Union([ a/b/d, a/c/d ])
+        let path = UnresolvedPathExpr::Sequence(vec![
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/a")),
+            UnresolvedPathExpr::Alternative(vec![
+                UnresolvedPathExpr::Iri(Arc::from("http://example.org/b")),
+                UnresolvedPathExpr::Iri(Arc::from("http://example.org/c")),
+            ]),
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/d")),
+        ]);
+        let pattern = make_path_pattern("?s", path, "?o");
+
+        let results =
+            lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter).unwrap();
+
+        assert_eq!(results.len(), 1);
+        if let Pattern::Union(branches) = &results[0] {
+            assert_eq!(branches.len(), 2);
+
+            // Each branch should be a 3-step chain (3 triples, 2 join vars)
+            for (i, branch) in branches.iter().enumerate() {
+                assert_eq!(
+                    branch.len(),
+                    3,
+                    "Branch {} should have 3 triple patterns",
+                    i
+                );
+                for (j, pat) in branch.iter().enumerate() {
+                    assert!(
+                        matches!(pat, Pattern::Triple(_)),
+                        "Branch {} pattern {} should be Triple",
+                        i,
+                        j
+                    );
+                }
+            }
+
+            // Branch 0 middle step should use predicate b
+            let t0_mid = extract_triple(&branches[0][1]);
+            assert!(matches!(&t0_mid.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/b"));
+
+            // Branch 1 middle step should use predicate c
+            let t1_mid = extract_triple(&branches[1][1]);
+            assert!(matches!(&t1_mid.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/c"));
+        } else {
+            panic!("Expected Pattern::Union, got {:?}", results[0]);
+        }
+    }
+
+    #[test]
+    fn test_sequence_with_multiple_alternatives() {
+        let encoder = test_encoder();
+        let mut vars = VarRegistry::new();
+        let mut pp_counter: u32 = 0;
+
+        // (a|b) / (c|d) → Union([ a/c, a/d, b/c, b/d ])
+        let path = UnresolvedPathExpr::Sequence(vec![
+            UnresolvedPathExpr::Alternative(vec![
+                UnresolvedPathExpr::Iri(Arc::from("http://example.org/a")),
+                UnresolvedPathExpr::Iri(Arc::from("http://example.org/b")),
+            ]),
+            UnresolvedPathExpr::Alternative(vec![
+                UnresolvedPathExpr::Iri(Arc::from("http://example.org/c")),
+                UnresolvedPathExpr::Iri(Arc::from("http://example.org/d")),
+            ]),
+        ]);
+        let pattern = make_path_pattern("?s", path, "?o");
+
+        let results =
+            lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter).unwrap();
+
+        assert_eq!(results.len(), 1);
+        if let Pattern::Union(branches) = &results[0] {
+            assert_eq!(branches.len(), 4);
+
+            // Each branch should be a 2-step chain
+            for (i, branch) in branches.iter().enumerate() {
+                assert_eq!(branch.len(), 2, "Branch {} should have 2 triples", i);
+            }
+
+            // Verify the 4 combinations: a/c, a/d, b/c, b/d
+            let combos: Vec<(String, String)> = branches
+                .iter()
+                .map(|branch| {
+                    let t0 = extract_triple(&branch[0]);
+                    let t1 = extract_triple(&branch[1]);
+                    let p0 = match &t0.p {
+                        Term::Iri(iri) => iri.to_string(),
+                        _ => panic!("Expected IRI"),
+                    };
+                    let p1 = match &t1.p {
+                        Term::Iri(iri) => iri.to_string(),
+                        _ => panic!("Expected IRI"),
+                    };
+                    (p0, p1)
+                })
+                .collect();
+
+            assert_eq!(combos[0], ("http://example.org/a".into(), "http://example.org/c".into()));
+            assert_eq!(combos[1], ("http://example.org/a".into(), "http://example.org/d".into()));
+            assert_eq!(combos[2], ("http://example.org/b".into(), "http://example.org/c".into()));
+            assert_eq!(combos[3], ("http://example.org/b".into(), "http://example.org/d".into()));
+        } else {
+            panic!("Expected Pattern::Union, got {:?}", results[0]);
+        }
+
+        // 4 branches × 1 join var each = 4 join vars total
+        assert_eq!(pp_counter, 4);
+    }
+
+    #[test]
+    fn test_sequence_alternative_with_inverse() {
+        let encoder = test_encoder();
+        let mut vars = VarRegistry::new();
+        let mut pp_counter: u32 = 0;
+
+        // (a|^b) / c → Union([ a/c, ^b/c ])
+        let path = UnresolvedPathExpr::Sequence(vec![
+            UnresolvedPathExpr::Alternative(vec![
+                UnresolvedPathExpr::Iri(Arc::from("http://example.org/a")),
+                UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::Iri(Arc::from(
+                    "http://example.org/b",
+                )))),
+            ]),
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/c")),
+        ]);
+        let pattern = make_path_pattern("?s", path, "?o");
+
+        let results =
+            lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter).unwrap();
+
+        assert_eq!(results.len(), 1);
+        if let Pattern::Union(branches) = &results[0] {
+            assert_eq!(branches.len(), 2);
+
+            // Branch 0: a/c → Triple(?s, a, ?__pp0), Triple(?__pp0, c, ?o)
+            let t0 = extract_triple(&branches[0][0]);
+            assert!(matches!(&t0.s, Term::Var(vid) if vars.name(*vid) == "?s"));
+            assert!(matches!(&t0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/a"));
+
+            // Branch 1: ^b/c → Triple(?__pp1, b, ?s), Triple(?__pp1, c, ?o)
+            // Inverse swaps: subject=next(?__pp1), object=prev(?s)
+            let t2 = extract_triple(&branches[1][0]);
+            assert!(matches!(&t2.s, Term::Var(vid) if vars.name(*vid) == "?__pp1"));
+            assert!(matches!(&t2.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/b"));
+            assert!(matches!(&t2.o, Term::Var(vid) if vars.name(*vid) == "?s"));
+        } else {
+            panic!("Expected Pattern::Union, got {:?}", results[0]);
+        }
+    }
+
+    #[test]
+    fn test_sequence_expansion_limit() {
+        let encoder = test_encoder();
+        let mut vars = VarRegistry::new();
+        let mut pp_counter: u32 = 0;
+
+        // Build a sequence with 7 alternative steps, each with 2 choices:
+        // 2^7 = 128 > 64 limit
+        let steps: Vec<UnresolvedPathExpr> = (0..7)
+            .map(|i| {
+                UnresolvedPathExpr::Alternative(vec![
+                    UnresolvedPathExpr::Iri(Arc::from(
+                        format!("http://example.org/a{}", i).as_str(),
+                    )),
+                    UnresolvedPathExpr::Iri(Arc::from(
+                        format!("http://example.org/b{}", i).as_str(),
+                    )),
+                ])
+            })
+            .collect();
+        let path = UnresolvedPathExpr::Sequence(steps);
+        let pattern = make_path_pattern("?s", path, "?o");
+
+        let result =
+            lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("expands to 128") && err.contains("limit 64"),
+            "Unexpected error: {}",
+            err,
+        );
+    }
+
+    #[test]
+    fn test_sequence_distributed_bag_semantics() {
+        let encoder = test_encoder();
+        let mut vars = VarRegistry::new();
+        let mut pp_counter: u32 = 0;
+
+        // (a|a) / c — both alternatives are the same IRI
+        // Distribution is syntactic, so we still get 2 branches
+        let path = UnresolvedPathExpr::Sequence(vec![
+            UnresolvedPathExpr::Alternative(vec![
+                UnresolvedPathExpr::Iri(Arc::from("http://example.org/a")),
+                UnresolvedPathExpr::Iri(Arc::from("http://example.org/a")),
+            ]),
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/c")),
+        ]);
+        let pattern = make_path_pattern("?s", path, "?o");
+
+        let results =
+            lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter).unwrap();
+
+        assert_eq!(results.len(), 1);
+        if let Pattern::Union(branches) = &results[0] {
+            // Syntactic distribution: 2 branches even though both use same predicate
+            assert_eq!(branches.len(), 2);
+            for branch in branches {
+                assert_eq!(branch.len(), 2);
+            }
+        } else {
+            panic!("Expected Pattern::Union, got {:?}", results[0]);
+        }
+    }
+
+    // ==========================================================================
+    // Inverse of complex paths — rewrite tests
+    // ==========================================================================
+
+    #[test]
+    fn test_rewrite_inverse_of_sequence() {
+        // ^(a/b) → Sequence([^b, ^a])
+        let path = UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::Sequence(vec![
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/a")),
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/b")),
+        ])));
+        let rewritten = rewrite_inverse_of_complex(&path).expect("should rewrite");
+        match rewritten {
+            UnresolvedPathExpr::Sequence(steps) => {
+                assert_eq!(steps.len(), 2);
+                // First step: ^b (reversed order)
+                match &steps[0] {
+                    UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
+                        UnresolvedPathExpr::Iri(iri) => {
+                            assert_eq!(iri.as_ref(), "http://example.org/b")
+                        }
+                        other => panic!("Expected Iri inside Inverse, got {:?}", other),
+                    },
+                    other => panic!("Expected Inverse, got {:?}", other),
+                }
+                // Second step: ^a
+                match &steps[1] {
+                    UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
+                        UnresolvedPathExpr::Iri(iri) => {
+                            assert_eq!(iri.as_ref(), "http://example.org/a")
+                        }
+                        other => panic!("Expected Iri inside Inverse, got {:?}", other),
+                    },
+                    other => panic!("Expected Inverse, got {:?}", other),
+                }
+            }
+            other => panic!("Expected Sequence, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_rewrite_inverse_of_alternative() {
+        // ^(a|b) → Alternative([^a, ^b])
+        let path = UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::Alternative(vec![
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/a")),
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/b")),
+        ])));
+        let rewritten = rewrite_inverse_of_complex(&path).expect("should rewrite");
+        match rewritten {
+            UnresolvedPathExpr::Alternative(branches) => {
+                assert_eq!(branches.len(), 2);
+                // Order preserved: ^a, ^b
+                match &branches[0] {
+                    UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
+                        UnresolvedPathExpr::Iri(iri) => {
+                            assert_eq!(iri.as_ref(), "http://example.org/a")
+                        }
+                        other => panic!("Expected Iri, got {:?}", other),
+                    },
+                    other => panic!("Expected Inverse, got {:?}", other),
+                }
+                match &branches[1] {
+                    UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
+                        UnresolvedPathExpr::Iri(iri) => {
+                            assert_eq!(iri.as_ref(), "http://example.org/b")
+                        }
+                        other => panic!("Expected Iri, got {:?}", other),
+                    },
+                    other => panic!("Expected Inverse, got {:?}", other),
+                }
+            }
+            other => panic!("Expected Alternative, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_rewrite_inverse_of_three_step_sequence() {
+        // ^(a/b/c) → Sequence([^c, ^b, ^a])
+        let path = UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::Sequence(vec![
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/a")),
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/b")),
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/c")),
+        ])));
+        let rewritten = rewrite_inverse_of_complex(&path).expect("should rewrite");
+        match rewritten {
+            UnresolvedPathExpr::Sequence(steps) => {
+                assert_eq!(steps.len(), 3);
+                // Reversed: c, b, a
+                let expected = ["http://example.org/c", "http://example.org/b", "http://example.org/a"];
+                for (i, exp_iri) in expected.iter().enumerate() {
+                    match &steps[i] {
+                        UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
+                            UnresolvedPathExpr::Iri(iri) => assert_eq!(iri.as_ref(), *exp_iri),
+                            other => panic!("Step {}: expected Iri, got {:?}", i, other),
+                        },
+                        other => panic!("Step {}: expected Inverse, got {:?}", i, other),
+                    }
+                }
+            }
+            other => panic!("Expected Sequence, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_rewrite_inverse_nested_sequence_with_alternative() {
+        // ^(a/(b|c)) → Sequence([Alternative([^b, ^c]), ^a])
+        let path = UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::Sequence(vec![
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/a")),
+            UnresolvedPathExpr::Alternative(vec![
+                UnresolvedPathExpr::Iri(Arc::from("http://example.org/b")),
+                UnresolvedPathExpr::Iri(Arc::from("http://example.org/c")),
+            ]),
+        ])));
+        let rewritten = rewrite_inverse_of_complex(&path).expect("should rewrite");
+        match rewritten {
+            UnresolvedPathExpr::Sequence(steps) => {
+                assert_eq!(steps.len(), 2);
+                // First step: Alternative([^b, ^c]) — recursive rewrite of ^(b|c)
+                match &steps[0] {
+                    UnresolvedPathExpr::Alternative(branches) => {
+                        assert_eq!(branches.len(), 2);
+                        assert!(matches!(&branches[0], UnresolvedPathExpr::Inverse(inner)
+                            if matches!(inner.as_ref(), UnresolvedPathExpr::Iri(iri)
+                                if iri.as_ref() == "http://example.org/b")));
+                        assert!(matches!(&branches[1], UnresolvedPathExpr::Inverse(inner)
+                            if matches!(inner.as_ref(), UnresolvedPathExpr::Iri(iri)
+                                if iri.as_ref() == "http://example.org/c")));
+                    }
+                    other => panic!("Expected Alternative, got {:?}", other),
+                }
+                // Second step: ^a
+                assert!(matches!(&steps[1], UnresolvedPathExpr::Inverse(inner)
+                    if matches!(inner.as_ref(), UnresolvedPathExpr::Iri(iri)
+                        if iri.as_ref() == "http://example.org/a")));
+            }
+            other => panic!("Expected Sequence, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_rewrite_double_inverse_cancels() {
+        // ^(^a) → Iri(a)
+        let path = UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::Inverse(Box::new(
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/a")),
+        ))));
+        let rewritten = rewrite_inverse_of_complex(&path).expect("should rewrite");
+        match rewritten {
+            UnresolvedPathExpr::Iri(iri) => {
+                assert_eq!(iri.as_ref(), "http://example.org/a");
+            }
+            other => panic!("Expected Iri (double-inverse cancelled), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_rewrite_double_inverse_in_sequence() {
+        // ^(^a/b) → Sequence([^b, a])
+        // The step ^a becomes Inverse(Inverse(a)) which cancels to a
+        let path = UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::Sequence(vec![
+            UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::Iri(Arc::from(
+                "http://example.org/a",
+            )))),
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/b")),
+        ])));
+        let rewritten = rewrite_inverse_of_complex(&path).expect("should rewrite");
+        match rewritten {
+            UnresolvedPathExpr::Sequence(steps) => {
+                assert_eq!(steps.len(), 2);
+                // First step: ^b (b was second, reversed to first, then inverted)
+                match &steps[0] {
+                    UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
+                        UnresolvedPathExpr::Iri(iri) => {
+                            assert_eq!(iri.as_ref(), "http://example.org/b")
+                        }
+                        other => panic!("Expected Iri inside Inverse, got {:?}", other),
+                    },
+                    other => panic!("Expected Inverse for step 0, got {:?}", other),
+                }
+                // Second step: a (^a was first, reversed to second, ^(^a) cancels to a)
+                match &steps[1] {
+                    UnresolvedPathExpr::Iri(iri) => {
+                        assert_eq!(iri.as_ref(), "http://example.org/a")
+                    }
+                    other => panic!("Expected Iri (double-inverse cancelled) for step 1, got {:?}", other),
+                }
+            }
+            other => panic!("Expected Sequence, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_rewrite_double_inverse_in_alternative() {
+        // ^(a|^b) → Alternative([^a, b])
+        // The branch ^b becomes Inverse(Inverse(b)) which cancels to b
+        let path = UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::Alternative(vec![
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/a")),
+            UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::Iri(Arc::from(
+                "http://example.org/b",
+            )))),
+        ])));
+        let rewritten = rewrite_inverse_of_complex(&path).expect("should rewrite");
+        match rewritten {
+            UnresolvedPathExpr::Alternative(branches) => {
+                assert_eq!(branches.len(), 2);
+                // First branch: ^a
+                match &branches[0] {
+                    UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
+                        UnresolvedPathExpr::Iri(iri) => {
+                            assert_eq!(iri.as_ref(), "http://example.org/a")
+                        }
+                        other => panic!("Expected Iri inside Inverse, got {:?}", other),
+                    },
+                    other => panic!("Expected Inverse for branch 0, got {:?}", other),
+                }
+                // Second branch: b (double-inverse cancelled)
+                match &branches[1] {
+                    UnresolvedPathExpr::Iri(iri) => {
+                        assert_eq!(iri.as_ref(), "http://example.org/b")
+                    }
+                    other => panic!("Expected Iri (double-inverse cancelled) for branch 1, got {:?}", other),
+                }
+            }
+            other => panic!("Expected Alternative, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_rewrite_no_change_for_simple_inverse() {
+        // ^a → None (handled by existing code)
+        let path = UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::Iri(Arc::from(
+            "http://example.org/a",
+        ))));
+        assert!(rewrite_inverse_of_complex(&path).is_none());
+    }
+
+    #[test]
+    fn test_rewrite_no_change_for_inverse_transitive() {
+        // ^(a+) → None (handled by existing code)
+        let path = UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::OneOrMore(
+            Box::new(UnresolvedPathExpr::Iri(Arc::from(
+                "http://example.org/a",
+            ))),
+        )));
+        assert!(rewrite_inverse_of_complex(&path).is_none());
+    }
+
+    // ==========================================================================
+    // Inverse of complex paths — end-to-end lowering tests
+    // ==========================================================================
+
+    #[test]
+    fn test_inverse_of_sequence_lowered() {
+        // ^(a/b) with s=?s, o=?o:
+        // Rewrite: Sequence([^b, ^a])
+        // Step 0: ^b → Triple(?pp0, b, ?s) (inverse swaps prev/next)
+        // Step 1: ^a → Triple(?o, a, ?pp0) (inverse swaps prev/next)
+        let encoder = test_encoder();
+        let mut vars = VarRegistry::new();
+        let mut pp_counter: u32 = 0;
+
+        let path = UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::Sequence(vec![
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/a")),
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/b")),
+        ])));
+        let pattern = make_path_pattern("?s", path, "?o");
+
+        let results =
+            lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter).unwrap();
+
+        assert_eq!(results.len(), 2);
+
+        // Step 0: ^b — Triple(?pp0, b, ?s) [inverse swaps]
+        let tp0 = extract_triple(&results[0]);
+        assert!(matches!(&tp0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/b"));
+        // Inverse: subject = next (?pp0), object = prev (?s)
+        assert!(matches!(&tp0.o, Term::Var(vid) if vars.name(*vid) == "?s"));
+
+        // Step 1: ^a — Triple(?o, a, ?pp0) [inverse swaps]
+        let tp1 = extract_triple(&results[1]);
+        assert!(matches!(&tp1.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/a"));
+        assert!(matches!(&tp1.s, Term::Var(vid) if vars.name(*vid) == "?o"));
+    }
+
+    #[test]
+    fn test_inverse_of_alternative_lowered() {
+        // ^(a|b) with s=?s, o=?o:
+        // Rewrite: Alternative([^a, ^b])
+        // → Union([[Triple(?o, a, ?s)], [Triple(?o, b, ?s)]])
+        let encoder = test_encoder();
+        let mut vars = VarRegistry::new();
+        let mut pp_counter: u32 = 0;
+
+        let path = UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::Alternative(vec![
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/a")),
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/b")),
+        ])));
+        let pattern = make_path_pattern("?s", path, "?o");
+
+        let results =
+            lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter).unwrap();
+
+        assert_eq!(results.len(), 1);
+        if let Pattern::Union(branches) = &results[0] {
+            assert_eq!(branches.len(), 2);
+            // Each branch: single triple with s/o swapped (inverse)
+            for branch in branches {
+                assert_eq!(branch.len(), 1);
+                let tp = extract_triple(&branch[0]);
+                // Inverse: subject = ?o, object = ?s
+                assert!(matches!(&tp.s, Term::Var(vid) if vars.name(*vid) == "?o"));
+                assert!(matches!(&tp.o, Term::Var(vid) if vars.name(*vid) == "?s"));
+            }
+            // Branch 0 predicate: a
+            let tp0 = extract_triple(&branches[0][0]);
+            assert!(matches!(&tp0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/a"));
+            // Branch 1 predicate: b
+            let tp1 = extract_triple(&branches[1][0]);
+            assert!(matches!(&tp1.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/b"));
+        } else {
+            panic!("Expected Union, got {:?}", results[0]);
+        }
     }
 }

@@ -237,6 +237,13 @@ fn format_row_wildcard(
                 continue;
             }
             let var_name = vars.name(var_id);
+
+            // Skip internal variables (e.g. ?__pp0, ?__s0, ?__n0) from wildcard output.
+            // The ?__ prefix is reserved for internal use.
+            if var_name.starts_with("?__") {
+                continue;
+            }
+
             let value = format_binding(binding, compactor)?;
             obj.insert(var_name.to_string(), value);
         }

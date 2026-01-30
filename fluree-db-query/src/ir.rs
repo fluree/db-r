@@ -287,10 +287,10 @@ pub enum PathModifier {
     ZeroOrMore,
 }
 
-/// Resolved property path pattern for transitive traversal
+/// Resolved property path pattern for transitive traversal.
 ///
-/// Represents queries like `{"@id": "ex:alice", "<ex:knows+>": "?who"}`
-/// where the predicate is traversed transitively (one or more, or zero or more hops).
+/// Produced by `@path` aliases with `+` or `*` modifiers, e.g.:
+/// `{"@context": {"knowsPlus": {"@path": "ex:knows+"}}, "where": [{"@id": "ex:alice", "knowsPlus": "?who"}]}`
 #[derive(Debug, Clone)]
 pub struct PropertyPathPattern {
     /// Subject term (Var or Sid - literals not allowed)

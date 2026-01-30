@@ -26,6 +26,7 @@ pub mod filter_sexpr;
 pub mod lower;
 pub mod node_map;
 pub mod options;
+pub mod path_expr;
 pub mod sexpr_tokenize;
 pub mod values;
 pub mod where_clause;
@@ -40,16 +41,24 @@ pub use ast::{
 pub use encode::{IriEncoder, MemoryEncoder, NoEncoder};
 pub use error::{ParseError, Result};
 pub use lower::{
-    lower_query, lower_unresolved_pattern, ConstructTemplate, GraphSelectSpec, NestedSelectSpec,
-    ParsedQuery, Root, SelectMode, SelectionSpec,
+    lower_query, lower_unresolved_pattern, lower_unresolved_patterns, ConstructTemplate,
+    GraphSelectSpec, NestedSelectSpec, ParsedQuery, Root, SelectMode, SelectionSpec,
 };
 pub use where_clause::parse_where_with_counters;
 
 use crate::ir::FilterExpr;
 use crate::var_registry::VarRegistry;
+use ast::UnresolvedPathExpr;
 use fluree_graph_json_ld::{details, parse_context, ParsedContext};
 use serde_json::Value as JsonValue;
+use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Map from context term name to its parsed `@path` expression.
+///
+/// Extracted from the raw query `@context` JSON during parse phase.
+/// Used by node-map parsing to recognise property-path aliases.
+pub type PathAliasMap = HashMap<String, UnresolvedPathExpr>;
 
 // Re-export is_variable from node_map for use within this module
 use node_map::is_variable;
@@ -108,6 +117,7 @@ fn parse_query_ast_internal(
         .unwrap_or(&JsonValue::Null);
 
     let context = parse_context(&normalize_context_value(context_val))?;
+    let path_aliases = extract_path_aliases(context_val, &context)?;
 
     let mut query = UnresolvedQuery::new(context.clone());
 
@@ -118,7 +128,7 @@ fn parse_query_ast_internal(
 
     // Check for CONSTRUCT query first
     if let Some(construct_val) = obj.get("construct") {
-        return parse_construct_query(obj, construct_val, &context, query, subject_counter, nested_counter);
+        return parse_construct_query(obj, construct_val, &context, &path_aliases, query, subject_counter, nested_counter);
     }
 
     // Determine select mode based on which key is present.
@@ -180,6 +190,7 @@ fn parse_query_ast_internal(
         where_clause::parse_where_with_counters(
             where_clause,
             &context,
+            &path_aliases,
             &mut query,
             subject_counter,
             nested_counter,
@@ -264,6 +275,106 @@ fn normalize_context_value(context_val: &JsonValue) -> JsonValue {
     context_val.clone()
 }
 
+/// Extract `@path` term definitions from the raw context JSON.
+///
+/// Scans the context for term definitions that contain `"@path"` and parses
+/// each into an [`UnresolvedPathExpr`]. The `@path` value may be a SPARQL-
+/// syntax string or an S-expression JSON array.
+///
+/// Handles all context shapes: null, string (vocab-only), object, and
+/// array-of-contexts. For arrays, later definitions override earlier ones
+/// (matching JSON-LD's "last context wins" semantics).
+///
+/// # Validation
+///
+/// - `@path` and `@reverse` on the same term → error (mutually exclusive).
+/// - `@path` value must be a string or array → error otherwise.
+fn extract_path_aliases(
+    context_val: &JsonValue,
+    parsed_context: &ParsedContext,
+) -> Result<PathAliasMap> {
+    let mut aliases = PathAliasMap::new();
+    extract_path_aliases_into(context_val, parsed_context, &mut aliases)?;
+    Ok(aliases)
+}
+
+/// Recursive helper that accumulates path aliases from a context value.
+fn extract_path_aliases_into(
+    context_val: &JsonValue,
+    parsed_context: &ParsedContext,
+    aliases: &mut PathAliasMap,
+) -> Result<()> {
+    match context_val {
+        JsonValue::Null | JsonValue::String(_) => {
+            // Null context or string vocab — no term definitions to inspect.
+            Ok(())
+        }
+        JsonValue::Object(map) => {
+            for (key, val) in map {
+                // Skip JSON-LD keywords
+                if key.starts_with('@') {
+                    continue;
+                }
+                // Only inspect object-valued term definitions
+                if let JsonValue::Object(term_def) = val {
+                    if let Some(path_val) = term_def.get("@path") {
+                        // Validate: @path and @reverse are mutually exclusive
+                        if term_def.contains_key("@reverse") {
+                            return Err(ParseError::InvalidContext(format!(
+                                "term '{}': @path and @reverse are mutually exclusive",
+                                key,
+                            )));
+                        }
+
+                        let path_expr = match path_val {
+                            JsonValue::String(s) => {
+                                path_expr::parse_path_string(s, parsed_context)?
+                            }
+                            JsonValue::Array(arr) => {
+                                path_expr::parse_path_array(arr, parsed_context)?
+                            }
+                            _ => {
+                                return Err(ParseError::InvalidContext(format!(
+                                    "term '{}': @path must be a string or array, got {}",
+                                    key,
+                                    json_type_name(path_val),
+                                )));
+                            }
+                        };
+
+                        // Last definition wins (matching JSON-LD override semantics)
+                        aliases.insert(key.clone(), path_expr);
+                    }
+                }
+            }
+            Ok(())
+        }
+        JsonValue::Array(arr) => {
+            // Array of contexts — process in order, last wins
+            for item in arr {
+                extract_path_aliases_into(item, parsed_context, aliases)?;
+            }
+            Ok(())
+        }
+        _ => {
+            // Unexpected type (number, bool) — ignore, let json-ld parser handle errors
+            Ok(())
+        }
+    }
+}
+
+/// Return a human-readable JSON type name for error messages.
+fn json_type_name(val: &JsonValue) -> &'static str {
+    match val {
+        JsonValue::Null => "null",
+        JsonValue::Bool(_) => "boolean",
+        JsonValue::Number(_) => "number",
+        JsonValue::String(_) => "string",
+        JsonValue::Array(_) => "array",
+        JsonValue::Object(_) => "object",
+    }
+}
+
 /// Parse a CONSTRUCT query
 ///
 /// CONSTRUCT queries transform matched data into JSON-LD graph format.
@@ -274,6 +385,7 @@ fn parse_construct_query(
     obj: &serde_json::Map<String, JsonValue>,
     construct_val: &JsonValue,
     context: &ParsedContext,
+    path_aliases: &PathAliasMap,
     mut query: UnresolvedQuery,
     subject_counter: &mut u32,
     nested_counter: &mut u32,
@@ -288,6 +400,7 @@ fn parse_construct_query(
     where_clause::parse_where_with_counters(
         where_clause,
         context,
+        path_aliases,
         &mut query,
         subject_counter,
         nested_counter,
@@ -340,6 +453,8 @@ fn parse_construct_template(
 ) -> Result<Vec<UnresolvedPattern>> {
     let mut subject_counter = 0u32;
     let mut nested_counter = 0u32;
+    // CONSTRUCT templates only contain triple patterns — no path aliases needed.
+    let empty_aliases = PathAliasMap::new();
 
     match template {
         JsonValue::Object(map) => {
@@ -348,6 +463,7 @@ fn parse_construct_template(
             node_map::parse_node_map(
                 map,
                 context,
+                &empty_aliases,
                 &mut temp_query,
                 &mut subject_counter,
                 &mut nested_counter,
@@ -369,6 +485,7 @@ fn parse_construct_template(
                     node_map::parse_node_map(
                         map,
                         context,
+                        &empty_aliases,
                         &mut temp_query,
                         &mut subject_counter,
                         &mut nested_counter,

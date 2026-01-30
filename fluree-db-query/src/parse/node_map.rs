@@ -5,11 +5,12 @@
 //! This module is shared between WHERE clause parsing and CONSTRUCT template parsing.
 
 use super::ast::{
-    PathModifier, UnresolvedIndexSearchPattern, UnresolvedIndexSearchTarget,
+    UnresolvedIndexSearchPattern, UnresolvedIndexSearchTarget, UnresolvedPathExpr,
     UnresolvedVectorSearchPattern, UnresolvedVectorSearchTarget, UnresolvedPattern,
-    UnresolvedPropertyPathPattern, UnresolvedQuery, UnresolvedTerm, UnresolvedTriplePattern,
+    UnresolvedQuery, UnresolvedTerm, UnresolvedTriplePattern,
 };
 use super::error::{ParseError, Result};
+use super::PathAliasMap;
 use fluree_graph_json_ld::{details, details_with_vocab, ParsedContext, TypeValue};
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
@@ -21,40 +22,6 @@ use fluree_vocab::xsd;
 /// Check if a string is a variable (starts with '?')
 pub(super) fn is_variable(s: &str) -> bool {
     s.starts_with('?')
-}
-
-/// Check if a predicate key is a property path and extract components
-///
-/// Property path syntax: `<predicate+>` (one-or-more) or `<predicate*>` (zero-or-more)
-///
-/// Returns `Some((inner_predicate, modifier))` if this is a property path,
-/// `None` if it's a regular predicate.
-fn parse_property_path_predicate(key: &str) -> Option<(&str, PathModifier)> {
-    // Must be wrapped in < > with trailing + or *
-    if !key.starts_with('<') || key.len() < 4 {
-        return None;
-    }
-
-    let inner = &key[1..]; // Skip leading <
-
-    if inner.ends_with("+>") {
-        let mut pred = &inner[..inner.len() - 2];
-        // Support Clojure-style `<<ex:knows>+>` as well as `<ex:knows+>`.
-        // If the extracted predicate is wrapped in `<...>`, strip it.
-        if pred.starts_with('<') && pred.ends_with('>') && pred.len() >= 2 {
-            pred = &pred[1..pred.len() - 1];
-        }
-        Some((pred, PathModifier::OneOrMore))
-    } else if inner.ends_with("*>") {
-        let mut pred = &inner[..inner.len() - 2];
-        // Support Clojure-style `<<ex:knows>*>` as well as `<ex:knows*>`.
-        if pred.starts_with('<') && pred.ends_with('>') && pred.len() >= 2 {
-            pred = &pred[1..pred.len() - 1];
-        }
-        Some((pred, PathModifier::ZeroOrMore))
-    } else {
-        None
-    }
 }
 
 // ============================================================================
@@ -450,6 +417,7 @@ fn parse_index_search_result(
 pub fn parse_node_map(
     map: &serde_json::Map<String, JsonValue>,
     context: &ParsedContext,
+    path_aliases: &PathAliasMap,
     query: &mut UnresolvedQuery,
     subject_counter: &mut u32,
     nested_counter: &mut u32,
@@ -507,6 +475,7 @@ pub fn parse_node_map(
             value,
             &subject,
             context,
+            path_aliases,
             query,
             nested_counter,
             object_var_parsing,
@@ -580,13 +549,14 @@ fn parse_property(
     value: &JsonValue,
     subject: &UnresolvedTerm,
     context: &ParsedContext,
+    path_aliases: &PathAliasMap,
     query: &mut UnresolvedQuery,
     nested_counter: &mut u32,
     object_var_parsing: bool,
 ) -> Result<()> {
-    // Check for property path syntax: <predicate+> or <predicate*>
-    if let Some((inner_pred, modifier)) = parse_property_path_predicate(key) {
-        return parse_property_path(inner_pred, modifier, value, subject, context, query);
+    // Check if key is a @path alias from @context
+    if let Some(path_expr) = path_aliases.get(key) {
+        return parse_path_alias_usage(path_expr, value, subject, context, query);
     }
 
     // Check if predicate is a variable (e.g., "?p")
@@ -791,6 +761,7 @@ fn parse_property(
             nested_map,
             &nested_subject,
             context,
+            path_aliases,
             query,
             nested_counter,
             object_var_parsing,
@@ -981,6 +952,7 @@ fn parse_nested_node_map(
     map: &serde_json::Map<String, JsonValue>,
     subject: &UnresolvedTerm,
     context: &ParsedContext,
+    path_aliases: &PathAliasMap,
     query: &mut UnresolvedQuery,
     nested_counter: &mut u32,
     object_var_parsing: bool,
@@ -1022,6 +994,7 @@ fn parse_nested_node_map(
             value,
             &actual_subject,
             context,
+            path_aliases,
             query,
             nested_counter,
             object_var_parsing,
@@ -1116,20 +1089,18 @@ fn parse_json_value(
     }
 }
 
-/// Parse a property path pattern
+/// Parse a property path pattern from a `@path` alias.
 ///
-/// Property paths allow transitive traversal: `<ex:knows+>` or `<ex:knows*>`
-fn parse_property_path(
-    inner_pred: &str,
-    modifier: PathModifier,
+/// The path expression was already parsed during `@context` extraction.
+/// Here we parse the object value (must be a variable or IRI) and emit
+/// an `UnresolvedPattern::Path` pattern.
+fn parse_path_alias_usage(
+    path_expr: &UnresolvedPathExpr,
     value: &JsonValue,
     subject: &UnresolvedTerm,
     context: &ParsedContext,
     query: &mut UnresolvedQuery,
 ) -> Result<()> {
-    // Expand the inner predicate IRI via @context (same as normal predicates)
-    let (expanded_iri, _) = details(inner_pred, context);
-
     // Parse the object value - must be a variable or IRI, not a literal
     let object = match value {
         JsonValue::String(s) => {
@@ -1142,12 +1113,16 @@ fn parse_property_path(
             }
         }
         JsonValue::Object(map) => {
-            // Support {"@id":"ex:foo"} (Clojure parity)
+            // Support {"@id":"ex:foo"}
             let id_val = map.get("@id").ok_or_else(|| {
-                ParseError::InvalidWhere("Property path object must be a variable or IRI".to_string())
+                ParseError::InvalidWhere(
+                    "Property path object must be a variable or IRI".to_string(),
+                )
             })?;
             let id_str = id_val.as_str().ok_or_else(|| {
-                ParseError::InvalidWhere("Property path object must be a variable or IRI".to_string())
+                ParseError::InvalidWhere(
+                    "Property path object must be a variable or IRI".to_string(),
+                )
             })?;
             if is_variable(id_str) {
                 UnresolvedTerm::var(id_str)
@@ -1163,15 +1138,11 @@ fn parse_property_path(
         }
     };
 
-    // Create the property path pattern
-    let pattern = UnresolvedPropertyPathPattern::new(
-        subject.clone(),
-        &expanded_iri,
-        modifier,
+    query.patterns.push(UnresolvedPattern::Path {
+        subject: subject.clone(),
+        path: path_expr.clone(),
         object,
-    );
-
-    query.patterns.push(UnresolvedPattern::PropertyPath(pattern));
+    });
 
     Ok(())
 }

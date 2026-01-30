@@ -14,8 +14,8 @@ mod support;
 use fluree_db_api::FlureeBuilder;
 use serde_json::{json, Value as JsonValue};
 use support::{
-    assert_index_defaults, genesis_ledger, normalize_rows_array, normalize_sparql_bindings,
-    MemoryFluree, MemoryLedger,
+    assert_index_defaults, genesis_ledger, normalize_rows, normalize_rows_array,
+    normalize_sparql_bindings, MemoryFluree, MemoryLedger,
 };
 
 fn normalize_object_rows(value: &JsonValue) -> Vec<String> {
@@ -1199,6 +1199,612 @@ async fn sparql_concat_with_langtag_argument() {
             ["Jenny Bob's handle is jbob"],
             ["Jane Doe's handle is jdoe"]
         ]))
+    );
+}
+
+// =========================================================================
+// SPARQL Property Path Tests: Inverse (^) and Alternative (|)
+// =========================================================================
+
+/// Seed a knows-chain for SPARQL property path tests.
+///
+/// Graph: a→b, b→c, b→d, d→e
+async fn sparql_seed_knows_chain(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, alias);
+    let insert = json!({
+        "@context": {"ex":"http://example.org/"},
+        "@graph": [
+            {"@id":"ex:a","ex:knows":{"@id":"ex:b"}},
+            {"@id":"ex:b","ex:knows":[{"@id":"ex:c"},{"@id":"ex:d"}]},
+            {"@id":"ex:d","ex:knows":{"@id":"ex:e"}}
+        ]
+    });
+    fluree.insert(ledger0, &insert).await.unwrap().ledger
+}
+
+#[tokio::test]
+async fn sparql_property_path_inverse_object_var() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = sparql_seed_knows_chain(&fluree, "sparql/path-inv-o:main").await;
+
+    // ^ex:knows from ex:b → who points to b? → a
+    let query = "\
+        PREFIX ex: <http://example.org/>
+        SELECT ?who WHERE { ex:b ^ex:knows ?who }";
+
+    let result = fluree
+        .query_sparql(&ledger, query)
+        .await
+        .expect("inverse path query should succeed");
+    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    assert_eq!(
+        normalize_rows(&jsonld),
+        normalize_rows(&json!(["ex:a"]))
+    );
+}
+
+#[tokio::test]
+async fn sparql_property_path_inverse_subject_var() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = sparql_seed_knows_chain(&fluree, "sparql/path-inv-s:main").await;
+
+    // ?who ^ex:knows ex:a → who is known-by a? → b
+    let query = "\
+        PREFIX ex: <http://example.org/>
+        SELECT ?who WHERE { ?who ^ex:knows ex:a }";
+
+    let result = fluree
+        .query_sparql(&ledger, query)
+        .await
+        .expect("inverse path subject var query should succeed");
+    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    assert_eq!(
+        normalize_rows(&jsonld),
+        normalize_rows(&json!(["ex:b"]))
+    );
+}
+
+#[tokio::test]
+async fn sparql_property_path_alternative_object_var() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "sparql/path-alt-o:main");
+    let insert = json!({
+        "@context": {"ex":"http://example.org/"},
+        "@graph": [
+            {"@id":"ex:a","ex:knows":{"@id":"ex:b"}},
+            {"@id":"ex:a","ex:likes":{"@id":"ex:x"}}
+        ]
+    });
+    let ledger = fluree.insert(ledger0, &insert).await.unwrap().ledger;
+
+    // ex:knows|ex:likes from ex:a → ex:b and ex:x
+    let query = "\
+        PREFIX ex: <http://example.org/>
+        SELECT ?o WHERE { ex:a ex:knows|ex:likes ?o }";
+
+    let result = fluree
+        .query_sparql(&ledger, query)
+        .await
+        .expect("alternative path query should succeed");
+    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    assert_eq!(
+        normalize_rows(&jsonld),
+        normalize_rows(&json!(["ex:b", "ex:x"]))
+    );
+}
+
+#[tokio::test]
+async fn sparql_property_path_alternative_with_inverse() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = sparql_seed_knows_chain(&fluree, "sparql/path-alt-inv:main").await;
+
+    // ex:knows|^ex:knows from ex:b → forward (c, d) + inverse (a)
+    let query = "\
+        PREFIX ex: <http://example.org/>
+        SELECT ?who WHERE { ex:b ex:knows|^ex:knows ?who }";
+
+    let result = fluree
+        .query_sparql(&ledger, query)
+        .await
+        .expect("alternative with inverse query should succeed");
+    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    assert_eq!(
+        normalize_rows(&jsonld),
+        normalize_rows(&json!(["ex:a", "ex:c", "ex:d"]))
+    );
+}
+
+#[tokio::test]
+async fn sparql_property_path_alternative_three_way() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "sparql/path-alt-3:main");
+    let insert = json!({
+        "@context": {"ex":"http://example.org/"},
+        "@graph": [
+            {"@id":"ex:a","ex:knows":{"@id":"ex:b"}},
+            {"@id":"ex:a","ex:likes":{"@id":"ex:c"}},
+            {"@id":"ex:a","ex:trusts":{"@id":"ex:d"}}
+        ]
+    });
+    let ledger = fluree.insert(ledger0, &insert).await.unwrap().ledger;
+
+    // ex:knows|ex:likes|ex:trusts from ex:a → b, c, d
+    let query = "\
+        PREFIX ex: <http://example.org/>
+        SELECT ?o WHERE { ex:a ex:knows|ex:likes|ex:trusts ?o }";
+
+    let result = fluree
+        .query_sparql(&ledger, query)
+        .await
+        .expect("three-way alternative query should succeed");
+    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    assert_eq!(
+        normalize_rows(&jsonld),
+        normalize_rows(&json!(["ex:b", "ex:c", "ex:d"]))
+    );
+}
+
+#[tokio::test]
+async fn sparql_property_path_alternative_duplicate_semantics() {
+    // When both predicates match the same (s,o) pair, UNION bag semantics
+    // produces the result twice (one per branch).
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "sparql/path-alt-dup:main");
+    let insert = json!({
+        "@context": {"ex":"http://example.org/"},
+        "@graph": [
+            {"@id":"ex:a","ex:knows":{"@id":"ex:b"}},
+            {"@id":"ex:a","ex:likes":{"@id":"ex:b"}}
+        ]
+    });
+    let ledger = fluree.insert(ledger0, &insert).await.unwrap().ledger;
+
+    let query = "\
+        PREFIX ex: <http://example.org/>
+        SELECT ?o WHERE { ex:a ex:knows|ex:likes ?o }";
+
+    let result = fluree
+        .query_sparql(&ledger, query)
+        .await
+        .expect("duplicate semantics query should succeed");
+    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    // Bag semantics: ex:b appears once per matching branch
+    assert_eq!(
+        normalize_rows(&jsonld),
+        normalize_rows(&json!(["ex:b", "ex:b"]))
+    );
+}
+
+#[tokio::test]
+async fn sparql_property_path_nested_alternative_under_transitive_errors() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = sparql_seed_knows_chain(&fluree, "sparql/path-alt-trans-err:main").await;
+
+    // (ex:knows|ex:likes)+ — alternative inside transitive is not supported
+    let query = "\
+        PREFIX ex: <http://example.org/>
+        SELECT ?o WHERE { ex:a (ex:knows|ex:likes)+ ?o }";
+
+    let result = fluree.query_sparql(&ledger, query).await;
+    assert!(
+        result.is_err(),
+        "Nested alternative under transitive should error"
+    );
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("simple predicate IRI"),
+        "Error should mention 'simple predicate IRI', got: {}",
+        msg
+    );
+}
+
+// =========================================================================
+// SPARQL Property Path Tests: Sequence (/)
+// =========================================================================
+
+/// Seed chain data for SPARQL sequence tests.
+///
+/// Graph: alice --friend--> bob --friend--> carol
+///        alice --name--> "Alice"
+///        bob   --name--> "Bob"
+///        carol --name--> "Carol"
+///        alice --parent--> bob
+///        bob   --parent--> carol
+async fn sparql_seed_chain_data(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, alias);
+    let insert = json!({
+        "@context": {"ex":"http://example.org/"},
+        "@graph": [
+            {
+                "@id": "ex:alice",
+                "ex:name": "Alice",
+                "ex:friend": {"@id": "ex:bob"},
+                "ex:parent": {"@id": "ex:bob"}
+            },
+            {
+                "@id": "ex:bob",
+                "ex:name": "Bob",
+                "ex:friend": {"@id": "ex:carol"},
+                "ex:parent": {"@id": "ex:carol"}
+            },
+            {
+                "@id": "ex:carol",
+                "ex:name": "Carol"
+            }
+        ]
+    });
+    fluree.insert(ledger0, &insert).await.unwrap().ledger
+}
+
+#[tokio::test]
+async fn sparql_property_path_sequence_two_step() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = sparql_seed_chain_data(&fluree, "sparql/path-seq-2:main").await;
+
+    // ex:friend/ex:name from ex:alice → bob's name → "Bob"
+    let query = "\
+        PREFIX ex: <http://example.org/>
+        SELECT ?name WHERE { ex:alice ex:friend/ex:name ?name }";
+
+    let result = fluree
+        .query_sparql(&ledger, query)
+        .await
+        .expect("two-step sequence query should succeed");
+    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    assert_eq!(
+        normalize_rows(&jsonld),
+        normalize_rows(&json!(["Bob"]))
+    );
+}
+
+#[tokio::test]
+async fn sparql_property_path_sequence_three_step() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = sparql_seed_chain_data(&fluree, "sparql/path-seq-3:main").await;
+
+    // ex:friend/ex:friend/ex:name from ex:alice → carol's name → "Carol"
+    let query = "\
+        PREFIX ex: <http://example.org/>
+        SELECT ?name WHERE { ex:alice ex:friend/ex:friend/ex:name ?name }";
+
+    let result = fluree
+        .query_sparql(&ledger, query)
+        .await
+        .expect("three-step sequence query should succeed");
+    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    assert_eq!(
+        normalize_rows(&jsonld),
+        normalize_rows(&json!(["Carol"]))
+    );
+}
+
+#[tokio::test]
+async fn sparql_property_path_sequence_with_inverse() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = sparql_seed_chain_data(&fluree, "sparql/path-seq-inv:main").await;
+
+    // ^ex:friend/ex:name from ex:bob → who has ex:bob as friend (alice) → alice's name → "Alice"
+    let query = "\
+        PREFIX ex: <http://example.org/>
+        SELECT ?name WHERE { ex:bob ^ex:friend/ex:name ?name }";
+
+    let result = fluree
+        .query_sparql(&ledger, query)
+        .await
+        .expect("sequence with inverse query should succeed");
+    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    assert_eq!(
+        normalize_rows(&jsonld),
+        normalize_rows(&json!(["Alice"]))
+    );
+}
+
+#[tokio::test]
+async fn sparql_property_path_sequence_wildcard_hides_internal_vars() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = sparql_seed_chain_data(&fluree, "sparql/path-seq-wc:main").await;
+
+    // SELECT * with a sequence path — internal ?__pp vars should not appear
+    let query = "\
+        PREFIX ex: <http://example.org/>
+        SELECT * WHERE { ex:alice ex:friend/ex:name ?name }";
+
+    let result = fluree
+        .query_sparql(&ledger, query)
+        .await
+        .expect("wildcard sequence query should succeed");
+    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+
+    // Verify results contain ?name but no ?__pp* keys
+    let arr = jsonld.as_array().expect("result should be array");
+    assert!(!arr.is_empty(), "Should have results");
+    for row in arr {
+        let obj = row.as_object().expect("row should be object");
+        for key in obj.keys() {
+            assert!(
+                !key.starts_with("?__"),
+                "Wildcard output should not contain internal variables, found: {}",
+                key
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn sparql_property_path_sequence_transitive_step_errors() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = sparql_seed_chain_data(&fluree, "sparql/path-seq-err:main").await;
+
+    // ex:friend+/ex:name — transitive inside sequence is not supported
+    let query = "\
+        PREFIX ex: <http://example.org/>
+        SELECT ?name WHERE { ex:alice ex:friend+/ex:name ?name }";
+
+    let result = fluree.query_sparql(&ledger, query).await;
+    assert!(
+        result.is_err(),
+        "Transitive step inside sequence should error"
+    );
+    let msg = format!("{}", result.unwrap_err());
+    assert!(
+        msg.contains("simple predicates") || msg.contains("Sequence"),
+        "Error should mention sequence step constraints, got: {}",
+        msg
+    );
+}
+
+// =========================================================================
+// SPARQL Property Path Tests: Inverse-Transitive (^p+ / ^p*)
+// =========================================================================
+
+#[tokio::test]
+async fn sparql_property_path_inverse_one_or_more() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = sparql_seed_knows_chain(&fluree, "sparql/path-inv-plus:main").await;
+
+    // ^ex:knows+ from ex:c → reverse-traverse one-or-more: who knows c? b. who knows b? a.
+    let query = "\
+        PREFIX ex: <http://example.org/>
+        SELECT ?x WHERE { ex:c ^ex:knows+ ?x }";
+
+    let result = fluree
+        .query_sparql(&ledger, query)
+        .await
+        .expect("inverse one-or-more query should succeed");
+    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    assert_eq!(
+        normalize_rows(&jsonld),
+        normalize_rows(&json!(["ex:a", "ex:b"]))
+    );
+}
+
+#[tokio::test]
+async fn sparql_property_path_inverse_zero_or_more() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = sparql_seed_knows_chain(&fluree, "sparql/path-inv-star:main").await;
+
+    // ^ex:knows* from ex:b → reverse-traverse zero-or-more (includes self):
+    // zero hops: b. who knows b? a. who knows a? nobody.
+    let query = "\
+        PREFIX ex: <http://example.org/>
+        SELECT ?x WHERE { ex:b ^ex:knows* ?x }";
+
+    let result = fluree
+        .query_sparql(&ledger, query)
+        .await
+        .expect("inverse zero-or-more query should succeed");
+    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    assert_eq!(
+        normalize_rows(&jsonld),
+        normalize_rows(&json!(["ex:a", "ex:b"]))
+    );
+}
+
+// =========================================================================
+// SPARQL Property Path Tests: Sequence-in-Alternative
+// =========================================================================
+
+/// Seed data for alternative-of-sequences tests.
+///
+/// Graph:
+///   ex:alice --ex:friend--> ex:bob
+///   ex:alice --ex:colleague--> ex:carol
+///   ex:bob   --ex:name--> "Bob"
+///   ex:carol --ex:name--> "Carol"
+async fn sparql_seed_alt_seq_data(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, alias);
+    let insert = json!({
+        "@context": {"ex":"http://example.org/"},
+        "@graph": [
+            {"@id":"ex:alice","ex:friend":{"@id":"ex:bob"},"ex:colleague":{"@id":"ex:carol"}},
+            {"@id":"ex:bob","ex:name":"Bob"},
+            {"@id":"ex:carol","ex:name":"Carol"}
+        ]
+    });
+    fluree.insert(ledger0, &insert).await.unwrap().ledger
+}
+
+#[tokio::test]
+async fn sparql_property_path_alternative_of_sequences() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = sparql_seed_alt_seq_data(&fluree, "sparql/path-alt-seq:main").await;
+
+    // (ex:friend/ex:name) | (ex:colleague/ex:name) from ex:alice
+    // Should return "Bob" (via friend) and "Carol" (via colleague)
+    let query = "\
+        PREFIX ex: <http://example.org/>
+        SELECT ?name WHERE { ex:alice (ex:friend/ex:name)|(ex:colleague/ex:name) ?name }";
+
+    let result = fluree
+        .query_sparql(&ledger, query)
+        .await
+        .expect("alternative-of-sequences query should succeed");
+    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    assert_eq!(
+        normalize_rows(&jsonld),
+        normalize_rows(&json!(["Bob", "Carol"]))
+    );
+}
+
+#[tokio::test]
+async fn sparql_property_path_alternative_mixed_simple_and_sequence() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = sparql_seed_alt_seq_data(&fluree, "sparql/path-alt-mix:main").await;
+
+    // Give alice a direct name
+    let insert2 = json!({
+        "@context": {"ex":"http://example.org/"},
+        "@graph": [{"@id":"ex:alice","ex:name":"Alice"}]
+    });
+    let ledger = fluree.insert(ledger, &insert2).await.unwrap().ledger;
+
+    // ex:name | (ex:friend/ex:name) — direct name OR friend's name
+    let query = "\
+        PREFIX ex: <http://example.org/>
+        SELECT ?val WHERE { ex:alice ex:name|(ex:friend/ex:name) ?val }";
+
+    let result = fluree
+        .query_sparql(&ledger, query)
+        .await
+        .expect("mixed simple+sequence alternative query should succeed");
+    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    assert_eq!(
+        normalize_rows(&jsonld),
+        normalize_rows(&json!(["Alice", "Bob"]))
+    );
+}
+
+// =============================================================================
+// SPARQL Alternative-in-Sequence distribution tests
+// =============================================================================
+
+async fn sparql_seed_alt_in_seq_data(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, alias);
+    let insert = json!({
+        "@context": {"ex":"http://example.org/"},
+        "@graph": [
+            {
+                "@id": "ex:alice",
+                "ex:name": "Alice",
+                "ex:nick": "Ali",
+                "ex:friend": {"@id": "ex:bob"}
+            },
+            {
+                "@id": "ex:bob",
+                "ex:name": "Bob",
+                "ex:nick": "Bobby"
+            }
+        ]
+    });
+    fluree.insert(ledger0, &insert).await.unwrap().ledger
+}
+
+#[tokio::test]
+async fn sparql_property_path_sequence_with_alternative_step() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = sparql_seed_alt_in_seq_data(&fluree, "sparql/path-alt-in-seq:main").await;
+
+    // ex:friend/(ex:name|ex:nick) — friend's name or nick
+    let query = "\
+        PREFIX ex: <http://example.org/>
+        SELECT ?val WHERE { ex:alice ex:friend/(ex:name|ex:nick) ?val }";
+
+    let result = fluree
+        .query_sparql(&ledger, query)
+        .await
+        .expect("alternative-in-sequence query should succeed");
+    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    assert_eq!(
+        normalize_rows(&jsonld),
+        normalize_rows(&json!(["Bob", "Bobby"]))
+    );
+}
+
+#[tokio::test]
+async fn sparql_property_path_sequence_with_middle_alternative() {
+    // Three-step chain with middle alternative: ex:friend/(ex:name|ex:nick)
+    // Uses the same data but with a different ledger alias to test isolation
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "sparql/path-mid-alt:main");
+    let insert = json!({
+        "@context": {"ex":"http://example.org/"},
+        "@graph": [
+            {
+                "@id": "ex:alice",
+                "ex:knows": {"@id": "ex:bob"}
+            },
+            {
+                "@id": "ex:bob",
+                "ex:friend": {"@id": "ex:carol"}
+            },
+            {
+                "@id": "ex:carol",
+                "ex:name": "Carol",
+                "ex:nick": "Caz"
+            }
+        ]
+    });
+    let ledger = fluree.insert(ledger0, &insert).await.unwrap().ledger;
+
+    // ex:knows/ex:friend/(ex:name|ex:nick) — three steps, alternative in last position
+    let query = "\
+        PREFIX ex: <http://example.org/>
+        SELECT ?val WHERE { ex:alice ex:knows/ex:friend/(ex:name|ex:nick) ?val }";
+
+    let result = fluree
+        .query_sparql(&ledger, query)
+        .await
+        .expect("three-step alternative-in-sequence query should succeed");
+    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    assert_eq!(
+        normalize_rows(&jsonld),
+        normalize_rows(&json!(["Carol", "Caz"]))
+    );
+}
+
+#[tokio::test]
+async fn sparql_property_path_inverse_of_sequence() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = sparql_seed_chain_data(&fluree, "sparql/path-inv-seq:main").await;
+
+    // ^(ex:friend/ex:friend): reverse sequence and invert each step
+    // Rewrites to (^ex:friend)/(^ex:friend)
+    // From ex:carol: ^friend → bob (bob has friend→carol), ^friend → alice (alice has friend→bob)
+    let query = "\
+        PREFIX ex: <http://example.org/>
+        SELECT ?who WHERE { ex:carol ^(ex:friend/ex:friend) ?who }";
+
+    let result = fluree
+        .query_sparql(&ledger, query)
+        .await
+        .expect("inverse-of-sequence query should succeed");
+    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    assert_eq!(
+        normalize_rows(&jsonld),
+        normalize_rows(&json!(["ex:alice"]))
+    );
+}
+
+#[tokio::test]
+async fn sparql_property_path_inverse_of_alternative() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = sparql_seed_chain_data(&fluree, "sparql/path-inv-alt:main").await;
+
+    // ^(ex:friend|ex:parent): distribute inverse into each branch
+    // Rewrites to (^ex:friend)|(^ex:parent)
+    // From ex:bob: ^friend → alice, ^parent → alice (both branches find alice)
+    let query = "\
+        PREFIX ex: <http://example.org/>
+        SELECT DISTINCT ?who WHERE { ex:bob ^(ex:friend|ex:parent) ?who }";
+
+    let result = fluree
+        .query_sparql(&ledger, query)
+        .await
+        .expect("inverse-of-alternative query should succeed");
+    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    assert_eq!(
+        normalize_rows(&jsonld),
+        normalize_rows(&json!(["ex:alice"]))
     );
 }
 

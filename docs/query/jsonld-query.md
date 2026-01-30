@@ -299,6 +299,233 @@ Provide initial bindings:
 }
 ```
 
+### Property Paths
+
+Property paths enable transitive traversal of predicates, following chains of relationships across multiple hops. Define a path alias in `@context` using `@path`, then use the alias as a key in WHERE node-maps.
+
+**Defining a Path Alias:**
+
+Add a term definition with `@path` to your `@context`. The value of `@path` can be a string (SPARQL property path syntax) or an array (S-expression form).
+
+**String Form (SPARQL syntax):**
+
+```json
+{
+  "@context": {
+    "ex": "http://example.org/",
+    "knowsPlus": { "@path": "ex:knows+" }
+  },
+  "select": ["?who"],
+  "where": [
+    { "@id": "ex:alice", "knowsPlus": "?who" }
+  ]
+}
+```
+
+This returns all entities reachable from `ex:alice` by following one or more `ex:knows` edges transitively.
+
+**Array Form (S-expression):**
+
+```json
+{
+  "@context": {
+    "ex": "http://example.org/",
+    "knowsPlus": { "@path": ["+", "ex:knows"] }
+  },
+  "select": ["?who"],
+  "where": [
+    { "@id": "ex:alice", "knowsPlus": "?who" }
+  ]
+}
+```
+
+The array form uses the operator as the first element followed by its operands.
+
+**Supported Operators:**
+
+| Operator | String syntax | Array syntax | Description |
+|----------|--------------|--------------|-------------|
+| One or more | `ex:p+` | `["+", "ex:p"]` | Transitive closure (1+ hops) |
+| Zero or more | `ex:p*` | `["*", "ex:p"]` | Reflexive transitive closure (0+ hops) |
+| Inverse | `^ex:p` | `["^", "ex:p"]` | Traverse predicate in reverse direction |
+| Alternative | <code>ex:a&#124;ex:b</code> | <code>["&#124;", "ex:a", "ex:b"]</code> | Match any of several predicates |
+| Sequence | `ex:a/ex:b` | `["/", "ex:a", "ex:b"]` | Follow a chain of predicates (property chain) |
+
+Zero-or-more (`*`) includes the starting node itself in the results (zero hops).
+
+Sequence (`/`) compiles into a chain of triple patterns joined by internal
+intermediate variables. Each step must be a simple predicate or an inverse simple
+predicate (`^ex:p`). For example, `"ex:friend/ex:name"` matches paths where
+subject has a `ex:friend` whose `ex:name` is the result.
+
+**Parsed but Not Yet Supported:**
+
+The following operators are recognized by the parser but currently rejected (not yet supported for execution):
+
+| Operator | String syntax | Array syntax |
+|----------|--------------|--------------|
+| Zero or one | `ex:p?` | `["?", "ex:p"]` |
+
+**Subject and Object Variables:**
+
+Path aliases work with variables on either side:
+
+```json
+{
+  "@context": {
+    "ex": "http://example.org/",
+    "knowsPlus": { "@path": "ex:knows+" }
+  },
+  "select": ["?x", "?y"],
+  "where": [
+    { "@id": "?x", "knowsPlus": "?y" }
+  ]
+}
+```
+
+This returns all pairs `(?x, ?y)` where `?y` is transitively reachable from `?x` via `ex:knows`.
+
+**Fixed Subject or Object:**
+
+You can also fix one end to an IRI:
+
+```json
+{
+  "@context": {
+    "ex": "http://example.org/",
+    "knowsPlus": { "@path": "ex:knows+" }
+  },
+  "select": ["?who"],
+  "where": [
+    { "@id": "?who", "knowsPlus": { "@id": "ex:bob" } }
+  ]
+}
+```
+
+This finds all entities that can reach `ex:bob` through one or more `ex:knows` hops.
+
+**Inverse Example:**
+
+Find entities that know `ex:bob` (traverse `ex:knows` in reverse):
+
+```json
+{
+  "@context": {
+    "ex": "http://example.org/",
+    "knownBy": { "@path": "^ex:knows" }
+  },
+  "select": ["?who"],
+  "where": [
+    { "@id": "ex:bob", "knownBy": "?who" }
+  ]
+}
+```
+
+**Alternative Example:**
+
+Match entities connected by either `ex:knows` or `ex:likes`:
+
+```json
+{
+  "@context": {
+    "ex": "http://example.org/",
+    "connected": { "@path": "ex:knows|ex:likes" }
+  },
+  "select": ["?who"],
+  "where": [
+    { "@id": "ex:alice", "connected": "?who" }
+  ]
+}
+```
+
+Inverse can also be applied to complex paths (sequences and alternatives):
+
+- `^(ex:friend/ex:name)` — inverse of a sequence: reverses the step order and inverts each step, producing `(^ex:name)/(^ex:friend)`
+- `^(ex:name|ex:nick)` — inverse of an alternative: distributes the inverse into each branch, producing `(^ex:name)|(^ex:nick)`
+- Double inverse cancels: `^(^ex:p)` simplifies to `ex:p`
+
+Array form examples:
+
+```json
+{ "@path": ["^", ["/", "ex:friend", "ex:name"]] }
+{ "@path": ["^", ["|", "ex:name", "ex:nick"]] }
+```
+
+Inverse is supported inside alternative branches (e.g. `ex:knows|^ex:knows` matches both directions of the `ex:knows` predicate).
+
+Alternative branches can also be sequence chains. For example, `ex:friend/ex:name|ex:colleague/ex:name` returns the name of a friend OR the name of a colleague:
+
+```json
+{
+  "@context": {
+    "ex": "http://example.org/",
+    "contactName": { "@path": "ex:friend/ex:name|ex:colleague/ex:name" }
+  },
+  "select": ["?name"],
+  "where": [
+    { "@id": "ex:alice", "contactName": "?name" }
+  ]
+}
+```
+
+Branches can freely mix simple predicates, inverse predicates, and sequence chains (e.g. `ex:name|ex:friend/ex:name|^ex:colleague`).
+
+Alternative uses UNION semantics (bag, not set): when multiple branches match the same `(subject, object)` pair, duplicate solutions are produced. Use `selectDistinct` if set semantics are needed.
+
+**Sequence (Property Chain) Example:**
+
+Follow a chain of predicates. The string form uses `/` to separate steps:
+
+```json
+{
+  "@context": {
+    "ex": "http://example.org/",
+    "friendName": { "@path": "ex:friend/ex:name" }
+  },
+  "select": ["?person", "?name"],
+  "where": [
+    { "@id": "?person", "friendName": "?name" }
+  ]
+}
+```
+
+The array form uses `"/"` as the operator:
+
+```json
+{ "@path": ["/", "ex:friend", "ex:name"] }
+```
+
+Sequence steps can include inverse predicates. For example, `"^ex:parent/ex:name"` traverses the `ex:parent` link backwards, then follows `ex:name`:
+
+```json
+{ "@path": "^ex:parent/ex:name" }
+```
+
+Longer chains are supported: `"ex:friend/ex:address/ex:city"` follows three hops.
+
+Sequence steps can also be alternatives. For example, `"ex:friend/(ex:name|ex:nick)"` distributes the alternative into a union of chains (`ex:friend/ex:name` and `ex:friend/ex:nick`):
+
+```json
+{ "@path": "ex:friend/(ex:name|ex:nick)" }
+```
+
+Array form:
+
+```json
+{ "@path": ["/", "ex:friend", ["|", "ex:name", "ex:nick"]] }
+```
+
+Multiple alternative steps are supported: `"(ex:a|ex:b)/(ex:c|ex:d)"` expands to 4 chains. A safety limit of 64 expanded chains is enforced to prevent combinatorial explosion.
+
+Each step must be a simple predicate (`ex:p`), inverse simple predicate (`^ex:p`), or an alternative of simple predicates (`(ex:a|ex:b)`). Transitive (`+`/`*`) and nested sequence modifiers are not allowed inside sequence steps.
+
+**Rules:**
+
+- `@path` and `@reverse` are mutually exclusive on the same term definition (produces an error).
+- `@path` and `@id` may coexist on the same term definition; when the alias key appears in a WHERE node-map, the `@path` definition is used.
+- Cycle detection is built in: transitive traversal terminates when it encounters a node already visited.
+- Variable names starting with `?__` are reserved for internal use (e.g., intermediate join variables generated by sequence paths). These variables will not appear in wildcard (`select: "*"`) output.
+
 ## Filter Functions
 
 ### Comparison Functions
