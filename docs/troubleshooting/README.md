@@ -24,6 +24,15 @@ Tools and techniques for query debugging:
 - Identifying slow queries
 - Optimizing query patterns
 
+### [Performance Investigation](performance-investigation.md)
+
+Deep tracing and OpenTelemetry-based performance investigation:
+- Enabling deep tracing for query and transaction waterfalls
+- Setting up Jaeger/Tempo for span visualization
+- Interpreting phase breakdowns to find bottlenecks
+- Correlating query tracking with OTEL span fields
+- High-throughput sampling strategies
+
 ## Quick Diagnostics
 
 ### Health Check

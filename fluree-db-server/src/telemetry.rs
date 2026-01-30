@@ -5,7 +5,9 @@
 
 use crate::config::ServerConfig;
 use std::env;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+use tracing_subscriber::{
+    layer::SubscriberExt, registry::LookupSpan, util::SubscriberInitExt, EnvFilter, Layer,
+};
 
 /// Telemetry configuration
 #[derive(Debug, Clone)]
@@ -69,8 +71,7 @@ impl TelemetryConfig {
         let rust_log = env::var("RUST_LOG").unwrap_or_default();
         let default_level = if rust_log.is_empty() {
             // Fallback to LOG_LEVEL env var, then server config, then "info"
-            env::var("LOG_LEVEL")
-                .unwrap_or_else(|_| server_config.log_level.clone())
+            env::var("LOG_LEVEL").unwrap_or_else(|_| server_config.log_level.clone())
         } else {
             server_config.log_level.clone() // Not used when RUST_LOG is set, but store for consistency
         };
@@ -95,7 +96,6 @@ impl Default for TelemetryConfig {
 
 impl TelemetryConfig {
     fn from_env_with_defaults(default_level: String) -> Self {
-
         Self {
             log_filter: env::var("RUST_LOG").unwrap_or_default(),
             default_level,
@@ -158,58 +158,69 @@ pub fn init_logging(config: &TelemetryConfig) {
         // NOTE: `tracing-subscriber` JSON formatting requires enabling its `json` feature.
         // For now, keep the "json" option as a structured-ish compact format.
         LogFormat::Json => tracing_subscriber::fmt::layer().compact().boxed(),
-        LogFormat::Human => tracing_subscriber::fmt::layer()
-            .compact()
-            .boxed(),
+        LogFormat::Human => tracing_subscriber::fmt::layer().compact().boxed(),
     };
 
-    let registry = tracing_subscriber::registry()
-        .with(filter)
-        .with(fmt_layer);
-
-    // Add OTEL layer if properly configured
+    // Build otel layer as Option (None is a no-op Layer)
     #[cfg(feature = "otel")]
-    let registry = {
-        if config.is_otel_enabled() {
-            registry.with(init_otel_layer(config))
-        } else {
-            registry
-        }
+    let otel_layer = if config.is_otel_enabled() {
+        Some(init_otel_layer(config))
+    } else {
+        None
     };
+    #[cfg(not(feature = "otel"))]
+    let otel_layer: Option<tracing_subscriber::layer::Identity> = None;
 
     // Use try_init to avoid panicking if another thread set the subscriber
     // between our has_been_set() check and now (race condition in tests)
-    let _ = registry.try_init();
+    let _ = tracing_subscriber::registry()
+        .with(filter)
+        .with(fmt_layer)
+        .with(otel_layer)
+        .try_init();
 }
+
+/// Global handle to the tracer provider for graceful shutdown.
+#[cfg(feature = "otel")]
+static TRACER_PROVIDER: std::sync::OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> =
+    std::sync::OnceLock::new();
 
 /// Initialize OTEL tracing layer
 ///
 /// Only call this if OTEL environment variables are set.
 /// Returns a tracing layer that exports spans via OTLP.
+///
+/// The `SdkTracerProvider` is stored in a module-level `OnceLock` so
+/// that `shutdown_tracer()` can flush remaining spans on exit.
 #[cfg(feature = "otel")]
-fn init_otel_layer(config: &TelemetryConfig) -> impl Layer<tracing_subscriber::Registry> + Send + Sync {
-    use opentelemetry::{global, KeyValue};
-    use opentelemetry_otlp::WithExportConfig;
-    use opentelemetry_sdk::trace::{self, Sampler};
-    use tracing_opentelemetry::OpenTelemetryLayer;
+fn init_otel_layer<S>(config: &TelemetryConfig) -> impl Layer<S> + Send + Sync
+where
+    S: tracing::Subscriber + for<'span> LookupSpan<'span> + Send + Sync,
+{
+    use opentelemetry::trace::TracerProvider as _;
+    use opentelemetry::KeyValue;
+    use opentelemetry_otlp::{SpanExporter, WithExportConfig};
+    use opentelemetry_sdk::trace::{SdkTracerProvider, Sampler};
 
     // Determine protocol (default: grpc)
     let protocol = env::var("OTEL_EXPORTER_OTLP_PROTOCOL")
         .unwrap_or_else(|_| "grpc".to_string())
         .to_lowercase();
 
+    let endpoint = config.otel_endpoint.as_ref().unwrap().clone();
+
     // Configure OTLP exporter based on protocol
-    let otlp_exporter = match protocol.as_str() {
-        "http/protobuf" | "http" => {
-            opentelemetry_otlp::new_exporter()
-                .http()
-                .with_endpoint(config.otel_endpoint.as_ref().unwrap())
-        }
-        "grpc" | _ => {
-            opentelemetry_otlp::new_exporter()
-                .tonic()
-                .with_endpoint(config.otel_endpoint.as_ref().unwrap())
-        }
+    let exporter = match protocol.as_str() {
+        "http/protobuf" | "http" => SpanExporter::builder()
+            .with_http()
+            .with_endpoint(endpoint)
+            .build()
+            .expect("Failed to create HTTP OTLP span exporter"),
+        _ => SpanExporter::builder()
+            .with_tonic()
+            .with_endpoint(endpoint)
+            .build()
+            .expect("Failed to create gRPC OTLP span exporter"),
     };
 
     // Configure sampler based on environment
@@ -231,32 +242,44 @@ fn init_otel_layer(config: &TelemetryConfig) -> impl Layer<tracing_subscriber::R
         _ => Sampler::AlwaysOn, // default
     };
 
-    // Configure tracer provider
-    let tracer_provider = opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_batch_exporter(otlp_exporter, opentelemetry_sdk::runtime::Tokio)
-        .with_sampler(sampler)
-        .with_resource(opentelemetry_sdk::Resource::new(vec![
-            KeyValue::new("service.name", config.otel_service_name.as_ref().unwrap()),
-            KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
-        ]))
+    let service_name = config.otel_service_name.as_ref().unwrap().clone();
+
+    // Build resource describing this service
+    let resource = opentelemetry_sdk::Resource::builder()
+        .with_service_name(service_name)
+        .with_attributes([KeyValue::new(
+            "service.version",
+            env!("CARGO_PKG_VERSION"),
+        )])
         .build();
 
-    // Set global tracer provider
-    global::set_tracer_provider(tracer_provider);
+    // Build tracer provider (batch export uses a background thread, no async runtime needed)
+    let tracer_provider = SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_sampler(sampler)
+        .with_resource(resource)
+        .build();
 
-    // Create tracing layer
-    OpenTelemetryLayer::new(global::tracer("fluree-db"))
+    // Store provider for later shutdown
+    let _ = TRACER_PROVIDER.set(tracer_provider.clone());
+
+    let tracer = tracer_provider.tracer("fluree-db");
+
+    tracing_opentelemetry::layer().with_tracer(tracer)
 }
-
 
 /// Shutdown telemetry gracefully
 ///
 /// Call this before application exit to ensure all spans are exported.
-/// This is a no-op if OTEL is not enabled.
+/// This is a no-op if OTEL is not enabled or no provider was initialized.
 pub async fn shutdown_tracer() {
     #[cfg(feature = "otel")]
     {
-        opentelemetry::global::shutdown_tracer_provider();
+        if let Some(provider) = TRACER_PROVIDER.get() {
+            if let Err(e) = provider.shutdown() {
+                tracing::warn!("OTEL tracer provider shutdown error: {e}");
+            }
+        }
     }
     // No-op when OTEL feature is disabled
 }
@@ -269,7 +292,10 @@ pub async fn shutdown_tracer() {
 /// 3. x-trace-id (generic)
 ///
 /// Returns None if no request ID found.
-pub fn extract_request_id(headers: &axum::http::HeaderMap, config: &TelemetryConfig) -> Option<String> {
+pub fn extract_request_id(
+    headers: &axum::http::HeaderMap,
+    config: &TelemetryConfig,
+) -> Option<String> {
     // Check configured header first
     if let Some(value) = headers.get(&config.request_id_header) {
         if let Ok(id) = value.to_str() {
@@ -378,7 +404,11 @@ pub fn handle_query_text_logging(
 ) -> (Option<String>, Option<String>, Option<String>) {
     match config.query_text_logging {
         QueryTextLogging::Off => (None, None, None),
-        QueryTextLogging::Full => (None, Some(query_text.to_string()), Some(query_text.to_string())),
+        QueryTextLogging::Full => (
+            None,
+            Some(query_text.to_string()),
+            Some(query_text.to_string()),
+        ),
         QueryTextLogging::Hash => {
             // Log fast non-crypto hash at info level, full text at trace
             use ahash::AHasher;
@@ -401,7 +431,7 @@ pub fn log_query_text(query_text: &str, config: &TelemetryConfig, span: &tracing
     let (info_text, debug_text, trace_text) = handle_query_text_logging(query_text, config);
 
     if let Some(hash) = info_text {
-        span.record("query_hash", &hash.as_str());
+        span.record("query_hash", hash.as_str());
         tracing::info!(query_hash = %hash, "query logged");
     }
 
@@ -432,12 +462,18 @@ mod tests {
 
         // Test configured header
         headers.insert("x-request-id", "test-123".parse().unwrap());
-        assert_eq!(extract_request_id(&headers, &config), Some("test-123".to_string()));
+        assert_eq!(
+            extract_request_id(&headers, &config),
+            Some("test-123".to_string())
+        );
 
         // Test AWS header fallback
         let mut headers = HeaderMap::new();
         headers.insert("x-amzn-trace-id", "aws-456".parse().unwrap());
-        assert_eq!(extract_request_id(&headers, &config), Some("aws-456".to_string()));
+        assert_eq!(
+            extract_request_id(&headers, &config),
+            Some("aws-456".to_string())
+        );
     }
 
     #[test]
@@ -445,19 +481,36 @@ mod tests {
         let mut headers = HeaderMap::new();
 
         // Test traceparent header
-        headers.insert("traceparent", "00-12345678901234567890123456789012-1234567890123456-01".parse().unwrap());
-        assert_eq!(extract_trace_id(&headers), Some("12345678901234567890123456789012".to_string()));
+        headers.insert(
+            "traceparent",
+            "00-12345678901234567890123456789012-1234567890123456-01"
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            extract_trace_id(&headers),
+            Some("12345678901234567890123456789012".to_string())
+        );
     }
 
     #[test]
     fn test_mask_sensitive_data() {
         let data = "secret-password";
 
-        assert_eq!(mask_sensitive_data(data, &SensitiveDataHandling::Off), "secret-password");
-        assert_eq!(mask_sensitive_data(data, &SensitiveDataHandling::Mask), "***************");
+        assert_eq!(
+            mask_sensitive_data(data, &SensitiveDataHandling::Off),
+            "secret-password"
+        );
+        assert_eq!(
+            mask_sensitive_data(data, &SensitiveDataHandling::Mask),
+            "***************"
+        );
         // Hash should be deterministic and different from input
         let hashed = mask_sensitive_data(data, &SensitiveDataHandling::Hash);
         assert_ne!(hashed, "secret-password");
-        assert_eq!(mask_sensitive_data(data, &SensitiveDataHandling::Hash), hashed); // deterministic
+        assert_eq!(
+            mask_sensitive_data(data, &SensitiveDataHandling::Hash),
+            hashed
+        ); // deterministic
     }
 }

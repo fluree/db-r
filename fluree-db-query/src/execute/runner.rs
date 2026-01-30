@@ -16,16 +16,18 @@ use crate::pattern::{Term, TriplePattern};
 use crate::reasoning::ReasoningOverlay;
 use crate::rewrite_owl_ql::Ontology;
 use crate::var_registry::VarRegistry;
-use fluree_db_core::{Db, NodeCache, StatsView, Storage, Tracker};
 #[cfg(feature = "native")]
 use fluree_db_core::OverlayProvider;
 #[cfg(feature = "native")]
 use fluree_db_core::PrefetchService;
+use fluree_db_core::{Db, NodeCache, StatsView, Storage, Tracker};
 use fluree_db_reasoner::DerivedFactsOverlay;
 use std::sync::Arc;
 
 use super::operator_tree::build_operator_tree;
-use super::reasoning_prep::{compute_derived_facts, effective_reasoning_modes, schema_hierarchy_with_overlay};
+use super::reasoning_prep::{
+    compute_derived_facts, effective_reasoning_modes, schema_hierarchy_with_overlay,
+};
 use super::rewrite_glue::rewrite_query_patterns;
 
 /// Query with execution options
@@ -103,41 +105,63 @@ pub async fn prepare_execution<S: Storage + 'static, C: NodeCache + 'static>(
 
     tracing::debug!("preparing query execution");
 
-    // Step 1: Compute schema hierarchy from overlay
-    let hierarchy = schema_hierarchy_with_overlay(db, overlay, to_t);
-
-    // Step 2: Determine effective reasoning modes
-    let reasoning = effective_reasoning_modes(&query.options.reasoning, hierarchy.is_some());
-
-    if reasoning.rdfs || reasoning.owl2ql || reasoning.owl2rl || reasoning.datalog {
-        tracing::debug!(
-            rdfs = reasoning.rdfs,
-            owl2ql = reasoning.owl2ql,
-            owl2rl = reasoning.owl2rl,
-            datalog = reasoning.datalog,
-            "reasoning enabled"
+    // Steps 1-4: Reasoning preparation (hierarchy, modes, derived facts, ontology)
+    let (hierarchy, reasoning, derived_overlay, ontology) = {
+        let span = tracing::debug_span!(
+            "reasoning_prep",
+            rdfs = tracing::field::Empty,
+            owl2ql = tracing::field::Empty,
+            owl2rl = tracing::field::Empty,
+            datalog = tracing::field::Empty,
         );
-    }
+        let _guard = span.enter();
 
-    // Step 3: Compute derived facts from OWL2-RL and/or datalog rules
-    let derived_overlay = compute_derived_facts(db, overlay, to_t, &reasoning).await;
+        // Step 1: Compute schema hierarchy from overlay
+        let hierarchy = schema_hierarchy_with_overlay(db, overlay, to_t);
 
-    // Step 4: Build ontology for OWL2-QL mode (if enabled)
-    // Note: We need to use the effective overlay for ontology building
-    let reasoning_overlay_for_ontology: Option<ReasoningOverlay<'_>> =
-        derived_overlay.as_ref().map(|derived| ReasoningOverlay::new(overlay, derived.clone()));
+        // Step 2: Determine effective reasoning modes
+        let reasoning = effective_reasoning_modes(&query.options.reasoning, hierarchy.is_some());
 
-    let effective_overlay_for_ontology: &dyn fluree_db_core::OverlayProvider =
-        reasoning_overlay_for_ontology
+        tracing::Span::current().record("rdfs", reasoning.rdfs);
+        tracing::Span::current().record("owl2ql", reasoning.owl2ql);
+        tracing::Span::current().record("owl2rl", reasoning.owl2rl);
+        tracing::Span::current().record("datalog", reasoning.datalog);
+
+        if reasoning.rdfs || reasoning.owl2ql || reasoning.owl2rl || reasoning.datalog {
+            tracing::debug!("reasoning enabled");
+        }
+
+        // Step 3: Compute derived facts from OWL2-RL and/or datalog rules
+        let derived_overlay = compute_derived_facts(db, overlay, to_t, &reasoning).await;
+
+        // Step 4: Build ontology for OWL2-QL mode (if enabled)
+        // Note: We need to use the effective overlay for ontology building
+        let reasoning_overlay_for_ontology: Option<ReasoningOverlay<'_>> = derived_overlay
             .as_ref()
-            .map(|o| o as &dyn fluree_db_core::OverlayProvider)
-            .unwrap_or(overlay);
+            .map(|derived| ReasoningOverlay::new(overlay, derived.clone()));
 
-    let ontology = if reasoning.owl2ql {
-        tracing::debug!("building OWL2-QL ontology");
-        Some(Ontology::from_db_with_overlay(db, effective_overlay_for_ontology, to_t as u64, to_t).await?)
-    } else {
-        None
+        let effective_overlay_for_ontology: &dyn fluree_db_core::OverlayProvider =
+            reasoning_overlay_for_ontology
+                .as_ref()
+                .map(|o| o as &dyn fluree_db_core::OverlayProvider)
+                .unwrap_or(overlay);
+
+        let ontology = if reasoning.owl2ql {
+            tracing::debug!("building OWL2-QL ontology");
+            Some(
+                Ontology::from_db_with_overlay(
+                    db,
+                    effective_overlay_for_ontology,
+                    to_t as u64,
+                    to_t,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+
+        (hierarchy, reasoning, derived_overlay, ontology)
     };
 
     // Step 5: Rewrite patterns for reasoning
@@ -147,7 +171,10 @@ pub async fn prepare_execution<S: Storage + 'static, C: NodeCache + 'static>(
     // we can safely encode IRIs to SIDs here.
     fn encode_term<S: Storage + 'static, C: NodeCache + 'static>(db: &Db<S, C>, t: &Term) -> Term {
         match t {
-            Term::Iri(iri) => db.encode_iri(iri).map(Term::Sid).unwrap_or_else(|| t.clone()),
+            Term::Iri(iri) => db
+                .encode_iri(iri)
+                .map(Term::Sid)
+                .unwrap_or_else(|| t.clone()),
             _ => t.clone(),
         }
     }
@@ -166,7 +193,9 @@ pub async fn prepare_execution<S: Storage + 'static, C: NodeCache + 'static>(
                     dt: tp.dt.clone(),
                     lang: tp.lang.clone(),
                 }),
-                Pattern::Optional(inner) => Pattern::Optional(encode_patterns_for_reasoning(db, inner)),
+                Pattern::Optional(inner) => {
+                    Pattern::Optional(encode_patterns_for_reasoning(db, inner))
+                }
                 Pattern::Union(branches) => Pattern::Union(
                     branches
                         .iter()
@@ -175,7 +204,9 @@ pub async fn prepare_execution<S: Storage + 'static, C: NodeCache + 'static>(
                 ),
                 Pattern::Minus(inner) => Pattern::Minus(encode_patterns_for_reasoning(db, inner)),
                 Pattern::Exists(inner) => Pattern::Exists(encode_patterns_for_reasoning(db, inner)),
-                Pattern::NotExists(inner) => Pattern::NotExists(encode_patterns_for_reasoning(db, inner)),
+                Pattern::NotExists(inner) => {
+                    Pattern::NotExists(encode_patterns_for_reasoning(db, inner))
+                }
                 Pattern::Graph { name, patterns } => Pattern::Graph {
                     name: name.clone(),
                     patterns: encode_patterns_for_reasoning(db, patterns),
@@ -185,25 +216,34 @@ pub async fn prepare_execution<S: Storage + 'static, C: NodeCache + 'static>(
             .collect()
     }
 
-    let patterns_for_rewrite = if reasoning.rdfs || reasoning.owl2ql {
-        encode_patterns_for_reasoning(db, &query.query.patterns)
-    } else {
-        query.query.patterns.clone()
-    };
-    let (rewritten_patterns, _diag) = rewrite_query_patterns(
-        &patterns_for_rewrite,
-        hierarchy.clone(),
-        &reasoning,
-        ontology.as_ref(),
-    );
-
-    if rewritten_patterns.len() != query.query.patterns.len() {
-        tracing::debug!(
-            original_count = query.query.patterns.len(),
-            rewritten_count = rewritten_patterns.len(),
-            "patterns rewritten for reasoning"
+    let rewritten_patterns = {
+        let span = tracing::debug_span!(
+            "pattern_rewrite",
+            patterns_before = query.query.patterns.len(),
+            patterns_after = tracing::field::Empty,
         );
-    }
+        let _guard = span.enter();
+
+        let patterns_for_rewrite = if reasoning.rdfs || reasoning.owl2ql {
+            encode_patterns_for_reasoning(db, &query.query.patterns)
+        } else {
+            query.query.patterns.clone()
+        };
+        let (rewritten_patterns, _diag) = rewrite_query_patterns(
+            &patterns_for_rewrite,
+            hierarchy.clone(),
+            &reasoning,
+            ontology.as_ref(),
+        );
+
+        tracing::Span::current().record("patterns_after", rewritten_patterns.len());
+
+        if rewritten_patterns.len() != query.query.patterns.len() {
+            tracing::debug!("patterns rewritten for reasoning");
+        }
+
+        rewritten_patterns
+    };
 
     // Build query with rewritten patterns
     let rewritten_query = query.query.with_patterns(rewritten_patterns);
@@ -215,12 +255,18 @@ pub async fn prepare_execution<S: Storage + 'static, C: NodeCache + 'static>(
     // here. That db is used as the planning/optimization stats source for the whole query.
     // The actual scan operators will still union across all default graphs via the attached
     // `DataSet` in the `ExecutionContext`.
-    tracing::debug!("building operator tree");
-    let stats_view = db
-        .stats
-        .as_ref()
-        .map(|s| Arc::new(StatsView::from_db_stats_with_namespaces(s, &db.namespace_codes)));
-    let operator = build_operator_tree(&rewritten_query, &query.options, stats_view)?;
+    let operator = {
+        let span = tracing::debug_span!("plan", pattern_count = rewritten_query.patterns.len(),);
+        let _guard = span.enter();
+
+        let stats_view = db.stats.as_ref().map(|s| {
+            Arc::new(StatsView::from_db_stats_with_namespaces(
+                s,
+                &db.namespace_codes,
+            ))
+        });
+        build_operator_tree(&rewritten_query, &query.options, stats_view)?
+    };
 
     Ok(PreparedExecution {
         operator,
@@ -246,7 +292,11 @@ pub async fn run_operator<S: Storage + 'static, C: NodeCache + 'static>(
     let mut batch_count = 0;
     while let Some(batch) = operator.next_batch(ctx).await? {
         batch_count += 1;
-        tracing::trace!(batch_num = batch_count, solution_count = batch.len(), "received batch");
+        tracing::trace!(
+            batch_num = batch_count,
+            solution_count = batch.len(),
+            "received batch"
+        );
         results.push(batch);
     }
 
@@ -351,7 +401,8 @@ pub async fn execute_prepared<'a, 'b, S: Storage + 'static, C: NodeCache + 'stat
         .unwrap_or(overlay);
 
     // Build context with all configured options
-    let mut ctx = ExecutionContext::with_time_and_overlay(db, vars, to_t, from_t, effective_overlay);
+    let mut ctx =
+        ExecutionContext::with_time_and_overlay(db, vars, to_t, from_t, effective_overlay);
 
     if let Some(tracker) = config.tracker {
         ctx = ctx.with_tracker(tracker.clone());
@@ -414,7 +465,11 @@ pub async fn execute_prepared_with_overlay<'a, S: Storage + 'static, C: NodeCach
 }
 
 /// Execute with overlay, time bounds, and optional tracker
-pub async fn execute_prepared_with_overlay_tracked<'a, S: Storage + 'static, C: NodeCache + 'static>(
+pub async fn execute_prepared_with_overlay_tracked<
+    'a,
+    S: Storage + 'static,
+    C: NodeCache + 'static,
+>(
     db: &Db<S, C>,
     vars: &VarRegistry,
     overlay: &'a dyn fluree_db_core::OverlayProvider,
@@ -451,9 +506,9 @@ pub async fn execute_prepared_with_policy<'a, S: Storage + 'static, C: NodeCache
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
     // Create policy enforcer for async f:query support
-    let enforcer = Arc::new(crate::policy::QueryPolicyEnforcer::new(
-        Arc::new(policy.clone()),
-    ));
+    let enforcer = Arc::new(crate::policy::QueryPolicyEnforcer::new(Arc::new(
+        policy.clone(),
+    )));
 
     execute_prepared(
         db,
@@ -506,7 +561,12 @@ pub async fn execute_prepared_with_r2rml<'a, 'b, S: Storage + 'static, C: NodeCa
 /// This is the same as `execute_prepared_with_r2rml` but includes prefetch resources
 /// for warming the index cache during query execution.
 #[cfg(feature = "native")]
-pub async fn execute_prepared_with_r2rml_prefetch<'a, 'b, S: Storage + 'static, C: NodeCache + 'static>(
+pub async fn execute_prepared_with_r2rml_prefetch<
+    'a,
+    'b,
+    S: Storage + 'static,
+    C: NodeCache + 'static,
+>(
     db: &Db<S, C>,
     vars: &VarRegistry,
     overlay: &'a dyn fluree_db_core::OverlayProvider,
@@ -554,7 +614,11 @@ pub async fn execute_prepared_with_dataset<'a, S: Storage + 'static, C: NodeCach
 }
 
 /// Execute with dataset (multi-graph query), with optional history mode
-pub async fn execute_prepared_with_dataset_history<'a, S: Storage + 'static, C: NodeCache + 'static>(
+pub async fn execute_prepared_with_dataset_history<
+    'a,
+    S: Storage + 'static,
+    C: NodeCache + 'static,
+>(
     db: &Db<S, C>,
     vars: &VarRegistry,
     overlay: &'a dyn fluree_db_core::OverlayProvider,
@@ -584,7 +648,11 @@ pub async fn execute_prepared_with_dataset_history<'a, S: Storage + 'static, C: 
 }
 
 /// Execute with dataset and policy
-pub async fn execute_prepared_with_dataset_and_policy<'a, S: Storage + 'static, C: NodeCache + 'static>(
+pub async fn execute_prepared_with_dataset_and_policy<
+    'a,
+    S: Storage + 'static,
+    C: NodeCache + 'static,
+>(
     db: &Db<S, C>,
     vars: &VarRegistry,
     overlay: &'a dyn fluree_db_core::OverlayProvider,
@@ -602,7 +670,11 @@ pub async fn execute_prepared_with_dataset_and_policy<'a, S: Storage + 'static, 
 }
 
 /// Execute with dataset and policy, with optional history mode
-pub async fn execute_prepared_with_dataset_and_policy_history<'a, S: Storage + 'static, C: NodeCache + 'static>(
+pub async fn execute_prepared_with_dataset_and_policy_history<
+    'a,
+    S: Storage + 'static,
+    C: NodeCache + 'static,
+>(
     db: &Db<S, C>,
     vars: &VarRegistry,
     overlay: &'a dyn fluree_db_core::OverlayProvider,
@@ -615,9 +687,9 @@ pub async fn execute_prepared_with_dataset_and_policy_history<'a, S: Storage + '
     history_mode: bool,
 ) -> Result<Vec<Batch>> {
     // Create policy enforcer for async f:query support
-    let enforcer = Arc::new(crate::policy::QueryPolicyEnforcer::new(
-        Arc::new(policy.clone()),
-    ));
+    let enforcer = Arc::new(crate::policy::QueryPolicyEnforcer::new(Arc::new(
+        policy.clone(),
+    )));
 
     execute_prepared(
         db,
@@ -639,7 +711,12 @@ pub async fn execute_prepared_with_dataset_and_policy_history<'a, S: Storage + '
 }
 
 /// Execute with dataset and BM25 provider (for virtual graph BM25 queries)
-pub async fn execute_prepared_with_dataset_and_bm25<'a, 'b, S: Storage + 'static, C: NodeCache + 'static>(
+pub async fn execute_prepared_with_dataset_and_bm25<
+    'a,
+    'b,
+    S: Storage + 'static,
+    C: NodeCache + 'static,
+>(
     db: &Db<S, C>,
     vars: &VarRegistry,
     overlay: &'a dyn fluree_db_core::OverlayProvider,
@@ -669,7 +746,12 @@ pub async fn execute_prepared_with_dataset_and_bm25<'a, 'b, S: Storage + 'static
 }
 
 /// Execute with dataset, policy, and BM25 provider (for virtual graph BM25 queries with policy)
-pub async fn execute_prepared_with_dataset_and_policy_and_bm25<'a, 'b, S: Storage + 'static, C: NodeCache + 'static>(
+pub async fn execute_prepared_with_dataset_and_policy_and_bm25<
+    'a,
+    'b,
+    S: Storage + 'static,
+    C: NodeCache + 'static,
+>(
     db: &Db<S, C>,
     vars: &VarRegistry,
     overlay: &'a dyn fluree_db_core::OverlayProvider,
@@ -682,9 +764,9 @@ pub async fn execute_prepared_with_dataset_and_policy_and_bm25<'a, 'b, S: Storag
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
     // Create policy enforcer for async f:query support
-    let enforcer = Arc::new(crate::policy::QueryPolicyEnforcer::new(
-        Arc::new(policy.clone()),
-    ));
+    let enforcer = Arc::new(crate::policy::QueryPolicyEnforcer::new(Arc::new(
+        policy.clone(),
+    )));
 
     execute_prepared(
         db,
@@ -706,7 +788,12 @@ pub async fn execute_prepared_with_dataset_and_policy_and_bm25<'a, 'b, S: Storag
 }
 
 /// Execute with dataset and both BM25 and vector providers (for virtual graph queries)
-pub async fn execute_prepared_with_dataset_and_providers<'a, 'b, S: Storage + 'static, C: NodeCache + 'static>(
+pub async fn execute_prepared_with_dataset_and_providers<
+    'a,
+    'b,
+    S: Storage + 'static,
+    C: NodeCache + 'static,
+>(
     db: &Db<S, C>,
     vars: &VarRegistry,
     overlay: &'a dyn fluree_db_core::OverlayProvider,
@@ -738,7 +825,12 @@ pub async fn execute_prepared_with_dataset_and_providers<'a, 'b, S: Storage + 's
 }
 
 /// Execute with dataset, policy, and both BM25 and vector providers
-pub async fn execute_prepared_with_dataset_and_policy_and_providers<'a, 'b, S: Storage + 'static, C: NodeCache + 'static>(
+pub async fn execute_prepared_with_dataset_and_policy_and_providers<
+    'a,
+    'b,
+    S: Storage + 'static,
+    C: NodeCache + 'static,
+>(
     db: &Db<S, C>,
     vars: &VarRegistry,
     overlay: &'a dyn fluree_db_core::OverlayProvider,
@@ -752,9 +844,9 @@ pub async fn execute_prepared_with_dataset_and_policy_and_providers<'a, 'b, S: S
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
     // Create policy enforcer for async f:query support
-    let enforcer = Arc::new(crate::policy::QueryPolicyEnforcer::new(
-        Arc::new(policy.clone()),
-    ));
+    let enforcer = Arc::new(crate::policy::QueryPolicyEnforcer::new(Arc::new(
+        policy.clone(),
+    )));
 
     execute_prepared(
         db,

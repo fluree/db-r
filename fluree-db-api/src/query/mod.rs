@@ -11,8 +11,8 @@ mod virtual_graph;
 use serde_json::Value as JsonValue;
 
 use crate::{
-    format, Batch, FormatterConfig, FuelExceededError, NodeCache, OverlayProvider,
-    PolicyContext, PolicyStats, SelectMode, Storage, Tracker, TrackingTally, VarRegistry,
+    format, Batch, FormatterConfig, FuelExceededError, NodeCache, OverlayProvider, PolicyContext,
+    PolicyStats, SelectMode, Storage, Tracker, TrackingTally, VarRegistry,
 };
 
 use fluree_db_core::Db;
@@ -79,7 +79,9 @@ impl TrackedQueryResponse {
     /// Create a successful response with optional tracking tally
     pub fn success(result: JsonValue, tally: Option<TrackingTally>) -> Self {
         match tally {
-            Some(TrackingTally { time, fuel, policy }) => Self {
+            Some(TrackingTally {
+                time, fuel, policy, ..
+            }) => Self {
                 status: 200,
                 result,
                 time,
@@ -115,7 +117,9 @@ impl TrackedErrorResponse {
     /// Create an error response with optional tracking tally
     pub fn new(status: u16, error: impl Into<String>, tally: Option<TrackingTally>) -> Self {
         match tally {
-            Some(TrackingTally { time, fuel, policy }) => Self {
+            Some(TrackingTally {
+                time, fuel, policy, ..
+            }) => Self {
                 status,
                 error: error.into(),
                 time,
@@ -158,10 +162,7 @@ impl QueryResult {
     ///
     /// Returns simple JSON values with compact IRIs using the @context prefixes.
     /// Rows are arrays aligned to the select order.
-    pub fn to_jsonld<S: Storage, C: NodeCache>(
-        &self,
-        db: &Db<S, C>,
-    ) -> format::Result<JsonValue> {
+    pub fn to_jsonld<S: Storage, C: NodeCache>(&self, db: &Db<S, C>) -> format::Result<JsonValue> {
         let config = FormatterConfig::jsonld().with_select_mode(self.select_mode);
         format::format_results(self, &self.context, db, &config)
     }
@@ -336,7 +337,14 @@ impl QueryResult {
         tracker: &Tracker,
     ) -> format::Result<JsonValue> {
         let config = FormatterConfig::jsonld().with_select_mode(self.select_mode);
-        format::format_results_async(self, &self.context, db, &config, Some(policy), Some(tracker))
-            .await
+        format::format_results_async(
+            self,
+            &self.context,
+            db,
+            &config,
+            Some(policy),
+            Some(tracker),
+        )
+        .await
     }
 }

@@ -601,6 +601,31 @@ level = "debug"
 log_queries = true
 ```
 
+### Using Deep Tracing for Performance Investigation
+
+For detailed phase-by-phase performance breakdowns, Fluree provides deep
+tracing instrumentation that shows exactly where time is spent inside the
+query engine. This is more detailed than explain plans and works with
+OpenTelemetry backends like Jaeger and Grafana Tempo.
+
+Enable deep tracing by setting the log level for the query crate:
+
+```bash
+# See query phase waterfall: parse, reasoning, plan, execute, format
+RUST_LOG=info,fluree_db_query=debug cargo run -p fluree-db-server
+
+# See individual operator detail: scan, join, filter, sort, etc.
+RUST_LOG=info,fluree_db_query=trace cargo run -p fluree-db-server
+```
+
+With OTEL export enabled, the full span waterfall is visible in Jaeger with
+durations, field values (flakes scanned, result counts, etc.), and
+parent-child relationships.
+
+See [Performance Investigation](performance-investigation.md) for a complete
+walkthrough including Jaeger setup, span field interpretation, and
+high-throughput sampling strategies.
+
 ## Common Query Antipatterns
 
 ### Antipattern 1: Overly Broad Patterns

@@ -35,13 +35,16 @@ use crate::operator::{Operator, OperatorState};
 use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{Db, Flake, FlakeMeta, FlakeValue, IndexType, NodeCache, ObjectBounds, OverlayProvider, RangeCursor, RangeMatch, RangeOptions, RangeTest, Sid, Storage, Tracker};
 #[cfg(feature = "native")]
 use fluree_db_core::PrefetchRequest;
+use fluree_db_core::{
+    Db, Flake, FlakeMeta, FlakeValue, IndexType, NodeCache, ObjectBounds, OverlayProvider,
+    RangeCursor, RangeMatch, RangeOptions, RangeTest, Sid, Storage, Tracker,
+};
 use fluree_vocab::namespaces::FLUREE_LEDGER;
 use std::collections::{HashSet, VecDeque};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::Arc;
 
 // Global scan timing aggregation
 static SCAN_TOTAL_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -161,6 +164,10 @@ pub struct ScanOperator {
     open_time: Option<std::time::Instant>,
     /// Timing: total time spent in next_batch
     batch_time_us: u64,
+    /// Tracing span for operator lifetime (trace level)
+    span: tracing::Span,
+    /// Count of flakes scanned for span recording
+    flakes_scanned: u64,
 }
 
 /// Context for creating bindings with ledger provenance
@@ -203,6 +210,12 @@ impl ScanOperator {
             schema_vec.push(*v);
         }
 
+        let span = tracing::trace_span!(
+            "scan",
+            index = ?index,
+            flakes_scanned = tracing::field::Empty,
+        );
+
         Self {
             pattern,
             index,
@@ -216,10 +229,12 @@ impl ScanOperator {
             datatypes: WellKnownDatatypes::new(),
             estimated_rows: None,
             object_bounds: None,
-            history_mode: false, // Will be set from context during open()
+            history_mode: false,  // Will be set from context during open()
             ledger_context: None, // Will be set from context during open() for dataset mode
             open_time: None,
             batch_time_us: 0,
+            span,
+            flakes_scanned: 0,
         }
     }
 
@@ -306,7 +321,10 @@ impl ScanOperator {
     /// Returns `None` if any IRI term cannot be encoded in this database,
     /// indicating that this ledger cannot have any matching flakes (the IRI
     /// doesn't exist in this ledger's namespace table).
-    fn build_range_match_for_db<S: Storage, C: NodeCache>(&self, db: &Db<S, C>) -> Option<RangeMatch> {
+    fn build_range_match_for_db<S: Storage, C: NodeCache>(
+        &self,
+        db: &Db<S, C>,
+    ) -> Option<RangeMatch> {
         let mut rm = RangeMatch::new();
 
         // Subject
@@ -396,7 +414,8 @@ impl ScanOperator {
             // Move object + datatype + transaction time into the binding (no cloning of strings/bytes).
             // The `t` field enables @t bindings in queries (e.g., {"@value": "?v", "@t": "?txn"}).
             // The `op` field enables @op bindings in history mode (e.g., {"@value": "?v", "@op": "?operation"}).
-            let binding = self.create_object_binding(flake.o, flake.dt, flake.m, flake.t, flake.op, ctx);
+            let binding =
+                self.create_object_binding(flake.o, flake.dt, flake.m, flake.t, flake.op, ctx);
             columns[col_idx].push(binding);
             // col_idx += 1;
         }
@@ -505,7 +524,11 @@ impl ScanOperator {
         if let Some(lang) = &self.pattern.lang {
             // Only apply language filter if it's not a variable (variables are handled by BIND)
             if !lang.starts_with('?') {
-                let flake_lang = flake.m.as_ref().and_then(|m| m.lang.as_deref()).unwrap_or("");
+                let flake_lang = flake
+                    .m
+                    .as_ref()
+                    .and_then(|m| m.lang.as_deref())
+                    .unwrap_or("");
                 if flake_lang != lang.as_ref() {
                     return Ok(false);
                 }
@@ -574,6 +597,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
         // Start timing
         self.open_time = Some(std::time::Instant::now());
         self.batch_time_us = 0;
+        self.flakes_scanned = 0;
 
         // Capture history mode from context for @op bindings
         self.history_mode = ctx.history_mode;
@@ -591,7 +615,9 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
                         Some(rm) => rm,
                         None => {
                             // IRI encoding failed - this ledger has no matches
-                            self.scan_mode = ScanMode::Chunked { current_leaf: VecDeque::new() };
+                            self.scan_mode = ScanMode::Chunked {
+                                current_leaf: VecDeque::new(),
+                            };
                             self.state = OperatorState::Exhausted;
                             return Ok(());
                         }
@@ -612,13 +638,10 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
                 }
 
                 // Create cursor for chunked iteration
-                let cursor = RangeCursor::new(
-                    ctx.db,
-                    self.index,
-                    RangeTest::Eq,
-                    range_match,
-                    opts,
-                ).map_err(|e| QueryError::Internal(format!("Failed to create range cursor: {}", e)))?;
+                let cursor = RangeCursor::new(ctx.db, self.index, RangeTest::Eq, range_match, opts)
+                    .map_err(|e| {
+                        QueryError::Internal(format!("Failed to create range cursor: {}", e))
+                    })?;
 
                 self.cursor = Some(cursor);
                 self.scan_mode = ScanMode::Chunked {
@@ -637,7 +660,9 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
                         Some(rm) => rm,
                         None => {
                             // IRI encoding failed - this ledger has no matches
-                            self.scan_mode = ScanMode::Chunked { current_leaf: VecDeque::new() };
+                            self.scan_mode = ScanMode::Chunked {
+                                current_leaf: VecDeque::new(),
+                            };
                             self.state = OperatorState::Exhausted;
                             return Ok(());
                         }
@@ -658,13 +683,11 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
                 }
 
                 // Create cursor for the single graph
-                let cursor = RangeCursor::new(
-                    graph.db,
-                    self.index,
-                    RangeTest::Eq,
-                    range_match,
-                    opts,
-                ).map_err(|e| QueryError::Internal(format!("Failed to create range cursor: {}", e)))?;
+                let cursor =
+                    RangeCursor::new(graph.db, self.index, RangeTest::Eq, range_match, opts)
+                        .map_err(|e| {
+                            QueryError::Internal(format!("Failed to create range cursor: {}", e))
+                        })?;
 
                 self.cursor = Some(cursor);
                 self.scan_mode = ScanMode::Chunked {
@@ -693,11 +716,13 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
                 // IMPORTANT: Use default_graphs_slice() directly (not active_graphs())
                 // to ensure graph_idx is stable and matches what next_batch() uses.
                 let graphs = ctx.default_graphs_slice().ok_or_else(|| {
-                    QueryError::Internal("MultiChunked requires dataset with default graphs".to_string())
+                    QueryError::Internal(
+                        "MultiChunked requires dataset with default graphs".to_string(),
+                    )
                 })?;
-                
+
                 let mut cursors = Vec::with_capacity(graphs.len());
-                
+
                 for (graph_idx, graph) in graphs.iter().enumerate() {
                     // Encode IRI terms for each graph's namespace table
                     // Skip graphs where encoding fails (IRI doesn't exist in that ledger)
@@ -722,16 +747,14 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
                     }
 
                     // Create cursor for this graph
-                    let cursor = RangeCursor::new(
-                        graph.db,
-                        self.index,
-                        RangeTest::Eq,
-                        range_match,
-                        opts,
-                    ).map_err(|e| QueryError::Internal(format!(
-                        "Failed to create range cursor for graph '{}': {}",
-                        graph.ledger_alias, e
-                    )))?;
+                    let cursor =
+                        RangeCursor::new(graph.db, self.index, RangeTest::Eq, range_match, opts)
+                            .map_err(|e| {
+                                QueryError::Internal(format!(
+                                    "Failed to create range cursor for graph '{}': {}",
+                                    graph.ledger_alias, e
+                                ))
+                            })?;
 
                     // Determine effective enforcer (graph-level preferred, else ctx-level)
                     let effective_enforcer = graph
@@ -771,7 +794,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
 
     async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
         let batch_start = std::time::Instant::now();
-        
+
         if !self.state.can_next() {
             if self.state == OperatorState::Created {
                 return Err(QueryError::OperatorNotOpened);
@@ -793,18 +816,21 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
         let is_multi_chunked = matches!(self.scan_mode, ScanMode::MultiChunked { .. });
 
         if matches!(self.scan_mode, ScanMode::Uninitialized) {
-            return Err(QueryError::Internal("Scan mode not initialized".to_string()));
+            return Err(QueryError::Internal(
+                "Scan mode not initialized".to_string(),
+            ));
         }
 
         if is_chunked {
             // Chunked mode: pull from cursor leaf-by-leaf
             while produced < batch_size {
                 // Try to get a flake from current leaf
-                let maybe_flake = if let ScanMode::Chunked { current_leaf, .. } = &mut self.scan_mode {
-                    current_leaf.pop_front()
-                } else {
-                    None
-                };
+                let maybe_flake =
+                    if let ScanMode::Chunked { current_leaf, .. } = &mut self.scan_mode {
+                        current_leaf.pop_front()
+                    } else {
+                        None
+                    };
 
                 if let Some(flake) = maybe_flake {
                     if self.should_include_flake(&flake, ctx)? {
@@ -827,12 +853,14 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
                                 // Build prefetch callback only if:
                                 // 1. Prefetch service is available
                                 // 2. Overlay epochs match (no ReasoningOverlay or other overlay transformation)
-                                let prefetch_enabled = ctx.prefetch.is_some() 
+                                let prefetch_enabled = ctx.prefetch.is_some()
                                     && ctx.prefetch_db.is_some()
-                                    && ctx.prefetch_overlay.as_ref()
+                                    && ctx
+                                        .prefetch_overlay
+                                        .as_ref()
                                         .map(|po| po.epoch() == ctx.overlay().epoch())
                                         .unwrap_or(false);
-                                
+
                                 if prefetch_enabled {
                                     let prefetch = ctx.prefetch.clone().unwrap();
                                     let prefetch_db = ctx.prefetch_db.clone().unwrap();
@@ -840,7 +868,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
                                     let to_t = ctx.to_t;
                                     let from_t = ctx.from_t;
                                     let history_mode = ctx.history_mode;
-                                    
+
                                     let callback = move |nodes: Vec<fluree_db_core::IndexNode>| {
                                         for node in nodes {
                                             prefetch.try_enqueue(PrefetchRequest {
@@ -853,18 +881,24 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
                                             });
                                         }
                                     };
-                                    cursor.next_leaf_with_prefetch(ctx.db, ctx.overlay(), callback).await
-                                        .map_err(|e| QueryError::Internal(format!("Cursor error: {}", e)))?
+                                    cursor
+                                        .next_leaf_with_prefetch(ctx.db, ctx.overlay(), callback)
+                                        .await
+                                        .map_err(|e| {
+                                            QueryError::Internal(format!("Cursor error: {}", e))
+                                        })?
                                 } else {
                                     // Prefetch disabled or overlay mismatch - fall back to non-prefetch path
-                                    cursor.next_leaf(ctx.db, ctx.overlay()).await
-                                        .map_err(|e| QueryError::Internal(format!("Cursor error: {}", e)))?
+                                    cursor.next_leaf(ctx.db, ctx.overlay()).await.map_err(|e| {
+                                        QueryError::Internal(format!("Cursor error: {}", e))
+                                    })?
                                 }
                             }
                             #[cfg(not(feature = "native"))]
                             {
-                                cursor.next_leaf(ctx.db, ctx.overlay()).await
-                                    .map_err(|e| QueryError::Internal(format!("Cursor error: {}", e)))?
+                                cursor.next_leaf(ctx.db, ctx.overlay()).await.map_err(|e| {
+                                    QueryError::Internal(format!("Cursor error: {}", e))
+                                })?
                             }
                         }
                         ActiveGraphs::Many(graphs) if graphs.len() == 1 => {
@@ -877,10 +911,12 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
                                 // - Need db to match (same cache)
                                 let prefetch_enabled = ctx.prefetch.is_some()
                                     && ctx.prefetch_db.is_some()
-                                    && ctx.prefetch_overlay.as_ref()
+                                    && ctx
+                                        .prefetch_overlay
+                                        .as_ref()
                                         .map(|po| po.epoch() == graph.overlay.epoch())
                                         .unwrap_or(false);
-                                
+
                                 if prefetch_enabled {
                                     let prefetch = ctx.prefetch.clone().unwrap();
                                     let prefetch_db = ctx.prefetch_db.clone().unwrap();
@@ -888,7 +924,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
                                     let to_t = graph.to_t;
                                     let from_t = ctx.from_t; // GraphRef doesn't track from_t separately
                                     let history_mode = ctx.history_mode;
-                                    
+
                                     let callback = move |nodes: Vec<fluree_db_core::IndexNode>| {
                                         for node in nodes {
                                             prefetch.try_enqueue(PrefetchRequest {
@@ -901,24 +937,33 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
                                             });
                                         }
                                     };
-                                    cursor.next_leaf_with_prefetch(graph.db, graph.overlay, callback).await
-                                        .map_err(|e| QueryError::Internal(format!("Cursor error: {}", e)))?
+                                    cursor
+                                        .next_leaf_with_prefetch(graph.db, graph.overlay, callback)
+                                        .await
+                                        .map_err(|e| {
+                                            QueryError::Internal(format!("Cursor error: {}", e))
+                                        })?
                                 } else {
                                     // Prefetch disabled or context mismatch - fall back to non-prefetch path
-                                    cursor.next_leaf(graph.db, graph.overlay).await
-                                        .map_err(|e| QueryError::Internal(format!("Cursor error: {}", e)))?
+                                    cursor.next_leaf(graph.db, graph.overlay).await.map_err(
+                                        |e| QueryError::Internal(format!("Cursor error: {}", e)),
+                                    )?
                                 }
                             }
                             #[cfg(not(feature = "native"))]
                             {
-                                cursor.next_leaf(graph.db, graph.overlay).await
-                                    .map_err(|e| QueryError::Internal(format!("Cursor error: {}", e)))?
+                                cursor
+                                    .next_leaf(graph.db, graph.overlay)
+                                    .await
+                                    .map_err(|e| {
+                                        QueryError::Internal(format!("Cursor error: {}", e))
+                                    })?
                             }
                         }
                         _ => {
                             // Multi-graph should use MultiChunked mode, not Chunked
                             return Err(QueryError::Internal(
-                                "Chunked mode used with multi-graph dataset".to_string()
+                                "Chunked mode used with multi-graph dataset".to_string(),
                             ));
                         }
                     }
@@ -987,9 +1032,9 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
                 } else {
                     true
                 };
-                
+
                 let cursor_exhausted = self.cursor.as_ref().map_or(true, |c| c.is_exhausted());
-                
+
                 if leaf_empty && cursor_exhausted {
                     self.state = OperatorState::Exhausted;
                 }
@@ -997,7 +1042,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
         } else if is_multi_chunked {
             // Multi-chunked mode: iterate through multiple graph cursors
             // Each graph is drained completely before moving to the next
-            
+
             // Get the dataset's default graphs slice (non-allocating)
             let graphs = ctx.default_graphs_slice().ok_or_else(|| {
                 QueryError::Internal("MultiChunked mode requires dataset".to_string())
@@ -1005,11 +1050,12 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
 
             'batch_loop: while produced < batch_size {
                 // Try to get a flake from current leaf
-                let maybe_flake = if let ScanMode::MultiChunked { current_leaf, .. } = &mut self.scan_mode {
-                    current_leaf.pop_front()
-                } else {
-                    None
-                };
+                let maybe_flake =
+                    if let ScanMode::MultiChunked { current_leaf, .. } = &mut self.scan_mode {
+                        current_leaf.pop_front()
+                    } else {
+                        None
+                    };
 
                 if let Some(flake) = maybe_flake {
                     if self.should_include_flake(&flake, ctx)? {
@@ -1026,9 +1072,11 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
                     // Get current cursor state
                     let (cursor_idx, graph_idx, ledger_alias, effective_enforcer) = {
                         let (current_cursor_idx, cursors) = match &self.scan_mode {
-                            ScanMode::MultiChunked { current_cursor_idx, cursors, .. } => {
-                                (*current_cursor_idx, cursors)
-                            }
+                            ScanMode::MultiChunked {
+                                current_cursor_idx,
+                                cursors,
+                                ..
+                            } => (*current_cursor_idx, cursors),
                             _ => break 'batch_loop, // Shouldn't happen
                         };
 
@@ -1054,10 +1102,15 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
                         if let ScanMode::MultiChunked { cursors, .. } = &mut self.scan_mode {
                             let cursor = &mut cursors[cursor_idx].cursor;
                             // No prefetch in multi-graph mode (would need per-graph prefetch db/overlay)
-                            cursor.next_leaf(graph.db, graph.overlay).await
-                                .map_err(|e| QueryError::Internal(format!(
-                                    "Cursor error for graph '{}': {}", ledger_alias, e
-                                )))?
+                            cursor
+                                .next_leaf(graph.db, graph.overlay)
+                                .await
+                                .map_err(|e| {
+                                    QueryError::Internal(format!(
+                                        "Cursor error for graph '{}': {}",
+                                        ledger_alias, e
+                                    ))
+                                })?
                         } else {
                             None
                         }
@@ -1089,14 +1142,18 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
                             });
 
                             // Store the leaf and break inner loop to start draining
-                            if let ScanMode::MultiChunked { current_leaf, .. } = &mut self.scan_mode {
+                            if let ScanMode::MultiChunked { current_leaf, .. } = &mut self.scan_mode
+                            {
                                 *current_leaf = VecDeque::from(leaf_flakes);
                             }
                             break; // Break inner loop, continue batch_loop
                         }
                         None => {
                             // Current cursor exhausted, advance to next
-                            if let ScanMode::MultiChunked { current_cursor_idx, .. } = &mut self.scan_mode {
+                            if let ScanMode::MultiChunked {
+                                current_cursor_idx, ..
+                            } = &mut self.scan_mode
+                            {
                                 *current_cursor_idx += 1;
                             }
                             // Continue inner loop to try next cursor
@@ -1106,12 +1163,17 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
             }
 
             // Check if we're fully exhausted
-            let all_exhausted = if let ScanMode::MultiChunked { current_leaf, cursors, current_cursor_idx } = &self.scan_mode {
+            let all_exhausted = if let ScanMode::MultiChunked {
+                current_leaf,
+                cursors,
+                current_cursor_idx,
+            } = &self.scan_mode
+            {
                 current_leaf.is_empty() && *current_cursor_idx >= cursors.len()
             } else {
                 true
             };
-            
+
             if produced == 0 && all_exhausted {
                 self.state = OperatorState::Exhausted;
             }
@@ -1119,10 +1181,12 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
 
         // Track batch time
         self.batch_time_us += batch_start.elapsed().as_micros() as u64;
-        
+
         if produced == 0 {
             return Ok(None);
         }
+
+        self.flakes_scanned += produced as u64;
 
         // Create batch
         if self.schema.is_empty() {
@@ -1134,6 +1198,8 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
     }
 
     fn close(&mut self) {
+        self.span.record("flakes_scanned", self.flakes_scanned);
+
         // Aggregate timing into global counters
         if let Some(start) = self.open_time.take() {
             let total_us = start.elapsed().as_micros() as u64;
@@ -1141,7 +1207,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
             SCAN_TOTAL_TIME_US.fetch_add(total_us, AtomicOrdering::Relaxed);
             SCAN_BATCH_TIME_US.fetch_add(self.batch_time_us, AtomicOrdering::Relaxed);
         }
-        
+
         self.cursor = None;
         self.scan_mode = ScanMode::Uninitialized;
         self.state = OperatorState::Closed;
@@ -1185,7 +1251,11 @@ mod tests {
                         dt: flake.dt,
                         lang: flake.m.and_then(|m| m.lang.map(Arc::from)),
                         t: Some(flake.t),
-                        op: if self.history_mode { Some(flake.op) } else { None },
+                        op: if self.history_mode {
+                            Some(flake.op)
+                        } else {
+                            None
+                        },
                     },
                 };
                 columns[col_idx].push(binding);

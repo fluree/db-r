@@ -96,6 +96,31 @@ When tracking is enabled, the response includes tracking information as top-leve
 }
 ```
 
+## Tracking and Deep Tracing
+
+When query tracking is enabled (via `opts.meta` or `opts.track`), the
+tracking metrics are also recorded as fields on the `query_execute` tracing
+span. This means they appear in Jaeger, Tempo, or any OTEL-compatible backend
+alongside the full span waterfall.
+
+| Span field | Source | Description |
+|------------|--------|-------------|
+| `tracker_time` | `tally.time` | Query execution duration (e.g., `"12.34ms"`) |
+| `tracker_fuel` | `tally.fuel` | Total items processed (flakes scanned + graph nodes crawled) |
+
+This is useful for correlating tracking data with the detailed phase breakdown
+provided by deep tracing. For example, you can search Jaeger for traces where
+`tracker_fuel > 100000` to find expensive queries, then drill into their span
+waterfalls to see which phase (scanning, joining, formatting, etc.) consumed
+the most time.
+
+When tracking is not enabled, these span fields remain empty and do not appear
+in trace output.
+
+For a full walkthrough of using tracing for performance investigation, see the
+[Performance Investigation](../troubleshooting/performance-investigation.md)
+guide.
+
 ## Best Practices
 
 ### Tracking

@@ -74,6 +74,7 @@
 - [Troubleshooting](troubleshooting/README.md)
   - [Common errors](troubleshooting/common-errors.md)
   - [Debugging queries](troubleshooting/debugging-queries.md)
+  - [Performance investigation](troubleshooting/performance-investigation.md)
 
 - [Reference](reference/README.md)
   - [Glossary](reference/glossary.md)

@@ -357,6 +357,29 @@ fluree-server \
 | `FLUREE_STORAGE_ACCESS_MODE` | Peer storage mode | `shared` |
 | `FLUREE_STORAGE_PROXY_ENABLED` | Enable storage proxy | `false` |
 
+### Telemetry and OTEL Variables
+
+These variables configure logging and OpenTelemetry trace export. OTEL
+variables require the server to be built with `--features otel`.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `RUST_LOG` | Log filter directive ([EnvFilter syntax](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html)). Highest priority — overrides `LOG_LEVEL`. | None |
+| `LOG_LEVEL` | Fallback log level when `RUST_LOG` is not set | `info` |
+| `LOG_FORMAT` | Output format: `json` or `human` | `human` |
+| `LOG_SENSITIVE_DATA` | Sensitive data handling: `off`, `mask`, or `hash` | `mask` |
+| `LOG_QUERY_TEXT` | Query text logging: `0` (off), `1`/`true`/`full`, or `hash` | `0` |
+| `LOG_REQUEST_ID_HEADER` | Custom request ID header name | `x-request-id` |
+| `OTEL_SERVICE_NAME` | Service name for OTEL trace exports | None (required for OTEL) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint URL | None (required for OTEL) |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | Transport protocol: `grpc` or `http/protobuf` | `grpc` |
+| `OTEL_TRACES_SAMPLER` | Sampling strategy: `always_on`, `always_off`, `traceidratio`, `parentbased_always_on`, `parentbased_always_off` | `always_on` |
+| `OTEL_TRACES_SAMPLER_ARG` | Sampler argument (e.g., `0.01` for 1% with `traceidratio`) | `1.0` |
+
+See [Telemetry and Logging](telemetry.md) for detailed configuration guidance,
+and [Performance Investigation](../troubleshooting/performance-investigation.md)
+for using tracing to diagnose slow operations.
+
 ## Command-Line Reference
 
 ```bash

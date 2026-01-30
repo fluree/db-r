@@ -70,6 +70,19 @@ Design documents are located in the `/docs/design/` directory and various planni
 
 ### Logging and Observability
 
+**Deep Performance Tracing:**
+- Location: `/dev-docs/deep-tracing-design.md`
+- Task breakdown: `/dev-docs/deep-tracing-task-breakdown.md`
+- Covers: Internal span instrumentation for query and transaction waterfalls,
+  two-tier span strategy (info + debug), operator-level trace spans, Tracker-to-span
+  bridge, OTEL export. All new spans use `debug_span!` or `trace_span!` and are
+  zero-cost when filtered out at the default `info` level.
+- Pattern: Use `#[tracing::instrument(level = "debug", name = "...", skip_all, fields(...))]`
+  for new phase spans. Use `trace_span!` with manual guards for hot-path operators
+  (scan, join, filter, sort). Record deferred fields via
+  `tracing::Span::current().record("field", value)`.
+- Status: Implemented (Phases 0-5 complete)
+
 **Logging Implementation:**
 - Location: `/LOGGING_IMPLEMENTATION_SUMMARY.md`
 - Covers: Logging architecture, structured logging, log levels

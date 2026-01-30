@@ -55,4 +55,5 @@ native = ["fluree-db-core/native"]
 vector = ["dep:usearch"]
 
 [dev-dependencies]
+tracing-subscriber = { workspace = true }
 # tokio is now a regular dependency

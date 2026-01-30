@@ -14,15 +14,17 @@ use crate::generate::{apply_cancellation, infer_datatype, FlakeGenerator};
 use crate::ir::InlineValues;
 use crate::ir::{TemplateTerm, Txn, TxnType};
 use crate::namespace::NamespaceRegistry;
+use fluree_db_core::Tracker;
 use fluree_db_core::{Flake, FlakeValue, NodeCache, Sid, Storage};
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
-use fluree_db_policy::{is_schema_flake, populate_class_cache, PolicyContext, PolicyDecision, PolicyError};
-use fluree_db_query::{
-    execute_pattern_with_overlay_at, Batch, Binding, Pattern, Term, TriplePattern,
-    VarId, VarRegistry, QueryPolicyExecutor,
+use fluree_db_policy::{
+    is_schema_flake, populate_class_cache, PolicyContext, PolicyDecision, PolicyError,
 };
 use fluree_db_query::parse::{lower_unresolved_pattern, UnresolvedPattern};
-use fluree_db_core::Tracker;
+use fluree_db_query::{
+    execute_pattern_with_overlay_at, Batch, Binding, Pattern, QueryPolicyExecutor, Term,
+    TriplePattern, VarId, VarRegistry,
+};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -125,8 +127,8 @@ pub async fn stage<S: Storage + Clone + 'static, C: NodeCache + 'static>(
     mut ns_registry: NamespaceRegistry,
     options: StageOptions<'_>,
 ) -> Result<(LedgerView<S, C>, NamespaceRegistry)> {
-    let span = tracing::info_span!("txn_stage", 
-        current_t = ledger.t(), 
+    let span = tracing::info_span!("txn_stage",
+        current_t = ledger.t(),
         txn_type = ?txn.txn_type,
         insert_count = txn.insert_templates.len(),
         delete_count = txn.delete_templates.len()
@@ -148,74 +150,100 @@ pub async fn stage<S: Storage + Clone + 'static, C: NodeCache + 'static>(
 
     // Execute WHERE patterns to get bindings
     // This lowers UnresolvedPattern to Pattern, assigning VarIds to variables
-    tracing::debug!(where_pattern_count = txn.where_patterns.len(), "executing WHERE patterns");
-    let bindings = execute_where(&ledger, &mut txn).await?;
-    tracing::debug!(binding_count = bindings.len(), "WHERE patterns executed");
+    let bindings = {
+        let span = tracing::debug_span!(
+            "where_exec",
+            pattern_count = txn.where_patterns.len(),
+            binding_rows = tracing::field::Empty,
+        );
+        let _guard = span.enter();
+        let bindings = execute_where(&ledger, &mut txn).await?;
+        tracing::Span::current().record("binding_rows", bindings.len());
+        bindings
+    };
 
     // Generate transaction ID for blank node skolemization
     let txn_id = generate_txn_id();
 
     // Generate retractions from DELETE templates
     let mut generator = FlakeGenerator::new(new_t, &mut ns_registry, txn_id);
-    tracing::debug!(template_count = txn.delete_templates.len(), "generating retractions from DELETE templates");
-    let mut retractions = generator.generate_retractions(&txn.delete_templates, &bindings)?;
-    tracing::debug!(retraction_count = retractions.len(), "retractions generated");
 
-    // Clojure parity: DELETE templates often omit list indices even when retracting `@list` values.
-    //
-    // In Rust, list items are stored as flakes with `FlakeMeta.i` (list index). A retraction flake
-    // with `m=None` may not match those list-item flakes. Hydrate retractions by copying the
-    // stored list-index meta from the currently asserted flake (if present).
-    hydrate_list_index_meta_for_retractions(&ledger, &mut retractions).await?;
+    let retractions = {
+        let span = tracing::debug_span!(
+            "delete_gen",
+            template_count = txn.delete_templates.len(),
+            retraction_count = tracing::field::Empty,
+        );
+        let _guard = span.enter();
 
-    // For Upsert: also generate deletions for existing values of (subject, predicate) pairs
-    if txn.txn_type == TxnType::Upsert {
-        tracing::debug!("generating upsert deletions");
-        let upsert_retractions = generate_upsert_deletions(&ledger, &txn, new_t).await?;
-        tracing::debug!(upsert_retraction_count = upsert_retractions.len(), "upsert deletions generated");
-        retractions.extend(upsert_retractions);
-    }
+        let mut retractions = generator.generate_retractions(&txn.delete_templates, &bindings)?;
+
+        // Clojure parity: DELETE templates often omit list indices even when retracting `@list` values.
+        // Hydrate retractions by copying stored list-index meta from currently asserted flakes.
+        hydrate_list_index_meta_for_retractions(&ledger, &mut retractions).await?;
+
+        // For Upsert: also generate deletions for existing values of (subject, predicate) pairs
+        if txn.txn_type == TxnType::Upsert {
+            let upsert_retractions = generate_upsert_deletions(&ledger, &txn, new_t).await?;
+            retractions.extend(upsert_retractions);
+        }
+
+        tracing::Span::current().record("retraction_count", retractions.len());
+        retractions
+    };
 
     // Generate assertions from INSERT templates
-    tracing::debug!(template_count = txn.insert_templates.len(), "generating assertions from INSERT templates");
-    // Clojure parity: For UPDATE transactions, it's common to write:
-    //   WHERE { ... maybe matches ... }
-    //   DELETE { ... bound vars ... }
-    //   INSERT { ... constant assertions ... }
-    //
-    // When WHERE has **no solutions**, DELETE should be a no-op (handled by bindings.is_empty()),
-    // but constant INSERT templates should still be applied once. Achieve that by using a single
-    // empty solution (0 vars, 1 row) for assertion generation in the zero-solution case.
-    let assertions = if bindings.is_empty() && txn.txn_type == TxnType::Update {
-        let empty_solution = Batch::single_empty();
-        generator.generate_assertions(&txn.insert_templates, &empty_solution)?
-    } else {
-        generator.generate_assertions(&txn.insert_templates, &bindings)?
+    let assertions = {
+        let span = tracing::debug_span!(
+            "insert_gen",
+            template_count = txn.insert_templates.len(),
+            assertion_count = tracing::field::Empty,
+        );
+        let _guard = span.enter();
+
+        // Clojure parity: For UPDATE transactions, constant INSERT templates should
+        // still be applied once even when WHERE has no solutions.
+        let assertions = if bindings.is_empty() && txn.txn_type == TxnType::Update {
+            let empty_solution = Batch::single_empty();
+            generator.generate_assertions(&txn.insert_templates, &empty_solution)?
+        } else {
+            generator.generate_assertions(&txn.insert_templates, &bindings)?
+        };
+
+        tracing::Span::current().record("assertion_count", assertions.len());
+        assertions
     };
-    tracing::debug!(assertion_count = assertions.len(), "assertions generated");
 
     // Apply cancellation (retraction cancels assertion and vice versa)
-    let mut all_flakes = retractions;
-    all_flakes.extend(assertions);
-    let total_before_cancel = all_flakes.len();
-    tracing::debug!(flake_count = total_before_cancel, "applying cancellation");
-    let flakes = apply_cancellation(all_flakes);
-    
-    if flakes.len() != total_before_cancel {
-        tracing::debug!(
-            before = total_before_cancel,
-            after = flakes.len(),
-            cancelled = total_before_cancel - flakes.len(),
-            "cancellation applied"
+    let flakes = {
+        let span = tracing::debug_span!(
+            "cancellation",
+            flakes_before = tracing::field::Empty,
+            cancelled_count = tracing::field::Empty,
         );
-    }
+        let _guard = span.enter();
+
+        let mut all_flakes = retractions;
+        all_flakes.extend(assertions);
+        let total_before_cancel = all_flakes.len();
+        let flakes = apply_cancellation(all_flakes);
+
+        tracing::Span::current().record("flakes_before", total_before_cancel);
+        tracing::Span::current().record("cancelled_count", total_before_cancel - flakes.len());
+
+        if flakes.len() != total_before_cancel {
+            tracing::debug!("cancellation applied");
+        }
+
+        flakes
+    };
 
     // 3. Enforce modify policies (if policy context provided and not root)
     if let Some(policy) = options.policy_ctx {
         if !policy.wrapper().is_root() {
-            tracing::debug!("enforcing modify policies");
+            let span = tracing::debug_span!("policy_enforce", flakes_checked = flakes.len(),);
+            let _guard = span.enter();
             enforce_modify_policies(&flakes, policy, &ledger, options.tracker).await?;
-            tracing::debug!("modify policies enforced");
         }
     }
 
@@ -337,11 +365,8 @@ async fn enforce_modify_policy_per_flake<S: Storage + Clone + 'static, C: NodeCa
 ) -> Result<()> {
     // Build a QueryPolicyExecutor that runs f:query against the pre-txn ledger view.
     // Clojure parity: modify policy queries see the state *before* this transaction.
-    let executor = QueryPolicyExecutor::with_overlay(
-        &ledger.db,
-        ledger.novelty.as_ref(),
-        ledger.t(),
-    );
+    let executor =
+        QueryPolicyExecutor::with_overlay(&ledger.db, ledger.novelty.as_ref(), ledger.t());
 
     // Clojure parity: fuel is counted for work performed. For transactions, we count
     // one unit of fuel per staged (non-schema) flake, regardless of whether the
@@ -502,7 +527,6 @@ fn generate_txn_id() -> String {
     format!("{:x}", now)
 }
 
-
 /// Convert a Binding to a (FlakeValue, datatype Sid) pair for flake generation
 ///
 /// Returns `None` for non-materializable bindings (Unbound, Poisoned, Grouped, Iri).
@@ -613,12 +637,13 @@ async fn generate_upsert_deletions<S: Storage + Clone + 'static, C: NodeCache + 
         .await?;
 
         // Convert each result to a retraction flake
-        retractions.extend(
-            batches.iter()
-                .flat_map(|batch| (0..batch.len()).filter_map(|row| {
-                    batch.get(row, o_var)
-                        .and_then(binding_to_flake_object)
-                        .map(|(o, dt)| Flake::new(
+        retractions.extend(batches.iter().flat_map(|batch| {
+            (0..batch.len()).filter_map(|row| {
+                batch
+                    .get(row, o_var)
+                    .and_then(binding_to_flake_object)
+                    .map(|(o, dt)| {
+                        Flake::new(
                             subject.clone(),
                             predicate.clone(),
                             o,
@@ -626,9 +651,10 @@ async fn generate_upsert_deletions<S: Storage + Clone + 'static, C: NodeCache + 
                             new_t,
                             false, // retraction
                             None,
-                        ))
-                }))
-        );
+                        )
+                    })
+            })
+        }));
     }
 
     Ok(retractions)
@@ -737,7 +763,9 @@ async fn validate_staged_nodes<S: Storage + Clone + 'static, C: NodeCache + 'sta
             .collect();
 
         // Validate this node (view implements OverlayProvider)
-        let report = engine.validate_node(db, view, &subject, &node_types).await?;
+        let report = engine
+            .validate_node(db, view, &subject, &node_types)
+            .await?;
 
         all_results.extend(report.results);
     }
@@ -780,7 +808,12 @@ fn format_shacl_report(report: &ValidationReport) -> String {
         )
         .ok();
         if let Some(path) = &result.result_path {
-            writeln!(&mut output, "     Path: {}{}", path.namespace_code, path.name).ok();
+            writeln!(
+                &mut output,
+                "     Path: {}{}",
+                path.namespace_code, path.name
+            )
+            .ok();
         }
     }
 
@@ -794,14 +827,10 @@ mod tests {
     use fluree_db_core::{Db, FlakeValue, MemoryStorage, NoCache, Sid};
     use fluree_db_novelty::Novelty;
     use fluree_db_query::parse::{UnresolvedTerm, UnresolvedTriplePattern};
-    
+
     /// Helper to create an UnresolvedPattern::Triple for WHERE clauses in tests
     fn where_triple(s: UnresolvedTerm, p: &str, o: UnresolvedTerm) -> UnresolvedPattern {
-        UnresolvedPattern::Triple(UnresolvedTriplePattern::new(
-            s,
-            UnresolvedTerm::iri(p),
-            o,
-        ))
+        UnresolvedPattern::Triple(UnresolvedTriplePattern::new(s, UnresolvedTerm::iri(p), o))
     }
 
     #[tokio::test]
@@ -813,15 +842,16 @@ mod tests {
         let ledger = LedgerState::new(db, novelty);
 
         // Create a simple insert transaction
-        let txn = Txn::insert()
-            .with_insert(TripleTemplate::new(
-                TemplateTerm::Sid(Sid::new(1, "ex:alice")),
-                TemplateTerm::Sid(Sid::new(1, "ex:name")),
-                TemplateTerm::Value(FlakeValue::String("Alice".to_string())),
-            ));
+        let txn = Txn::insert().with_insert(TripleTemplate::new(
+            TemplateTerm::Sid(Sid::new(1, "ex:alice")),
+            TemplateTerm::Sid(Sid::new(1, "ex:name")),
+            TemplateTerm::Value(FlakeValue::String("Alice".to_string())),
+        ));
 
         let ns_registry = NamespaceRegistry::from_db(&ledger.db);
-        let (view, _ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default()).await.unwrap();
+        let (view, _ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default())
+            .await
+            .unwrap();
 
         assert_eq!(view.staged_len(), 1);
     }
@@ -848,7 +878,9 @@ mod tests {
             ));
 
         let ns_registry = NamespaceRegistry::from_db(&ledger.db);
-        let (view, _) = stage(ledger, txn, ns_registry, StageOptions::default()).await.unwrap();
+        let (view, _) = stage(ledger, txn, ns_registry, StageOptions::default())
+            .await
+            .unwrap();
 
         assert_eq!(view.staged_len(), 2);
     }
@@ -862,15 +894,16 @@ mod tests {
         let ledger = LedgerState::new(db, novelty);
 
         // Insert with blank node
-        let txn = Txn::insert()
-            .with_insert(TripleTemplate::new(
-                TemplateTerm::BlankNode("_:b1".to_string()),
-                TemplateTerm::Sid(Sid::new(1, "ex:name")),
-                TemplateTerm::Value(FlakeValue::String("Anonymous".to_string())),
-            ));
+        let txn = Txn::insert().with_insert(TripleTemplate::new(
+            TemplateTerm::BlankNode("_:b1".to_string()),
+            TemplateTerm::Sid(Sid::new(1, "ex:name")),
+            TemplateTerm::Value(FlakeValue::String("Anonymous".to_string())),
+        ));
 
         let ns_registry = NamespaceRegistry::from_db(&ledger.db);
-        let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default()).await.unwrap();
+        let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default())
+            .await
+            .unwrap();
 
         assert_eq!(view.staged_len(), 1);
         // Blank nodes use the predefined _: prefix (code 24), no new namespace allocation needed
@@ -932,12 +965,11 @@ mod tests {
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
-        let txn = Txn::insert()
-            .with_insert(TripleTemplate::new(
-                TemplateTerm::BlankNode("_:b1".to_string()),
-                TemplateTerm::Sid(Sid::new(1, "ex:name")),
-                TemplateTerm::Value(FlakeValue::String("Test".to_string())),
-            ));
+        let txn = Txn::insert().with_insert(TripleTemplate::new(
+            TemplateTerm::BlankNode("_:b1".to_string()),
+            TemplateTerm::Sid(Sid::new(1, "ex:name")),
+            TemplateTerm::Value(FlakeValue::String("Test".to_string())),
+        ));
 
         // Should succeed - blank nodes don't trigger existence check
         let ns_registry = NamespaceRegistry::from_db(&ledger.db);
@@ -967,7 +999,9 @@ mod tests {
         ));
 
         let ns_registry = NamespaceRegistry::from_db(&ledger.db);
-        let (view1, ns_registry1) = stage(ledger, txn1, ns_registry, StageOptions::default()).await.unwrap();
+        let (view1, ns_registry1) = stage(ledger, txn1, ns_registry, StageOptions::default())
+            .await
+            .unwrap();
         let (_receipt, state1) = commit(
             view1,
             ns_registry1,
@@ -987,7 +1021,9 @@ mod tests {
         ));
 
         let ns_registry2 = NamespaceRegistry::from_db(&state1.db);
-        let (view2, _ns_registry2) = stage(state1, txn2, ns_registry2, StageOptions::default()).await.unwrap();
+        let (view2, _ns_registry2) = stage(state1, txn2, ns_registry2, StageOptions::default())
+            .await
+            .unwrap();
 
         // Check that we have both a retraction and an assertion
         let (_base, staged) = view2.into_parts();
@@ -996,7 +1032,10 @@ mod tests {
         assert_eq!(staged.len(), 2);
 
         // Find retraction
-        let retraction = staged.iter().find(|f| !f.op).expect("should have retraction");
+        let retraction = staged
+            .iter()
+            .find(|f| !f.op)
+            .expect("should have retraction");
         assert_eq!(retraction.s.name.as_ref(), "ex:alice");
         assert_eq!(retraction.p.name.as_ref(), "ex:name");
         assert_eq!(retraction.o, FlakeValue::String("Alice".to_string()));
@@ -1024,7 +1063,9 @@ mod tests {
         ));
 
         let ns_registry = NamespaceRegistry::from_db(&ledger.db);
-        let (view, _) = stage(ledger, txn, ns_registry, StageOptions::default()).await.unwrap();
+        let (view, _) = stage(ledger, txn, ns_registry, StageOptions::default())
+            .await
+            .unwrap();
 
         // Should have just one assertion (no retraction since nothing existed)
         assert_eq!(view.staged_len(), 1);
@@ -1058,15 +1099,27 @@ mod tests {
         ));
 
         let ns_registry = NamespaceRegistry::from_db(&ledger.db);
-        let (view1, ns1) = stage(ledger, txn1, ns_registry, StageOptions::default()).await.unwrap();
-        let (_r1, state1) = commit(view1, ns1, &storage, &nameservice, &config, CommitOpts::default())
+        let (view1, ns1) = stage(ledger, txn1, ns_registry, StageOptions::default())
             .await
             .unwrap();
+        let (_r1, state1) = commit(
+            view1,
+            ns1,
+            &storage,
+            &nameservice,
+            &config,
+            CommitOpts::default(),
+        )
+        .await
+        .unwrap();
 
         // state1 now has t=1 with data in NOVELTY (not indexed)
         assert_eq!(state1.t(), 1);
         // Novelty includes 1 txn flake + commit metadata flakes
-        assert!(state1.novelty.len() >= 1, "novelty should have at least 1 transaction flake (Alice's name)");
+        assert!(
+            state1.novelty.len() >= 1,
+            "novelty should have at least 1 transaction flake (Alice's name)"
+        );
 
         // Commit 2: Update with WHERE pattern that should match data in novelty
         // This UPDATE should find schema:alice's name (in novelty) and change it
@@ -1095,7 +1148,9 @@ mod tests {
             .with_vars(vars);
 
         let ns_registry2 = NamespaceRegistry::from_db(&state1.db);
-        let (view2, _ns2) = stage(state1, txn2, ns_registry2, StageOptions::default()).await.unwrap();
+        let (view2, _ns2) = stage(state1, txn2, ns_registry2, StageOptions::default())
+            .await
+            .unwrap();
 
         // The WHERE should have found "Alice" (in novelty), so we should have:
         // - A retraction for "Alice"
@@ -1105,7 +1160,10 @@ mod tests {
 
         // Verify we got the retraction (proving WHERE saw the novelty data)
         let retraction = staged2.iter().find(|f| !f.op);
-        assert!(retraction.is_some(), "WHERE should have found data in novelty");
+        assert!(
+            retraction.is_some(),
+            "WHERE should have found data in novelty"
+        );
         assert_eq!(
             retraction.unwrap().o,
             FlakeValue::String("Alice".to_string())
@@ -1144,24 +1202,41 @@ mod tests {
             ));
 
         let ns_registry = NamespaceRegistry::from_db(&ledger.db);
-        let (view1, ns1) = stage(ledger, txn1, ns_registry, StageOptions::default()).await.unwrap();
-        let (_r1, state1) = commit(view1, ns1, &storage, &nameservice, &config, CommitOpts::default())
+        let (view1, ns1) = stage(ledger, txn1, ns_registry, StageOptions::default())
             .await
             .unwrap();
+        let (_r1, state1) = commit(
+            view1,
+            ns1,
+            &storage,
+            &nameservice,
+            &config,
+            CommitOpts::default(),
+        )
+        .await
+        .unwrap();
 
         // Commit 2: Also insert schema:bob with only a name (no age)
-        let txn2 = Txn::insert()
-            .with_insert(TripleTemplate::new(
-                TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "bob")),
-                TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "name")),
-                TemplateTerm::Value(FlakeValue::String("Bob".to_string())),
-            ));
+        let txn2 = Txn::insert().with_insert(TripleTemplate::new(
+            TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "bob")),
+            TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "name")),
+            TemplateTerm::Value(FlakeValue::String("Bob".to_string())),
+        ));
 
         let ns_registry2 = NamespaceRegistry::from_db(&state1.db);
-        let (view2, ns2) = stage(state1, txn2, ns_registry2, StageOptions::default()).await.unwrap();
-        let (_r2, state2) = commit(view2, ns2, &storage, &nameservice, &config, CommitOpts::default())
+        let (view2, ns2) = stage(state1, txn2, ns_registry2, StageOptions::default())
             .await
             .unwrap();
+        let (_r2, state2) = commit(
+            view2,
+            ns2,
+            &storage,
+            &nameservice,
+            &config,
+            CommitOpts::default(),
+        )
+        .await
+        .unwrap();
 
         // Now: Multi-pattern UPDATE
         // WHERE { ?s schema:name ?name . ?s schema:age ?age }  <- requires BOTH patterns to match
@@ -1201,22 +1276,34 @@ mod tests {
             .with_vars(vars);
 
         let ns_registry3 = NamespaceRegistry::from_db(&state2.db);
-        let (view3, _ns3) = stage(state2, txn3, ns_registry3, StageOptions::default()).await.unwrap();
+        let (view3, _ns3) = stage(state2, txn3, ns_registry3, StageOptions::default())
+            .await
+            .unwrap();
 
         // Should have exactly 2 flakes:
         // - Retraction of schema:alice schema:age 30
         // - Assertion of schema:alice schema:age 31
         let (_base3, staged3) = view3.into_parts();
-        assert_eq!(staged3.len(), 2, "Should have exactly 2 flakes (1 retraction + 1 assertion)");
+        assert_eq!(
+            staged3.len(),
+            2,
+            "Should have exactly 2 flakes (1 retraction + 1 assertion)"
+        );
 
         // Verify the retraction is for alice's old age
-        let retraction = staged3.iter().find(|f| !f.op).expect("should have retraction");
+        let retraction = staged3
+            .iter()
+            .find(|f| !f.op)
+            .expect("should have retraction");
         assert_eq!(retraction.s.name.as_ref(), "alice");
         assert_eq!(retraction.p.name.as_ref(), "age");
         assert_eq!(retraction.o, FlakeValue::Long(30));
 
         // Verify the assertion is for alice's new age
-        let assertion = staged3.iter().find(|f| f.op).expect("should have assertion");
+        let assertion = staged3
+            .iter()
+            .find(|f| f.op)
+            .expect("should have assertion");
         assert_eq!(assertion.s.name.as_ref(), "alice");
         assert_eq!(assertion.p.name.as_ref(), "age");
         assert_eq!(assertion.o, FlakeValue::Long(31));
@@ -1266,14 +1353,19 @@ mod tests {
             .with_vars(vars);
 
         let ns_registry = NamespaceRegistry::from_db(&ledger.db);
-        let (view, _) = stage(ledger, txn, ns_registry, StageOptions::default()).await.unwrap();
+        let (view, _) = stage(ledger, txn, ns_registry, StageOptions::default())
+            .await
+            .unwrap();
 
         // Should have 2 assertions (one for "Alice", one for "Bob")
         let (_base, staged) = view.into_parts();
         assert_eq!(staged.len(), 2, "Should have 2 flakes from VALUES seeding");
 
         // Both should be assertions
-        assert!(staged.iter().all(|f| f.op), "All flakes should be assertions");
+        assert!(
+            staged.iter().all(|f| f.op),
+            "All flakes should be assertions"
+        );
 
         // Verify we got both names with correct subjects
         let alice_flake = staged.iter().find(|f| f.s.name.as_ref() == "ex:alice");
@@ -1282,7 +1374,10 @@ mod tests {
         assert!(alice_flake.is_some(), "Should have alice flake");
         assert!(bob_flake.is_some(), "Should have bob flake");
 
-        assert_eq!(alice_flake.unwrap().o, FlakeValue::String("Alice".to_string()));
+        assert_eq!(
+            alice_flake.unwrap().o,
+            FlakeValue::String("Alice".to_string())
+        );
         assert_eq!(bob_flake.unwrap().o, FlakeValue::String("Bob".to_string()));
     }
 
@@ -1319,15 +1414,27 @@ mod tests {
             ));
 
         let ns_registry = NamespaceRegistry::from_db(&ledger.db);
-        let (view1, ns1) = stage(ledger, txn1, ns_registry, StageOptions::default()).await.unwrap();
-        let (_r1, state1) = commit(view1, ns1, &storage, &nameservice, &config, CommitOpts::default())
+        let (view1, ns1) = stage(ledger, txn1, ns_registry, StageOptions::default())
             .await
             .unwrap();
+        let (_r1, state1) = commit(
+            view1,
+            ns1,
+            &storage,
+            &nameservice,
+            &config,
+            CommitOpts::default(),
+        )
+        .await
+        .unwrap();
 
         // Verify state after first commit
         assert_eq!(state1.t(), 1);
         // Novelty includes 2 txn flakes + commit metadata flakes
-        assert!(state1.novelty.len() >= 2, "novelty should have at least 2 transaction flakes (alice and bob's ages)");
+        assert!(
+            state1.novelty.len() >= 2,
+            "novelty should have at least 2 transaction flakes (alice and bob's ages)"
+        );
 
         // Now: Update with VALUES constraining to only alice
         // VALUES ?s { schema:alice }
@@ -1378,13 +1485,18 @@ mod tests {
         );
 
         // Verify only alice's age was affected
-        let retraction = staged2.iter().find(|f| !f.op).expect("should have retraction");
+        let retraction = staged2
+            .iter()
+            .find(|f| !f.op)
+            .expect("should have retraction");
         assert_eq!(retraction.s.name.as_ref(), "alice");
         assert_eq!(retraction.o, FlakeValue::Long(30));
 
-        let assertion = staged2.iter().find(|f| f.op).expect("should have assertion");
+        let assertion = staged2
+            .iter()
+            .find(|f| f.op)
+            .expect("should have assertion");
         assert_eq!(assertion.s.name.as_ref(), "alice");
         assert_eq!(assertion.o, FlakeValue::Long(35));
     }
-
 }

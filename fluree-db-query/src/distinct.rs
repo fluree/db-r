@@ -71,6 +71,8 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for DistinctOp
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+        let _span = tracing::trace_span!("distinct").entered();
+        drop(_span);
         if !self.state.can_open() {
             if self.state.is_closed() {
                 return Err(crate::error::QueryError::OperatorClosed);

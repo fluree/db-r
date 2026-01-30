@@ -165,7 +165,9 @@ impl Tracker {
     /// Clojure parity: allows exactly `limit` items, errors when total becomes `limit + 1`.
     #[inline]
     pub fn consume_fuel_one(&self) -> Result<(), FuelExceededError> {
-        let Some(inner) = &self.0 else { return Ok(()); };
+        let Some(inner) = &self.0 else {
+            return Ok(());
+        };
         if !inner.options.track_fuel {
             return Ok(());
         }
@@ -183,7 +185,9 @@ impl Tracker {
     /// Record a policy evaluation attempt (increments for every policy considered).
     #[inline]
     pub fn policy_executed(&self, policy_id: &str) {
-        let Some(inner) = &self.0 else { return; };
+        let Some(inner) = &self.0 else {
+            return;
+        };
         if !inner.options.track_policy || policy_id.is_empty() {
             return;
         }
@@ -196,7 +200,9 @@ impl Tracker {
     /// Record a policy allow decision (only when that policy grants access).
     #[inline]
     pub fn policy_allowed(&self, policy_id: &str) {
-        let Some(inner) = &self.0 else { return; };
+        let Some(inner) = &self.0 else {
+            return;
+        };
         if !inner.options.track_policy || policy_id.is_empty() {
             return;
         }
@@ -210,8 +216,11 @@ impl Tracker {
     pub fn tally(&self) -> Option<TrackingTally> {
         let inner = self.0.as_ref()?;
 
+        let elapsed = inner.start_time.map(|t| t.elapsed());
+
         Some(TrackingTally {
-            time: inner.start_time.map(|t| format_time_ms(t.elapsed())),
+            time: elapsed.map(format_time_ms),
+            time_ms: elapsed.map(|d| d.as_secs_f64() * 1000.0),
             fuel: inner
                 .options
                 .track_fuel
@@ -231,6 +240,10 @@ pub struct TrackingTally {
     /// Formatted time string like `"12.34ms"`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time: Option<String>,
+    /// Numeric time in milliseconds (for span recording / OTEL export).
+    /// Not included in JSON response — use `time` for the formatted string.
+    #[serde(skip_serializing)]
+    pub time_ms: Option<f64>,
     /// Total fuel consumed (just the number)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fuel: Option<u64>,
@@ -244,3 +257,69 @@ fn format_time_ms(duration: Duration) -> String {
     format!("{:.2}ms", ms)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tally_time_ms_populated_when_time_tracking_enabled() {
+        let tracker = Tracker::new(TrackingOptions {
+            track_time: true,
+            track_fuel: false,
+            track_policy: false,
+            max_fuel: None,
+        });
+        // Let a small amount of time elapse
+        std::thread::sleep(Duration::from_millis(1));
+        let tally = tracker
+            .tally()
+            .expect("tally should be Some when tracking is enabled");
+        assert!(tally.time.is_some(), "formatted time should be present");
+        assert!(tally.time_ms.is_some(), "time_ms should be present");
+        assert!(
+            tally.time_ms.unwrap() >= 1.0,
+            "time_ms should reflect elapsed time"
+        );
+    }
+
+    #[test]
+    fn test_tally_time_ms_none_when_time_tracking_disabled() {
+        let tracker = Tracker::new(TrackingOptions {
+            track_time: false,
+            track_fuel: true,
+            track_policy: false,
+            max_fuel: None,
+        });
+        let tally = tracker
+            .tally()
+            .expect("tally should be Some when any tracking is enabled");
+        assert!(tally.time.is_none(), "formatted time should be None");
+        assert!(tally.time_ms.is_none(), "time_ms should be None");
+    }
+
+    #[test]
+    fn test_tally_none_when_disabled() {
+        let tracker = Tracker::disabled();
+        assert!(
+            tracker.tally().is_none(),
+            "disabled tracker should return None"
+        );
+    }
+
+    #[test]
+    fn test_time_ms_not_serialized() {
+        let tally = TrackingTally {
+            time: Some("5.00ms".to_string()),
+            time_ms: Some(5.0),
+            fuel: Some(42),
+            policy: None,
+        };
+        let json = serde_json::to_value(&tally).unwrap();
+        assert!(json.get("time").is_some(), "time should be serialized");
+        assert!(
+            json.get("time_ms").is_none(),
+            "time_ms should NOT be serialized"
+        );
+        assert!(json.get("fuel").is_some(), "fuel should be serialized");
+    }
+}

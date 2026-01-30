@@ -72,6 +72,13 @@ impl QueryPolicyEnforcer {
             return Ok(flakes);
         }
 
+        let span = tracing::debug_span!(
+            "policy_eval",
+            flakes_checked = flakes.len(),
+            flakes_allowed = tracing::field::Empty,
+        );
+        let _guard = span.enter();
+
         // Create executor using the GRAPH's db/overlay/to_t (not ctx-level!)
         let executor = QueryPolicyExecutor::with_overlay(db, overlay, to_t);
 
@@ -108,6 +115,8 @@ impl QueryPolicyEnforcer {
                 Err(_) => {}    // On error, conservatively deny
             }
         }
+
+        tracing::Span::current().record("flakes_allowed", result.len());
 
         Ok(result)
     }

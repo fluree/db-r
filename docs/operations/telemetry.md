@@ -244,6 +244,171 @@ docker run -d -p 4317:4317 -p 16686:16686 jaegertracing/all-in-one
 
 View traces: http://localhost:16686
 
+## Deep Performance Tracing
+
+Fluree includes detailed internal span instrumentation for diagnosing slow
+queries and transactions. These spans are compiled unconditionally but only
+emitted when the appropriate log level is active, so they add zero overhead in
+production at the default `info` level.
+
+### Span Hierarchy
+
+The instrumentation follows a two-tier strategy:
+
+**Tier 1 (info level — always visible):** Top-level operation spans that already
+exist (`request`, `query_execute`, `transact_execute`).
+
+**Tier 2 (debug level — opt-in):** Internal phase breakdowns showing where time
+is spent.
+
+#### Query waterfall (`RUST_LOG=info,fluree_db_query=debug`)
+
+```
+request
+  └─ query_execute (ledger_alias, query_kind, tracker_time, tracker_fuel)
+       ├─ parse (input_format, input_bytes)
+       ├─ reasoning_prep (rdfs, owl2ql, owl2rl, datalog)
+       ├─ pattern_rewrite (patterns_before, patterns_after)
+       ├─ plan (pattern_count)
+       ├─ execute
+       │    ├─ scan* (index, flakes_scanned)          [trace level]
+       │    ├─ join* (batched)                         [trace level]
+       │    ├─ filter*                                 [trace level]
+       │    ├─ sort* (sort_keys)                       [trace level]
+       │    ├─ group_by* / aggregate* / distinct*      [trace level]
+       │    └─ limit* / offset* / project*             [trace level]
+       ├─ policy_eval (flakes_checked, flakes_allowed) [when policy active]
+       └─ format (output_format, result_count)
+```
+
+#### Transaction waterfall (`RUST_LOG=info,fluree_db_transact=debug`)
+
+```
+request
+  └─ transact_execute (ledger_alias, txn_type, tracker_time, tracker_fuel)
+       ├─ parse (input_format, txn_type)
+       ├─ txn_stage (txn_type, insert_count)
+       │    ├─ where_exec (pattern_count, binding_rows)
+       │    ├─ delete_gen (template_count, retraction_count)
+       │    ├─ insert_gen (template_count, assertion_count)
+       │    ├─ cancellation (flakes_before, cancelled_count)
+       │    └─ policy_enforce (flakes_checked)
+       └─ commit (flake_count, bytes_written)
+            ├─ storage_write (bytes_written)
+            └─ ns_publish
+```
+
+### Recommended RUST_LOG Settings
+
+```bash
+# Default: production-safe, minimal output
+RUST_LOG=info
+
+# Investigation mode: full query/transaction waterfall
+RUST_LOG=info,fluree_db_query=debug,fluree_db_transact=debug
+
+# Maximum detail: per-batch operator traces (scan, join, filter, etc.)
+RUST_LOG=info,fluree_db_query=trace,fluree_db_transact=trace,fluree_db_core=trace
+```
+
+### Tracker Bridge
+
+When query tracking is enabled (via `opts.track` or `opts.meta`), the
+`query_execute` and `transact_execute` spans include `tracker_time` and
+`tracker_fuel` fields populated from the Tracker tally. These appear in OTEL
+exports alongside the span waterfall, providing both high-level metrics and
+detailed phase breakdowns in a single trace.
+
+### OTEL Export
+
+With the `otel` feature flag enabled, the full span waterfall is exported to any
+OTLP-compatible collector (Jaeger, Tempo, Datadog, etc.):
+
+```bash
+OTEL_SERVICE_NAME=fluree \
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 \
+OTEL_TRACES_SAMPLER=always_on \
+RUST_LOG=info,fluree_db_query=debug \
+  ./fluree-server
+```
+
+### Interpreting Span Fields
+
+Each span carries typed fields that help you identify bottlenecks. Here are the
+key fields and what to look for:
+
+**Query spans (`query_execute` children):**
+
+| Span | Field | Type | Normal | Concerning |
+|------|-------|------|--------|------------|
+| `query_execute` | `tracker_time` | string | < 50ms for simple queries | > 500ms |
+| `query_execute` | `tracker_fuel` | u64 | < 10,000 | > 100,000 (broad scan or missing constraints) |
+| `parse` | `input_bytes` | u64 | < 10KB | > 1MB (very large query payload) |
+| `reasoning_prep` | `rdfs` | bool | false (no RDFS reasoning) | true with large schemas |
+| `pattern_rewrite` | `patterns_after` | u64 | Close to `patterns_before` | Much larger (pattern explosion) |
+| `plan` | `pattern_count` | u64 | < 20 | > 50 (complex query) |
+| `format` | `result_count` | u64 | < 1,000 | > 100,000 (consider LIMIT) |
+| `policy_eval` | `flakes_checked` | u64 | < 10,000 | > 100,000 (broad policy scan) |
+
+**Transaction spans (`transact_execute` children):**
+
+| Span | Field | Type | Normal | Concerning |
+|------|-------|------|--------|------------|
+| `where_exec` | `binding_rows` | u64 | < 1,000 | > 10,000 (broad WHERE clause) |
+| `insert_gen` | `assertion_count` | u64 | < 1,000 | > 100,000 (large batch) |
+| `cancellation` | `cancelled_count` | u64 | 0 or small | Close to `flakes_before` (mostly redundant writes) |
+| `commit` | `bytes_written` | u64 | < 1MB | > 10MB (large commit, may affect I/O) |
+| `storage_write` | `bytes_written` | u64 | < 1MB | > 10MB (storage backend under pressure) |
+
+**Operator spans (trace level, children of `execute`):**
+
+| Span | Field | Type | What to look for |
+|------|-------|------|-----------------|
+| `scan` | `flakes_scanned` | u64 | High values mean broad index scans — add constraints |
+| `join` | `batched` | bool | `true` means hash join (efficient), `false` means nested loop |
+| `sort` | `sort_keys` | u64 | Sorting large result sets is expensive |
+
+### Production Sampling
+
+For production deployments, tracing every request generates significant data
+volume. Use the `OTEL_TRACES_SAMPLER` environment variable to control sampling.
+
+**Recommended production configurations:**
+
+```bash
+# Sample 1% of traces — good for steady-state monitoring
+OTEL_TRACES_SAMPLER=traceidratio
+OTEL_TRACES_SAMPLER_ARG=0.01
+
+# Sample 10% — good for active investigation
+OTEL_TRACES_SAMPLER=traceidratio
+OTEL_TRACES_SAMPLER_ARG=0.1
+
+# Respect upstream sampling decisions (e.g., from an API gateway)
+OTEL_TRACES_SAMPLER=parentbased_always_on
+```
+
+**When to use each sampler:**
+
+- **`traceidratio`** — Best for most production workloads. Gives a statistically
+  representative sample without overwhelming your collector.
+- **`parentbased_always_on`** — Use when upstream services (API gateways, load
+  balancers) propagate W3C `traceparent` headers with sampling decisions. Fluree
+  will respect the parent's decision while still tracing un-parented requests.
+- **`always_on`** — Development and debugging only. Generates a trace for every
+  request.
+- **`always_off`** — Disable OTEL trace export entirely while keeping the
+  feature compiled in.
+
+For detailed investigation workflows, see the
+[Performance Investigation](../troubleshooting/performance-investigation.md)
+guide.
+
+### Design Reference
+
+For implementation details, span naming conventions, and the full field
+reference, see [`dev-docs/deep-tracing-design.md`](../../dev-docs/deep-tracing-design.md).
+
 ## Monitoring Integration
 
 ### Grafana Dashboards

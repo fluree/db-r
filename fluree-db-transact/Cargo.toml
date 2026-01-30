@@ -48,3 +48,4 @@ shacl = ["dep:fluree-db-shacl"]
 
 [dev-dependencies]
 tokio.workspace = true
+tracing-subscriber = { workspace = true }

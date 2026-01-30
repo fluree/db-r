@@ -86,6 +86,13 @@ pub fn format_results<S: Storage, C: NodeCache>(
     db: &Db<S, C>,
     config: &FormatterConfig,
 ) -> Result<JsonValue> {
+    let span = tracing::debug_span!(
+        "format",
+        output_format = ?config.format,
+        result_count = result.batches.iter().map(|b| b.len()).sum::<usize>(),
+    );
+    let _guard = span.enter();
+
     let compactor = IriCompactor::new(db.namespaces(), context);
 
     // CONSTRUCT queries have dedicated output format
@@ -179,6 +186,13 @@ pub async fn format_results_async<S: Storage, C: NodeCache>(
     policy: Option<&fluree_db_policy::PolicyContext>,
     tracker: Option<&Tracker>,
 ) -> Result<JsonValue> {
+    let span = tracing::debug_span!(
+        "format",
+        output_format = ?config.format,
+        result_count = result.batches.iter().map(|b| b.len()).sum::<usize>(),
+    );
+    let _guard = span.enter();
+
     let compactor = IriCompactor::new(db.namespaces(), context);
 
     // CONSTRUCT queries have dedicated output format (sync, no DB access needed)

@@ -156,7 +156,11 @@ pub async fn query(
         // Ledger-scoped SPARQL without FROM is supported via the /:ledger/query route.
         match state.fluree.query_connection_sparql_jsonld(&sparql).await {
             Ok(result) => {
-                tracing::info!(status = "success", query_kind = "sparql", result_count = result.as_array().map(|a| a.len()).unwrap_or(0));
+                tracing::info!(
+                    status = "success",
+                    query_kind = "sparql",
+                    result_count = result.as_array().map(|a| a.len()).unwrap_or(0)
+                );
                 Ok((HeaderMap::new(), Json(result)))
             }
             Err(e) => {
@@ -297,8 +301,14 @@ async fn execute_query(
     alias: &str,
     query_json: &JsonValue,
 ) -> Result<(HeaderMap, Json<JsonValue>)> {
-    // Create execution span
-    let span = tracing::info_span!("query_execute", ledger_alias = alias, query_kind = "fql");
+    // Create execution span with tracker fields for OTEL bridge
+    let span = tracing::info_span!(
+        "query_execute",
+        ledger_alias = alias,
+        query_kind = "fql",
+        tracker_time = tracing::field::Empty,
+        tracker_fuel = tracing::field::Empty,
+    );
     let _guard = span.enter();
 
     // In proxy mode, use the unified FlureeInstance methods (no local freshness checking)
@@ -320,11 +330,17 @@ async fn execute_query(
     // Check if tracking is requested
     if has_tracking_opts(query_json) {
         // Execute tracked query via builder
-        let response = match graph.query(fluree.as_ref()).jsonld(query_json).execute_tracked().await {
+        let response = match graph
+            .query(fluree.as_ref())
+            .jsonld(query_json)
+            .execute_tracked()
+            .await
+        {
             Ok(response) => response,
             Err(e) => {
                 // TrackedErrorResponse has status and error fields
-                let server_error = ServerError::Api(fluree_db_api::ApiError::http(e.status, e.error));
+                let server_error =
+                    ServerError::Api(fluree_db_api::ApiError::http(e.status, e.error));
                 set_span_error_code(&span, "error:InvalidQuery");
                 tracing::error!(error = %server_error, "tracked query failed");
                 return Err(server_error);
@@ -334,16 +350,26 @@ async fn execute_query(
         // Extract tracking info for headers
         let tally = TrackingTally {
             time: response.time.clone(),
+            time_ms: None,
             fuel: response.fuel,
             policy: response.policy.clone(),
         };
         let headers = tracking_headers(&tally);
 
+        // Bridge tracker metrics to span for OTEL export
+        if let Some(ref time) = response.time {
+            span.record("tracker_time", time.as_str());
+        }
+        if let Some(fuel) = response.fuel {
+            span.record("tracker_fuel", fuel);
+        }
+
         // Serialize TrackedQueryResponse to JSON
         let json = match serde_json::to_value(&response) {
             Ok(json) => json,
             Err(e) => {
-                let server_error = ServerError::internal(format!("Failed to serialize response: {}", e));
+                let server_error =
+                    ServerError::internal(format!("Failed to serialize response: {}", e));
                 set_span_error_code(&span, "error:InternalError");
                 tracing::error!(error = %server_error, "response serialization failed");
                 return Err(server_error);
@@ -355,9 +381,18 @@ async fn execute_query(
     }
 
     // Execute query via builder - formatted JSON-LD output
-    let result = match graph.query(fluree.as_ref()).jsonld(query_json).execute_formatted().await {
+    let result = match graph
+        .query(fluree.as_ref())
+        .jsonld(query_json)
+        .execute_formatted()
+        .await
+    {
         Ok(result) => {
-            tracing::info!(status = "success", tracked = false, result_count = result.as_array().map(|a| a.len()).unwrap_or(0));
+            tracing::info!(
+                status = "success",
+                tracked = false,
+                result_count = result.as_array().map(|a| a.len()).unwrap_or(0)
+            );
             result
         }
         Err(e) => {
@@ -383,7 +418,8 @@ async fn execute_query_proxy(
         let response = match state.fluree.query_ledger_tracked(alias, query_json).await {
             Ok(response) => response,
             Err(e) => {
-                let server_error = ServerError::Api(fluree_db_api::ApiError::http(e.status, e.error));
+                let server_error =
+                    ServerError::Api(fluree_db_api::ApiError::http(e.status, e.error));
                 set_span_error_code(span, "error:InvalidQuery");
                 tracing::error!(error = %server_error, "tracked query failed (proxy)");
                 return Err(server_error);
@@ -393,16 +429,26 @@ async fn execute_query_proxy(
         // Extract tracking info for headers
         let tally = TrackingTally {
             time: response.time.clone(),
+            time_ms: None,
             fuel: response.fuel,
             policy: response.policy.clone(),
         };
         let headers = tracking_headers(&tally);
 
+        // Bridge tracker metrics to span for OTEL export
+        if let Some(ref time) = response.time {
+            span.record("tracker_time", time.as_str());
+        }
+        if let Some(fuel) = response.fuel {
+            span.record("tracker_fuel", fuel);
+        }
+
         // Serialize TrackedQueryResponse to JSON
         let json = match serde_json::to_value(&response) {
             Ok(json) => json,
             Err(e) => {
-                let server_error = ServerError::internal(format!("Failed to serialize response: {}", e));
+                let server_error =
+                    ServerError::internal(format!("Failed to serialize response: {}", e));
                 set_span_error_code(span, "error:InternalError");
                 tracing::error!(error = %server_error, "response serialization failed");
                 return Err(server_error);
@@ -416,7 +462,11 @@ async fn execute_query_proxy(
     // Execute query via FlureeInstance wrapper
     let result = match state.fluree.query_ledger_jsonld(alias, query_json).await {
         Ok(result) => {
-            tracing::info!(status = "success", tracked = false, result_count = result.as_array().map(|a| a.len()).unwrap_or(0));
+            tracing::info!(
+                status = "success",
+                tracked = false,
+                result_count = result.as_array().map(|a| a.len()).unwrap_or(0)
+            );
             result
         }
         Err(e) => {
@@ -441,7 +491,10 @@ async fn execute_sparql_ledger(
 
     // In proxy mode, use the unified FlureeInstance method
     if state.config.is_proxy_storage_mode() {
-        let result = state.fluree.query_ledger_sparql_jsonld(alias, sparql).await?;
+        let result = state
+            .fluree
+            .query_ledger_sparql_jsonld(alias, sparql)
+            .await?;
         return Ok((HeaderMap::new(), Json(result)));
     }
 
@@ -452,7 +505,11 @@ async fn execute_sparql_ledger(
 
     // Execute SPARQL query via builder
     // Note: SPARQL tracking not yet implemented - returns empty headers
-    let result = graph.query(fluree.as_ref()).sparql(sparql).execute_formatted().await?;
+    let result = graph
+        .query(fluree.as_ref())
+        .sparql(sparql)
+        .execute_formatted()
+        .await?;
     Ok((HeaderMap::new(), Json(result)))
 }
 

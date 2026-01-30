@@ -127,7 +127,8 @@ impl<S: Storage + 'static, C: NodeCache + 'static> GroupByOperator<S, C> {
                 output.push(group_key[key_pos].clone());
             } else {
                 // Non-grouped column - collect all values into Grouped
-                let values: Vec<Binding> = group_rows.iter().map(|row| row[col_idx].clone()).collect();
+                let values: Vec<Binding> =
+                    group_rows.iter().map(|row| row[col_idx].clone()).collect();
                 output.push(Binding::Grouped(values));
             }
         }
@@ -143,6 +144,8 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for GroupByOpe
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+        let _span = tracing::trace_span!("group_by").entered();
+        drop(_span);
         self.child.open(ctx).await?;
         self.state = OperatorState::Open;
         self.groups.clear();
@@ -374,7 +377,10 @@ mod tests {
             async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+            async fn next_batch(
+                &mut self,
+                _: &ExecutionContext<'_, S, C>,
+            ) -> Result<Option<Batch>> {
                 Ok(self.batch.take())
             }
             fn close(&mut self) {}
@@ -463,7 +469,10 @@ mod tests {
             async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+            async fn next_batch(
+                &mut self,
+                _: &ExecutionContext<'_, S, C>,
+            ) -> Result<Option<Batch>> {
                 Ok(self.batch.take())
             }
             fn close(&mut self) {}
@@ -524,7 +533,10 @@ mod tests {
             async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+            async fn next_batch(
+                &mut self,
+                _: &ExecutionContext<'_, S, C>,
+            ) -> Result<Option<Batch>> {
                 Ok(None) // Truly no rows
             }
             fn close(&mut self) {}
@@ -583,7 +595,10 @@ mod tests {
             async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+            async fn next_batch(
+                &mut self,
+                _: &ExecutionContext<'_, S, C>,
+            ) -> Result<Option<Batch>> {
                 Ok(self.batch.take())
             }
             fn close(&mut self) {}
