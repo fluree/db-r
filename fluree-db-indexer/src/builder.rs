@@ -9,16 +9,16 @@
 use crate::config::IndexerConfig;
 use crate::error::Result;
 use crate::node::build_tree;
-use crate::stats::IndexStatsHook;
 use crate::stats::ClassPropertyExtractor;
-#[cfg(feature = "hll-stats")]
-use crate::stats::{HllStatsHook, persist_hll_sketches};
+use crate::stats::IndexStatsHook;
 #[cfg(not(feature = "hll-stats"))]
 use crate::stats::NoOpStatsHook;
+#[cfg(feature = "hll-stats")]
+use crate::stats::{persist_hll_sketches, HllStatsHook};
 use crate::writer::IndexWriter;
 use crate::{IndexResult, IndexStats};
-use fluree_db_core::serde::json::{serialize_db_root, DbRoot, DbRootStats};
 use fluree_db_core::flake::size_flakes_estimate;
+use fluree_db_core::serde::json::{serialize_db_root, DbRoot, DbRootStats};
 use fluree_db_core::{ContentAddressedWrite, ContentKind, Flake, IndexType, StorageWrite};
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -193,10 +193,10 @@ pub async fn build_index<S: ContentAddressedWrite + StorageWrite>(
         tspo: Some(tspo_root),
         timestamp: None,
         stats: Some(db_root_stats),
-        config: None,      // Config can be added later via refresh_index_with_prev
-        prev_index: None,  // Genesis build has no previous index
-        schema: None,      // Schema can be populated during refresh with schema tracking
-        garbage: None,     // Genesis build has no garbage
+        config: None,     // Config can be added later via refresh_index_with_prev
+        prev_index: None, // Genesis build has no previous index
+        schema: None,     // Schema can be populated during refresh with schema tracking
+        garbage: None,    // Genesis build has no garbage
     };
 
     // Serialize and write the root

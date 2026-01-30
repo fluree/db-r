@@ -5,9 +5,9 @@
 use crate::config::IndexerConfig;
 use crate::error::Result;
 use crate::writer::IndexWriter;
+use fluree_db_core::flake::size_flakes_estimate;
 use fluree_db_core::index::ChildRef;
 use fluree_db_core::serde::json::{serialize_branch_node, serialize_leaf_node};
-use fluree_db_core::flake::size_flakes_estimate;
 use fluree_db_core::{ContentAddressedWrite, Flake};
 
 /// Write a single leaf and return its ChildRef
@@ -73,10 +73,7 @@ pub async fn split_leaf_if_needed<S: ContentAddressedWrite>(
 
     // Split into chunks by target bytes
     let mut leaves = Vec::new();
-    let target_bytes = config
-        .leaf_target_bytes
-        .min(config.leaf_max_bytes)
-        .max(1);
+    let target_bytes = config.leaf_target_bytes.min(config.leaf_max_bytes).max(1);
     let mut start = 0;
     let total = flakes.len();
     let mut chunks: Vec<&[Flake]> = Vec::new();
@@ -260,8 +257,8 @@ pub async fn finalize_root<S: ContentAddressedWrite>(
     let root = ChildRef {
         id: address,
         leaf: false,
-        first: None,  // Root invariant
-        rhs: None,    // Root invariant
+        first: None, // Root invariant
+        rhs: None,   // Root invariant
         size: total_size,
         bytes: Some(serialized_len),
         leftmost: true, // Root invariant
@@ -394,9 +391,7 @@ mod tests {
 
         let children = vec![make_child_ref("child1", 100)];
 
-        let root = finalize_root(children, &config, &mut writer)
-            .await
-            .unwrap();
+        let root = finalize_root(children, &config, &mut writer).await.unwrap();
 
         assert!(root.leftmost);
         assert!(root.first.is_none());
@@ -419,9 +414,7 @@ mod tests {
             .map(|i| make_child_ref(&format!("child{}", i), 10))
             .collect();
 
-        let root = finalize_root(children, &config, &mut writer)
-            .await
-            .unwrap();
+        let root = finalize_root(children, &config, &mut writer).await.unwrap();
 
         assert!(root.leftmost);
         assert!(root.first.is_none());

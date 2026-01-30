@@ -511,8 +511,7 @@ async fn execute_sparql_ledger(
         }
 
         // Shared storage mode: use load_ledger_for_query with freshness checking
-        let ledger =
-            load_ledger_for_query(state, alias, &tracing::Span::current()).await?;
+        let ledger = load_ledger_for_query(state, alias, &tracing::Span::current()).await?;
         let graph = FlureeView::from_ledger_state(&ledger);
         let fluree = state.fluree.as_file();
 
@@ -569,7 +568,11 @@ pub async fn explain(
         // Log query text according to configuration (only serialize if needed)
         if should_log_query_text(&state.telemetry_config) {
             if let Ok(query_text) = serde_json::to_string(&query_json) {
-                log_query_text(&query_text, &state.telemetry_config, &tracing::Span::current());
+                log_query_text(
+                    &query_text,
+                    &state.telemetry_config,
+                    &tracing::Span::current(),
+                );
             }
         }
 
@@ -611,8 +614,7 @@ pub async fn explain(
             }
         } else {
             // Shared storage mode: use load_ledger_for_query with freshness checking
-            let ledger =
-                load_ledger_for_query(&state, &alias, &tracing::Span::current()).await?;
+            let ledger = load_ledger_for_query(&state, &alias, &tracing::Span::current()).await?;
             match state.fluree.as_file().explain(&ledger, &query_json).await {
                 Ok(result) => {
                     tracing::info!(status = "success", "explain completed");

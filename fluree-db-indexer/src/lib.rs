@@ -99,19 +99,23 @@ mod node;
 // Re-export main types
 pub use config::IndexerConfig;
 pub use error::{IndexerError, Result};
-pub use orchestrator::{
-    BackgroundIndexerWorker, IndexCompletion, IndexerHandle, IndexerOrchestrator, IndexOutcome,
-    IndexPhase, IndexStatusSnapshot,
+pub use gc::{
+    clean_garbage, collect_garbage_addresses, load_garbage_record, write_garbage_record,
+    CleanGarbageConfig, CleanGarbageResult, GarbageRecord, GarbageRef, DEFAULT_MAX_OLD_INDEXES,
+    DEFAULT_MIN_TIME_GARBAGE_MINS,
 };
 #[cfg(feature = "embedded-orchestrator")]
-pub use orchestrator::{maybe_refresh_after_commit, require_refresh_before_commit, PostCommitIndexResult};
-pub use refresh::{refresh_index, refresh_index_with_prev, RefreshIndexResult, RefreshResult, RefreshStats};
-pub use stats::{IndexStatsHook, NoOpStatsHook, StatsArtifacts, StatsSummary};
-pub use gc::{
-    CleanGarbageConfig, CleanGarbageResult, GarbageRecord, GarbageRef,
-    clean_garbage, collect_garbage_addresses, load_garbage_record, write_garbage_record,
-    DEFAULT_MAX_OLD_INDEXES, DEFAULT_MIN_TIME_GARBAGE_MINS,
+pub use orchestrator::{
+    maybe_refresh_after_commit, require_refresh_before_commit, PostCommitIndexResult,
 };
+pub use orchestrator::{
+    BackgroundIndexerWorker, IndexCompletion, IndexOutcome, IndexPhase, IndexStatusSnapshot,
+    IndexerHandle, IndexerOrchestrator,
+};
+pub use refresh::{
+    refresh_index, refresh_index_with_prev, RefreshIndexResult, RefreshResult, RefreshStats,
+};
+pub use stats::{IndexStatsHook, NoOpStatsHook, StatsArtifacts, StatsSummary};
 
 // Note: The following types/functions are defined in this module and are automatically public:
 // - build_index_for_ledger (heavy bounds: Storage + Send), refresh_index_for_ledger (light bounds)
@@ -125,8 +129,7 @@ use fluree_db_core::serde::json::PrevIndexRef;
 use fluree_db_core::{ContentAddressedWrite, Db, Storage, StorageWrite};
 use fluree_db_nameservice::{NameService, Publisher};
 use fluree_db_novelty::{
-    load_commit, trace_commit_envelopes, trace_commits,
-    Commit, CommitEnvelope, Novelty,
+    load_commit, trace_commit_envelopes, trace_commits, Commit, CommitEnvelope, Novelty,
 };
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -348,9 +351,15 @@ impl IndexerConfigSnapshot {
         IndexerConfig {
             leaf_target_bytes: self.leaf_target_bytes.unwrap_or(default.leaf_target_bytes),
             leaf_max_bytes: self.leaf_max_bytes.unwrap_or(default.leaf_max_bytes),
-            branch_target_children: self.branch_target_children.unwrap_or(default.branch_target_children),
-            branch_max_children: self.branch_max_children.unwrap_or(default.branch_max_children),
-            gc_max_old_indexes: self.gc_max_old_indexes.unwrap_or(default.gc_max_old_indexes),
+            branch_target_children: self
+                .branch_target_children
+                .unwrap_or(default.branch_target_children),
+            branch_max_children: self
+                .branch_max_children
+                .unwrap_or(default.branch_max_children),
+            gc_max_old_indexes: self
+                .gc_max_old_indexes
+                .unwrap_or(default.gc_max_old_indexes),
             gc_min_time_mins: self.gc_min_time_mins.unwrap_or(default.gc_min_time_mins),
         }
     }
@@ -385,21 +394,27 @@ pub async fn load_checkpoint<S: Storage>(
     let address = checkpoint_address(alias);
     match storage.read_bytes(&address).await {
         Ok(bytes) => {
-            let checkpoint: ReindexCheckpoint = serde_json::from_slice(&bytes)
-                .map_err(|e| IndexerError::Checkpoint(format!(
-                    "Failed to parse checkpoint at {}: {}", address, e
-                )))?;
+            let checkpoint: ReindexCheckpoint = serde_json::from_slice(&bytes).map_err(|e| {
+                IndexerError::Checkpoint(format!(
+                    "Failed to parse checkpoint at {}: {}",
+                    address, e
+                ))
+            })?;
             Ok(Some(checkpoint))
         }
         Err(e) => {
             // Best-effort detection of "not found" errors via string matching.
             // See doc comment above for caveats.
             let msg = e.to_string().to_lowercase();
-            if msg.contains("not found") || msg.contains("does not exist") || msg.contains("no such file") {
+            if msg.contains("not found")
+                || msg.contains("does not exist")
+                || msg.contains("no such file")
+            {
                 Ok(None)
             } else {
                 Err(IndexerError::Checkpoint(format!(
-                    "Failed to read checkpoint at {}: {}", address, e
+                    "Failed to read checkpoint at {}: {}",
+                    address, e
                 )))
             }
         }
@@ -413,13 +428,10 @@ pub async fn write_checkpoint<S: fluree_db_core::StorageWrite>(
 ) -> Result<()> {
     let address = checkpoint_address(&checkpoint.alias);
     let bytes = serde_json::to_vec_pretty(checkpoint)
-        .map_err(|e| IndexerError::Checkpoint(format!(
-            "Failed to serialize checkpoint: {}", e
-        )))?;
-    storage.write_bytes(&address, &bytes).await
-        .map_err(|e| IndexerError::Checkpoint(format!(
-            "Failed to write checkpoint to {}: {}", address, e
-        )))?;
+        .map_err(|e| IndexerError::Checkpoint(format!("Failed to serialize checkpoint: {}", e)))?;
+    storage.write_bytes(&address, &bytes).await.map_err(|e| {
+        IndexerError::Checkpoint(format!("Failed to write checkpoint to {}: {}", address, e))
+    })?;
     tracing::debug!(
         address = %address,
         last_processed_t = checkpoint.last_processed_t,
@@ -429,10 +441,7 @@ pub async fn write_checkpoint<S: fluree_db_core::StorageWrite>(
 }
 
 /// Delete a reindex checkpoint from storage
-pub async fn delete_checkpoint<S: StorageWrite>(
-    storage: &S,
-    alias: &str,
-) -> Result<()> {
+pub async fn delete_checkpoint<S: StorageWrite>(storage: &S, alias: &str) -> Result<()> {
     let address = checkpoint_address(alias);
     // Ignore errors - checkpoint may not exist
     let _ = storage.delete(&address).await;
@@ -475,7 +484,10 @@ impl std::fmt::Debug for BatchedRebuildConfig {
             .field("max_batch_commits", &self.max_batch_commits)
             .field("checkpoint", &self.checkpoint)
             .field("checkpoint_interval", &self.checkpoint_interval)
-            .field("progress_callback", &self.progress_callback.as_ref().map(|_| "<callback>"))
+            .field(
+                "progress_callback",
+                &self.progress_callback.as_ref().map(|_| "<callback>"),
+            )
             .finish()
     }
 }
@@ -556,10 +568,12 @@ fn build_prev_index_ref(
     prev_index_address: Option<&String>,
     prev_index_t: Option<i64>,
 ) -> Option<PrevIndexRef> {
-    prev_index_address.zip(prev_index_t).map(|(addr, t)| PrevIndexRef {
-        t,
-        address: addr.clone(),
-    })
+    prev_index_address
+        .zip(prev_index_t)
+        .map(|(addr, t)| PrevIndexRef {
+            t,
+            address: addr.clone(),
+        })
 }
 
 /// Create an IndexResult from a RefreshIndexResult.
@@ -663,330 +677,341 @@ where
     let span = tracing::info_span!("batched_rebuild", ledger_alias = alias);
 
     async {
-    tracing::info!(
-        batch_bytes = config.batch_bytes,
-        max_batch_commits = config.max_batch_commits,
-        checkpoint = config.checkpoint,
-        "Starting batched index rebuild"
-    );
+        tracing::info!(
+            batch_bytes = config.batch_bytes,
+            max_batch_commits = config.max_batch_commits,
+            checkpoint = config.checkpoint,
+            "Starting batched index rebuild"
+        );
 
-    // =========================================================================
-    // PHASE 1: Metadata scan (backwards)
-    // =========================================================================
-    // Walk commits backwards collecting lightweight envelopes.
+        // =========================================================================
+        // PHASE 1: Metadata scan (backwards)
+        // =========================================================================
+        // Walk commits backwards collecting lightweight envelopes.
 
-    tracing::debug!("Phase 1: Scanning commit metadata backwards");
+        let (mut envelopes, target_t) = async {
+            let mut envelopes: Vec<(String, CommitEnvelope)> = Vec::new();
+            let mut target_t: i64 = 0;
 
-    let mut envelopes: Vec<(String, CommitEnvelope)> = Vec::new();
-    let mut target_t: i64 = 0; // Will be set from head envelope
+            let mut stream = std::pin::pin!(trace_commit_envelopes(
+                storage.clone(),
+                head_commit_address.to_string(),
+                0, // Scan all the way back
+            ));
 
-    let mut stream = std::pin::pin!(trace_commit_envelopes(
-        storage.clone(),
-        head_commit_address.to_string(),
-        0, // Scan all the way back
-    ));
+            while let Some(result) = stream.next().await {
+                let (addr, envelope) = result?;
 
-    while let Some(result) = stream.next().await {
-        let (addr, envelope) = result?;
+                // Capture target_t from first (head) envelope
+                if envelopes.is_empty() {
+                    target_t = envelope.t;
+                }
 
-        // Capture target_t from first (head) envelope
+                envelopes.push((addr, envelope));
+            }
+
+            Ok::<_, IndexerError>((envelopes, target_t))
+        }
+        .instrument(tracing::debug_span!("commit_scan"))
+        .await?;
+
+        tracing::debug!(
+            envelope_count = envelopes.len(),
+            "Phase 1 complete: metadata scan finished"
+        );
+
+        // Reverse to get forward order (oldest first)
+        envelopes.reverse();
+
         if envelopes.is_empty() {
-            target_t = envelope.t;
+            tracing::warn!("No commits found");
+            return Err(IndexerError::NoCommits);
         }
 
-        envelopes.push((addr, envelope));
-    }
+        // =========================================================================
+        // PHASE 2: Initialize starting state
+        // =========================================================================
+        // Always start from genesis for full rebuild
 
-    tracing::debug!(
-        envelope_count = envelopes.len(),
-        "Phase 1 complete: metadata scan finished"
-    );
+        tracing::info!("Starting full rebuild from genesis");
+        let mut db = Db::genesis(storage.clone(), NoCache, alias);
+        let mut novelty = Novelty::new(0);
 
-    // Reverse to get forward order (oldest first)
-    envelopes.reverse();
+        // =========================================================================
+        // PHASE 3: Forward processing with batching
+        // =========================================================================
 
-    if envelopes.is_empty() {
-        tracing::warn!("No commits found");
-        return Err(IndexerError::NoCommits);
-    }
+        tracing::debug!("Phase 2: Processing commits forward with batching");
 
-    // =========================================================================
-    // PHASE 2: Initialize starting state
-    // =========================================================================
-    // Always start from genesis for full rebuild
+        let mut batches_flushed = 0;
+        let mut commits_in_batch = 0;
+        let mut prev_index_address: Option<String> = None;
+        let mut prev_index_t: Option<i64> = None;
 
-    tracing::info!("Starting full rebuild from genesis");
-    let mut db = Db::genesis(storage.clone(), NoCache, alias);
-    let mut novelty = Novelty::new(0);
+        // For checkpointing: track last processed commit
+        #[allow(unused_assignments)]
+        let mut last_processed_commit: String = String::new();
+        let mut last_processed_t: i64 = 0;
+        let mut batches_since_checkpoint: u32 = 0;
 
-    // =========================================================================
-    // PHASE 3: Forward processing with batching
-    // =========================================================================
+        // All commits need to be processed (starting from genesis)
+        let commits_to_process: Vec<_> = envelopes.into_iter().collect();
 
-    tracing::debug!("Phase 2: Processing commits forward with batching");
+        let total_commits = commits_to_process.len();
+        tracing::info!(
+            total_commits = total_commits,
+            "Processing {} commits from genesis",
+            total_commits
+        );
 
-    let mut batches_flushed = 0;
-    let mut commits_in_batch = 0;
-    let mut prev_index_address: Option<String> = None;
-    let mut prev_index_t: Option<i64> = None;
+        // Progress tracking for observability
+        let start_time = std::time::Instant::now();
+        let mut commits_processed: usize = 0;
+        let mut bytes_flushed: u64 = 0;
 
-    // For checkpointing: track last processed commit
-    #[allow(unused_assignments)]
-    let mut last_processed_commit: String = String::new();
-    let mut last_processed_t: i64 = 0;
-    let mut batches_since_checkpoint: u32 = 0;
+        for (commit_addr, _envelope) in commits_to_process {
+            // Track commit address for checkpointing
+            last_processed_commit = commit_addr.clone();
+            // Load the full commit (with flakes)
+            let commit: Commit = load_commit(storage, &commit_addr).await?;
 
-    // All commits need to be processed (starting from genesis)
-    let commits_to_process: Vec<_> = envelopes.into_iter().collect();
+            // Apply namespace delta to Db BEFORE processing flakes
+            // This ensures namespace codes are available for flake interpretation
+            if !commit.namespace_delta.is_empty() {
+                for (code, prefix) in &commit.namespace_delta {
+                    db.namespace_codes.insert(*code, prefix.clone());
+                }
+            }
 
-    let total_commits = commits_to_process.len();
-    tracing::info!(
-        total_commits = total_commits,
-        "Processing {} commits from genesis",
-        total_commits
-    );
+            // Apply flakes to novelty
+            novelty.apply_commit(commit.flakes, commit.t)?;
+            commits_in_batch += 1;
+            commits_processed += 1;
 
-    // Progress tracking for observability
-    let start_time = std::time::Instant::now();
-    let mut commits_processed: usize = 0;
-    let mut bytes_flushed: u64 = 0;
+            // Check if we need to flush this batch
+            let should_flush =
+                novelty.size >= config.batch_bytes || commits_in_batch >= config.max_batch_commits;
 
-    for (commit_addr, _envelope) in commits_to_process {
-        // Track commit address for checkpointing
-        last_processed_commit = commit_addr.clone();
-        // Load the full commit (with flakes)
-        let commit: Commit = load_commit(storage, &commit_addr).await?;
+            if should_flush {
+                let batch_novelty_bytes = novelty.size;
 
-        // Apply namespace delta to Db BEFORE processing flakes
-        // This ensures namespace codes are available for flake interpretation
-        if !commit.namespace_delta.is_empty() {
-            for (code, prefix) in &commit.namespace_delta {
-                db.namespace_codes.insert(*code, prefix.clone());
+                // Enhanced tracing span for this batch
+                let batch_span = tracing::info_span!(
+                    "reindex_batch",
+                    batch_num = batches_flushed + 1,
+                    commits_in_batch = commits_in_batch,
+                    novelty_bytes = batch_novelty_bytes,
+                    from_t = last_processed_t,
+                    to_t = commit.t,
+                );
+                async {
+                    tracing::info!(
+                        batch = batches_flushed + 1,
+                        commits_in_batch = commits_in_batch,
+                        novelty_size = batch_novelty_bytes,
+                        target_t = commit.t,
+                        "Flushing batch"
+                    );
+
+                    // Build prev_index reference for GC chain
+                    let prev_index =
+                        build_prev_index_ref(prev_index_address.as_ref(), prev_index_t);
+
+                    // Refresh the index
+                    let refresh_result = refresh_index_with_prev(
+                        storage,
+                        &db,
+                        &novelty,
+                        commit.t,
+                        config.indexer_config.clone(),
+                        None,
+                        prev_index,
+                    )
+                    .await?;
+
+                    // Update state for next batch
+                    prev_index_address = Some(refresh_result.root_address.clone());
+                    prev_index_t = Some(refresh_result.index_t);
+
+                    // Load the new Db from the refresh result
+                    db = Db::load(storage.clone(), NoCache, &refresh_result.root_address).await?;
+
+                    // Track bytes flushed for progress reporting
+                    bytes_flushed += batch_novelty_bytes as u64;
+
+                    // Reset novelty for next batch
+                    novelty = Novelty::new(commit.t);
+                    commits_in_batch = 0;
+                    batches_flushed += 1;
+                    last_processed_t = commit.t;
+                    batches_since_checkpoint += 1;
+
+                    // Invoke progress callback if configured
+                    if let Some(ref callback) = config.progress_callback {
+                        let elapsed = start_time.elapsed().as_secs_f64();
+                        let commits_per_sec = if elapsed > 0.0 {
+                            commits_processed as f64 / elapsed
+                        } else {
+                            0.0
+                        };
+                        let remaining_commits = total_commits.saturating_sub(commits_processed);
+                        let estimated_remaining = if commits_per_sec > 0.0 {
+                            Some(remaining_commits as f64 / commits_per_sec)
+                        } else {
+                            None
+                        };
+
+                        let progress = ReindexProgress {
+                            alias: alias.to_string(),
+                            total_commits,
+                            commits_processed,
+                            batches_flushed,
+                            bytes_flushed,
+                            current_t: commit.t,
+                            target_t,
+                            commits_per_sec,
+                            estimated_remaining_secs: estimated_remaining,
+                        };
+                        callback(progress);
+                    }
+
+                    // Write checkpoint if enabled and at interval
+                    if config.checkpoint && batches_since_checkpoint >= config.checkpoint_interval {
+                        let checkpoint = create_checkpoint_struct(
+                            alias,
+                            head_commit_address,
+                            target_t,
+                            &last_processed_commit,
+                            last_processed_t,
+                            prev_index_address.clone(),
+                            config.batch_bytes,
+                            config.max_batch_commits,
+                            config.checkpoint_interval,
+                            batches_flushed,
+                            Some(IndexerConfigSnapshot::from(&config.indexer_config)),
+                        );
+                        write_checkpoint(storage, &checkpoint).await?;
+                        batches_since_checkpoint = 0;
+                    }
+
+                    Ok::<_, IndexerError>(())
+                }
+                .instrument(batch_span)
+                .await?;
             }
         }
 
-        // Apply flakes to novelty
-        novelty.apply_commit(commit.flakes, commit.t)?;
-        commits_in_batch += 1;
-        commits_processed += 1;
+        // =========================================================================
+        // PHASE 4: Final flush
+        // =========================================================================
+        // Process any remaining novelty
 
-        // Check if we need to flush this batch
-        let should_flush = novelty.size >= config.batch_bytes
-            || commits_in_batch >= config.max_batch_commits;
-
-        if should_flush {
+        if novelty.len() > 0 || commits_in_batch > 0 {
+            let final_t = novelty.t;
             let batch_novelty_bytes = novelty.size;
 
-            // Enhanced tracing span for this batch
+            // Enhanced tracing span for final batch
             let batch_span = tracing::info_span!(
                 "reindex_batch",
                 batch_num = batches_flushed + 1,
                 commits_in_batch = commits_in_batch,
                 novelty_bytes = batch_novelty_bytes,
-                from_t = last_processed_t,
-                to_t = commit.t,
+                final = true,
             );
-            async {
-            tracing::info!(
-                batch = batches_flushed + 1,
-                commits_in_batch = commits_in_batch,
-                novelty_size = batch_novelty_bytes,
-                target_t = commit.t,
-                "Flushing batch"
-            );
-
-            // Build prev_index reference for GC chain
-            let prev_index = build_prev_index_ref(prev_index_address.as_ref(), prev_index_t);
-
-            // Refresh the index
-            let refresh_result = refresh_index_with_prev(
-                storage,
-                &db,
-                &novelty,
-                commit.t,
-                config.indexer_config.clone(),
-                None,
-                prev_index,
-            )
-            .await?;
-
-            // Update state for next batch
-            prev_index_address = Some(refresh_result.root_address.clone());
-            prev_index_t = Some(refresh_result.index_t);
-
-            // Load the new Db from the refresh result
-            db = Db::load(storage.clone(), NoCache, &refresh_result.root_address).await?;
-
-            // Track bytes flushed for progress reporting
-            bytes_flushed += batch_novelty_bytes as u64;
-
-            // Reset novelty for next batch
-            novelty = Novelty::new(commit.t);
-            commits_in_batch = 0;
-            batches_flushed += 1;
-            last_processed_t = commit.t;
-            batches_since_checkpoint += 1;
-
-            // Invoke progress callback if configured
-            if let Some(ref callback) = config.progress_callback {
-                let elapsed = start_time.elapsed().as_secs_f64();
-                let commits_per_sec = if elapsed > 0.0 {
-                    commits_processed as f64 / elapsed
-                } else {
-                    0.0
-                };
-                let remaining_commits = total_commits.saturating_sub(commits_processed);
-                let estimated_remaining = if commits_per_sec > 0.0 {
-                    Some(remaining_commits as f64 / commits_per_sec)
-                } else {
-                    None
-                };
-
-                let progress = ReindexProgress {
-                    alias: alias.to_string(),
-                    total_commits,
-                    commits_processed,
-                    batches_flushed,
-                    bytes_flushed,
-                    current_t: commit.t,
-                    target_t,
-                    commits_per_sec,
-                    estimated_remaining_secs: estimated_remaining,
-                };
-                callback(progress);
-            }
-
-            // Write checkpoint if enabled and at interval
-            if config.checkpoint && batches_since_checkpoint >= config.checkpoint_interval {
-                let checkpoint = create_checkpoint_struct(
-                    alias,
-                    head_commit_address,
-                    target_t,
-                    &last_processed_commit,
-                    last_processed_t,
-                    prev_index_address.clone(),
-                    config.batch_bytes,
-                    config.max_batch_commits,
-                    config.checkpoint_interval,
-                    batches_flushed,
-                    Some(IndexerConfigSnapshot::from(&config.indexer_config)),
+            return async {
+                tracing::info!(
+                    commits_in_batch = commits_in_batch,
+                    novelty_size = batch_novelty_bytes,
+                    target_t = final_t,
+                    "Final batch flush"
                 );
-                write_checkpoint(storage, &checkpoint).await?;
-                batches_since_checkpoint = 0;
+
+                let prev_index = build_prev_index_ref(prev_index_address.as_ref(), prev_index_t);
+
+                let refresh_result = refresh_index_with_prev(
+                    storage,
+                    &db,
+                    &novelty,
+                    final_t,
+                    config.indexer_config.clone(),
+                    None,
+                    prev_index,
+                )
+                .await?;
+
+                // Update progress tracking
+                bytes_flushed += batch_novelty_bytes as u64;
+                batches_flushed += 1;
+
+                // Invoke final progress callback (100% complete)
+                if let Some(ref callback) = config.progress_callback {
+                    let elapsed = start_time.elapsed().as_secs_f64();
+                    let commits_per_sec = if elapsed > 0.0 {
+                        total_commits as f64 / elapsed
+                    } else {
+                        0.0
+                    };
+
+                    let progress = ReindexProgress {
+                        alias: alias.to_string(),
+                        total_commits,
+                        commits_processed: total_commits, // All done
+                        batches_flushed,
+                        bytes_flushed,
+                        current_t: final_t,
+                        target_t,
+                        commits_per_sec,
+                        estimated_remaining_secs: Some(0.0), // Complete
+                    };
+                    callback(progress);
+                }
+
+                // Delete checkpoint on successful completion
+                if config.checkpoint {
+                    delete_checkpoint(storage, alias).await?;
+                }
+
+                tracing::info!(
+                    batches_flushed = batches_flushed,
+                    index_t = refresh_result.index_t,
+                    root_address = %refresh_result.root_address,
+                    total_elapsed_secs = start_time.elapsed().as_secs_f64(),
+                    "Batched rebuild complete"
+                );
+
+                Ok(BatchedRebuildResult {
+                    index_result: create_index_result_from_refresh(&refresh_result, alias),
+                    batches_flushed,
+                })
             }
-
-            Ok::<_, IndexerError>(())
-            }.instrument(batch_span).await?;
-        }
-    }
-
-    // =========================================================================
-    // PHASE 4: Final flush
-    // =========================================================================
-    // Process any remaining novelty
-
-    if novelty.len() > 0 || commits_in_batch > 0 {
-        let final_t = novelty.t;
-        let batch_novelty_bytes = novelty.size;
-
-        // Enhanced tracing span for final batch
-        let batch_span = tracing::info_span!(
-            "reindex_batch",
-            batch_num = batches_flushed + 1,
-            commits_in_batch = commits_in_batch,
-            novelty_bytes = batch_novelty_bytes,
-            final = true,
-        );
-        return async {
-        tracing::info!(
-            commits_in_batch = commits_in_batch,
-            novelty_size = batch_novelty_bytes,
-            target_t = final_t,
-            "Final batch flush"
-        );
-
-        let prev_index = build_prev_index_ref(prev_index_address.as_ref(), prev_index_t);
-
-        let refresh_result = refresh_index_with_prev(
-            storage,
-            &db,
-            &novelty,
-            final_t,
-            config.indexer_config.clone(),
-            None,
-            prev_index,
-        )
-        .await?;
-
-        // Update progress tracking
-        bytes_flushed += batch_novelty_bytes as u64;
-        batches_flushed += 1;
-
-        // Invoke final progress callback (100% complete)
-        if let Some(ref callback) = config.progress_callback {
-            let elapsed = start_time.elapsed().as_secs_f64();
-            let commits_per_sec = if elapsed > 0.0 {
-                total_commits as f64 / elapsed
-            } else {
-                0.0
-            };
-
-            let progress = ReindexProgress {
-                alias: alias.to_string(),
-                total_commits,
-                commits_processed: total_commits, // All done
-                batches_flushed,
-                bytes_flushed,
-                current_t: final_t,
-                target_t,
-                commits_per_sec,
-                estimated_remaining_secs: Some(0.0), // Complete
-            };
-            callback(progress);
+            .instrument(batch_span)
+            .await;
         }
 
+        // Edge case: no commits to process (index was already current)
+        // This shouldn't happen in normal operation but handle gracefully
         // Delete checkpoint on successful completion
         if config.checkpoint {
             delete_checkpoint(storage, alias).await?;
         }
 
         tracing::info!(
-            batches_flushed = batches_flushed,
-            index_t = refresh_result.index_t,
-            root_address = %refresh_result.root_address,
-            total_elapsed_secs = start_time.elapsed().as_secs_f64(),
-            "Batched rebuild complete"
+            index_t = db.t,
+            "No commits to process, index already current"
         );
 
         Ok(BatchedRebuildResult {
-            index_result: create_index_result_from_refresh(&refresh_result, alias),
+            index_result: IndexResult {
+                root_address: prev_index_address.unwrap_or_default(),
+                index_t: db.t,
+                alias: alias.to_string(),
+                stats: IndexStats::default(),
+            },
             batches_flushed,
         })
-        }.instrument(batch_span).await;
     }
-
-    // Edge case: no commits to process (index was already current)
-    // This shouldn't happen in normal operation but handle gracefully
-    // Delete checkpoint on successful completion
-    if config.checkpoint {
-        delete_checkpoint(storage, alias).await?;
-    }
-
-    tracing::info!(
-        index_t = db.t,
-        "No commits to process, index already current"
-    );
-
-    Ok(BatchedRebuildResult {
-        index_result: IndexResult {
-            root_address: prev_index_address.unwrap_or_default(),
-            index_t: db.t,
-            alias: alias.to_string(),
-            stats: IndexStats::default(),
-        },
-        batches_flushed,
-    })
-    }.instrument(span).await
+    .instrument(span)
+    .await
 }
 
 /// Resume a batched rebuild from a checkpoint
@@ -1035,149 +1060,202 @@ where
     let span = tracing::info_span!("batched_rebuild_resume", ledger_alias = %checkpoint.alias);
 
     async {
-    // Restore indexer config from checkpoint, or use override
-    let config_from_checkpoint = checkpoint.indexer_config.is_some();
-    let indexer_config = checkpoint
-        .indexer_config
-        .as_ref()
-        .map(|snap| snap.to_indexer_config())
-        .unwrap_or(indexer_config_override);
+        // Restore indexer config from checkpoint, or use override
+        let config_from_checkpoint = checkpoint.indexer_config.is_some();
+        let indexer_config = checkpoint
+            .indexer_config
+            .as_ref()
+            .map(|snap| snap.to_indexer_config())
+            .unwrap_or(indexer_config_override);
 
-    tracing::info!(
-        last_processed_t = checkpoint.last_processed_t,
-        target_t = checkpoint.target_t,
-        batches_flushed = checkpoint.batches_flushed,
-        checkpoint_interval = checkpoint.checkpoint_interval,
-        config_from_checkpoint = config_from_checkpoint,
-        "Resuming batched rebuild from checkpoint"
-    );
+        tracing::info!(
+            last_processed_t = checkpoint.last_processed_t,
+            target_t = checkpoint.target_t,
+            batches_flushed = checkpoint.batches_flushed,
+            checkpoint_interval = checkpoint.checkpoint_interval,
+            config_from_checkpoint = config_from_checkpoint,
+            "Resuming batched rebuild from checkpoint"
+        );
 
-    // Validate head hasn't changed
-    if current_head_address != checkpoint.target_head {
-        return Err(IndexerError::CheckpointHeadMismatch {
-            checkpoint_head: checkpoint.target_head,
-            current_head: current_head_address.to_string(),
-        });
-    }
+        // Validate head hasn't changed
+        if current_head_address != checkpoint.target_head {
+            return Err(IndexerError::CheckpointHeadMismatch {
+                checkpoint_head: checkpoint.target_head,
+                current_head: current_head_address.to_string(),
+            });
+        }
 
-    // Load intermediate index if available
-    let (mut db, mut novelty, mut prev_index_address, mut prev_index_t): (
-        Db<S, NoCache>,
-        Novelty,
-        Option<String>,
-        Option<i64>,
-    ) = if let Some(ref index_addr) = checkpoint.intermediate_index {
-        match Db::load(storage.clone(), NoCache, index_addr).await {
-            Ok(loaded_db) => {
-                // Validate loaded index t matches checkpoint expectation
-                // The loaded_db.t is ground truth - if it doesn't match, checkpoint is stale
-                if loaded_db.t != checkpoint.last_processed_t {
-                    return Err(IndexerError::Checkpoint(format!(
+        // Load intermediate index if available
+        let (mut db, mut novelty, mut prev_index_address, mut prev_index_t): (
+            Db<S, NoCache>,
+            Novelty,
+            Option<String>,
+            Option<i64>,
+        ) = if let Some(ref index_addr) = checkpoint.intermediate_index {
+            match Db::load(storage.clone(), NoCache, index_addr).await {
+                Ok(loaded_db) => {
+                    // Validate loaded index t matches checkpoint expectation
+                    // The loaded_db.t is ground truth - if it doesn't match, checkpoint is stale
+                    if loaded_db.t != checkpoint.last_processed_t {
+                        return Err(IndexerError::Checkpoint(format!(
                         "Intermediate index t mismatch: loaded t={} but checkpoint expects t={}. \
                          The checkpoint may be stale or the index was modified.",
                         loaded_db.t, checkpoint.last_processed_t
                     )));
-                }
+                    }
 
+                    tracing::info!(
+                        index_address = %index_addr,
+                        index_t = loaded_db.t,
+                        "Loaded intermediate index from checkpoint"
+                    );
+
+                    // Use loaded_db.t as the authoritative value for novelty initialization
+                    let actual_t = loaded_db.t;
+                    (
+                        loaded_db,
+                        Novelty::new(actual_t),
+                        Some(index_addr.clone()),
+                        Some(actual_t),
+                    )
+                }
+                Err(e) => {
+                    return Err(IndexerError::Checkpoint(format!(
+                        "Failed to load intermediate index at {}: {}",
+                        index_addr, e
+                    )));
+                }
+            }
+        } else {
+            // No intermediate index - start from genesis (unlikely but handle it)
+            tracing::warn!("No intermediate index in checkpoint, starting from genesis");
+            let genesis_db = Db::genesis(storage.clone(), NoCache, &checkpoint.alias);
+            (genesis_db, Novelty::new(0), None, None)
+        };
+
+        // Scan commits from checkpoint's last processed commit to head
+        // We need to collect addresses of commits AFTER last_processed_commit
+        tracing::debug!("Scanning remaining commits from checkpoint");
+
+        let mut remaining_commits: Vec<(String, CommitEnvelope)> = Vec::new();
+        let mut stream = std::pin::pin!(trace_commit_envelopes(
+            storage.clone(),
+            current_head_address.to_string(),
+            checkpoint.last_processed_t, // Stop at checkpoint's last processed t
+        ));
+
+        while let Some(result) = stream.next().await {
+            let (addr, envelope) = result?;
+            // Only include commits AFTER checkpoint.last_processed_t
+            if envelope.t > checkpoint.last_processed_t {
+                remaining_commits.push((addr, envelope));
+            }
+        }
+
+        // Reverse to get forward order
+        remaining_commits.reverse();
+
+        let total_remaining = remaining_commits.len();
+        tracing::info!(
+            remaining_commits = total_remaining,
+            from_t = checkpoint.last_processed_t,
+            to_t = checkpoint.target_t,
+            "Processing remaining {} commits",
+            total_remaining
+        );
+
+        // Process remaining commits with checkpointing enabled
+        // Use checkpoint's stored interval, not a hardcoded default
+        let mut batches_flushed = checkpoint.batches_flushed;
+        let mut commits_in_batch = 0;
+        #[allow(unused_assignments)]
+        let mut last_processed_commit = checkpoint.last_processed_commit.clone();
+        #[allow(unused_assignments)]
+        let mut last_processed_t = checkpoint.last_processed_t;
+        let mut batches_since_checkpoint: u32 = 0;
+        let checkpoint_interval = checkpoint.checkpoint_interval;
+
+        for (commit_addr, _envelope) in remaining_commits {
+            last_processed_commit = commit_addr.clone();
+
+            // Load the full commit
+            let commit: Commit = load_commit(storage, &commit_addr).await?;
+            last_processed_t = commit.t;
+
+            // Apply namespace delta
+            if !commit.namespace_delta.is_empty() {
+                for (code, prefix) in &commit.namespace_delta {
+                    db.namespace_codes.insert(*code, prefix.clone());
+                }
+            }
+
+            // Apply flakes to novelty
+            novelty.apply_commit(commit.flakes, commit.t)?;
+            commits_in_batch += 1;
+
+            // Check if we need to flush
+            let should_flush = novelty.size >= checkpoint.batch_bytes
+                || commits_in_batch >= checkpoint.max_batch_commits;
+
+            if should_flush {
                 tracing::info!(
-                    index_address = %index_addr,
-                    index_t = loaded_db.t,
-                    "Loaded intermediate index from checkpoint"
+                    batch = batches_flushed + 1,
+                    commits_in_batch = commits_in_batch,
+                    novelty_size = novelty.size,
+                    target_t = commit.t,
+                    "Flushing batch (resumed)"
                 );
 
-                // Use loaded_db.t as the authoritative value for novelty initialization
-                let actual_t = loaded_db.t;
-                (
-                    loaded_db,
-                    Novelty::new(actual_t),
-                    Some(index_addr.clone()),
-                    Some(actual_t),
+                let prev_index = build_prev_index_ref(prev_index_address.as_ref(), prev_index_t);
+
+                let refresh_result = refresh_index_with_prev(
+                    storage,
+                    &db,
+                    &novelty,
+                    commit.t,
+                    indexer_config.clone(),
+                    None,
+                    prev_index,
                 )
-            }
-            Err(e) => {
-                return Err(IndexerError::Checkpoint(format!(
-                    "Failed to load intermediate index at {}: {}", index_addr, e
-                )));
-            }
-        }
-    } else {
-        // No intermediate index - start from genesis (unlikely but handle it)
-        tracing::warn!("No intermediate index in checkpoint, starting from genesis");
-        let genesis_db = Db::genesis(storage.clone(), NoCache, &checkpoint.alias);
-        (genesis_db, Novelty::new(0), None, None)
-    };
+                .await?;
 
-    // Scan commits from checkpoint's last processed commit to head
-    // We need to collect addresses of commits AFTER last_processed_commit
-    tracing::debug!("Scanning remaining commits from checkpoint");
+                prev_index_address = Some(refresh_result.root_address.clone());
+                prev_index_t = Some(refresh_result.index_t);
+                db = Db::load(storage.clone(), NoCache, &refresh_result.root_address).await?;
+                novelty = Novelty::new(commit.t);
+                commits_in_batch = 0;
+                batches_flushed += 1;
+                batches_since_checkpoint += 1;
 
-    let mut remaining_commits: Vec<(String, CommitEnvelope)> = Vec::new();
-    let mut stream = std::pin::pin!(trace_commit_envelopes(
-        storage.clone(),
-        current_head_address.to_string(),
-        checkpoint.last_processed_t, // Stop at checkpoint's last processed t
-    ));
-
-    while let Some(result) = stream.next().await {
-        let (addr, envelope) = result?;
-        // Only include commits AFTER checkpoint.last_processed_t
-        if envelope.t > checkpoint.last_processed_t {
-            remaining_commits.push((addr, envelope));
-        }
-    }
-
-    // Reverse to get forward order
-    remaining_commits.reverse();
-
-    let total_remaining = remaining_commits.len();
-    tracing::info!(
-        remaining_commits = total_remaining,
-        from_t = checkpoint.last_processed_t,
-        to_t = checkpoint.target_t,
-        "Processing remaining {} commits",
-        total_remaining
-    );
-
-    // Process remaining commits with checkpointing enabled
-    // Use checkpoint's stored interval, not a hardcoded default
-    let mut batches_flushed = checkpoint.batches_flushed;
-    let mut commits_in_batch = 0;
-    #[allow(unused_assignments)]
-    let mut last_processed_commit = checkpoint.last_processed_commit.clone();
-    #[allow(unused_assignments)]
-    let mut last_processed_t = checkpoint.last_processed_t;
-    let mut batches_since_checkpoint: u32 = 0;
-    let checkpoint_interval = checkpoint.checkpoint_interval;
-
-    for (commit_addr, _envelope) in remaining_commits {
-        last_processed_commit = commit_addr.clone();
-
-        // Load the full commit
-        let commit: Commit = load_commit(storage, &commit_addr).await?;
-        last_processed_t = commit.t;
-
-        // Apply namespace delta
-        if !commit.namespace_delta.is_empty() {
-            for (code, prefix) in &commit.namespace_delta {
-                db.namespace_codes.insert(*code, prefix.clone());
+                // Write checkpoint at interval
+                if batches_since_checkpoint >= checkpoint_interval {
+                    let new_checkpoint = create_checkpoint_struct(
+                        &checkpoint.alias,
+                        &checkpoint.target_head,
+                        checkpoint.target_t,
+                        &last_processed_commit,
+                        last_processed_t,
+                        prev_index_address.clone(),
+                        checkpoint.batch_bytes,
+                        checkpoint.max_batch_commits,
+                        checkpoint.checkpoint_interval,
+                        batches_flushed,
+                        checkpoint.indexer_config.clone(),
+                    );
+                    write_checkpoint(storage, &new_checkpoint).await?;
+                    batches_since_checkpoint = 0;
+                }
             }
         }
 
-        // Apply flakes to novelty
-        novelty.apply_commit(commit.flakes, commit.t)?;
-        commits_in_batch += 1;
-
-        // Check if we need to flush
-        let should_flush = novelty.size >= checkpoint.batch_bytes
-            || commits_in_batch >= checkpoint.max_batch_commits;
-
-        if should_flush {
+        // Final flush
+        if novelty.len() > 0 || commits_in_batch > 0 {
+            let final_t = novelty.t;
             tracing::info!(
-                batch = batches_flushed + 1,
                 commits_in_batch = commits_in_batch,
                 novelty_size = novelty.size,
-                target_t = commit.t,
-                "Flushing batch (resumed)"
+                target_t = final_t,
+                "Final batch flush (resumed)"
             );
 
             let prev_index = build_prev_index_ref(prev_index_address.as_ref(), prev_index_t);
@@ -1186,101 +1264,48 @@ where
                 storage,
                 &db,
                 &novelty,
-                commit.t,
+                final_t,
                 indexer_config.clone(),
                 None,
                 prev_index,
             )
             .await?;
 
-            prev_index_address = Some(refresh_result.root_address.clone());
-            prev_index_t = Some(refresh_result.index_t);
-            db = Db::load(storage.clone(), NoCache, &refresh_result.root_address).await?;
-            novelty = Novelty::new(commit.t);
-            commits_in_batch = 0;
             batches_flushed += 1;
-            batches_since_checkpoint += 1;
 
-            // Write checkpoint at interval
-            if batches_since_checkpoint >= checkpoint_interval {
-                let new_checkpoint = create_checkpoint_struct(
-                    &checkpoint.alias,
-                    &checkpoint.target_head,
-                    checkpoint.target_t,
-                    &last_processed_commit,
-                    last_processed_t,
-                    prev_index_address.clone(),
-                    checkpoint.batch_bytes,
-                    checkpoint.max_batch_commits,
-                    checkpoint.checkpoint_interval,
-                    batches_flushed,
-                    checkpoint.indexer_config.clone(),
-                );
-                write_checkpoint(storage, &new_checkpoint).await?;
-                batches_since_checkpoint = 0;
-            }
+            // Delete checkpoint on success
+            delete_checkpoint(storage, &checkpoint.alias).await?;
+
+            tracing::info!(
+                batches_flushed = batches_flushed,
+                index_t = refresh_result.index_t,
+                root_address = %refresh_result.root_address,
+                "Resumed batched rebuild complete"
+            );
+
+            return Ok(BatchedRebuildResult {
+                index_result: create_index_result_from_refresh(&refresh_result, &checkpoint.alias),
+                batches_flushed,
+            });
         }
-    }
 
-    // Final flush
-    if novelty.len() > 0 || commits_in_batch > 0 {
-        let final_t = novelty.t;
-        tracing::info!(
-            commits_in_batch = commits_in_batch,
-            novelty_size = novelty.size,
-            target_t = final_t,
-            "Final batch flush (resumed)"
-        );
-
-        let prev_index = build_prev_index_ref(prev_index_address.as_ref(), prev_index_t);
-
-        let refresh_result = refresh_index_with_prev(
-            storage,
-            &db,
-            &novelty,
-            final_t,
-            indexer_config.clone(),
-            None,
-            prev_index,
-        )
-        .await?;
-
-        batches_flushed += 1;
-
-        // Delete checkpoint on success
+        // No remaining commits - checkpoint was at completion
         delete_checkpoint(storage, &checkpoint.alias).await?;
 
-        tracing::info!(
-            batches_flushed = batches_flushed,
-            index_t = refresh_result.index_t,
-            root_address = %refresh_result.root_address,
-            "Resumed batched rebuild complete"
-        );
+        tracing::info!(index_t = db.t, "Resumed rebuild: no remaining commits");
 
-        return Ok(BatchedRebuildResult {
-            index_result: create_index_result_from_refresh(&refresh_result, &checkpoint.alias),
+        Ok(BatchedRebuildResult {
+            index_result: IndexResult {
+                root_address: prev_index_address.unwrap_or_default(),
+                index_t: db.t,
+                alias: checkpoint.alias,
+                stats: IndexStats::default(),
+            },
             batches_flushed,
-        });
+        })
     }
-
-    // No remaining commits - checkpoint was at completion
-    delete_checkpoint(storage, &checkpoint.alias).await?;
-
-    tracing::info!(
-        index_t = db.t,
-        "Resumed rebuild: no remaining commits"
-    );
-
-    Ok(BatchedRebuildResult {
-        index_result: IndexResult {
-            root_address: prev_index_address.unwrap_or_default(),
-            index_t: db.t,
-            alias: checkpoint.alias,
-            stats: IndexStats::default(),
-        },
-        batches_flushed,
-    })
-    }.instrument(span).await
+    .instrument(span)
+    .await
 }
 
 /// Refresh-only entry point with lighter trait bounds
@@ -1314,61 +1339,63 @@ where
     let span = tracing::info_span!("index_refresh", ledger_alias = alias);
 
     async {
-    tracing::info!("refreshing index for ledger (refresh-only mode)");
+        tracing::info!("refreshing index for ledger (refresh-only mode)");
 
-    // Look up the ledger record
-    let record = nameservice
-        .lookup(alias)
-        .await
-        .map_err(|e| IndexerError::NameService(e.to_string()))?
-        .ok_or_else(|| IndexerError::LedgerNotFound(alias.to_string()))?;
+        // Look up the ledger record
+        let record = nameservice
+            .lookup(alias)
+            .await
+            .map_err(|e| IndexerError::NameService(e.to_string()))?
+            .ok_or_else(|| IndexerError::LedgerNotFound(alias.to_string()))?;
 
-    // Require an existing index
-    let index_addr = record
-        .index_address
-        .as_ref()
-        .ok_or_else(|| IndexerError::NoIndex)?;
+        // Require an existing index
+        let index_addr = record
+            .index_address
+            .as_ref()
+            .ok_or_else(|| IndexerError::NoIndex)?;
 
-    // If index is already current, return it directly (no work needed)
-    if record.index_t >= record.commit_t {
+        // If index is already current, return it directly (no work needed)
+        if record.index_t >= record.commit_t {
+            tracing::info!(
+                index_t = record.index_t,
+                commit_t = record.commit_t,
+                "index already current, returning existing"
+            );
+            return Ok(IndexResult {
+                root_address: index_addr.clone(),
+                index_t: record.index_t,
+                alias: alias.to_string(),
+                stats: IndexStats::default(),
+            });
+        }
+
+        // Get head commit address (only needed for refresh path)
+        let head_address = record
+            .commit_address
+            .as_ref()
+            .ok_or_else(|| IndexerError::NoCommits)?;
+
+        // Perform incremental refresh
         tracing::info!(
             index_t = record.index_t,
             commit_t = record.commit_t,
-            "index already current, returning existing"
+            delta = record.commit_t - record.index_t,
+            "performing incremental refresh"
         );
-        return Ok(IndexResult {
-            root_address: index_addr.clone(),
-            index_t: record.index_t,
-            alias: alias.to_string(),
-            stats: IndexStats::default(),
-        });
+
+        try_refresh(
+            storage,
+            index_addr,
+            head_address,
+            record.index_t,
+            record.commit_t,
+            alias,
+            &config,
+        )
+        .await
     }
-
-    // Get head commit address (only needed for refresh path)
-    let head_address = record
-        .commit_address
-        .as_ref()
-        .ok_or_else(|| IndexerError::NoCommits)?;
-
-    // Perform incremental refresh
-    tracing::info!(
-        index_t = record.index_t,
-        commit_t = record.commit_t,
-        delta = record.commit_t - record.index_t,
-        "performing incremental refresh"
-    );
-
-    try_refresh(
-        storage,
-        index_addr,
-        head_address,
-        record.index_t,
-        record.commit_t,
-        alias,
-        &config,
-    )
+    .instrument(span)
     .await
-    }.instrument(span).await
 }
 
 /// External indexer entry point - refresh-first with rebuild fallback
@@ -1400,12 +1427,15 @@ where
     tracing::info!("building index for ledger");
 
     // Look up the ledger record
-    tracing::debug!("looking up ledger record");
-    let record = nameservice
-        .lookup(alias)
-        .await
-        .map_err(|e| IndexerError::NameService(e.to_string()))?
-        .ok_or_else(|| IndexerError::LedgerNotFound(alias.to_string()))?;
+    let record = async {
+        nameservice
+            .lookup(alias)
+            .await
+            .map_err(|e| IndexerError::NameService(e.to_string()))?
+            .ok_or_else(|| IndexerError::LedgerNotFound(alias.to_string()))
+    }
+    .instrument(tracing::debug_span!("ns_lookup"))
+    .await?;
 
     tracing::debug!(
         commit_t = record.commit_t,
@@ -1487,75 +1517,89 @@ async fn try_refresh<S>(
 where
     S: Storage + StorageWrite + ContentAddressedWrite + Sync + Clone + 'static,
 {
-    let span = tracing::debug_span!("index_refresh", ledger_alias = alias, from_t = index_t, to_t = commit_t);
+    let span = tracing::debug_span!(
+        "index_refresh",
+        ledger_alias = alias,
+        from_t = index_t,
+        to_t = commit_t
+    );
 
     async {
-    // 1. Load existing Db from the index
-    tracing::debug!("loading existing index");
-    let mut db: Db<S, NoCache> = Db::load(storage.clone(), NoCache, index_address).await?;
+        // 1. Load existing Db from the index
+        tracing::debug!("loading existing index");
+        let mut db: Db<S, NoCache> = Db::load(storage.clone(), NoCache, index_address).await?;
 
-    // 2. Build novelty from commits since index_t
-    // trace_commits streams HEAD→oldest, so we collect and process
-    tracing::debug!("building novelty from commits");
-    let mut novelty = Novelty::new(index_t);
-    let mut namespace_delta: HashMap<i32, String> = HashMap::new();
+        // 2. Build novelty from commits since index_t
+        // trace_commits streams HEAD→oldest, so we collect and process
+        tracing::debug!("building novelty from commits");
+        let mut novelty = Novelty::new(index_t);
+        let mut namespace_delta: HashMap<i32, String> = HashMap::new();
 
-    let stream = trace_commits(storage.clone(), head_commit_address.to_string(), index_t);
-    futures::pin_mut!(stream);
+        let stream = trace_commits(storage.clone(), head_commit_address.to_string(), index_t);
+        futures::pin_mut!(stream);
 
-    let mut commit_count = 0;
-    while let Some(result) = stream.next().await {
-        let commit = result?;
-        commit_count += 1;
-        novelty.apply_commit(commit.flakes, commit.t)?;
-        // trace_commits streams HEAD→oldest, so newer commits come first
-        // Use or_insert to keep the first (newest) value for each key
-        for (code, prefix) in commit.namespace_delta {
-            namespace_delta.entry(code).or_insert(prefix);
+        let mut commit_count = 0;
+        while let Some(result) = stream.next().await {
+            let commit = result?;
+            commit_count += 1;
+            novelty.apply_commit(commit.flakes, commit.t)?;
+            // trace_commits streams HEAD→oldest, so newer commits come first
+            // Use or_insert to keep the first (newest) value for each key
+            for (code, prefix) in commit.namespace_delta {
+                namespace_delta.entry(code).or_insert(prefix);
+            }
         }
-    }
 
-    tracing::debug!(
-        commit_count = commit_count,
-        novelty_flake_count = novelty.len(),
-        "novelty built"
-    );
+        tracing::debug!(
+            commit_count = commit_count,
+            novelty_flake_count = novelty.len(),
+            "novelty built"
+        );
 
-    // 3. Apply namespace deltas to Db BEFORE refresh
-    // This ensures the refreshed DbRoot has the correct namespace_codes
-    if !namespace_delta.is_empty() {
-        tracing::debug!(namespace_update_count = namespace_delta.len(), "applying namespace deltas");
-        for (code, prefix) in &namespace_delta {
-            db.namespace_codes.insert(*code, prefix.clone());
+        // 3. Apply namespace deltas to Db BEFORE refresh
+        // This ensures the refreshed DbRoot has the correct namespace_codes
+        if !namespace_delta.is_empty() {
+            tracing::debug!(
+                namespace_update_count = namespace_delta.len(),
+                "applying namespace deltas"
+            );
+            for (code, prefix) in &namespace_delta {
+                db.namespace_codes.insert(*code, prefix.clone());
+            }
         }
+
+        // 4. Refresh the index with prev_index for GC chain
+        tracing::debug!("refreshing index");
+        let prev_index = Some(fluree_db_core::serde::json::PrevIndexRef {
+            t: index_t,
+            address: index_address.to_string(),
+        });
+        let refresh_result = refresh_index_with_prev(
+            storage,
+            &db,
+            &novelty,
+            commit_t,
+            config.clone(),
+            None,
+            prev_index,
+        )
+        .await?;
+
+        tracing::debug!(
+            nodes_written = refresh_result.stats.nodes_written,
+            leaves_modified = refresh_result.stats.leaves_modified,
+            branches_modified = refresh_result.stats.branches_modified,
+            "index refresh completed"
+        );
+
+        Ok(create_index_result_from_refresh(&refresh_result, alias))
     }
-
-    // 4. Refresh the index with prev_index for GC chain
-    tracing::debug!("refreshing index");
-    let prev_index = Some(fluree_db_core::serde::json::PrevIndexRef {
-        t: index_t,
-        address: index_address.to_string(),
-    });
-    let refresh_result = refresh_index_with_prev(
-        storage, &db, &novelty, commit_t, config.clone(), None, prev_index
-    ).await?;
-
-    tracing::debug!(
-        nodes_written = refresh_result.stats.nodes_written,
-        leaves_modified = refresh_result.stats.leaves_modified,
-        branches_modified = refresh_result.stats.branches_modified,
-        "index refresh completed"
-    );
-
-    Ok(create_index_result_from_refresh(&refresh_result, alias))
-    }.instrument(span).await
+    .instrument(span)
+    .await
 }
 
 /// Publish index result to nameservice
-pub async fn publish_index_result<P: Publisher>(
-    publisher: &P,
-    result: &IndexResult,
-) -> Result<()> {
+pub async fn publish_index_result<P: Publisher>(publisher: &P, result: &IndexResult) -> Result<()> {
     publisher
         .publish_index(&result.alias, &result.root_address, result.index_t)
         .await
@@ -1585,11 +1629,17 @@ mod tests {
     fn test_normalize_alias_for_comparison() {
         // Canonical format passes through
         assert_eq!(normalize_alias_for_comparison("test:main"), "test:main");
-        assert_eq!(normalize_alias_for_comparison("my-ledger:dev"), "my-ledger:dev");
+        assert_eq!(
+            normalize_alias_for_comparison("my-ledger:dev"),
+            "my-ledger:dev"
+        );
 
         // Storage-path format with single slash converts to canonical
         assert_eq!(normalize_alias_for_comparison("test/main"), "test:main");
-        assert_eq!(normalize_alias_for_comparison("my-ledger/dev"), "my-ledger:dev");
+        assert_eq!(
+            normalize_alias_for_comparison("my-ledger/dev"),
+            "my-ledger:dev"
+        );
 
         // Both formats normalize to the same canonical form
         assert_eq!(
@@ -1602,21 +1652,17 @@ mod tests {
 
         // Canonical format with explicit branch takes precedence over slashes in name
         // "org/project:main" - the colon is the branch separator, not the slash
-        assert_eq!(normalize_alias_for_comparison("org/project:main"), "org/project:main");
+        assert_eq!(
+            normalize_alias_for_comparison("org/project:main"),
+            "org/project:main"
+        );
 
         // Multiple slashes without colon - treated as name with default branch
         // (we don't know which slash is the "branch separator")
         assert_eq!(normalize_alias_for_comparison("a/b/c"), "a/b/c:main");
     }
 
-    fn make_flake(
-        s_code: i32,
-        s_name: &str,
-        p_code: i32,
-        p_name: &str,
-        val: i64,
-        t: i64,
-    ) -> Flake {
+    fn make_flake(s_code: i32, s_name: &str, p_code: i32, p_name: &str, val: i64, t: i64) -> Flake {
         Flake::new(
             Sid::new(s_code, s_name),
             Sid::new(p_code, p_name),
@@ -1762,9 +1808,13 @@ mod tests {
             .unwrap();
 
         // Publish the index
-        ns.publish_index("test:main", &first_result.root_address, first_result.index_t)
-            .await
-            .unwrap();
+        ns.publish_index(
+            "test:main",
+            &first_result.root_address,
+            first_result.index_t,
+        )
+        .await
+        .unwrap();
 
         // Try to build again - should return existing index (no-op)
         let second_result = build_index_for_ledger(&storage, &ns, "test:main", config)
@@ -1811,9 +1861,13 @@ mod tests {
         let initial_result = build_index_for_ledger(&storage, &ns, "test:main", config.clone())
             .await
             .unwrap();
-        ns.publish_index("test:main", &initial_result.root_address, initial_result.index_t)
-            .await
-            .unwrap();
+        ns.publish_index(
+            "test:main",
+            &initial_result.root_address,
+            initial_result.index_t,
+        )
+        .await
+        .unwrap();
 
         // Add more commits at t=2 and t=3
         let flakes_t2 = vec![make_flake(1, "ex:bob", 1, "ex:age", 25, 2)];
@@ -2026,7 +2080,14 @@ mod tests {
         // Create commits 2-5
         let mut addresses = vec![addr1.clone()];
         for t in 2i64..=5 {
-            let flakes = vec![make_flake(t as i32, &format!("ex:s{}", t), 1, "ex:age", t * 10, t)];
+            let flakes = vec![make_flake(
+                t as i32,
+                &format!("ex:s{}", t),
+                1,
+                "ex:age",
+                t * 10,
+                t,
+            )];
             let commit = Commit {
                 address: String::new(),
                 id: None,
@@ -2064,13 +2125,18 @@ mod tests {
             .expect("Batched rebuild should succeed");
 
         // Should have flushed multiple batches (5 commits / 2 per batch = 3 batches)
-        assert!(result.batches_flushed >= 2, "Should flush at least 2 batches, got {}", result.batches_flushed);
+        assert!(
+            result.batches_flushed >= 2,
+            "Should flush at least 2 batches, got {}",
+            result.batches_flushed
+        );
         assert_eq!(result.index_result.index_t, 5);
 
         // Verify we can load the resulting index
-        let db: Db<_, NoCache> = Db::load(storage.clone(), NoCache, &result.index_result.root_address)
-            .await
-            .expect("Should load db from batched rebuild");
+        let db: Db<_, NoCache> =
+            Db::load(storage.clone(), NoCache, &result.index_result.root_address)
+                .await
+                .expect("Should load db from batched rebuild");
         assert_eq!(db.t, 5);
     }
 
@@ -2121,7 +2187,14 @@ mod tests {
         // Create commits 2-5
         let mut addresses = vec![addr1];
         for t in 2i64..=5 {
-            let flakes = vec![make_flake(t as i32, &format!("ex:s{}", t), 1, "ex:age", t * 10, t)];
+            let flakes = vec![make_flake(
+                t as i32,
+                &format!("ex:s{}", t),
+                1,
+                "ex:age",
+                t * 10,
+                t,
+            )];
             let commit = Commit {
                 address: String::new(),
                 id: None,
@@ -2160,26 +2233,33 @@ mod tests {
             progress_callback: Some(callback),
         };
 
-        let result = batched_rebuild_from_commits(
-            &storage,
-            addresses.last().unwrap(),
-            "test:main",
-            config,
-        )
-        .await
-        .expect("Should succeed");
+        let result =
+            batched_rebuild_from_commits(&storage, addresses.last().unwrap(), "test:main", config)
+                .await
+                .expect("Should succeed");
 
         // Verify callback was invoked at least once
         let count = callback_count.load(Ordering::SeqCst);
-        assert!(count >= 1, "Progress callback should be invoked at least once, was invoked {} times", count);
+        assert!(
+            count >= 1,
+            "Progress callback should be invoked at least once, was invoked {} times",
+            count
+        );
 
         // Verify last progress values make sense
-        let last = last_progress.lock().unwrap().clone().expect("Should have progress");
+        let last = last_progress
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("Should have progress");
         assert_eq!(last.alias, "test:main");
         assert_eq!(last.total_commits, 5);
         assert_eq!(last.commits_processed, 5); // Final callback should show all processed
         assert_eq!(last.batches_flushed, result.batches_flushed);
-        assert!(last.commits_per_sec > 0.0, "Should have positive throughput");
+        assert!(
+            last.commits_per_sec > 0.0,
+            "Should have positive throughput"
+        );
     }
 
     #[tokio::test]
@@ -2295,7 +2375,14 @@ mod tests {
         // Create commits 2-10
         let mut addresses = vec![addr1];
         for t in 2i64..=10 {
-            let flakes = vec![make_flake(t as i32, &format!("ex:s{}", t), 1, "ex:age", t * 10, t)];
+            let flakes = vec![make_flake(
+                t as i32,
+                &format!("ex:s{}", t),
+                1,
+                "ex:age",
+                t * 10,
+                t,
+            )];
             let commit = Commit {
                 address: String::new(),
                 id: None,
@@ -2326,14 +2413,10 @@ mod tests {
             progress_callback: None,
         };
 
-        let expected_result = batched_rebuild_from_commits(
-            &storage,
-            head_address,
-            "test:main",
-            config_no_checkpoint,
-        )
-        .await
-        .expect("Full build should succeed");
+        let expected_result =
+            batched_rebuild_from_commits(&storage, head_address, "test:main", config_no_checkpoint)
+                .await
+                .expect("Full build should succeed");
 
         // Now do a build WITH checkpointing
         let config_with_checkpoint = BatchedRebuildConfig {
@@ -2355,11 +2438,19 @@ mod tests {
         .expect("Build with checkpoint should succeed");
 
         // Verify results match
-        assert_eq!(result_with_checkpoint.index_result.index_t, expected_result.index_result.index_t);
+        assert_eq!(
+            result_with_checkpoint.index_result.index_t,
+            expected_result.index_result.index_t
+        );
 
         // Checkpoint should be deleted on successful completion
-        let checkpoint = load_checkpoint(&storage, "test:main").await.expect("Load should not error");
-        assert!(checkpoint.is_none(), "Checkpoint should be deleted after successful completion");
+        let checkpoint = load_checkpoint(&storage, "test:main")
+            .await
+            .expect("Load should not error");
+        assert!(
+            checkpoint.is_none(),
+            "Checkpoint should be deleted after successful completion"
+        );
     }
 
     #[tokio::test]
@@ -2400,7 +2491,14 @@ mod tests {
         // Create commits 2-5 (first half)
         let mut addresses = vec![addr1.clone()];
         for t in 2i64..=5 {
-            let flakes = vec![make_flake(t as i32, &format!("ex:s{}", t), 1, "ex:age", t * 10, t)];
+            let flakes = vec![make_flake(
+                t as i32,
+                &format!("ex:s{}", t),
+                1,
+                "ex:age",
+                t * 10,
+                t,
+            )];
             let commit = Commit {
                 address: String::new(),
                 id: None,
@@ -2422,7 +2520,14 @@ mod tests {
 
         // Create commits 6-10 (second half)
         for t in 6i64..=10 {
-            let flakes = vec![make_flake(t as i32, &format!("ex:s{}", t), 1, "ex:age", t * 10, t)];
+            let flakes = vec![make_flake(
+                t as i32,
+                &format!("ex:s{}", t),
+                1,
+                "ex:age",
+                t * 10,
+                t,
+            )];
             let commit = Commit {
                 address: String::new(),
                 id: None,
@@ -2452,14 +2557,10 @@ mod tests {
             progress_callback: None,
         };
 
-        let partial_result = batched_rebuild_from_commits(
-            &storage,
-            &addr5,
-            "test:main",
-            partial_config,
-        )
-        .await
-        .expect("Partial build should succeed");
+        let partial_result =
+            batched_rebuild_from_commits(&storage, &addr5, "test:main", partial_config)
+                .await
+                .expect("Partial build should succeed");
 
         // The partial index is at t=5
         assert_eq!(partial_result.index_result.index_t, 5);
@@ -2480,17 +2581,15 @@ mod tests {
             indexer_config: Some(IndexerConfigSnapshot::from(&IndexerConfig::small())),
         };
 
-        write_checkpoint(&storage, &checkpoint).await.expect("Should write checkpoint");
+        write_checkpoint(&storage, &checkpoint)
+            .await
+            .expect("Should write checkpoint");
 
         // Step 3: Resume from checkpoint
-        let resume_result = batched_rebuild_resume(
-            &storage,
-            &head_address,
-            checkpoint,
-            IndexerConfig::small(),
-        )
-        .await
-        .expect("Resume should succeed");
+        let resume_result =
+            batched_rebuild_resume(&storage, &head_address, checkpoint, IndexerConfig::small())
+                .await
+                .expect("Resume should succeed");
 
         // Step 4: Do a full build from scratch for comparison
         let full_config = BatchedRebuildConfig {
@@ -2502,26 +2601,26 @@ mod tests {
             progress_callback: None,
         };
 
-        let full_result = batched_rebuild_from_commits(
-            &storage,
-            &head_address,
-            "test:main",
-            full_config,
-        )
-        .await
-        .expect("Full build should succeed");
+        let full_result =
+            batched_rebuild_from_commits(&storage, &head_address, "test:main", full_config)
+                .await
+                .expect("Full build should succeed");
 
         // Step 5: Verify resume produces the same result as full build
         assert_eq!(
-            resume_result.index_result.index_t,
-            full_result.index_result.index_t,
+            resume_result.index_result.index_t, full_result.index_result.index_t,
             "Resume should reach same t as full build"
         );
         assert_eq!(resume_result.index_result.index_t, 10);
 
         // Verify checkpoint is deleted after successful resume
-        let checkpoint_after = load_checkpoint(&storage, "test:main").await.expect("Load should not error");
-        assert!(checkpoint_after.is_none(), "Checkpoint should be deleted after successful resume");
+        let checkpoint_after = load_checkpoint(&storage, "test:main")
+            .await
+            .expect("Load should not error");
+        assert!(
+            checkpoint_after.is_none(),
+            "Checkpoint should be deleted after successful resume"
+        );
     }
 
     #[tokio::test]
@@ -2545,7 +2644,9 @@ mod tests {
             indexer_config: None,
         };
 
-        write_checkpoint(&storage, &checkpoint).await.expect("Should write checkpoint");
+        write_checkpoint(&storage, &checkpoint)
+            .await
+            .expect("Should write checkpoint");
 
         // Try to resume with a different head address
         let result = batched_rebuild_resume(
@@ -2561,7 +2662,8 @@ mod tests {
         let err = result.unwrap_err();
         assert!(
             matches!(err, IndexerError::CheckpointHeadMismatch { .. }),
-            "Expected CheckpointHeadMismatch error, got: {:?}", err
+            "Expected CheckpointHeadMismatch error, got: {:?}",
+            err
         );
     }
 
@@ -2571,10 +2673,8 @@ mod tests {
         let storage = MemoryStorage::new();
 
         // Create initial index with minimal namespaces
-        let namespace_codes: BTreeMap<i32, String> = BTreeMap::from([
-            (0, "fluree:".to_string()),
-            (1, "ex:".to_string()),
-        ]);
+        let namespace_codes: BTreeMap<i32, String> =
+            BTreeMap::from([(0, "fluree:".to_string()), (1, "ex:".to_string())]);
         let initial_flakes = vec![make_flake(1, "ex:s0", 1, "ex:name", 100, 1)];
         let _initial_result = builder::build_index(
             &storage,
@@ -2644,7 +2744,7 @@ mod tests {
         // Use tiny batch size to force namespace deltas to span batches
         let config = BatchedRebuildConfig {
             indexer_config: IndexerConfig::small(),
-            batch_bytes: 50, // Very small
+            batch_bytes: 50,      // Very small
             max_batch_commits: 1, // Force batch after each commit
             checkpoint: false,
             checkpoint_interval: DEFAULT_CHECKPOINT_INTERVAL,
@@ -2656,13 +2756,23 @@ mod tests {
             .expect("Batched rebuild should succeed");
 
         // Verify all namespaces are present in final index
-        let db: Db<_, NoCache> = Db::load(storage.clone(), NoCache, &result.index_result.root_address)
-            .await
-            .expect("Should load final db");
+        let db: Db<_, NoCache> =
+            Db::load(storage.clone(), NoCache, &result.index_result.root_address)
+                .await
+                .expect("Should load final db");
 
-        assert!(db.namespace_codes.contains_key(&1), "Should have ex: namespace");
-        assert!(db.namespace_codes.contains_key(&100), "Should have schema: namespace");
-        assert!(db.namespace_codes.contains_key(&200), "Should have foaf: namespace");
+        assert!(
+            db.namespace_codes.contains_key(&1),
+            "Should have ex: namespace"
+        );
+        assert!(
+            db.namespace_codes.contains_key(&100),
+            "Should have schema: namespace"
+        );
+        assert!(
+            db.namespace_codes.contains_key(&200),
+            "Should have foaf: namespace"
+        );
         assert_eq!(db.namespace_codes.get(&100), Some(&"schema:".to_string()));
         assert_eq!(db.namespace_codes.get(&200), Some(&"foaf:".to_string()));
     }

@@ -277,7 +277,13 @@ where
     /// 1. Attempts incremental refresh if an index exists
     /// 2. Falls back to full batched rebuild if refresh fails or no index exists
     pub async fn index_ledger(&self, alias: &str) -> Result<IndexResult> {
-        crate::build_index_for_ledger(&self.storage, self.nameservice.as_ref(), alias, self.config.clone()).await
+        crate::build_index_for_ledger(
+            &self.storage,
+            self.nameservice.as_ref(),
+            alias,
+            self.config.clone(),
+        )
+        .await
     }
 
     /// Index a ledger and publish the result
@@ -557,10 +563,7 @@ where
             // Compute next retry deadline
             let retry_deadline = {
                 let states = self.states.lock().await;
-                states
-                    .values()
-                    .filter_map(|s| s.next_retry_at)
-                    .min()
+                states.values().filter_map(|s| s.next_retry_at).min()
             };
 
             // Wait for tick OR retry deadline (whichever comes first)
@@ -637,7 +640,7 @@ where
 
         // Re-check nameservice for current state
         let record = match self.nameservice.lookup(alias).await {
-                    Ok(Some(r)) => r,
+            Ok(Some(r)) => r,
             Ok(None) => {
                 // Ledger doesn't exist - resolve waiters as failed
                 let mut states = self.states.lock().await;
@@ -651,12 +654,12 @@ where
                 }
                 return;
             }
-                    Err(e) => {
-                        warn!(
-                    alias = %alias,
-                            error = %e,
-                            "Nameservice lookup failed, will retry"
-                        );
+            Err(e) => {
+                warn!(
+                alias = %alias,
+                        error = %e,
+                        "Nameservice lookup failed, will retry"
+                    );
                 self.schedule_retry(alias, &e.to_string()).await;
                 return;
             }
@@ -707,7 +710,8 @@ where
                         } else {
                             // Nameservice is reporting an index_t but no index address.
                             // Don't spin: force a retry with backoff.
-                            state.last_error = Some("Nameservice missing index_address".to_string());
+                            state.last_error =
+                                Some("Nameservice missing index_address".to_string());
                             state.phase = IndexPhase::Pending;
                             state.next_retry_at =
                                 Some(tokio::time::Instant::now() + Duration::from_millis(250));
@@ -725,7 +729,7 @@ where
             }
         }
 
-                // Skip if already indexed to current commit
+        // Skip if already indexed to current commit
         if record.commit_t <= current_index_t {
             let mut states = self.states.lock().await;
             if let Some(state) = states.get_mut(alias) {
@@ -758,38 +762,35 @@ where
                 }
             }
             return;
-                }
+        }
 
-                // Execute refresh-first indexing to CURRENT commit_t
-                let result = crate::build_index_for_ledger(
-                    &self.storage,
-                    self.nameservice.as_ref(),
+        // Execute refresh-first indexing to CURRENT commit_t
+        let result = crate::build_index_for_ledger(
+            &self.storage,
+            self.nameservice.as_ref(),
             alias,
-                    self.config.clone(),
-                )
-                .await;
+            self.config.clone(),
+        )
+        .await;
 
-                match result {
-                    Ok(index_result) => {
+        match result {
+            Ok(index_result) => {
                 // Try to publish
-                        if let Err(e) = crate::publish_index_result(
-                            self.nameservice.as_ref(),
-                            &index_result,
-                        )
-                        .await
-                        {
-                            warn!(
-                        alias = %alias,
-                                error = %e,
-                                "Failed to publish index, will retry"
-                            );
+                if let Err(e) =
+                    crate::publish_index_result(self.nameservice.as_ref(), &index_result).await
+                {
+                    warn!(
+                    alias = %alias,
+                            error = %e,
+                            "Failed to publish index, will retry"
+                        );
                     self.schedule_retry(alias, &e.to_string()).await;
-                        } else {
-                            info!(
-                        alias = %alias,
-                                index_t = index_result.index_t,
-                                "Successfully indexed ledger"
-                            );
+                } else {
+                    info!(
+                    alias = %alias,
+                            index_t = index_result.index_t,
+                            "Successfully indexed ledger"
+                        );
 
                     // Resolve waiters
                     let mut states = self.states.lock().await;
@@ -808,14 +809,14 @@ where
                         state.next_retry_at = None;
                         state.last_error = None;
                     }
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
-                    alias = %alias,
-                            error = %e,
-                            "Indexing failed, will retry"
-                        );
+                }
+            }
+            Err(e) => {
+                warn!(
+                alias = %alias,
+                        error = %e,
+                        "Indexing failed, will retry"
+                    );
                 self.schedule_retry(alias, &e.to_string()).await;
             }
         }
@@ -838,7 +839,7 @@ where
             // Compute backoff: 100ms * 2^retry_count, capped at 30s
             let exp = state.retry_count.min(20);
             let factor = 1u64.checked_shl(exp).unwrap_or(u64::MAX);
-        let backoff_ms = 100u64.saturating_mul(factor).min(30_000);
+            let backoff_ms = 100u64.saturating_mul(factor).min(30_000);
             state.next_retry_at =
                 Some(tokio::time::Instant::now() + Duration::from_millis(backoff_ms));
 
@@ -932,12 +933,12 @@ where
 
     // Build prev_index for GC chain from current index (if available)
     let prev_index = ledger.ns_record.as_ref().and_then(|ns| {
-        ns.index_address.as_ref().map(|addr| {
-            fluree_db_core::serde::json::PrevIndexRef {
+        ns.index_address
+            .as_ref()
+            .map(|addr| fluree_db_core::serde::json::PrevIndexRef {
                 t: ns.index_t,
                 address: addr.clone(),
-            }
-        })
+            })
     });
 
     match crate::refresh_index_with_prev(
@@ -1028,12 +1029,12 @@ where
 
     // Build prev_index for GC chain from current index (if available)
     let prev_index = ledger.ns_record.as_ref().and_then(|ns| {
-        ns.index_address.as_ref().map(|addr| {
-            fluree_db_core::serde::json::PrevIndexRef {
+        ns.index_address
+            .as_ref()
+            .map(|addr| fluree_db_core::serde::json::PrevIndexRef {
                 t: ns.index_t,
                 address: addr.clone(),
-            }
-        })
+            })
     });
 
     let refresh = crate::refresh_index_with_prev(
@@ -1069,14 +1070,7 @@ mod tests {
     use fluree_db_novelty::Commit;
     use std::collections::HashMap;
 
-    fn make_flake(
-        s_code: i32,
-        s_name: &str,
-        p_code: i32,
-        p_name: &str,
-        val: i64,
-        t: i64,
-    ) -> Flake {
+    fn make_flake(s_code: i32, s_name: &str, p_code: i32, p_name: &str, val: i64, t: i64) -> Flake {
         Flake::new(
             Sid::new(s_code, s_name),
             Sid::new(p_code, p_name),
@@ -1106,8 +1100,7 @@ mod tests {
         let ns = Arc::new(MemoryNameService::new());
         ns.create_ledger("test:main").unwrap();
 
-        let orchestrator =
-            IndexerOrchestrator::new(storage, ns.clone(), IndexerConfig::small());
+        let orchestrator = IndexerOrchestrator::new(storage, ns.clone(), IndexerConfig::small());
 
         // No commits - doesn't need indexing
         let needs = orchestrator.needs_indexing("test:main").await.unwrap();
@@ -1138,8 +1131,7 @@ mod tests {
         let addr = store_commit(&storage, &commit).await;
         ns.publish_commit("test:main", &addr, 1).await.unwrap();
 
-        let orchestrator =
-            IndexerOrchestrator::new(storage, ns.clone(), IndexerConfig::small());
+        let orchestrator = IndexerOrchestrator::new(storage, ns.clone(), IndexerConfig::small());
 
         // Has commits but no index - needs indexing
         let needs = orchestrator.needs_indexing("test:main").await.unwrap();
@@ -1344,8 +1336,7 @@ mod tests {
         let storage = MemoryStorage::new();
         let ns = Arc::new(MemoryNameService::new());
 
-        let orchestrator =
-            IndexerOrchestrator::new(storage, ns.clone(), IndexerConfig::small());
+        let orchestrator = IndexerOrchestrator::new(storage, ns.clone(), IndexerConfig::small());
 
         let result = orchestrator.index_ledger("nonexistent:main").await;
         assert!(result.is_err());
@@ -1587,14 +1578,7 @@ mod embedded_tests {
     use fluree_db_nameservice::memory::MemoryNameService;
     use fluree_db_novelty::Novelty;
 
-    fn make_flake(
-        s_code: i32,
-        s_name: &str,
-        p_code: i32,
-        p_name: &str,
-        val: i64,
-        t: i64,
-    ) -> Flake {
+    fn make_flake(s_code: i32, s_name: &str, p_code: i32, p_name: &str, val: i64, t: i64) -> Flake {
         Flake::new(
             Sid::new(s_code, s_name),
             Sid::new(p_code, p_name),
@@ -1632,14 +1616,8 @@ mod embedded_tests {
         let index_config = IndexConfig::default(); // High threshold
         let indexer_config = IndexerConfig::small();
 
-        let (returned_ledger, result) = maybe_refresh_after_commit(
-            &ns,
-            ledger,
-            &index_config,
-            indexer_config,
-            1,
-        )
-        .await;
+        let (returned_ledger, result) =
+            maybe_refresh_after_commit(&ns, ledger, &index_config, indexer_config, 1).await;
 
         // Should not have attempted since novelty is empty
         assert!(!result.attempted);
@@ -1679,10 +1657,13 @@ mod embedded_tests {
         .expect("Should build initial index");
 
         // Load the indexed Db
-        let db: Db<MemoryStorage, NoCache> =
-            Db::load(storage.clone(), NoCache::new(), &initial_result.root_address)
-                .await
-                .expect("Should load db");
+        let db: Db<MemoryStorage, NoCache> = Db::load(
+            storage.clone(),
+            NoCache::new(),
+            &initial_result.root_address,
+        )
+        .await
+        .expect("Should load db");
 
         // Create novelty with a large flake to exceed threshold
         let mut novelty = Novelty::new(1); // Start after index_t=1
@@ -1782,10 +1763,13 @@ mod embedded_tests {
         .expect("Should build initial index");
 
         // Load the indexed Db
-        let db: Db<MemoryStorage, NoCache> =
-            Db::load(storage.clone(), NoCache::new(), &initial_result.root_address)
-                .await
-                .expect("Should load db");
+        let db: Db<MemoryStorage, NoCache> = Db::load(
+            storage.clone(),
+            NoCache::new(),
+            &initial_result.root_address,
+        )
+        .await
+        .expect("Should load db");
 
         // Create novelty with some flakes at t=2
         let mut novelty = Novelty::new(1);

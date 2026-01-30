@@ -64,7 +64,7 @@ fi
 # OTEL / logging defaults
 SAMPLER="${OTEL_TRACES_SAMPLER:-always_on}"
 SAMPLER_ARG="${OTEL_TRACES_SAMPLER_ARG:-1.0}"
-SERVER_LOG="${RUST_LOG:-info,fluree_db_query=debug,fluree_db_transact=debug}"
+SERVER_LOG="${RUST_LOG:-debug}"
 
 SERVER_PID=""
 

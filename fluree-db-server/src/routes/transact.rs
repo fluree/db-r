@@ -137,8 +137,14 @@ async fn transact_local(state: Arc<AppState>, request: Request) -> Result<Json<T
                 format = "sparql-update",
                 "SPARQL UPDATE request received"
             );
-            return execute_sparql_update_request(&state, None, &headers, &credential, &tracing::Span::current())
-                .await;
+            return execute_sparql_update_request(
+                &state,
+                None,
+                &headers,
+                &credential,
+                &tracing::Span::current(),
+            )
+            .await;
         }
 
         tracing::info!(status = "start", "transaction request received");
@@ -579,7 +585,10 @@ async fn execute_transaction(
 
         // Get cached ledger handle (loads if not cached)
         // Transaction execution is only in transaction mode (peers forward)
-        let handle = match state.fluree.as_file().ledger_cached(alias).await {
+        let handle_result = async { state.fluree.as_file().ledger_cached(alias).await }
+            .instrument(tracing::debug_span!("ledger_load", ledger_alias = alias))
+            .await;
+        let handle = match handle_result {
             Ok(handle) => handle,
             Err(e) => {
                 let server_error = ServerError::Api(e);
@@ -722,7 +731,10 @@ async fn execute_sparql_update_request(
     };
 
     // Get ledger handle
-    let handle = match state.fluree.as_file().ledger_cached(&alias).await {
+    let handle_result = async { state.fluree.as_file().ledger_cached(&alias).await }
+        .instrument(tracing::debug_span!("ledger_load", ledger_alias = %alias))
+        .await;
+    let handle = match handle_result {
         Ok(handle) => handle,
         Err(e) => {
             let server_error = ServerError::Api(e);

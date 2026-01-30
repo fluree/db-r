@@ -4,9 +4,9 @@
 //! novelty flakes within the target time range (since_t, to_t].
 
 use fluree_db_core::{Flake, IndexType};
-use fluree_db_novelty::Novelty;
 #[cfg(test)]
 use fluree_db_novelty::FlakeId;
+use fluree_db_novelty::Novelty;
 
 /// Check if flake is in the time range (since_t, to_t]
 ///

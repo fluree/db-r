@@ -77,10 +77,8 @@ mod tests {
 
     #[test]
     fn test_replay_empty_commits() {
-        let base: BTreeMap<i32, String> = BTreeMap::from([
-            (0, "".to_string()),
-            (1, "@".to_string()),
-        ]);
+        let base: BTreeMap<i32, String> =
+            BTreeMap::from([(0, "".to_string()), (1, "@".to_string())]);
         let commits: Vec<Commit> = vec![];
 
         let result = replay_namespace_deltas(base.clone(), &commits);
@@ -89,10 +87,8 @@ mod tests {
 
     #[test]
     fn test_replay_adds_new_codes() {
-        let base: BTreeMap<i32, String> = BTreeMap::from([
-            (0, "".to_string()),
-            (1, "@".to_string()),
-        ]);
+        let base: BTreeMap<i32, String> =
+            BTreeMap::from([(0, "".to_string()), (1, "@".to_string())]);
         let commits = vec![
             make_commit(1, vec![(100, "http://example.org/")]),
             make_commit(2, vec![(101, "http://other.org/")]),
@@ -109,12 +105,8 @@ mod tests {
 
     #[test]
     fn test_replay_overwrites_codes() {
-        let base: BTreeMap<i32, String> = BTreeMap::from([
-            (100, "http://old.org/".to_string()),
-        ]);
-        let commits = vec![
-            make_commit(1, vec![(100, "http://new.org/")]),
-        ];
+        let base: BTreeMap<i32, String> = BTreeMap::from([(100, "http://old.org/".to_string())]);
+        let commits = vec![make_commit(1, vec![(100, "http://new.org/")])];
 
         let result = replay_namespace_deltas(base, &commits);
         assert_eq!(result.get(&100), Some(&"http://new.org/".to_string()));
@@ -123,13 +115,14 @@ mod tests {
     #[test]
     fn test_replay_multiple_in_one_commit() {
         let base: BTreeMap<i32, String> = BTreeMap::new();
-        let commits = vec![
-            make_commit(1, vec![
+        let commits = vec![make_commit(
+            1,
+            vec![
                 (100, "http://a.org/"),
                 (101, "http://b.org/"),
                 (102, "http://c.org/"),
-            ]),
-        ];
+            ],
+        )];
 
         let result = replay_namespace_deltas(base, &commits);
         assert_eq!(result.len(), 3);

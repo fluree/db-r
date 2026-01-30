@@ -131,7 +131,9 @@ where
     S: Storage,
 {
     let max_old_indexes = config.max_old_indexes.unwrap_or(DEFAULT_MAX_OLD_INDEXES) as usize;
-    let min_age_mins = config.min_time_garbage_mins.unwrap_or(DEFAULT_MIN_TIME_GARBAGE_MINS);
+    let min_age_mins = config
+        .min_time_garbage_mins
+        .unwrap_or(DEFAULT_MIN_TIME_GARBAGE_MINS);
     let min_age_ms = min_age_mins as i64 * 60 * 1000;
     let now_ms = current_timestamp_ms();
 
@@ -698,7 +700,9 @@ mod tests {
         };
 
         // First GC run
-        let result1 = clean_garbage(&storage, addr3, config.clone()).await.unwrap();
+        let result1 = clean_garbage(&storage, addr3, config.clone())
+            .await
+            .unwrap();
         assert_eq!(result1.indexes_cleaned, 1);
 
         // t=1 should be deleted now

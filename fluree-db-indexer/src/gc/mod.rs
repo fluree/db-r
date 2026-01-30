@@ -104,10 +104,7 @@ pub async fn write_garbage_record<S: ContentAddressedWrite>(
 }
 
 /// Load a garbage record from storage.
-pub async fn load_garbage_record<S: Storage>(
-    storage: &S,
-    address: &str,
-) -> Result<GarbageRecord> {
+pub async fn load_garbage_record<S: Storage>(storage: &S, address: &str) -> Result<GarbageRecord> {
     let bytes = storage.read_bytes(address).await?;
     let record: GarbageRecord = serde_json::from_slice(&bytes)?;
     Ok(record)
@@ -161,10 +158,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = collect_garbage_addresses(
-            &[&stat1, &stat2],
-            vec!["sketch1".to_string()],
-        );
+        let result = collect_garbage_addresses(&[&stat1, &stat2], vec!["sketch1".to_string()]);
 
         // Should be sorted and deduped
         assert_eq!(result, vec!["addr1", "addr2", "addr3", "sketch1"]);

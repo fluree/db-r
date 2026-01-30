@@ -96,7 +96,10 @@ impl ResolvedNode {
 /// Load a node and wrap with metadata
 pub async fn load_node<S: Storage>(storage: &S, child: ChildRef) -> Result<ResolvedNode> {
     let content = resolve_node(storage, &child).await?;
-    Ok(ResolvedNode { child_ref: child, content })
+    Ok(ResolvedNode {
+        child_ref: child,
+        content,
+    })
 }
 
 #[cfg(test)]

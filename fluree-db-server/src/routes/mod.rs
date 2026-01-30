@@ -18,7 +18,7 @@ use axum::{
 };
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 
 /// Build the main application router
 pub fn build_router(state: Arc<AppState>) -> Router {
@@ -78,9 +78,15 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         // Stub endpoints (not yet implemented)
         .route("/fluree/subscribe", get(stubs::subscribe))
-        .route("/fluree/remote/:path", get(stubs::remote).post(stubs::remote))
+        .route(
+            "/fluree/remote/:path",
+            get(stubs::remote).post(stubs::remote),
+        )
         // Dynamic ledger routes (/{ledger}/query, /{ledger}/transact, etc.)
-        .route("/:ledger/query", get(query::query_ledger).post(query::query_ledger))
+        .route(
+            "/:ledger/query",
+            get(query::query_ledger).post(query::query_ledger),
+        )
         .route("/:ledger/update", post(transact::transact_ledger))
         .route("/:ledger/transact", post(transact::transact_ledger))
         .route("/:ledger/insert", post(transact::insert_ledger))
@@ -98,7 +104,13 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     let mut router = router.with_state(state.clone());
 
     // Add middleware
-    router = router.layer(TraceLayer::new_for_http());
+    // Use TRACE level for tower-http's per-request span to avoid colliding with
+    // our handler-level "request" info_span and to prevent debug-level noise from
+    // tower-http when RUST_LOG=debug is set.
+    router = router.layer(
+        TraceLayer::new_for_http()
+            .make_span_with(DefaultMakeSpan::new().level(tracing::Level::TRACE)),
+    );
 
     // Add CORS if enabled
     if state.config.cors_enabled {

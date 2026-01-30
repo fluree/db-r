@@ -161,10 +161,23 @@ pub fn init_logging(config: &TelemetryConfig) {
         LogFormat::Human => tracing_subscriber::fmt::layer().compact().boxed(),
     };
 
-    // Build otel layer as Option (None is a no-op Layer)
+    // Build otel layer as Option (None is a no-op Layer).
+    // The OTEL layer gets its own target filter so that only fluree crate spans
+    // are exported, regardless of what RUST_LOG enables.  This prevents debug
+    // noise from hyper, h2, tokio, tower-http etc. from flooding the batch
+    // exporter and causing parent spans to be dropped (which would orphan child
+    // spans into separate root traces in Jaeger/Tempo).
     #[cfg(feature = "otel")]
     let otel_layer = if config.is_otel_enabled() {
-        Some(init_otel_layer(config))
+        let otel_filter = tracing_subscriber::filter::Targets::new()
+            .with_target("fluree_db_server", tracing::Level::DEBUG)
+            .with_target("fluree_db_api", tracing::Level::DEBUG)
+            .with_target("fluree_db_transact", tracing::Level::DEBUG)
+            .with_target("fluree_db_query", tracing::Level::DEBUG)
+            .with_target("fluree_db_indexer", tracing::Level::DEBUG)
+            .with_target("fluree_db_sparql", tracing::Level::DEBUG)
+            .with_target("fluree_db_core", tracing::Level::DEBUG);
+        Some(init_otel_layer(config).with_filter(otel_filter))
     } else {
         None
     };
@@ -200,7 +213,7 @@ where
     use opentelemetry::trace::TracerProvider as _;
     use opentelemetry::KeyValue;
     use opentelemetry_otlp::{SpanExporter, WithExportConfig};
-    use opentelemetry_sdk::trace::{SdkTracerProvider, Sampler};
+    use opentelemetry_sdk::trace::{Sampler, SdkTracerProvider};
 
     // Determine protocol (default: grpc)
     let protocol = env::var("OTEL_EXPORTER_OTLP_PROTOCOL")
@@ -247,10 +260,7 @@ where
     // Build resource describing this service
     let resource = opentelemetry_sdk::Resource::builder()
         .with_service_name(service_name)
-        .with_attributes([KeyValue::new(
-            "service.version",
-            env!("CARGO_PKG_VERSION"),
-        )])
+        .with_attributes([KeyValue::new("service.version", env!("CARGO_PKG_VERSION"))])
         .build();
 
     // Build tracer provider (batch export uses a background thread, no async runtime needed)
