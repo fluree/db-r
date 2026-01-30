@@ -67,6 +67,8 @@ Supported:
 - `defaults` (partial):
   - `defaults.indexing.reindexMinBytes` / `reindexMaxBytes` are applied as the default `IndexConfig` for writes
   - `defaults.indexing.indexingEnabled=false` suppresses background index triggers
+  - `defaults.indexing.maxOldIndexes` sets the maximum number of old index versions to retain before GC (default: 5)
+  - `defaults.indexing.gcMinTimeMins` sets the minimum age in minutes before an index can be garbage collected (default: 30)
 
 ### addressIdentifiers (read routing)
 
@@ -252,5 +254,5 @@ This Rust JSON-LD model is intended to stay in parity with `../db` docs:
 Current intentional gaps in Rust:
 - `remoteSystems` not supported
 - `defaults.identity` is parsed but not currently applied
-- `defaults.indexing.trackClassStats` and `defaults.indexing.maxOldIndexes` are parsed but not currently applied
+- `defaults.indexing.trackClassStats` is parsed but not currently applied
 
