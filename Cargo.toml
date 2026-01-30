@@ -32,6 +32,8 @@ members = [
     "fluree-search-protocol",
     "fluree-search-service",
     "fluree-search-httpd",
+    "examples/bulk-turtle-import",
+    "examples/otel-firehose-demo",
 ]
 
 [workspace.package]
