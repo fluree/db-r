@@ -26,6 +26,8 @@
 
 mod commit;
 mod commit_flakes;
+#[cfg(feature = "commit-v2")]
+pub mod commit_v2;
 mod error;
 mod stats;
 
@@ -38,6 +40,7 @@ pub use error::{NoveltyError, Result};
 pub use stats::current_stats;
 
 use fluree_db_core::{Flake, IndexType};
+use rayon::Scope;
 use std::cmp::Ordering;
 
 /// Index into FlakeStore - u32 limits to ~4B flakes
@@ -157,6 +160,14 @@ impl Novelty {
             return Ok(());
         }
 
+        let span = tracing::info_span!(
+            "novelty_apply_commit",
+            commit_t = commit_t,
+            flake_count = flakes.len(),
+            rayon_threads = rayon::current_num_threads()
+        );
+        let _guard = span.enter();
+
         // Check FlakeId overflow
         let new_count = self.store.len() + flakes.len();
         if new_count > MAX_FLAKE_ID as usize {
@@ -178,99 +189,68 @@ impl Novelty {
         }
 
         // Build batch IDs
-        let batch_ids: Vec<FlakeId> = (base_id..self.store.len() as FlakeId).collect();
+        let batch_ids_vec: Vec<FlakeId> = (base_id..self.store.len() as FlakeId).collect();
+        let batch_ids: &[FlakeId] = batch_ids_vec.as_slice();
 
-        // Merge batch into each index (LSM-style merge)
-        self.merge_into_index(&batch_ids, IndexType::Spot);
-        self.merge_into_index(&batch_ids, IndexType::Psot);
-        self.merge_into_index(&batch_ids, IndexType::Post);
-        self.merge_into_index_refs_only(&batch_ids);
-        self.merge_into_index(&batch_ids, IndexType::Tspo);
+        // Merge batch into each index (LSM-style merge).
+        //
+        // These merges are independent (read-only access to store + disjoint index vectors),
+        // so we can run them in parallel to utilize multiple CPU cores.
+        let store = &self.store;
+        let (spot, psot, post, opst, tspo) = (
+            &mut self.spot,
+            &mut self.psot,
+            &mut self.post,
+            &mut self.opst,
+            &mut self.tspo,
+        );
+
+        // Propagate the parent span context into Rayon worker threads so that
+        // per-index merge spans appear nested under `novelty_apply_commit` in traces.
+        let parent = tracing::Span::current();
+
+        rayon::scope(|scope: &Scope<'_>| {
+            let parent_spot = parent.clone();
+            scope.spawn(move |_| {
+                let _p = parent_spot.enter();
+                let span = tracing::info_span!("novelty_merge_spot", batch_len = batch_ids.len());
+                let _g = span.enter();
+                merge_batch_into_index(store, spot, batch_ids, IndexType::Spot)
+            });
+            let parent_psot = parent.clone();
+            scope.spawn(move |_| {
+                let _p = parent_psot.enter();
+                let span = tracing::info_span!("novelty_merge_psot", batch_len = batch_ids.len());
+                let _g = span.enter();
+                merge_batch_into_index(store, psot, batch_ids, IndexType::Psot)
+            });
+            let parent_post = parent.clone();
+            scope.spawn(move |_| {
+                let _p = parent_post.enter();
+                let span = tracing::info_span!("novelty_merge_post", batch_len = batch_ids.len());
+                let _g = span.enter();
+                merge_batch_into_index(store, post, batch_ids, IndexType::Post)
+            });
+            let parent_opst = parent.clone();
+            scope.spawn(move |_| {
+                let _p = parent_opst.enter();
+                let span = tracing::info_span!("novelty_merge_opst", batch_len = batch_ids.len());
+                let _g = span.enter();
+                merge_batch_into_opst_refs_only(store, opst, batch_ids)
+            });
+            let parent_tspo = parent.clone();
+            scope.spawn(move |_| {
+                let _p = parent_tspo.enter();
+                let span = tracing::info_span!("novelty_merge_tspo", batch_len = batch_ids.len());
+                let _g = span.enter();
+                merge_batch_into_index(store, tspo, batch_ids, IndexType::Tspo)
+            });
+        });
 
         Ok(())
     }
 
-    /// LSM-style merge: sort batch by index comparator, then merge with existing
-    fn merge_into_index(&mut self, batch_ids: &[FlakeId], index: IndexType) {
-        // Sort batch by this index's comparator
-        let mut sorted_batch = batch_ids.to_vec();
-        sorted_batch.sort_by(|&a, &b| index.compare(self.store.get(a), self.store.get(b)));
-
-        // Get mutable reference to the correct index
-        let target = match index {
-            IndexType::Spot => &mut self.spot,
-            IndexType::Psot => &mut self.psot,
-            IndexType::Post => &mut self.post,
-            IndexType::Opst => &mut self.opst,
-            IndexType::Tspo => &mut self.tspo,
-        };
-
-        // Two-way merge existing + batch
-        let mut merged = Vec::with_capacity(target.len() + sorted_batch.len());
-        let mut i = 0;
-        let mut j = 0;
-
-        while i < target.len() && j < sorted_batch.len() {
-            let cmp = index.compare(
-                self.store.get(target[i]),
-                self.store.get(sorted_batch[j]),
-            );
-            if cmp != Ordering::Greater {
-                merged.push(target[i]);
-                i += 1;
-            } else {
-                merged.push(sorted_batch[j]);
-                j += 1;
-            }
-        }
-        merged.extend_from_slice(&target[i..]);
-        merged.extend_from_slice(&sorted_batch[j..]);
-
-        *target = merged;
-    }
-
-    /// Merge only reference flakes into OPST index
-    fn merge_into_index_refs_only(&mut self, batch_ids: &[FlakeId]) {
-        // Filter to refs only
-        let ref_ids: Vec<FlakeId> = batch_ids
-            .iter()
-            .copied()
-            .filter(|&id| self.store.get(id).is_ref())
-            .collect();
-
-        if ref_ids.is_empty() {
-            return;
-        }
-
-        // Sort by OPST comparator
-        let mut sorted_batch = ref_ids;
-        sorted_batch.sort_by(|&a, &b| {
-            IndexType::Opst.compare(self.store.get(a), self.store.get(b))
-        });
-
-        // Two-way merge
-        let mut merged = Vec::with_capacity(self.opst.len() + sorted_batch.len());
-        let mut i = 0;
-        let mut j = 0;
-
-        while i < self.opst.len() && j < sorted_batch.len() {
-            let cmp = IndexType::Opst.compare(
-                self.store.get(self.opst[i]),
-                self.store.get(sorted_batch[j]),
-            );
-            if cmp != Ordering::Greater {
-                merged.push(self.opst[i]);
-                i += 1;
-            } else {
-                merged.push(sorted_batch[j]);
-                j += 1;
-            }
-        }
-        merged.extend_from_slice(&self.opst[i..]);
-        merged.extend_from_slice(&sorted_batch[j..]);
-
-        self.opst = merged;
-    }
+    // merge helpers are free functions below
 
     /// Clear flakes with t <= cutoff_t (after index merge)
     ///
@@ -432,6 +412,84 @@ impl OverlayProvider for Novelty {
             }
         }
     }
+}
+
+// =============================================================================
+// Parallel merge helpers (read-only store + disjoint mutable index vectors)
+// =============================================================================
+
+/// LSM-style merge: sort batch by index comparator, then merge with existing target.
+fn merge_batch_into_index(
+    store: &FlakeStore,
+    target: &mut Vec<FlakeId>,
+    batch_ids: &[FlakeId],
+    index: IndexType,
+) {
+    use rayon::prelude::*;
+
+    // Sort batch by this index's comparator
+    let mut sorted_batch = batch_ids.to_vec();
+    sorted_batch.par_sort_unstable_by(|&a, &b| index.compare(store.get(a), store.get(b)));
+
+    // Two-way merge existing + batch
+    let mut merged = Vec::with_capacity(target.len() + sorted_batch.len());
+    let mut i = 0;
+    let mut j = 0;
+
+    while i < target.len() && j < sorted_batch.len() {
+        let cmp = index.compare(store.get(target[i]), store.get(sorted_batch[j]));
+        if cmp != Ordering::Greater {
+            merged.push(target[i]);
+            i += 1;
+        } else {
+            merged.push(sorted_batch[j]);
+            j += 1;
+        }
+    }
+    merged.extend_from_slice(&target[i..]);
+    merged.extend_from_slice(&sorted_batch[j..]);
+
+    *target = merged;
+}
+
+/// Merge only reference flakes into OPST index.
+fn merge_batch_into_opst_refs_only(store: &FlakeStore, opst: &mut Vec<FlakeId>, batch_ids: &[FlakeId]) {
+    use rayon::prelude::*;
+
+    // Filter to refs only
+    let ref_ids: Vec<FlakeId> = batch_ids
+        .iter()
+        .copied()
+        .filter(|&id| store.get(id).is_ref())
+        .collect();
+
+    if ref_ids.is_empty() {
+        return;
+    }
+
+    // Sort by OPST comparator
+    let mut sorted_batch = ref_ids;
+    sorted_batch.par_sort_unstable_by(|&a, &b| IndexType::Opst.compare(store.get(a), store.get(b)));
+
+    // Two-way merge
+    let mut merged = Vec::with_capacity(opst.len() + sorted_batch.len());
+    let mut i = 0;
+    let mut j = 0;
+
+    while i < opst.len() && j < sorted_batch.len() {
+        let cmp = IndexType::Opst.compare(store.get(opst[i]), store.get(sorted_batch[j]));
+        if cmp != Ordering::Greater {
+            merged.push(opst[i]);
+            i += 1;
+        } else {
+            merged.push(sorted_batch[j]);
+            j += 1;
+        }
+    }
+    merged.extend_from_slice(&opst[i..]);
+    merged.extend_from_slice(&sorted_batch[j..]);
+
+    *opst = merged;
 }
 
 #[cfg(test)]

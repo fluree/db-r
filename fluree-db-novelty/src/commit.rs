@@ -304,6 +304,16 @@ pub async fn load_commit<S: Storage>(storage: &S, address: &str) -> Result<Commi
         .await
         .map_err(|e| NoveltyError::storage(format!("Failed to read commit {}: {}", address, e)))?;
 
+    // When commit-v2 is enabled: binary-only, no JSON fallback.
+    // When off: JSON deserialization (original path).
+    #[cfg(feature = "commit-v2")]
+    let mut commit = {
+        let _span = tracing::debug_span!("load_commit_v2", blob_bytes = data.len()).entered();
+        crate::commit_v2::read_commit(&data)
+            .map_err(|e| NoveltyError::invalid_commit(e.to_string()))?
+    };
+
+    #[cfg(not(feature = "commit-v2"))]
     let mut commit: Commit = serde_json::from_slice(&data)?;
 
     // Inject derived metadata that may be omitted from on-disk commit blobs.
@@ -454,7 +464,18 @@ pub async fn load_commit_envelope<S: Storage>(storage: &S, address: &str) -> Res
         .await
         .map_err(|e| NoveltyError::storage(format!("Failed to read commit envelope {}: {}", address, e)))?;
 
+    // When commit-v2 is enabled: binary-only, no JSON fallback.
+    // When off: JSON deserialization (original path).
+    #[cfg(feature = "commit-v2")]
+    let envelope = {
+        let _span = tracing::debug_span!("load_commit_envelope_v2", blob_bytes = data.len()).entered();
+        crate::commit_v2::read_commit_envelope(&data)
+            .map_err(|e| NoveltyError::invalid_commit(e.to_string()))?
+    };
+
+    #[cfg(not(feature = "commit-v2"))]
     let envelope: CommitEnvelope = serde_json::from_slice(&data)?;
+
     Ok(envelope)
 }
 
@@ -538,7 +559,10 @@ pub fn trace_commits<S: Storage + Clone + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::{Flake, FlakeValue, MemoryStorage, Sid};
+    use fluree_db_core::{Flake, FlakeValue, Sid};
+    #[cfg(not(feature = "commit-v2"))]
+    use fluree_db_core::MemoryStorage;
+    #[cfg(not(feature = "commit-v2"))]
     use futures::StreamExt;
 
     fn make_test_flake(s: i64, p: i64, o: i64, t: i64) -> Flake {
@@ -576,6 +600,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(feature = "commit-v2"))]
     async fn test_trace_commits() {
         let storage = MemoryStorage::new();
 
@@ -691,6 +716,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(feature = "commit-v2"))]
     async fn test_trace_commit_envelopes() {
         let storage = MemoryStorage::new();
 
@@ -741,6 +767,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(not(feature = "commit-v2"))]
     async fn test_load_commit_envelope_ignores_large_flakes() {
         let storage = MemoryStorage::new();
 

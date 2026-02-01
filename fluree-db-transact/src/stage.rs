@@ -233,6 +233,44 @@ pub async fn stage<S: Storage + Clone + 'static, C: NodeCache + 'static>(
     Ok((LedgerView::stage(ledger, flakes), ns_registry))
 }
 
+/// Stage pre-built flakes against a ledger (bypass WHERE/template pipeline).
+///
+/// This is the fast path for bulk INSERT from Turtle where flakes are already
+/// constructed by [`FlakeSink`](crate::flake_sink::FlakeSink). No WHERE
+/// execution, template materialization, or cancellation is performed.
+///
+/// # Arguments
+/// * `ledger` - The ledger state (consumed)
+/// * `flakes` - Pre-built assertion flakes
+/// * `options` - Optional backpressure / policy / tracking configuration
+pub async fn stage_flakes<S: Storage + Clone + 'static, C: NodeCache + 'static>(
+    ledger: LedgerState<S, C>,
+    flakes: Vec<Flake>,
+    options: StageOptions<'_>,
+) -> Result<LedgerView<S, C>> {
+    let span = tracing::info_span!("stage_flakes", flake_count = flakes.len());
+    let _guard = span.enter();
+
+    // 1. Backpressure check
+    if let Some(config) = options.index_config {
+        if ledger.at_max_novelty(config) {
+            tracing::warn!("novelty at max, rejecting transaction");
+            return Err(TransactError::NoveltyAtMax);
+        }
+    }
+
+    // 2. Policy enforcement
+    if let Some(policy) = options.policy_ctx {
+        if !policy.wrapper().is_root() {
+            tracing::debug!("enforcing modify policies on pre-built flakes");
+            enforce_modify_policies(&flakes, policy, &ledger, options.tracker).await?;
+        }
+    }
+
+    tracing::info!(flake_count = flakes.len(), "stage_flakes completed");
+    Ok(LedgerView::stage(ledger, flakes))
+}
+
 async fn hydrate_list_index_meta_for_retractions<
     S: Storage + Clone + 'static,
     C: NodeCache + 'static,
@@ -489,7 +527,7 @@ fn merge_batches(batches: Vec<Batch>, vars: &VarRegistry) -> Result<Batch> {
 }
 
 /// Generate a unique transaction ID for blank node skolemization
-fn generate_txn_id() -> String {
+pub fn generate_txn_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

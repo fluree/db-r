@@ -22,6 +22,7 @@ fluree-graph-ir = { path = "../fluree-graph-ir" }
 # Workspace dependencies
 async-trait.workspace = true
 futures.workspace = true
+once_cell.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -42,9 +43,19 @@ chrono.workspace = true
 bigdecimal = "0.4"
 num-bigint = "0.4"
 
+# Compression (optional, for commit-v2 binary format)
+zstd = { workspace = true, optional = true }
+
+# Tempfile for streaming commit writer spool
+tempfile = { version = "3", optional = true }
+
+# Turtle parser (optional, for import mode)
+fluree-graph-turtle = { path = "../fluree-graph-turtle", optional = true }
+
 [features]
 default = []
 shacl = ["dep:fluree-db-shacl"]
+commit-v2 = ["dep:zstd", "dep:tempfile", "dep:fluree-graph-turtle", "fluree-db-novelty/commit-v2"]
 
 [dev-dependencies]
 tokio.workspace = true

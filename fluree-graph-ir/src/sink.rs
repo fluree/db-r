@@ -21,6 +21,21 @@ use std::collections::HashMap;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TermId(pub(crate) u32);
 
+impl TermId {
+    /// Create a new TermId from a raw index.
+    ///
+    /// This is intended for `GraphSink` implementations outside this crate
+    /// that need to allocate term IDs.
+    pub fn new(id: u32) -> Self {
+        Self(id)
+    }
+
+    /// Get the raw index value.
+    pub fn index(self) -> u32 {
+        self.0
+    }
+}
+
 /// Event-driven interface for RDF graph construction
 ///
 /// Inspired by the Raphael library's generator pattern, this trait allows

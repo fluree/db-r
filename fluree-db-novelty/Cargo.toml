@@ -14,6 +14,23 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 futures = { workspace = true }
 chrono = { workspace = true }
+rayon = "1.10"
+tracing = { workspace = true }
+rustc-hash = "2"
+
+# Numeric types for typed literal coercion (optional, for commit-v2)
+bigdecimal = { version = "0.4", optional = true }
+num-bigint = { version = "0.4", optional = true }
+
+# Content addressing (optional, for commit-v2 hash verification)
+sha2 = { workspace = true, optional = true }
+
+# Compression (optional, for commit-v2 binary format)
+zstd = { workspace = true, optional = true }
+
+[features]
+default = []
+commit-v2 = ["dep:sha2", "dep:zstd", "dep:bigdecimal", "dep:num-bigint"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }

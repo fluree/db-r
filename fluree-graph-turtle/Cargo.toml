@@ -12,5 +12,7 @@ fluree-vocab = { path = "../fluree-vocab" }
 winnow = { workspace = true }
 thiserror = { workspace = true }
 serde_json = { workspace = true }
+tracing = { workspace = true }
+rustc-hash = "2"
 
 [dev-dependencies]

@@ -1,6 +1,13 @@
 //! Turtle Token types.
 //!
 //! Tokens are the output of lexical analysis, ready for parsing.
+//!
+//! Most token variants are **zero-copy span tokens** — they carry no data.
+//! The token's `start`/`end` fields are byte offsets into the original input,
+//! and the parser extracts content via `&input[start..end]`.
+//!
+//! A few rare variants carry pre-processed content (e.g., strings with escape
+//! sequences) in an `Arc<str>`.
 
 use std::sync::Arc;
 
@@ -10,14 +17,14 @@ pub struct Token {
     /// The token kind
     pub kind: TokenKind,
     /// Source location (start byte offset)
-    pub start: usize,
+    pub start: u32,
     /// Source location (end byte offset)
-    pub end: usize,
+    pub end: u32,
 }
 
 impl Token {
     /// Create a new token.
-    pub fn new(kind: TokenKind, start: usize, end: usize) -> Self {
+    pub fn new(kind: TokenKind, start: u32, end: u32) -> Self {
         Self { kind, start, end }
     }
 
@@ -28,30 +35,45 @@ impl Token {
 }
 
 /// Token kinds for Turtle.
+///
+/// Most variants store no data — content is recovered from the source input
+/// using the token's byte span (`start..end`). The parser uses kind-specific
+/// offset adjustments to strip delimiters (e.g., `<>` for IRIs, `""` for
+/// strings).
+///
+/// Variants with `Escaped` suffix carry pre-processed content for the rare
+/// case where escape sequences altered the text.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TokenKind {
     // =========================================================================
     // IRIs
     // =========================================================================
     /// Full IRI: `<http://example.org/>`
-    Iri(Arc<str>),
+    /// Span covers the entire token including `<>`.
+    /// Content: `&input[(start+1)..(end-1)]`
+    Iri,
 
-    /// Prefixed name namespace: `prefix:` (just the prefix, no local)
-    PrefixedNameNs(Arc<str>),
+    /// Full IRI with unicode escapes (rare).
+    /// Content is pre-processed and stored inline.
+    IriEscaped(Arc<str>),
+
+    /// Prefixed name namespace: `prefix:` (just the prefix with trailing colon).
+    /// Span covers `prefix:`.
+    /// Prefix: `&input[start..(end-1)]`
+    PrefixedNameNs,
 
     /// Prefixed name with local: `prefix:local`
-    PrefixedName {
-        /// Namespace prefix (without colon)
-        prefix: Arc<str>,
-        /// Local name
-        local: Arc<str>,
-    },
+    /// Span covers `prefix:local`.
+    /// Split on first `:` to get `(prefix, local)`.
+    PrefixedName,
 
     // =========================================================================
     // Blank Nodes
     // =========================================================================
     /// Labeled blank node: `_:name`
-    BlankNodeLabel(Arc<str>),
+    /// Span covers `_:name`.
+    /// Label: `&input[(start+2)..end]`
+    BlankNodeLabel,
 
     /// Anonymous blank node: `[]`
     Anon,
@@ -62,21 +84,35 @@ pub enum TokenKind {
     // =========================================================================
     // Literals
     // =========================================================================
-    /// String literal (unescaped content)
-    String(Arc<str>),
+    /// Short string literal (no escapes): `"..."` or `'...'`
+    /// Span covers the entire token including quotes.
+    /// Content: `&input[(start+1)..(end-1)]`
+    String,
 
-    /// Integer literal
+    /// Long string literal (no escapes): `"""..."""` or `'''...'''`
+    /// Span covers the entire token including triple quotes.
+    /// Content: `&input[(start+3)..(end-3)]`
+    LongString,
+
+    /// String literal with escape sequences (rare).
+    /// Content is pre-processed and stored inline.
+    StringEscaped(Arc<str>),
+
+    /// Integer literal (parsed inline).
     Integer(i64),
 
-    /// Decimal literal (stored as string to preserve precision)
-    Decimal(Arc<str>),
+    /// Decimal literal.
+    /// Span covers the numeric text.
+    /// Text: `&input[start..end]`
+    Decimal,
 
-    /// Double literal (floating point with exponent)
+    /// Double literal (parsed inline).
     Double(f64),
 
-    /// Language tag (e.g., `@en`, `@en-US`)
-    /// Stored without the `@` prefix.
-    LangTag(Arc<str>),
+    /// Language tag (e.g., `@en`, `@en-US`).
+    /// Span covers `@tag`.
+    /// Tag: `&input[(start+1)..end]`
+    LangTag,
 
     // =========================================================================
     // Keywords / Directives
@@ -132,17 +168,20 @@ pub enum TokenKind {
 impl std::fmt::Display for TokenKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TokenKind::Iri(s) => write!(f, "<{}>", s),
-            TokenKind::PrefixedNameNs(s) => write!(f, "{}:", s),
-            TokenKind::PrefixedName { prefix, local } => write!(f, "{}:{}", prefix, local),
-            TokenKind::BlankNodeLabel(s) => write!(f, "_:{}", s),
+            TokenKind::Iri => write!(f, "<IRI>"),
+            TokenKind::IriEscaped(s) => write!(f, "<{}>", s),
+            TokenKind::PrefixedNameNs => write!(f, "prefixedNs:"),
+            TokenKind::PrefixedName => write!(f, "prefixed:name"),
+            TokenKind::BlankNodeLabel => write!(f, "_:blank"),
             TokenKind::Anon => write!(f, "[]"),
             TokenKind::Nil => write!(f, "()"),
-            TokenKind::String(s) => write!(f, "\"{}\"", s),
+            TokenKind::String => write!(f, "\"string\""),
+            TokenKind::LongString => write!(f, "\"\"\"string\"\"\""),
+            TokenKind::StringEscaped(s) => write!(f, "\"{}\"", s),
             TokenKind::Integer(n) => write!(f, "{}", n),
-            TokenKind::Decimal(s) => write!(f, "{}", s),
+            TokenKind::Decimal => write!(f, "decimal"),
             TokenKind::Double(n) => write!(f, "{:e}", n),
-            TokenKind::LangTag(s) => write!(f, "@{}", s),
+            TokenKind::LangTag => write!(f, "@lang"),
             TokenKind::KwPrefix => write!(f, "@prefix"),
             TokenKind::KwBase => write!(f, "@base"),
             TokenKind::KwSparqlPrefix => write!(f, "PREFIX"),

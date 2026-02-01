@@ -5,7 +5,7 @@
 
 use crate::config::ServerConfig;
 use std::env;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Layer};
 
 /// Telemetry configuration
 #[derive(Debug, Clone)]
@@ -154,32 +154,25 @@ pub fn init_logging(config: &TelemetryConfig) {
         EnvFilter::new(&config.log_filter)
     };
 
-    let fmt_layer = match config.log_format {
-        // NOTE: `tracing-subscriber` JSON formatting requires enabling its `json` feature.
-        // For now, keep the "json" option as a structured-ish compact format.
-        LogFormat::Json => tracing_subscriber::fmt::layer().compact().boxed(),
-        LogFormat::Human => tracing_subscriber::fmt::layer()
-            .compact()
-            .boxed(),
-    };
-
-    let registry = tracing_subscriber::registry()
-        .with(filter)
-        .with(fmt_layer);
-
-    // Add OTEL layer if properly configured
+    // When OTEL is enabled, attach the OTEL layer *first* so its type is `Layer<Registry>`.
     #[cfg(feature = "otel")]
-    let registry = {
+    {
         if config.is_otel_enabled() {
-            registry.with(init_otel_layer(config))
-        } else {
-            registry
-        }
-    };
+            let subscriber = tracing_subscriber::registry()
+                .with(init_otel_layer(config))
+                .with(filter.clone())
+                .with(tracing_subscriber::fmt::layer().compact());
 
-    // Use try_init to avoid panicking if another thread set the subscriber
-    // between our has_been_set() check and now (race condition in tests)
-    let _ = registry.try_init();
+            let _ = tracing::dispatcher::set_global_default(tracing::Dispatch::new(subscriber));
+            return;
+        }
+    }
+
+    let subscriber = tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer().compact());
+
+    let _ = tracing::dispatcher::set_global_default(tracing::Dispatch::new(subscriber));
 }
 
 /// Initialize OTEL tracing layer
@@ -187,10 +180,19 @@ pub fn init_logging(config: &TelemetryConfig) {
 /// Only call this if OTEL environment variables are set.
 /// Returns a tracing layer that exports spans via OTLP.
 #[cfg(feature = "otel")]
-fn init_otel_layer(config: &TelemetryConfig) -> impl Layer<tracing_subscriber::Registry> + Send + Sync {
+static OTEL_PROVIDER: std::sync::OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> =
+    std::sync::OnceLock::new();
+
+#[cfg(feature = "otel")]
+fn init_otel_layer(
+    config: &TelemetryConfig,
+) -> impl Layer<tracing_subscriber::Registry> + Send + Sync {
     use opentelemetry::{global, KeyValue};
     use opentelemetry_otlp::WithExportConfig;
-    use opentelemetry_sdk::trace::{self, Sampler};
+    use opentelemetry_sdk::runtime;
+    use opentelemetry_sdk::trace::span_processor_with_async_runtime::BatchSpanProcessor;
+    use opentelemetry_sdk::trace::{Sampler, SdkTracerProvider};
+    use opentelemetry_sdk::Resource;
     use tracing_opentelemetry::OpenTelemetryLayer;
 
     // Determine protocol (default: grpc)
@@ -198,18 +200,18 @@ fn init_otel_layer(config: &TelemetryConfig) -> impl Layer<tracing_subscriber::R
         .unwrap_or_else(|_| "grpc".to_string())
         .to_lowercase();
 
-    // Configure OTLP exporter based on protocol
-    let otlp_exporter = match protocol.as_str() {
-        "http/protobuf" | "http" => {
-            opentelemetry_otlp::new_exporter()
-                .http()
-                .with_endpoint(config.otel_endpoint.as_ref().unwrap())
-        }
-        "grpc" | _ => {
-            opentelemetry_otlp::new_exporter()
-                .tonic()
-                .with_endpoint(config.otel_endpoint.as_ref().unwrap())
-        }
+    // Configure OTLP span exporter based on protocol
+    let exporter = match protocol.as_str() {
+        "http/protobuf" | "http" => opentelemetry_otlp::SpanExporter::builder()
+            .with_http()
+            .with_endpoint(config.otel_endpoint.as_ref().unwrap())
+            .build()
+            .expect("failed to build OTLP HTTP span exporter"),
+        "grpc" | _ => opentelemetry_otlp::SpanExporter::builder()
+            .with_tonic()
+            .with_endpoint(config.otel_endpoint.as_ref().unwrap())
+            .build()
+            .expect("failed to build OTLP gRPC span exporter"),
     };
 
     // Configure sampler based on environment
@@ -231,17 +233,24 @@ fn init_otel_layer(config: &TelemetryConfig) -> impl Layer<tracing_subscriber::R
         _ => Sampler::AlwaysOn, // default
     };
 
-    // Configure tracer provider
-    let tracer_provider = opentelemetry_sdk::trace::TracerProvider::builder()
-        .with_batch_exporter(otlp_exporter, opentelemetry_sdk::runtime::Tokio)
-        .with_sampler(sampler)
-        .with_resource(opentelemetry_sdk::Resource::new(vec![
-            KeyValue::new("service.name", config.otel_service_name.as_ref().unwrap()),
+    let batch = BatchSpanProcessor::builder(exporter, runtime::Tokio).build();
+
+    let resource = Resource::builder_empty()
+        .with_attributes(vec![
+            KeyValue::new("service.name", config.otel_service_name.as_ref().unwrap().clone()),
             KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
-        ]))
+        ])
+        .build();
+
+    // Configure tracer provider
+    let tracer_provider = SdkTracerProvider::builder()
+        .with_span_processor(batch)
+        .with_sampler(sampler)
+        .with_resource(resource)
         .build();
 
     // Set global tracer provider
+    let _ = OTEL_PROVIDER.set(tracer_provider.clone());
     global::set_tracer_provider(tracer_provider);
 
     // Create tracing layer
@@ -256,7 +265,10 @@ fn init_otel_layer(config: &TelemetryConfig) -> impl Layer<tracing_subscriber::R
 pub async fn shutdown_tracer() {
     #[cfg(feature = "otel")]
     {
-        opentelemetry::global::shutdown_tracer_provider();
+        if let Some(provider) = OTEL_PROVIDER.get() {
+            let _ = provider.force_flush();
+            let _ = provider.shutdown();
+        }
     }
     // No-op when OTEL feature is disabled
 }

@@ -314,6 +314,8 @@ where
         index_config: &IndexConfig,
         policy: &crate::PolicyContext,
     ) -> std::result::Result<(TransactResult<S>, Option<TrackingTally>), TrackedErrorResponse> {
+        let store_raw_txn = txn_opts.store_raw_txn.unwrap_or(false);
+
         let opts = txn_json.as_object().and_then(|o| o.get("opts"));
         let tracker = Tracker::new(TrackingOptions::from_opts_value(opts));
 
@@ -329,9 +331,9 @@ where
             )
             .await?;
 
-        // Add raw transaction JSON for storage (Clojure parity - default ON)
-        // Only apply if not already set (preserves caller-supplied raw_txn, e.g. signed credential)
-        let commit_opts = if commit_opts.raw_txn.is_none() {
+        // Store raw transaction JSON ONLY when explicitly opted-in, or when already provided
+        // (e.g., signed credential envelope for provenance).
+        let commit_opts = if commit_opts.raw_txn.is_none() && store_raw_txn {
             commit_opts.with_raw_txn(txn_json.clone())
         } else {
             commit_opts
@@ -404,13 +406,15 @@ where
         commit_opts: CommitOpts,
         index_config: &IndexConfig,
     ) -> Result<TransactResult<S>> {
+        let store_raw_txn = txn_opts.store_raw_txn.unwrap_or(false);
+
         let StageResult { view, ns_registry } = self
             .stage_transaction(ledger, txn_type, txn_json, txn_opts, Some(index_config))
             .await?;
 
-        // Add raw transaction JSON for storage (Clojure parity - default ON)
-        // Only apply if not already set (preserves caller-supplied raw_txn, e.g. signed credential)
-        let commit_opts = if commit_opts.raw_txn.is_none() {
+        // Store raw transaction JSON ONLY when explicitly opted-in, or when already provided
+        // (e.g., signed credential envelope for provenance).
+        let commit_opts = if commit_opts.raw_txn.is_none() && store_raw_txn {
             commit_opts.with_raw_txn(txn_json.clone())
         } else {
             commit_opts
@@ -506,10 +510,10 @@ where
         .await
     }
 
-    /// Insert new data from Turtle format
+    /// Insert new data from Turtle format (direct flake path).
     ///
-    /// Parses the Turtle input and inserts it as new data.
-    /// Fails if any subject with a concrete `@id` already has triples in the ledger.
+    /// Parses Turtle directly into assertion flakes, bypassing the
+    /// JSON-LD / Txn IR intermediate representations.
     ///
     /// # Arguments
     ///
@@ -530,11 +534,18 @@ where
         ledger: LedgerState<S, SimpleCache>,
         turtle: &str,
     ) -> Result<TransactResult<S>> {
-        let data = fluree_graph_turtle::parse_to_json(turtle)?;
-        self.insert(ledger, &data).await
+        let index_config = self.default_index_config();
+        self.insert_turtle_with_opts(
+            ledger,
+            turtle,
+            TxnOpts::default(),
+            CommitOpts::default(),
+            &index_config,
+        )
+        .await
     }
 
-    /// Insert new data from Turtle format with options
+    /// Insert new data from Turtle format with options (direct flake path).
     ///
     /// Same as `insert_turtle` but allows custom transaction and commit options.
     /// Prefer using the builder API: `fluree.transact(ledger).insert_turtle(ttl).txn_opts(...).execute()`.
@@ -547,9 +558,93 @@ where
         commit_opts: CommitOpts,
         index_config: &IndexConfig,
     ) -> Result<TransactResult<S>> {
-        let data = fluree_graph_turtle::parse_to_json(turtle)?;
-        self.insert_with_opts(ledger, &data, txn_opts, commit_opts, index_config)
-            .await
+        let store_raw_txn = txn_opts.store_raw_txn.unwrap_or(false);
+
+        let stage_result = self
+            .stage_turtle_insert(ledger, turtle, Some(index_config))
+            .await?;
+
+        let StageResult { view, ns_registry } = stage_result;
+
+        // Store raw Turtle text when explicitly opted-in (same pattern as JSON path)
+        let commit_opts = if commit_opts.raw_txn.is_none() && store_raw_txn {
+            commit_opts.with_raw_txn(JsonValue::String(turtle.to_string()))
+        } else {
+            commit_opts
+        };
+
+        let (receipt, ledger) = self
+            .commit_staged(view, ns_registry, index_config, commit_opts)
+            .await?;
+
+        // Compute indexing status (same logic as transact())
+        let indexing_enabled = self.indexing_mode.is_enabled() && self.defaults_indexing_enabled();
+        let indexing_needed = ledger.should_reindex(index_config);
+
+        let indexing_status = IndexingStatus {
+            enabled: indexing_enabled,
+            needed: indexing_needed,
+            novelty_size: ledger.novelty_size(),
+            index_t: ledger.index_t(),
+            commit_t: receipt.t,
+        };
+
+        // Trigger indexing AFTER publish_commit succeeds
+        if let IndexingMode::Background(handle) = &self.indexing_mode {
+            if indexing_enabled && indexing_needed {
+                handle.trigger(ledger.alias(), receipt.t).await;
+            }
+        }
+
+        Ok(TransactResult {
+            receipt,
+            ledger,
+            indexing: indexing_status,
+        })
+    }
+
+    /// Stage a Turtle INSERT by parsing directly to flakes (bypass JSON-LD / IR).
+    ///
+    /// This is the fast path for Turtle ingestion. The Turtle is parsed using
+    /// `FlakeSink` which converts parser events directly to flakes.
+    pub async fn stage_turtle_insert(
+        &self,
+        ledger: LedgerState<S, SimpleCache>,
+        turtle: &str,
+        index_config: Option<&IndexConfig>,
+    ) -> Result<StageResult<S>> {
+        use fluree_db_transact::{generate_txn_id, stage_flakes, FlakeSink};
+
+        let span = tracing::info_span!(
+            "stage_turtle_insert",
+            ledger_t = ledger.t(),
+            new_t = ledger.t() + 1,
+            turtle_bytes = turtle.len()
+        );
+        let _guard = span.enter();
+
+        let mut ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let new_t = ledger.t() + 1;
+        let txn_id = generate_txn_id();
+
+        // Parse Turtle directly to flakes
+        let parse_span = tracing::info_span!("turtle_parse_to_flakes", turtle_bytes = turtle.len());
+        let flakes = {
+            let _g = parse_span.enter();
+            let mut sink = FlakeSink::new(&mut ns_registry, new_t, txn_id);
+            fluree_graph_turtle::parse(turtle, &mut sink)?;
+            sink.finish()
+        };
+        tracing::info!(flake_count = flakes.len(), "turtle parsed to flakes");
+
+        // Stage the flakes (backpressure + optional policy)
+        let options = match index_config {
+            Some(cfg) => StageOptions::new().with_index_config(cfg),
+            None => StageOptions::default(),
+        };
+        let view = stage_flakes(ledger, flakes, options).await?;
+
+        Ok(StageResult { view, ns_registry })
     }
 
     /// Insert new data with options

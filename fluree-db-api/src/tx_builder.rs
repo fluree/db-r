@@ -316,12 +316,30 @@ where
             .map_err(|e| ApiError::Builder(e))?;
 
         let op = self.core.operation.unwrap(); // safe: validate checks
+
+        // Direct flake path for InsertTurtle (bypass JSON-LD / IR)
+        if let TransactOperation::InsertTurtle(turtle) = op {
+            let index_config = self.core.index_config.unwrap_or_default();
+            return self
+                .fluree
+                .insert_turtle_with_opts(
+                    self.ledger,
+                    turtle,
+                    self.core.txn_opts,
+                    self.core.commit_opts,
+                    &index_config,
+                )
+                .await;
+        }
+
         let txn_type = op.txn_type();
         let txn_json = op.to_json()?;
         let index_config = self.core.index_config.unwrap_or_default();
 
-        // Attach raw_txn if not already set
-        let commit_opts = if self.core.commit_opts.raw_txn.is_none() {
+        // Store raw transaction JSON ONLY when explicitly opted-in, or when already provided
+        // (e.g., signed credential envelope for provenance).
+        let store_raw_txn = self.core.txn_opts.store_raw_txn.unwrap_or(false);
+        let commit_opts = if self.core.commit_opts.raw_txn.is_none() && store_raw_txn {
             self.core.commit_opts.with_raw_txn(txn_json.clone().into_owned())
         } else {
             self.core.commit_opts
@@ -367,6 +385,20 @@ where
             .map_err(|e| ApiError::Builder(e))?;
 
         let op = self.core.operation.unwrap();
+
+        // Direct flake path for InsertTurtle
+        if let TransactOperation::InsertTurtle(turtle) = op {
+            let index_config = self.core.index_config.unwrap_or_default();
+            let stage_result = self
+                .fluree
+                .stage_turtle_insert(self.ledger, turtle, Some(&index_config))
+                .await?;
+            return Ok(Staged {
+                view: stage_result.view,
+                ns_registry: stage_result.ns_registry,
+            });
+        }
+
         let txn_type = op.txn_type();
         let txn_json_cow = op.to_json()?;
         let index_config = self.core.index_config.unwrap_or_default();
@@ -569,6 +601,7 @@ where
     core.validate().map_err(|e| ApiError::Builder(e))?;
 
     let index_config = core.index_config.unwrap_or_default();
+    let store_raw_txn = core.txn_opts.store_raw_txn.unwrap_or(false);
 
     // Acquire write lock
     let mut write_guard = handle.lock_for_write().await;
@@ -584,50 +617,67 @@ where
         (stage_result, txn_type, core.commit_opts)
     } else {
         let op = core.operation.unwrap(); // safe: validate checks
-        let txn_type = op.txn_type();
-        let txn_json = op.to_json()?;
 
-        // Attach raw_txn if not already set
-        let commit_opts = if core.commit_opts.raw_txn.is_none() {
-            core.commit_opts.with_raw_txn(txn_json.clone().into_owned())
+        // Direct flake path for InsertTurtle (bypass JSON-LD / IR)
+        if let TransactOperation::InsertTurtle(turtle) = op {
+            let stage_result = fluree
+                .stage_turtle_insert(ledger_state, turtle, Some(&index_config))
+                .await?;
+            // Store raw Turtle text when explicitly opted-in
+            let commit_opts = if core.commit_opts.raw_txn.is_none() && store_raw_txn {
+                core.commit_opts
+                    .with_raw_txn(serde_json::Value::String(turtle.to_string()))
+            } else {
+                core.commit_opts
+            };
+            (stage_result, TxnType::Insert, commit_opts)
         } else {
-            core.commit_opts
-        };
+            let txn_type = op.txn_type();
+            let txn_json = op.to_json()?;
 
-        // Stage
-        let stage_result = if let Some(policy) = &core.policy {
-            let tracker = Tracker::new(
-                core.tracking.unwrap_or_else(|| TrackingOptions {
-                    track_time: true,
-                    track_fuel: true,
-                    track_policy: true,
-                    max_fuel: None,
-                }),
-            );
-            fluree
-                .stage_transaction_tracked_with_policy(
-                    ledger_state,
-                    txn_type,
-                    &txn_json,
-                    core.txn_opts,
-                    Some(&index_config),
-                    policy,
-                    &tracker,
-                )
-                .await
-                .map_err(|e: TrackedErrorResponse| ApiError::http(e.status, e.error))?
-        } else {
-            fluree
-                .stage_transaction(
-                    ledger_state,
-                    txn_type,
-                    &txn_json,
-                    core.txn_opts,
-                    Some(&index_config),
-                )
-                .await?
-        };
-        (stage_result, txn_type, commit_opts)
+            // Store raw transaction JSON ONLY when explicitly opted-in, or when already provided
+            // (e.g., signed credential envelope for provenance).
+            let commit_opts = if core.commit_opts.raw_txn.is_none() && store_raw_txn {
+                core.commit_opts.with_raw_txn(txn_json.clone().into_owned())
+            } else {
+                core.commit_opts
+            };
+
+            // Stage
+            let stage_result = if let Some(policy) = &core.policy {
+                let tracker = Tracker::new(
+                    core.tracking.unwrap_or_else(|| TrackingOptions {
+                        track_time: true,
+                        track_fuel: true,
+                        track_policy: true,
+                        max_fuel: None,
+                    }),
+                );
+                fluree
+                    .stage_transaction_tracked_with_policy(
+                        ledger_state,
+                        txn_type,
+                        &txn_json,
+                        core.txn_opts,
+                        Some(&index_config),
+                        policy,
+                        &tracker,
+                    )
+                    .await
+                    .map_err(|e: TrackedErrorResponse| ApiError::http(e.status, e.error))?
+            } else {
+                fluree
+                    .stage_transaction(
+                        ledger_state,
+                        txn_type,
+                        &txn_json,
+                        core.txn_opts,
+                        Some(&index_config),
+                    )
+                    .await?
+            };
+            (stage_result, txn_type, commit_opts)
+        }
     };
 
     let StageResult { view, ns_registry } = stage_result;

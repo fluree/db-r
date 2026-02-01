@@ -15,7 +15,8 @@ use axum::extract::{Path, Request, State};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use fluree_db_api::{
-    lower_sparql_update, parse_sparql, NamespaceRegistry, SparqlQueryBody, TxnOpts, TxnType,
+    lower_sparql_update, parse_sparql, CommitOpts, NamespaceRegistry, SparqlQueryBody, TxnOpts,
+    TxnType,
 };
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -59,6 +60,29 @@ fn compute_tx_id(body: &JsonValue) -> String {
 fn compute_tx_id_sparql(sparql: &str) -> String {
     let hash = Sha256::digest(sparql.as_bytes());
     format!("fluree:tx:sha256:{}", hex::encode(hash))
+}
+
+/// If the request was signed (credentialed), return the *original* signed envelope
+/// to store for provenance (JWS string or VC JSON).
+fn raw_txn_from_credential(credential: &MaybeCredential) -> Option<JsonValue> {
+    let extracted = credential.credential.as_ref()?;
+    let raw = extracted.raw_body.as_ref();
+
+    // Prefer JSON if it parses, otherwise store as string.
+    if let Ok(s) = std::str::from_utf8(raw) {
+        let trimmed = s.trim();
+        if trimmed.starts_with('{') || trimmed.starts_with('[') {
+            if let Ok(json) = serde_json::from_str::<JsonValue>(trimmed) {
+                return Some(json);
+            }
+        }
+        return Some(JsonValue::String(trimmed.to_string()));
+    }
+
+    // Fallback for non-UTF8: store base64 string for auditability.
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(raw);
+    Some(JsonValue::String(format!("base64:{}", b64)))
 }
 
 /// Helper to extract ledger alias from request
@@ -164,9 +188,7 @@ async fn transact_local(
         }
     };
 
-    let did = credential.did().map(String::from);
-
-    execute_transaction(&state, &alias, TxnType::Update, &body_json, did).await
+    execute_transaction(&state, &alias, TxnType::Update, &body_json, &credential).await
 }
 
 /// Execute a transaction with ledger in path
@@ -245,9 +267,7 @@ async fn transact_ledger_local(
         }
     };
 
-    let did = credential.did().map(String::from);
-
-    execute_transaction(&state, &alias, TxnType::Update, &body_json, did).await
+    execute_transaction(&state, &alias, TxnType::Update, &body_json, &credential).await
 }
 
 /// Insert data
@@ -313,9 +333,7 @@ async fn insert_local(state: Arc<AppState>, request: Request) -> Result<Json<Tra
         }
     };
 
-    let did = credential.did().map(String::from);
-
-    execute_transaction(&state, &alias, TxnType::Insert, &body_json, did).await
+    execute_transaction(&state, &alias, TxnType::Insert, &body_json, &credential).await
 }
 
 /// Upsert data
@@ -381,9 +399,7 @@ async fn upsert_local(state: Arc<AppState>, request: Request) -> Result<Json<Tra
         }
     };
 
-    let did = credential.did().map(String::from);
-
-    execute_transaction(&state, &alias, TxnType::Upsert, &body_json, did).await
+    execute_transaction(&state, &alias, TxnType::Upsert, &body_json, &credential).await
 }
 
 /// Insert data with ledger in path
@@ -454,9 +470,7 @@ async fn insert_ledger_local(
         }
     };
 
-    let did = credential.did().map(String::from);
-
-    execute_transaction(&state, &alias, TxnType::Insert, &body_json, did).await
+    execute_transaction(&state, &alias, TxnType::Insert, &body_json, &credential).await
 }
 
 /// Upsert data with ledger in path
@@ -527,9 +541,7 @@ async fn upsert_ledger_local(
         }
     };
 
-    let did = credential.did().map(String::from);
-
-    execute_transaction(&state, &alias, TxnType::Upsert, &body_json, did).await
+    execute_transaction(&state, &alias, TxnType::Upsert, &body_json, &credential).await
 }
 
 /// Execute a transaction with the given type
@@ -538,7 +550,7 @@ async fn execute_transaction(
     alias: &str,
     txn_type: TxnType,
     body: &JsonValue,
-    did: Option<String>,
+    credential: &MaybeCredential,
 ) -> Result<Json<TransactResponse>> {
     // Create execution span
     let span = tracing::info_span!("transact_execute", ledger_alias = alias, txn_type = ?txn_type);
@@ -561,11 +573,23 @@ async fn execute_transaction(
         }
     };
 
+    let did = credential.did().map(String::from);
+
     // Build transaction options with DID as author if credential was signed
-    let txn_opts = match did {
-        Some(d) => TxnOpts::default().author(d),
+    let txn_opts = match &did {
+        Some(d) => TxnOpts::default().author(d.clone()),
         None => TxnOpts::default(),
     };
+
+    // If the request was signed, ALWAYS store the original signed envelope for provenance.
+    // (No opt-in needed; this is the primary reason to store txn payloads.)
+    let mut commit_opts = match &did {
+        Some(d) => CommitOpts::default().author(d.clone()),
+        None => CommitOpts::default(),
+    };
+    if let Some(raw_txn) = raw_txn_from_credential(credential) {
+        commit_opts = commit_opts.with_raw_txn(raw_txn);
+    }
 
     // Build and execute the transaction via the builder API
     let fluree = state.fluree.as_file();
@@ -575,7 +599,7 @@ async fn execute_transaction(
         TxnType::Upsert => builder.upsert(body),
         TxnType::Update => builder.update(body),
     };
-    let mut builder = builder.txn_opts(txn_opts);
+    let mut builder = builder.txn_opts(txn_opts).commit_opts(commit_opts);
     if let Some(config) = &state.index_config {
         builder = builder.index_config(config.clone());
     }
@@ -734,6 +758,14 @@ async fn execute_sparql_update_request(
     // Execute the transaction using the Txn IR directly
     let fluree = state.fluree.as_file();
     let mut builder = fluree.stage(&handle).txn(txn);
+    // If the request was signed, ALWAYS store the original signed envelope for provenance.
+    if let Some(raw_txn) = raw_txn_from_credential(credential) {
+        let mut commit_opts = CommitOpts::default();
+        if let Some(d) = credential.did().map(String::from) {
+            commit_opts = commit_opts.author(d);
+        }
+        builder = builder.commit_opts(commit_opts.with_raw_txn(raw_txn));
+    }
     if let Some(config) = &state.index_config {
         builder = builder.index_config(config.clone());
     }

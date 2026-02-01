@@ -2164,6 +2164,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "fluree-db-ingest"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "fluree-db-api",
+ "fluree-db-transact",
+ "mimalloc",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "fluree-db-ledger"
 version = "0.1.0"
 dependencies = [
@@ -2221,14 +2238,21 @@ name = "fluree-db-novelty"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bigdecimal",
  "chrono",
  "fluree-db-core",
  "fluree-vocab",
  "futures",
+ "num-bigint",
+ "rayon",
+ "rustc-hash",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
+ "zstd",
 ]
 
 [[package]]
@@ -2460,18 +2484,22 @@ dependencies = [
  "fluree-db-sparql",
  "fluree-graph-ir",
  "fluree-graph-json-ld",
+ "fluree-graph-turtle",
  "fluree-vocab",
  "futures",
  "hex",
  "num-bigint",
+ "once_cell",
  "postcard",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
  "ulid",
+ "zstd",
 ]
 
 [[package]]
@@ -2514,8 +2542,10 @@ version = "0.1.0"
 dependencies = [
  "fluree-graph-ir",
  "fluree-vocab",
+ "rustc-hash",
  "serde_json",
  "thiserror 1.0.69",
+ "tracing",
  "winnow",
 ]
 
@@ -3081,6 +3111,19 @@ dependencies = [
  "tokio-rustls 0.26.4",
  "tower-service",
  "webpki-roots",
+]
+
+[[package]]
+name = "hyper-timeout"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b90d566bffbce6a75bd8b09a05aa8c2cb1fabb6cb348f8840c9e4c90a0d83b0"
+dependencies = [
+ "hyper 1.8.1",
+ "hyper-util",
+ "pin-project-lite",
+ "tokio",
+ "tower-service",
 ]
 
 [[package]]
@@ -3809,6 +3852,8 @@ dependencies = [
  "prost",
  "reqwest",
  "thiserror 2.0.18",
+ "tokio",
+ "tonic",
  "tracing",
 ]
 
@@ -3838,6 +3883,8 @@ dependencies = [
  "percent-encoding",
  "rand 0.9.2",
  "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]
@@ -5479,10 +5526,15 @@ dependencies = [
  "http 1.4.0",
  "http-body 1.0.1",
  "http-body-util",
+ "hyper 1.8.1",
+ "hyper-timeout",
+ "hyper-util",
  "percent-encoding",
  "pin-project",
  "sync_wrapper",
+ "tokio",
  "tokio-stream",
+ "tower",
  "tower-layer",
  "tower-service",
  "tracing",
@@ -5507,9 +5559,12 @@ checksum = "ebe5ef63511595f1344e2d5cfa636d973292adc0eec1f0ad45fae9f0851ab1d4"
 dependencies = [
  "futures-core",
  "futures-util",
+ "indexmap 2.13.0",
  "pin-project-lite",
+ "slab",
  "sync_wrapper",
  "tokio",
+ "tokio-util",
  "tower-layer",
  "tower-service",
  "tracing",
