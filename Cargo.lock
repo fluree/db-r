@@ -2147,6 +2147,7 @@ name = "fluree-db-indexer"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "fluree-db-core",
  "fluree-db-ledger",
  "fluree-db-nameservice",
@@ -2154,6 +2155,9 @@ dependencies = [
  "fluree-vocab",
  "futures",
  "hex",
+ "memmap2",
+ "moka",
+ "rustc-hash",
  "serde",
  "serde_json",
  "sha2",
@@ -2161,6 +2165,7 @@ dependencies = [
  "tokio",
  "tracing",
  "xxhash-rust",
+ "zstd",
 ]
 
 [[package]]
@@ -2169,6 +2174,10 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "fluree-db-api",
+ "fluree-db-core",
+ "fluree-db-indexer",
+ "fluree-db-query",
+ "fluree-db-sparql",
  "fluree-db-transact",
  "mimalloc",
  "opentelemetry",
@@ -2297,6 +2306,7 @@ dependencies = [
  "bigdecimal",
  "chrono",
  "fluree-db-core",
+ "fluree-db-indexer",
  "fluree-db-policy",
  "fluree-db-r2rml",
  "fluree-db-reasoner",
@@ -2306,6 +2316,7 @@ dependencies = [
  "fluree-vocab",
  "futures",
  "md-5",
+ "memmap2",
  "num-bigint",
  "num-traits",
  "once_cell",
@@ -3614,6 +3625,15 @@ name = "memchr"
 version = "2.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
+
+[[package]]
+name = "memmap2"
+version = "0.9.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "744133e4a0e0a658e1374cf3bf8e415c4052a15a111acd372764c55b4177d490"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "mimalloc"

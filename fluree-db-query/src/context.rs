@@ -10,6 +10,8 @@ use crate::r2rml::{R2rmlProvider, R2rmlTableProvider};
 use crate::var_registry::VarRegistry;
 use crate::vector::VectorIndexProvider;
 use fluree_db_core::{Db, NoOverlay, NodeCache, OverlayProvider, Sid, Storage, Tracker};
+#[cfg(feature = "binary-index")]
+use fluree_db_indexer::run_index::BinaryIndexStore;
 #[cfg(feature = "native")]
 use fluree_db_core::PrefetchService;
 use fluree_vocab::namespaces::{JSON_LD, XSD};
@@ -95,6 +97,15 @@ pub struct ExecutionContext<'a, S: Storage + 'static, C: NodeCache + 'static> {
     /// Set this when `prefetch` is set.
     #[cfg(feature = "native")]
     pub prefetch_overlay: Option<Arc<dyn OverlayProvider>>,
+    /// Optional binary columnar index store for fast local-file scans.
+    ///
+    /// When present, scan operators can use `BinaryScanOperator` instead of
+    /// `ScanOperator` for queries against the binary columnar indexes.
+    #[cfg(feature = "binary-index")]
+    pub binary_store: Option<Arc<BinaryIndexStore>>,
+    /// Graph ID for binary index scans (typically 0 for default graph).
+    #[cfg(feature = "binary-index")]
+    pub binary_g_id: u32,
 }
 
 impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C> {
@@ -124,6 +135,10 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
             prefetch_db: None,
             #[cfg(feature = "native")]
             prefetch_overlay: None,
+            #[cfg(feature = "binary-index")]
+            binary_store: None,
+            #[cfg(feature = "binary-index")]
+            binary_g_id: 0,
         }
     }
 
@@ -153,6 +168,10 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
             prefetch_db: None,
             #[cfg(feature = "native")]
             prefetch_overlay: None,
+            #[cfg(feature = "binary-index")]
+            binary_store: None,
+            #[cfg(feature = "binary-index")]
+            binary_g_id: 0,
         }
     }
 
@@ -192,6 +211,10 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
             prefetch_db: None,
             #[cfg(feature = "native")]
             prefetch_overlay: None,
+            #[cfg(feature = "binary-index")]
+            binary_store: None,
+            #[cfg(feature = "binary-index")]
+            binary_g_id: 0,
         }
     }
 
@@ -227,6 +250,10 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
             prefetch_db: None,
             #[cfg(feature = "native")]
             prefetch_overlay: None,
+            #[cfg(feature = "binary-index")]
+            binary_store: None,
+            #[cfg(feature = "binary-index")]
+            binary_g_id: 0,
         }
     }
 
@@ -438,6 +465,10 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
             prefetch_db: self.prefetch_db.clone(),
             #[cfg(feature = "native")]
             prefetch_overlay: self.prefetch_overlay.clone(),
+            #[cfg(feature = "binary-index")]
+            binary_store: self.binary_store.clone(),
+            #[cfg(feature = "binary-index")]
+            binary_g_id: self.binary_g_id,
         }
     }
 
@@ -469,6 +500,10 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
             prefetch_db: self.prefetch_db.clone(),
             #[cfg(feature = "native")]
             prefetch_overlay: self.prefetch_overlay.clone(),
+            #[cfg(feature = "binary-index")]
+            binary_store: self.binary_store.clone(),
+            #[cfg(feature = "binary-index")]
+            binary_g_id: self.binary_g_id,
         }
     }
 
@@ -503,6 +538,17 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
         self.prefetch = Some(prefetch);
         self.prefetch_db = Some(db);
         self.prefetch_overlay = Some(overlay);
+        self
+    }
+
+    /// Attach a binary columnar index store for fast local-file scans.
+    ///
+    /// When set, scan operators will use `BinaryScanOperator` instead of
+    /// `ScanOperator` for reading from the binary columnar indexes.
+    #[cfg(feature = "binary-index")]
+    pub fn with_binary_store(mut self, store: Arc<BinaryIndexStore>, g_id: u32) -> Self {
+        self.binary_store = Some(store);
+        self.binary_g_id = g_id;
         self
     }
 }

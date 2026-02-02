@@ -383,6 +383,26 @@ impl NamespaceRegistry {
         Sid::new(code, local)
     }
 
+    /// Register a namespace code if not already present.
+    ///
+    /// Used to merge allocations from a parallel parser clone back into the
+    /// main registry. If the prefix is already registered (under any code),
+    /// this is a no-op.
+    pub fn ensure_code(&mut self, code: i32, prefix: &str) {
+        if self.codes.contains_key(prefix) {
+            return;
+        }
+        self.codes.insert(prefix.to_string(), code);
+        self.names.insert(code, prefix.to_string());
+        self.delta.insert(code, prefix.to_string());
+        if !prefix.is_empty() {
+            self.trie.insert(prefix, code);
+        }
+        if code >= self.next_code {
+            self.next_code = code + 1;
+        }
+    }
+
     /// Create a Sid for a blank node
     ///
     /// Blank nodes use the predefined namespace code 24 (_:) and generate

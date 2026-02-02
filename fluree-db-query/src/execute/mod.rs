@@ -45,6 +45,11 @@ pub use runner::PrefetchResources;
 // Re-export internal helpers for use in lib.rs
 pub use where_plan::build_where_operators_seeded;
 
+// Re-export operator tree builder and runner for custom execution pipelines
+// (e.g., binary index queries in fluree-db-ingest)
+pub use operator_tree::build_operator_tree;
+pub use runner::run_operator;
+
 // Re-export pushdown utilities for tests
 pub use pushdown::{
     count_filter_vars, extract_bounds_from_filters, extract_lookahead_bounds_with_consumption,
@@ -62,7 +67,6 @@ use crate::var_registry::VarRegistry;
 use fluree_db_core::{Db, NodeCache, StatsView, Storage, Tracker};
 use std::sync::Arc;
 
-use operator_tree::build_operator_tree;
 use reasoning_prep::effective_reasoning_modes;
 use rewrite_glue::rewrite_query_patterns;
 use runner::{
@@ -71,7 +75,7 @@ use runner::{
     execute_prepared_with_dataset_and_policy_and_providers, execute_prepared_with_dataset_and_providers,
     execute_prepared_with_dataset_history, execute_prepared_with_overlay,
     execute_prepared_with_overlay_tracked, execute_prepared_with_policy, execute_prepared_with_r2rml,
-    prepare_execution, run_operator,
+    prepare_execution,
 };
 #[cfg(feature = "native")]
 use runner::execute_prepared_with_r2rml_prefetch;

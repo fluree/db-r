@@ -49,6 +49,8 @@ pub mod reasoning;
 pub mod rewrite;
 pub mod vector;
 pub mod rewrite_owl_ql;
+#[cfg(feature = "binary-index")]
+pub mod binary_scan;
 pub mod scan;
 pub mod seed;
 pub mod sort;
@@ -75,13 +77,14 @@ pub use explain::{
 };
 pub use distinct::DistinctOperator;
 pub use execute::{
-    execute, execute_query, execute_with_dataset, execute_with_dataset_and_bm25,
-    execute_with_dataset_and_policy, execute_with_dataset_and_policy_and_bm25,
+    build_operator_tree, execute, execute_query, execute_with_dataset,
+    execute_with_dataset_and_bm25, execute_with_dataset_and_policy,
+    execute_with_dataset_and_policy_and_bm25,
     execute_with_dataset_and_policy_and_providers, execute_with_dataset_and_providers,
     execute_with_dataset_and_policy_tracked, execute_with_dataset_history,
     execute_with_dataset_tracked, execute_with_overlay, execute_with_overlay_at,
     execute_with_overlay_at_tracked, execute_with_policy, execute_with_policy_tracked,
-    execute_with_r2rml, ExecutableQuery,
+    execute_with_r2rml, run_operator, ExecutableQuery,
 };
 #[cfg(feature = "native")]
 pub use execute::{PrefetchResources, execute_with_r2rml_prefetch};
@@ -97,6 +100,8 @@ pub use project::ProjectOperator;
 pub use property_join::PropertyJoinOperator;
 pub use property_path::{PropertyPathOperator, DEFAULT_MAX_VISITED};
 pub use r2rml::{NoOpR2rmlProvider, R2rmlProvider, R2rmlScanOperator, R2rmlTableProvider};
+#[cfg(feature = "binary-index")]
+pub use binary_scan::{BinaryScanOperator, DeferredScanOperator};
 pub use scan::{ScanOperator, scan_stats_reset};
 pub use graph_view::{GraphView, ResolvedGraphView, BaseView, AsOf, WithPolicy, WithReasoning};
 pub use seed::{EmptyOperator, SeedOperator};

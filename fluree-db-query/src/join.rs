@@ -18,8 +18,40 @@ use fluree_db_core::{
     Db, Flake, IndexType, MultiSeekCursor, NodeCache, ObjectBounds, OverlayProvider, RangeOptions,
     Sid, Storage, BATCHED_JOIN_SIZE,
 };
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+
+/// Create a right-side scan operator for a join.
+///
+/// When the `binary-index` feature is enabled and a `BinaryIndexStore` is available
+/// on the execution context (and conditions are met), uses `BinaryScanOperator`
+/// for faster local-file scans. Otherwise falls back to the standard `ScanOperator`.
+fn make_right_scan<S: Storage + 'static, C: NodeCache + 'static>(
+    pattern: TriplePattern,
+    object_bounds: &Option<ObjectBounds>,
+    _ctx: &ExecutionContext<'_, S, C>,
+) -> Box<dyn Operator<S, C>> {
+    #[cfg(feature = "binary-index")]
+    if object_bounds.is_none()
+        && _ctx.overlay.is_none()
+        && _ctx.from_t.is_none()
+        && !_ctx.is_multi_ledger()
+        && !_ctx.history_mode
+    {
+        if let Some(store) = &_ctx.binary_store {
+            return Box::new(crate::binary_scan::BinaryScanOperator::new(
+                pattern,
+                store.clone(),
+                _ctx.binary_g_id,
+            ));
+        }
+    }
+
+    match object_bounds {
+        Some(bounds) => Box::new(ScanOperator::new(pattern).with_object_bounds(bounds.clone())),
+        None => Box::new(ScanOperator::new(pattern)),
+    }
+}
 
 /// Position in a triple pattern (subject, predicate, object)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -568,33 +600,27 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for NestedLoop
                     let batch_ref = BatchRef::Stored(batch_idx);
                     let left_batch = self.stored_left_batches.last().unwrap();
                     let bound_pattern = self.substitute_pattern(left_batch, left_row);
-                    let mut right_scan = match &self.object_bounds {
-                        Some(bounds) => ScanOperator::new(bound_pattern).with_object_bounds(bounds.clone()),
-                        None => ScanOperator::new(bound_pattern),
-                    };
+                    let mut right_scan = make_right_scan(bound_pattern, &self.object_bounds, ctx);
                     right_scan.open(ctx).await?;
                     while let Some(right_batch) = right_scan.next_batch(ctx).await? {
                         if !right_batch.is_empty() {
                             self.pending_output.push_back((batch_ref.clone(), left_row, right_batch));
                         }
                     }
-                    <ScanOperator as Operator<S, C>>::close(&mut right_scan);
+                    right_scan.close();
                 }
             } else {
                 // Non-batched path: existing per-row join
                 let left_batch = self.current_left_batch.as_ref().unwrap();
                 let bound_pattern = self.substitute_pattern(left_batch, left_row);
-                let mut right_scan = match &self.object_bounds {
-                    Some(bounds) => ScanOperator::new(bound_pattern).with_object_bounds(bounds.clone()),
-                    None => ScanOperator::new(bound_pattern),
-                };
+                let mut right_scan = make_right_scan(bound_pattern, &self.object_bounds, ctx);
                 right_scan.open(ctx).await?;
                 while let Some(right_batch) = right_scan.next_batch(ctx).await? {
                     if !right_batch.is_empty() {
                         self.pending_output.push_back((BatchRef::Current, left_row, right_batch));
                     }
                 }
-                <ScanOperator as Operator<S, C>>::close(&mut right_scan);
+                right_scan.close();
             }
         }
     }
@@ -705,6 +731,13 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
         &mut self,
         ctx: &ExecutionContext<'_, S, C>,
     ) -> Result<()> {
+        // When a binary index store is available, use it directly instead
+        // of the B-tree MultiSeekCursor (which may be empty for binary-only imports).
+        #[cfg(feature = "binary-index")]
+        if ctx.binary_store.is_some() {
+            return self.flush_batched_accumulator_binary(ctx).await;
+        }
+
         match ctx.active_graphs() {
             ActiveGraphs::Single => self
                 .flush_batched_accumulator(ctx, ctx.db, ctx.overlay(), ctx.to_t, ctx.policy_enforcer.as_deref())
@@ -885,6 +918,259 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
         }
 
         // 6. Clear accumulator and stored batches
+        self.batched_accumulator.clear();
+        self.stored_left_batches.clear();
+        self.current_left_batch_stored_idx = None;
+
+        Ok(())
+    }
+
+    /// Binary-index variant of flush_batched_accumulator.
+    ///
+    /// Implements a true batched scan over SPOT leaf files:
+    /// - Translate all subject Sids to s_id
+    /// - Compute the leaf range for [min_s_id, max_s_id]
+    /// - Scan each candidate leaf once, extracting rows where (s_id ∈ set && p_id == fixed_p)
+    ///
+    /// This avoids opening/decompressing leaflets once per subject, which can be
+    /// catastrophically slow for large left batches.
+    #[cfg(feature = "binary-index")]
+    async fn flush_batched_accumulator_binary(
+        &mut self,
+        ctx: &ExecutionContext<'_, S, C>,
+    ) -> Result<()> {
+        use fluree_db_core::value_id::ValueId;
+        use fluree_db_core::FlakeValue;
+        use fluree_db_indexer::run_index::leaf::read_leaf_header;
+        use fluree_db_indexer::run_index::leaflet::{decode_leaflet_region1, decode_leaflet_region2};
+        use fluree_db_indexer::run_index::run_record::{cmp_for_order, RunRecord, RunSortOrder, NO_LIST_INDEX};
+        use memmap2::Mmap;
+
+        if self.batched_accumulator.is_empty() {
+            return Ok(());
+        }
+
+        let store = ctx.binary_store.as_ref().unwrap().clone();
+        let g_id = ctx.binary_g_id;
+        let batch_size = ctx.batch_size;
+        let pred_sid = self.batched_predicate.as_ref().unwrap().clone();
+
+        let p_id = match store.sid_to_p_id(&pred_sid) {
+            Some(id) => id,
+            None => {
+                // Predicate not in binary index — no results
+                self.batched_accumulator.clear();
+                self.stored_left_batches.clear();
+                self.current_left_batch_stored_idx = None;
+                return Ok(());
+            }
+        };
+
+        // 1. Translate Sids → s_id and group accumulator indices by s_id
+        let mut s_id_to_accum_indices: HashMap<u32, Vec<usize>> = HashMap::new();
+        let mut unique_s_ids: Vec<u32> = Vec::new();
+        for (accum_idx, (_, _, sid)) in self.batched_accumulator.iter().enumerate() {
+            let s_id = match store
+                .sid_to_s_id(sid)
+                .map_err(|e| QueryError::Internal(format!("sid_to_s_id: {}", e)))?
+            {
+                Some(id) => id,
+                None => continue, // subject not in binary index
+            };
+            s_id_to_accum_indices.entry(s_id).or_default().push(accum_idx);
+            unique_s_ids.push(s_id);
+        }
+        if unique_s_ids.is_empty() {
+            self.batched_accumulator.clear();
+            self.stored_left_batches.clear();
+            self.current_left_batch_stored_idx = None;
+            return Ok(());
+        }
+        unique_s_ids.sort_unstable();
+        unique_s_ids.dedup();
+        let min_s_id = unique_s_ids[0];
+        let max_s_id = *unique_s_ids.last().unwrap();
+
+        // 2. Scatter buffer indexed by accumulator position
+        let accum_len = self.batched_accumulator.len();
+        let mut scatter: Vec<Vec<Vec<Binding>>> = Vec::with_capacity(accum_len);
+        scatter.resize_with(accum_len, Vec::new);
+
+        // 3. Scan candidate SPOT leaves once, extracting matches for our (s_id set, fixed p_id)
+        let branch = match store.branch_for_order(g_id, RunSortOrder::Spot) {
+            Some(b) => b,
+            None => {
+                // No SPOT index for this graph
+                self.batched_accumulator.clear();
+                self.stored_left_batches.clear();
+                self.current_left_batch_stored_idx = None;
+                return Ok(());
+            }
+        };
+
+        let min_key = RunRecord {
+            g_id,
+            s_id: min_s_id,
+            p_id: 0,
+            dt: 0,
+            lang_id: 0,
+            o: ValueId::MIN,
+            t: i64::MIN,
+            op: 0,
+            _pad: [0; 3],
+            i: NO_LIST_INDEX,
+        };
+        let max_key = RunRecord {
+            g_id,
+            s_id: max_s_id,
+            p_id: u32::MAX,
+            dt: u16::MAX,
+            lang_id: u16::MAX,
+            o: ValueId::MAX,
+            t: i64::MAX,
+            op: 1,
+            _pad: [0; 3],
+            i: i32::MAX,
+        };
+
+        let leaf_range = branch.find_leaves_in_range(&min_key, &max_key, cmp_for_order(RunSortOrder::Spot));
+
+        for leaf_idx in leaf_range {
+            let leaf_entry = &branch.leaves[leaf_idx];
+            let file = std::fs::File::open(&leaf_entry.path)
+                .map_err(|e| QueryError::Internal(format!("open leaf: {}", e)))?;
+            let leaf_mmap = unsafe { Mmap::map(&file) }
+                .map_err(|e| QueryError::Internal(format!("mmap leaf: {}", e)))?;
+            let header = read_leaf_header(&leaf_mmap)
+                .map_err(|e| QueryError::Internal(format!("read leaf header: {}", e)))?;
+
+            for dir_entry in &header.leaflet_dir {
+                let end = dir_entry.offset as usize + dir_entry.compressed_len as usize;
+                if end > leaf_mmap.len() {
+                    break;
+                }
+                let leaflet_bytes = &leaf_mmap[dir_entry.offset as usize..end];
+
+                let (leaflet_header, s_ids, p_ids, o_values) =
+                    decode_leaflet_region1(leaflet_bytes, header.p_width, RunSortOrder::Spot)
+                        .map_err(|e| QueryError::Internal(format!("decode region1: {}", e)))?;
+
+                let row_count = leaflet_header.row_count as usize;
+                debug_assert_eq!(s_ids.len(), row_count);
+                debug_assert_eq!(p_ids.len(), row_count);
+                debug_assert_eq!(o_values.len(), row_count);
+
+                // Collect matching row indices (cheap pass over Region 1 arrays)
+                let mut matches: Vec<(usize, u32)> = Vec::new(); // (row_idx, s_id)
+                matches.reserve(64);
+                for row in 0..row_count {
+                    if p_ids[row] != p_id {
+                        continue;
+                    }
+                    let s_id = s_ids[row];
+                    if s_id_to_accum_indices.contains_key(&s_id) {
+                        matches.push((row, s_id));
+                    }
+                }
+                if matches.is_empty() {
+                    continue;
+                }
+
+                // Need Region 2 for correct literal bindings (dt/lang/i/t)
+                let (dt_values, t_values, lang_ids, i_values) =
+                    decode_leaflet_region2(leaflet_bytes, &leaflet_header, header.dt_width)
+                        .map_err(|e| QueryError::Internal(format!("decode region2: {}", e)))?;
+
+                for (row, s_id) in matches {
+                    let vid = ValueId::from_u64(o_values[row]);
+                    let val = store
+                        .decode_value(vid)
+                        .map_err(|e| QueryError::Internal(format!("decode value: {}", e)))?;
+
+                    let dt_id = dt_values[row] as usize;
+                    let dt_sid = store
+                        .dt_sids()
+                        .get(dt_id)
+                        .cloned()
+                        .unwrap_or_else(|| Sid::new(0, ""));
+
+                    let lang_id = lang_ids[row];
+                    let i_val = i_values[row];
+                    let meta = store.decode_meta(lang_id, i_val);
+                    let t = t_values[row];
+
+                    let obj_binding = match val {
+                        FlakeValue::Ref(ref s) => Binding::Sid(s.clone()),
+                        other => Binding::Lit {
+                            val: other,
+                            dt: dt_sid,
+                            lang: meta.and_then(|m| m.lang.map(Arc::from)),
+                            t: Some(t),
+                            op: None,
+                        },
+                    };
+
+                    if let Some(accum_indices) = s_id_to_accum_indices.get(&s_id) {
+                        for &accum_idx in accum_indices {
+                            let (batch_idx, row_idx, _) = &self.batched_accumulator[accum_idx];
+                            let left_batch = &self.stored_left_batches[*batch_idx];
+
+                            let mut combined = Vec::with_capacity(self.combined_schema.len());
+                            for col in 0..self.left_schema.len() {
+                                combined.push(left_batch.get_by_col(*row_idx, col).clone());
+                            }
+                            for _ in &self.right_new_vars {
+                                combined.push(obj_binding.clone());
+                            }
+
+                            scatter[accum_idx].push(combined);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Emit in left-row order (same scatter-gather as B-tree path)
+        let num_cols = self.combined_schema.len();
+        let mut output_columns: Vec<Vec<Binding>> =
+            (0..num_cols).map(|_| Vec::with_capacity(batch_size)).collect();
+        let mut rows_added = 0;
+
+        for accum_idx in 0..accum_len {
+            for combined in scatter[accum_idx].drain(..) {
+                for (col, val) in combined.into_iter().enumerate() {
+                    output_columns[col].push(val);
+                }
+                rows_added += 1;
+
+                if rows_added >= batch_size {
+                    if num_cols == 0 {
+                        self.batched_output
+                            .push_back(Batch::empty_schema_with_len(rows_added));
+                    } else {
+                        let batch =
+                            Batch::new(self.combined_schema.clone(), output_columns)?;
+                        self.batched_output.push_back(batch);
+                    }
+                    output_columns = (0..num_cols)
+                        .map(|_| Vec::with_capacity(batch_size))
+                        .collect();
+                    rows_added = 0;
+                }
+            }
+        }
+
+        if rows_added > 0 {
+            if num_cols == 0 {
+                self.batched_output
+                    .push_back(Batch::empty_schema_with_len(rows_added));
+            } else {
+                let batch =
+                    Batch::new(self.combined_schema.clone(), output_columns)?;
+                self.batched_output.push_back(batch);
+            }
+        }
+
         self.batched_accumulator.clear();
         self.stored_left_batches.clear();
         self.current_left_batch_stored_idx = None;

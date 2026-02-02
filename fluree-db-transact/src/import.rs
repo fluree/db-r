@@ -10,11 +10,13 @@
 #[cfg(feature = "commit-v2")]
 mod inner {
     use crate::commit_v2::CommitV2Envelope;
+    use crate::commit_v2::StreamingCommitWriter;
     use crate::error::{Result, TransactError};
     use crate::import_sink::ImportSink;
     use crate::namespace::NamespaceRegistry;
     use fluree_db_core::{ContentAddressedWrite, ContentKind};
     use fluree_db_novelty::CommitRef;
+    use std::collections::HashMap;
 
     /// Mutable state carried across chunks during an import session.
     pub struct ImportState {
@@ -61,6 +63,10 @@ mod inner {
         pub flake_count: u32,
         /// Size of the committed blob in bytes.
         pub blob_bytes: usize,
+        /// The raw commit blob (moved, not cloned — zero extra cost).
+        /// Available for downstream consumers (e.g., run generation)
+        /// without re-reading from storage.
+        pub commit_blob: Vec<u8>,
     }
 
     /// Import a single TTL chunk as a v2 commit blob.
@@ -180,9 +186,153 @@ mod inner {
             t: new_t,
             flake_count: op_count,
             blob_bytes,
+            commit_blob: result.bytes,
+        })
+    }
+
+    // ========================================================================
+    // Parallel-friendly split: parse_chunk + finalize_parsed_chunk
+    // ========================================================================
+
+    /// Result of parsing a single TTL chunk (parallelizable step).
+    ///
+    /// Contains the `StreamingCommitWriter` (tempfile-backed, Send) and the
+    /// namespace delta from the parser's cloned registry. Can be sent across
+    /// threads and finalized later on the commit thread.
+    pub struct ParsedChunk {
+        /// The streaming writer with all encoded ops spooled to a tempfile.
+        pub writer: StreamingCommitWriter,
+        /// Number of flakes (ops) encoded.
+        pub op_count: u32,
+        /// Namespace allocations from this chunk's cloned registry.
+        /// Usually empty after chunk 0 establishes all known namespaces.
+        pub ns_delta: HashMap<i32, String>,
+    }
+
+    /// Parse a TTL chunk into a `StreamingCommitWriter`. Thread-safe.
+    ///
+    /// Takes an **owned** `NamespaceRegistry` (cloned per worker thread)
+    /// instead of `&mut ImportState`. This allows multiple chunks to be
+    /// parsed concurrently, each with an independent registry clone.
+    ///
+    /// The `t` value is pre-assigned by the caller (chunk_index + 1).
+    pub fn parse_chunk(
+        ttl: &str,
+        mut ns_registry: NamespaceRegistry,
+        t: i64,
+        ledger_alias: &str,
+        compress: bool,
+    ) -> Result<ParsedChunk> {
+        let txn_id = format!("{}-{}", ledger_alias, t);
+
+        let _parse_span = tracing::info_span!(
+            "parse_chunk",
+            t,
+            ttl_bytes = ttl.len(),
+        )
+        .entered();
+
+        let mut sink = ImportSink::new(&mut ns_registry, t, txn_id, compress)
+            .map_err(|e| TransactError::Parse(format!("failed to create import sink: {}", e)))?;
+        fluree_graph_turtle::parse(ttl, &mut sink)
+            .map_err(|e| TransactError::Parse(e.to_string()))?;
+        drop(_parse_span);
+
+        let writer = sink
+            .finish()
+            .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
+        let op_count = writer.op_count();
+        let ns_delta = ns_registry.take_delta();
+
+        Ok(ParsedChunk {
+            writer,
+            op_count,
+            ns_delta,
+        })
+    }
+
+    /// Finalize a parsed chunk: build envelope, store blob, update state.
+    ///
+    /// Must be called **serially in chunk order** because each commit
+    /// references the previous commit's address (hash chain).
+    pub async fn finalize_parsed_chunk<S>(
+        state: &mut ImportState,
+        parsed: ParsedChunk,
+        storage: &S,
+        ledger_alias: &str,
+    ) -> Result<ImportCommitResult>
+    where
+        S: ContentAddressedWrite,
+    {
+        let new_t = state.t + 1;
+
+        let _span = tracing::info_span!("finalize_parsed_chunk", t = new_t).entered();
+
+        // Merge any new namespaces from clone into main registry
+        for (code, prefix) in &parsed.ns_delta {
+            state.ns_registry.ensure_code(*code, prefix);
+        }
+        let ns_delta = if !parsed.ns_delta.is_empty() {
+            state.ns_registry.take_delta()
+        } else {
+            HashMap::new()
+        };
+
+        state.cumulative_flakes += parsed.op_count as u64;
+
+        let envelope = CommitV2Envelope {
+            t: new_t,
+            v: 2,
+            previous: state.previous_address.clone(),
+            previous_ref: state.previous_ref.clone(),
+            namespace_delta: ns_delta,
+            txn: None,
+            time: Some(state.import_time.clone()),
+            data: None,
+            index: None,
+            indexed_at: None,
+        };
+
+        let result = parsed.writer.finish(&envelope)?;
+        let commit_id = format!("sha256:{}", &result.content_hash_hex);
+        let blob_bytes = result.bytes.len();
+
+        let write_res = storage
+            .content_write_bytes_with_hash(
+                ContentKind::Commit,
+                ledger_alias,
+                &result.content_hash_hex,
+                &result.bytes,
+            )
+            .await?;
+
+        tracing::info!(
+            t = new_t,
+            flakes = parsed.op_count,
+            blob_bytes,
+            address = %write_res.address,
+            "parsed chunk finalized and stored"
+        );
+
+        state.t = new_t;
+        state.previous_address = Some(write_res.address.clone());
+        state.previous_ref = Some(
+            CommitRef::new(&write_res.address)
+                .with_id(format!("fluree:commit:{}", commit_id)),
+        );
+
+        Ok(ImportCommitResult {
+            address: write_res.address,
+            commit_id,
+            t: new_t,
+            flake_count: parsed.op_count,
+            blob_bytes,
+            commit_blob: result.bytes,
         })
     }
 }
 
 #[cfg(feature = "commit-v2")]
-pub use inner::{import_commit, ImportCommitResult, ImportState};
+pub use inner::{
+    finalize_parsed_chunk, import_commit, parse_chunk, ImportCommitResult, ImportState, ParsedChunk,
+};

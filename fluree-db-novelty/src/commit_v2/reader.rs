@@ -174,7 +174,7 @@ pub fn read_commit_envelope(bytes: &[u8]) -> Result<CommitEnvelope, CommitV2Erro
 ///
 /// Validates that each dictionary is within `[valid_start..valid_end)` (the region
 /// between the ops section and footer) and that dictionaries don't overlap.
-fn load_dicts(
+pub(crate) fn load_dicts(
     bytes: &[u8],
     footer: &CommitV2Footer,
     valid_start: usize,

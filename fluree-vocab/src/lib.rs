@@ -469,6 +469,21 @@ pub mod xsd_names {
     /// xsd:hexBinary local name
     pub const HEX_BINARY: &str = "hexBinary";
 
+    /// xsd:gYear local name
+    pub const G_YEAR: &str = "gYear";
+
+    /// xsd:gMonth local name
+    pub const G_MONTH: &str = "gMonth";
+
+    /// xsd:gDay local name
+    pub const G_DAY: &str = "gDay";
+
+    /// xsd:gYearMonth local name
+    pub const G_YEAR_MONTH: &str = "gYearMonth";
+
+    /// xsd:gMonthDay local name
+    pub const G_MONTH_DAY: &str = "gMonthDay";
+
     // ========================================================================
     // Classification Helpers (for SID-based datatype checking)
     // ========================================================================

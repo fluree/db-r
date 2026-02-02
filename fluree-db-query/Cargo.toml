@@ -15,6 +15,8 @@ fluree-db-reasoner = { path = "../fluree-db-reasoner" }
 fluree-search-protocol = { path = "../fluree-search-protocol" }
 fluree-vocab = { path = "../fluree-vocab" }
 fluree-graph-json-ld = { path = "../fluree-graph-json-ld" }
+fluree-db-indexer = { path = "../fluree-db-indexer", optional = true }
+memmap2 = { version = "0.9", optional = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
@@ -53,6 +55,8 @@ usearch = { version = "2.16", optional = true }
 native = ["fluree-db-core/native"]
 # Enable embedded vector search (HNSW-based approximate nearest neighbor)
 vector = ["dep:usearch"]
+# Enable binary columnar index scan operator (requires commit-v2 indexer)
+binary-index = ["dep:fluree-db-indexer", "fluree-db-indexer/commit-v2", "dep:memmap2"]
 
 [dev-dependencies]
 # tokio is now a regular dependency

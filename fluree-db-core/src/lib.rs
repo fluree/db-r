@@ -46,6 +46,7 @@ pub mod address;
 pub mod address_path;
 pub mod prefetch;
 pub mod coerce;
+pub mod value_id;
 
 // Re-export main types
 pub use sid::{Sid, SidInterner};
@@ -90,6 +91,7 @@ pub use stats_view::{PropertyStatData, StatsView};
 pub use tracking::{FuelExceededError, PolicyStats, Tracker, TrackingOptions, TrackingTally};
 pub use coerce::{coerce_value, coerce_json_value, CoercionError, CoercionResult};
 pub use address::{ParsedFlureeAddress, parse_fluree_address, extract_identifier, extract_path};
+pub use value_id::{ValueId, DatatypeId};
 
 /// Prelude module for convenient imports of storage traits and common types.
 ///

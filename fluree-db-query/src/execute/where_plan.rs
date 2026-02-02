@@ -23,6 +23,7 @@ use crate::pattern::TriplePattern;
 use crate::planner::{is_property_join, reorder_patterns_seeded};
 use crate::property_join::PropertyJoinOperator;
 use crate::property_path::{PropertyPathOperator, DEFAULT_MAX_VISITED};
+#[cfg(not(feature = "binary-index"))]
 use crate::scan::ScanOperator;
 use crate::seed::EmptyOperator;
 use crate::subquery::SubqueryOperator;
@@ -592,12 +593,45 @@ pub fn build_where_operators_seeded<S: Storage + 'static, C: NodeCache + 'static
     operator.ok_or_else(|| QueryError::InvalidQuery("No patterns produced an operator".to_string()))
 }
 
+/// Create a first-pattern scan operator.
+///
+/// When the `binary-index` feature is enabled, creates a `DeferredScanOperator`
+/// that selects between `BinaryScanOperator` and `ScanOperator` at open() time.
+/// Otherwise creates a `ScanOperator` directly.
+#[cfg(feature = "binary-index")]
+fn make_first_scan<S: Storage + 'static, C: NodeCache + 'static>(
+    tp: &TriplePattern,
+    object_bounds: &HashMap<VarId, ObjectBounds>,
+) -> BoxedOperator<S, C> {
+    let obj_bounds = tp.o.as_var().and_then(|v| object_bounds.get(&v).cloned());
+    Box::new(crate::binary_scan::DeferredScanOperator::<S, C>::new(
+        tp.clone(),
+        obj_bounds,
+    ))
+}
+
+/// Create a first-pattern scan operator (standard path, no binary-index feature).
+#[cfg(not(feature = "binary-index"))]
+fn make_first_scan<S: Storage + 'static, C: NodeCache + 'static>(
+    tp: &TriplePattern,
+    object_bounds: &HashMap<VarId, ObjectBounds>,
+) -> BoxedOperator<S, C> {
+    let mut scan = ScanOperator::new(tp.clone());
+    if let Some(obj_var) = tp.o.as_var() {
+        if let Some(bounds) = object_bounds.get(&obj_var) {
+            scan = scan.with_object_bounds(bounds.clone());
+        }
+    }
+    Box::new(scan)
+}
+
 /// Build a single scan or join operator for a triple pattern
 ///
 /// This is the extracted helper that eliminates the duplication between
 /// `build_where_operators_seeded` (incremental path) and `build_triple_operators`.
 ///
-/// - If `left` is None, creates a ScanOperator for the first pattern
+/// - If `left` is None, creates a scan operator for the first pattern
+///   (using `DeferredScanOperator` when `binary-index` is enabled)
 /// - If `left` is Some, creates a NestedLoopJoinOperator joining to the existing operator
 /// - Applies object bounds from filters when available
 pub fn build_scan_or_join<S: Storage + 'static, C: NodeCache + 'static>(
@@ -606,19 +640,7 @@ pub fn build_scan_or_join<S: Storage + 'static, C: NodeCache + 'static>(
     object_bounds: &HashMap<VarId, ObjectBounds>,
 ) -> BoxedOperator<S, C> {
     match left {
-        None => {
-            // First pattern: use ScanOperator with optional bounds pushdown
-            let mut scan = ScanOperator::new(tp.clone());
-
-            // Push down object bounds if available for this pattern's object variable
-            if let Some(obj_var) = tp.o.as_var() {
-                if let Some(bounds) = object_bounds.get(&obj_var) {
-                    scan = scan.with_object_bounds(bounds.clone());
-                }
-            }
-
-            Box::new(scan)
-        }
+        None => make_first_scan(tp, object_bounds),
         Some(left) => {
             // Subsequent patterns: use NestedLoopJoinOperator with optional bounds pushdown
             let left_schema = Arc::from(left.schema().to_vec().into_boxed_slice());

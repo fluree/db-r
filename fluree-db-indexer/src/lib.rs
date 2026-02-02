@@ -84,6 +84,8 @@ pub mod error;
 pub mod gc;
 #[cfg(feature = "hll-stats")]
 pub mod hll;
+#[cfg(feature = "commit-v2")]
+pub mod run_index;
 pub mod namespace;
 pub mod orchestrator;
 pub mod refresh;
