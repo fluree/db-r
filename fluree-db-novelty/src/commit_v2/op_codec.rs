@@ -17,7 +17,10 @@ use super::error::CommitV2Error;
 use super::format::{OTag, OP_FLAG_ASSERT, OP_FLAG_HAS_I, OP_FLAG_HAS_LANG};
 use super::string_dict::{StringDict, StringDictBuilder};
 use super::varint::{decode_varint, encode_varint, zigzag_decode, zigzag_encode};
-use fluree_db_core::temporal::{Date, DateTime, Time};
+use fluree_db_core::temporal::{
+    Date, DateTime, DayTimeDuration, Duration, GDay, GMonth, GMonthDay, GYear, GYearMonth, Time,
+    YearMonthDuration,
+};
 use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
 
 // =============================================================================
@@ -169,6 +172,38 @@ fn encode_object(value: &FlakeValue, dicts: &mut CommitDicts, buf: &mut Vec<u8>)
         }
         FlakeValue::Null => {
             buf.push(OTag::Null as u8);
+        }
+        FlakeValue::GYear(v) => {
+            buf.push(OTag::GYear as u8);
+            encode_len_prefixed_str(&v.to_string(), buf);
+        }
+        FlakeValue::GYearMonth(v) => {
+            buf.push(OTag::GYearMonth as u8);
+            encode_len_prefixed_str(&v.to_string(), buf);
+        }
+        FlakeValue::GMonth(v) => {
+            buf.push(OTag::GMonth as u8);
+            encode_len_prefixed_str(&v.to_string(), buf);
+        }
+        FlakeValue::GDay(v) => {
+            buf.push(OTag::GDay as u8);
+            encode_len_prefixed_str(&v.to_string(), buf);
+        }
+        FlakeValue::GMonthDay(v) => {
+            buf.push(OTag::GMonthDay as u8);
+            encode_len_prefixed_str(&v.to_string(), buf);
+        }
+        FlakeValue::YearMonthDuration(v) => {
+            buf.push(OTag::YearMonthDuration as u8);
+            encode_len_prefixed_str(&v.to_string(), buf);
+        }
+        FlakeValue::DayTimeDuration(v) => {
+            buf.push(OTag::DayTimeDuration as u8);
+            encode_len_prefixed_str(&v.to_string(), buf);
+        }
+        FlakeValue::Duration(v) => {
+            buf.push(OTag::Duration as u8);
+            encode_len_prefixed_str(&v.to_string(), buf);
         }
         FlakeValue::Vector(_) => {
             return Err(CommitV2Error::UnsupportedValue(
@@ -340,6 +375,54 @@ fn decode_object(
             Ok(FlakeValue::Json(s))
         }
         OTag::Null => Ok(FlakeValue::Null),
+        OTag::GYear => {
+            let s = decode_len_prefixed_str(data, pos)?;
+            GYear::parse(&s)
+                .map(|v| FlakeValue::GYear(Box::new(v)))
+                .map_err(|e| CommitV2Error::InvalidOp(format!("bad gYear: {}", e)))
+        }
+        OTag::GYearMonth => {
+            let s = decode_len_prefixed_str(data, pos)?;
+            GYearMonth::parse(&s)
+                .map(|v| FlakeValue::GYearMonth(Box::new(v)))
+                .map_err(|e| CommitV2Error::InvalidOp(format!("bad gYearMonth: {}", e)))
+        }
+        OTag::GMonth => {
+            let s = decode_len_prefixed_str(data, pos)?;
+            GMonth::parse(&s)
+                .map(|v| FlakeValue::GMonth(Box::new(v)))
+                .map_err(|e| CommitV2Error::InvalidOp(format!("bad gMonth: {}", e)))
+        }
+        OTag::GDay => {
+            let s = decode_len_prefixed_str(data, pos)?;
+            GDay::parse(&s)
+                .map(|v| FlakeValue::GDay(Box::new(v)))
+                .map_err(|e| CommitV2Error::InvalidOp(format!("bad gDay: {}", e)))
+        }
+        OTag::GMonthDay => {
+            let s = decode_len_prefixed_str(data, pos)?;
+            GMonthDay::parse(&s)
+                .map(|v| FlakeValue::GMonthDay(Box::new(v)))
+                .map_err(|e| CommitV2Error::InvalidOp(format!("bad gMonthDay: {}", e)))
+        }
+        OTag::YearMonthDuration => {
+            let s = decode_len_prefixed_str(data, pos)?;
+            YearMonthDuration::parse(&s)
+                .map(|v| FlakeValue::YearMonthDuration(Box::new(v)))
+                .map_err(|e| CommitV2Error::InvalidOp(format!("bad yearMonthDuration: {}", e)))
+        }
+        OTag::DayTimeDuration => {
+            let s = decode_len_prefixed_str(data, pos)?;
+            DayTimeDuration::parse(&s)
+                .map(|v| FlakeValue::DayTimeDuration(Box::new(v)))
+                .map_err(|e| CommitV2Error::InvalidOp(format!("bad dayTimeDuration: {}", e)))
+        }
+        OTag::Duration => {
+            let s = decode_len_prefixed_str(data, pos)?;
+            Duration::parse(&s)
+                .map(|v| FlakeValue::Duration(Box::new(v)))
+                .map_err(|e| CommitV2Error::InvalidOp(format!("bad duration: {}", e)))
+        }
     }
 }
 

@@ -27,6 +27,14 @@ pub(crate) static DT_STRING: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "string"));
 pub(crate) static DT_JSON: Lazy<Sid> = Lazy::new(|| Sid::new(RDF, "JSON"));
 pub(crate) static DT_LANG_STRING: Lazy<Sid> = Lazy::new(|| Sid::new(RDF, "langString"));
 pub(crate) static DT_VECTOR: Lazy<Sid> = Lazy::new(|| Sid::new(NS_FLUREE_LEDGER, "vector"));
+pub(crate) static DT_G_YEAR: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "gYear"));
+pub(crate) static DT_G_YEAR_MONTH: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "gYearMonth"));
+pub(crate) static DT_G_MONTH: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "gMonth"));
+pub(crate) static DT_G_DAY: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "gDay"));
+pub(crate) static DT_G_MONTH_DAY: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "gMonthDay"));
+pub(crate) static DT_YEAR_MONTH_DURATION: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "yearMonthDuration"));
+pub(crate) static DT_DAY_TIME_DURATION: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "dayTimeDuration"));
+pub(crate) static DT_DURATION: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "duration"));
 
 /// Generates flakes from triple templates
 ///
@@ -334,6 +342,14 @@ pub fn infer_datatype(val: &FlakeValue) -> Sid {
         FlakeValue::String(_) => DT_STRING.clone(),
         FlakeValue::Json(_) => DT_JSON.clone(),
         FlakeValue::Vector(_) => DT_VECTOR.clone(),
+        FlakeValue::GYear(_) => DT_G_YEAR.clone(),
+        FlakeValue::GYearMonth(_) => DT_G_YEAR_MONTH.clone(),
+        FlakeValue::GMonth(_) => DT_G_MONTH.clone(),
+        FlakeValue::GDay(_) => DT_G_DAY.clone(),
+        FlakeValue::GMonthDay(_) => DT_G_MONTH_DAY.clone(),
+        FlakeValue::YearMonthDuration(_) => DT_YEAR_MONTH_DURATION.clone(),
+        FlakeValue::DayTimeDuration(_) => DT_DAY_TIME_DURATION.clone(),
+        FlakeValue::Duration(_) => DT_DURATION.clone(),
         // Null isn't a standard RDF literal; treat as xsd:string for now (MVP).
         FlakeValue::Null => DT_STRING.clone(),
     }

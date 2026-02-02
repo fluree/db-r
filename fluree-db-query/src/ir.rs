@@ -1152,6 +1152,8 @@ pub enum FilterValue {
     Double(f64),
     String(String),
     Bool(bool),
+    /// Temporal or duration value (wraps any temporal/duration FlakeValue)
+    Temporal(fluree_db_core::value::FlakeValue),
 }
 
 // =============================================================================

@@ -116,6 +116,21 @@ pub mod xsd {
     /// xsd:time IRI
     pub const TIME: &str = "http://www.w3.org/2001/XMLSchema#time";
 
+    /// xsd:gYear IRI
+    pub const G_YEAR: &str = "http://www.w3.org/2001/XMLSchema#gYear";
+
+    /// xsd:gYearMonth IRI
+    pub const G_YEAR_MONTH: &str = "http://www.w3.org/2001/XMLSchema#gYearMonth";
+
+    /// xsd:gMonth IRI
+    pub const G_MONTH: &str = "http://www.w3.org/2001/XMLSchema#gMonth";
+
+    /// xsd:gDay IRI
+    pub const G_DAY: &str = "http://www.w3.org/2001/XMLSchema#gDay";
+
+    /// xsd:gMonthDay IRI
+    pub const G_MONTH_DAY: &str = "http://www.w3.org/2001/XMLSchema#gMonthDay";
+
     /// xsd:duration IRI
     pub const DURATION: &str = "http://www.w3.org/2001/XMLSchema#duration";
 

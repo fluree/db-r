@@ -89,6 +89,27 @@ impl ObjKind {
     /// Not ordered by numeric value in the index; range queries post-filter.
     pub const NUM_BIG: Self = Self(0x0C);
 
+    /// xsd:gYear — signed year, order-preserving encoding via i64.
+    pub const G_YEAR: Self = Self(0x0D);
+
+    /// xsd:gYearMonth — (year, month) packed, order-preserving signed encoding.
+    pub const G_YEAR_MONTH: Self = Self(0x0E);
+
+    /// xsd:gMonth — month number 1..=12 (unsigned).
+    pub const G_MONTH: Self = Self(0x0F);
+
+    /// xsd:gDay — day number 1..=31 (unsigned).
+    pub const G_DAY: Self = Self(0x10);
+
+    /// xsd:gMonthDay — (month, day) packed unsigned.
+    pub const G_MONTH_DAY: Self = Self(0x11);
+
+    /// xsd:yearMonthDuration — total months (signed), order-preserving encoding.
+    pub const YEAR_MONTH_DUR: Self = Self(0x12);
+
+    /// xsd:dayTimeDuration — total microseconds (signed), order-preserving encoding.
+    pub const DAY_TIME_DUR: Self = Self(0x13);
+
     /// Get the raw `u8` discriminant.
     #[inline]
     pub const fn as_u8(self) -> u8 {
@@ -124,6 +145,13 @@ impl fmt::Debug for ObjKind {
             0x0A => write!(f, "ObjKind::VectorId"),
             0x0B => write!(f, "ObjKind::JsonId"),
             0x0C => write!(f, "ObjKind::NumBig"),
+            0x0D => write!(f, "ObjKind::GYear"),
+            0x0E => write!(f, "ObjKind::GYearMonth"),
+            0x0F => write!(f, "ObjKind::GMonth"),
+            0x10 => write!(f, "ObjKind::GDay"),
+            0x11 => write!(f, "ObjKind::GMonthDay"),
+            0x12 => write!(f, "ObjKind::YearMonthDur"),
+            0x13 => write!(f, "ObjKind::DayTimeDur"),
             0xFF => write!(f, "ObjKind::Max"),
             n => write!(f, "ObjKind({:#04x})", n),
         }
@@ -308,6 +336,100 @@ impl ObjKey {
     /// Decode epoch microseconds.
     #[inline]
     pub const fn decode_datetime(self) -> i64 {
+        self.decode_i64()
+    }
+
+    // ---- gYear / gYearMonth / gMonth / gDay / gMonthDay encodings ----
+
+    /// Encode an xsd:gYear (signed year) using the signed i64 transform.
+    #[inline]
+    pub fn encode_g_year(year: i32) -> Self {
+        Self::encode_i64(year as i64)
+    }
+
+    /// Decode an xsd:gYear back to a signed year.
+    #[inline]
+    pub fn decode_g_year(self) -> i32 {
+        self.decode_i64() as i32
+    }
+
+    /// Encode an xsd:gYearMonth as `year * 12 + (month - 1)`, signed transform.
+    #[inline]
+    pub fn encode_g_year_month(year: i32, month: u32) -> Self {
+        Self::encode_i64(year as i64 * 12 + (month as i64 - 1))
+    }
+
+    /// Decode an xsd:gYearMonth back to `(year, month)`.
+    #[inline]
+    pub fn decode_g_year_month(self) -> (i32, u32) {
+        let v = self.decode_i64();
+        let year = v.div_euclid(12) as i32;
+        let month = (v.rem_euclid(12) + 1) as u32;
+        (year, month)
+    }
+
+    /// Encode an xsd:gMonth (1..=12) as a plain unsigned value.
+    #[inline]
+    pub fn encode_g_month(month: u32) -> Self {
+        Self(month as u64)
+    }
+
+    /// Decode an xsd:gMonth.
+    #[inline]
+    pub fn decode_g_month(self) -> u32 {
+        self.0 as u32
+    }
+
+    /// Encode an xsd:gDay (1..=31) as a plain unsigned value.
+    #[inline]
+    pub fn encode_g_day(day: u32) -> Self {
+        Self(day as u64)
+    }
+
+    /// Decode an xsd:gDay.
+    #[inline]
+    pub fn decode_g_day(self) -> u32 {
+        self.0 as u32
+    }
+
+    /// Encode an xsd:gMonthDay as `(month - 1) * 31 + (day - 1)`, unsigned.
+    #[inline]
+    pub fn encode_g_month_day(month: u32, day: u32) -> Self {
+        Self(((month - 1) * 31 + (day - 1)) as u64)
+    }
+
+    /// Decode an xsd:gMonthDay back to `(month, day)`.
+    #[inline]
+    pub fn decode_g_month_day(self) -> (u32, u32) {
+        let v = self.0 as u32;
+        let month = v / 31 + 1;
+        let day = v % 31 + 1;
+        (month, day)
+    }
+
+    // ---- Duration encodings (yearMonthDuration, dayTimeDuration) ----
+
+    /// Encode an xsd:yearMonthDuration as total months (signed).
+    #[inline]
+    pub fn encode_year_month_dur(months: i32) -> Self {
+        Self::encode_i64(months as i64)
+    }
+
+    /// Decode an xsd:yearMonthDuration back to total months.
+    #[inline]
+    pub fn decode_year_month_dur(self) -> i32 {
+        self.decode_i64() as i32
+    }
+
+    /// Encode an xsd:dayTimeDuration as total microseconds (signed).
+    #[inline]
+    pub fn encode_day_time_dur(micros: i64) -> Self {
+        Self::encode_i64(micros)
+    }
+
+    /// Decode an xsd:dayTimeDuration back to total microseconds.
+    #[inline]
+    pub fn decode_day_time_dur(self) -> i64 {
         self.decode_i64()
     }
 

@@ -65,6 +65,14 @@ pub enum OTag {
     Decimal = 9,
     Json = 10,
     Null = 11,
+    GYear = 12,
+    GYearMonth = 13,
+    GMonth = 14,
+    GDay = 15,
+    GMonthDay = 16,
+    YearMonthDuration = 17,
+    DayTimeDuration = 18,
+    Duration = 19,
 }
 
 impl OTag {
@@ -82,6 +90,14 @@ impl OTag {
             9 => Ok(OTag::Decimal),
             10 => Ok(OTag::Json),
             11 => Ok(OTag::Null),
+            12 => Ok(OTag::GYear),
+            13 => Ok(OTag::GYearMonth),
+            14 => Ok(OTag::GMonth),
+            15 => Ok(OTag::GDay),
+            16 => Ok(OTag::GMonthDay),
+            17 => Ok(OTag::YearMonthDuration),
+            18 => Ok(OTag::DayTimeDuration),
+            19 => Ok(OTag::Duration),
             _ => Err(CommitV2Error::InvalidOpTag(b)),
         }
     }
@@ -278,11 +294,11 @@ mod tests {
 
     #[test]
     fn test_otag_round_trip() {
-        for tag_byte in 0..=11u8 {
+        for tag_byte in 0..=19u8 {
             let tag = OTag::from_u8(tag_byte).unwrap();
             assert_eq!(tag as u8, tag_byte);
         }
-        assert!(OTag::from_u8(12).is_err());
+        assert!(OTag::from_u8(20).is_err());
         assert!(OTag::from_u8(255).is_err());
     }
 }

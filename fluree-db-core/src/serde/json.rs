@@ -1487,6 +1487,14 @@ fn serialize_object(value: &FlakeValue, _dt: &Sid) -> serde_json::Value {
         FlakeValue::DateTime(dt) => serde_json::Value::String(dt.to_string()),
         FlakeValue::Date(d) => serde_json::Value::String(d.to_string()),
         FlakeValue::Time(t) => serde_json::Value::String(t.to_string()),
+        FlakeValue::GYear(v) => serde_json::Value::String(v.to_string()),
+        FlakeValue::GYearMonth(v) => serde_json::Value::String(v.to_string()),
+        FlakeValue::GMonth(v) => serde_json::Value::String(v.to_string()),
+        FlakeValue::GDay(v) => serde_json::Value::String(v.to_string()),
+        FlakeValue::GMonthDay(v) => serde_json::Value::String(v.to_string()),
+        FlakeValue::YearMonthDuration(v) => serde_json::Value::String(v.to_string()),
+        FlakeValue::DayTimeDuration(v) => serde_json::Value::String(v.to_string()),
+        FlakeValue::Duration(v) => serde_json::Value::String(v.to_string()),
     }
 }
 

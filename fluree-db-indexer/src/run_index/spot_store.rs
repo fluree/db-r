@@ -1244,6 +1244,48 @@ impl BinaryIndexStore {
                 format!("NUM_BIG handle {} not found for p_id={}", handle, p_id),
             ));
         }
+        if o_kind == ObjKind::G_YEAR.as_u8() {
+            let year = ObjKey::from_u64(o_key).decode_g_year();
+            return Ok(FlakeValue::GYear(Box::new(
+                fluree_db_core::temporal::GYear::from_year(year),
+            )));
+        }
+        if o_kind == ObjKind::G_YEAR_MONTH.as_u8() {
+            let (year, month) = ObjKey::from_u64(o_key).decode_g_year_month();
+            return Ok(FlakeValue::GYearMonth(Box::new(
+                fluree_db_core::temporal::GYearMonth::from_components(year, month),
+            )));
+        }
+        if o_kind == ObjKind::G_MONTH.as_u8() {
+            let month = ObjKey::from_u64(o_key).decode_g_month();
+            return Ok(FlakeValue::GMonth(Box::new(
+                fluree_db_core::temporal::GMonth::from_month(month),
+            )));
+        }
+        if o_kind == ObjKind::G_DAY.as_u8() {
+            let day = ObjKey::from_u64(o_key).decode_g_day();
+            return Ok(FlakeValue::GDay(Box::new(
+                fluree_db_core::temporal::GDay::from_day(day),
+            )));
+        }
+        if o_kind == ObjKind::G_MONTH_DAY.as_u8() {
+            let (month, day) = ObjKey::from_u64(o_key).decode_g_month_day();
+            return Ok(FlakeValue::GMonthDay(Box::new(
+                fluree_db_core::temporal::GMonthDay::from_components(month, day),
+            )));
+        }
+        if o_kind == ObjKind::YEAR_MONTH_DUR.as_u8() {
+            let months = ObjKey::from_u64(o_key).decode_year_month_dur();
+            return Ok(FlakeValue::YearMonthDuration(Box::new(
+                fluree_db_core::temporal::YearMonthDuration::from_months(months),
+            )));
+        }
+        if o_kind == ObjKind::DAY_TIME_DUR.as_u8() {
+            let micros = ObjKey::from_u64(o_key).decode_day_time_dur();
+            return Ok(FlakeValue::DayTimeDuration(Box::new(
+                fluree_db_core::temporal::DayTimeDuration::from_micros(micros),
+            )));
+        }
         if o_kind == ObjKind::MAX.as_u8() {
             return Ok(FlakeValue::Null);
         }

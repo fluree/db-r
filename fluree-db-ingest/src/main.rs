@@ -1174,43 +1174,107 @@ async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         vars.len(),
     );
 
-    // 3. Build operator tree
+    // Helper: build operator tree + context, execute, return batches + timing
+    let parse_plan_elapsed = query_start.elapsed();
+
+    // --- Run 1: Cold execution ---
+    info!("=== Cold execution (run 1) ===");
     let exec_query = ExecutableQuery::simple(parsed_query.clone());
-    let operator = build_operator_tree::<MemoryStorage, NoCache>(
+    let cold_operator = build_operator_tree::<MemoryStorage, NoCache>(
         &parsed_query,
         &exec_query.options,
-        None, // no stats for binary index path
+        None,
     )?;
-
-    // 4. Create execution context with binary_store
-    // Use a genesis DB as placeholder — the binary index is the real data source.
-    // Set to_t = store.max_t() so the binary path guard recognizes this as a
-    // current-time query (genesis DB has t=0, which would fail the guard).
     let db = Db::genesis(MemoryStorage::new(), NoCache, &args.ledger);
-    let mut ctx = ExecutionContext::new(&db, &vars)
+    let mut cold_ctx = ExecutionContext::new(&db, &vars)
         .with_binary_store(store.clone(), 0);
-    ctx.to_t = store.max_t();
+    cold_ctx.to_t = store.max_t();
 
-    // 5. Execute
-    let start = Instant::now();
-    let batches = run_operator(operator, &ctx).await?;
-    let elapsed = start.elapsed();
-
-    // 6. Print results
-    let query_elapsed = query_start.elapsed();
-    let total_rows: usize = batches.iter().map(|b| b.len()).sum();
+    let cold_start = Instant::now();
+    let cold_batches = run_operator(cold_operator, &cold_ctx).await?;
+    let cold_elapsed = cold_start.elapsed();
+    let cold_rows: usize = cold_batches.iter().map(|b| b.len()).sum();
     info!(
-        "Query completed: {} rows in {:.3}s (execute: {:.3}s, parse+plan: {:.3}s)",
-        total_rows,
-        query_elapsed.as_secs_f64(),
-        elapsed.as_secs_f64(),
-        (query_elapsed - elapsed).as_secs_f64(),
+        "Cold query: {} rows in {:.3}s",
+        cold_rows,
+        cold_elapsed.as_secs_f64(),
     );
 
-    // Print variable names header from SELECT clause (or all vars if SELECT *)
+    // --- Run 2: Hot execution (same store, fresh operator tree) ---
+    info!("=== Hot execution (run 2) ===");
+    let exec_query2 = ExecutableQuery::simple(parsed_query.clone());
+    let hot_operator = build_operator_tree::<MemoryStorage, NoCache>(
+        &parsed_query,
+        &exec_query2.options,
+        None,
+    )?;
+    let db2 = Db::genesis(MemoryStorage::new(), NoCache, &args.ledger);
+    let mut hot_ctx = ExecutionContext::new(&db2, &vars)
+        .with_binary_store(store.clone(), 0);
+    hot_ctx.to_t = store.max_t();
+
+    let hot_start = Instant::now();
+    let hot_batches = run_operator(hot_operator, &hot_ctx).await?;
+    let hot_elapsed = hot_start.elapsed();
+    let hot_rows: usize = hot_batches.iter().map(|b| b.len()).sum();
+    info!(
+        "Hot query: {} rows in {:.3}s",
+        hot_rows,
+        hot_elapsed.as_secs_f64(),
+    );
+
+    // --- Verify results are identical ---
+    let batches_to_strings = |batches: &[fluree_db_query::Batch]| -> Vec<Vec<String>> {
+        let mut rows = Vec::new();
+        for batch in batches {
+            for row in 0..batch.len() {
+                let cols: Vec<String> = (0..batch.schema().len())
+                    .map(|col| format!("{:?}", batch.get_by_col(row, col)))
+                    .collect();
+                rows.push(cols);
+            }
+        }
+        rows
+    };
+    let cold_strings = batches_to_strings(&cold_batches);
+    let hot_strings = batches_to_strings(&hot_batches);
+    if cold_strings == hot_strings {
+        info!("Results verified: cold and hot runs are identical ({} rows)", cold_rows);
+    } else {
+        error!(
+            "MISMATCH: cold run ({} rows) vs hot run ({} rows) differ!",
+            cold_rows, hot_rows
+        );
+        // Show first difference
+        for (i, (c, h)) in cold_strings.iter().zip(hot_strings.iter()).enumerate() {
+            if c != h {
+                error!("  First diff at row {}: cold={:?} hot={:?}", i, c, h);
+                break;
+            }
+        }
+        if cold_strings.len() != hot_strings.len() {
+            error!(
+                "  Row count differs: cold={} hot={}",
+                cold_strings.len(),
+                hot_strings.len()
+            );
+        }
+    }
+
+    // --- Timing summary ---
+    let cold_s = cold_elapsed.as_secs_f64();
+    let hot_s = hot_elapsed.as_secs_f64();
+    let speedup = if hot_s > 0.0 { cold_s / hot_s } else { f64::INFINITY };
+    info!("──────────────────────────────────────────");
+    info!("Parse + plan:     {:.3}s", parse_plan_elapsed.as_secs_f64());
+    info!("Cold execution:   {:.3}s", cold_s);
+    info!("Hot execution:    {:.3}s", hot_s);
+    info!("Speedup (cold/hot): {:.2}x", speedup);
+    info!("──────────────────────────────────────────");
+
+    // --- Print results (once) ---
     let select_vars = if parsed_query.select.is_empty() {
-        // SELECT * — use all variables from the first batch schema
-        batches
+        cold_batches
             .first()
             .map(|b| b.schema().to_vec())
             .unwrap_or_default()
@@ -1228,9 +1292,8 @@ async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", "-".repeat(var_names.len() * 20));
     }
 
-    // Print rows
     let mut printed = 0;
-    for batch in &batches {
+    for batch in &cold_batches {
         for row in 0..batch.len() {
             let cols: Vec<String> = (0..batch.schema().len())
                 .map(|col| format!("{:?}", batch.get_by_col(row, col)))
@@ -1238,8 +1301,8 @@ async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", cols.join("\t"));
             printed += 1;
             if printed >= 100 {
-                if total_rows > 100 {
-                    println!("... ({} more rows)", total_rows - 100);
+                if cold_rows > 100 {
+                    println!("... ({} more rows)", cold_rows - 100);
                 }
                 return Ok(());
             }

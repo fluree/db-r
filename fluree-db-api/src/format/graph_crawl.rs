@@ -679,6 +679,15 @@ impl<'a, S: Storage, C: NodeCache> GraphCrawlFormatter<'a, S, C> {
                 FlakeValue::DateTime(dt) => Ok(JsonValue::String(dt.to_string())),
                 FlakeValue::Date(d) => Ok(JsonValue::String(d.to_string())),
                 FlakeValue::Time(t) => Ok(JsonValue::String(t.to_string())),
+                // Additional temporal types - serialize as original string
+                FlakeValue::GYear(v) => Ok(JsonValue::String(v.to_string())),
+                FlakeValue::GYearMonth(v) => Ok(JsonValue::String(v.to_string())),
+                FlakeValue::GMonth(v) => Ok(JsonValue::String(v.to_string())),
+                FlakeValue::GDay(v) => Ok(JsonValue::String(v.to_string())),
+                FlakeValue::GMonthDay(v) => Ok(JsonValue::String(v.to_string())),
+                FlakeValue::YearMonthDuration(v) => Ok(JsonValue::String(v.to_string())),
+                FlakeValue::DayTimeDuration(v) => Ok(JsonValue::String(v.to_string())),
+                FlakeValue::Duration(v) => Ok(JsonValue::String(v.to_string())),
             };
         }
 
@@ -713,6 +722,15 @@ impl<'a, S: Storage, C: NodeCache> GraphCrawlFormatter<'a, S, C> {
             FlakeValue::DateTime(dt) => JsonValue::String(dt.to_string()),
             FlakeValue::Date(d) => JsonValue::String(d.to_string()),
             FlakeValue::Time(t) => JsonValue::String(t.to_string()),
+            // Additional temporal types - serialize as original string with @type
+            FlakeValue::GYear(v) => JsonValue::String(v.to_string()),
+            FlakeValue::GYearMonth(v) => JsonValue::String(v.to_string()),
+            FlakeValue::GMonth(v) => JsonValue::String(v.to_string()),
+            FlakeValue::GDay(v) => JsonValue::String(v.to_string()),
+            FlakeValue::GMonthDay(v) => JsonValue::String(v.to_string()),
+            FlakeValue::YearMonthDuration(v) => JsonValue::String(v.to_string()),
+            FlakeValue::DayTimeDuration(v) => JsonValue::String(v.to_string()),
+            FlakeValue::Duration(v) => JsonValue::String(v.to_string()),
         };
 
         Ok(json!({
@@ -827,6 +845,15 @@ impl<'a, S: Storage, C: NodeCache> GraphCrawlFormatter<'a, S, C> {
             FlakeValue::DateTime(dt) => Ok(JsonValue::String(dt.to_string())),
             FlakeValue::Date(d) => Ok(JsonValue::String(d.to_string())),
             FlakeValue::Time(t) => Ok(JsonValue::String(t.to_string())),
+            // Additional temporal types - serialize as original string
+            FlakeValue::GYear(v) => Ok(JsonValue::String(v.to_string())),
+            FlakeValue::GYearMonth(v) => Ok(JsonValue::String(v.to_string())),
+            FlakeValue::GMonth(v) => Ok(JsonValue::String(v.to_string())),
+            FlakeValue::GDay(v) => Ok(JsonValue::String(v.to_string())),
+            FlakeValue::GMonthDay(v) => Ok(JsonValue::String(v.to_string())),
+            FlakeValue::YearMonthDuration(v) => Ok(JsonValue::String(v.to_string())),
+            FlakeValue::DayTimeDuration(v) => Ok(JsonValue::String(v.to_string())),
+            FlakeValue::Duration(v) => Ok(JsonValue::String(v.to_string())),
         }
     }
 

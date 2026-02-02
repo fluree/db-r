@@ -44,6 +44,14 @@ fn flake_to_json(fv: &FlakeValue) -> serde_json::Value {
         FlakeValue::Date(d) => serde_json::json!(d.to_string()),
         FlakeValue::Time(t) => serde_json::json!(t.to_string()),
         FlakeValue::Json(j) => serde_json::json!(j),
+        FlakeValue::GYear(v) => serde_json::json!(v.to_string()),
+        FlakeValue::GYearMonth(v) => serde_json::json!(v.to_string()),
+        FlakeValue::GMonth(v) => serde_json::json!(v.to_string()),
+        FlakeValue::GDay(v) => serde_json::json!(v.to_string()),
+        FlakeValue::GMonthDay(v) => serde_json::json!(v.to_string()),
+        FlakeValue::YearMonthDuration(v) => serde_json::json!(v.to_string()),
+        FlakeValue::DayTimeDuration(v) => serde_json::json!(v.to_string()),
+        FlakeValue::Duration(v) => serde_json::json!(v.to_string()),
         _ => serde_json::json!(null),
     }
 }

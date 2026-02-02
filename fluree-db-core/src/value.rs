@@ -24,7 +24,10 @@
 //! `FlakeValue::min()` and `FlakeValue::max()` provide bounds for wildcard queries.
 
 use crate::sid::Sid;
-use crate::temporal::{Date, DateTime, Time};
+use crate::temporal::{
+    Date, DateTime, DayTimeDuration, Duration, GDay, GMonth, GMonthDay, GYear, GYearMonth, Time,
+    YearMonthDuration,
+};
 use bigdecimal::BigDecimal;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
@@ -58,6 +61,22 @@ pub enum FlakeValue {
     Date(Box<Date>),
     /// XSD time with optional timezone
     Time(Box<Time>),
+    /// XSD gYear (year with optional timezone)
+    GYear(Box<GYear>),
+    /// XSD gYearMonth (year-month with optional timezone)
+    GYearMonth(Box<GYearMonth>),
+    /// XSD gMonth (month with optional timezone)
+    GMonth(Box<GMonth>),
+    /// XSD gDay (day with optional timezone)
+    GDay(Box<GDay>),
+    /// XSD gMonthDay (month-day with optional timezone)
+    GMonthDay(Box<GMonthDay>),
+    /// XSD yearMonthDuration (totally orderable by months)
+    YearMonthDuration(Box<YearMonthDuration>),
+    /// XSD dayTimeDuration (totally orderable by microseconds)
+    DayTimeDuration(Box<DayTimeDuration>),
+    /// XSD duration (not totally orderable — months vs days indeterminate)
+    Duration(Box<Duration>),
     /// String value (xsd:string and other string-like types)
     String(String),
     /// Dense vector/embedding (fluree:vector)
@@ -111,10 +130,20 @@ impl FlakeValue {
             FlakeValue::Date(_) => 7,
             FlakeValue::Time(_) => 8,
             FlakeValue::DateTime(_) => 9,
+            // Calendar fragment class (10-14)
+            FlakeValue::GYear(_) => 10,
+            FlakeValue::GYearMonth(_) => 11,
+            FlakeValue::GMonth(_) => 12,
+            FlakeValue::GDay(_) => 13,
+            FlakeValue::GMonthDay(_) => 14,
+            // Duration class (15-17)
+            FlakeValue::YearMonthDuration(_) => 15,
+            FlakeValue::DayTimeDuration(_) => 16,
+            FlakeValue::Duration(_) => 17,
             // Other types
-            FlakeValue::String(_) => 10,
-            FlakeValue::Json(_) => 11,
-            FlakeValue::Vector(_) => 12,
+            FlakeValue::String(_) => 18,
+            FlakeValue::Json(_) => 19,
+            FlakeValue::Vector(_) => 20,
         }
     }
 
@@ -137,11 +166,28 @@ impl FlakeValue {
         )
     }
 
-    /// Check if this is any temporal type (DateTime, Date, Time)
+    /// Check if this is any temporal type (DateTime, Date, Time, g-types)
     pub fn is_temporal(&self) -> bool {
         matches!(
             self,
-            FlakeValue::DateTime(_) | FlakeValue::Date(_) | FlakeValue::Time(_)
+            FlakeValue::DateTime(_)
+                | FlakeValue::Date(_)
+                | FlakeValue::Time(_)
+                | FlakeValue::GYear(_)
+                | FlakeValue::GYearMonth(_)
+                | FlakeValue::GMonth(_)
+                | FlakeValue::GDay(_)
+                | FlakeValue::GMonthDay(_)
+        )
+    }
+
+    /// Check if this is any duration type
+    pub fn is_duration(&self) -> bool {
+        matches!(
+            self,
+            FlakeValue::YearMonthDuration(_)
+                | FlakeValue::DayTimeDuration(_)
+                | FlakeValue::Duration(_)
         )
     }
 
@@ -335,7 +381,17 @@ impl FlakeValue {
             (FlakeValue::DateTime(a), FlakeValue::DateTime(b)) => Some(a.cmp(b)),
             (FlakeValue::Date(a), FlakeValue::Date(b)) => Some(a.cmp(b)),
             (FlakeValue::Time(a), FlakeValue::Time(b)) => Some(a.cmp(b)),
-            _ => None, // Cross-type temporal comparisons are incompatible
+            (FlakeValue::GYear(a), FlakeValue::GYear(b)) => Some(a.cmp(b)),
+            (FlakeValue::GYearMonth(a), FlakeValue::GYearMonth(b)) => Some(a.cmp(b)),
+            (FlakeValue::GMonth(a), FlakeValue::GMonth(b)) => Some(a.cmp(b)),
+            (FlakeValue::GDay(a), FlakeValue::GDay(b)) => Some(a.cmp(b)),
+            (FlakeValue::GMonthDay(a), FlakeValue::GMonthDay(b)) => Some(a.cmp(b)),
+            (FlakeValue::YearMonthDuration(a), FlakeValue::YearMonthDuration(b)) => {
+                Some(a.cmp(b))
+            }
+            (FlakeValue::DayTimeDuration(a), FlakeValue::DayTimeDuration(b)) => Some(a.cmp(b)),
+            (FlakeValue::Duration(a), FlakeValue::Duration(b)) => (**a).partial_cmp(&**b),
+            _ => None, // Cross-type comparisons are incompatible
         }
     }
 
@@ -362,6 +418,15 @@ impl FlakeValue {
             (FlakeValue::DateTime(a), FlakeValue::DateTime(b)) => a.cmp(b),
             (FlakeValue::Date(a), FlakeValue::Date(b)) => a.cmp(b),
             (FlakeValue::Time(a), FlakeValue::Time(b)) => a.cmp(b),
+            (FlakeValue::GYear(a), FlakeValue::GYear(b)) => a.cmp(b),
+            (FlakeValue::GYearMonth(a), FlakeValue::GYearMonth(b)) => a.cmp(b),
+            (FlakeValue::GMonth(a), FlakeValue::GMonth(b)) => a.cmp(b),
+            (FlakeValue::GDay(a), FlakeValue::GDay(b)) => a.cmp(b),
+            (FlakeValue::GMonthDay(a), FlakeValue::GMonthDay(b)) => a.cmp(b),
+            (FlakeValue::YearMonthDuration(a), FlakeValue::YearMonthDuration(b)) => a.cmp(b),
+            (FlakeValue::DayTimeDuration(a), FlakeValue::DayTimeDuration(b)) => a.cmp(b),
+            // Duration: use storage order (months, micros) tuple — NOT semantic comparison
+            (FlakeValue::Duration(a), FlakeValue::Duration(b)) => a.cmp(b),
             (FlakeValue::String(a), FlakeValue::String(b)) => a.cmp(b),
             (FlakeValue::Json(a), FlakeValue::Json(b)) => a.cmp(b),
             (FlakeValue::Vector(a), FlakeValue::Vector(b)) => {
@@ -477,6 +542,65 @@ impl FlakeValue {
                 hasher.update(&v.micros_since_midnight().to_le_bytes());
                 hasher.digest()
             }
+            FlakeValue::GYear(v) => {
+                use xxhash_rust::xxh64::Xxh64;
+                let mut hasher = Xxh64::new(0);
+                hasher.update(&[0x0D]);
+                hasher.update(&(v.year() as i64).to_le_bytes());
+                hasher.digest()
+            }
+            FlakeValue::GYearMonth(v) => {
+                use xxhash_rust::xxh64::Xxh64;
+                let mut hasher = Xxh64::new(0);
+                hasher.update(&[0x0E]);
+                hasher.update(&(v.year() as i64).to_le_bytes());
+                hasher.update(&v.month().to_le_bytes());
+                hasher.digest()
+            }
+            FlakeValue::GMonth(v) => {
+                use xxhash_rust::xxh64::Xxh64;
+                let mut hasher = Xxh64::new(0);
+                hasher.update(&[0x0F]);
+                hasher.update(&v.month().to_le_bytes());
+                hasher.digest()
+            }
+            FlakeValue::GDay(v) => {
+                use xxhash_rust::xxh64::Xxh64;
+                let mut hasher = Xxh64::new(0);
+                hasher.update(&[0x10]);
+                hasher.update(&v.day().to_le_bytes());
+                hasher.digest()
+            }
+            FlakeValue::GMonthDay(v) => {
+                use xxhash_rust::xxh64::Xxh64;
+                let mut hasher = Xxh64::new(0);
+                hasher.update(&[0x11]);
+                hasher.update(&v.month().to_le_bytes());
+                hasher.update(&v.day().to_le_bytes());
+                hasher.digest()
+            }
+            FlakeValue::YearMonthDuration(v) => {
+                use xxhash_rust::xxh64::Xxh64;
+                let mut hasher = Xxh64::new(0);
+                hasher.update(&[0x12]);
+                hasher.update(&v.months().to_le_bytes());
+                hasher.digest()
+            }
+            FlakeValue::DayTimeDuration(v) => {
+                use xxhash_rust::xxh64::Xxh64;
+                let mut hasher = Xxh64::new(0);
+                hasher.update(&[0x13]);
+                hasher.update(&v.micros().to_le_bytes());
+                hasher.digest()
+            }
+            FlakeValue::Duration(v) => {
+                use xxhash_rust::xxh64::Xxh64;
+                let mut hasher = Xxh64::new(0);
+                hasher.update(&[0x14]);
+                hasher.update(&v.months().to_le_bytes());
+                hasher.update(&v.micros().to_le_bytes());
+                hasher.digest()
+            }
             FlakeValue::String(s) => {
                 // tag + length + bytes for unambiguous encoding
                 use xxhash_rust::xxh64::Xxh64;
@@ -543,6 +667,14 @@ impl PartialEq for FlakeValue {
             return false;
         }
 
+        // Duration types: same-type comparison
+        if self.is_duration() && other.is_duration() {
+            if let Some(ord) = self.temporal_cmp(other) {
+                return ord == Ordering::Equal;
+            }
+            return false;
+        }
+
         // Same discriminant: type-specific equality
         if std::mem::discriminant(self) == std::mem::discriminant(other) {
             match (self, other) {
@@ -592,6 +724,15 @@ impl Ord for FlakeValue {
                 return ord;
             }
             // Different temporal types: order by discriminant
+            return self.type_discriminant().cmp(&other.type_discriminant());
+        }
+
+        // 3b. Both duration → compare (if same duration type)
+        if self.is_duration() && other.is_duration() {
+            if let Some(ord) = self.temporal_cmp(other) {
+                return ord;
+            }
+            // Different duration types: order by discriminant
             return self.type_discriminant().cmp(&other.type_discriminant());
         }
 
@@ -684,6 +825,38 @@ impl std::hash::Hash for FlakeValue {
                 self.type_discriminant().hash(state);
                 v.hash(state);
             }
+            FlakeValue::GYear(v) => {
+                self.type_discriminant().hash(state);
+                v.hash(state);
+            }
+            FlakeValue::GYearMonth(v) => {
+                self.type_discriminant().hash(state);
+                v.hash(state);
+            }
+            FlakeValue::GMonth(v) => {
+                self.type_discriminant().hash(state);
+                v.hash(state);
+            }
+            FlakeValue::GDay(v) => {
+                self.type_discriminant().hash(state);
+                v.hash(state);
+            }
+            FlakeValue::GMonthDay(v) => {
+                self.type_discriminant().hash(state);
+                v.hash(state);
+            }
+            FlakeValue::YearMonthDuration(v) => {
+                self.type_discriminant().hash(state);
+                v.hash(state);
+            }
+            FlakeValue::DayTimeDuration(v) => {
+                self.type_discriminant().hash(state);
+                v.hash(state);
+            }
+            FlakeValue::Duration(v) => {
+                self.type_discriminant().hash(state);
+                v.hash(state);
+            }
             FlakeValue::String(s) => {
                 self.type_discriminant().hash(state);
                 s.hash(state);
@@ -716,6 +889,14 @@ impl fmt::Display for FlakeValue {
             FlakeValue::DateTime(v) => write!(f, "{}", v),
             FlakeValue::Date(v) => write!(f, "{}", v),
             FlakeValue::Time(v) => write!(f, "{}", v),
+            FlakeValue::GYear(v) => write!(f, "{}", v),
+            FlakeValue::GYearMonth(v) => write!(f, "{}", v),
+            FlakeValue::GMonth(v) => write!(f, "{}", v),
+            FlakeValue::GDay(v) => write!(f, "{}", v),
+            FlakeValue::GMonthDay(v) => write!(f, "{}", v),
+            FlakeValue::YearMonthDuration(v) => write!(f, "{}", v),
+            FlakeValue::DayTimeDuration(v) => write!(f, "{}", v),
+            FlakeValue::Duration(v) => write!(f, "{}", v),
             FlakeValue::String(s) => write!(f, "\"{}\"", s),
             FlakeValue::Json(s) => write!(f, "@json:{}", s),
             FlakeValue::Vector(v) => {

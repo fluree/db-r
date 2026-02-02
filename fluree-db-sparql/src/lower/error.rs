@@ -60,6 +60,15 @@ pub enum LowerError {
     /// Invalid property path pattern
     #[error("Invalid property path: {message}")]
     InvalidPropertyPath { message: String, span: SourceSpan },
+
+    /// Invalid typed literal (e.g., temporal parse failure)
+    #[error("Invalid {datatype} literal '{value}': {reason}")]
+    InvalidLiteral {
+        value: String,
+        datatype: String,
+        reason: String,
+        span: SourceSpan,
+    },
 }
 
 impl LowerError {
@@ -152,6 +161,21 @@ impl LowerError {
         }
     }
 
+    /// Create an invalid typed literal error.
+    pub fn invalid_literal(
+        value: impl Into<String>,
+        datatype: impl Into<String>,
+        reason: impl Into<String>,
+        span: SourceSpan,
+    ) -> Self {
+        Self::InvalidLiteral {
+            value: value.into(),
+            datatype: datatype.into(),
+            reason: reason.into(),
+            span,
+        }
+    }
+
     /// Get the span associated with this error.
     pub fn span(&self) -> SourceSpan {
         match self {
@@ -167,6 +191,7 @@ impl LowerError {
             Self::AggregateWithoutAlias { span } => *span,
             Self::UnsupportedCountStar { span } => *span,
             Self::InvalidPropertyPath { span, .. } => *span,
+            Self::InvalidLiteral { span, .. } => *span,
         }
     }
 }

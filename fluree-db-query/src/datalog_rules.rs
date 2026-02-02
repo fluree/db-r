@@ -892,6 +892,14 @@ fn flake_value_to_binding(val: &FlakeValue) -> BindingValue {
         FlakeValue::Time(t) => BindingValue::String(t.to_string()),
         FlakeValue::Vector(v) => BindingValue::String(format!("{:?}", v)),
         FlakeValue::Null => BindingValue::String("null".to_string()),
+        FlakeValue::GYear(v) => BindingValue::String(v.to_string()),
+        FlakeValue::GYearMonth(v) => BindingValue::String(v.to_string()),
+        FlakeValue::GMonth(v) => BindingValue::String(v.to_string()),
+        FlakeValue::GDay(v) => BindingValue::String(v.to_string()),
+        FlakeValue::GMonthDay(v) => BindingValue::String(v.to_string()),
+        FlakeValue::YearMonthDuration(v) => BindingValue::String(v.to_string()),
+        FlakeValue::DayTimeDuration(v) => BindingValue::String(v.to_string()),
+        FlakeValue::Duration(v) => BindingValue::String(v.to_string()),
     }
 }
 

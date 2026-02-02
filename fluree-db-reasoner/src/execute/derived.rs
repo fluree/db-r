@@ -88,6 +88,38 @@ impl DerivedSet {
                 12u8.hash(&mut hasher);
                 v.hash(&mut hasher);
             }
+            FlakeValue::GYear(v) => {
+                13u8.hash(&mut hasher);
+                v.hash(&mut hasher);
+            }
+            FlakeValue::GYearMonth(v) => {
+                14u8.hash(&mut hasher);
+                v.hash(&mut hasher);
+            }
+            FlakeValue::GMonth(v) => {
+                15u8.hash(&mut hasher);
+                v.hash(&mut hasher);
+            }
+            FlakeValue::GDay(v) => {
+                16u8.hash(&mut hasher);
+                v.hash(&mut hasher);
+            }
+            FlakeValue::GMonthDay(v) => {
+                17u8.hash(&mut hasher);
+                v.hash(&mut hasher);
+            }
+            FlakeValue::YearMonthDuration(v) => {
+                18u8.hash(&mut hasher);
+                v.hash(&mut hasher);
+            }
+            FlakeValue::DayTimeDuration(v) => {
+                19u8.hash(&mut hasher);
+                v.hash(&mut hasher);
+            }
+            FlakeValue::Duration(v) => {
+                20u8.hash(&mut hasher);
+                v.hash(&mut hasher);
+            }
         }
         hasher.finish()
     }

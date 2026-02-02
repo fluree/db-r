@@ -187,6 +187,55 @@ fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Result<JsonVal
                         "@type": dt_iri
                     }))
                 }
+                // Additional temporal types - serialize as original string with datatype
+                FlakeValue::GYear(v) => {
+                    Ok(json!({
+                        "@value": v.to_string(),
+                        "@type": dt_iri
+                    }))
+                }
+                FlakeValue::GYearMonth(v) => {
+                    Ok(json!({
+                        "@value": v.to_string(),
+                        "@type": dt_iri
+                    }))
+                }
+                FlakeValue::GMonth(v) => {
+                    Ok(json!({
+                        "@value": v.to_string(),
+                        "@type": dt_iri
+                    }))
+                }
+                FlakeValue::GDay(v) => {
+                    Ok(json!({
+                        "@value": v.to_string(),
+                        "@type": dt_iri
+                    }))
+                }
+                FlakeValue::GMonthDay(v) => {
+                    Ok(json!({
+                        "@value": v.to_string(),
+                        "@type": dt_iri
+                    }))
+                }
+                FlakeValue::YearMonthDuration(v) => {
+                    Ok(json!({
+                        "@value": v.to_string(),
+                        "@type": dt_iri
+                    }))
+                }
+                FlakeValue::DayTimeDuration(v) => {
+                    Ok(json!({
+                        "@value": v.to_string(),
+                        "@type": dt_iri
+                    }))
+                }
+                FlakeValue::Duration(v) => {
+                    Ok(json!({
+                        "@value": v.to_string(),
+                        "@type": dt_iri
+                    }))
+                }
             }
         }
 

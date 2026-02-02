@@ -117,6 +117,14 @@ fn string_length(value: &FlakeValue) -> usize {
         FlakeValue::DateTime(dt) => dt.original().len(),
         FlakeValue::Date(d) => d.original().len(),
         FlakeValue::Time(t) => t.original().len(),
+        FlakeValue::GYear(v) => v.original().len(),
+        FlakeValue::GYearMonth(v) => v.original().len(),
+        FlakeValue::GMonth(v) => v.original().len(),
+        FlakeValue::GDay(v) => v.original().len(),
+        FlakeValue::GMonthDay(v) => v.original().len(),
+        FlakeValue::YearMonthDuration(v) => v.original().len(),
+        FlakeValue::DayTimeDuration(v) => v.original().len(),
+        FlakeValue::Duration(v) => v.original().len(),
     }
 }
 

@@ -493,6 +493,19 @@ fn flake_value_to_comparable(val: &FlakeValue) -> Option<ComparableValue> {
         FlakeValue::DateTime(dt) => Some(ComparableValue::DateTime(dt.clone())),
         FlakeValue::Date(d) => Some(ComparableValue::Date(d.clone())),
         FlakeValue::Time(t) => Some(ComparableValue::Time(t.clone())),
+        // Calendar fragments and durations: route through TypedLiteral
+        FlakeValue::GYear(_)
+        | FlakeValue::GYearMonth(_)
+        | FlakeValue::GMonth(_)
+        | FlakeValue::GDay(_)
+        | FlakeValue::GMonthDay(_)
+        | FlakeValue::YearMonthDuration(_)
+        | FlakeValue::DayTimeDuration(_)
+        | FlakeValue::Duration(_) => Some(ComparableValue::TypedLiteral {
+            val: val.clone(),
+            dt_iri: None,
+            lang: None,
+        }),
     }
 }
 
@@ -502,6 +515,11 @@ fn filter_value_to_comparable(val: &FilterValue) -> ComparableValue {
         FilterValue::Double(d) => ComparableValue::Double(*d),
         FilterValue::String(s) => ComparableValue::String(Arc::from(s.as_str())),
         FilterValue::Bool(b) => ComparableValue::Bool(*b),
+        FilterValue::Temporal(fv) => ComparableValue::TypedLiteral {
+            val: fv.clone(),
+            dt_iri: None,
+            lang: None,
+        },
     }
 }
 

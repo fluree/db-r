@@ -134,6 +134,22 @@ pub enum RawObject<'a> {
     JsonStr(&'a str),
     /// Null value.
     Null,
+    /// gYear lexical form, borrowed from ops buffer.
+    GYearStr(&'a str),
+    /// gYearMonth lexical form, borrowed from ops buffer.
+    GYearMonthStr(&'a str),
+    /// gMonth lexical form, borrowed from ops buffer.
+    GMonthStr(&'a str),
+    /// gDay lexical form, borrowed from ops buffer.
+    GDayStr(&'a str),
+    /// gMonthDay lexical form, borrowed from ops buffer.
+    GMonthDayStr(&'a str),
+    /// yearMonthDuration lexical form, borrowed from ops buffer.
+    YearMonthDurationStr(&'a str),
+    /// dayTimeDuration lexical form, borrowed from ops buffer.
+    DayTimeDurationStr(&'a str),
+    /// duration lexical form, borrowed from ops buffer.
+    DurationStr(&'a str),
 }
 
 // ============================================================================
@@ -361,6 +377,38 @@ fn decode_raw_object<'a>(
             Ok(RawObject::JsonStr(s))
         }
         OTag::Null => Ok(RawObject::Null),
+        OTag::GYear => {
+            let s = decode_inline_str(data, pos)?;
+            Ok(RawObject::GYearStr(s))
+        }
+        OTag::GYearMonth => {
+            let s = decode_inline_str(data, pos)?;
+            Ok(RawObject::GYearMonthStr(s))
+        }
+        OTag::GMonth => {
+            let s = decode_inline_str(data, pos)?;
+            Ok(RawObject::GMonthStr(s))
+        }
+        OTag::GDay => {
+            let s = decode_inline_str(data, pos)?;
+            Ok(RawObject::GDayStr(s))
+        }
+        OTag::GMonthDay => {
+            let s = decode_inline_str(data, pos)?;
+            Ok(RawObject::GMonthDayStr(s))
+        }
+        OTag::YearMonthDuration => {
+            let s = decode_inline_str(data, pos)?;
+            Ok(RawObject::YearMonthDurationStr(s))
+        }
+        OTag::DayTimeDuration => {
+            let s = decode_inline_str(data, pos)?;
+            Ok(RawObject::DayTimeDurationStr(s))
+        }
+        OTag::Duration => {
+            let s = decode_inline_str(data, pos)?;
+            Ok(RawObject::DurationStr(s))
+        }
     }
 }
 

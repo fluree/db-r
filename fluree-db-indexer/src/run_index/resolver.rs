@@ -13,7 +13,10 @@ use super::run_record::{RunRecord, NO_LIST_INDEX};
 use super::run_writer::RecordSink;
 use bigdecimal::BigDecimal;
 use chrono;
-use fluree_db_core::temporal::{Date, DateTime, Time};
+use fluree_db_core::temporal::{
+    Date, DateTime, DayTimeDuration, Duration as XsdDuration, GDay, GMonth, GMonthDay, GYear,
+    GYearMonth, Time, YearMonthDuration,
+};
 use fluree_db_core::value::FlakeValue;
 use super::global_dict::dt_ids;
 use fluree_db_core::value_id::{ObjKind, ObjKey};
@@ -542,6 +545,49 @@ impl CommitResolver {
                 Ok((ObjKind::JSON_ID, ObjKey::encode_u32_id(id)))
             }
             RawObject::Null => Ok((ObjKind::NULL, ObjKey::ZERO)),
+            RawObject::GYearStr(s) => {
+                GYear::parse(s)
+                    .map(|g| (ObjKind::G_YEAR, ObjKey::encode_g_year(g.year())))
+                    .map_err(|e| format!("gYear parse: {}", e))
+            }
+            RawObject::GYearMonthStr(s) => {
+                GYearMonth::parse(s)
+                    .map(|g| (ObjKind::G_YEAR_MONTH, ObjKey::encode_g_year_month(g.year(), g.month())))
+                    .map_err(|e| format!("gYearMonth parse: {}", e))
+            }
+            RawObject::GMonthStr(s) => {
+                GMonth::parse(s)
+                    .map(|g| (ObjKind::G_MONTH, ObjKey::encode_g_month(g.month())))
+                    .map_err(|e| format!("gMonth parse: {}", e))
+            }
+            RawObject::GDayStr(s) => {
+                GDay::parse(s)
+                    .map(|g| (ObjKind::G_DAY, ObjKey::encode_g_day(g.day())))
+                    .map_err(|e| format!("gDay parse: {}", e))
+            }
+            RawObject::GMonthDayStr(s) => {
+                GMonthDay::parse(s)
+                    .map(|g| (ObjKind::G_MONTH_DAY, ObjKey::encode_g_month_day(g.month(), g.day())))
+                    .map_err(|e| format!("gMonthDay parse: {}", e))
+            }
+            RawObject::YearMonthDurationStr(s) => {
+                YearMonthDuration::parse(s)
+                    .map(|d| (ObjKind::YEAR_MONTH_DUR, ObjKey::encode_year_month_dur(d.months())))
+                    .map_err(|e| format!("yearMonthDuration parse: {}", e))
+            }
+            RawObject::DayTimeDurationStr(s) => {
+                DayTimeDuration::parse(s)
+                    .map(|d| (ObjKind::DAY_TIME_DUR, ObjKey::encode_day_time_dur(d.micros())))
+                    .map_err(|e| format!("dayTimeDuration parse: {}", e))
+            }
+            RawObject::DurationStr(s) => {
+                // General xsd:duration has no total order — store as canonical string
+                let d = XsdDuration::parse(s)
+                    .map_err(|e| format!("duration parse: {}", e))?;
+                let canonical = d.to_canonical_string();
+                let id = dicts.strings.get_or_insert(&canonical);
+                Ok((ObjKind::LEX_ID, ObjKey::encode_u32_id(id)))
+            }
         }
     }
 

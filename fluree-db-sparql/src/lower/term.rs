@@ -10,13 +10,16 @@ use crate::ast::term::{
 };
 use crate::ast::TriplePattern as SparqlTriplePattern;
 
+use fluree_db_core::temporal::{
+    DayTimeDuration, Duration, GDay, GMonth, GMonthDay, GYear, GYearMonth, YearMonthDuration,
+};
 use fluree_db_core::{FlakeValue, Sid};
 use fluree_db_query::binding::Binding;
 use fluree_db_query::parse::encode::IriEncoder;
 use fluree_db_query::pattern::{Term, TriplePattern};
 use fluree_db_query::var_registry::VarId;
 use fluree_vocab::namespaces::{RDF, XSD};
-use fluree_vocab::{rdf_names, xsd_names};
+use fluree_vocab::{rdf_names, xsd, xsd_names};
 
 
 use super::{LowerError, LoweringContext, Result};
@@ -133,7 +136,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         Ok(Term::Value(value))
     }
 
-    fn lower_typed_literal(&self, value: &str, datatype: &Iri) -> Result<FlakeValue> {
+    pub(super) fn lower_typed_literal(&self, value: &str, datatype: &Iri) -> Result<FlakeValue> {
         let dt_iri = self.expand_iri(datatype)?;
 
         match dt_iri.as_str() {
@@ -157,6 +160,64 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             "http://www.w3.org/2001/XMLSchema#boolean" => {
                 let b = value == "true" || value == "1";
                 Ok(FlakeValue::Boolean(b))
+            }
+            // Temporal types: dateTime, date, time
+            xsd::DATE_TIME => {
+                let dt = fluree_db_core::temporal::DateTime::parse(value)
+                    .map_err(|e| LowerError::invalid_literal(value, "xsd:dateTime", &e, datatype.span))?;
+                Ok(FlakeValue::DateTime(Box::new(dt)))
+            }
+            xsd::DATE => {
+                let d = fluree_db_core::temporal::Date::parse(value)
+                    .map_err(|e| LowerError::invalid_literal(value, "xsd:date", &e, datatype.span))?;
+                Ok(FlakeValue::Date(Box::new(d)))
+            }
+            xsd::TIME => {
+                let t = fluree_db_core::temporal::Time::parse(value)
+                    .map_err(|e| LowerError::invalid_literal(value, "xsd:time", &e, datatype.span))?;
+                Ok(FlakeValue::Time(Box::new(t)))
+            }
+            // Calendar fragment types
+            xsd::G_YEAR => {
+                let g = GYear::parse(value)
+                    .map_err(|e| LowerError::invalid_literal(value, "xsd:gYear", &e, datatype.span))?;
+                Ok(FlakeValue::GYear(Box::new(g)))
+            }
+            xsd::G_YEAR_MONTH => {
+                let g = GYearMonth::parse(value)
+                    .map_err(|e| LowerError::invalid_literal(value, "xsd:gYearMonth", &e, datatype.span))?;
+                Ok(FlakeValue::GYearMonth(Box::new(g)))
+            }
+            xsd::G_MONTH => {
+                let g = GMonth::parse(value)
+                    .map_err(|e| LowerError::invalid_literal(value, "xsd:gMonth", &e, datatype.span))?;
+                Ok(FlakeValue::GMonth(Box::new(g)))
+            }
+            xsd::G_DAY => {
+                let g = GDay::parse(value)
+                    .map_err(|e| LowerError::invalid_literal(value, "xsd:gDay", &e, datatype.span))?;
+                Ok(FlakeValue::GDay(Box::new(g)))
+            }
+            xsd::G_MONTH_DAY => {
+                let g = GMonthDay::parse(value)
+                    .map_err(|e| LowerError::invalid_literal(value, "xsd:gMonthDay", &e, datatype.span))?;
+                Ok(FlakeValue::GMonthDay(Box::new(g)))
+            }
+            // Duration types
+            xsd::DURATION => {
+                let d = Duration::parse(value)
+                    .map_err(|e| LowerError::invalid_literal(value, "xsd:duration", &e, datatype.span))?;
+                Ok(FlakeValue::Duration(Box::new(d)))
+            }
+            xsd::DAY_TIME_DURATION => {
+                let d = DayTimeDuration::parse(value)
+                    .map_err(|e| LowerError::invalid_literal(value, "xsd:dayTimeDuration", &e, datatype.span))?;
+                Ok(FlakeValue::DayTimeDuration(Box::new(d)))
+            }
+            xsd::YEAR_MONTH_DURATION => {
+                let d = YearMonthDuration::parse(value)
+                    .map_err(|e| LowerError::invalid_literal(value, "xsd:yearMonthDuration", &e, datatype.span))?;
+                Ok(FlakeValue::YearMonthDuration(Box::new(d)))
             }
             _ => {
                 // Default to string for unknown datatypes

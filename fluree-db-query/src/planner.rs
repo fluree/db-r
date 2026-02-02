@@ -17,7 +17,7 @@
 use crate::ir::{Pattern, Query};
 use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarId;
-use fluree_db_core::StatsView;
+use fluree_db_core::{FlakeValue, StatsView};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -577,6 +577,8 @@ pub enum RangeValue {
     Long(i64),
     Double(f64),
     String(String),
+    /// Temporal value for range pushdown (NOT used for xsd:duration — it has no total order)
+    Temporal(fluree_db_core::value::FlakeValue),
 }
 
 impl RangeConstraint {
@@ -761,6 +763,14 @@ fn extract_const(expr: &FilterExpr) -> Option<RangeValue> {
         FilterExpr::Const(FilterValue::Double(d)) if d.is_nan() => None,
         FilterExpr::Const(FilterValue::Double(d)) => Some(RangeValue::Double(*d)),
         FilterExpr::Const(FilterValue::String(s)) => Some(RangeValue::String(s.clone())),
+        FilterExpr::Const(FilterValue::Temporal(fv)) => {
+            // Duration (non-totally-orderable) should NOT be pushed down as a range constraint
+            if matches!(fv, FlakeValue::Duration(_)) {
+                None
+            } else {
+                Some(RangeValue::Temporal(fv.clone()))
+            }
+        }
         _ => None,
     }
 }
@@ -821,7 +831,7 @@ fn create_constraint(
 }
 
 use crate::ir::FilterExpr;
-use fluree_db_core::{FlakeValue, ObjectBounds};
+use fluree_db_core::ObjectBounds;
 
 impl RangeValue {
     /// Convert to FlakeValue for use with ObjectBounds
@@ -830,6 +840,7 @@ impl RangeValue {
             RangeValue::Long(n) => FlakeValue::Long(*n),
             RangeValue::Double(d) => FlakeValue::Double((*d).into()),
             RangeValue::String(s) => FlakeValue::String(s.clone()),
+            RangeValue::Temporal(fv) => fv.clone(),
         }
     }
 }

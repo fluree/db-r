@@ -588,6 +588,22 @@ pub struct WellKnownDatatypes {
     pub xsd_date: Sid,
     /// xsd:time (namespace code 2)
     pub xsd_time: Sid,
+    /// xsd:gYear
+    pub xsd_g_year: Sid,
+    /// xsd:gYearMonth
+    pub xsd_g_year_month: Sid,
+    /// xsd:gMonth
+    pub xsd_g_month: Sid,
+    /// xsd:gDay
+    pub xsd_g_day: Sid,
+    /// xsd:gMonthDay
+    pub xsd_g_month_day: Sid,
+    /// xsd:duration
+    pub xsd_duration: Sid,
+    /// xsd:dayTimeDuration
+    pub xsd_day_time_duration: Sid,
+    /// xsd:yearMonthDuration
+    pub xsd_year_month_duration: Sid,
     /// $id (reference type) - returned by DATATYPE() for IRIs
     pub id_type: Sid,
     /// fluree:vector (https://ns.flur.ee/ledger#vector)
@@ -619,6 +635,14 @@ impl WellKnownDatatypes {
             xsd_datetime: Sid::new(XSD, xsd_names::DATE_TIME),
             xsd_date: Sid::new(XSD, xsd_names::DATE),
             xsd_time: Sid::new(XSD, xsd_names::TIME),
+            xsd_g_year: Sid::new(XSD, xsd_names::G_YEAR),
+            xsd_g_year_month: Sid::new(XSD, xsd_names::G_YEAR_MONTH),
+            xsd_g_month: Sid::new(XSD, xsd_names::G_MONTH),
+            xsd_g_day: Sid::new(XSD, xsd_names::G_DAY),
+            xsd_g_month_day: Sid::new(XSD, xsd_names::G_MONTH_DAY),
+            xsd_duration: Sid::new(XSD, xsd_names::DURATION),
+            xsd_day_time_duration: Sid::new(XSD, xsd_names::DAY_TIME_DURATION),
+            xsd_year_month_duration: Sid::new(XSD, xsd_names::YEAR_MONTH_DURATION),
             id_type: Sid::new(JSON_LD, "id"), // @ namespace for internal types
             // Reserved Fluree ledger namespace code is 8 (https://ns.flur.ee/ledger#)
             fluree_vector: Sid::new(8, "vector"),
