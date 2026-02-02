@@ -496,6 +496,8 @@ pub struct GlobalDicts {
     pub strings: StringValueDict,
     pub languages: LanguageTagDict,
     pub datatypes: PredicateDict,
+    /// Per-predicate overflow numeric arenas (BigInt/BigDecimal). Key = p_id.
+    pub numbigs: FxHashMap<u32, super::numbig_dict::NumBigArena>,
 }
 
 impl GlobalDicts {
@@ -511,6 +513,7 @@ impl GlobalDicts {
             strings: StringValueDict::new(),
             languages: LanguageTagDict::new(),
             datatypes: new_datatype_dict(),
+            numbigs: FxHashMap::default(),
         };
         // Reserve g_id=1 for txn-meta: graphs dict returns 0-based, +1 = g_id 1.
         dicts.graphs.get_or_insert_parts(
@@ -532,6 +535,7 @@ impl GlobalDicts {
             strings: StringValueDict::new(),
             languages: LanguageTagDict::new(),
             datatypes: new_datatype_dict(),
+            numbigs: FxHashMap::default(),
         };
         // Reserve g_id=1 for txn-meta: graphs dict returns 0-based, +1 = g_id 1.
         dicts.graphs.get_or_insert_parts(
@@ -576,6 +580,23 @@ impl GlobalDicts {
 
         // Write datatype dict
         write_predicate_dict(&run_dir.join("datatypes.dict"), &self.datatypes)?;
+
+        // Write numbig arenas (one file per predicate)
+        if !self.numbigs.is_empty() {
+            let nb_dir = run_dir.join("numbig");
+            std::fs::create_dir_all(&nb_dir)?;
+            for (&p_id, arena) in &self.numbigs {
+                super::numbig_dict::write_numbig_arena(
+                    &nb_dir.join(format!("p_{}.nba", p_id)),
+                    arena,
+                )?;
+            }
+            tracing::info!(
+                predicates = self.numbigs.len(),
+                total_entries = self.numbigs.values().map(|a| a.len()).sum::<usize>(),
+                "numbig arenas persisted"
+            );
+        }
 
         tracing::info!(
             subjects = self.subjects.len(),

@@ -13,13 +13,13 @@ use super::run_record::{RunRecord, RunSortOrder, NO_LIST_INDEX};
 use std::io;
 
 /// Size of the leaflet header in bytes.
-pub const LEAFLET_HEADER_LEN: usize = 56;
+pub const LEAFLET_HEADER_LEN: usize = 57;
 
 // ============================================================================
 // Leaflet header
 // ============================================================================
 
-/// Leaflet header (56 bytes, fixed).
+/// Leaflet header (57 bytes, fixed).
 #[derive(Debug, Clone)]
 pub struct LeafletHeader {
     pub row_count: u32,
@@ -34,7 +34,8 @@ pub struct LeafletHeader {
     pub region3_uncompressed_len: u32,
     pub first_s_id: u32,
     pub first_p_id: u32,
-    pub first_o: u64,
+    pub first_o_kind: u8,
+    pub first_o_key: u64,
 }
 
 impl LeafletHeader {
@@ -52,7 +53,8 @@ impl LeafletHeader {
         buf[36..40].copy_from_slice(&self.region3_uncompressed_len.to_le_bytes());
         buf[40..44].copy_from_slice(&self.first_s_id.to_le_bytes());
         buf[44..48].copy_from_slice(&self.first_p_id.to_le_bytes());
-        buf[48..56].copy_from_slice(&self.first_o.to_le_bytes());
+        buf[48] = self.first_o_kind;
+        buf[49..57].copy_from_slice(&self.first_o_key.to_le_bytes());
     }
 
     pub fn read_from(buf: &[u8]) -> io::Result<Self> {
@@ -75,7 +77,8 @@ impl LeafletHeader {
             region3_uncompressed_len: u32::from_le_bytes(buf[36..40].try_into().unwrap()),
             first_s_id: u32::from_le_bytes(buf[40..44].try_into().unwrap()),
             first_p_id: u32::from_le_bytes(buf[44..48].try_into().unwrap()),
-            first_o: u64::from_le_bytes(buf[48..56].try_into().unwrap()),
+            first_o_kind: buf[48],
+            first_o_key: u64::from_le_bytes(buf[49..57].try_into().unwrap()),
         })
     }
 }
@@ -164,7 +167,8 @@ impl LeafletEncoder {
             region3_uncompressed_len: 0,
             first_s_id: records[0].s_id,
             first_p_id: records[0].p_id,
-            first_o: records[0].o.as_u64(),
+            first_o_kind: records[0].o_kind,
+            first_o_key: records[0].o_key,
         };
 
         // ---- Assemble ----
@@ -227,7 +231,8 @@ impl LeafletEncoder {
             region3_uncompressed_len: r3_uncompressed_len,
             first_s_id: records[0].s_id,
             first_p_id: records[0].p_id,
-            first_o: records[0].o.as_u64(),
+            first_o_kind: records[0].o_kind,
+            first_o_key: records[0].o_key,
         };
 
         // ---- Assemble ----
@@ -373,6 +378,13 @@ fn write_col_u32(buf: &mut Vec<u8>, records: &[RunRecord], field_fn: fn(&RunReco
     }
 }
 
+/// Write a fixed u8 column.
+fn write_col_u8(buf: &mut Vec<u8>, records: &[RunRecord], field_fn: fn(&RunRecord) -> u8) {
+    for r in records {
+        buf.push(field_fn(r));
+    }
+}
+
 /// Write a fixed u64 column.
 fn write_col_u64(buf: &mut Vec<u8>, records: &[RunRecord], field_fn: fn(&RunRecord) -> u64) {
     for r in records {
@@ -382,45 +394,50 @@ fn write_col_u64(buf: &mut Vec<u8>, records: &[RunRecord], field_fn: fn(&RunReco
 
 // ---- Per-order encode functions ----
 
-/// SPOT Region 1: RLE(s_id:u32), p_id[pw], o[u64]
+/// SPOT Region 1: RLE(s_id:u32), p_id[pw], o_kind[u8], o_key[u64]
 fn encode_region1_spot(records: &[RunRecord], p_width: u8) -> Vec<u8> {
     let rle = build_rle_u32(records, |r| r.s_id);
     let row_count = records.len();
-    let buf_size = 4 + rle.len() * 8 + row_count * (p_width as usize) + row_count * 8;
+    let buf_size = 4 + rle.len() * 8 + row_count * (p_width as usize) + row_count * 1 + row_count * 8;
     let mut buf = Vec::with_capacity(buf_size);
     write_rle_u32(&mut buf, &rle);
     write_col_p_id(&mut buf, records, p_width);
-    write_col_u64(&mut buf, records, |r| r.o.as_u64());
+    write_col_u8(&mut buf, records, |r| r.o_kind);
+    write_col_u64(&mut buf, records, |r| r.o_key);
     buf
 }
 
-/// PSOT Region 1: RLE(p_id:u32), s_id[u32], o[u64]
+/// PSOT Region 1: RLE(p_id:u32), s_id[u32], o_kind[u8], o_key[u64]
 fn encode_region1_psot(records: &[RunRecord]) -> Vec<u8> {
     let rle = build_rle_u32(records, |r| r.p_id);
     let row_count = records.len();
-    let buf_size = 4 + rle.len() * 8 + row_count * 4 + row_count * 8;
+    let buf_size = 4 + rle.len() * 8 + row_count * 4 + row_count * 1 + row_count * 8;
     let mut buf = Vec::with_capacity(buf_size);
     write_rle_u32(&mut buf, &rle);
     write_col_u32(&mut buf, records, |r| r.s_id);
-    write_col_u64(&mut buf, records, |r| r.o.as_u64());
+    write_col_u8(&mut buf, records, |r| r.o_kind);
+    write_col_u64(&mut buf, records, |r| r.o_key);
     buf
 }
 
-/// POST Region 1: RLE(p_id:u32), o[u64], s_id[u32]
+/// POST Region 1: RLE(p_id:u32), o_kind[u8], o_key[u64], s_id[u32]
 fn encode_region1_post(records: &[RunRecord]) -> Vec<u8> {
     let rle = build_rle_u32(records, |r| r.p_id);
     let row_count = records.len();
-    let buf_size = 4 + rle.len() * 8 + row_count * 8 + row_count * 4;
+    let buf_size = 4 + rle.len() * 8 + row_count * 1 + row_count * 8 + row_count * 4;
     let mut buf = Vec::with_capacity(buf_size);
     write_rle_u32(&mut buf, &rle);
-    write_col_u64(&mut buf, records, |r| r.o.as_u64());
+    write_col_u8(&mut buf, records, |r| r.o_kind);
+    write_col_u64(&mut buf, records, |r| r.o_key);
     write_col_u32(&mut buf, records, |r| r.s_id);
     buf
 }
 
-/// OPST Region 1: RLE(o:u64), p_id[pw], s_id[u32]
+/// OPST Region 1: RLE(o_key:u64), p_id[pw], s_id[u32]
+///
+/// OPST omits o_kind — it is always `REF_ID` (0x05). Hardcoded on decode.
 fn encode_region1_opst(records: &[RunRecord], p_width: u8) -> Vec<u8> {
-    let rle = build_rle_u64(records, |r| r.o.as_u64());
+    let rle = build_rle_u64(records, |r| r.o_key);
     let row_count = records.len();
     // u64 RLE entries are 12 bytes each (8 key + 4 count)
     let buf_size = 4 + rle.len() * 12 + row_count * (p_width as usize) + row_count * 4;
@@ -516,7 +533,10 @@ fn encode_region2(records: &[RunRecord], dt_width: u8) -> Vec<u8> {
 // Region 3: history journal (operation log)
 // ============================================================================
 
-/// A single Region 3 history entry (32 bytes, fixed-width).
+/// Wire size of a Region 3 entry in bytes.
+const REGION3_ENTRY_BYTES: usize = 33;
+
+/// A single Region 3 history entry (33 bytes on wire, manually serialized).
 ///
 /// Region 3 is an operation log stored in **reverse chronological order**
 /// (newest first). Each entry is a self-contained fact tuple with signed-t
@@ -524,19 +544,22 @@ fn encode_region2(records: &[RunRecord], dt_width: u8) -> Vec<u8> {
 /// actual transaction number.
 ///
 /// Datatype IDs are stored as `u16`, supporting up to 65,535 distinct types.
+///
+/// Wire layout (33 bytes):
+///   s_id: u32 [0..4], p_id: u32 [4..8], o_kind: u8 [8],
+///   o_key: u64 [9..17], t_signed: i64 [17..25], dt: u16 [25..27],
+///   lang_id: u16 [27..29], i: i32 [29..33]
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[repr(C)]
 pub struct Region3Entry {
     pub s_id: u32,
     pub p_id: u32,
-    pub o: u64,        // ValueId as u64
+    pub o_kind: u8,
+    pub o_key: u64,
     pub t_signed: i64, // positive = assert, negative = retract
     pub dt: u16,
     pub lang_id: u16,
     pub i: i32,        // NO_LIST_INDEX = i32::MIN if none
 }
-
-const _: () = assert!(std::mem::size_of::<Region3Entry>() == 32);
 
 impl Region3Entry {
     /// Build from a `RunRecord`. `op == 1` (assert) → positive t, else negative.
@@ -544,7 +567,8 @@ impl Region3Entry {
         Self {
             s_id: r.s_id,
             p_id: r.p_id,
-            o: r.o.as_u64(),
+            o_kind: r.o_kind,
+            o_key: r.o_key,
             t_signed: if r.op == 1 { r.t } else { -r.t },
             dt: r.dt,
             lang_id: r.lang_id,
@@ -570,17 +594,18 @@ impl Region3Entry {
 /// Encode Region 3 entries into the wire format (before compression).
 ///
 /// Wire format:
-///   `entry_count: u32` (4B), then `[Region3Entry; entry_count]` (32B each).
+///   `entry_count: u32` (4B), then `[Region3Entry; entry_count]` (33B each).
 ///
 /// Entries must be in reverse chronological order (newest first).
 pub fn encode_region3(entries: &[Region3Entry]) -> Vec<u8> {
-    let buf_size = 4 + entries.len() * 32;
+    let buf_size = 4 + entries.len() * REGION3_ENTRY_BYTES;
     let mut buf = Vec::with_capacity(buf_size);
     buf.extend_from_slice(&(entries.len() as u32).to_le_bytes());
     for e in entries {
         buf.extend_from_slice(&e.s_id.to_le_bytes());
         buf.extend_from_slice(&e.p_id.to_le_bytes());
-        buf.extend_from_slice(&e.o.to_le_bytes());
+        buf.push(e.o_kind);
+        buf.extend_from_slice(&e.o_key.to_le_bytes());
         buf.extend_from_slice(&e.t_signed.to_le_bytes());
         buf.extend_from_slice(&e.dt.to_le_bytes());
         buf.extend_from_slice(&e.lang_id.to_le_bytes());
@@ -598,7 +623,7 @@ fn decode_region3(data: &[u8]) -> io::Result<Vec<Region3Entry>> {
         ));
     }
     let entry_count = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
-    let expected_len = 4 + entry_count * 32;
+    let expected_len = 4 + entry_count * REGION3_ENTRY_BYTES;
     if data.len() < expected_len {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -616,13 +641,14 @@ fn decode_region3(data: &[u8]) -> io::Result<Vec<Region3Entry>> {
     for _ in 0..entry_count {
         let s_id = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
         let p_id = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap());
-        let o = u64::from_le_bytes(data[pos + 8..pos + 16].try_into().unwrap());
-        let t_signed = i64::from_le_bytes(data[pos + 16..pos + 24].try_into().unwrap());
-        let dt = u16::from_le_bytes(data[pos + 24..pos + 26].try_into().unwrap());
-        let lang_id = u16::from_le_bytes(data[pos + 26..pos + 28].try_into().unwrap());
-        let i = i32::from_le_bytes(data[pos + 28..pos + 32].try_into().unwrap());
-        entries.push(Region3Entry { s_id, p_id, o, t_signed, dt, lang_id, i });
-        pos += 32;
+        let o_kind = data[pos + 8];
+        let o_key = u64::from_le_bytes(data[pos + 9..pos + 17].try_into().unwrap());
+        let t_signed = i64::from_le_bytes(data[pos + 17..pos + 25].try_into().unwrap());
+        let dt = u16::from_le_bytes(data[pos + 25..pos + 27].try_into().unwrap());
+        let lang_id = u16::from_le_bytes(data[pos + 27..pos + 29].try_into().unwrap());
+        let i = i32::from_le_bytes(data[pos + 29..pos + 33].try_into().unwrap());
+        entries.push(Region3Entry { s_id, p_id, o_kind, o_key, t_signed, dt, lang_id, i });
+        pos += REGION3_ENTRY_BYTES;
     }
 
     Ok(entries)
@@ -674,7 +700,10 @@ pub struct DecodedLeaflet {
     pub row_count: usize,
     pub s_ids: Vec<u32>,
     pub p_ids: Vec<u32>,
-    pub o_values: Vec<u64>,
+    /// Object kind discriminant per row (see `ObjKind`).
+    pub o_kinds: Vec<u8>,
+    /// Object key payload per row (interpretation depends on `o_kinds`).
+    pub o_keys: Vec<u64>,
     /// Datatype dict index per row. Conceptually u32; stored on disk at dt_width bytes.
     pub dt_values: Vec<u32>,
     pub t_values: Vec<i64>,
@@ -686,11 +715,13 @@ pub struct DecodedLeaflet {
 ///
 /// This is used by `BinaryCursor` to apply integer-ID filters before paying to
 /// decompress/parse Region 2 metadata (dt/t/lang/i).
+///
+/// Returns `(header, s_ids, p_ids, o_kinds, o_keys)`.
 pub fn decode_leaflet_region1(
     data: &[u8],
     p_width: u8,
     sort_order: RunSortOrder,
-) -> io::Result<(LeafletHeader, Vec<u32>, Vec<u32>, Vec<u64>)> {
+) -> io::Result<(LeafletHeader, Vec<u32>, Vec<u32>, Vec<u8>, Vec<u64>)> {
     // New format: no "legacy width=0" defaults.
     if p_width != 2 && p_width != 4 {
         return Err(io::Error::new(
@@ -718,8 +749,8 @@ pub fn decode_leaflet_region1(
     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("zstd decompress r1: {}", e)))?;
 
     // ---- Decode Region 1 ----
-    let (s_ids, p_ids, o_values) = decode_region1(&r1_raw, row_count, p_width, sort_order)?;
-    Ok((header, s_ids, p_ids, o_values))
+    let (s_ids, p_ids, o_kinds, o_keys) = decode_region1(&r1_raw, row_count, p_width, sort_order)?;
+    Ok((header, s_ids, p_ids, o_kinds, o_keys))
 }
 
 /// Decode Region 2 of a leaflet (metadata columns) using a previously-read header.
@@ -769,14 +800,15 @@ pub fn decode_leaflet(
     dt_width: u8,
     sort_order: RunSortOrder,
 ) -> io::Result<DecodedLeaflet> {
-    let (header, s_ids, p_ids, o_values) = decode_leaflet_region1(data, p_width, sort_order)?;
+    let (header, s_ids, p_ids, o_kinds, o_keys) = decode_leaflet_region1(data, p_width, sort_order)?;
     let (dt_values, t_values, lang_ids, i_values) = decode_leaflet_region2(data, &header, dt_width)?;
 
     Ok(DecodedLeaflet {
         row_count: header.row_count as usize,
         s_ids,
         p_ids,
-        o_values,
+        o_kinds,
+        o_keys,
         dt_values,
         t_values,
         lang_ids,
@@ -790,13 +822,13 @@ pub fn decode_leaflet(
 
 /// Decode Region 1 for the given sort order.
 ///
-/// Returns `(s_ids, p_ids, o_values)` regardless of sort order.
+/// Returns `(s_ids, p_ids, o_kinds, o_keys)` regardless of sort order.
 fn decode_region1(
     data: &[u8],
     row_count: usize,
     p_width: u8,
     order: RunSortOrder,
-) -> io::Result<(Vec<u32>, Vec<u32>, Vec<u64>)> {
+) -> io::Result<(Vec<u32>, Vec<u32>, Vec<u8>, Vec<u64>)> {
     match order {
         RunSortOrder::Spot => decode_region1_spot(data, row_count, p_width),
         RunSortOrder::Psot => decode_region1_psot(data, row_count),
@@ -891,6 +923,16 @@ fn read_col_p_id(data: &[u8], pos: &mut usize, row_count: usize, p_width: u8) ->
     Ok(vals)
 }
 
+/// Read a fixed u8 column.
+fn read_col_u8(data: &[u8], pos: &mut usize, row_count: usize) -> io::Result<Vec<u8>> {
+    if *pos + row_count > data.len() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "region 1: u8 col truncated"));
+    }
+    let vals = data[*pos..*pos + row_count].to_vec();
+    *pos += row_count;
+    Ok(vals)
+}
+
 /// Read a fixed u32 column.
 fn read_col_u32(data: &[u8], pos: &mut usize, row_count: usize) -> io::Result<Vec<u32>> {
     let mut vals = Vec::with_capacity(row_count);
@@ -919,40 +961,48 @@ fn read_col_u64(data: &[u8], pos: &mut usize, row_count: usize) -> io::Result<Ve
 
 // ---- Per-order decode functions ----
 
-/// SPOT: RLE(s_id:u32), p_id[pw], o[u64]
-fn decode_region1_spot(data: &[u8], row_count: usize, p_width: u8) -> io::Result<(Vec<u32>, Vec<u32>, Vec<u64>)> {
+/// SPOT: RLE(s_id:u32), p_id[pw], o_kind[u8], o_key[u64]
+fn decode_region1_spot(data: &[u8], row_count: usize, p_width: u8) -> io::Result<(Vec<u32>, Vec<u32>, Vec<u8>, Vec<u64>)> {
     let mut pos = 0;
     let s_ids = decode_rle_u32(data, &mut pos, row_count)?;
     let p_ids = read_col_p_id(data, &mut pos, row_count, p_width)?;
-    let o_values = read_col_u64(data, &mut pos, row_count)?;
-    Ok((s_ids, p_ids, o_values))
+    let o_kinds = read_col_u8(data, &mut pos, row_count)?;
+    let o_keys = read_col_u64(data, &mut pos, row_count)?;
+    Ok((s_ids, p_ids, o_kinds, o_keys))
 }
 
-/// PSOT: RLE(p_id:u32), s_id[u32], o[u64]
-fn decode_region1_psot(data: &[u8], row_count: usize) -> io::Result<(Vec<u32>, Vec<u32>, Vec<u64>)> {
+/// PSOT: RLE(p_id:u32), s_id[u32], o_kind[u8], o_key[u64]
+fn decode_region1_psot(data: &[u8], row_count: usize) -> io::Result<(Vec<u32>, Vec<u32>, Vec<u8>, Vec<u64>)> {
     let mut pos = 0;
     let p_ids = decode_rle_u32(data, &mut pos, row_count)?;
     let s_ids = read_col_u32(data, &mut pos, row_count)?;
-    let o_values = read_col_u64(data, &mut pos, row_count)?;
-    Ok((s_ids, p_ids, o_values))
+    let o_kinds = read_col_u8(data, &mut pos, row_count)?;
+    let o_keys = read_col_u64(data, &mut pos, row_count)?;
+    Ok((s_ids, p_ids, o_kinds, o_keys))
 }
 
-/// POST: RLE(p_id:u32), o[u64], s_id[u32]
-fn decode_region1_post(data: &[u8], row_count: usize) -> io::Result<(Vec<u32>, Vec<u32>, Vec<u64>)> {
+/// POST: RLE(p_id:u32), o_kind[u8], o_key[u64], s_id[u32]
+fn decode_region1_post(data: &[u8], row_count: usize) -> io::Result<(Vec<u32>, Vec<u32>, Vec<u8>, Vec<u64>)> {
     let mut pos = 0;
     let p_ids = decode_rle_u32(data, &mut pos, row_count)?;
-    let o_values = read_col_u64(data, &mut pos, row_count)?;
+    let o_kinds = read_col_u8(data, &mut pos, row_count)?;
+    let o_keys = read_col_u64(data, &mut pos, row_count)?;
     let s_ids = read_col_u32(data, &mut pos, row_count)?;
-    Ok((s_ids, p_ids, o_values))
+    Ok((s_ids, p_ids, o_kinds, o_keys))
 }
 
-/// OPST: RLE(o:u64), p_id[pw], s_id[u32]
-fn decode_region1_opst(data: &[u8], row_count: usize, p_width: u8) -> io::Result<(Vec<u32>, Vec<u32>, Vec<u64>)> {
+/// OPST: RLE(o_key:u64), p_id[pw], s_id[u32]
+///
+/// OPST omits o_kind — it is always `REF_ID` (0x05). Filled on decode.
+fn decode_region1_opst(data: &[u8], row_count: usize, p_width: u8) -> io::Result<(Vec<u32>, Vec<u32>, Vec<u8>, Vec<u64>)> {
+    use fluree_db_core::value_id::ObjKind;
     let mut pos = 0;
-    let o_values = decode_rle_u64(data, &mut pos, row_count)?;
+    let o_keys = decode_rle_u64(data, &mut pos, row_count)?;
     let p_ids = read_col_p_id(data, &mut pos, row_count, p_width)?;
     let s_ids = read_col_u32(data, &mut pos, row_count)?;
-    Ok((s_ids, p_ids, o_values))
+    // OPST is always REF_ID — fill o_kinds with the constant
+    let o_kinds = vec![ObjKind::REF_ID.as_u8(); row_count];
+    Ok((s_ids, p_ids, o_kinds, o_keys))
 }
 
 /// Decode Region 2: dt[] + t[] + lang bitmap + i bitmap.
@@ -1089,12 +1139,12 @@ fn decode_region2(
 mod tests {
     use super::*;
     use crate::run_index::global_dict::dt_ids;
-    use fluree_db_core::value_id::ValueId;
+    use fluree_db_core::value_id::{ObjKind, ObjKey};
 
     fn make_record(s_id: u32, p_id: u32, val: i64, t: i64) -> RunRecord {
         RunRecord::new(
             0, s_id, p_id,
-            ValueId::num_int(val).unwrap(),
+            ObjKind::NUM_INT, ObjKey::encode_i64(val),
             t, true, dt_ids::INTEGER, 0, None,
         )
     }
@@ -1115,8 +1165,9 @@ mod tests {
         assert_eq!(decoded.row_count, 4);
         assert_eq!(decoded.s_ids, vec![1, 1, 2, 3]);
         assert_eq!(decoded.p_ids, vec![1, 2, 1, 1]);
-        assert_eq!(decoded.o_values[0], ValueId::num_int(10).unwrap().as_u64());
-        assert_eq!(decoded.o_values[1], ValueId::num_int(20).unwrap().as_u64());
+        assert_eq!(decoded.o_kinds[0], ObjKind::NUM_INT.as_u8());
+        assert_eq!(decoded.o_keys[0], ObjKey::encode_i64(10).as_u64());
+        assert_eq!(decoded.o_keys[1], ObjKey::encode_i64(20).as_u64());
         assert_eq!(decoded.t_values, vec![1, 1, 2, 2]);
         assert_eq!(decoded.dt_values, vec![dt_ids::INTEGER as u32; 4]);
     }
@@ -1147,17 +1198,17 @@ mod tests {
             make_record(1, 1, 10, 1),
             // Lang string
             RunRecord::new(
-                0, 1, 2, ValueId::lex_id(5), 1, true,
+                0, 1, 2, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true,
                 dt_ids::LANG_STRING, 3, None,
             ),
             // List entry
             RunRecord::new(
-                0, 2, 1, ValueId::num_int(42).unwrap(), 1, true,
+                0, 2, 1, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
                 dt_ids::INTEGER, 0, Some(7),
             ),
             // Both lang and list index
             RunRecord::new(
-                0, 2, 2, ValueId::lex_id(8), 1, true,
+                0, 2, 2, ObjKind::LEX_ID, ObjKey::encode_u32_id(8), 1, true,
                 dt_ids::LANG_STRING, 2, Some(3),
             ),
         ];
@@ -1190,7 +1241,8 @@ mod tests {
         assert_eq!(header.row_count, 2);
         assert_eq!(header.first_s_id, 5);
         assert_eq!(header.first_p_id, 3);
-        assert_eq!(header.first_o, ValueId::num_int(100).unwrap().as_u64());
+        assert_eq!(header.first_o_kind, ObjKind::NUM_INT.as_u8());
+        assert_eq!(header.first_o_key, ObjKey::encode_i64(100).as_u64());
         assert_eq!(header.region3_compressed_len, 0);
     }
 
@@ -1212,13 +1264,13 @@ mod tests {
     fn make_records_for_order_tests() -> Vec<RunRecord> {
         vec![
             // s=1, p=5, o=100
-            RunRecord::new(0, 1, 5, ValueId::num_int(100).unwrap(), 1, true, dt_ids::INTEGER, 0, None),
+            RunRecord::new(0, 1, 5, ObjKind::NUM_INT, ObjKey::encode_i64(100), 1, true, dt_ids::INTEGER, 0, None),
             // s=1, p=5, o=200
-            RunRecord::new(0, 1, 5, ValueId::num_int(200).unwrap(), 2, true, dt_ids::INTEGER, 0, None),
+            RunRecord::new(0, 1, 5, ObjKind::NUM_INT, ObjKey::encode_i64(200), 2, true, dt_ids::INTEGER, 0, None),
             // s=2, p=3, o=50
-            RunRecord::new(0, 2, 3, ValueId::num_int(50).unwrap(), 1, true, dt_ids::INTEGER, 0, None),
+            RunRecord::new(0, 2, 3, ObjKind::NUM_INT, ObjKey::encode_i64(50), 1, true, dt_ids::INTEGER, 0, None),
             // s=3, p=5, o=100
-            RunRecord::new(0, 3, 5, ValueId::num_int(100).unwrap(), 3, true, dt_ids::INTEGER, 0, None),
+            RunRecord::new(0, 3, 5, ObjKind::NUM_INT, ObjKey::encode_i64(100), 3, true, dt_ids::INTEGER, 0, None),
         ]
     }
 
@@ -1227,7 +1279,8 @@ mod tests {
         for (i, r) in records.iter().enumerate() {
             assert_eq!(decoded.s_ids[i], r.s_id, "s_id mismatch at row {}", i);
             assert_eq!(decoded.p_ids[i], r.p_id, "p_id mismatch at row {}", i);
-            assert_eq!(decoded.o_values[i], r.o.as_u64(), "o mismatch at row {}", i);
+            assert_eq!(decoded.o_kinds[i], r.o_kind, "o_kind mismatch at row {}", i);
+            assert_eq!(decoded.o_keys[i], r.o_key, "o_key mismatch at row {}", i);
             assert_eq!(decoded.t_values[i], r.t, "t mismatch at row {}", i);
             assert_eq!(decoded.dt_values[i], r.dt as u32, "dt mismatch at row {}", i);
         }
@@ -1253,11 +1306,11 @@ mod tests {
 
     #[test]
     fn test_opst_encode_decode_round_trip() {
-        // OPST uses u64 RLE on o values
+        // OPST uses u64 RLE on o_key values
         let records = vec![
-            RunRecord::new(0, 1, 5, ValueId::iri_id(10), 1, true, dt_ids::ID, 0, None),
-            RunRecord::new(0, 2, 5, ValueId::iri_id(10), 2, true, dt_ids::ID, 0, None),
-            RunRecord::new(0, 3, 3, ValueId::iri_id(20), 1, true, dt_ids::ID, 0, None),
+            RunRecord::new(0, 1, 5, ObjKind::REF_ID, ObjKey::encode_u32_id(10), 1, true, dt_ids::ID, 0, None),
+            RunRecord::new(0, 2, 5, ObjKind::REF_ID, ObjKey::encode_u32_id(10), 2, true, dt_ids::ID, 0, None),
+            RunRecord::new(0, 3, 3, ObjKind::REF_ID, ObjKey::encode_u32_id(20), 1, true, dt_ids::ID, 0, None),
         ];
         let encoder = LeafletEncoder::with_widths_and_order(1, 2, 1, RunSortOrder::Opst);
         let encoded = encoder.encode_leaflet(&records);
@@ -1268,7 +1321,7 @@ mod tests {
     #[test]
     fn test_opst_single_record() {
         let records = vec![
-            RunRecord::new(0, 1, 5, ValueId::iri_id(42), 1, true, dt_ids::ID, 0, None),
+            RunRecord::new(0, 1, 5, ObjKind::REF_ID, ObjKey::encode_u32_id(42), 1, true, dt_ids::ID, 0, None),
         ];
         let encoder = LeafletEncoder::with_widths_and_order(1, 2, 1, RunSortOrder::Opst);
         let encoded = encoder.encode_leaflet(&records);
@@ -1279,12 +1332,13 @@ mod tests {
     #[test]
     fn test_opst_all_same_object() {
         // All records have the same o — collapses to a single RLE entry
-        let iri = ValueId::iri_id(99);
+        let o_kind = ObjKind::REF_ID;
+        let o_key = ObjKey::encode_u32_id(99);
         let records = vec![
-            RunRecord::new(0, 1, 1, iri, 1, true, dt_ids::ID, 0, None),
-            RunRecord::new(0, 2, 1, iri, 1, true, dt_ids::ID, 0, None),
-            RunRecord::new(0, 3, 2, iri, 1, true, dt_ids::ID, 0, None),
-            RunRecord::new(0, 4, 2, iri, 1, true, dt_ids::ID, 0, None),
+            RunRecord::new(0, 1, 1, o_kind, o_key, 1, true, dt_ids::ID, 0, None),
+            RunRecord::new(0, 2, 1, o_kind, o_key, 1, true, dt_ids::ID, 0, None),
+            RunRecord::new(0, 3, 2, o_kind, o_key, 1, true, dt_ids::ID, 0, None),
+            RunRecord::new(0, 4, 2, o_kind, o_key, 1, true, dt_ids::ID, 0, None),
         ];
         let encoder = LeafletEncoder::with_widths_and_order(1, 2, 1, RunSortOrder::Opst);
         let encoded = encoder.encode_leaflet(&records);
@@ -1296,9 +1350,9 @@ mod tests {
     fn test_opst_alternating_objects() {
         // Worst case for RLE: every record has a different o
         let records = vec![
-            RunRecord::new(0, 1, 1, ValueId::iri_id(1), 1, true, dt_ids::ID, 0, None),
-            RunRecord::new(0, 2, 1, ValueId::iri_id(2), 1, true, dt_ids::ID, 0, None),
-            RunRecord::new(0, 3, 1, ValueId::iri_id(3), 1, true, dt_ids::ID, 0, None),
+            RunRecord::new(0, 1, 1, ObjKind::REF_ID, ObjKey::encode_u32_id(1), 1, true, dt_ids::ID, 0, None),
+            RunRecord::new(0, 2, 1, ObjKind::REF_ID, ObjKey::encode_u32_id(2), 1, true, dt_ids::ID, 0, None),
+            RunRecord::new(0, 3, 1, ObjKind::REF_ID, ObjKey::encode_u32_id(3), 1, true, dt_ids::ID, 0, None),
         ];
         let encoder = LeafletEncoder::with_widths_and_order(1, 2, 1, RunSortOrder::Opst);
         let encoded = encoder.encode_leaflet(&records);
@@ -1323,11 +1377,6 @@ mod tests {
     // ---- Region 3 tests ----
 
     #[test]
-    fn test_region3_entry_size() {
-        assert_eq!(std::mem::size_of::<Region3Entry>(), 32);
-    }
-
-    #[test]
     fn test_region3_empty_round_trip() {
         let entries: Vec<Region3Entry> = vec![];
         let encoded = encode_region3(&entries);
@@ -1341,15 +1390,18 @@ mod tests {
     fn test_region3_multi_entry_round_trip() {
         let entries = vec![
             Region3Entry {
-                s_id: 10, p_id: 5, o: ValueId::num_int(100).unwrap().as_u64(),
+                s_id: 10, p_id: 5, o_kind: ObjKind::NUM_INT.as_u8(),
+                o_key: ObjKey::encode_i64(100).as_u64(),
                 t_signed: 42, dt: dt_ids::INTEGER, lang_id: 0, i: NO_LIST_INDEX,
             },
             Region3Entry {
-                s_id: 10, p_id: 5, o: ValueId::num_int(100).unwrap().as_u64(),
+                s_id: 10, p_id: 5, o_kind: ObjKind::NUM_INT.as_u8(),
+                o_key: ObjKey::encode_i64(100).as_u64(),
                 t_signed: -40, dt: dt_ids::INTEGER, lang_id: 0, i: NO_LIST_INDEX,
             },
             Region3Entry {
-                s_id: 7, p_id: 3, o: ValueId::lex_id(99).as_u64(),
+                s_id: 7, p_id: 3, o_kind: ObjKind::LEX_ID.as_u8(),
+                o_key: ObjKey::encode_u32_id(99).as_u64(),
                 t_signed: 38, dt: dt_ids::LANG_STRING, lang_id: 2, i: 5,
             },
         ];
@@ -1363,7 +1415,7 @@ mod tests {
     fn test_region3_signed_t_encoding() {
         // Assert: op=1 → positive t_signed
         let assert_rec = RunRecord::new(
-            0, 1, 2, ValueId::num_int(10).unwrap(), 42, true,
+            0, 1, 2, ObjKind::NUM_INT, ObjKey::encode_i64(10), 42, true,
             dt_ids::INTEGER, 0, None,
         );
         let e = Region3Entry::from_run_record(&assert_rec);
@@ -1373,7 +1425,7 @@ mod tests {
 
         // Retract: op=0 → negative t_signed
         let retract_rec = RunRecord::new(
-            0, 1, 2, ValueId::num_int(10).unwrap(), 42, false,
+            0, 1, 2, ObjKind::NUM_INT, ObjKey::encode_i64(10), 42, false,
             dt_ids::INTEGER, 0, None,
         );
         let e = Region3Entry::from_run_record(&retract_rec);
@@ -1412,11 +1464,13 @@ mod tests {
 
         let r3_entries = vec![
             Region3Entry {
-                s_id: 1, p_id: 2, o: ValueId::num_int(20).unwrap().as_u64(),
+                s_id: 1, p_id: 2, o_kind: ObjKind::NUM_INT.as_u8(),
+                o_key: ObjKey::encode_i64(20).as_u64(),
                 t_signed: 5, dt: dt_ids::INTEGER, lang_id: 0, i: NO_LIST_INDEX,
             },
             Region3Entry {
-                s_id: 1, p_id: 2, o: ValueId::num_int(15).unwrap().as_u64(),
+                s_id: 1, p_id: 2, o_kind: ObjKind::NUM_INT.as_u8(),
+                o_key: ObjKey::encode_i64(15).as_u64(),
                 t_signed: -4, dt: dt_ids::INTEGER, lang_id: 0, i: NO_LIST_INDEX,
             },
         ];

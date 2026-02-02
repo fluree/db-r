@@ -57,7 +57,7 @@ impl<'a> super::Parser<'a> {
     ///
     /// GroupClause ::= 'GROUP' 'BY' GroupCondition+
     /// GroupCondition ::= BuiltInCall | FunctionCall | '(' Expression ( 'AS' Var )? ')' | Var
-    fn parse_group_by(&mut self) -> Option<GroupByClause> {
+    pub(super) fn parse_group_by(&mut self) -> Option<GroupByClause> {
         let start = self.stream.current_span();
         self.stream.advance(); // consume GROUP
 
@@ -321,19 +321,4 @@ impl<'a> super::Parser<'a> {
         }
     }
 
-    pub(super) fn skip_group_by_content(&mut self) {
-        // Skip until we hit ORDER, HAVING, LIMIT, OFFSET, or end
-        while !self.stream.is_eof() {
-            if matches!(
-                &self.stream.peek().kind,
-                TokenKind::KwOrderBy
-                    | TokenKind::KwHaving
-                    | TokenKind::KwLimit
-                    | TokenKind::KwOffset
-            ) {
-                break;
-            }
-            self.stream.advance();
-        }
-    }
 }

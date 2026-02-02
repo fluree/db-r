@@ -1,38 +1,44 @@
 //! CommitResolver: transforms RawOps into RunRecords using global dictionaries.
 //!
-//! This is the core of Phase B — dictionary resolution. For each commit's ops:
+//! This is the core of Phase B -- dictionary resolution. For each commit's ops:
 //! 1. Look up namespace prefix from ns_code
 //! 2. Hash prefix + name using streaming xxh3_128 (no IRI concatenation on hot path)
 //! 3. Resolve to global u32 ID via SubjectDict/PredicateDict
-//! 4. Encode object value as ValueId
-//! 5. Resolve datatype → dict ID from (dt_ns_code, dt_name)
+//! 4. Encode object value as (ObjKind, ObjKey)
+//! 5. Resolve datatype -> dict ID from (dt_ns_code, dt_name)
 //! 6. Emit RunRecord
 
 use super::global_dict::GlobalDicts;
 use super::run_record::{RunRecord, NO_LIST_INDEX};
 use super::run_writer::RecordSink;
+use bigdecimal::BigDecimal;
 use chrono;
 use fluree_db_core::temporal::{Date, DateTime, Time};
+use fluree_db_core::value::FlakeValue;
 use super::global_dict::dt_ids;
-use fluree_db_core::value_id::ValueId;
+use fluree_db_core::value_id::{ObjKind, ObjKey};
 use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
 use fluree_db_novelty::commit_v2::raw_reader::{CommitOps, RawObject, RawOp};
 use fluree_db_novelty::commit_v2::{load_commit_ops, CommitV2Error};
 use fluree_vocab::{fluree, ledger};
+use num_bigint::BigInt;
 use std::collections::HashMap;
 use std::io;
 use xxhash_rust::xxh3::Xxh3;
 
 /// Resolves commit-local ops into globally-addressed RunRecords.
 pub struct CommitResolver {
-    /// namespace_code → prefix IRI.
+    /// namespace_code -> prefix IRI.
     /// Seeded from `default_namespace_codes()`, updated by commit namespace_deltas.
     ///
-    /// **Invariant:** ns_code → prefix is stable once assigned. A namespace
+    /// **Invariant:** ns_code -> prefix is stable once assigned. A namespace
     /// delta can introduce new codes but never changes existing mappings.
     ns_prefixes: HashMap<i32, String>,
     /// Reusable xxh3 streaming hasher (avoids per-op hasher construction).
     hasher: Xxh3,
+    /// Per-predicate tracking: bit 0 = has NUM_INT, bit 1 = has NUM_F64, bit 2 = has NUM_BIG.
+    /// Used to compute `NumericShape` for the binary scan path.
+    numeric_tag_usage: HashMap<u32, u8>,
 }
 
 impl CommitResolver {
@@ -41,6 +47,7 @@ impl CommitResolver {
         Self {
             ns_prefixes: fluree_db_core::default_namespace_codes(),
             hasher: Xxh3::new(),
+            numeric_tag_usage: HashMap::new(),
         }
     }
 
@@ -83,17 +90,6 @@ impl CommitResolver {
     ///
     /// Convenience wrapper that combines [`load_commit_ops`], [`apply_namespace_delta`],
     /// [`resolve_commit_ops`], and [`emit_txn_meta`]. Returns `(op_count, t)`.
-    ///
-    /// This is the primary entry point for downstream orchestration (e.g., the
-    /// ingest crate) — callers just feed raw blob bytes without needing to know
-    /// about `CommitOps` or namespace deltas.
-    ///
-    /// `commit_address` is the storage address of this commit (e.g.,
-    /// `"fluree:file://ledger/commit/<hex>.json"`), used to derive the canonical
-    /// commit IRI for txn-meta records.
-    ///
-    /// `ledger_alias` is the ledger name (e.g., `"my-ledger"`), stored as
-    /// `ledger:alias` in the txn-meta graph.
     pub fn resolve_blob<W: RecordSink>(
         &mut self,
         bytes: &[u8],
@@ -115,11 +111,31 @@ impl CommitResolver {
         Ok((op_count, commit_ops.t))
     }
 
-    /// Access the accumulated namespace prefix map (code → prefix IRI).
-    ///
-    /// Needed for persistence at end of run generation (Step 2: namespaces.json).
+    /// Access the accumulated namespace prefix map (code -> prefix IRI).
     pub fn ns_prefixes(&self) -> &HashMap<i32, String> {
         &self.ns_prefixes
+    }
+
+    /// Compute per-predicate numeric shapes from accumulated tag usage.
+    ///
+    /// Returns a map from p_id to `NumericShape` (IntOnly, FloatOnly, or Mixed).
+    /// Only includes predicates that have NumInt or NumF64 values.
+    pub fn numeric_shapes(&self) -> HashMap<u32, super::numfloat_dict::NumericShape> {
+        use super::numfloat_dict::NumericShape;
+        self.numeric_tag_usage
+            .iter()
+            .filter_map(|(&p_id, &bits)| {
+                // Only consider bits 0 (INT) and 1 (F64); bit 2 (BIG) is separate
+                let int_f64_bits = bits & 0x3;
+                let shape = match int_f64_bits {
+                    0x1 => NumericShape::IntOnly,
+                    0x2 => NumericShape::FloatOnly,
+                    0x3 => NumericShape::Mixed,
+                    _ => return None, // Only has NumBig, or no numeric values
+                };
+                Some((p_id, shape))
+            })
+            .collect()
     }
 
     /// Emit txn-meta RunRecords for a single commit into the txn-meta graph (g_id=1).
@@ -189,7 +205,8 @@ impl CommitResolver {
         // Helper to push a record into the writer
         let mut push = |s_id: u32,
                         p_id: u32,
-                        o: ValueId,
+                        o_kind: ObjKind,
+                        o_key: ObjKey,
                         dt: u16|
          -> Result<(), ResolverError> {
             let record = RunRecord {
@@ -197,11 +214,12 @@ impl CommitResolver {
                 s_id,
                 p_id,
                 dt,
-                lang_id: 0,
-                o,
-                t,
+                o_kind: o_kind.as_u8(),
                 op: 1, // assert
-                _pad: [0; 3],
+                o_key: o_key.as_u64(),
+                t,
+                lang_id: 0,
+                _pad: [0; 2],
                 i: NO_LIST_INDEX,
             };
             writer
@@ -218,7 +236,8 @@ impl CommitResolver {
         push(
             commit_s_id,
             p_address,
-            ValueId::lex_id(addr_str_id),
+            ObjKind::LEX_ID,
+            ObjKey::encode_u32_id(addr_str_id),
             dt_ids::STRING,
         )?;
 
@@ -227,30 +246,43 @@ impl CommitResolver {
         push(
             commit_s_id,
             p_alias,
-            ValueId::lex_id(alias_str_id),
+            ObjKind::LEX_ID,
+            ObjKey::encode_u32_id(alias_str_id),
             dt_ids::STRING,
         )?;
 
         // ledger:v (INTEGER)
-        let v_val = ValueId::num_int(envelope.v as i64)
-            .unwrap_or_else(|| ValueId::lex_id(dicts.strings.get_or_insert(&envelope.v.to_string())));
-        push(commit_s_id, p_v, v_val, dt_ids::INTEGER)?;
+        push(
+            commit_s_id,
+            p_v,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(envelope.v as i64),
+            dt_ids::INTEGER,
+        )?;
 
-        // ledger:time (LONG) — epoch milliseconds (skipped if ISO parse fails)
+        // ledger:time (LONG) -- epoch milliseconds (skipped if ISO parse fails)
         if let Some(time_str) = &envelope.time {
             if let Some(epoch_ms) = iso_to_epoch_ms(time_str) {
-                if let Some(time_val) = ValueId::num_int(epoch_ms) {
-                    push(commit_s_id, p_time, time_val, dt_ids::LONG)?;
-                }
+                push(
+                    commit_s_id,
+                    p_time,
+                    ObjKind::NUM_INT,
+                    ObjKey::encode_i64(epoch_ms),
+                    dt_ids::LONG,
+                )?;
             }
         }
 
         // ledger:t (INTEGER)
-        let t_val = ValueId::num_int(t)
-            .unwrap_or_else(|| ValueId::lex_id(dicts.strings.get_or_insert(&t.to_string())));
-        push(commit_s_id, p_t, t_val, dt_ids::INTEGER)?;
+        push(
+            commit_s_id,
+            p_t,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(t),
+            dt_ids::INTEGER,
+        )?;
 
-        // ledger:previous (ID) — ref to previous commit
+        // ledger:previous (ID) -- ref to previous commit
         if let Some(prev_ref) = &envelope.previous_ref {
             if let Some(prev_id) = &prev_ref.id {
                 // prev_id is like "fluree:commit:sha256:<hex>"
@@ -258,7 +290,8 @@ impl CommitResolver {
                 push(
                     commit_s_id,
                     p_previous,
-                    ValueId::iri_id(prev_s_id),
+                    ObjKind::REF_ID,
+                    ObjKey::encode_u32_id(prev_s_id),
                     dt_ids::ID,
                 )?;
             }
@@ -285,7 +318,7 @@ impl CommitResolver {
         // 3. Resolve predicate
         let p_id = self.resolve_predicate(op.p_ns_code, op.p_name, dicts);
 
-        // 4. Resolve datatype via dict lookup (lossless — any IRI gets an ID)
+        // 4. Resolve datatype via dict lookup (lossless -- any IRI gets an ID)
         let prefix = self.lookup_prefix(op.dt_ns_code);
         let dt_id = dicts.datatypes.get_or_insert_parts(prefix, op.dt_name);
         // Bulk import path: enforce u8 dt ids for now (imports are allowed to error here).
@@ -298,8 +331,8 @@ impl CommitResolver {
         }
         let dt_id = dt_id as u16;
 
-        // 5. Encode object → ValueId
-        let o = self.resolve_object(&op.o, op.dt_ns_code, op.dt_name, dicts)
+        // 5. Encode object -> (ObjKind, ObjKey)
+        let (o_kind, o_key) = self.resolve_object(&op.o, p_id, dt_id, dicts)
             .map_err(|e| CommitV2Error::InvalidOp(format!("object resolve: {}", e)))?;
 
         // 6. Language tag
@@ -313,19 +346,20 @@ impl CommitResolver {
             s_id,
             p_id,
             dt: dt_id,
-            lang_id,
-            o,
-            t,
+            o_kind: o_kind.as_u8(),
             op: op.op as u8,
-            _pad: [0; 3],
+            o_key: o_key.as_u64(),
+            t,
+            lang_id,
+            _pad: [0; 2],
             i: i.unwrap_or(NO_LIST_INDEX),
         })
     }
 
     // ---- Field resolvers ----
 
-    /// Resolve graph: default graph (ns=0, name="") → g_id=0.
-    /// Named graphs → g_id = graphs.get_or_insert(full_iri) + 1.
+    /// Resolve graph: default graph (ns=0, name="") -> g_id=0.
+    /// Named graphs -> g_id = graphs.get_or_insert(full_iri) + 1.
     fn resolve_graph(
         &mut self,
         ns_code: i32,
@@ -340,7 +374,7 @@ impl CommitResolver {
         Ok(dicts.graphs.get_or_insert_parts(prefix, name) + 1)
     }
 
-    /// Resolve subject IRI → global s_id using streaming xxh3_128.
+    /// Resolve subject IRI -> global s_id using streaming xxh3_128.
     fn resolve_subject(
         &mut self,
         ns_code: i32,
@@ -357,7 +391,7 @@ impl CommitResolver {
         self.hasher.update(name.as_bytes());
         let hash = self.hasher.digest128();
 
-        // Closure captures &str refs — only allocates on miss (novel entry).
+        // Closure captures &str refs -- only allocates on miss (novel entry).
         dicts.subjects.get_or_insert_with_hash(hash, || {
             let mut s = String::with_capacity(prefix.len() + name.len());
             s.push_str(prefix);
@@ -366,7 +400,7 @@ impl CommitResolver {
         })
     }
 
-    /// Resolve predicate IRI → global p_id.
+    /// Resolve predicate IRI -> global p_id.
     fn resolve_predicate(
         &mut self,
         ns_code: i32,
@@ -377,54 +411,55 @@ impl CommitResolver {
         dicts.predicates.get_or_insert_parts(prefix, name)
     }
 
-    /// Encode object value as ValueId.
+    /// Encode object value as (ObjKind, ObjKey).
+    ///
+    /// Numeric routing:
+    /// - Integers -> NumInt (full i64 range, order-preserving)
+    /// - Finite floats: integer-valued that fit i64 -> NumInt; otherwise -> NumF64 (inline)
+    /// - NaN / Inf -> REJECT (error)
+    /// - Overflow BigInt / BigDecimal -> NumBig (per-predicate equality-only arena)
     fn resolve_object(
         &mut self,
         obj: &RawObject<'_>,
-        _dt_ns_code: i32,
-        _dt_name: &str,
+        p_id: u32,
+        dt_id: u16,
         dicts: &mut GlobalDicts,
-    ) -> Result<ValueId, String> {
+    ) -> Result<(ObjKind, ObjKey), String> {
         match obj {
             RawObject::Long(v) => {
-                // Try NUM_INT; fallback to LEX_ID if outside i60 range
-                match ValueId::num_int(*v) {
-                    Some(vid) => Ok(vid),
-                    None => {
-                        let id = dicts.strings.get_or_insert(&v.to_string());
-                        Ok(ValueId::lex_id(id))
-                    }
-                }
+                *self.numeric_tag_usage.entry(p_id).or_default() |= 0x1;
+                Ok((ObjKind::NUM_INT, ObjKey::encode_i64(*v)))
             }
             RawObject::Double(v) => {
-                // Phase 4: always LEX_ID for doubles (no NUM_FLOAT shortcut).
-                // This means non-integer float values are ordered by string dict
-                // insertion order, not by value. Per-predicate NUM_FLOAT dict
-                // with midpoint-splitting ranks is a later optimization.
-                let id = dicts.strings.get_or_insert(&v.to_string());
-                Ok(ValueId::lex_id(id))
+                // Integer-valued doubles that fit i64 -> NumInt fast path
+                if v.is_finite() && v.fract() == 0.0 {
+                    let as_i64 = *v as i64;
+                    if (as_i64 as f64) == *v {
+                        *self.numeric_tag_usage.entry(p_id).or_default() |= 0x1;
+                        return Ok((ObjKind::NUM_INT, ObjKey::encode_i64(as_i64)));
+                    }
+                }
+                // Reject NaN and Inf
+                let key = ObjKey::encode_f64(*v)
+                    .map_err(|e| format!("f64 encode for p_id={}: {}", p_id, e))?;
+                *self.numeric_tag_usage.entry(p_id).or_default() |= 0x2;
+                Ok((ObjKind::NUM_F64, key))
             }
             RawObject::Str(s) => {
                 let id = dicts.strings.get_or_insert(s);
-                Ok(ValueId::lex_id(id))
+                Ok((ObjKind::LEX_ID, ObjKey::encode_u32_id(id)))
             }
             RawObject::Boolean(b) => {
-                if *b {
-                    Ok(ValueId::BOOL_TRUE)
-                } else {
-                    Ok(ValueId::BOOL_FALSE)
-                }
+                Ok((ObjKind::BOOL, ObjKey::encode_bool(*b)))
             }
             RawObject::Ref { ns_code, name } => {
-                // Resolve ref IRI → global subject ID → IRI_ID ValueId.
-                // Access ns_prefixes directly for disjoint field borrow.
+                // Resolve ref IRI -> global subject ID -> REF_ID.
                 let prefix = self.ns_prefixes.get(ns_code).map(|s| s.as_str()).unwrap_or("");
                 self.hasher.reset();
                 self.hasher.update(prefix.as_bytes());
                 self.hasher.update(name.as_bytes());
                 let hash = self.hasher.digest128();
 
-                // Closure captures &str refs — only allocates on miss (novel entry).
                 let id = dicts
                     .subjects
                     .get_or_insert_with_hash(hash, || {
@@ -434,48 +469,79 @@ impl CommitResolver {
                         s
                     })
                     .map_err(|e| format!("ref resolve: {}", e))?;
-                Ok(ValueId::iri_id(id))
+                Ok((ObjKind::REF_ID, ObjKey::encode_u32_id(id)))
             }
             RawObject::DateTimeStr(s) => {
                 DateTime::parse(s)
                     .map_err(|e| format!("datetime parse: {}", e))
-                    .and_then(|dt| {
+                    .map(|dt| {
                         let micros = dt.epoch_micros();
-                        ValueId::datetime(micros).ok_or_else(|| {
-                            format!("datetime {} epoch_micros {} exceeds i60 range", s, micros)
-                        })
+                        (ObjKind::DATE_TIME, ObjKey::encode_datetime(micros))
                     })
             }
             RawObject::DateStr(s) => {
                 Date::parse(s)
-                    .map(|d| ValueId::date(d.days_since_epoch()))
+                    .map(|d| (ObjKind::DATE, ObjKey::encode_date(d.days_since_epoch())))
                     .map_err(|e| format!("date parse: {}", e))
             }
             RawObject::TimeStr(s) => {
                 Time::parse(s)
-                    .map(|t| ValueId::time(t.micros_since_midnight()))
+                    .map(|t| (ObjKind::TIME, ObjKey::encode_time(t.micros_since_midnight())))
                     .map_err(|e| format!("time parse: {}", e))
             }
             RawObject::BigIntStr(s) => {
-                // Try to parse as i64 and use NUM_INT; fallback to LEX_ID
+                // Try to parse as i64 first for NumInt fast path
                 if let Ok(v) = s.parse::<i64>() {
-                    if let Some(vid) = ValueId::num_int(v) {
-                        return Ok(vid);
+                    *self.numeric_tag_usage.entry(p_id).or_default() |= 0x1;
+                    return Ok((ObjKind::NUM_INT, ObjKey::encode_i64(v)));
+                }
+                // Parse as BigInt
+                match s.parse::<BigInt>() {
+                    Ok(bi) => {
+                        if let Some(v) = num_traits::ToPrimitive::to_i64(&bi) {
+                            *self.numeric_tag_usage.entry(p_id).or_default() |= 0x1;
+                            return Ok((ObjKind::NUM_INT, ObjKey::encode_i64(v)));
+                        }
+                        // Overflow BigInt -> NumBig
+                        *self.numeric_tag_usage.entry(p_id).or_default() |= 0x4;
+                        let handle = dicts
+                            .numbigs
+                            .entry(p_id)
+                            .or_default()
+                            .get_or_insert_bigint(&bi);
+                        Ok((ObjKind::NUM_BIG, ObjKey::encode_u32_id(handle)))
+                    }
+                    Err(_) => {
+                        // Cannot parse as BigInt -- store as string
+                        let id = dicts.strings.get_or_insert(s);
+                        Ok((ObjKind::LEX_ID, ObjKey::encode_u32_id(id)))
                     }
                 }
-                let id = dicts.strings.get_or_insert(s);
-                Ok(ValueId::lex_id(id))
             }
             RawObject::DecimalStr(s) => {
-                // Always LEX_ID for decimals
-                let id = dicts.strings.get_or_insert(s);
-                Ok(ValueId::lex_id(id))
+                // All typed xsd:decimal values route to NumBig by default
+                match s.parse::<BigDecimal>() {
+                    Ok(bd) => {
+                        *self.numeric_tag_usage.entry(p_id).or_default() |= 0x4;
+                        let handle = dicts
+                            .numbigs
+                            .entry(p_id)
+                            .or_default()
+                            .get_or_insert_bigdec(&bd);
+                        Ok((ObjKind::NUM_BIG, ObjKey::encode_u32_id(handle)))
+                    }
+                    Err(_) => {
+                        // Cannot parse as BigDecimal -- store as string
+                        let id = dicts.strings.get_or_insert(s);
+                        Ok((ObjKind::LEX_ID, ObjKey::encode_u32_id(id)))
+                    }
+                }
             }
             RawObject::JsonStr(s) => {
                 let id = dicts.strings.get_or_insert(s);
-                Ok(ValueId::json(id))
+                Ok((ObjKind::JSON_ID, ObjKey::encode_u32_id(id)))
             }
-            RawObject::Null => Ok(ValueId::NULL),
+            RawObject::Null => Ok((ObjKind::NULL, ObjKey::ZERO)),
         }
     }
 
@@ -540,7 +606,7 @@ impl std::error::Error for ResolverError {}
 /// Addresses look like `fluree:file://ledger/commit/<64-hex>.json`.
 /// Returns the hex portion (without `sha256:` prefix) or `None` if unparseable.
 fn extract_commit_hex(address: &str) -> Option<&str> {
-    // Strip the scheme: "fluree:file://..." → path after "://"
+    // Strip the scheme: "fluree:file://..." -> path after "://"
     let path = if let Some(rest) = address.strip_prefix("fluree:") {
         let pos = rest.find("://")?;
         &rest[pos + 3..]
@@ -737,12 +803,8 @@ mod tests {
 
         resolver.resolve_commit_ops(&commit_ops, &mut dicts, &mut writer).unwrap();
 
-        // Alice and Bob are both in subject dict
-        // Bob is referenced both as a subject and as an object ref
-        // They should share the same global ID (dedup via hash)
         assert_eq!(dicts.subjects.len(), 2); // Alice, Bob
-        // Predicate: knows, age
-        assert_eq!(dicts.predicates.len(), 2);
+        assert_eq!(dicts.predicates.len(), 2); // knows, age
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -781,8 +843,8 @@ mod tests {
         let result = writer.finish(&mut dicts.languages).unwrap();
         let (_, _, records) = crate::run_index::read_run_file(&result.run_files[0].path).unwrap();
         assert_eq!(records.len(), 1);
-        // Verify the ValueId tag is DATETIME (0x9)
-        assert_eq!(records[0].o.tag(), 0x9);
+        // Verify the ObjKind is DATE_TIME (0x9)
+        assert_eq!(records[0].o_kind, ObjKind::DATE_TIME.as_u8());
         // Verify dt is DATE_TIME
         assert_eq!(records[0].dt, dt_ids::DATE_TIME);
 
@@ -824,8 +886,10 @@ mod tests {
 
         let result = writer.finish(&mut dicts.languages).unwrap();
         let (_, _, records) = crate::run_index::read_run_file(&result.run_files[0].path).unwrap();
-        assert_eq!(records[0].o, ValueId::BOOL_TRUE);
-        assert_eq!(records[1].o, ValueId::NULL);
+        assert_eq!(records[0].o_kind, ObjKind::BOOL.as_u8());
+        assert_eq!(records[0].o_key, ObjKey::encode_bool(true).as_u64());
+        assert_eq!(records[1].o_kind, ObjKind::NULL.as_u8());
+        assert_eq!(records[1].o_key, 0);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -889,9 +953,7 @@ mod tests {
             ),
             Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
         );
-        // Too short
         assert_eq!(super::extract_commit_hex("fluree:file://test/commit/abc.json"), None);
-        // No .json suffix
         assert_eq!(
             super::extract_commit_hex(
                 "fluree:file://test/commit/abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
@@ -908,7 +970,6 @@ mod tests {
         assert!(ms > 1737000000000);
         assert!(ms < 1738000000000);
 
-        // Invalid timestamp returns None (skipped, not emitted as 0)
         assert_eq!(super::iso_to_epoch_ms("not-a-date"), None);
     }
 
@@ -931,7 +992,6 @@ mod tests {
         };
         let mut writer = RunWriter::new(config);
 
-        // Build an envelope with time + previous_ref
         let hex = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
         let prev_hex = "0000000000000000000000000000000000000000000000000000000000000000";
         let commit_address = format!(
@@ -966,7 +1026,7 @@ mod tests {
         ) + 1;
         assert_eq!(g_id, 1);
 
-        // Verify subjects created (commit + prev_commit; no separate DB subject)
+        // Verify subjects created
         assert!(dicts.subjects.len() >= 2);
 
         // Flush and read back records
@@ -992,34 +1052,32 @@ mod tests {
         assert!(p_t.is_some(), "ledger:t predicate missing");
         assert!(p_previous.is_some(), "ledger:previous predicate missing");
 
-        // Find the time record and verify it's NUM_INT (epoch ms) with dt_ids::LONG
+        // Find the time record and verify it's NUM_INT with dt_ids::LONG
         let time_pid = p_time.unwrap();
         let time_rec = records.iter().find(|r| r.p_id == time_pid).unwrap();
         assert_eq!(time_rec.dt, dt_ids::LONG, "ledger:time must be dt_ids::LONG");
-        // Verify it's a NUM_INT (tag 0x3)
-        assert_eq!(time_rec.o.tag(), 0x3, "ledger:time must be NUM_INT encoding");
+        assert_eq!(time_rec.o_kind, ObjKind::NUM_INT.as_u8(), "ledger:time must be NUM_INT");
         // Verify epoch ms is reasonable (2025)
-        let epoch_ms = time_rec.o.decode_offset_binary();
+        let epoch_ms = ObjKey::from_u64(time_rec.o_key).decode_i64();
         assert!(epoch_ms > 1718000000000, "epoch ms should be in 2025");
 
-        // Find the t record (now on commit subject, not separate DB subject)
+        // Find the t record
         let t_pid = p_t.unwrap();
         let t_rec = records.iter().find(|r| r.p_id == t_pid).unwrap();
         assert_eq!(t_rec.dt, dt_ids::INTEGER, "ledger:t must be dt_ids::INTEGER");
-        assert_eq!(t_rec.o.tag(), 0x3, "ledger:t must be NUM_INT encoding");
+        assert_eq!(t_rec.o_kind, ObjKind::NUM_INT.as_u8(), "ledger:t must be NUM_INT");
 
-        // Find the previous record and verify it's IRI_ID with dt_ids::ID
+        // Find the previous record and verify it's REF_ID with dt_ids::ID
         let prev_pid = p_previous.unwrap();
         let prev_rec = records.iter().find(|r| r.p_id == prev_pid).unwrap();
         assert_eq!(prev_rec.dt, dt_ids::ID, "ledger:previous must be dt_ids::ID");
-        assert_eq!(prev_rec.o.tag(), 0x5, "ledger:previous must be IRI_ID encoding");
+        assert_eq!(prev_rec.o_kind, ObjKind::REF_ID.as_u8(), "ledger:previous must be REF_ID");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_emit_txn_meta_minimal() {
-        // Test with minimal envelope (no time, no previous_ref)
         use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
 
         let dir = std::env::temp_dir().join("fluree_test_emit_txn_meta_min");
@@ -1056,8 +1114,7 @@ mod tests {
             .emit_txn_meta(&commit_address, "test-ledger", &envelope, &mut dicts, &mut writer)
             .unwrap();
 
-        // 4 records on commit subject: address, alias, v, t
-        // No time, no previous — those are conditional
+        // 4 records: address, alias, v, t (no time, no previous)
         assert_eq!(count, 4);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1066,7 +1123,6 @@ mod tests {
     #[test]
     fn test_global_dicts_reserves_g_id_1() {
         let dicts = GlobalDicts::new_memory();
-        // txn-meta graph is pre-inserted at position 0 in graphs dict
         let g_id = dicts.graphs.get("https://ns.flur.ee/ledger#transactions");
         assert_eq!(g_id, Some(0), "txn-meta graph must be first entry (dict id=0, g_id=0+1=1)");
     }

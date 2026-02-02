@@ -144,7 +144,7 @@ impl KWayMerge {
 #[inline]
 fn same_identity(a: &RunRecord, b: &RunRecord) -> bool {
     // Base identity
-    if a.g_id != b.g_id || a.s_id != b.s_id || a.p_id != b.p_id || a.o != b.o || a.dt != b.dt {
+    if a.g_id != b.g_id || a.s_id != b.s_id || a.p_id != b.p_id || a.o_kind != b.o_kind || a.o_key != b.o_key || a.dt != b.dt {
         return false;
     }
 
@@ -172,14 +172,14 @@ mod tests {
     use crate::run_index::run_record::cmp_spot;
     use crate::run_index::run_file::write_run_file;
     use crate::run_index::run_record::RunSortOrder;
-    use fluree_db_core::value_id::ValueId;
+    use fluree_db_core::value_id::{ObjKind, ObjKey};
 
     fn make_record(s_id: u32, p_id: u32, val: i64, t: i64) -> RunRecord {
         RunRecord::new(
             0,
             s_id,
             p_id,
-            ValueId::num_int(val).unwrap(),
+            ObjKind::NUM_INT, ObjKey::encode_i64(val),
             t,
             true,
             dt_ids::INTEGER,
@@ -193,7 +193,7 @@ mod tests {
             0,
             s_id,
             p_id,
-            ValueId::lex_id(lex_id),
+            ObjKind::LEX_ID, ObjKey::encode_u32_id(lex_id),
             t,
             true,
             dt_ids::LANG_STRING,
@@ -207,7 +207,7 @@ mod tests {
             0,
             s_id,
             p_id,
-            ValueId::num_int(val).unwrap(),
+            ObjKind::NUM_INT, ObjKey::encode_i64(val),
             t,
             true,
             dt_ids::INTEGER,

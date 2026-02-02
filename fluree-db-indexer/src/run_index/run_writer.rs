@@ -362,14 +362,14 @@ impl RecordSink for MultiOrderRunWriter {
 mod tests {
     use super::*;
     use crate::run_index::global_dict::dt_ids;
-    use fluree_db_core::value_id::ValueId;
+    use fluree_db_core::value_id::{ObjKind, ObjKey};
 
     fn make_test_record(s_id: u32, p_id: u32, val: i64, t: i64) -> RunRecord {
         RunRecord::new(
             0,
             s_id,
             p_id,
-            ValueId::num_int(val).unwrap(),
+            ObjKind::NUM_INT, ObjKey::encode_i64(val),
             t,
             true,
             dt_ids::INTEGER,
@@ -540,7 +540,7 @@ mod tests {
         // Push 1 IRI record
         let iri_rec = RunRecord::new(
             0, 3, 1,
-            ValueId::iri_id(42),
+            ObjKind::REF_ID, ObjKey::encode_u32_id(42),
             1, true,
             dt_ids::ID,
             0, None,

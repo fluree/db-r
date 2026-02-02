@@ -1,6 +1,7 @@
 //! Graph pattern parsing: WHERE, OPTIONAL, UNION, MINUS, FILTER, BIND, VALUES, subqueries.
 
 use crate::ast::pattern::{GraphName, SubSelect, SubSelectOrderBy};
+use crate::ast::query::SelectVariables;
 use crate::ast::{GraphPattern, Term, Var, WhereClause};
 use crate::diag::{DiagCode, Diagnostic};
 use crate::lex::TokenKind;
@@ -110,6 +111,24 @@ impl<'a> super::Parser<'a> {
                 if self.stream.check_keyword(TokenKind::KwSelect) {
                     if let Some(subquery) = self.parse_subquery(brace_span) {
                         patterns.push(subquery);
+                    } else {
+                        // Subquery parse failed — skip to matching } to prevent
+                        // the unparsed tokens from leaking into the outer scope.
+                        let mut depth = 1u32;
+                        while depth > 0 && !self.stream.is_eof() {
+                            match &self.stream.peek().kind {
+                                TokenKind::LBrace => depth += 1,
+                                TokenKind::RBrace => depth -= 1,
+                                _ => {}
+                            }
+                            if depth > 0 {
+                                self.stream.advance();
+                            }
+                        }
+                        // Consume the final }
+                        if self.stream.check(&TokenKind::RBrace) {
+                            self.stream.advance();
+                        }
                     }
                 } else if let Some(inner) = self.parse_group_graph_pattern() {
                     // Check for UNION after the group
@@ -526,18 +545,16 @@ impl<'a> super::Parser<'a> {
         };
 
         // Parse variable list (SELECT * or SELECT ?var1 ?var2 ...)
+        // Reuses the top-level SELECT parser which handles both ?var and (expr AS ?var).
         let variables = if self.stream.match_token(&TokenKind::Star) {
-            None // SELECT *
+            SelectVariables::Star
         } else {
-            let mut vars = Vec::new();
-            while let Some((name, span)) = self.stream.consume_var() {
-                vars.push(Var::new(name.as_ref(), span));
-            }
+            let vars = self.parse_select_variables()?;
             if vars.is_empty() {
                 self.stream.error_at_current("expected variable or '*' after SELECT");
                 return None;
             }
-            Some(vars)
+            SelectVariables::Explicit(vars)
         };
 
         // Optional WHERE keyword (can be omitted in subqueries)
@@ -551,8 +568,8 @@ impl<'a> super::Parser<'a> {
 
         let pattern = self.parse_group_graph_pattern()?;
 
-        // Parse solution modifiers (ORDER BY, LIMIT, OFFSET)
-        let (order_by, limit, offset) = self.parse_subquery_modifiers();
+        // Parse solution modifiers (GROUP BY, ORDER BY, LIMIT, OFFSET)
+        let (group_by, order_by, limit, offset) = self.parse_subquery_modifiers();
 
         // Expect closing brace for the subquery
         if !self.stream.match_token(&TokenKind::RBrace) {
@@ -566,6 +583,7 @@ impl<'a> super::Parser<'a> {
             reduced,
             variables,
             pattern: Box::new(pattern),
+            group_by,
             order_by,
             limit,
             offset,
@@ -578,23 +596,31 @@ impl<'a> super::Parser<'a> {
         })
     }
 
-    /// Parse solution modifiers for a subquery (ORDER BY, LIMIT, OFFSET).
+    /// Parse solution modifiers for a subquery (GROUP BY, ORDER BY, LIMIT, OFFSET).
     ///
-    /// Returns (order_by, limit, offset).
-    pub(super) fn parse_subquery_modifiers(&mut self) -> (Vec<SubSelectOrderBy>, Option<u64>, Option<u64>) {
+    /// Returns (group_by, order_by, limit, offset).
+    pub(super) fn parse_subquery_modifiers(
+        &mut self,
+    ) -> (
+        Option<crate::ast::query::GroupByClause>,
+        Vec<SubSelectOrderBy>,
+        Option<u64>,
+        Option<u64>,
+    ) {
         let mut order_by = Vec::new();
         let mut limit = None;
         let mut offset = None;
 
-        // GROUP BY (skip for now - Phase 4)
-        if self.stream.check_keyword(TokenKind::KwGroupBy) {
-            self.stream.advance();
-            self.stream.match_keyword(TokenKind::KwBy);
-            self.skip_group_by_content();
-        }
+        // GROUP BY
+        let group_by = if self.stream.check_keyword(TokenKind::KwGroupBy) {
+            self.parse_group_by()
+        } else {
+            None
+        };
 
-        // HAVING (skip for now - Phase 4)
+        // HAVING — not yet supported in subqueries; emit error instead of silently skipping.
         if self.stream.check_keyword(TokenKind::KwHaving) {
+            self.stream.error_at_current("HAVING is not yet supported in subqueries");
             self.stream.advance();
             self.skip_parenthesized_content();
         }
@@ -656,6 +682,6 @@ impl<'a> super::Parser<'a> {
             }
         }
 
-        (order_by, limit, offset)
+        (group_by, order_by, limit, offset)
     }
 }

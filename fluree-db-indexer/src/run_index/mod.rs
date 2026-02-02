@@ -22,6 +22,8 @@ pub mod streaming_reader;
 pub mod lang_remap;
 pub mod merge;
 pub mod dict_io;
+pub mod numfloat_dict;
+pub mod numbig_dict;
 pub mod prefix_trie;
 pub mod spot_store;
 pub mod spot_cursor;
@@ -229,6 +231,12 @@ pub async fn generate_runs<S: StorageRead>(
 
     // Persist namespace map for query-time IRI encoding
     persist_namespaces(resolver.ns_prefixes(), &run_dir)?;
+
+    // Persist per-predicate numeric shapes for binary scan path
+    let shapes = resolver.numeric_shapes();
+    if !shapes.is_empty() {
+        numfloat_dict::write_numeric_shapes(&run_dir.join("numeric_shapes.json"), &shapes)?;
+    }
 
     // Persist subject reverse hash index for O(log N) IRI → s_id lookup
     dicts.subjects.write_reverse_index(&run_dir.join("subjects.rev"))?;

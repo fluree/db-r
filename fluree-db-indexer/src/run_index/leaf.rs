@@ -43,7 +43,7 @@ const LEAFLET_DIR_ENTRY: usize = 24;
 // ============================================================================
 
 /// Compact sort key stored in leaf headers and branch entries.
-/// 28 bytes: g_id(4) + s_id(4) + p_id(4) + o(8) + dt(u16=2) + _pad(2) + reserved(4) = 28.
+/// 28 bytes: g_id(4) + s_id(4) + p_id(4) + dt(2) + o_kind(1) + _pad(1) + o_key(8) + _pad2(4) = 28.
 ///
 /// Note: For branch routing we use full RunRecord keys (40 bytes). This
 /// compact form is only used inside leaf file headers for space efficiency.
@@ -52,9 +52,10 @@ pub struct SortKey {
     pub g_id: u32,
     pub s_id: u32,
     pub p_id: u32,
-    pub o: u64,
     pub dt: u16,
-    pub _pad: [u8; 2],
+    pub o_kind: u8,
+    pub _pad: u8,
+    pub o_key: u64,
 }
 // Serialized size is SORT_KEY_BYTES (28); in-memory layout may differ.
 
@@ -64,9 +65,10 @@ impl SortKey {
             g_id: r.g_id,
             s_id: r.s_id,
             p_id: r.p_id,
-            o: r.o.as_u64(),
             dt: r.dt,
-            _pad: [0; 2],
+            o_kind: r.o_kind,
+            _pad: 0,
+            o_key: r.o_key,
         }
     }
 
@@ -74,13 +76,11 @@ impl SortKey {
         buf[0..4].copy_from_slice(&self.g_id.to_le_bytes());
         buf[4..8].copy_from_slice(&self.s_id.to_le_bytes());
         buf[8..12].copy_from_slice(&self.p_id.to_le_bytes());
-        buf[12..20].copy_from_slice(&self.o.to_le_bytes());
-        buf[20..22].copy_from_slice(&self.dt.to_le_bytes());
-        buf[22..24].fill(0);
-        // 24 bytes written — but we write 28 for alignment (last 4 bytes reserved)
-        if buf.len() >= 28 {
-            buf[24..28].fill(0);
-        }
+        buf[12..14].copy_from_slice(&self.dt.to_le_bytes());
+        buf[14] = self.o_kind;
+        buf[15] = 0;
+        buf[16..24].copy_from_slice(&self.o_key.to_le_bytes());
+        buf[24..28].fill(0);
     }
 
     fn read_from(buf: &[u8]) -> Self {
@@ -88,9 +88,10 @@ impl SortKey {
             g_id: u32::from_le_bytes(buf[0..4].try_into().unwrap()),
             s_id: u32::from_le_bytes(buf[4..8].try_into().unwrap()),
             p_id: u32::from_le_bytes(buf[8..12].try_into().unwrap()),
-            o: u64::from_le_bytes(buf[12..20].try_into().unwrap()),
-            dt: u16::from_le_bytes(buf[20..22].try_into().unwrap()),
-            _pad: [0; 2],
+            dt: u16::from_le_bytes(buf[12..14].try_into().unwrap()),
+            o_kind: buf[14],
+            _pad: 0,
+            o_key: u64::from_le_bytes(buf[16..24].try_into().unwrap()),
         }
     }
 }
@@ -482,12 +483,12 @@ pub fn read_leaf_header(data: &[u8]) -> io::Result<LeafFileHeader> {
 mod tests {
     use super::*;
     use crate::run_index::global_dict::dt_ids;
-    use fluree_db_core::value_id::ValueId;
+    use fluree_db_core::value_id::{ObjKind, ObjKey};
 
     fn make_record(s_id: u32, p_id: u32, val: i64, t: i64) -> RunRecord {
         RunRecord::new(
             0, s_id, p_id,
-            ValueId::num_int(val).unwrap(),
+            ObjKind::NUM_INT, ObjKey::encode_i64(val),
             t, true, dt_ids::INTEGER, 0, None,
         )
     }

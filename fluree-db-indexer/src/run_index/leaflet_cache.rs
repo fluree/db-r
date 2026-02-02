@@ -43,14 +43,15 @@ pub struct LeafletCacheKey {
 // Cached value types
 // ============================================================================
 
-/// Cached decoded Region 1 (core columns: s_id, p_id, o).
+/// Cached decoded Region 1 (core columns: s_id, p_id, o_kind, o_key).
 ///
 /// Uses `Arc<[T]>` for zero-copy sharing between cache and in-flight cursors.
 #[derive(Clone, Debug)]
 pub struct CachedRegion1 {
     pub s_ids: Arc<[u32]>,
     pub p_ids: Arc<[u32]>,
-    pub o_values: Arc<[u64]>,
+    pub o_kinds: Arc<[u8]>,
+    pub o_keys: Arc<[u64]>,
     pub row_count: usize,
 }
 
@@ -66,8 +67,8 @@ pub struct CachedRegion2 {
 impl CachedRegion1 {
     /// Approximate byte size of this cached value (for cache weighing).
     pub fn byte_size(&self) -> usize {
-        // s_ids(4) + p_ids(4) + o_values(8) = 16 bytes per row
-        self.row_count * 16
+        // s_ids(4) + p_ids(4) + o_kinds(1) + o_keys(8) = 17 bytes per row
+        self.row_count * 17
     }
 }
 
@@ -181,7 +182,8 @@ mod tests {
         CachedRegion1 {
             s_ids: vec![1u32; row_count].into(),
             p_ids: vec![2u32; row_count].into(),
-            o_values: vec![3u64; row_count].into(),
+            o_kinds: vec![0u8; row_count].into(),
+            o_keys: vec![3u64; row_count].into(),
             row_count,
         }
     }
@@ -301,7 +303,7 @@ mod tests {
     #[test]
     fn test_cached_region_byte_sizes() {
         let r1 = make_r1(25000);
-        assert_eq!(r1.byte_size(), 25000 * 16); // 400KB
+        assert_eq!(r1.byte_size(), 25000 * 17); // 425KB
 
         let r2 = make_r2(25000);
         assert_eq!(r2.byte_size(), 25000 * 18); // 450KB

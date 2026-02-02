@@ -126,7 +126,8 @@ impl SpotCursor {
                     let flake = self.store.row_to_flake(
                         row_s_id,
                         row_p_id,
-                        decoded.o_values[row],
+                        decoded.o_kinds[row],
+                        decoded.o_keys[row],
                         decoded.dt_values[row],
                         decoded.t_values[row],
                         decoded.lang_ids[row],

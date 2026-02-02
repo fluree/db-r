@@ -91,7 +91,7 @@ pub use stats_view::{PropertyStatData, StatsView};
 pub use tracking::{FuelExceededError, PolicyStats, Tracker, TrackingOptions, TrackingTally};
 pub use coerce::{coerce_value, coerce_json_value, CoercionError, CoercionResult};
 pub use address::{ParsedFlureeAddress, parse_fluree_address, extract_identifier, extract_path};
-pub use value_id::{ValueId, DatatypeId};
+pub use value_id::{ObjKind, ObjKey, ObjKeyError, DatatypeId};
 
 /// Prelude module for convenient imports of storage traits and common types.
 ///

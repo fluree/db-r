@@ -9,7 +9,7 @@ use super::global_dict::PredicateDict;
 use super::leaf::read_leaf_header;
 use super::leaflet::decode_leaflet;
 use super::run_record::{RunSortOrder, NO_LIST_INDEX};
-use fluree_db_core::value_id::ValueId;
+use fluree_db_core::value_id::{ObjKind, ObjKey};
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
@@ -24,7 +24,8 @@ pub struct FactRow {
     pub s_id: u32,
     pub p_id: u32,
     pub p_iri: String,
-    pub o: ValueId,
+    pub o_kind: u8,
+    pub o_key: u64,
     pub o_display: String,
     pub dt: u32,
     pub t: i64,
@@ -167,7 +168,8 @@ impl SpotQuery {
 
                 for row in 0..decoded.row_count {
                     if decoded.s_ids[row] == s_id {
-                        let o = ValueId::from_u64(decoded.o_values[row]);
+                        let o_kind = decoded.o_kinds[row];
+                        let o_key = decoded.o_keys[row];
                         let dt = decoded.dt_values[row];
                         let p_id = decoded.p_ids[row];
                         let lang_id = decoded.lang_ids[row];
@@ -179,13 +181,14 @@ impl SpotQuery {
                             .unwrap_or("<unknown>")
                             .to_string();
 
-                        let o_display = self.project_object(o, dt);
+                        let o_display = self.project_object(o_kind, o_key, dt);
 
                         results.push(FactRow {
                             s_id,
                             p_id,
                             p_iri,
-                            o,
+                            o_kind,
+                            o_key,
                             o_display,
                             dt,
                             t: decoded.t_values[row],
@@ -234,58 +237,50 @@ impl SpotQuery {
         Ok(None)
     }
 
-    /// Project an object ValueId to a human-readable string.
-    fn project_object(&self, o: ValueId, _dt: u32) -> String {
-        let tag = o.tag();
-        match tag {
-            0x0 => "MIN".to_string(),
-            0x1 => "null".to_string(),
-            0x2 => {
-                if o.payload() == 0 {
-                    "false".to_string()
-                } else {
-                    "true".to_string()
-                }
+    /// Project an object (o_kind, o_key) pair to a human-readable string.
+    fn project_object(&self, o_kind: u8, o_key: u64, _dt: u32) -> String {
+        let kind = ObjKind::from_u8(o_kind);
+        let key = ObjKey::from_u64(o_key);
+        match kind {
+            ObjKind::MIN => "MIN".to_string(),
+            ObjKind::NULL => "null".to_string(),
+            ObjKind::BOOL => {
+                if o_key == 0 { "false".to_string() } else { "true".to_string() }
             }
-            0x3 => {
-                // NUM_INT: decode offset-binary i60
-                format!("{}", o.decode_offset_binary())
+            ObjKind::NUM_INT => {
+                format!("{}", key.decode_i64())
             }
-            0x4 => {
-                // NUM_FLOAT: rank (future)
-                format!("float(rank={})", o.payload())
+            ObjKind::NUM_F64 => {
+                format!("{}", key.decode_f64())
             }
-            0x5 => {
-                // IRI_ID: look up in subject forward file
-                let id = o.payload() as u32;
+            ObjKind::REF_ID => {
+                let id = key.decode_u32_id();
                 self.resolve_subject_iri(id)
                     .unwrap_or_else(|_| format!("<iri:{}>", id))
             }
-            0x6 => {
-                // LEX_ID: look up in string forward file
-                let id = o.payload() as u32;
+            ObjKind::LEX_ID => {
+                let id = key.decode_u32_id();
                 self.resolve_string_value(id)
                     .unwrap_or_else(|_| format!("<lex:{}>", id))
             }
-            0x7 => {
-                // DATE
-                format!("date(days={})", o.decode_offset_binary())
+            ObjKind::DATE => {
+                format!("date(days={})", key.decode_date())
             }
-            0x8 => {
-                // TIME
-                format!("time(micros={})", o.payload())
+            ObjKind::TIME => {
+                format!("time(micros={})", key.decode_time())
             }
-            0x9 => {
-                // DATETIME
-                format!("datetime(micros={})", o.decode_offset_binary())
+            ObjKind::DATE_TIME => {
+                format!("datetime(micros={})", key.decode_datetime())
             }
-            0xB => {
-                // JSON
-                let id = o.payload() as u32;
+            ObjKind::JSON_ID => {
+                let id = key.decode_u32_id();
                 self.resolve_string_value(id)
                     .unwrap_or_else(|_| format!("<json:{}>", id))
             }
-            _ => format!("{:?}", o),
+            ObjKind::NUM_BIG => {
+                format!("numbig(handle={})", key.decode_u32_id())
+            }
+            _ => format!("unknown(kind={:#x}, key={})", o_kind, o_key),
         }
     }
 

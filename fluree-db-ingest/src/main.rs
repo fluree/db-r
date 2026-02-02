@@ -193,7 +193,7 @@ async fn run_import(
     );
 
     // ---- Spawn background run resolver (optional) ----
-    let (run_tx, run_handle) = if args.generate_runs {
+    let (mut run_tx, mut run_handle) = if args.generate_runs {
         use fluree_db_indexer::run_index::{
             CommitResolver, GlobalDicts, RunGenerationResult, RunSortOrder,
             MultiOrderRunWriter, MultiOrderConfig, persist_namespaces,
@@ -361,15 +361,24 @@ async fn run_import(
         );
 
         // Feed commit blob + address to background resolver
-        if let Some(ref tx) = run_tx {
-            // block_in_place: tells tokio we may block (bounded channel backpressure).
-            // This is the desired behavior — if the resolver falls behind, import
-            // naturally slows down rather than accumulating unbounded memory.
+        let resolver_send_failed = if let Some(ref tx) = run_tx {
             let addr = result.address.clone();
             tokio::task::block_in_place(|| {
-                tx.send((result.commit_blob, addr))
-                    .map_err(|_| "resolver thread exited unexpectedly")
-            })?;
+                tx.send((result.commit_blob, addr)).is_err()
+            })
+        } else {
+            false
+        };
+        if resolver_send_failed {
+            drop(run_tx.take());
+            if let Some(h) = run_handle.take() {
+                match h.join() {
+                    Ok(Err(e)) => return Err(format!("resolver failed: {}", e).into()),
+                    Err(p) => return Err(format!("resolver panicked: {:?}", p).into()),
+                    _ => {}
+                }
+            }
+            return Err("resolver thread exited unexpectedly (no error captured)".into());
         }
 
         // Periodic checkpoint: publish nameservice head
@@ -489,7 +498,7 @@ async fn run_import_parallel(
     );
 
     // ---- Spawn background run resolver (same as serial path) ----
-    let (run_tx, run_handle) = if args.generate_runs {
+    let (mut run_tx, mut run_handle) = if args.generate_runs {
         use fluree_db_indexer::run_index::{
             persist_namespaces, CommitResolver, GlobalDicts, MultiOrderConfig,
             MultiOrderRunWriter, RunGenerationResult, RunSortOrder,
@@ -727,12 +736,24 @@ async fn run_import_parallel(
                 );
 
                 // Feed to run resolver
-                if let Some(ref tx) = run_tx {
+                let resolver_send_failed = if let Some(ref tx) = run_tx {
                     let addr = result.address.clone();
                     tokio::task::block_in_place(|| {
-                        tx.send((result.commit_blob, addr))
-                            .map_err(|_| "resolver thread exited unexpectedly")
-                    })?;
+                        tx.send((result.commit_blob, addr)).is_err()
+                    })
+                } else {
+                    false
+                };
+                if resolver_send_failed {
+                    drop(run_tx.take());
+                    if let Some(h) = run_handle.take() {
+                        match h.join() {
+                            Ok(Err(e)) => return Err(format!("resolver failed: {}", e).into()),
+                            Err(p) => return Err(format!("resolver panicked: {:?}", p).into()),
+                            _ => {}
+                        }
+                    }
+                    return Err("resolver thread exited unexpectedly (no error captured)".into());
                 }
 
                 // Periodic nameservice checkpoint

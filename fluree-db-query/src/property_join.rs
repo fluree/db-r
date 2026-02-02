@@ -26,14 +26,19 @@
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::operator::{Operator, OperatorState};
+use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::pattern::{Term, TriplePattern};
-use crate::scan::ScanOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::{NodeCache, ObjectBounds, Sid, Storage};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+#[cfg(feature = "binary-index")]
+use crate::binary_scan::DeferredScanOperator;
+
+#[cfg(not(feature = "binary-index"))]
+use crate::scan::ScanOperator;
 
 /// Internal temp var for object position in predicate scans.
 ///
@@ -43,6 +48,26 @@ use std::sync::Arc;
 /// 2. VarRegistry panics if > 65534 vars are registered (u16::MAX - 1)
 /// 3. This var never escapes to external schemas or user code
 const TEMP_OBJECT_VAR: VarId = VarId(u16::MAX - 1);
+
+#[cfg(feature = "binary-index")]
+fn make_property_join_scan<S: Storage + 'static, C: NodeCache + 'static>(
+    pattern: TriplePattern,
+    bounds: Option<ObjectBounds>,
+) -> BoxedOperator<S, C> {
+    Box::new(DeferredScanOperator::<S, C>::new(pattern, bounds))
+}
+
+#[cfg(not(feature = "binary-index"))]
+fn make_property_join_scan<S: Storage + 'static, C: NodeCache + 'static>(
+    pattern: TriplePattern,
+    bounds: Option<ObjectBounds>,
+) -> BoxedOperator<S, C> {
+    let mut scan = ScanOperator::new(pattern);
+    if let Some(b) = bounds {
+        scan = scan.with_object_bounds(b);
+    }
+    Box::new(scan)
+}
 
 /// Property-join operator for same-subject multi-predicate patterns
 ///
@@ -250,11 +275,14 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for PropertyJo
                 )
             };
 
-            // Create scan with optional bounds pushdown for this object variable
-            let mut scan = match self.object_bounds.get(obj_var) {
-                Some(bounds) => ScanOperator::new(pattern).with_object_bounds(bounds.clone()),
-                None => ScanOperator::new(pattern),
-            };
+            // Create scan with optional bounds pushdown for this object variable.
+            //
+            // IMPORTANT: Under `binary-index`, we must use `DeferredScanOperator` so
+            // the operator can select the binary scan path when available. Using
+            // `ScanOperator` directly will yield empty results in binary-only imports
+            // (no B-tree nodes to scan).
+            let bounds = self.object_bounds.get(obj_var).cloned();
+            let mut scan: BoxedOperator<S, C> = make_property_join_scan::<S, C>(pattern, bounds);
             scan.open(ctx).await?;
 
             while let Some(batch) = scan.next_batch(ctx).await? {
@@ -285,7 +313,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for PropertyJo
                 }
             }
 
-            <ScanOperator as Operator<S, C>>::close(&mut scan);
+            scan.close();
         }
 
         // Filter to only subjects that have values for ALL predicates

@@ -2147,6 +2147,7 @@ name = "fluree-db-indexer"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bigdecimal",
  "chrono",
  "fluree-db-core",
  "fluree-db-ledger",
@@ -2157,6 +2158,8 @@ dependencies = [
  "hex",
  "memmap2",
  "moka",
+ "num-bigint",
+ "num-traits",
  "rustc-hash",
  "serde",
  "serde_json",

@@ -1,17 +1,17 @@
 //! BinaryScanOperator: reads from binary columnar indexes and converts to bindings.
 //!
 //! Replaces `ScanOperator` for queries when a `BinaryIndexStore` is available.
-//! Works entirely in integer-ID space (s_id, p_id, ValueId) and only resolves
+//! Works entirely in integer-ID space (s_id, p_id, ObjKind/ObjKey) and only resolves
 //! to Sid/FlakeValue at the Binding output boundary.
 //!
 //! # Integer-ID Pipeline
 //!
-//! 1. Pattern's bound terms → integer IDs (s_id, p_id, ValueId) via `BinaryIndexStore`
+//! 1. Pattern's bound terms → integer IDs (s_id, p_id, ObjKind/ObjKey) via `BinaryIndexStore`
 //! 2. `BinaryCursor` iterates leaves using integer comparators and columnar filters
 //! 3. `DecodedBatch` rows converted to `Binding` columns:
 //!    - s_id → Sid (cached in `sid_cache`)
 //!    - p_id → Sid (pre-computed in `p_sids`)
-//!    - o (ValueId) → FlakeValue via `store.decode_value()`
+//!    - o (ObjKind, ObjKey) → FlakeValue via `store.decode_value()`
 //!    - dt_id → Sid via `store.dt_sids()`
 //!
 //! # Design Principles
@@ -31,7 +31,7 @@ use crate::pattern::{Term, TriplePattern};
 use crate::scan::ScanOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::value_id::ValueId;
+use fluree_db_core::value_id::{ObjKind, ObjKey};
 use fluree_db_core::{Flake, FlakeValue, IndexType, NodeCache, ObjectBounds, OverlayProvider, Sid, Storage};
 use fluree_db_indexer::run_index::{
     BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, OverlayOp,
@@ -107,9 +107,11 @@ pub struct BinaryScanOperator {
     /// Whether predicate is a variable (for internal predicate filtering).
     p_is_var: bool,
     /// Bound object value for post-filtering when the value cannot be translated
-    /// to a ValueId (e.g., string literals without a reverse index).
+    /// to an (ObjKind, ObjKey) pair (e.g., string literals without a reverse index).
     /// When set, `batch_to_bindings` filters rows whose decoded object != this value.
     bound_o_filter: Option<FlakeValue>,
+    /// Object bounds for range post-filtering (set when binary path handles range queries).
+    object_bounds: Option<ObjectBounds>,
     /// Pre-translated overlay operations (set by DeferredScanOperator).
     overlay_ops: Vec<OverlayOp>,
     /// Overlay epoch for cache key differentiation.
@@ -125,13 +127,20 @@ impl BinaryScanOperator {
         pattern: TriplePattern,
         store: Arc<BinaryIndexStore>,
         g_id: u32,
+        object_bounds: Option<ObjectBounds>,
     ) -> Self {
-        let index = IndexType::for_query(
+        let mut index = IndexType::for_query(
             pattern.s_bound(),
             pattern.p_bound(),
             pattern.o_bound(),
             pattern.o_is_ref(),
         );
+
+        // When object bounds are present and default index is PSOT, switch to POST
+        // for object-range scanning (matches ScanOperator::with_object_bounds behavior).
+        if object_bounds.is_some() && index == IndexType::Psot {
+            index = IndexType::Post;
+        }
 
         // Build schema from pattern variables (same logic as ScanOperator)
         let mut schema_vec = Vec::with_capacity(3);
@@ -169,6 +178,7 @@ impl BinaryScanOperator {
             sid_cache: HashMap::new(),
             p_is_var,
             bound_o_filter: None,
+            object_bounds,
             overlay_ops: Vec::new(),
             overlay_epoch: 0,
         }
@@ -181,7 +191,7 @@ impl BinaryScanOperator {
         g_id: u32,
         index: IndexType,
     ) -> Self {
-        let mut op = Self::new(pattern, store, g_id);
+        let mut op = Self::new(pattern, store, g_id, None);
         op.index = index;
         op
     }
@@ -245,16 +255,28 @@ impl BinaryScanOperator {
                 continue;
             }
 
-            // Post-filter: when an object value couldn't be translated to a
-            // ValueId key (e.g. string literal — no reverse string index),
+            // Post-filter: when an object value couldn't be translated to an
+            // (ObjKind, ObjKey) pair (e.g. string literal — no reverse string index),
             // decode each row's object and skip non-matching rows.
             if let Some(ref filter_val) = self.bound_o_filter {
-                let vid = ValueId::from_u64(decoded.o_values[row]);
-                let decoded_val = self.store.decode_value(vid)
+                let decoded_val = self.store.decode_value(decoded.o_kinds[row], decoded.o_keys[row], decoded.p_ids[row])
                     .map_err(|e| QueryError::Internal(
                         format!("decode object for filter: {}", e),
                     ))?;
                 if decoded_val != *filter_val {
+                    continue;
+                }
+            }
+
+            // Range post-filter: ObjectBounds applied after decoding.
+            // POST key range provides coarse leaf filtering; this handles
+            // inclusive/exclusive boundaries and cross-type comparisons exactly.
+            if let Some(ref obj_bounds) = self.object_bounds {
+                let decoded_val = self.store.decode_value(decoded.o_kinds[row], decoded.o_keys[row], decoded.p_ids[row])
+                    .map_err(|e| QueryError::Internal(
+                        format!("decode object for bounds: {}", e),
+                    ))?;
+                if !obj_bounds.matches(&decoded_val) {
                     continue;
                 }
             }
@@ -286,8 +308,7 @@ impl BinaryScanOperator {
 
             // Object binding
             if self.o_var_pos.is_some() {
-                let vid = ValueId::from_u64(decoded.o_values[row]);
-                let val = self.store.decode_value(vid)
+                let val = self.store.decode_value(decoded.o_kinds[row], decoded.o_keys[row], decoded.p_ids[row])
                     .map_err(|e| QueryError::Internal(format!("decode object: {}", e)))?;
 
                 let binding = match val {
@@ -418,7 +439,36 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for BinaryScan
         };
 
         match bounds {
-            Some((min_key, max_key)) => {
+            Some((mut min_key, mut max_key)) => {
+                // Narrow key range with ObjectBounds when available.
+                // Requires a bound predicate (need p_id for shape lookup and POST order).
+                if let Some(ref obj_bounds) = self.object_bounds {
+                    if let Some(ref p) = p_sid {
+                        if let Some(p_id) = self.store.sid_to_p_id(p) {
+                            if let Some(shape) = self.store.numeric_shape(p_id) {
+                                match self.store.translate_object_bounds(obj_bounds, p_id, shape) {
+                                    Some((min_ok, min_okey, max_ok, max_okey)) => {
+                                        min_key.o_kind = min_ok.as_u8();
+                                        min_key.o_key = min_okey.as_u64();
+                                        max_key.o_kind = max_ok.as_u8();
+                                        max_key.o_key = max_okey.as_u64();
+                                    }
+                                    None => {
+                                        // Cannot safely narrow (e.g., Mixed numeric predicates or
+                                        // bounds that don't translate cleanly). Fall back to
+                                        // post-filtering with ObjectBounds after decoding.
+                                        //
+                                        // IMPORTANT: `translate_object_bounds` returning `None`
+                                        // does NOT necessarily mean "empty range" in the current
+                                        // API — it can also mean "no safe narrowing".
+                                    }
+                                }
+                            }
+                            // shape is None → no narrowing, rely on post-filter only
+                        }
+                    }
+                }
+
                 // Build BinaryFilter from bound terms
                 let mut filter = BinaryFilter::new();
 
@@ -427,14 +477,19 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for BinaryScan
                         filter.s_id = Some(s_id);
                     }
                 }
-                if let Some(ref sid) = p_sid {
-                    if let Some(p_id) = self.store.sid_to_p_id(sid) {
-                        filter.p_id = Some(p_id);
-                    }
+                let resolved_p_id = p_sid.as_ref().and_then(|sid| self.store.sid_to_p_id(sid));
+                if let Some(p_id) = resolved_p_id {
+                    filter.p_id = Some(p_id);
                 }
                 if let Some(ref val) = o_val {
-                    if let Ok(Some(vid)) = self.store.value_to_value_id(val) {
-                        filter.o = Some(vid);
+                    let pair_result = if let Some(p_id) = resolved_p_id {
+                        self.store.value_to_obj_pair_for_predicate(val, p_id)
+                    } else {
+                        self.store.value_to_obj_pair(val)
+                    };
+                    if let Ok(Some((ok, okey))) = pair_result {
+                        filter.o_kind = Some(ok.as_u8());
+                        filter.o_key = Some(okey.as_u64());
                     }
                 }
 
@@ -487,17 +542,21 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for BinaryScan
                         match order {
                             RunSortOrder::Spot => a.s_id.cmp(&b.s_id)
                                 .then(a.p_id.cmp(&b.p_id))
-                                .then(a.o.cmp(&b.o))
+                                .then(a.o_kind.cmp(&b.o_kind))
+                                .then(a.o_key.cmp(&b.o_key))
                                 .then(a.dt.cmp(&b.dt)),
                             RunSortOrder::Psot => a.p_id.cmp(&b.p_id)
                                 .then(a.s_id.cmp(&b.s_id))
-                                .then(a.o.cmp(&b.o))
+                                .then(a.o_kind.cmp(&b.o_kind))
+                                .then(a.o_key.cmp(&b.o_key))
                                 .then(a.dt.cmp(&b.dt)),
                             RunSortOrder::Post => a.p_id.cmp(&b.p_id)
-                                .then(a.o.cmp(&b.o))
+                                .then(a.o_kind.cmp(&b.o_kind))
+                                .then(a.o_key.cmp(&b.o_key))
                                 .then(a.dt.cmp(&b.dt))
                                 .then(a.s_id.cmp(&b.s_id)),
-                            RunSortOrder::Opst => a.o.cmp(&b.o)
+                            RunSortOrder::Opst => a.o_kind.cmp(&b.o_kind)
+                                .then(a.o_key.cmp(&b.o_key))
                                 .then(a.dt.cmp(&b.dt))
                                 .then(a.p_id.cmp(&b.p_id))
                                 .then(a.s_id.cmp(&b.s_id)),
@@ -626,7 +685,7 @@ fn translate_one_flake(
     let p_id = store.sid_to_p_id(&flake.p)
         .ok_or_else(|| format!("unknown predicate: {}", flake.p))?;
 
-    let vid = store.value_to_value_id(&flake.o)
+    let (o_kind, o_key) = store.value_to_obj_pair(&flake.o)
         .map_err(|e| format!("value lookup: {}", e))?
         .ok_or_else(|| "unknown object value".to_string())?;
 
@@ -649,7 +708,8 @@ fn translate_one_flake(
     Ok(OverlayOp {
         s_id,
         p_id,
-        o: vid.as_u64(),
+        o_kind: o_kind.as_u8(),
+        o_key: o_key.as_u64(),
         t: flake.t,
         op: flake.op,
         dt,
@@ -678,7 +738,8 @@ fn translate_one_flake(
 /// - Not in history mode
 /// - Time-travel is within binary index coverage (`to_t >= store.base_t()`)
 /// - No history range query (`from_t` is `None`)
-/// - No `ObjectBounds` (range filters are not yet supported in binary path)
+/// - `ObjectBounds` are supported when the predicate is bound and its numeric
+///   shape is `IntOnly` or `FloatOnly` (Mixed/unknown falls back to `ScanOperator`)
 /// - If overlay is set: all overlay flakes are translatable to binary dict IDs
 ///   (falls back to `ScanOperator` if overlay contains new subjects/predicates)
 ///
@@ -741,12 +802,25 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for DeferredSc
         let binary_covers_time = ctx.binary_store.as_ref()
             .map_or(false, |s| ctx.to_t >= s.base_t());
 
+        // Check if binary path can handle object bounds
+        let binary_can_handle_bounds = match &self.object_bounds {
+            None => true, // no bounds: always OK
+            Some(_bounds) => {
+                // Bounds are always *semantically* supported in the binary path because
+                // `BinaryScanOperator` applies `ObjectBounds` as a post-filter after decoding.
+                //
+                // We only use numeric shape to optionally *narrow* the key range; Mixed/unknown
+                // shapes simply skip narrowing (but still filter correctly post-scan).
+                ctx.binary_store.is_some()
+            }
+        };
+
         let use_binary = ctx.binary_store.is_some()
             && binary_covers_time
             && !ctx.is_multi_ledger()
             && !ctx.history_mode
             && ctx.from_t.is_none()
-            && self.object_bounds.is_none();
+            && binary_can_handle_bounds;
 
         // When binary path is selected and overlay exists, translate overlay
         // flakes to integer-ID space. Fall back to ScanOperator if any flake
@@ -770,6 +844,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for DeferredSc
                 self.pattern.clone(),
                 store,
                 ctx.binary_g_id,
+                self.object_bounds.clone(),
             );
             if let Some((ops, epoch)) = overlay_data {
                 op.set_overlay(ops, epoch);

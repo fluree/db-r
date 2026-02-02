@@ -43,6 +43,7 @@ fn make_right_scan<S: Storage + 'static, C: NodeCache + 'static>(
                 pattern,
                 store.clone(),
                 _ctx.binary_g_id,
+                None, // join+bounds deferred to later phase
             ));
         }
     }
@@ -939,7 +940,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
         &mut self,
         ctx: &ExecutionContext<'_, S, C>,
     ) -> Result<()> {
-        use fluree_db_core::value_id::ValueId;
+        use fluree_db_core::value_id::{ObjKind, ObjKey};
         use fluree_db_core::FlakeValue;
         use fluree_db_indexer::run_index::leaf::read_leaf_header;
         use fluree_db_indexer::run_index::leaflet::{decode_leaflet_region1, decode_leaflet_region2};
@@ -1013,11 +1014,12 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
             s_id: min_s_id,
             p_id: 0,
             dt: 0,
-            lang_id: 0,
-            o: ValueId::MIN,
-            t: i64::MIN,
+            o_kind: ObjKind::MIN.as_u8(),
             op: 0,
-            _pad: [0; 3],
+            o_key: 0,
+            t: i64::MIN,
+            lang_id: 0,
+            _pad: [0; 2],
             i: NO_LIST_INDEX,
         };
         let max_key = RunRecord {
@@ -1025,11 +1027,12 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
             s_id: max_s_id,
             p_id: u32::MAX,
             dt: u16::MAX,
-            lang_id: u16::MAX,
-            o: ValueId::MAX,
-            t: i64::MAX,
+            o_kind: ObjKind::MAX.as_u8(),
             op: 1,
-            _pad: [0; 3],
+            o_key: u64::MAX,
+            t: i64::MAX,
+            lang_id: u16::MAX,
+            _pad: [0; 2],
             i: i32::MAX,
         };
 
@@ -1051,14 +1054,15 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
                 }
                 let leaflet_bytes = &leaf_mmap[dir_entry.offset as usize..end];
 
-                let (leaflet_header, s_ids, p_ids, o_values) =
+                let (leaflet_header, s_ids, p_ids, o_kinds, o_keys) =
                     decode_leaflet_region1(leaflet_bytes, header.p_width, RunSortOrder::Spot)
                         .map_err(|e| QueryError::Internal(format!("decode region1: {}", e)))?;
 
                 let row_count = leaflet_header.row_count as usize;
                 debug_assert_eq!(s_ids.len(), row_count);
                 debug_assert_eq!(p_ids.len(), row_count);
-                debug_assert_eq!(o_values.len(), row_count);
+                debug_assert_eq!(o_kinds.len(), row_count);
+                debug_assert_eq!(o_keys.len(), row_count);
 
                 // Collect matching row indices (cheap pass over Region 1 arrays)
                 let mut matches: Vec<(usize, u32)> = Vec::new(); // (row_idx, s_id)
@@ -1082,9 +1086,8 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
                         .map_err(|e| QueryError::Internal(format!("decode region2: {}", e)))?;
 
                 for (row, s_id) in matches {
-                    let vid = ValueId::from_u64(o_values[row]);
                     let val = store
-                        .decode_value(vid)
+                        .decode_value(o_kinds[row], o_keys[row], p_ids[row])
                         .map_err(|e| QueryError::Internal(format!("decode value: {}", e)))?;
 
                     let dt_id = dt_values[row] as usize;

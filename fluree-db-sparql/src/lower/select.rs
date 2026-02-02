@@ -256,7 +256,8 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
 
     /// Lower a SPARQL subquery (SubSelect) to the IR.
     ///
-    /// Subqueries have the form: `{ SELECT ?vars WHERE { ... } LIMIT n }`
+    /// Subqueries have the form: `{ SELECT ?vars WHERE { ... } GROUP BY ?v LIMIT n }`
+    /// Supports aggregate expressions like `(COUNT(?x) AS ?count)` in the SELECT clause.
     pub(super) fn lower_subselect(
         &mut self,
         subselect: &SubSelect,
@@ -264,6 +265,20 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
     ) -> Result<Vec<Pattern>> {
         // Lower WHERE patterns
         let patterns = self.lower_graph_pattern(&subselect.pattern)?;
+
+        // Build a temporary SelectClause so we can reuse extract_aggregates /
+        // collect_non_aggregate_select_vars which operate on SelectClause.
+        let select_clause = SelectClause {
+            modifier: if subselect.distinct {
+                Some(SelectModifier::Distinct)
+            } else if subselect.reduced {
+                Some(SelectModifier::Reduced)
+            } else {
+                None
+            },
+            variables: subselect.variables.clone(),
+            span: subselect.span,
+        };
 
         // Lower SELECT variables
         //
@@ -273,8 +288,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         // For SPARQL `SELECT *`, we approximate the spec by selecting all variables referenced
         // by the subquery's WHERE patterns (in stable encounter order).
         let select: Vec<VarId> = match &subselect.variables {
-            Some(vars) => vars.iter().map(|v| self.register_var(v)).collect(),
-            None => {
+            SelectVariables::Star => {
                 let mut seen: HashSet<VarId> = HashSet::new();
                 let mut select: Vec<VarId> = Vec::new();
                 for p in &patterns {
@@ -286,10 +300,49 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 }
                 select
             }
+            SelectVariables::Explicit(vars) => {
+                let mut result = Vec::with_capacity(vars.len());
+                for var in vars {
+                    match var {
+                        SelectVariable::Var(v) => {
+                            result.push(self.register_var(v));
+                        }
+                        SelectVariable::Expr { alias, .. } => {
+                            result.push(self.register_var(alias));
+                        }
+                    }
+                }
+                result
+            }
         };
 
         // Build SubqueryPattern
         let mut sq = SubqueryPattern::new(select, patterns);
+
+        // Extract aggregates from SELECT clause (e.g. COUNT(?x) AS ?count)
+        let aggregates = self.extract_aggregates(&select_clause)?;
+
+        // Lower GROUP BY
+        let mut group_vars = Vec::new();
+        if let Some(ref group_by) = subselect.group_by {
+            for cond in &group_by.conditions {
+                let var_id = self.lower_group_condition(cond)?;
+                group_vars.push(var_id);
+            }
+        }
+
+        // Auto-populate GROUP BY when aggregates present but no explicit GROUP BY.
+        // Per SPARQL semantics, all non-aggregated SELECT variables must be grouped.
+        if !aggregates.is_empty() && group_vars.is_empty() {
+            group_vars = self.collect_non_aggregate_select_vars(&select_clause);
+        }
+
+        if !group_vars.is_empty() {
+            sq = sq.with_group_by(group_vars);
+        }
+        if !aggregates.is_empty() {
+            sq = sq.with_aggregates(aggregates);
+        }
 
         // Apply LIMIT
         if let Some(limit) = subselect.limit {

@@ -1644,6 +1644,102 @@ mod tests {
 
     /// Store a commit in storage and return its address
     async fn store_commit(storage: &MemoryStorage, commit: &Commit) -> String {
+        #[cfg(feature = "commit-v2")]
+        let bytes = {
+            use fluree_db_novelty::commit_v2::envelope::{encode_envelope_fields, CommitV2Envelope};
+            use fluree_db_novelty::commit_v2::format::{
+                self, CommitV2Footer, CommitV2Header, FOOTER_LEN, HASH_LEN, HEADER_LEN,
+            };
+            use fluree_db_novelty::commit_v2::op_codec::{encode_op, CommitDicts};
+            use std::collections::HashMap;
+
+            let mut dicts = CommitDicts::new();
+            let mut ops_buf = Vec::new();
+            for f in &commit.flakes {
+                encode_op(f, &mut dicts, &mut ops_buf).unwrap();
+            }
+
+            let envelope = CommitV2Envelope {
+                t: commit.t,
+                v: commit.v,
+                previous: commit.previous.clone(),
+                previous_ref: commit.previous_ref.clone(),
+                namespace_delta: commit
+                    .namespace_delta
+                    .iter()
+                    .map(|(k, v)| (*k, v.clone()))
+                    .collect::<HashMap<_, _>>(),
+                txn: commit.txn.clone(),
+                time: commit.time.clone(),
+                data: commit.data.clone(),
+                index: commit.index.clone(),
+                indexed_at: commit.indexed_at.clone(),
+            };
+            let mut envelope_bytes = Vec::new();
+            encode_envelope_fields(&envelope, &mut envelope_bytes).unwrap();
+
+            let dict_bytes: Vec<Vec<u8>> = vec![
+                dicts.graph.serialize(),
+                dicts.subject.serialize(),
+                dicts.predicate.serialize(),
+                dicts.datatype.serialize(),
+                dicts.object_ref.serialize(),
+            ];
+
+            let ops_section_len = ops_buf.len() as u32;
+            let envelope_len = envelope_bytes.len() as u32;
+            let dict_start = HEADER_LEN + envelope_bytes.len() + ops_buf.len();
+            let mut dict_locations = [format::DictLocation::default(); 5];
+            let mut offset = dict_start as u64;
+            for (i, d) in dict_bytes.iter().enumerate() {
+                dict_locations[i] = format::DictLocation {
+                    offset,
+                    len: d.len() as u32,
+                };
+                offset += d.len() as u64;
+            }
+
+            let footer = CommitV2Footer {
+                dicts: dict_locations,
+                ops_section_len,
+            };
+            let header = CommitV2Header {
+                version: format::VERSION,
+                flags: 0,
+                t: commit.t,
+                op_count: commit.flakes.len() as u32,
+                envelope_len,
+            };
+
+            let total_len = HEADER_LEN
+                + envelope_bytes.len()
+                + ops_buf.len()
+                + dict_bytes.iter().map(|d| d.len()).sum::<usize>()
+                + FOOTER_LEN
+                + HASH_LEN;
+            let mut blob = vec![0u8; total_len];
+
+            let mut pos = 0;
+            header.write_to(&mut blob[pos..]);
+            pos += HEADER_LEN;
+            blob[pos..pos + envelope_bytes.len()].copy_from_slice(&envelope_bytes);
+            pos += envelope_bytes.len();
+            blob[pos..pos + ops_buf.len()].copy_from_slice(&ops_buf);
+            pos += ops_buf.len();
+            for d in &dict_bytes {
+                blob[pos..pos + d.len()].copy_from_slice(d);
+                pos += d.len();
+            }
+            footer.write_to(&mut blob[pos..]);
+            pos += FOOTER_LEN;
+
+            use sha2::{Digest, Sha256};
+            let hash: [u8; 32] = Sha256::digest(&blob[..pos]).into();
+            blob[pos..pos + HASH_LEN].copy_from_slice(&hash);
+            blob
+        };
+
+        #[cfg(not(feature = "commit-v2"))]
         let bytes = serde_json::to_vec(commit).unwrap();
         let hash = {
             use sha2::{Digest, Sha256};

@@ -523,12 +523,12 @@ mod tests {
     use crate::run_index::run_file::write_run_file;
     use crate::run_index::run_record::{cmp_spot, RunRecord};
     use crate::run_index::global_dict::dt_ids;
-    use fluree_db_core::value_id::ValueId;
+    use fluree_db_core::value_id::{ObjKind, ObjKey};
 
     fn make_record(g_id: u32, s_id: u32, p_id: u32, val: i64, t: i64) -> RunRecord {
         RunRecord::new(
             g_id, s_id, p_id,
-            ValueId::num_int(val).unwrap(),
+            ObjKind::NUM_INT, ObjKey::encode_i64(val),
             t, true, dt_ids::INTEGER, 0, None,
         )
     }
