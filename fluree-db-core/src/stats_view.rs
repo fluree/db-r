@@ -5,6 +5,7 @@
 
 use crate::serde::json::DbRootStats;
 use crate::sid::Sid;
+use crate::value_id::DatatypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -27,6 +28,25 @@ pub struct StatsView {
     ///
     /// This is derived from `classes` using the db's namespace table.
     pub classes_by_iri: HashMap<Arc<str>, u64>,
+    /// Graph-scoped property stats keyed by numeric IDs: g_id -> (p_id -> data).
+    ///
+    /// Populated from `DbRootStats.graphs` when present. Provides per-graph
+    /// property lookups with datatype breakdown. The aggregate Sid-keyed
+    /// `properties` map remains the primary source for the query planner.
+    pub graph_properties: HashMap<u32, HashMap<u32, GraphPropertyStatData>>,
+}
+
+/// Per-property statistics within a graph, keyed by numeric IDs.
+#[derive(Debug, Clone)]
+pub struct GraphPropertyStatData {
+    /// Total number of flakes with this property in this graph
+    pub count: u64,
+    /// Estimated number of distinct object values (from HLL)
+    pub ndv_values: u64,
+    /// Estimated number of distinct subjects using this property (from HLL)
+    pub ndv_subjects: u64,
+    /// Per-datatype flake counts
+    pub datatypes: Vec<(DatatypeId, u64)>,
 }
 
 /// Statistics for a single property.
@@ -66,6 +86,28 @@ impl StatsView {
         if let Some(ref classes) = stats.classes {
             for entry in classes {
                 view.classes.insert(entry.class_sid.clone(), entry.count);
+            }
+        }
+
+        if let Some(ref graphs) = stats.graphs {
+            for g_entry in graphs {
+                let mut prop_map = HashMap::new();
+                for p_entry in &g_entry.properties {
+                    prop_map.insert(
+                        p_entry.p_id,
+                        GraphPropertyStatData {
+                            count: p_entry.count,
+                            ndv_values: p_entry.ndv_values,
+                            ndv_subjects: p_entry.ndv_subjects,
+                            datatypes: p_entry
+                                .datatypes
+                                .iter()
+                                .map(|&(dt, c)| (DatatypeId::from_u8(dt), c))
+                                .collect(),
+                        },
+                    );
+                }
+                view.graph_properties.insert(g_entry.g_id, prop_map);
             }
         }
 
@@ -132,6 +174,26 @@ impl StatsView {
     pub fn has_class_stats(&self) -> bool {
         !self.classes.is_empty()
     }
+
+    /// Get property stats within a specific graph by numeric IDs.
+    pub fn get_graph_property(&self, g_id: u32, p_id: u32) -> Option<&GraphPropertyStatData> {
+        self.graph_properties.get(&g_id)?.get(&p_id)
+    }
+
+    /// Get all property stats for a specific graph.
+    pub fn get_graph_properties(&self, g_id: u32) -> Option<&HashMap<u32, GraphPropertyStatData>> {
+        self.graph_properties.get(&g_id)
+    }
+
+    /// Return the set of graph IDs that have stats.
+    pub fn graph_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.graph_properties.keys().copied()
+    }
+
+    /// Check if any graph-scoped statistics are available.
+    pub fn has_graph_stats(&self) -> bool {
+        !self.graph_properties.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -146,6 +208,7 @@ mod tests {
             size: 0,
             properties: None,
             classes: None,
+            graphs: None,
         };
         let view = StatsView::from_db_stats(&stats);
         assert!(!view.has_property_stats());
@@ -165,6 +228,7 @@ mod tests {
                 last_modified_t: 10,
             }]),
             classes: None,
+            graphs: None,
         };
         let view = StatsView::from_db_stats(&stats);
         assert!(view.has_property_stats());
@@ -188,6 +252,7 @@ mod tests {
                 count: 25,
                 properties: vec![],
             }]),
+            graphs: None,
         };
         let view = StatsView::from_db_stats(&stats);
         assert!(view.has_class_stats());

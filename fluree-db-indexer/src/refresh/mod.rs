@@ -338,6 +338,15 @@ where
         size,
         properties: updated_properties,
         classes: updated_classes,
+        // Preserve existing multi-graph stats if present (refresh path is g_id=0 only).
+        // Only populate from refresh if no multi-graph stats exist already.
+        graphs: match db.stats.as_ref().and_then(|s| s.graphs.as_ref()) {
+            Some(entries) if entries.iter().any(|e| e.g_id != 0) => {
+                // Multi-graph stats exist from import/ID-based path — preserve them.
+                db.stats.as_ref().and_then(|s| s.graphs.clone())
+            }
+            _ => None, // No prior multi-graph stats; refresh doesn't produce graph-scoped stats yet.
+        },
     };
 
     // Determine config: use provided db_config, or fall back to db's existing config

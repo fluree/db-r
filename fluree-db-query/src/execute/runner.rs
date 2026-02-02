@@ -23,6 +23,7 @@ use fluree_db_core::OverlayProvider;
 use fluree_db_core::PrefetchService;
 use fluree_db_reasoner::DerivedFactsOverlay;
 use std::sync::Arc;
+use std::time::Instant;
 
 use super::operator_tree::build_operator_tree;
 use super::reasoning_prep::{compute_derived_facts, effective_reasoning_modes, schema_hierarchy_with_overlay};
@@ -236,27 +237,62 @@ pub async fn run_operator<S: Storage + 'static, C: NodeCache + 'static>(
     mut operator: BoxedOperator<S, C>,
     ctx: &ExecutionContext<'_, S, C>,
 ) -> Result<Vec<Batch>> {
-    let span = tracing::debug_span!("query_run");
+    let op_type = std::any::type_name_of_val(operator.as_ref());
+    let span = tracing::info_span!(
+        "query_run",
+        operator = op_type,
+        to_t = ctx.to_t,
+        from_t = tracing::field::Empty,
+        history_mode = ctx.history_mode,
+        has_overlay = ctx.overlay.is_some(),
+        batch_size = ctx.batch_size,
+        open_ms = tracing::field::Empty,
+        total_ms = tracing::field::Empty,
+        total_batches = tracing::field::Empty,
+        total_rows = tracing::field::Empty,
+        max_batch_ms = tracing::field::Empty
+    );
     let _guard = span.enter();
 
-    tracing::debug!("opening operator");
+    span.record("from_t", &ctx.from_t);
+
+    let open_start = Instant::now();
     operator.open(ctx).await?;
+    span.record("open_ms", &((open_start.elapsed().as_secs_f64() * 1000.0) as u64));
 
     let mut results = Vec::new();
     let mut batch_count = 0;
-    while let Some(batch) = operator.next_batch(ctx).await? {
-        batch_count += 1;
-        tracing::trace!(batch_num = batch_count, solution_count = batch.len(), "received batch");
-        results.push(batch);
-    }
+    let mut total_rows: usize = 0;
+    let mut max_batch_ms: u64 = 0;
+    let run_start = Instant::now();
+    while {
+        let batch_start = Instant::now();
+        let next = operator.next_batch(ctx).await?;
+        let batch_ms = (batch_start.elapsed().as_secs_f64() * 1000.0) as u64;
+        if batch_ms > max_batch_ms {
+            max_batch_ms = batch_ms;
+        }
+        if let Some(batch) = next {
+            batch_count += 1;
+            total_rows += batch.len();
+            tracing::debug!(batch_num = batch_count, row_count = batch.len(), batch_ms, "received batch");
+            results.push(batch);
+            true
+        } else {
+            false
+        }
+    } {}
 
     operator.close();
 
-    tracing::debug!(
-        total_batches = batch_count,
-        total_solutions = results.iter().map(|b| b.len()).sum::<usize>(),
-        "query execution completed"
-    );
+    // If the operator is blocking, results often arrive in a small number of batches.
+    // We record overall totals here; operator-level spans provide the breakdown.
+    let total_ms = (run_start.elapsed().as_secs_f64() * 1000.0) as u64;
+    span.record("total_ms", &total_ms);
+    span.record("total_batches", &(batch_count as u64));
+    span.record("total_rows", &(total_rows as u64));
+    span.record("max_batch_ms", &max_batch_ms);
+    tracing::info!(total_batches = batch_count, total_rows, "query execution completed");
 
     Ok(results)
 }

@@ -80,6 +80,11 @@ pub struct RunGenerationResult {
     pub total_records: u64,
     /// Number of commits processed.
     pub commit_count: usize,
+    /// ID-based stats hook accumulated across all resolved commits.
+    /// Contains per-(graph, property) HLL sketches and datatype usage.
+    /// `None` if stats collection was not enabled.
+    #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+    pub stats_hook: Option<crate::stats::IdStatsHook>,
 }
 
 /// Errors from the run generation pipeline.
@@ -251,6 +256,8 @@ pub async fn generate_runs<S: StorageRead>(
         string_count: dicts.strings.len(),
         total_records: writer_result.total_records,
         commit_count: addresses.len(),
+        #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+        stats_hook: resolver.take_stats_hook(),
     };
 
     tracing::info!(

@@ -31,6 +31,7 @@ use async_trait::async_trait;
 use fluree_db_core::{NodeCache, Storage};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// GROUP BY operator - partitions solutions by group key variables.
 ///
@@ -157,14 +158,52 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for GroupByOpe
 
         // If we haven't consumed all input yet, do so now
         if self.emit_iter.is_none() {
+            let span = tracing::info_span!(
+                "groupby_blocking",
+                group_key_cols = self.group_key_indices.len(),
+                schema_cols = self.schema.len(),
+                input_batches = tracing::field::Empty,
+                input_rows = tracing::field::Empty,
+                groups = tracing::field::Empty,
+                drain_ms = tracing::field::Empty,
+                child_next_ms = tracing::field::Empty,
+                process_rows_ms = tracing::field::Empty
+            );
+            let _g = span.enter();
+            let drain_start = Instant::now();
+            let mut input_batches: u64 = 0;
+            let mut input_rows: u64 = 0;
+            let mut child_next_ms: u64 = 0;
+            let mut process_rows_ms: u64 = 0;
+
             // Drain all input from child
-            while let Some(batch) = self.child.next_batch(ctx).await? {
+            loop {
+                // Span around child.next_batch(): captures time spent in upstream operators
+                // (scan/join/filter/etc). This will show up as the "gaps" in OTEL.
+                let child_span = tracing::info_span!("groupby_child_next_batch");
+                let next_start = Instant::now();
+                let next = {
+                    let _cg = child_span.enter();
+                    self.child.next_batch(ctx).await?
+                };
+                child_next_ms += (next_start.elapsed().as_secs_f64() * 1000.0) as u64;
+
+                let Some(batch) = next else { break; };
+                input_batches += 1;
                 if batch.is_empty() {
                     continue;
                 }
 
                 // Process each row
+                let proc_span = tracing::info_span!(
+                    "groupby_process_batch",
+                    rows = batch.len(),
+                    schema_cols = self.schema.len()
+                );
+                let proc_start = Instant::now();
+                let _pg = proc_span.enter();
                 for row_idx in 0..batch.len() {
+                    input_rows += 1;
                     // Extract the complete row
                     let row: Vec<Binding> = (0..self.schema.len())
                         .map(|col| batch.get_by_col(row_idx, col).clone())
@@ -176,7 +215,18 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for GroupByOpe
                     // Add row to group
                     self.groups.entry(group_key).or_default().push(row);
                 }
+                process_rows_ms += (proc_start.elapsed().as_secs_f64() * 1000.0) as u64;
             }
+
+            span.record("input_batches", &input_batches);
+            span.record("input_rows", &input_rows);
+            span.record("groups", &(self.groups.len() as u64));
+            span.record("child_next_ms", &child_next_ms);
+            span.record("process_rows_ms", &process_rows_ms);
+            span.record(
+                "drain_ms",
+                &((drain_start.elapsed().as_secs_f64() * 1000.0) as u64),
+            );
 
             // Handle empty group case (no group vars = implicit single group)
             // If there's no input at all, produce no output

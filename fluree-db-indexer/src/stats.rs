@@ -40,6 +40,13 @@ use fluree_db_core::StorageWrite;
 #[cfg(feature = "hll-stats")]
 use std::collections::HashMap;
 
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+use fluree_db_core::serde::json::{GraphPropertyStatEntry, GraphStatsEntry};
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+use fluree_db_core::value_id::DatatypeId;
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+use xxhash_rust::xxh64::xxh64;
+
 // Schema extraction imports (always available, not feature-gated)
 use fluree_db_core::serde::json::{DbRootSchema, SchemaPredicateInfo, SchemaPredicates};
 use fluree_db_core::{is_rdf_type, is_rdfs_subclass_of, is_rdfs_subproperty_of, FlakeValue};
@@ -297,7 +304,311 @@ impl IndexStatsHook for HllStatsHook {
     }
 }
 
-// === HLL Sketch Persistence ===
+// =============================================================================
+// ID-Based Stats Hook (commit-v2 + hll-stats)
+// =============================================================================
+
+/// Key for graph-scoped property stats (numeric IDs only)
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct GraphPropertyKey {
+    pub g_id: u32,
+    pub p_id: u32,
+}
+
+/// Per-(graph, property) HLL state with datatype tracking.
+///
+/// Uses signed deltas internally; clamped to 0 at finalize.
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+#[derive(Debug)]
+pub struct IdPropertyHll {
+    /// Flake count delta (signed: retractions decrement)
+    pub count: i64,
+    /// HLL sketch for distinct object values
+    pub values_hll: HllSketch256,
+    /// HLL sketch for distinct subjects
+    pub subjects_hll: HllSketch256,
+    /// Most recent transaction time
+    pub last_modified_t: i64,
+    /// Per-datatype flake count deltas: DatatypeId(u8) -> signed count
+    pub datatypes: HashMap<u8, i64>,
+}
+
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+impl IdPropertyHll {
+    fn new() -> Self {
+        Self {
+            count: 0,
+            values_hll: HllSketch256::new(),
+            subjects_hll: HllSketch256::new(),
+            last_modified_t: 0,
+            datatypes: HashMap::new(),
+        }
+    }
+
+    /// Create from loaded sketches (for incremental refresh)
+    pub fn from_sketches(
+        count: i64,
+        values_hll: HllSketch256,
+        subjects_hll: HllSketch256,
+        last_modified_t: i64,
+        datatypes: HashMap<u8, i64>,
+    ) -> Self {
+        Self {
+            count,
+            values_hll,
+            subjects_hll,
+            last_modified_t,
+            datatypes,
+        }
+    }
+
+    /// Merge another IdPropertyHll into this one.
+    /// HLL: register-wise max. Counts: additive. last_modified_t: max.
+    pub fn merge_from(&mut self, other: &IdPropertyHll) {
+        self.count += other.count;
+        self.values_hll.merge_inplace(&other.values_hll);
+        self.subjects_hll.merge_inplace(&other.subjects_hll);
+        self.last_modified_t = self.last_modified_t.max(other.last_modified_t);
+        for (&dt, &delta) in &other.datatypes {
+            *self.datatypes.entry(dt).or_insert(0) += delta;
+        }
+    }
+}
+
+// --- Domain-separated hashing for HLL ---
+
+/// Domain separator for object value hashing.
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+const OBJ_HASH_DOMAIN: &[u8] = b"fluree:obj:";
+
+/// Domain separator for subject HLL hashing.
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+const SUBJ_HASH_DOMAIN: &[u8] = b"fluree:subj:";
+
+/// Compute a stable, endian-invariant hash of an object value.
+///
+/// Domain-separated by `o_kind` to prevent cross-kind collisions
+/// (e.g., `NumInt(3)` vs `RefId(3)` both have `o_key=3`).
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+pub fn value_hash(o_kind: u8, o_key: u64) -> u64 {
+    // domain(11) + kind(1) + key(8) = 20 bytes
+    let mut buf = [0u8; 20];
+    buf[..11].copy_from_slice(OBJ_HASH_DOMAIN);
+    buf[11] = o_kind;
+    buf[12..20].copy_from_slice(&o_key.to_le_bytes());
+    xxh64(&buf, 0)
+}
+
+/// Compute a stable hash of a subject ID for HLL insertion.
+///
+/// Hashes `s_id` rather than using it directly to ensure uniform bit
+/// distribution across HLL registers.
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+pub fn subject_hash(s_id: u32) -> u64 {
+    // domain(12) + s_id(4) = 16 bytes
+    let mut buf = [0u8; 16];
+    buf[..12].copy_from_slice(SUBJ_HASH_DOMAIN);
+    buf[12..16].copy_from_slice(&s_id.to_le_bytes());
+    xxh64(&buf, 0)
+}
+
+/// Result from `IdStatsHook::finalize()`.
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+pub struct IdStatsResult {
+    /// Per-graph stats entries (authoritative, ID-keyed).
+    /// Excludes txn-meta graph (g_id=1).
+    pub graphs: Vec<GraphStatsEntry>,
+    /// Total flake count (excluding txn-meta).
+    pub total_flakes: u64,
+}
+
+/// ID-based stats hook for import/index paths where GlobalDicts are available.
+///
+/// Maintains per-(graph, property) HLL sketches and datatype usage.
+/// All keys are numeric IDs — no Sid anywhere.
+///
+/// # Usage
+///
+/// ```ignore
+/// let mut hook = IdStatsHook::new();
+/// // Per resolved op:
+/// hook.on_record(g_id, p_id, s_id, dt, value_hash(o_kind, o_key), t, op);
+/// // After all ops:
+/// let result = hook.finalize();
+/// ```
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+#[derive(Debug)]
+pub struct IdStatsHook {
+    flake_count: usize,
+    properties: HashMap<GraphPropertyKey, IdPropertyHll>,
+    /// Per-graph flake count (signed delta)
+    graph_flakes: HashMap<u32, i64>,
+}
+
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+impl IdStatsHook {
+    pub fn new() -> Self {
+        Self {
+            flake_count: 0,
+            properties: HashMap::new(),
+            graph_flakes: HashMap::new(),
+        }
+    }
+
+    /// Process a single record with resolved IDs.
+    ///
+    /// Called per-op after the resolver maps Sids to numeric IDs.
+    ///
+    /// # Arguments
+    /// * `g_id` - Graph dictionary ID (0 = default)
+    /// * `p_id` - Predicate dictionary ID
+    /// * `s_id` - Subject dictionary ID
+    /// * `dt` - Datatype ID
+    /// * `o_hash` - Pre-computed object value hash (from `value_hash()`)
+    /// * `t` - Transaction time
+    /// * `op` - true = assertion, false = retraction
+    pub fn on_record(
+        &mut self,
+        g_id: u32,
+        p_id: u32,
+        s_id: u32,
+        dt: DatatypeId,
+        o_hash: u64,
+        t: i64,
+        op: bool,
+    ) {
+        self.flake_count += 1;
+        let delta: i64 = if op { 1 } else { -1 };
+
+        // Track per-graph flake count
+        *self.graph_flakes.entry(g_id).or_insert(0) += delta;
+
+        let key = GraphPropertyKey { g_id, p_id };
+        let hll = self.properties.entry(key).or_insert_with(IdPropertyHll::new);
+
+        hll.count += delta;
+
+        // HLL: only insert on assertions (NDV is monotone)
+        if op {
+            hll.values_hll.insert_hash(o_hash);
+            hll.subjects_hll.insert_hash(subject_hash(s_id));
+        }
+
+        if t > hll.last_modified_t {
+            hll.last_modified_t = t;
+        }
+
+        // Track datatype usage
+        *hll.datatypes.entry(dt.as_u8()).or_insert(0) += delta;
+    }
+
+    /// Merge another hook into this one (for cross-commit accumulation).
+    ///
+    /// HLL: register-wise max. Counts: additive.
+    pub fn merge_from(&mut self, other: IdStatsHook) {
+        self.flake_count += other.flake_count;
+
+        for (g_id, delta) in other.graph_flakes {
+            *self.graph_flakes.entry(g_id).or_insert(0) += delta;
+        }
+
+        for (key, other_hll) in other.properties {
+            self.properties
+                .entry(key)
+                .or_insert_with(IdPropertyHll::new)
+                .merge_from(&other_hll);
+        }
+    }
+
+    /// Borrow the internal properties map (for sketch persistence before finalize).
+    pub fn properties(&self) -> &HashMap<GraphPropertyKey, IdPropertyHll> {
+        &self.properties
+    }
+
+    /// Total flake count (all graphs, all ops).
+    pub fn flake_count(&self) -> usize {
+        self.flake_count
+    }
+
+    /// Produce per-graph stats and aggregate property stats.
+    ///
+    /// Excludes txn-meta graph (g_id=1) from both `graphs` and aggregate
+    /// `properties`. Clamps all signed deltas to 0.
+    pub fn finalize(self) -> IdStatsResult {
+        // Group by g_id, then by p_id
+        let mut graph_map: HashMap<u32, Vec<(&GraphPropertyKey, &IdPropertyHll)>> = HashMap::new();
+        for (key, hll) in &self.properties {
+            graph_map.entry(key.g_id).or_default().push((key, hll));
+        }
+
+        // Build per-graph entries (excluding g_id=1 txn-meta)
+        let mut graphs: Vec<GraphStatsEntry> = Vec::new();
+
+        for (&g_id, entries) in &graph_map {
+            // Skip txn-meta graph from output
+            if g_id == 1 {
+                continue;
+            }
+
+            let mut props: Vec<GraphPropertyStatEntry> = Vec::new();
+            for (key, hll) in entries {
+                // Clamp count to 0
+                let count = hll.count.max(0) as u64;
+                let datatypes: Vec<(u8, u64)> = hll
+                    .datatypes
+                    .iter()
+                    .filter(|(_, &v)| v > 0)
+                    .map(|(&dt, &v)| (dt, v.max(0) as u64))
+                    .collect();
+
+                props.push(GraphPropertyStatEntry {
+                    p_id: key.p_id,
+                    count,
+                    ndv_values: hll.values_hll.estimate() as u64,
+                    ndv_subjects: hll.subjects_hll.estimate() as u64,
+                    last_modified_t: hll.last_modified_t,
+                    datatypes,
+                });
+            }
+
+            // Sort properties by p_id for determinism
+            props.sort_by_key(|p| p.p_id);
+
+            let graph_flake_count = self
+                .graph_flakes
+                .get(&g_id)
+                .copied()
+                .unwrap_or(0)
+                .max(0) as u64;
+
+            graphs.push(GraphStatsEntry {
+                g_id,
+                flakes: graph_flake_count,
+                size: 0, // Populated by index build, not available here
+                properties: props,
+            });
+        }
+
+        // Sort graphs by g_id for determinism
+        graphs.sort_by_key(|g| g.g_id);
+
+        // Total flakes excluding txn-meta
+        let total_flakes: u64 = self
+            .graph_flakes
+            .iter()
+            .filter(|(&g_id, _)| g_id != 1)
+            .map(|(_, &delta)| delta.max(0) as u64)
+            .sum();
+
+        IdStatsResult {
+            graphs,
+            total_flakes,
+        }
+    }
+}
+
+// === HLL Sketch Persistence (Sid-based, legacy) ===
 
 /// Number of registers in HLL sketch (2^8 = 256)
 #[cfg(feature = "hll-stats")]
@@ -563,6 +874,225 @@ pub fn compute_obsolete_sketch_addresses(
     }
 
     obsolete
+}
+
+// =============================================================================
+// ID-Based HLL Sketch Persistence (commit-v2 + hll-stats)
+// =============================================================================
+
+/// Generate storage address for ID-based HLL sketch.
+///
+/// Uses pattern: `fluree:file://{alias}/index/stats-sketches/{kind}/g{g_id}/p{p_id}_t{t}.hll`
+///
+/// Pure numeric IDs — no IRI encoding, no escaping.
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+fn hll_sketch_address_id(alias: &str, g_id: u32, p_id: u32, t: i64, kind: &str) -> String {
+    format!(
+        "fluree:file://{}/index/stats-sketches/{}/g{}/p{}_t{}.hll",
+        alias.replace(':', "/"),
+        kind,
+        g_id,
+        p_id,
+        t
+    )
+}
+
+/// Persist ID-based HLL sketches to storage.
+///
+/// Writes all (graph, property) HLL sketches to storage with T-based filenames.
+/// Returns the list of addresses written.
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+pub async fn persist_hll_sketches_id<S: StorageWrite>(
+    storage: &S,
+    alias: &str,
+    properties: &HashMap<GraphPropertyKey, IdPropertyHll>,
+) -> Result<Vec<String>> {
+    let mut addresses = Vec::new();
+
+    for (key, hll) in properties {
+        let t = hll.last_modified_t;
+
+        // Write values sketch
+        let values_addr = hll_sketch_address_id(alias, key.g_id, key.p_id, t, "values");
+        let values_bytes = hll.values_hll.to_bytes();
+        storage
+            .write_bytes(&values_addr, &values_bytes)
+            .await
+            .map_err(|e| {
+                IndexerError::StorageWrite(format!("Failed to write values HLL (g{}/p{}): {}", key.g_id, key.p_id, e))
+            })?;
+        addresses.push(values_addr);
+
+        // Write subjects sketch
+        let subjects_addr = hll_sketch_address_id(alias, key.g_id, key.p_id, t, "subjects");
+        let subjects_bytes = hll.subjects_hll.to_bytes();
+        storage
+            .write_bytes(&subjects_addr, &subjects_bytes)
+            .await
+            .map_err(|e| {
+                IndexerError::StorageWrite(format!("Failed to write subjects HLL (g{}/p{}): {}", key.g_id, key.p_id, e))
+            })?;
+        addresses.push(subjects_addr);
+    }
+
+    Ok(addresses)
+}
+
+/// Load ID-based HLL sketches from storage.
+///
+/// Reads all (graph, property) HLL sketches from storage using each entry's
+/// `last_modified_t` to locate the correct sketch file.
+/// Returns a map of `GraphPropertyKey` to `IdPropertyHll` with loaded sketches.
+///
+/// Properties whose sketches cannot be loaded are still included with empty
+/// sketches but their prior count and last_modified_t are preserved (monotonicity).
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+pub async fn load_hll_sketches_id<S: Storage>(
+    storage: &S,
+    alias: &str,
+    graph_entries: &[GraphStatsEntry],
+) -> Result<HashMap<GraphPropertyKey, IdPropertyHll>> {
+    let mut properties = HashMap::new();
+
+    for graph in graph_entries {
+        for prop in &graph.properties {
+            let key = GraphPropertyKey {
+                g_id: graph.g_id,
+                p_id: prop.p_id,
+            };
+            let t = prop.last_modified_t;
+
+            // Load values sketch
+            let values_addr = hll_sketch_address_id(alias, graph.g_id, prop.p_id, t, "values");
+            let values_hll = match storage.read_bytes(&values_addr).await {
+                Ok(bytes) if bytes.len() == HLL_REGISTER_COUNT => {
+                    let mut registers = [0u8; HLL_REGISTER_COUNT];
+                    registers.copy_from_slice(&bytes);
+                    HllSketch256::from_bytes(&registers)
+                }
+                Ok(bytes) => {
+                    tracing::warn!(
+                        g_id = graph.g_id,
+                        p_id = prop.p_id,
+                        expected = HLL_REGISTER_COUNT,
+                        got = bytes.len(),
+                        "Values HLL sketch has wrong size"
+                    );
+                    HllSketch256::new()
+                }
+                Err(_) => HllSketch256::new(),
+            };
+
+            // Load subjects sketch
+            let subjects_addr =
+                hll_sketch_address_id(alias, graph.g_id, prop.p_id, t, "subjects");
+            let subjects_hll = match storage.read_bytes(&subjects_addr).await {
+                Ok(bytes) if bytes.len() == HLL_REGISTER_COUNT => {
+                    let mut registers = [0u8; HLL_REGISTER_COUNT];
+                    registers.copy_from_slice(&bytes);
+                    HllSketch256::from_bytes(&registers)
+                }
+                Ok(bytes) => {
+                    tracing::warn!(
+                        g_id = graph.g_id,
+                        p_id = prop.p_id,
+                        expected = HLL_REGISTER_COUNT,
+                        got = bytes.len(),
+                        "Subjects HLL sketch has wrong size"
+                    );
+                    HllSketch256::new()
+                }
+                Err(_) => HllSketch256::new(),
+            };
+
+            // Reconstruct datatype map from the stat entry
+            let datatypes: HashMap<u8, i64> = prop
+                .datatypes
+                .iter()
+                .map(|&(dt, count)| (dt, count as i64))
+                .collect();
+
+            let hll = IdPropertyHll::from_sketches(
+                prop.count as i64,
+                values_hll,
+                subjects_hll,
+                prop.last_modified_t,
+                datatypes,
+            );
+
+            properties.insert(key, hll);
+        }
+    }
+
+    Ok(properties)
+}
+
+/// Compute obsolete ID-based HLL sketch addresses after a refresh.
+///
+/// Compares prior graph stats with updated properties to identify sketches
+/// that have been superseded. A sketch is obsolete when the `last_modified_t`
+/// has changed for a given `(g_id, p_id)`.
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+pub fn compute_obsolete_sketch_addresses_id(
+    alias: &str,
+    prior_graphs: &[GraphStatsEntry],
+    updated_properties: &HashMap<GraphPropertyKey, IdPropertyHll>,
+) -> Vec<String> {
+    let mut obsolete = Vec::new();
+
+    for graph in prior_graphs {
+        for prop in &graph.properties {
+            let key = GraphPropertyKey {
+                g_id: graph.g_id,
+                p_id: prop.p_id,
+            };
+            let prior_t = prop.last_modified_t;
+
+            let is_obsolete = match updated_properties.get(&key) {
+                Some(updated_hll) => updated_hll.last_modified_t != prior_t,
+                None => true, // Property removed
+            };
+
+            if is_obsolete {
+                obsolete.push(hll_sketch_address_id(
+                    alias,
+                    graph.g_id,
+                    prop.p_id,
+                    prior_t,
+                    "values",
+                ));
+                obsolete.push(hll_sketch_address_id(
+                    alias,
+                    graph.g_id,
+                    prop.p_id,
+                    prior_t,
+                    "subjects",
+                ));
+            }
+        }
+    }
+
+    obsolete
+}
+
+/// List all ID-based HLL sketch addresses for the given properties.
+///
+/// Each property's sketch address uses its own `last_modified_t`.
+/// Useful for cleanup/garbage collection.
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+pub fn list_hll_sketch_addresses_id(
+    alias: &str,
+    properties: &HashMap<GraphPropertyKey, IdPropertyHll>,
+) -> Vec<String> {
+    let mut addresses = Vec::with_capacity(properties.len() * 2);
+
+    for (key, hll) in properties {
+        let t = hll.last_modified_t;
+        addresses.push(hll_sketch_address_id(alias, key.g_id, key.p_id, t, "values"));
+        addresses.push(hll_sketch_address_id(alias, key.g_id, key.p_id, t, "subjects"));
+    }
+
+    addresses
 }
 
 #[cfg(test)]
@@ -1832,6 +2362,7 @@ mod class_property_stats_tests {
                 count: 1,
                 properties: vec![],
             }]),
+            graphs: None,
         };
 
         // Novelty: alice rdf:type Employee (without reasserting Person) + uses prop "name".

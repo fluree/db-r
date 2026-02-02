@@ -41,7 +41,6 @@ pub fn format_data_model_markdown(alias: &str, info: &JsonValue) -> String {
     ];
 
     // Note: Prefixes section intentionally omitted.
-    // The namespace-codes map doesn't provide PREFIX labels (just IRI → code).
     // Future: accept prefixes as a parameter if the client wants them included.
 
     // Dataset statistics section
@@ -286,10 +285,6 @@ mod tests {
     #[test]
     fn test_format_data_model_basic() {
         let info = json!({
-            "namespace-codes": {
-                "http://example.org/": 100,
-                "http://www.w3.org/1999/02/22-rdf-syntax-ns#": 3
-            },
             "stats": {
                 "flakes": 1234,
                 "size": 56789,
@@ -316,7 +311,7 @@ mod tests {
         let markdown = format_data_model_markdown("test:main", &info);
 
         assert!(markdown.contains("# Data Model Overview for \"test:main\""));
-        // Prefixes section intentionally omitted (namespace-codes doesn't provide PREFIX labels)
+        // Prefixes section intentionally omitted
         assert!(!markdown.contains("## Prefixes"));
         assert!(markdown.contains("## Dataset Statistics"));
         assert!(markdown.contains("- Classes: 1"));

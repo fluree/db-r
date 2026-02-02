@@ -144,9 +144,19 @@ impl LeafletCache {
         self.r1.get(key)
     }
 
+    /// Check if Region 1 is cached for the given key without cloning the value.
+    pub fn contains_r1(&self, key: &LeafletCacheKey) -> bool {
+        self.r1.contains_key(key)
+    }
+
     /// Check if Region 2 is cached for the given key (no insertion).
     pub fn get_r2(&self, key: &LeafletCacheKey) -> Option<CachedRegion2> {
         self.r2.get(key)
+    }
+
+    /// Check if Region 2 is cached for the given key without cloning the value.
+    pub fn contains_r2(&self, key: &LeafletCacheKey) -> bool {
+        self.r2.contains_key(key)
     }
 
     /// Invalidate all entries (e.g., after index rebuild).

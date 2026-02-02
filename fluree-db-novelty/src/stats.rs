@@ -334,6 +334,14 @@ fn finalize_stats(
         size: indexed.size,
         properties,
         classes,
+        // Graph stats (ID-keyed) are preserved from indexed stats unchanged.
+        // The novelty layer operates on Sid-keyed data and lacks the Sid-to-p_id
+        // mapping (lives in GlobalDicts in the indexer) needed to update the
+        // numeric-ID-keyed graph entries. The flat `properties` field above
+        // carries the novelty-adjusted Sid-keyed counts for the query planner.
+        // Full novelty adjustment of graph stats will be possible once Flake
+        // carries a graph field and the ID mapping is available here.
+        graphs: indexed.graphs.clone(),
     }
 }
 
@@ -404,6 +412,7 @@ mod tests {
                 last_modified_t: 10,
             }]),
             classes: None,
+            graphs: None,
         };
 
         let novelty = Novelty::new(0);
@@ -426,6 +435,7 @@ mod tests {
                 last_modified_t: 5,
             }]),
             classes: None,
+            graphs: None,
         };
 
         let mut novelty = Novelty::new(5);
@@ -525,6 +535,7 @@ mod tests {
                 last_modified_t: 5,
             }]),
             classes: None,
+            graphs: None,
         };
 
         let mut novelty = Novelty::new(5);

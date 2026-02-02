@@ -178,6 +178,7 @@ pub async fn build_index<S: ContentAddressedWrite + StorageWrite>(
         #[cfg(not(feature = "hll-stats"))]
         properties: None,
         classes,
+        graphs: None, // Graph-scoped stats populated by IdStatsHook in import/resolve path
     };
 
     // Build the DbRoot with stats (config, prev_index, garbage are None for genesis build)

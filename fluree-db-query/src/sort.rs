@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use fluree_db_core::{FlakeValue, NodeCache, Sid, Storage};
 use std::cmp::Ordering;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Sort direction for ORDER BY clauses
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -242,20 +243,63 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for SortOperat
 
         // First call: buffer all input and sort
         if self.buffer.is_none() {
+            let span = tracing::info_span!(
+                "sort_blocking",
+                sort_keys = self.sort_col_indices.len(),
+                schema_cols = self.schema.len(),
+                input_batches = tracing::field::Empty,
+                input_rows = tracing::field::Empty,
+                drain_ms = tracing::field::Empty,
+                sort_ms = tracing::field::Empty,
+                child_next_ms = tracing::field::Empty,
+                build_rows_ms = tracing::field::Empty
+            );
+            let _g = span.enter();
+
             let mut all_rows: Vec<Vec<Binding>> = Vec::new();
 
             // Drain child operator
-            while let Some(batch) = self.child.next_batch(ctx).await? {
+            let drain_start = Instant::now();
+            let mut input_batches: u64 = 0;
+            let mut input_rows: u64 = 0;
+            let mut child_next_ms: u64 = 0;
+            let mut build_rows_ms: u64 = 0;
+            loop {
+                let child_span = tracing::info_span!("sort_child_next_batch");
+                let next_start = Instant::now();
+                let next = {
+                    let _cg = child_span.enter();
+                    self.child.next_batch(ctx).await?
+                };
+                child_next_ms += (next_start.elapsed().as_secs_f64() * 1000.0) as u64;
+                let Some(batch) = next else { break; };
+
+                input_batches += 1;
+                let build_span = tracing::info_span!("sort_build_rows_batch", rows = batch.len());
+                let build_start = Instant::now();
+                let _bg = build_span.enter();
                 for row_idx in 0..batch.len() {
+                    input_rows += 1;
                     let row: Vec<Binding> = (0..self.schema.len())
                         .map(|col| batch.get_by_col(row_idx, col).clone())
                         .collect();
                     all_rows.push(row);
                 }
+                build_rows_ms += (build_start.elapsed().as_secs_f64() * 1000.0) as u64;
             }
+            let drain_ms = (drain_start.elapsed().as_secs_f64() * 1000.0) as u64;
 
             // Sort rows
+            let sort_start = Instant::now();
             all_rows.sort_by(|a, b| self.compare_rows(a, b));
+            let sort_ms = (sort_start.elapsed().as_secs_f64() * 1000.0) as u64;
+
+            span.record("input_batches", &input_batches);
+            span.record("input_rows", &input_rows);
+            span.record("drain_ms", &drain_ms);
+            span.record("sort_ms", &sort_ms);
+            span.record("child_next_ms", &child_next_ms);
+            span.record("build_rows_ms", &build_rows_ms);
 
             self.buffer = Some(all_rows);
         }

@@ -789,13 +789,19 @@ pub struct DbRootStats {
     pub flakes: u64,
     /// Estimated total bytes of flakes in the index (not storage bytes of index nodes)
     pub size: u64,
-    /// Per-property statistics (sorted by SID for determinism)
-    /// Only populated when hll-stats feature is enabled during indexing.
+    /// DEPRECATED: Sid-keyed aggregate view, kept for backward compatibility with
+    /// StatsView, current_stats(), and the query planner. Derived from `graphs`
+    /// when both are present. Will be removed once all consumers migrate to
+    /// ID-based lookups via `graphs`.
     pub properties: Option<Vec<PropertyStatEntry>>,
     /// Per-class property usage statistics (sorted by class SID for determinism)
     /// Tracks which properties are used by instances of each class, with datatype,
     /// reference class, and language tag breakdown.
     pub classes: Option<Vec<ClassStatEntry>>,
+    /// Per-graph statistics keyed by numeric IDs (authoritative, ID-based).
+    /// Each entry contains per-property stats including datatype usage.
+    /// Sorted by g_id for determinism.
+    pub graphs: Option<Vec<GraphStatsEntry>>,
 }
 
 // === Class-Property Statistics ===
@@ -830,6 +836,46 @@ pub struct ClassPropertyUsage {
     pub ref_classes: Vec<(Sid, u64)>,
     /// Language tag usage: language tag → count (for rdf:langString)
     pub langs: Vec<(String, u64)>,
+}
+
+// === Graph-Scoped Statistics (ID-Based) ===
+
+/// Per-property stats within a graph, keyed by numeric IDs from GlobalDicts.
+///
+/// This is the authoritative ID-based stats format. The Sid-keyed
+/// `PropertyStatEntry` above is a deprecated interim adapter.
+#[derive(Debug, Clone)]
+pub struct GraphPropertyStatEntry {
+    /// Predicate dictionary ID (from GlobalDicts.predicates)
+    pub p_id: u32,
+    /// Total number of asserted flakes with this property (after dedup; retractions decrement)
+    pub count: u64,
+    /// Estimated number of distinct object values (via HLL)
+    pub ndv_values: u64,
+    /// Estimated number of distinct subjects using this property (via HLL)
+    pub ndv_subjects: u64,
+    /// Most recent transaction time that modified this property
+    pub last_modified_t: i64,
+    /// Per-datatype flake counts: (DatatypeId.0, count)
+    pub datatypes: Vec<(u8, u64)>,
+}
+
+/// Stats for a single named graph within a ledger.
+///
+/// Each entry corresponds to one graph in the binary index, identified
+/// by `g_id` from GlobalDicts.graphs (0 = default, 1 = txn-meta).
+#[derive(Debug, Clone)]
+pub struct GraphStatsEntry {
+    /// Graph dictionary ID (0 = default graph)
+    pub g_id: u32,
+    /// Total number of flakes in this graph (after dedup)
+    pub flakes: u64,
+    /// Byte size of flakes in this graph in the binary index.
+    /// Set to 0 in the pre-index manifest (binary index not yet built).
+    /// Populated by index build/refresh.
+    pub size: u64,
+    /// Per-property statistics within this graph (sorted by p_id for determinism)
+    pub properties: Vec<GraphPropertyStatEntry>,
 }
 
 /// Raw property stat entry as it appears in JSON
@@ -905,6 +951,41 @@ pub struct RawDbRootStats {
     pub properties: Option<Vec<RawPropertyStatEntry>>,
     #[serde(default)]
     pub classes: Option<Vec<RawClassStatEntry>>,
+    #[serde(default)]
+    pub graphs: Option<Vec<RawGraphStatsEntry>>,
+}
+
+/// Raw per-property stats within a graph as it appears in JSON
+///
+/// JSON format: `{"p_id": u32, "count": u64, "ndv_values": u64, "ndv_subjects": u64,
+///               "last_modified_t": i64, "datatypes": [[dt_id, count], ...]}`
+#[derive(Debug, Deserialize)]
+pub struct RawGraphPropertyStatEntry {
+    pub p_id: u32,
+    #[serde(default)]
+    pub count: u64,
+    #[serde(default)]
+    pub ndv_values: u64,
+    #[serde(default)]
+    pub ndv_subjects: u64,
+    #[serde(default)]
+    pub last_modified_t: i64,
+    #[serde(default)]
+    pub datatypes: Option<Vec<(u8, u64)>>,
+}
+
+/// Raw graph stats entry as it appears in JSON
+///
+/// JSON format: `{"g_id": u32, "flakes": u64, "size": u64, "properties": [...]}`
+#[derive(Debug, Deserialize)]
+pub struct RawGraphStatsEntry {
+    pub g_id: u32,
+    #[serde(default)]
+    pub flakes: u64,
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
+    pub properties: Option<Vec<RawGraphPropertyStatEntry>>,
 }
 
 /// Raw class stat entry as it appears in JSON
@@ -1283,7 +1364,7 @@ impl RawDbRoot {
         // Convert stats if present
         let stats = self.stats.as_ref().and_then(|s| {
             // Only create DbRootStats if at least one field is present
-            if s.flakes.is_some() || s.size.is_some() || s.properties.is_some() || s.classes.is_some() {
+            if s.flakes.is_some() || s.size.is_some() || s.properties.is_some() || s.classes.is_some() || s.graphs.is_some() {
                 // Convert properties if present
                 let properties = s.properties.as_ref().map(|props| {
                     props.iter().map(|p| PropertyStatEntry {
@@ -1329,11 +1410,34 @@ impl RawDbRoot {
                     }).collect()
                 });
 
+                // Convert graphs if present
+                let graphs = s.graphs.as_ref().map(|graph_list| {
+                    graph_list.iter().map(|g| {
+                        let properties = g.properties.as_ref().map(|props| {
+                            props.iter().map(|p| GraphPropertyStatEntry {
+                                p_id: p.p_id,
+                                count: p.count,
+                                ndv_values: p.ndv_values,
+                                ndv_subjects: p.ndv_subjects,
+                                last_modified_t: p.last_modified_t,
+                                datatypes: p.datatypes.clone().unwrap_or_default(),
+                            }).collect()
+                        }).unwrap_or_default();
+                        GraphStatsEntry {
+                            g_id: g.g_id,
+                            flakes: g.flakes,
+                            size: g.size,
+                            properties,
+                        }
+                    }).collect()
+                });
+
                 Some(DbRootStats {
                     flakes: s.flakes.unwrap_or(0),
                     size: s.size.unwrap_or(0),
                     properties,
                     classes,
+                    graphs,
                 })
             } else {
                 None
@@ -2118,6 +2222,33 @@ pub fn serialize_db_root(root: &DbRoot) -> Result<Vec<u8>> {
             stats_obj.insert("classes".to_string(), serde_json::Value::Array(classes_array));
         }
 
+        // Graphs - ID-based per-graph stats (new format, not Clojure compact arrays)
+        // Format: [{"g_id": u32, "flakes": u64, "size": u64, "properties": [...]}]
+        if let Some(ref graphs) = stats.graphs {
+            let graphs_array: Vec<serde_json::Value> = graphs.iter().map(|g| {
+                let props_array: Vec<serde_json::Value> = g.properties.iter().map(|p| {
+                    let dt_array: Vec<serde_json::Value> = p.datatypes.iter()
+                        .map(|(dt_id, count)| serde_json::json!([dt_id, count]))
+                        .collect();
+                    serde_json::json!({
+                        "p_id": p.p_id,
+                        "count": p.count,
+                        "ndv_values": p.ndv_values,
+                        "ndv_subjects": p.ndv_subjects,
+                        "last_modified_t": p.last_modified_t,
+                        "datatypes": dt_array
+                    })
+                }).collect();
+                serde_json::json!({
+                    "g_id": g.g_id,
+                    "flakes": g.flakes,
+                    "size": g.size,
+                    "properties": props_array
+                })
+            }).collect();
+            stats_obj.insert("graphs".to_string(), serde_json::Value::Array(graphs_array));
+        }
+
         stats_obj.insert("size".to_string(), serde_json::Value::Number(stats.size.into()));
         root_obj.insert("stats".to_string(), serde_json::Value::Object(stats_obj));
     }
@@ -2646,6 +2777,7 @@ mod tests {
                 size: 123456,
                 properties: None,
                 classes: None,
+                graphs: None,
             }),
             config: Some(DbRootConfig {
                 reindex_min_bytes: Some(1000000),

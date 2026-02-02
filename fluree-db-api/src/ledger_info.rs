@@ -10,13 +10,13 @@
 //! - Commit JSON-LD (uses `"id"` not `"@id"`, `"type"` as array)
 //! - Nameservice JSON-LD (uses `"@id"`, `"@type"`, `"@context"`)
 //! - Stats with decoded IRIs and computed selectivity
-//! - Inverted namespace codes (prefix → code, not code → prefix)
 
 use crate::format::iri::IriCompactor;
 use fluree_db_core::serde::json::{
-    ClassPropertyUsage, ClassStatEntry, DbRootSchema, DbRootStats, PropertyStatEntry,
-    SchemaPredicateInfo,
+    ClassPropertyUsage, ClassStatEntry, DbRootSchema, DbRootStats, GraphStatsEntry,
+    PropertyStatEntry, SchemaPredicateInfo,
 };
+use fluree_db_core::value_id::DatatypeId;
 use fluree_db_core::{NodeCache, Sid, Storage};
 use fluree_db_ledger::LedgerState;
 use fluree_db_core::alias as core_alias;
@@ -63,7 +63,6 @@ pub type Result<T> = std::result::Result<T, LedgerInfoError>;
 /// Returns JSON containing:
 /// - `commit`: Commit info in JSON-LD format
 /// - `nameservice`: NsRecord in JSON-LD format
-/// - `namespace-codes`: Inverted namespace mapping (prefix → code)
 /// - `stats`: Current statistics with decoded IRIs
 /// - `index`: Index metadata (if available)
 ///
@@ -104,7 +103,29 @@ where
         .unwrap_or_default();
 
     // Get current stats (always returns DbRootStats)
-    let stats = ledger.current_stats();
+    let mut stats = ledger.current_stats();
+
+    // Pre-index fallback: if no graph stats from index, try loading the pre-index manifest
+    if stats.graphs.is_none() {
+        let manifest_addr = format!(
+            "fluree:file://{}/stats/pre-index-stats.json",
+            ledger.db.alias
+        );
+        if let Ok(bytes) = ledger.db.storage.read_bytes(&manifest_addr).await {
+            match parse_pre_index_manifest(&bytes) {
+                Ok(graphs) => {
+                    tracing::debug!(
+                        graphs = graphs.len(),
+                        "loaded pre-index stats manifest"
+                    );
+                    stats.graphs = Some(graphs);
+                }
+                Err(e) => {
+                    tracing::warn!("failed to parse pre-index stats manifest: {}", e);
+                }
+            }
+        }
+    }
 
     // Build the response
     let mut result = Map::new();
@@ -135,13 +156,7 @@ where
         result.insert("nameservice".to_string(), ns_record_to_jsonld(ns_record));
     }
 
-    // 3. Namespace codes (inverted: prefix → code)
-    result.insert(
-        "namespace-codes".to_string(),
-        invert_namespace_codes(&ledger.db.namespace_codes),
-    );
-
-    // 4. Stats section (with hierarchy fields)
+    // 3. Stats section (with hierarchy fields)
     result.insert(
         "stats".to_string(),
         build_stats(ledger, &stats, &compactor, &schema_index)?,
@@ -366,15 +381,6 @@ pub fn vg_record_to_jsonld(record: &VgNsRecord) -> JsonValue {
     obj
 }
 
-/// Invert namespace codes from code→prefix to prefix→code.
-fn invert_namespace_codes(codes: &HashMap<i32, String>) -> JsonValue {
-    let mut inverted = Map::new();
-    for (code, prefix) in codes {
-        inverted.insert(prefix.clone(), json!(code));
-    }
-    JsonValue::Object(inverted)
-}
-
 /// Build stats section with decoded IRIs and hierarchy fields.
 fn build_stats<S, C>(
     ledger: &LedgerState<S, C>,
@@ -395,13 +401,21 @@ where
         .map(|r| r.index_t)
         .unwrap_or(ledger.db.t);
 
-    Ok(json!({
+    let mut stats_obj = json!({
         "flakes": stats.flakes,
         "size": stats.size,
         "indexed": indexed_t,
         "properties": decode_property_stats(&stats.properties, compactor, schema_index)?,
         "classes": decode_class_stats(&stats.classes, compactor, schema_index)?,
-    }))
+    });
+
+    // Add per-graph stats when available (ID-keyed; IRI resolution requires
+    // predicate/graph dictionaries to be wired to the API layer).
+    if let Some(ref graphs) = stats.graphs {
+        stats_obj["graphs"] = encode_graph_stats(graphs);
+    }
+
+    Ok(stats_obj)
 }
 
 /// Decode property statistics with IRI compaction.
@@ -583,6 +597,146 @@ fn decode_class_property_usage(
     }))
 }
 
+/// Parse a pre-index stats manifest (JSON) into `GraphStatsEntry` entries.
+///
+/// The manifest is produced by `finalize_pre_index_stats` in the ingest tool.
+/// It has the structure:
+/// ```json
+/// {
+///   "graphs": [
+///     {
+///       "g_id": 0, "flakes": 1000, "size": 0,
+///       "properties": [
+///         { "p_id": 1, "count": 500, "ndv_values": 400, "ndv_subjects": 300,
+///           "last_modified_t": -42, "datatypes": [[0, 500]] }
+///       ]
+///     }
+///   ]
+/// }
+/// ```
+fn parse_pre_index_manifest(bytes: &[u8]) -> std::result::Result<Vec<GraphStatsEntry>, String> {
+    let json: JsonValue =
+        serde_json::from_slice(bytes).map_err(|e| format!("invalid JSON: {}", e))?;
+
+    let graphs_arr = json
+        .get("graphs")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "missing 'graphs' array".to_string())?;
+
+    let mut entries = Vec::with_capacity(graphs_arr.len());
+    for g in graphs_arr {
+        let g_id = g
+            .get("g_id")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| "missing g_id".to_string())? as u32;
+        let flakes = g.get("flakes").and_then(|v| v.as_u64()).unwrap_or(0);
+        let size = g.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+
+        let props_arr = g
+            .get("properties")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut properties = Vec::with_capacity(props_arr.len());
+        for p in &props_arr {
+            let p_id = p
+                .get("p_id")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| "missing p_id".to_string())? as u32;
+            let count = p.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+            let ndv_values = p.get("ndv_values").and_then(|v| v.as_u64()).unwrap_or(0);
+            let ndv_subjects = p.get("ndv_subjects").and_then(|v| v.as_u64()).unwrap_or(0);
+            let last_modified_t = p
+                .get("last_modified_t")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            let dt_arr = p
+                .get("datatypes")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let datatypes: Vec<(u8, u64)> = dt_arr
+                .iter()
+                .filter_map(|pair| {
+                    let arr = pair.as_array()?;
+                    if arr.len() == 2 {
+                        Some((arr[0].as_u64()? as u8, arr[1].as_u64()?))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            properties.push(fluree_db_core::serde::json::GraphPropertyStatEntry {
+                p_id,
+                count,
+                ndv_values,
+                ndv_subjects,
+                last_modified_t,
+                datatypes,
+            });
+        }
+
+        entries.push(GraphStatsEntry {
+            g_id,
+            flakes,
+            size,
+            properties,
+        });
+    }
+
+    Ok(entries)
+}
+
+/// Encode per-graph stats as a JSON array.
+///
+/// Each entry is keyed by numeric `g_id` and `p_id`. The `DatatypeId` values
+/// are resolved to compact IRIs (e.g., `"xsd:string"`) via compile-time
+/// constants. Full predicate and graph IRI resolution requires wiring the
+/// predicate/graph dictionaries to the API layer (future work).
+///
+/// Excludes `g_id = 1` (transaction metadata graph) from the output.
+fn encode_graph_stats(graphs: &[GraphStatsEntry]) -> JsonValue {
+    let entries: Vec<JsonValue> = graphs
+        .iter()
+        .filter(|g| g.g_id != 1) // exclude txn-meta graph
+        .map(|g| {
+            let properties: Vec<JsonValue> = g
+                .properties
+                .iter()
+                .map(|p| {
+                    // Resolve DatatypeId to compact IRI via Display
+                    let mut dt_obj = Map::new();
+                    for &(dt_raw, count) in &p.datatypes {
+                        let dt_iri = DatatypeId::from_u8(dt_raw).to_string();
+                        dt_obj.insert(dt_iri, json!(count));
+                    }
+
+                    json!({
+                        "p_id": p.p_id,
+                        "count": p.count,
+                        "ndv-values": p.ndv_values,
+                        "ndv-subjects": p.ndv_subjects,
+                        "last-modified-t": p.last_modified_t,
+                        "datatypes": dt_obj,
+                    })
+                })
+                .collect();
+
+            json!({
+                "g_id": g.g_id,
+                "flakes": g.flakes,
+                "size": g.size,
+                "properties": properties,
+            })
+        })
+        .collect();
+
+    JsonValue::Array(entries)
+}
+
 /// Compute selectivity: ceil(count/ndv), minimum 1, as INTEGER.
 fn compute_selectivity(count: u64, ndv: u64) -> u64 {
     if ndv == 0 {
@@ -644,8 +798,8 @@ where
     /// Execute the ledger info request.
     ///
     /// Loads the ledger (using cache if available) and returns comprehensive
-    /// metadata including commit info, nameservice record, namespace codes,
-    /// stats, and index information.
+    /// metadata including commit info, nameservice record, stats,
+    /// and index information.
     pub async fn execute(self) -> crate::Result<JsonValue> {
         // Load the ledger (uses cache if caching is enabled)
         let ledger = self.fluree.ledger(&self.alias).await?;
@@ -669,20 +823,6 @@ mod tests {
         assert_eq!(compute_selectivity(0, 0), 1);
         assert_eq!(compute_selectivity(3, 2), 2); // ceil(1.5) = 2
         assert_eq!(compute_selectivity(1, 100), 1); // ceil(0.01) = 1, but min is 1
-    }
-
-    #[test]
-    fn test_invert_namespace_codes() {
-        let mut codes = HashMap::new();
-        codes.insert(0, "".to_string());
-        codes.insert(1, "@".to_string());
-        codes.insert(100, "http://example.org/".to_string());
-
-        let inverted = invert_namespace_codes(&codes);
-
-        assert_eq!(inverted[""], 0);
-        assert_eq!(inverted["@"], 1);
-        assert_eq!(inverted["http://example.org/"], 100);
     }
 
     #[test]

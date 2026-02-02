@@ -42,6 +42,10 @@ pub struct CommitResolver {
     /// Per-predicate tracking: bit 0 = has NUM_INT, bit 1 = has NUM_F64, bit 2 = has NUM_BIG.
     /// Used to compute `NumericShape` for the binary scan path.
     numeric_tag_usage: HashMap<u32, u8>,
+    /// Optional per-(graph, property) stats hook. When set, `on_record()` is
+    /// called for every resolved user-data op (not txn-meta).
+    #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+    stats_hook: Option<crate::stats::IdStatsHook>,
 }
 
 impl CommitResolver {
@@ -51,7 +55,21 @@ impl CommitResolver {
             ns_prefixes: fluree_db_core::default_namespace_codes(),
             hasher: Xxh3::new(),
             numeric_tag_usage: HashMap::new(),
+            #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+            stats_hook: None,
         }
+    }
+
+    /// Set the ID-based stats hook for per-op stats collection.
+    #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+    pub fn set_stats_hook(&mut self, hook: crate::stats::IdStatsHook) {
+        self.stats_hook = Some(hook);
+    }
+
+    /// Take the stats hook out of the resolver (for finalization / merge).
+    #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+    pub fn take_stats_hook(&mut self) -> Option<crate::stats::IdStatsHook> {
+        self.stats_hook.take()
     }
 
     /// Apply a commit's namespace delta to update prefix mappings.
@@ -78,6 +96,21 @@ impl CommitResolver {
 
         commit_ops.for_each_op(|raw_op: RawOp<'_>| {
             let record = self.resolve_single_op(&raw_op, t, dicts)?;
+
+            // Feed resolved record to ID-based stats hook (user-data ops only)
+            #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+            if let Some(ref mut hook) = self.stats_hook {
+                hook.on_record(
+                    record.g_id,
+                    record.p_id,
+                    record.s_id,
+                    fluree_db_core::value_id::DatatypeId::from_u8(record.dt as u8),
+                    crate::stats::value_hash(record.o_kind, record.o_key),
+                    record.t,
+                    record.op != 0,
+                );
+            }
+
             writer
                 .push(record, &mut dicts.languages)
                 .map_err(|e| CommitV2Error::InvalidOp(format!("run writer error: {}", e)))?;

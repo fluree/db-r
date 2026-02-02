@@ -24,6 +24,7 @@ use std::cmp::Ordering;
 use std::io;
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::Instant;
 
 // ============================================================================
 // OverlayOp: overlay operation in integer-ID space
@@ -587,10 +588,28 @@ impl BinaryCursor {
             return Ok(None);
         }
 
+        let span = tracing::info_span!(
+            "binary_cursor_next_leaf",
+            order = self.order.dir_name(),
+            g_id = self.g_id,
+            to_t = self.to_t,
+            overlay_epoch = self.epoch,
+            overlay_ops = self.overlay_ops.len(),
+            ms = tracing::field::Empty,
+            leaflets = tracing::field::Empty,
+            r1_hits = tracing::field::Empty,
+            r1_misses = tracing::field::Empty,
+            r2_hits = tracing::field::Empty,
+            r2_misses = tracing::field::Empty
+        );
+        let _g = span.enter();
+        let start = Instant::now();
+
         let branch = match self.store.branch_for_order(self.g_id, self.order) {
             Some(b) => b,
             None => {
                 self.exhausted = true;
+                span.record("ms", &((start.elapsed().as_secs_f64() * 1000.0) as u64));
                 return Ok(None);
             }
         };
@@ -637,6 +656,12 @@ impl BinaryCursor {
             let leaf_id = xxhash_rust::xxh3::xxh3_128(leaf_entry.content_hash.as_bytes());
             let cache = self.store.leaflet_cache();
 
+            let mut leaflets: u64 = 0;
+            let mut r1_hits: u64 = 0;
+            let mut r1_misses: u64 = 0;
+            let mut r2_hits: u64 = 0;
+            let mut r2_misses: u64 = 0;
+
             if !leaf_overlay.is_empty() {
                 // Overlay merge path: merge overlay ops into leaflet rows.
                 // Each leaflet gets its assigned slice of overlay ops;
@@ -652,6 +677,7 @@ impl BinaryCursor {
             } else {
                 // No overlay for this leaf — use per-leaflet normal/time-travel paths.
                 for (leaflet_idx, dir_entry) in header.leaflet_dir.iter().enumerate() {
+                    leaflets += 1;
                     let end = dir_entry.offset as usize + dir_entry.compressed_len as usize;
                     if end > leaf_mmap.len() {
                         break;
@@ -665,6 +691,14 @@ impl BinaryCursor {
                         to_t: self.to_t,
                         epoch: self.epoch,
                     };
+
+                    if let Some(c) = cache {
+                        if c.contains_r1(&cache_key) { r1_hits += 1; } else { r1_misses += 1; }
+                        // Region 2 is only relevant when the cursor needs it (Region 2 requested or time-travel).
+                        if self.need_region2 || time_traveling {
+                            if c.contains_r2(&cache_key) { r2_hits += 1; } else { r2_misses += 1; }
+                        }
+                    }
 
                     if time_traveling {
                         self.process_leaflet_time_travel(
@@ -688,12 +722,24 @@ impl BinaryCursor {
 
             batch.row_count = batch.s_ids.len();
             if batch.row_count > 0 {
+                span.record("leaflets", &leaflets);
+                span.record("r1_hits", &r1_hits);
+                span.record("r1_misses", &r1_misses);
+                span.record("r2_hits", &r2_hits);
+                span.record("r2_misses", &r2_misses);
+                span.record("ms", &((start.elapsed().as_secs_f64() * 1000.0) as u64));
                 return Ok(Some(batch));
             }
             // Empty after filtering — continue to next leaf
         }
 
         self.exhausted = true;
+        span.record("leaflets", &0u64);
+        span.record("r1_hits", &0u64);
+        span.record("r1_misses", &0u64);
+        span.record("r2_hits", &0u64);
+        span.record("r2_misses", &0u64);
+        span.record("ms", &((start.elapsed().as_secs_f64() * 1000.0) as u64));
         Ok(None)
     }
 

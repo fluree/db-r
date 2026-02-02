@@ -24,6 +24,7 @@ use async_trait::async_trait;
 use fluree_db_core::{FlakeValue, NodeCache, Sid, Storage};
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Aggregate function types
 #[derive(Debug, Clone, PartialEq)]
@@ -181,6 +182,15 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for AggregateO
             return Ok(None);
         }
 
+        let span = tracing::info_span!(
+            "aggregate_batch",
+            aggregates = self.aggregates.len(),
+            rows_in = tracing::field::Empty,
+            ms = tracing::field::Empty
+        );
+        let _g = span.enter();
+        let start = Instant::now();
+
         let batch = match self.child.next_batch(ctx).await? {
             Some(b) => b,
             None => {
@@ -192,6 +202,8 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for AggregateO
         if batch.is_empty() {
             return Ok(Some(Batch::empty(self.schema.clone())?));
         }
+
+        span.record("rows_in", &(batch.len() as u64));
 
         let num_cols = self.schema.len();
         let mut output_columns: Vec<Vec<Binding>> = Vec::with_capacity(num_cols);
@@ -265,7 +277,9 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for AggregateO
             }
         }
 
-        Ok(Some(Batch::new(self.schema.clone(), output_columns)?))
+        let out = Batch::new(self.schema.clone(), output_columns)?;
+        span.record("ms", &((start.elapsed().as_secs_f64() * 1000.0) as u64));
+        Ok(Some(out))
     }
 
     fn close(&mut self) {

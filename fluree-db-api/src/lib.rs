@@ -123,7 +123,7 @@ pub use search::EmbeddedBm25SearchProvider;
 // Re-export indexer types for background indexing setup
 pub use fluree_db_indexer::{
     BackgroundIndexerWorker, IndexCompletion, IndexOutcome, IndexPhase, IndexStatusSnapshot,
-    IndexerHandle,
+    IndexerConfig, IndexerHandle,
 };
 
 // Re-export commonly used types from child crates

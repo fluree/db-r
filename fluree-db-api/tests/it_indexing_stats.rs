@@ -385,7 +385,6 @@ async fn ledger_info_api_returns_expected_structure() {
             // ================================================================
             assert!(info.get("commit").is_some(), "should have 'commit' key");
             assert!(info.get("nameservice").is_some(), "should have 'nameservice' key");
-            assert!(info.get("namespace-codes").is_some(), "should have 'namespace-codes' key");
             assert!(info.get("stats").is_some(), "should have 'stats' key");
             assert!(info.get("index").is_some(), "should have 'index' key");
 
@@ -413,18 +412,6 @@ async fn ledger_info_api_returns_expected_structure() {
             assert!(ns.get("@type").is_some(), "nameservice should have @type");
             assert!(ns.get("f:t").is_some(), "nameservice should have f:t");
             assert_eq!(ns["f:status"], "ready", "nameservice f:status should be 'ready'");
-
-            // ================================================================
-            // Verify namespace-codes (inverted: prefix → code)
-            // ================================================================
-            let ns_codes = &info["namespace-codes"];
-            assert!(ns_codes.is_object(), "namespace-codes should be object");
-            // Check some expected namespace codes
-            assert!(ns_codes.get("").is_some(), "should have empty prefix");
-            assert!(ns_codes.get("@").is_some(), "should have '@' prefix");
-            // Example namespace should be present since we used ex:
-            assert!(ns_codes.get("http://example.org/").is_some(),
-                "should have http://example.org/ prefix");
 
             // ================================================================
             // Verify stats structure
@@ -642,7 +629,6 @@ async fn ledger_info_before_commit_returns_null_commit() {
     assert!(info["commit"].is_null(), "commit should be null when no commits");
 
     // Other keys should still be present
-    assert!(info.get("namespace-codes").is_some(), "should have namespace-codes");
     assert!(info.get("stats").is_some(), "should have stats");
 }
 

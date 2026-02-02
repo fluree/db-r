@@ -17,7 +17,9 @@ fn init_logging() {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| {
             EnvFilter::new(
-                "fluree_ingest=info,fluree_db_api=info,fluree_db_transact=info,fluree_db_novelty=info,fluree_graph_turtle=info,fluree_db_indexer=info",
+                // Include query + sparql at info so OTEL spans show up
+                // during ingest benchmarks (cold/hot query runs, etc).
+                "fluree_ingest=info,fluree_db_api=info,fluree_db_query=info,fluree_db_sparql=info,fluree_db_transact=info,fluree_db_novelty=info,fluree_graph_turtle=info,fluree_db_indexer=info",
             )
         });
 
@@ -232,6 +234,13 @@ async fn run_import(
                     let mut dicts = GlobalDicts::new(&subject_fwd)
                         .map_err(|e| format!("init dicts: {}", e))?;
                     let mut resolver = CommitResolver::new();
+
+                    // Enable per-(graph, property) stats collection
+                    // Enable per-(graph, property) stats collection.
+                    // Uses commit-v2 cfg since hll-stats is the indexer's default feature.
+                    #[cfg(feature = "commit-v2")]
+                    resolver.set_stats_hook(fluree_db_indexer::stats::IdStatsHook::new());
+
                     let mut writer = MultiOrderRunWriter::new(config)
                         .map_err(|e| format!("init multi-order writer: {}", e))?;
                     let mut commit_count = 0usize;
@@ -299,6 +308,8 @@ async fn run_import(
                         string_count: dicts.strings.len(),
                         total_records,
                         commit_count,
+                        #[cfg(feature = "commit-v2")]
+                        stats_hook: resolver.take_stats_hook(),
                     })
                 })
                 .map_err(|e| format!("spawn resolver: {}", e))?;
@@ -420,7 +431,7 @@ async fn run_import(
     if let Some(handle) = run_handle {
         info!("Waiting for run resolver to finish...");
         let rr_start = Instant::now();
-        let run_result = match handle.join() {
+        let mut run_result = match handle.join() {
             Ok(Ok(result)) => result,
             Ok(Err(e)) => return Err(format!("run generation failed: {}", e).into()),
             Err(_) => return Err("resolver thread panicked".into()),
@@ -437,9 +448,116 @@ async fn run_import(
             run_result.commit_count,
             rr_elapsed,
         );
+
+        // Finalize and persist pre-index stats
+        let run_dir = args
+            .run_dir
+            .clone()
+            .unwrap_or_else(|| args.db_dir.join("runs"));
+        finalize_pre_index_stats(
+            &mut run_result, &run_dir, state.t, state.cumulative_flakes,
+            storage, &args.ledger,
+        ).await;
     }
 
     Ok(state.cumulative_flakes)
+}
+
+/// Finalize and persist pre-index stats from the resolver's IdStatsHook.
+///
+/// Writes a JSON manifest to `run_dir/pre-index-stats.json` with per-graph
+/// property stats (counts, NDV estimates, datatype usage). Also persists
+/// HLL sketches to content-addressed storage at
+/// `fluree:file://{alias}/index/stats-sketches/{kind}/g{g_id}/p{p_id}_t{t}.hll`.
+///
+/// The manifest is readable by `ledger-info` before any index build.
+#[cfg(feature = "commit-v2")]
+async fn finalize_pre_index_stats<S: fluree_db_core::StorageWrite>(
+    run_result: &mut fluree_db_indexer::run_index::RunGenerationResult,
+    run_dir: &std::path::Path,
+    final_t: i64,
+    cumulative_flakes: u64,
+    storage: &S,
+    alias: &str,
+) {
+    use std::fmt::Write;
+
+    let hook = match run_result.stats_hook.take() {
+        Some(h) => h,
+        None => return,
+    };
+
+    let flake_count = hook.flake_count();
+
+    // Persist HLL sketches to storage before finalization (finalize consumes the hook)
+    match fluree_db_indexer::stats::persist_hll_sketches_id(storage, alias, hook.properties()).await
+    {
+        Ok(addrs) => info!("Persisted {} HLL sketch files", addrs.len()),
+        Err(e) => error!("Failed to persist HLL sketches: {}", e),
+    }
+
+    let result = hook.finalize();
+
+    // Derive property_count from finalized graphs (excludes txn-meta g_id=1)
+    let property_count: usize = result
+        .graphs
+        .iter()
+        .map(|g| g.properties.len())
+        .sum();
+
+    info!(
+        "Pre-index stats: {} graphs, {} properties, {} flakes (excl txn-meta)",
+        result.graphs.len(),
+        property_count,
+        result.total_flakes,
+    );
+
+    // Build JSON manifest manually (no serde_json dependency in this crate)
+    let mut json = String::with_capacity(4096);
+    let _ = writeln!(json, "{{");
+    let _ = writeln!(json, "  \"schema_version\": 1,");
+    let _ = writeln!(json, "  \"datatype_id_version\": 1,");
+    let _ = writeln!(json, "  \"final_t\": {},", final_t);
+    let _ = writeln!(json, "  \"cumulative_flakes\": {},", cumulative_flakes);
+    let _ = writeln!(json, "  \"total_flakes_resolved\": {},", flake_count);
+    let _ = writeln!(json, "  \"property_count\": {},", property_count);
+    let _ = writeln!(json, "  \"graphs\": [");
+    for (gi, g) in result.graphs.iter().enumerate() {
+        let _ = writeln!(json, "    {{");
+        let _ = writeln!(json, "      \"g_id\": {},", g.g_id);
+        let _ = writeln!(json, "      \"flakes\": {},", g.flakes);
+        let _ = writeln!(json, "      \"size\": {},", g.size);
+        let _ = writeln!(json, "      \"properties\": [");
+        for (pi, p) in g.properties.iter().enumerate() {
+            let _ = write!(json, "        {{\"p_id\":{},\"count\":{},\"ndv_values\":{},\"ndv_subjects\":{},\"last_modified_t\":{},\"datatypes\":[",
+                p.p_id, p.count, p.ndv_values, p.ndv_subjects, p.last_modified_t);
+            for (di, (dt, count)) in p.datatypes.iter().enumerate() {
+                let _ = write!(json, "[{},{}]", dt, count);
+                if di + 1 < p.datatypes.len() { let _ = write!(json, ","); }
+            }
+            let _ = write!(json, "]}}");
+            if pi + 1 < g.properties.len() { let _ = writeln!(json, ","); } else { let _ = writeln!(json); }
+        }
+        let _ = write!(json, "      ]");
+        let _ = writeln!(json, "\n    }}{}",
+            if gi + 1 < result.graphs.len() { "," } else { "" });
+    }
+    let _ = writeln!(json, "  ]");
+    let _ = writeln!(json, "}}");
+
+    let manifest_path = run_dir.join("pre-index-stats.json");
+    match std::fs::write(&manifest_path, &json) {
+        Ok(()) => info!("Pre-index stats manifest written to {:?}", manifest_path),
+        Err(e) => error!("Failed to write pre-index stats manifest: {}", e),
+    }
+
+    // Also write manifest to content-addressed storage so ledger-info can read it
+    // before any index build, using the well-known address.
+    let storage_addr = format!("fluree:file://{}/stats/pre-index-stats.json", alias);
+    match storage.write_bytes(&storage_addr, json.as_bytes()).await {
+        Ok(()) => info!("Pre-index stats manifest written to storage: {}", storage_addr),
+        Err(e) => error!("Failed to write pre-index stats to storage: {}", e),
+    }
 }
 
 /// Parallel import: parse chunks on N threads, commit serially.
@@ -527,6 +645,13 @@ async fn run_import_parallel(
                     let mut dicts =
                         GlobalDicts::new(&subject_fwd).map_err(|e| format!("init dicts: {}", e))?;
                     let mut resolver = CommitResolver::new();
+
+                    // Enable per-(graph, property) stats collection
+                    // Enable per-(graph, property) stats collection.
+                    // Uses commit-v2 cfg since hll-stats is the indexer's default feature.
+                    #[cfg(feature = "commit-v2")]
+                    resolver.set_stats_hook(fluree_db_indexer::stats::IdStatsHook::new());
+
                     let mut writer = MultiOrderRunWriter::new(config)
                         .map_err(|e| format!("init multi-order writer: {}", e))?;
                     let mut commit_count = 0usize;
@@ -594,6 +719,8 @@ async fn run_import_parallel(
                         string_count: dicts.strings.len(),
                         total_records,
                         commit_count,
+                        #[cfg(feature = "commit-v2")]
+                        stats_hook: resolver.take_stats_hook(),
                     })
                 })
                 .map_err(|e| format!("spawn resolver: {}", e))?;
@@ -803,7 +930,7 @@ async fn run_import_parallel(
     if let Some(handle) = run_handle {
         info!("Waiting for run resolver to finish...");
         let rr_start = Instant::now();
-        let run_result = match handle.join() {
+        let mut run_result = match handle.join() {
             Ok(Ok(result)) => result,
             Ok(Err(e)) => return Err(format!("run generation failed: {}", e).into()),
             Err(_) => return Err("resolver thread panicked".into()),
@@ -820,6 +947,16 @@ async fn run_import_parallel(
             run_result.commit_count,
             rr_elapsed,
         );
+
+        // Finalize and persist pre-index stats
+        let run_dir = args
+            .run_dir
+            .clone()
+            .unwrap_or_else(|| args.db_dir.join("runs"));
+        finalize_pre_index_stats(
+            &mut run_result, &run_dir, state.t, state.cumulative_flakes,
+            storage, &args.ledger,
+        ).await;
     }
 
     Ok(state.cumulative_flakes)
@@ -908,6 +1045,12 @@ struct Args {
     /// parses multiple chunks simultaneously while commits remain serial.
     #[arg(long, default_value_t = 0)]
     parse_threads: usize,
+
+    /// Enable background indexing in the standard staging pipeline.
+    /// Triggers index refresh with stats collection when novelty exceeds thresholds.
+    /// Has no effect in --import mode.
+    #[arg(long)]
+    enable_indexing: bool,
 }
 
 #[cfg(feature = "commit-v2")]
@@ -1449,7 +1592,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build Fluree connection with file-backed storage
     std::fs::create_dir_all(&args.db_dir)?;
-    let fluree = FlureeBuilder::file(args.db_dir.to_string_lossy()).build()?;
+    let mut fluree = FlureeBuilder::file(args.db_dir.to_string_lossy()).build()?;
+
+    // Enable background indexing if requested
+    if args.enable_indexing {
+        use fluree_db_api::{BackgroundIndexerWorker, IndexerConfig, IndexingMode};
+
+        let indexer_config = IndexerConfig::default();
+        let (worker, handle) = BackgroundIndexerWorker::new(
+            fluree.storage().clone(),
+            std::sync::Arc::new(fluree.nameservice().clone()),
+            indexer_config,
+        );
+        tokio::spawn(worker.run());
+        fluree.set_indexing_mode(IndexingMode::Background(handle));
+        info!("Background indexing enabled");
+    }
 
     // Create or load ledger
     let ledger = match fluree.create_ledger(&args.ledger).await {
@@ -1464,13 +1622,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let index_config = IndexConfig {
-        reindex_min_bytes: args.reindex_max_mb * 1024 * 1024 / 2, // soft = half of hard
-        reindex_max_bytes: args.reindex_max_mb * 1024 * 1024,
+        reindex_min_bytes: if args.enable_indexing {
+            50 * 1024 * 1024 // 50 MB soft threshold when indexing enabled
+        } else {
+            args.reindex_max_mb * 1024 * 1024 / 2
+        },
+        reindex_max_bytes: if args.enable_indexing {
+            200 * 1024 * 1024 // 200 MB hard threshold when indexing enabled
+        } else {
+            args.reindex_max_mb * 1024 * 1024
+        },
     };
     info!(
-        "Index thresholds: soft={} MB, hard={} MB",
+        "Index thresholds: soft={} MB, hard={} MB{}",
         index_config.reindex_min_bytes / (1024 * 1024),
         index_config.reindex_max_bytes / (1024 * 1024),
+        if args.enable_indexing { " (indexing enabled)" } else { "" },
     );
 
     let mut current_ledger = ledger;
