@@ -1210,6 +1210,7 @@ pub enum FunctionName {
     Ceil,
     Floor,
     Rand,
+    Power,
     /// RDF term constructors
     Iri,
     Bnode,

@@ -1133,6 +1133,31 @@ fn eval_function_to_value(
             Ok(Some(ComparableValue::Double(random::<f64>())))
         }
 
+        FunctionName::Power => {
+            check_arity(args, 2, "POWER")?;
+            let base = eval_to_comparable(&args[0], row)?;
+            let exp = eval_to_comparable(&args[1], row)?;
+            Ok(match (base, exp) {
+                (Some(ComparableValue::Long(b)), Some(ComparableValue::Long(e))) => {
+                    if e >= 0 {
+                        Some(ComparableValue::Long(b.saturating_pow(e as u32)))
+                    } else {
+                        Some(ComparableValue::Double((b as f64).powf(e as f64)))
+                    }
+                }
+                (Some(ComparableValue::Double(b)), Some(ComparableValue::Double(e))) => {
+                    Some(ComparableValue::Double(b.powf(e)))
+                }
+                (Some(ComparableValue::Long(b)), Some(ComparableValue::Double(e))) => {
+                    Some(ComparableValue::Double((b as f64).powf(e)))
+                }
+                (Some(ComparableValue::Double(b)), Some(ComparableValue::Long(e))) => {
+                    Some(ComparableValue::Double(b.powf(e as f64)))
+                }
+                _ => None,
+            })
+        }
+
         // String functions that return strings
         FunctionName::Ucase => eval_unary_string_transform(args, row, "UCASE", |s| s.to_uppercase()),
         FunctionName::Lcase => eval_unary_string_transform(args, row, "LCASE", |s| s.to_lowercase()),
@@ -1672,6 +1697,15 @@ fn evaluate_function(name: &FunctionName, args: &[FilterExpr], row: &RowView) ->
         FunctionName::LangMatches | FunctionName::SameTerm => {
             match eval_function_to_value(name, args, row)? {
                 Some(ComparableValue::Bool(b)) => Ok(b),
+                _ => Ok(false),
+            }
+        }
+
+        // Power - numeric truthiness
+        FunctionName::Power => {
+            match eval_function_to_value(name, args, row)? {
+                Some(ComparableValue::Long(n)) => Ok(n != 0),
+                Some(ComparableValue::Double(d)) => Ok(!d.is_nan() && d != 0.0),
                 _ => Ok(false),
             }
         }

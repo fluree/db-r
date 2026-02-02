@@ -1331,6 +1331,7 @@ fn lower_function_name(name: &str) -> FunctionName {
         "ceil" => FunctionName::Ceil,
         "floor" => FunctionName::Floor,
         "rand" => FunctionName::Rand,
+        "power" => FunctionName::Power,
         "iri" => FunctionName::Iri,
         "bnode" => FunctionName::Bnode,
         // DateTime functions
