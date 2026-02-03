@@ -15,9 +15,11 @@
 //!
 //! ## Garbage Record Naming
 //!
-//! Garbage records are written using storage-owned addressing. The record bytes
-//! are deterministic (sorted/deduped), so the resulting content address is also
-//! deterministic across indexers.
+//! Garbage records are written using storage-owned addressing with sorted/deduped
+//! record bytes. Each record includes a `created_at_ms` wall-clock timestamp for
+//! time-based retention checks. Because of the timestamp, records are
+//! indexer-specific (not deterministic across concurrent indexers), but this is
+//! harmless since only one indexer wins the publish race.
 //!
 //! ## Time-Based Retention
 //!
@@ -68,9 +70,7 @@ pub struct CleanGarbageResult {
 ///
 /// Returns `None` if there are no garbage addresses to record.
 /// The garbage addresses are sorted and deduplicated before writing.
-///
-/// Note: For deterministic content addressing across multiple indexers, the
-/// record should not include wall-clock timestamps. `created_at_ms` is set to 0.
+/// Includes a wall-clock `created_at_ms` timestamp for time-based GC retention.
 pub async fn write_garbage_record<S: ContentAddressedWrite>(
     storage: &S,
     alias: &str,
@@ -90,7 +90,10 @@ pub async fn write_garbage_record<S: ContentAddressedWrite>(
         alias: alias.to_string(),
         t,
         garbage: garbage_addresses,
-        created_at_ms: 0,
+        created_at_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0),
     };
 
     let bytes = serde_json::to_vec(&record)?;

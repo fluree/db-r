@@ -168,6 +168,25 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
     pub(super) fn expand_iri(&self, iri: &Iri) -> Result<String> {
         match &iri.value {
             IriValue::Full(s) => {
+                // Check for common mistake: <prefix:local> instead of prefix:local
+                // This happens when users wrap a prefixed name in angle brackets.
+                // We detect this by checking if the IRI looks like "prefix:local"
+                // where "prefix" matches a declared PREFIX.
+                if !s.contains("://") {
+                    if let Some(colon_pos) = s.find(':') {
+                        let potential_prefix = &s[..colon_pos];
+                        if let Some(ns) = self.prefixes.get(potential_prefix) {
+                            let local = &s[colon_pos + 1..];
+                            let expanded = format!("{}{}", ns, local);
+                            return Err(LowerError::misused_prefix_syntax(
+                                s.to_string(),
+                                expanded,
+                                iri.span,
+                            ));
+                        }
+                    }
+                }
+
                 // Handle relative IRIs
                 if let Some(base) = &self.base {
                     if !s.contains("://") && !s.starts_with('#') {

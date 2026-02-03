@@ -123,3 +123,4 @@ pub const FIELD_REINDEX_MAX_BYTES: &str = "https://ns.flur.ee/system#reindexMaxB
 pub const FIELD_MAX_OLD_INDEXES: &str = "https://ns.flur.ee/system#maxOldIndexes";
 pub const FIELD_INDEXING_ENABLED: &str = "https://ns.flur.ee/system#indexingEnabled";
 pub const FIELD_TRACK_CLASS_STATS: &str = "https://ns.flur.ee/system#trackClassStats";
+pub const FIELD_GC_MIN_TIME_MINS: &str = "https://ns.flur.ee/system#gcMinTimeMins";

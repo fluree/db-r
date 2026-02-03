@@ -37,7 +37,7 @@
 
 use super::ast::UnresolvedPattern;
 use super::error::{ParseError, Result};
-use super::{node_map, parse_query_ast_internal, values, UnresolvedQuery};
+use super::{node_map, parse_query_ast_internal, values, PathAliasMap, UnresolvedQuery};
 use fluree_graph_json_ld::ParsedContext;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
@@ -62,6 +62,7 @@ fn validate_var_name(name: &str) -> Result<()> {
 pub fn parse_where_with_counters(
     where_val: &JsonValue,
     context: &ParsedContext,
+    path_aliases: &PathAliasMap,
     query: &mut UnresolvedQuery,
     subject_counter: &mut u32,
     nested_counter: &mut u32,
@@ -72,6 +73,7 @@ pub fn parse_where_with_counters(
             node_map::parse_node_map(
                 map,
                 context,
+                path_aliases,
                 query,
                 subject_counter,
                 nested_counter,
@@ -86,6 +88,7 @@ pub fn parse_where_with_counters(
                         node_map::parse_node_map(
                             map,
                             context,
+                            path_aliases,
                             query,
                             subject_counter,
                             nested_counter,
@@ -97,6 +100,7 @@ pub fn parse_where_with_counters(
                         parse_where_array_element(
                             inner_arr,
                             context,
+                            path_aliases,
                             query,
                             subject_counter,
                             nested_counter,
@@ -137,6 +141,7 @@ pub fn parse_where_with_counters(
 pub fn parse_where_array_element(
     arr: &[JsonValue],
     context: &ParsedContext,
+    path_aliases: &PathAliasMap,
     query: &mut UnresolvedQuery,
     subject_counter: &mut u32,
     nested_counter: &mut u32,
@@ -214,6 +219,7 @@ pub fn parse_where_array_element(
         "optional" => parse_optional_patterns(
             &arr[1..],
             context,
+            path_aliases,
             query,
             subject_counter,
             nested_counter,
@@ -239,6 +245,7 @@ pub fn parse_where_array_element(
                         parse_subquery_patterns(
                             std::slice::from_ref(branch_val),
                             context,
+                            path_aliases,
                             subject_counter,
                             nested_counter,
                             object_var_parsing,
@@ -248,6 +255,7 @@ pub fn parse_where_array_element(
                         parse_subquery_patterns(
                             items,
                             context,
+                            path_aliases,
                             subject_counter,
                             nested_counter,
                             object_var_parsing,
@@ -275,6 +283,7 @@ pub fn parse_where_array_element(
             let minus_patterns = parse_subquery_patterns(
                 &arr[1..],
                 context,
+                path_aliases,
                 subject_counter,
                 nested_counter,
                 object_var_parsing,
@@ -294,6 +303,7 @@ pub fn parse_where_array_element(
             let exists_patterns = parse_subquery_patterns(
                 &arr[1..],
                 context,
+                path_aliases,
                 subject_counter,
                 nested_counter,
                 object_var_parsing,
@@ -313,6 +323,7 @@ pub fn parse_where_array_element(
             let not_exists_patterns = parse_subquery_patterns(
                 &arr[1..],
                 context,
+                path_aliases,
                 subject_counter,
                 nested_counter,
                 object_var_parsing,
@@ -360,6 +371,7 @@ pub fn parse_where_array_element(
             let graph_patterns = parse_subquery_patterns(
                 &arr[2..],
                 context,
+                path_aliases,
                 subject_counter,
                 nested_counter,
                 object_var_parsing,
@@ -383,6 +395,7 @@ pub fn parse_where_array_element(
 pub fn parse_subquery_patterns(
     items: &[JsonValue],
     context: &ParsedContext,
+    path_aliases: &PathAliasMap,
     subject_counter: &mut u32,
     nested_counter: &mut u32,
     object_var_parsing: bool,
@@ -397,6 +410,7 @@ pub fn parse_subquery_patterns(
                 node_map::parse_node_map(
                     map,
                     context,
+                    path_aliases,
                     &mut temp_query,
                     subject_counter,
                     nested_counter,
@@ -410,6 +424,7 @@ pub fn parse_subquery_patterns(
                 parse_where_array_element(
                     arr,
                     context,
+                    path_aliases,
                     &mut temp_query,
                     subject_counter,
                     nested_counter,
@@ -441,6 +456,7 @@ pub fn parse_subquery_patterns(
 fn parse_optional_patterns(
     items: &[JsonValue],
     context: &ParsedContext,
+    path_aliases: &PathAliasMap,
     query: &mut UnresolvedQuery,
     subject_counter: &mut u32,
     nested_counter: &mut u32,
@@ -475,6 +491,7 @@ fn parse_optional_patterns(
                 node_map::parse_node_map(
                     map,
                     context,
+                    path_aliases,
                     &mut temp_query,
                     subject_counter,
                     nested_counter,
@@ -503,6 +520,7 @@ fn parse_optional_patterns(
                 parse_where_array_element(
                     inner_arr,
                     context,
+                    path_aliases,
                     &mut temp_query,
                     subject_counter,
                     nested_counter,
@@ -547,9 +565,11 @@ mod tests {
     ) -> Result<()> {
         let mut subject_counter: u32 = 0;
         let mut nested_counter: u32 = 0;
+        let empty_aliases = PathAliasMap::new();
         parse_where_with_counters(
             where_val,
             context,
+            &empty_aliases,
             query,
             &mut subject_counter,
             &mut nested_counter,
@@ -586,7 +606,8 @@ mod tests {
         let context = test_context();
         let mut query = UnresolvedQuery::new(context.clone());
         let arr = vec![json!("filter"), json!([">", "?age", 18])];
-        parse_where_array_element(&arr, &context, &mut query, &mut 0, &mut 0, true).unwrap();
+        let empty_aliases = PathAliasMap::new();
+        parse_where_array_element(&arr, &context, &empty_aliases, &mut query, &mut 0, &mut 0, true).unwrap();
         // Filter added to patterns
         assert!(!query.patterns.is_empty());
     }
@@ -596,7 +617,8 @@ mod tests {
         let context = test_context();
         let mut query = UnresolvedQuery::new(context.clone());
         let arr = vec![json!("bind"), json!("?doubled"), json!(["+", "?x", "?x"])];
-        parse_where_array_element(&arr, &context, &mut query, &mut 0, &mut 0, true).unwrap();
+        let empty_aliases = PathAliasMap::new();
+        parse_where_array_element(&arr, &context, &empty_aliases, &mut query, &mut 0, &mut 0, true).unwrap();
         assert!(!query.patterns.is_empty());
     }
 
@@ -605,7 +627,8 @@ mod tests {
         let context = test_context();
         let mut query = UnresolvedQuery::new(context.clone());
         let arr = vec![json!("optional"), json!({"ex:email": "?email"})];
-        parse_where_array_element(&arr, &context, &mut query, &mut 0, &mut 0, true).unwrap();
+        let empty_aliases = PathAliasMap::new();
+        parse_where_array_element(&arr, &context, &empty_aliases, &mut query, &mut 0, &mut 0, true).unwrap();
         assert!(!query.patterns.is_empty());
     }
 
@@ -618,7 +641,8 @@ mod tests {
             json!({"ex:type": "Person"}),
             json!({"ex:type": "Organization"}),
         ];
-        parse_where_array_element(&arr, &context, &mut query, &mut 0, &mut 0, true).unwrap();
+        let empty_aliases = PathAliasMap::new();
+        parse_where_array_element(&arr, &context, &empty_aliases, &mut query, &mut 0, &mut 0, true).unwrap();
         assert!(!query.patterns.is_empty());
     }
 
@@ -627,7 +651,8 @@ mod tests {
         let context = test_context();
         let mut query = UnresolvedQuery::new(context.clone());
         let arr = vec![json!("exists"), json!({"ex:verified": true})];
-        parse_where_array_element(&arr, &context, &mut query, &mut 0, &mut 0, true).unwrap();
+        let empty_aliases = PathAliasMap::new();
+        parse_where_array_element(&arr, &context, &empty_aliases, &mut query, &mut 0, &mut 0, true).unwrap();
         assert!(!query.patterns.is_empty());
     }
 
@@ -636,7 +661,8 @@ mod tests {
         let context = test_context();
         let mut query = UnresolvedQuery::new(context.clone());
         let arr = vec![json!("invalid_keyword")];
-        let result = parse_where_array_element(&arr, &context, &mut query, &mut 0, &mut 0, true);
+        let empty_aliases = PathAliasMap::new();
+        let result = parse_where_array_element(&arr, &context, &empty_aliases, &mut query, &mut 0, &mut 0, true);
         assert!(result.is_err());
     }
 
@@ -645,7 +671,8 @@ mod tests {
         let context = test_context();
         let mut query = UnresolvedQuery::new(context.clone());
         let arr: Vec<JsonValue> = vec![];
-        let result = parse_where_array_element(&arr, &context, &mut query, &mut 0, &mut 0, true);
+        let empty_aliases = PathAliasMap::new();
+        let result = parse_where_array_element(&arr, &context, &empty_aliases, &mut query, &mut 0, &mut 0, true);
         assert!(result.is_err());
     }
 }

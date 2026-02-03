@@ -15,7 +15,7 @@ use crate::error::{Result, TransactError};
 use crate::ir::{InlineValues, TemplateTerm, TripleTemplate, Txn, TxnOpts, TxnType};
 use crate::namespace::NamespaceRegistry;
 use fluree_db_core::FlakeValue;
-use fluree_db_query::parse::{parse_where_with_counters, UnresolvedQuery};
+use fluree_db_query::parse::{parse_where_with_counters, PathAliasMap, UnresolvedQuery};
 use fluree_db_query::VarRegistry;
 use fluree_graph_json_ld::{details, expand_with_context, parse_context, ParsedContext};
 use fluree_vocab::rdf::{self, TYPE};
@@ -148,9 +148,11 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
         let mut query = UnresolvedQuery::new(context.clone());
         let mut subject_counter: u32 = 0;
         let mut nested_counter: u32 = 0;
+        let no_path_aliases = PathAliasMap::new();
         parse_where_with_counters(
             where_val,
             &context,
+            &no_path_aliases,
             &mut query,
             &mut subject_counter,
             &mut nested_counter,

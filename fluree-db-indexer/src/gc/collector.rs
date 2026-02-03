@@ -149,135 +149,114 @@ where
         return Ok(CleanGarbageResult::default());
     }
 
-    // 2. Identify gc-eligible pairs
-    // Chain is newest-first. We want to keep indices 0..keep_count.
-    // For each eligible root to delete (indices >= keep_count), we need the
-    // newer root (index - 1) that has the garbage manifest for deletion.
+    // 2. Process ALL gc-eligible entries from oldest to newest.
     //
-    // Example with max_old_indexes=2 (keep 3 total) and chain length 5:
-    //   index: 0=current, 1=old1, 2=old2, 3=old3, 4=old4
-    //   keep: 0, 1, 2 (indices < 3)
-    //   delete: 3, 4 (indices >= 3)
-    //   - To delete index 3: use garbage from index 2 (newest retained)
-    //   - To delete index 4: use garbage from index 3 (but 3 will be deleted first)
+    // Chain is newest-first. Indices 0..keep_count are retained.
+    // Indices keep_count..len are gc-eligible.
     //
-    // But we must delete in order from newest-candidate to oldest-candidate
-    // because each deletion truncates the chain.
+    // For each gc-eligible entry at index i, the manifest at index i-1 (the
+    // newer entry) lists nodes from entry i that were replaced. We use that
+    // manifest to delete those nodes, then delete the entry's own garbage
+    // manifest and root.
+    //
+    // Oldest-first processing (reversed range) is crash-safe: if interrupted,
+    // remaining gc-eligible entries are still reachable via prev_index chain
+    // from the retained set. Newest-first would truncate the chain at the
+    // retention boundary, orphaning everything beyond.
+    //
+    // We break (not continue) on any failure because skipping an entry and
+    // deleting a newer one would orphan the skipped entry and everything
+    // older than it.
 
     let mut deleted_count = 0;
     let mut indexes_cleaned = 0;
 
-    // Process one gc-eligible pair at a time.
-    // The oldest retained index has the garbage manifest for the first deletion.
-    // After deleting, we can't continue (chain is truncated).
-    //
-    // NOTE: This is an intentional design choice - we delete one index per GC run.
-    // The Clojure implementation differs: it builds a list of all gc-eligible indexes
-    // and deletes them all in one pass. Our approach is more conservative and ensures
-    // we always have a valid prev-index chain after each run.
-    //
-    // Operational impact for batched reindex: if many intermediate indexes are created
-    // faster than GC runs (e.g., small batch sizes with slow GC interval), they can
-    // accumulate. Consider tuning gc_max_old_indexes or running GC more frequently.
+    for i in (keep_count..index_chain.len()).rev() {
+        let manifest_entry = &index_chain[i - 1];
+        let entry_to_delete = &index_chain[i];
 
-    // The last retained index
-    let last_retained_idx = keep_count - 1;
-    if last_retained_idx >= index_chain.len() {
-        return Ok(CleanGarbageResult::default());
-    }
+        // Manifest from the newer entry lists nodes from entry_to_delete
+        // that were replaced when manifest_entry was built.
+        let garbage_ref = match &manifest_entry.root.garbage {
+            Some(g) => g,
+            None => {
+                tracing::debug!(
+                    t = manifest_entry.t,
+                    "No garbage manifest in index, stopping GC"
+                );
+                break;
+            }
+        };
 
-    let retained_entry = &index_chain[last_retained_idx];
-    let to_delete_idx = keep_count;
-    if to_delete_idx >= index_chain.len() {
-        return Ok(CleanGarbageResult::default());
-    }
-    let entry_to_delete = &index_chain[to_delete_idx];
+        // Load the garbage record to check age
+        let record = match load_garbage_record(storage, &garbage_ref.address).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!(
+                    t = manifest_entry.t,
+                    error = %e,
+                    "Failed to load garbage record (may already be deleted), stopping GC"
+                );
+                break;
+            }
+        };
 
-    // The retained entry's garbage manifest lists nodes replaced when going from
-    // entry_to_delete to retained_entry
-    let garbage_ref = match &retained_entry.root.garbage {
-        Some(g) => g,
-        None => {
-            // No garbage manifest in the retained entry - can't GC
+        // Check age: if created_at_ms is 0 (old format) or too recent, stop.
+        // Newer manifests will be even more recent, so break is correct.
+        if record.created_at_ms == 0 || now_ms - record.created_at_ms < min_age_ms {
             tracing::debug!(
-                t = retained_entry.t,
-                "No garbage manifest in retained index, skipping GC"
+                t = manifest_entry.t,
+                age_mins = (now_ms - record.created_at_ms) / 60000,
+                min_age_mins = min_age_mins,
+                "Garbage record too recent, stopping GC"
             );
-            return Ok(CleanGarbageResult::default());
+            break;
         }
-    };
 
-    // Load the garbage record to check age
-    let record = match load_garbage_record(storage, &garbage_ref.address).await {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!(
-                t = retained_entry.t,
-                error = %e,
-                "Failed to load garbage record, skipping GC"
-            );
-            return Ok(CleanGarbageResult {
-                indexes_cleaned: 0,
-                nodes_deleted: 0,
-            });
+        // Delete the garbage nodes (from entry_to_delete's tree)
+        for addr in &record.garbage {
+            if let Err(e) = storage.delete(addr).await {
+                tracing::debug!(
+                    address = %addr,
+                    error = %e,
+                    "Failed to delete garbage node (may already be deleted)"
+                );
+            } else {
+                deleted_count += 1;
+            }
         }
-    };
 
-    // Check age using garbage record's created_at_ms
-    // If created_at_ms is 0 (old format or missing), treat as too recent (conservative)
-    if record.created_at_ms == 0 || now_ms - record.created_at_ms < min_age_ms {
-        tracing::debug!(
-            t = retained_entry.t,
-            age_mins = (now_ms - record.created_at_ms) / 60000,
-            min_age_mins = min_age_mins,
-            "Garbage record too recent, skipping GC"
-        );
-        return Ok(CleanGarbageResult::default());
-    }
+        // Delete entry_to_delete's own garbage manifest
+        if let Some(ref old_garbage) = entry_to_delete.root.garbage {
+            if let Err(e) = storage.delete(&old_garbage.address).await {
+                tracing::debug!(
+                    address = %old_garbage.address,
+                    error = %e,
+                    "Failed to delete old garbage manifest (may already be deleted)"
+                );
+            }
+        }
 
-    // Delete the garbage nodes (from entry_to_delete's tree)
-    for addr in &record.garbage {
-        if let Err(e) = storage.delete(addr).await {
-            // Log but continue - may already be deleted
+        // Delete the old db-root
+        if let Err(e) = storage.delete(&entry_to_delete.address).await {
             tracing::debug!(
-                address = %addr,
+                address = %entry_to_delete.address,
                 error = %e,
-                "Failed to delete garbage node (may already be deleted)"
+                "Failed to delete old db-root (may already be deleted)"
             );
         } else {
-            deleted_count += 1;
+            indexes_cleaned += 1;
         }
     }
 
-    // Delete the garbage manifest of entry_to_delete (if it has one)
-    if let Some(ref old_garbage) = entry_to_delete.root.garbage {
-        if let Err(e) = storage.delete(&old_garbage.address).await {
-            tracing::debug!(
-                address = %old_garbage.address,
-                error = %e,
-                "Failed to delete old garbage manifest"
-            );
-        }
-    }
-
-    // Delete the old db-root itself (truncates the chain)
-    if let Err(e) = storage.delete(&entry_to_delete.address).await {
-        tracing::warn!(
-            address = %entry_to_delete.address,
-            error = %e,
-            "Failed to delete old db-root"
+    if indexes_cleaned > 0 || deleted_count > 0 {
+        tracing::info!(
+            indexes_cleaned = indexes_cleaned,
+            nodes_deleted = deleted_count,
+            retained_count = keep_count,
+            "Garbage collection complete"
         );
-    } else {
-        indexes_cleaned += 1;
     }
-
-    tracing::info!(
-        indexes_cleaned = indexes_cleaned,
-        nodes_deleted = deleted_count,
-        deleted_t = entry_to_delete.t,
-        retained_count = keep_count,
-        "Garbage collection complete"
-    );
 
     Ok(CleanGarbageResult {
         indexes_cleaned,
@@ -793,5 +772,188 @@ mod tests {
 
         // No GC because created_at_ms=0 is treated as "too recent" (conservative)
         assert_eq!(result.indexes_cleaned, 0);
+    }
+
+    #[tokio::test]
+    async fn test_clean_garbage_multi_delete() {
+        // Test that ALL gc-eligible indexes are deleted in one pass (oldest first).
+        // Chain: t=5 -> t=4 -> t=3 -> t=2 -> t=1
+        // max_old_indexes=1, keep current + 1 = 2 (t=5, t=4)
+        // GC eligible: t=3, t=2, t=1 (3 entries to delete)
+        let storage = MemoryStorage::new();
+
+        let addr1 = "fluree:file://test/main/index/root/t1.json";
+        let addr2 = "fluree:file://test/main/index/root/t2.json";
+        let addr3 = "fluree:file://test/main/index/root/t3.json";
+        let addr4 = "fluree:file://test/main/index/root/t4.json";
+        let addr5 = "fluree:file://test/main/index/root/t5.json";
+        let garbage_addr2 = "fluree:file://test/main/index/garbage/t2.json";
+        let garbage_addr3 = "fluree:file://test/main/index/garbage/t3.json";
+        let garbage_addr4 = "fluree:file://test/main/index/garbage/t4.json";
+        let node_from_t1 = "fluree:file://test/main/index/spot/node_t1.json";
+        let node_from_t2 = "fluree:file://test/main/index/spot/node_t2.json";
+        let node_from_t3 = "fluree:file://test/main/index/spot/node_t3.json";
+
+        let old_ts = current_timestamp_ms() - (60 * 60 * 1000);
+
+        // t=1: oldest, no prev
+        let root1 = r#"{"ledger-alias": "test/main", "t": 1, "v": 2, "namespace-codes": {}}"#;
+
+        // t=2: points to t=1, has garbage (nodes replaced from t=1)
+        let root2 = format!(
+            r#"{{"ledger-alias": "test/main", "t": 2, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 1, "address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
+            addr1, garbage_addr2
+        );
+
+        // t=3: points to t=2, has garbage (nodes replaced from t=2)
+        let root3 = format!(
+            r#"{{"ledger-alias": "test/main", "t": 3, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 2, "address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
+            addr2, garbage_addr3
+        );
+
+        // t=4: points to t=3, has garbage (nodes replaced from t=3)
+        let root4 = format!(
+            r#"{{"ledger-alias": "test/main", "t": 4, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 3, "address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
+            addr3, garbage_addr4
+        );
+
+        // t=5: current, points to t=4
+        let root5 = format!(
+            r#"{{"ledger-alias": "test/main", "t": 5, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 4, "address": "{}"}}}}"#,
+            addr4
+        );
+
+        // Garbage records: each lists nodes from the previous index that were replaced
+        // t=2's garbage: nodes from t=1 replaced when building t=2
+        let garbage2 = format!(
+            r#"{{"alias": "test/main", "t": 2, "garbage": ["{}"], "created_at_ms": {}}}"#,
+            node_from_t1, old_ts
+        );
+        // t=3's garbage: nodes from t=2 replaced when building t=3
+        let garbage3 = format!(
+            r#"{{"alias": "test/main", "t": 3, "garbage": ["{}"], "created_at_ms": {}}}"#,
+            node_from_t2, old_ts
+        );
+        // t=4's garbage: nodes from t=3 replaced when building t=4
+        let garbage4 = format!(
+            r#"{{"alias": "test/main", "t": 4, "garbage": ["{}"], "created_at_ms": {}}}"#,
+            node_from_t3, old_ts
+        );
+
+        // Write everything
+        storage.write_bytes(addr1, root1.as_bytes()).await.unwrap();
+        storage.write_bytes(addr2, root2.as_bytes()).await.unwrap();
+        storage.write_bytes(addr3, root3.as_bytes()).await.unwrap();
+        storage.write_bytes(addr4, root4.as_bytes()).await.unwrap();
+        storage.write_bytes(addr5, root5.as_bytes()).await.unwrap();
+        storage.write_bytes(garbage_addr2, garbage2.as_bytes()).await.unwrap();
+        storage.write_bytes(garbage_addr3, garbage3.as_bytes()).await.unwrap();
+        storage.write_bytes(garbage_addr4, garbage4.as_bytes()).await.unwrap();
+        storage.write_bytes(node_from_t1, b"t1 data").await.unwrap();
+        storage.write_bytes(node_from_t2, b"t2 data").await.unwrap();
+        storage.write_bytes(node_from_t3, b"t3 data").await.unwrap();
+
+        let config = CleanGarbageConfig {
+            max_old_indexes: Some(1),
+            min_time_garbage_mins: Some(30),
+        };
+
+        let result = clean_garbage(&storage, addr5, config).await.unwrap();
+
+        // All 3 gc-eligible indexes should be cleaned
+        assert_eq!(result.indexes_cleaned, 3);
+        // All 3 garbage nodes should be deleted
+        assert_eq!(result.nodes_deleted, 3);
+
+        // Verify gc-eligible roots are deleted
+        assert!(storage.read_bytes(addr1).await.is_err());
+        assert!(storage.read_bytes(addr2).await.is_err());
+        assert!(storage.read_bytes(addr3).await.is_err());
+
+        // Verify garbage nodes are deleted
+        assert!(storage.read_bytes(node_from_t1).await.is_err());
+        assert!(storage.read_bytes(node_from_t2).await.is_err());
+        assert!(storage.read_bytes(node_from_t3).await.is_err());
+
+        // Verify gc-eligible entries' own garbage manifests are deleted
+        assert!(storage.read_bytes(garbage_addr2).await.is_err());
+        assert!(storage.read_bytes(garbage_addr3).await.is_err());
+
+        // Verify retained entries still exist
+        assert!(storage.read_bytes(addr4).await.is_ok());
+        assert!(storage.read_bytes(addr5).await.is_ok());
+
+        // Verify retained entry's garbage manifest (t=4) still exists
+        assert!(storage.read_bytes(garbage_addr4).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_clean_garbage_multi_delete_partial_time_threshold() {
+        // Test that GC stops when a manifest is too recent.
+        // Chain: t=4 -> t=3 -> t=2 -> t=1
+        // max_old_indexes=1, keep current + 1 = 2 (t=4, t=3)
+        // GC eligible: t=2, t=1
+        // t=2's manifest (at t=3) is too recent → GC should stop before t=2
+        // t=1's manifest (at t=2) is old enough but never reached
+        let storage = MemoryStorage::new();
+
+        let addr1 = "fluree:file://test/main/index/root/t1.json";
+        let addr2 = "fluree:file://test/main/index/root/t2.json";
+        let addr3 = "fluree:file://test/main/index/root/t3.json";
+        let addr4 = "fluree:file://test/main/index/root/t4.json";
+        let garbage_addr2 = "fluree:file://test/main/index/garbage/t2.json";
+        let garbage_addr3 = "fluree:file://test/main/index/garbage/t3.json";
+
+        let old_ts = current_timestamp_ms() - (60 * 60 * 1000);
+        let recent_ts = current_timestamp_ms() - (5 * 60 * 1000);
+
+        let root1 = r#"{"ledger-alias": "test/main", "t": 1, "v": 2, "namespace-codes": {}}"#;
+        let root2 = format!(
+            r#"{{"ledger-alias": "test/main", "t": 2, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 1, "address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
+            addr1, garbage_addr2
+        );
+        let root3 = format!(
+            r#"{{"ledger-alias": "test/main", "t": 3, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 2, "address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
+            addr2, garbage_addr3
+        );
+        let root4 = format!(
+            r#"{{"ledger-alias": "test/main", "t": 4, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 3, "address": "{}"}}}}"#,
+            addr3
+        );
+
+        // t=2's garbage is old (for deleting t=1)
+        let garbage2 = format!(
+            r#"{{"alias": "test/main", "t": 2, "garbage": ["old1"], "created_at_ms": {}}}"#,
+            old_ts
+        );
+        // t=3's garbage is RECENT (for deleting t=2) - should block
+        let garbage3 = format!(
+            r#"{{"alias": "test/main", "t": 3, "garbage": ["old2"], "created_at_ms": {}}}"#,
+            recent_ts
+        );
+
+        storage.write_bytes(addr1, root1.as_bytes()).await.unwrap();
+        storage.write_bytes(addr2, root2.as_bytes()).await.unwrap();
+        storage.write_bytes(addr3, root3.as_bytes()).await.unwrap();
+        storage.write_bytes(addr4, root4.as_bytes()).await.unwrap();
+        storage.write_bytes(garbage_addr2, garbage2.as_bytes()).await.unwrap();
+        storage.write_bytes(garbage_addr3, garbage3.as_bytes()).await.unwrap();
+
+        let config = CleanGarbageConfig {
+            max_old_indexes: Some(1),
+            min_time_garbage_mins: Some(30),
+        };
+
+        let result = clean_garbage(&storage, addr4, config).await.unwrap();
+
+        // Processing oldest first: t=1 uses t=2's manifest (old enough) → deleted
+        // Then t=2 uses t=3's manifest (too recent) → stops
+        assert_eq!(result.indexes_cleaned, 1);
+
+        // t=1 deleted, t=2 still exists (blocked by time threshold)
+        assert!(storage.read_bytes(addr1).await.is_err());
+        assert!(storage.read_bytes(addr2).await.is_ok());
+        assert!(storage.read_bytes(addr3).await.is_ok());
+        assert!(storage.read_bytes(addr4).await.is_ok());
     }
 }

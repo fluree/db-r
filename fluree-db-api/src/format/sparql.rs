@@ -39,7 +39,14 @@ pub fn format(
         SelectMode::Wildcard => result
             .batches
             .first()
-            .map(|b| b.schema().to_vec())
+            .map(|b| {
+                b.schema()
+                    .iter()
+                    .copied()
+                    // Skip internal variables (?__pp0, ?__s0, etc.) from wildcard output.
+                    .filter(|&vid| !result.vars.name(vid).starts_with("?__"))
+                    .collect()
+            })
             .unwrap_or_default(),
         _ => result.select.clone(),
     };

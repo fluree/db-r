@@ -351,6 +351,40 @@ fn parse_pn_local(input: &mut Input<'_>) -> ModalResult<String> {
             break;
         }
 
+        // Check for '/' - extension beyond strict SPARQL spec for convenience.
+        // Consume '/' if followed by local name chars but NOT if followed by another prefix.
+        // This allows `hsc:product/123` while preserving `hsc:parent/ex:child` as a path sequence.
+        if input.starts_with('/') {
+            let rest = &input.as_ref()[1..];
+            if let Some(next_char) = rest.chars().next() {
+                // If next char could start a local name AND it's not the start of another prefix,
+                // include the slash in this local name.
+                // Another prefix would be: letters followed by ':'
+                if is_pn_chars(next_char) || next_char.is_ascii_digit() {
+                    // Check if this looks like another prefixed name (prefix:local)
+                    // by scanning ahead for a pattern like "word:"
+                    let looks_like_prefix = rest
+                        .find(':')
+                        .map(|colon_pos| {
+                            // Everything before the colon should be valid prefix chars
+                            let potential_prefix = &rest[..colon_pos];
+                            !potential_prefix.is_empty()
+                                && potential_prefix.chars().all(|c| is_pn_chars_base(c) || c == '.')
+                        })
+                        .unwrap_or(false);
+
+                    if !looks_like_prefix {
+                        // Not another prefix, consume the slash as part of local name
+                        '/'.parse_next(input)?;
+                        result.push('/');
+                        continue;
+                    }
+                }
+            }
+            // Slash followed by another prefix or invalid char - don't consume, break
+            break;
+        }
+
         // Check for PLX (percent-encoded or escaped character)
         if input.starts_with('%') {
             // Percent-encoded: %HH

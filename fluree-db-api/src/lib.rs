@@ -880,7 +880,17 @@ fn build_indexer_config(config: &ConnectionConfig) -> fluree_db_indexer::Indexer
         .and_then(|d| d.indexing.as_ref())
         .and_then(|i| i.max_old_indexes)
     {
-        indexer_config.gc_max_old_indexes = max_old as u32;
+        indexer_config.gc_max_old_indexes = max_old.min(u32::MAX as u64) as u32;
+    }
+
+    // Apply gc_min_time_mins from config if present
+    if let Some(min_time) = config
+        .defaults
+        .as_ref()
+        .and_then(|d| d.indexing.as_ref())
+        .and_then(|i| i.gc_min_time_mins)
+    {
+        indexer_config.gc_min_time_mins = min_time.min(u32::MAX as u64) as u32;
     }
 
     indexer_config

@@ -53,7 +53,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{oneshot, watch, Mutex, Notify};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 // =============================================================================
 // Indexing Status & Completion Types
@@ -791,6 +791,27 @@ where
                             index_t = index_result.index_t,
                             "Successfully indexed ledger"
                         );
+
+                    // Spawn garbage collection (fire-and-forget, non-fatal)
+                    let gc_storage = self.storage.clone();
+                    let gc_root = index_result.root_address.clone();
+                    let gc_config = crate::gc::CleanGarbageConfig {
+                        max_old_indexes: Some(self.config.gc_max_old_indexes),
+                        min_time_garbage_mins: Some(self.config.gc_min_time_mins),
+                    };
+                    tokio::spawn(async move {
+                        if let Err(e) =
+                            crate::gc::clean_garbage(&gc_storage, &gc_root, gc_config).await
+                        {
+                            warn!(
+                                error = %e,
+                                root_address = %gc_root,
+                                "Background GC failed (non-fatal)"
+                            );
+                        } else {
+                            debug!(root_address = %gc_root, "Background GC completed");
+                        }
+                    });
 
                     // Resolve waiters
                     let mut states = self.states.lock().await;

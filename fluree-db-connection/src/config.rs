@@ -81,6 +81,7 @@ pub struct IndexingDefaults {
     pub max_old_indexes: Option<u64>,
     pub indexing_enabled: Option<bool>,
     pub track_class_stats: Option<bool>,
+    pub gc_min_time_mins: Option<u64>,
 }
 
 /// Publisher configuration (nameservice backend selection).
@@ -469,6 +470,7 @@ fn parse_defaults_node(graph: &ConfigGraph, node: &JsonValue) -> Result<Defaults
             max_old_indexes: resolve_u64(graph, n, vocab::FIELD_MAX_OLD_INDEXES),
             indexing_enabled: resolve_bool(graph, n, vocab::FIELD_INDEXING_ENABLED),
             track_class_stats: resolve_bool(graph, n, vocab::FIELD_TRACK_CLASS_STATS),
+            gc_min_time_mins: resolve_u64(graph, n, vocab::FIELD_GC_MIN_TIME_MINS),
         });
 
     Ok(DefaultsConfig { identity, indexing })
