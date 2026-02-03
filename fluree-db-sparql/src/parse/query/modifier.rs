@@ -57,7 +57,7 @@ impl<'a> super::Parser<'a> {
     ///
     /// GroupClause ::= 'GROUP' 'BY' GroupCondition+
     /// GroupCondition ::= BuiltInCall | FunctionCall | '(' Expression ( 'AS' Var )? ')' | Var
-    fn parse_group_by(&mut self) -> Option<GroupByClause> {
+    pub(super) fn parse_group_by(&mut self) -> Option<GroupByClause> {
         let start = self.stream.current_span();
         self.stream.advance(); // consume GROUP
 
@@ -135,7 +135,7 @@ impl<'a> super::Parser<'a> {
     ///
     /// HavingClause ::= 'HAVING' Constraint+
     /// Constraint ::= BrackettedExpression | BuiltInCall | FunctionCall
-    fn parse_having(&mut self) -> Option<HavingClause> {
+    pub(super) fn parse_having(&mut self) -> Option<HavingClause> {
         let start = self.stream.current_span();
         self.stream.advance(); // consume HAVING
 
@@ -302,38 +302,4 @@ impl<'a> super::Parser<'a> {
         }
     }
 
-    // =========================================================================
-    // Skip helpers for features not yet implemented
-    // =========================================================================
-
-    pub(super) fn skip_parenthesized_content(&mut self) {
-        if !self.stream.match_token(&TokenKind::LParen) {
-            return;
-        }
-        let mut depth = 1;
-        while depth > 0 && !self.stream.is_eof() {
-            match &self.stream.peek().kind {
-                TokenKind::LParen => depth += 1,
-                TokenKind::RParen => depth -= 1,
-                _ => {}
-            }
-            self.stream.advance();
-        }
-    }
-
-    pub(super) fn skip_group_by_content(&mut self) {
-        // Skip until we hit ORDER, HAVING, LIMIT, OFFSET, or end
-        while !self.stream.is_eof() {
-            if matches!(
-                &self.stream.peek().kind,
-                TokenKind::KwOrderBy
-                    | TokenKind::KwHaving
-                    | TokenKind::KwLimit
-                    | TokenKind::KwOffset
-            ) {
-                break;
-            }
-            self.stream.advance();
-        }
-    }
 }

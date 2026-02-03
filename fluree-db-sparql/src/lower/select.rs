@@ -311,6 +311,22 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             sq = sq.with_distinct();
         }
 
+        // Apply GROUP BY
+        if let Some(ref group_by) = subselect.group_by {
+            let mut group_vars = Vec::with_capacity(group_by.conditions.len());
+            for cond in &group_by.conditions {
+                let var_id = self.lower_group_condition(cond)?;
+                group_vars.push(var_id);
+            }
+            sq = sq.with_group_by(group_vars);
+        }
+
+        // Apply HAVING
+        if let Some(ref having) = subselect.having {
+            let filter = self.lower_having_conditions(&having.conditions)?;
+            sq = sq.with_having(filter);
+        }
+
         // Apply ORDER BY
         if !subselect.order_by.is_empty() {
             let mut sort_specs = Vec::with_capacity(subselect.order_by.len());

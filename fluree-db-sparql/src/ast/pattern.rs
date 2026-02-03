@@ -5,6 +5,7 @@
 
 use super::expr::Expression;
 use super::path::PropertyPath;
+use super::query::{GroupByClause, HavingClause};
 use super::term::{Iri, ObjectTerm, PredicateTerm, SubjectTerm, Term, Var};
 use crate::span::SourceSpan;
 
@@ -256,6 +257,10 @@ pub struct SubSelect {
     pub variables: Option<Vec<Var>>,
     /// The WHERE clause pattern
     pub pattern: Box<GraphPattern>,
+    /// GROUP BY clause
+    pub group_by: Option<GroupByClause>,
+    /// HAVING clause
+    pub having: Option<HavingClause>,
     /// ORDER BY variables (simplified - just variable names for now)
     pub order_by: Vec<SubSelectOrderBy>,
     /// LIMIT value

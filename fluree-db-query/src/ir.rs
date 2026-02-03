@@ -395,6 +395,18 @@ impl SubqueryPattern {
         self
     }
 
+    /// Set GROUP BY variables
+    pub fn with_group_by(mut self, vars: Vec<VarId>) -> Self {
+        self.group_by = vars;
+        self
+    }
+
+    /// Set HAVING filter
+    pub fn with_having(mut self, filter: FilterExpr) -> Self {
+        self.having = Some(filter);
+        self
+    }
+
     /// Get variables from the select list
     pub fn variables(&self) -> Vec<VarId> {
         self.select.clone()

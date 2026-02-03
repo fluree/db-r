@@ -1,6 +1,7 @@
 //! Graph pattern parsing: WHERE, OPTIONAL, UNION, MINUS, FILTER, BIND, VALUES, subqueries.
 
 use crate::ast::pattern::{GraphName, SubSelect, SubSelectOrderBy};
+use crate::ast::query::{GroupByClause, HavingClause};
 use crate::ast::{GraphPattern, Term, Var, WhereClause};
 use crate::diag::{DiagCode, Diagnostic};
 use crate::lex::TokenKind;
@@ -551,8 +552,8 @@ impl<'a> super::Parser<'a> {
 
         let pattern = self.parse_group_graph_pattern()?;
 
-        // Parse solution modifiers (ORDER BY, LIMIT, OFFSET)
-        let (order_by, limit, offset) = self.parse_subquery_modifiers();
+        // Parse solution modifiers (GROUP BY, HAVING, ORDER BY, LIMIT, OFFSET)
+        let (group_by, having, order_by, limit, offset) = self.parse_subquery_modifiers();
 
         // Expect closing brace for the subquery
         if !self.stream.match_token(&TokenKind::RBrace) {
@@ -566,6 +567,8 @@ impl<'a> super::Parser<'a> {
             reduced,
             variables,
             pattern: Box::new(pattern),
+            group_by,
+            having,
             order_by,
             limit,
             offset,
@@ -578,26 +581,27 @@ impl<'a> super::Parser<'a> {
         })
     }
 
-    /// Parse solution modifiers for a subquery (ORDER BY, LIMIT, OFFSET).
+    /// Parse solution modifiers for a subquery (GROUP BY, HAVING, ORDER BY, LIMIT, OFFSET).
     ///
-    /// Returns (order_by, limit, offset).
-    pub(super) fn parse_subquery_modifiers(&mut self) -> (Vec<SubSelectOrderBy>, Option<u64>, Option<u64>) {
+    /// Returns (group_by, having, order_by, limit, offset).
+    pub(super) fn parse_subquery_modifiers(&mut self) -> (Option<GroupByClause>, Option<HavingClause>, Vec<SubSelectOrderBy>, Option<u64>, Option<u64>) {
         let mut order_by = Vec::new();
         let mut limit = None;
         let mut offset = None;
 
-        // GROUP BY (skip for now - Phase 4)
-        if self.stream.check_keyword(TokenKind::KwGroupBy) {
-            self.stream.advance();
-            self.stream.match_keyword(TokenKind::KwBy);
-            self.skip_group_by_content();
-        }
+        // GROUP BY
+        let group_by = if self.stream.check_keyword(TokenKind::KwGroupBy) {
+            self.parse_group_by()
+        } else {
+            None
+        };
 
-        // HAVING (skip for now - Phase 4)
-        if self.stream.check_keyword(TokenKind::KwHaving) {
-            self.stream.advance();
-            self.skip_parenthesized_content();
-        }
+        // HAVING
+        let having = if self.stream.check_keyword(TokenKind::KwHaving) {
+            self.parse_having()
+        } else {
+            None
+        };
 
         // ORDER BY
         if self.stream.check_keyword(TokenKind::KwOrderBy) {
@@ -656,6 +660,6 @@ impl<'a> super::Parser<'a> {
             }
         }
 
-        (order_by, limit, offset)
+        (group_by, having, order_by, limit, offset)
     }
 }
