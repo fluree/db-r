@@ -97,6 +97,26 @@ enum OutputFormat {
     Json,
 }
 
+/// Transaction operation type for ingest benchmarks.
+#[derive(Clone, Default, clap::ValueEnum)]
+pub enum BenchTxnType {
+    /// Insert new entities (fails on duplicate @id within the same commit).
+    #[default]
+    Insert,
+    /// Upsert: update if exists, insert if not. Exercises the existence-check
+    /// and merge code path in the transact pipeline.
+    Upsert,
+}
+
+impl std::fmt::Display for BenchTxnType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BenchTxnType::Insert => write!(f, "insert"),
+            BenchTxnType::Upsert => write!(f, "upsert"),
+        }
+    }
+}
+
 #[derive(Parser, Clone)]
 struct IngestArgs {
     #[command(flatten)]
@@ -109,6 +129,10 @@ struct IngestArgs {
     /// Maximum in-flight concurrent transactions (1 = sequential).
     #[arg(long, default_value_t = 1)]
     concurrency: usize,
+
+    /// Transaction type: insert (default) or upsert.
+    #[arg(long, value_enum, default_value_t = BenchTxnType::Insert)]
+    txn_type: BenchTxnType,
 }
 
 #[derive(Parser, Clone)]

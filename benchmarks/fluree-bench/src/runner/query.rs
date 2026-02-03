@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use fluree_db_api::FlureeClient;
+use fluree_db_api::{FlureeClient, NodeCache};
 
 use crate::metrics::collector::{CacheState, MetricsCollector, QueryTiming};
 use crate::setup;
@@ -43,8 +43,11 @@ pub async fn run(
 
     for query in &queries {
         for &conc in &concurrency_levels {
-            // Cold run
+            // Cold run — clear the node cache before each iteration so every
+            // cold measurement starts from a truly empty cache.
             for _ in 0..args.query_iterations {
+                fluree.connection().cache().clear();
+
                 let timing = run_query_at_concurrency(
                     fluree,
                     &alias,
@@ -57,7 +60,8 @@ pub async fn run(
                 collector.record_query(query.name, timing);
             }
 
-            // Warm run (cache is populated from cold run)
+            // Warm run — cache is populated from the last cold iteration.
+            // No cache clearing here; each iteration benefits from prior runs.
             for _ in 0..args.query_iterations {
                 let timing = run_query_at_concurrency(
                     fluree,

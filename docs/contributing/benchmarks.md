@@ -42,6 +42,7 @@ cargo run --release -p fluree-bench -- full --data-size-mb 50 --concurrency 4
 | `--data-size-mb` | `10` | Target data size in MB |
 | `--batch-size` | `500` | Entities per transaction |
 | `--concurrency` | `1` | In-flight concurrent transactions (1 = sequential) |
+| `--txn-type` | `insert` | Transaction type: `insert` or `upsert` |
 | `--reindex-min-bytes` | `10000000` | Soft indexing trigger (10 MB) |
 | `--reindex-max-bytes` | `200000000` | Hard novelty block (200 MB) |
 | `--no-indexing` | `false` | Disable background indexing |
@@ -80,7 +81,7 @@ Manufacturer → Warehouse → Distributor → Retailer
                  Product → Category
 ```
 
-~4,810 entities per unit, ~25-40K flakes per unit. Entity IDs are deterministic
+~4,630 entities per unit, ~25-40K flakes per unit. Entity IDs are deterministic
 for any given `--data-size-mb` value (seeded RNG per unit).
 
 ## Report Output
@@ -94,7 +95,7 @@ The ingest report includes:
 The query report shows a matrix of median latency across:
 - Query complexity (simple count, filtered, multi-hop join, aggregate)
 - Concurrency levels
-- Cache state (cold vs warm)
+- Cache state (cold vs warm — the node cache is cleared before each cold iteration)
 
 ## OTEL / Jaeger Integration
 
@@ -138,6 +139,7 @@ Back-pressure events and durations will appear in the report.
 | `bench-quick` | 1 MB smoke test |
 | `bench-large` | 100 MB ingest, concurrency=4 |
 | `bench-concurrent` | 10 MB ingest, concurrency=8 |
+| `bench-upsert` | 10 MB upsert ingest (measures upsert overhead) |
 | `bench-full` | Ingest + query matrix |
 | `bench-queries` | Query matrix only |
 | `bench-otel` | Full OTEL workflow (Jaeger + bench) |

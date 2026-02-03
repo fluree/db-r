@@ -1,5 +1,5 @@
-.PHONY: bench bench-quick bench-large bench-concurrent bench-full bench-queries \
-       bench-otel bench-otel-setup bench-otel-teardown
+.PHONY: bench bench-quick bench-large bench-concurrent bench-upsert bench-full \
+       bench-queries bench-otel bench-otel-setup bench-otel-teardown
 
 # ---------------------------------------------------------------------------
 # Benchmarks
@@ -20,6 +20,10 @@ bench-large:
 # Concurrency stress test
 bench-concurrent:
 	cargo run --release -p fluree-bench -- ingest --data-size-mb 10 --concurrency 8
+
+# Upsert mode (measures upsert overhead vs insert)
+bench-upsert:
+	cargo run --release -p fluree-bench -- ingest --data-size-mb 10 --txn-type upsert
 
 # Full: ingest + query matrix (in-memory)
 bench-full:

@@ -24,6 +24,7 @@ pub fn print_ingest(common: &CommonArgs, args: &IngestArgs, collector: &MetricsC
         units,
         units * entities_per_unit
     );
+    eprintln!("  Txn type:         {}", args.txn_type);
     eprintln!("  Batch size:       {} entities", args.batch_size);
     eprintln!("  Concurrency:      {} in-flight", args.concurrency);
     eprintln!(

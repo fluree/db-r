@@ -328,22 +328,38 @@ pub fn generate_unit(unit_id: usize) -> Value {
     json!(entities)
 }
 
-/// Generate a batch of entities from a unit, sliced by offset and count.
+/// Wrap a pre-generated slice of entities into a JSON-LD insert body.
 ///
-/// Returns a JSON-LD insert body with `@context` and `@graph`.
-pub fn generate_batch(unit_id: usize, offset: usize, count: usize) -> Value {
-    let all = generate_unit(unit_id);
-    let arr = all.as_array().expect("unit must be an array");
-    let end = (offset + count).min(arr.len());
-    let slice = &arr[offset..end];
-
+/// Use this with [`generate_unit`] to avoid regenerating the full unit for
+/// every batch:
+///
+/// ```ignore
+/// let unit = generate_unit(0);
+/// let all = unit.as_array().unwrap();
+/// let batch = wrap_batch(&all[0..500]);
+/// ```
+pub fn wrap_batch(entities: &[Value]) -> Value {
     json!({
         "@context": {
             "ex": "http://example.org/",
             "schema": "http://schema.org/"
         },
-        "@graph": slice
+        "@graph": entities
     })
+}
+
+/// Generate a batch of entities from a unit, sliced by offset and count.
+///
+/// Returns a JSON-LD insert body with `@context` and `@graph`.
+///
+/// **Note:** This regenerates the entire unit on each call. For hot loops,
+/// prefer calling [`generate_unit`] once and slicing with [`wrap_batch`].
+#[cfg(test)]
+pub fn generate_batch(unit_id: usize, offset: usize, count: usize) -> Value {
+    let all = generate_unit(unit_id);
+    let arr = all.as_array().expect("unit must be an array");
+    let end = (offset + count).min(arr.len());
+    wrap_batch(&arr[offset..end])
 }
 
 #[cfg(test)]
@@ -369,6 +385,19 @@ mod tests {
         let a = generate_unit(0);
         let b = generate_unit(1);
         assert_ne!(a, b, "Different unit_ids should produce different output");
+    }
+
+    #[test]
+    fn test_wrap_batch_structure() {
+        let unit = generate_unit(0);
+        let all = unit.as_array().unwrap();
+        let batch = wrap_batch(&all[0..100]);
+        assert!(batch.get("@context").is_some());
+        assert!(batch.get("@graph").is_some());
+        let graph = batch["@graph"].as_array().unwrap();
+        assert_eq!(graph.len(), 100);
+        // First entity should match the unit's first entity.
+        assert_eq!(graph[0], all[0]);
     }
 
     #[test]

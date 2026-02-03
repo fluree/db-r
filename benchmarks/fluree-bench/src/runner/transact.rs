@@ -3,14 +3,14 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use fluree_db_api::FlureeClient;
+use fluree_db_api::{FlureeClient, IndexConfig};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::datagen;
 use crate::metrics::collector::{BackPressureEvent, MetricsCollector};
 use crate::setup;
-use crate::IngestArgs;
+use crate::{BenchTxnType, IngestArgs};
 
 /// Output from a single commit task.
 struct TxnResult {
@@ -43,6 +43,7 @@ pub async fn run(
         entities_per_unit,
         batch_size = args.batch_size,
         concurrency = args.concurrency,
+        txn_type = %args.txn_type,
         "Starting ingest"
     );
 
@@ -51,10 +52,16 @@ pub async fn run(
     let mut batch_idx: usize = 0;
 
     for unit_id in 0..units {
+        // Generate the full unit once and slice into batches to avoid
+        // regenerating all 4,630 entities for every batch.
+        let unit = datagen::supply_chain::generate_unit(unit_id);
+        let all_entities = unit.as_array().expect("unit must be an array");
+
         let mut offset = 0;
         while offset < entities_per_unit {
             let count = args.batch_size.min(entities_per_unit - offset);
-            let batch_json = datagen::supply_chain::generate_batch(unit_id, offset, count);
+            let end = (offset + count).min(all_entities.len());
+            let batch_json = datagen::supply_chain::wrap_batch(&all_entities[offset..end]);
             offset += count;
             batch_idx += 1;
 
@@ -67,6 +74,7 @@ pub async fn run(
             let fluree = Arc::clone(fluree);
             let alias = alias.clone();
             let idx_cfg = idx_cfg.clone();
+            let txn_type = args.txn_type.clone();
             let current_batch = batch_idx;
             let entity_count = count;
 
@@ -78,13 +86,7 @@ pub async fn run(
                 let bp_start = Instant::now();
 
                 let result = loop {
-                    let res = fluree
-                        .graph(&alias)
-                        .transact()
-                        .insert(&batch_json)
-                        .index_config(idx_cfg.clone())
-                        .commit()
-                        .await;
+                    let res = commit_batch(&fluree, &alias, &batch_json, &idx_cfg, &txn_type).await;
 
                     match &res {
                         Err(e) if is_back_pressure(e) => {
@@ -188,6 +190,23 @@ fn record_result(txn: TxnResult, collector: &mut MetricsCollector) {
     if let Some(bp) = txn.back_pressure {
         collector.record_back_pressure(bp);
     }
+}
+
+/// Execute a single transact+commit using the configured transaction type.
+async fn commit_batch(
+    fluree: &FlureeClient,
+    alias: &str,
+    batch_json: &serde_json::Value,
+    idx_cfg: &IndexConfig,
+    txn_type: &BenchTxnType,
+) -> fluree_db_api::Result<fluree_db_api::TransactResultRef> {
+    let graph = fluree.graph(alias);
+    let builder = graph.transact();
+    let builder = match txn_type {
+        BenchTxnType::Insert => builder.insert(batch_json),
+        BenchTxnType::Upsert => builder.upsert(batch_json),
+    };
+    builder.index_config(idx_cfg.clone()).commit().await
 }
 
 /// Check if an API error is a back-pressure error (novelty at max).
