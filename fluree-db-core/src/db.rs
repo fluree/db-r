@@ -12,7 +12,7 @@ use crate::serde::json::{
     raw_schema_to_index_schema, raw_stats_to_index_stats, DbRootConfig,
     RawDbRootSchema, RawDbRootStats,
 };
-use crate::sid::{Sid, SidInterner};
+use crate::sid::Sid;
 use crate::storage::Storage;
 use crate::namespaces::default_namespace_codes;
 use once_cell::sync::OnceCell;
@@ -44,9 +44,6 @@ pub struct Db<S> {
     /// Cached schema hierarchy for reasoning (lazily computed)
     schema_hierarchy_cache: OnceCell<SchemaHierarchy>,
 
-    /// SID interner for deduplicating names across decoded index nodes
-    pub sid_interner: Arc<SidInterner>,
-
     /// Binary range provider.
     ///
     /// When set, `range_with_overlay()` delegates to this provider.
@@ -69,7 +66,6 @@ impl<S: Clone> Clone for Db<S> {
             config: self.config.clone(),
             schema: self.schema.clone(),
             schema_hierarchy_cache: self.schema_hierarchy_cache.clone(),
-            sid_interner: self.sid_interner.clone(),
             range_provider: self.range_provider.clone(),
             storage: self.storage.clone(),
         }
@@ -104,7 +100,6 @@ impl<S: Storage> Db<S> {
             config: None,
             schema: None,
             schema_hierarchy_cache: OnceCell::new(),
-            sid_interner: Arc::new(SidInterner::with_capacity(4096)),
             range_provider: None,
             storage,
         }
@@ -133,7 +128,6 @@ impl<S: Storage> Db<S> {
             config: None,
             schema,
             schema_hierarchy_cache: OnceCell::new(),
-            sid_interner: Arc::new(SidInterner::with_capacity(256)),
             range_provider: None,
             storage,
         }
@@ -217,7 +211,7 @@ impl<S: Storage> Db<S> {
 
         best_match.map(|(code, prefix_len)| {
             let name = &iri[prefix_len..];
-            self.sid_interner.intern(code, name)
+            Sid::new(code, name)
         })
     }
 

@@ -452,7 +452,7 @@ pub async fn get_block(
         ServerError::not_acceptable("Flakes format only available for ledger blocks")
     })?;
 
-    // Get cached ledger state (for interner)
+    // Get cached ledger state
     let fluree = state.fluree.as_file();
     let handle = fluree.ledger_cached(&alias).await.map_err(|e| {
         ServerError::internal(format!("Ledger load failed: {}", e))
@@ -462,7 +462,8 @@ pub async fn get_block(
     let snapshot = handle.snapshot().await;
 
     // Attempt to parse as leaf using actual core parser
-    let parsed = try_parse_as_leaf(bytes, &context, &snapshot.db.sid_interner);
+    let interner = fluree_db_core::SidInterner::new();
+    let parsed = try_parse_as_leaf(bytes, &context, &interner);
 
     let flakes = match parsed {
         FilterableBlock::Leaf(flakes) => flakes,

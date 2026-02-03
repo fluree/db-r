@@ -242,7 +242,7 @@ impl Ontology {
 
         // Query for owl:inverseOf assertions
         // Pattern: ?property owl:inverseOf ?inverse
-        let inverse_of_pred = db.sid_interner.intern(OWL, "inverseOf");
+        let inverse_of_pred = Sid::new(OWL, "inverseOf");
         let inverse_flakes = range(
             db,
             IndexType::Psot,
@@ -269,7 +269,7 @@ impl Ontology {
 
         // Query for owl:equivalentProperty assertions
         // Pattern: ?property owl:equivalentProperty ?equivalent
-        let equivalent_prop_pred = db.sid_interner.intern(OWL, "equivalentProperty");
+        let equivalent_prop_pred = Sid::new(OWL, "equivalentProperty");
         let equivalent_flakes = range(
             db,
             IndexType::Psot,
@@ -287,7 +287,7 @@ impl Ontology {
 
         // Query for rdfs:domain assertions
         // Pattern: ?property rdfs:domain ?class
-        let domain_pred = db.sid_interner.intern(RDFS, "domain");
+        let domain_pred = Sid::new(RDFS, "domain");
         let domain_flakes = range(
             db,
             IndexType::Psot,
@@ -307,7 +307,7 @@ impl Ontology {
 
         // Query for rdfs:range assertions
         // Pattern: ?property rdfs:range ?class
-        let range_pred = db.sid_interner.intern(RDFS, "range");
+        let range_pred = Sid::new(RDFS, "range");
         let range_flakes = range(
             db,
             IndexType::Psot,

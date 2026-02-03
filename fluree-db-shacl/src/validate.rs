@@ -272,7 +272,7 @@ impl ShaclEngine {
         let mut all_results = Vec::new();
 
         // For each modified subject, find its types and validate
-        let rdf_type = db.sid_interner.intern(RDF, rdf_names::TYPE);
+        let rdf_type = Sid::new(RDF, rdf_names::TYPE);
 
         for subject in modified_subjects {
             // Get the types of this subject (through the overlay so we see staged data)
@@ -378,7 +378,7 @@ async fn get_focus_nodes<S: Storage, O: OverlayProvider>(
                 }
 
                 // Find all instances of each class
-                let rdf_type = db.sid_interner.intern(RDF, rdf_names::TYPE);
+                let rdf_type = Sid::new(RDF, rdf_names::TYPE);
                 for cls in classes_to_query {
                     let flakes = range_with_overlay(
                         db,
@@ -518,7 +518,7 @@ fn validate_structural_constraint<'a, S: Storage, O: OverlayProvider>(
                         .collect();
 
                     // Per SHACL spec section 4.8.1, rdf:type is implicitly ignored
-                    let rdf_type_sid = db.sid_interner.intern(RDF, rdf_names::TYPE);
+                    let rdf_type_sid = Sid::new(RDF, rdf_names::TYPE);
                     let mut effective_ignored = ignored_properties.clone();
                     effective_ignored.insert(rdf_type_sid);
 
@@ -1128,8 +1128,8 @@ mod tests {
 
         // Even with subjects to validate, should return conforming immediately
         let mut modified_subjects = HashSet::new();
-        modified_subjects.insert(db.sid_interner.intern(100, "ex:alice"));
-        modified_subjects.insert(db.sid_interner.intern(100, "ex:bob"));
+        modified_subjects.insert(Sid::new(100, "ex:alice"));
+        modified_subjects.insert(Sid::new(100, "ex:bob"));
 
         let report = engine
             .validate_staged(&db, &NoOverlay, &modified_subjects)
@@ -1152,8 +1152,8 @@ mod tests {
         use crate::compile::{CompiledShape, TargetType};
 
         let shape = CompiledShape {
-            id: db.sid_interner.intern(100, "TestShape"),
-            targets: vec![TargetType::Class(db.sid_interner.intern(100, "ex:Person"))],
+            id: Sid::new(100, "TestShape"),
+            targets: vec![TargetType::Class(Sid::new(100, "ex:Person"))],
             property_shapes: vec![],
             node_constraints: vec![],
             structural_constraints: vec![],

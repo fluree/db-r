@@ -230,7 +230,7 @@ impl ShapeCompiler {
         let opts = RangeOptions::default().with_to_t(i64::MAX);
 
         for pred_name in &shacl_predicates {
-            let pred = db.sid_interner.intern(SHACL, pred_name);
+            let pred = Sid::new(SHACL, pred_name);
             let flakes = range_with_overlay(
                 db,
                 overlay,
@@ -258,9 +258,9 @@ impl ShapeCompiler {
         db: &Db<S>,
         overlay: &O,
     ) -> Result<()> {
-        let rdf_first = db.sid_interner.intern(RDF, rdf_names::FIRST);
-        let rdf_rest = db.sid_interner.intern(RDF, rdf_names::REST);
-        let rdf_nil = db.sid_interner.intern(RDF, rdf_names::NIL);
+        let rdf_first = Sid::new(RDF, rdf_names::FIRST);
+        let rdf_rest = Sid::new(RDF, rdf_names::REST);
+        let rdf_nil = Sid::new(RDF, rdf_names::NIL);
 
         // Expand sh:in list references in in_values
         // If in_values contains a single Ref, it might be an RDF list head that needs expansion
