@@ -19,8 +19,8 @@ use crate::error::{BuilderError, BuilderErrors};
 use crate::ledger_manager::LedgerHandle;
 use crate::tx::{IndexingMode, IndexingStatus, StageResult, TransactResult, TransactResultRef};
 use crate::{
-    ApiError, Fluree, NameService, PolicyContext, Result, SimpleCache, Storage, Tracker,
-    TrackedErrorResponse, TrackingOptions,
+    ApiError, Fluree, NameService, PolicyContext, Result, SimpleCache, Storage,
+    TrackedErrorResponse, Tracker, TrackingOptions,
 };
 use fluree_db_core::ContentAddressedWrite;
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
@@ -311,9 +311,7 @@ where
 
     /// Stage + commit the transaction, returning the updated ledger state.
     pub async fn execute(self) -> Result<TransactResult<S>> {
-        self.core
-            .validate()
-            .map_err(|e| ApiError::Builder(e))?;
+        self.core.validate().map_err(ApiError::Builder)?;
 
         let op = self.core.operation.unwrap(); // safe: validate checks
         let txn_type = op.txn_type();
@@ -322,7 +320,9 @@ where
 
         // Attach raw_txn if not already set
         let commit_opts = if self.core.commit_opts.raw_txn.is_none() {
-            self.core.commit_opts.with_raw_txn(txn_json.clone().into_owned())
+            self.core
+                .commit_opts
+                .with_raw_txn(txn_json.clone().into_owned())
         } else {
             self.core.commit_opts
         };
@@ -362,9 +362,7 @@ where
     ///
     /// Returns a [`Staged`] that can be queried and later committed.
     pub async fn stage(self) -> Result<Staged<S>> {
-        self.core
-            .validate()
-            .map_err(|e| ApiError::Builder(e))?;
+        self.core.validate().map_err(ApiError::Builder)?;
 
         let op = self.core.operation.unwrap();
         let txn_type = op.txn_type();
@@ -373,14 +371,12 @@ where
 
         // If policy is set, use the tracked+policy staging path
         if let Some(policy) = &self.core.policy {
-            let tracker = Tracker::new(
-                self.core.tracking.unwrap_or_else(|| TrackingOptions {
-                    track_time: true,
-                    track_fuel: true,
-                    track_policy: true,
-                    max_fuel: None,
-                }),
-            );
+            let tracker = Tracker::new(self.core.tracking.unwrap_or(TrackingOptions {
+                track_time: true,
+                track_fuel: true,
+                track_policy: true,
+                max_fuel: None,
+            }));
             let stage_result = self
                 .fluree
                 .stage_transaction_tracked_with_policy(
@@ -557,6 +553,10 @@ where
 ///
 /// This is the shared logic for `RefTransactBuilder::execute()` and
 /// `GraphTransactBuilder::commit()`.
+///
+/// Wraps the entire stage+commit sequence in a `transact_execute` info_span
+/// so that child spans (`txn_stage`, `commit`, etc.) are properly parented
+/// in traces — both for the HTTP server path and the library API path.
 pub(crate) async fn commit_with_handle<S, N>(
     fluree: &Fluree<S, SimpleCache, N>,
     handle: &LedgerHandle<S, SimpleCache>,
@@ -566,8 +566,39 @@ where
     S: Storage + ContentAddressedWrite + Clone + Send + Sync + 'static,
     N: NameService + Publisher + Clone + Send + Sync + 'static,
 {
-    core.validate().map_err(|e| ApiError::Builder(e))?;
+    use tracing::Instrument as _;
 
+    core.validate().map_err(ApiError::Builder)?;
+
+    // Derive txn_type before the operation is consumed, for the span.
+    let txn_type = core
+        .pre_built_txn
+        .as_ref()
+        .map(|t| t.txn_type)
+        .or_else(|| core.operation.as_ref().map(|op| op.txn_type()));
+
+    let span = tracing::info_span!(
+        "transact_execute",
+        ledger_alias = handle.alias(),
+        txn_type = ?txn_type,
+        tracker_time = tracing::field::Empty,
+        tracker_fuel = tracing::field::Empty,
+    );
+
+    commit_with_handle_inner(fluree, handle, core)
+        .instrument(span)
+        .await
+}
+
+async fn commit_with_handle_inner<S, N>(
+    fluree: &Fluree<S, SimpleCache, N>,
+    handle: &LedgerHandle<S, SimpleCache>,
+    core: TransactCore<'_>,
+) -> Result<TransactResultRef>
+where
+    S: Storage + ContentAddressedWrite + Clone + Send + Sync + 'static,
+    N: NameService + Publisher + Clone + Send + Sync + 'static,
+{
     let index_config = core.index_config.unwrap_or_default();
 
     // Acquire write lock
@@ -596,14 +627,12 @@ where
 
         // Stage
         let stage_result = if let Some(policy) = &core.policy {
-            let tracker = Tracker::new(
-                core.tracking.unwrap_or_else(|| TrackingOptions {
-                    track_time: true,
-                    track_fuel: true,
-                    track_policy: true,
-                    max_fuel: None,
-                }),
-            );
+            let tracker = Tracker::new(core.tracking.unwrap_or(TrackingOptions {
+                track_time: true,
+                track_fuel: true,
+                track_policy: true,
+                max_fuel: None,
+            }));
             fluree
                 .stage_transaction_tracked_with_policy(
                     ledger_state,
@@ -633,24 +662,23 @@ where
     let StageResult { view, ns_registry } = stage_result;
 
     // Handle no-op
-    let (receipt, new_state) = if !view.has_staged()
-        && matches!(txn_type, TxnType::Update | TxnType::Upsert)
-    {
-        let (base, _) = view.into_parts();
-        (
-            fluree_db_transact::CommitReceipt {
-                address: String::new(),
-                commit_id: String::new(),
-                t: base.t(),
-                flake_count: 0,
-            },
-            base,
-        )
-    } else {
-        fluree
-            .commit_staged(view, ns_registry, &index_config, commit_opts)
-            .await?
-    };
+    let (receipt, new_state) =
+        if !view.has_staged() && matches!(txn_type, TxnType::Update | TxnType::Upsert) {
+            let (base, _) = view.into_parts();
+            (
+                fluree_db_transact::CommitReceipt {
+                    address: String::new(),
+                    commit_id: String::new(),
+                    t: base.t(),
+                    flake_count: 0,
+                },
+                base,
+            )
+        } else {
+            fluree
+                .commit_staged(view, ns_registry, &index_config, commit_opts)
+                .await?
+        };
 
     // Compute indexing status
     let indexing_status = IndexingStatus {
@@ -713,10 +741,13 @@ mod tests {
         let result = core.validate();
         assert!(result.is_err());
         let errs = result.unwrap_err();
-        assert!(errs
-            .0
-            .iter()
-            .any(|e| matches!(e, BuilderError::Conflict { field: "operation", .. })));
+        assert!(errs.0.iter().any(|e| matches!(
+            e,
+            BuilderError::Conflict {
+                field: "operation",
+                ..
+            }
+        )));
     }
 
     #[test]
@@ -812,7 +843,12 @@ mod tests {
 
         // Via builder
         let ledger2 = fluree.create_ledger("testdb2").await.unwrap();
-        let result2 = fluree.stage_owned(ledger2).insert(&data).execute().await.unwrap();
+        let result2 = fluree
+            .stage_owned(ledger2)
+            .insert(&data)
+            .execute()
+            .await
+            .unwrap();
 
         // Both should succeed at t=1
         assert_eq!(result1.receipt.t, 1);

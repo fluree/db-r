@@ -1997,6 +1997,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "fluree-bench"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "fluree-db-api",
+ "fluree-db-transact",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "fluree-db-api"
 version = "0.1.0"
 dependencies = [

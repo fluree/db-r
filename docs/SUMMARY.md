@@ -85,5 +85,6 @@
 - [Contributing](contributing/README.md)
   - [Dev setup](contributing/dev-setup.md)
   - [Tests](contributing/tests.md)
+  - [Benchmarks](contributing/benchmarks.md)
   - [Design notes (repo docs)](contributing/design-notes.md)
 
