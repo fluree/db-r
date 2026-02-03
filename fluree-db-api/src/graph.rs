@@ -8,7 +8,7 @@ use crate::dataset::TimeSpec;
 use crate::graph_snapshot::GraphSnapshot;
 use crate::graph_query_builder::GraphQueryBuilder;
 use crate::graph_transact_builder::GraphTransactBuilder;
-use crate::{Fluree, NameService, Result, SimpleCache, Storage};
+use crate::{Fluree, NameService, Result, Storage};
 use fluree_db_nameservice::Publisher;
 
 /// A lazy, zero-cost handle to a ledger graph.
@@ -41,7 +41,7 @@ use fluree_db_nameservice::Publisher;
 /// let r2 = snapshot.query().jsonld(&q).execute().await?;
 /// ```
 pub struct Graph<'a, S: Storage + 'static, N> {
-    pub(crate) fluree: &'a Fluree<S, SimpleCache, N>,
+    pub(crate) fluree: &'a Fluree<S, N>,
     pub(crate) alias: String,
     pub(crate) time_spec: TimeSpec,
 }
@@ -52,7 +52,7 @@ where
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Create a new lazy graph handle.
-    pub(crate) fn new(fluree: &'a Fluree<S, SimpleCache, N>, alias: String, time_spec: TimeSpec) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<S, N>, alias: String, time_spec: TimeSpec) -> Self {
         Self {
             fluree,
             alias,

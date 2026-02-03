@@ -2031,7 +2031,6 @@ impl ClassPropertyExtractor {
 // Batched PSOT Lookup for Class Retrieval
 // =============================================================================
 
-use fluree_db_core::cache::NodeCache;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::db::Db;
 use fluree_db_core::range::{range, RangeMatch, RangeOptions, RangeTest};
@@ -2051,13 +2050,12 @@ pub struct ClassPropertyStatsResult {
 /// asserted in prior transactions (not in current novelty).
 ///
 /// Returns {subject_sid -> HashSet<class_sid>} mapping.
-pub async fn batch_lookup_subject_classes<S, C>(
-    db: &Db<S, C>,
+pub async fn batch_lookup_subject_classes<S>(
+    db: &Db<S>,
     subjects: &HashSet<Sid>,
 ) -> crate::error::Result<std::collections::HashMap<Sid, HashSet<Sid>>>
 where
     S: Storage,
-    C: NodeCache,
 {
     if subjects.is_empty() {
         return Ok(std::collections::HashMap::new());
@@ -2096,14 +2094,13 @@ where
 /// 4. Processes all novelty flakes to build class-property stats
 ///
 /// Returns class statistics ready for inclusion in db-root.
-pub async fn compute_class_property_stats_parallel<S, C>(
-    db: &Db<S, C>,
+pub async fn compute_class_property_stats_parallel<S>(
+    db: &Db<S>,
     prior_stats: Option<&fluree_db_core::IndexStats>,
     novelty_flakes: &[Flake],
 ) -> crate::error::Result<ClassPropertyStatsResult>
 where
     S: Storage,
-    C: NodeCache,
 {
     if novelty_flakes.is_empty() {
         // No novelty - preserve prior classes
@@ -2192,7 +2189,6 @@ where
 #[cfg(test)]
 mod class_property_stats_tests {
     use super::*;
-    use fluree_db_core::cache::NoCache;
     use fluree_db_core::IndexStats;
     use fluree_db_core::{Db, FlakeValue, MemoryStorage, Sid};
     use fluree_vocab::namespaces::{EMPTY, JSON_LD, XSD};

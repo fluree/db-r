@@ -9,7 +9,7 @@ use fluree_db_core::{
     is_rdfs_subclass_of, is_rdfs_subproperty_of,
     overlay::OverlayProvider,
     IndexSchema, SchemaPredicateInfo,
-    Db, NodeCache, SchemaHierarchy, Storage,
+    Db, SchemaHierarchy, Storage,
 };
 use fluree_db_reasoner::{DerivedFactsBuilder, DerivedFactsOverlay, FrozenSameAs, ReasoningOptions};
 use std::collections::HashMap;
@@ -19,8 +19,8 @@ use std::sync::Arc;
 ///
 /// Merges overlay rdfs:subClassOf and rdfs:subPropertyOf assertions
 /// with the existing database schema to create a unified hierarchy view.
-pub fn schema_hierarchy_with_overlay<S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub fn schema_hierarchy_with_overlay<S: Storage + 'static>(
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
 ) -> Option<SchemaHierarchy> {
@@ -161,8 +161,8 @@ pub fn effective_reasoning_modes(
 /// - Datalog: Executes user-defined rules stored with `f:rule` predicate
 ///
 /// When both are enabled, derived facts from both sources are combined into a single overlay.
-pub async fn compute_derived_facts<S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn compute_derived_facts<S: Storage + 'static>(
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     reasoning: &ReasoningModes,

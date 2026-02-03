@@ -7,7 +7,7 @@
 //! - query via JSON-LD query syntax
 //! - reload from file-backed nameservice + storage and re-run the query
 
-use fluree_db_api::{FlureeBuilder, IndexConfig, LedgerState, Novelty, SimpleCache};
+use fluree_db_api::{FlureeBuilder, IndexConfig, LedgerState, Novelty};
 use fluree_db_core::Db;
 use serde_json::json;
 
@@ -32,7 +32,6 @@ async fn jsonld_insert_then_query_file_backed() {
     // the nameservice has no record yet, and `commit()` will create one via publish_commit().
     let db = Db::genesis(
         fluree.storage().clone(),
-        SimpleCache::new(10_000),
         alias,
     );
     let ledger0 = LedgerState::new(db, Novelty::new(0));

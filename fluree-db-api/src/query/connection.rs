@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use crate::query::helpers::{extract_sparql_dataset_spec, parse_and_validate_sparql, parse_dataset_spec};
 use crate::view::FlureeDataSetView;
-use crate::{ApiError, Fluree, PolicyContext, QueryResult, Result, SimpleCache, Storage};
+use crate::{ApiError, Fluree, PolicyContext, QueryResult, Result, Storage};
 
-impl<S, N> Fluree<S, SimpleCache, N>
+impl<S, N> Fluree<S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
     N: crate::NameService + Clone + Send + Sync + 'static,
@@ -311,9 +311,9 @@ where
 }
 
 fn apply_policy_to_dataset<S: Storage + 'static>(
-    mut dataset: FlureeDataSetView<S, SimpleCache>,
+    mut dataset: FlureeDataSetView<S>,
     policy: &PolicyContext,
-) -> FlureeDataSetView<S, SimpleCache> {
+) -> FlureeDataSetView<S> {
     let policy = Arc::new(policy.clone());
 
     dataset.default = dataset

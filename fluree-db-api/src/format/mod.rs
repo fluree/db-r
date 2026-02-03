@@ -37,7 +37,7 @@ pub use config::{FormatterConfig, JsonLdRowShape, OutputFormat, SelectMode};
 pub use iri::IriCompactor;
 
 use crate::QueryResult;
-use fluree_db_core::{Db, NodeCache, Storage};
+use fluree_db_core::{Db, Storage};
 use fluree_db_core::{FuelExceededError, Tracker};
 use fluree_graph_json_ld::ParsedContext;
 use serde_json::Value as JsonValue;
@@ -80,10 +80,10 @@ pub type Result<T> = std::result::Result<T, FormatError>;
 /// # Returns
 ///
 /// A `serde_json::Value` containing the formatted results
-pub fn format_results<S: Storage, C: NodeCache>(
+pub fn format_results<S: Storage>(
     result: &QueryResult,
     context: &ParsedContext,
-    db: &Db<S, C>,
+    db: &Db<S>,
     config: &FormatterConfig,
 ) -> Result<JsonValue> {
     let compactor = IriCompactor::new(db.namespaces(), context);
@@ -129,10 +129,10 @@ pub fn format_results<S: Storage, C: NodeCache>(
 /// Respects `config.pretty` for formatting.
 ///
 /// Note: For graph crawl queries, use `format_results_string_async()` instead.
-pub fn format_results_string<S: Storage, C: NodeCache>(
+pub fn format_results_string<S: Storage>(
     result: &QueryResult,
     context: &ParsedContext,
-    db: &Db<S, C>,
+    db: &Db<S>,
     config: &FormatterConfig,
 ) -> Result<String> {
     let value = format_results(result, context, db, config)?;
@@ -171,10 +171,10 @@ pub fn format_results_string<S: Storage, C: NodeCache>(
 ///
 /// When `policy` is `Some`, graph crawl queries filter flakes according to view policies.
 /// When `policy` is `None`, no filtering is applied (zero overhead for the common case).
-pub async fn format_results_async<S: Storage, C: NodeCache>(
+pub async fn format_results_async<S: Storage>(
     result: &QueryResult,
     context: &ParsedContext,
-    db: &Db<S, C>,
+    db: &Db<S>,
     config: &FormatterConfig,
     policy: Option<&fluree_db_policy::PolicyContext>,
     tracker: Option<&Tracker>,
@@ -234,10 +234,10 @@ pub async fn format_results_async<S: Storage, C: NodeCache>(
 ///
 /// When `policy` is `Some`, graph crawl queries filter flakes according to view policies.
 /// When `policy` is `None`, no filtering is applied (zero overhead).
-pub async fn format_results_string_async<S: Storage, C: NodeCache>(
+pub async fn format_results_string_async<S: Storage>(
     result: &QueryResult,
     context: &ParsedContext,
-    db: &Db<S, C>,
+    db: &Db<S>,
     config: &FormatterConfig,
     policy: Option<&fluree_db_policy::PolicyContext>,
 ) -> Result<String> {

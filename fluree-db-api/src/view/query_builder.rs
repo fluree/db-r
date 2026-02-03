@@ -5,9 +5,9 @@
 
 use crate::query::builder::{DatasetQueryBuilder, ViewQueryBuilder};
 use crate::view::{FlureeDataSetView, FlureeView};
-use crate::{Fluree, NameService, SimpleCache, Storage};
+use crate::{Fluree, NameService, Storage};
 
-impl<S> FlureeView<S, SimpleCache>
+impl<S> FlureeView<S>
 where
     S: Storage + Clone + Send + Sync + 'static,
 {
@@ -23,13 +23,13 @@ where
     /// ```
     pub fn query<'a, N: NameService>(
         &'a self,
-        fluree: &'a Fluree<S, SimpleCache, N>,
+        fluree: &'a Fluree<S, N>,
     ) -> ViewQueryBuilder<'a, S, N> {
         ViewQueryBuilder::new(fluree, self)
     }
 }
 
-impl<S> FlureeDataSetView<S, SimpleCache>
+impl<S> FlureeDataSetView<S>
 where
     S: Storage + Clone + Send + Sync + 'static,
 {
@@ -47,7 +47,7 @@ where
     /// ```
     pub fn query<'a, N: NameService>(
         &'a self,
-        fluree: &'a Fluree<S, SimpleCache, N>,
+        fluree: &'a Fluree<S, N>,
     ) -> DatasetQueryBuilder<'a, S, N> {
         DatasetQueryBuilder::new(fluree, self)
     }

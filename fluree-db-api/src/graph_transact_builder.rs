@@ -11,7 +11,7 @@ use crate::graph_query_builder::GraphSnapshotQueryBuilder;
 use crate::tx_builder::{TransactCore, TransactOperation, Staged, commit_with_handle};
 use crate::view::FlureeView;
 use crate::{
-    ApiError, Fluree, NameService, PolicyContext, Result, SimpleCache, Storage,
+    ApiError, Fluree, NameService, PolicyContext, Result, Storage,
     Tracker, TrackedErrorResponse, TrackingOptions, TransactResultRef,
 };
 use fluree_db_core::ContentAddressedWrite;
@@ -253,9 +253,9 @@ where
 /// let preview = staged.query().jsonld(&q).execute().await?;
 /// ```
 pub struct StagedGraph<'a, S: Storage + 'static, N> {
-    fluree: &'a Fluree<S, SimpleCache, N>,
+    fluree: &'a Fluree<S, N>,
     staged: Staged<S>,
-    staged_view: FlureeView<S, SimpleCache>,
+    staged_view: FlureeView<S>,
 }
 
 impl<'a, S, N> StagedGraph<'a, S, N>

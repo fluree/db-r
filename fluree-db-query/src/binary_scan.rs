@@ -33,7 +33,7 @@ use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::value_id::DatatypeId;
 use fluree_db_core::value_id::{ObjKind, ObjKey};
-use fluree_db_core::{Flake, FlakeValue, IndexType, NodeCache, ObjectBounds, OverlayProvider, Sid, Storage};
+use fluree_db_core::{Flake, FlakeValue, IndexType, ObjectBounds, OverlayProvider, Sid, Storage};
 use fluree_db_indexer::run_index::{
     BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, OverlayOp,
 };
@@ -379,8 +379,8 @@ impl BinaryScanOperator {
 ///
 /// Uses graph-scoped property datatype counts from `IndexStats.graphs`.
 /// Returns `None` when stats are unavailable or the predicate is not present.
-fn numeric_shape_from_db_stats<S: Storage + 'static, C: NodeCache + 'static>(
-    ctx: &ExecutionContext<'_, S, C>,
+fn numeric_shape_from_db_stats<S: Storage + 'static>(
+    ctx: &ExecutionContext<'_, S>,
     _pred_iri: &str,
     pred_sid_binary: &Sid,
 ) -> Option<NumericShape> {
@@ -428,12 +428,12 @@ fn numeric_shape_from_db_stats<S: Storage + 'static, C: NodeCache + 'static>(
 }
 
 #[async_trait]
-impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for BinaryScanOperator {
+impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
         if !self.state.can_open() {
             if self.state.is_closed() {
                 return Err(QueryError::OperatorClosed);
@@ -704,7 +704,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for BinaryScan
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
         if !self.state.can_next() {
             if self.state == OperatorState::Created {
                 return Err(QueryError::OperatorNotOpened);
@@ -870,15 +870,15 @@ fn translate_one_flake(
 ///
 /// When conditions are not met, falls back to `ScanOperator` (b-tree path).
 /// The b-tree fallback will be removed once all consumers provide a binary store.
-pub struct DeferredScanOperator<S: Storage + 'static, C: NodeCache + 'static> {
+pub struct DeferredScanOperator<S: Storage + 'static> {
     pattern: TriplePattern,
     object_bounds: Option<ObjectBounds>,
     schema: Arc<[VarId]>,
-    inner: Option<BoxedOperator<S, C>>,
+    inner: Option<BoxedOperator<S>>,
     state: OperatorState,
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> DeferredScanOperator<S, C> {
+impl<S: Storage + 'static> DeferredScanOperator<S> {
     /// Create a new deferred scan operator.
     ///
     /// Schema is computed from the pattern variables (matches both
@@ -906,7 +906,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> DeferredScanOperator<S, C> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for DeferredScanOperator<S, C> {
+impl<S: Storage + 'static> Operator<S> for DeferredScanOperator<S> {
     fn schema(&self) -> &[VarId] {
         match &self.inner {
             Some(op) => op.schema(),
@@ -914,7 +914,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for DeferredSc
         }
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
         if !self.state.can_open() {
             if self.state.is_closed() {
                 return Err(QueryError::OperatorClosed);
@@ -971,7 +971,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for DeferredSc
             (None, None)
         };
 
-        let mut inner: BoxedOperator<S, C> = if use_binary {
+        let mut inner: BoxedOperator<S> = if use_binary {
             let store = ctx.binary_store.as_ref().unwrap().clone();
             let mut op = BinaryScanOperator::new(
                 self.pattern.clone(),
@@ -997,7 +997,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for DeferredSc
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
         match &mut self.inner {
             Some(op) => op.next_batch(ctx).await,
             None => Err(QueryError::OperatorNotOpened),

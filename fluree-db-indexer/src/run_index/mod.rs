@@ -55,7 +55,11 @@ pub use prefix_trie::PrefixTrie;
 pub use leaflet_cache::{LeafletCache, LeafletCacheKey, CachedRegion1, CachedRegion2};
 pub use novelty_merge::{merge_novelty, MergeInput, MergeOutput};
 pub use replay::{replay_leaflet, ReplayedLeaflet};
-pub use index_root::{BinaryIndexRoot, GraphEntry, BINARY_INDEX_ROOT_VERSION};
+pub use index_root::{
+    BinaryIndexRoot, BinaryIndexRootV2, BinaryIndexRootAny, GraphEntry, GraphEntryV2,
+    GraphOrderAddresses, GraphAddresses, DictAddresses,
+    BINARY_INDEX_ROOT_VERSION, BINARY_INDEX_ROOT_VERSION_V2, parse_index_root,
+};
 
 use fluree_db_core::StorageRead;
 use fluree_db_novelty::commit_v2::{read_commit_envelope, CommitV2Error};

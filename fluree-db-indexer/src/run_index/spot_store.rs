@@ -7,8 +7,13 @@
 //! branch manifests. Dictionaries (subjects, strings, predicates, datatypes) are shared
 //! across all orders.
 
-use super::branch::{find_branch_file, read_branch_manifest, BranchManifest};
-use super::dict_io::{read_forward_entry, read_forward_index, read_language_dict, read_predicate_dict};
+use super::branch::{find_branch_file, read_branch_manifest, read_branch_manifest_from_bytes, BranchManifest};
+use super::dict_io::{
+    read_forward_entry, read_forward_index, read_forward_index_from_bytes,
+    read_language_dict, read_language_dict_from_bytes,
+    read_predicate_dict, read_predicate_dict_from_bytes,
+};
+use super::index_root::BinaryIndexRootV2;
 use super::global_dict::{LanguageTagDict, PredicateDict};
 use super::leaf::read_leaf_header;
 use super::leaflet::decode_leaflet;
@@ -16,6 +21,7 @@ use super::leaflet_cache::LeafletCache;
 use super::prefix_trie::PrefixTrie;
 use super::run_record::{RunRecord, RunSortOrder, NO_LIST_INDEX};
 use fluree_db_core::value_id::{ObjKind, ObjKey};
+use fluree_db_core::storage::{extract_hash_from_address, StorageRead};
 use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
 use memmap2::Mmap;
 use std::collections::HashMap;
@@ -451,6 +457,275 @@ impl BinaryIndexStore {
         let mut store = Self::load(run_dir, index_dir)?;
         store.leaflet_cache = cache;
         Ok(store)
+    }
+
+    /// Load a BinaryIndexStore from CAS (content-addressed storage) using
+    /// a v2 index root.
+    ///
+    /// Fetches dictionary and index artifacts via `storage.read_bytes()`,
+    /// materializes mmap-required files to `cache_dir`, and eagerly
+    /// downloads all leaf files for sync cursor compatibility.
+    ///
+    /// # Arguments
+    ///
+    /// * `storage` - Storage backend for reading CAS artifacts
+    /// * `root` - V2 index root with CAS addresses for all artifacts
+    /// * `cache_dir` - Local directory for cached files (mmap'd dicts + leaves)
+    /// * `leaflet_cache` - Optional shared LRU cache for decoded leaflets
+    pub async fn load_from_root<S: StorageRead>(
+        storage: &S,
+        root: &BinaryIndexRootV2,
+        cache_dir: &Path,
+        leaflet_cache: Option<Arc<LeafletCache>>,
+    ) -> io::Result<Self> {
+        let _span = tracing::info_span!("BinaryIndexStore::load_from_root").entered();
+
+        std::fs::create_dir_all(cache_dir)?;
+
+        // ---- Load predicate dict (cache-aware) ----
+        let pred_bytes = fetch_cached_bytes(storage, &root.dict_addresses.predicates, cache_dir, "dict").await?;
+        let predicates = read_predicate_dict_from_bytes(&pred_bytes)?;
+        let mut predicate_reverse = HashMap::with_capacity(predicates.len() as usize);
+        for i in 0..predicates.len() {
+            if let Some(iri) = predicates.resolve(i) {
+                predicate_reverse.insert(iri.to_string(), i);
+            }
+        }
+        tracing::info!(predicates = predicates.len(), "loaded predicate dict");
+
+        // ---- Load subject forward index (cache-aware) ----
+        let subj_idx_bytes = fetch_cached_bytes(storage, &root.dict_addresses.subject_index, cache_dir, "idx").await?;
+        let (subject_offsets, subject_lens) = read_forward_index_from_bytes(&subj_idx_bytes)?;
+        tracing::info!(subjects = subject_offsets.len(), "loaded subject forward index");
+
+        // ---- Load subject forward file (mmap'd, cache-aware) ----
+        let subject_forward = fetch_and_mmap(storage, &root.dict_addresses.subject_forward, cache_dir, "fwd").await?;
+
+        // ---- Load string forward index (cache-aware) ----
+        let str_idx_bytes = fetch_cached_bytes(storage, &root.dict_addresses.string_index, cache_dir, "idx").await?;
+        let (string_offsets, string_lens) = if !str_idx_bytes.is_empty() {
+            read_forward_index_from_bytes(&str_idx_bytes)?
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        tracing::info!(strings = string_offsets.len(), "loaded string forward index");
+
+        // ---- Load string forward file (mmap'd, cache-aware) ----
+        let string_forward = fetch_and_mmap(storage, &root.dict_addresses.string_forward, cache_dir, "fwd").await?;
+
+        // ---- Namespace codes (from root, not from storage) ----
+        let namespace_codes: HashMap<i32, String> = root.namespace_codes
+            .iter()
+            .map(|(&k, v)| (k, v.clone()))
+            .collect();
+        let namespace_reverse: HashMap<String, i32> = namespace_codes
+            .iter()
+            .map(|(&code, prefix)| (prefix.clone(), code))
+            .collect();
+        let prefix_trie = PrefixTrie::from_namespace_codes(&namespace_codes);
+        tracing::info!(
+            namespaces = namespace_codes.len(),
+            trie_nodes = prefix_trie.node_count(),
+            "loaded namespace codes + built prefix trie"
+        );
+
+        // ---- Load subject reverse hash index (mmap'd, strict validation) ----
+        // V2 root requires this artifact — error on missing/invalid, not silent absent.
+        let (subject_reverse, subject_reverse_count) = {
+            let mmap = fetch_and_mmap(storage, &root.dict_addresses.subject_reverse, cache_dir, "rev").await?;
+            match mmap {
+                Some(m) if m.len() >= 8 && &m[0..4] == b"SRV1" => {
+                    let count = u32::from_le_bytes(m[4..8].try_into().unwrap());
+                    let expected = 8 + count as usize * 20;
+                    if m.len() < expected {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("subjects.rev truncated: {} < {} (count={})", m.len(), expected, count),
+                        ));
+                    }
+                    tracing::info!(entries = count, "loaded subject reverse index");
+                    (Some(m), count)
+                }
+                Some(m) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("subjects.rev: invalid magic or too small (len={})", m.len()),
+                    ));
+                }
+                None => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "subjects.rev: empty content for required artifact",
+                    ));
+                }
+            }
+        };
+
+        // ---- Load string reverse hash index (mmap'd, strict validation) ----
+        let (string_reverse, string_reverse_count) = {
+            let mmap = fetch_and_mmap(storage, &root.dict_addresses.string_reverse, cache_dir, "rev").await?;
+            match mmap {
+                Some(m) if m.len() >= 8 && &m[0..4] == b"LRV1" => {
+                    let count = u32::from_le_bytes(m[4..8].try_into().unwrap());
+                    let expected = 8 + count as usize * 20;
+                    if m.len() < expected {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("strings.rev truncated: {} < {} (count={})", m.len(), expected, count),
+                        ));
+                    }
+                    tracing::info!(entries = count, "loaded string reverse index");
+                    (Some(m), count)
+                }
+                Some(m) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("strings.rev: invalid magic or too small (len={})", m.len()),
+                    ));
+                }
+                None => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "strings.rev: empty content for required artifact",
+                    ));
+                }
+            }
+        };
+
+        // ---- Load language tag dict (cache-aware) ----
+        let lang_bytes = fetch_cached_bytes(storage, &root.dict_addresses.languages, cache_dir, "dict").await?;
+        let language_tags = if !lang_bytes.is_empty() {
+            read_language_dict_from_bytes(&lang_bytes)?
+        } else {
+            LanguageTagDict::new()
+        };
+        tracing::info!(tags = language_tags.len(), "loaded language dict");
+
+        // ---- Load datatype dict → pre-compute dt_sids (cache-aware) ----
+        let dt_bytes = fetch_cached_bytes(storage, &root.dict_addresses.datatypes, cache_dir, "dict").await?;
+        let dt_dict = read_predicate_dict_from_bytes(&dt_bytes)?;
+        let dt_sids: Vec<Sid> = (0..dt_dict.len()).map(|id| {
+            let iri = dt_dict.resolve(id).unwrap_or("");
+            match prefix_trie.longest_match(iri) {
+                Some((code, prefix_len)) => Sid::new(code, &iri[prefix_len..]),
+                None => Sid::new(0, iri),
+            }
+        }).collect();
+        tracing::info!(datatypes = dt_dict.len(), "loaded datatype dict → dt_sids");
+
+        // ---- Load numbig arenas (cache-aware) ----
+        let mut numbig_forward: HashMap<u32, super::numbig_dict::NumBigArena> = HashMap::new();
+        for (p_id_str, addr) in &root.dict_addresses.numbig {
+            if let Ok(p_id) = p_id_str.parse::<u32>() {
+                let bytes = fetch_cached_bytes(storage, addr, cache_dir, "nba").await?;
+                let arena = super::numbig_dict::read_numbig_arena_from_bytes(&bytes)?;
+                numbig_forward.insert(p_id, arena);
+            }
+        }
+        if !numbig_forward.is_empty() {
+            tracing::info!(
+                predicates = numbig_forward.len(),
+                total_entries = numbig_forward.values().map(|a| a.len()).sum::<usize>(),
+                "loaded numbig arenas"
+            );
+        }
+
+        // ---- Load per-graph, per-order branch manifests + leaves ----
+        let mut graphs: HashMap<u32, GraphIndex> = HashMap::new();
+
+        for graph_entry in &root.graphs {
+            let mut order_indexes = HashMap::new();
+
+            for (order_name, order_addrs) in &graph_entry.orders {
+                let order = RunSortOrder::from_dir_name(order_name).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unknown sort order: {}", order_name),
+                    )
+                })?;
+
+                // Load branch manifest (cache-aware), resolving leaf paths against cache_dir
+                let branch_bytes = fetch_cached_bytes(storage, &order_addrs.branch, cache_dir, "fbr").await?;
+                let branch = read_branch_manifest_from_bytes(&branch_bytes, Some(cache_dir))?;
+                tracing::info!(
+                    g_id = graph_entry.g_id,
+                    order = order_name,
+                    leaves = branch.leaves.len(),
+                    "loaded branch manifest"
+                );
+
+                // Eagerly download leaf files to cache_dir (skip on cache hit).
+                // Sync cursors open these via File::open or leaf_dir.join(path).
+                for leaf_addr in &order_addrs.leaves {
+                    ensure_leaf_cached(storage, leaf_addr, cache_dir).await?;
+                }
+
+                order_indexes.insert(order, OrderIndex {
+                    branch,
+                    leaf_dir: cache_dir.to_path_buf(),
+                });
+            }
+
+            graphs.insert(graph_entry.g_id, GraphIndex { orders: order_indexes });
+        }
+
+        // Log summary of loaded orders
+        let all_orders = [RunSortOrder::Spot, RunSortOrder::Psot, RunSortOrder::Post, RunSortOrder::Opst];
+        let mut order_summary = Vec::new();
+        for &order in &all_orders {
+            let graph_count = graphs.values().filter(|g| g.orders.contains_key(&order)).count();
+            if graph_count > 0 {
+                order_summary.push(format!("{}({}g)", order.dir_name(), graph_count));
+            }
+        }
+        tracing::info!(
+            orders = %order_summary.join(", "),
+            graphs = graphs.len(),
+            max_t = root.index_t,
+            base_t = root.base_t,
+            "BinaryIndexStore loaded from CAS root"
+        );
+
+        Ok(Self {
+            graphs,
+            predicates,
+            predicate_reverse,
+            subject_forward,
+            subject_offsets,
+            subject_lens,
+            string_forward,
+            string_offsets,
+            string_lens,
+            namespace_codes,
+            namespace_reverse,
+            prefix_trie,
+            subject_reverse,
+            subject_reverse_count,
+            string_reverse,
+            string_reverse_count,
+            language_tags,
+            dt_sids,
+            max_t: root.index_t,
+            base_t: root.base_t,
+            numbig_forward,
+            leaflet_cache,
+        })
+    }
+
+    /// Load from a v2 index root with default leaflet cache.
+    ///
+    /// Uses 8 GiB cache (or `FLUREE_LEAFLET_CACHE_BYTES` env var).
+    pub async fn load_from_root_default<S: StorageRead>(
+        storage: &S,
+        root: &BinaryIndexRootV2,
+        cache_dir: &Path,
+    ) -> io::Result<Self> {
+        let leaflet_cache_bytes: u64 = std::env::var("FLUREE_LEAFLET_CACHE_BYTES")
+            .ok()
+            .and_then(|s| u64::from_str(&s).ok())
+            .unwrap_or(8 * 1024 * 1024 * 1024);
+        let cache = Some(Arc::new(LeafletCache::with_max_bytes(leaflet_cache_bytes)));
+        Self::load_from_root(storage, root, cache_dir, cache).await
     }
 
     /// Replace the leaflet cache on an already-loaded store.
@@ -1503,6 +1778,126 @@ fn flakevalue_to_i64_floor(val: &FlakeValue, inclusive: bool) -> Option<i64> {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/// Map a `fluree_db_core` storage error to `io::Error`, preserving NotFound.
+fn storage_to_io_error(e: fluree_db_core::error::Error) -> io::Error {
+    let kind = match &e {
+        fluree_db_core::error::Error::NotFound(_) => io::ErrorKind::NotFound,
+        _ => io::ErrorKind::Other,
+    };
+    io::Error::new(kind, e.to_string())
+}
+
+/// Write bytes to `cache_dir/{hash}.{ext}` if not already cached.
+///
+/// Content-addressed files are immutable: if the file already exists at the
+/// expected path, same hash = same content, skip the write. Uses atomic
+/// write (temp + rename) to prevent partial reads by concurrent accessors.
+/// Temp file names include PID + timestamp to avoid clobbering across
+/// concurrent writers.
+///
+/// Returns the path to the (possibly pre-existing) cached file.
+fn cache_bytes_to_file(
+    cache_dir: &Path,
+    hash: &str,
+    ext: &str,
+    bytes: &[u8],
+) -> io::Result<PathBuf> {
+    let target = cache_dir.join(format!("{}.{}", hash, ext));
+    if target.exists() {
+        return Ok(target);
+    }
+    std::fs::create_dir_all(cache_dir)?;
+    // Unique tmp name: PID + nanosecond timestamp to avoid races between
+    // concurrent writers (threads / processes / warm-start lambdas).
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp = cache_dir.join(format!(".cas_{}_{}.{}.tmp", std::process::id(), nanos, ext));
+    std::fs::write(&tmp, bytes)?;
+    if let Err(_rename_err) = std::fs::rename(&tmp, &target) {
+        // Rename failed — concurrent writer may have created target (Windows),
+        // or on Unix with different filesystems. Content-addressed: same hash =
+        // same content, so if target now exists we can discard our tmp.
+        let _ = std::fs::remove_file(&tmp);
+        if !target.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("failed to cache {}.{} to {:?}", hash, ext, cache_dir),
+            ));
+        }
+    }
+    Ok(target)
+}
+
+/// Fetch artifact bytes: reads from local cache if available, otherwise
+/// downloads from storage and writes to cache for next time.
+async fn fetch_cached_bytes<S: StorageRead>(
+    storage: &S,
+    address: &str,
+    cache_dir: &Path,
+    ext: &str,
+) -> io::Result<Vec<u8>> {
+    let hash = extract_hash_from_address(address)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData,
+            format!("cannot extract hash from address: {}", address)))?;
+    let cached = cache_dir.join(format!("{}.{}", hash, ext));
+    if cached.exists() {
+        return std::fs::read(&cached);
+    }
+    let bytes = storage.read_bytes(address).await.map_err(storage_to_io_error)?;
+    cache_bytes_to_file(cache_dir, &hash, ext, &bytes)?;
+    Ok(bytes)
+}
+
+/// Fetch artifact, cache locally, and mmap. Returns from local cache on hit.
+/// Returns `None` only for empty content (0-byte file cannot be mmap'd).
+async fn fetch_and_mmap<S: StorageRead>(
+    storage: &S,
+    address: &str,
+    cache_dir: &Path,
+    ext: &str,
+) -> io::Result<Option<Mmap>> {
+    let hash = extract_hash_from_address(address)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData,
+            format!("cannot extract hash from address: {}", address)))?;
+    let cached = cache_dir.join(format!("{}.{}", hash, ext));
+    if cached.exists() {
+        let meta = std::fs::metadata(&cached)?;
+        if meta.len() == 0 {
+            return Ok(None);
+        }
+        let file = std::fs::File::open(&cached)?;
+        return Ok(Some(unsafe { Mmap::map(&file)? }));
+    }
+    let bytes = storage.read_bytes(address).await.map_err(storage_to_io_error)?;
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    let path = cache_bytes_to_file(cache_dir, &hash, ext, &bytes)?;
+    drop(bytes);
+    let file = std::fs::File::open(&path)?;
+    Ok(Some(unsafe { Mmap::map(&file)? }))
+}
+
+/// Ensure a leaf file exists in the local cache. Skips download on cache hit.
+async fn ensure_leaf_cached<S: StorageRead>(
+    storage: &S,
+    address: &str,
+    cache_dir: &Path,
+) -> io::Result<()> {
+    let hash = extract_hash_from_address(address)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData,
+            format!("cannot extract hash from leaf address: {}", address)))?;
+    let cached = cache_dir.join(format!("{}.fli", hash));
+    if cached.exists() {
+        return Ok(());
+    }
+    let bytes = storage.read_bytes(address).await.map_err(storage_to_io_error)?;
+    cache_bytes_to_file(cache_dir, &hash, "fli", &bytes)?;
+    Ok(())
+}
 
 /// Load namespace codes from namespaces.json.
 fn load_namespace_codes(path: &Path) -> io::Result<HashMap<i32, String>> {

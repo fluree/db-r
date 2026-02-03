@@ -58,7 +58,6 @@ pub use rdf_list::{collect_chain_elements, collect_list_elements, collect_list_v
 pub use same_as::{FrozenSameAs, SameAsTracker};
 pub use owl::{find_owl_typed_entities, OwlSidRegistry};
 
-use fluree_db_core::cache::NodeCache;
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::storage::Storage;
 use fluree_db_core::Db;
@@ -131,8 +130,8 @@ impl ReasoningOptions {
 ///
 /// Results are cached by (ledger_alias, db_epoch, to_t, overlay_epoch, ontology_epoch, config).
 /// Cache hits return immediately without recomputation.
-pub async fn reason_owl2rl<S: Storage, C: NodeCache>(
-    db: &Db<S, C>,
+pub async fn reason_owl2rl<S: Storage>(
+    db: &Db<S>,
     overlay: &dyn OverlayProvider,
     to_t: i64,
     opts: &ReasoningOptions,

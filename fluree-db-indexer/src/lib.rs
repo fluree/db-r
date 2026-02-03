@@ -779,26 +779,41 @@ where
             )
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
-            // ---- Phase D: Load store and write root descriptor ----
+            // ---- Phase D: Upload artifacts to CAS and write v2 root ----
+
+            // D.1: Load store for max_t / base_t / namespace_codes
             let store = run_index::BinaryIndexStore::load(&run_dir, &index_dir)
                 .map_err(|e| IndexerError::StorageRead(e.to_string()))?;
 
-            let runs_prefix = format!("file://{}", run_dir.display());
-            let index_prefix = format!("file://{}", index_dir.display());
-            let root = run_index::BinaryIndexRoot::from_store(
-                &store,
+            // D.2: Upload dictionary artifacts to CAS
+            let numbig_p_ids: Vec<u32> = dicts.numbigs.keys().copied().collect();
+            let dict_addresses = upload_dicts_to_cas(
+                &storage, &alias, &run_dir, &numbig_p_ids,
+            ).await?;
+
+            // D.3: Upload index artifacts (branches + leaves) to CAS
+            let graph_addresses = upload_indexes_to_cas(
+                &storage, &alias, &build_results,
+            ).await?;
+
+            // D.4: Build v2 root with CAS addresses
+            let root = run_index::BinaryIndexRootV2::from_cas_artifacts(
                 &alias,
-                &runs_prefix,
-                &index_prefix,
+                store.max_t(),
+                store.base_t(),
+                store.namespace_codes(),
+                dict_addresses,
+                graph_addresses,
             );
 
             tracing::info!(
                 index_t = root.index_t,
                 base_t = root.base_t,
                 graphs = root.graphs.len(),
-                "binary index built, writing root"
+                "binary index built (v2), writing CAS root"
             );
 
+            // D.5: Write root to CAS (auto-hash of canonical compact JSON)
             let root_bytes = root
                 .to_json_bytes()
                 .map_err(|e| IndexerError::Serialization(e.to_string()))?;
@@ -833,6 +848,188 @@ where
     })
     .await
     .map_err(|e| IndexerError::StorageWrite(format!("index build task panicked: {}", e)))?
+}
+
+/// Upload all dictionary artifacts from `run_dir` to CAS.
+///
+/// Reads each file that `GlobalDicts::persist()` and `build_all_indexes()`
+/// wrote to disk, uploads via `content_write_bytes`, and returns the full
+/// CAS addresses.
+#[cfg(feature = "commit-v2")]
+async fn upload_dicts_to_cas<S: Storage>(
+    storage: &S,
+    alias: &str,
+    run_dir: &std::path::Path,
+    numbig_p_ids: &[u32],
+) -> Result<run_index::DictAddresses> {
+    use fluree_db_core::{ContentKind, DictKind};
+    use std::collections::BTreeMap;
+
+    /// Read a file and upload to CAS, returning the address.
+    async fn upload_one<S: Storage>(
+        storage: &S,
+        alias: &str,
+        path: &std::path::Path,
+        dict: DictKind,
+    ) -> Result<String> {
+        let bytes = std::fs::read(path)
+            .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", path.display(), e)))?;
+        let result = storage
+            .content_write_bytes(ContentKind::DictBlob { dict }, alias, &bytes)
+            .await
+            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+        tracing::debug!(
+            path = %path.display(),
+            address = %result.address,
+            bytes = result.size_bytes,
+            "dict artifact uploaded to CAS"
+        );
+        Ok(result.address)
+    }
+
+    let predicates = upload_one(storage, alias, &run_dir.join("predicates.dict"), DictKind::Predicates).await?;
+    let graphs = upload_one(storage, alias, &run_dir.join("graphs.dict"), DictKind::Graphs).await?;
+    let datatypes = upload_one(storage, alias, &run_dir.join("datatypes.dict"), DictKind::Datatypes).await?;
+    let languages = upload_one(storage, alias, &run_dir.join("languages.dict"), DictKind::Languages).await?;
+    let subject_forward = upload_one(storage, alias, &run_dir.join("subjects.fwd"), DictKind::SubjectForward).await?;
+    let subject_index = upload_one(storage, alias, &run_dir.join("subjects.idx"), DictKind::SubjectIndex).await?;
+    let subject_reverse = upload_one(storage, alias, &run_dir.join("subjects.rev"), DictKind::SubjectReverse).await?;
+    let string_forward = upload_one(storage, alias, &run_dir.join("strings.fwd"), DictKind::StringForward).await?;
+    let string_index = upload_one(storage, alias, &run_dir.join("strings.idx"), DictKind::StringIndex).await?;
+    let string_reverse = upload_one(storage, alias, &run_dir.join("strings.rev"), DictKind::StringReverse).await?;
+    let namespaces = upload_one(storage, alias, &run_dir.join("namespaces.json"), DictKind::Namespaces).await?;
+
+    let mut numbig = BTreeMap::new();
+    let nb_dir = run_dir.join("numbig");
+    for &p_id in numbig_p_ids {
+        let path = nb_dir.join(format!("p_{}.nba", p_id));
+        if path.exists() {
+            let addr = upload_one(storage, alias, &path, DictKind::NumBig { p_id }).await?;
+            numbig.insert(p_id.to_string(), addr);
+        }
+    }
+
+    tracing::info!(
+        dict_count = 11 + numbig.len(),
+        "dictionary artifacts uploaded to CAS"
+    );
+
+    Ok(run_index::DictAddresses {
+        predicates,
+        graphs,
+        datatypes,
+        languages,
+        subject_forward,
+        subject_index,
+        subject_reverse,
+        string_forward,
+        string_index,
+        string_reverse,
+        namespaces,
+        numbig,
+    })
+}
+
+/// Upload all index artifacts (branches + leaves) to CAS.
+///
+/// Reads each `.fbr` and `.fli` file from the index directory, uploads via
+/// `content_write_bytes_with_hash` (reusing the existing SHA-256 hashes from
+/// the build), and returns per-graph CAS addresses.
+#[cfg(feature = "commit-v2")]
+async fn upload_indexes_to_cas<S: Storage>(
+    storage: &S,
+    alias: &str,
+    build_results: &[(run_index::RunSortOrder, run_index::IndexBuildResult)],
+) -> Result<Vec<run_index::GraphAddresses>> {
+    use fluree_db_core::ContentKind;
+    use std::collections::BTreeMap;
+
+    let mut graph_map: BTreeMap<u32, BTreeMap<String, run_index::GraphOrderAddresses>> =
+        BTreeMap::new();
+
+    for (order, result) in build_results {
+        let order_name = order.dir_name().to_string();
+
+        for graph_result in &result.graphs {
+            let g_id = graph_result.g_id;
+            let graph_dir = &graph_result.graph_dir;
+
+            // Upload branch manifest
+            let branch_path = graph_dir.join(format!("{}.fbr", graph_result.branch_hash));
+            let branch_bytes = std::fs::read(&branch_path)
+                .map_err(|e| IndexerError::StorageRead(
+                    format!("read branch {}: {}", branch_path.display(), e),
+                ))?;
+            let branch_write = storage
+                .content_write_bytes_with_hash(
+                    ContentKind::IndexBranch,
+                    alias,
+                    &graph_result.branch_hash,
+                    &branch_bytes,
+                )
+                .await
+                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+            // Parse branch manifest to discover leaf files
+            let branch_manifest = run_index::branch::read_branch_manifest(&branch_path)
+                .map_err(|e| IndexerError::StorageRead(
+                    format!("read branch manifest {}: {}", branch_path.display(), e),
+                ))?;
+
+            // Upload each leaf file
+            let mut leaf_addresses = Vec::with_capacity(branch_manifest.leaves.len());
+            for leaf_entry in &branch_manifest.leaves {
+                let leaf_bytes = std::fs::read(&leaf_entry.path)
+                    .map_err(|e| IndexerError::StorageRead(
+                        format!("read leaf {}: {}", leaf_entry.path.display(), e),
+                    ))?;
+                let leaf_write = storage
+                    .content_write_bytes_with_hash(
+                        ContentKind::IndexLeaf,
+                        alias,
+                        &leaf_entry.content_hash,
+                        &leaf_bytes,
+                    )
+                    .await
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                leaf_addresses.push(leaf_write.address);
+            }
+
+            tracing::debug!(
+                g_id,
+                order = %order_name,
+                leaves = leaf_addresses.len(),
+                branch = %branch_write.address,
+                "graph/order index artifacts uploaded to CAS"
+            );
+
+            graph_map
+                .entry(g_id)
+                .or_default()
+                .insert(order_name.clone(), run_index::GraphOrderAddresses {
+                    branch: branch_write.address,
+                    leaves: leaf_addresses,
+                });
+        }
+    }
+
+    let graph_addresses: Vec<run_index::GraphAddresses> = graph_map
+        .into_iter()
+        .map(|(g_id, orders)| run_index::GraphAddresses { g_id, orders })
+        .collect();
+
+    let total_artifacts: usize = graph_addresses
+        .iter()
+        .flat_map(|ga| ga.orders.values())
+        .map(|oa| 1 + oa.leaves.len())
+        .sum();
+    tracing::info!(
+        graphs = graph_addresses.len(),
+        total_artifacts,
+        "index artifacts uploaded to CAS"
+    );
+
+    Ok(graph_addresses)
 }
 
 /// Publish index result to nameservice

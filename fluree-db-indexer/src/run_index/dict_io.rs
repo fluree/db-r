@@ -50,9 +50,8 @@ pub fn write_predicate_dict(path: &Path, dict: &PredicateDict) -> io::Result<()>
     Ok(())
 }
 
-/// Read a `PredicateDict` (or graph dict) from a binary file.
-pub fn read_predicate_dict(path: &Path) -> io::Result<PredicateDict> {
-    let data = std::fs::read(path)?;
+/// Parse a `PredicateDict` (or graph dict) from a byte buffer.
+pub fn read_predicate_dict_from_bytes(data: &[u8]) -> io::Result<PredicateDict> {
     if data.len() < 8 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -93,6 +92,11 @@ pub fn read_predicate_dict(path: &Path) -> io::Result<PredicateDict> {
         pos += len;
     }
     Ok(dict)
+}
+
+/// Read a `PredicateDict` (or graph dict) from a binary file.
+pub fn read_predicate_dict(path: &Path) -> io::Result<PredicateDict> {
+    read_predicate_dict_from_bytes(&std::fs::read(path)?)
 }
 
 // ============================================================================
@@ -158,9 +162,8 @@ fn write_forward_index(path: &Path, offsets: &[u64], lens: &[u32]) -> io::Result
     Ok(())
 }
 
-/// Read a forward-index file. Returns `(offsets, lens)`.
-pub fn read_forward_index(path: &Path) -> io::Result<(Vec<u64>, Vec<u32>)> {
-    let data = std::fs::read(path)?;
+/// Parse a forward-index from a byte buffer. Returns `(offsets, lens)`.
+pub fn read_forward_index_from_bytes(data: &[u8]) -> io::Result<(Vec<u64>, Vec<u32>)> {
     if data.len() < 8 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -203,6 +206,11 @@ pub fn read_forward_index(path: &Path) -> io::Result<(Vec<u64>, Vec<u32>)> {
     Ok((offsets, lens))
 }
 
+/// Read a forward-index file. Returns `(offsets, lens)`.
+pub fn read_forward_index(path: &Path) -> io::Result<(Vec<u64>, Vec<u32>)> {
+    read_forward_index_from_bytes(&std::fs::read(path)?)
+}
+
 // ============================================================================
 // LanguageTagDict
 // ============================================================================
@@ -227,11 +235,10 @@ pub fn write_language_dict(path: &Path, dict: &LanguageTagDict) -> io::Result<()
     Ok(())
 }
 
-/// Read a `LanguageTagDict` from a binary file (FRD1 format).
+/// Parse a `LanguageTagDict` from a byte buffer (FRD1 format).
 ///
 /// Returns a LanguageTagDict where entry at position 0 = lang_id 1.
-pub fn read_language_dict(path: &Path) -> io::Result<LanguageTagDict> {
-    let data = std::fs::read(path)?;
+pub fn read_language_dict_from_bytes(data: &[u8]) -> io::Result<LanguageTagDict> {
     if data.len() < 8 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -272,6 +279,13 @@ pub fn read_language_dict(path: &Path) -> io::Result<LanguageTagDict> {
         pos += len;
     }
     Ok(dict)
+}
+
+/// Read a `LanguageTagDict` from a binary file (FRD1 format).
+///
+/// Returns a LanguageTagDict where entry at position 0 = lang_id 1.
+pub fn read_language_dict(path: &Path) -> io::Result<LanguageTagDict> {
+    read_language_dict_from_bytes(&std::fs::read(path)?)
 }
 
 // ============================================================================

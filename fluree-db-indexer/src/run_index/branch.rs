@@ -263,7 +263,7 @@ pub fn find_branch_file(dir: &Path) -> io::Result<PathBuf> {
     ))
 }
 
-fn read_branch_manifest_from_bytes(
+pub fn read_branch_manifest_from_bytes(
     data: &[u8],
     base_dir: Option<&Path>,
 ) -> io::Result<BranchManifest> {

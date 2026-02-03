@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use support::{assert_index_defaults, genesis_ledger};
 
 /// Helper to seed test data with users.
-async fn seed_users(fluree: &support::MemoryFluree, alias: &str) -> fluree_db_api::LedgerState<fluree_db_core::MemoryStorage, fluree_db_core::SimpleCache> {
+async fn seed_users(fluree: &support::MemoryFluree, alias: &str) -> fluree_db_api::LedgerState<fluree_db_core::MemoryStorage> {
     let ledger0 = genesis_ledger(fluree, alias);
 
     let txn = json!({

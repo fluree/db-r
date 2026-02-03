@@ -57,12 +57,12 @@ use fluree_db_query::vector::{DistanceMetric, VectorIndexProvider, VectorSearchH
 /// ctx.bm25_provider = Some(&provider);
 /// ```
 pub struct FlureeIndexProvider<'a, S: Storage + 'static, N> {
-    fluree: &'a crate::Fluree<S, crate::SimpleCache, N>,
+    fluree: &'a crate::Fluree<S, N>,
 }
 
 impl<'a, S: Storage + 'static, N> FlureeIndexProvider<'a, S, N> {
     /// Create a new index provider wrapping a Fluree instance.
-    pub fn new(fluree: &'a crate::Fluree<S, crate::SimpleCache, N>) -> Self {
+    pub fn new(fluree: &'a crate::Fluree<S, N>) -> Self {
         Self { fluree }
     }
 }

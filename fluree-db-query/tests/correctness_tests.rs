@@ -3,7 +3,7 @@
 //! These tests are designed to validate end-to-end operator semantics without
 //! requiring the on-disk `test-database` fixture.
 
-use fluree_db_core::{Db, MemoryStorage, NoCache, Sid};
+use fluree_db_core::{Db, MemoryStorage, Sid};
 use fluree_db_query::binding::{Batch, Binding};
 use fluree_db_query::context::ExecutionContext;
 use fluree_db_query::join::NestedLoopJoinOperator;
@@ -19,7 +19,7 @@ struct SingleBatchOp {
 }
 
 #[async_trait::async_trait]
-impl<S: fluree_db_core::Storage + 'static, C: fluree_db_core::NodeCache + 'static> Operator<S, C>
+impl<S: fluree_db_core::Storage + 'static> Operator<S>
     for SingleBatchOp
 {
     fn schema(&self) -> &[VarId] {
@@ -29,13 +29,13 @@ impl<S: fluree_db_core::Storage + 'static, C: fluree_db_core::NodeCache + 'stati
             .unwrap_or(&[])
     }
 
-    async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> fluree_db_query::Result<()> {
+    async fn open(&mut self, _: &ExecutionContext<'_, S>) -> fluree_db_query::Result<()> {
         Ok(())
     }
 
     async fn next_batch(
         &mut self,
-        _: &ExecutionContext<'_, S, C>,
+        _: &ExecutionContext<'_, S>,
     ) -> fluree_db_query::Result<Option<Batch>> {
         Ok(self.batch.take())
     }
@@ -58,11 +58,11 @@ impl NoMatchOptionalBuilder {
     }
 }
 
-impl<S: fluree_db_core::Storage + 'static, C: fluree_db_core::NodeCache + 'static>
-    OptionalBuilder<S, C>
+impl<S: fluree_db_core::Storage + 'static>
+    OptionalBuilder<S>
     for NoMatchOptionalBuilder
 {
-    fn build(&self, _: &Batch, _: usize) -> fluree_db_query::Result<Option<fluree_db_query::BoxedOperator<S, C>>> {
+    fn build(&self, _: &Batch, _: usize) -> fluree_db_query::Result<Option<fluree_db_query::BoxedOperator<S>>> {
         Ok(None)
     }
 
@@ -85,7 +85,7 @@ impl<S: fluree_db_core::Storage + 'static, C: fluree_db_core::NodeCache + 'stati
 #[tokio::test]
 async fn test_optional_poison_blocks_subsequent() {
     // Minimal db/context.
-    let db = Db::genesis(MemoryStorage::new(), NoCache, "test/main");
+    let db = Db::genesis(MemoryStorage::new(), "test/main");
     let mut vars = VarRegistry::new();
     let s = vars.get_or_insert("?s");
     let opt = vars.get_or_insert("?opt");
@@ -104,7 +104,7 @@ async fn test_optional_poison_blocks_subsequent() {
     let required_op = SingleBatchOp {
         batch: Some(required_batch),
     };
-    let builder: Box<dyn OptionalBuilder<MemoryStorage, NoCache>> =
+    let builder: Box<dyn OptionalBuilder<MemoryStorage>> =
         Box::new(NoMatchOptionalBuilder::new(opt));
 
     let mut left_join = OptionalOperator::with_builder(
@@ -137,7 +137,7 @@ async fn test_optional_poison_blocks_subsequent() {
         Term::Var(o),
     );
 
-    let mut join = NestedLoopJoinOperator::<MemoryStorage, NoCache>::new(
+    let mut join = NestedLoopJoinOperator::<MemoryStorage>::new(
         Box::new(left_op),
         left_schema,
         right_pattern,

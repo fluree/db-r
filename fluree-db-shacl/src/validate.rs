@@ -15,7 +15,7 @@ use crate::constraints::value::{
 use crate::constraints::{Constraint, ConstraintViolation, NestedShape};
 use crate::error::Result;
 use fluree_db_core::{
-    range_with_overlay, Db, FlakeValue, IndexType, NoOverlay, NodeCache, OverlayProvider,
+    range_with_overlay, Db, FlakeValue, IndexType, NoOverlay, OverlayProvider,
     RangeMatch, RangeOptions, RangeTest, SchemaHierarchy, Sid, Storage,
 };
 use fluree_vocab::namespaces::RDF;
@@ -74,8 +74,8 @@ impl ShaclEngine {
     /// immediately after they are committed.
     ///
     /// Automatically extracts the schema hierarchy for RDFS reasoning.
-    pub async fn from_db_with_overlay<S: Storage, C: NodeCache, O: OverlayProvider>(
-        db: &Db<S, C>,
+    pub async fn from_db_with_overlay<S: Storage, O: OverlayProvider>(
+        db: &Db<S>,
         overlay: &O,
         ledger_id: impl Into<String>,
     ) -> Result<Self> {
@@ -95,8 +95,8 @@ impl ShaclEngine {
     /// such as when loading from a fully indexed database.
     ///
     /// Automatically extracts the schema hierarchy for RDFS reasoning.
-    pub async fn from_db<S: Storage, C: NodeCache>(
-        db: &Db<S, C>,
+    pub async fn from_db<S: Storage>(
+        db: &Db<S>,
         ledger_id: impl Into<String>,
     ) -> Result<Self> {
         Self::from_db_with_overlay(db, &fluree_db_core::NoOverlay, ledger_id).await
@@ -108,9 +108,9 @@ impl ShaclEngine {
     /// 1. Finds all shapes that target the focus node
     /// 2. Validates the node against each shape's constraints
     /// 3. Returns a validation report
-    pub async fn validate_node<S: Storage, C: NodeCache, O: OverlayProvider>(
+    pub async fn validate_node<S: Storage, O: OverlayProvider>(
         &self,
-        db: &Db<S, C>,
+        db: &Db<S>,
         overlay: &O,
         focus_node: &Sid,
         node_types: &[Sid],
@@ -152,9 +152,9 @@ impl ShaclEngine {
     }
 
     /// Validate a focus node without an overlay
-    pub async fn validate_node_no_overlay<S: Storage, C: NodeCache>(
+    pub async fn validate_node_no_overlay<S: Storage>(
         &self,
-        db: &Db<S, C>,
+        db: &Db<S>,
         focus_node: &Sid,
         node_types: &[Sid],
     ) -> Result<ValidationReport> {
@@ -163,9 +163,9 @@ impl ShaclEngine {
     }
 
     /// Validate all focus nodes targeted by shapes
-    pub async fn validate_all<S: Storage, C: NodeCache, O: OverlayProvider>(
+    pub async fn validate_all<S: Storage, O: OverlayProvider>(
         &self,
-        db: &Db<S, C>,
+        db: &Db<S>,
         overlay: &O,
     ) -> Result<ValidationReport> {
         let mut all_results = Vec::new();
@@ -200,9 +200,9 @@ impl ShaclEngine {
     }
 
     /// Validate all focus nodes without an overlay
-    pub async fn validate_all_no_overlay<S: Storage, C: NodeCache>(
+    pub async fn validate_all_no_overlay<S: Storage>(
         &self,
-        db: &Db<S, C>,
+        db: &Db<S>,
     ) -> Result<ValidationReport> {
         self.validate_all(db, &NoOverlay).await
     }
@@ -252,9 +252,9 @@ impl ShaclEngine {
     ///
     /// # Returns
     /// * `ValidationReport` - conforming if no violations, or containing all violations
-    pub async fn validate_staged<S: Storage, C: NodeCache, O: OverlayProvider>(
+    pub async fn validate_staged<S: Storage, O: OverlayProvider>(
         &self,
-        db: &Db<S, C>,
+        db: &Db<S>,
         overlay: &O,
         modified_subjects: &HashSet<Sid>,
     ) -> Result<ValidationReport> {
@@ -316,9 +316,9 @@ impl ShaclEngine {
     ///
     /// This is a convenience wrapper around `validate_staged` that converts
     /// validation failures into errors, suitable for use in transaction staging.
-    pub async fn validate_staged_or_error<S: Storage, C: NodeCache, O: OverlayProvider>(
+    pub async fn validate_staged_or_error<S: Storage, O: OverlayProvider>(
         &self,
-        db: &Db<S, C>,
+        db: &Db<S>,
         overlay: &O,
         modified_subjects: &HashSet<Sid>,
     ) -> Result<()> {
@@ -360,8 +360,8 @@ impl ShaclEngine {
 /// When a hierarchy is provided, `TargetType::Class` targets are expanded
 /// to include instances of all subclasses. For example, a shape targeting
 /// `Animal` will also match instances of `Dog` (if `Dog rdfs:subClassOf Animal`).
-async fn get_focus_nodes<S: Storage, C: NodeCache, O: OverlayProvider>(
-    db: &Db<S, C>,
+async fn get_focus_nodes<S: Storage, O: OverlayProvider>(
+    db: &Db<S>,
     overlay: &O,
     shape: &CompiledShape,
     hierarchy: Option<&SchemaHierarchy>,
@@ -445,8 +445,8 @@ async fn get_focus_nodes<S: Storage, C: NodeCache, O: OverlayProvider>(
 /// Validate a focus node against a single shape
 ///
 /// Note: This function uses `Box::pin` for recursive calls to avoid infinitely-sized futures.
-fn validate_shape<'a, S: Storage, C: NodeCache, O: OverlayProvider>(
-    db: &'a Db<S, C>,
+fn validate_shape<'a, S: Storage, O: OverlayProvider>(
+    db: &'a Db<S>,
     overlay: &'a O,
     focus_node: &'a Sid,
     shape: &'a CompiledShape,
@@ -478,8 +478,8 @@ fn validate_shape<'a, S: Storage, C: NodeCache, O: OverlayProvider>(
 /// Validate a structural (node-level) constraint
 ///
 /// Note: This function uses `Box::pin` for recursive calls to avoid infinitely-sized futures.
-fn validate_structural_constraint<'a, S: Storage, C: NodeCache, O: OverlayProvider>(
-    db: &'a Db<S, C>,
+fn validate_structural_constraint<'a, S: Storage, O: OverlayProvider>(
+    db: &'a Db<S>,
     overlay: &'a O,
     focus_node: &'a Sid,
     constraint: &'a crate::constraints::NodeConstraint,
@@ -685,8 +685,8 @@ fn validate_structural_constraint<'a, S: Storage, C: NodeCache, O: OverlayProvid
 ///
 /// Unlike `validate_shape` which validates against a `CompiledShape`, this validates
 /// directly against the constraints embedded in a `NestedShape`.
-fn validate_nested_shape<'a, S: Storage, C: NodeCache, O: OverlayProvider>(
-    db: &'a Db<S, C>,
+fn validate_nested_shape<'a, S: Storage, O: OverlayProvider>(
+    db: &'a Db<S>,
     overlay: &'a O,
     focus_node: &'a Sid,
     nested: &'a NestedShape,
@@ -792,8 +792,8 @@ fn validate_nested_shape<'a, S: Storage, C: NodeCache, O: OverlayProvider>(
 }
 
 /// Validate a focus node against a property shape
-async fn validate_property_shape<S: Storage, C: NodeCache, O: OverlayProvider>(
-    db: &Db<S, C>,
+async fn validate_property_shape<S: Storage, O: OverlayProvider>(
+    db: &Db<S>,
     overlay: &O,
     focus_node: &Sid,
     prop_shape: &PropertyShape,
@@ -1116,11 +1116,10 @@ mod tests {
         // When there are no shapes, validate_staged should return immediately
         // without doing any database work.
 
-        use fluree_db_core::{Db, MemoryStorage, NoCache};
+        use fluree_db_core::{Db, MemoryStorage};
 
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage, cache, "test:main");
+        let db = Db::genesis(storage, "test:main");
 
         // Empty cache (no shapes)
         let key = ShaclCacheKey::new("test", 1);
@@ -1144,11 +1143,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_staged_empty_subjects_returns_conforming() {
-        use fluree_db_core::{Db, MemoryStorage, NoCache};
+        use fluree_db_core::{Db, MemoryStorage};
 
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage, cache, "test:main");
+        let db = Db::genesis(storage, "test:main");
 
         // Even with shapes, if no subjects modified, should return conforming
         use crate::compile::{CompiledShape, TargetType};

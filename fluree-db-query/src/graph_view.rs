@@ -32,8 +32,8 @@
 //!
 //! # Object Safety
 //!
-//! The `GraphView` trait is object-safe (with concrete `S, C`), enabling heterogeneous
-//! collections of views via `Arc<dyn GraphView<S, C>>`.
+//! The `GraphView` trait is object-safe (with concrete `S`), enabling heterogeneous
+//! collections of views via `Arc<dyn GraphView<S>>`.
 //!
 //! # Performance
 //!
@@ -46,7 +46,7 @@
 //! then call `resolve()` to obtain a `ResolvedGraphView` for use in operators.
 
 use crate::policy::QueryPolicyEnforcer;
-use fluree_db_core::{Db, NodeCache, OverlayProvider, Storage};
+use fluree_db_core::{Db, OverlayProvider, Storage};
 use std::sync::Arc;
 
 // ============================================================================
@@ -69,9 +69,9 @@ use std::sync::Arc;
 /// The lifetime `'a` ties this view to the underlying `GraphView` it was
 /// resolved from. The resolved view is valid as long as the source view exists.
 #[derive(Copy, Clone)]
-pub struct ResolvedGraphView<'a, S: Storage, C: NodeCache> {
+pub struct ResolvedGraphView<'a, S: Storage> {
     /// The database for this graph
-    pub db: &'a Db<S, C>,
+    pub db: &'a Db<S>,
     /// Overlay provider (novelty layer, possibly with reasoning)
     pub overlay: &'a dyn OverlayProvider,
     /// Target transaction time (possibly overridden by AsOf)
@@ -82,10 +82,10 @@ pub struct ResolvedGraphView<'a, S: Storage, C: NodeCache> {
     pub ledger_alias: &'a Arc<str>,
 }
 
-impl<'a, S: Storage, C: NodeCache> ResolvedGraphView<'a, S, C> {
+impl<'a, S: Storage> ResolvedGraphView<'a, S> {
     /// Create a new resolved view with no policy
     pub fn new(
-        db: &'a Db<S, C>,
+        db: &'a Db<S>,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
         ledger_alias: &'a Arc<str>,
@@ -101,7 +101,7 @@ impl<'a, S: Storage, C: NodeCache> ResolvedGraphView<'a, S, C> {
 
     /// Create a resolved view with policy
     pub fn with_policy(
-        db: &'a Db<S, C>,
+        db: &'a Db<S>,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
         ledger_alias: &'a Arc<str>,
@@ -124,7 +124,7 @@ impl<'a, S: Storage, C: NodeCache> ResolvedGraphView<'a, S, C> {
     }
 }
 
-impl<'a, S: Storage, C: NodeCache> std::fmt::Debug for ResolvedGraphView<'a, S, C> {
+impl<'a, S: Storage> std::fmt::Debug for ResolvedGraphView<'a, S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResolvedGraphView")
             .field("db", &"<Db>")
@@ -149,18 +149,18 @@ impl<'a, S: Storage, C: NodeCache> std::fmt::Debug for ResolvedGraphView<'a, S, 
 /// # Object Safety
 ///
 /// The trait is object-safe when `S` and `C` are concrete, which allows
-/// `DataSet` to store heterogeneous wrapper stacks via `Arc<dyn GraphView<S, C>>`.
+/// `DataSet` to store heterogeneous wrapper stacks via `Arc<dyn GraphView<S>>`.
 ///
 /// # Performance
 ///
 /// `resolve()` returns a view with **references only** - no allocations.
 /// Call it once per graph/leaf, then use the resolved view.
-pub trait GraphView<S: Storage, C: NodeCache> {
+pub trait GraphView<S: Storage> {
     /// Resolve this view to a [`ResolvedGraphView`] for use by operators.
     ///
     /// This should be called **once per graph/leaf**, not per flake.
     /// The returned view borrows from `self` and contains no owned data.
-    fn resolve(&self) -> ResolvedGraphView<'_, S, C>;
+    fn resolve(&self) -> ResolvedGraphView<'_, S>;
 
     /// Get the ledger alias for this view (for provenance tracking).
     fn ledger_alias(&self) -> &Arc<str>;
@@ -180,9 +180,9 @@ pub trait GraphView<S: Storage, C: NodeCache> {
 /// Do **not** use `db.t` as `to_t` when you have a novelty overlay - that
 /// ignores unindexed commits. Use `ledger.t()` (which is `max(db.t, novelty.t)`)
 /// or pass the correct time explicitly.
-pub struct BaseView<'a, S: Storage, C: NodeCache> {
+pub struct BaseView<'a, S: Storage> {
     /// The database
-    pub db: &'a Db<S, C>,
+    pub db: &'a Db<S>,
     /// The overlay provider (novelty)
     pub overlay: &'a dyn OverlayProvider,
     /// Target transaction time - must include novelty commits if present
@@ -191,7 +191,7 @@ pub struct BaseView<'a, S: Storage, C: NodeCache> {
     pub ledger_alias: Arc<str>,
 }
 
-impl<'a, S: Storage, C: NodeCache> BaseView<'a, S, C> {
+impl<'a, S: Storage> BaseView<'a, S> {
     /// Create a new base view.
     ///
     /// # Arguments
@@ -203,7 +203,7 @@ impl<'a, S: Storage, C: NodeCache> BaseView<'a, S, C> {
     ///   unindexed commits.
     /// * `ledger_alias` - Ledger alias for provenance tracking
     pub fn new(
-        db: &'a Db<S, C>,
+        db: &'a Db<S>,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
         ledger_alias: impl Into<Arc<str>>,
@@ -217,8 +217,8 @@ impl<'a, S: Storage, C: NodeCache> BaseView<'a, S, C> {
     }
 }
 
-impl<'a, S: Storage, C: NodeCache> GraphView<S, C> for BaseView<'a, S, C> {
-    fn resolve(&self) -> ResolvedGraphView<'_, S, C> {
+impl<'a, S: Storage> GraphView<S> for BaseView<'a, S> {
+    fn resolve(&self) -> ResolvedGraphView<'_, S> {
         ResolvedGraphView::new(self.db, self.overlay, self.to_t, &self.ledger_alias)
     }
 
@@ -261,8 +261,8 @@ impl<V> AsOf<V> {
     }
 }
 
-impl<S: Storage, C: NodeCache, V: GraphView<S, C>> GraphView<S, C> for AsOf<V> {
-    fn resolve(&self) -> ResolvedGraphView<'_, S, C> {
+impl<S: Storage, V: GraphView<S>> GraphView<S> for AsOf<V> {
+    fn resolve(&self) -> ResolvedGraphView<'_, S> {
         let mut resolved = self.inner.resolve();
         resolved.to_t = self.to_t;
         resolved
@@ -311,8 +311,8 @@ impl<'a, V> WithPolicy<'a, V> {
     }
 }
 
-impl<'a, S: Storage, C: NodeCache, V: GraphView<S, C>> GraphView<S, C> for WithPolicy<'a, V> {
-    fn resolve(&self) -> ResolvedGraphView<'_, S, C> {
+impl<'a, S: Storage, V: GraphView<S>> GraphView<S> for WithPolicy<'a, V> {
+    fn resolve(&self) -> ResolvedGraphView<'_, S> {
         let mut resolved = self.inner.resolve();
         resolved.policy_enforcer = Some(self.enforcer);
         resolved
@@ -353,8 +353,8 @@ impl<'a, V> WithReasoning<'a, V> {
     }
 }
 
-impl<'a, S: Storage, C: NodeCache, V: GraphView<S, C>> GraphView<S, C> for WithReasoning<'a, V> {
-    fn resolve(&self) -> ResolvedGraphView<'_, S, C> {
+impl<'a, S: Storage, V: GraphView<S>> GraphView<S> for WithReasoning<'a, V> {
+    fn resolve(&self) -> ResolvedGraphView<'_, S> {
         let mut resolved = self.inner.resolve();
         resolved.overlay = self.overlay;
         resolved
@@ -374,16 +374,16 @@ mod tests {
     use super::*;
 
     // Verify object-safety: the trait can be used as a trait object
-    fn _assert_object_safe<S: Storage, C: NodeCache>(_: &dyn GraphView<S, C>) {}
+    fn _assert_object_safe<S: Storage + 'static>(_: &dyn GraphView<S>) {}
 
     #[test]
     fn test_wrapper_composition_compiles() {
         // This test just verifies that the wrapper composition types compile
         // and the trait bounds are correct.
-        fn _assert_graph_view<V: GraphView<fluree_db_core::MemoryStorage, fluree_db_core::SimpleCache>>(_: &V) {}
+        fn _assert_graph_view<V: GraphView<fluree_db_core::MemoryStorage>>(_: &V) {}
         
         // Object-safety check (doesn't run, just compiles)
-        fn _check_dyn<S: Storage, C: NodeCache>(v: &dyn GraphView<S, C>) {
+        fn _check_dyn<S: Storage + 'static>(v: &dyn GraphView<S>) {
             let _resolved = v.resolve();
             let _alias = v.ledger_alias();
         }

@@ -36,7 +36,7 @@ use crate::r2rml::rewrite_patterns_for_r2rml;
 use crate::seed::SeedOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{FlakeValue, NodeCache, Storage};
+use fluree_db_core::{FlakeValue, Storage};
 use std::sync::Arc;
 // Note: tracing::debug removed to fix compilation - add tracing dependency if needed
 
@@ -44,9 +44,9 @@ use std::sync::Arc;
 ///
 /// This is a correlated operator: for each input row, it executes the inner
 /// patterns in the appropriate graph context (determined by the graph name).
-pub struct GraphOperator<S: Storage + 'static, C: NodeCache + 'static> {
+pub struct GraphOperator<S: Storage + 'static> {
     /// Child operator providing input solutions
-    child: BoxedOperator<S, C>,
+    child: BoxedOperator<S>,
     /// Graph name (IRI or variable)
     graph_name: GraphName,
     /// Inner patterns to execute within the graph context
@@ -63,7 +63,7 @@ pub struct GraphOperator<S: Storage + 'static, C: NodeCache + 'static> {
     buffer_pos: usize,
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> GraphOperator<S, C> {
+impl<S: Storage + 'static> GraphOperator<S> {
     /// Create a new GRAPH pattern operator
     ///
     /// # Arguments
@@ -72,7 +72,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> GraphOperator<S, C> {
     /// * `graph_name` - The graph name (concrete IRI or variable)
     /// * `inner_patterns` - Patterns to execute within the graph context
     pub fn new(
-        child: BoxedOperator<S, C>,
+        child: BoxedOperator<S>,
         graph_name: GraphName,
         inner_patterns: Vec<Pattern>,
     ) -> Self {
@@ -131,7 +131,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> GraphOperator<S, C> {
     /// Execute inner patterns in a specific graph, seeded with parent row
     async fn execute_in_graph(
         &mut self,
-        ctx: &ExecutionContext<'_, S, C>,
+        ctx: &ExecutionContext<'_, S>,
         parent_batch: &Batch,
         row_idx: usize,
         graph_iri: Arc<str>,
@@ -177,7 +177,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> GraphOperator<S, C> {
         // Build seed operator from parent row (like EXISTS/Subquery)
         let seed = SeedOperator::from_batch_row(parent_batch, row_idx);
         let mut inner =
-            build_where_operators_seeded::<S, C>(Some(Box::new(seed)), &patterns_to_execute, None)?;
+            build_where_operators_seeded::<S>(Some(Box::new(seed)), &patterns_to_execute, None)?;
 
         inner.open(&graph_ctx).await?;
 
@@ -256,12 +256,12 @@ impl<S: Storage + 'static, C: NodeCache + 'static> GraphOperator<S, C> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for GraphOperator<S, C> {
+impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
         self.child.open(ctx).await?;
         self.state = OperatorState::Open;
         self.result_buffer.clear();
@@ -269,7 +269,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for GraphOpera
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }
@@ -428,16 +428,16 @@ mod tests {
     }
 
     #[async_trait]
-    impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for TestChildOperator {
+    impl<S: Storage + 'static> Operator<S> for TestChildOperator {
         fn schema(&self) -> &[VarId] {
             &self.schema
         }
 
-        async fn open(&mut self, _ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+        async fn open(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<()> {
             Ok(())
         }
 
-        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
             Ok(None)
         }
 
@@ -447,7 +447,7 @@ mod tests {
     #[test]
     fn test_graph_operator_schema_with_iri() {
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
-        let child: BoxedOperator<fluree_db_core::MemoryStorage, fluree_db_core::NoCache> =
+        let child: BoxedOperator<fluree_db_core::MemoryStorage> =
             Box::new(TestChildOperator {
                 schema: child_schema.clone(),
             });
@@ -473,7 +473,7 @@ mod tests {
     #[test]
     fn test_graph_operator_schema_with_var() {
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
-        let child: BoxedOperator<fluree_db_core::MemoryStorage, fluree_db_core::NoCache> =
+        let child: BoxedOperator<fluree_db_core::MemoryStorage> =
             Box::new(TestChildOperator {
                 schema: child_schema,
             });
@@ -503,7 +503,7 @@ mod tests {
             t: None,
             op: None,
         };
-        let iri = GraphOperator::<fluree_db_core::MemoryStorage, fluree_db_core::NoCache>::extract_graph_iri_from_binding(&binding);
+        let iri = GraphOperator::<fluree_db_core::MemoryStorage>::extract_graph_iri_from_binding(&binding);
         assert_eq!(iri, Some(Arc::from("http://example.org/graph1")));
 
         // Non-string binding returns None
@@ -514,11 +514,11 @@ mod tests {
             t: None,
             op: None,
         };
-        let iri = GraphOperator::<fluree_db_core::MemoryStorage, fluree_db_core::NoCache>::extract_graph_iri_from_binding(&binding);
+        let iri = GraphOperator::<fluree_db_core::MemoryStorage>::extract_graph_iri_from_binding(&binding);
         assert_eq!(iri, None);
 
         // Unbound returns None
-        let iri = GraphOperator::<fluree_db_core::MemoryStorage, fluree_db_core::NoCache>::extract_graph_iri_from_binding(&Binding::Unbound);
+        let iri = GraphOperator::<fluree_db_core::MemoryStorage>::extract_graph_iri_from_binding(&Binding::Unbound);
         assert_eq!(iri, None);
     }
 }

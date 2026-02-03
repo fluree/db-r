@@ -15,7 +15,6 @@
 use std::collections::HashSet;
 
 use chrono::{TimeZone, Utc};
-use fluree_db_core::cache::NodeCache;
 use fluree_vocab::namespaces::{FLUREE_COMMIT, FLUREE_LEDGER};
 use fluree_vocab::ledger::TIME as LEDGER_TIME;
 use fluree_db_core::overlay::OverlayProvider;
@@ -60,15 +59,14 @@ fn epoch_ms_to_iso(epoch_ms: i64) -> String {
 /// # Errors
 ///
 /// Returns an error if the target timestamp is before the earliest commit.
-pub async fn datetime_to_t<S, C, O>(
-    db: &Db<S, C>,
+pub async fn datetime_to_t<S, O>(
+    db: &Db<S>,
     overlay: Option<&O>,
     target_epoch_ms: i64,
     current_t: i64,
 ) -> Result<i64>
 where
     S: Storage,
-    C: NodeCache,
     O: OverlayProvider + ?Sized,
 {
     let time_predicate = Sid::new(FLUREE_LEDGER, LEDGER_TIME);
@@ -163,15 +161,14 @@ where
 /// - If prefix is too short (< 6 chars) or too long (> 64 chars)
 /// - If no commit matches the prefix
 /// - If multiple commits match (ambiguous prefix)
-pub async fn sha_to_t<S, C, O>(
-    db: &Db<S, C>,
+pub async fn sha_to_t<S, O>(
+    db: &Db<S>,
     overlay: Option<&O>,
     sha_prefix: &str,
     current_t: i64,
 ) -> Result<i64>
 where
     S: Storage,
-    C: NodeCache,
     O: OverlayProvider + ?Sized,
 {
     // Step 1: Normalize the SHA prefix

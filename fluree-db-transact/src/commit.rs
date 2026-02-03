@@ -7,7 +7,7 @@ use crate::address::parse_commit_id;
 use crate::error::{Result, TransactError};
 use crate::namespace::NamespaceRegistry;
 use chrono::Utc;
-use fluree_db_core::{ContentAddressedWrite, ContentKind, NodeCache, Storage};
+use fluree_db_core::{ContentAddressedWrite, ContentKind, Storage};
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, Publisher};
 use fluree_db_novelty::{Commit, CommitData, CommitRef};
@@ -123,17 +123,16 @@ impl CommitOpts {
 /// # Returns
 ///
 /// A tuple of (CommitReceipt, new LedgerState)
-pub async fn commit<S, C, N>(
-    view: LedgerView<S, C>,
+pub async fn commit<S, N>(
+    view: LedgerView<S>,
     mut ns_registry: NamespaceRegistry,
     storage: &S,
     nameservice: &N,
     index_config: &IndexConfig,
     opts: CommitOpts,
-) -> Result<(CommitReceipt, LedgerState<S, C>)>
+) -> Result<(CommitReceipt, LedgerState<S>)>
 where
     S: Storage + ContentAddressedWrite + Clone + 'static,
-    C: NodeCache,
     N: NameService + Publisher,
 {
     // 1. Extract flakes from view
@@ -367,13 +366,12 @@ where
 }
 
 /// Verify that this commit follows the expected sequence
-fn verify_sequencing<S, C>(
-    base: &LedgerState<S, C>,
+fn verify_sequencing<S>(
+    base: &LedgerState<S>,
     current: Option<&fluree_db_nameservice::NsRecord>,
 ) -> Result<()>
 where
     S: Storage + Clone + 'static,
-    C: NodeCache,
 {
     match current {
         None => {
@@ -435,15 +433,14 @@ mod tests {
     use super::*;
     use crate::ir::{TemplateTerm, TripleTemplate, Txn};
     use crate::stage::{stage, StageOptions};
-    use fluree_db_core::{Db, FlakeValue, MemoryStorage, NoCache, Sid};
+    use fluree_db_core::{Db, FlakeValue, MemoryStorage, Sid};
     use fluree_db_nameservice::memory::MemoryNameService;
     use fluree_db_novelty::Novelty;
 
     #[tokio::test]
     async fn test_commit_simple_insert() {
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage.clone(), cache, "test:main");
+        let db = Db::genesis(storage.clone(), "test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -482,8 +479,7 @@ mod tests {
     #[tokio::test]
     async fn test_commit_empty_transaction() {
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage.clone(), cache, "test:main");
+        let db = Db::genesis(storage.clone(), "test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -512,8 +508,7 @@ mod tests {
     #[tokio::test]
     async fn test_commit_sequence() {
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage.clone(), cache, "test:main");
+        let db = Db::genesis(storage.clone(), "test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -572,8 +567,7 @@ mod tests {
     #[tokio::test]
     async fn test_commit_predictive_sizing() {
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage.clone(), cache, "test:main");
+        let db = Db::genesis(storage.clone(), "test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 

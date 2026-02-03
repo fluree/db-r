@@ -5,7 +5,7 @@
 
 use crate::graph_query_builder::GraphSnapshotQueryBuilder;
 use crate::view::FlureeView;
-use crate::{Fluree, NameService, SimpleCache, Storage};
+use crate::{Fluree, NameService, Storage};
 
 /// A materialized, queryable graph snapshot.
 ///
@@ -25,8 +25,8 @@ use crate::{Fluree, NameService, SimpleCache, Storage};
 /// let view = snapshot.view();
 /// ```
 pub struct GraphSnapshot<'a, S: Storage + 'static, N> {
-    pub(crate) fluree: &'a Fluree<S, SimpleCache, N>,
-    pub(crate) view: FlureeView<S, SimpleCache>,
+    pub(crate) fluree: &'a Fluree<S, N>,
+    pub(crate) view: FlureeView<S>,
 }
 
 impl<'a, S, N> GraphSnapshot<'a, S, N>
@@ -36,8 +36,8 @@ where
 {
     /// Create a new snapshot (called internally by `Graph::load()`).
     pub(crate) fn new(
-        fluree: &'a Fluree<S, SimpleCache, N>,
-        view: FlureeView<S, SimpleCache>,
+        fluree: &'a Fluree<S, N>,
+        view: FlureeView<S>,
     ) -> Self {
         Self { fluree, view }
     }
@@ -55,12 +55,12 @@ where
     }
 
     /// Access the underlying [`FlureeView`] snapshot.
-    pub fn view(&self) -> &FlureeView<S, SimpleCache> {
+    pub fn view(&self) -> &FlureeView<S> {
         &self.view
     }
 
     /// Unwrap into the underlying [`FlureeView`] snapshot.
-    pub fn into_view(self) -> FlureeView<S, SimpleCache> {
+    pub fn into_view(self) -> FlureeView<S> {
         self.view
     }
 }

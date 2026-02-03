@@ -20,7 +20,7 @@ use crate::ir::FilterExpr;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{NodeCache, Storage};
+use fluree_db_core::Storage;
 use std::sync::Arc;
 
 /// BIND operator - evaluates expression and binds to variable
@@ -29,9 +29,9 @@ use std::sync::Arc;
 /// - New variable: bind computed value
 /// - Same value: pass through
 /// - Different value: drop row
-pub struct BindOperator<S: Storage + 'static, C: NodeCache + 'static> {
+pub struct BindOperator<S: Storage + 'static> {
     /// Child operator providing input solutions
-    child: BoxedOperator<S, C>,
+    child: BoxedOperator<S>,
     /// Variable to bind the result to
     var: VarId,
     /// Expression to evaluate
@@ -46,7 +46,7 @@ pub struct BindOperator<S: Storage + 'static, C: NodeCache + 'static> {
     state: OperatorState,
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> BindOperator<S, C> {
+impl<S: Storage + 'static> BindOperator<S> {
     /// Create a new BIND operator
     ///
     /// # Arguments
@@ -54,7 +54,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> BindOperator<S, C> {
     /// * `child` - Child operator providing input solutions
     /// * `var` - Variable to bind the computed value to
     /// * `expr` - Expression to evaluate
-    pub fn new(child: BoxedOperator<S, C>, var: VarId, expr: FilterExpr) -> Self {
+    pub fn new(child: BoxedOperator<S>, var: VarId, expr: FilterExpr) -> Self {
         let child_schema = child.schema();
 
         // Check if var already exists in child schema
@@ -88,18 +88,18 @@ impl<S: Storage + 'static, C: NodeCache + 'static> BindOperator<S, C> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for BindOperator<S, C> {
+impl<S: Storage + 'static> Operator<S> for BindOperator<S> {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
         self.child.open(ctx).await?;
         self.state = OperatorState::Open;
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }
@@ -208,9 +208,8 @@ mod tests {
     use super::*;
     use crate::binding::Batch;
     use crate::ir::FilterValue;
-    use fluree_db_core::{MemoryStorage, NoCache};
+    use fluree_db_core::MemoryStorage;
 
-    type TestCache = NoCache;
 
     #[test]
     fn test_bind_operator_new_var_schema() {
@@ -219,7 +218,7 @@ mod tests {
         let child = Box::new(TestEmptyWithSchema { schema: child_schema });
 
         let expr = FilterExpr::Const(FilterValue::Long(42));
-        let op = BindOperator::<MemoryStorage, TestCache>::new(child, VarId(1), expr);
+        let op = BindOperator::<MemoryStorage>::new(child, VarId(1), expr);
 
         // Output schema should be [?a, ?b]
         assert_eq!(op.schema().len(), 2);
@@ -235,7 +234,7 @@ mod tests {
         let child = Box::new(TestEmptyWithSchema { schema: child_schema });
 
         let expr = FilterExpr::Const(FilterValue::Long(42));
-        let op = BindOperator::<MemoryStorage, TestCache>::new(child, VarId(0), expr);
+        let op = BindOperator::<MemoryStorage>::new(child, VarId(0), expr);
 
         // Schema should stay [?a, ?b]
         assert_eq!(op.schema().len(), 2);
@@ -251,16 +250,16 @@ mod tests {
     }
 
     #[async_trait]
-    impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for TestEmptyWithSchema {
+    impl<S: Storage + 'static> Operator<S> for TestEmptyWithSchema {
         fn schema(&self) -> &[VarId] {
             &self.schema
         }
 
-        async fn open(&mut self, _ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+        async fn open(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<()> {
             Ok(())
         }
 
-        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
             Ok(None)
         }
 

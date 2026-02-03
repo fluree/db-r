@@ -1,17 +1,17 @@
-# Virtual Graphs Overview
+# Graph Sources Overview (Virtual Graphs)
 
-Virtual graphs enable querying specialized indexes and external data sources using the same query interface as regular Fluree ledgers. This document provides a comprehensive overview of virtual graph architecture and capabilities.
+Graph sources enable querying specialized indexes and external data sources using the same query interface as regular Fluree ledgers. This document provides a comprehensive overview of graph source architecture and capabilities.
 
 ## Concept
 
-A **virtual graph** appears as a queryable ledger but is backed by a different storage system optimized for specific query patterns:
+A **graph source** is anything you can address by a graph name/IRI and query as part of a single execution. Some graph sources are ledger-backed RDF graphs; others are backed by different systems optimized for specific query patterns.
 
 **Regular Ledger:**
 - Stored as RDF triples
 - Indexed with SPOT, POST, OPST, PSOT
 - Optimized for graph traversal
 
-**Virtual Graph:**
+**Non-ledger Graph Source (legacy term: “virtual graph”):**
 - Stored in specialized format
 - Custom indexing for specific queries
 - Optimized for particular use cases
@@ -42,9 +42,9 @@ Both are queried using the same SPARQL or JSON-LD Query syntax.
 └────────────┘ └───────┘     └────────────┘
 ```
 
-### Virtual Graph Registry
+### Graph Source Registry (Nameservice)
 
-Virtual graphs registered in nameservice:
+Non-ledger graph sources (historically “virtual graphs”) are registered in nameservice:
 
 ```json
 {

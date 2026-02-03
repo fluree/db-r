@@ -10,14 +10,14 @@ use crate::query::helpers::{
 use crate::view::{FlureeView, QueryInput};
 use crate::{
     ApiError, ExecutableQuery, Fluree, NameService, NoOpR2rmlProvider, QueryResult, Result,
-    SimpleCache, Storage, Tracker, TrackingOptions,
+    Storage, Tracker, TrackingOptions,
 };
 
 // ============================================================================
 // Query Execution
 // ============================================================================
 
-impl<S, N> Fluree<S, SimpleCache, N>
+impl<S, N> Fluree<S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService,
@@ -50,7 +50,7 @@ where
     /// `query_connection_sparql` for multi-ledger queries.
     pub async fn query_view(
         &self,
-        view: &FlureeView<S, SimpleCache>,
+        view: &FlureeView<S>,
         q: impl Into<QueryInput<'_>>,
     ) -> Result<QueryResult> {
         let input = q.into();
@@ -94,7 +94,7 @@ where
     /// Returns a tracked response with fuel, time, and policy statistics.
     pub(crate) async fn query_view_tracked(
         &self,
-        view: &FlureeView<S, SimpleCache>,
+        view: &FlureeView<S>,
         q: impl Into<QueryInput<'_>>,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
@@ -221,7 +221,7 @@ where
     /// Build an ExecutableQuery with optional reasoning override from view wrapper.
     fn build_executable_for_view(
         &self,
-        view: &FlureeView<S, SimpleCache>,
+        view: &FlureeView<S>,
         parsed: &fluree_db_query::parse::ParsedQuery,
     ) -> Result<ExecutableQuery> {
         // Start with the standard executable
@@ -248,7 +248,7 @@ where
     /// Uses tracked executor when tracker has fuel limits (even for non-tracked calls).
     pub(crate) async fn execute_view_internal(
         &self,
-        view: &FlureeView<S, SimpleCache>,
+        view: &FlureeView<S>,
         vars: &crate::VarRegistry,
         executable: &ExecutableQuery,
         tracker: &Tracker,
@@ -307,7 +307,7 @@ where
     /// Uses tracked execution functions to properly record fuel/time/policy stats.
     pub(crate) async fn execute_view_tracked(
         &self,
-        view: &FlureeView<S, SimpleCache>,
+        view: &FlureeView<S>,
         vars: &crate::VarRegistry,
         executable: &ExecutableQuery,
         tracker: &Tracker,

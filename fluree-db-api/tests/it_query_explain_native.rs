@@ -6,7 +6,7 @@
 
 mod support;
 
-use fluree_db_api::{tx::IndexingMode, CommitOpts, FlureeBuilder, IndexConfig, LedgerState, Novelty, SimpleCache};
+use fluree_db_api::{tx::IndexingMode, CommitOpts, FlureeBuilder, IndexConfig, LedgerState, Novelty};
 use fluree_db_core::Db;
 use fluree_db_transact::TxnOpts;
 use serde_json::json;
@@ -15,13 +15,12 @@ use support::start_background_indexer_local;
 async fn index_and_load_db(
     fluree: &fluree_db_api::Fluree<
         fluree_db_core::MemoryStorage,
-        SimpleCache,
         fluree_db_nameservice::memory::MemoryNameService,
     >,
     handle: &fluree_db_indexer::IndexerHandle,
-    ledger: LedgerState<fluree_db_core::MemoryStorage, SimpleCache>,
+    ledger: LedgerState<fluree_db_core::MemoryStorage>,
     t: i64,
-) -> LedgerState<fluree_db_core::MemoryStorage, SimpleCache> {
+) -> LedgerState<fluree_db_core::MemoryStorage> {
     let completion = handle.trigger(ledger.alias(), t).await;
     let root = match completion.wait().await {
         fluree_db_api::IndexOutcome::Completed { root_address, .. } => root_address,
@@ -29,7 +28,7 @@ async fn index_and_load_db(
         fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
     };
 
-    let loaded = Db::load(fluree.storage().clone(), SimpleCache::new(10_000), &root)
+    let loaded = Db::load(fluree.storage().clone(), &root)
         .await
         .expect("Db::load(root)");
     LedgerState::new(loaded, Novelty::new(0))
@@ -49,7 +48,7 @@ async fn explain_no_optimization_when_equal_selectivity() {
     local
         .run_until(async move {
             let alias = "test/explain:main";
-            let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let mut index_cfg = IndexConfig::default();
@@ -100,7 +99,7 @@ async fn explain_reorders_bound_object_email_first() {
     local
         .run_until(async move {
             let alias = "test/optimize:main";
-            let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let mut index_cfg = IndexConfig::default();
@@ -153,7 +152,7 @@ async fn explain_reorders_badge_property_scan_before_class_scan() {
     local
         .run_until(async move {
             let alias = "test/property-opt:main";
-            let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let mut index_cfg = IndexConfig::default();
@@ -205,7 +204,7 @@ async fn explain_includes_inputs_fields_and_flags() {
     local
         .run_until(async move {
             let alias = "test/inputs:main";
-            let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let mut index_cfg = IndexConfig::default();

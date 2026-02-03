@@ -5,7 +5,7 @@
 use crate::context::ExecutionContext;
 use crate::execute::build_where_operators_seeded;
 use crate::var_registry::VarRegistry;
-use fluree_db_core::{Db, NodeCache, OverlayProvider, Sid, Storage};
+use fluree_db_core::{Db, OverlayProvider, Sid, Storage};
 use fluree_db_policy::{PolicyQuery, PolicyQueryExecutor, PolicyQueryFut, Result as PolicyResult, UNBOUND_IDENTITY_PREFIX};
 use std::collections::HashMap;
 
@@ -13,18 +13,18 @@ use std::collections::HashMap;
 ///
 /// This executor converts `PolicyQuery` to the query engine's IR and
 /// executes with a root context (no policy filtering).
-pub struct QueryPolicyExecutor<'a, S: Storage, C: NodeCache> {
+pub struct QueryPolicyExecutor<'a, S: Storage> {
     /// The database to query
-    pub db: &'a Db<S, C>,
+    pub db: &'a Db<S>,
     /// Optional overlay provider (for staged flakes)
     pub overlay: Option<&'a dyn OverlayProvider>,
     /// Target transaction time
     pub to_t: i64,
 }
 
-impl<'a, S: Storage, C: NodeCache> QueryPolicyExecutor<'a, S, C> {
+impl<'a, S: Storage> QueryPolicyExecutor<'a, S> {
     /// Create a new query executor
-    pub fn new(db: &'a Db<S, C>) -> Self {
+    pub fn new(db: &'a Db<S>) -> Self {
         Self {
             db,
             overlay: None,
@@ -33,7 +33,7 @@ impl<'a, S: Storage, C: NodeCache> QueryPolicyExecutor<'a, S, C> {
     }
 
     /// Create a query executor with overlay support
-    pub fn with_overlay(db: &'a Db<S, C>, overlay: &'a dyn OverlayProvider, to_t: i64) -> Self {
+    pub fn with_overlay(db: &'a Db<S>, overlay: &'a dyn OverlayProvider, to_t: i64) -> Self {
         Self {
             db,
             overlay: Some(overlay),
@@ -42,8 +42,8 @@ impl<'a, S: Storage, C: NodeCache> QueryPolicyExecutor<'a, S, C> {
     }
 }
 
-impl<'a, S: Storage + 'static, C: NodeCache + 'static> PolicyQueryExecutor
-    for QueryPolicyExecutor<'a, S, C>
+impl<'a, S: Storage + 'static> PolicyQueryExecutor
+    for QueryPolicyExecutor<'a, S>
 {
     fn evaluate_policy_query<'b>(
         &'b self,
@@ -54,7 +54,7 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> PolicyQueryExecutor
     }
 }
 
-impl<'a, S: Storage + 'static, C: NodeCache + 'static> QueryPolicyExecutor<'a, S, C> {
+impl<'a, S: Storage + 'static> QueryPolicyExecutor<'a, S> {
     /// Async implementation of policy query evaluation
     async fn evaluate_async(
         &self,

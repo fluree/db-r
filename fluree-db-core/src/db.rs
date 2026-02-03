@@ -10,7 +10,6 @@
 //! to return an empty leaf without any storage reads. Storage backends must
 //! never use `"empty"` as a real node address.
 
-use crate::cache::NodeCache;
 use crate::comparator::IndexType;
 use crate::error::{Error, Result};
 use crate::flake::Flake;
@@ -38,8 +37,7 @@ pub const EMPTY_NODE_ID: &str = "empty";
 ///
 /// Generic over:
 /// - `S`: Storage backend
-/// - `C`: Node cache
-pub struct Db<S, C> {
+pub struct Db<S> {
     /// Ledger alias (e.g., "mydb/main")
     pub alias: String,
     /// Current transaction time
@@ -93,15 +91,9 @@ pub struct Db<S, C> {
 
     /// Storage backend
     pub storage: S,
-    /// Node cache (Arc-wrapped to enable sharing across cloned Db instances)
-    ///
-    /// This is critical for prefetch: when Db is cloned for background prefetch tasks,
-    /// both the mainline query and prefetch tasks must share the same cache instance
-    /// so that prefetch actually warms the cache the query will use.
-    pub cache: Arc<C>,
 }
 
-impl<S: Clone, C> Clone for Db<S, C> {
+impl<S: Clone> Clone for Db<S> {
     fn clone(&self) -> Self {
         Self {
             alias: self.alias.clone(),
@@ -120,12 +112,11 @@ impl<S: Clone, C> Clone for Db<S, C> {
             sid_interner: self.sid_interner.clone(),
             range_provider: self.range_provider.clone(),
             storage: self.storage.clone(),
-            cache: Arc::clone(&self.cache), // Share cache across clones for prefetch
         }
     }
 }
 
-impl<S: std::fmt::Debug, C: std::fmt::Debug> std::fmt::Debug for Db<S, C> {
+impl<S: std::fmt::Debug> std::fmt::Debug for Db<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Db")
             .field("alias", &self.alias)
@@ -141,16 +132,12 @@ impl<S: std::fmt::Debug, C: std::fmt::Debug> std::fmt::Debug for Db<S, C> {
     }
 }
 
-impl<S: Storage, C: NodeCache> Db<S, C> {
+impl<S: Storage> Db<S> {
     /// Create a genesis (empty) database for a new ledger
     ///
     /// Used when a nameservice has a commit but no index yet.
     /// The database starts at t=0 with empty index roots using [`EMPTY_NODE_ID`].
-    ///
-    /// The cache is wrapped in Arc internally to enable sharing across cloned Db instances,
-    /// which is critical for prefetch to warm the same cache the query uses.
-    pub fn genesis(storage: S, cache: impl Into<Arc<C>>, alias: &str) -> Self {
-        let cache = cache.into();
+    pub fn genesis(storage: S, alias: &str) -> Self {
         // Use a consistent empty leaf root for all indexes.
         // The resolver treats EMPTY_NODE_ID as an empty leaf with no storage reads.
         let empty_root = ChildRef {
@@ -180,7 +167,6 @@ impl<S: Storage, C: NodeCache> Db<S, C> {
             sid_interner: Arc::new(SidInterner::with_capacity(4096)),
             range_provider: None,
             storage,
-            cache,
         }
     }
 
@@ -200,7 +186,6 @@ impl<S: Storage, C: NodeCache> Db<S, C> {
         stats: Option<IndexStats>,
         schema: Option<IndexSchema>,
         storage: S,
-        cache: impl Into<Arc<C>>,
     ) -> Self {
         Self {
             alias,
@@ -219,7 +204,6 @@ impl<S: Storage, C: NodeCache> Db<S, C> {
             sid_interner: Arc::new(SidInterner::with_capacity(256)),
             range_provider: None,
             storage,
-            cache: cache.into(),
         }
     }
 
@@ -228,22 +212,17 @@ impl<S: Storage, C: NodeCache> Db<S, C> {
     /// # Arguments
     ///
     /// * `storage` - Storage backend to read index data from
-    /// * `cache` - Cache for resolved nodes (will be Arc-wrapped if not already)
     /// * `root_address` - Address of the DB root (index metadata)
-    pub async fn load(storage: S, cache: impl Into<Arc<C>>, root_address: &str) -> Result<Self> {
-        let cache = cache.into();
+    pub async fn load(storage: S, root_address: &str) -> Result<Self> {
         // Read and parse the DB root
         let bytes = storage.read_bytes(root_address).await?;
         let root = parse_db_root(bytes)?;
 
-        Ok(Self::from_root(storage, cache, root))
+        Ok(Self::from_root(storage, root))
     }
 
     /// Create a Db from a parsed DbRoot
-    ///
-    /// The cache is wrapped in Arc internally to enable sharing across cloned Db instances,
-    /// which is critical for prefetch to warm the same cache the query uses.
-    pub fn from_root(storage: S, cache: impl Into<Arc<C>>, root: DbRoot) -> Self {
+    pub fn from_root(storage: S, root: DbRoot) -> Self {
         Self {
             alias: root.alias,
             t: root.t,
@@ -261,7 +240,6 @@ impl<S: Storage, C: NodeCache> Db<S, C> {
             sid_interner: Arc::new(SidInterner::with_capacity(4096)),
             range_provider: None,
             storage,
-            cache: cache.into(),
         }
     }
 
@@ -348,7 +326,6 @@ impl<S: Storage, C: NodeCache> Db<S, C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::SimpleCache;
     use crate::storage::MemoryStorage;
 
     fn make_db_root_json() -> String {
@@ -395,8 +372,7 @@ mod tests {
         let storage = MemoryStorage::new();
         storage.insert("test-root", make_db_root_json().into_bytes());
 
-        let cache = SimpleCache::new(100);
-        let db = Db::load(storage, cache, "test-root").await.unwrap();
+        let db = Db::load(storage, "test-root").await.unwrap();
 
         assert_eq!(db.alias, "test/main");
         assert_eq!(db.t, 100);
@@ -410,8 +386,7 @@ mod tests {
         let storage = MemoryStorage::new();
         storage.insert("test-root", make_db_root_json().into_bytes());
 
-        let cache = SimpleCache::new(100);
-        let db = Db::load(storage, cache, "test-root").await.unwrap();
+        let db = Db::load(storage, "test-root").await.unwrap();
 
         // Encode an IRI
         let sid = db.encode_iri("http://example.org/Alice").unwrap();
@@ -433,8 +408,7 @@ mod tests {
         let storage = MemoryStorage::new();
         storage.insert("test-root", make_db_root_json().into_bytes());
 
-        let cache = SimpleCache::new(100);
-        let db = Db::load(storage, cache, "test-root").await.unwrap();
+        let db = Db::load(storage, "test-root").await.unwrap();
 
         let spot_root = db.get_index_root(IndexType::Spot).unwrap();
         assert_eq!(spot_root.id, "spot-root");
@@ -467,7 +441,6 @@ mod tests {
         }
 
         let storage = FileStorage::new(&test_db_path);
-        let cache = SimpleCache::new(10000);
 
         // Find the latest root file
         let root_dir = test_db_path.join("test/range-scan/index/root");
@@ -485,7 +458,7 @@ mod tests {
 
         println!("Loading from: {}", root_address);
 
-        let db = Db::load(storage, cache, &root_address).await.unwrap();
+        let db = Db::load(storage, &root_address).await.unwrap();
 
         println!("Loaded database:");
         println!("  alias: {}", db.alias);

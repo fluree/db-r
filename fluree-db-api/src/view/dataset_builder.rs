@@ -6,7 +6,7 @@
 use crate::view::{FlureeDataSetView, FlureeView};
 use crate::{
     dataset, time_resolve, ApiError, DatasetSpec, Fluree, NameService, QueryConnectionOptions,
-    Result, SimpleCache, Storage,
+    Result, Storage,
 };
 use chrono::DateTime;
 
@@ -14,7 +14,7 @@ use chrono::DateTime;
 // Dataset View Builder
 // ============================================================================
 
-impl<S, N> Fluree<S, SimpleCache, N>
+impl<S, N> Fluree<S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
@@ -34,7 +34,7 @@ where
     pub async fn build_dataset_view(
         &self,
         spec: &DatasetSpec,
-    ) -> Result<FlureeDataSetView<S, SimpleCache>> {
+    ) -> Result<FlureeDataSetView<S>> {
         // History/changes queries are a Fluree dataset extension.
         // In this mode, the "from" array specifies a (from,to) range on ONE ledger,
         // not two distinct default graphs.
@@ -74,7 +74,7 @@ where
         &self,
         spec: &DatasetSpec,
         opts: &QueryConnectionOptions,
-    ) -> Result<FlureeDataSetView<S, SimpleCache>> {
+    ) -> Result<FlureeDataSetView<S>> {
         // History mode: load head view, resolve range, then wrap policy.
         if let Some(range) = spec.history_range() {
             let ledger = self.ledger(&range.identifier).await?;
@@ -113,7 +113,7 @@ where
     pub(crate) async fn load_view_from_source(
         &self,
         source: &dataset::GraphSource,
-    ) -> Result<FlureeView<S, SimpleCache>> {
+    ) -> Result<FlureeView<S>> {
         match &source.time_spec {
             None => self.view(&source.identifier).await,
             Some(time_spec) => {
@@ -130,7 +130,7 @@ where
     pub async fn try_single_view_from_spec(
         &self,
         spec: &DatasetSpec,
-    ) -> Result<Option<FlureeView<S, SimpleCache>>> {
+    ) -> Result<Option<FlureeView<S>>> {
         // Single default graph, no named graphs, no history range = single-ledger
         // (load_view_from_source handles both with and without time_spec)
         if spec.default_graphs.len() == 1
@@ -157,7 +157,7 @@ where
 }
 
 async fn resolve_history_endpoint_t<S: Storage + Clone + Send + Sync + 'static>(
-    ledger: &fluree_db_ledger::LedgerState<S, SimpleCache>,
+    ledger: &fluree_db_ledger::LedgerState<S>,
     spec: &dataset::TimeSpec,
     latest_t: i64,
 ) -> Result<i64> {
@@ -258,22 +258,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_single_ledger_fast_path() {
-        use crate::SimpleCache;
 
         // No time spec - fast path
         let spec = DatasetSpec::new().with_default(GraphSource::new("testdb:main"));
-        assert!(Fluree::<crate::MemoryStorage, SimpleCache, crate::MemoryNameService>::is_single_ledger_fast_path(&spec));
+        assert!(Fluree::<crate::MemoryStorage, crate::MemoryNameService>::is_single_ledger_fast_path(&spec));
 
         // With time spec - not fast path (needs time resolution)
         let spec = DatasetSpec::new().with_default(
             GraphSource::new("testdb:main").with_time(dataset::TimeSpec::AtT(5)),
         );
-        assert!(!Fluree::<crate::MemoryStorage, SimpleCache, crate::MemoryNameService>::is_single_ledger_fast_path(&spec));
+        assert!(!Fluree::<crate::MemoryStorage, crate::MemoryNameService>::is_single_ledger_fast_path(&spec));
 
         // Multiple graphs - not fast path
         let spec = DatasetSpec::new()
             .with_default(GraphSource::new("db1:main"))
             .with_default(GraphSource::new("db2:main"));
-        assert!(!Fluree::<crate::MemoryStorage, SimpleCache, crate::MemoryNameService>::is_single_ledger_fast_path(&spec));
+        assert!(!Fluree::<crate::MemoryStorage, crate::MemoryNameService>::is_single_ledger_fast_path(&spec));
     }
 }

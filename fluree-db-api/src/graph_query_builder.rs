@@ -11,7 +11,7 @@ use crate::graph::Graph;
 use crate::query::builder::QueryCore;
 use crate::view::FlureeView;
 use crate::{
-    ApiError, Fluree, NameService, QueryResult, Result, SimpleCache, Storage,
+    ApiError, Fluree, NameService, QueryResult, Result, Storage,
     TrackedErrorResponse, TrackedQueryResponse, TrackingOptions,
 };
 
@@ -173,8 +173,8 @@ where
 /// let result = snapshot.query().jsonld(&q).execute().await?;
 /// ```
 pub struct GraphSnapshotQueryBuilder<'a, 'v, S: Storage + 'static, N> {
-    fluree: &'a Fluree<S, SimpleCache, N>,
-    view: &'v FlureeView<S, SimpleCache>,
+    fluree: &'a Fluree<S, N>,
+    view: &'v FlureeView<S>,
     core: QueryCore<'v>,
 }
 
@@ -185,8 +185,8 @@ where
 {
     /// Create a new builder from a fluree reference and a view.
     pub(crate) fn new_from_parts(
-        fluree: &'a Fluree<S, SimpleCache, N>,
-        view: &'v FlureeView<S, SimpleCache>,
+        fluree: &'a Fluree<S, N>,
+        view: &'v FlureeView<S>,
     ) -> Self {
         Self {
             fluree,

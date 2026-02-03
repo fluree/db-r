@@ -269,6 +269,17 @@ impl RunSortOrder {
         }
     }
 
+    /// Parse a sort order from its directory name.
+    pub fn from_dir_name(name: &str) -> Option<Self> {
+        match name {
+            "spot" => Some(Self::Spot),
+            "psot" => Some(Self::Psot),
+            "post" => Some(Self::Post),
+            "opst" => Some(Self::Opst),
+            _ => None,
+        }
+    }
+
     /// All orders that should be built during index generation.
     pub fn all_build_orders() -> &'static [RunSortOrder] {
         &[Self::Spot, Self::Psot, Self::Post, Self::Opst]

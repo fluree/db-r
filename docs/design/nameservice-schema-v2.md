@@ -7,7 +7,7 @@
 This document describes the design for a unified nameservice schema that supports:
 
 1. **Ledgers** with named graphs and independent indexing
-2. **Virtual Graphs** (BM25, Iceberg, Vector, JDBC, etc.) with varying versioning semantics
+2. **Non-ledger graph sources** (historically “Virtual Graphs”: BM25, Iceberg, Vector, JDBC, etc.) with varying versioning semantics
 3. **Four independent atomic concerns** that can be updated without contention
 4. **Watermarked updates** for client subscription and push notifications
 5. **Pluggable backends** (DynamoDB, S3, filesystem) with consistent semantics
@@ -82,12 +82,12 @@ The `type` attribute discriminates between entity kinds:
 | Type Value | Description |
 |------------|-------------|
 | `ledger` | Fluree ledger with commits, indexes, named graphs |
-| `vg:bm25` | BM25 full-text search virtual graph |
-| `vg:vector` | Vector similarity search virtual graph |
-| `vg:iceberg` | Apache Iceberg table virtual graph |
-| `vg:jdbc` | JDBC connection virtual graph (live, no versioning) |
-| `vg:r2rml` | R2RML relational mapping virtual graph |
-| `vg:*` | Future virtual graph types |
+| `vg:bm25` | BM25 full-text search graph source (legacy: virtual graph) |
+| `vg:vector` | Vector similarity search graph source (legacy: virtual graph) |
+| `vg:iceberg` | Apache Iceberg table graph source (legacy: virtual graph) |
+| `vg:jdbc` | JDBC connection graph source (legacy: virtual graph; live, no versioning) |
+| `vg:r2rml` | R2RML relational mapping graph source (legacy: virtual graph) |
+| `vg:*` | Future non-ledger graph source types (legacy prefix: `vg:`) |
 
 ---
 

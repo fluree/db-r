@@ -26,7 +26,7 @@ use crate::QueryResult;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::value::FlakeValue;
-use fluree_db_core::{Db, Flake, NoOverlay, NodeCache, OverlayProvider, Sid, Storage, Tracker};
+use fluree_db_core::{Db, Flake, NoOverlay, OverlayProvider, Sid, Storage, Tracker};
 use fluree_vocab::rdf::{self, TYPE as RDF_TYPE_IRI};
 use fluree_db_policy::{is_schema_flake, PolicyContext};
 use fluree_db_query::binding::Binding;
@@ -153,9 +153,9 @@ pub fn format(result: &QueryResult, _compactor: &IriCompactor) -> Result<JsonVal
 ///
 /// When `policy` is `Some`, flakes are filtered according to view policies.
 /// When `policy` is `None`, no filtering is applied (zero overhead).
-pub async fn format_async<S: Storage, C: NodeCache>(
+pub async fn format_async<S: Storage>(
     result: &QueryResult,
-    db: &Db<S, C>,
+    db: &Db<S>,
     compactor: &IriCompactor,
     _config: &FormatterConfig,
     policy: Option<&PolicyContext>,
@@ -261,8 +261,8 @@ pub async fn format_async<S: Storage, C: NodeCache>(
 }
 
 /// Graph crawl formatter with async DB access
-struct GraphCrawlFormatter<'a, S: Storage, C: NodeCache> {
-    db: &'a Db<S, C>,
+struct GraphCrawlFormatter<'a, S: Storage> {
+    db: &'a Db<S>,
     overlay: &'a dyn OverlayProvider,
     compactor: &'a IriCompactor,
     spec: &'a GraphSelectSpec,
@@ -274,9 +274,9 @@ struct GraphCrawlFormatter<'a, S: Storage, C: NodeCache> {
     tracker: Option<&'a Tracker>,
 }
 
-impl<'a, S: Storage, C: NodeCache> GraphCrawlFormatter<'a, S, C> {
+impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
     fn new(
-        db: &'a Db<S, C>,
+        db: &'a Db<S>,
         overlay: &'a dyn OverlayProvider,
         compactor: &'a IriCompactor,
         spec: &'a GraphSelectSpec,

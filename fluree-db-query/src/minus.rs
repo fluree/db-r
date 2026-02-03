@@ -19,7 +19,7 @@ use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::seed::EmptyOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{NodeCache, StatsView, Storage};
+use fluree_db_core::{StatsView, Storage};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -27,9 +27,9 @@ use std::sync::Arc;
 ///
 /// For each input row, executes the MINUS patterns with an empty seed (fresh scope).
 /// If any result matches the input row on shared variables, the input row is filtered out.
-pub struct MinusOperator<S: Storage + 'static, C: NodeCache + 'static> {
+pub struct MinusOperator<S: Storage + 'static> {
     /// Child operator providing input solutions
-    child: BoxedOperator<S, C>,
+    child: BoxedOperator<S>,
     /// MINUS patterns to execute
     minus_patterns: Vec<Pattern>,
     /// Shared variables (appear in both child schema and MINUS patterns)
@@ -42,7 +42,7 @@ pub struct MinusOperator<S: Storage + 'static, C: NodeCache + 'static> {
     stats: Option<Arc<StatsView>>,
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> MinusOperator<S, C> {
+impl<S: Storage + 'static> MinusOperator<S> {
     /// Create a new MINUS operator
     ///
     /// # Arguments
@@ -50,7 +50,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> MinusOperator<S, C> {
     /// * `child` - Input solutions operator
     /// * `minus_patterns` - Patterns to execute for anti-join matching
     /// * `stats` - Optional stats for nested query optimization (Arc for cheap cloning)
-    pub fn new(child: BoxedOperator<S, C>, minus_patterns: Vec<Pattern>, stats: Option<Arc<StatsView>>) -> Self {
+    pub fn new(child: BoxedOperator<S>, minus_patterns: Vec<Pattern>, stats: Option<Arc<StatsView>>) -> Self {
         let schema: Arc<[VarId]> = Arc::from(child.schema().to_vec().into_boxed_slice());
         let child_vars: HashSet<VarId> = child.schema().iter().copied().collect();
 
@@ -92,18 +92,18 @@ impl<S: Storage + 'static, C: NodeCache + 'static> MinusOperator<S, C> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for MinusOperator<S, C> {
+impl<S: Storage + 'static> Operator<S> for MinusOperator<S> {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
         self.child.open(ctx).await?;
         self.state = OperatorState::Open;
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }
@@ -129,7 +129,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for MinusOpera
 
             for row_idx in 0..input_batch.len() {
                 // Execute MINUS patterns with empty seed (fresh scope)
-                let seed: BoxedOperator<S, C> = Box::new(EmptyOperator::new());
+                let seed: BoxedOperator<S> = Box::new(EmptyOperator::new());
                 let mut minus_op = build_where_operators_seeded(Some(seed), &self.minus_patterns, self.stats.clone())?;
 
                 minus_op.open(ctx).await?;
@@ -214,7 +214,7 @@ mod tests {
     fn test_shared_vars_computation() {
         // Create a child with schema [?s, ?name]
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
-        let child: BoxedOperator<fluree_db_core::MemoryStorage, fluree_db_core::NoCache> =
+        let child: BoxedOperator<fluree_db_core::MemoryStorage> =
             Box::new(TestEmptyWithSchema { schema: child_schema });
 
         // MINUS pattern references ?s and ?age
@@ -234,7 +234,7 @@ mod tests {
     #[test]
     fn test_minus_schema_preserved() {
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
-        let child: BoxedOperator<fluree_db_core::MemoryStorage, fluree_db_core::NoCache> =
+        let child: BoxedOperator<fluree_db_core::MemoryStorage> =
             Box::new(TestEmptyWithSchema { schema: child_schema.clone() });
 
         let op = MinusOperator::new(child, vec![], None);
@@ -249,16 +249,16 @@ mod tests {
     }
 
     #[async_trait]
-    impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for TestEmptyWithSchema {
+    impl<S: Storage + 'static> Operator<S> for TestEmptyWithSchema {
         fn schema(&self) -> &[VarId] {
             &self.schema
         }
 
-        async fn open(&mut self, _ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+        async fn open(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<()> {
             Ok(())
         }
 
-        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
             Ok(None)
         }
 

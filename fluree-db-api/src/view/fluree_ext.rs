@@ -8,7 +8,7 @@ use chrono::DateTime;
 
 use crate::view::{FlureeView, ReasoningModePrecedence};
 use crate::{
-    time_resolve, ApiError, Fluree, NameService, QueryConnectionOptions, Result, SimpleCache,
+    time_resolve, ApiError, Fluree, NameService, QueryConnectionOptions, Result,
     Storage, TimeSpec,
 };
 use fluree_db_query::rewrite::ReasoningModes;
@@ -17,7 +17,7 @@ use fluree_db_query::rewrite::ReasoningModes;
 // View Loading
 // ============================================================================
 
-impl<S, N> Fluree<S, SimpleCache, N>
+impl<S, N> Fluree<S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
@@ -30,7 +30,7 @@ where
     ///
     /// This is the internal loading method. For the public API, use
     /// [`graph()`](Self::graph) which returns a lazy [`Graph`](crate::Graph) handle.
-    pub(crate) async fn load_view(&self, alias: &str) -> Result<FlureeView<S, SimpleCache>> {
+    pub(crate) async fn load_view(&self, alias: &str) -> Result<FlureeView<S>> {
         let handle = self.ledger_cached(alias).await?;
         let snapshot = handle.snapshot().await;
         let ledger = snapshot.to_ledger_state();
@@ -42,7 +42,7 @@ where
         &self,
         alias: &str,
         target_t: i64,
-    ) -> Result<FlureeView<S, SimpleCache>> {
+    ) -> Result<FlureeView<S>> {
         let historical = self.ledger_view_at(alias, target_t).await?;
         Ok(FlureeView::from_historical(&historical))
     }
@@ -54,7 +54,7 @@ where
         &self,
         alias: &str,
         spec: TimeSpec,
-    ) -> Result<FlureeView<S, SimpleCache>> {
+    ) -> Result<FlureeView<S>> {
         match spec {
             TimeSpec::Latest => self.load_view(alias).await,
             TimeSpec::AtT(t) => self.load_view_at_t(alias, t).await,
@@ -101,7 +101,7 @@ where
     ///
     /// Returns a [`FlureeView`] — an immutable, point-in-time snapshot.
     /// For the lazy API, use [`graph()`](Self::graph) instead.
-    pub async fn view(&self, alias: &str) -> Result<FlureeView<S, SimpleCache>> {
+    pub async fn view(&self, alias: &str) -> Result<FlureeView<S>> {
         self.load_view(alias).await
     }
 
@@ -110,7 +110,7 @@ where
         &self,
         alias: &str,
         target_t: i64,
-    ) -> Result<FlureeView<S, SimpleCache>> {
+    ) -> Result<FlureeView<S>> {
         self.load_view_at_t(alias, target_t).await
     }
 
@@ -119,7 +119,7 @@ where
         &self,
         alias: &str,
         spec: TimeSpec,
-    ) -> Result<FlureeView<S, SimpleCache>> {
+    ) -> Result<FlureeView<S>> {
         self.load_view_at(alias, spec).await
     }
 }
@@ -128,7 +128,7 @@ where
 // Policy Wrapping
 // ============================================================================
 
-impl<S, N> Fluree<S, SimpleCache, N>
+impl<S, N> Fluree<S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
@@ -153,9 +153,9 @@ where
     /// ```
     pub async fn wrap_policy(
         &self,
-        view: FlureeView<S, SimpleCache>,
+        view: FlureeView<S>,
         opts: &QueryConnectionOptions,
-    ) -> Result<FlureeView<S, SimpleCache>> {
+    ) -> Result<FlureeView<S>> {
         let policy_ctx = crate::policy_builder::build_policy_context_from_opts(
             &view.db,
             view.overlay.as_ref(),
@@ -174,7 +174,7 @@ where
         &self,
         alias: &str,
         opts: &QueryConnectionOptions,
-    ) -> Result<FlureeView<S, SimpleCache>> {
+    ) -> Result<FlureeView<S>> {
         let view = self.view(alias).await?;
         self.wrap_policy(view, opts).await
     }
@@ -185,7 +185,7 @@ where
         alias: &str,
         target_t: i64,
         opts: &QueryConnectionOptions,
-    ) -> Result<FlureeView<S, SimpleCache>> {
+    ) -> Result<FlureeView<S>> {
         let view = self.view_at_t(alias, target_t).await?;
         self.wrap_policy(view, opts).await
     }
@@ -195,7 +195,7 @@ where
 // Reasoning Wrapping
 // ============================================================================
 
-impl<S, N> Fluree<S, SimpleCache, N>
+impl<S, N> Fluree<S, N>
 where
     S: Storage + Clone + 'static,
     N: NameService,
@@ -206,19 +206,19 @@ where
     /// Uses `DefaultUnlessQueryOverrides` precedence.
     pub fn wrap_reasoning(
         &self,
-        view: FlureeView<S, SimpleCache>,
+        view: FlureeView<S>,
         modes: ReasoningModes,
-    ) -> FlureeView<S, SimpleCache> {
+    ) -> FlureeView<S> {
         view.with_reasoning(modes)
     }
 
     /// Wrap a view with reasoning modes and explicit precedence.
     pub fn wrap_reasoning_with_precedence(
         &self,
-        view: FlureeView<S, SimpleCache>,
+        view: FlureeView<S>,
         modes: ReasoningModes,
         precedence: ReasoningModePrecedence,
-    ) -> FlureeView<S, SimpleCache> {
+    ) -> FlureeView<S> {
         view.with_reasoning_precedence(modes, precedence)
     }
 }

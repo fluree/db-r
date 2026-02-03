@@ -10,7 +10,7 @@
 //! Fluree uses predefined codes for common namespaces to ensure compatibility
 //! with existing databases. User-supplied namespaces start at code 101.
 
-use fluree_db_core::{Db, NodeCache, Sid, Storage};
+use fluree_db_core::{Db, Sid, Storage};
 use std::collections::HashMap;
 
 // ============================================================================
@@ -259,7 +259,7 @@ impl NamespaceRegistry {
     ///
     /// This merges the database's codes with the predefined defaults,
     /// with the database taking precedence for any conflicts.
-    pub fn from_db<S: Storage, C: NodeCache>(db: &Db<S, C>) -> Self {
+    pub fn from_db<S: Storage>(db: &Db<S>) -> Self {
         // Start with defaults
         let mut names = default_namespaces();
 

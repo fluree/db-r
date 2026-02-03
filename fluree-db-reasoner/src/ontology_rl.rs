@@ -7,7 +7,6 @@
 //! - Domain and range declarations
 //! - sameAs assertions
 
-use fluree_db_core::cache::NodeCache;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::flake::Flake;
 use fluree_db_core::namespaces::{
@@ -174,8 +173,8 @@ impl OntologyRL {
     /// - `?p owl:inverseOf ?q`
     /// - `?p rdfs:domain ?c`
     /// - `?p rdfs:range ?c`
-    pub async fn from_db_with_overlay<S: Storage, C: NodeCache>(
-        db: &Db<S, C>,
+    pub async fn from_db_with_overlay<S: Storage>(
+        db: &Db<S>,
         overlay: &dyn OverlayProvider,
         epoch: u64,
         to_t: i64,
@@ -866,8 +865,8 @@ impl OntologyRL {
 /// Load initial owl:sameAs assertions from the database
 ///
 /// Returns pairs of SIDs that are asserted to be the same.
-pub async fn load_same_as_assertions<S: Storage, C: NodeCache>(
-    db: &Db<S, C>,
+pub async fn load_same_as_assertions<S: Storage>(
+    db: &Db<S>,
     overlay: &dyn OverlayProvider,
     to_t: i64,
 ) -> Result<Vec<(Sid, Sid)>> {

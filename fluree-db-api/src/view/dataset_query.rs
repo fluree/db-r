@@ -8,7 +8,7 @@ use crate::query::helpers::{
 };
 use crate::view::{FlureeDataSetView, QueryInput};
 use crate::{
-    ApiError, ExecutableQuery, Fluree, NameService, QueryResult, Result, SimpleCache, Storage,
+    ApiError, ExecutableQuery, Fluree, NameService, QueryResult, Result, Storage,
     Tracker, TrackingOptions,
 };
 
@@ -16,7 +16,7 @@ use crate::{
 // Dataset Query Execution
 // ============================================================================
 
-impl<S, N> Fluree<S, SimpleCache, N>
+impl<S, N> Fluree<S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService,
@@ -40,7 +40,7 @@ where
     /// ```
     pub async fn query_dataset_view(
         &self,
-        dataset: &FlureeDataSetView<S, SimpleCache>,
+        dataset: &FlureeDataSetView<S>,
         q: impl Into<QueryInput<'_>>,
     ) -> Result<QueryResult> {
         let input = q.into();
@@ -120,7 +120,7 @@ where
     /// Execute a dataset query with tracking.
     pub(crate) async fn query_dataset_view_tracked(
         &self,
-        dataset: &FlureeDataSetView<S, SimpleCache>,
+        dataset: &FlureeDataSetView<S>,
         q: impl Into<QueryInput<'_>>,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
@@ -213,7 +213,7 @@ where
     /// Applies reasoning from the primary view if set.
     fn build_executable_for_dataset(
         &self,
-        dataset: &FlureeDataSetView<S, SimpleCache>,
+        dataset: &FlureeDataSetView<S>,
         parsed: &fluree_db_query::parse::ParsedQuery,
     ) -> Result<ExecutableQuery> {
         let mut executable = prepare_for_execution(parsed);
@@ -238,7 +238,7 @@ where
     /// Execute against dataset (multi-ledger).
     async fn execute_dataset_internal(
         &self,
-        dataset: &FlureeDataSetView<S, SimpleCache>,
+        dataset: &FlureeDataSetView<S>,
         vars: &crate::VarRegistry,
         executable: &ExecutableQuery,
         tracker: &Tracker,
@@ -301,7 +301,7 @@ where
     /// Execute against dataset with tracking.
     async fn execute_dataset_tracked(
         &self,
-        dataset: &FlureeDataSetView<S, SimpleCache>,
+        dataset: &FlureeDataSetView<S>,
         vars: &crate::VarRegistry,
         executable: &ExecutableQuery,
         tracker: &Tracker,
@@ -457,7 +457,7 @@ mod tests {
         let fluree = FlureeBuilder::memory().build_memory();
         let _ledger = fluree.create_ledger("testdb").await.unwrap();
 
-        let dataset: FlureeDataSetView<_, _> = FlureeDataSetView::new();
+        let dataset: FlureeDataSetView<_> = FlureeDataSetView::new();
         let query = json!({ "select": ["?s"], "where": {"@id": "?s"} });
 
         let result = fluree.query_dataset_view(&dataset, &query).await;

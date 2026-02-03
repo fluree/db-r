@@ -49,8 +49,6 @@
 //! ```
 
 #[cfg(feature = "native")]
-use crate::cache::NodeCache;
-#[cfg(feature = "native")]
 use crate::index::IndexNode;
 #[cfg(feature = "native")]
 use crate::overlay::OverlayProvider;
@@ -163,9 +161,9 @@ impl PrefetchConfig {
 ///
 /// Contains all context needed to call `resolve_node_materialized_with_overlay`.
 #[cfg(feature = "native")]
-pub struct PrefetchRequest<S: Storage, C: NodeCache> {
+pub struct PrefetchRequest<S: Storage> {
     /// Database reference (Arc for 'static lifetime in spawned tasks).
-    pub db: Arc<Db<S, C>>,
+    pub db: Arc<Db<S>>,
 
     /// Overlay provider for uncommitted data.
     pub overlay: Arc<dyn OverlayProvider>,
@@ -189,15 +187,14 @@ pub struct PrefetchRequest<S: Storage, C: NodeCache> {
 /// and spawns bounded workers to resolve them. The cache provides
 /// single-flight deduplication, so prefetch and mainline never duplicate work.
 #[cfg(feature = "native")]
-pub struct PrefetchService<S: Storage + 'static, C: NodeCache + 'static> {
-    sender: mpsc::Sender<PrefetchRequest<S, C>>,
+pub struct PrefetchService<S: Storage + 'static> {
+    sender: mpsc::Sender<PrefetchRequest<S>>,
 }
 
 #[cfg(feature = "native")]
-impl<S, C> PrefetchService<S, C>
+impl<S> PrefetchService<S>
 where
     S: Storage + 'static,
-    C: NodeCache + 'static,
 {
     /// Start the prefetch service with the given configuration.
     ///
@@ -225,7 +222,7 @@ where
     }
 
     /// Spawn the dispatcher task that processes prefetch requests.
-    fn spawn_dispatcher(mut rx: mpsc::Receiver<PrefetchRequest<S, C>>, num_workers: usize) {
+    fn spawn_dispatcher(mut rx: mpsc::Receiver<PrefetchRequest<S>>, num_workers: usize) {
         let semaphore = Arc::new(Semaphore::new(num_workers));
 
         tokio::spawn(async move {
@@ -273,7 +270,7 @@ where
     /// This is acceptable because prefetch is best-effort optimization.
     ///
     /// Returns `true` if the request was enqueued, `false` if dropped.
-    pub fn try_enqueue(&self, request: PrefetchRequest<S, C>) -> bool {
+    pub fn try_enqueue(&self, request: PrefetchRequest<S>) -> bool {
         let ok = self.sender.try_send(request).is_ok();
         if ok {
             PREFETCH_ENQUEUED.fetch_add(1, Ordering::Relaxed);
@@ -290,7 +287,7 @@ where
 }
 
 #[cfg(feature = "native")]
-impl<S: Storage + 'static, C: NodeCache + 'static> Clone for PrefetchService<S, C> {
+impl<S: Storage + 'static> Clone for PrefetchService<S> {
     fn clone(&self) -> Self {
         Self {
             sender: self.sender.clone(),
@@ -311,12 +308,12 @@ pub struct PrefetchConfig;
 ///
 /// On WASM, prefetch is disabled (no background tasks).
 #[cfg(not(feature = "native"))]
-pub struct PrefetchService<S, C> {
-    _phantom: std::marker::PhantomData<(S, C)>,
+pub struct PrefetchService<S> {
+    _phantom: std::marker::PhantomData<S>,
 }
 
 #[cfg(not(feature = "native"))]
-impl<S, C> PrefetchService<S, C> {
+impl<S> PrefetchService<S> {
     /// No-op on WASM.
     pub fn start(_config: PrefetchConfig) -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self {
@@ -341,7 +338,7 @@ impl<S, C> PrefetchService<S, C> {
 }
 
 #[cfg(not(feature = "native"))]
-impl<S, C> Clone for PrefetchService<S, C> {
+impl<S> Clone for PrefetchService<S> {
     fn clone(&self) -> Self {
         Self {
             _phantom: std::marker::PhantomData,

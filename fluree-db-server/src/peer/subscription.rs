@@ -14,7 +14,7 @@ use crate::state::FlureeInstance;
 
 use fluree_db_peer::{LedgerRecord, VgRecord};
 use fluree_sse::{SseEvent, SseParser};
-use fluree_db_api::{NsNotify, NotifyResult, SimpleCache};
+use fluree_db_api::{NsNotify, NotifyResult};
 use fluree_db_core::alias;
 use fluree_db_nameservice::NsRecord;
 
@@ -290,7 +290,7 @@ impl PeerSubscriptionTask {
 
     async fn notify_mgr<S, N>(
         &self,
-        mgr: &Arc<fluree_db_api::LedgerManager<S, SimpleCache, N>>,
+        mgr: &Arc<fluree_db_api::LedgerManager<S, N>>,
         record: &LedgerRecord,
         ns_record: NsRecord,
     ) where

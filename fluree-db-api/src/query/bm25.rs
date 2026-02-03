@@ -6,12 +6,12 @@ use crate::query::helpers::{
 };
 use crate::{
     ApiError, ExecutableQuery, Fluree, FlureeDataSetView, FlureeIndexProvider, QueryResult, Result,
-    SimpleCache, Storage, StorageWrite, VarRegistry,
+    Storage, StorageWrite, VarRegistry,
 };
 
 use fluree_db_query::parse::parse_query;
 
-impl<S, N> Fluree<S, SimpleCache, N>
+impl<S, N> Fluree<S, N>
 where
     S: Storage + StorageWrite + Clone + Send + Sync + 'static,
     N: crate::NameService + crate::Publisher + crate::VirtualGraphPublisher + Clone + Send + Sync + 'static,
@@ -22,7 +22,7 @@ where
     /// in queries against virtual graphs.
     pub async fn query_dataset_with_bm25(
         &self,
-        dataset: &FlureeDataSetView<S, SimpleCache>,
+        dataset: &FlureeDataSetView<S>,
         query_json: &JsonValue,
     ) -> Result<QueryResult> {
         // Get the primary graph for parsing/encoding

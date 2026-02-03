@@ -19,7 +19,7 @@ use crate::config::{ServerConfig, ServerRole};
 use crate::peer::{ForwardingClient, PeerState, ProxyNameService, ProxyStorage};
 use crate::registry::LedgerRegistry;
 use crate::telemetry::TelemetryConfig;
-use fluree_db_api::{Fluree, FlureeBuilder, IndexConfig, QueryConnectionOptions, SimpleCache};
+use fluree_db_api::{Fluree, FlureeBuilder, IndexConfig, QueryConnectionOptions};
 use fluree_db_connection::{Connection, ConnectionConfig};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -29,10 +29,10 @@ use fluree_db_api::FileStorage;
 use fluree_db_nameservice::file::FileNameService;
 
 /// File-backed Fluree instance type (transaction server or peer with shared storage)
-pub type FileFluree = Fluree<FileStorage, SimpleCache, FileNameService>;
+pub type FileFluree = Fluree<FileStorage, FileNameService>;
 
 /// Proxy-backed Fluree instance type (peer with proxy storage access)
-pub type ProxyFluree = Fluree<ProxyStorage, SimpleCache, ProxyNameService>;
+pub type ProxyFluree = Fluree<ProxyStorage, ProxyNameService>;
 
 /// Unified Fluree instance wrapper
 ///
@@ -476,8 +476,7 @@ impl AppState {
         let nameservice = ProxyNameService::new(tx_url, token);
 
         // Create connection with proxy storage
-        let cache = SimpleCache::new(config.cache_max_entries);
-        let connection = Connection::new(ConnectionConfig::default(), storage, cache);
+        let connection = Connection::new(ConnectionConfig::default(), storage);
 
         // Create Fluree instance with proxy components
         //

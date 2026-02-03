@@ -19,7 +19,7 @@ use crate::error::{BuilderError, BuilderErrors};
 use crate::ledger_manager::LedgerHandle;
 use crate::tx::{IndexingMode, IndexingStatus, StageResult, TransactResult, TransactResultRef};
 use crate::{
-    ApiError, Fluree, NameService, PolicyContext, Result, SimpleCache, Storage, Tracker,
+    ApiError, Fluree, NameService, PolicyContext, Result, Storage, Tracker,
     TrackedErrorResponse, TrackingOptions,
 };
 use fluree_db_core::ContentAddressedWrite;
@@ -168,7 +168,7 @@ impl<'a> TransactCore<'a> {
 /// ```
 pub struct Staged<S: Storage + 'static> {
     /// The queryable staged view (base + overlay with staged flakes).
-    pub view: LedgerView<S, SimpleCache>,
+    pub view: LedgerView<S>,
     /// Namespace registry needed for commit.
     pub ns_registry: NamespaceRegistry,
 }
@@ -203,8 +203,8 @@ impl<S: Storage + 'static> std::fmt::Debug for Staged<S> {
 /// let ledger = result.ledger;
 /// ```
 pub struct OwnedTransactBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a Fluree<S, SimpleCache, N>,
-    ledger: LedgerState<S, SimpleCache>,
+    fluree: &'a Fluree<S, N>,
+    ledger: LedgerState<S>,
     core: TransactCore<'a>,
 }
 
@@ -215,8 +215,8 @@ where
 {
     /// Create a new builder (called by `Fluree::stage_owned()`).
     pub(crate) fn new(
-        fluree: &'a Fluree<S, SimpleCache, N>,
-        ledger: LedgerState<S, SimpleCache>,
+        fluree: &'a Fluree<S, N>,
+        ledger: LedgerState<S>,
     ) -> Self {
         Self {
             fluree,
@@ -471,8 +471,8 @@ where
 ///     .execute().await?;
 /// ```
 pub struct RefTransactBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a Fluree<S, SimpleCache, N>,
-    handle: &'a LedgerHandle<S, SimpleCache>,
+    fluree: &'a Fluree<S, N>,
+    handle: &'a LedgerHandle<S>,
     core: TransactCore<'a>,
 }
 
@@ -483,8 +483,8 @@ where
 {
     /// Create a new builder (called by `Fluree::stage()`).
     pub(crate) fn new(
-        fluree: &'a Fluree<S, SimpleCache, N>,
-        handle: &'a LedgerHandle<S, SimpleCache>,
+        fluree: &'a Fluree<S, N>,
+        handle: &'a LedgerHandle<S>,
     ) -> Self {
         Self {
             fluree,
@@ -590,8 +590,8 @@ where
 /// This is the shared logic for `RefTransactBuilder::execute()` and
 /// `GraphTransactBuilder::commit()`.
 pub(crate) async fn commit_with_handle<S, N>(
-    fluree: &Fluree<S, SimpleCache, N>,
-    handle: &LedgerHandle<S, SimpleCache>,
+    fluree: &Fluree<S, N>,
+    handle: &LedgerHandle<S>,
     core: TransactCore<'_>,
 ) -> Result<TransactResultRef>
 where

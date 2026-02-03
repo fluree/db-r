@@ -36,7 +36,7 @@ use crate::format::FormatterConfig;
 use crate::ledger_info::{ns_record_to_jsonld, vg_record_to_jsonld};
 use crate::query::builder::QueryCore;
 use crate::view::QueryInput;
-use crate::{ApiError, Fluree, NameService, Result, SimpleCache, Storage, VirtualGraphPublisher};
+use crate::{ApiError, Fluree, NameService, Result, Storage, VirtualGraphPublisher};
 use fluree_db_ledger::IndexConfig;
 use fluree_db_transact::{CommitOpts, TxnOpts, TxnType};
 use serde_json::json;
@@ -88,7 +88,7 @@ use serde_json::json;
 /// - `fidx:indexAddress` - Index address
 /// - `fidx:indexT` - Index t value
 pub struct NameserviceQueryBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a Fluree<S, SimpleCache, N>,
+    fluree: &'a Fluree<S, N>,
     core: QueryCore<'a>,
 }
 
@@ -98,7 +98,7 @@ where
     N: NameService + VirtualGraphPublisher + Clone + Send + Sync + 'static,
 {
     /// Create a new builder (called by `Fluree::nameservice_query()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, SimpleCache, N>) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<S, N>) -> Self {
         Self {
             fluree,
             core: QueryCore::new(),
@@ -326,7 +326,7 @@ mod tests {
     use crate::FlureeBuilder;
     use fluree_db_nameservice::{memory::MemoryNameService, Publisher, VgType};
 
-    async fn setup_ns_with_records() -> Fluree<fluree_db_core::MemoryStorage, SimpleCache, MemoryNameService> {
+    async fn setup_ns_with_records() -> Fluree<fluree_db_core::MemoryStorage, MemoryNameService> {
         let fluree = FlureeBuilder::memory().build_memory();
 
         // Create some ledger records

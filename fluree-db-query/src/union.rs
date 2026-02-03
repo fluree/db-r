@@ -17,15 +17,15 @@ use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::seed::SeedOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{NodeCache, Storage};
+use fluree_db_core::Storage;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
 /// UNION operator - executes branches for each input row (correlated).
-pub struct UnionOperator<S: Storage + 'static, C: NodeCache + 'static> {
+pub struct UnionOperator<S: Storage + 'static> {
     /// Child operator providing input solutions
-    child: BoxedOperator<S, C>,
+    child: BoxedOperator<S>,
     /// Branch patterns (each branch is its own pattern list)
     branches: Vec<Vec<Pattern>>,
     /// Unified schema across child + all branch patterns
@@ -40,7 +40,7 @@ pub struct UnionOperator<S: Storage + 'static, C: NodeCache + 'static> {
     current_input_row: usize,
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> UnionOperator<S, C> {
+impl<S: Storage + 'static> UnionOperator<S> {
     /// Create a new correlated UNION operator.
     ///
     /// # Arguments
@@ -48,7 +48,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> UnionOperator<S, C> {
     /// * `child` - Input solutions operator
     /// * `branches` - Branch pattern lists (at least one required)
     ///
-    pub fn new(child: BoxedOperator<S, C>, branches: Vec<Vec<Pattern>>) -> Self {
+    pub fn new(child: BoxedOperator<S>, branches: Vec<Vec<Pattern>>) -> Self {
         assert!(!branches.is_empty(), "UNION requires at least one branch");
 
         // Build unified schema: start with child schema (preserve order),
@@ -94,12 +94,12 @@ impl<S: Storage + 'static, C: NodeCache + 'static> UnionOperator<S, C> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for UnionOperator<S, C> {
+impl<S: Storage + 'static> Operator<S> for UnionOperator<S> {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
         self.child.open(ctx).await?;
         self.state = OperatorState::Open;
         self.output_buffer.clear();
@@ -108,7 +108,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for UnionOpera
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }
@@ -145,7 +145,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for UnionOpera
             for branch_patterns in &self.branches {
                 let seed = SeedOperator::from_batch_row(&input_batch, row_idx);
                 let mut branch_op =
-                    build_where_operators_seeded::<S, C>(Some(Box::new(seed)), branch_patterns, None)?;
+                    build_where_operators_seeded::<S>(Some(Box::new(seed)), branch_patterns, None)?;
 
                 branch_op.open(ctx).await?;
                 while let Some(batch) = branch_op.next_batch(ctx).await? {
@@ -262,16 +262,14 @@ fn extend_schema_from_patterns(schema: &mut Vec<VarId>, seen: &mut HashSet<VarId
 mod tests {
     use super::*;
     use crate::seed::EmptyOperator;
-    use fluree_db_core::{MemoryStorage, NoCache, Sid};
+    use fluree_db_core::{MemoryStorage, Sid};
     use std::sync::Arc;
-
-    type TestCache = NoCache;
 
     #[test]
     fn test_union_operator_schema_computation() {
         // Child schema has ?s, branches introduce ?n and ?e.
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
-        let child: BoxedOperator<MemoryStorage, TestCache> = Box::new(TestEmptyWithSchema { schema: child_schema });
+        let child: BoxedOperator<MemoryStorage> = Box::new(TestEmptyWithSchema { schema: child_schema });
 
         let branches = vec![
             vec![Pattern::Triple(crate::pattern::TriplePattern::new(
@@ -294,7 +292,7 @@ mod tests {
     fn test_union_operator_allows_position_0_via_empty_seed_child() {
         // UNION at position 0 should still be able to run using an EmptyOperator child.
         // Here we only validate it constructs; runtime behavior is covered by execute.rs integration tests.
-        let child: BoxedOperator<MemoryStorage, TestCache> = Box::new(EmptyOperator::new());
+        let child: BoxedOperator<MemoryStorage> = Box::new(EmptyOperator::new());
         let branches = vec![vec![], vec![]];
         let op = UnionOperator::new(child, branches);
         assert_eq!(op.schema().len(), 0);
@@ -306,16 +304,16 @@ mod tests {
     }
 
     #[async_trait]
-    impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for TestEmptyWithSchema {
+    impl<S: Storage + 'static> Operator<S> for TestEmptyWithSchema {
         fn schema(&self) -> &[VarId] {
             &self.schema
         }
 
-        async fn open(&mut self, _ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+        async fn open(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<()> {
             Ok(())
         }
 
-        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
             Ok(None)
         }
 

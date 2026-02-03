@@ -17,7 +17,7 @@ use fluree_db_core::{
     PropertyStatEntry, SchemaPredicateInfo,
 };
 use fluree_db_core::value_id::DatatypeId;
-use fluree_db_core::{NodeCache, Sid, Storage};
+use fluree_db_core::{Sid, Storage};
 use fluree_db_ledger::LedgerState;
 use fluree_db_core::alias as core_alias;
 use fluree_db_nameservice::{parse_alias, NsRecord, VgNsRecord};
@@ -80,13 +80,12 @@ pub type Result<T> = std::result::Result<T, LedgerInfoError>;
 ///
 /// The nameservice section uses standard JSON-LD keywords.
 /// The stats section has IRIs optionally compacted via the provided context.
-pub async fn build_ledger_info<S, C>(
-    ledger: &LedgerState<S, C>,
+pub async fn build_ledger_info<S>(
+    ledger: &LedgerState<S>,
     context: Option<&JsonValue>,
 ) -> Result<JsonValue>
 where
     S: Storage + Clone + 'static,
-    C: NodeCache,
 {
     // Build the IRI compactor for stats decoding
     let parsed_context = context
@@ -382,15 +381,14 @@ pub fn vg_record_to_jsonld(record: &VgNsRecord) -> JsonValue {
 }
 
 /// Build stats section with decoded IRIs and hierarchy fields.
-fn build_stats<S, C>(
-    ledger: &LedgerState<S, C>,
+fn build_stats<S>(
+    ledger: &LedgerState<S>,
     stats: &IndexStats,
     compactor: &IriCompactor,
     schema_index: &SchemaIndex,
 ) -> Result<JsonValue>
 where
     S: Storage + Clone + 'static,
-    C: NodeCache,
 {
     // CANONICAL RULE for indexed_t:
     // 1. Use ns_record.index_t if ns_record exists (even if 0 when no index yet)
@@ -707,7 +705,7 @@ fn compute_selectivity(count: u64, ndv: u64) -> u64 {
 // LedgerInfoBuilder
 // ============================================================================
 
-use crate::{ApiError, Fluree, SimpleCache};
+use crate::{ApiError, Fluree};
 use fluree_db_nameservice::NameService;
 
 /// Builder for retrieving comprehensive ledger metadata.
@@ -724,7 +722,7 @@ use fluree_db_nameservice::NameService;
 ///     .await?;
 /// ```
 pub struct LedgerInfoBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a Fluree<S, SimpleCache, N>,
+    fluree: &'a Fluree<S, N>,
     alias: String,
     context: Option<&'a JsonValue>,
 }
@@ -735,7 +733,7 @@ where
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Create a new builder (called by `Fluree::ledger_info()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, SimpleCache, N>, alias: String) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<S, N>, alias: String) -> Self {
         Self {
             fluree,
             alias,

@@ -236,12 +236,11 @@ pub fn write_numbig_arena(path: &std::path::Path, arena: &NumBigArena) -> io::Re
     Ok(())
 }
 
-/// Read a NumBigArena from a binary NBA1 file.
+/// Parse a NumBigArena from a byte buffer (NBA1 format).
 ///
 /// Entries are inserted in file order, so handles are preserved
 /// (entry 0 = handle 0, etc.).
-pub fn read_numbig_arena(path: &std::path::Path) -> io::Result<NumBigArena> {
-    let data = std::fs::read(path)?;
+pub fn read_numbig_arena_from_bytes(data: &[u8]) -> io::Result<NumBigArena> {
     if data.len() < 8 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -328,6 +327,14 @@ pub fn read_numbig_arena(path: &std::path::Path) -> io::Result<NumBigArena> {
     }
 
     Ok(arena)
+}
+
+/// Read a NumBigArena from a binary NBA1 file.
+///
+/// Entries are inserted in file order, so handles are preserved
+/// (entry 0 = handle 0, etc.).
+pub fn read_numbig_arena(path: &std::path::Path) -> io::Result<NumBigArena> {
+    read_numbig_arena_from_bytes(&std::fs::read(path)?)
 }
 
 // ============================================================================

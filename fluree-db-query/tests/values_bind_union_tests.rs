@@ -5,7 +5,7 @@
 //! - BIND expression evaluation
 //! - UNION branch execution
 
-use fluree_db_core::{Db, FlakeValue, MemoryStorage, NoCache, Sid};
+use fluree_db_core::{Db, FlakeValue, MemoryStorage, Sid};
 use fluree_db_query::binding::Binding;
 use fluree_db_query::context::ExecutionContext;
 use fluree_db_query::execute::execute_query;
@@ -20,8 +20,8 @@ use fluree_db_query::var_registry::{VarId, VarRegistry};
 use fluree_graph_json_ld::ParsedContext;
 use std::sync::Arc;
 
-fn make_test_db() -> Db<MemoryStorage, NoCache> {
-    Db::genesis(MemoryStorage::new(), NoCache, "test/main")
+fn make_test_db() -> Db<MemoryStorage> {
+    Db::genesis(MemoryStorage::new(), "test/main")
 }
 
 fn make_triple_pattern(s_var: VarId, p_name: &str, o_var: VarId) -> TriplePattern {

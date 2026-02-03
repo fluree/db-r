@@ -4,7 +4,7 @@
 //! from the database. This is needed for f:onClass policy enforcement.
 
 use fluree_db_core::{
-    range_with_overlay, Db, FlakeValue, NodeCache, OverlayProvider, RangeMatch, RangeOptions,
+    range_with_overlay, Db, FlakeValue, OverlayProvider, RangeMatch, RangeOptions,
     RangeTest, Sid, Storage,
 };
 use fluree_vocab::namespaces::RDF;
@@ -30,15 +30,14 @@ use crate::Result;
 ///
 /// A map from subject SID to a vector of class SIDs. Subjects with no
 /// rdf:type assertions will not be present in the map.
-pub async fn lookup_subject_classes<S, C, O>(
+pub async fn lookup_subject_classes<S, O>(
     subjects: &[Sid],
-    db: &Db<S, C>,
+    db: &Db<S>,
     overlay: &O,
     to_t: i64,
 ) -> Result<HashMap<Sid, Vec<Sid>>>
 where
     S: Storage,
-    C: NodeCache,
     O: OverlayProvider + ?Sized,
 {
     if subjects.is_empty() {
@@ -101,16 +100,15 @@ where
 /// * `overlay` - Optional overlay (novelty) to include staged flakes
 /// * `to_t` - The transaction time to query as-of
 /// * `policy_ctx` - The policy context whose cache to populate
-pub async fn populate_class_cache<S, C, O>(
+pub async fn populate_class_cache<S, O>(
     subjects: &[Sid],
-    db: &Db<S, C>,
+    db: &Db<S>,
     overlay: &O,
     to_t: i64,
     policy_ctx: &crate::evaluate::PolicyContext,
 ) -> Result<()>
 where
     S: Storage,
-    C: NodeCache,
     O: OverlayProvider + ?Sized,
 {
     // Skip if no class policies need checking

@@ -88,7 +88,7 @@ pub use aws::{
 };
 
 // Re-export core types commonly used with connections
-pub use fluree_db_core::{Db, MemoryStorage, SimpleCache};
+pub use fluree_db_core::{Db, MemoryStorage};
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use fluree_db_core::FileStorage;
 
@@ -107,8 +107,7 @@ pub use fluree_db_core::FileStorage;
 pub fn connect_memory() -> MemoryConnection {
     let config = ConnectionConfig::memory();
     let storage = MemoryStorage::new();
-    let cache = SimpleCache::new(config.cache.max_entries);
-    Connection::new(config, storage, cache)
+    Connection::new(config, storage)
 }
 
 /// Create a file-backed connection
@@ -129,8 +128,7 @@ pub fn connect_memory() -> MemoryConnection {
 pub fn connect_file(base_path: &str) -> FileConnection {
     let config = ConnectionConfig::file(base_path);
     let storage = FileStorage::new(base_path);
-    let cache = SimpleCache::new(config.cache.max_entries);
-    Connection::new(config, storage, cache)
+    Connection::new(config, storage)
 }
 
 /// Connection that can be file, memory, or AWS backed
@@ -190,12 +188,12 @@ impl ConnectionHandle {
 pub enum DynDb {
     /// File-backed database
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-    File(Db<FileStorage, SimpleCache>),
+    File(Db<FileStorage>),
     /// Memory-backed database
-    Memory(Db<MemoryStorage, SimpleCache>),
+    Memory(Db<MemoryStorage>),
     /// AWS-backed database (S3 storage)
     #[cfg(feature = "aws")]
-    Aws(Db<fluree_db_storage_aws::S3Storage, SimpleCache>),
+    Aws(Db<fluree_db_storage_aws::S3Storage>),
 }
 
 /// Create connection from JSON config (auto-detects format)
@@ -290,17 +288,15 @@ fn create_sync_connection(config: ConnectionConfig) -> Result<ConnectionHandle> 
                     .as_ref()
                     .ok_or_else(|| ConnectionError::invalid_config("File storage requires path"))?;
                 let storage = FileStorage::new(path.as_ref());
-                let cache = SimpleCache::new(config.cache.max_entries);
                 Ok(ConnectionHandle::File(Connection::new(
-                    config, storage, cache,
+                    config, storage,
                 )))
             }
         }
         StorageType::Memory => {
             let storage = MemoryStorage::new();
-            let cache = SimpleCache::new(config.cache.max_entries);
             Ok(ConnectionHandle::Memory(Connection::new(
-                config, storage, cache,
+                config, storage,
             )))
         }
         StorageType::S3(_) => Err(ConnectionError::invalid_config(
@@ -334,17 +330,15 @@ async fn create_async_connection(config: ConnectionConfig) -> Result<ConnectionH
                     .as_ref()
                     .ok_or_else(|| ConnectionError::invalid_config("File storage requires path"))?;
                 let storage = FileStorage::new(path.as_ref());
-                let cache = SimpleCache::new(config.cache.max_entries);
                 Ok(ConnectionHandle::File(Connection::new(
-                    config, storage, cache,
+                    config, storage,
                 )))
             }
         }
         StorageType::Memory => {
             let storage = MemoryStorage::new();
-            let cache = SimpleCache::new(config.cache.max_entries);
             Ok(ConnectionHandle::Memory(Connection::new(
-                config, storage, cache,
+                config, storage,
             )))
         }
         StorageType::Unsupported { type_iri, .. } => {
@@ -473,16 +467,12 @@ async fn create_aws_connection(
         }
     };
 
-    // Create cache
-    let cache = SimpleCache::new(config.cache.max_entries);
-
     // Build connection handle directly (bypasses connect_aws to use registry-shared storage)
     let handle = aws::AwsConnectionHandle::new(
         config,
         (*index_storage).clone(),
         commit_storage.map(|s| (*s).clone()),
         nameservice,
-        cache,
     );
 
     Ok(ConnectionHandle::Aws(handle))
@@ -512,8 +502,7 @@ mod tests {
             ..ConnectionConfig::default()
         };
         let storage = MemoryStorage::new();
-        let cache = SimpleCache::new(500);
-        let conn = Connection::new(config, storage, cache);
+        let conn = Connection::new(config, storage);
 
         assert_eq!(conn.config().parallelism, 8);
     }

@@ -21,7 +21,7 @@ use crate::error::Result;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{FlakeValue, NodeCache, Sid, Storage};
+use fluree_db_core::{FlakeValue, Sid, Storage};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
@@ -71,9 +71,9 @@ pub struct AggregateSpec {
 ///
 /// Expects input from `GroupByOperator` where non-grouped columns contain
 /// `Grouped(Vec<Binding>)` values. Replaces those with aggregate results.
-pub struct AggregateOperator<S: Storage + 'static, C: NodeCache + 'static> {
+pub struct AggregateOperator<S: Storage + 'static> {
     /// Child operator (typically GroupByOperator)
-    child: BoxedOperator<S, C>,
+    child: BoxedOperator<S>,
     /// Aggregate specifications
     aggregates: Vec<AggregateSpec>,
     /// Output schema
@@ -91,7 +91,7 @@ pub struct AggregateOperator<S: Storage + 'static, C: NodeCache + 'static> {
     child_col_count: usize,
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> AggregateOperator<S, C> {
+impl<S: Storage + 'static> AggregateOperator<S> {
     /// Create a new aggregate operator
     ///
     /// # Arguments
@@ -102,7 +102,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> AggregateOperator<S, C> {
     /// The output schema includes:
     /// - All columns from child (with aggregate input vars replaced by output vars)
     /// - Additional columns for COUNT(*) aggregates (which have no input var)
-    pub fn new(child: BoxedOperator<S, C>, aggregates: Vec<AggregateSpec>) -> Self {
+    pub fn new(child: BoxedOperator<S>, aggregates: Vec<AggregateSpec>) -> Self {
         let child_schema = child.schema().to_vec();
         let child_col_count = child_schema.len();
 
@@ -166,18 +166,18 @@ impl<S: Storage + 'static, C: NodeCache + 'static> AggregateOperator<S, C> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for AggregateOperator<S, C> {
+impl<S: Storage + 'static> Operator<S> for AggregateOperator<S> {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
         self.child.open(ctx).await?;
         self.state = OperatorState::Open;
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }

@@ -9,7 +9,7 @@ use crate::policy::QueryPolicyEnforcer;
 use crate::r2rml::{R2rmlProvider, R2rmlTableProvider};
 use crate::var_registry::VarRegistry;
 use crate::vector::VectorIndexProvider;
-use fluree_db_core::{Db, NoOverlay, NodeCache, OverlayProvider, Sid, Storage, Tracker};
+use fluree_db_core::{Db, NoOverlay, OverlayProvider, Sid, Storage, Tracker};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 #[cfg(feature = "native")]
 use fluree_db_core::PrefetchService;
@@ -32,12 +32,12 @@ use std::sync::Arc;
 ///
 /// # Lifetime Bounds
 ///
-/// The `'static` bounds on `S` and `C` are required for the native prefetch service,
-/// which spawns background tasks that need `'static` types. In practice, storage and
-/// cache implementations are always `'static` (they don't borrow from local data).
-pub struct ExecutionContext<'a, S: Storage + 'static, C: NodeCache + 'static> {
+/// The `'static` bound on `S` is required for the native prefetch service,
+/// which spawns background tasks that need `'static` types. In practice, storage
+/// implementations are always `'static` (they don't borrow from local data).
+pub struct ExecutionContext<'a, S: Storage + 'static> {
     /// Reference to the primary database (for encoding/decoding, single-db fallback)
-    pub db: &'a Db<S, C>,
+    pub db: &'a Db<S>,
     /// Variable registry for this query
     pub vars: &'a VarRegistry,
     /// Target transaction time (for time-travel queries)
@@ -68,7 +68,7 @@ pub struct ExecutionContext<'a, S: Storage + 'static, C: NodeCache + 'static> {
     /// Optional R2RML table provider for Iceberg table scanning
     pub r2rml_table_provider: Option<&'a dyn R2rmlTableProvider>,
     /// Optional dataset for multi-graph queries
-    pub dataset: Option<&'a DataSet<'a, S, C>>,
+    pub dataset: Option<&'a DataSet<'a, S>>,
     /// Currently active graph (Default or Named) - only meaningful when dataset is Some
     pub active_graph: ActiveGraph,
     /// Optional execution tracker (time/fuel/policy)
@@ -83,13 +83,13 @@ pub struct ExecutionContext<'a, S: Storage + 'static, C: NodeCache + 'static> {
     /// When present, operators can enqueue upcoming index nodes for prefetch,
     /// which warms the cache before the mainline query needs them.
     #[cfg(feature = "native")]
-    pub prefetch: Option<Arc<PrefetchService<S, C>>>,
+    pub prefetch: Option<Arc<PrefetchService<S>>>,
     /// Arc-wrapped database for prefetch requests (native only).
     ///
     /// Required for background prefetch tasks which need `'static` data.
     /// Set this when `prefetch` is set, using the same db that's referenced by `db`.
     #[cfg(feature = "native")]
-    pub prefetch_db: Option<Arc<Db<S, C>>>,
+    pub prefetch_db: Option<Arc<Db<S>>>,
     /// Arc-wrapped overlay for prefetch requests (native only).
     ///
     /// Required for background prefetch tasks which need `'static` data.
@@ -107,9 +107,9 @@ pub struct ExecutionContext<'a, S: Storage + 'static, C: NodeCache + 'static> {
     pub binary_g_id: u32,
 }
 
-impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C> {
+impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
     /// Create a new execution context
-    pub fn new(db: &'a Db<S, C>, vars: &'a VarRegistry) -> Self {
+    pub fn new(db: &'a Db<S>, vars: &'a VarRegistry) -> Self {
         Self {
             db,
             vars,
@@ -140,7 +140,7 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
     }
 
     /// Create context with specific time-travel settings
-    pub fn with_time(db: &'a Db<S, C>, vars: &'a VarRegistry, to_t: i64, from_t: Option<i64>) -> Self {
+    pub fn with_time(db: &'a Db<S>, vars: &'a VarRegistry, to_t: i64, from_t: Option<i64>) -> Self {
         Self {
             db,
             vars,
@@ -178,7 +178,7 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
 
     /// Create a new execution context with an overlay provider (novelty)
     pub fn with_overlay(
-        db: &'a Db<S, C>,
+        db: &'a Db<S>,
         vars: &'a VarRegistry,
         overlay: &'a dyn OverlayProvider,
     ) -> Self {
@@ -213,7 +213,7 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
 
     /// Create context with time-travel settings and an overlay provider
     pub fn with_time_and_overlay(
-        db: &'a Db<S, C>,
+        db: &'a Db<S>,
         vars: &'a VarRegistry,
         to_t: i64,
         from_t: Option<i64>,
@@ -391,7 +391,7 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
     }
 
     /// Attach a dataset to this execution context for multi-graph queries
-    pub fn with_dataset(mut self, dataset: &'a DataSet<'a, S, C>) -> Self {
+    pub fn with_dataset(mut self, dataset: &'a DataSet<'a, S>) -> Self {
         self.dataset = Some(dataset);
         self
     }
@@ -402,7 +402,7 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
     /// or `Many` with the active graph(s) from the dataset.
     ///
     /// Returns `Single` when no dataset is present, or `Many` with the relevant graph references to iterate over.
-    pub fn active_graphs(&self) -> ActiveGraphs<'a, '_, S, C> {
+    pub fn active_graphs(&self) -> ActiveGraphs<'a, '_, S> {
         match (&self.dataset, &self.active_graph) {
             (None, _) => ActiveGraphs::Single,
             (Some(ds), ActiveGraph::Default) => {
@@ -420,7 +420,7 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
     /// `None` otherwise (single-db mode or named graph active).
     ///
     /// Use this instead of `active_graphs()` in tight loops to avoid Vec allocation.
-    pub fn default_graphs_slice(&self) -> Option<&[crate::dataset::GraphRef<'a, S, C>]> {
+    pub fn default_graphs_slice(&self) -> Option<&[crate::dataset::GraphRef<'a, S>]> {
         match (&self.dataset, &self.active_graph) {
             (Some(ds), ActiveGraph::Default) => Some(ds.default_graphs()),
             _ => None,
@@ -503,7 +503,7 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
     /// tasks to have `'static` data. Use `with_prefetch_resources` to set all three.
     ///
     #[cfg(feature = "native")]
-    pub fn with_prefetch(mut self, prefetch: Arc<PrefetchService<S, C>>) -> Self {
+    pub fn with_prefetch(mut self, prefetch: Arc<PrefetchService<S>>) -> Self {
         self.prefetch = Some(prefetch);
         self
     }
@@ -518,8 +518,8 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
     #[cfg(feature = "native")]
     pub fn with_prefetch_resources(
         mut self,
-        prefetch: Arc<PrefetchService<S, C>>,
-        db: Arc<Db<S, C>>,
+        prefetch: Arc<PrefetchService<S>>,
+        db: Arc<Db<S>>,
         overlay: Arc<dyn OverlayProvider>,
     ) -> Self {
         self.prefetch = Some(prefetch);

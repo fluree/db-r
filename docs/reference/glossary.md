@@ -186,9 +186,22 @@ Following relationships recursively to explore connected entities.
 
 ## Virtual Graph Terms
 
+### Graph Source
+
+An addressable query source that participates in execution and can be named in SPARQL via `FROM`, `FROM NAMED`, and `GRAPH <…>`.
+
+Graph sources include:
+- Ledger graph sources (default graph and named graphs stored in a ledger)
+- Index graph sources (BM25 and vector/HNSW indexes)
+- Mapped graph sources (R2RML and Iceberg-backed graph mappings)
+
 ### Virtual Graph
 
-A queryable data source that appears as a ledger but is backed by specialized storage (BM25 index, vector index, Iceberg table, SQL database).
+A legacy/compatibility term for non-ledger graph sources.
+
+Historically, Fluree used “virtual graph” to mean: “a queryable data source that appears in graph queries but is backed by specialized storage (BM25 index, vector index, Iceberg table, SQL database).”
+
+New docs prefer the umbrella term **Graph Source** and use “virtual graph” only when referring to existing nameservice records/APIs that still use VG naming.
 
 Example: `products-search:main`, `products-vector:main`
 

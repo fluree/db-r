@@ -19,8 +19,8 @@
 //! ```ignore
 //! use fluree_db_core::{Db, range, IndexType, RangeTest};
 //!
-//! // Apps provide their own Storage and Cache implementations
-//! let db = Db::load(&storage, &cache, address).await?;
+//! // Apps provide their own Storage implementation
+//! let db = Db::load(storage, address).await?;
 //! let flakes = range(&db, IndexType::Spot, RangeTest::Eq, match_val, opts).await?;
 //! ```
 
@@ -64,7 +64,7 @@ pub use flake::{Flake, FlakeMeta};
 pub use comparator::IndexType;
 pub use index::{IndexNode, ChildRef, ResolvedNode};
 pub use storage::{
-    ContentAddressedWrite, ContentKind, ContentWriteResult, MemoryStorage, ReadHint,
+    ContentAddressedWrite, ContentKind, ContentWriteResult, DictKind, MemoryStorage, ReadHint,
     Storage, StorageRead, StorageWrite,
     // Helper functions for storage implementations
     alias_prefix_for_path, content_address, content_path, sha256_hex,
@@ -114,8 +114,8 @@ pub use index_schema::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};
 /// ```
 pub mod prelude {
     pub use crate::storage::{
-        ContentAddressedWrite, ContentKind, ContentWriteResult, MemoryStorage, ReadHint, Storage,
-        StorageRead, StorageWrite,
+        ContentAddressedWrite, ContentKind, ContentWriteResult, DictKind, MemoryStorage, ReadHint,
+        Storage, StorageRead, StorageWrite,
     };
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     pub use crate::storage::FileStorage;

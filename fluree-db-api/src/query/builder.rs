@@ -21,7 +21,7 @@ use crate::format::FormatterConfig;
 use crate::query::helpers::parse_dataset_spec;
 use crate::view::{FlureeDataSetView, FlureeView, QueryInput};
 use crate::{
-    ApiError, Fluree, NameService, PolicyContext, QueryResult, Result, SimpleCache, Storage,
+    ApiError, Fluree, NameService, PolicyContext, QueryResult, Result, Storage,
     TrackedErrorResponse, TrackedQueryResponse, TrackingOptions,
 };
 
@@ -160,8 +160,8 @@ impl<'a> QueryCore<'a> {
 ///     .execute().await?;
 /// ```
 pub struct ViewQueryBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a Fluree<S, SimpleCache, N>,
-    view: &'a FlureeView<S, SimpleCache>,
+    fluree: &'a Fluree<S, N>,
+    view: &'a FlureeView<S>,
     core: QueryCore<'a>,
 }
 
@@ -172,8 +172,8 @@ where
 {
     /// Create a new builder (called by `FlureeView::query()`).
     pub(crate) fn new(
-        fluree: &'a Fluree<S, SimpleCache, N>,
-        view: &'a FlureeView<S, SimpleCache>,
+        fluree: &'a Fluree<S, N>,
+        view: &'a FlureeView<S>,
     ) -> Self {
         Self {
             fluree,
@@ -312,8 +312,8 @@ where
 ///     .execute().await?;
 /// ```
 pub struct DatasetQueryBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a Fluree<S, SimpleCache, N>,
-    dataset: &'a FlureeDataSetView<S, SimpleCache>,
+    fluree: &'a Fluree<S, N>,
+    dataset: &'a FlureeDataSetView<S>,
     core: QueryCore<'a>,
 }
 
@@ -324,8 +324,8 @@ where
 {
     /// Create a new builder (called by `FlureeDataSetView::query()`).
     pub(crate) fn new(
-        fluree: &'a Fluree<S, SimpleCache, N>,
-        dataset: &'a FlureeDataSetView<S, SimpleCache>,
+        fluree: &'a Fluree<S, N>,
+        dataset: &'a FlureeDataSetView<S>,
     ) -> Self {
         Self {
             fluree,
@@ -470,7 +470,7 @@ where
 ///     .execute().await?;
 /// ```
 pub struct FromQueryBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a Fluree<S, SimpleCache, N>,
+    fluree: &'a Fluree<S, N>,
     core: QueryCore<'a>,
     policy: Option<Arc<PolicyContext>>,
 }
@@ -481,7 +481,7 @@ where
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Create a new builder (called by `Fluree::query_from()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, SimpleCache, N>) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<S, N>) -> Self {
         Self {
             fluree,
             core: QueryCore::new(),

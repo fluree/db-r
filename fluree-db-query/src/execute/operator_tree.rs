@@ -16,7 +16,7 @@ use crate::parse::{ParsedQuery, SelectMode};
 use crate::project::ProjectOperator;
 use crate::sort::SortOperator;
 use crate::var_registry::VarId;
-use fluree_db_core::{NodeCache, StatsView, Storage};
+use fluree_db_core::{StatsView, Storage};
 use std::sync::Arc;
 
 use super::where_plan::build_where_operators;
@@ -25,11 +25,11 @@ use super::where_plan::build_where_operators;
 ///
 /// Constructs operators in the order:
 /// WHERE patterns → GROUP BY → Aggregates → HAVING → ORDER BY → PROJECT → DISTINCT → OFFSET → LIMIT
-pub fn build_operator_tree<S: Storage + 'static, C: NodeCache + 'static>(
+pub fn build_operator_tree<S: Storage + 'static>(
     query: &ParsedQuery,
     options: &QueryOptions,
     stats: Option<Arc<StatsView>>,
-) -> Result<BoxedOperator<S, C>> {
+) -> Result<BoxedOperator<S>> {
     // Build WHERE clause operators
     let mut operator = build_where_operators(&query.patterns, stats)?;
 
@@ -210,7 +210,7 @@ mod tests {
     use crate::parse::ParsedQuery;
     use crate::pattern::{Term, TriplePattern};
     use crate::sort::SortSpec;
-    use fluree_db_core::{MemoryStorage, NoCache, Sid};
+    use fluree_db_core::{MemoryStorage, Sid};
     use fluree_graph_json_ld::ParsedContext;
 
     fn make_pattern(s_var: VarId, p_name: &str, o_var: VarId) -> TriplePattern {
@@ -248,7 +248,7 @@ mod tests {
         };
 
         let result =
-            build_operator_tree::<MemoryStorage, NoCache>(&query, &QueryOptions::default(), None);
+            build_operator_tree::<MemoryStorage>(&query, &QueryOptions::default(), None);
         match result {
             Err(e) => assert!(e.to_string().contains("not found")),
             Ok(_) => panic!("Expected error for invalid select var"),
@@ -270,7 +270,7 @@ mod tests {
 
         let options = QueryOptions::new().with_order_by(vec![SortSpec::asc(VarId(99))]); // Invalid var
 
-        let result = build_operator_tree::<MemoryStorage, NoCache>(&query, &options, None);
+        let result = build_operator_tree::<MemoryStorage>(&query, &options, None);
         match result {
             Err(e) => assert!(e.to_string().contains("Sort variable")),
             Ok(_) => panic!("Expected error for invalid sort var"),
@@ -281,7 +281,7 @@ mod tests {
     fn test_build_operator_tree_empty_patterns() {
         let query = make_simple_query(vec![], vec![]);
         let result =
-            build_operator_tree::<MemoryStorage, NoCache>(&query, &QueryOptions::default(), None);
+            build_operator_tree::<MemoryStorage>(&query, &QueryOptions::default(), None);
         assert!(result.is_ok());
 
         let op = result.unwrap();

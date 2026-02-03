@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-use fluree_db_core::{Db, NodeCache, OverlayProvider, Storage};
+use fluree_db_core::{Db, OverlayProvider, Storage};
 
 use crate::policy::QueryPolicyEnforcer;
 
@@ -39,9 +39,9 @@ use crate::policy::QueryPolicyEnforcer;
 /// Each graph in a dataset can have its own policy enforcer, supporting
 /// the "wrap-first, then compose" model where individual views are
 /// policy-wrapped before being assembled into a dataset.
-pub struct GraphRef<'a, S: Storage, C: NodeCache> {
+pub struct GraphRef<'a, S: Storage> {
     /// The database for this graph
-    pub db: &'a Db<S, C>,
+    pub db: &'a Db<S>,
     /// Overlay provider (novelty) - NOT optional, LedgerState always has novelty
     pub overlay: &'a dyn OverlayProvider,
     /// Target transaction time for this graph
@@ -60,7 +60,7 @@ pub struct GraphRef<'a, S: Storage, C: NodeCache> {
     pub policy_enforcer: Option<Arc<QueryPolicyEnforcer>>,
 }
 
-impl<'a, S: Storage, C: NodeCache> GraphRef<'a, S, C> {
+impl<'a, S: Storage> GraphRef<'a, S> {
     /// Create a new graph reference
     ///
     /// # Arguments
@@ -70,7 +70,7 @@ impl<'a, S: Storage, C: NodeCache> GraphRef<'a, S, C> {
     /// * `to_t` - Target transaction time
     /// * `ledger_alias` - Ledger alias for provenance tracking (e.g., "orders:main")
     pub fn new(
-        db: &'a Db<S, C>,
+        db: &'a Db<S>,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
         ledger_alias: impl Into<Arc<str>>,
@@ -94,7 +94,7 @@ impl<'a, S: Storage, C: NodeCache> GraphRef<'a, S, C> {
     /// * `ledger_alias` - Ledger alias for provenance tracking
     /// * `policy_enforcer` - Policy enforcer for this graph
     pub fn with_policy(
-        db: &'a Db<S, C>,
+        db: &'a Db<S>,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
         ledger_alias: impl Into<Arc<str>>,
@@ -112,7 +112,7 @@ impl<'a, S: Storage, C: NodeCache> GraphRef<'a, S, C> {
     /// Create a graph reference using the db's alias as the ledger alias
     ///
     /// Convenience method when the db's alias is the appropriate identifier.
-    pub fn from_db(db: &'a Db<S, C>, overlay: &'a dyn OverlayProvider, to_t: i64) -> Self {
+    pub fn from_db(db: &'a Db<S>, overlay: &'a dyn OverlayProvider, to_t: i64) -> Self {
         Self {
             db,
             overlay,
@@ -131,7 +131,7 @@ impl<'a, S: Storage, C: NodeCache> GraphRef<'a, S, C> {
     }
 }
 
-impl<'a, S: Storage, C: NodeCache> fmt::Debug for GraphRef<'a, S, C> {
+impl<'a, S: Storage> fmt::Debug for GraphRef<'a, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GraphRef")
             .field("db", &"<Db>")
@@ -144,8 +144,8 @@ impl<'a, S: Storage, C: NodeCache> fmt::Debug for GraphRef<'a, S, C> {
 }
 
 // Implement GraphView for GraphRef to enable composability
-impl<'a, S: Storage, C: NodeCache> crate::graph_view::GraphView<S, C> for GraphRef<'a, S, C> {
-    fn resolve(&self) -> crate::graph_view::ResolvedGraphView<'_, S, C> {
+impl<'a, S: Storage> crate::graph_view::GraphView<S> for GraphRef<'a, S> {
+    fn resolve(&self) -> crate::graph_view::ResolvedGraphView<'_, S> {
         crate::graph_view::ResolvedGraphView {
             db: self.db,
             overlay: self.overlay,
@@ -173,14 +173,14 @@ impl<'a, S: Storage, C: NodeCache> crate::graph_view::GraphView<S, C> for GraphR
 ///
 /// Construct via `DataSet::new()` and add graphs with `with_default_graph` and `with_named_graph`.
 #[derive(Debug)]
-pub struct DataSet<'a, S: Storage, C: NodeCache> {
+pub struct DataSet<'a, S: Storage> {
     /// Default graphs - unioned for non-GRAPH patterns
-    default_graphs: Vec<GraphRef<'a, S, C>>,
+    default_graphs: Vec<GraphRef<'a, S>>,
     /// Named graphs keyed by IRI string (not Sid)
-    named_graphs: HashMap<Arc<str>, GraphRef<'a, S, C>>,
+    named_graphs: HashMap<Arc<str>, GraphRef<'a, S>>,
 }
 
-impl<'a, S: Storage, C: NodeCache> DataSet<'a, S, C> {
+impl<'a, S: Storage> DataSet<'a, S> {
     /// Create a new empty dataset
     pub fn new() -> Self {
         Self {
@@ -190,24 +190,24 @@ impl<'a, S: Storage, C: NodeCache> DataSet<'a, S, C> {
     }
 
     /// Add a default graph
-    pub fn with_default_graph(mut self, graph: GraphRef<'a, S, C>) -> Self {
+    pub fn with_default_graph(mut self, graph: GraphRef<'a, S>) -> Self {
         self.default_graphs.push(graph);
         self
     }
 
     /// Add a named graph
-    pub fn with_named_graph(mut self, iri: impl Into<Arc<str>>, graph: GraphRef<'a, S, C>) -> Self {
+    pub fn with_named_graph(mut self, iri: impl Into<Arc<str>>, graph: GraphRef<'a, S>) -> Self {
         self.named_graphs.insert(iri.into(), graph);
         self
     }
 
     /// Get default graph references
-    pub fn default_graphs(&self) -> &[GraphRef<'a, S, C>] {
+    pub fn default_graphs(&self) -> &[GraphRef<'a, S>] {
         &self.default_graphs
     }
 
     /// Get a named graph by IRI (None if not found)
-    pub fn named_graph(&self, iri: &str) -> Option<&GraphRef<'a, S, C>> {
+    pub fn named_graph(&self, iri: &str) -> Option<&GraphRef<'a, S>> {
         self.named_graphs.get(iri)
     }
 
@@ -239,7 +239,7 @@ impl<'a, S: Storage, C: NodeCache> DataSet<'a, S, C> {
     /// Iterate over all named graphs (IRI, GraphRef pairs)
     ///
     /// Used when searching for a graph by ledger_alias rather than by IRI.
-    pub fn named_graphs_iter(&self) -> impl Iterator<Item = (&Arc<str>, &GraphRef<'a, S, C>)> {
+    pub fn named_graphs_iter(&self) -> impl Iterator<Item = (&Arc<str>, &GraphRef<'a, S>)> {
         self.named_graphs.iter()
     }
 
@@ -258,7 +258,7 @@ impl<'a, S: Storage, C: NodeCache> DataSet<'a, S, C> {
     ///
     /// The dataset construction code should ensure uniqueness, or the caller
     /// should be aware that duplicate aliases may cause ambiguous behavior.
-    pub fn find_by_ledger_alias(&self, ledger_alias: &str) -> Option<&GraphRef<'a, S, C>> {
+    pub fn find_by_ledger_alias(&self, ledger_alias: &str) -> Option<&GraphRef<'a, S>> {
         // Check default graphs first
         for graph in &self.default_graphs {
             if graph.ledger_alias.as_ref() == ledger_alias {
@@ -275,7 +275,7 @@ impl<'a, S: Storage, C: NodeCache> DataSet<'a, S, C> {
     }
 }
 
-impl<'a, S: Storage, C: NodeCache> Default for DataSet<'a, S, C> {
+impl<'a, S: Storage> Default for DataSet<'a, S> {
     fn default() -> Self {
         Self::new()
     }
@@ -332,14 +332,14 @@ impl ActiveGraph {
 /// return slices where possible (`&[GraphRef]` for defaults, `Option<&GraphRef>` for named).
 /// Fine for MVP.
 #[derive(Debug)]
-pub enum ActiveGraphs<'a, 'b, S: Storage, C: NodeCache> {
+pub enum ActiveGraphs<'a, 'b, S: Storage> {
     /// Single-db mode (no dataset) - use `ctx.db`/`ctx.overlay()`/`ctx.to_t`
     Single,
     /// Multiple graphs from dataset
-    Many(Vec<&'b GraphRef<'a, S, C>>),
+    Many(Vec<&'b GraphRef<'a, S>>),
 }
 
-impl<'a, 'b, S: Storage, C: NodeCache> ActiveGraphs<'a, 'b, S, C> {
+impl<'a, 'b, S: Storage> ActiveGraphs<'a, 'b, S> {
     /// Check if this is single-db mode
     pub fn is_single(&self) -> bool {
         matches!(self, Self::Single)
@@ -351,7 +351,7 @@ impl<'a, 'b, S: Storage, C: NodeCache> ActiveGraphs<'a, 'b, S, C> {
     }
 
     /// Get the graphs if in dataset mode
-    pub fn as_many(&self) -> Option<&[&'b GraphRef<'a, S, C>]> {
+    pub fn as_many(&self) -> Option<&[&'b GraphRef<'a, S>]> {
         match self {
             Self::Many(graphs) => Some(graphs),
             Self::Single => None,

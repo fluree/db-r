@@ -8,7 +8,7 @@ use crate::virtual_graph::helpers::{expand_ids_in_results, extract_prefix_map};
 use crate::virtual_graph::result::{
     Bm25CreateResult, Bm25DropResult, Bm25StalenessCheck, Bm25SyncResult, SnapshotSelection,
 };
-use crate::{QueryResult as ApiQueryResult, Result, SimpleCache};
+use crate::{QueryResult as ApiQueryResult, Result};
 use fluree_db_core::{alias as core_alias, OverlayProvider, Storage, StorageWrite};
 use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{NameService, Publisher, VgType, VirtualGraphPublisher};
@@ -24,7 +24,7 @@ use tracing::{info, warn};
 // BM25 Index Creation
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, SimpleCache, N>
+impl<S, N> crate::Fluree<S, N>
 where
     S: Storage + StorageWrite + Clone + 'static,
     N: NameService + Publisher + VirtualGraphPublisher,
@@ -177,7 +177,7 @@ where
     /// Each result object will have an `@id` field identifying the document.
     pub(crate) async fn execute_bm25_indexing_query(
         &self,
-        ledger: &LedgerState<S, SimpleCache>,
+        ledger: &LedgerState<S>,
         query_json: &JsonValue,
     ) -> Result<Vec<JsonValue>> {
         // Parse the query
@@ -230,7 +230,7 @@ where
     /// This is used for building BM25 indexes at historical points in time.
     pub(crate) async fn execute_bm25_indexing_query_historical(
         &self,
-        view: &crate::HistoricalLedgerView<S, SimpleCache>,
+        view: &crate::HistoricalLedgerView<S>,
         query_json: &JsonValue,
     ) -> Result<Vec<JsonValue>> {
         // Parse the query
@@ -332,7 +332,7 @@ where
 // BM25 Index Loading (for queries)
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, SimpleCache, N>
+impl<S, N> crate::Fluree<S, N>
 where
     S: Storage + Clone + 'static,
     N: NameService + VirtualGraphPublisher,
@@ -472,7 +472,7 @@ where
 // BM25 Index Sync (Maintenance)
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, SimpleCache, N>
+impl<S, N> crate::Fluree<S, N>
 where
     S: Storage + StorageWrite + Clone + 'static,
     N: NameService + Publisher + VirtualGraphPublisher,

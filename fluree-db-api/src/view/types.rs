@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use fluree_db_core::{Db, NoOverlay, NodeCache, OverlayProvider, Storage};
+use fluree_db_core::{Db, NoOverlay, OverlayProvider, Storage};
 use fluree_db_ledger::{HistoricalLedgerView, LedgerState};
 use fluree_db_novelty::Novelty;
 use fluree_db_policy::PolicyContext;
@@ -40,7 +40,6 @@ pub enum ReasoningModePrecedence {
 /// # Type Parameters
 ///
 /// - `S`: Storage backend (e.g., `FileStorage`, `MemoryStorage`)
-/// - `C`: Node cache (e.g., `SimpleCache`, `NoCache`)
 ///
 /// # Composition
 ///
@@ -60,12 +59,12 @@ pub enum ReasoningModePrecedence {
 /// `FlureeView` is cheap to clone (all fields are `Arc`-wrapped or `Copy`).
 /// Cloning a view creates a new handle to the same underlying data.
 #[derive(Clone)]
-pub struct FlureeView<S: Storage + 'static, C: NodeCache + 'static> {
+pub struct FlureeView<S: Storage + 'static> {
     // ========================================================================
     // Core components (required)
     // ========================================================================
     /// The indexed database snapshot.
-    pub db: Arc<Db<S, C>>,
+    pub db: Arc<Db<S>>,
 
     /// Overlay provider for uncommitted/derived flakes.
     ///
@@ -114,7 +113,7 @@ pub struct FlureeView<S: Storage + 'static, C: NodeCache + 'static> {
     reasoning_precedence: ReasoningModePrecedence,
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> std::fmt::Debug for FlureeView<S, C> {
+impl<S: Storage + 'static> std::fmt::Debug for FlureeView<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FlureeView")
             .field("ledger_alias", &self.ledger_alias)
@@ -132,7 +131,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> std::fmt::Debug for FlureeVie
 // Constructors
 // ============================================================================
 
-impl<S: Storage + Clone + 'static, C: NodeCache + 'static> FlureeView<S, C> {
+impl<S: Storage + Clone + 'static> FlureeView<S> {
     /// Create a base view from components.
     ///
     /// This is the low-level constructor. Prefer `from_ledger_state` or
@@ -146,7 +145,7 @@ impl<S: Storage + Clone + 'static, C: NodeCache + 'static> FlureeView<S, C> {
     /// * `to_t` - Time bound for queries
     /// * `ledger_alias` - Ledger alias (e.g., "mydb:main")
     pub fn new(
-        db: Arc<Db<S, C>>,
+        db: Arc<Db<S>>,
         overlay: Arc<dyn OverlayProvider>,
         novelty: Option<Arc<Novelty>>,
         to_t: i64,
@@ -175,7 +174,7 @@ impl<S: Storage + Clone + 'static, C: NodeCache + 'static> FlureeView<S, C> {
     /// let ledger = fluree.ledger("mydb:main").await?;
     /// let view = FlureeView::from_ledger_state(&ledger);
     /// ```
-    pub fn from_ledger_state(ledger: &LedgerState<S, C>) -> Self {
+    pub fn from_ledger_state(ledger: &LedgerState<S>) -> Self {
         let novelty = ledger.novelty.clone();
         Self::new(
             Arc::new(ledger.db.clone()),
@@ -196,7 +195,7 @@ impl<S: Storage + Clone + 'static, C: NodeCache + 'static> FlureeView<S, C> {
     /// let historical = fluree.ledger_view_at("mydb:main", 50).await?;
     /// let view = FlureeView::from_historical(&historical);
     /// ```
-    pub fn from_historical(view: &HistoricalLedgerView<S, C>) -> Self {
+    pub fn from_historical(view: &HistoricalLedgerView<S>) -> Self {
         let (overlay, novelty): (Arc<dyn OverlayProvider>, Option<Arc<Novelty>>) =
             match view.overlay() {
                 Some(nov) => (nov.clone() as Arc<dyn OverlayProvider>, Some(nov.clone())),
@@ -214,7 +213,7 @@ impl<S: Storage + Clone + 'static, C: NodeCache + 'static> FlureeView<S, C> {
 
 }
 
-impl<S: Storage + Clone + 'static> FlureeView<S, fluree_db_core::SimpleCache> {
+impl<S: Storage + Clone + 'static> FlureeView<S> {
     /// Create a view from a [`Staged`](crate::tx_builder::Staged) transaction
     /// that includes the staged (uncommitted) changes.
     ///
@@ -287,7 +286,7 @@ impl<S: Storage + Clone + 'static> FlureeView<S, fluree_db_core::SimpleCache> {
 // Time Travel
 // ============================================================================
 
-impl<S: Storage + 'static, C: NodeCache + 'static> FlureeView<S, C> {
+impl<S: Storage + 'static> FlureeView<S> {
     /// Adjust the view's time bound.
     ///
     /// **Important**: This only adjusts the `to_t` filter; it doesn't reload
@@ -310,7 +309,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> FlureeView<S, C> {
 // Policy Wrapper
 // ============================================================================
 
-impl<S: Storage + 'static, C: NodeCache + 'static> FlureeView<S, C> {
+impl<S: Storage + 'static> FlureeView<S> {
     /// Attach a policy context to the view.
     ///
     /// Policy is enforced during query execution and result formatting.
@@ -370,7 +369,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> FlureeView<S, C> {
 // Reasoning Wrapper
 // ============================================================================
 
-impl<S: Storage + 'static, C: NodeCache + 'static> FlureeView<S, C> {
+impl<S: Storage + 'static> FlureeView<S> {
     /// Apply default reasoning modes to queries on this view.
     ///
     /// This mirrors Clojure's `wrap-reasoning`. The reasoning modes apply
@@ -469,7 +468,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> FlureeView<S, C> {
 // Accessors
 // ============================================================================
 
-impl<S: Storage + 'static, C: NodeCache + 'static> FlureeView<S, C> {
+impl<S: Storage + 'static> FlureeView<S> {
     /// Get the concrete novelty overlay (if available).
     ///
     /// This is needed for policy stats (`f:onClass`) and some time resolution
@@ -528,12 +527,11 @@ impl std::fmt::Debug for DerivedFactsHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::{MemoryStorage, NoCache};
+    use fluree_db_core::MemoryStorage;
 
-    fn make_test_db() -> Db<MemoryStorage, NoCache> {
+    fn make_test_db() -> Db<MemoryStorage> {
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        Db::genesis(storage, cache, "test:main")
+        Db::genesis(storage, "test:main")
     }
 
     #[test]

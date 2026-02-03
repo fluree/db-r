@@ -26,7 +26,7 @@ fn extract_first_string(v: &serde_json::Value) -> Option<String> {
     None
 }
 
-async fn create_and_insert(fluree: &fluree_db_api::Fluree<fluree_db_core::MemoryStorage, fluree_db_core::SimpleCache, fluree_db_nameservice::memory::MemoryNameService>,
+async fn create_and_insert(fluree: &fluree_db_api::Fluree<fluree_db_core::MemoryStorage, fluree_db_nameservice::memory::MemoryNameService>,
                            ledger: &str,
                            name: &str) {
     let ledger_state = fluree.create_ledger(ledger).await.expect("create_ledger");
