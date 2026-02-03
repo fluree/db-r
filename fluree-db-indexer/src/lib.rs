@@ -796,7 +796,41 @@ where
                 &storage, &alias, &build_results,
             ).await?;
 
-            // D.4: Build v2 root with CAS addresses
+            // D.4: Build stats JSON for the planner (RawDbRootStats format).
+            // Use the SPOT build result for per-graph flake counts (all orders
+            // index the same data, just in different sort orders).
+            let stats_json = {
+                let (_, spot_result) = build_results
+                    .iter()
+                    .find(|(order, _)| *order == run_index::RunSortOrder::Spot)
+                    .expect("SPOT index must always be present in build results");
+
+                let graph_stats: Vec<serde_json::Value> = spot_result
+                    .graphs
+                    .iter()
+                    .map(|g| {
+                        serde_json::json!({
+                            "g_id": g.g_id,
+                            "flakes": g.total_rows,
+                            "size": 0
+                        })
+                    })
+                    .collect();
+
+                let total_flakes: u64 = spot_result
+                    .graphs
+                    .iter()
+                    .map(|g| g.total_rows)
+                    .sum();
+
+                serde_json::json!({
+                    "flakes": total_flakes,
+                    "size": 0,
+                    "graphs": graph_stats
+                })
+            };
+
+            // D.5: Build v2 root with CAS addresses and stats
             let root = run_index::BinaryIndexRootV2::from_cas_artifacts(
                 &alias,
                 store.max_t(),
@@ -804,6 +838,8 @@ where
                 store.namespace_codes(),
                 dict_addresses,
                 graph_addresses,
+                Some(stats_json),
+                None, // schema: requires predicate definitions (future)
             );
 
             tracing::info!(
@@ -813,7 +849,7 @@ where
                 "binary index built (v2), writing CAS root"
             );
 
-            // D.5: Write root to CAS (auto-hash of canonical compact JSON)
+            // D.6: Write root to CAS (auto-hash of canonical compact JSON)
             let root_bytes = root
                 .to_json_bytes()
                 .map_err(|e| IndexerError::Serialization(e.to_string()))?;

@@ -24,7 +24,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+use std::path::PathBuf;
+
 use fluree_db_core::{alias as core_alias, Storage};
+use fluree_db_indexer::run_index::{BinaryIndexStore, LeafletCache};
 use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{NameService, NsRecord};
 use fluree_db_novelty::Novelty;
@@ -71,10 +74,18 @@ pub struct LedgerSnapshot<S> {
     pub head_commit: Option<String>,
     /// Nameservice record (if loaded via nameservice)
     pub ns_record: Option<NsRecord>,
+    /// Binary columnar index store (v2 only).
+    ///
+    /// Present when `db.range_provider` is also set — the two are always
+    /// set/cleared together (see coherence `debug_assert` in `snapshot()`).
+    pub binary_store: Option<Arc<BinaryIndexStore>>,
 }
 
 impl<S: Storage + Clone + 'static> LedgerSnapshot<S> {
     /// Create a snapshot from ledger state
+    ///
+    /// Note: `binary_store` is set to `None` here — callers that have a
+    /// binary store must set it after construction (see `LedgerHandle::snapshot()`).
     fn from_state(state: &LedgerState<S>) -> Self {
         Self {
             db: state.db.clone(), // Cheap: Arc fields
@@ -82,6 +93,7 @@ impl<S: Storage + Clone + 'static> LedgerSnapshot<S> {
             t: state.t(),
             head_commit: state.head_commit.clone(),
             ns_record: state.ns_record.clone(),
+            binary_store: None,
         }
     }
 
@@ -176,6 +188,9 @@ impl<S> Clone for LedgerHandle<S> {
     }
 }
 
+/// Lock ordering invariant: always acquire `state` before `binary_store`.
+/// All paths that touch both locks (snapshot, apply_index_v2, reload)
+/// follow this order to prevent deadlock and ensure coherence.
 struct LedgerHandleInner<S> {
     /// Single mutex for all access (queries clone snapshot, txns hold for duration)
     state: Mutex<LedgerState<S>>,
@@ -183,16 +198,26 @@ struct LedgerHandleInner<S> {
     alias: String,
     /// Last access time (monotonic secs since process start)
     last_access: AtomicU64,
+    /// Binary columnar index store (v2 only).
+    ///
+    /// Always coherent with `state.db.range_provider` — writers hold
+    /// the `state` lock while updating this.
+    binary_store: Mutex<Option<Arc<BinaryIndexStore>>>,
 }
 
 impl<S: Storage + Clone + 'static> LedgerHandle<S> {
     /// Create a new handle wrapping ledger state
-    pub fn new(alias: String, state: LedgerState<S>) -> Self {
+    pub fn new(
+        alias: String,
+        state: LedgerState<S>,
+        binary_store: Option<Arc<BinaryIndexStore>>,
+    ) -> Self {
         Self {
             inner: Arc::new(LedgerHandleInner {
                 state: Mutex::new(state),
                 alias,
                 last_access: AtomicU64::new(monotonic_secs()),
+                binary_store: Mutex::new(binary_store),
             }),
         }
     }
@@ -202,7 +227,7 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
     /// This is functionally identical to `new()`, but the naming clarifies
     /// that this handle is NOT cached and each call creates a fresh load.
     pub fn ephemeral(alias: String, state: LedgerState<S>) -> Self {
-        Self::new(alias, state)
+        Self::new(alias, state, None)
     }
 
     /// Get read-only snapshot for queries (brief lock, clone, release)
@@ -212,8 +237,15 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
     pub async fn snapshot(&self) -> LedgerSnapshot<S> {
         self.touch();
         let state = self.inner.state.lock().await;
-        LedgerSnapshot::from_state(&state)
-        // Lock released here
+        let binary_store = self.inner.binary_store.lock().await.clone();
+        let mut snap = LedgerSnapshot::from_state(&state);
+        snap.binary_store = binary_store;
+        debug_assert!(
+            snap.db.range_provider.is_some() == snap.binary_store.is_some(),
+            "range_provider and binary_store must be coherent"
+        );
+        snap
+        // Locks released here
     }
 
     /// Acquire exclusive access for transaction (hold lock for stage+commit)
@@ -286,6 +318,72 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
             FreshnessCheck::Current
         }
     }
+
+    /// Apply a v2 binary index root to this handle.
+    ///
+    /// All I/O (root read, BinaryIndexStore load) happens outside any lock.
+    /// The state lock is held for the brief atomic swap of both `state` and
+    /// `binary_store`, ensuring coherence between `db.range_provider` and
+    /// `binary_store` (lock ordering: state → binary_store).
+    pub async fn apply_index_v2(
+        &self,
+        index_address: &str,
+        storage: &S,
+        cache_dir: &std::path::Path,
+        leaflet_cache: Option<Arc<LeafletCache>>,
+    ) -> Result<()> {
+        use fluree_db_core::serde::json::{
+            raw_schema_to_index_schema, raw_stats_to_index_stats, RawDbRootSchema, RawDbRootStats,
+        };
+
+        // All I/O outside any lock
+        let bytes = storage
+            .read_bytes(index_address)
+            .await
+            .map_err(|e| ApiError::internal(format!("failed to read index root: {}", e)))?;
+        let root: BinaryIndexRootV2 = serde_json::from_slice(&bytes)
+            .map_err(|e| ApiError::internal(format!("failed to parse v2 root: {}", e)))?;
+
+        let store = BinaryIndexStore::load_from_root(storage, &root, cache_dir, leaflet_cache)
+            .await
+            .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
+        let arc_store = Arc::new(store);
+        let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), 0);
+
+        // Build metadata-only Db from root
+        let ns_codes = root.namespace_codes.into_iter().collect();
+        let stats = root
+            .stats
+            .as_ref()
+            .and_then(|s| serde_json::from_value::<RawDbRootStats>(s.clone()).ok())
+            .and_then(|raw| raw_stats_to_index_stats(&raw));
+        let schema = root
+            .schema
+            .as_ref()
+            .and_then(|s| serde_json::from_value::<RawDbRootSchema>(s.clone()).ok())
+            .map(|raw| raw_schema_to_index_schema(&raw));
+        let mut db = Db::new_meta(
+            root.ledger_alias,
+            root.index_t,
+            ns_codes,
+            stats,
+            schema,
+            storage.clone(),
+        );
+        db.range_provider = Some(Arc::new(provider));
+
+        // Brief lock: swap state + binary_store atomically.
+        // Lock ordering: state → binary_store (same as snapshot()).
+        {
+            let mut state = self.inner.state.lock().await;
+            state
+                .apply_loaded_db(db, index_address)
+                .map_err(|e| ApiError::internal(format!("apply_loaded_db failed: {}", e)))?;
+            *self.inner.binary_store.lock().await = Some(arc_store);
+        }
+
+        Ok(())
+    }
 }
 
 // ============================================================================
@@ -349,12 +447,32 @@ enum LoadState<S> {
 // ============================================================================
 
 /// Configuration for the ledger manager
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct LedgerManagerConfig {
     /// TTL before idle ledgers are evicted (default: 30 min)
     pub idle_ttl: Duration,
     /// Sweep interval for background cleanup (default: 1 min)
     pub sweep_interval: Duration,
+    /// Directory for binary index cache files (leaflets, forward indexes, etc.)
+    ///
+    /// Layout: `{cache_dir}/{alias_hash}/{root_hash}/...`
+    /// Default: `$TMPDIR/fluree_binary_cache`
+    pub cache_dir: PathBuf,
+    /// Shared leaflet cache across all ledgers.
+    ///
+    /// Default capacity: 8 GiB or `FLUREE_LEAFLET_CACHE_BYTES` env var.
+    pub leaflet_cache: Option<Arc<LeafletCache>>,
+}
+
+impl std::fmt::Debug for LedgerManagerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LedgerManagerConfig")
+            .field("idle_ttl", &self.idle_ttl)
+            .field("sweep_interval", &self.sweep_interval)
+            .field("cache_dir", &self.cache_dir)
+            .field("has_leaflet_cache", &self.leaflet_cache.is_some())
+            .finish()
+    }
 }
 
 impl Default for LedgerManagerConfig {
@@ -362,8 +480,61 @@ impl Default for LedgerManagerConfig {
         Self {
             idle_ttl: Duration::from_secs(30 * 60),
             sweep_interval: Duration::from_secs(60),
+            cache_dir: std::env::temp_dir().join("fluree_binary_cache"),
+            leaflet_cache: None,
         }
     }
+}
+
+// ============================================================================
+// Binary Index Loading Helper
+// ============================================================================
+
+use fluree_db_indexer::run_index::{BinaryIndexRootV2, BINARY_INDEX_ROOT_VERSION_V2};
+use fluree_db_query::BinaryRangeProvider;
+
+/// Load BinaryIndexStore from a v2 index root, attach range_provider
+/// to the LedgerState's Db, and return the Arc'd store.
+///
+/// Returns `Ok(None)` if no index_address is present or the root is not v2.
+async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
+    storage: &S,
+    state: &mut LedgerState<S>,
+    cache_dir: &std::path::Path,
+    leaflet_cache: Option<Arc<LeafletCache>>,
+) -> std::result::Result<Option<Arc<BinaryIndexStore>>, ApiError> {
+    let index_addr = match state
+        .ns_record
+        .as_ref()
+        .and_then(|r| r.index_address.as_ref())
+    {
+        Some(addr) => addr.clone(),
+        None => return Ok(None),
+    };
+
+    let bytes = storage
+        .read_bytes(&index_addr)
+        .await
+        .map_err(|e| ApiError::internal(format!("failed to read index root: {}", e)))?;
+
+    let root: BinaryIndexRootV2 = match serde_json::from_slice(&bytes) {
+        Ok(r) => r,
+        Err(_) => return Ok(None), // Not a v2 root (could be v1 or malformed)
+    };
+
+    // BinaryIndexRootV2's custom Deserialize already validates version == 2,
+    // but belt-and-suspenders:
+    if root.version != BINARY_INDEX_ROOT_VERSION_V2 {
+        return Ok(None);
+    }
+
+    let store = BinaryIndexStore::load_from_root(storage, &root, cache_dir, leaflet_cache)
+        .await
+        .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
+    let arc_store = Arc::new(store);
+    let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), 0);
+    state.db.range_provider = Some(Arc::new(provider));
+    Ok(Some(arc_store))
 }
 
 // ============================================================================
@@ -495,8 +666,30 @@ where
         let shutting_down = self.is_shutdown();
 
         match result {
-            Ok(state) => {
-                let handle = LedgerHandle::new(canonical_alias.clone(), state);
+            Ok(mut state) => {
+                // Attempt to load binary index store (v2 only).
+                // Non-fatal: if loading fails, log and continue without binary index.
+                let binary_store = match load_and_attach_binary_store(
+                    &self.storage,
+                    &mut state,
+                    &self.config.cache_dir,
+                    self.config.leaflet_cache.clone(),
+                )
+                .await
+                {
+                    Ok(store) => store,
+                    Err(e) => {
+                        tracing::warn!(
+                            alias = %alias,
+                            error = %e,
+                            "Failed to load binary store, continuing without"
+                        );
+                        None
+                    }
+                };
+
+                let handle =
+                    LedgerHandle::new(canonical_alias.clone(), state, binary_store);
 
                 // Notify waiters
                 if let Some(LoadState::Loading(waiters)) = entries.remove(&canonical_alias) {
@@ -669,8 +862,30 @@ where
                 let shutting_down = self.is_shutdown();
 
                 match result {
-                    Ok(new_state) => {
+                    Ok(mut new_state) => {
+                        // Attempt to load binary index store (v2 only)
+                        let new_binary_store = match load_and_attach_binary_store(
+                            &self.storage,
+                            &mut new_state,
+                            &self.config.cache_dir,
+                            self.config.leaflet_cache.clone(),
+                        )
+                        .await
+                        {
+                            Ok(store) => store,
+                            Err(e) => {
+                                tracing::warn!(
+                                    alias = %alias,
+                                    error = %e,
+                                    "Failed to load binary store during reload, continuing without"
+                                );
+                                None
+                            }
+                        };
+
                         write_guard.replace(new_state);
+                        // Update binary_store coherently with the new state
+                        *handle.inner.binary_store.lock().await = new_binary_store;
 
                         // Notify waiters and restore Ready state (unless shutting down)
                         if let Some(LoadState::Reloading { handle, waiters }) =

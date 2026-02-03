@@ -38,9 +38,9 @@ mod runner;
 mod where_plan;
 
 // Re-export public types
+pub use runner::ContextConfig;
 pub use runner::ExecutableQuery;
-#[cfg(feature = "native")]
-pub use runner::PrefetchResources;
+pub use runner::execute_prepared;
 
 // Re-export internal helpers for use in lib.rs
 pub use where_plan::build_where_operators_seeded;
@@ -69,16 +69,14 @@ use std::sync::Arc;
 
 use reasoning_prep::effective_reasoning_modes;
 use rewrite_glue::rewrite_query_patterns;
+pub use runner::prepare_execution;
 use runner::{
     execute_prepared_with_dataset, execute_prepared_with_dataset_and_bm25,
     execute_prepared_with_dataset_and_policy, execute_prepared_with_dataset_and_policy_and_bm25,
     execute_prepared_with_dataset_and_policy_and_providers, execute_prepared_with_dataset_and_providers,
     execute_prepared_with_dataset_history, execute_prepared_with_overlay,
     execute_prepared_with_overlay_tracked, execute_prepared_with_policy, execute_prepared_with_r2rml,
-    prepare_execution,
 };
-#[cfg(feature = "native")]
-use runner::execute_prepared_with_r2rml_prefetch;
 
 /// Execute a query with full modifier support
 ///
@@ -392,39 +390,6 @@ pub async fn execute_with_r2rml<S: Storage + 'static>(
         tracker,
         r2rml_provider,
         r2rml_table_provider,
-    )
-    .await
-}
-
-/// Execute a query with R2RML providers and background prefetch (native only).
-///
-/// This is the same as `execute_with_r2rml` but includes prefetch resources
-/// for warming the index cache during query execution.
-#[cfg(feature = "native")]
-pub async fn execute_with_r2rml_prefetch<S: Storage + 'static>(
-    db: &Db<S>,
-    overlay: &dyn fluree_db_core::OverlayProvider,
-    vars: &VarRegistry,
-    query: &ExecutableQuery,
-    to_t: i64,
-    from_t: Option<i64>,
-    tracker: &Tracker,
-    r2rml_provider: &dyn crate::r2rml::R2rmlProvider,
-    r2rml_table_provider: &dyn crate::r2rml::R2rmlTableProvider,
-    prefetch: runner::PrefetchResources<S>,
-) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(db, overlay, query, to_t).await?;
-    execute_prepared_with_r2rml_prefetch(
-        db,
-        vars,
-        overlay,
-        prepared,
-        to_t,
-        from_t,
-        tracker,
-        r2rml_provider,
-        r2rml_table_provider,
-        prefetch,
     )
     .await
 }

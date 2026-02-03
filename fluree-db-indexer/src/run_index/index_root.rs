@@ -262,6 +262,11 @@ impl BinaryIndexRootV2 {
     }
 
     /// Build a v2 root from CAS upload results.
+    ///
+    /// `stats` and `schema` are optional JSON blobs matching the
+    /// `RawDbRootStats`/`RawDbRootSchema` format from `fluree-db-core`.
+    /// When present, `Db::load()` will parse them into `IndexStats`/`IndexSchema`
+    /// for the query planner.
     pub fn from_cas_artifacts(
         ledger_alias: &str,
         index_t: i64,
@@ -269,6 +274,8 @@ impl BinaryIndexRootV2 {
         namespace_codes: &HashMap<i32, String>,
         dict_addresses: DictAddresses,
         graph_addresses: Vec<GraphAddresses>,
+        stats: Option<serde_json::Value>,
+        schema: Option<serde_json::Value>,
     ) -> Self {
         let ns_codes: BTreeMap<i32, String> = namespace_codes
             .iter()
@@ -291,8 +298,8 @@ impl BinaryIndexRootV2 {
             graphs,
             namespace_codes: ns_codes,
             dict_addresses,
-            stats: None,
-            schema: None,
+            stats,
+            schema,
         }
     }
 }
@@ -450,9 +457,11 @@ mod tests {
 
         let root1 = BinaryIndexRootV2::from_cas_artifacts(
             "test/main", 42, 1, &ns, sample_dict_addresses(), graph_addrs.clone(),
+            None, None,
         );
         let root2 = BinaryIndexRootV2::from_cas_artifacts(
             "test/main", 42, 1, &ns, sample_dict_addresses(), graph_addrs,
+            None, None,
         );
 
         let bytes1 = root1.to_json_bytes().unwrap();
@@ -488,6 +497,7 @@ mod tests {
     fn parse_index_root_v2() {
         let root = BinaryIndexRootV2::from_cas_artifacts(
             "x", 0, 0, &HashMap::new(), sample_dict_addresses(), vec![],
+            None, None,
         );
         let bytes = root.to_json_bytes().unwrap();
         let result = parse_index_root(&bytes).unwrap();
@@ -499,5 +509,40 @@ mod tests {
         let json = r#"{"version": 99}"#;
         let result = parse_index_root(json.as_bytes());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn v2_stats_round_trip() {
+        let stats = serde_json::json!({
+            "flakes": 12345,
+            "size": 0,
+            "graphs": [{"g_id": 1, "flakes": 10000, "size": 0}]
+        });
+        let root = BinaryIndexRootV2::from_cas_artifacts(
+            "test/main", 42, 1, &HashMap::new(), sample_dict_addresses(), vec![],
+            Some(stats.clone()), None,
+        );
+
+        // Round-trip through JSON
+        let bytes = root.to_json_bytes().unwrap();
+        let parsed = BinaryIndexRootV2::from_json_bytes(&bytes).unwrap();
+        assert_eq!(parsed.stats, Some(stats));
+        assert_eq!(parsed.schema, None);
+    }
+
+    #[test]
+    fn v2_stats_parseable_as_raw_db_root_stats() {
+        // Verify the stats JSON we produce is compatible with RawDbRootStats
+        let stats = serde_json::json!({
+            "flakes": 12345,
+            "size": 0,
+            "graphs": [{"g_id": 1, "flakes": 10000, "size": 0}]
+        });
+        let raw: fluree_db_core::serde::json::RawDbRootStats =
+            serde_json::from_value(stats).unwrap();
+        assert_eq!(raw.flakes, Some(12345));
+        assert_eq!(raw.graphs.as_ref().unwrap().len(), 1);
+        assert_eq!(raw.graphs.as_ref().unwrap()[0].g_id, 1);
+        assert_eq!(raw.graphs.as_ref().unwrap()[0].flakes, 10000);
     }
 }

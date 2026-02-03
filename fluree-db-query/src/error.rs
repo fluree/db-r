@@ -63,5 +63,12 @@ pub enum QueryError {
     Policy(String),
 }
 
+impl QueryError {
+    /// Create an execution error (runtime configuration/environment issue).
+    pub fn execution(msg: impl Into<String>) -> Self {
+        Self::Internal(msg.into())
+    }
+}
+
 /// Result type for query operations
 pub type Result<T> = std::result::Result<T, QueryError>;

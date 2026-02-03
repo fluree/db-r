@@ -2,8 +2,23 @@
 
 use crate::error::{Error, Result};
 use crate::flake::{Flake, FlakeMeta};
-use crate::index::ChildRef;
 use crate::sid::Sid;
+
+/// Minimal ChildRef for v1 index root parsing (GC collector needs this).
+///
+/// Formerly lived in `crate::index` (b-tree code, now removed). Retained here
+/// so that `DbRoot`, `RawDbRoot`, `parse_db_root`, and `parse_branch_node`
+/// continue to compile for the GC collector which must traverse old v1 roots.
+#[derive(Debug, Clone)]
+pub struct ChildRef {
+    pub id: String,
+    pub leaf: bool,
+    pub first: Option<Flake>,
+    pub rhs: Option<Flake>,
+    pub size: u64,
+    pub bytes: Option<u64>,
+    pub leftmost: bool,
+}
 use crate::temporal::{DateTime, Date, Time};
 use crate::value::FlakeValue;
 use bigdecimal::BigDecimal;
@@ -1185,73 +1200,7 @@ impl RawDbRoot {
             .collect();
 
         // Convert stats if present
-        let stats = self.stats.as_ref().and_then(|s| {
-            // Only create DbRootStats if at least one field is present
-            if s.flakes.is_some() || s.size.is_some() || s.properties.is_some() || s.classes.is_some() || s.graphs.is_some() {
-                // Convert properties if present
-                let properties = s.properties.as_ref().map(|props| {
-                    props.iter().map(|p| PropertyStatEntry {
-                        sid: p.sid.clone(),
-                        count: p.count,
-                        ndv_values: p.ndv_values,
-                        ndv_subjects: p.ndv_subjects,
-                        last_modified_t: p.last_modified_t,
-                    }).collect()
-                });
-
-                // Convert classes if present
-                let classes = s.classes.as_ref().map(|class_list| {
-                    class_list.iter().map(|c| {
-                        let class_sid = Sid::new(c.class_sid.0, &c.class_sid.1);
-                        let properties = c.properties.as_ref().map(|props| {
-                            props.iter().map(|p| {
-                                let property_sid = Sid::new(p.property_sid.0, &p.property_sid.1);
-                                ClassPropertyUsage {
-                                    property_sid,
-                                }
-                            }).collect()
-                        }).unwrap_or_default();
-                        ClassStatEntry {
-                            class_sid,
-                            count: c.count,
-                            properties,
-                        }
-                    }).collect()
-                });
-
-                // Convert graphs if present
-                let graphs = s.graphs.as_ref().map(|graph_list| {
-                    graph_list.iter().map(|g| {
-                        let properties = g.properties.as_ref().map(|props| {
-                            props.iter().map(|p| GraphPropertyStatEntry {
-                                p_id: p.p_id,
-                                count: p.count,
-                                ndv_values: p.ndv_values,
-                                ndv_subjects: p.ndv_subjects,
-                                last_modified_t: p.last_modified_t,
-                                datatypes: p.datatypes.clone().unwrap_or_default(),
-                            }).collect()
-                        }).unwrap_or_default();
-                        GraphStatsEntry {
-                            g_id: g.g_id,
-                            flakes: g.flakes,
-                            size: g.size,
-                            properties,
-                        }
-                    }).collect()
-                });
-
-                Some(DbRootStats {
-                    flakes: s.flakes.unwrap_or(0),
-                    size: s.size.unwrap_or(0),
-                    properties,
-                    classes,
-                    graphs,
-                })
-            } else {
-                None
-            }
-        });
+        let stats = self.stats.as_ref().and_then(raw_stats_to_index_stats);
 
         // Convert config if present
         let config = self.config.as_ref().and_then(|c| {
@@ -1279,44 +1228,7 @@ impl RawDbRoot {
         });
 
         // Convert schema if present
-        let schema = self.schema.as_ref().map(|s| {
-            let pred = s.pred.as_ref().map(|p| {
-                // Parse vals: each entry is [sid, [subclass_of], [parent_props], [child_props]]
-                let vals = p.vals.iter().filter_map(|entry| {
-                    if entry.len() < 4 {
-                        return None;
-                    }
-                    // Parse SID from first element
-                    let id = deserialize_sid(&entry[0]).ok()?;
-                    // Parse subclass_of from second element (array of SIDs)
-                    let subclass_of = entry[1].as_array()
-                        .map(|arr| arr.iter().filter_map(|v| deserialize_sid(v).ok()).collect())
-                        .unwrap_or_default();
-                    // Parse parent_props from third element
-                    let parent_props = entry[2].as_array()
-                        .map(|arr| arr.iter().filter_map(|v| deserialize_sid(v).ok()).collect())
-                        .unwrap_or_default();
-                    // Parse child_props from fourth element
-                    let child_props = entry[3].as_array()
-                        .map(|arr| arr.iter().filter_map(|v| deserialize_sid(v).ok()).collect())
-                        .unwrap_or_default();
-                    Some(SchemaPredicateInfo {
-                        id,
-                        subclass_of,
-                        parent_props,
-                        child_props,
-                    })
-                }).collect();
-                SchemaPredicates {
-                    keys: p.keys.clone(),
-                    vals,
-                }
-            }).unwrap_or_default();
-            DbRootSchema {
-                t: s.t,
-                pred,
-            }
-        });
+        let schema = self.schema.as_ref().map(raw_schema_to_index_schema);
 
         // Convert garbage if present
         let garbage = self.garbage.as_ref().map(|g| GarbageRef {
@@ -1341,6 +1253,148 @@ impl RawDbRoot {
             garbage,
         })
     }
+}
+
+// === Raw → Typed conversion helpers ===
+//
+// Extracted from RawDbRoot::to_db_root() so both v1 (RawDbRoot) and v2
+// (BinaryIndexRootV2) roots can share the same canonical interpretation.
+
+/// Convert raw stats to IndexStats.
+///
+/// Returns None if no meaningful stat fields are present.
+pub fn raw_stats_to_index_stats(s: &RawDbRootStats) -> Option<IndexStats> {
+    if s.flakes.is_some()
+        || s.size.is_some()
+        || s.properties.is_some()
+        || s.classes.is_some()
+        || s.graphs.is_some()
+    {
+        let properties = s.properties.as_ref().map(|props| {
+            props
+                .iter()
+                .map(|p| PropertyStatEntry {
+                    sid: p.sid.clone(),
+                    count: p.count,
+                    ndv_values: p.ndv_values,
+                    ndv_subjects: p.ndv_subjects,
+                    last_modified_t: p.last_modified_t,
+                })
+                .collect()
+        });
+
+        let classes = s.classes.as_ref().map(|class_list| {
+            class_list
+                .iter()
+                .map(|c| {
+                    let class_sid = Sid::new(c.class_sid.0, &c.class_sid.1);
+                    let properties = c
+                        .properties
+                        .as_ref()
+                        .map(|props| {
+                            props
+                                .iter()
+                                .map(|p| {
+                                    let property_sid =
+                                        Sid::new(p.property_sid.0, &p.property_sid.1);
+                                    ClassPropertyUsage { property_sid }
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    ClassStatEntry {
+                        class_sid,
+                        count: c.count,
+                        properties,
+                    }
+                })
+                .collect()
+        });
+
+        let graphs = s.graphs.as_ref().map(|graph_list| {
+            graph_list
+                .iter()
+                .map(|g| {
+                    let properties = g
+                        .properties
+                        .as_ref()
+                        .map(|props| {
+                            props
+                                .iter()
+                                .map(|p| GraphPropertyStatEntry {
+                                    p_id: p.p_id,
+                                    count: p.count,
+                                    ndv_values: p.ndv_values,
+                                    ndv_subjects: p.ndv_subjects,
+                                    last_modified_t: p.last_modified_t,
+                                    datatypes: p.datatypes.clone().unwrap_or_default(),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    GraphStatsEntry {
+                        g_id: g.g_id,
+                        flakes: g.flakes,
+                        size: g.size,
+                        properties,
+                    }
+                })
+                .collect()
+        });
+
+        Some(IndexStats {
+            flakes: s.flakes.unwrap_or(0),
+            size: s.size.unwrap_or(0),
+            properties,
+            classes,
+            graphs,
+        })
+    } else {
+        None
+    }
+}
+
+/// Convert raw schema to IndexSchema.
+pub fn raw_schema_to_index_schema(s: &RawDbRootSchema) -> IndexSchema {
+    let pred = s
+        .pred
+        .as_ref()
+        .map(|p| {
+            let vals = p
+                .vals
+                .iter()
+                .filter_map(|entry| {
+                    if entry.len() < 4 {
+                        return None;
+                    }
+                    let id = deserialize_sid(&entry[0]).ok()?;
+                    let subclass_of = entry[1]
+                        .as_array()
+                        .map(|arr| arr.iter().filter_map(|v| deserialize_sid(v).ok()).collect())
+                        .unwrap_or_default();
+                    let parent_props = entry[2]
+                        .as_array()
+                        .map(|arr| arr.iter().filter_map(|v| deserialize_sid(v).ok()).collect())
+                        .unwrap_or_default();
+                    let child_props = entry[3]
+                        .as_array()
+                        .map(|arr| arr.iter().filter_map(|v| deserialize_sid(v).ok()).collect())
+                        .unwrap_or_default();
+                    Some(SchemaPredicateInfo {
+                        id,
+                        subclass_of,
+                        parent_props,
+                        child_props,
+                    })
+                })
+                .collect();
+            SchemaPredicates {
+                keys: p.keys.clone(),
+                vals,
+            }
+        })
+        .unwrap_or_default();
+    IndexSchema { t: s.t, pred }
 }
 
 // === Serialization structures ===
@@ -2485,7 +2539,6 @@ mod tests {
     #[test]
     fn test_serialize_branch_node_roundtrip() {
         use crate::flake::Flake;
-        use crate::index::ChildRef;
         use crate::sid::Sid;
         use crate::value::FlakeValue;
 
@@ -2535,7 +2588,6 @@ mod tests {
 
     #[test]
     fn test_serialize_db_root_roundtrip() {
-        use crate::index::ChildRef;
         use std::collections::HashMap;
 
         let mut namespace_codes = HashMap::new();

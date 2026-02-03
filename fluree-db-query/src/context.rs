@@ -11,8 +11,6 @@ use crate::var_registry::VarRegistry;
 use crate::vector::VectorIndexProvider;
 use fluree_db_core::{Db, NoOverlay, OverlayProvider, Sid, Storage, Tracker};
 use fluree_db_indexer::run_index::BinaryIndexStore;
-#[cfg(feature = "native")]
-use fluree_db_core::PrefetchService;
 use fluree_vocab::namespaces::{JSON_LD, XSD};
 use fluree_vocab::xsd_names;
 use std::sync::Arc;
@@ -32,9 +30,8 @@ use std::sync::Arc;
 ///
 /// # Lifetime Bounds
 ///
-/// The `'static` bound on `S` is required for the native prefetch service,
-/// which spawns background tasks that need `'static` types. In practice, storage
-/// implementations are always `'static` (they don't borrow from local data).
+/// The `'static` bound on `S` is required because storage implementations
+/// are always `'static` (they don't borrow from local data).
 pub struct ExecutionContext<'a, S: Storage + 'static> {
     /// Reference to the primary database (for encoding/decoding, single-db fallback)
     pub db: &'a Db<S>,
@@ -78,24 +75,6 @@ pub struct ExecutionContext<'a, S: Storage + 'static> {
     pub history_mode: bool,
     /// When true, bind evaluation errors are treated as query errors.
     pub strict_bind_errors: bool,
-    /// Optional prefetch service for background leaf warming (native only).
-    ///
-    /// When present, operators can enqueue upcoming index nodes for prefetch,
-    /// which warms the cache before the mainline query needs them.
-    #[cfg(feature = "native")]
-    pub prefetch: Option<Arc<PrefetchService<S>>>,
-    /// Arc-wrapped database for prefetch requests (native only).
-    ///
-    /// Required for background prefetch tasks which need `'static` data.
-    /// Set this when `prefetch` is set, using the same db that's referenced by `db`.
-    #[cfg(feature = "native")]
-    pub prefetch_db: Option<Arc<Db<S>>>,
-    /// Arc-wrapped overlay for prefetch requests (native only).
-    ///
-    /// Required for background prefetch tasks which need `'static` data.
-    /// Set this when `prefetch` is set.
-    #[cfg(feature = "native")]
-    pub prefetch_overlay: Option<Arc<dyn OverlayProvider>>,
     /// Optional binary columnar index store for fast local-file scans.
     ///
     /// When present, scan operators use `BinaryScanOperator` for queries
@@ -128,12 +107,6 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
             tracker: Tracker::disabled(),
             history_mode: false,
             strict_bind_errors: false,
-            #[cfg(feature = "native")]
-            prefetch: None,
-            #[cfg(feature = "native")]
-            prefetch_db: None,
-            #[cfg(feature = "native")]
-            prefetch_overlay: None,
             binary_store: None,
             binary_g_id: 0,
         }
@@ -159,12 +132,6 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
             tracker: Tracker::disabled(),
             history_mode: false,
             strict_bind_errors: false,
-            #[cfg(feature = "native")]
-            prefetch: None,
-            #[cfg(feature = "native")]
-            prefetch_db: None,
-            #[cfg(feature = "native")]
-            prefetch_overlay: None,
             binary_store: None,
             binary_g_id: 0,
         }
@@ -200,12 +167,6 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
             tracker: Tracker::disabled(),
             history_mode: false,
             strict_bind_errors: false,
-            #[cfg(feature = "native")]
-            prefetch: None,
-            #[cfg(feature = "native")]
-            prefetch_db: None,
-            #[cfg(feature = "native")]
-            prefetch_overlay: None,
             binary_store: None,
             binary_g_id: 0,
         }
@@ -237,12 +198,6 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
             tracker: Tracker::disabled(),
             history_mode: false,
             strict_bind_errors: false,
-            #[cfg(feature = "native")]
-            prefetch: None,
-            #[cfg(feature = "native")]
-            prefetch_db: None,
-            #[cfg(feature = "native")]
-            prefetch_overlay: None,
             binary_store: None,
             binary_g_id: 0,
         }
@@ -450,12 +405,6 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
             tracker: self.tracker.clone(),
             history_mode: self.history_mode,
             strict_bind_errors: self.strict_bind_errors,
-            #[cfg(feature = "native")]
-            prefetch: self.prefetch.clone(),
-            #[cfg(feature = "native")]
-            prefetch_db: self.prefetch_db.clone(),
-            #[cfg(feature = "native")]
-            prefetch_overlay: self.prefetch_overlay.clone(),
             binary_store: self.binary_store.clone(),
             binary_g_id: self.binary_g_id,
         }
@@ -483,49 +432,9 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
             tracker: self.tracker.clone(),
             history_mode: self.history_mode,
             strict_bind_errors: self.strict_bind_errors,
-            #[cfg(feature = "native")]
-            prefetch: self.prefetch.clone(),
-            #[cfg(feature = "native")]
-            prefetch_db: self.prefetch_db.clone(),
-            #[cfg(feature = "native")]
-            prefetch_overlay: self.prefetch_overlay.clone(),
             binary_store: self.binary_store.clone(),
             binary_g_id: self.binary_g_id,
         }
-    }
-
-    /// Attach a prefetch service to this context for background leaf warming (native only).
-    ///
-    /// When present, operators can enqueue upcoming index nodes for prefetch,
-    /// which warms the cache before the mainline query needs them.
-    ///
-    /// Also requires `prefetch_db` and `prefetch_overlay` to be set for the prefetch
-    /// tasks to have `'static` data. Use `with_prefetch_resources` to set all three.
-    ///
-    #[cfg(feature = "native")]
-    pub fn with_prefetch(mut self, prefetch: Arc<PrefetchService<S>>) -> Self {
-        self.prefetch = Some(prefetch);
-        self
-    }
-
-    /// Attach prefetch service with required Arc-wrapped resources (native only).
-    ///
-    /// This is the recommended way to enable prefetch. It sets:
-    /// - `prefetch`: The service that processes background requests
-    /// - `prefetch_db`: Arc'd database for `'static` lifetime in spawned tasks
-    /// - `prefetch_overlay`: Arc'd overlay for `'static` lifetime in spawned tasks
-    ///
-    #[cfg(feature = "native")]
-    pub fn with_prefetch_resources(
-        mut self,
-        prefetch: Arc<PrefetchService<S>>,
-        db: Arc<Db<S>>,
-        overlay: Arc<dyn OverlayProvider>,
-    ) -> Self {
-        self.prefetch = Some(prefetch);
-        self.prefetch_db = Some(db);
-        self.prefetch_overlay = Some(overlay);
-        self
     }
 
     /// Attach a binary columnar index store for fast local-file scans.

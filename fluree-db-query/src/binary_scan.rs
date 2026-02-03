@@ -28,19 +28,21 @@ use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::pattern::{Term, TriplePattern};
-use crate::scan::ScanOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::value_id::DatatypeId;
 use fluree_db_core::value_id::{ObjKind, ObjKey};
-use fluree_db_core::{Flake, FlakeValue, IndexType, ObjectBounds, OverlayProvider, Sid, Storage};
+use fluree_db_core::{
+    range_with_overlay, Db, Flake, FlakeValue, IndexType, ObjectBounds, OverlayProvider,
+    RangeMatch, RangeOptions, RangeTest, Sid, Storage,
+};
 use fluree_db_indexer::run_index::{
     BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, OverlayOp,
 };
 use fluree_db_indexer::run_index::run_record::{RunSortOrder, NO_LIST_INDEX};
 use fluree_db_indexer::run_index::numfloat_dict::NumericShape;
 use fluree_vocab::namespaces::FLUREE_LEDGER;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 // ============================================================================
@@ -849,7 +851,7 @@ fn translate_one_flake(
 // ============================================================================
 
 /// Deferred scan operator that selects between `BinaryScanOperator` and
-/// `ScanOperator` at `open()` time based on the `ExecutionContext`.
+/// `RangeFallbackOperator` at `open()` time based on the `ExecutionContext`.
 ///
 /// The query planner creates operators at plan time, before the
 /// `ExecutionContext` exists.  `DeferredScanOperator` bridges this gap by
@@ -868,8 +870,9 @@ fn translate_one_flake(
 /// Overlay flakes are always translatable via `DictOverlay` (ephemeral IDs
 /// are allocated for entities not yet in the persisted dictionaries).
 ///
-/// When conditions are not met, falls back to `ScanOperator` (b-tree path).
-/// The b-tree fallback will be removed once all consumers provide a binary store.
+/// When the binary path is not available, falls back to `RangeFallbackOperator`
+/// which delegates to `range_with_overlay()`. This handles genesis databases
+/// (t=0, overlay-only) and databases with a `RangeProvider` but no binary store.
 pub struct DeferredScanOperator<S: Storage + 'static> {
     pattern: TriplePattern,
     object_bounds: Option<ObjectBounds>,
@@ -984,11 +987,11 @@ impl<S: Storage + 'static> Operator<S> for DeferredScanOperator<S> {
             }
             Box::new(op)
         } else {
-            let scan = ScanOperator::new(self.pattern.clone());
-            match &self.object_bounds {
-                Some(bounds) => Box::new(scan.with_object_bounds(bounds.clone())),
-                None => Box::new(scan),
-            }
+            // Fallback: use range_with_overlay() for genesis/pre-index databases
+            Box::new(RangeFallbackOperator::<S>::new(
+                self.pattern.clone(),
+                self.object_bounds.clone(),
+            ))
         };
 
         inner.open(ctx).await?;
@@ -1009,6 +1012,296 @@ impl<S: Storage + 'static> Operator<S> for DeferredScanOperator<S> {
             op.close();
         }
         self.inner = None;
+        self.state = OperatorState::Closed;
+    }
+}
+
+// ============================================================================
+// RangeFallbackOperator — overlay/range_provider path (no binary index)
+// ============================================================================
+
+/// Range-based fallback scan operator for databases without a binary index.
+///
+/// Used when `BinaryScanOperator` is not available:
+/// - Genesis databases (t=0, no index) — returns overlay-only flakes
+/// - Databases with a `RangeProvider` but no `BinaryIndexStore`
+/// - Conditions that exclude the binary path (history mode, multi-ledger, etc.)
+///
+/// Delegates to `range_with_overlay()` on `open()` and pre-computes all
+/// matching flakes, which are then returned as batches via `next_batch()`.
+struct RangeFallbackOperator<S: Storage + 'static> {
+    pattern: TriplePattern,
+    object_bounds: Option<ObjectBounds>,
+    schema: Arc<[VarId]>,
+    s_var_pos: Option<usize>,
+    p_var_pos: Option<usize>,
+    o_var_pos: Option<usize>,
+    state: OperatorState,
+    batches: VecDeque<Batch>,
+    _marker: std::marker::PhantomData<S>,
+}
+
+impl<S: Storage + 'static> RangeFallbackOperator<S> {
+    fn new(pattern: TriplePattern, object_bounds: Option<ObjectBounds>) -> Self {
+        let mut schema_vec = Vec::with_capacity(3);
+        let mut s_var_pos = None;
+        let mut p_var_pos = None;
+        let mut o_var_pos = None;
+
+        if let Term::Var(v) = &pattern.s {
+            s_var_pos = Some(schema_vec.len());
+            schema_vec.push(*v);
+        }
+        if let Term::Var(v) = &pattern.p {
+            p_var_pos = Some(schema_vec.len());
+            schema_vec.push(*v);
+        }
+        if let Term::Var(v) = &pattern.o {
+            o_var_pos = Some(schema_vec.len());
+            schema_vec.push(*v);
+        }
+
+        Self {
+            pattern,
+            object_bounds,
+            schema: Arc::from(schema_vec.into_boxed_slice()),
+            s_var_pos,
+            p_var_pos,
+            o_var_pos,
+            state: OperatorState::Created,
+            batches: VecDeque::new(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Build a `RangeMatch` from the pattern's bound terms.
+    fn build_range_match(&self, db: &Db<S>) -> RangeMatch {
+        let mut rm = RangeMatch::new();
+
+        match &self.pattern.s {
+            Term::Sid(sid) => rm.s = Some(sid.clone()),
+            Term::Iri(iri) => {
+                if let Some(sid) = db.encode_iri(iri) {
+                    rm.s = Some(sid);
+                }
+            }
+            _ => {}
+        }
+
+        match &self.pattern.p {
+            Term::Sid(sid) => rm.p = Some(sid.clone()),
+            Term::Iri(iri) => {
+                if let Some(sid) = db.encode_iri(iri) {
+                    rm.p = Some(sid);
+                }
+            }
+            _ => {}
+        }
+
+        match &self.pattern.o {
+            Term::Sid(sid) => rm.o = Some(FlakeValue::Ref(sid.clone())),
+            Term::Value(val) => rm.o = Some(val.clone()),
+            Term::Iri(iri) => {
+                if let Some(sid) = db.encode_iri(iri) {
+                    rm.o = Some(FlakeValue::Ref(sid));
+                }
+            }
+            _ => {}
+        }
+
+        if let Some(dt) = &self.pattern.dt {
+            rm.dt = Some(dt.clone());
+        }
+
+        rm
+    }
+
+    /// Check if a flake matches the pattern's bound terms.
+    ///
+    /// `range_with_overlay` may return a superset (especially in the
+    /// overlay-only genesis path), so we post-filter here.
+    fn flake_matches(&self, f: &Flake, db: &Db<S>) -> bool {
+        match &self.pattern.s {
+            Term::Sid(sid) if &f.s != sid => return false,
+            Term::Iri(iri) => match db.encode_iri(iri) {
+                Some(sid) if f.s != sid => return false,
+                None => return false,
+                _ => {}
+            },
+            _ => {}
+        }
+
+        match &self.pattern.p {
+            Term::Sid(sid) if &f.p != sid => return false,
+            Term::Iri(iri) => match db.encode_iri(iri) {
+                Some(sid) if f.p != sid => return false,
+                None => return false,
+                _ => {}
+            },
+            _ => {}
+        }
+
+        match &self.pattern.o {
+            Term::Sid(sid) => {
+                if f.o != FlakeValue::Ref(sid.clone()) {
+                    return false;
+                }
+            }
+            Term::Value(val) if &f.o != val => return false,
+            Term::Iri(iri) => match db.encode_iri(iri) {
+                Some(sid) if f.o != FlakeValue::Ref(sid.clone()) => return false,
+                None => return false,
+                _ => {}
+            },
+            _ => {}
+        }
+
+        if let Some(dt) = &self.pattern.dt {
+            if &f.dt != dt {
+                return false;
+            }
+        }
+
+        if let Some(bounds) = &self.object_bounds {
+            if !bounds.matches(&f.o) {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Convert a single flake to binding values matching the schema.
+    fn flake_to_row(&self, f: &Flake, history_mode: bool) -> Vec<Binding> {
+        let mut row = Vec::with_capacity(self.schema.len());
+
+        if self.s_var_pos.is_some() {
+            row.push(Binding::Sid(f.s.clone()));
+        }
+        if self.p_var_pos.is_some() {
+            row.push(Binding::Sid(f.p.clone()));
+        }
+        if self.o_var_pos.is_some() {
+            let binding = match &f.o {
+                FlakeValue::Ref(sid) => Binding::Sid(sid.clone()),
+                val => Binding::Lit {
+                    val: val.clone(),
+                    dt: f.dt.clone(),
+                    lang: None,
+                    t: if history_mode { Some(f.t) } else { None },
+                    op: if history_mode { Some(f.op) } else { None },
+                },
+            };
+            row.push(binding);
+        }
+
+        row
+    }
+}
+
+#[async_trait]
+impl<S: Storage + 'static> Operator<S> for RangeFallbackOperator<S> {
+    fn schema(&self) -> &[VarId] {
+        &self.schema
+    }
+
+    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+        if !self.state.can_open() {
+            if self.state.is_closed() {
+                return Err(QueryError::OperatorClosed);
+            }
+            return Err(QueryError::OperatorAlreadyOpened);
+        }
+
+        let mut index = IndexType::for_query(
+            self.pattern.s_bound(),
+            self.pattern.p_bound(),
+            self.pattern.o_bound(),
+            self.pattern.o_is_ref(),
+        );
+
+        // When object bounds are present and default index is PSOT, switch to POST
+        // for object-range scanning (matches BinaryScanOperator behavior).
+        if self.object_bounds.is_some() && index == IndexType::Psot {
+            index = IndexType::Post;
+        }
+
+        let range_match = self.build_range_match(ctx.db);
+        let mut opts = RangeOptions::new().with_to_t(ctx.to_t);
+        if let Some(from_t) = ctx.from_t {
+            opts = opts.with_from_t(from_t);
+        }
+        if ctx.history_mode {
+            opts = opts.with_history_mode();
+        }
+        if let Some(ref bounds) = self.object_bounds {
+            opts = opts.with_object_bounds(bounds.clone());
+        }
+
+        let flakes = range_with_overlay(
+            ctx.db,
+            ctx.overlay(),
+            index,
+            RangeTest::Eq,
+            range_match,
+            opts,
+        )
+        .await
+        .map_err(|e| QueryError::execution(e.to_string()))?;
+
+        // Post-filter: overlay-only path may return a superset of matches
+        let batch_size = ctx.batch_size;
+        let ncols = self.schema.len();
+
+        if ncols == 0 {
+            // All terms bound (existence check): count matches, emit empty-schema batch
+            let match_count = flakes.iter().filter(|f| self.flake_matches(f, ctx.db)).count();
+            if match_count > 0 {
+                self.batches.push_back(Batch::empty_schema_with_len(match_count));
+            }
+        } else {
+            let mut columns: Vec<Vec<Binding>> =
+                (0..ncols).map(|_| Vec::with_capacity(batch_size)).collect();
+            let mut row_count = 0;
+
+            for f in &flakes {
+                if !self.flake_matches(f, ctx.db) {
+                    continue;
+                }
+
+                let row = self.flake_to_row(f, ctx.history_mode);
+                for (col_idx, binding) in row.into_iter().enumerate() {
+                    columns[col_idx].push(binding);
+                }
+                row_count += 1;
+
+                if row_count >= batch_size {
+                    let batch = Batch::new(self.schema.clone(), columns)
+                        .map_err(|e| QueryError::execution(format!("batch construction: {e}")))?;
+                    self.batches.push_back(batch);
+                    columns = (0..ncols).map(|_| Vec::with_capacity(batch_size)).collect();
+                    row_count = 0;
+                }
+            }
+
+            // Final partial batch
+            if row_count > 0 {
+                let batch = Batch::new(self.schema.clone(), columns)
+                    .map_err(|e| QueryError::execution(format!("batch construction: {e}")))?;
+                self.batches.push_back(batch);
+            }
+        }
+
+        self.state = OperatorState::Open;
+        Ok(())
+    }
+
+    async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+        Ok(self.batches.pop_front())
+    }
+
+    fn close(&mut self) {
+        self.batches.clear();
         self.state = OperatorState::Closed;
     }
 }

@@ -30,7 +30,7 @@ use crate::ir::Pattern;
 use crate::join::{BindInstruction, PatternPosition, UnifyInstruction};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::pattern::{Term, TriplePattern};
-use crate::scan::ScanOperator;
+use crate::binary_scan::DeferredScanOperator;
 use crate::seed::SeedOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
@@ -285,7 +285,7 @@ impl<S: Storage + 'static> OptionalBuilder<S> for PatternOptionalBuilder<S> {
 
         // Substitute bindings into pattern and create scan operator
         let bound_pattern = self.substitute_pattern(required_batch, row);
-        Ok(Some(Box::new(ScanOperator::new(bound_pattern))))
+        Ok(Some(Box::new(DeferredScanOperator::<S>::new(bound_pattern, None))))
     }
 
     fn schema(&self) -> &[VarId] {

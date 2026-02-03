@@ -9,9 +9,10 @@ use crate::query::helpers::{
 };
 use crate::view::{FlureeView, QueryInput};
 use crate::{
-    ApiError, ExecutableQuery, Fluree, NameService, NoOpR2rmlProvider, QueryResult, Result,
+    ApiError, ExecutableQuery, Fluree, NameService, QueryResult, Result,
     Storage, Tracker, TrackingOptions,
 };
+use fluree_db_query::execute::{ContextConfig, execute_prepared, prepare_execution};
 
 // ============================================================================
 // Query Execution
@@ -245,7 +246,8 @@ where
     /// Execute against view with policy awareness.
     ///
     /// Single internal path that handles both policy and non-policy execution.
-    /// Uses tracked executor when tracker has fuel limits (even for non-tracked calls).
+    /// Threads `binary_store` from the view into `ContextConfig` so that
+    /// `DeferredScanOperator` can use `BinaryScanOperator` when available.
     pub(crate) async fn execute_view_internal(
         &self,
         view: &FlureeView<S>,
@@ -253,53 +255,29 @@ where
         executable: &ExecutableQuery,
         tracker: &Tracker,
     ) -> Result<Vec<crate::Batch>> {
-        let r2rml_provider = NoOpR2rmlProvider::new();
-
-        if let Some(policy) = view.policy() {
-            // Policy-enforced execution
-            // Use tracked variant when tracker has limits (for fuel enforcement)
-            if tracker.is_enabled() {
-                fluree_db_query::execute_with_policy_tracked(
-                    &view.db,
-                    view.overlay.as_ref(),
-                    vars,
-                    executable,
-                    view.to_t,
-                    None,
-                    policy,
-                    tracker,
-                )
-                .await
-                .map_err(query_error_to_api_error)
-            } else {
-                fluree_db_query::execute_with_policy(
-                    &view.db,
-                    view.overlay.as_ref(),
-                    vars,
-                    executable,
-                    view.to_t,
-                    None,
-                    policy,
-                )
-                .await
-                .map_err(query_error_to_api_error)
-            }
-        } else {
-            // Standard execution (always uses tracker for potential limits)
-            crate::execute_with_r2rml(
-                &view.db,
-                view.overlay.as_ref(),
-                vars,
-                executable,
-                view.to_t,
-                None,
-                tracker,
-                &r2rml_provider,
-                &r2rml_provider,
-            )
+        let prepared = prepare_execution(&view.db, view.overlay.as_ref(), executable, view.to_t)
             .await
-            .map_err(query_error_to_api_error)
-        }
+            .map_err(query_error_to_api_error)?;
+
+        let config = ContextConfig {
+            tracker: Some(tracker),
+            policy_enforcer: view.policy_enforcer().cloned(),
+            binary_store: view.binary_store.clone(),
+            strict_bind_errors: true,
+            ..Default::default()
+        };
+
+        execute_prepared(
+            &view.db,
+            vars,
+            view.overlay.as_ref(),
+            prepared,
+            view.to_t,
+            None,
+            config,
+        )
+        .await
+        .map_err(query_error_to_api_error)
     }
 
     /// Execute against view with policy awareness (tracked variant).
@@ -312,36 +290,27 @@ where
         executable: &ExecutableQuery,
         tracker: &Tracker,
     ) -> std::result::Result<Vec<crate::Batch>, fluree_db_query::QueryError> {
-        let r2rml_provider = NoOpR2rmlProvider::new();
+        let prepared = prepare_execution(&view.db, view.overlay.as_ref(), executable, view.to_t)
+            .await?;
 
-        if let Some(policy) = view.policy() {
-            // Policy-enforced execution WITH tracking
-            fluree_db_query::execute_with_policy_tracked(
-                &view.db,
-                view.overlay.as_ref(),
-                vars,
-                executable,
-                view.to_t,
-                None,
-                policy,
-                tracker,
-            )
-            .await
-        } else {
-            // Standard execution with tracking
-            crate::execute_with_r2rml(
-                &view.db,
-                view.overlay.as_ref(),
-                vars,
-                executable,
-                view.to_t,
-                None,
-                tracker,
-                &r2rml_provider,
-                &r2rml_provider,
-            )
-            .await
-        }
+        let config = ContextConfig {
+            tracker: Some(tracker),
+            policy_enforcer: view.policy_enforcer().cloned(),
+            binary_store: view.binary_store.clone(),
+            strict_bind_errors: true,
+            ..Default::default()
+        };
+
+        execute_prepared(
+            &view.db,
+            vars,
+            view.overlay.as_ref(),
+            prepared,
+            view.to_t,
+            None,
+            config,
+        )
+        .await
     }
 }
 

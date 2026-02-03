@@ -13,9 +13,6 @@ use crate::{
     Storage, TrackingOptions, TrackingTally, Tracker, VarRegistry,
 };
 
-#[cfg(feature = "native")]
-use fluree_db_query::{execute_with_r2rml_prefetch, PrefetchResources};
-
 impl<S, N> Fluree<S, N>
 where
     S: Storage + Clone + 'static,
@@ -44,9 +41,7 @@ where
         ))
     }
 
-    /// Internal helper for query execution with optional prefetch.
-    ///
-    /// Consolidates the native/non-native feature-gated execution paths.
+    /// Internal helper for query execution.
     async fn execute_query_internal(
         &self,
         ledger: &LedgerState<S>,
@@ -56,29 +51,6 @@ where
     ) -> Result<Vec<crate::Batch>> {
         let r2rml_provider = NoOpR2rmlProvider::new();
 
-        #[cfg(feature = "native")]
-        let batches = {
-            let prefetch = PrefetchResources {
-                service: self.prefetch.clone(),
-                db: Arc::new(ledger.db.clone()),
-                overlay: ledger.novelty.clone() as Arc<dyn OverlayProvider>,
-            };
-            execute_with_r2rml_prefetch(
-                &ledger.db,
-                ledger.novelty.as_ref(),
-                vars,
-                executable,
-                ledger.t(),
-                None,
-                tracker,
-                &r2rml_provider,
-                &r2rml_provider,
-                prefetch,
-            )
-            .await?
-        };
-
-        #[cfg(not(feature = "native"))]
         let batches = crate::execute_with_r2rml(
             &ledger.db,
             ledger.novelty.as_ref(),
