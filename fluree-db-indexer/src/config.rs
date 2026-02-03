@@ -1,6 +1,7 @@
 //! Indexer configuration
 
 use crate::gc::{DEFAULT_MAX_OLD_INDEXES, DEFAULT_MIN_TIME_GARBAGE_MINS};
+use std::path::PathBuf;
 
 /// Configuration for index building
 #[derive(Debug, Clone)]
@@ -43,6 +44,15 @@ pub struct IndexerConfig {
     /// queries might still be using.
     /// Default: 30 minutes
     pub gc_min_time_mins: u32,
+
+    /// Base directory for binary index artifacts (run files, index files).
+    ///
+    /// Index files for each ledger will be stored under:
+    /// `{data_dir}/{alias_path}/runs` and `{data_dir}/{alias_path}/index`
+    ///
+    /// If `None`, defaults to `{system_temp_dir}/fluree-index`. For production
+    /// deployments, this should always be set to a persistent directory.
+    pub data_dir: Option<PathBuf>,
 }
 
 impl Default for IndexerConfig {
@@ -54,6 +64,7 @@ impl Default for IndexerConfig {
             branch_max_children: 200,
             gc_max_old_indexes: DEFAULT_MAX_OLD_INDEXES,
             gc_min_time_mins: DEFAULT_MIN_TIME_GARBAGE_MINS,
+            data_dir: None,
         }
     }
 }
@@ -73,6 +84,7 @@ impl IndexerConfig {
             branch_max_children,
             gc_max_old_indexes: DEFAULT_MAX_OLD_INDEXES,
             gc_min_time_mins: DEFAULT_MIN_TIME_GARBAGE_MINS,
+            data_dir: None,
         }
     }
 
@@ -85,6 +97,7 @@ impl IndexerConfig {
             branch_max_children: 40,
             gc_max_old_indexes: DEFAULT_MAX_OLD_INDEXES,
             gc_min_time_mins: DEFAULT_MIN_TIME_GARBAGE_MINS,
+            data_dir: None,
         }
     }
 
@@ -97,6 +110,7 @@ impl IndexerConfig {
             branch_max_children: 400,
             gc_max_old_indexes: DEFAULT_MAX_OLD_INDEXES,
             gc_min_time_mins: DEFAULT_MIN_TIME_GARBAGE_MINS,
+            data_dir: None,
         }
     }
 
@@ -109,6 +123,12 @@ impl IndexerConfig {
     /// Builder method to set GC min time in minutes
     pub fn with_gc_min_time_mins(mut self, min_time: u32) -> Self {
         self.gc_min_time_mins = min_time;
+        self
+    }
+
+    /// Builder method to set the data directory for binary index artifacts
+    pub fn with_data_dir(mut self, data_dir: impl Into<PathBuf>) -> Self {
+        self.data_dir = Some(data_dir.into());
         self
     }
 }

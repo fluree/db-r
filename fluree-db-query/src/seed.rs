@@ -15,7 +15,7 @@ use crate::error::Result;
 use crate::operator::{Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{NodeCache, Storage};
+use fluree_db_core::Storage;
 use std::sync::Arc;
 
 /// Operator that yields exactly one row from a source batch
@@ -83,18 +83,18 @@ impl SeedOperator {
 }
 
 #[async_trait]
-impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for SeedOperator {
+impl<S: Storage + 'static> Operator<S> for SeedOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, _ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+    async fn open(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<()> {
         self.state = OperatorState::Open;
         self.emitted = false;
         Ok(())
     }
 
-    async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }
@@ -172,19 +172,19 @@ impl Default for EmptyOperator {
 }
 
 #[async_trait]
-impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for EmptyOperator {
+impl<S: Storage + 'static> Operator<S> for EmptyOperator {
     fn schema(&self) -> &[VarId] {
         // Empty schema - no columns
         &[]
     }
 
-    async fn open(&mut self, _ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+    async fn open(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<()> {
         self.state = OperatorState::Open;
         self.emitted = false;
         Ok(())
     }
 
-    async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }

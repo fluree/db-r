@@ -262,7 +262,7 @@ impl VectorWorkerHandle {
 /// source ledgers are updated.
 #[cfg(feature = "vector")]
 pub struct VectorMaintenanceWorker<'a, S: Storage + 'static, N> {
-    fluree: &'a crate::Fluree<S, crate::SimpleCache, N>,
+    fluree: &'a crate::Fluree<S, N>,
     config: VectorWorkerConfig,
     state: Rc<RefCell<VectorWorkerState>>,
     stop_requested: Rc<RefCell<bool>>,
@@ -275,7 +275,7 @@ where
     N: NameService + Publisher + VirtualGraphPublisher + Publication,
 {
     /// Create a new maintenance worker.
-    pub fn new(fluree: &'a crate::Fluree<S, crate::SimpleCache, N>) -> Self {
+    pub fn new(fluree: &'a crate::Fluree<S, N>) -> Self {
         Self {
             fluree,
             config: VectorWorkerConfig::default(),
@@ -285,7 +285,7 @@ where
     }
 
     /// Create a new maintenance worker with custom config.
-    pub fn with_config(fluree: &'a crate::Fluree<S, crate::SimpleCache, N>, config: VectorWorkerConfig) -> Self {
+    pub fn with_config(fluree: &'a crate::Fluree<S, N>, config: VectorWorkerConfig) -> Self {
         Self {
             fluree,
             config,

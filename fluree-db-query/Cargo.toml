@@ -15,6 +15,8 @@ fluree-db-reasoner = { path = "../fluree-db-reasoner" }
 fluree-search-protocol = { path = "../fluree-search-protocol" }
 fluree-vocab = { path = "../fluree-vocab" }
 fluree-graph-json-ld = { path = "../fluree-graph-json-ld" }
+fluree-db-indexer = { path = "../fluree-db-indexer", features = ["commit-v2"] }
+memmap2 = "0.9"
 futures = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
@@ -40,6 +42,8 @@ md-5 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 # Random number generation
 rand = { workspace = true }
+# Hashing for leaflet cache keys (matches indexer)
+xxhash-rust = "0.8"
 # URL encoding
 percent-encoding = "2"
 # Async runtime - needed for block_in_place in policy evaluation
@@ -53,6 +57,9 @@ usearch = { version = "2.16", optional = true }
 native = ["fluree-db-core/native"]
 # Enable embedded vector search (HNSW-based approximate nearest neighbor)
 vector = ["dep:usearch"]
+# DEPRECATED: binary-index is now always enabled; this feature is kept for backward
+# compatibility with crates that activate it. Will be removed in Phase 5.
+binary-index = []
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }

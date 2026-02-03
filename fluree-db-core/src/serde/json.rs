@@ -754,83 +754,17 @@ impl RawBranchNode {
 }
 
 // === DB Root Stats ===
+//
+// Canonical types moved to `crate::index_stats`. Re-exported here for
+// backward compatibility with existing `serde::json::DbRootStats` imports.
 
-/// Per-property statistics entry
-///
-/// Contains HLL-derived NDV estimates for a single property.
-/// Stored sorted by SID in the db-root for determinism.
-#[derive(Debug, Clone)]
-pub struct PropertyStatEntry {
-    /// Predicate SID as (namespace_code, name)
-    pub sid: (i32, String),
-    /// Total number of flakes with this property (including history)
-    pub count: u64,
-    /// Estimated number of distinct object values (via HLL)
-    pub ndv_values: u64,
-    /// Estimated number of distinct subjects using this property (via HLL)
-    pub ndv_subjects: u64,
-    /// Most recent transaction time that modified this property
-    pub last_modified_t: i64,
-}
+use crate::index_stats::{
+    IndexStats, PropertyStatEntry, ClassStatEntry, ClassPropertyUsage,
+    GraphPropertyStatEntry, GraphStatsEntry,
+};
 
-/// Basic index statistics (fast estimates)
-///
-/// These are designed to be maintained incrementally during indexing/refresh and
-/// **must not require walking the full index tree** (which can be many GBs).
-///
-/// Semantics mirror the Clojure implementation:
-/// - `flakes`: total number of flakes in the index (including history; after dedup)
-/// - `size`: estimated total bytes of flakes in the index (speed over accuracy)
-/// - `properties`: per-property HLL statistics (optional, requires hll-stats feature)
-/// - `classes`: per-class property usage statistics (optional)
-#[derive(Debug, Clone, Default)]
-pub struct DbRootStats {
-    /// Total number of flakes in the index (including history; after dedup)
-    pub flakes: u64,
-    /// Estimated total bytes of flakes in the index (not storage bytes of index nodes)
-    pub size: u64,
-    /// Per-property statistics (sorted by SID for determinism)
-    /// Only populated when hll-stats feature is enabled during indexing.
-    pub properties: Option<Vec<PropertyStatEntry>>,
-    /// Per-class property usage statistics (sorted by class SID for determinism)
-    /// Tracks which properties are used by instances of each class, with datatype,
-    /// reference class, and language tag breakdown.
-    pub classes: Option<Vec<ClassStatEntry>>,
-}
-
-// === Class-Property Statistics ===
-
-/// Statistics for a single class (rdf:type target)
-///
-/// Tracks property usage patterns for instances of this class.
-/// Used for query optimization (selectivity estimation) and schema inference.
-#[derive(Debug, Clone)]
-pub struct ClassStatEntry {
-    /// The class SID (target of rdf:type assertions)
-    pub class_sid: Sid,
-    /// Number of instances of this class
-    pub count: u64,
-    /// Properties used by instances of this class (sorted by property SID)
-    pub properties: Vec<ClassPropertyUsage>,
-}
-
-/// Property usage statistics within a class
-///
-/// For each property used by instances of a class, tracks:
-/// - Datatypes used (e.g., xsd:string, xsd:integer)
-/// - Referenced classes (for @id/@ref properties)
-/// - Language tags (for rdf:langString values)
-#[derive(Debug, Clone)]
-pub struct ClassPropertyUsage {
-    /// The property SID
-    pub property_sid: Sid,
-    /// Datatype usage: datatype SID → count
-    pub types: Vec<(Sid, u64)>,
-    /// Referenced classes: class SID → count (for @id datatype refs)
-    pub ref_classes: Vec<(Sid, u64)>,
-    /// Language tag usage: language tag → count (for rdf:langString)
-    pub langs: Vec<(String, u64)>,
-}
+/// Backward-compatible alias for [`IndexStats`].
+pub type DbRootStats = IndexStats;
 
 /// Raw property stat entry as it appears in JSON
 ///
@@ -905,6 +839,41 @@ pub struct RawDbRootStats {
     pub properties: Option<Vec<RawPropertyStatEntry>>,
     #[serde(default)]
     pub classes: Option<Vec<RawClassStatEntry>>,
+    #[serde(default)]
+    pub graphs: Option<Vec<RawGraphStatsEntry>>,
+}
+
+/// Raw per-property stats within a graph as it appears in JSON
+///
+/// JSON format: `{"p_id": u32, "count": u64, "ndv_values": u64, "ndv_subjects": u64,
+///               "last_modified_t": i64, "datatypes": [[dt_id, count], ...]}`
+#[derive(Debug, Deserialize)]
+pub struct RawGraphPropertyStatEntry {
+    pub p_id: u32,
+    #[serde(default)]
+    pub count: u64,
+    #[serde(default)]
+    pub ndv_values: u64,
+    #[serde(default)]
+    pub ndv_subjects: u64,
+    #[serde(default)]
+    pub last_modified_t: i64,
+    #[serde(default)]
+    pub datatypes: Option<Vec<(u8, u64)>>,
+}
+
+/// Raw graph stats entry as it appears in JSON
+///
+/// JSON format: `{"g_id": u32, "flakes": u64, "size": u64, "properties": [...]}`
+#[derive(Debug, Deserialize)]
+pub struct RawGraphStatsEntry {
+    pub g_id: u32,
+    #[serde(default)]
+    pub flakes: u64,
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
+    pub properties: Option<Vec<RawGraphPropertyStatEntry>>,
 }
 
 /// Raw class stat entry as it appears in JSON
@@ -962,18 +931,15 @@ impl<'de> serde::Deserialize<'de> for RawClassStatEntry {
 
 /// Raw class property usage as it appears in JSON
 ///
-/// Clojure format: `[[property_sid], [[types], [ref_classes], [langs]]]`
-/// Where types/ref_classes are `[[sid, count], ...]` and langs are `[[lang_string, count], ...]`
+/// New format: `[[property_sid]]`
+///
+/// We also accept the legacy Clojure format:
+/// `[[property_sid], [[types], [ref_classes], [langs]]]` but we intentionally
+/// ignore the detailed breakdowns.
 #[derive(Debug)]
 pub struct RawClassPropertyUsage {
     /// Property SID as (namespace_code, name)
     pub property_sid: (i32, String),
-    /// Datatype counts: (sid, count) pairs
-    pub types: Option<Vec<((i32, String), u64)>>,
-    /// Referenced class counts: (sid, count) pairs
-    pub ref_classes: Option<Vec<((i32, String), u64)>>,
-    /// Language tag counts: (lang, count) pairs
-    pub langs: Option<Vec<(String, u64)>>,
 }
 
 impl<'de> serde::Deserialize<'de> for RawClassPropertyUsage {
@@ -1001,21 +967,11 @@ impl<'de> serde::Deserialize<'de> for RawClassPropertyUsage {
                     .next_element()?
                     .ok_or_else(|| de::Error::invalid_length(0, &self))?;
 
-                // Second element: [[types], [ref_classes], [langs]]
-                // Each is a list of [sid/string, count] pairs
-                let usage_data: (
-                    Vec<((i32, String), u64)>,  // types: [[datatype_sid, count], ...]
-                    Vec<((i32, String), u64)>,  // ref_classes: [[class_sid, count], ...]
-                    Vec<(String, u64)>,         // langs: [[lang_string, count], ...]
-                ) = seq
-                    .next_element()?
-                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                // Optional second element: legacy detailed structure. Ignore if present.
+                let _ignored: Option<serde_json::Value> = seq.next_element()?;
 
                 Ok(RawClassPropertyUsage {
                     property_sid,
-                    types: if usage_data.0.is_empty() { None } else { Some(usage_data.0) },
-                    ref_classes: if usage_data.1.is_empty() { None } else { Some(usage_data.1) },
-                    langs: if usage_data.2.is_empty() { None } else { Some(usage_data.2) },
                 })
             }
         }
@@ -1092,66 +1048,14 @@ pub struct RawGarbageRef {
 }
 
 // === Schema ===
+//
+// Canonical types moved to `crate::index_schema`. Re-exported here for
+// backward compatibility with existing `serde::json::DbRootSchema` imports.
 
-/// Predicate info entry in schema
-///
-/// Each entry describes a predicate/class with its relationships:
-/// - id: The predicate/class SID
-/// - subclass_of: Parent classes (for rdfs:subClassOf)
-/// - parent_props: Parent properties (for rdfs:subPropertyOf)
-/// - child_props: Child properties (inverse of subPropertyOf)
-#[derive(Debug, Clone)]
-pub struct SchemaPredicateInfo {
-    /// Predicate/class SID
-    pub id: Sid,
-    /// Parent classes (from rdfs:subClassOf assertions)
-    pub subclass_of: Vec<Sid>,
-    /// Parent properties (from rdfs:subPropertyOf assertions)
-    pub parent_props: Vec<Sid>,
-    /// Child properties (inverse of subPropertyOf)
-    pub child_props: Vec<Sid>,
-}
+use crate::index_schema::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};
 
-/// Schema predicates structure (Clojure-compatible format)
-///
-/// Uses a columnar format with fixed keys and values arrays:
-/// - keys: ["id", "subclassOf", "parentProps", "childProps"]
-/// - vals: [[sid, [parents], [parent_props], [child_props]], ...]
-#[derive(Debug, Clone, Default)]
-pub struct SchemaPredicates {
-    /// Fixed keys: ["id", "subclassOf", "parentProps", "childProps"]
-    pub keys: Vec<String>,
-    /// Values: one entry per predicate, sorted by SID for determinism
-    pub vals: Vec<SchemaPredicateInfo>,
-}
-
-/// Index schema persisted in db-root
-///
-/// Tracks class/property hierarchy information for query optimization.
-#[derive(Debug, Clone)]
-pub struct DbRootSchema {
-    /// Transaction ID when schema was last updated
-    pub t: i64,
-    /// Predicate/class metadata
-    pub pred: SchemaPredicates,
-}
-
-impl Default for DbRootSchema {
-    fn default() -> Self {
-        Self {
-            t: 0,
-            pred: SchemaPredicates {
-                keys: vec![
-                    "id".to_string(),
-                    "subclassOf".to_string(),
-                    "parentProps".to_string(),
-                    "childProps".to_string(),
-                ],
-                vals: Vec::new(),
-            },
-        }
-    }
-}
+/// Backward-compatible alias for [`IndexSchema`].
+pub type DbRootSchema = IndexSchema;
 
 /// Raw schema predicates as it appears in JSON
 #[derive(Debug, Deserialize)]
@@ -1283,7 +1187,7 @@ impl RawDbRoot {
         // Convert stats if present
         let stats = self.stats.as_ref().and_then(|s| {
             // Only create DbRootStats if at least one field is present
-            if s.flakes.is_some() || s.size.is_some() || s.properties.is_some() || s.classes.is_some() {
+            if s.flakes.is_some() || s.size.is_some() || s.properties.is_some() || s.classes.is_some() || s.graphs.is_some() {
                 // Convert properties if present
                 let properties = s.properties.as_ref().map(|props| {
                     props.iter().map(|p| PropertyStatEntry {
@@ -1302,22 +1206,8 @@ impl RawDbRoot {
                         let properties = c.properties.as_ref().map(|props| {
                             props.iter().map(|p| {
                                 let property_sid = Sid::new(p.property_sid.0, &p.property_sid.1);
-                                let types = p.types.as_ref()
-                                    .map(|t| t.iter().map(|((ns, name), count)| {
-                                        (Sid::new(*ns, name), *count)
-                                    }).collect())
-                                    .unwrap_or_default();
-                                let ref_classes = p.ref_classes.as_ref()
-                                    .map(|r| r.iter().map(|((ns, name), count)| {
-                                        (Sid::new(*ns, name), *count)
-                                    }).collect())
-                                    .unwrap_or_default();
-                                let langs = p.langs.clone().unwrap_or_default();
                                 ClassPropertyUsage {
                                     property_sid,
-                                    types,
-                                    ref_classes,
-                                    langs,
                                 }
                             }).collect()
                         }).unwrap_or_default();
@@ -1329,11 +1219,34 @@ impl RawDbRoot {
                     }).collect()
                 });
 
+                // Convert graphs if present
+                let graphs = s.graphs.as_ref().map(|graph_list| {
+                    graph_list.iter().map(|g| {
+                        let properties = g.properties.as_ref().map(|props| {
+                            props.iter().map(|p| GraphPropertyStatEntry {
+                                p_id: p.p_id,
+                                count: p.count,
+                                ndv_values: p.ndv_values,
+                                ndv_subjects: p.ndv_subjects,
+                                last_modified_t: p.last_modified_t,
+                                datatypes: p.datatypes.clone().unwrap_or_default(),
+                            }).collect()
+                        }).unwrap_or_default();
+                        GraphStatsEntry {
+                            g_id: g.g_id,
+                            flakes: g.flakes,
+                            size: g.size,
+                            properties,
+                        }
+                    }).collect()
+                });
+
                 Some(DbRootStats {
                     flakes: s.flakes.unwrap_or(0),
                     size: s.size.unwrap_or(0),
                     properties,
                     classes,
+                    graphs,
                 })
             } else {
                 None
@@ -1487,6 +1400,14 @@ fn serialize_object(value: &FlakeValue, _dt: &Sid) -> serde_json::Value {
         FlakeValue::DateTime(dt) => serde_json::Value::String(dt.to_string()),
         FlakeValue::Date(d) => serde_json::Value::String(d.to_string()),
         FlakeValue::Time(t) => serde_json::Value::String(t.to_string()),
+        FlakeValue::GYear(v) => serde_json::Value::String(v.to_string()),
+        FlakeValue::GYearMonth(v) => serde_json::Value::String(v.to_string()),
+        FlakeValue::GMonth(v) => serde_json::Value::String(v.to_string()),
+        FlakeValue::GDay(v) => serde_json::Value::String(v.to_string()),
+        FlakeValue::GMonthDay(v) => serde_json::Value::String(v.to_string()),
+        FlakeValue::YearMonthDuration(v) => serde_json::Value::String(v.to_string()),
+        FlakeValue::DayTimeDuration(v) => serde_json::Value::String(v.to_string()),
+        FlakeValue::Duration(v) => serde_json::Value::String(v.to_string()),
     }
 }
 
@@ -2084,22 +2005,12 @@ pub fn serialize_db_root(root: &DbRoot) -> Result<Vec<u8>> {
 
         // Classes - compact array format for Clojure compatibility
         // Format: [[class_sid], [count, [property_usages...]]]
-        // Property usage format: [[property_sid], [[types], [ref_classes], [langs]]]
+        // Property usage format (new): [[property_sid]]
         if let Some(ref classes) = stats.classes {
             let classes_array: Vec<serde_json::Value> = classes.iter().map(|c| {
                 let props_array: Vec<serde_json::Value> = c.properties.iter().map(|p| {
-                    let types: Vec<serde_json::Value> = p.types.iter()
-                        .map(|(sid, count)| serde_json::json!([[sid.namespace_code, &*sid.name], count]))
-                        .collect();
-                    let refs: Vec<serde_json::Value> = p.ref_classes.iter()
-                        .map(|(sid, count)| serde_json::json!([[sid.namespace_code, &*sid.name], count]))
-                        .collect();
-                    let langs: Vec<serde_json::Value> = p.langs.iter()
-                        .map(|(lang, count)| serde_json::json!([lang, count]))
-                        .collect();
                     serde_json::json!([
-                        [p.property_sid.namespace_code, &*p.property_sid.name],
-                        [types, refs, langs]
+                        [p.property_sid.namespace_code, &*p.property_sid.name]
                     ])
                 }).collect();
                 serde_json::json!([
@@ -2108,6 +2019,33 @@ pub fn serialize_db_root(root: &DbRoot) -> Result<Vec<u8>> {
                 ])
             }).collect();
             stats_obj.insert("classes".to_string(), serde_json::Value::Array(classes_array));
+        }
+
+        // Graphs - ID-based per-graph stats (new format, not Clojure compact arrays)
+        // Format: [{"g_id": u32, "flakes": u64, "size": u64, "properties": [...]}]
+        if let Some(ref graphs) = stats.graphs {
+            let graphs_array: Vec<serde_json::Value> = graphs.iter().map(|g| {
+                let props_array: Vec<serde_json::Value> = g.properties.iter().map(|p| {
+                    let dt_array: Vec<serde_json::Value> = p.datatypes.iter()
+                        .map(|(dt_id, count)| serde_json::json!([dt_id, count]))
+                        .collect();
+                    serde_json::json!({
+                        "p_id": p.p_id,
+                        "count": p.count,
+                        "ndv_values": p.ndv_values,
+                        "ndv_subjects": p.ndv_subjects,
+                        "last_modified_t": p.last_modified_t,
+                        "datatypes": dt_array
+                    })
+                }).collect();
+                serde_json::json!({
+                    "g_id": g.g_id,
+                    "flakes": g.flakes,
+                    "size": g.size,
+                    "properties": props_array
+                })
+            }).collect();
+            stats_obj.insert("graphs".to_string(), serde_json::Value::Array(graphs_array));
         }
 
         stats_obj.insert("size".to_string(), serde_json::Value::Number(stats.size.into()));
@@ -2638,6 +2576,7 @@ mod tests {
                 size: 123456,
                 properties: None,
                 classes: None,
+                graphs: None,
             }),
             config: Some(DbRootConfig {
                 reindex_min_bytes: Some(1000000),

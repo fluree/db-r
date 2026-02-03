@@ -10,7 +10,7 @@
 //! Fluree uses predefined codes for common namespaces to ensure compatibility
 //! with existing databases. User-supplied namespaces start at code 101.
 
-use fluree_db_core::{Db, NodeCache, Sid, Storage};
+use fluree_db_core::{Db, Sid, Storage};
 use std::collections::HashMap;
 
 // ============================================================================
@@ -78,6 +78,96 @@ pub const BLANK_NODE_PREFIX: &str = "_:";
 /// Fluree blank node ID prefix (used in generated blank node names)
 pub const BLANK_NODE_ID_PREFIX: &str = "fdb";
 
+// ============================================================================
+// Prefix Trie — O(len(iri)) longest-prefix matching
+// ============================================================================
+
+/// A node in the byte-level prefix trie.
+///
+/// Children are stored as a sorted `Vec<(u8, u32)>` instead of a HashMap.
+/// Most nodes in URI prefix tries have 1-3 children, where a linear scan
+/// beats HashMap's hashing + heap allocation overhead. The `u32` index
+/// supports up to 4B nodes (far more than needed).
+#[derive(Debug, Clone)]
+struct TrieNode {
+    /// Namespace code if a registered prefix ends at this node.
+    code: Option<i32>,
+    /// Children sorted by byte value. Typically 1-3 entries for URI prefixes.
+    children: Vec<(u8, u32)>,
+}
+
+/// Byte-level trie for longest-prefix matching of IRI strings.
+///
+/// Each registered namespace prefix is inserted byte-by-byte. Lookup walks
+/// the trie following the IRI's bytes, tracking the deepest node that has a
+/// namespace code set. This gives O(len(iri)) lookup time independent of the
+/// number of registered prefixes — critical when namespace counts grow to
+/// thousands (e.g. DBLP imports with ~90K namespaces).
+#[derive(Debug, Clone)]
+struct PrefixTrie {
+    nodes: Vec<TrieNode>,
+}
+
+impl PrefixTrie {
+    fn new() -> Self {
+        Self {
+            nodes: vec![TrieNode {
+                code: None,
+                children: Vec::new(),
+            }],
+        }
+    }
+
+    /// Insert a prefix string with its namespace code.
+    fn insert(&mut self, prefix: &str, code: i32) {
+        let mut node_idx: u32 = 0;
+        for &byte in prefix.as_bytes() {
+            let children = &self.nodes[node_idx as usize].children;
+            node_idx = match children.iter().find(|(b, _)| *b == byte) {
+                Some(&(_, child_idx)) => child_idx,
+                None => {
+                    let new_idx = self.nodes.len() as u32;
+                    self.nodes.push(TrieNode {
+                        code: None,
+                        children: Vec::new(),
+                    });
+                    let node = &mut self.nodes[node_idx as usize];
+                    let pos = node.children.partition_point(|(b, _)| *b < byte);
+                    node.children.insert(pos, (byte, new_idx));
+                    new_idx
+                }
+            };
+        }
+        self.nodes[node_idx as usize].code = Some(code);
+    }
+
+    /// Find the longest registered prefix that matches the start of `iri`.
+    ///
+    /// Returns `(namespace_code, prefix_byte_length)` or `None` if no
+    /// non-empty prefix matches. The empty prefix (code 0) is intentionally
+    /// not stored in the trie — unmatched IRIs fall through to the split
+    /// heuristic in `sid_for_iri`.
+    fn longest_match(&self, iri: &str) -> Option<(i32, usize)> {
+        let mut node_idx: u32 = 0;
+        let mut best: Option<(i32, usize)> = None;
+
+        for (i, &byte) in iri.as_bytes().iter().enumerate() {
+            let children = &self.nodes[node_idx as usize].children;
+            match children.iter().find(|(b, _)| *b == byte) {
+                Some(&(_, child_idx)) => {
+                    node_idx = child_idx;
+                    if let Some(code) = self.nodes[node_idx as usize].code {
+                        best = Some((code, i + 1));
+                    }
+                }
+                None => break,
+            }
+        }
+
+        best
+    }
+}
+
 /// Build the default namespace mappings
 fn default_namespaces() -> HashMap<i32, String> {
     let mut map = HashMap::new();
@@ -117,9 +207,12 @@ fn default_namespaces() -> HashMap<i32, String> {
 /// 2. Loads existing codes from `db.namespace_codes`
 /// 3. Allocates new codes as needed (starting at USER_NS_START)
 /// 4. Tracks new allocations in `delta` for commit persistence
+///
+/// Prefix lookups use a byte-level trie for O(len(iri)) longest-prefix
+/// matching, independent of the number of registered namespaces.
 #[derive(Debug, Clone)]
 pub struct NamespaceRegistry {
-    /// Prefix → code mapping (for lookups)
+    /// Prefix → code mapping (for exact lookups in get_or_allocate)
     codes: HashMap<String, i32>,
 
     /// Code → prefix mapping (for encoding, matches Db.namespace_codes)
@@ -130,6 +223,11 @@ pub struct NamespaceRegistry {
 
     /// New allocations this transaction (code → prefix)
     pub(crate) delta: HashMap<i32, String>,
+
+    /// Byte-level trie for O(len(iri)) longest-prefix matching.
+    /// The empty prefix (code 0) is NOT stored in the trie — unmatched
+    /// IRIs fall through to the split heuristic which may allocate it.
+    trie: PrefixTrie,
 }
 
 impl NamespaceRegistry {
@@ -141,11 +239,19 @@ impl NamespaceRegistry {
             .map(|(code, prefix)| (prefix.clone(), *code))
             .collect();
 
+        let mut trie = PrefixTrie::new();
+        for (prefix, &code) in &codes {
+            if !prefix.is_empty() {
+                trie.insert(prefix, code);
+            }
+        }
+
         Self {
             codes,
             names,
             next_code: USER_NS_START,
             delta: HashMap::new(),
+            trie,
         }
     }
 
@@ -153,7 +259,7 @@ impl NamespaceRegistry {
     ///
     /// This merges the database's codes with the predefined defaults,
     /// with the database taking precedence for any conflicts.
-    pub fn from_db<S: Storage, C: NodeCache>(db: &Db<S, C>) -> Self {
+    pub fn from_db<S: Storage>(db: &Db<S>) -> Self {
         // Start with defaults
         let mut names = default_namespaces();
 
@@ -171,11 +277,19 @@ impl NamespaceRegistry {
         let max_code = names.keys().max().copied().unwrap_or(0);
         let next_code = (max_code + 1).max(USER_NS_START);
 
+        let mut trie = PrefixTrie::new();
+        for (prefix, &code) in &codes {
+            if !prefix.is_empty() {
+                trie.insert(prefix, code);
+            }
+        }
+
         Self {
             codes,
             names,
             next_code,
             delta: HashMap::new(),
+            trie,
         }
     }
 
@@ -195,6 +309,11 @@ impl NamespaceRegistry {
         self.codes.insert(prefix.to_string(), code);
         self.names.insert(code, prefix.to_string());
         self.delta.insert(code, prefix.to_string());
+
+        // Insert into trie (skip empty prefix — handled by split heuristic)
+        if !prefix.is_empty() {
+            self.trie.insert(prefix, code);
+        }
 
         code
     }
@@ -219,6 +338,11 @@ impl NamespaceRegistry {
         self.codes.contains_key(prefix)
     }
 
+    /// Number of registered namespace codes (predefined + user-allocated).
+    pub fn code_count(&self) -> usize {
+        self.codes.len()
+    }
+
     /// Take the delta (new allocations) and reset it
     ///
     /// Returns the map of new allocations (code → prefix) for
@@ -239,49 +363,44 @@ impl NamespaceRegistry {
 
     /// Create a Sid for an IRI, allocating namespace code if needed
     ///
-    /// The IRI is split into prefix and local name. The prefix gets
-    /// a namespace code (existing or newly allocated), and the result
-    /// is a Sid with that code and the local name.
-    ///
-    /// This uses longest-prefix matching first (checking against known prefixes),
-    /// then falls back to splitting on the last `/` or `#` for unknown prefixes.
-    /// This ensures parity with `Db::encode_iri()` at query time.
+    /// Uses a byte-level trie for O(len(iri)) longest-prefix matching,
+    /// independent of the number of registered namespaces. Falls back to
+    /// splitting on the last `/` or `#` for IRIs with no matching prefix.
     pub fn sid_for_iri(&mut self, iri: &str) -> Sid {
-        // First, try to find the longest known prefix that matches this IRI.
-        // This ensures consistency with Db::encode_iri() at query time.
-        let mut best_match: Option<(&str, i32)> = None;
-        for (prefix, &code) in &self.codes {
-            if iri.starts_with(prefix) {
-                let prefix_len = prefix.len();
-                if best_match.map(|(p, _)| p.len()).unwrap_or(0) < prefix_len {
-                    best_match = Some((prefix.as_str(), code));
-                }
-            }
-        }
-
-        if let Some((prefix, code)) = best_match {
-            let local = &iri[prefix.len()..];
-            return Sid::new(code, local);
+        // Trie lookup: O(len(iri)), handles nested prefixes correctly
+        if let Some((code, prefix_len)) = self.trie.longest_match(iri) {
+            return Sid::new(code, &iri[prefix_len..]);
         }
 
         // No known prefix matched; fall back to split heuristic for new prefixes.
-        // Find split point (last / or #)
         let split_pos = iri.rfind(|c| c == '/' || c == '#');
-
         let (prefix, local) = match split_pos {
-            Some(pos) => {
-                let prefix = &iri[..=pos]; // Include the delimiter
-                let local = &iri[pos + 1..];
-                (prefix, local)
-            }
-            None => {
-                // No delimiter found, use empty prefix
-                ("", iri)
-            }
+            Some(pos) => (&iri[..=pos], &iri[pos + 1..]),
+            None => ("", iri),
         };
 
         let code = self.get_or_allocate(prefix);
         Sid::new(code, local)
+    }
+
+    /// Register a namespace code if not already present.
+    ///
+    /// Used to merge allocations from a parallel parser clone back into the
+    /// main registry. If the prefix is already registered (under any code),
+    /// this is a no-op.
+    pub fn ensure_code(&mut self, code: i32, prefix: &str) {
+        if self.codes.contains_key(prefix) {
+            return;
+        }
+        self.codes.insert(prefix.to_string(), code);
+        self.names.insert(code, prefix.to_string());
+        self.delta.insert(code, prefix.to_string());
+        if !prefix.is_empty() {
+            self.trie.insert(prefix, code);
+        }
+        if code >= self.next_code {
+            self.next_code = code + 1;
+        }
     }
 
     /// Create a Sid for a blank node
@@ -418,6 +537,102 @@ mod tests {
 
         // No delta should be created since all prefixes are predefined
         assert!(registry.delta.is_empty());
+    }
+
+    #[test]
+    fn test_nested_prefixes_use_longest_match() {
+        let mut registry = NamespaceRegistry::new();
+
+        // Register a short prefix, then a longer nested prefix
+        let short_code = registry.get_or_allocate("http://ex.org/");
+        let long_code = registry.get_or_allocate("http://ex.org/foo/");
+        assert_ne!(short_code, long_code);
+
+        // IRI matching only the short prefix
+        let sid1 = registry.sid_for_iri("http://ex.org/bar");
+        assert_eq!(sid1.namespace_code, short_code);
+        assert_eq!(sid1.name.as_ref(), "bar");
+
+        // IRI matching BOTH — must use the longer prefix
+        let sid2 = registry.sid_for_iri("http://ex.org/foo/bar");
+        assert_eq!(sid2.namespace_code, long_code);
+        assert_eq!(sid2.name.as_ref(), "bar");
+
+        // Call again — trie always finds longest match, no cache issues
+        let sid3 = registry.sid_for_iri("http://ex.org/foo/baz");
+        assert_eq!(sid3.namespace_code, long_code);
+        assert_eq!(sid3.name.as_ref(), "baz");
+
+        // And the short prefix still works correctly after
+        let sid4 = registry.sid_for_iri("http://ex.org/qux");
+        assert_eq!(sid4.namespace_code, short_code);
+        assert_eq!(sid4.name.as_ref(), "qux");
+    }
+
+    #[test]
+    fn test_nested_prefixes_registered_in_reverse_order() {
+        let mut registry = NamespaceRegistry::new();
+
+        // Register LONG prefix first, then the short one
+        let long_code = registry.get_or_allocate("http://ex.org/foo/");
+        let short_code = registry.get_or_allocate("http://ex.org/");
+        assert_ne!(short_code, long_code);
+
+        // Warm the cache with the short prefix
+        let sid1 = registry.sid_for_iri("http://ex.org/bar");
+        assert_eq!(sid1.namespace_code, short_code);
+
+        // Must still find the long prefix even though short was just used
+        let sid2 = registry.sid_for_iri("http://ex.org/foo/bar");
+        assert_eq!(sid2.namespace_code, long_code);
+        assert_eq!(sid2.name.as_ref(), "bar");
+    }
+
+    #[test]
+    fn test_trie_basic() {
+        let mut trie = PrefixTrie::new();
+        trie.insert("http://example.org/", 101);
+        trie.insert("http://other.org/", 102);
+
+        assert_eq!(
+            trie.longest_match("http://example.org/foo"),
+            Some((101, 19))
+        );
+        assert_eq!(
+            trie.longest_match("http://other.org/bar"),
+            Some((102, 17))
+        );
+        assert_eq!(trie.longest_match("http://unknown.org/baz"), None);
+    }
+
+    #[test]
+    fn test_trie_nested_prefixes() {
+        let mut trie = PrefixTrie::new();
+        trie.insert("http://ex.org/", 101);
+        trie.insert("http://ex.org/foo/", 102);
+
+        // Short prefix only
+        assert_eq!(trie.longest_match("http://ex.org/bar"), Some((101, 14)));
+        // Longest match wins
+        assert_eq!(
+            trie.longest_match("http://ex.org/foo/bar"),
+            Some((102, 18))
+        );
+    }
+
+    #[test]
+    fn test_trie_nested_reverse_insertion() {
+        let mut trie = PrefixTrie::new();
+        // Insert long first, then short
+        trie.insert("http://ex.org/foo/", 102);
+        trie.insert("http://ex.org/", 101);
+
+        // Still finds longest match
+        assert_eq!(
+            trie.longest_match("http://ex.org/foo/bar"),
+            Some((102, 18))
+        );
+        assert_eq!(trie.longest_match("http://ex.org/bar"), Some((101, 14)));
     }
 
     #[test]

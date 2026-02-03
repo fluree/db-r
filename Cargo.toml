@@ -32,6 +32,7 @@ members = [
     "fluree-search-protocol",
     "fluree-search-service",
     "fluree-search-httpd",
+    "fluree-db-ingest",
     "examples/bulk-turtle-import",
     "examples/otel-firehose-demo",
     "benchmarks/fluree-bench",
@@ -116,6 +117,9 @@ urlencoding = "2"
 
 # HTTP mocking for tests
 wiremock = "0.6"
+
+# Compression
+zstd = "0.13"
 
 # Iceberg format support (manifest Avro, data Parquet)
 apache-avro = "0.17"

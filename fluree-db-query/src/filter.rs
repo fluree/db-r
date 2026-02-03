@@ -34,7 +34,7 @@ use chrono::{
 use fluree_db_core::temporal::{
     Date as FlureeDate, DateTime as FlureeDateTime, Time as FlureeTime,
 };
-use fluree_db_core::{FlakeValue, NodeCache, Storage};
+use fluree_db_core::{FlakeValue, Storage};
 use md5::{Digest as Md5Digest, Md5};
 use num_bigint::BigInt;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -50,9 +50,9 @@ use uuid::Uuid;
 ///
 /// Rows where the filter evaluates to `false` or encounters an error
 /// (type mismatch, unbound var) are filtered out.
-pub struct FilterOperator<S: Storage + 'static, C: NodeCache + 'static> {
+pub struct FilterOperator<S: Storage + 'static> {
     /// Child operator providing input rows
-    child: BoxedOperator<S, C>,
+    child: BoxedOperator<S>,
     /// Filter expression to evaluate
     expr: FilterExpr,
     /// Output schema (same as child)
@@ -61,9 +61,9 @@ pub struct FilterOperator<S: Storage + 'static, C: NodeCache + 'static> {
     state: OperatorState,
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> FilterOperator<S, C> {
+impl<S: Storage + 'static> FilterOperator<S> {
     /// Create a new filter operator
-    pub fn new(child: BoxedOperator<S, C>, expr: FilterExpr) -> Self {
+    pub fn new(child: BoxedOperator<S>, expr: FilterExpr) -> Self {
         let schema = Arc::from(child.schema().to_vec().into_boxed_slice());
         Self {
             child,
@@ -80,12 +80,12 @@ impl<S: Storage + 'static, C: NodeCache + 'static> FilterOperator<S, C> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for FilterOperator<S, C> {
+impl<S: Storage + 'static> Operator<S> for FilterOperator<S> {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
         let _span = tracing::trace_span!("filter").entered();
         drop(_span);
         self.child.open(ctx).await?;
@@ -93,7 +93,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for FilterOper
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }
@@ -165,15 +165,13 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for FilterOper
 pub fn evaluate_to_binding(expr: &FilterExpr, row: &RowView) -> Binding {
     // Use MemoryStorage as a placeholder type since ctx is None
     // The generic types don't matter when ctx is None - they're only used for IRI encoding
-    evaluate_to_binding_with_context::<fluree_db_core::MemoryStorage, fluree_db_core::NoCache>(
-        expr, row, None,
-    )
+    evaluate_to_binding_with_context::<fluree_db_core::MemoryStorage>(expr, row, None)
 }
 
-pub fn evaluate_to_binding_with_context<S: Storage, C: NodeCache>(
+pub fn evaluate_to_binding_with_context<S: Storage>(
     expr: &FilterExpr,
     row: &RowView,
-    ctx: Option<&ExecutionContext<'_, S, C>>,
+    ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Binding {
     match evaluate_to_binding_with_context_strict(expr, row, ctx) {
         Ok(binding) => binding,
@@ -181,10 +179,10 @@ pub fn evaluate_to_binding_with_context<S: Storage, C: NodeCache>(
     }
 }
 
-pub fn evaluate_to_binding_with_context_strict<S: Storage, C: NodeCache>(
+pub fn evaluate_to_binding_with_context_strict<S: Storage>(
     expr: &FilterExpr,
     row: &RowView,
-    ctx: Option<&ExecutionContext<'_, S, C>>,
+    ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Binding> {
     use crate::context::WellKnownDatatypes;
 
@@ -522,6 +520,19 @@ fn flake_value_to_comparable(val: &FlakeValue) -> Option<ComparableValue> {
         FlakeValue::DateTime(dt) => Some(ComparableValue::DateTime(dt.clone())),
         FlakeValue::Date(d) => Some(ComparableValue::Date(d.clone())),
         FlakeValue::Time(t) => Some(ComparableValue::Time(t.clone())),
+        // Calendar fragments and durations: route through TypedLiteral
+        FlakeValue::GYear(_)
+        | FlakeValue::GYearMonth(_)
+        | FlakeValue::GMonth(_)
+        | FlakeValue::GDay(_)
+        | FlakeValue::GMonthDay(_)
+        | FlakeValue::YearMonthDuration(_)
+        | FlakeValue::DayTimeDuration(_)
+        | FlakeValue::Duration(_) => Some(ComparableValue::TypedLiteral {
+            val: val.clone(),
+            dt_iri: None,
+            lang: None,
+        }),
     }
 }
 
@@ -531,6 +542,11 @@ fn filter_value_to_comparable(val: &FilterValue) -> ComparableValue {
         FilterValue::Double(d) => ComparableValue::Double(*d),
         FilterValue::String(s) => ComparableValue::String(Arc::from(s.as_str())),
         FilterValue::Bool(b) => ComparableValue::Bool(*b),
+        FilterValue::Temporal(fv) => ComparableValue::TypedLiteral {
+            val: fv.clone(),
+            dt_iri: None,
+            lang: None,
+        },
     }
 }
 

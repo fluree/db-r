@@ -10,13 +10,15 @@
 //! to return an empty leaf without any storage reads. Storage backends must
 //! never use `"empty"` as a real node address.
 
-use crate::cache::NodeCache;
 use crate::comparator::IndexType;
 use crate::error::{Error, Result};
 use crate::flake::Flake;
 use crate::index::{ChildRef, IndexNode};
+use crate::range_provider::RangeProvider;
 use crate::schema_hierarchy::SchemaHierarchy;
-use crate::serde::json::{parse_db_root, DbRoot, DbRootConfig, DbRootSchema, DbRootStats};
+use crate::index_stats::IndexStats;
+use crate::index_schema::IndexSchema;
+use crate::serde::json::{parse_db_root, DbRoot, DbRootConfig};
 use crate::sid::{Sid, SidInterner};
 use crate::storage::Storage;
 use crate::namespaces::default_namespace_codes;
@@ -35,9 +37,7 @@ pub const EMPTY_NODE_ID: &str = "empty";
 ///
 /// Generic over:
 /// - `S`: Storage backend
-/// - `C`: Node cache
-#[derive(Debug)]
-pub struct Db<S, C> {
+pub struct Db<S> {
     /// Ledger alias (e.g., "mydb/main")
     pub alias: String,
     /// Current transaction time
@@ -60,11 +60,11 @@ pub struct Db<S, C> {
     pub namespace_codes: HashMap<i32, String>,
 
     /// Index statistics (flakes count, total size)
-    pub stats: Option<DbRootStats>,
+    pub stats: Option<IndexStats>,
     /// Index configuration (reindex thresholds)
     pub config: Option<DbRootConfig>,
     /// Schema (class/property hierarchy)
-    pub schema: Option<DbRootSchema>,
+    pub schema: Option<IndexSchema>,
 
     /// Cached schema hierarchy for reasoning (lazily computed)
     schema_hierarchy_cache: OnceCell<SchemaHierarchy>,
@@ -78,17 +78,22 @@ pub struct Db<S, C> {
     /// during leaf parsing (native only).
     pub sid_interner: Arc<SidInterner>,
 
+    /// Optional binary range provider.
+    ///
+    /// When set, `range_with_overlay()` delegates to this provider instead of
+    /// traversing the b-tree.  This allows the binary columnar index to serve
+    /// all existing range callers (reasoner, API, policy, SHACL) without
+    /// modifying them.
+    ///
+    /// Set via `Db::with_range_provider()` after construction, typically by
+    /// the ledger loading path once a `BinaryIndexStore` is available.
+    pub range_provider: Option<Arc<dyn RangeProvider>>,
+
     /// Storage backend
     pub storage: S,
-    /// Node cache (Arc-wrapped to enable sharing across cloned Db instances)
-    ///
-    /// This is critical for prefetch: when Db is cloned for background prefetch tasks,
-    /// both the mainline query and prefetch tasks must share the same cache instance
-    /// so that prefetch actually warms the cache the query will use.
-    pub cache: Arc<C>,
 }
 
-impl<S: Clone, C> Clone for Db<S, C> {
+impl<S: Clone> Clone for Db<S> {
     fn clone(&self) -> Self {
         Self {
             alias: self.alias.clone(),
@@ -105,22 +110,34 @@ impl<S: Clone, C> Clone for Db<S, C> {
             schema: self.schema.clone(),
             schema_hierarchy_cache: self.schema_hierarchy_cache.clone(),
             sid_interner: self.sid_interner.clone(),
+            range_provider: self.range_provider.clone(),
             storage: self.storage.clone(),
-            cache: Arc::clone(&self.cache), // Share cache across clones for prefetch
         }
     }
 }
 
-impl<S: Storage, C: NodeCache> Db<S, C> {
+impl<S: std::fmt::Debug> std::fmt::Debug for Db<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Db")
+            .field("alias", &self.alias)
+            .field("t", &self.t)
+            .field("version", &self.version)
+            .field("spot", &self.spot)
+            .field("psot", &self.psot)
+            .field("post", &self.post)
+            .field("opst", &self.opst)
+            .field("tspo", &self.tspo)
+            .field("range_provider", &self.range_provider.as_ref().map(|_| "..."))
+            .finish_non_exhaustive()
+    }
+}
+
+impl<S: Storage> Db<S> {
     /// Create a genesis (empty) database for a new ledger
     ///
     /// Used when a nameservice has a commit but no index yet.
     /// The database starts at t=0 with empty index roots using [`EMPTY_NODE_ID`].
-    ///
-    /// The cache is wrapped in Arc internally to enable sharing across cloned Db instances,
-    /// which is critical for prefetch to warm the same cache the query uses.
-    pub fn genesis(storage: S, cache: impl Into<Arc<C>>, alias: &str) -> Self {
-        let cache = cache.into();
+    pub fn genesis(storage: S, alias: &str) -> Self {
         // Use a consistent empty leaf root for all indexes.
         // The resolver treats EMPTY_NODE_ID as an empty leaf with no storage reads.
         let empty_root = ChildRef {
@@ -148,8 +165,45 @@ impl<S: Storage, C: NodeCache> Db<S, C> {
             schema: None, // Genesis has no schema
             schema_hierarchy_cache: OnceCell::new(),
             sid_interner: Arc::new(SidInterner::with_capacity(4096)),
+            range_provider: None,
             storage,
-            cache,
+        }
+    }
+
+    /// Create a Db from metadata only (no b-tree index roots).
+    ///
+    /// Used when the binary columnar index is the source of truth and b-tree
+    /// roots are not available.  The Db carries namespace codes, stats, and
+    /// schema for callers that need ledger metadata, while all actual range
+    /// queries go through `BinaryIndexStore` / `BinaryScanOperator`.
+    ///
+    /// B-tree index roots are set to `None`, so any call to `range()` or
+    /// `get_index_root()` that relies on them will return an error.
+    pub fn new_meta(
+        alias: String,
+        t: i64,
+        namespace_codes: HashMap<i32, String>,
+        stats: Option<IndexStats>,
+        schema: Option<IndexSchema>,
+        storage: S,
+    ) -> Self {
+        Self {
+            alias,
+            t,
+            version: 2,
+            spot: None,
+            psot: None,
+            post: None,
+            opst: None,
+            tspo: None,
+            namespace_codes,
+            stats,
+            config: None,
+            schema,
+            schema_hierarchy_cache: OnceCell::new(),
+            sid_interner: Arc::new(SidInterner::with_capacity(256)),
+            range_provider: None,
+            storage,
         }
     }
 
@@ -158,22 +212,17 @@ impl<S: Storage, C: NodeCache> Db<S, C> {
     /// # Arguments
     ///
     /// * `storage` - Storage backend to read index data from
-    /// * `cache` - Cache for resolved nodes (will be Arc-wrapped if not already)
     /// * `root_address` - Address of the DB root (index metadata)
-    pub async fn load(storage: S, cache: impl Into<Arc<C>>, root_address: &str) -> Result<Self> {
-        let cache = cache.into();
+    pub async fn load(storage: S, root_address: &str) -> Result<Self> {
         // Read and parse the DB root
         let bytes = storage.read_bytes(root_address).await?;
         let root = parse_db_root(bytes)?;
 
-        Ok(Self::from_root(storage, cache, root))
+        Ok(Self::from_root(storage, root))
     }
 
     /// Create a Db from a parsed DbRoot
-    ///
-    /// The cache is wrapped in Arc internally to enable sharing across cloned Db instances,
-    /// which is critical for prefetch to warm the same cache the query uses.
-    pub fn from_root(storage: S, cache: impl Into<Arc<C>>, root: DbRoot) -> Self {
+    pub fn from_root(storage: S, root: DbRoot) -> Self {
         Self {
             alias: root.alias,
             t: root.t,
@@ -189,9 +238,19 @@ impl<S: Storage, C: NodeCache> Db<S, C> {
             schema: root.schema,
             schema_hierarchy_cache: OnceCell::new(),
             sid_interner: Arc::new(SidInterner::with_capacity(4096)),
+            range_provider: None,
             storage,
-            cache: cache.into(),
         }
+    }
+
+    /// Attach a range provider for binary index queries.
+    ///
+    /// When set, `range_with_overlay()` delegates to this provider instead
+    /// of traversing the b-tree, allowing all existing callers to seamlessly
+    /// use the binary columnar index.
+    pub fn with_range_provider(mut self, provider: Arc<dyn RangeProvider>) -> Self {
+        self.range_provider = Some(provider);
+        self
     }
 
     /// Get the index root for a specific index type
@@ -267,7 +326,6 @@ impl<S: Storage, C: NodeCache> Db<S, C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::SimpleCache;
     use crate::storage::MemoryStorage;
 
     fn make_db_root_json() -> String {
@@ -314,8 +372,7 @@ mod tests {
         let storage = MemoryStorage::new();
         storage.insert("test-root", make_db_root_json().into_bytes());
 
-        let cache = SimpleCache::new(100);
-        let db = Db::load(storage, cache, "test-root").await.unwrap();
+        let db = Db::load(storage, "test-root").await.unwrap();
 
         assert_eq!(db.alias, "test/main");
         assert_eq!(db.t, 100);
@@ -329,8 +386,7 @@ mod tests {
         let storage = MemoryStorage::new();
         storage.insert("test-root", make_db_root_json().into_bytes());
 
-        let cache = SimpleCache::new(100);
-        let db = Db::load(storage, cache, "test-root").await.unwrap();
+        let db = Db::load(storage, "test-root").await.unwrap();
 
         // Encode an IRI
         let sid = db.encode_iri("http://example.org/Alice").unwrap();
@@ -352,8 +408,7 @@ mod tests {
         let storage = MemoryStorage::new();
         storage.insert("test-root", make_db_root_json().into_bytes());
 
-        let cache = SimpleCache::new(100);
-        let db = Db::load(storage, cache, "test-root").await.unwrap();
+        let db = Db::load(storage, "test-root").await.unwrap();
 
         let spot_root = db.get_index_root(IndexType::Spot).unwrap();
         assert_eq!(spot_root.id, "spot-root");
@@ -386,7 +441,6 @@ mod tests {
         }
 
         let storage = FileStorage::new(&test_db_path);
-        let cache = SimpleCache::new(10000);
 
         // Find the latest root file
         let root_dir = test_db_path.join("test/range-scan/index/root");
@@ -404,7 +458,7 @@ mod tests {
 
         println!("Loading from: {}", root_address);
 
-        let db = Db::load(storage, cache, &root_address).await.unwrap();
+        let db = Db::load(storage, &root_address).await.unwrap();
 
         println!("Loaded database:");
         println!("  alias: {}", db.alias);

@@ -78,7 +78,7 @@ impl<'a> super::Parser<'a> {
     }
 
     /// Parse the variables in a SELECT clause.
-    fn parse_select_variables(&mut self) -> Option<Vec<SelectVariable>> {
+    pub(super) fn parse_select_variables(&mut self) -> Option<Vec<SelectVariable>> {
         let mut vars = Vec::new();
 
         while let Some(var) = self.parse_select_variable() {

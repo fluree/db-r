@@ -16,7 +16,6 @@ use aws_sdk_dynamodb::types::{
 };
 use fluree_db_api::{tx, Fluree};
 use fluree_db_connection::{Connection, ConnectionConfig};
-use fluree_db_core::SimpleCache;
 use fluree_db_indexer::IndexerConfig;
 use fluree_db_nameservice::NameService;
 use fluree_db_storage_aws::{DynamoDbConfig, DynamoDbNameService, S3Config, S3Storage};
@@ -109,11 +108,9 @@ async fn ensure_dynamodb_table(sdk_config: &aws_config::SdkConfig, table_name: &
     panic!("DynamoDB table was not available: {}", table_name);
 }
 
-fn build_fluree(storage: S3Storage, nameservice: DynamoDbNameService) -> Fluree<S3Storage, SimpleCache, DynamoDbNameService> {
-    let mut cfg = ConnectionConfig::default();
-    cfg.cache.max_entries = 10_000;
-    let cache = SimpleCache::new(cfg.cache.max_entries);
-    let conn = Connection::new(cfg, storage, cache);
+fn build_fluree(storage: S3Storage, nameservice: DynamoDbNameService) -> Fluree<S3Storage, DynamoDbNameService> {
+    let cfg = ConnectionConfig::default();
+    let conn = Connection::new(cfg, storage);
     Fluree::new(conn, nameservice)
 }
 

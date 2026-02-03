@@ -9,7 +9,8 @@ use crate::policy::QueryPolicyEnforcer;
 use crate::r2rml::{R2rmlProvider, R2rmlTableProvider};
 use crate::var_registry::VarRegistry;
 use crate::vector::VectorIndexProvider;
-use fluree_db_core::{Db, NoOverlay, NodeCache, OverlayProvider, Sid, Storage, Tracker};
+use fluree_db_core::{Db, NoOverlay, OverlayProvider, Sid, Storage, Tracker};
+use fluree_db_indexer::run_index::BinaryIndexStore;
 #[cfg(feature = "native")]
 use fluree_db_core::PrefetchService;
 use fluree_vocab::namespaces::{JSON_LD, XSD};
@@ -31,12 +32,12 @@ use std::sync::Arc;
 ///
 /// # Lifetime Bounds
 ///
-/// The `'static` bounds on `S` and `C` are required for the native prefetch service,
-/// which spawns background tasks that need `'static` types. In practice, storage and
-/// cache implementations are always `'static` (they don't borrow from local data).
-pub struct ExecutionContext<'a, S: Storage + 'static, C: NodeCache + 'static> {
+/// The `'static` bound on `S` is required for the native prefetch service,
+/// which spawns background tasks that need `'static` types. In practice, storage
+/// implementations are always `'static` (they don't borrow from local data).
+pub struct ExecutionContext<'a, S: Storage + 'static> {
     /// Reference to the primary database (for encoding/decoding, single-db fallback)
-    pub db: &'a Db<S, C>,
+    pub db: &'a Db<S>,
     /// Variable registry for this query
     pub vars: &'a VarRegistry,
     /// Target transaction time (for time-travel queries)
@@ -67,7 +68,7 @@ pub struct ExecutionContext<'a, S: Storage + 'static, C: NodeCache + 'static> {
     /// Optional R2RML table provider for Iceberg table scanning
     pub r2rml_table_provider: Option<&'a dyn R2rmlTableProvider>,
     /// Optional dataset for multi-graph queries
-    pub dataset: Option<&'a DataSet<'a, S, C>>,
+    pub dataset: Option<&'a DataSet<'a, S>>,
     /// Currently active graph (Default or Named) - only meaningful when dataset is Some
     pub active_graph: ActiveGraph,
     /// Optional execution tracker (time/fuel/policy)
@@ -82,24 +83,33 @@ pub struct ExecutionContext<'a, S: Storage + 'static, C: NodeCache + 'static> {
     /// When present, operators can enqueue upcoming index nodes for prefetch,
     /// which warms the cache before the mainline query needs them.
     #[cfg(feature = "native")]
-    pub prefetch: Option<Arc<PrefetchService<S, C>>>,
+    pub prefetch: Option<Arc<PrefetchService<S>>>,
     /// Arc-wrapped database for prefetch requests (native only).
     ///
     /// Required for background prefetch tasks which need `'static` data.
     /// Set this when `prefetch` is set, using the same db that's referenced by `db`.
     #[cfg(feature = "native")]
-    pub prefetch_db: Option<Arc<Db<S, C>>>,
+    pub prefetch_db: Option<Arc<Db<S>>>,
     /// Arc-wrapped overlay for prefetch requests (native only).
     ///
     /// Required for background prefetch tasks which need `'static` data.
     /// Set this when `prefetch` is set.
     #[cfg(feature = "native")]
     pub prefetch_overlay: Option<Arc<dyn OverlayProvider>>,
+    /// Optional binary columnar index store for fast local-file scans.
+    ///
+    /// When present, scan operators use `BinaryScanOperator` for queries
+    /// against the binary columnar indexes. When absent, falls back to
+    /// `ScanOperator` (b-tree path). Will become mandatory once the
+    /// b-tree path is fully removed.
+    pub binary_store: Option<Arc<BinaryIndexStore>>,
+    /// Graph ID for binary index scans (typically 0 for default graph).
+    pub binary_g_id: u32,
 }
 
-impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C> {
+impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
     /// Create a new execution context
-    pub fn new(db: &'a Db<S, C>, vars: &'a VarRegistry) -> Self {
+    pub fn new(db: &'a Db<S>, vars: &'a VarRegistry) -> Self {
         Self {
             db,
             vars,
@@ -124,11 +134,13 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
             prefetch_db: None,
             #[cfg(feature = "native")]
             prefetch_overlay: None,
+            binary_store: None,
+            binary_g_id: 0,
         }
     }
 
     /// Create context with specific time-travel settings
-    pub fn with_time(db: &'a Db<S, C>, vars: &'a VarRegistry, to_t: i64, from_t: Option<i64>) -> Self {
+    pub fn with_time(db: &'a Db<S>, vars: &'a VarRegistry, to_t: i64, from_t: Option<i64>) -> Self {
         Self {
             db,
             vars,
@@ -153,6 +165,8 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
             prefetch_db: None,
             #[cfg(feature = "native")]
             prefetch_overlay: None,
+            binary_store: None,
+            binary_g_id: 0,
         }
     }
 
@@ -164,7 +178,7 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
 
     /// Create a new execution context with an overlay provider (novelty)
     pub fn with_overlay(
-        db: &'a Db<S, C>,
+        db: &'a Db<S>,
         vars: &'a VarRegistry,
         overlay: &'a dyn OverlayProvider,
     ) -> Self {
@@ -192,12 +206,14 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
             prefetch_db: None,
             #[cfg(feature = "native")]
             prefetch_overlay: None,
+            binary_store: None,
+            binary_g_id: 0,
         }
     }
 
     /// Create context with time-travel settings and an overlay provider
     pub fn with_time_and_overlay(
-        db: &'a Db<S, C>,
+        db: &'a Db<S>,
         vars: &'a VarRegistry,
         to_t: i64,
         from_t: Option<i64>,
@@ -227,6 +243,8 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
             prefetch_db: None,
             #[cfg(feature = "native")]
             prefetch_overlay: None,
+            binary_store: None,
+            binary_g_id: 0,
         }
     }
 
@@ -373,7 +391,7 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
     }
 
     /// Attach a dataset to this execution context for multi-graph queries
-    pub fn with_dataset(mut self, dataset: &'a DataSet<'a, S, C>) -> Self {
+    pub fn with_dataset(mut self, dataset: &'a DataSet<'a, S>) -> Self {
         self.dataset = Some(dataset);
         self
     }
@@ -384,7 +402,7 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
     /// or `Many` with the active graph(s) from the dataset.
     ///
     /// Returns `Single` when no dataset is present, or `Many` with the relevant graph references to iterate over.
-    pub fn active_graphs(&self) -> ActiveGraphs<'a, '_, S, C> {
+    pub fn active_graphs(&self) -> ActiveGraphs<'a, '_, S> {
         match (&self.dataset, &self.active_graph) {
             (None, _) => ActiveGraphs::Single,
             (Some(ds), ActiveGraph::Default) => {
@@ -402,7 +420,7 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
     /// `None` otherwise (single-db mode or named graph active).
     ///
     /// Use this instead of `active_graphs()` in tight loops to avoid Vec allocation.
-    pub fn default_graphs_slice(&self) -> Option<&[crate::dataset::GraphRef<'a, S, C>]> {
+    pub fn default_graphs_slice(&self) -> Option<&[crate::dataset::GraphRef<'a, S>]> {
         match (&self.dataset, &self.active_graph) {
             (Some(ds), ActiveGraph::Default) => Some(ds.default_graphs()),
             _ => None,
@@ -438,6 +456,8 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
             prefetch_db: self.prefetch_db.clone(),
             #[cfg(feature = "native")]
             prefetch_overlay: self.prefetch_overlay.clone(),
+            binary_store: self.binary_store.clone(),
+            binary_g_id: self.binary_g_id,
         }
     }
 
@@ -469,6 +489,8 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
             prefetch_db: self.prefetch_db.clone(),
             #[cfg(feature = "native")]
             prefetch_overlay: self.prefetch_overlay.clone(),
+            binary_store: self.binary_store.clone(),
+            binary_g_id: self.binary_g_id,
         }
     }
 
@@ -481,7 +503,7 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
     /// tasks to have `'static` data. Use `with_prefetch_resources` to set all three.
     ///
     #[cfg(feature = "native")]
-    pub fn with_prefetch(mut self, prefetch: Arc<PrefetchService<S, C>>) -> Self {
+    pub fn with_prefetch(mut self, prefetch: Arc<PrefetchService<S>>) -> Self {
         self.prefetch = Some(prefetch);
         self
     }
@@ -496,13 +518,23 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
     #[cfg(feature = "native")]
     pub fn with_prefetch_resources(
         mut self,
-        prefetch: Arc<PrefetchService<S, C>>,
-        db: Arc<Db<S, C>>,
+        prefetch: Arc<PrefetchService<S>>,
+        db: Arc<Db<S>>,
         overlay: Arc<dyn OverlayProvider>,
     ) -> Self {
         self.prefetch = Some(prefetch);
         self.prefetch_db = Some(db);
         self.prefetch_overlay = Some(overlay);
+        self
+    }
+
+    /// Attach a binary columnar index store for fast local-file scans.
+    ///
+    /// When set, scan operators will use `BinaryScanOperator` instead of
+    /// `ScanOperator` for reading from the binary columnar indexes.
+    pub fn with_binary_store(mut self, store: Arc<BinaryIndexStore>, g_id: u32) -> Self {
+        self.binary_store = Some(store);
+        self.binary_g_id = g_id;
         self
     }
 }
@@ -542,6 +574,22 @@ pub struct WellKnownDatatypes {
     pub xsd_date: Sid,
     /// xsd:time (namespace code 2)
     pub xsd_time: Sid,
+    /// xsd:gYear
+    pub xsd_g_year: Sid,
+    /// xsd:gYearMonth
+    pub xsd_g_year_month: Sid,
+    /// xsd:gMonth
+    pub xsd_g_month: Sid,
+    /// xsd:gDay
+    pub xsd_g_day: Sid,
+    /// xsd:gMonthDay
+    pub xsd_g_month_day: Sid,
+    /// xsd:duration
+    pub xsd_duration: Sid,
+    /// xsd:dayTimeDuration
+    pub xsd_day_time_duration: Sid,
+    /// xsd:yearMonthDuration
+    pub xsd_year_month_duration: Sid,
     /// $id (reference type) - returned by DATATYPE() for IRIs
     pub id_type: Sid,
     /// fluree:vector (https://ns.flur.ee/ledger#vector)
@@ -573,6 +621,14 @@ impl WellKnownDatatypes {
             xsd_datetime: Sid::new(XSD, xsd_names::DATE_TIME),
             xsd_date: Sid::new(XSD, xsd_names::DATE),
             xsd_time: Sid::new(XSD, xsd_names::TIME),
+            xsd_g_year: Sid::new(XSD, xsd_names::G_YEAR),
+            xsd_g_year_month: Sid::new(XSD, xsd_names::G_YEAR_MONTH),
+            xsd_g_month: Sid::new(XSD, xsd_names::G_MONTH),
+            xsd_g_day: Sid::new(XSD, xsd_names::G_DAY),
+            xsd_g_month_day: Sid::new(XSD, xsd_names::G_MONTH_DAY),
+            xsd_duration: Sid::new(XSD, xsd_names::DURATION),
+            xsd_day_time_duration: Sid::new(XSD, xsd_names::DAY_TIME_DURATION),
+            xsd_year_month_duration: Sid::new(XSD, xsd_names::YEAR_MONTH_DURATION),
             id_type: Sid::new(JSON_LD, "id"), // @ namespace for internal types
             // Reserved Fluree ledger namespace code is 8 (https://ns.flur.ee/ledger#)
             fluree_vector: Sid::new(8, "vector"),

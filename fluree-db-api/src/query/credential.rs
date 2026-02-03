@@ -2,7 +2,7 @@ use serde_json::Value as JsonValue;
 
 use crate::query::helpers::parse_and_validate_sparql;
 use crate::{
-    ApiError, DatasetSpec, Fluree, QueryConnectionOptions, QueryResult, Result, SimpleCache,
+    ApiError, DatasetSpec, Fluree, QueryConnectionOptions, QueryResult, Result,
     Storage,
 };
 
@@ -10,7 +10,7 @@ use crate::{
 use crate::credential;
 
 #[cfg(feature = "credential")]
-impl<S, N> Fluree<S, SimpleCache, N>
+impl<S, N> Fluree<S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
     N: crate::NameService + Clone + Send + Sync + 'static,

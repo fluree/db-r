@@ -18,11 +18,11 @@
 //! use fluree_db_ledger::{LedgerState, HistoricalLedgerView};
 //!
 //! // Load current ledger state
-//! let state = LedgerState::load(&nameservice, "mydb:main", storage, cache).await?;
+//! let state = LedgerState::load(&nameservice, "mydb:main", storage).await?;
 //! println!("Ledger at t={}", state.t());
 //!
 //! // Load historical view at t=50
-//! let view = HistoricalLedgerView::load_at(&ns, "mydb:main", storage, cache, 50).await?;
+//! let view = HistoricalLedgerView::load_at(&ns, "mydb:main", storage, 50).await?;
 //! ```
 
 mod error;
@@ -33,7 +33,7 @@ pub use error::{LedgerError, Result};
 pub use historical::HistoricalLedgerView;
 pub use staged::LedgerView;
 
-use fluree_db_core::{Db, NodeCache, Storage};
+use fluree_db_core::{Db, Storage};
 use fluree_db_nameservice::{NameService, NsRecord};
 use fluree_db_novelty::{generate_commit_flakes, trace_commits, Novelty};
 use futures::StreamExt;
@@ -66,9 +66,9 @@ impl Default for IndexConfig {
 /// - The persisted index (Db)
 /// - In-memory uncommitted changes (Novelty)
 #[derive(Debug, Clone)]
-pub struct LedgerState<S, C> {
+pub struct LedgerState<S> {
     /// The indexed database
-    pub db: Db<S, C>,
+    pub db: Db<S>,
     /// In-memory overlay of uncommitted transactions
     pub novelty: Arc<Novelty>,
     /// Current head commit address
@@ -77,7 +77,7 @@ pub struct LedgerState<S, C> {
     pub ns_record: Option<NsRecord>,
 }
 
-impl<S: Storage + Clone + 'static, C: NodeCache> LedgerState<S, C> {
+impl<S: Storage + Clone + 'static> LedgerState<S> {
     /// Load a ledger from nameservice
     ///
     /// This is resilient to missing index - if the nameservice has commits
@@ -86,9 +86,7 @@ impl<S: Storage + Clone + 'static, C: NodeCache> LedgerState<S, C> {
         ns: &N,
         ledger_address: &str,
         storage: S,
-        cache: impl Into<Arc<C>>,
     ) -> Result<Self> {
-        let cache = cache.into();
         let record = ns
             .lookup(ledger_address)
             .await?
@@ -97,8 +95,8 @@ impl<S: Storage + Clone + 'static, C: NodeCache> LedgerState<S, C> {
         // Handle missing index (genesis fallback)
         // Use record.address which includes the branch (e.g., "test:main")
         let mut db = match &record.index_address {
-            Some(addr) => Db::load(storage.clone(), Arc::clone(&cache), addr).await?,
-            None => Db::genesis(storage.clone(), Arc::clone(&cache), &record.address),
+            Some(addr) => Db::load(storage.clone(), addr).await?,
+            None => Db::genesis(storage.clone(), &record.address),
         };
 
         // Load novelty from commits since index_t
@@ -161,7 +159,7 @@ impl<S: Storage + Clone + 'static, C: NodeCache> LedgerState<S, C> {
     }
 
     /// Create a new ledger state from components
-    pub fn new(db: Db<S, C>, novelty: Novelty) -> Self {
+    pub fn new(db: Db<S>, novelty: Novelty) -> Self {
         Self {
             db,
             novelty: Arc::new(novelty),
@@ -212,19 +210,19 @@ impl<S: Storage + Clone + 'static, C: NodeCache> LedgerState<S, C> {
 
     /// Get current stats (indexed + novelty merged)
     ///
-    /// Always returns a DbRootStats, even for genesis/no-index ledgers.
+    /// Always returns an IndexStats, even for genesis/no-index ledgers.
     /// Falls back to default stats and applies novelty deltas.
     ///
     /// This is the canonical way to get up-to-date statistics for a ledger,
     /// as it includes both the indexed stats and any uncommitted changes
     /// from the novelty layer.
-    pub fn current_stats(&self) -> fluree_db_core::serde::json::DbRootStats {
+    pub fn current_stats(&self) -> fluree_db_core::IndexStats {
         let indexed = self
             .db
             .stats
             .as_ref()
             .cloned()
-            .unwrap_or_default(); // DbRootStats::default() for genesis/no-index
+            .unwrap_or_default(); // IndexStats::default() for genesis/no-index
         fluree_db_novelty::current_stats(&indexed, self.novelty.as_ref())
     }
 
@@ -243,13 +241,9 @@ impl<S: Storage + Clone + 'static, C: NodeCache> LedgerState<S, C> {
     /// - `AliasMismatch` if the new index is for a different ledger
     /// - `StaleIndex` if the new index is older than the current index
     /// - `Core` errors from loading the index
-    pub async fn apply_index(&mut self, index_address: &str) -> Result<()>
-    where
-        C: Clone,
-    {
+    pub async fn apply_index(&mut self, index_address: &str) -> Result<()> {
         let new_db = Db::load(
             self.db.storage.clone(),
-            self.db.cache.clone(),
             index_address,
         )
         .await?;
@@ -295,10 +289,7 @@ impl<S: Storage + Clone + 'static, C: NodeCache> LedgerState<S, C> {
     /// - `NotFound` if the ledger is not in the nameservice
     /// - `MissingIndexAddress` if nameservice has index_t but no address
     /// - Other errors from `apply_index`
-    pub async fn maybe_apply_newer_index<N: NameService>(&mut self, ns: &N) -> Result<bool>
-    where
-        C: Clone,
-    {
+    pub async fn maybe_apply_newer_index<N: NameService>(&mut self, ns: &N) -> Result<bool> {
         let record = ns
             .lookup(&self.db.alias)
             .await?
@@ -369,7 +360,7 @@ impl<S: Storage + Clone + 'static, C: NodeCache> LedgerState<S, C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::{Flake, FlakeValue, MemoryStorage, NoCache, Sid};
+    use fluree_db_core::{Flake, FlakeValue, MemoryStorage, Sid};
     use fluree_db_nameservice::memory::MemoryNameService;
 
     fn make_flake(s: i32, p: i32, o: i64, t: i64) -> Flake {
@@ -387,8 +378,7 @@ mod tests {
     #[tokio::test]
     async fn test_ledger_state_new() {
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage, cache, "test:main");
+        let db = Db::genesis(storage, "test:main");
 
         let mut novelty = Novelty::new(0);
         novelty
@@ -406,8 +396,7 @@ mod tests {
     #[tokio::test]
     async fn test_ledger_state_backpressure() {
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage, cache, "test:main");
+        let db = Db::genesis(storage, "test:main");
 
         let mut novelty = Novelty::new(0);
         // Add some flakes to increase size
@@ -435,7 +424,6 @@ mod tests {
 
         let ns = MemoryNameService::new();
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
 
         // Create a ledger in nameservice with no index
         ns.publish_commit("test:main", "commit-1", 1).await.unwrap();
@@ -446,7 +434,7 @@ mod tests {
         storage.insert("commit-1", serde_json::to_vec(&commit).unwrap());
 
         // Load ledger - should use genesis since no index exists
-        let state = LedgerState::load(&ns, "test:main", storage, cache)
+        let state = LedgerState::load(&ns, "test:main", storage)
             .await
             .unwrap();
 
@@ -464,8 +452,7 @@ mod tests {
         use std::collections::HashMap;
 
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage.clone(), cache, "test:main");
+        let db = Db::genesis(storage.clone(), "test:main");
 
         // Create novelty with flakes at t=1 and t=2
         let mut novelty = Novelty::new(0);
@@ -531,8 +518,7 @@ mod tests {
         use std::collections::HashMap;
 
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage.clone(), cache, "test:main");
+        let db = Db::genesis(storage.clone(), "test:main");
         let novelty = Novelty::new(0);
 
         let mut state = LedgerState::new(db, novelty);
@@ -585,7 +571,6 @@ mod tests {
         use std::collections::HashMap;
 
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
 
         // Start with a db at t=2
         let mut namespace_codes = HashMap::new();
@@ -623,7 +608,7 @@ mod tests {
         let storage = storage;
         storage.insert("index-root-t2", root_bytes_t2);
 
-        let db = Db::load(storage.clone(), cache, "index-root-t2").await.unwrap();
+        let db = Db::load(storage.clone(), "index-root-t2").await.unwrap();
         let novelty = Novelty::new(2);
         let mut state = LedgerState::new(db, novelty);
         assert_eq!(state.index_t(), 2);
@@ -662,7 +647,6 @@ mod tests {
         use std::collections::HashMap;
 
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
 
         let mut namespace_codes = HashMap::new();
         namespace_codes.insert(0, "".to_string());
@@ -699,7 +683,7 @@ mod tests {
         let storage = storage;
         storage.insert("index-root", root_bytes);
 
-        let db = Db::load(storage.clone(), cache, "index-root").await.unwrap();
+        let db = Db::load(storage.clone(), "index-root").await.unwrap();
         let novelty = Novelty::new(1);
         let mut state = LedgerState::new(db, novelty);
 
@@ -735,8 +719,7 @@ mod tests {
     #[tokio::test]
     async fn test_maybe_trigger_index_below_threshold() {
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage, cache, "test:main");
+        let db = Db::genesis(storage, "test:main");
         let novelty = Novelty::new(0);
 
         let state = LedgerState::new(db, novelty);
@@ -754,8 +737,7 @@ mod tests {
     #[tokio::test]
     async fn test_maybe_trigger_index_above_threshold() {
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage, cache, "test:main");
+        let db = Db::genesis(storage, "test:main");
 
         // Add some flakes to increase size
         let mut novelty = Novelty::new(0);
@@ -780,8 +762,7 @@ mod tests {
     #[tokio::test]
     async fn test_require_index_below_max() {
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage, cache, "test:main");
+        let db = Db::genesis(storage, "test:main");
 
         let mut novelty = Novelty::new(0);
         for i in 0..10 {
@@ -805,8 +786,7 @@ mod tests {
     #[tokio::test]
     async fn test_require_index_at_max() {
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage, cache, "test:main");
+        let db = Db::genesis(storage, "test:main");
 
         let mut novelty = Novelty::new(0);
         for i in 0..100 {

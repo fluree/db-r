@@ -65,7 +65,7 @@
 use crate::config::ConnectionConfig;
 use crate::error::{ConnectionError, Result};
 use async_trait::async_trait;
-use fluree_db_core::{Db, SimpleCache};
+use fluree_db_core::Db;
 use fluree_db_nameservice::{
     NameService, NameServiceError, NsRecord, Publisher, StorageNameService,
 };
@@ -291,8 +291,6 @@ pub struct AwsConnectionHandle {
     commit_storage: Option<S3Storage>,
     /// Nameservice (DynamoDB or S3 storage-backed)
     nameservice: AwsNameService,
-    /// Node cache
-    cache: SimpleCache,
 }
 
 impl std::fmt::Debug for AwsConnectionHandle {
@@ -318,14 +316,12 @@ impl AwsConnectionHandle {
         index_storage: S3Storage,
         commit_storage: Option<S3Storage>,
         nameservice: AwsNameService,
-        cache: SimpleCache,
     ) -> Self {
         Self {
             config,
             index_storage,
             commit_storage,
             nameservice,
-            cache,
         }
     }
 
@@ -351,11 +347,6 @@ impl AwsConnectionHandle {
         &self.nameservice
     }
 
-    /// Get a reference to the cache
-    pub fn cache(&self) -> &SimpleCache {
-        &self.cache
-    }
-
     /// Load a database by alias
     ///
     /// Uses the nameservice to look up the ledger's index root address,
@@ -369,7 +360,7 @@ impl AwsConnectionHandle {
     ///
     /// A `Db` instance backed by S3 storage, or an error if the ledger
     /// is not found or has no index.
-    pub async fn load_db(&self, alias: &str) -> Result<Db<S3Storage, SimpleCache>> {
+    pub async fn load_db(&self, alias: &str) -> Result<Db<S3Storage>> {
         let record = self
             .nameservice
             .lookup(alias)
@@ -402,11 +393,10 @@ impl AwsConnectionHandle {
     pub async fn load_db_by_address(
         &self,
         root_address: &str,
-    ) -> Result<Db<S3Storage, SimpleCache>> {
+    ) -> Result<Db<S3Storage>> {
         let storage = self.index_storage.clone();
-        let cache = self.cache.clone();
 
-        Ok(Db::load(storage, cache, root_address).await?)
+        Ok(Db::load(storage, root_address).await?)
     }
 
     /// Look up a ledger record by alias
@@ -562,9 +552,6 @@ pub async fn connect_aws(config: AwsConfig) -> Result<AwsConnectionHandle> {
         }
     };
 
-    // Create cache
-    let cache = SimpleCache::new(config.cache_max_entries);
-
     // Build connection config (for compatibility)
     let conn_config = ConnectionConfig {
         cache: crate::config::CacheConfig {
@@ -579,7 +566,6 @@ pub async fn connect_aws(config: AwsConfig) -> Result<AwsConnectionHandle> {
         index_storage,
         commit_storage,
         nameservice,
-        cache,
     })
 }
 

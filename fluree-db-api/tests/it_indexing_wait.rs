@@ -16,7 +16,7 @@
 mod support;
 
 use fluree_db_api::{FlureeBuilder, IndexConfig};
-use fluree_db_core::{Db, SimpleCache};
+use fluree_db_core::Db;
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::json;
 use support::start_background_indexer_local;
@@ -42,7 +42,7 @@ async fn background_indexing_trigger_wait_then_load_index_root() {
         .run_until(async move {
             // Genesis ledger state (uncommitted; nameservice record created on first commit).
             let alias = "it/index-wait:main";
-            let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = fluree_db_api::LedgerState::new(db0, fluree_db_api::Novelty::new(0));
 
             // Force indexing_needed=true for the test.
@@ -90,7 +90,6 @@ async fn background_indexing_trigger_wait_then_load_index_root() {
 
                     let loaded = Db::load(
                         fluree.storage().clone(),
-                        SimpleCache::new(10_000),
                         &root_address,
                     )
                     .await

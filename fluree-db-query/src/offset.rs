@@ -9,15 +9,15 @@ use crate::error::Result;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{NodeCache, Storage};
+use fluree_db_core::Storage;
 use std::sync::Arc;
 
 /// Offset operator - skips the first N rows
 ///
 /// Wraps a child operator and skips the first N rows before emitting the remainder.
-pub struct OffsetOperator<S: Storage + 'static, C: NodeCache + 'static> {
+pub struct OffsetOperator<S: Storage + 'static> {
     /// Child operator
-    child: BoxedOperator<S, C>,
+    child: BoxedOperator<S>,
     /// Number of rows to skip
     offset: usize,
     /// Rows skipped so far
@@ -28,14 +28,14 @@ pub struct OffsetOperator<S: Storage + 'static, C: NodeCache + 'static> {
     state: OperatorState,
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> OffsetOperator<S, C> {
+impl<S: Storage + 'static> OffsetOperator<S> {
     /// Create a new offset operator
     ///
     /// # Arguments
     ///
     /// * `child` - The child operator to offset
     /// * `offset` - Number of rows to skip
-    pub fn new(child: BoxedOperator<S, C>, offset: usize) -> Self {
+    pub fn new(child: BoxedOperator<S>, offset: usize) -> Self {
         let schema = Arc::from(child.schema().to_vec().into_boxed_slice());
         Self {
             child,
@@ -58,12 +58,12 @@ impl<S: Storage + 'static, C: NodeCache + 'static> OffsetOperator<S, C> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for OffsetOperator<S, C> {
+impl<S: Storage + 'static> Operator<S> for OffsetOperator<S> {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
         let _span = tracing::trace_span!("offset").entered();
         drop(_span);
         if !self.state.can_open() {
@@ -79,7 +79,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for OffsetOper
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
         if !self.state.can_next() {
             if self.state == OperatorState::Created {
                 return Err(crate::error::QueryError::OperatorNotOpened);
@@ -145,7 +145,7 @@ mod tests {
     use super::*;
     use crate::error::QueryError;
     use crate::var_registry::VarRegistry;
-    use fluree_db_core::{Db, FlakeValue, MemoryStorage, NoCache, Sid};
+    use fluree_db_core::{Db, FlakeValue, MemoryStorage, Sid};
 
     /// Mock operator that emits predefined batches
     struct MockOperator {
@@ -171,18 +171,18 @@ mod tests {
     }
 
     #[async_trait]
-    impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for MockOperator {
+    impl<S: Storage + 'static> Operator<S> for MockOperator {
         fn schema(&self) -> &[VarId] {
             &self.schema
         }
 
-        async fn open(&mut self, _ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+        async fn open(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<()> {
             self.idx = 0;
             self.state = OperatorState::Open;
             Ok(())
         }
 
-        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
             if self.state != OperatorState::Open {
                 return Ok(None);
             }
@@ -225,7 +225,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_offset_within_first_batch() {
-        let db = Db::genesis(MemoryStorage::new(), NoCache, "test/main");
+        let db = Db::genesis(MemoryStorage::new(), "test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -259,7 +259,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_offset_skips_entire_batch() {
-        let db = Db::genesis(MemoryStorage::new(), NoCache, "test/main");
+        let db = Db::genesis(MemoryStorage::new(), "test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -290,7 +290,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_offset_spans_batches() {
-        let db = Db::genesis(MemoryStorage::new(), NoCache, "test/main");
+        let db = Db::genesis(MemoryStorage::new(), "test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -331,7 +331,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_offset_larger_than_input() {
-        let db = Db::genesis(MemoryStorage::new(), NoCache, "test/main");
+        let db = Db::genesis(MemoryStorage::new(), "test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -349,7 +349,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_offset_zero() {
-        let db = Db::genesis(MemoryStorage::new(), NoCache, "test/main");
+        let db = Db::genesis(MemoryStorage::new(), "test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -368,7 +368,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_offset_preserves_schema() {
-        let db = Db::genesis(MemoryStorage::new(), NoCache, "test/main");
+        let db = Db::genesis(MemoryStorage::new(), "test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -393,20 +393,20 @@ mod tests {
         let mock = MockOperator::new(vec![batch]);
 
         // Offset less than total
-        let offset_op = OffsetOperator::<MemoryStorage, NoCache>::new(Box::new(mock), 30);
+        let offset_op = OffsetOperator::<MemoryStorage>::new(Box::new(mock), 30);
         assert_eq!(offset_op.estimated_rows(), Some(70));
 
         // Offset more than total
         let schema2: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let batch2 = make_test_batch(schema2.clone(), 5, 0);
         let mock2 = MockOperator::new(vec![batch2]);
-        let offset_op2 = OffsetOperator::<MemoryStorage, NoCache>::new(Box::new(mock2), 100);
+        let offset_op2 = OffsetOperator::<MemoryStorage>::new(Box::new(mock2), 100);
         assert_eq!(offset_op2.estimated_rows(), Some(0));
     }
 
     #[tokio::test]
     async fn test_offset_state_transitions() {
-        let db = Db::genesis(MemoryStorage::new(), NoCache, "test/main");
+        let db = Db::genesis(MemoryStorage::new(), "test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 

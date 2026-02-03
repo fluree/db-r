@@ -31,7 +31,7 @@ use tracing::{debug, info, warn};
 // Iceberg/R2RML VG Creation
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, crate::SimpleCache, N>
+impl<S, N> crate::Fluree<S, N>
 where
     S: Storage + fluree_db_core::StorageWrite + Clone + 'static,
     N: NameService + Publisher + VirtualGraphPublisher,
@@ -274,12 +274,12 @@ where
 ///     .with_r2rml_providers(&provider, &provider);
 /// ```
 pub struct FlureeR2rmlProvider<'a, S: Storage + 'static, N> {
-    fluree: &'a crate::Fluree<S, crate::SimpleCache, N>,
+    fluree: &'a crate::Fluree<S, N>,
 }
 
 impl<'a, S: Storage + 'static, N> FlureeR2rmlProvider<'a, S, N> {
     /// Create a new R2RML provider wrapping a Fluree instance.
-    pub fn new(fluree: &'a crate::Fluree<S, crate::SimpleCache, N>) -> Self {
+    pub fn new(fluree: &'a crate::Fluree<S, N>) -> Self {
         Self { fluree }
     }
 }

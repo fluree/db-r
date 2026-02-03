@@ -37,7 +37,7 @@ use crate::ir::R2rmlPattern;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{NodeCache, Storage};
+use fluree_db_core::Storage;
 use fluree_db_tabular::ColumnBatch;
 use fluree_vocab::{rdf, xsd};
 use fluree_db_r2rml::mapping::{CompiledR2rmlMapping, ObjectMap, TriplesMap};
@@ -56,9 +56,9 @@ pub type ParentLookup = HashMap<Vec<String>, RdfTerm>;
 /// R2RML scan operator for `Pattern::R2rml`.
 ///
 /// Scans an Iceberg table through an R2RML mapping and produces RDF term bindings.
-pub struct R2rmlScanOperator<S: Storage + 'static, C: NodeCache + 'static> {
+pub struct R2rmlScanOperator<S: Storage + 'static> {
     /// Child operator providing input solutions (may be EmptyOperator seed)
-    child: BoxedOperator<S, C>,
+    child: BoxedOperator<S>,
     /// R2RML pattern from the query IR
     pattern: R2rmlPattern,
     /// Output schema (child schema + new vars from R2RML scan)
@@ -73,9 +73,9 @@ pub struct R2rmlScanOperator<S: Storage + 'static, C: NodeCache + 'static> {
     state: OperatorState,
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> R2rmlScanOperator<S, C> {
+impl<S: Storage + 'static> R2rmlScanOperator<S> {
     /// Create a new R2RML scan operator.
-    pub fn new(child: BoxedOperator<S, C>, pattern: R2rmlPattern) -> Self {
+    pub fn new(child: BoxedOperator<S>, pattern: R2rmlPattern) -> Self {
         let child_schema = child.schema();
 
         // Build output schema: start with child vars, then add R2RML pattern vars
@@ -132,7 +132,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> R2rmlScanOperator<S, C> {
     fn term_to_binding(
         &self,
         term: &RdfTerm,
-        ctx: &ExecutionContext<'_, S, C>,
+        ctx: &ExecutionContext<'_, S>,
     ) -> Result<Binding> {
         match term {
             RdfTerm::Iri(iri) => {
@@ -252,12 +252,12 @@ fn build_parent_lookup(
 }
 
 #[async_trait]
-impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for R2rmlScanOperator<S, C> {
+impl<S: Storage + 'static> Operator<S> for R2rmlScanOperator<S> {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
         // Open child first
         self.child.open(ctx).await?;
 
@@ -280,7 +280,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for R2rmlScanO
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
         if self.state == OperatorState::Exhausted {
             return Ok(None);
         }

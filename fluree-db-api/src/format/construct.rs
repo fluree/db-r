@@ -356,6 +356,47 @@ fn binding_to_ir_term(binding: &Binding, compactor: &IriCompactor) -> Result<Opt
                     datatype: Datatype::from_iri(&dt_iri),
                     language: None,
                 })),
+                // Additional temporal types
+                FlakeValue::GYear(v) => Ok(Some(IrTerm::Literal {
+                    value: LiteralValue::String(Arc::from(v.to_string())),
+                    datatype: Datatype::from_iri(&dt_iri),
+                    language: None,
+                })),
+                FlakeValue::GYearMonth(v) => Ok(Some(IrTerm::Literal {
+                    value: LiteralValue::String(Arc::from(v.to_string())),
+                    datatype: Datatype::from_iri(&dt_iri),
+                    language: None,
+                })),
+                FlakeValue::GMonth(v) => Ok(Some(IrTerm::Literal {
+                    value: LiteralValue::String(Arc::from(v.to_string())),
+                    datatype: Datatype::from_iri(&dt_iri),
+                    language: None,
+                })),
+                FlakeValue::GDay(v) => Ok(Some(IrTerm::Literal {
+                    value: LiteralValue::String(Arc::from(v.to_string())),
+                    datatype: Datatype::from_iri(&dt_iri),
+                    language: None,
+                })),
+                FlakeValue::GMonthDay(v) => Ok(Some(IrTerm::Literal {
+                    value: LiteralValue::String(Arc::from(v.to_string())),
+                    datatype: Datatype::from_iri(&dt_iri),
+                    language: None,
+                })),
+                FlakeValue::YearMonthDuration(v) => Ok(Some(IrTerm::Literal {
+                    value: LiteralValue::String(Arc::from(v.to_string())),
+                    datatype: Datatype::from_iri(&dt_iri),
+                    language: None,
+                })),
+                FlakeValue::DayTimeDuration(v) => Ok(Some(IrTerm::Literal {
+                    value: LiteralValue::String(Arc::from(v.to_string())),
+                    datatype: Datatype::from_iri(&dt_iri),
+                    language: None,
+                })),
+                FlakeValue::Duration(v) => Ok(Some(IrTerm::Literal {
+                    value: LiteralValue::String(Arc::from(v.to_string())),
+                    datatype: Datatype::from_iri(&dt_iri),
+                    language: None,
+                })),
             }
         }
 
@@ -430,6 +471,47 @@ fn flake_value_to_ir_term(val: &FlakeValue) -> Result<Option<IrTerm>> {
         FlakeValue::Time(t) => Some(IrTerm::Literal {
             value: LiteralValue::String(Arc::from(t.to_string())),
             datatype: Datatype::from_iri(xsd::TIME),
+            language: None,
+        }),
+        // Additional temporal types
+        FlakeValue::GYear(v) => Some(IrTerm::Literal {
+            value: LiteralValue::String(Arc::from(v.to_string())),
+            datatype: Datatype::from_iri(xsd::G_YEAR),
+            language: None,
+        }),
+        FlakeValue::GYearMonth(v) => Some(IrTerm::Literal {
+            value: LiteralValue::String(Arc::from(v.to_string())),
+            datatype: Datatype::from_iri(xsd::G_YEAR_MONTH),
+            language: None,
+        }),
+        FlakeValue::GMonth(v) => Some(IrTerm::Literal {
+            value: LiteralValue::String(Arc::from(v.to_string())),
+            datatype: Datatype::from_iri(xsd::G_MONTH),
+            language: None,
+        }),
+        FlakeValue::GDay(v) => Some(IrTerm::Literal {
+            value: LiteralValue::String(Arc::from(v.to_string())),
+            datatype: Datatype::from_iri(xsd::G_DAY),
+            language: None,
+        }),
+        FlakeValue::GMonthDay(v) => Some(IrTerm::Literal {
+            value: LiteralValue::String(Arc::from(v.to_string())),
+            datatype: Datatype::from_iri(xsd::G_MONTH_DAY),
+            language: None,
+        }),
+        FlakeValue::YearMonthDuration(v) => Some(IrTerm::Literal {
+            value: LiteralValue::String(Arc::from(v.to_string())),
+            datatype: Datatype::from_iri(xsd::YEAR_MONTH_DURATION),
+            language: None,
+        }),
+        FlakeValue::DayTimeDuration(v) => Some(IrTerm::Literal {
+            value: LiteralValue::String(Arc::from(v.to_string())),
+            datatype: Datatype::from_iri(xsd::DAY_TIME_DURATION),
+            language: None,
+        }),
+        FlakeValue::Duration(v) => Some(IrTerm::Literal {
+            value: LiteralValue::String(Arc::from(v.to_string())),
+            datatype: Datatype::from_iri(xsd::DURATION),
             language: None,
         }),
     })

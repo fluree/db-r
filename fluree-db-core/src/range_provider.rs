@@ -1,0 +1,49 @@
+//! Abstract range query provider.
+//!
+//! `RangeProvider` decouples callers of `range_with_overlay()` from the
+//! underlying index implementation.  When a `RangeProvider` is present on
+//! a `Db`, `range_with_overlay()` delegates to it instead of traversing the
+//! b-tree.  This allows the binary columnar index to serve all range queries
+//! without modifying the 25+ callers across the reasoner, API, policy, and
+//! SHACL crates.
+//!
+//! The trait is defined in `fluree-db-core` (where the callers live) and
+//! implemented for `BinaryIndexStore` in `fluree-db-query`.
+
+use crate::comparator::IndexType;
+use crate::flake::Flake;
+use crate::overlay::OverlayProvider;
+use crate::query_bounds::{RangeMatch, RangeOptions, RangeTest};
+
+/// A range query backend that can execute range queries against an index.
+///
+/// This trait abstracts the index implementation (b-tree vs binary columnar)
+/// so callers can use the same `range_with_overlay()` API regardless of which
+/// index is active.
+///
+/// Implementations must return results in the correct index order (SPOT, PSOT,
+/// POST, or OPST) matching the requested `IndexType`.
+pub trait RangeProvider: Send + Sync {
+    /// Execute a range query, returning matching flakes in index order.
+    ///
+    /// # Arguments
+    ///
+    /// * `index` — which index order to scan (SPOT, PSOT, POST, OPST)
+    /// * `test` — comparison operator (Eq, Lt, Le, Gt, Ge)
+    /// * `match_val` — components to match (subject, predicate, object)
+    /// * `opts` — query options (limit, time bounds, object bounds)
+    /// * `overlay` — overlay provider for uncommitted novelty flakes
+    ///
+    /// # Errors
+    ///
+    /// Returns `io::Error` on I/O failures or if match components cannot be
+    /// translated to the index's internal representation.
+    fn range(
+        &self,
+        index: IndexType,
+        test: RangeTest,
+        match_val: &RangeMatch,
+        opts: &RangeOptions,
+        overlay: &dyn OverlayProvider,
+    ) -> std::io::Result<Vec<Flake>>;
+}

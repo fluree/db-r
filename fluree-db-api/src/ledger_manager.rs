@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use fluree_db_core::{alias as core_alias, NodeCache, Storage};
+use fluree_db_core::{alias as core_alias, Storage};
 use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{NameService, NsRecord};
 use fluree_db_novelty::Novelty;
@@ -60,9 +60,9 @@ fn monotonic_secs() -> u64 {
 ///
 /// Safe to pass around and use for queries without blocking other operations.
 /// This is a cheap clone of the underlying state (Db clone is cheap via Arc fields).
-pub struct LedgerSnapshot<S, C> {
+pub struct LedgerSnapshot<S> {
     /// The indexed database (cheap clone - Arc fields)
-    pub db: Db<S, C>,
+    pub db: Db<S>,
     /// In-memory overlay of uncommitted transactions
     pub novelty: Arc<Novelty>,
     /// Current transaction t value
@@ -73,9 +73,9 @@ pub struct LedgerSnapshot<S, C> {
     pub ns_record: Option<NsRecord>,
 }
 
-impl<S: Storage + Clone + 'static, C: NodeCache> LedgerSnapshot<S, C> {
+impl<S: Storage + Clone + 'static> LedgerSnapshot<S> {
     /// Create a snapshot from ledger state
-    fn from_state(state: &LedgerState<S, C>) -> Self {
+    fn from_state(state: &LedgerState<S>) -> Self {
         Self {
             db: state.db.clone(), // Cheap: Arc fields
             novelty: Arc::clone(&state.novelty),
@@ -112,7 +112,7 @@ impl<S: Storage + Clone + 'static, C: NodeCache> LedgerSnapshot<S, C> {
     ///
     /// This creates a LedgerState with the same data as the snapshot.
     /// Use this when you need to pass the state to APIs that expect LedgerState.
-    pub fn to_ledger_state(self) -> LedgerState<S, C> {
+    pub fn to_ledger_state(self) -> LedgerState<S> {
         LedgerState {
             db: self.db,
             novelty: self.novelty,
@@ -130,26 +130,26 @@ impl<S: Storage + Clone + 'static, C: NodeCache> LedgerSnapshot<S, C> {
 ///
 /// Transactions hold this guard across stage+commit to serialize writes
 /// to the same ledger.
-pub struct LedgerWriteGuard<'a, S, C> {
-    guard: tokio::sync::MutexGuard<'a, LedgerState<S, C>>,
+pub struct LedgerWriteGuard<'a, S> {
+    guard: tokio::sync::MutexGuard<'a, LedgerState<S>>,
 }
 
-impl<S: Clone, C> LedgerWriteGuard<'_, S, C> {
+impl<S: Clone> LedgerWriteGuard<'_, S> {
     /// Get reference to current state
-    pub fn state(&self) -> &LedgerState<S, C> {
+    pub fn state(&self) -> &LedgerState<S> {
         &self.guard
     }
 
     /// Clone current state for passing to stage (which consumes by value)
-    pub fn clone_state(&self) -> LedgerState<S, C>
+    pub fn clone_state(&self) -> LedgerState<S>
     where
-        LedgerState<S, C>: Clone,
+        LedgerState<S>: Clone,
     {
         self.guard.clone()
     }
 
     /// Replace state with new state after successful commit
-    pub fn replace(&mut self, new_state: LedgerState<S, C>) {
+    pub fn replace(&mut self, new_state: LedgerState<S>) {
         *self.guard = new_state;
     }
 }
@@ -162,13 +162,13 @@ impl<S: Clone, C> LedgerWriteGuard<'_, S, C> {
 ///
 /// Provides access to cached ledger state for queries and transactions.
 /// Multiple handles can reference the same cached state (via Arc).
-pub struct LedgerHandle<S, C> {
-    inner: Arc<LedgerHandleInner<S, C>>,
+pub struct LedgerHandle<S> {
+    inner: Arc<LedgerHandleInner<S>>,
 }
 
 // Manual Clone impl to avoid requiring S: Clone, C: Clone bounds
 // (Arc<T> is Clone regardless of T)
-impl<S, C> Clone for LedgerHandle<S, C> {
+impl<S> Clone for LedgerHandle<S> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -176,18 +176,18 @@ impl<S, C> Clone for LedgerHandle<S, C> {
     }
 }
 
-struct LedgerHandleInner<S, C> {
+struct LedgerHandleInner<S> {
     /// Single mutex for all access (queries clone snapshot, txns hold for duration)
-    state: Mutex<LedgerState<S, C>>,
+    state: Mutex<LedgerState<S>>,
     /// Ledger alias
     alias: String,
     /// Last access time (monotonic secs since process start)
     last_access: AtomicU64,
 }
 
-impl<S: Storage + Clone + 'static, C: NodeCache> LedgerHandle<S, C> {
+impl<S: Storage + Clone + 'static> LedgerHandle<S> {
     /// Create a new handle wrapping ledger state
-    pub fn new(alias: String, state: LedgerState<S, C>) -> Self {
+    pub fn new(alias: String, state: LedgerState<S>) -> Self {
         Self {
             inner: Arc::new(LedgerHandleInner {
                 state: Mutex::new(state),
@@ -201,7 +201,7 @@ impl<S: Storage + Clone + 'static, C: NodeCache> LedgerHandle<S, C> {
     ///
     /// This is functionally identical to `new()`, but the naming clarifies
     /// that this handle is NOT cached and each call creates a fresh load.
-    pub fn ephemeral(alias: String, state: LedgerState<S, C>) -> Self {
+    pub fn ephemeral(alias: String, state: LedgerState<S>) -> Self {
         Self::new(alias, state)
     }
 
@@ -209,7 +209,7 @@ impl<S: Storage + Clone + 'static, C: NodeCache> LedgerHandle<S, C> {
     ///
     /// IMPORTANT: Queries must NOT execute while holding the internal lock.
     /// The snapshot is a cheap clone; the lock is released immediately after.
-    pub async fn snapshot(&self) -> LedgerSnapshot<S, C> {
+    pub async fn snapshot(&self) -> LedgerSnapshot<S> {
         self.touch();
         let state = self.inner.state.lock().await;
         LedgerSnapshot::from_state(&state)
@@ -217,7 +217,7 @@ impl<S: Storage + Clone + 'static, C: NodeCache> LedgerHandle<S, C> {
     }
 
     /// Acquire exclusive access for transaction (hold lock for stage+commit)
-    pub async fn lock_for_write(&self) -> LedgerWriteGuard<'_, S, C> {
+    pub async fn lock_for_write(&self) -> LedgerWriteGuard<'_, S> {
         self.touch();
         LedgerWriteGuard {
             guard: self.inner.state.lock().await,
@@ -332,14 +332,14 @@ pub enum FreshnessCheck {
 ///
 /// Note: Loading sends `Result<LedgerHandle>` to waiters (they need the handle).
 ///       Reloading sends `Result<()>` to waiters (handle already obtained).
-enum LoadState<S, C> {
+enum LoadState<S> {
     /// Initial load in progress - waiters receive handle on success
-    Loading(Vec<oneshot::Sender<std::result::Result<LedgerHandle<S, C>, Arc<ApiError>>>>),
+    Loading(Vec<oneshot::Sender<std::result::Result<LedgerHandle<S>, Arc<ApiError>>>>),
     /// Loaded and cached
-    Ready(LedgerHandle<S, C>),
+    Ready(LedgerHandle<S>),
     /// Reload in progress - handle stays valid, waiters receive () on success
     Reloading {
-        handle: LedgerHandle<S, C>,
+        handle: LedgerHandle<S>,
         waiters: Vec<oneshot::Sender<std::result::Result<(), Arc<ApiError>>>>,
     },
 }
@@ -374,13 +374,12 @@ impl Default for LedgerManagerConfig {
 ///
 /// Provides single-flight loading (concurrent requests share one I/O operation)
 /// and idle eviction.
-pub struct LedgerManager<S, C, N> {
+pub struct LedgerManager<S, N> {
     /// Cached ledger handles + loading state
-    entries: RwLock<HashMap<String, LoadState<S, C>>>,
+    entries: RwLock<HashMap<String, LoadState<S>>>,
     /// Storage for ledger loading
     storage: S,
     /// Shared cache for index nodes
-    cache: Arc<C>,
     /// Nameservice for ledger lookup/loading
     nameservice: N,
     /// Configuration
@@ -389,18 +388,16 @@ pub struct LedgerManager<S, C, N> {
     shutdown: AtomicBool,
 }
 
-impl<S, C, N> LedgerManager<S, C, N>
+impl<S, N> LedgerManager<S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
-    C: NodeCache + Send + Sync + 'static,
     N: NameService + Send + Sync + 'static,
 {
     /// Create a new ledger manager
-    pub fn new(storage: S, cache: Arc<C>, nameservice: N, config: LedgerManagerConfig) -> Self {
+    pub fn new(storage: S, nameservice: N, config: LedgerManagerConfig) -> Self {
         Self {
             entries: RwLock::new(HashMap::new()),
             storage,
-            cache,
             nameservice,
             config,
             shutdown: AtomicBool::new(false),
@@ -419,7 +416,7 @@ where
     ///
     /// The alias is normalized to canonical form (e.g., "mydb" -> "mydb:main")
     /// before caching to ensure consistent cache keys regardless of input form.
-    pub async fn get_or_load(&self, alias: &str) -> Result<LedgerHandle<S, C>> {
+    pub async fn get_or_load(&self, alias: &str) -> Result<LedgerHandle<S>> {
         // Normalize alias to canonical form for consistent cache keys
         // This ensures "mydb" and "mydb:main" use the same cache entry
         let canonical_alias = core_alias::normalize_alias(alias)
@@ -489,7 +486,6 @@ where
             &self.nameservice,
             alias,
             self.storage.clone(),
-            Arc::clone(&self.cache),
         )
         .await
         .map_err(ApiError::from); // Convert LedgerError to ApiError
@@ -583,11 +579,11 @@ where
         let canonical_alias = core_alias::normalize_alias(alias)
             .unwrap_or_else(|_| alias.to_string());
 
-        enum ReloadAction<S, C> {
-            BecomeLeader(LedgerHandle<S, C>),
+        enum ReloadAction<S> {
+            BecomeLeader(LedgerHandle<S>),
             WaitForReload(oneshot::Receiver<std::result::Result<(), Arc<ApiError>>>),
             WaitForInitialLoad(
-                oneshot::Receiver<std::result::Result<LedgerHandle<S, C>, Arc<ApiError>>>,
+                oneshot::Receiver<std::result::Result<LedgerHandle<S>, Arc<ApiError>>>,
             ),
             NotLoaded,
         }
@@ -664,7 +660,6 @@ where
                     &self.nameservice,
                     alias,
                     self.storage.clone(),
-                    Arc::clone(&self.cache),
                 )
                 .await
                 .map_err(ApiError::from); // Convert LedgerError to ApiError
@@ -928,10 +923,9 @@ pub enum NotifyResult {
     Reloaded,
 }
 
-impl<S, C, N> LedgerManager<S, C, N>
+impl<S, N> LedgerManager<S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
-    C: NodeCache + Send + Sync + 'static,
     N: NameService + Send + Sync + 'static,
 {
     /// Handle nameservice update notification
@@ -1214,13 +1208,11 @@ mod tests {
     async fn test_disconnect_all_clears_entries() {
         use fluree_db_core::MemoryStorage;
         use fluree_db_nameservice::memory::MemoryNameService;
-        use fluree_db_core::SimpleCache;
 
         let storage = MemoryStorage::new();
-        let cache = Arc::new(SimpleCache::new(100));
         let ns = MemoryNameService::new();
         let config = LedgerManagerConfig::default();
-        let mgr = LedgerManager::new(storage, cache, ns, config);
+        let mgr = LedgerManager::new(storage, ns, config);
 
         // Directly insert Loading entries (simulates in-flight loads)
         {
@@ -1248,13 +1240,11 @@ mod tests {
     async fn test_shutdown_flag_prevents_reinsertion() {
         use fluree_db_core::MemoryStorage;
         use fluree_db_nameservice::memory::MemoryNameService;
-        use fluree_db_core::SimpleCache;
 
         let storage = MemoryStorage::new();
-        let cache = Arc::new(SimpleCache::new(100));
         let ns = MemoryNameService::new();
         let config = LedgerManagerConfig::default();
-        let mgr = LedgerManager::new(storage, cache, ns, config);
+        let mgr = LedgerManager::new(storage, ns, config);
 
         // Simulate: disconnect_all sets shutdown flag and clears entries
         mgr.disconnect_all().await;

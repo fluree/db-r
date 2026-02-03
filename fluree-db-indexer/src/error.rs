@@ -57,6 +57,10 @@ pub enum IndexerError {
     #[error("Checkpoint error: {0}")]
     Checkpoint(String),
 
+    /// B-tree index pipeline has been removed; binary pipeline not yet wired
+    #[error("B-tree index pipeline removed; binary index pipeline pending")]
+    BTreePipelineRemoved,
+
     /// Head mismatch on resume (ledger has new commits since checkpoint)
     #[error("Checkpoint head mismatch: checkpoint targets {checkpoint_head}, but current head is {current_head}")]
     CheckpointHeadMismatch {

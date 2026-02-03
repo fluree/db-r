@@ -13,7 +13,6 @@ use crate::{error::ApiError, tx::IndexingMode, Result};
 use fluree_db_core::{
     address_path::alias_to_path_prefix,
     alias as core_alias,
-    SimpleCache,
     Storage,
 };
 use fluree_db_indexer::{
@@ -295,7 +294,7 @@ fn normalize_alias(alias: &str) -> String {
 // Fluree Drop Implementation
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, SimpleCache, N>
+impl<S, N> crate::Fluree<S, N>
 where
     // NOTE: Storage trait provides full read/write/delete capabilities.
     S: Storage + Clone + 'static,
@@ -450,7 +449,7 @@ where
 // Virtual Graph Drop Implementation
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, SimpleCache, N>
+impl<S, N> crate::Fluree<S, N>
 where
     S: Storage + Clone + 'static,
     N: NameService + Publisher + VirtualGraphPublisher,
@@ -524,7 +523,7 @@ where
 // Index Status and Trigger (minimal bounds - not native-only)
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, SimpleCache, N>
+impl<S, N> crate::Fluree<S, N>
 where
     S: Storage + Clone + 'static,
     N: NameService,
@@ -653,7 +652,7 @@ where
 // Reindex (requires AdminPublisher for allow-equal publish)
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, SimpleCache, N>
+impl<S, N> crate::Fluree<S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService + AdminPublisher,

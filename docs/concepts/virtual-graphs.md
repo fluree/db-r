@@ -1,19 +1,24 @@
-# Virtual Graphs
+# Graph Sources (Virtual Graphs)
 
-**Differentiator**: Virtual graphs are one of Fluree's most powerful features, enabling seamless integration of specialized indexes and external data sources directly into graph queries. Unlike traditional databases that require separate systems for full-text search, vector similarity, or data lake access, Fluree's virtual graphs make these capabilities first-class citizens in the query language.
+**Differentiator**: Graph sources are one of Fluree's most powerful features, enabling seamless integration of specialized indexes and external data sources directly into graph queries. Unlike traditional databases that require separate systems for full-text search, vector similarity, or data lake access, Fluree makes these capabilities first-class citizens in the query language.
 
-## What Are Virtual Graphs?
+## What Are Graph Sources?
 
-A **virtual graph** is a specialized index or data source that appears as a queryable graph in Fluree, but may be backed by different storage or indexing technologies. Virtual graphs extend Fluree's query capabilities beyond traditional RDF triple queries.
+A **graph source** is anything you can address by a graph name/IRI in Fluree query execution. Graph sources may be backed by:
+- **Ledger graphs** (default graph and named graphs stored as RDF triples)
+- **Index graph sources** (BM25 and vector/HNSW indexes)
+- **Mapped graph sources** (R2RML and Iceberg-backed mappings)
+
+Historically, Fluree used the term **virtual graph** for non-ledger graph sources. You will still see “virtual graph” in some docs and nameservice records, but new docs prefer **graph source** as the umbrella term.
 
 ### Key Characteristics
 
-- **Query Integration**: Virtual graphs can be queried using the same SPARQL and JSON-LD Query syntax as regular ledgers
-- **Transparent Access**: Applications don't need to know whether data comes from a ledger or virtual graph
-- **Specialized Indexes**: Each virtual graph type is optimized for specific query patterns
-- **Time-Travel Support**: Many virtual graphs support historical queries with snapshot history
+- **Query integration**: Graph sources can be queried using the same SPARQL and JSON-LD Query interfaces
+- **Transparent access**: Applications don't need to know whether data comes from a ledger graph source or a non-ledger graph source
+- **Specialization**: Each graph source type is optimized for specific query patterns
+- **Time travel**: Many graph sources support historical queries with snapshot history
 
-## Virtual Graph Types
+## Graph Source Types
 
 ### BM25 Full-Text Search
 
@@ -27,7 +32,7 @@ A **virtual graph** is a specialized index or data source that appears as a quer
 **Example:**
 
 ```sparql
-# Query BM25 virtual graph for full-text search
+# Query BM25 index graph source for full-text search
 SELECT ?product ?score
 FROM <products-search:main>
 WHERE {

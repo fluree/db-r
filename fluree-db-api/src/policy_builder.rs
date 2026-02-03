@@ -14,8 +14,8 @@
 
 use crate::dataset::QueryConnectionOptions;
 use crate::error::{ApiError, Result};
-use fluree_db_core::serde::json::DbRootStats;
-use fluree_db_core::{Db, FlakeValue, NodeCache, Sid, Storage};
+use fluree_db_core::IndexStats;
+use fluree_db_core::{Db, FlakeValue, Sid, Storage};
 use fluree_db_novelty::Novelty;
 use fluree_db_policy::{
     build_policy_set, PolicyAction, PolicyContext, PolicyQuery, PolicyRestriction, PolicyValue,
@@ -69,8 +69,8 @@ const IRI_EX_MESSAGE: &str = "https://ns.flur.ee/ledger#exMessage";
 /// * `novelty_for_stats` - Optional novelty for computing current stats (needed for f:onClass)
 /// * `to_t` - Time bound for queries
 /// * `opts` - Query connection options with policy configuration
-pub async fn build_policy_context_from_opts<S: Storage + Clone + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn build_policy_context_from_opts<S: Storage + Clone + 'static>(
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     novelty_for_stats: Option<&Novelty>,
     to_t: i64,
@@ -128,7 +128,7 @@ pub async fn build_policy_context_from_opts<S: Storage + Clone + 'static, C: Nod
     //
     // We use current_stats() which merges indexed stats with novelty updates.
     // This ensures class→property relationships from uncommitted transactions are included.
-    let stats: Option<DbRootStats> = if let Some(novelty) = novelty_for_stats {
+    let stats: Option<IndexStats> = if let Some(novelty) = novelty_for_stats {
         let indexed = db.stats.as_ref().cloned().unwrap_or_default();
         Some(fluree_db_novelty::current_stats(&indexed, novelty))
     } else {
@@ -169,8 +169,8 @@ pub async fn build_policy_context_from_opts<S: Storage + Clone + 'static, C: Nod
 ///   ?policy a ?class .
 /// }
 /// ```
-async fn load_policies_by_identity<S: Storage + Clone + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+async fn load_policies_by_identity<S: Storage + Clone + 'static>(
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     identity_iri: &str,
@@ -219,8 +219,8 @@ async fn load_policies_by_identity<S: Storage + Clone + 'static, C: NodeCache + 
 /// Load policies by querying for subjects of the given class types.
 ///
 /// Clojure equivalent: `wrap-class-policy`
-async fn load_policies_by_class<S: Storage + Clone + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+async fn load_policies_by_class<S: Storage + Clone + 'static>(
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     class_iris: &[String],
@@ -243,8 +243,8 @@ async fn load_policies_by_class<S: Storage + Clone + 'static, C: NodeCache + 'st
 /// }
 /// ```
 /// Then load each policy's properties.
-async fn load_policies_of_classes<S: Storage + Clone + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+async fn load_policies_of_classes<S: Storage + Clone + 'static>(
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     class_sids: &[Sid],
@@ -296,8 +296,8 @@ async fn load_policies_of_classes<S: Storage + Clone + 'static, C: NodeCache + '
 /// because the scan layer filters out internal `fluree:ledger` predicates
 /// when the predicate is a variable. Since all policy vocabulary predicates
 /// are in the `fluree:ledger` namespace, we must query them explicitly.
-async fn load_policy_restriction<S: Storage + Clone + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+async fn load_policy_restriction<S: Storage + Clone + 'static>(
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     policy_sid: &Sid,
@@ -523,8 +523,8 @@ async fn load_policy_restriction<S: Storage + Clone + 'static, C: NodeCache + 's
 ///
 /// Uses an explicit predicate SID (not a variable) to avoid the scan layer's
 /// filtering of internal `fluree:ledger` predicates.
-async fn query_predicate<S: Storage + Clone + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+async fn query_predicate<S: Storage + Clone + 'static>(
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     subject_sid: &Sid,
@@ -561,8 +561,8 @@ async fn query_predicate<S: Storage + Clone + 'static, C: NodeCache + 'static>(
 /// Parse inline policy JSON-LD into restrictions.
 ///
 /// Clojure equivalent: `wrap-policy` with inline policy
-fn parse_inline_policy<S: Storage, C: NodeCache>(
-    db: &Db<S, C>,
+fn parse_inline_policy<S: Storage>(
+    db: &Db<S>,
     policy_json: &JsonValue,
 ) -> Result<Vec<PolicyRestriction>> {
     // The inline policy can be a single object or an array of objects
@@ -806,14 +806,14 @@ fn parse_inline_policy<S: Storage, C: NodeCache>(
 // full feature support (e.g., FILTER patterns) in f:query policies.
 
 /// Resolve an IRI string to a SID using the database's encoding.
-fn resolve_iri_to_sid<S: Storage, C: NodeCache>(db: &Db<S, C>, iri: &str) -> Result<Sid> {
+fn resolve_iri_to_sid<S: Storage>(db: &Db<S>, iri: &str) -> Result<Sid> {
     db.encode_iri(iri)
         .ok_or_else(|| ApiError::query(format!("Failed to resolve IRI '{}'", iri)))
 }
 
 /// Build policy values map from JSON values.
-fn build_policy_values<S: Storage, C: NodeCache>(
-    db: &Db<S, C>,
+fn build_policy_values<S: Storage>(
+    db: &Db<S>,
     values: &Option<HashMap<String, JsonValue>>,
 ) -> Result<HashMap<String, Sid>> {
     let mut result = HashMap::new();

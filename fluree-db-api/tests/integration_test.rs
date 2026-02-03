@@ -4,7 +4,7 @@
 //! novelty overlay, and query execution.
 
 use fluree_db_api::{
-    Fluree, MemoryStorage, SimpleCache, Term, TriplePattern, VarRegistry,
+    Fluree, MemoryStorage, Term, TriplePattern, VarRegistry,
 };
 use fluree_db_connection::{Connection, ConnectionConfig};
 use fluree_db_core::{Flake, FlakeValue, Sid};
@@ -28,15 +28,14 @@ fn make_flake(s: i32, p: i32, o: i64, t: i64) -> Flake {
 fn create_test_fluree(
     storage: MemoryStorage,
     commits: Vec<(&str, Commit)>,
-) -> Fluree<MemoryStorage, SimpleCache, MemoryNameService> {
+) -> Fluree<MemoryStorage, MemoryNameService> {
     // Insert commits into storage
     for (addr, commit) in commits {
         storage.insert(addr, serde_json::to_vec(&commit).unwrap());
     }
 
     let config = ConnectionConfig::default();
-    let cache = SimpleCache::new(1000);
-    let connection = Connection::new(config, storage, cache);
+    let connection = Connection::new(config, storage);
     let nameservice = MemoryNameService::new();
 
     Fluree::new(connection, nameservice)

@@ -49,6 +49,7 @@
 //! - rdf:JSON
 
 use crate::{DateTime, Date, FlakeValue, Time};
+use crate::temporal::{DayTimeDuration, Duration, GDay, GMonth, GMonthDay, GYear, GYearMonth, YearMonthDuration};
 use bigdecimal::BigDecimal;
 use fluree_vocab::{errors, rdf, xsd};
 use num_bigint::BigInt;
@@ -313,6 +314,62 @@ pub fn coerce_value(value: FlakeValue, datatype_iri: &str) -> CoercionResult<Fla
                 .map_err(|e| CoercionError::parse_failed(s, "xsd:time", Some(&e)))
         }
 
+        // String → GYear
+        (FlakeValue::String(s), dt) if dt == xsd::G_YEAR => {
+            GYear::parse(s)
+                .map(|g| FlakeValue::GYear(Box::new(g)))
+                .map_err(|e| CoercionError::parse_failed(s, "xsd:gYear", Some(&e)))
+        }
+
+        // String → GYearMonth
+        (FlakeValue::String(s), dt) if dt == xsd::G_YEAR_MONTH => {
+            GYearMonth::parse(s)
+                .map(|g| FlakeValue::GYearMonth(Box::new(g)))
+                .map_err(|e| CoercionError::parse_failed(s, "xsd:gYearMonth", Some(&e)))
+        }
+
+        // String → GMonth
+        (FlakeValue::String(s), dt) if dt == xsd::G_MONTH => {
+            GMonth::parse(s)
+                .map(|g| FlakeValue::GMonth(Box::new(g)))
+                .map_err(|e| CoercionError::parse_failed(s, "xsd:gMonth", Some(&e)))
+        }
+
+        // String → GDay
+        (FlakeValue::String(s), dt) if dt == xsd::G_DAY => {
+            GDay::parse(s)
+                .map(|g| FlakeValue::GDay(Box::new(g)))
+                .map_err(|e| CoercionError::parse_failed(s, "xsd:gDay", Some(&e)))
+        }
+
+        // String → GMonthDay
+        (FlakeValue::String(s), dt) if dt == xsd::G_MONTH_DAY => {
+            GMonthDay::parse(s)
+                .map(|g| FlakeValue::GMonthDay(Box::new(g)))
+                .map_err(|e| CoercionError::parse_failed(s, "xsd:gMonthDay", Some(&e)))
+        }
+
+        // String → Duration
+        (FlakeValue::String(s), dt) if dt == xsd::DURATION => {
+            Duration::parse(s)
+                .map(|d| FlakeValue::Duration(Box::new(d)))
+                .map_err(|e| CoercionError::parse_failed(s, "xsd:duration", Some(&e)))
+        }
+
+        // String → DayTimeDuration
+        (FlakeValue::String(s), dt) if dt == xsd::DAY_TIME_DURATION => {
+            DayTimeDuration::parse(s)
+                .map(|d| FlakeValue::DayTimeDuration(Box::new(d)))
+                .map_err(|e| CoercionError::parse_failed(s, "xsd:dayTimeDuration", Some(&e)))
+        }
+
+        // String → YearMonthDuration
+        (FlakeValue::String(s), dt) if dt == xsd::YEAR_MONTH_DURATION => {
+            YearMonthDuration::parse(s)
+                .map(|d| FlakeValue::YearMonthDuration(Box::new(d)))
+                .map_err(|e| CoercionError::parse_failed(s, "xsd:yearMonthDuration", Some(&e)))
+        }
+
         // String → Boolean
         (FlakeValue::String(s), dt) if dt == xsd::BOOLEAN => match s.as_str() {
             "true" | "1" => Ok(FlakeValue::Boolean(true)),
@@ -433,6 +490,46 @@ fn coerce_string_value(s: &str, datatype_iri: &str) -> CoercionResult<FlakeValue
         xsd::TIME => Time::parse(s)
             .map(|t| FlakeValue::Time(Box::new(t)))
             .map_err(|e| CoercionError::parse_failed(s, "xsd:time", Some(&e))),
+
+        // GYear
+        xsd::G_YEAR => GYear::parse(s)
+            .map(|g| FlakeValue::GYear(Box::new(g)))
+            .map_err(|e| CoercionError::parse_failed(s, "xsd:gYear", Some(&e))),
+
+        // GYearMonth
+        xsd::G_YEAR_MONTH => GYearMonth::parse(s)
+            .map(|g| FlakeValue::GYearMonth(Box::new(g)))
+            .map_err(|e| CoercionError::parse_failed(s, "xsd:gYearMonth", Some(&e))),
+
+        // GMonth
+        xsd::G_MONTH => GMonth::parse(s)
+            .map(|g| FlakeValue::GMonth(Box::new(g)))
+            .map_err(|e| CoercionError::parse_failed(s, "xsd:gMonth", Some(&e))),
+
+        // GDay
+        xsd::G_DAY => GDay::parse(s)
+            .map(|g| FlakeValue::GDay(Box::new(g)))
+            .map_err(|e| CoercionError::parse_failed(s, "xsd:gDay", Some(&e))),
+
+        // GMonthDay
+        xsd::G_MONTH_DAY => GMonthDay::parse(s)
+            .map(|g| FlakeValue::GMonthDay(Box::new(g)))
+            .map_err(|e| CoercionError::parse_failed(s, "xsd:gMonthDay", Some(&e))),
+
+        // Duration
+        xsd::DURATION => Duration::parse(s)
+            .map(|d| FlakeValue::Duration(Box::new(d)))
+            .map_err(|e| CoercionError::parse_failed(s, "xsd:duration", Some(&e))),
+
+        // DayTimeDuration
+        xsd::DAY_TIME_DURATION => DayTimeDuration::parse(s)
+            .map(|d| FlakeValue::DayTimeDuration(Box::new(d)))
+            .map_err(|e| CoercionError::parse_failed(s, "xsd:dayTimeDuration", Some(&e))),
+
+        // YearMonthDuration
+        xsd::YEAR_MONTH_DURATION => YearMonthDuration::parse(s)
+            .map(|d| FlakeValue::YearMonthDuration(Box::new(d)))
+            .map_err(|e| CoercionError::parse_failed(s, "xsd:yearMonthDuration", Some(&e))),
 
         // rdf:JSON (validate as JSON)
         dt if dt == rdf::JSON => serde_json::from_str::<serde_json::Value>(s)

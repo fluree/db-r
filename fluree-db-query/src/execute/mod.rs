@@ -45,6 +45,11 @@ pub use runner::PrefetchResources;
 // Re-export internal helpers for use in lib.rs
 pub use where_plan::build_where_operators_seeded;
 
+// Re-export operator tree builder and runner for custom execution pipelines
+// (e.g., binary index queries in fluree-db-ingest)
+pub use operator_tree::build_operator_tree;
+pub use runner::run_operator;
+
 // Re-export pushdown utilities for tests
 pub use pushdown::{
     count_filter_vars, extract_bounds_from_filters, extract_lookahead_bounds_with_consumption,
@@ -59,11 +64,10 @@ use crate::ir::Pattern;
 use crate::parse::ParsedQuery;
 use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarRegistry;
-use fluree_db_core::{Db, NodeCache, StatsView, Storage, Tracker};
+use fluree_db_core::{Db, StatsView, Storage, Tracker};
 use std::sync::Arc;
 use tracing::Instrument;
 
-use operator_tree::build_operator_tree;
 use reasoning_prep::effective_reasoning_modes;
 use rewrite_glue::rewrite_query_patterns;
 #[cfg(feature = "native")]
@@ -74,7 +78,7 @@ use runner::{
     execute_prepared_with_dataset_and_policy_and_providers,
     execute_prepared_with_dataset_and_providers, execute_prepared_with_dataset_history,
     execute_prepared_with_overlay, execute_prepared_with_overlay_tracked,
-    execute_prepared_with_policy, execute_prepared_with_r2rml, prepare_execution, run_operator,
+    execute_prepared_with_policy, execute_prepared_with_r2rml, prepare_execution,
 };
 
 /// Execute a query with full modifier support
@@ -91,8 +95,8 @@ use runner::{
 /// # Returns
 ///
 /// Vector of result batches. Empty vector if no results.
-pub async fn execute<S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn execute<S: Storage + 'static>(
+    db: &Db<S>,
     vars: &VarRegistry,
     query: &ExecutableQuery,
 ) -> Result<Vec<Batch>> {
@@ -148,10 +152,7 @@ pub async fn execute<S: Storage + 'static, C: NodeCache + 'static>(
         );
         let _guard = span.enter();
 
-        fn encode_term<S: Storage + 'static, C: NodeCache + 'static>(
-            db: &Db<S, C>,
-            t: &Term,
-        ) -> Term {
+        fn encode_term<S: Storage + 'static>(db: &Db<S>, t: &Term) -> Term {
             match t {
                 Term::Iri(iri) => db
                     .encode_iri(iri)
@@ -161,8 +162,8 @@ pub async fn execute<S: Storage + 'static, C: NodeCache + 'static>(
             }
         }
 
-        fn encode_patterns_for_reasoning<S: Storage + 'static, C: NodeCache + 'static>(
-            db: &Db<S, C>,
+        fn encode_patterns_for_reasoning<S: Storage + 'static>(
+            db: &Db<S>,
             patterns: &[Pattern],
         ) -> Vec<Pattern> {
             patterns
@@ -260,8 +261,8 @@ pub async fn execute<S: Storage + 'static, C: NodeCache + 'static>(
 /// # Returns
 ///
 /// Vector of result batches.
-pub async fn execute_query<S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn execute_query<S: Storage + 'static>(
+    db: &Db<S>,
     vars: &VarRegistry,
     query: &ParsedQuery,
 ) -> Result<Vec<Batch>> {
@@ -283,8 +284,8 @@ pub async fn execute_query<S: Storage + 'static, C: NodeCache + 'static>(
 /// # Returns
 ///
 /// Vector of result batches.
-pub async fn execute_with_overlay<S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn execute_with_overlay<S: Storage + 'static>(
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     vars: &VarRegistry,
     query: &ExecutableQuery,
@@ -311,8 +312,8 @@ pub async fn execute_with_overlay<S: Storage + 'static, C: NodeCache + 'static>(
 /// # Returns
 ///
 /// Vector of result batches.
-pub async fn execute_with_overlay_at<S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn execute_with_overlay_at<S: Storage + 'static>(
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     vars: &VarRegistry,
     query: &ExecutableQuery,
@@ -326,8 +327,8 @@ pub async fn execute_with_overlay_at<S: Storage + 'static, C: NodeCache + 'stati
 /// Execute a query with an overlay and time-travel settings, with optional tracking.
 ///
 /// This mirrors `execute_with_overlay_at`, but attaches `tracker` to the execution context.
-pub async fn execute_with_overlay_at_tracked<S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn execute_with_overlay_at_tracked<S: Storage + 'static>(
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     vars: &VarRegistry,
     query: &ExecutableQuery,
@@ -358,8 +359,8 @@ pub async fn execute_with_overlay_at_tracked<S: Storage + 'static, C: NodeCache 
 /// # Returns
 ///
 /// Vector of result batches, filtered by policy.
-pub async fn execute_with_policy<S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn execute_with_policy<S: Storage + 'static>(
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     vars: &VarRegistry,
     query: &ExecutableQuery,
@@ -374,8 +375,8 @@ pub async fn execute_with_policy<S: Storage + 'static, C: NodeCache + 'static>(
 /// Execute a query with policy enforcement, with optional tracking.
 ///
 /// This mirrors `execute_with_policy`, but attaches `tracker` to the execution context.
-pub async fn execute_with_policy_tracked<S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn execute_with_policy_tracked<S: Storage + 'static>(
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     vars: &VarRegistry,
     query: &ExecutableQuery,
@@ -414,8 +415,8 @@ pub async fn execute_with_policy_tracked<S: Storage + 'static, C: NodeCache + 's
 /// * `tracker` - Execution tracker
 /// * `r2rml_provider` - Provider for R2RML mapping lookups
 /// * `r2rml_table_provider` - Provider for Iceberg table scanning
-pub async fn execute_with_r2rml<S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn execute_with_r2rml<S: Storage + 'static>(
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     vars: &VarRegistry,
     query: &ExecutableQuery,
@@ -445,8 +446,8 @@ pub async fn execute_with_r2rml<S: Storage + 'static, C: NodeCache + 'static>(
 /// This is the same as `execute_with_r2rml` but includes prefetch resources
 /// for warming the index cache during query execution.
 #[cfg(feature = "native")]
-pub async fn execute_with_r2rml_prefetch<S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn execute_with_r2rml_prefetch<S: Storage + 'static>(
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     vars: &VarRegistry,
     query: &ExecutableQuery,
@@ -455,7 +456,7 @@ pub async fn execute_with_r2rml_prefetch<S: Storage + 'static, C: NodeCache + 's
     tracker: &Tracker,
     r2rml_provider: &dyn crate::r2rml::R2rmlProvider,
     r2rml_table_provider: &dyn crate::r2rml::R2rmlTableProvider,
-    prefetch: runner::PrefetchResources<S, C>,
+    prefetch: runner::PrefetchResources<S>,
 ) -> Result<Vec<Batch>> {
     let prepared = prepare_execution(db, overlay, query, to_t).await?;
     execute_prepared_with_r2rml_prefetch(
@@ -492,14 +493,14 @@ pub async fn execute_with_r2rml_prefetch<S: Storage + 'static, C: NodeCache + 's
 /// # Returns
 ///
 /// Vector of result batches
-pub async fn execute_with_dataset<'a, S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn execute_with_dataset<'a, S: Storage + 'static>(
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     to_t: i64,
     from_t: Option<i64>,
-    dataset: &'a DataSet<'a, S, C>,
+    dataset: &'a DataSet<'a, S>,
 ) -> Result<Vec<Batch>> {
     let prepared = prepare_execution(db, overlay, query, to_t).await?;
     execute_prepared_with_dataset(db, vars, overlay, prepared, to_t, from_t, dataset, None).await
@@ -508,14 +509,14 @@ pub async fn execute_with_dataset<'a, S: Storage + 'static, C: NodeCache + 'stat
 /// Execute a query against a dataset (multi-graph), with optional tracking.
 ///
 /// This mirrors `execute_with_dataset`, but attaches `tracker` to the execution context.
-pub async fn execute_with_dataset_tracked<'a, S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn execute_with_dataset_tracked<'a, S: Storage + 'static>(
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     to_t: i64,
     from_t: Option<i64>,
-    dataset: &'a DataSet<'a, S, C>,
+    dataset: &'a DataSet<'a, S>,
     tracker: &Tracker,
 ) -> Result<Vec<Batch>> {
     let prepared = prepare_execution(db, overlay, query, to_t).await?;
@@ -536,14 +537,14 @@ pub async fn execute_with_dataset_tracked<'a, S: Storage + 'static, C: NodeCache
 ///
 /// History mode enables `@op` bindings that capture whether each flake is an
 /// assertion or retraction. Used for unified history queries with time ranges.
-pub async fn execute_with_dataset_history<'a, S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn execute_with_dataset_history<'a, S: Storage + 'static>(
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     to_t: i64,
     from_t: Option<i64>,
-    dataset: &'a DataSet<'a, S, C>,
+    dataset: &'a DataSet<'a, S>,
     tracker: Option<&Tracker>,
 ) -> Result<Vec<Batch>> {
     let prepared = prepare_execution(db, overlay, query, to_t).await?;
@@ -558,14 +559,14 @@ pub async fn execute_with_dataset_history<'a, S: Storage + 'static, C: NodeCache
 /// This combines dataset execution (multiple default/named graphs) with access-control
 /// filtering via `PolicyContext`, mirroring the behavior of `execute_with_dataset` and
 /// `execute_with_policy` together.
-pub async fn execute_with_dataset_and_policy<'a, S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn execute_with_dataset_and_policy<'a, S: Storage + 'static>(
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     to_t: i64,
     from_t: Option<i64>,
-    dataset: &'a DataSet<'a, S, C>,
+    dataset: &'a DataSet<'a, S>,
     policy: &fluree_db_policy::PolicyContext,
 ) -> Result<Vec<Batch>> {
     let prepared = prepare_execution(db, overlay, query, to_t).await?;
@@ -581,15 +582,14 @@ pub async fn execute_with_dataset_and_policy<'a, S: Storage + 'static, C: NodeCa
 pub async fn execute_with_dataset_and_policy_tracked<
     'a,
     S: Storage + 'static,
-    C: NodeCache + 'static,
 >(
-    db: &Db<S, C>,
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     to_t: i64,
     from_t: Option<i64>,
-    dataset: &'a DataSet<'a, S, C>,
+    dataset: &'a DataSet<'a, S>,
     policy: &fluree_db_policy::PolicyContext,
     tracker: &Tracker,
 ) -> Result<Vec<Batch>> {
@@ -625,14 +625,14 @@ pub async fn execute_with_dataset_and_policy_tracked<
 /// * `dataset` - The dataset providing graph sources
 /// * `bm25_provider` - Provider for BM25 index lookups
 /// * `tracker` - Optional execution tracker
-pub async fn execute_with_dataset_and_bm25<'a, 'b, S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn execute_with_dataset_and_bm25<'a, 'b, S: Storage + 'static>(
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     to_t: i64,
     from_t: Option<i64>,
-    dataset: &'a DataSet<'a, S, C>,
+    dataset: &'a DataSet<'a, S>,
     bm25_provider: &'b dyn crate::bm25::Bm25IndexProvider,
     tracker: Option<&Tracker>,
 ) -> Result<Vec<Batch>> {
@@ -673,15 +673,14 @@ pub async fn execute_with_dataset_and_policy_and_bm25<
     'a,
     'b,
     S: Storage + 'static,
-    C: NodeCache + 'static,
 >(
-    db: &Db<S, C>,
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     to_t: i64,
     from_t: Option<i64>,
-    dataset: &'a DataSet<'a, S, C>,
+    dataset: &'a DataSet<'a, S>,
     policy: &fluree_db_policy::PolicyContext,
     bm25_provider: &'b dyn crate::bm25::Bm25IndexProvider,
     tracker: Option<&Tracker>,
@@ -720,19 +719,14 @@ pub async fn execute_with_dataset_and_policy_and_bm25<
 /// * `bm25_provider` - Provider for BM25 index lookups
 /// * `vector_provider` - Provider for vector similarity search
 /// * `tracker` - Optional execution tracker
-pub async fn execute_with_dataset_and_providers<
-    'a,
-    'b,
-    S: Storage + 'static,
-    C: NodeCache + 'static,
->(
-    db: &Db<S, C>,
+pub async fn execute_with_dataset_and_providers<'a, 'b, S: Storage + 'static>(
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     to_t: i64,
     from_t: Option<i64>,
-    dataset: &'a DataSet<'a, S, C>,
+    dataset: &'a DataSet<'a, S>,
     bm25_provider: &'b dyn crate::bm25::Bm25IndexProvider,
     vector_provider: &'b dyn crate::vector::VectorIndexProvider,
     tracker: Option<&Tracker>,
@@ -757,19 +751,14 @@ pub async fn execute_with_dataset_and_providers<
 ///
 /// This combines dataset execution with policy enforcement and both BM25 and
 /// vector index provider support.
-pub async fn execute_with_dataset_and_policy_and_providers<
-    'a,
-    'b,
-    S: Storage + 'static,
-    C: NodeCache + 'static,
->(
-    db: &Db<S, C>,
+pub async fn execute_with_dataset_and_policy_and_providers<'a, 'b, S: Storage + 'static>(
+    db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     to_t: i64,
     from_t: Option<i64>,
-    dataset: &'a DataSet<'a, S, C>,
+    dataset: &'a DataSet<'a, S>,
     policy: &fluree_db_policy::PolicyContext,
     bm25_provider: &'b dyn crate::bm25::Bm25IndexProvider,
     vector_provider: &'b dyn crate::vector::VectorIndexProvider,
@@ -802,14 +791,12 @@ mod tests {
     use crate::planner::reorder_patterns;
     use crate::sort::SortSpec;
     use crate::var_registry::VarId;
-    use fluree_db_core::{
-        Db, FlakeValue, MemoryStorage, NoCache, PropertyStatData, Sid, StatsView,
-    };
+    use fluree_db_core::{Db, FlakeValue, MemoryStorage, PropertyStatData, Sid, StatsView};
     use fluree_graph_json_ld::ParsedContext;
     use where_plan::collect_inner_join_block;
 
-    fn make_test_db() -> Db<MemoryStorage, NoCache> {
-        Db::genesis(MemoryStorage::new(), NoCache, "test/main")
+    fn make_test_db() -> Db<MemoryStorage> {
+        Db::genesis(MemoryStorage::new(), "test/main")
     }
 
     fn make_pattern(s_var: VarId, p_name: &str, o_var: VarId) -> TriplePattern {
@@ -882,7 +869,7 @@ mod tests {
         };
 
         let result =
-            build_operator_tree::<MemoryStorage, NoCache>(&query, &QueryOptions::default(), None);
+            build_operator_tree::<MemoryStorage>(&query, &QueryOptions::default(), None);
         match result {
             Err(e) => assert!(e.to_string().contains("not found")),
             Ok(_) => panic!("Expected error for invalid select var"),
@@ -904,7 +891,7 @@ mod tests {
 
         let options = QueryOptions::new().with_order_by(vec![SortSpec::asc(VarId(99))]); // Invalid var
 
-        let result = build_operator_tree::<MemoryStorage, NoCache>(&query, &options, None);
+        let result = build_operator_tree::<MemoryStorage>(&query, &options, None);
         match result {
             Err(e) => assert!(e.to_string().contains("Sort variable")),
             Ok(_) => panic!("Expected error for invalid sort var"),
@@ -915,7 +902,7 @@ mod tests {
     fn test_build_where_operators_single_triple() {
         let patterns = vec![Pattern::Triple(make_pattern(VarId(0), "name", VarId(1)))];
 
-        let result = where_plan::build_where_operators::<MemoryStorage, NoCache>(&patterns, None);
+        let result = where_plan::build_where_operators::<MemoryStorage>(&patterns, None);
         assert!(result.is_ok());
 
         let op = result.unwrap();
@@ -933,7 +920,7 @@ mod tests {
             }),
         ];
 
-        let result = where_plan::build_where_operators::<MemoryStorage, NoCache>(&patterns, None);
+        let result = where_plan::build_where_operators::<MemoryStorage>(&patterns, None);
         assert!(result.is_ok());
     }
 

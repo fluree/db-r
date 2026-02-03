@@ -9,14 +9,14 @@ use crate::query::helpers::{
 };
 use crate::{
     ExecutableQuery, Fluree, FormatterConfig, HistoricalLedgerView, LedgerState,
-    NoOpR2rmlProvider, OverlayProvider, PolicyContext, QueryResult, Result, SimpleCache,
+    NoOpR2rmlProvider, OverlayProvider, PolicyContext, QueryResult, Result,
     Storage, TrackingOptions, TrackingTally, Tracker, VarRegistry,
 };
 
 #[cfg(feature = "native")]
 use fluree_db_query::{execute_with_r2rml_prefetch, PrefetchResources};
 
-impl<S, N> Fluree<S, SimpleCache, N>
+impl<S, N> Fluree<S, N>
 where
     S: Storage + Clone + 'static,
     N: crate::NameService,
@@ -24,7 +24,7 @@ where
     /// Execute a JSON-LD query against a ledger
     pub async fn query(
         &self,
-        ledger: &LedgerState<S, SimpleCache>,
+        ledger: &LedgerState<S>,
         query_json: &JsonValue,
     ) -> Result<QueryResult> {
         let (vars, parsed) = parse_jsonld_query(query_json, &ledger.db)?;
@@ -49,7 +49,7 @@ where
     /// Consolidates the native/non-native feature-gated execution paths.
     async fn execute_query_internal(
         &self,
-        ledger: &LedgerState<S, SimpleCache>,
+        ledger: &LedgerState<S>,
         vars: &VarRegistry,
         executable: &ExecutableQuery,
         tracker: &Tracker,
@@ -98,7 +98,7 @@ where
     /// Explain a JSON-LD query (query optimization plan).
     pub async fn explain(
         &self,
-        ledger: &LedgerState<S, SimpleCache>,
+        ledger: &LedgerState<S>,
         query_json: &JsonValue,
     ) -> Result<JsonValue> {
         crate::explain::explain_jsonld(&ledger.db, query_json).await
@@ -107,7 +107,7 @@ where
     /// Execute a JSON-LD query and return formatted JSON-LD output.
     pub async fn query_jsonld(
         &self,
-        ledger: &LedgerState<S, SimpleCache>,
+        ledger: &LedgerState<S>,
         query_json: &JsonValue,
     ) -> Result<JsonValue> {
         let result = self.query(ledger, query_json).await?;
@@ -117,7 +117,7 @@ where
     /// Clojure-parity alias: tracked query entrypoint for a loaded ledger.
     pub async fn query_tracked(
         &self,
-        ledger: &LedgerState<S, SimpleCache>,
+        ledger: &LedgerState<S>,
         query_json: &JsonValue,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
@@ -127,7 +127,7 @@ where
     /// Execute a JSON-LD query and return a Clojure-parity tracked response.
     pub async fn query_jsonld_tracked(
         &self,
-        ledger: &LedgerState<S, SimpleCache>,
+        ledger: &LedgerState<S>,
         query_json: &JsonValue,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
@@ -181,7 +181,7 @@ where
     /// Execute a JSON-LD query and format results using a custom formatter config (async).
     pub async fn query_format(
         &self,
-        ledger: &LedgerState<S, SimpleCache>,
+        ledger: &LedgerState<S>,
         query_json: &JsonValue,
         config: &FormatterConfig,
     ) -> Result<JsonValue> {
@@ -192,7 +192,7 @@ where
     /// Execute a JSON-LD query with policy enforcement
     pub async fn query_with_policy(
         &self,
-        ledger: &LedgerState<S, SimpleCache>,
+        ledger: &LedgerState<S>,
         query_json: &JsonValue,
         policy: &PolicyContext,
     ) -> Result<QueryResult> {
@@ -222,7 +222,7 @@ where
     /// Execute a SPARQL query with policy enforcement
     pub async fn query_sparql_with_policy(
         &self,
-        ledger: &LedgerState<S, SimpleCache>,
+        ledger: &LedgerState<S>,
         sparql: &str,
         policy: &PolicyContext,
     ) -> Result<QueryResult> {
@@ -252,7 +252,7 @@ where
     /// Execute a pre-built triple pattern query (advanced/testing API)
     pub async fn query_pattern(
         &self,
-        ledger: &LedgerState<S, SimpleCache>,
+        ledger: &LedgerState<S>,
         vars: &VarRegistry,
         pattern: crate::TriplePattern,
     ) -> Result<Vec<crate::Batch>> {
@@ -271,7 +271,7 @@ where
     /// Execute a SPARQL query against a ledger
     pub async fn query_sparql(
         &self,
-        ledger: &LedgerState<S, SimpleCache>,
+        ledger: &LedgerState<S>,
         sparql: &str,
     ) -> Result<QueryResult> {
         let (vars, parsed) = parse_sparql_to_ir(sparql, &ledger.db)?;
@@ -294,7 +294,7 @@ where
     /// Execute a SPARQL query with tracking (fuel counting, time, policy stats).
     pub async fn query_sparql_tracked(
         &self,
-        ledger: &LedgerState<S, SimpleCache>,
+        ledger: &LedgerState<S>,
         sparql: &str,
         options: TrackingOptions,
     ) -> Result<(QueryResult, Option<TrackingTally>)> {
@@ -323,7 +323,7 @@ where
     /// Execute a JSON-LD query against a historical ledger view
     pub async fn query_historical(
         &self,
-        view: &HistoricalLedgerView<S, SimpleCache>,
+        view: &HistoricalLedgerView<S>,
         query_json: &JsonValue,
     ) -> Result<QueryResult> {
         let (vars, parsed) = parse_jsonld_query(query_json, &view.db)?;

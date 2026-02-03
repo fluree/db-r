@@ -16,7 +16,10 @@
 //! ).await?;
 //! ```
 
-use crate::cache::{CacheKey, NodeCache};
+// Re-export query parameter types from their canonical home.
+// Callers should migrate to `use fluree_db_core::query_bounds::*` over time.
+pub use crate::query_bounds::{ObjectBounds, RangeMatch, RangeOptions, RangeTest};
+
 use crate::comparator::IndexType;
 use crate::db::{Db, EMPTY_NODE_ID};
 #[cfg(feature = "native")]
@@ -95,340 +98,11 @@ fn leaf_parse_semaphore() -> &'static tokio::sync::Semaphore {
     })
 }
 
-/// Comparison test operators for range queries
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RangeTest {
-    /// Equal to (becomes >= and <=)
-    Eq,
-    /// Less than
-    Lt,
-    /// Less than or equal
-    Le,
-    /// Greater than
-    Gt,
-    /// Greater than or equal
-    Ge,
-}
-
-/// Components to match in a range query
-///
-/// Use the builder methods to construct a match for specific components.
-/// Unset components are wildcards (use min/max bounds).
-#[derive(Clone, Debug, Default)]
-pub struct RangeMatch {
-    /// Subject to match
-    pub s: Option<Sid>,
-    /// Predicate to match
-    pub p: Option<Sid>,
-    /// Object to match
-    pub o: Option<FlakeValue>,
-    /// Datatype to match
-    pub dt: Option<Sid>,
-    /// Transaction time to match
-    pub t: Option<i64>,
-}
-
-impl RangeMatch {
-    /// Create an empty match (matches everything)
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Match a specific subject
-    pub fn subject(s: Sid) -> Self {
-        Self {
-            s: Some(s),
-            ..Default::default()
-        }
-    }
-
-    /// Match a specific subject and predicate
-    pub fn subject_predicate(s: Sid, p: Sid) -> Self {
-        Self {
-            s: Some(s),
-            p: Some(p),
-            ..Default::default()
-        }
-    }
-
-    /// Match a specific predicate
-    pub fn predicate(p: Sid) -> Self {
-        Self {
-            p: Some(p),
-            ..Default::default()
-        }
-    }
-
-    /// Match a specific predicate and object
-    pub fn predicate_object(p: Sid, o: FlakeValue) -> Self {
-        Self {
-            p: Some(p),
-            o: Some(o),
-            ..Default::default()
-        }
-    }
-
-    /// Match a specific transaction time
-    pub fn at_t(t: i64) -> Self {
-        Self {
-            t: Some(t),
-            ..Default::default()
-        }
-    }
-
-    /// Set subject
-    pub fn with_subject(mut self, s: Sid) -> Self {
-        self.s = Some(s);
-        self
-    }
-
-    /// Set predicate
-    pub fn with_predicate(mut self, p: Sid) -> Self {
-        self.p = Some(p);
-        self
-    }
-
-    /// Set object
-    pub fn with_object(mut self, o: FlakeValue) -> Self {
-        self.o = Some(o);
-        self
-    }
-
-    /// Set datatype
-    pub fn with_datatype(mut self, dt: Sid) -> Self {
-        self.dt = Some(dt);
-        self
-    }
-
-    /// Set transaction time
-    pub fn with_t(mut self, t: i64) -> Self {
-        self.t = Some(t);
-        self
-    }
-}
-
-/// Object value bounds for range filtering
-///
-/// Used for filter pushdown to narrow scan results based on object value comparisons.
-/// Bounds are applied as a post-filter after the range scan.
-#[derive(Clone, Debug, Default)]
-pub struct ObjectBounds {
-    /// Lower bound: (value, inclusive)
-    /// For `?x > 10`, use `(10, false)`. For `?x >= 10`, use `(10, true)`.
-    pub lower: Option<(FlakeValue, bool)>,
-    /// Upper bound: (value, inclusive)
-    /// For `?x < 100`, use `(100, false)`. For `?x <= 100`, use `(100, true)`.
-    pub upper: Option<(FlakeValue, bool)>,
-}
-
-impl ObjectBounds {
-    /// Create empty bounds (no filtering)
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set lower bound
-    pub fn with_lower(mut self, value: FlakeValue, inclusive: bool) -> Self {
-        self.lower = Some((value, inclusive));
-        self
-    }
-
-    /// Set upper bound
-    pub fn with_upper(mut self, value: FlakeValue, inclusive: bool) -> Self {
-        self.upper = Some((value, inclusive));
-        self
-    }
-
-    /// Check if a value satisfies the bounds
-    ///
-    /// Uses **type class comparison** for Clojure parity:
-    /// - All numeric types (Long, Double, BigInt, Decimal) are comparable to each other
-    /// - Temporal types are only comparable within the same kind (Date vs Date, etc.)
-    /// - Other types require exact type match
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// // Numeric class comparison: Long(10) bound matches Double(15.5)
-    /// let bounds = ObjectBounds::new().with_lower(FlakeValue::Long(10), true);
-    /// assert!(bounds.matches(&FlakeValue::Double(15.5))); // true!
-    /// assert!(bounds.matches(&FlakeValue::Long(15)));     // true
-    /// assert!(!bounds.matches(&FlakeValue::Long(5)));     // false
-    /// ```
-    pub fn matches(&self, value: &FlakeValue) -> bool {
-        // Check lower bound
-        if let Some((lower, inclusive)) = &self.lower {
-            match Self::class_cmp(value, lower) {
-                None => return false, // Incompatible types
-                Some(std::cmp::Ordering::Less) => return false,
-                Some(std::cmp::Ordering::Equal) if !inclusive => return false,
-                _ => {}
-            }
-        }
-
-        // Check upper bound
-        if let Some((upper, inclusive)) = &self.upper {
-            match Self::class_cmp(value, upper) {
-                None => return false, // Incompatible types
-                Some(std::cmp::Ordering::Greater) => return false,
-                Some(std::cmp::Ordering::Equal) if !inclusive => return false,
-                _ => {}
-            }
-        }
-
-        true
-    }
-
-    /// Compare values within their type class.
-    ///
-    /// Returns `Some(Ordering)` if the values are comparable, `None` if incompatible.
-    ///
-    /// - **Numeric class**: All numeric types are comparable (Long, Double, BigInt, Decimal)
-    /// - **Temporal class**: Same temporal type only (Date vs Date, Time vs Time, DateTime vs DateTime)
-    /// - **Same type**: Always comparable
-    /// - **Different type classes**: Incompatible (returns None)
-    fn class_cmp(a: &FlakeValue, b: &FlakeValue) -> Option<std::cmp::Ordering> {
-        // Numeric class: all numeric types are comparable
-        if a.is_numeric() && b.is_numeric() {
-            return a.numeric_cmp(b);
-        }
-
-        // Temporal class: same temporal type only
-        if a.is_temporal() && b.is_temporal() {
-            return a.temporal_cmp(b);
-        }
-
-        // Same type: use standard comparison
-        if std::mem::discriminant(a) == std::mem::discriminant(b) {
-            return Some(a.cmp(b));
-        }
-
-        // Incompatible types
-        None
-    }
-
-    /// Returns true if no bounds are set
-    pub fn is_empty(&self) -> bool {
-        self.lower.is_none() && self.upper.is_none()
-    }
-}
-
 /// Default number of leaves to prefetch ahead during cold scans.
 ///
 /// Matches Clojure's `default-prefetch-n` of 3. Larger values can cause
 /// too many concurrent I/O operations, hurting cold query performance.
 pub const DEFAULT_PREFETCH_N: usize = 100;
-
-/// Options for range query execution
-#[derive(Clone, Debug, Default)]
-pub struct RangeOptions {
-    /// Maximum number of subjects to return
-    pub limit: Option<usize>,
-    /// Number of subjects to skip
-    pub offset: Option<usize>,
-    /// Maximum number of flakes to return
-    pub flake_limit: Option<usize>,
-    /// "As-of" time - only include flakes where t <= to_t
-    /// If None, uses the database's current t
-    pub to_t: Option<i64>,
-    /// Start time for history queries - only include flakes where t >= from_t
-    /// Used together with to_t for time-range queries
-    pub from_t: Option<i64>,
-    /// Optional object value bounds (for filter pushdown)
-    pub object_bounds: Option<ObjectBounds>,
-    /// History mode: when true, skip stale removal to return all flakes
-    /// including retractions. Used by history queries to show full history.
-    pub history_mode: bool,
-    /// Number of leaves to prefetch ahead during traversal.
-    /// Set to 0 to disable prefetch. Default is 3.
-    /// Prefetch overlaps I/O with processing to reduce cold query latency.
-    pub prefetch_n: Option<usize>,
-}
-
-impl RangeOptions {
-    /// Create default options (no limits)
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set subject limit
-    pub fn with_limit(mut self, limit: usize) -> Self {
-        self.limit = Some(limit);
-        self
-    }
-
-    /// Set subject offset
-    pub fn with_offset(mut self, offset: usize) -> Self {
-        self.offset = Some(offset);
-        self
-    }
-
-    /// Set flake limit
-    pub fn with_flake_limit(mut self, flake_limit: usize) -> Self {
-        self.flake_limit = Some(flake_limit);
-        self
-    }
-
-    /// Set "as-of" time for time travel queries
-    ///
-    /// Only flakes with t <= to_t will be included in results.
-    pub fn with_to_t(mut self, to_t: i64) -> Self {
-        self.to_t = Some(to_t);
-        self
-    }
-
-    /// Set start time for history queries
-    ///
-    /// Only flakes with t >= from_t will be included.
-    /// Use together with `with_to_t` for time-range queries.
-    pub fn with_from_t(mut self, from_t: i64) -> Self {
-        self.from_t = Some(from_t);
-        self
-    }
-
-    /// Set both from_t and to_t for a time range query
-    pub fn with_time_range(mut self, from_t: i64, to_t: i64) -> Self {
-        self.from_t = Some(from_t);
-        self.to_t = Some(to_t);
-        self
-    }
-
-    /// Set object value bounds for filter pushdown
-    ///
-    /// Bounds are applied as a post-filter after the range scan, retaining only
-    /// flakes whose object value falls within the specified range.
-    pub fn with_object_bounds(mut self, bounds: ObjectBounds) -> Self {
-        self.object_bounds = Some(bounds);
-        self
-    }
-
-    /// Enable history mode
-    ///
-    /// When enabled, skips stale removal to return all flakes including
-    /// retractions. Used by history queries to show the full history of changes.
-    pub fn with_history_mode(mut self) -> Self {
-        self.history_mode = true;
-        self
-    }
-
-    /// Set the number of leaves to prefetch ahead during traversal
-    ///
-    /// Prefetch overlaps I/O with processing - while one leaf is being processed,
-    /// the next N leaves are loaded in parallel. This significantly reduces cold
-    /// query latency.
-    ///
-    /// Set to 0 to disable prefetch. Default is 3 (if None).
-    pub fn with_prefetch_n(mut self, n: usize) -> Self {
-        self.prefetch_n = Some(n);
-        self
-    }
-
-    /// Disable prefetch
-    pub fn without_prefetch(mut self) -> Self {
-        self.prefetch_n = Some(0);
-        self
-    }
-}
 
 /// Execute a range query on a database
 ///
@@ -449,8 +123,8 @@ impl RangeOptions {
 /// let flakes = range(&db, IndexType::Spot, RangeTest::Eq,
 ///     RangeMatch::subject(x), RangeOptions::default()).await?;
 /// ```
-pub async fn range<S, C>(
-    db: &Db<S, C>,
+pub async fn range<S>(
+    db: &Db<S>,
     index: IndexType,
     test: RangeTest,
     match_val: RangeMatch,
@@ -458,7 +132,6 @@ pub async fn range<S, C>(
 ) -> Result<Vec<Flake>>
 where
     S: Storage,
-    C: NodeCache,
 {
     range_with_overlay(db, &NoOverlay, index, test, match_val, opts).await
 }
@@ -471,8 +144,8 @@ where
 /// **Prefetch optimization**: When `prefetch_n` is set (default 3), upcoming leaf
 /// nodes are resolved in parallel to overlap I/O with processing. This significantly
 /// reduces cold query latency by loading data ahead of when it's needed.
-pub async fn range_with_overlay<S, C, O>(
-    db: &Db<S, C>,
+pub async fn range_with_overlay<S, O>(
+    db: &Db<S>,
     overlay: &O,
     index: IndexType,
     test: RangeTest,
@@ -481,9 +154,36 @@ pub async fn range_with_overlay<S, C, O>(
 ) -> Result<Vec<Flake>>
 where
     S: Storage,
-    C: NodeCache,
     O: OverlayProvider + ?Sized,
 {
+    // If a binary range provider is attached, delegate to it instead of
+    // traversing the b-tree.  This is the primary migration path: once a
+    // Db is loaded with a BinaryRangeProvider, all existing callers
+    // (reasoner, API, policy, SHACL) seamlessly use the binary index.
+    if let Some(ref provider) = db.range_provider {
+        // Wrapper to coerce &O (possibly ?Sized) into &dyn OverlayProvider.
+        // The wrapper is always Sized, so &OverlayRef can be coerced.
+        struct OverlayRef<'a, O: OverlayProvider + ?Sized>(&'a O);
+        impl<O: OverlayProvider + ?Sized> OverlayProvider for OverlayRef<'_, O> {
+            fn epoch(&self) -> u64 { self.0.epoch() }
+            fn for_each_overlay_flake(
+                &self,
+                index: IndexType,
+                first: Option<&Flake>,
+                rhs: Option<&Flake>,
+                leftmost: bool,
+                to_t: i64,
+                callback: &mut dyn FnMut(&Flake),
+            ) {
+                self.0.for_each_overlay_flake(index, first, rhs, leftmost, to_t, callback)
+            }
+        }
+        let overlay_ref = OverlayRef(overlay);
+        return provider
+            .range(index, test, &match_val, &opts, &overlay_ref)
+            .map_err(|e| crate::error::Error::Io(e.to_string()));
+    }
+
     // Expand the test into start/end bounds
     let (mut start_bound, mut end_bound) = expand_range_bounds(index, test, &match_val);
 
@@ -523,8 +223,8 @@ where
 ///     &db, &overlay, IndexType::Spot, start, end, RangeOptions::default()
 /// ).await?;
 /// ```
-pub async fn range_bounded_with_overlay<S, C, O>(
-    db: &Db<S, C>,
+pub async fn range_bounded_with_overlay<S, O>(
+    db: &Db<S>,
     overlay: &O,
     index: IndexType,
     start_bound: Flake,
@@ -533,7 +233,6 @@ pub async fn range_bounded_with_overlay<S, C, O>(
 ) -> Result<Vec<Flake>>
 where
     S: Storage,
-    C: NodeCache,
     O: OverlayProvider + ?Sized,
 {
     // Determine effective time bounds
@@ -664,9 +363,9 @@ where
 ///
 /// Returns the number of prefetch futures that were enqueued.
 #[cfg(feature = "native")]
-fn prefetch_upcoming_leaves<'a, S, C, O>(
+fn prefetch_upcoming_leaves<'a, S, O>(
     prefetches: &mut FuturesUnordered<BoxFuture<'a, ()>>,
-    db: &'a Db<S, C>,
+    db: &'a Db<S>,
     overlay: &'a O,
     overlay_epoch: u64,
     stack: &[IndexNode],
@@ -680,7 +379,6 @@ fn prefetch_upcoming_leaves<'a, S, C, O>(
 ) -> usize
 where
     S: Storage,
-    C: NodeCache,
     O: OverlayProvider + ?Sized,
 {
     // Collect up to n nodes from the stack that intersect the range.
@@ -1139,10 +837,10 @@ fn merge_sorted(
 /// - Stale flake removal (unless history_mode)
 ///
 /// The cache key includes overlay epoch, so overlay changes invalidate cached materializations.
-pub async fn resolve_node_materialized_with_overlay<S, C, O>(
-    db: &Db<S, C>,
+pub async fn resolve_node_materialized_with_overlay<S, O>(
+    db: &Db<S>,
     overlay: &O,
-    overlay_epoch: u64,
+    _overlay_epoch: u64,
     node: &IndexNode,
     from_t: Option<i64>,
     to_t: i64,
@@ -1150,7 +848,6 @@ pub async fn resolve_node_materialized_with_overlay<S, C, O>(
 ) -> Result<ResolvedNode>
 where
     S: Storage,
-    C: NodeCache,
     O: OverlayProvider + ?Sized,
 {
     // Special-case the genesis empty root (see EMPTY_NODE_ID in db.rs).
@@ -1191,162 +888,98 @@ where
     }
 
     if !node.leaf {
-        // Branch nodes are time-independent; cache raw.
-        let key = CacheKey::raw(&node.id);
-        return db
-            .cache
-            .get_or_fetch(&key, || async {
-                let bytes = db.storage.read_bytes(&node.id).await?;
-
-                let children = parse_branch_node(bytes)?;
-
-                Ok(ResolvedNode::branch(
-                    node.clone(),
-                    Arc::from(children.into_boxed_slice()),
-                ))
-            })
-            .await;
+        // Branch: resolve directly from storage (no caching — binary path is primary).
+        let bytes = db.storage.read_bytes(&node.id).await?;
+        let children = parse_branch_node(bytes)?;
+        return Ok(ResolvedNode::branch(
+            node.clone(),
+            Arc::from(children.into_boxed_slice()),
+        ));
     }
 
-    // Leaf: first ensure we have the raw decoded leaf cached.
-    let raw_key = CacheKey::raw(&node.id);
-    let raw_leaf = db
-        .cache
-        .get_or_fetch(&raw_key, || async {
-            // Use ReadHint::PreferLeafFlakes to request policy-filtered flakes
-            // if the storage supports it (e.g., ProxyStorage). The storage may return
-            // either FLKB-encoded filtered flakes or traditional JSON-encoded raw flakes.
-            let bytes = db
-                .storage
-                .read_bytes_hint(&node.id, ReadHint::PreferLeafFlakes)
-                .await?;
+    // Leaf: decode raw flakes from storage.
+    let raw_flakes: Arc<[Flake]> = {
+        let bytes = db
+            .storage
+            .read_bytes_hint(&node.id, ReadHint::PreferLeafFlakes)
+            .await?;
 
-            // Detect format: FLKB (policy-filtered flakes) vs JSON (traditional)
-            //
-            // FLKB format: Policy-filtered flakes from ProxyStorage content negotiation.
-            // These are pre-filtered by the tx server based on peer identity/policy.
-            //
-            // JSON format: Traditional JSON-encoded leaf nodes from direct storage.
-            //
-            // On native, we offload the CPU-intensive parsing to a blocking thread
-            // so we don't block the async executor.
-            //
-            // We use a semaphore to bound concurrency, preventing:
-            // - Memory pressure from too many parallel parses
-            // - Cache lock contention
-            // - CPU oversubscription
-            #[cfg(feature = "native")]
-            let flakes = {
-                // Acquire permit before spawning (bounds concurrent parses)
-                let _permit = leaf_parse_semaphore()
-                    .acquire()
-                    .await
-                    .map_err(|_| Error::Other("leaf parse semaphore closed".to_string()))?;
-
-                let interner = db.sid_interner.clone();
-                tokio::task::spawn_blocking(move || {
-                    if is_flkb_format(&bytes) {
-                        // FLKB: Decode policy-filtered transport flakes
-                        decode_flakes_interned(&bytes, &interner).map_err(|e| {
-                            crate::error::Error::other(format!(
-                                "Failed to decode transport flakes: {}",
-                                e
-                            ))
-                        })
-                    } else {
-                        // JSON: Parse traditional leaf node with SID interning integrated
-                        parse_leaf_node_interned(bytes, &interner)
-                    }
-                })
+        #[cfg(feature = "native")]
+        let flakes = {
+            let _permit = leaf_parse_semaphore()
+                .acquire()
                 .await
-                .map_err(|e| Error::Other(format!("spawn_blocking join error: {}", e)))??
-                // _permit dropped here, releasing the semaphore slot
-            };
+                .map_err(|_| Error::Other("leaf parse semaphore closed".to_string()))?;
 
-            #[cfg(not(feature = "native"))]
-            let flakes = if is_flkb_format(&bytes) {
-                // FLKB: Decode policy-filtered transport flakes
-                decode_flakes_interned(&bytes, &db.sid_interner).map_err(|e| {
-                    crate::error::Error::other(format!("Failed to decode transport flakes: {}", e))
-                })?
-            } else {
-                // JSON: Parse traditional leaf node with SID interning integrated
-                parse_leaf_node_interned(bytes, &db.sid_interner)?
-            };
-
-            Ok(ResolvedNode::leaf(
-                node.clone(),
-                Arc::from(flakes.into_boxed_slice()),
-            ))
-        })
-        .await?;
-
-    let raw_flakes = match raw_leaf {
-        ResolvedNode::Leaf { flakes, .. } => flakes,
-        ResolvedNode::Branch { .. } => unreachable!("raw leaf cache returned branch"),
-    };
-
-    // Now cache the materialized version for the requested time window.
-    let mat_key = match from_t {
-        Some(ft) => CacheKey::leaf_history_range_with_epoch_and_mode(
-            &node.id,
-            ft,
-            to_t,
-            overlay_epoch,
-            history_mode,
-        ),
-        None => CacheKey::leaf_t_range_with_epoch_and_mode(&node.id, to_t, overlay_epoch, history_mode),
-    };
-
-    db.cache
-        .get_or_fetch(&mat_key, || async {
-            let cmp = node.index_type.comparator();
-
-            // Overlay flakes (must be yielded in sorted order)
-            let mut overlay_flakes: Vec<Flake> = Vec::new();
-            overlay.for_each_overlay_flake(
-                node.index_type,
-                node.first.as_ref(),
-                node.rhs.as_ref(),
-                node.leftmost,
-                to_t,
-                &mut |f| {
-                    if in_time_window(f, from_t, to_t) {
-                        overlay_flakes.push(f.clone());
-                    }
-                },
-            );
-
-            // Fast path: no overlay, so we can materialize directly from the raw leaf
-            // without cloning the entire leaf into a temp vec.
-            let materialized = if overlay_flakes.is_empty() {
-                materialize_raw_leaf_no_overlay(raw_flakes.as_ref(), from_t, to_t, history_mode)
-            } else {
-                // General path: time-filter leaf into owned vec, merge with overlay, then stale-remove.
-                // (Overlay can override stored facts, so stale removal must happen after merge.)
-                let leaf_flakes: Vec<Flake> = raw_flakes
-                    .iter()
-                    .filter(|f| in_time_window(f, from_t, to_t))
-                    .cloned()
-                    .collect();
-
-                // Overlay flakes are yielded sorted by overlay implementation; defensively sort.
-                overlay_flakes.sort_by(|a, b| cmp(a, b));
-
-                let merged = merge_sorted(leaf_flakes, overlay_flakes, cmp);
-                if history_mode {
-                    merged
+            let interner = db.sid_interner.clone();
+            tokio::task::spawn_blocking(move || {
+                if is_flkb_format(&bytes) {
+                    decode_flakes_interned(&bytes, &interner).map_err(|e| {
+                        crate::error::Error::other(format!(
+                            "Failed to decode transport flakes: {}",
+                            e
+                        ))
+                    })
                 } else {
-                    remove_stale_flakes(merged)
+                    parse_leaf_node_interned(bytes, &interner)
                 }
-            };
+            })
+            .await
+            .map_err(|e| Error::Other(format!("spawn_blocking join error: {}", e)))??
+        };
 
-            Ok(ResolvedNode::leaf(
-                node.clone(),
-                Arc::from(materialized.into_boxed_slice()),
-            ))
-        })
-        .await
+        #[cfg(not(feature = "native"))]
+        let flakes = if is_flkb_format(&bytes) {
+            decode_flakes_interned(&bytes, &db.sid_interner).map_err(|e| {
+                crate::error::Error::other(format!("Failed to decode transport flakes: {}", e))
+            })?
+        } else {
+            parse_leaf_node_interned(bytes, &db.sid_interner)?
+        };
+
+        Arc::from(flakes.into_boxed_slice())
+    };
+
+    // Materialize for the requested time window + overlay.
+    let cmp = node.index_type.comparator();
+
+    let mut overlay_flakes: Vec<Flake> = Vec::new();
+    overlay.for_each_overlay_flake(
+        node.index_type,
+        node.first.as_ref(),
+        node.rhs.as_ref(),
+        node.leftmost,
+        to_t,
+        &mut |f| {
+            if in_time_window(f, from_t, to_t) {
+                overlay_flakes.push(f.clone());
+            }
+        },
+    );
+
+    let materialized = if overlay_flakes.is_empty() {
+        materialize_raw_leaf_no_overlay(raw_flakes.as_ref(), from_t, to_t, history_mode)
+    } else {
+        let leaf_flakes: Vec<Flake> = raw_flakes
+            .iter()
+            .filter(|f| in_time_window(f, from_t, to_t))
+            .cloned()
+            .collect();
+
+        overlay_flakes.sort_by(|a, b| cmp(a, b));
+
+        let merged = merge_sorted(leaf_flakes, overlay_flakes, cmp);
+        if history_mode {
+            merged
+        } else {
+            remove_stale_flakes(merged)
+        }
+    };
+
+    Ok(ResolvedNode::leaf(
+        node.clone(),
+        Arc::from(materialized.into_boxed_slice()),
+    ))
 }
 
 /// Apply subject-based pagination
@@ -1495,8 +1128,8 @@ impl RangeCursor {
     /// # Returns
     ///
     /// A cursor ready for iteration, or an error if the index root cannot be loaded.
-    pub fn new<S, C>(
-        db: &Db<S, C>,
+    pub fn new<S>(
+        db: &Db<S>,
         index: IndexType,
         test: RangeTest,
         match_val: RangeMatch,
@@ -1504,8 +1137,7 @@ impl RangeCursor {
     ) -> Result<Self>
     where
         S: Storage,
-        C: NodeCache,
-    {
+        {
         let to_t = opts.to_t.unwrap_or(db.t);
         let from_t = opts.from_t;
         let prefetch_n = opts.prefetch_n.unwrap_or(DEFAULT_PREFETCH_N);
@@ -1544,8 +1176,8 @@ impl RangeCursor {
     ///
     /// This variant is useful for subject-range queries (e.g., SHA prefix scans)
     /// that need to scan between two different subjects.
-    pub fn new_bounded<S, C>(
-        db: &Db<S, C>,
+    pub fn new_bounded<S>(
+        db: &Db<S>,
         index: IndexType,
         start_bound: Flake,
         end_bound: Flake,
@@ -1553,8 +1185,7 @@ impl RangeCursor {
     ) -> Result<Self>
     where
         S: Storage,
-        C: NodeCache,
-    {
+        {
         let to_t = opts.to_t.unwrap_or(db.t);
         let from_t = opts.from_t;
         let prefetch_n = opts.prefetch_n.unwrap_or(DEFAULT_PREFETCH_N);
@@ -1599,15 +1230,14 @@ impl RangeCursor {
     ///
     /// * `db` - Database for storage access
     /// * `overlay` - Overlay provider (novelty) for uncommitted data
-    pub async fn next_leaf<S, C, O>(
+    pub async fn next_leaf<S, O>(
         &mut self,
-        db: &Db<S, C>,
+        db: &Db<S>,
         overlay: &O,
     ) -> Result<Option<Vec<Flake>>>
     where
         S: Storage,
-        C: NodeCache,
-        O: OverlayProvider + ?Sized,
+            O: OverlayProvider + ?Sized,
     {
         if self.exhausted {
             return Ok(None);
@@ -1628,8 +1258,7 @@ impl RangeCursor {
         // This ensures prefetch work scheduled when returning a leaf actually runs.
         //
         // NOTE: If these prefetch futures are orphaned (dropped before completion),
-        // the cache will handle it gracefully by retrying on the next request for
-        // that node. See SimpleCache::get_or_fetch orphan handling.
+        // the next mainline request for that node will simply fetch it directly.
         #[cfg(feature = "native")]
         if self.prefetch_n > 0 && !self.pending_prefetch_nodes.is_empty() {
             for node in self.pending_prefetch_nodes.drain(..) {
@@ -1813,16 +1442,15 @@ impl RangeCursor {
     ///     }
     /// }).await?;
     /// ```
-    pub async fn next_leaf_with_prefetch<S, C, O, F>(
+    pub async fn next_leaf_with_prefetch<S, O, F>(
         &mut self,
-        db: &Db<S, C>,
+        db: &Db<S>,
         overlay: &O,
         mut on_prefetch: F,
     ) -> Result<Option<Vec<Flake>>>
     where
         S: Storage,
-        C: NodeCache,
-        O: OverlayProvider + ?Sized,
+            O: OverlayProvider + ?Sized,
         F: FnMut(Vec<IndexNode>),
     {
         if self.exhausted {
@@ -1916,15 +1544,14 @@ impl RangeCursor {
     ///
     /// This is a convenience method that drains the cursor into a Vec.
     /// For large result sets, prefer using `next_leaf()` directly.
-    pub async fn collect_all<S, C, O>(
+    pub async fn collect_all<S, O>(
         &mut self,
-        db: &Db<S, C>,
+        db: &Db<S>,
         overlay: &O,
     ) -> Result<Vec<Flake>>
     where
         S: Storage,
-        C: NodeCache,
-        O: OverlayProvider + ?Sized,
+            O: OverlayProvider + ?Sized,
     {
         let mut results = Vec::new();
         while let Some(leaf_flakes) = self.next_leaf(db, overlay).await? {
@@ -1996,16 +1623,15 @@ impl MultiSeekCursor {
     ///
     /// `ranges` must be pre-sorted by start bound using the index comparator.
     /// No validation is performed on ordering.
-    pub fn new<S, C>(
-        db: &Db<S, C>,
+    pub fn new<S>(
+        db: &Db<S>,
         index: IndexType,
         ranges: Vec<(Flake, Flake)>,
         opts: RangeOptions,
     ) -> Result<Self>
     where
         S: Storage,
-        C: NodeCache,
-    {
+        {
         let to_t = opts.to_t.unwrap_or(db.t);
         let root = db.get_index_root(index)?;
         let cmp = index.comparator();
@@ -2033,15 +1659,14 @@ impl MultiSeekCursor {
     ///
     /// Returns `Ok(Some(flakes))` for each range (may be empty if no flakes match),
     /// `Ok(None)` when all ranges are exhausted.
-    pub async fn next_range_flakes<S, C, O>(
+    pub async fn next_range_flakes<S, O>(
         &mut self,
-        db: &Db<S, C>,
+        db: &Db<S>,
         overlay: &O,
     ) -> Result<Option<Vec<Flake>>>
     where
         S: Storage,
-        C: NodeCache,
-        O: OverlayProvider + ?Sized,
+            O: OverlayProvider + ?Sized,
     {
         if self.current_range >= self.ranges.len() {
             return Ok(None);
@@ -2171,13 +1796,13 @@ impl MultiSeekCursor {
     /// * `after` - If `false`, seek to the leaf whose range contains `target`.
     ///   If `true`, seek to the leaf **after** the one whose `rhs` equals `target`,
     ///   preventing stalling when continuing past a leaf boundary.
-    async fn seek_leaf<S, C, O>(
+    async fn seek_leaf<S, O>(
         root: &IndexNode,
         target: &Flake,
         after: bool,
         cmp: fn(&Flake, &Flake) -> std::cmp::Ordering,
         index: IndexType,
-        db: &Db<S, C>,
+        db: &Db<S>,
         overlay: &O,
         overlay_epoch: u64,
         to_t: i64,
@@ -2186,8 +1811,7 @@ impl MultiSeekCursor {
     ) -> Result<Option<LeafState>>
     where
         S: Storage,
-        C: NodeCache,
-        O: OverlayProvider + ?Sized,
+            O: OverlayProvider + ?Sized,
     {
         let mut current_node = root.clone();
 
@@ -2496,7 +2120,7 @@ mod tests {
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     #[ignore = "Requires external test-database/ directory"]
     async fn integration_range_query_subject() {
-        use crate::cache::SimpleCache;
+
         use crate::db::Db;
         use crate::storage::FileStorage;
         use std::path::PathBuf;
@@ -2513,7 +2137,7 @@ mod tests {
         }
 
         let storage = FileStorage::new(&test_db_path);
-        let cache = SimpleCache::new(10000);
+
 
         // Find a root file
         let root_dir = test_db_path.join("test/range-scan/index/root");
@@ -2529,7 +2153,7 @@ mod tests {
             root_file.file_name().to_string_lossy()
         );
 
-        let db = Db::load(storage, cache, &root_address).await.unwrap();
+        let db = Db::load(storage, &root_address).await.unwrap();
         println!("Loaded db at t={}", db.t);
 
         // Find the namespace code for http://example.org/
@@ -2584,7 +2208,7 @@ mod tests {
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     #[ignore = "Requires external test-database/ directory"]
     async fn integration_range_query_deleted() {
-        use crate::cache::SimpleCache;
+
         use crate::db::Db;
         use crate::storage::FileStorage;
         use std::path::PathBuf;
@@ -2599,7 +2223,7 @@ mod tests {
         }
 
         let storage = FileStorage::new(&test_db_path);
-        let cache = SimpleCache::new(10000);
+
 
         let root_dir = test_db_path.join("test/range-scan/index/root");
         let root_file = std::fs::read_dir(&root_dir)
@@ -2614,7 +2238,7 @@ mod tests {
             root_file.file_name().to_string_lossy()
         );
 
-        let db = Db::load(storage, cache, &root_address).await.unwrap();
+        let db = Db::load(storage, &root_address).await.unwrap();
 
         // At T=100, persons from T=5 (scores 500-599) should be deleted
         // person-005-000 has score=500, should be deleted at T=20
@@ -2645,7 +2269,7 @@ mod tests {
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     #[ignore = "Requires external test-database/ directory"]
     async fn integration_time_travel() {
-        use crate::cache::SimpleCache;
+
         use crate::db::Db;
         use crate::storage::FileStorage;
         use std::path::PathBuf;
@@ -2661,7 +2285,7 @@ mod tests {
         }
 
         let storage = FileStorage::new(&test_db_path);
-        let cache = SimpleCache::new(10000);
+
 
         let root_dir = test_db_path.join("test/range-scan/index/root");
         let root_file = std::fs::read_dir(&root_dir)
@@ -2676,7 +2300,7 @@ mod tests {
             root_file.file_name().to_string_lossy()
         );
 
-        let db = Db::load(storage, cache, &root_address).await.unwrap();
+        let db = Db::load(storage, &root_address).await.unwrap();
         println!("Loaded db at t={}", db.t);
 
         let example_ns_code = db.namespace_codes
@@ -2763,7 +2387,7 @@ mod tests {
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     #[ignore = "Requires external test-database/ directory"]
     async fn integration_time_travel_before_exists() {
-        use crate::cache::SimpleCache;
+
         use crate::db::Db;
         use crate::storage::FileStorage;
         use std::path::PathBuf;
@@ -2778,7 +2402,7 @@ mod tests {
         }
 
         let storage = FileStorage::new(&test_db_path);
-        let cache = SimpleCache::new(10000);
+
 
         let root_dir = test_db_path.join("test/range-scan/index/root");
         let root_file = std::fs::read_dir(&root_dir)
@@ -2793,7 +2417,7 @@ mod tests {
             root_file.file_name().to_string_lossy()
         );
 
-        let db = Db::load(storage, cache, &root_address).await.unwrap();
+        let db = Db::load(storage, &root_address).await.unwrap();
 
         let example_ns_code = db.namespace_codes
             .iter()
@@ -2845,7 +2469,7 @@ mod tests {
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     #[ignore = "Benchmark: requires external test-database/ directory"]
     async fn benchmark_range_query() {
-        use crate::cache::SimpleCache;
+
         use crate::db::Db;
         use crate::storage::FileStorage;
         use std::path::PathBuf;
@@ -2862,7 +2486,7 @@ mod tests {
         }
 
         let storage = FileStorage::new(&test_db_path);
-        let cache = SimpleCache::new(10000);
+
 
         let root_dir = test_db_path.join("test/range-scan/index/root");
         let root_file = std::fs::read_dir(&root_dir)
@@ -2877,7 +2501,7 @@ mod tests {
             root_file.file_name().to_string_lossy()
         );
 
-        let db = Db::load(storage, cache, &root_address).await.unwrap();
+        let db = Db::load(storage, &root_address).await.unwrap();
 
         let example_ns_code = db.namespace_codes
             .iter()
@@ -2928,17 +2552,7 @@ mod tests {
         let warmup_time = warmup_start.elapsed();
         println!("Warmup: {} queries, {} flakes in {:?}", 1000, warmup_flakes, warmup_time);
 
-        let stats_after_warmup = db.cache.stats();
-        println!("Cache after warmup: {} entries, {} hits, {} misses, {:.1}% hit rate",
-            db.cache.len(),
-            stats_after_warmup.hits,
-            stats_after_warmup.misses,
-            stats_after_warmup.hit_rate() * 100.0);
-
-        // Reset stats for benchmark
-        db.cache.reset_stats();
-
-        // Benchmark 1: Single subject queries (hot cache, steady-state)
+        // Benchmark 1: Single subject queries
         //
         // Note: keep iteration count large enough that timing noise doesn't dominate.
         println!("\n--- Benchmark 1: Single Subject Queries (Hot Cache) ---");
@@ -2979,16 +2593,11 @@ mod tests {
             queries_per_sec, flakes_per_sec, ns_per_query
         );
 
-        let stats = db.cache.stats();
-        println!("Cache: {} hits, {} misses, {:.1}% hit rate",
-            stats.hits, stats.misses, stats.hit_rate() * 100.0);
 
         // Benchmark 1b: Hot cache first-hit (clear cache then run once)
         //
         // This measures the miss-path for the same access pattern.
         println!("\n--- Benchmark 1b: Single Subject Queries (First-Hit / Cold In-Memory Cache) ---");
-        db.cache.clear();
-        db.cache.reset_stats();
         let start = Instant::now();
         let mut total_flakes = 0usize;
         for i in 0..num_queries {
@@ -3012,14 +2621,6 @@ mod tests {
         println!("Total flakes: {}", total_flakes);
         println!("Time: {:?}", elapsed);
         println!("Throughput: {:.0} queries/sec ({:.0} ns/query)", queries_per_sec, ns_per_query);
-        let stats = db.cache.stats();
-        println!(
-            "Cache: {} hits, {} misses, {:.1}% hit rate",
-            stats.hits,
-            stats.misses,
-            stats.hit_rate() * 100.0
-        );
-
         // Benchmark 2: Time-travel queries at different t values
         //
         // Important: time-travel has a one-time cost per leaf per `to_t` to materialize
@@ -3058,7 +2659,6 @@ mod tests {
             .unwrap();
         }
 
-        db.cache.reset_stats();
         let start = Instant::now();
         let mut total_flakes = 0usize;
 
@@ -3084,14 +2684,6 @@ mod tests {
         println!("Time: {:?}", elapsed);
         println!("Throughput: {:.0} queries/sec ({:.0} ns/query)", queries_per_sec, ns_per_query);
 
-        let stats = db.cache.stats();
-        println!(
-            "Cache: {} hits, {} misses, {:.1}% hit rate",
-            stats.hits,
-            stats.misses,
-            stats.hit_rate() * 100.0
-        );
-
         // Benchmark 3: Cold cache (clear and re-query)
         //
         // Apples-to-apples with Clojure cold-cache:
@@ -3099,8 +2691,6 @@ mod tests {
         // - run queries against a fixed subject pool (t=1..10, p=0..99) so we can see
         //   the "first-hit" miss cost plus subsequent hits within the same run.
         println!("\n--- Benchmark 3: Cold Cache Performance ---");
-        db.cache.clear();
-        db.cache.reset_stats();
         let start = Instant::now();
         let mut total_flakes = 0;
 
@@ -3134,9 +2724,6 @@ mod tests {
         println!("Time: {:?}", elapsed);
         println!("Throughput: {:.0} queries/sec ({:.0} ns/query)", queries_per_sec, ns_per_query);
 
-        let stats = db.cache.stats();
-        println!("Cache: {} hits, {} misses, {:.1}% hit rate",
-            stats.hits, stats.misses, stats.hit_rate() * 100.0);
 
         println!("\n=== Benchmark Complete ===");
     }
@@ -3148,7 +2735,7 @@ mod tests {
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     #[ignore = "Verification: requires external test-database/ directory"]
     async fn verify_range_results() {
-        use crate::cache::SimpleCache;
+
         use crate::db::Db;
         use crate::flake::Flake;
         use crate::storage::FileStorage;
@@ -3165,7 +2752,7 @@ mod tests {
         }
 
         let storage = FileStorage::new(&test_db_path);
-        let cache = SimpleCache::new(10000);
+
 
         let root_dir = test_db_path.join("test/range-scan/index/root");
         let root_file = std::fs::read_dir(&root_dir)
@@ -3180,7 +2767,7 @@ mod tests {
             root_file.file_name().to_string_lossy()
         );
 
-        let db = Db::load(storage, cache, &root_address).await
+        let db = Db::load(storage, &root_address).await
             .expect("Failed to load database");
 
         println!("\n");

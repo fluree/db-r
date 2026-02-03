@@ -19,8 +19,8 @@
 //! ```ignore
 //! use fluree_db_core::{Db, range, IndexType, RangeTest};
 //!
-//! // Apps provide their own Storage and Cache implementations
-//! let db = Db::load(&storage, &cache, address).await?;
+//! // Apps provide their own Storage implementation
+//! let db = Db::load(storage, address).await?;
 //! let flakes = range(&db, IndexType::Spot, RangeTest::Eq, match_val, opts).await?;
 //! ```
 
@@ -34,6 +34,8 @@ pub mod cache;
 pub mod error;
 pub mod serde;
 pub mod overlay;
+pub mod query_bounds;
+pub mod range_provider;
 pub mod range;
 pub mod db;
 pub mod namespaces;
@@ -46,6 +48,9 @@ pub mod address;
 pub mod address_path;
 pub mod prefetch;
 pub mod coerce;
+pub mod value_id;
+pub mod index_stats;
+pub mod index_schema;
 
 // Re-export main types
 pub use sid::{Sid, SidInterner};
@@ -59,7 +64,7 @@ pub use flake::{Flake, FlakeMeta};
 pub use comparator::IndexType;
 pub use index::{IndexNode, ChildRef, ResolvedNode};
 pub use storage::{
-    ContentAddressedWrite, ContentKind, ContentWriteResult, MemoryStorage, ReadHint,
+    ContentAddressedWrite, ContentKind, ContentWriteResult, DictKind, MemoryStorage, ReadHint,
     Storage, StorageRead, StorageWrite,
     // Helper functions for storage implementations
     alias_prefix_for_path, content_address, content_path, sha256_hex,
@@ -71,6 +76,7 @@ pub use cache::{NodeCache, SimpleCache, NoCache, CacheKey, CacheStats};
 pub use cache::MokaNodeCache;
 pub use overlay::{OverlayProvider, NoOverlay};
 pub use error::{Error, Result};
+pub use range_provider::RangeProvider;
 pub use range::{range, range_with_overlay, range_bounded_with_overlay, RangeTest, RangeMatch, RangeOptions, ObjectBounds, RangeCursor, MultiSeekCursor, BATCHED_JOIN_SIZE, resolve_node_materialized_with_overlay};
 #[cfg(feature = "native")]
 pub use range::{set_max_concurrent_leaf_parses, DEFAULT_MAX_CONCURRENT_LEAF_PARSES};
@@ -90,6 +96,9 @@ pub use stats_view::{PropertyStatData, StatsView};
 pub use tracking::{FuelExceededError, PolicyStats, Tracker, TrackingOptions, TrackingTally};
 pub use coerce::{coerce_value, coerce_json_value, CoercionError, CoercionResult};
 pub use address::{ParsedFlureeAddress, parse_fluree_address, extract_identifier, extract_path};
+pub use value_id::{ObjKind, ObjKey, ObjKeyError, DatatypeId};
+pub use index_stats::{IndexStats, PropertyStatEntry, ClassStatEntry, ClassPropertyUsage, GraphPropertyStatEntry, GraphStatsEntry};
+pub use index_schema::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};
 
 /// Prelude module for convenient imports of storage traits and common types.
 ///
@@ -105,8 +114,8 @@ pub use address::{ParsedFlureeAddress, parse_fluree_address, extract_identifier,
 /// ```
 pub mod prelude {
     pub use crate::storage::{
-        ContentAddressedWrite, ContentKind, ContentWriteResult, MemoryStorage, ReadHint, Storage,
-        StorageRead, StorageWrite,
+        ContentAddressedWrite, ContentKind, ContentWriteResult, DictKind, MemoryStorage, ReadHint,
+        Storage, StorageRead, StorageWrite,
     };
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     pub use crate::storage::FileStorage;

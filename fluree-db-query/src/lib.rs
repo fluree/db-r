@@ -49,6 +49,9 @@ pub mod reasoning;
 pub mod rewrite;
 pub mod vector;
 pub mod rewrite_owl_ql;
+pub mod dict_overlay;
+pub mod binary_scan;
+pub mod binary_range;
 pub mod scan;
 pub mod seed;
 pub mod sort;
@@ -75,13 +78,14 @@ pub use explain::{
 };
 pub use distinct::DistinctOperator;
 pub use execute::{
-    execute, execute_query, execute_with_dataset, execute_with_dataset_and_bm25,
-    execute_with_dataset_and_policy, execute_with_dataset_and_policy_and_bm25,
+    build_operator_tree, execute, execute_query, execute_with_dataset,
+    execute_with_dataset_and_bm25, execute_with_dataset_and_policy,
+    execute_with_dataset_and_policy_and_bm25,
     execute_with_dataset_and_policy_and_providers, execute_with_dataset_and_providers,
     execute_with_dataset_and_policy_tracked, execute_with_dataset_history,
     execute_with_dataset_tracked, execute_with_overlay, execute_with_overlay_at,
     execute_with_overlay_at_tracked, execute_with_policy, execute_with_policy_tracked,
-    execute_with_r2rml, ExecutableQuery,
+    execute_with_r2rml, run_operator, ExecutableQuery,
 };
 #[cfg(feature = "native")]
 pub use execute::{PrefetchResources, execute_with_r2rml_prefetch};
@@ -97,6 +101,8 @@ pub use project::ProjectOperator;
 pub use property_join::PropertyJoinOperator;
 pub use property_path::{PropertyPathOperator, DEFAULT_MAX_VISITED};
 pub use r2rml::{NoOpR2rmlProvider, R2rmlProvider, R2rmlScanOperator, R2rmlTableProvider};
+pub use binary_range::BinaryRangeProvider;
+pub use binary_scan::{BinaryScanOperator, DeferredScanOperator};
 pub use scan::{ScanOperator, scan_stats_reset};
 pub use graph_view::{GraphView, ResolvedGraphView, BaseView, AsOf, WithPolicy, WithReasoning};
 pub use seed::{EmptyOperator, SeedOperator};
@@ -121,7 +127,7 @@ pub use var_registry::{VarId, VarRegistry};
 pub use parse::{parse_query, ParsedQuery, SelectMode};
 
 use execute::build_where_operators_seeded;
-use fluree_db_core::{Db, NodeCache, OverlayProvider, Storage};
+use fluree_db_core::{Db, OverlayProvider, Storage};
 use std::sync::Arc;
 
 /// Execute a single triple pattern query
@@ -134,8 +140,8 @@ use std::sync::Arc;
 /// * `vars` - Variable registry containing the pattern's variables
 /// * `pattern` - Triple pattern to match
 ///
-pub async fn execute_pattern<S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn execute_pattern<S: Storage + 'static>(
+    db: &Db<S>,
     vars: &VarRegistry,
     pattern: TriplePattern,
 ) -> Result<Vec<Batch>> {
@@ -149,15 +155,15 @@ pub async fn execute_pattern<S: Storage + 'static, C: NodeCache + 'static>(
         batches.push(batch);
     }
 
-    <ScanOperator as Operator<S, C>>::close(&mut scan);
+    <ScanOperator as Operator<S>>::close(&mut scan);
     Ok(batches)
 }
 
 /// Execute a pattern and collect all results into a single batch
 ///
 /// Convenience function when you want all results at once.
-pub async fn execute_pattern_all<S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn execute_pattern_all<S: Storage + 'static>(
+    db: &Db<S>,
     vars: &VarRegistry,
     pattern: TriplePattern,
 ) -> Result<Option<Batch>> {
@@ -191,8 +197,8 @@ pub async fn execute_pattern_all<S: Storage + 'static, C: NodeCache + 'static>(
 }
 
 /// Execute a pattern with time-travel settings
-pub async fn execute_pattern_at<S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn execute_pattern_at<S: Storage + 'static>(
+    db: &Db<S>,
     vars: &VarRegistry,
     pattern: TriplePattern,
     to_t: i64,
@@ -208,7 +214,7 @@ pub async fn execute_pattern_at<S: Storage + 'static, C: NodeCache + 'static>(
         batches.push(batch);
     }
 
-    <ScanOperator as Operator<S, C>>::close(&mut scan);
+    <ScanOperator as Operator<S>>::close(&mut scan);
     Ok(batches)
 }
 
@@ -225,8 +231,8 @@ pub async fn execute_pattern_at<S: Storage + 'static, C: NodeCache + 'static>(
 /// * `vars` - Variable registry containing the pattern's variables
 /// * `pattern` - Triple pattern to match
 ///
-pub async fn execute_pattern_with_overlay<S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn execute_pattern_with_overlay<S: Storage + 'static>(
+    db: &Db<S>,
     overlay: &dyn OverlayProvider,
     vars: &VarRegistry,
     pattern: TriplePattern,
@@ -241,7 +247,7 @@ pub async fn execute_pattern_with_overlay<S: Storage + 'static, C: NodeCache + '
         batches.push(batch);
     }
 
-    <ScanOperator as Operator<S, C>>::close(&mut scan);
+    <ScanOperator as Operator<S>>::close(&mut scan);
     Ok(batches)
 }
 
@@ -250,8 +256,8 @@ pub async fn execute_pattern_with_overlay<S: Storage + 'static, C: NodeCache + '
 /// Combines overlay support with time-travel queries. The `to_t` parameter
 /// limits results to flakes with `t <= to_t`, and the optional `from_t`
 /// enables history range queries.
-pub async fn execute_pattern_with_overlay_at<S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn execute_pattern_with_overlay_at<S: Storage + 'static>(
+    db: &Db<S>,
     overlay: &dyn OverlayProvider,
     vars: &VarRegistry,
     pattern: TriplePattern,
@@ -268,7 +274,7 @@ pub async fn execute_pattern_with_overlay_at<S: Storage + 'static, C: NodeCache 
         batches.push(batch);
     }
 
-    <ScanOperator as Operator<S, C>>::close(&mut scan);
+    <ScanOperator as Operator<S>>::close(&mut scan);
     Ok(batches)
 }
 
@@ -291,8 +297,8 @@ pub async fn execute_pattern_with_overlay_at<S: Storage + 'static, C: NodeCache 
 /// Vector of result batches. If patterns is empty, returns a single batch
 /// with one empty solution (row with no columns).
 ///
-pub async fn execute_where_with_overlay_at<S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn execute_where_with_overlay_at<S: Storage + 'static>(
+    db: &Db<S>,
     overlay: &dyn OverlayProvider,
     vars: &VarRegistry,
     patterns: &[Pattern],
@@ -306,7 +312,7 @@ pub async fn execute_where_with_overlay_at<S: Storage + 'static, C: NodeCache + 
     }
 
     let ctx = ExecutionContext::with_time_and_overlay(db, vars, to_t, from_t, overlay);
-    let mut operator = build_where_operators_seeded::<S, C>(None, patterns, None)?;
+    let mut operator = build_where_operators_seeded::<S>(None, patterns, None)?;
 
     operator.open(&ctx).await?;
     let mut batches = Vec::new();
@@ -319,8 +325,8 @@ pub async fn execute_where_with_overlay_at<S: Storage + 'static, C: NodeCache + 
 }
 
 /// Execute WHERE patterns with strict bind error handling.
-pub async fn execute_where_with_overlay_at_strict<S: Storage + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn execute_where_with_overlay_at_strict<S: Storage + 'static>(
+    db: &Db<S>,
     overlay: &dyn OverlayProvider,
     vars: &VarRegistry,
     patterns: &[Pattern],
@@ -334,7 +340,7 @@ pub async fn execute_where_with_overlay_at_strict<S: Storage + 'static, C: NodeC
 
     let ctx = ExecutionContext::with_time_and_overlay(db, vars, to_t, from_t, overlay)
         .with_strict_bind_errors();
-    let mut operator = build_where_operators_seeded::<S, C>(None, patterns, None)?;
+    let mut operator = build_where_operators_seeded::<S>(None, patterns, None)?;
 
     operator.open(&ctx).await?;
     let mut batches = Vec::new();

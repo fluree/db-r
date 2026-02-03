@@ -137,7 +137,7 @@ impl ShaclCache {
 mod tests {
     use super::*;
     use crate::compile::{Severity, TargetType};
-    use fluree_db_core::serde::json::{DbRootSchema, SchemaPredicateInfo, SchemaPredicates};
+    use fluree_db_core::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};
     use fluree_db_core::SidInterner;
 
     fn make_test_shape(id_name: &str, target_class: Sid) -> CompiledShape {
@@ -176,7 +176,7 @@ mod tests {
             })
             .collect();
 
-        let schema = DbRootSchema {
+        let schema = IndexSchema {
             t: 1,
             pred: SchemaPredicates {
                 keys: vec![

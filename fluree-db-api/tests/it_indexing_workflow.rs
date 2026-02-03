@@ -7,7 +7,7 @@
 mod support;
 
 use fluree_db_api::{Fluree, FlureeBuilder, IndexConfig, IndexingMode, LedgerState, Novelty, ReindexOptions, TriggerIndexOptions};
-use fluree_db_core::{Db, SimpleCache};
+use fluree_db_core::Db;
 use fluree_db_nameservice::NameService;
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::json;
@@ -19,7 +19,7 @@ async fn indexing_disabled_transaction_exposes_indexing_status_hints() {
     let fluree = FlureeBuilder::memory().build_memory();
     let alias = "it/indexing-disabled-metadata:main";
 
-    let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+    let db0 = Db::genesis(fluree.storage().clone(), alias);
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
     let tx = json!({
@@ -79,7 +79,7 @@ async fn manual_indexing_disabled_mode_then_trigger_updates_nameservice_and_load
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
             let mut index_cfg = IndexConfig::default();
@@ -167,7 +167,7 @@ async fn indexing_coalesces_multiple_commits_and_latest_root_is_queryable() {
     local
         .run_until(async move {
             let alias = "it/indexing-workflow:main";
-            let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let mut index_cfg = IndexConfig::default();
@@ -235,7 +235,7 @@ async fn indexing_coalesces_multiple_commits_and_latest_root_is_queryable() {
                 fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
             };
 
-            let loaded = Db::load(fluree.storage().clone(), SimpleCache::new(10_000), &root2)
+            let loaded = Db::load(fluree.storage().clone(), &root2)
                 .await
                 .expect("Db::load(root2)");
             assert_eq!(loaded.t, index_t2, "loaded db.t should match indexed t");
@@ -275,7 +275,7 @@ async fn file_based_indexing_then_new_connection_loads_and_queries() {
     local
         .run_until(async move {
             let alias = "it/indexing-file-load:main";
-            let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
             let mut index_cfg = IndexConfig::default();
@@ -332,7 +332,7 @@ async fn automatic_indexing_disabled_mode_allows_novelty_to_accumulate_without_i
     let fluree = FlureeBuilder::memory().build_memory();
     let alias = "it/indexing-disabled-accumulate:main";
 
-    let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+    let db0 = Db::genesis(fluree.storage().clone(), alias);
     let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
     // Insert multiple transactions to build up novelty
@@ -371,11 +371,11 @@ fn admin_alias(name: &str) -> String {
 }
 
 async fn seed_some_commits(
-    fluree: &Fluree<fluree_db_core::MemoryStorage, SimpleCache, fluree_db_nameservice::memory::MemoryNameService>,
+    fluree: &Fluree<fluree_db_core::MemoryStorage, fluree_db_nameservice::memory::MemoryNameService>,
     alias: &str,
     n: usize,
-) -> LedgerState<fluree_db_core::MemoryStorage, SimpleCache> {
-    let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+) -> LedgerState<fluree_db_core::MemoryStorage> {
+    let db0 = Db::genesis(fluree.storage().clone(), alias);
     let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
     let mut idx_cfg = IndexConfig::default();
@@ -562,7 +562,7 @@ async fn reindex_populates_statistics() {
     let a = admin_alias("reindex-stats");
 
     // Create some structured data with types
-    let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), &a);
+    let db0 = Db::genesis(fluree.storage().clone(), &a);
     let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
     let mut idx_cfg = IndexConfig::default();
@@ -728,7 +728,7 @@ async fn reindex_preserves_filter_queries() {
     let a = admin_alias("reindex-filters");
 
     // Create ledger with salary data
-    let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), &a);
+    let db0 = Db::genesis(fluree.storage().clone(), &a);
     let ledger = LedgerState::new(db0, Novelty::new(0));
 
     let mut idx_cfg = IndexConfig::default();
@@ -804,7 +804,7 @@ async fn reindex_uses_provided_indexer_config() {
     let fluree = FlureeBuilder::memory().build_memory();
     let a = admin_alias("reindex-config");
 
-    let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), &a);
+    let db0 = Db::genesis(fluree.storage().clone(), &a);
     let ledger = LedgerState::new(db0, Novelty::new(0));
 
     let mut idx_cfg = IndexConfig::default();
@@ -859,7 +859,7 @@ async fn reindex_default_from_t_includes_all_data() {
     let fluree = FlureeBuilder::memory().build_memory();
     let a = admin_alias("reindex-from-t");
 
-    let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), &a);
+    let db0 = Db::genesis(fluree.storage().clone(), &a);
     let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
     let mut idx_cfg = IndexConfig::default();

@@ -14,7 +14,7 @@ use crate::virtual_graph::result::{
     VectorCreateResult, VectorDropResult, VectorStalenessCheck, VectorSyncResult,
 };
 #[cfg(feature = "vector")]
-use crate::{QueryResult as ApiQueryResult, Result, SimpleCache};
+use crate::{QueryResult as ApiQueryResult, Result};
 #[cfg(feature = "vector")]
 use fluree_db_core::{alias as core_alias, OverlayProvider, Storage};
 #[cfg(feature = "vector")]
@@ -43,7 +43,7 @@ use tracing::{info, warn};
 // =============================================================================
 
 #[cfg(feature = "vector")]
-impl<S, N> crate::Fluree<S, SimpleCache, N>
+impl<S, N> crate::Fluree<S, N>
 where
     S: Storage + StorageWrite + Clone + 'static,
     N: NameService + Publisher + VirtualGraphPublisher,
@@ -228,7 +228,7 @@ where
     /// Each result object will have an `@id` field identifying the document.
     pub(crate) async fn execute_vector_indexing_query(
         &self,
-        ledger: &LedgerState<S, SimpleCache>,
+        ledger: &LedgerState<S>,
         query_json: &JsonValue,
     ) -> Result<Vec<JsonValue>> {
         // Parse the query
@@ -320,7 +320,7 @@ where
 // =============================================================================
 
 #[cfg(feature = "vector")]
-impl<S, N> crate::Fluree<S, SimpleCache, N>
+impl<S, N> crate::Fluree<S, N>
 where
     S: Storage + Clone + 'static,
     N: NameService + VirtualGraphPublisher,
@@ -435,7 +435,7 @@ where
 // =============================================================================
 
 #[cfg(feature = "vector")]
-impl<S, N> crate::Fluree<S, SimpleCache, N>
+impl<S, N> crate::Fluree<S, N>
 where
     S: Storage + StorageWrite + Clone + 'static,
     N: NameService + Publisher + VirtualGraphPublisher,

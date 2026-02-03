@@ -293,6 +293,63 @@ fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Result<Option<
                         "datatype": dt_iri
                     })))
                 }
+                // Additional temporal types
+                FlakeValue::GYear(v) => {
+                    Ok(Some(json!({
+                        "type": "literal",
+                        "value": v.to_string(),
+                        "datatype": dt_iri
+                    })))
+                }
+                FlakeValue::GYearMonth(v) => {
+                    Ok(Some(json!({
+                        "type": "literal",
+                        "value": v.to_string(),
+                        "datatype": dt_iri
+                    })))
+                }
+                FlakeValue::GMonth(v) => {
+                    Ok(Some(json!({
+                        "type": "literal",
+                        "value": v.to_string(),
+                        "datatype": dt_iri
+                    })))
+                }
+                FlakeValue::GDay(v) => {
+                    Ok(Some(json!({
+                        "type": "literal",
+                        "value": v.to_string(),
+                        "datatype": dt_iri
+                    })))
+                }
+                FlakeValue::GMonthDay(v) => {
+                    Ok(Some(json!({
+                        "type": "literal",
+                        "value": v.to_string(),
+                        "datatype": dt_iri
+                    })))
+                }
+                FlakeValue::YearMonthDuration(v) => {
+                    Ok(Some(json!({
+                        "type": "literal",
+                        "value": v.to_string(),
+                        "datatype": dt_iri
+                    })))
+                }
+                FlakeValue::DayTimeDuration(v) => {
+                    Ok(Some(json!({
+                        "type": "literal",
+                        "value": v.to_string(),
+                        "datatype": dt_iri
+                    })))
+                }
+                FlakeValue::Duration(v) => {
+                    Ok(Some(json!({
+                        "type": "literal",
+                        "value": v.to_string(),
+                        "datatype": dt_iri
+                    })))
+                }
             }
         }
 

@@ -130,7 +130,7 @@ pub use fluree_db_indexer::{
 pub use fluree_db_connection::{ConnectionConfig, StorageType};
 pub use fluree_db_core::{
     ContentAddressedWrite, ContentKind, ContentWriteResult, MemoryStorage, NodeCache,
-    OverlayProvider, SimpleCache, Storage, StorageRead, StorageWrite,
+    OverlayProvider, Storage, StorageRead, StorageWrite,
 };
 #[cfg(feature = "native")]
 pub use fluree_db_core::FileStorage;
@@ -724,7 +724,7 @@ impl ContentAddressedWrite for AddressIdentifierResolverStorage {
 }
 
 /// Fluree runtime type returned by `connect_json_ld`.
-pub type FlureeClient = Fluree<AnyStorage, SimpleCache, AnyNameService>;
+pub type FlureeClient = Fluree<AnyStorage, AnyNameService>;
 
 fn decode_encryption_key_base64(key_str: &str) -> Result<[u8; 32]> {
     use base64::Engine;
@@ -1017,7 +1017,6 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
     match &parsed.index_storage.storage_type {
         StorageType::Memory => {
             let base_storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
-            let cache = Arc::new(SimpleCache::new(parsed.cache.max_entries));
 
             // Build address identifier resolver if configured
             let storage: AnyStorage = if let Some(addr_ids) = &parsed.address_identifiers {
@@ -1034,7 +1033,7 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
                 AnyStorage::new(base_storage)
             };
 
-            let connection = Connection::new(parsed, storage, Arc::clone(&cache));
+            let connection = Connection::new(parsed, storage);
             let id = connection
                 .config()
                 .index_storage
@@ -1108,8 +1107,7 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
                     AnyStorage::new(base_storage)
                 };
 
-                let cache = Arc::new(SimpleCache::new(parsed.cache.max_entries));
-                let connection = Connection::new(parsed, storage, Arc::clone(&cache));
+                let connection = Connection::new(parsed, storage);
                 let id = connection
                     .config()
                     .index_storage
@@ -1585,15 +1583,13 @@ impl FlureeBuilder {
     /// Indexing is disabled by default; use `set_indexing_mode` after building
     /// to enable background indexing.
     #[cfg(feature = "native")]
-    pub fn build(self) -> Result<Fluree<FileStorage, SimpleCache, FileNameService>> {
+    pub fn build(self) -> Result<Fluree<FileStorage, FileNameService>> {
         let path = self
             .storage_path
             .ok_or_else(|| ApiError::config("File storage requires a path"))?;
 
         let storage = FileStorage::new(&path);
-        let cache_arc = Arc::new(SimpleCache::new(self.config.cache.max_entries));
-        // Share the same cache Arc between Connection and LedgerManager
-        let connection = Connection::new(self.config, storage.clone(), Arc::clone(&cache_arc));
+        let connection = Connection::new(self.config, storage.clone());
 
         let nameservice = FileNameService::new(&path);
 
@@ -1601,7 +1597,6 @@ impl FlureeBuilder {
         let ledger_manager = self.ledger_cache_config.map(|config| {
             Arc::new(LedgerManager::new(
                 storage,
-                cache_arc,
                 nameservice.clone(),
                 config,
             ))
@@ -1653,7 +1648,6 @@ impl FlureeBuilder {
     ) -> Result<
         Fluree<
             EncryptedStorage<FileStorage, StaticKeyProvider>,
-            SimpleCache,
             FileNameService,
         >,
     > {
@@ -1694,7 +1688,6 @@ impl FlureeBuilder {
     ) -> Result<
         Fluree<
             EncryptedStorage<FileStorage, StaticKeyProvider>,
-            SimpleCache,
             FileNameService,
         >,
     > {
@@ -1712,7 +1705,6 @@ impl FlureeBuilder {
     ) -> Result<
         Fluree<
             EncryptedStorage<FileStorage, StaticKeyProvider>,
-            SimpleCache,
             FileNameService,
         >,
     > {
@@ -1725,8 +1717,7 @@ impl FlureeBuilder {
         let key_provider = StaticKeyProvider::new(encryption_key);
         let storage = EncryptedStorage::new(file_storage, key_provider);
 
-        let cache = SimpleCache::new(self.config.cache.max_entries);
-        let connection = Connection::new(self.config, storage, cache);
+        let connection = Connection::new(self.config, storage);
 
         let nameservice = FileNameService::new(&path);
 
@@ -1751,18 +1742,15 @@ impl FlureeBuilder {
     ///
     /// Indexing is disabled by default; use `set_indexing_mode` after building
     /// to enable background indexing.
-    pub fn build_memory(self) -> Fluree<MemoryStorage, SimpleCache, MemoryNameService> {
+    pub fn build_memory(self) -> Fluree<MemoryStorage, MemoryNameService> {
         let storage = MemoryStorage::new();
-        let cache_arc = Arc::new(SimpleCache::new(self.config.cache.max_entries));
-        // Share the same cache Arc between Connection and LedgerManager
-        let connection = Connection::new(self.config, storage.clone(), Arc::clone(&cache_arc));
+        let connection = Connection::new(self.config, storage.clone());
         let nameservice = MemoryNameService::new();
 
         // Create LedgerManager if caching is enabled
         let ledger_manager = self.ledger_cache_config.map(|config| {
             Arc::new(LedgerManager::new(
                 storage,
-                cache_arc,
                 nameservice.clone(),
                 config,
             ))
@@ -1791,7 +1779,6 @@ impl FlureeBuilder {
         key: [u8; 32],
     ) -> Fluree<
         EncryptedStorage<MemoryStorage, StaticKeyProvider>,
-        SimpleCache,
         MemoryNameService,
     > {
         let mem_storage = MemoryStorage::new();
@@ -1799,8 +1786,7 @@ impl FlureeBuilder {
         let key_provider = StaticKeyProvider::new(encryption_key);
         let storage = EncryptedStorage::new(mem_storage, key_provider);
 
-        let cache = SimpleCache::new(self.config.cache.max_entries);
-        let connection = Connection::new(self.config, storage, cache);
+        let connection = Connection::new(self.config, storage);
         let nameservice = MemoryNameService::new();
 
         // Note: Ledger caching not yet supported for encrypted storage
@@ -1826,7 +1812,7 @@ impl FlureeBuilder {
     #[cfg(feature = "aws")]
     pub async fn build_s3(
         self,
-    ) -> Result<Fluree<fluree_db_storage_aws::S3Storage, SimpleCache, StorageNameService<fluree_db_storage_aws::S3Storage>>> {
+    ) -> Result<Fluree<fluree_db_storage_aws::S3Storage, StorageNameService<fluree_db_storage_aws::S3Storage>>> {
         use fluree_db_connection::aws;
         use fluree_db_connection::config::S3StorageConfig;
         use fluree_db_storage_aws::{S3Config, S3Storage};
@@ -1864,8 +1850,7 @@ impl FlureeBuilder {
         .await
         .map_err(|e| ApiError::config(format!("Failed to create S3 storage: {}", e)))?;
 
-        let cache = Arc::new(SimpleCache::new(self.config.cache.max_entries));
-        let connection = Connection::new(self.config, storage.clone(), Arc::clone(&cache));
+        let connection = Connection::new(self.config, storage.clone());
 
         // Empty prefix: S3Storage already applies its own key prefix.
         let nameservice = StorageNameService::new(storage, "");
@@ -1901,7 +1886,6 @@ impl FlureeBuilder {
     ) -> Result<
         Fluree<
             EncryptedStorage<fluree_db_storage_aws::S3Storage, StaticKeyProvider>,
-            SimpleCache,
             StorageNameService<EncryptedStorage<fluree_db_storage_aws::S3Storage, StaticKeyProvider>>,
         >,
     > {
@@ -1947,8 +1931,7 @@ impl FlureeBuilder {
         let key_provider = StaticKeyProvider::new(encryption_key);
         let storage = EncryptedStorage::new(s3_storage, key_provider);
 
-        let cache = Arc::new(SimpleCache::new(self.config.cache.max_entries));
-        let connection = Connection::new(self.config, storage.clone(), Arc::clone(&cache));
+        let connection = Connection::new(self.config, storage.clone());
 
         // Empty prefix: S3Storage already applies its own key prefix.
         let nameservice = StorageNameService::new(storage, "");
@@ -1972,11 +1955,10 @@ impl FlureeBuilder {
 ///
 /// Type parameters:
 /// - `S`: Storage implementation (FileStorage or MemoryStorage)
-/// - `C`: Cache implementation (SimpleCache or NoCache)
 /// - `N`: NameService implementation
-pub struct Fluree<S: Storage + 'static, C: NodeCache + 'static, N> {
+pub struct Fluree<S: Storage + 'static, N> {
     /// Connection for database operations (includes storage)
-    connection: Connection<S, C>,
+    connection: Connection<S>,
     /// Nameservice for ledger discovery
     nameservice: N,
     /// Indexing mode (disabled or background with handle)
@@ -1988,15 +1970,15 @@ pub struct Fluree<S: Storage + 'static, C: NodeCache + 'static, N> {
     /// Automatically warms the cache for upcoming index nodes during query execution.
     /// This overlaps I/O with CPU-bound leaf parsing for better performance.
     #[cfg(feature = "native")]
-    prefetch: Arc<PrefetchService<S, SimpleCache>>,
+    prefetch: Arc<PrefetchService<S>>,
     /// Optional ledger manager for connection-level caching
     ///
     /// When enabled via `FlureeBuilder::with_ledger_caching()`, loaded ledgers
     /// are cached for reuse across queries and transactions.
-    ledger_manager: Option<Arc<LedgerManager<S, C, N>>>,
+    ledger_manager: Option<Arc<LedgerManager<S, N>>>,
 }
 
-impl<S, N> Fluree<S, SimpleCache, N>
+impl<S, N> Fluree<S, N>
 where
     S: Storage + Clone + 'static,
     N: NameService,
@@ -2004,7 +1986,7 @@ where
     /// Create a new Fluree instance with custom components
     ///
     /// Most users should use `FlureeBuilder` instead.
-    pub fn new(connection: Connection<S, SimpleCache>, nameservice: N) -> Self {
+    pub fn new(connection: Connection<S>, nameservice: N) -> Self {
         Self {
             connection,
             nameservice,
@@ -2018,7 +2000,7 @@ where
 
     /// Create a new Fluree instance with a specific indexing mode
     pub fn with_indexing_mode(
-        connection: Connection<S, SimpleCache>,
+        connection: Connection<S>,
         nameservice: N,
         indexing_mode: tx::IndexingMode,
     ) -> Self {
@@ -2044,7 +2026,7 @@ where
     }
 
     /// Get a reference to the connection
-    pub fn connection(&self) -> &Connection<S, SimpleCache> {
+    pub fn connection(&self) -> &Connection<S> {
         &self.connection
     }
 
@@ -2066,12 +2048,12 @@ where
     }
 
     /// Get the ledger manager (if caching is enabled)
-    pub fn ledger_manager(&self) -> Option<&Arc<LedgerManager<S, SimpleCache, N>>> {
+    pub fn ledger_manager(&self) -> Option<&Arc<LedgerManager<S, N>>> {
         self.ledger_manager.as_ref()
     }
 }
 
-impl<S, N> Fluree<S, SimpleCache, N>
+impl<S, N> Fluree<S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
@@ -2127,7 +2109,7 @@ where
     }
 }
 
-impl<S, N> Fluree<S, SimpleCache, N>
+impl<S, N> Fluree<S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
@@ -2148,7 +2130,7 @@ where
     /// ```
     pub fn stage<'a>(
         &'a self,
-        handle: &'a LedgerHandle<S, SimpleCache>,
+        handle: &'a LedgerHandle<S>,
     ) -> RefTransactBuilder<'a, S, N>
     where
         S: ContentAddressedWrite,
@@ -2174,7 +2156,7 @@ where
     ///     .execute().await?;
     /// let ledger = result.ledger;
     /// ```
-    pub fn stage_owned(&self, ledger: LedgerState<S, SimpleCache>) -> OwnedTransactBuilder<'_, S, N>
+    pub fn stage_owned(&self, ledger: LedgerState<S>) -> OwnedTransactBuilder<'_, S, N>
     where
         S: ContentAddressedWrite,
         N: Publisher,
@@ -2258,12 +2240,10 @@ where
         }
 
         let storage = self.connection.storage().clone();
-        let cache_arc = Arc::clone(self.connection.cache());
         let nameservice = self.nameservice.clone();
 
         self.ledger_manager = Some(Arc::new(LedgerManager::new(
             storage,
-            cache_arc,
             nameservice,
             config,
         )));
@@ -2276,7 +2256,7 @@ where
     /// If caching is disabled (no `with_ledger_caching()` on builder),
     /// returns an ephemeral handle that wraps a fresh load.
     /// Server code should assert caching is enabled if it expects reuse.
-    pub async fn ledger_cached(&self, alias: &str) -> Result<LedgerHandle<S, SimpleCache>> {
+    pub async fn ledger_cached(&self, alias: &str) -> Result<LedgerHandle<S>> {
         match &self.ledger_manager {
             Some(mgr) => mgr.get_or_load(alias).await,
             None => {
@@ -2454,14 +2434,14 @@ where
 #[cfg(feature = "native")]
 pub fn fluree_file(
     path: impl Into<String>,
-) -> Result<Fluree<FileStorage, SimpleCache, FileNameService>> {
+) -> Result<Fluree<FileStorage, FileNameService>> {
     FlureeBuilder::file(path).build()
 }
 
 /// Create a memory-backed Fluree instance
 ///
 /// Useful for testing or when persistence is not needed.
-pub fn fluree_memory() -> Fluree<MemoryStorage, SimpleCache, MemoryNameService> {
+pub fn fluree_memory() -> Fluree<MemoryStorage, MemoryNameService> {
     FlureeBuilder::memory().build_memory()
 }
 

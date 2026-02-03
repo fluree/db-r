@@ -1,9 +1,9 @@
 use crate::{
-    ApiError, Fluree, HistoricalLedgerView, LedgerState, NameService, Result, SimpleCache, Storage,
+    ApiError, Fluree, HistoricalLedgerView, LedgerState, NameService, Result, Storage,
 };
 use fluree_db_nameservice::{NameServiceError, Publisher};
 
-impl<S, N> Fluree<S, SimpleCache, N>
+impl<S, N> Fluree<S, N>
 where
     S: Storage + Clone + 'static,
     N: NameService,
@@ -194,13 +194,11 @@ where
     ///
     /// This loads the ledger state using the connection-wide cache.
     /// The ledger state combines the indexed database with any uncommitted novelty transactions.
-    pub async fn ledger(&self, alias: &str) -> Result<LedgerState<S, SimpleCache>> {
-        let cache = std::sync::Arc::clone(self.connection.cache());
+    pub async fn ledger(&self, alias: &str) -> Result<LedgerState<S>> {
         let state = LedgerState::load(
             &self.nameservice,
             alias,
             self.connection.storage().clone(),
-            cache,
         )
         .await?;
 
@@ -215,14 +213,11 @@ where
         &self,
         alias: &str,
         target_t: i64,
-    ) -> Result<HistoricalLedgerView<S, SimpleCache>> {
-        let cache = std::sync::Arc::clone(self.connection.cache());
-
+    ) -> Result<HistoricalLedgerView<S>> {
         let view = HistoricalLedgerView::load_at(
             &self.nameservice,
             alias,
             self.connection.storage().clone(),
-            cache,
             target_t,
         )
         .await?;
@@ -235,7 +230,7 @@ where
 // Ledger Creation
 // =============================================================================
 
-impl<S, N> Fluree<S, SimpleCache, N>
+impl<S, N> Fluree<S, N>
 where
     S: Storage + Clone + 'static,
     N: NameService + Publisher,
@@ -264,7 +259,7 @@ where
     /// let ledger = fluree.create_ledger("mydb").await?;
     /// // Now you can transact: fluree.insert(ledger, &data).await?
     /// ```
-    pub async fn create_ledger(&self, alias: &str) -> Result<LedgerState<S, SimpleCache>> {
+    pub async fn create_ledger(&self, alias: &str) -> Result<LedgerState<S>> {
         use fluree_db_core::alias::normalize_alias;
         use fluree_db_novelty::Novelty;
         use tracing::info;
@@ -284,9 +279,8 @@ where
             }
         }
 
-        // 3. Create genesis Db with empty state at t=0 using the connection-wide cache
-        let cache = std::sync::Arc::clone(self.connection.cache());
-        let db = fluree_db_core::Db::genesis(self.connection.storage().clone(), cache, &alias);
+        // 3. Create genesis Db with empty state at t=0
+        let db = fluree_db_core::Db::genesis(self.connection.storage().clone(), &alias);
 
         // 4. Create LedgerState with empty Novelty (t=0)
         let ledger = LedgerState::new(db, Novelty::new(0));

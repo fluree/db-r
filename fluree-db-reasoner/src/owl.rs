@@ -8,7 +8,6 @@ use fluree_vocab::owl_names::*;
 use fluree_db_core::{range_with_overlay, Db, IndexType, RangeMatch, RangeOptions, RangeTest, Sid, FlakeValue};
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::storage::Storage;
-use fluree_db_core::cache::NodeCache;
 use fluree_db_core::namespaces::is_rdf_type;
 
 /// Get the SID for owl:sameAs
@@ -143,8 +142,8 @@ pub fn one_of_sid() -> Sid {
 /// (e.g., all owl:SymmetricProperty instances, all owl:Restriction instances)
 ///
 /// Returns flakes of the form: (?entity rdf:type owl:Class)
-pub async fn find_owl_typed_entities<S: Storage, C: NodeCache>(
-    db: &Db<S, C>,
+pub async fn find_owl_typed_entities<S: Storage>(
+    db: &Db<S>,
     overlay: &dyn OverlayProvider,
     owl_class: &str,
     to_t: i64,

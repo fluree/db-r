@@ -38,7 +38,7 @@ use async_trait::async_trait;
 #[cfg(feature = "native")]
 use fluree_db_core::PrefetchRequest;
 use fluree_db_core::{
-    Db, Flake, FlakeMeta, FlakeValue, IndexType, NodeCache, ObjectBounds, OverlayProvider,
+    Db, Flake, FlakeMeta, FlakeValue, IndexType, ObjectBounds, OverlayProvider,
     RangeCursor, RangeMatch, RangeOptions, RangeTest, Sid, Storage, Tracker,
 };
 use fluree_vocab::namespaces::FLUREE_LEDGER;
@@ -321,10 +321,7 @@ impl ScanOperator {
     /// Returns `None` if any IRI term cannot be encoded in this database,
     /// indicating that this ledger cannot have any matching flakes (the IRI
     /// doesn't exist in this ledger's namespace table).
-    fn build_range_match_for_db<S: Storage, C: NodeCache>(
-        &self,
-        db: &Db<S, C>,
-    ) -> Option<RangeMatch> {
+    fn build_range_match_for_db<S: Storage>(&self, db: &Db<S>) -> Option<RangeMatch> {
         let mut rm = RangeMatch::new();
 
         // Subject
@@ -388,11 +385,11 @@ impl ScanOperator {
     /// In multi-ledger mode (when ledger_context is set), creates IriMatch bindings
     /// for subject/predicate/object-ref positions to enable correct cross-ledger joins.
     /// In single-ledger mode, creates plain Sid bindings for efficiency.
-    fn push_flake_bindings_into_columns<S: Storage + 'static, C: NodeCache + 'static>(
+    fn push_flake_bindings_into_columns<S: Storage + 'static>(
         &self,
         flake: Flake,
         columns: &mut [Vec<Binding>],
-        ctx: &ExecutionContext<'_, S, C>,
+        ctx: &ExecutionContext<'_, S>,
     ) {
         // Columns are created in the same order as schema: s, p, o (when those are vars).
         // We push directly into the per-column vectors to avoid per-flake allocations.
@@ -426,10 +423,10 @@ impl ScanOperator {
     /// In multi-ledger mode, decodes to IRI and creates IriMatch for correct joins.
     /// In single-ledger mode, creates plain Sid binding for efficiency.
     #[inline]
-    fn create_sid_binding<S: Storage + 'static, C: NodeCache + 'static>(
+    fn create_sid_binding<S: Storage + 'static>(
         &self,
         sid: &Sid,
-        ctx: &ExecutionContext<'_, S, C>,
+        ctx: &ExecutionContext<'_, S>,
     ) -> Binding {
         if let Some(ref ledger_ctx) = self.ledger_context {
             // Multi-ledger mode: decode to IRI for correct cross-ledger joins
@@ -450,14 +447,14 @@ impl ScanOperator {
     /// Handles both literal values and references. For references in multi-ledger
     /// mode, creates IriMatch for correct cross-ledger joins.
     #[inline]
-    fn create_object_binding<S: Storage + 'static, C: NodeCache + 'static>(
+    fn create_object_binding<S: Storage + 'static>(
         &self,
         val: FlakeValue,
         dt: Sid,
         meta: Option<FlakeMeta>,
         t: i64,
         op: bool,
-        ctx: &ExecutionContext<'_, S, C>,
+        ctx: &ExecutionContext<'_, S>,
     ) -> Binding {
         match val {
             FlakeValue::Ref(ref sid) => {
@@ -500,10 +497,10 @@ impl ScanOperator {
     /// Applies datatype, language, and policy filters.
     ///
     /// Returns `true` if the flake should be included, `false` to skip.
-    fn should_include_flake<S: Storage + 'static, C: NodeCache + 'static>(
+    fn should_include_flake<S: Storage + 'static>(
         &self,
         flake: &Flake,
-        _ctx: &ExecutionContext<'_, S, C>,
+        _ctx: &ExecutionContext<'_, S>,
     ) -> Result<bool> {
         // Clojure parity: wildcard predicate patterns should not surface internal
         // fluree:ledger predicates unless explicitly requested.
@@ -546,10 +543,10 @@ impl ScanOperator {
     ///
     /// Handles both class cache population (if needed) and the actual filtering.
     /// Returns the filtered flakes.
-    async fn apply_policy_to_leaf<S2: Storage + 'static, C2: NodeCache + 'static>(
+    async fn apply_policy_to_leaf<S2: Storage + 'static>(
         mut leaf_flakes: Vec<Flake>,
         enforcer: &crate::policy::QueryPolicyEnforcer,
-        db: &Db<S2, C2>,
+        db: &Db<S2>,
         overlay: &dyn OverlayProvider,
         to_t: i64,
         tracker: &Tracker,
@@ -581,12 +578,12 @@ impl ScanOperator {
 }
 
 #[async_trait]
-impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperator {
+impl<S: Storage + 'static> Operator<S> for ScanOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
         if !self.state.can_open() {
             if self.state.is_closed() {
                 return Err(QueryError::OperatorClosed);
@@ -792,7 +789,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ScanOperat
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
         let batch_start = std::time::Instant::now();
 
         if !self.state.can_next() {

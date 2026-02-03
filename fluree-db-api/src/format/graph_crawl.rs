@@ -26,7 +26,7 @@ use crate::QueryResult;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::value::FlakeValue;
-use fluree_db_core::{Db, Flake, NoOverlay, NodeCache, OverlayProvider, Sid, Storage, Tracker};
+use fluree_db_core::{Db, Flake, NoOverlay, OverlayProvider, Sid, Storage, Tracker};
 use fluree_vocab::rdf::{self, TYPE as RDF_TYPE_IRI};
 use fluree_db_policy::{is_schema_flake, PolicyContext};
 use fluree_db_query::binding::Binding;
@@ -153,9 +153,9 @@ pub fn format(result: &QueryResult, _compactor: &IriCompactor) -> Result<JsonVal
 ///
 /// When `policy` is `Some`, flakes are filtered according to view policies.
 /// When `policy` is `None`, no filtering is applied (zero overhead).
-pub async fn format_async<S: Storage, C: NodeCache>(
+pub async fn format_async<S: Storage>(
     result: &QueryResult,
-    db: &Db<S, C>,
+    db: &Db<S>,
     compactor: &IriCompactor,
     _config: &FormatterConfig,
     policy: Option<&PolicyContext>,
@@ -261,8 +261,8 @@ pub async fn format_async<S: Storage, C: NodeCache>(
 }
 
 /// Graph crawl formatter with async DB access
-struct GraphCrawlFormatter<'a, S: Storage, C: NodeCache> {
-    db: &'a Db<S, C>,
+struct GraphCrawlFormatter<'a, S: Storage> {
+    db: &'a Db<S>,
     overlay: &'a dyn OverlayProvider,
     compactor: &'a IriCompactor,
     spec: &'a GraphSelectSpec,
@@ -274,9 +274,9 @@ struct GraphCrawlFormatter<'a, S: Storage, C: NodeCache> {
     tracker: Option<&'a Tracker>,
 }
 
-impl<'a, S: Storage, C: NodeCache> GraphCrawlFormatter<'a, S, C> {
+impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
     fn new(
-        db: &'a Db<S, C>,
+        db: &'a Db<S>,
         overlay: &'a dyn OverlayProvider,
         compactor: &'a IriCompactor,
         spec: &'a GraphSelectSpec,
@@ -679,6 +679,15 @@ impl<'a, S: Storage, C: NodeCache> GraphCrawlFormatter<'a, S, C> {
                 FlakeValue::DateTime(dt) => Ok(JsonValue::String(dt.to_string())),
                 FlakeValue::Date(d) => Ok(JsonValue::String(d.to_string())),
                 FlakeValue::Time(t) => Ok(JsonValue::String(t.to_string())),
+                // Additional temporal types - serialize as original string
+                FlakeValue::GYear(v) => Ok(JsonValue::String(v.to_string())),
+                FlakeValue::GYearMonth(v) => Ok(JsonValue::String(v.to_string())),
+                FlakeValue::GMonth(v) => Ok(JsonValue::String(v.to_string())),
+                FlakeValue::GDay(v) => Ok(JsonValue::String(v.to_string())),
+                FlakeValue::GMonthDay(v) => Ok(JsonValue::String(v.to_string())),
+                FlakeValue::YearMonthDuration(v) => Ok(JsonValue::String(v.to_string())),
+                FlakeValue::DayTimeDuration(v) => Ok(JsonValue::String(v.to_string())),
+                FlakeValue::Duration(v) => Ok(JsonValue::String(v.to_string())),
             };
         }
 
@@ -713,6 +722,15 @@ impl<'a, S: Storage, C: NodeCache> GraphCrawlFormatter<'a, S, C> {
             FlakeValue::DateTime(dt) => JsonValue::String(dt.to_string()),
             FlakeValue::Date(d) => JsonValue::String(d.to_string()),
             FlakeValue::Time(t) => JsonValue::String(t.to_string()),
+            // Additional temporal types - serialize as original string with @type
+            FlakeValue::GYear(v) => JsonValue::String(v.to_string()),
+            FlakeValue::GYearMonth(v) => JsonValue::String(v.to_string()),
+            FlakeValue::GMonth(v) => JsonValue::String(v.to_string()),
+            FlakeValue::GDay(v) => JsonValue::String(v.to_string()),
+            FlakeValue::GMonthDay(v) => JsonValue::String(v.to_string()),
+            FlakeValue::YearMonthDuration(v) => JsonValue::String(v.to_string()),
+            FlakeValue::DayTimeDuration(v) => JsonValue::String(v.to_string()),
+            FlakeValue::Duration(v) => JsonValue::String(v.to_string()),
         };
 
         Ok(json!({
@@ -827,6 +845,15 @@ impl<'a, S: Storage, C: NodeCache> GraphCrawlFormatter<'a, S, C> {
             FlakeValue::DateTime(dt) => Ok(JsonValue::String(dt.to_string())),
             FlakeValue::Date(d) => Ok(JsonValue::String(d.to_string())),
             FlakeValue::Time(t) => Ok(JsonValue::String(t.to_string())),
+            // Additional temporal types - serialize as original string
+            FlakeValue::GYear(v) => Ok(JsonValue::String(v.to_string())),
+            FlakeValue::GYearMonth(v) => Ok(JsonValue::String(v.to_string())),
+            FlakeValue::GMonth(v) => Ok(JsonValue::String(v.to_string())),
+            FlakeValue::GDay(v) => Ok(JsonValue::String(v.to_string())),
+            FlakeValue::GMonthDay(v) => Ok(JsonValue::String(v.to_string())),
+            FlakeValue::YearMonthDuration(v) => Ok(JsonValue::String(v.to_string())),
+            FlakeValue::DayTimeDuration(v) => Ok(JsonValue::String(v.to_string())),
+            FlakeValue::Duration(v) => Ok(JsonValue::String(v.to_string())),
         }
     }
 

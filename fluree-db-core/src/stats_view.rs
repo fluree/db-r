@@ -1,16 +1,17 @@
 //! Pre-built statistics lookup for query optimization.
 //!
 //! `StatsView` provides O(1) lookups of property and class statistics,
-//! built from `DbRootStats` at query time.
+//! built from `IndexStats` at query time.
 
-use crate::serde::json::DbRootStats;
+use crate::index_stats::IndexStats;
 use crate::sid::Sid;
+use crate::value_id::DatatypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Pre-built stats lookup for query optimization.
 ///
-/// Built from `DbRootStats` at query time, provides O(1) lookups for
+/// Built from `IndexStats` at query time, provides O(1) lookups for
 /// property and class statistics used in selectivity estimation.
 #[derive(Debug, Default, Clone)]
 pub struct StatsView {
@@ -27,6 +28,25 @@ pub struct StatsView {
     ///
     /// This is derived from `classes` using the db's namespace table.
     pub classes_by_iri: HashMap<Arc<str>, u64>,
+    /// Graph-scoped property stats keyed by numeric IDs: g_id -> (p_id -> data).
+    ///
+    /// Populated from `IndexStats.graphs` when present. Provides per-graph
+    /// property lookups with datatype breakdown. The aggregate Sid-keyed
+    /// `properties` map remains the primary source for the query planner.
+    pub graph_properties: HashMap<u32, HashMap<u32, GraphPropertyStatData>>,
+}
+
+/// Per-property statistics within a graph, keyed by numeric IDs.
+#[derive(Debug, Clone)]
+pub struct GraphPropertyStatData {
+    /// Total number of flakes with this property in this graph
+    pub count: u64,
+    /// Estimated number of distinct object values (from HLL)
+    pub ndv_values: u64,
+    /// Estimated number of distinct subjects using this property (from HLL)
+    pub ndv_subjects: u64,
+    /// Per-datatype flake counts
+    pub datatypes: Vec<(DatatypeId, u64)>,
 }
 
 /// Statistics for a single property.
@@ -41,11 +61,11 @@ pub struct PropertyStatData {
 }
 
 impl StatsView {
-    /// Build from DbRootStats.
+    /// Build from IndexStats.
     ///
     /// Note: `PropertyStatEntry.sid` is already `(i32, String)` matching `Sid::new` shape,
     /// so no namespace_codes lookup is needed.
-    pub fn from_db_stats(stats: &DbRootStats) -> Self {
+    pub fn from_db_stats(stats: &IndexStats) -> Self {
         let mut view = StatsView::default();
 
         if let Some(ref props) = stats.properties {
@@ -69,16 +89,38 @@ impl StatsView {
             }
         }
 
+        if let Some(ref graphs) = stats.graphs {
+            for g_entry in graphs {
+                let mut prop_map = HashMap::new();
+                for p_entry in &g_entry.properties {
+                    prop_map.insert(
+                        p_entry.p_id,
+                        GraphPropertyStatData {
+                            count: p_entry.count,
+                            ndv_values: p_entry.ndv_values,
+                            ndv_subjects: p_entry.ndv_subjects,
+                            datatypes: p_entry
+                                .datatypes
+                                .iter()
+                                .map(|&(dt, c)| (DatatypeId::from_u8(dt), c))
+                                .collect(),
+                        },
+                    );
+                }
+                view.graph_properties.insert(g_entry.g_id, prop_map);
+            }
+        }
+
         view
     }
 
-    /// Build from DbRootStats, also deriving IRI-keyed maps using a namespace table.
+    /// Build from IndexStats, also deriving IRI-keyed maps using a namespace table.
     ///
-    /// This does **not** change how stats are persisted (still SID-keyed in `DbRootStats`).
+    /// This does **not** change how stats are persisted (still SID-keyed in `IndexStats`).
     /// It just builds additional lookup maps that allow planning code to consult stats
     /// when query terms are represented as IRIs rather than SIDs.
     pub fn from_db_stats_with_namespaces(
-        stats: &DbRootStats,
+        stats: &IndexStats,
         namespace_codes: &HashMap<i32, String>,
     ) -> Self {
         let mut view = StatsView::from_db_stats(stats);
@@ -132,20 +174,41 @@ impl StatsView {
     pub fn has_class_stats(&self) -> bool {
         !self.classes.is_empty()
     }
+
+    /// Get property stats within a specific graph by numeric IDs.
+    pub fn get_graph_property(&self, g_id: u32, p_id: u32) -> Option<&GraphPropertyStatData> {
+        self.graph_properties.get(&g_id)?.get(&p_id)
+    }
+
+    /// Get all property stats for a specific graph.
+    pub fn get_graph_properties(&self, g_id: u32) -> Option<&HashMap<u32, GraphPropertyStatData>> {
+        self.graph_properties.get(&g_id)
+    }
+
+    /// Return the set of graph IDs that have stats.
+    pub fn graph_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.graph_properties.keys().copied()
+    }
+
+    /// Check if any graph-scoped statistics are available.
+    pub fn has_graph_stats(&self) -> bool {
+        !self.graph_properties.is_empty()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serde::json::{ClassStatEntry, PropertyStatEntry};
+    use crate::index_stats::{ClassStatEntry, PropertyStatEntry};
 
     #[test]
     fn test_empty_stats() {
-        let stats = DbRootStats {
+        let stats = IndexStats {
             flakes: 0,
             size: 0,
             properties: None,
             classes: None,
+            graphs: None,
         };
         let view = StatsView::from_db_stats(&stats);
         assert!(!view.has_property_stats());
@@ -154,7 +217,7 @@ mod tests {
 
     #[test]
     fn test_property_lookup() {
-        let stats = DbRootStats {
+        let stats = IndexStats {
             flakes: 100,
             size: 1000,
             properties: Some(vec![PropertyStatEntry {
@@ -165,6 +228,7 @@ mod tests {
                 last_modified_t: 10,
             }]),
             classes: None,
+            graphs: None,
         };
         let view = StatsView::from_db_stats(&stats);
         assert!(view.has_property_stats());
@@ -179,7 +243,7 @@ mod tests {
     #[test]
     fn test_class_lookup() {
         let class_sid = Sid::new(2, "Person");
-        let stats = DbRootStats {
+        let stats = IndexStats {
             flakes: 100,
             size: 1000,
             properties: None,
@@ -188,6 +252,7 @@ mod tests {
                 count: 25,
                 properties: vec![],
             }]),
+            graphs: None,
         };
         let view = StatsView::from_db_stats(&stats);
         assert!(view.has_class_stats());

@@ -8,7 +8,6 @@
 //! - owl:propertyChainAxiom
 //! - owl:hasKey
 
-use fluree_db_core::cache::NodeCache;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::flake::Flake;
 use fluree_db_core::namespaces::is_rdf_nil;
@@ -60,8 +59,8 @@ const MAX_LIST_LENGTH: usize = 10_000;
 /// ```
 ///
 /// `collect_list_elements(db, overlay, &_:list1, to_t)` returns `[ex:A, ex:B]`
-pub async fn collect_list_elements<S: Storage, C: NodeCache>(
-    db: &Db<S, C>,
+pub async fn collect_list_elements<S: Storage>(
+    db: &Db<S>,
     overlay: &dyn OverlayProvider,
     list_head: &Sid,
     to_t: i64,
@@ -171,8 +170,8 @@ pub async fn collect_list_elements<S: Storage, C: NodeCache>(
 /// # Returns
 ///
 /// A vector of FlakeValues representing the list elements.
-pub async fn collect_list_values<S: Storage, C: NodeCache>(
-    db: &Db<S, C>,
+pub async fn collect_list_values<S: Storage>(
+    db: &Db<S>,
     overlay: &dyn OverlayProvider,
     list_head: &Sid,
     to_t: i64,
@@ -284,8 +283,8 @@ pub async fn collect_list_values<S: Storage, C: NodeCache>(
 /// ```
 ///
 /// Returns: `[ChainElement::direct(ex:hasParent), ChainElement::inverse(ex:hasChild)]`
-pub async fn collect_chain_elements<S: Storage, C: NodeCache>(
-    db: &Db<S, C>,
+pub async fn collect_chain_elements<S: Storage>(
+    db: &Db<S>,
     overlay: &dyn OverlayProvider,
     list_head: &Sid,
     to_t: i64,
@@ -384,8 +383,8 @@ pub async fn collect_chain_elements<S: Storage, C: NodeCache>(
 /// - `_:b2 owl:inverseOf _:b1` where `_:b1 owl:inverseOf P` → `ChainElement { property: P, is_inverse: false }`
 ///
 /// The `depth` parameter tracks recursion to prevent infinite loops on malformed data.
-fn resolve_chain_element<'a, S: Storage, C: NodeCache>(
-    db: &'a Db<S, C>,
+fn resolve_chain_element<'a, S: Storage>(
+    db: &'a Db<S>,
     overlay: &'a dyn OverlayProvider,
     element_sid: &'a Sid,
     to_t: i64,
@@ -460,8 +459,8 @@ fn resolve_chain_element<'a, S: Storage, C: NodeCache>(
 /// # Returns
 ///
 /// A PropertyExpression representing the resolved property.
-pub async fn resolve_property_expression<S: Storage, C: NodeCache>(
-    db: &Db<S, C>,
+pub async fn resolve_property_expression<S: Storage>(
+    db: &Db<S>,
     overlay: &dyn OverlayProvider,
     property_sid: &Sid,
     to_t: i64,
@@ -470,8 +469,8 @@ pub async fn resolve_property_expression<S: Storage, C: NodeCache>(
 }
 
 /// Inner implementation with depth tracking for recursion safety.
-fn resolve_property_expression_inner<'a, S: Storage, C: NodeCache>(
-    db: &'a Db<S, C>,
+fn resolve_property_expression_inner<'a, S: Storage>(
+    db: &'a Db<S>,
     overlay: &'a dyn OverlayProvider,
     property_sid: &'a Sid,
     to_t: i64,

@@ -14,7 +14,6 @@
 //! }
 //! ```
 
-use fluree_db_core::cache::NodeCache;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::flake::Flake;
 use fluree_db_core::overlay::OverlayProvider;
@@ -51,8 +50,8 @@ const RULE_LOCAL_NAME: &str = "rule";
 ///
 /// Queries for all `f:rule` triples and parses the rule definitions.
 /// Returns a `DatalogRuleSet` ready for execution in the reasoning loop.
-pub async fn extract_datalog_rules<S: Storage, C: NodeCache>(
-    db: &Db<S, C>,
+pub async fn extract_datalog_rules<S: Storage>(
+    db: &Db<S>,
     overlay: &dyn OverlayProvider,
     to_t: i64,
 ) -> Result<DatalogRuleSet> {
@@ -124,9 +123,9 @@ pub async fn extract_datalog_rules<S: Storage, C: NodeCache>(
 /// Query-time rules can have two formats:
 /// 1. Direct rule format: `{"where": ..., "insert": ...}`
 /// 2. Stored rule format: `{"@id": "...", "f:rule": {"@value": {"where": ..., "insert": ...}}}`
-fn parse_query_time_rule<S: Storage, C: NodeCache>(
+fn parse_query_time_rule<S: Storage>(
     json: &JsonValue,
-    db: &Db<S, C>,
+    db: &Db<S>,
     index: usize,
 ) -> Result<DatalogRule> {
     // Check if this is a stored rule format with f:rule wrapper
@@ -155,10 +154,10 @@ fn parse_query_time_rule<S: Storage, C: NodeCache>(
 }
 
 /// Parse a rule definition JSON into a DatalogRule
-fn parse_rule_definition<S: Storage, C: NodeCache>(
+fn parse_rule_definition<S: Storage>(
     rule_id: &Sid,
     json: &JsonValue,
-    db: &Db<S, C>,
+    db: &Db<S>,
 ) -> Result<DatalogRule> {
     // Extract context for IRI resolution
     let context = json.get("@context").cloned().unwrap_or(JsonValue::Null);
@@ -193,10 +192,10 @@ fn parse_rule_definition<S: Storage, C: NodeCache>(
 /// The where clause can be:
 /// - A single node pattern object: `{"@id": "?x", "ex:age": "?age"}`
 /// - An array of patterns and filters: `[{"@id": "?x", "ex:age": "?age"}, ["filter", "(>= ?age 62)"]]`
-fn parse_where_clause<S: Storage, C: NodeCache>(
+fn parse_where_clause<S: Storage>(
     json: &JsonValue,
     context: &JsonValue,
-    db: &Db<S, C>,
+    db: &Db<S>,
 ) -> Result<(Vec<RuleTriplePattern>, Vec<RuleFilter>)> {
     let mut patterns = Vec::new();
     let mut filters = Vec::new();
@@ -323,10 +322,10 @@ fn parse_filter_term(s: &str) -> Result<RuleTerm> {
 }
 
 /// Parse a node-map pattern into triple patterns
-fn parse_node_pattern<S: Storage, C: NodeCache>(
+fn parse_node_pattern<S: Storage>(
     map: &serde_json::Map<String, JsonValue>,
     context: &JsonValue,
-    db: &Db<S, C>,
+    db: &Db<S>,
     patterns: &mut Vec<RuleTriplePattern>,
 ) -> Result<()> {
     // Get subject (@id or generate implicit variable)
@@ -414,10 +413,10 @@ fn parse_node_pattern<S: Storage, C: NodeCache>(
 }
 
 /// Parse an object value, handling nested structures
-fn parse_object_value<S: Storage, C: NodeCache>(
+fn parse_object_value<S: Storage>(
     value: &JsonValue,
     context: &JsonValue,
-    db: &Db<S, C>,
+    db: &Db<S>,
     patterns: &mut Vec<RuleTriplePattern>,
     _parent_subject: &RuleTerm,
     _predicate_sid: &Sid,
@@ -444,10 +443,10 @@ fn parse_object_value<S: Storage, C: NodeCache>(
 }
 
 /// Parse a JSON value into a RuleTerm
-fn parse_term<S: Storage, C: NodeCache>(
+fn parse_term<S: Storage>(
     value: &JsonValue,
     context: &JsonValue,
-    db: &Db<S, C>,
+    db: &Db<S>,
 ) -> Result<RuleTerm> {
     match value {
         JsonValue::String(s) => {
@@ -495,10 +494,10 @@ fn parse_term<S: Storage, C: NodeCache>(
 }
 
 /// Parse the insert clause into triple patterns (templates)
-fn parse_insert_patterns<S: Storage, C: NodeCache>(
+fn parse_insert_patterns<S: Storage>(
     json: &JsonValue,
     context: &JsonValue,
-    db: &Db<S, C>,
+    db: &Db<S>,
 ) -> Result<Vec<RuleTriplePattern>> {
     // Insert patterns use the same format as where patterns (but we ignore any filters)
     let (patterns, _filters) = parse_where_clause(json, context, db)?;
@@ -534,7 +533,7 @@ fn expand_iri(compact: &str, context: &JsonValue) -> Result<String> {
 }
 
 /// Resolve an IRI to a SID
-fn resolve_iri<S: Storage, C: NodeCache>(iri: &str, db: &Db<S, C>) -> Result<Sid> {
+fn resolve_iri<S: Storage>(iri: &str, db: &Db<S>) -> Result<Sid> {
     // Use the database's IRI encoding
     db.encode_iri(iri)
         .ok_or_else(|| QueryError::InvalidQuery(format!("Failed to encode IRI '{}'", iri)))
@@ -548,9 +547,9 @@ fn resolve_iri<S: Storage, C: NodeCache>(iri: &str, db: &Db<S, C>) -> Result<Sid
 ///
 /// Finds all bindings that satisfy the rule's where patterns and filters, and returns them.
 /// The bindings can then be used with `execute_rule_with_bindings` to generate flakes.
-pub async fn execute_rule_matching<S: Storage, C: NodeCache>(
+pub async fn execute_rule_matching<S: Storage>(
     rule: &DatalogRule,
-    db: &Db<S, C>,
+    db: &Db<S>,
     overlay: &dyn OverlayProvider,
     to_t: i64,
 ) -> Result<Vec<Bindings>> {
@@ -686,9 +685,9 @@ fn compare_values(left: &FilterValue, right: &FilterValue, op: CompareOp) -> boo
 ///
 /// If `existing_bindings` is provided, uses those bindings to constrain the pattern.
 /// Returns all binding rows that satisfy the pattern.
-async fn match_pattern<S: Storage, C: NodeCache>(
+async fn match_pattern<S: Storage>(
     pattern: &RuleTriplePattern,
-    db: &Db<S, C>,
+    db: &Db<S>,
     overlay: &dyn OverlayProvider,
     to_t: i64,
     existing_bindings: &[Bindings],
@@ -712,9 +711,9 @@ async fn match_pattern<S: Storage, C: NodeCache>(
 }
 
 /// Match a single pattern with existing bindings, returning extended binding rows
-async fn match_pattern_with_bindings<S: Storage, C: NodeCache>(
+async fn match_pattern_with_bindings<S: Storage>(
     pattern: &RuleTriplePattern,
-    db: &Db<S, C>,
+    db: &Db<S>,
     overlay: &dyn OverlayProvider,
     to_t: i64,
     bindings: &Bindings,
@@ -892,6 +891,14 @@ fn flake_value_to_binding(val: &FlakeValue) -> BindingValue {
         FlakeValue::Time(t) => BindingValue::String(t.to_string()),
         FlakeValue::Vector(v) => BindingValue::String(format!("{:?}", v)),
         FlakeValue::Null => BindingValue::String("null".to_string()),
+        FlakeValue::GYear(v) => BindingValue::String(v.to_string()),
+        FlakeValue::GYearMonth(v) => BindingValue::String(v.to_string()),
+        FlakeValue::GMonth(v) => BindingValue::String(v.to_string()),
+        FlakeValue::GDay(v) => BindingValue::String(v.to_string()),
+        FlakeValue::GMonthDay(v) => BindingValue::String(v.to_string()),
+        FlakeValue::YearMonthDuration(v) => BindingValue::String(v.to_string()),
+        FlakeValue::DayTimeDuration(v) => BindingValue::String(v.to_string()),
+        FlakeValue::Duration(v) => BindingValue::String(v.to_string()),
     }
 }
 
@@ -1001,8 +1008,8 @@ pub struct DatalogExecutionResult {
 /// * `to_t` - Time point for queries
 /// * `max_iterations` - Maximum number of fixpoint iterations
 /// * `query_time_rules` - Optional rules provided at query time (JSON-LD format)
-pub async fn execute_datalog_rules<S: Storage, C: NodeCache>(
-    db: &Db<S, C>,
+pub async fn execute_datalog_rules<S: Storage>(
+    db: &Db<S>,
     overlay: &dyn OverlayProvider,
     to_t: i64,
     max_iterations: usize,
@@ -1014,8 +1021,8 @@ pub async fn execute_datalog_rules<S: Storage, C: NodeCache>(
 ///
 /// This is the full implementation that supports both database-stored rules
 /// and query-time rules passed as JSON-LD.
-pub async fn execute_datalog_rules_with_query_rules<S: Storage, C: NodeCache>(
-    db: &Db<S, C>,
+pub async fn execute_datalog_rules_with_query_rules<S: Storage>(
+    db: &Db<S>,
     overlay: &dyn OverlayProvider,
     to_t: i64,
     max_iterations: usize,

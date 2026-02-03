@@ -335,13 +335,19 @@ fn test_values_in_group() {
 
 #[test]
 fn test_subquery_simple() {
+    use crate::ast::query::{SelectVariable, SelectVariables};
     let ast = assert_parses("SELECT * WHERE { { SELECT ?x WHERE { ?x ?p ?o } } }");
     if let QueryBody::Select(q) = &ast.body {
         if let GraphPattern::SubSelect { query, .. } = &q.where_clause.pattern {
-            assert!(query.variables.is_some());
-            let vars = query.variables.as_ref().unwrap();
-            assert_eq!(vars.len(), 1);
-            assert_eq!(vars[0].name.as_ref(), "x");
+            if let SelectVariables::Explicit(vars) = &query.variables {
+                assert_eq!(vars.len(), 1);
+                match &vars[0] {
+                    SelectVariable::Var(v) => assert_eq!(v.name.as_ref(), "x"),
+                    other => panic!("Expected Var, got {:?}", other),
+                }
+            } else {
+                panic!("Expected Explicit variables, got Star");
+            }
         } else {
             panic!("Expected SubSelect pattern, got {:?}", q.where_clause.pattern);
         }
@@ -350,10 +356,11 @@ fn test_subquery_simple() {
 
 #[test]
 fn test_subquery_star() {
+    use crate::ast::query::SelectVariables;
     let ast = assert_parses("SELECT * WHERE { { SELECT * WHERE { ?s ?p ?o } } }");
     if let QueryBody::Select(q) = &ast.body {
         if let GraphPattern::SubSelect { query, .. } = &q.where_clause.pattern {
-            assert!(query.variables.is_none()); // SELECT *
+            assert!(matches!(query.variables, SelectVariables::Star));
             assert!(!query.distinct);
             assert!(!query.reduced);
         } else {

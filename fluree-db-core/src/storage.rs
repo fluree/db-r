@@ -153,6 +153,53 @@ pub trait StorageWrite: Debug + Send + Sync {
 // Content-Addressed Write (Extension)
 // ============================================================================
 
+/// What kind of dictionary blob is being stored.
+///
+/// Used by [`ContentKind::DictBlob`] to route dictionary artifacts to
+/// typed CAS paths (e.g. `objects/dicts/{hash}.dict`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DictKind {
+    /// Predicate IRI dictionary (FRD1 format).
+    Predicates,
+    /// Named-graph IRI dictionary (FRD1 format).
+    Graphs,
+    /// Datatype IRI dictionary (FRD1 format).
+    Datatypes,
+    /// Language tag dictionary (FRD1 format).
+    Languages,
+    /// Subject forward file — raw concatenated UTF-8 IRIs (mmap'd).
+    SubjectForward,
+    /// Subject index — offsets/lengths into subject forward file (FSI1 format).
+    SubjectIndex,
+    /// Subject reverse hash index — hash→s_id binary search table (SRV1 format, mmap'd).
+    SubjectReverse,
+    /// String value forward file — raw concatenated UTF-8 (mmap'd).
+    StringForward,
+    /// String value index — offsets/lengths into string forward file (FSI1 format).
+    StringIndex,
+    /// String value reverse hash index (SRV1 format, mmap'd).
+    StringReverse,
+    /// Namespace code→IRI prefix map (JSON).
+    Namespaces,
+    /// Per-predicate overflow BigInt/BigDecimal arena (NBA1 format).
+    NumBig { p_id: u32 },
+}
+
+/// File extension for a given [`DictKind`] (used in CAS paths).
+fn dict_kind_extension(dict: DictKind) -> &'static str {
+    match dict {
+        DictKind::Predicates | DictKind::Graphs | DictKind::Datatypes | DictKind::Languages => {
+            "dict"
+        }
+        DictKind::SubjectForward | DictKind::StringForward => "fwd",
+        DictKind::SubjectIndex | DictKind::StringIndex => "idx",
+        DictKind::SubjectReverse | DictKind::StringReverse => "rev",
+        DictKind::Namespaces => "json",
+        DictKind::NumBig { .. } => "nba",
+    }
+}
+
 /// What a blob "is", so storage can choose its layout.
 ///
 /// Filesystem-like storages typically map this to directory prefixes such as
@@ -173,6 +220,12 @@ pub enum ContentKind {
     GarbageRecord,
     /// Reindex checkpoint (mutable / overwritten)
     ReindexCheckpoint,
+    /// Dictionary artifact (predicates, subjects, strings, etc.)
+    DictBlob { dict: DictKind },
+    /// Index branch manifest (FBR1 format)
+    IndexBranch,
+    /// Index leaf file (FLI1 format)
+    IndexLeaf,
 }
 
 /// Result of a storage-owned content write.
@@ -268,9 +321,15 @@ pub fn content_path(kind: ContentKind, alias: &str, hash_hex: &str) -> String {
         ContentKind::IndexNode { index_type } => {
             format!("{}/index/{}/{}.json", prefix, index_type.name(), hash_hex)
         }
-        ContentKind::IndexRoot => format!("{}/index/root/{}.json", prefix, hash_hex),
+        ContentKind::IndexRoot => format!("{}/index/roots/{}.json", prefix, hash_hex),
         ContentKind::GarbageRecord => format!("{}/index/garbage/{}.json", prefix, hash_hex),
         ContentKind::ReindexCheckpoint => format!("{}/index/reindex-checkpoint.json", prefix),
+        ContentKind::DictBlob { dict } => {
+            let ext = dict_kind_extension(dict);
+            format!("{}/index/objects/dicts/{}.{}", prefix, hash_hex, ext)
+        }
+        ContentKind::IndexBranch => format!("{}/index/objects/branches/{}.fbr", prefix, hash_hex),
+        ContentKind::IndexLeaf => format!("{}/index/objects/leaves/{}.fli", prefix, hash_hex),
         // Forward-compatibility: unknown kinds go to a generic blob directory
         #[allow(unreachable_patterns)]
         _ => format!("{}/blob/{}.bin", prefix, hash_hex),
@@ -293,6 +352,25 @@ pub fn content_address(method: &str, kind: ContentKind, alias: &str, hash_hex: &
     let path = content_path(kind, alias, hash_hex);
     format!("fluree:{}://{}", method, path)
 }
+
+/// Extract the content hash (filename stem) from a CAS address.
+///
+/// Given an address like `"fluree:file://mydb/main/index/objects/leaves/abc123.fli"`,
+/// returns `Some("abc123".to_string())`. Works by extracting the last path segment
+/// and stripping the file extension.
+///
+/// Returns `None` if the address has no path segment or no file extension.
+pub fn extract_hash_from_address(address: &str) -> Option<String> {
+    // Find the last path segment (after the last '/')
+    let filename = address.rsplit('/').next()?;
+    // Strip the file extension (after the last '.')
+    let dot_pos = filename.rfind('.')?;
+    if dot_pos == 0 {
+        return None; // hidden file with no stem
+    }
+    Some(filename[..dot_pos].to_string())
+}
+
 
 /// Decode JSON from bytes
 ///

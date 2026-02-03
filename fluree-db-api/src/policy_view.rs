@@ -28,7 +28,7 @@
 use crate::dataset::QueryConnectionOptions;
 use crate::error::Result;
 use crate::policy_builder;
-use fluree_db_core::{Db, NodeCache, OverlayProvider, Storage};
+use fluree_db_core::{Db, OverlayProvider, Storage};
 use fluree_db_ledger::{HistoricalLedgerView, LedgerState};
 use fluree_db_novelty::Novelty;
 use fluree_db_policy::PolicyContext;
@@ -52,9 +52,9 @@ use std::sync::Arc;
 /// Use the appropriate constructor based on your view type:
 /// - `from_ledger_state()` for `LedgerState`
 /// - `from_historical()` for `HistoricalLedgerView`
-pub struct PolicyWrappedView<'a, S: Storage, C: NodeCache> {
+pub struct PolicyWrappedView<'a, S: Storage> {
     /// Reference to the database
-    pub db: &'a Db<S, C>,
+    pub db: &'a Db<S>,
     /// Overlay provider (novelty layer)
     pub overlay: &'a dyn OverlayProvider,
     /// Target transaction time
@@ -65,13 +65,13 @@ pub struct PolicyWrappedView<'a, S: Storage, C: NodeCache> {
     pub enforcer: Arc<QueryPolicyEnforcer>,
 }
 
-impl<'a, S: Storage, C: NodeCache> PolicyWrappedView<'a, S, C> {
+impl<'a, S: Storage> PolicyWrappedView<'a, S> {
     /// Create a policy-wrapped view from components.
     ///
     /// This is the low-level constructor. Prefer using `wrap_policy_view()`
     /// which handles policy context creation from options.
     pub fn new(
-        db: &'a Db<S, C>,
+        db: &'a Db<S>,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
         policy: Arc<PolicyContext>,
@@ -102,9 +102,9 @@ impl<'a, S: Storage, C: NodeCache> PolicyWrappedView<'a, S, C> {
     }
 }
 
-impl<'a, S: Storage + Clone + 'static, C: NodeCache + 'static> PolicyWrappedView<'a, S, C> {
+impl<'a, S: Storage + Clone + 'static> PolicyWrappedView<'a, S> {
     /// Create a policy-wrapped view from a `LedgerState`.
-    pub fn from_ledger_state(ledger: &'a LedgerState<S, C>, policy: Arc<PolicyContext>) -> Self {
+    pub fn from_ledger_state(ledger: &'a LedgerState<S>, policy: Arc<PolicyContext>) -> Self {
         Self::new(&ledger.db, ledger.novelty.as_ref(), ledger.t(), policy)
     }
 
@@ -112,7 +112,7 @@ impl<'a, S: Storage + Clone + 'static, C: NodeCache + 'static> PolicyWrappedView
     ///
     /// Note: The view itself is used as the overlay provider.
     pub fn from_historical(
-        view: &'a HistoricalLedgerView<S, C>,
+        view: &'a HistoricalLedgerView<S>,
         policy: Arc<PolicyContext>,
     ) -> Self {
         Self::new(&view.db, view, view.to_t(), policy)
@@ -147,10 +147,10 @@ impl<'a, S: Storage + Clone + 'static, C: NodeCache + 'static> PolicyWrappedView
 /// };
 /// let wrapped = wrap_policy_view(&ledger, &opts).await?;
 /// ```
-pub async fn wrap_policy_view<'a, S: Storage + Clone + 'static, C: NodeCache + 'static>(
-    ledger: &'a LedgerState<S, C>,
+pub async fn wrap_policy_view<'a, S: Storage + Clone + 'static>(
+    ledger: &'a LedgerState<S>,
     opts: &QueryConnectionOptions,
-) -> Result<PolicyWrappedView<'a, S, C>> {
+) -> Result<PolicyWrappedView<'a, S>> {
     let policy_ctx = policy_builder::build_policy_context_from_opts(
         &ledger.db,
         ledger.novelty.as_ref(),
@@ -169,10 +169,10 @@ pub async fn wrap_policy_view<'a, S: Storage + Clone + 'static, C: NodeCache + '
 /// Wrap a historical ledger view with policy based on query connection options.
 ///
 /// Similar to `wrap_policy_view` but for historical views.
-pub async fn wrap_policy_view_historical<'a, S: Storage + Clone + 'static, C: NodeCache + 'static>(
-    view: &'a HistoricalLedgerView<S, C>,
+pub async fn wrap_policy_view_historical<'a, S: Storage + Clone + 'static>(
+    view: &'a HistoricalLedgerView<S>,
     opts: &QueryConnectionOptions,
-) -> Result<PolicyWrappedView<'a, S, C>> {
+) -> Result<PolicyWrappedView<'a, S>> {
     // Use the view itself as the overlay provider (it implements OverlayProvider)
     // Extract novelty from the view for stats computation (needed for f:onClass)
     let novelty_for_stats: Option<&Novelty> = view.overlay().map(|arc| arc.as_ref());
@@ -200,8 +200,8 @@ pub async fn wrap_policy_view_historical<'a, S: Storage + Clone + 'static, C: No
 /// * `novelty_for_stats` - Optional novelty for computing current stats (needed for f:onClass)
 /// * `to_t` - Time bound for queries
 /// * `opts` - Query connection options with policy configuration
-pub async fn build_policy_context<S: Storage + Clone + 'static, C: NodeCache + 'static>(
-    db: &Db<S, C>,
+pub async fn build_policy_context<S: Storage + Clone + 'static>(
+    db: &Db<S>,
     overlay: &dyn OverlayProvider,
     novelty_for_stats: Option<&Novelty>,
     to_t: i64,
@@ -226,11 +226,11 @@ pub async fn build_policy_context<S: Storage + Clone + 'static, C: NodeCache + '
 /// ```ignore
 /// let wrapped = wrap_identity_policy_view(&ledger, "did:example:user", false).await?;
 /// ```
-pub async fn wrap_identity_policy_view<'a, S: Storage + Clone + 'static, C: NodeCache + 'static>(
-    ledger: &'a LedgerState<S, C>,
+pub async fn wrap_identity_policy_view<'a, S: Storage + Clone + 'static>(
+    ledger: &'a LedgerState<S>,
     identity_iri: &str,
     default_allow: bool,
-) -> Result<PolicyWrappedView<'a, S, C>> {
+) -> Result<PolicyWrappedView<'a, S>> {
     let opts = QueryConnectionOptions {
         identity: Some(identity_iri.to_string()),
         default_allow,

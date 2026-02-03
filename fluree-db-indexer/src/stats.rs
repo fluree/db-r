@@ -26,7 +26,7 @@
 use fluree_db_core::Flake;
 use fluree_db_core::Sid;
 use fluree_db_core::Storage;
-use fluree_vocab::namespaces::{JSON_LD, RDF};
+use fluree_vocab::namespaces::RDF;
 use std::collections::HashSet;
 
 #[cfg(feature = "hll-stats")]
@@ -34,14 +34,21 @@ use crate::error::{IndexerError, Result};
 #[cfg(feature = "hll-stats")]
 use crate::hll::HllSketch256;
 #[cfg(feature = "hll-stats")]
-use fluree_db_core::serde::json::PropertyStatEntry;
+use fluree_db_core::PropertyStatEntry;
 #[cfg(feature = "hll-stats")]
 use fluree_db_core::StorageWrite;
 #[cfg(feature = "hll-stats")]
 use std::collections::HashMap;
 
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+use fluree_db_core::{GraphPropertyStatEntry, GraphStatsEntry};
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+use fluree_db_core::value_id::DatatypeId;
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+use xxhash_rust::xxh64::xxh64;
+
 // Schema extraction imports (always available, not feature-gated)
-use fluree_db_core::serde::json::{DbRootSchema, SchemaPredicateInfo, SchemaPredicates};
+use fluree_db_core::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};
 use fluree_db_core::{is_rdf_type, is_rdfs_subclass_of, is_rdfs_subproperty_of, FlakeValue};
 
 /// Hook for collecting index statistics during build
@@ -243,8 +250,7 @@ impl IndexStatsHook for HllStatsHook {
         self.flake_count += 1;
 
         // Get or create property entry
-        let entry = self
-            .properties
+        let entry = self.properties
             .entry(flake.p.clone())
             .or_insert_with(PropertyHll::new);
 
@@ -271,8 +277,7 @@ impl IndexStatsHook for HllStatsHook {
 
     fn finalize(self: Box<Self>) -> StatsArtifacts {
         // Convert property HLLs to PropertyStatEntry, sorted by SID for determinism
-        let mut entries: Vec<PropertyStatEntry> = self
-            .properties
+        let mut entries: Vec<PropertyStatEntry> = self.properties
             .into_iter()
             .map(|(sid, hll)| PropertyStatEntry {
                 sid: (sid.namespace_code, sid.name.to_string()),
@@ -284,23 +289,326 @@ impl IndexStatsHook for HllStatsHook {
             .collect();
 
         // Sort by SID for deterministic output: namespace_code first, then name
-        entries.sort_by(|a, b| a.sid.0.cmp(&b.sid.0).then_with(|| a.sid.1.cmp(&b.sid.1)));
+        entries.sort_by(|a, b| {
+            a.sid.0.cmp(&b.sid.0)
+                .then_with(|| a.sid.1.cmp(&b.sid.1))
+        });
 
         StatsArtifacts {
             artifact_addresses: vec![], // Sketch addresses added by caller if persisted
             summary: StatsSummary {
                 flake_count: self.flake_count,
-                properties: if entries.is_empty() {
-                    None
-                } else {
-                    Some(entries)
-                },
+                properties: if entries.is_empty() { None } else { Some(entries) },
             },
         }
     }
 }
 
-// === HLL Sketch Persistence ===
+// =============================================================================
+// ID-Based Stats Hook (commit-v2 + hll-stats)
+// =============================================================================
+
+/// Key for graph-scoped property stats (numeric IDs only)
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct GraphPropertyKey {
+    pub g_id: u32,
+    pub p_id: u32,
+}
+
+/// Per-(graph, property) HLL state with datatype tracking.
+///
+/// Uses signed deltas internally; clamped to 0 at finalize.
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+#[derive(Debug)]
+pub struct IdPropertyHll {
+    /// Flake count delta (signed: retractions decrement)
+    pub count: i64,
+    /// HLL sketch for distinct object values
+    pub values_hll: HllSketch256,
+    /// HLL sketch for distinct subjects
+    pub subjects_hll: HllSketch256,
+    /// Most recent transaction time
+    pub last_modified_t: i64,
+    /// Per-datatype flake count deltas: DatatypeId(u8) -> signed count
+    pub datatypes: HashMap<u8, i64>,
+}
+
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+impl IdPropertyHll {
+    fn new() -> Self {
+        Self {
+            count: 0,
+            values_hll: HllSketch256::new(),
+            subjects_hll: HllSketch256::new(),
+            last_modified_t: 0,
+            datatypes: HashMap::new(),
+        }
+    }
+
+    /// Create from loaded sketches (for incremental refresh)
+    pub fn from_sketches(
+        count: i64,
+        values_hll: HllSketch256,
+        subjects_hll: HllSketch256,
+        last_modified_t: i64,
+        datatypes: HashMap<u8, i64>,
+    ) -> Self {
+        Self {
+            count,
+            values_hll,
+            subjects_hll,
+            last_modified_t,
+            datatypes,
+        }
+    }
+
+    /// Merge another IdPropertyHll into this one.
+    /// HLL: register-wise max. Counts: additive. last_modified_t: max.
+    pub fn merge_from(&mut self, other: &IdPropertyHll) {
+        self.count += other.count;
+        self.values_hll.merge_inplace(&other.values_hll);
+        self.subjects_hll.merge_inplace(&other.subjects_hll);
+        self.last_modified_t = self.last_modified_t.max(other.last_modified_t);
+        for (&dt, &delta) in &other.datatypes {
+            *self.datatypes.entry(dt).or_insert(0) += delta;
+        }
+    }
+}
+
+// --- Domain-separated hashing for HLL ---
+
+/// Domain separator for object value hashing.
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+const OBJ_HASH_DOMAIN: &[u8] = b"fluree:obj:";
+
+/// Domain separator for subject HLL hashing.
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+const SUBJ_HASH_DOMAIN: &[u8] = b"fluree:subj:";
+
+/// Compute a stable, endian-invariant hash of an object value.
+///
+/// Domain-separated by `o_kind` to prevent cross-kind collisions
+/// (e.g., `NumInt(3)` vs `RefId(3)` both have `o_key=3`).
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+pub fn value_hash(o_kind: u8, o_key: u64) -> u64 {
+    // domain(11) + kind(1) + key(8) = 20 bytes
+    let mut buf = [0u8; 20];
+    buf[..11].copy_from_slice(OBJ_HASH_DOMAIN);
+    buf[11] = o_kind;
+    buf[12..20].copy_from_slice(&o_key.to_le_bytes());
+    xxh64(&buf, 0)
+}
+
+/// Compute a stable hash of a subject ID for HLL insertion.
+///
+/// Hashes `s_id` rather than using it directly to ensure uniform bit
+/// distribution across HLL registers.
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+pub fn subject_hash(s_id: u32) -> u64 {
+    // domain(12) + s_id(4) = 16 bytes
+    let mut buf = [0u8; 16];
+    buf[..12].copy_from_slice(SUBJ_HASH_DOMAIN);
+    buf[12..16].copy_from_slice(&s_id.to_le_bytes());
+    xxh64(&buf, 0)
+}
+
+/// Result from `IdStatsHook::finalize()`.
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+pub struct IdStatsResult {
+    /// Per-graph stats entries (authoritative, ID-keyed).
+    /// Excludes txn-meta graph (g_id=1).
+    pub graphs: Vec<GraphStatsEntry>,
+    /// Total flake count (excluding txn-meta).
+    pub total_flakes: u64,
+}
+
+/// ID-based stats hook for import/index paths where GlobalDicts are available.
+///
+/// Maintains per-(graph, property) HLL sketches and datatype usage.
+/// All keys are numeric IDs — no Sid anywhere.
+///
+/// # Usage
+///
+/// ```ignore
+/// let mut hook = IdStatsHook::new();
+/// // Per resolved op:
+/// hook.on_record(g_id, p_id, s_id, dt, value_hash(o_kind, o_key), t, op);
+/// // After all ops:
+/// let result = hook.finalize();
+/// ```
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+#[derive(Debug)]
+pub struct IdStatsHook {
+    flake_count: usize,
+    properties: HashMap<GraphPropertyKey, IdPropertyHll>,
+    /// Per-graph flake count (signed delta)
+    graph_flakes: HashMap<u32, i64>,
+}
+
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+impl IdStatsHook {
+    pub fn new() -> Self {
+        Self {
+            flake_count: 0,
+            properties: HashMap::new(),
+            graph_flakes: HashMap::new(),
+        }
+    }
+
+    /// Process a single record with resolved IDs.
+    ///
+    /// Called per-op after the resolver maps Sids to numeric IDs.
+    ///
+    /// # Arguments
+    /// * `g_id` - Graph dictionary ID (0 = default)
+    /// * `p_id` - Predicate dictionary ID
+    /// * `s_id` - Subject dictionary ID
+    /// * `dt` - Datatype ID
+    /// * `o_hash` - Pre-computed object value hash (from `value_hash()`)
+    /// * `t` - Transaction time
+    /// * `op` - true = assertion, false = retraction
+    pub fn on_record(
+        &mut self,
+        g_id: u32,
+        p_id: u32,
+        s_id: u32,
+        dt: DatatypeId,
+        o_hash: u64,
+        t: i64,
+        op: bool,
+    ) {
+        self.flake_count += 1;
+        let delta: i64 = if op { 1 } else { -1 };
+
+        // Track per-graph flake count
+        *self.graph_flakes.entry(g_id).or_insert(0) += delta;
+
+        let key = GraphPropertyKey { g_id, p_id };
+        let hll = self.properties.entry(key).or_insert_with(IdPropertyHll::new);
+
+        hll.count += delta;
+
+        // HLL: only insert on assertions (NDV is monotone)
+        if op {
+            hll.values_hll.insert_hash(o_hash);
+            hll.subjects_hll.insert_hash(subject_hash(s_id));
+        }
+
+        if t > hll.last_modified_t {
+            hll.last_modified_t = t;
+        }
+
+        // Track datatype usage
+        *hll.datatypes.entry(dt.as_u8()).or_insert(0) += delta;
+    }
+
+    /// Merge another hook into this one (for cross-commit accumulation).
+    ///
+    /// HLL: register-wise max. Counts: additive.
+    pub fn merge_from(&mut self, other: IdStatsHook) {
+        self.flake_count += other.flake_count;
+
+        for (g_id, delta) in other.graph_flakes {
+            *self.graph_flakes.entry(g_id).or_insert(0) += delta;
+        }
+
+        for (key, other_hll) in other.properties {
+            self.properties
+                .entry(key)
+                .or_insert_with(IdPropertyHll::new)
+                .merge_from(&other_hll);
+        }
+    }
+
+    /// Borrow the internal properties map (for sketch persistence before finalize).
+    pub fn properties(&self) -> &HashMap<GraphPropertyKey, IdPropertyHll> {
+        &self.properties
+    }
+
+    /// Total flake count (all graphs, all ops).
+    pub fn flake_count(&self) -> usize {
+        self.flake_count
+    }
+
+    /// Produce per-graph stats and aggregate property stats.
+    ///
+    /// Excludes txn-meta graph (g_id=1) from both `graphs` and aggregate
+    /// `properties`. Clamps all signed deltas to 0.
+    pub fn finalize(self) -> IdStatsResult {
+        // Group by g_id, then by p_id
+        let mut graph_map: HashMap<u32, Vec<(&GraphPropertyKey, &IdPropertyHll)>> = HashMap::new();
+        for (key, hll) in &self.properties {
+            graph_map.entry(key.g_id).or_default().push((key, hll));
+        }
+
+        // Build per-graph entries (excluding g_id=1 txn-meta)
+        let mut graphs: Vec<GraphStatsEntry> = Vec::new();
+
+        for (&g_id, entries) in &graph_map {
+            // Skip txn-meta graph from output
+            if g_id == 1 {
+                continue;
+            }
+
+            let mut props: Vec<GraphPropertyStatEntry> = Vec::new();
+            for (key, hll) in entries {
+                // Clamp count to 0
+                let count = hll.count.max(0) as u64;
+                let datatypes: Vec<(u8, u64)> = hll
+                    .datatypes
+                    .iter()
+                    .filter(|(_, &v)| v > 0)
+                    .map(|(&dt, &v)| (dt, v.max(0) as u64))
+                    .collect();
+
+                props.push(GraphPropertyStatEntry {
+                    p_id: key.p_id,
+                    count,
+                    ndv_values: hll.values_hll.estimate() as u64,
+                    ndv_subjects: hll.subjects_hll.estimate() as u64,
+                    last_modified_t: hll.last_modified_t,
+                    datatypes,
+                });
+            }
+
+            // Sort properties by p_id for determinism
+            props.sort_by_key(|p| p.p_id);
+
+            let graph_flake_count = self
+                .graph_flakes
+                .get(&g_id)
+                .copied()
+                .unwrap_or(0)
+                .max(0) as u64;
+
+            graphs.push(GraphStatsEntry {
+                g_id,
+                flakes: graph_flake_count,
+                size: 0, // Populated by index build, not available here
+                properties: props,
+            });
+        }
+
+        // Sort graphs by g_id for determinism
+        graphs.sort_by_key(|g| g.g_id);
+
+        // Total flakes excluding txn-meta
+        let total_flakes: u64 = self
+            .graph_flakes
+            .iter()
+            .filter(|(&g_id, _)| g_id != 1)
+            .map(|(_, &delta)| delta.max(0) as u64)
+            .sum();
+
+        IdStatsResult {
+            graphs,
+            total_flakes,
+        }
+    }
+}
+
+// === HLL Sketch Persistence (Sid-based, legacy) ===
 
 /// Number of registers in HLL sketch (2^8 = 256)
 #[cfg(feature = "hll-stats")]
@@ -319,13 +627,7 @@ fn hll_sketch_address(alias: &str, ns_code: i32, name: &str, t: i64, kind: &str)
     // Sanitize name for use in path (replace problematic characters)
     let safe_name: String = name
         .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
+        .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
         .collect();
 
     format!(
@@ -383,9 +685,7 @@ where
         storage
             .write_bytes(&values_addr, &values_bytes)
             .await
-            .map_err(|e| {
-                IndexerError::StorageWrite(format!("Failed to write values HLL: {}", e))
-            })?;
+            .map_err(|e| IndexerError::StorageWrite(format!("Failed to write values HLL: {}", e)))?;
         addresses.push(values_addr);
 
         // Write subjects sketch
@@ -394,9 +694,7 @@ where
         storage
             .write_bytes(&subjects_addr, &subjects_bytes)
             .await
-            .map_err(|e| {
-                IndexerError::StorageWrite(format!("Failed to write subjects HLL: {}", e))
-            })?;
+            .map_err(|e| IndexerError::StorageWrite(format!("Failed to write subjects HLL: {}", e)))?;
         addresses.push(subjects_addr);
     }
 
@@ -474,7 +772,9 @@ pub async fn load_hll_sketches<S: Storage>(
                 );
                 HllSketch256::new()
             }
-            Err(_) => HllSketch256::new(),
+            Err(_) => {
+                HllSketch256::new()
+            }
         };
 
         // Create PropertyHll with loaded sketches (or empty sketches with prior stats)
@@ -505,20 +805,8 @@ pub fn list_hll_sketch_addresses(
 
     for (sid, hll) in properties {
         let t = hll.last_modified_t;
-        addresses.push(hll_sketch_address(
-            alias,
-            sid.namespace_code,
-            &sid.name,
-            t,
-            "values",
-        ));
-        addresses.push(hll_sketch_address(
-            alias,
-            sid.namespace_code,
-            &sid.name,
-            t,
-            "subjects",
-        ));
+        addresses.push(hll_sketch_address(alias, sid.namespace_code, &sid.name, t, "values"));
+        addresses.push(hll_sketch_address(alias, sid.namespace_code, &sid.name, t, "subjects"));
     }
 
     addresses
@@ -586,6 +874,225 @@ pub fn compute_obsolete_sketch_addresses(
     }
 
     obsolete
+}
+
+// =============================================================================
+// ID-Based HLL Sketch Persistence (commit-v2 + hll-stats)
+// =============================================================================
+
+/// Generate storage address for ID-based HLL sketch.
+///
+/// Uses pattern: `fluree:file://{alias}/index/stats-sketches/{kind}/g{g_id}/p{p_id}_t{t}.hll`
+///
+/// Pure numeric IDs — no IRI encoding, no escaping.
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+fn hll_sketch_address_id(alias: &str, g_id: u32, p_id: u32, t: i64, kind: &str) -> String {
+    format!(
+        "fluree:file://{}/index/stats-sketches/{}/g{}/p{}_t{}.hll",
+        alias.replace(':', "/"),
+        kind,
+        g_id,
+        p_id,
+        t
+    )
+}
+
+/// Persist ID-based HLL sketches to storage.
+///
+/// Writes all (graph, property) HLL sketches to storage with T-based filenames.
+/// Returns the list of addresses written.
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+pub async fn persist_hll_sketches_id<S: StorageWrite>(
+    storage: &S,
+    alias: &str,
+    properties: &HashMap<GraphPropertyKey, IdPropertyHll>,
+) -> Result<Vec<String>> {
+    let mut addresses = Vec::new();
+
+    for (key, hll) in properties {
+        let t = hll.last_modified_t;
+
+        // Write values sketch
+        let values_addr = hll_sketch_address_id(alias, key.g_id, key.p_id, t, "values");
+        let values_bytes = hll.values_hll.to_bytes();
+        storage
+            .write_bytes(&values_addr, &values_bytes)
+            .await
+            .map_err(|e| {
+                IndexerError::StorageWrite(format!("Failed to write values HLL (g{}/p{}): {}", key.g_id, key.p_id, e))
+            })?;
+        addresses.push(values_addr);
+
+        // Write subjects sketch
+        let subjects_addr = hll_sketch_address_id(alias, key.g_id, key.p_id, t, "subjects");
+        let subjects_bytes = hll.subjects_hll.to_bytes();
+        storage
+            .write_bytes(&subjects_addr, &subjects_bytes)
+            .await
+            .map_err(|e| {
+                IndexerError::StorageWrite(format!("Failed to write subjects HLL (g{}/p{}): {}", key.g_id, key.p_id, e))
+            })?;
+        addresses.push(subjects_addr);
+    }
+
+    Ok(addresses)
+}
+
+/// Load ID-based HLL sketches from storage.
+///
+/// Reads all (graph, property) HLL sketches from storage using each entry's
+/// `last_modified_t` to locate the correct sketch file.
+/// Returns a map of `GraphPropertyKey` to `IdPropertyHll` with loaded sketches.
+///
+/// Properties whose sketches cannot be loaded are still included with empty
+/// sketches but their prior count and last_modified_t are preserved (monotonicity).
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+pub async fn load_hll_sketches_id<S: Storage>(
+    storage: &S,
+    alias: &str,
+    graph_entries: &[GraphStatsEntry],
+) -> Result<HashMap<GraphPropertyKey, IdPropertyHll>> {
+    let mut properties = HashMap::new();
+
+    for graph in graph_entries {
+        for prop in &graph.properties {
+            let key = GraphPropertyKey {
+                g_id: graph.g_id,
+                p_id: prop.p_id,
+            };
+            let t = prop.last_modified_t;
+
+            // Load values sketch
+            let values_addr = hll_sketch_address_id(alias, graph.g_id, prop.p_id, t, "values");
+            let values_hll = match storage.read_bytes(&values_addr).await {
+                Ok(bytes) if bytes.len() == HLL_REGISTER_COUNT => {
+                    let mut registers = [0u8; HLL_REGISTER_COUNT];
+                    registers.copy_from_slice(&bytes);
+                    HllSketch256::from_bytes(&registers)
+                }
+                Ok(bytes) => {
+                    tracing::warn!(
+                        g_id = graph.g_id,
+                        p_id = prop.p_id,
+                        expected = HLL_REGISTER_COUNT,
+                        got = bytes.len(),
+                        "Values HLL sketch has wrong size"
+                    );
+                    HllSketch256::new()
+                }
+                Err(_) => HllSketch256::new(),
+            };
+
+            // Load subjects sketch
+            let subjects_addr =
+                hll_sketch_address_id(alias, graph.g_id, prop.p_id, t, "subjects");
+            let subjects_hll = match storage.read_bytes(&subjects_addr).await {
+                Ok(bytes) if bytes.len() == HLL_REGISTER_COUNT => {
+                    let mut registers = [0u8; HLL_REGISTER_COUNT];
+                    registers.copy_from_slice(&bytes);
+                    HllSketch256::from_bytes(&registers)
+                }
+                Ok(bytes) => {
+                    tracing::warn!(
+                        g_id = graph.g_id,
+                        p_id = prop.p_id,
+                        expected = HLL_REGISTER_COUNT,
+                        got = bytes.len(),
+                        "Subjects HLL sketch has wrong size"
+                    );
+                    HllSketch256::new()
+                }
+                Err(_) => HllSketch256::new(),
+            };
+
+            // Reconstruct datatype map from the stat entry
+            let datatypes: HashMap<u8, i64> = prop
+                .datatypes
+                .iter()
+                .map(|&(dt, count)| (dt, count as i64))
+                .collect();
+
+            let hll = IdPropertyHll::from_sketches(
+                prop.count as i64,
+                values_hll,
+                subjects_hll,
+                prop.last_modified_t,
+                datatypes,
+            );
+
+            properties.insert(key, hll);
+        }
+    }
+
+    Ok(properties)
+}
+
+/// Compute obsolete ID-based HLL sketch addresses after a refresh.
+///
+/// Compares prior graph stats with updated properties to identify sketches
+/// that have been superseded. A sketch is obsolete when the `last_modified_t`
+/// has changed for a given `(g_id, p_id)`.
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+pub fn compute_obsolete_sketch_addresses_id(
+    alias: &str,
+    prior_graphs: &[GraphStatsEntry],
+    updated_properties: &HashMap<GraphPropertyKey, IdPropertyHll>,
+) -> Vec<String> {
+    let mut obsolete = Vec::new();
+
+    for graph in prior_graphs {
+        for prop in &graph.properties {
+            let key = GraphPropertyKey {
+                g_id: graph.g_id,
+                p_id: prop.p_id,
+            };
+            let prior_t = prop.last_modified_t;
+
+            let is_obsolete = match updated_properties.get(&key) {
+                Some(updated_hll) => updated_hll.last_modified_t != prior_t,
+                None => true, // Property removed
+            };
+
+            if is_obsolete {
+                obsolete.push(hll_sketch_address_id(
+                    alias,
+                    graph.g_id,
+                    prop.p_id,
+                    prior_t,
+                    "values",
+                ));
+                obsolete.push(hll_sketch_address_id(
+                    alias,
+                    graph.g_id,
+                    prop.p_id,
+                    prior_t,
+                    "subjects",
+                ));
+            }
+        }
+    }
+
+    obsolete
+}
+
+/// List all ID-based HLL sketch addresses for the given properties.
+///
+/// Each property's sketch address uses its own `last_modified_t`.
+/// Useful for cleanup/garbage collection.
+#[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+pub fn list_hll_sketch_addresses_id(
+    alias: &str,
+    properties: &HashMap<GraphPropertyKey, IdPropertyHll>,
+) -> Vec<String> {
+    let mut addresses = Vec::with_capacity(properties.len() * 2);
+
+    for (key, hll) in properties {
+        let t = hll.last_modified_t;
+        addresses.push(hll_sketch_address_id(alias, key.g_id, key.p_id, t, "values"));
+        addresses.push(hll_sketch_address_id(alias, key.g_id, key.p_id, t, "subjects"));
+    }
+
+    addresses
 }
 
 #[cfg(test)]
@@ -875,14 +1382,14 @@ mod tests {
             hll1.values_hll.insert_hash(0xfedcba0987654321);
             hll1.subjects_hll.insert_hash(0xaaaaaaaaaaaaaaaa);
             hll1.count = 10;
-            hll1.last_modified_t = 5; // prop_a was modified at t=5
+            hll1.last_modified_t = 5;  // prop_a was modified at t=5
             properties.insert(Sid::new(100, "prop_a"), hll1);
 
             let mut hll2 = PropertyHll::new();
             hll2.values_hll.insert_hash(0x1111111111111111);
             hll2.subjects_hll.insert_hash(0x2222222222222222);
             hll2.count = 5;
-            hll2.last_modified_t = 3; // prop_b was modified at t=3
+            hll2.last_modified_t = 3;  // prop_b was modified at t=3
             properties.insert(Sid::new(100, "prop_b"), hll2);
 
             // Persist sketches (each stored at its own last_modified_t)
@@ -900,14 +1407,14 @@ mod tests {
                     count: 10,
                     ndv_values: 2,
                     ndv_subjects: 1,
-                    last_modified_t: 5, // Must match the t used during persist
+                    last_modified_t: 5,  // Must match the t used during persist
                 },
                 PropertyStatEntry {
                     sid: (100, "prop_b".to_string()),
                     count: 5,
                     ndv_values: 1,
                     ndv_subjects: 1,
-                    last_modified_t: 3, // Must match the t used during persist
+                    last_modified_t: 3,  // Must match the t used during persist
                 },
             ];
 
@@ -918,25 +1425,14 @@ mod tests {
             assert_eq!(loaded.len(), 2);
 
             // Verify prop_a was loaded correctly
-            let loaded_a = loaded
-                .get(&Sid::new(100, "prop_a"))
-                .expect("prop_a should exist");
+            let loaded_a = loaded.get(&Sid::new(100, "prop_a")).expect("prop_a should exist");
             assert_eq!(loaded_a.count, 10);
             assert_eq!(loaded_a.last_modified_t, 5);
             // Verify sketch data was preserved (estimates should match)
-            assert_eq!(
-                loaded_a.values_hll.estimate(),
-                properties
-                    .get(&Sid::new(100, "prop_a"))
-                    .unwrap()
-                    .values_hll
-                    .estimate()
-            );
+            assert_eq!(loaded_a.values_hll.estimate(), properties.get(&Sid::new(100, "prop_a")).unwrap().values_hll.estimate());
 
             // Verify prop_b was loaded correctly
-            let loaded_b = loaded
-                .get(&Sid::new(100, "prop_b"))
-                .expect("prop_b should exist");
+            let loaded_b = loaded.get(&Sid::new(100, "prop_b")).expect("prop_b should exist");
             assert_eq!(loaded_b.count, 5);
             assert_eq!(loaded_b.last_modified_t, 3);
         }
@@ -983,16 +1479,10 @@ mod tests {
             hll.last_modified_t = 5; // Same t - no change
             updated_properties.insert(Sid::new(100, "name"), hll);
 
-            let obsolete = super::compute_obsolete_sketch_addresses(
-                "test/db",
-                &prior_properties,
-                &updated_properties,
-            );
+            let obsolete =
+                super::compute_obsolete_sketch_addresses("test/db", &prior_properties, &updated_properties);
 
-            assert!(
-                obsolete.is_empty(),
-                "No obsolete addresses when t unchanged"
-            );
+            assert!(obsolete.is_empty(), "No obsolete addresses when t unchanged");
         }
 
         #[test]
@@ -1011,20 +1501,13 @@ mod tests {
             hll.last_modified_t = 10; // New t - prior is obsolete
             updated_properties.insert(Sid::new(100, "name"), hll);
 
-            let obsolete = super::compute_obsolete_sketch_addresses(
-                "test/db",
-                &prior_properties,
-                &updated_properties,
-            );
+            let obsolete =
+                super::compute_obsolete_sketch_addresses("test/db", &prior_properties, &updated_properties);
 
             // Should have 2 obsolete addresses (values + subjects for prior t=5)
             assert_eq!(obsolete.len(), 2);
-            assert!(obsolete
-                .iter()
-                .any(|a| a.contains("values") && a.contains("t5.hll")));
-            assert!(obsolete
-                .iter()
-                .any(|a| a.contains("subjects") && a.contains("t5.hll")));
+            assert!(obsolete.iter().any(|a| a.contains("values") && a.contains("t5.hll")));
+            assert!(obsolete.iter().any(|a| a.contains("subjects") && a.contains("t5.hll")));
         }
 
         #[test]
@@ -1040,20 +1523,13 @@ mod tests {
 
             let updated_properties: HashMap<Sid, PropertyHll> = HashMap::new();
 
-            let obsolete = super::compute_obsolete_sketch_addresses(
-                "test/db",
-                &prior_properties,
-                &updated_properties,
-            );
+            let obsolete =
+                super::compute_obsolete_sketch_addresses("test/db", &prior_properties, &updated_properties);
 
             // Property removed, so prior sketches are obsolete
             assert_eq!(obsolete.len(), 2);
-            assert!(obsolete
-                .iter()
-                .any(|a| a.contains("values") && a.contains("t5.hll")));
-            assert!(obsolete
-                .iter()
-                .any(|a| a.contains("subjects") && a.contains("t5.hll")));
+            assert!(obsolete.iter().any(|a| a.contains("values") && a.contains("t5.hll")));
+            assert!(obsolete.iter().any(|a| a.contains("subjects") && a.contains("t5.hll")));
         }
 
         #[test]
@@ -1088,11 +1564,8 @@ mod tests {
             hll_age.last_modified_t = 3;
             updated_properties.insert(Sid::new(100, "age"), hll_age);
 
-            let obsolete = super::compute_obsolete_sketch_addresses(
-                "test/db",
-                &prior_properties,
-                &updated_properties,
-            );
+            let obsolete =
+                super::compute_obsolete_sketch_addresses("test/db", &prior_properties, &updated_properties);
 
             // Only "name" at t=5 should be obsolete (2 addresses)
             // "age" at t=3 is unchanged
@@ -1113,16 +1586,10 @@ mod tests {
             hll.last_modified_t = 10;
             updated_properties.insert(Sid::new(100, "name"), hll);
 
-            let obsolete = super::compute_obsolete_sketch_addresses(
-                "test/db",
-                &prior_properties,
-                &updated_properties,
-            );
+            let obsolete =
+                super::compute_obsolete_sketch_addresses("test/db", &prior_properties, &updated_properties);
 
-            assert!(
-                obsolete.is_empty(),
-                "No prior properties means nothing obsolete"
-            );
+            assert!(obsolete.is_empty(), "No prior properties means nothing obsolete");
         }
 
         #[test]
@@ -1140,21 +1607,16 @@ mod tests {
             hll.last_modified_t = 100;
             updated_properties.insert(Sid::new(200, "email"), hll);
 
-            let obsolete = super::compute_obsolete_sketch_addresses(
-                "mydb:main",
-                &prior_properties,
-                &updated_properties,
-            );
+            let obsolete =
+                super::compute_obsolete_sketch_addresses("mydb:main", &prior_properties, &updated_properties);
 
             assert_eq!(obsolete.len(), 2);
             // Verify correct path format with alias normalization
             assert!(obsolete.contains(
-                &"fluree:file://mydb/main/index/stats-sketches/values/200_email_t42.hll"
-                    .to_string()
+                &"fluree:file://mydb/main/index/stats-sketches/values/200_email_t42.hll".to_string()
             ));
             assert!(obsolete.contains(
-                &"fluree:file://mydb/main/index/stats-sketches/subjects/200_email_t42.hll"
-                    .to_string()
+                &"fluree:file://mydb/main/index/stats-sketches/subjects/200_email_t42.hll".to_string()
             ));
         }
     }
@@ -1212,7 +1674,7 @@ impl SchemaExtractor {
     /// Create a schema extractor initialized with prior schema
     ///
     /// Used during refresh to incrementally update the schema.
-    pub fn from_prior(prior_schema: Option<&DbRootSchema>) -> Self {
+    pub fn from_prior(prior_schema: Option<&IndexSchema>) -> Self {
         if let Some(schema) = prior_schema {
             let mut entries = std::collections::HashMap::new();
             for info in &schema.pred.vals {
@@ -1241,7 +1703,9 @@ impl SchemaExtractor {
         // rdfs:subClassOf - track class hierarchy
         if is_rdfs_subclass_of(&flake.p) {
             if let FlakeValue::Ref(parent_sid) = &flake.o {
-                let class_entry = self.entries.entry(flake.s.clone()).or_default();
+                let class_entry = self.entries
+                    .entry(flake.s.clone())
+                    .or_default();
 
                 if flake.op {
                     // Assertion: add parent class
@@ -1263,10 +1727,14 @@ impl SchemaExtractor {
             if let FlakeValue::Ref(parent_sid) = &flake.o {
                 if flake.op {
                     // Assertion: add parent property to subject, add child to parent
-                    let prop_entry = self.entries.entry(flake.s.clone()).or_default();
+                    let prop_entry = self.entries
+                        .entry(flake.s.clone())
+                        .or_default();
                     prop_entry.parent_props.insert(parent_sid.clone());
 
-                    let parent_entry = self.entries.entry(parent_sid.clone()).or_default();
+                    let parent_entry = self.entries
+                        .entry(parent_sid.clone())
+                        .or_default();
                     parent_entry.child_props.insert(flake.s.clone());
                 } else {
                     // Retraction: remove relationships
@@ -1286,15 +1754,14 @@ impl SchemaExtractor {
         }
     }
 
-    /// Finalize extraction and produce DbRootSchema
+    /// Finalize extraction and produce IndexSchema
     ///
     /// Returns None if no schema relationships were found.
     /// The schema's t is set to the maximum t seen during extraction,
     /// or falls back to `fallback_t` if no schema flakes were processed.
-    pub fn finalize(self, fallback_t: i64) -> Option<DbRootSchema> {
+    pub fn finalize(self, fallback_t: i64) -> Option<IndexSchema> {
         // Filter out empty entries (all relationships removed)
-        let vals: Vec<SchemaPredicateInfo> = self
-            .entries
+        let vals: Vec<SchemaPredicateInfo> = self.entries
             .into_iter()
             .filter(|(_, entry)| {
                 // Keep entries that have at least one relationship
@@ -1313,12 +1780,8 @@ impl SchemaExtractor {
         if vals.is_empty() {
             None
         } else {
-            Some(DbRootSchema {
-                t: if self.schema_t > 0 {
-                    self.schema_t
-                } else {
-                    fallback_t
-                },
+            Some(IndexSchema {
+                t: if self.schema_t > 0 { self.schema_t } else { fallback_t },
                 pred: SchemaPredicates {
                     keys: vec![
                         "id".to_string(),
@@ -1342,7 +1805,7 @@ impl SchemaExtractor {
 // Class-Property Statistics Extractor
 // =============================================================================
 
-use fluree_db_core::serde::json::{ClassPropertyUsage, ClassStatEntry};
+use fluree_db_core::{ClassPropertyUsage, ClassStatEntry};
 
 /// Tracks property usage per class from novelty flakes
 ///
@@ -1392,12 +1855,11 @@ struct ClassData {
 /// Internal property usage data during extraction
 #[derive(Debug, Default)]
 struct PropertyData {
-    /// Datatype counts: datatype SID → delta
-    types: std::collections::HashMap<Sid, i64>,
-    /// Reference class counts: class SID → delta
-    ref_classes: std::collections::HashMap<Sid, i64>,
-    /// Language tag counts: lang → delta
-    langs: std::collections::HashMap<String, i64>,
+    /// Count of asserted flakes for this (class, property) pair (delta).
+    ///
+    /// We intentionally do NOT track datatype/ref/lang breakdowns here; those live
+    /// in graph-scoped property stats (`IndexStats.graphs[*].properties`).
+    count_delta: i64,
 }
 
 impl ClassPropertyExtractor {
@@ -1409,30 +1871,16 @@ impl ClassPropertyExtractor {
     /// Create an extractor initialized with prior class stats
     ///
     /// Used during refresh to incrementally update class-property stats.
-    pub fn from_prior(prior_stats: Option<&fluree_db_core::serde::json::DbRootStats>) -> Self {
+    pub fn from_prior(prior_stats: Option<&fluree_db_core::IndexStats>) -> Self {
         if let Some(stats) = prior_stats {
             if let Some(ref classes) = stats.classes {
                 let mut class_data = std::collections::HashMap::new();
                 for class_entry in classes {
                     let mut props = std::collections::HashMap::new();
                     for prop_usage in &class_entry.properties {
-                        let prop_data = PropertyData {
-                            types: prop_usage
-                                .types
-                                .iter()
-                                .map(|(sid, count)| (sid.clone(), *count as i64))
-                                .collect(),
-                            ref_classes: prop_usage
-                                .ref_classes
-                                .iter()
-                                .map(|(sid, count)| (sid.clone(), *count as i64))
-                                .collect(),
-                            langs: prop_usage
-                                .langs
-                                .iter()
-                                .map(|(lang, count)| (lang.clone(), *count as i64))
-                                .collect(),
-                        };
+                        // Prior stats only carry the property identity. Treat presence as 1 so we
+                        // preserve the property list, but do not attempt to “undo” it on retractions.
+                        let prop_data = PropertyData { count_delta: 1 };
                         props.insert(prop_usage.property_sid.clone(), prop_data);
                     }
                     let data = ClassData {
@@ -1460,13 +1908,17 @@ impl ClassPropertyExtractor {
         }
 
         if let FlakeValue::Ref(class_sid) = &flake.o {
-            let classes = self.subject_classes.entry(flake.s.clone()).or_default();
+            let classes = self.subject_classes
+                .entry(flake.s.clone())
+                .or_default();
 
             if flake.op {
                 // Assertion: subject is instance of class
                 classes.insert(class_sid.clone());
                 // Update class count
-                let class_data = self.class_data.entry(class_sid.clone()).or_default();
+                let class_data = self.class_data
+                    .entry(class_sid.clone())
+                    .or_default();
                 class_data.count_delta += 1;
             } else {
                 // Retraction: subject is no longer instance of class
@@ -1500,39 +1952,20 @@ impl ClassPropertyExtractor {
 
         // For each class the subject belongs to, track property usage
         for class_sid in classes {
-            let class_data = self.class_data.entry(class_sid).or_default();
+            let class_data = self.class_data
+                .entry(class_sid)
+                .or_default();
 
-            let prop_data = class_data.properties.entry(flake.p.clone()).or_default();
+            let prop_data = class_data.properties
+                .entry(flake.p.clone())
+                .or_default();
 
-            // Track datatype
-            let dt_count = prop_data.types.entry(flake.dt.clone()).or_insert(0);
-            *dt_count += delta;
-
-            // Track ref-class for @id refs
-            // $id datatype has namespace_code=JSON_LD, name="id"
-            if flake.dt.namespace_code == JSON_LD && flake.dt.name.as_ref() == "id" {
-                if let FlakeValue::Ref(ref_sid) = &flake.o {
-                    // Look up class of referenced entity
-                    if let Some(ref_classes) = self.subject_classes.get(ref_sid) {
-                        for ref_class in ref_classes {
-                            let ref_count =
-                                prop_data.ref_classes.entry(ref_class.clone()).or_insert(0);
-                            *ref_count += delta;
-                        }
-                    }
-                }
-            }
-
-            // Track language tag for rdf:langString
-            // rdf:langString has namespace_code=RDF, name="langString"
-            if flake.dt.namespace_code == RDF && flake.dt.name.as_ref() == "langString" {
-                if let Some(ref meta) = flake.m {
-                    if let Some(ref lang) = meta.lang {
-                        let lang_count = prop_data.langs.entry(lang.clone()).or_insert(0);
-                        *lang_count += delta;
-                    }
-                }
-            }
+            // Track presence for this (class, property) pair.
+            //
+            // NOTE: If a property is fully retracted from a class, we do not have enough
+            // baseline information to reliably remove it without an expensive index walk,
+            // so this list is treated as a conservative superset.
+            prop_data.count_delta += delta;
         }
     }
 
@@ -1545,56 +1978,15 @@ impl ClassPropertyExtractor {
         }
 
         // Convert to sorted output (determinism)
-        let mut entries: Vec<ClassStatEntry> = self
-            .class_data
+        let mut entries: Vec<ClassStatEntry> = self.class_data
             .into_iter()
             .filter(|(_, data)| data.count_delta > 0 || !data.properties.is_empty())
             .map(|(class_sid, data)| {
                 // Convert properties (sorted by property SID)
-                let mut properties: Vec<ClassPropertyUsage> = data
-                    .properties
+                let mut properties: Vec<ClassPropertyUsage> = data.properties
                     .into_iter()
-                    .filter(|(_, prop_data)| {
-                        // Keep if any count is positive
-                        prop_data.types.values().any(|&c| c > 0)
-                            || prop_data.ref_classes.values().any(|&c| c > 0)
-                            || prop_data.langs.values().any(|&c| c > 0)
-                    })
-                    .map(|(property_sid, prop_data)| {
-                        // Convert types (sorted by SID)
-                        let mut types: Vec<(Sid, u64)> = prop_data
-                            .types
-                            .into_iter()
-                            .filter(|(_, count)| *count > 0)
-                            .map(|(sid, count)| (sid, count.max(0) as u64))
-                            .collect();
-                        types.sort_by(|a, b| a.0.cmp(&b.0));
-
-                        // Convert ref_classes (sorted by SID)
-                        let mut ref_classes: Vec<(Sid, u64)> = prop_data
-                            .ref_classes
-                            .into_iter()
-                            .filter(|(_, count)| *count > 0)
-                            .map(|(sid, count)| (sid, count.max(0) as u64))
-                            .collect();
-                        ref_classes.sort_by(|a, b| a.0.cmp(&b.0));
-
-                        // Convert langs (sorted alphabetically)
-                        let mut langs: Vec<(String, u64)> = prop_data
-                            .langs
-                            .into_iter()
-                            .filter(|(_, count)| *count > 0)
-                            .map(|(lang, count)| (lang, count.max(0) as u64))
-                            .collect();
-                        langs.sort_by(|a, b| a.0.cmp(&b.0));
-
-                        ClassPropertyUsage {
-                            property_sid,
-                            types,
-                            ref_classes,
-                            langs,
-                        }
-                    })
+                    .filter(|(_, prop_data)| prop_data.count_delta > 0)
+                    .map(|(property_sid, _prop_data)| ClassPropertyUsage { property_sid })
                     .collect();
 
                 // Sort properties by SID for determinism
@@ -1627,10 +2019,7 @@ impl ClassPropertyExtractor {
     ///
     /// Used to incorporate class mappings retrieved from the index
     /// (subjects whose rdf:type was asserted in prior transactions).
-    pub fn merge_subject_classes(
-        &mut self,
-        index_classes: std::collections::HashMap<Sid, HashSet<Sid>>,
-    ) {
+    pub fn merge_subject_classes(&mut self, index_classes: std::collections::HashMap<Sid, HashSet<Sid>>) {
         for (subject, classes) in index_classes {
             // Only add if not already in novelty (novelty takes precedence)
             self.subject_classes.entry(subject).or_insert(classes);
@@ -1642,7 +2031,6 @@ impl ClassPropertyExtractor {
 // Batched PSOT Lookup for Class Retrieval
 // =============================================================================
 
-use fluree_db_core::cache::NodeCache;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::db::Db;
 use fluree_db_core::range::{range, RangeMatch, RangeOptions, RangeTest};
@@ -1652,7 +2040,7 @@ use fluree_vocab::predicates::RDF_TYPE;
 #[derive(Debug, Default)]
 pub struct ClassPropertyStatsResult {
     /// Class statistics (sorted for determinism)
-    pub classes: Option<Vec<fluree_db_core::serde::json::ClassStatEntry>>,
+    pub classes: Option<Vec<fluree_db_core::ClassStatEntry>>,
 }
 
 /// Batch lookup subject classes from PSOT index
@@ -1662,13 +2050,12 @@ pub struct ClassPropertyStatsResult {
 /// asserted in prior transactions (not in current novelty).
 ///
 /// Returns {subject_sid -> HashSet<class_sid>} mapping.
-pub async fn batch_lookup_subject_classes<S, C>(
-    db: &Db<S, C>,
+pub async fn batch_lookup_subject_classes<S>(
+    db: &Db<S>,
     subjects: &HashSet<Sid>,
 ) -> crate::error::Result<std::collections::HashMap<Sid, HashSet<Sid>>>
 where
     S: Storage,
-    C: NodeCache,
 {
     if subjects.is_empty() {
         return Ok(std::collections::HashMap::new());
@@ -1679,11 +2066,8 @@ where
     let match_val = RangeMatch::predicate(rdf_type_sid);
     let opts = RangeOptions::default();
 
-    let flakes = range(db, IndexType::Psot, RangeTest::Eq, match_val, opts)
-        .await
-        .map_err(|e| {
-            crate::error::IndexerError::InvalidConfig(format!("PSOT range query failed: {}", e))
-        })?;
+    let flakes = range(db, IndexType::Psot, RangeTest::Eq, match_val, opts).await
+        .map_err(|e| crate::error::IndexerError::InvalidConfig(format!("PSOT range query failed: {}", e)))?;
 
     // Filter to subjects we care about and build mapping
     let mut result: std::collections::HashMap<Sid, HashSet<Sid>> = std::collections::HashMap::new();
@@ -1691,8 +2075,7 @@ where
         if subjects.contains(&flake.s) && flake.op {
             // Only assertions (op=true) count
             if let FlakeValue::Ref(class_sid) = &flake.o {
-                result
-                    .entry(flake.s.clone())
+                result.entry(flake.s.clone())
                     .or_default()
                     .insert(class_sid.clone());
             }
@@ -1711,14 +2094,13 @@ where
 /// 4. Processes all novelty flakes to build class-property stats
 ///
 /// Returns class statistics ready for inclusion in db-root.
-pub async fn compute_class_property_stats_parallel<S, C>(
-    db: &Db<S, C>,
-    prior_stats: Option<&fluree_db_core::serde::json::DbRootStats>,
+pub async fn compute_class_property_stats_parallel<S>(
+    db: &Db<S>,
+    prior_stats: Option<&fluree_db_core::IndexStats>,
     novelty_flakes: &[Flake],
 ) -> crate::error::Result<ClassPropertyStatsResult>
 where
     S: Storage,
-    C: NodeCache,
 {
     if novelty_flakes.is_empty() {
         // No novelty - preserve prior classes
@@ -1744,27 +2126,13 @@ where
         extractor.collect_type_flake(flake);
     }
 
-    // Phase 2: Collect subjects we may need class membership for.
-    // - subjects present in novelty
-    // - referenced subjects from @id refs (so we can attribute ref-classes)
-    let novelty_subjects: HashSet<Sid> = novelty_flakes.iter().map(|f| f.s.clone()).collect();
-
-    // Also collect referenced subjects (@id refs) that might need class lookup
-    let referenced_subjects: HashSet<Sid> = novelty_flakes
+    // Phase 2: Collect subjects we may need class membership for (subjects present in novelty).
+    let novelty_subjects: HashSet<Sid> = novelty_flakes
         .iter()
-        .filter(|f| f.dt.namespace_code == JSON_LD && f.dt.name.as_ref() == "id")
-        .filter_map(|f| match &f.o {
-            FlakeValue::Ref(ref_sid) => Some(ref_sid.clone()),
-            _ => None,
-        })
+        .map(|f| f.s.clone())
         .collect();
 
-    // Combine all subjects we care about (Clojure parity: lookup includes subjects even
-    // if they have rdf:type changes in novelty, so we can apply novelty deltas to base).
-    let all_subjects_to_lookup: HashSet<Sid> = novelty_subjects
-        .union(&referenced_subjects)
-        .cloned()
-        .collect();
+    let all_subjects_to_lookup: HashSet<Sid> = novelty_subjects;
 
     // Phase 3: Build novelty rdf:type deltas by subject.
     // We apply these to the base class set from PSOT (assertions only).
@@ -1821,10 +2189,9 @@ where
 #[cfg(test)]
 mod class_property_stats_tests {
     use super::*;
-    use fluree_db_core::cache::NoCache;
-    use fluree_db_core::serde::json::DbRootStats;
+    use fluree_db_core::IndexStats;
     use fluree_db_core::{Db, FlakeValue, MemoryStorage, Sid};
-    use fluree_vocab::namespaces::{EMPTY, XSD};
+    use fluree_vocab::namespaces::{EMPTY, JSON_LD, XSD};
 
     fn make_type_flake(subject: &str, class: &str, t: i64, op: bool) -> Flake {
         Flake::new(
@@ -1852,112 +2219,20 @@ mod class_property_stats_tests {
         )
     }
 
-    #[tokio::test]
-    async fn test_type_novelty_applies_on_top_of_index_base_classes() {
-        // Base index says: alice rdf:type Person (persisted).
-        let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-
-        // Build a Db with PSOT present by creating an index root (use existing helper path).
-        // For this unit test, we rely on range() reading the db's PSOT root; easiest is to load
-        // from a small built index.
-        use crate::builder;
-        use crate::config::IndexerConfig;
-        use std::collections::BTreeMap;
-
-        let namespace_codes: BTreeMap<i32, String> = BTreeMap::from([
-            (EMPTY, "fluree:".to_string()),
-            (JSON_LD, "ex:".to_string()),
-            (XSD, "http://www.w3.org/2001/XMLSchema#".to_string()),
-            (
-                RDF,
-                "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string(),
-            ),
-        ]);
-
-        let base_flakes = vec![make_type_flake("alice", "Person", 1, true)];
-
-        let indexer_config = IndexerConfig::small();
-        let built = builder::build_index(
-            &storage,
-            "test:main",
-            1,
-            base_flakes,
-            namespace_codes,
-            indexer_config,
-        )
-        .await
-        .unwrap();
-
-        let db: Db<_, NoCache> = Db::load(storage.clone(), cache, &built.root_address)
-            .await
-            .unwrap();
-
-        // Prior stats include Person count=1 (like refresh would have).
-        let prior_stats = DbRootStats {
-            flakes: 0,
-            size: 0,
-            properties: None,
-            classes: Some(vec![ClassStatEntry {
-                class_sid: Sid::new(100, "Person"),
-                count: 1,
-                properties: vec![],
-            }]),
-        };
-
-        // Novelty: alice rdf:type Employee (without reasserting Person) + uses prop "name".
-        let novelty = vec![
-            make_type_flake("alice", "Employee", 2, true),
-            make_prop_flake("alice", "name", 2),
-        ];
-
-        let result = compute_class_property_stats_parallel(&db, Some(&prior_stats), &novelty)
-            .await
-            .unwrap();
-
-        let classes = result.classes.expect("should have classes");
-
-        // Expect both Person (base) and Employee (novelty) to exist.
-        assert!(classes
-            .iter()
-            .any(|c| c.class_sid.name.as_ref() == "Person"));
-        assert!(classes
-            .iter()
-            .any(|c| c.class_sid.name.as_ref() == "Employee"));
-
-        // The "name" property usage should be attributed to BOTH classes, since alice is in both.
-        for class_name in ["Person", "Employee"] {
-            let c = classes
-                .iter()
-                .find(|c| c.class_sid.name.as_ref() == class_name)
-                .unwrap();
-            assert!(
-                c.properties
-                    .iter()
-                    .any(|p| p.property_sid.name.as_ref() == "name"),
-                "expected name usage under class {class_name}"
-            );
-        }
-    }
+    // test_type_novelty_applies_on_top_of_index_base_classes removed:
+    // depended on deleted builder module. Needs rewrite for binary pipeline.
 }
 
 #[cfg(test)]
 mod schema_tests {
     use super::*;
 
-    fn make_schema_flake(
-        subject: &str,
-        predicate_ns: i32,
-        predicate_name: &str,
-        object: &str,
-        t: i64,
-        op: bool,
-    ) -> Flake {
+    fn make_schema_flake(subject: &str, predicate_ns: i32, predicate_name: &str, object: &str, t: i64, op: bool) -> Flake {
         Flake::new(
             Sid::new(100, subject),
             Sid::new(predicate_ns, predicate_name),
             FlakeValue::Ref(Sid::new(100, object)),
-            Sid::new(0, ""), // dt not relevant for schema
+            Sid::new(0, ""),  // dt not relevant for schema
             t,
             op,
             None,
@@ -1993,20 +2268,14 @@ mod schema_tests {
         assert_eq!(schema.pred.vals.len(), 2);
 
         // Find Person entry
-        let person = schema
-            .pred
-            .vals
-            .iter()
+        let person = schema.pred.vals.iter()
             .find(|v| v.id.name.as_ref() == "Person")
             .expect("Person should exist");
         assert_eq!(person.subclass_of.len(), 1);
         assert_eq!(person.subclass_of[0].name.as_ref(), "Thing");
 
         // Find Student entry
-        let student = schema
-            .pred
-            .vals
-            .iter()
+        let student = schema.pred.vals.iter()
             .find(|v| v.id.name.as_ref() == "Student")
             .expect("Student should exist");
         assert_eq!(student.subclass_of.len(), 1);
@@ -2031,20 +2300,14 @@ mod schema_tests {
         assert_eq!(schema.pred.vals.len(), 2); // givenName and name
 
         // givenName should have name as parent
-        let given_name = schema
-            .pred
-            .vals
-            .iter()
+        let given_name = schema.pred.vals.iter()
             .find(|v| v.id.name.as_ref() == "givenName")
             .expect("givenName should exist");
         assert_eq!(given_name.parent_props.len(), 1);
         assert_eq!(given_name.parent_props[0].name.as_ref(), "name");
 
         // name should have givenName as child
-        let name = schema
-            .pred
-            .vals
-            .iter()
+        let name = schema.pred.vals.iter()
             .find(|v| v.id.name.as_ref() == "name")
             .expect("name should exist");
         assert_eq!(name.child_props.len(), 1);
@@ -2083,21 +2346,18 @@ mod schema_tests {
     #[test]
     fn test_schema_extractor_from_prior() {
         // Create prior schema with Person -> Thing
-        let prior = DbRootSchema {
+        let prior = IndexSchema {
             t: 1,
             pred: SchemaPredicates {
-                keys: vec![
-                    "id".to_string(),
-                    "subclassOf".to_string(),
-                    "parentProps".to_string(),
-                    "childProps".to_string(),
+                keys: vec!["id".to_string(), "subclassOf".to_string(), "parentProps".to_string(), "childProps".to_string()],
+                vals: vec![
+                    SchemaPredicateInfo {
+                        id: Sid::new(100, "Person"),
+                        subclass_of: vec![Sid::new(100, "Thing")],
+                        parent_props: vec![],
+                        child_props: vec![],
+                    },
                 ],
-                vals: vec![SchemaPredicateInfo {
-                    id: Sid::new(100, "Person"),
-                    subclass_of: vec![Sid::new(100, "Thing")],
-                    parent_props: vec![],
-                    child_props: vec![],
-                }],
             },
         };
 
@@ -2118,10 +2378,7 @@ mod schema_tests {
         assert_eq!(schema.pred.vals.len(), 2); // Person and Student
 
         // Person should still have Thing as parent
-        let person = schema
-            .pred
-            .vals
-            .iter()
+        let person = schema.pred.vals.iter()
             .find(|v| v.id.name.as_ref() == "Person")
             .expect("Person should exist");
         assert_eq!(person.subclass_of.len(), 1);

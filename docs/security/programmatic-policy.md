@@ -339,11 +339,11 @@ let result = view.query(&fluree)
 ### wrap_identity_policy_view
 
 ```rust
-pub async fn wrap_identity_policy_view<'a, S, C>(
-    ledger: &'a LedgerState<S, C>,
+pub async fn wrap_identity_policy_view<'a, S: Storage + Clone + 'static>(
+    ledger: &'a LedgerState<S>,
     identity_iri: &str,
     default_allow: bool,
-) -> Result<PolicyWrappedView<'a, S, C>>
+) -> Result<PolicyWrappedView<'a, S>>
 ```
 
 Creates a policy-wrapped view using identity-based `f:policyClass` lookup.
@@ -356,10 +356,10 @@ Creates a policy-wrapped view using identity-based `f:policyClass` lookup.
 ### wrap_policy_view
 
 ```rust
-pub async fn wrap_policy_view<'a, S, C>(
-    ledger: &'a LedgerState<S, C>,
+pub async fn wrap_policy_view<'a, S: Storage + Clone + 'static>(
+    ledger: &'a LedgerState<S>,
     opts: &QueryConnectionOptions,
-) -> Result<PolicyWrappedView<'a, S, C>>
+) -> Result<PolicyWrappedView<'a, S>>
 ```
 
 Creates a policy-wrapped view from query connection options.

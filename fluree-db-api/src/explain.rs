@@ -160,8 +160,8 @@ fn plan_patterns_to_json(
 ///
 /// Returns a JSON object like:
 /// `{ "query": <parsed/echo>, "plan": { ... } }`
-pub async fn explain_jsonld<S: fluree_db_core::Storage + 'static, C: fluree_db_core::NodeCache + 'static>(
-    db: &fluree_db_core::Db<S, C>,
+pub async fn explain_jsonld<S: fluree_db_core::Storage + 'static>(
+    db: &fluree_db_core::Db<S>,
     query_json: &JsonValue,
 ) -> Result<JsonValue> {
     let mut vars = VarRegistry::new();

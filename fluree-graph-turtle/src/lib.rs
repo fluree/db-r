@@ -31,7 +31,7 @@ pub mod parser;
 
 pub use adapter::graph_to_transaction_json;
 pub use error::{Result, TurtleError};
-pub use lex::{tokenize, Lexer, Token, TokenKind};
+pub use lex::{tokenize, Lexer, StreamingLexer, Token, TokenKind};
 pub use parser::parse;
 
 use fluree_graph_ir::GraphCollectorSink;
@@ -120,7 +120,11 @@ mod tests {
         let json = parse_to_json(turtle).unwrap();
         let arr = json.as_array().unwrap();
 
-        // Collection creates 3 list nodes + alice
-        assert!(arr.len() >= 4);
+        // Collection produces indexed list items on alice (single subject)
+        assert_eq!(arr.len(), 1);
+        let alice = &arr[0];
+        assert_eq!(alice["@id"], "http://example.org/alice");
+        let colors = alice["http://example.org/colors"].as_array().unwrap();
+        assert_eq!(colors.len(), 3);
     }
 }

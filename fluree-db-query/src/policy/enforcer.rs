@@ -5,7 +5,7 @@
 use super::QueryPolicyExecutor;
 use crate::error::Result;
 use crate::graph_view::ResolvedGraphView;
-use fluree_db_core::{Db, Flake, NodeCache, OverlayProvider, Storage, Tracker};
+use fluree_db_core::{Db, Flake, OverlayProvider, Storage, Tracker};
 use fluree_db_policy::{is_schema_flake, PolicyContext};
 use std::sync::Arc;
 use tracing::Instrument;
@@ -60,9 +60,9 @@ impl QueryPolicyEnforcer {
     /// # Returns
     ///
     /// Filtered flakes that pass policy checks
-    pub async fn filter_flakes_for_graph<S: Storage + 'static, C: NodeCache + 'static>(
+    pub async fn filter_flakes_for_graph<S: Storage + 'static>(
         &self,
-        db: &Db<S, C>,
+        db: &Db<S>,
         overlay: &dyn OverlayProvider,
         to_t: i64,
         tracker: &Tracker,
@@ -128,9 +128,9 @@ impl QueryPolicyEnforcer {
     ///
     /// Convenience method that extracts db/overlay/to_t from a `ResolvedGraphView`.
     /// This is the preferred API for Phase 2 dataset integration.
-    pub async fn filter_flakes_for_view<S: Storage + 'static, C: NodeCache + 'static>(
+    pub async fn filter_flakes_for_view<S: Storage + 'static>(
         &self,
-        view: &ResolvedGraphView<'_, S, C>,
+        view: &ResolvedGraphView<'_, S>,
         tracker: &Tracker,
         flakes: Vec<Flake>,
     ) -> Result<Vec<Flake>> {
@@ -141,9 +141,9 @@ impl QueryPolicyEnforcer {
     /// Check if a single flake is allowed by policy using explicit graph parameters.
     ///
     /// This is the correct method for dataset mode.
-    pub async fn allow_flake_for_graph<S: Storage + 'static, C: NodeCache + 'static>(
+    pub async fn allow_flake_for_graph<S: Storage + 'static>(
         &self,
-        db: &Db<S, C>,
+        db: &Db<S>,
         overlay: &dyn OverlayProvider,
         to_t: i64,
         tracker: &Tracker,
@@ -183,9 +183,9 @@ impl QueryPolicyEnforcer {
     }
 
     /// Check if a single flake is allowed using a resolved graph view.
-    pub async fn allow_flake_for_view<S: Storage + 'static, C: NodeCache + 'static>(
+    pub async fn allow_flake_for_view<S: Storage + 'static>(
         &self,
-        view: &ResolvedGraphView<'_, S, C>,
+        view: &ResolvedGraphView<'_, S>,
         tracker: &Tracker,
         flake: &Flake,
     ) -> Result<bool> {
@@ -197,9 +197,9 @@ impl QueryPolicyEnforcer {
     ///
     /// Call this before filtering to ensure class lookups are cached.
     /// Uses the graph's snapshot for class membership lookups.
-    pub async fn populate_class_cache_for_graph<S: Storage + 'static, C: NodeCache + 'static>(
+    pub async fn populate_class_cache_for_graph<S: Storage + 'static>(
         &self,
-        db: &Db<S, C>,
+        db: &Db<S>,
         overlay: &dyn OverlayProvider,
         to_t: i64,
         subjects: &[fluree_db_core::Sid],
@@ -211,9 +211,9 @@ impl QueryPolicyEnforcer {
     }
 
     /// Populate the class cache using a resolved graph view.
-    pub async fn populate_class_cache_for_view<S: Storage + 'static, C: NodeCache + 'static>(
+    pub async fn populate_class_cache_for_view<S: Storage + 'static>(
         &self,
-        view: &ResolvedGraphView<'_, S, C>,
+        view: &ResolvedGraphView<'_, S>,
         subjects: &[fluree_db_core::Sid],
     ) -> Result<()> {
         self.populate_class_cache_for_graph(view.db, view.overlay, view.to_t, subjects)

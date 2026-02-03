@@ -35,24 +35,35 @@ pub mod address;
 pub mod commit;
 pub mod commit_flakes;
 pub mod error;
+pub mod flake_sink;
 pub mod generate;
 pub mod ir;
 pub mod lower_sparql_update;
 pub mod namespace;
 pub mod parse;
 pub mod stage;
+mod value_convert;
+
+#[cfg(feature = "commit-v2")]
+pub mod import;
+#[cfg(feature = "commit-v2")]
+pub mod import_sink;
 
 // Re-exports
 pub use address::parse_commit_id;
 pub use commit::{commit, CommitOpts, CommitReceipt};
 pub use commit_flakes::generate_commit_flakes;
 pub use error::{Result, TransactError};
+pub use flake_sink::FlakeSink;
 pub use generate::{apply_cancellation, FlakeGenerator};
 pub use ir::{InlineValues, TemplateTerm, TripleTemplate, Txn, TxnOpts, TxnType};
 pub use lower_sparql_update::{lower_sparql_update, lower_sparql_update_ast, LowerError};
 pub use namespace::{NamespaceRegistry, BLANK_NODE_PREFIX};
 pub use parse::parse_transaction;
-pub use stage::{stage, StageOptions};
+pub use stage::{generate_txn_id, stage, stage_flakes, StageOptions};
 
 #[cfg(feature = "shacl")]
 pub use stage::stage_with_shacl;
+
+#[cfg(feature = "commit-v2")]
+pub mod commit_v2;

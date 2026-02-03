@@ -107,25 +107,28 @@ pub async fn write_garbage_record<S: ContentAddressedWrite>(
 }
 
 /// Load a garbage record from storage.
-pub async fn load_garbage_record<S: Storage>(storage: &S, address: &str) -> Result<GarbageRecord> {
+pub async fn load_garbage_record<S: Storage>(
+    storage: &S,
+    address: &str,
+) -> Result<GarbageRecord> {
     let bytes = storage.read_bytes(address).await?;
     let record: GarbageRecord = serde_json::from_slice(&bytes)?;
     Ok(record)
 }
 
-/// Collect garbage addresses from all index refresh stats.
+/// Collect garbage addresses from replaced node lists.
 ///
-/// Merges replaced_nodes from all 5 index trees (spot, psot, post, opst, tspo)
-/// and any obsolete sketch files. Returns a sorted, deduplicated list.
+/// Merges replaced node addresses from all index trees and any obsolete
+/// sketch files. Returns a sorted, deduplicated list.
 pub fn collect_garbage_addresses(
-    stats: &[&crate::refresh::RefreshStats],
+    replaced_node_lists: &[&[String]],
     obsolete_sketches: Vec<String>,
 ) -> Vec<String> {
     let mut all_garbage: Vec<String> = Vec::new();
 
     // Collect replaced nodes from all index stats
-    for stat in stats {
-        all_garbage.extend(stat.replaced_nodes.iter().cloned());
+    for list in replaced_node_lists {
+        all_garbage.extend(list.iter().cloned());
     }
 
     // Include obsolete sketch files
@@ -141,27 +144,23 @@ pub fn collect_garbage_addresses(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::refresh::RefreshStats;
 
     #[test]
     fn test_collect_garbage_addresses_empty() {
-        let stats: Vec<&RefreshStats> = vec![];
-        let result = collect_garbage_addresses(&stats, vec![]);
+        let lists: Vec<&[String]> = vec![];
+        let result = collect_garbage_addresses(&lists, vec![]);
         assert!(result.is_empty());
     }
 
     #[test]
     fn test_collect_garbage_addresses_merges_and_dedupes() {
-        let stat1 = RefreshStats {
-            replaced_nodes: vec!["addr1".to_string(), "addr2".to_string()],
-            ..Default::default()
-        };
-        let stat2 = RefreshStats {
-            replaced_nodes: vec!["addr2".to_string(), "addr3".to_string()],
-            ..Default::default()
-        };
+        let list1 = vec!["addr1".to_string(), "addr2".to_string()];
+        let list2 = vec!["addr2".to_string(), "addr3".to_string()];
 
-        let result = collect_garbage_addresses(&[&stat1, &stat2], vec!["sketch1".to_string()]);
+        let result = collect_garbage_addresses(
+            &[list1.as_slice(), list2.as_slice()],
+            vec!["sketch1".to_string()],
+        );
 
         // Should be sorted and deduped
         assert_eq!(result, vec!["addr1", "addr2", "addr3", "sketch1"]);
@@ -169,12 +168,9 @@ mod tests {
 
     #[test]
     fn test_collect_garbage_addresses_sorts() {
-        let stat = RefreshStats {
-            replaced_nodes: vec!["z".to_string(), "a".to_string(), "m".to_string()],
-            ..Default::default()
-        };
+        let list = vec!["z".to_string(), "a".to_string(), "m".to_string()];
 
-        let result = collect_garbage_addresses(&[&stat], vec![]);
+        let result = collect_garbage_addresses(&[list.as_slice()], vec![]);
         assert_eq!(result, vec!["a", "m", "z"]);
     }
 }

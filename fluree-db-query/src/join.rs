@@ -11,15 +11,30 @@ use crate::error::{QueryError, Result};
 use crate::operator::{Operator, OperatorState};
 use crate::pattern::{Term, TriplePattern};
 use crate::policy::QueryPolicyEnforcer;
-use crate::scan::ScanOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::{
-    Db, Flake, IndexType, MultiSeekCursor, NodeCache, ObjectBounds, OverlayProvider, RangeOptions,
+    Db, Flake, IndexType, MultiSeekCursor, ObjectBounds, OverlayProvider, RangeOptions,
     Sid, Storage, BATCHED_JOIN_SIZE,
 };
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::time::Instant;
+
+/// Create a right-side scan operator for a join.
+///
+/// Uses `DeferredScanOperator` which selects between `BinaryScanOperator`
+/// and `ScanOperator` at open() time based on the execution context.
+fn make_right_scan<S: Storage + 'static>(
+    pattern: TriplePattern,
+    object_bounds: &Option<ObjectBounds>,
+    _ctx: &ExecutionContext<'_, S>,
+) -> Box<dyn Operator<S>> {
+    Box::new(crate::binary_scan::DeferredScanOperator::<S>::new(
+        pattern,
+        object_bounds.clone(),
+    ))
+}
 
 /// Position in a triple pattern (subject, predicate, object)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,9 +124,9 @@ fn is_batched_eligible(
 /// We assume shared vars are never `Unbound` from the left side (except via
 /// OPTIONAL which uses `Poisoned`). This is simpler than supporting "unbound
 /// shared-vars" semantics.
-pub struct NestedLoopJoinOperator<S: Storage + 'static, C: NodeCache + 'static> {
+pub struct NestedLoopJoinOperator<S: Storage + 'static> {
     /// Left (driving) operator
-    left: Box<dyn Operator<S, C>>,
+    left: Box<dyn Operator<S>>,
     /// Right pattern template (will be instantiated per left row)
     right_pattern: TriplePattern,
     /// Schema from left operator
@@ -152,7 +167,7 @@ pub struct NestedLoopJoinOperator<S: Storage + 'static, C: NodeCache + 'static> 
     current_left_batch_stored_idx: Option<usize>,
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> {
+impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
     /// Create a new bind-join operator
     ///
     /// # Arguments
@@ -162,7 +177,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
     /// * `right_pattern` - Pattern to execute for each left row
     /// * `object_bounds` - Optional range bounds for object variable (filter pushdown)
     pub fn new(
-        left: Box<dyn Operator<S, C>>,
+        left: Box<dyn Operator<S>>,
         left_schema: Arc<[VarId]>,
         right_pattern: TriplePattern,
         object_bounds: Option<ObjectBounds>,
@@ -462,12 +477,12 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
 }
 
 #[async_trait]
-impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for NestedLoopJoinOperator<S, C> {
+impl<S: Storage + 'static> Operator<S> for NestedLoopJoinOperator<S> {
     fn schema(&self) -> &[VarId] {
         &self.combined_schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
         let _span = tracing::trace_span!("join", batched = self.batched_eligible).entered();
         drop(_span);
 
@@ -485,7 +500,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for NestedLoop
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
         if !self.state.can_next() {
             if self.state == OperatorState::Created {
                 return Err(QueryError::OperatorNotOpened);
@@ -582,12 +597,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for NestedLoop
                     let batch_ref = BatchRef::Stored(batch_idx);
                     let left_batch = self.stored_left_batches.last().unwrap();
                     let bound_pattern = self.substitute_pattern(left_batch, left_row);
-                    let mut right_scan = match &self.object_bounds {
-                        Some(bounds) => {
-                            ScanOperator::new(bound_pattern).with_object_bounds(bounds.clone())
-                        }
-                        None => ScanOperator::new(bound_pattern),
-                    };
+                    let mut right_scan = make_right_scan(bound_pattern, &self.object_bounds, ctx);
                     right_scan.open(ctx).await?;
                     while let Some(right_batch) = right_scan.next_batch(ctx).await? {
                         if !right_batch.is_empty() {
@@ -598,18 +608,13 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for NestedLoop
                             ));
                         }
                     }
-                    <ScanOperator as Operator<S, C>>::close(&mut right_scan);
+                    right_scan.close();
                 }
             } else {
                 // Non-batched path: existing per-row join
                 let left_batch = self.current_left_batch.as_ref().unwrap();
                 let bound_pattern = self.substitute_pattern(left_batch, left_row);
-                let mut right_scan = match &self.object_bounds {
-                    Some(bounds) => {
-                        ScanOperator::new(bound_pattern).with_object_bounds(bounds.clone())
-                    }
-                    None => ScanOperator::new(bound_pattern),
-                };
+                let mut right_scan = make_right_scan(bound_pattern, &self.object_bounds, ctx);
                 right_scan.open(ctx).await?;
                 while let Some(right_batch) = right_scan.next_batch(ctx).await? {
                     if !right_batch.is_empty() {
@@ -617,7 +622,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for NestedLoop
                             .push_back((BatchRef::Current, left_row, right_batch));
                     }
                 }
-                <ScanOperator as Operator<S, C>>::close(&mut right_scan);
+                right_scan.close();
             }
         }
     }
@@ -639,7 +644,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for NestedLoop
     }
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> {
+impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
     /// Resolve the left batch for a given `BatchRef`.
     fn resolve_left_batch<'a>(&'a self, batch_ref: &BatchRef) -> Option<&'a Batch> {
         match batch_ref {
@@ -649,10 +654,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
     }
 
     /// Build output batch from pending results
-    async fn build_output_batch(
-        &mut self,
-        ctx: &ExecutionContext<'_, S, C>,
-    ) -> Result<Option<Batch>> {
+    async fn build_output_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
         let batch_size = ctx.batch_size;
         let mut output_columns: Vec<Vec<Binding>> = (0..self.combined_schema.len())
             .map(|_| Vec::with_capacity(batch_size))
@@ -729,8 +731,21 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
     /// - Dataset mode with exactly one graph: uses that graph's db/overlay/to_t
     async fn flush_batched_accumulator_for_ctx(
         &mut self,
-        ctx: &ExecutionContext<'_, S, C>,
+        ctx: &ExecutionContext<'_, S>,
     ) -> Result<()> {
+        // When a binary index store is available, use it directly instead
+        // of the B-tree MultiSeekCursor (which may be empty for binary-only imports).
+        if ctx.binary_store.is_some() {
+            let span = tracing::info_span!(
+                "join_flush_batched_binary",
+                accum_len = self.batched_accumulator.len(),
+                batch_size = ctx.batch_size,
+                to_t = ctx.to_t
+            );
+            let _g = span.enter();
+            return self.flush_batched_accumulator_binary(ctx).await;
+        }
+
         match ctx.active_graphs() {
             ActiveGraphs::Single => {
                 self.flush_batched_accumulator(
@@ -760,8 +775,8 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
     /// Flush the batched accumulator: group by SID, seek through PSOT/SPOT, emit joined rows.
     async fn flush_batched_accumulator(
         &mut self,
-        ctx: &ExecutionContext<'_, S, C>,
-        db: &Db<S, C>,
+        ctx: &ExecutionContext<'_, S>,
+        db: &Db<S>,
         overlay: &dyn OverlayProvider,
         to_t: i64,
         policy_enforcer: Option<&QueryPolicyEnforcer>,
@@ -769,6 +784,14 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
         if self.batched_accumulator.is_empty() {
             return Ok(());
         }
+
+        let span = tracing::info_span!(
+            "join_flush_batched_btree",
+            accum_len = self.batched_accumulator.len(),
+            batch_size = ctx.batch_size,
+            to_t = to_t
+        );
+        let _g = span.enter();
 
         let pred_sid = self.batched_predicate.as_ref().unwrap().clone();
 
@@ -820,6 +843,8 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
 
         let mut range_idx = 0usize;
 
+        let scan_span = tracing::info_span!("join_flush_seek_ranges", ranges = sorted_sids.len());
+        let _sg = scan_span.enter();
         while let Some(flakes) = cursor.next_range_flakes(db, overlay).await? {
             let sid = &sorted_sids[range_idx];
             let accum_indices = sid_to_accum_indices.get(sid).unwrap();
@@ -924,6 +949,436 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
         self.batched_accumulator.clear();
         self.stored_left_batches.clear();
         self.current_left_batch_stored_idx = None;
+
+        Ok(())
+    }
+
+    /// Binary-index variant of flush_batched_accumulator.
+    ///
+    /// Implements a true batched scan over SPOT leaf files:
+    /// - Translate all subject Sids to s_id
+    /// - Compute the leaf range for [min_s_id, max_s_id]
+    /// - Scan each candidate leaf once, extracting rows where (s_id ∈ set && p_id == fixed_p)
+    ///
+    /// This avoids opening/decompressing leaflets once per subject, which can be
+    /// catastrophically slow for large left batches.
+    async fn flush_batched_accumulator_binary(
+        &mut self,
+        ctx: &ExecutionContext<'_, S>,
+    ) -> Result<()> {
+        use fluree_db_core::FlakeValue;
+        use fluree_db_indexer::run_index::leaf::read_leaf_header;
+        use fluree_db_indexer::run_index::leaflet::{
+            decode_leaflet_region1, decode_leaflet_region2, LeafletHeader,
+        };
+        use fluree_db_indexer::run_index::leaflet_cache::{CachedRegion1, CachedRegion2, LeafletCacheKey};
+        use fluree_db_indexer::run_index::run_record::{cmp_psot, RunRecord, RunSortOrder, NO_LIST_INDEX};
+        use memmap2::Mmap;
+        use std::sync::Arc as StdArc;
+        use xxhash_rust::xxh3::xxh3_128;
+
+        if self.batched_accumulator.is_empty() {
+            return Ok(());
+        }
+
+        let overall_start = Instant::now();
+
+        let store = ctx.binary_store.as_ref().unwrap().clone();
+        let g_id = ctx.binary_g_id;
+        let batch_size = ctx.batch_size;
+        let pred_sid = self.batched_predicate.as_ref().unwrap().clone();
+        let cache = store.leaflet_cache();
+
+        let p_id = match store.sid_to_p_id(&pred_sid) {
+            Some(id) => id,
+            None => {
+                // Predicate not in binary index — no results
+                self.batched_accumulator.clear();
+                self.stored_left_batches.clear();
+                self.current_left_batch_stored_idx = None;
+                return Ok(());
+            }
+        };
+
+        // 1. Translate Sids → s_id and group accumulator indices by s_id
+        let mut s_id_to_accum_indices: HashMap<u32, Vec<usize>> = HashMap::new();
+        let mut unique_s_ids: Vec<u32> = Vec::new();
+        for (accum_idx, (_, _, sid)) in self.batched_accumulator.iter().enumerate() {
+            let s_id = match store
+                .sid_to_s_id(sid)
+                .map_err(|e| QueryError::Internal(format!("sid_to_s_id: {}", e)))?
+            {
+                Some(id) => id,
+                None => continue, // subject not in binary index
+            };
+            s_id_to_accum_indices.entry(s_id).or_default().push(accum_idx);
+            unique_s_ids.push(s_id);
+        }
+        if unique_s_ids.is_empty() {
+            self.batched_accumulator.clear();
+            self.stored_left_batches.clear();
+            self.current_left_batch_stored_idx = None;
+            return Ok(());
+        }
+        unique_s_ids.sort_unstable();
+        unique_s_ids.dedup();
+        let min_s_id = unique_s_ids[0];
+        let max_s_id = *unique_s_ids.last().unwrap();
+
+        // 2. Scatter buffer indexed by accumulator position
+        let accum_len = self.batched_accumulator.len();
+        let mut scatter: Vec<Vec<Vec<Binding>>> = Vec::with_capacity(accum_len);
+        scatter.resize_with(accum_len, Vec::new);
+
+        // 3. Prefer PSOT for batched property joins:
+        // old engine optimized this shape by scanning predicate-bounded PSOT segments.
+        let branch = match store.branch_for_order(g_id, RunSortOrder::Psot) {
+            Some(b) => b,
+            None => {
+                // No PSOT index for this graph
+                self.batched_accumulator.clear();
+                self.stored_left_batches.clear();
+                self.current_left_batch_stored_idx = None;
+                return Ok(());
+            }
+        };
+
+        // Restrict scan to the predicate's PSOT range (contiguous partition).
+        let min_key = RunRecord {
+            g_id,
+            s_id: 0,
+            p_id,
+            dt: 0,
+            o_kind: 0,
+            op: 0,
+            o_key: 0,
+            t: i64::MIN,
+            lang_id: 0,
+            _pad: [0; 2],
+            i: NO_LIST_INDEX,
+        };
+        let max_key = RunRecord {
+            g_id,
+            s_id: u32::MAX,
+            p_id,
+            dt: u16::MAX,
+            o_kind: u8::MAX,
+            op: u8::MAX,
+            o_key: u64::MAX,
+            t: i64::MAX,
+            lang_id: u16::MAX,
+            _pad: [0; 2],
+            i: i32::MAX,
+        };
+        let leaf_range = branch.find_leaves_in_range(&min_key, &max_key, cmp_psot);
+        let total_leaf_count: usize = leaf_range.end.saturating_sub(leaf_range.start);
+
+        let scan_span = tracing::info_span!(
+            "join_flush_scan_spot",
+            unique_subjects = unique_s_ids.len(),
+            s_id_min = min_s_id,
+            s_id_max = max_s_id,
+            order = "psot",
+            leaf_start = leaf_range.start,
+            leaf_end = leaf_range.end,
+            total_leaves = total_leaf_count
+        );
+        let scan_start = Instant::now();
+        let _sg = scan_span.enter();
+
+        let mut leaflets_scanned: u64 = 0;
+        let mut region2_decodes: u64 = 0;
+        let mut matched_rows: u64 = 0;
+        let mut r1_cache_hits: u64 = 0;
+        let mut r1_cache_misses: u64 = 0;
+        let mut r2_cache_hits: u64 = 0;
+        let mut r2_cache_misses: u64 = 0;
+
+        for leaf_idx in leaf_range {
+            let leaf_entry = &branch.leaves[leaf_idx];
+                let file = std::fs::File::open(&leaf_entry.path)
+                    .map_err(|e| QueryError::Internal(format!("open leaf: {}", e)))?;
+                let leaf_mmap = unsafe { Mmap::map(&file) }
+                    .map_err(|e| QueryError::Internal(format!("mmap leaf: {}", e)))?;
+                let header = read_leaf_header(&leaf_mmap)
+                    .map_err(|e| QueryError::Internal(format!("read leaf header: {}", e)))?;
+                let leaf_id = xxh3_128(leaf_entry.content_hash.as_bytes());
+
+                for (leaflet_idx, dir_entry) in header.leaflet_dir.iter().enumerate() {
+                    leaflets_scanned += 1;
+                    let end = dir_entry.offset as usize + dir_entry.compressed_len as usize;
+                    if end > leaf_mmap.len() {
+                        break;
+                    }
+                    let leaflet_bytes = &leaf_mmap[dir_entry.offset as usize..end];
+
+                    let cache_key = LeafletCacheKey {
+                        leaf_id,
+                        leaflet_index: leaflet_idx as u8,
+                        to_t: ctx.to_t,
+                        epoch: 0,
+                    };
+
+                    // Region 1 (s_id, p_id, o_kind, o_key): cached across flushes and across runs.
+                    let (leaflet_header, s_ids, p_ids, o_kinds, o_keys) = if let Some(c) = cache {
+                        if let Some(cached) = c.get_r1(&cache_key) {
+                            r1_cache_hits += 1;
+                            (
+                                None,
+                                cached.s_ids,
+                                cached.p_ids,
+                                cached.o_kinds,
+                                cached.o_keys,
+                            )
+                        } else {
+                            r1_cache_misses += 1;
+                            let (lh, s_ids, p_ids, o_kinds, o_keys) =
+                                decode_leaflet_region1(leaflet_bytes, header.p_width, RunSortOrder::Psot)
+                                    .map_err(|e| QueryError::Internal(format!("decode region1: {}", e)))?;
+                            let row_count = lh.row_count as usize;
+                            let cached_r1 = CachedRegion1 {
+                                s_ids: StdArc::from(s_ids.into_boxed_slice()),
+                                p_ids: StdArc::from(p_ids.into_boxed_slice()),
+                                o_kinds: StdArc::from(o_kinds.into_boxed_slice()),
+                                o_keys: StdArc::from(o_keys.into_boxed_slice()),
+                                row_count,
+                            };
+                            let s_ids = cached_r1.s_ids.clone();
+                            let p_ids = cached_r1.p_ids.clone();
+                            let o_kinds = cached_r1.o_kinds.clone();
+                            let o_keys = cached_r1.o_keys.clone();
+                            c.get_or_decode_r1(cache_key.clone(), || cached_r1);
+                            (Some(lh), s_ids, p_ids, o_kinds, o_keys)
+                        }
+                    } else {
+                        let (lh, s_ids, p_ids, o_kinds, o_keys) =
+                            decode_leaflet_region1(leaflet_bytes, header.p_width, RunSortOrder::Psot)
+                                .map_err(|e| QueryError::Internal(format!("decode region1: {}", e)))?;
+                        (Some(lh), StdArc::from(s_ids.into_boxed_slice()), StdArc::from(p_ids.into_boxed_slice()), StdArc::from(o_kinds.into_boxed_slice()), StdArc::from(o_keys.into_boxed_slice()))
+                    };
+
+                    let row_count = leaflet_header
+                        .as_ref()
+                        .map(|h| h.row_count as usize)
+                        .unwrap_or_else(|| s_ids.len());
+                    debug_assert_eq!(s_ids.len(), row_count);
+                    debug_assert_eq!(p_ids.len(), row_count);
+                    debug_assert_eq!(o_kinds.len(), row_count);
+                    debug_assert_eq!(o_keys.len(), row_count);
+
+                    // Collect matching row indices using PSOT's `(p_id, s_id, ...)` ordering:
+                    // only consider subjects in this leaflet's subject range, then binary-search
+                    // their row ranges (avoids scanning every row).
+                    let mut matches: Vec<(usize, u32)> = Vec::new(); // (row_idx, s_id)
+                    matches.reserve(64);
+
+                    // PSOT leaflets are sorted by p_id then s_id. Boundary leaflets may contain
+                    // adjacent predicates, so isolate the contiguous segment for our `p_id`.
+                    let p_start = p_ids.partition_point(|&x| x < p_id);
+                    let p_end = p_ids.partition_point(|&x| x <= p_id);
+                    if p_start == p_end {
+                        continue;
+                    }
+                    let leaflet_s_min = s_ids[p_start];
+                    let leaflet_s_max = s_ids[p_end - 1];
+                    let subj_start = unique_s_ids.partition_point(|&x| x < leaflet_s_min);
+                    let subj_end = unique_s_ids.partition_point(|&x| x <= leaflet_s_max);
+                    if subj_start >= subj_end {
+                        continue;
+                    }
+                    let s_slice = &s_ids[p_start..p_end];
+                    for &s_id in &unique_s_ids[subj_start..subj_end] {
+                        // fast reject (should always be true, but keep it safe)
+                        if !s_id_to_accum_indices.contains_key(&s_id) {
+                            continue;
+                        }
+                        let row_start = p_start + s_slice.partition_point(|&x| x < s_id);
+                        let row_end = p_start + s_slice.partition_point(|&x| x <= s_id);
+                        if row_start == row_end {
+                            continue;
+                        }
+                        for row in row_start..row_end {
+                            // Within [p_start, p_end) the predicate matches by construction.
+                            matches.push((row, s_id));
+                        }
+                    }
+                    if matches.is_empty() {
+                        continue;
+                    }
+                    matched_rows += matches.len() as u64;
+
+                    // Need Region 2 for correct literal bindings (dt/lang/i/t)
+                    let (dt_values, t_values, lang_ids, i_values) = if let Some(c) = cache {
+                        if let Some(cached) = c.get_r2(&cache_key) {
+                            r2_cache_hits += 1;
+                            (
+                                cached.dt_values,
+                                cached.t_values,
+                                cached.lang_ids,
+                                cached.i_values,
+                            )
+                        } else {
+                            r2_cache_misses += 1;
+                            region2_decodes += 1;
+                            // If R1 came from cache, we don't have `LeafletHeader` available.
+                            // Re-read it from the leaflet bytes (fixed-size, no decompression).
+                            let lh_owned;
+                            let lh: &LeafletHeader = match leaflet_header.as_ref() {
+                                Some(h) => h,
+                                None => {
+                                    lh_owned = LeafletHeader::read_from(leaflet_bytes)
+                                        .map_err(|e| QueryError::Internal(format!("read leaflet header: {}", e)))?;
+                                    &lh_owned
+                                }
+                            };
+                            let (dt_values, t_values, lang_ids, i_values) =
+                                decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)
+                                    .map_err(|e| QueryError::Internal(format!("decode region2: {}", e)))?;
+                            let cached_r2 = CachedRegion2 {
+                                dt_values: StdArc::from(dt_values.into_boxed_slice()),
+                                t_values: StdArc::from(t_values.into_boxed_slice()),
+                                lang_ids: StdArc::from(lang_ids.into_boxed_slice()),
+                                i_values: StdArc::from(i_values.into_boxed_slice()),
+                            };
+                            let dt_values = cached_r2.dt_values.clone();
+                            let t_values = cached_r2.t_values.clone();
+                            let lang_ids = cached_r2.lang_ids.clone();
+                            let i_values = cached_r2.i_values.clone();
+                            c.get_or_decode_r2(cache_key.clone(), || cached_r2);
+                            (dt_values, t_values, lang_ids, i_values)
+                        }
+                    } else {
+                        region2_decodes += 1;
+                        let lh_owned;
+                        let lh: &LeafletHeader = match leaflet_header.as_ref() {
+                            Some(h) => h,
+                            None => {
+                                lh_owned = LeafletHeader::read_from(leaflet_bytes)
+                                    .map_err(|e| QueryError::Internal(format!("read leaflet header: {}", e)))?;
+                                &lh_owned
+                            }
+                        };
+                        let (dt_values, t_values, lang_ids, i_values) =
+                            decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)
+                                .map_err(|e| QueryError::Internal(format!("decode region2: {}", e)))?;
+                        (
+                            StdArc::from(dt_values.into_boxed_slice()),
+                            StdArc::from(t_values.into_boxed_slice()),
+                            StdArc::from(lang_ids.into_boxed_slice()),
+                            StdArc::from(i_values.into_boxed_slice()),
+                        )
+                    };
+
+                    for (row, s_id) in matches {
+                        let val = store
+                            .decode_value(o_kinds[row], o_keys[row], p_ids[row])
+                            .map_err(|e| QueryError::Internal(format!("decode value: {}", e)))?;
+
+                        let dt_id = dt_values[row] as usize;
+                        let dt_sid = store
+                            .dt_sids()
+                            .get(dt_id)
+                            .cloned()
+                            .unwrap_or_else(|| Sid::new(0, ""));
+
+                        let lang_id = lang_ids[row];
+                        let i_val = i_values[row];
+                        let meta = store.decode_meta(lang_id, i_val);
+                        let t = t_values[row];
+
+                        let obj_binding = match val {
+                            FlakeValue::Ref(ref s) => Binding::Sid(s.clone()),
+                            other => Binding::Lit {
+                                val: other,
+                                dt: dt_sid,
+                                lang: meta.and_then(|m| m.lang.map(Arc::from)),
+                                t: Some(t),
+                                op: None,
+                            },
+                        };
+
+                        if let Some(accum_indices) = s_id_to_accum_indices.get(&s_id) {
+                            for &accum_idx in accum_indices {
+                                let (batch_idx, row_idx, _) = &self.batched_accumulator[accum_idx];
+                                let left_batch = &self.stored_left_batches[*batch_idx];
+
+                                let mut combined = Vec::with_capacity(self.combined_schema.len());
+                                for col in 0..self.left_schema.len() {
+                                    combined.push(left_batch.get_by_col(*row_idx, col).clone());
+                                }
+                                for _ in &self.right_new_vars {
+                                    combined.push(obj_binding.clone());
+                                }
+
+                                scatter[accum_idx].push(combined);
+                            }
+                        }
+                    }
+                }
+        }
+
+        tracing::debug!(
+            scan_ms = (scan_start.elapsed().as_secs_f64() * 1000.0) as u64,
+            leaflets_scanned,
+            region2_decodes,
+            matched_rows,
+            r1_cache_hits,
+            r1_cache_misses,
+            r2_cache_hits,
+            r2_cache_misses,
+            "join batched binary scan complete"
+        );
+
+        // 4. Emit in left-row order (same scatter-gather as B-tree path)
+        let num_cols = self.combined_schema.len();
+        let mut output_columns: Vec<Vec<Binding>> =
+            (0..num_cols).map(|_| Vec::with_capacity(batch_size)).collect();
+        let mut rows_added = 0;
+
+        for accum_idx in 0..accum_len {
+            for combined in scatter[accum_idx].drain(..) {
+                for (col, val) in combined.into_iter().enumerate() {
+                    output_columns[col].push(val);
+                }
+                rows_added += 1;
+
+                if rows_added >= batch_size {
+                    if num_cols == 0 {
+                        self.batched_output
+                            .push_back(Batch::empty_schema_with_len(rows_added));
+                    } else {
+                        let batch =
+                            Batch::new(self.combined_schema.clone(), output_columns)?;
+                        self.batched_output.push_back(batch);
+                    }
+                    output_columns = (0..num_cols)
+                        .map(|_| Vec::with_capacity(batch_size))
+                        .collect();
+                    rows_added = 0;
+                }
+            }
+        }
+
+        if rows_added > 0 {
+            if num_cols == 0 {
+                self.batched_output
+                    .push_back(Batch::empty_schema_with_len(rows_added));
+            } else {
+                let batch =
+                    Batch::new(self.combined_schema.clone(), output_columns)?;
+                self.batched_output.push_back(batch);
+            }
+        }
+
+        self.batched_accumulator.clear();
+        self.stored_left_batches.clear();
+        self.current_left_batch_stored_idx = None;
+
+        tracing::debug!(
+            total_ms = (overall_start.elapsed().as_secs_f64() * 1000.0) as u64,
+            output_rows = self.batched_output.iter().map(|b| b.len()).sum::<usize>(),
+            "join batched binary flush complete"
+        );
 
         Ok(())
     }
@@ -1036,7 +1491,7 @@ mod tests {
 
     #[test]
     fn test_has_poisoned_binding() {
-        use fluree_db_core::{FlakeValue, MemoryStorage, NoCache};
+        use fluree_db_core::{FlakeValue, MemoryStorage};
 
         // Create a simple operator setup
         let left_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
@@ -1049,25 +1504,22 @@ mod tests {
         // Create a mock operator
         struct MockOp;
         #[async_trait]
-        impl<S: fluree_db_core::Storage + 'static, C: fluree_db_core::NodeCache + 'static>
-            Operator<S, C> for MockOp
+        impl<S: fluree_db_core::Storage + 'static>
+            Operator<S> for MockOp
         {
             fn schema(&self) -> &[VarId] {
                 &[]
             }
-            async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
+            async fn open(&mut self, _: &ExecutionContext<'_, S>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(
-                &mut self,
-                _: &ExecutionContext<'_, S, C>,
-            ) -> Result<Option<Batch>> {
+            async fn next_batch(&mut self, _: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
                 Ok(None)
             }
             fn close(&mut self) {}
         }
 
-        let join = NestedLoopJoinOperator::<MemoryStorage, NoCache>::new(
+        let join = NestedLoopJoinOperator::<MemoryStorage>::new(
             Box::new(MockOp),
             left_schema.clone(),
             right_pattern,
@@ -1123,10 +1575,10 @@ mod tests {
     async fn test_join_substituted_var_no_unification() {
         use crate::context::ExecutionContext;
         use crate::var_registry::VarRegistry;
-        use fluree_db_core::{Db, FlakeValue, MemoryStorage, NoCache};
+        use fluree_db_core::{Db, FlakeValue, MemoryStorage};
 
         // Minimal context (db is unused here; only batch_size matters).
-        let db = Db::genesis(MemoryStorage::new(), NoCache, "test/main");
+        let db = Db::genesis(MemoryStorage::new(), "test/main");
         let mut vars = VarRegistry::new();
         let x = vars.get_or_insert("?x"); // VarId(0)
         let v = vars.get_or_insert("?v"); // VarId(1)
@@ -1141,25 +1593,25 @@ mod tests {
         // Mock left operator (unused; we inject batches directly into join state).
         struct MockOp;
         #[async_trait]
-        impl<S: fluree_db_core::Storage + 'static, C: fluree_db_core::NodeCache + 'static>
-            Operator<S, C> for MockOp
+        impl<S: fluree_db_core::Storage + 'static>
+            Operator<S> for MockOp
         {
             fn schema(&self) -> &[VarId] {
                 &[]
             }
-            async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
+            async fn open(&mut self, _: &ExecutionContext<'_, S>) -> Result<()> {
                 Ok(())
             }
             async fn next_batch(
                 &mut self,
-                _: &ExecutionContext<'_, S, C>,
+                _: &ExecutionContext<'_, S>,
             ) -> Result<Option<Batch>> {
                 Ok(None)
             }
             fn close(&mut self) {}
         }
 
-        let mut join = NestedLoopJoinOperator::<MemoryStorage, NoCache>::new(
+        let mut join = NestedLoopJoinOperator::<MemoryStorage>::new(
             Box::new(MockOp),
             left_schema.clone(),
             right_pattern,
@@ -1229,9 +1681,9 @@ mod tests {
     async fn test_join_multiple_new_vars() {
         use crate::context::ExecutionContext;
         use crate::var_registry::VarRegistry;
-        use fluree_db_core::{Db, FlakeValue, MemoryStorage, NoCache};
+        use fluree_db_core::{Db, FlakeValue, MemoryStorage};
 
-        let db = Db::genesis(MemoryStorage::new(), NoCache, "test/main");
+        let db = Db::genesis(MemoryStorage::new(), "test/main");
         let mut vars = VarRegistry::new();
         let s = vars.get_or_insert("?s"); // VarId(0)
         let x = vars.get_or_insert("?x"); // VarId(1)
@@ -1247,25 +1699,25 @@ mod tests {
 
         struct MockOp;
         #[async_trait]
-        impl<S: fluree_db_core::Storage + 'static, C: fluree_db_core::NodeCache + 'static>
-            Operator<S, C> for MockOp
+        impl<S: fluree_db_core::Storage + 'static>
+            Operator<S> for MockOp
         {
             fn schema(&self) -> &[VarId] {
                 &[]
             }
-            async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
+            async fn open(&mut self, _: &ExecutionContext<'_, S>) -> Result<()> {
                 Ok(())
             }
             async fn next_batch(
                 &mut self,
-                _: &ExecutionContext<'_, S, C>,
+                _: &ExecutionContext<'_, S>,
             ) -> Result<Option<Batch>> {
                 Ok(None)
             }
             fn close(&mut self) {}
         }
 
-        let mut join = NestedLoopJoinOperator::<MemoryStorage, NoCache>::new(
+        let mut join = NestedLoopJoinOperator::<MemoryStorage>::new(
             Box::new(MockOp),
             left_schema.clone(),
             right_pattern,
@@ -1306,5 +1758,282 @@ mod tests {
         assert_eq!(out.len(), 1);
         // Combined schema: left [?s] + new right vars [?x, ?y]
         assert_eq!(out.schema(), &[s, x, y]);
+    }
+
+    /// Regression test: in binary-index-only setups, a join where the RIGHT pattern
+    /// has pushed-down object bounds must still be able to execute via the binary path.
+    ///
+    /// Previously, join right-scans with `object_bounds=Some(...)` could fall back to
+    /// `ScanOperator` (B-tree), which yields 0 results in binary-only ingest mode.
+    #[tokio::test]
+    async fn test_join_right_scan_with_object_bounds_uses_binary_path() {
+        use crate::execute::{build_operator_tree, run_operator, ExecutableQuery};
+        use crate::ir::{CompareOp, FilterExpr, FilterValue, Pattern};
+        use crate::parse::ParsedQuery;
+        use crate::pattern::Term;
+        use crate::var_registry::VarRegistry;
+        use fluree_db_core::{Db, MemoryStorage};
+        use fluree_db_indexer::run_index::dict_io::{
+            write_language_dict, write_predicate_dict, write_subject_index,
+        };
+        use fluree_db_indexer::run_index::global_dict::{LanguageTagDict, PredicateDict, SubjectDict};
+        use fluree_db_indexer::run_index::index_build::build_all_indexes;
+        use fluree_db_indexer::run_index::run_file::write_run_file;
+        use fluree_db_indexer::run_index::run_record::{cmp_for_order, RunRecord, RunSortOrder};
+        use fluree_db_indexer::run_index::spot_store::BinaryIndexStore;
+        use fluree_db_indexer::run_index::global_dict::dt_ids;
+        use fluree_db_core::value_id::{ObjKind, ObjKey};
+        use fluree_graph_json_ld::ParsedContext;
+
+        // --- Temp dirs ---
+        let base = std::env::temp_dir().join(format!(
+            "fluree_test_binary_join_{}",
+            uuid::Uuid::new_v4()
+        ));
+        let run_dir = base.join("runs");
+        let spot_dir = run_dir.join("spot");
+        let psot_dir = run_dir.join("psot");
+        let post_dir = run_dir.join("post");
+        let opst_dir = run_dir.join("opst");
+        let index_dir = base.join("index");
+        std::fs::create_dir_all(&spot_dir).unwrap();
+        std::fs::create_dir_all(&psot_dir).unwrap();
+        std::fs::create_dir_all(&post_dir).unwrap();
+        std::fs::create_dir_all(&opst_dir).unwrap();
+        std::fs::create_dir_all(&index_dir).unwrap();
+
+        // --- Dictionaries ---
+        // Predicates.dict
+        let p_has_score = "http://example.com/score#hasScore";
+        let p_refers = "http://example.com/score#refersInstance";
+        let mut pred_dict = PredicateDict::new();
+        let p_id_has_score = pred_dict.get_or_insert(p_has_score);
+        let p_id_refers = pred_dict.get_or_insert(p_refers);
+        write_predicate_dict(&run_dir.join("predicates.dict"), &pred_dict).unwrap();
+
+        // Datatypes.dict with reserved IDs up through DOUBLE (id=6).
+        let mut dt_dict = PredicateDict::new();
+        dt_dict.get_or_insert("@id"); // 0
+        dt_dict.get_or_insert(fluree_vocab::xsd::STRING); // 1
+        dt_dict.get_or_insert(fluree_vocab::xsd::BOOLEAN); // 2
+        dt_dict.get_or_insert(fluree_vocab::xsd::INTEGER); // 3
+        dt_dict.get_or_insert(fluree_vocab::xsd::LONG); // 4
+        dt_dict.get_or_insert(fluree_vocab::xsd::DECIMAL); // 5
+        dt_dict.get_or_insert(fluree_vocab::xsd::DOUBLE); // 6
+        write_predicate_dict(&run_dir.join("datatypes.dict"), &dt_dict).unwrap();
+
+        // Subjects forward + index + reverse.
+        let subjects_fwd = run_dir.join("subjects.fwd");
+        let mut subjects = SubjectDict::new(&subjects_fwd).unwrap();
+
+        // Subjects: scores + concepts
+        let score1 = "http://example.com/score#s1";
+        let score2 = "http://example.com/score#s2";
+        let concept1 = "http://example.com/concept#c1";
+        let concept2 = "http://example.com/concept#c2";
+        let s_id_score1 = subjects.get_or_insert(score1).unwrap();
+        let s_id_score2 = subjects.get_or_insert(score2).unwrap();
+        let s_id_concept1 = subjects.get_or_insert(concept1).unwrap();
+        let s_id_concept2 = subjects.get_or_insert(concept2).unwrap();
+
+        subjects.flush().unwrap();
+        write_subject_index(
+            &run_dir.join("subjects.idx"),
+            subjects.forward_offsets(),
+            subjects.forward_lens(),
+        )
+        .unwrap();
+        subjects.write_reverse_index(&run_dir.join("subjects.rev")).unwrap();
+
+        // Minimal languages dict (empty).
+        write_language_dict(&run_dir.join("languages.dict"), &LanguageTagDict::new()).unwrap();
+
+        // --- Run records ---
+        // Facts:
+        // score1 hasScore 0.5 ; score1 refersInstance concept1
+        // score2 hasScore 0.3 ; score2 refersInstance concept2
+        // Filter (>0.4) should keep only score1 → concept1.
+        let g_id = 0u32;
+        let t = 1i64;
+        let records = vec![
+            // score1 hasScore 0.5
+            RunRecord::new(
+                g_id,
+                s_id_score1,
+                p_id_has_score,
+                ObjKind::NUM_F64,
+                ObjKey::encode_f64(0.5).unwrap(),
+                t,
+                true,
+                dt_ids::DOUBLE,
+                0,
+                None,
+            ),
+            // score1 refersInstance concept1
+            RunRecord::new(
+                g_id,
+                s_id_score1,
+                p_id_refers,
+                ObjKind::REF_ID,
+                ObjKey::encode_u32_id(s_id_concept1),
+                t,
+                true,
+                dt_ids::ID,
+                0,
+                None,
+            ),
+            // score2 hasScore 0.3
+            RunRecord::new(
+                g_id,
+                s_id_score2,
+                p_id_has_score,
+                ObjKind::NUM_F64,
+                ObjKey::encode_f64(0.3).unwrap(),
+                t,
+                true,
+                dt_ids::DOUBLE,
+                0,
+                None,
+            ),
+            // score2 refersInstance concept2
+            RunRecord::new(
+                g_id,
+                s_id_score2,
+                p_id_refers,
+                ObjKind::REF_ID,
+                ObjKey::encode_u32_id(s_id_concept2),
+                t,
+                true,
+                dt_ids::ID,
+                0,
+                None,
+            ),
+        ];
+
+        // Write run files for all sort orders the query might choose.
+        let lang = LanguageTagDict::new();
+        let mut spot_records = records.clone();
+        spot_records.sort_unstable_by(|a, b| cmp_for_order(RunSortOrder::Spot)(a, b));
+        write_run_file(
+            &spot_dir.join("run_00000.frn"),
+            &spot_records,
+            &lang,
+            RunSortOrder::Spot,
+            t,
+            t,
+        )
+        .unwrap();
+
+        let mut psot_records = records.clone();
+        psot_records.sort_unstable_by(|a, b| cmp_for_order(RunSortOrder::Psot)(a, b));
+        write_run_file(
+            &psot_dir.join("run_00000.frn"),
+            &psot_records,
+            &lang,
+            RunSortOrder::Psot,
+            t,
+            t,
+        )
+        .unwrap();
+
+        let mut post_records = records.clone();
+        post_records.sort_unstable_by(|a, b| cmp_for_order(RunSortOrder::Post)(a, b));
+        write_run_file(
+            &post_dir.join("run_00000.frn"),
+            &post_records,
+            &lang,
+            RunSortOrder::Post,
+            t,
+            t,
+        )
+        .unwrap();
+
+        // OPST contains only IRI references (ObjKind::REF_ID).
+        let mut opst_records: Vec<RunRecord> = records
+            .iter()
+            .copied()
+            .filter(|r| r.o_kind == ObjKind::REF_ID.as_u8())
+            .collect();
+        opst_records.sort_unstable_by(|a, b| cmp_for_order(RunSortOrder::Opst)(a, b));
+        write_run_file(
+            &opst_dir.join("run_00000.frn"),
+            &opst_records,
+            &lang,
+            RunSortOrder::Opst,
+            t,
+            t,
+        )
+        .unwrap();
+
+        // Build indexes for all orders.
+        build_all_indexes(
+            &run_dir,
+            &index_dir,
+            &[
+                RunSortOrder::Spot,
+                RunSortOrder::Psot,
+                RunSortOrder::Post,
+                RunSortOrder::Opst,
+            ],
+            64, // leaflet_rows
+            2,  // leaflets_per_leaf
+            0,  // zstd_level
+        )
+        .unwrap();
+
+        let store = std::sync::Arc::new(BinaryIndexStore::load(&run_dir, &index_dir).unwrap());
+
+        // --- Build query: (unbounded triple) JOIN (bounded triple) + FILTER ---
+        let mut vars = VarRegistry::new();
+        let v_score = vars.get_or_insert("?score");
+        let v_concept = vars.get_or_insert("?concept");
+        let v_score_v = vars.get_or_insert("?scoreV");
+
+        let tp_refers = TriplePattern::new(
+            Term::Var(v_score),
+            Term::Sid(Sid::new(0, p_refers)),
+            Term::Var(v_concept),
+        );
+        let tp_has_score = TriplePattern::new(
+            Term::Var(v_score),
+            Term::Sid(Sid::new(0, p_has_score)),
+            Term::Var(v_score_v),
+        );
+        let filter = FilterExpr::Compare {
+            op: CompareOp::Gt,
+            left: Box::new(FilterExpr::Var(v_score_v)),
+            right: Box::new(FilterExpr::Const(FilterValue::Double(0.4))),
+        };
+
+        let mut pq = ParsedQuery::new(ParsedContext::default());
+        pq.patterns = vec![
+            Pattern::Triple(tp_refers),
+            Pattern::Triple(tp_has_score),
+            Pattern::Filter(filter),
+        ];
+
+        let exec = ExecutableQuery::simple(pq.clone());
+        let operator = build_operator_tree::<MemoryStorage>(&pq, &exec.options, None).unwrap();
+
+        let db = Db::genesis(MemoryStorage::new(), "test:main");
+        let mut ctx = crate::context::ExecutionContext::new(&db, &vars).with_binary_store(store, 0);
+        ctx.to_t = 1;
+
+        let batches = run_operator(operator, &ctx).await.unwrap();
+        let rows: usize = batches.iter().map(|b| b.len()).sum();
+        assert_eq!(rows, 1, "expected only score1 to match filter");
+
+        // Verify the surviving row binds concept1.
+        let batch0 = &batches[0];
+        let schema = batch0.schema();
+        let concept_col = schema.iter().position(|v| *v == v_concept).unwrap();
+        let bound = batch0.get_by_col(0, concept_col);
+        match bound {
+            Binding::Sid(sid) => assert!(sid.name.contains("concept#c1")),
+            other => panic!("expected Sid for ?concept, got {:?}", other),
+        }
+
+        // Best-effort cleanup
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

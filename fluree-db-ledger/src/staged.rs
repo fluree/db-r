@@ -8,7 +8,7 @@
 //! This enables query against staged changes without committing them.
 
 use crate::LedgerState;
-use fluree_db_core::{Flake, IndexType, NodeCache, OverlayProvider, Storage};
+use fluree_db_core::{Flake, IndexType, OverlayProvider, Storage};
 use fluree_db_novelty::FlakeId;
 use std::cmp::Ordering;
 
@@ -148,18 +148,18 @@ impl StagedOverlay {
 /// - Staged flakes (not yet committed)
 ///
 /// Queries against a LedgerView will see the staged changes.
-pub struct LedgerView<S, C> {
+pub struct LedgerView<S> {
     /// Base ledger state
-    base: LedgerState<S, C>,
+    base: LedgerState<S>,
     /// Staged changes
     staged: StagedOverlay,
     /// Unique epoch for cache keys (different from base novelty)
     staged_epoch: u64,
 }
 
-impl<S: Storage, C: NodeCache> LedgerView<S, C> {
+impl<S: Storage> LedgerView<S> {
     /// Create a new ledger view with staged flakes
-    pub fn stage(base: LedgerState<S, C>, flakes: Vec<Flake>) -> Self {
+    pub fn stage(base: LedgerState<S>, flakes: Vec<Flake>) -> Self {
         let staged_epoch = base.novelty.epoch + 1;
         Self {
             staged: StagedOverlay::from_flakes(flakes),
@@ -169,14 +169,14 @@ impl<S: Storage, C: NodeCache> LedgerView<S, C> {
     }
 
     /// Get the base ledger state
-    pub fn base(&self) -> &LedgerState<S, C> {
+    pub fn base(&self) -> &LedgerState<S> {
         &self.base
     }
 
     /// Consume the view and return the owned base ledger state
     ///
     /// Use this when the staged changes should be discarded (e.g., no-op updates).
-    pub fn into_base(self) -> LedgerState<S, C> {
+    pub fn into_base(self) -> LedgerState<S> {
         self.base
     }
 
@@ -201,17 +201,17 @@ impl<S: Storage, C: NodeCache> LedgerView<S, C> {
     }
 
     /// Get a reference to the underlying database
-    pub fn db(&self) -> &fluree_db_core::Db<S, C> {
+    pub fn db(&self) -> &fluree_db_core::Db<S> {
         &self.base.db
     }
 
     /// Consume the view and return the base state and staged flakes
-    pub fn into_parts(self) -> (LedgerState<S, C>, Vec<Flake>) {
+    pub fn into_parts(self) -> (LedgerState<S>, Vec<Flake>) {
         (self.base, self.staged.store.flakes)
     }
 }
 
-impl<S: Storage, C: NodeCache> OverlayProvider for LedgerView<S, C> {
+impl<S: Storage> OverlayProvider for LedgerView<S> {
     fn epoch(&self) -> u64 {
         self.staged_epoch
     }
@@ -274,7 +274,7 @@ impl<S: Storage, C: NodeCache> OverlayProvider for LedgerView<S, C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::{FlakeValue, MemoryStorage, NoCache, Sid};
+    use fluree_db_core::{FlakeValue, MemoryStorage, Sid};
     use fluree_db_novelty::Novelty;
 
     fn make_flake(s: i32, p: i32, o: i64, t: i64) -> Flake {
@@ -319,8 +319,7 @@ mod tests {
         use fluree_db_core::Db;
 
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage, cache, "test:main");
+        let db = Db::genesis(storage, "test:main");
 
         // Create base novelty with some flakes
         let mut novelty = Novelty::new(0);
@@ -352,8 +351,7 @@ mod tests {
         use fluree_db_core::Db;
 
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage, cache, "test:main");
+        let db = Db::genesis(storage, "test:main");
 
         let mut novelty = Novelty::new(0);
         novelty.apply_commit(vec![make_flake(1, 1, 100, 1)], 1).unwrap();
@@ -372,8 +370,7 @@ mod tests {
         use fluree_db_core::Db;
 
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage, cache, "test:main");
+        let db = Db::genesis(storage, "test:main");
         let novelty = Novelty::new(0);
         let state = LedgerState::new(db, novelty);
 

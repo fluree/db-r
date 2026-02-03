@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde_json::Value as JsonValue;
 
 use crate::{
-    ApiError, Batch, DatasetSpec, ExecutableQuery, NodeCache,
+    ApiError, Batch, DatasetSpec, ExecutableQuery,
     OverlayProvider, QueryConnectionOptions, Result, SelectMode,
     Storage, Tracker, TrackingOptions, VarRegistry,
 };
@@ -20,9 +20,9 @@ use super::QueryResult;
 /// Parse a JSON-LD query and prepare it for execution.
 ///
 /// Returns the variable registry and parsed query.
-pub(crate) fn parse_jsonld_query<S: Storage + 'static, C: NodeCache + 'static>(
+pub(crate) fn parse_jsonld_query<S: Storage + 'static>(
     query_json: &JsonValue,
-    db: &Db<S, C>,
+    db: &Db<S>,
 ) -> Result<(VarRegistry, ParsedQuery)> {
     let mut vars = VarRegistry::new();
     let parsed = parse_query(query_json, db, &mut vars)?;
@@ -32,9 +32,9 @@ pub(crate) fn parse_jsonld_query<S: Storage + 'static, C: NodeCache + 'static>(
 /// Parse a SPARQL query and prepare it for execution.
 ///
 /// Returns the variable registry and parsed query.
-pub(crate) fn parse_sparql_to_ir<S: Storage + 'static, C: NodeCache + 'static>(
+pub(crate) fn parse_sparql_to_ir<S: Storage + 'static>(
     sparql: &str,
-    db: &Db<S, C>,
+    db: &Db<S>,
 ) -> Result<(VarRegistry, ParsedQuery)> {
     let ast = parse_and_validate_sparql(sparql)?;
     let mut vars = VarRegistry::new();
@@ -120,7 +120,7 @@ pub(crate) fn build_sparql_result(
 /// # Usage
 ///
 /// ```ignore
-/// // In a method on Fluree<S, SimpleCache, N>
+/// // In a method on Fluree<S, N>
 /// let r2rml_provider = r2rml_provider!(self);
 /// ```
 ///

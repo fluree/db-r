@@ -34,7 +34,7 @@ use crate::scan::ScanOperator;
 use crate::seed::SeedOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{NodeCache, StatsView, Storage};
+use fluree_db_core::{StatsView, Storage};
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -57,7 +57,7 @@ use std::sync::Arc;
 /// - Substituting bound vars into scan patterns
 /// - Creating a seed `Values` operator with the left row
 /// - Building a join chain that starts from the left bindings
-pub trait OptionalBuilder<S: Storage + 'static, C: NodeCache + 'static>: Send + Sync {
+pub trait OptionalBuilder<S: Storage + 'static>: Send + Sync {
     /// Build an optional operator for the given required row
     ///
     /// # Arguments
@@ -75,7 +75,7 @@ pub trait OptionalBuilder<S: Storage + 'static, C: NodeCache + 'static>: Send + 
         &self,
         required_batch: &Batch,
         row: usize,
-    ) -> Result<Option<BoxedOperator<S, C>>>;
+    ) -> Result<Option<BoxedOperator<S>>>;
 
     /// Get the output schema of the optional operator
     ///
@@ -99,7 +99,7 @@ pub trait OptionalBuilder<S: Storage + 'static, C: NodeCache + 'static>: Send + 
 /// For `OPTIONAL { ?s :email ?email }` where `?s` is bound from the left:
 /// - `build()` substitutes the left's `?s` value into the pattern
 /// - Returns a `ScanOperator` for `alice :email ?email` (when ?s = alice)
-pub struct PatternOptionalBuilder<S: Storage + 'static, C: NodeCache + 'static> {
+pub struct PatternOptionalBuilder<S: Storage + 'static> {
     /// The triple pattern template
     pattern: TriplePattern,
     /// Output schema of the pattern
@@ -111,10 +111,10 @@ pub struct PatternOptionalBuilder<S: Storage + 'static, C: NodeCache + 'static> 
     /// Instructions for unification checks on shared vars
     unify_instructions: Vec<UnifyInstruction>,
     /// Phantom data for generic parameters
-    _phantom: std::marker::PhantomData<(S, C)>,
+    _phantom: std::marker::PhantomData<S>,
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> PatternOptionalBuilder<S, C> {
+impl<S: Storage + 'static> PatternOptionalBuilder<S> {
     /// Create a new pattern-based optional builder
     pub fn new(required_schema: Arc<[VarId]>, pattern: TriplePattern) -> Self {
         // Determine optional-only vars (in optional but not in required)
@@ -271,12 +271,12 @@ impl<S: Storage + 'static, C: NodeCache + 'static> PatternOptionalBuilder<S, C> 
     }
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> OptionalBuilder<S, C> for PatternOptionalBuilder<S, C> {
+impl<S: Storage + 'static> OptionalBuilder<S> for PatternOptionalBuilder<S> {
     fn build(
         &self,
         required_batch: &Batch,
         row: usize,
-    ) -> Result<Option<BoxedOperator<S, C>>> {
+    ) -> Result<Option<BoxedOperator<S>>> {
         // Check for poisoned bindings - if any correlation var is poisoned,
         // the optional cannot match
         if self.has_poisoned_binding(required_batch, row) {
@@ -321,7 +321,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> OptionalBuilder<S, C> for Pat
 /// - `build()` creates a seed with the left's `?s` value
 /// - Builds an operator tree for the age triple + filter
 /// - Returns the complete operator chain
-pub struct PlanTreeOptionalBuilder<S: Storage + 'static, C: NodeCache + 'static> {
+pub struct PlanTreeOptionalBuilder<S: Storage + 'static> {
     /// The inner patterns to execute
     inner_patterns: Vec<Pattern>,
     /// All variables in the optional patterns (computed schema)
@@ -335,10 +335,10 @@ pub struct PlanTreeOptionalBuilder<S: Storage + 'static, C: NodeCache + 'static>
     /// Stats for nested query optimization
     stats: Option<Arc<StatsView>>,
     /// Phantom data for generic parameters
-    _phantom: std::marker::PhantomData<(S, C)>,
+    _phantom: std::marker::PhantomData<S>,
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> PlanTreeOptionalBuilder<S, C> {
+impl<S: Storage + 'static> PlanTreeOptionalBuilder<S> {
     /// Create a new plan-tree optional builder
     ///
     /// # Arguments
@@ -418,12 +418,12 @@ impl<S: Storage + 'static, C: NodeCache + 'static> PlanTreeOptionalBuilder<S, C>
     }
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> OptionalBuilder<S, C> for PlanTreeOptionalBuilder<S, C> {
+impl<S: Storage + 'static> OptionalBuilder<S> for PlanTreeOptionalBuilder<S> {
     fn build(
         &self,
         required_batch: &Batch,
         row: usize,
-    ) -> Result<Option<BoxedOperator<S, C>>> {
+    ) -> Result<Option<BoxedOperator<S>>> {
         // Check for poisoned bindings - if any shared var is poisoned,
         // the optional cannot match
         if self.has_poisoned_shared_var(required_batch, row) {
@@ -476,11 +476,11 @@ impl<S: Storage + 'static, C: NodeCache + 'static> OptionalBuilder<S, C> for Pla
 /// Unlike `BindJoinOperator`, this operator supports arbitrary optional subtrees
 /// via the `OptionalBuilder` trait. The builder can construct complex operator
 /// trees (joins, filters, property-joins) that are correlated with each required row.
-pub struct OptionalOperator<S: Storage + 'static, C: NodeCache + 'static> {
+pub struct OptionalOperator<S: Storage + 'static> {
     /// Required (left) operator
-    required: BoxedOperator<S, C>,
+    required: BoxedOperator<S>,
     /// Builder for correlated optional operators
-    optional_builder: Box<dyn OptionalBuilder<S, C>>,
+    optional_builder: Box<dyn OptionalBuilder<S>>,
     /// Schema from required operator
     required_schema: Arc<[VarId]>,
     /// Combined output schema: required vars + optional-only vars
@@ -509,7 +509,7 @@ struct PendingOptionalMatch {
     matched: bool,
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> OptionalOperator<S, C> {
+impl<S: Storage + 'static> OptionalOperator<S> {
     /// Create a new left-join operator with an optional builder
     ///
     /// This is the general constructor that accepts any `OptionalBuilder`.
@@ -521,9 +521,9 @@ impl<S: Storage + 'static, C: NodeCache + 'static> OptionalOperator<S, C> {
     /// * `required_schema` - Schema of the required operator
     /// * `optional_builder` - Builder that creates correlated optional operators
     pub fn with_builder(
-        required: BoxedOperator<S, C>,
+        required: BoxedOperator<S>,
         required_schema: Arc<[VarId]>,
-        optional_builder: Box<dyn OptionalBuilder<S, C>>,
+        optional_builder: Box<dyn OptionalBuilder<S>>,
     ) -> Self {
         // Build combined schema: required + optional-only
         let mut combined = required_schema.to_vec();
@@ -553,7 +553,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> OptionalOperator<S, C> {
     /// * `required_schema` - Schema of the required operator
     /// * `optional_pattern` - Single triple pattern for the optional side
     pub fn new(
-        required: BoxedOperator<S, C>,
+        required: BoxedOperator<S>,
         required_schema: Arc<[VarId]>,
         optional_pattern: TriplePattern,
     ) -> Self {
@@ -643,12 +643,12 @@ impl<S: Storage + 'static, C: NodeCache + 'static> OptionalOperator<S, C> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for OptionalOperator<S, C> {
+impl<S: Storage + 'static> Operator<S> for OptionalOperator<S> {
     fn schema(&self) -> &[VarId] {
         &self.combined_schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
         if !self.state.can_open() {
             if self.state.is_closed() {
                 return Err(QueryError::OperatorClosed);
@@ -663,7 +663,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for OptionalOp
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
         if !self.state.can_next() {
             if self.state == OperatorState::Created {
                 return Err(QueryError::OperatorNotOpened);
@@ -906,20 +906,20 @@ mod tests {
         // Mock required operator
         struct MockOp;
         #[async_trait]
-        impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for MockOp {
+        impl<S: Storage + 'static> Operator<S> for MockOp {
             fn schema(&self) -> &[VarId] {
                 &[]
             }
-            async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
+            async fn open(&mut self, _: &ExecutionContext<'_, S>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+            async fn next_batch(&mut self, _: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
                 Ok(None)
             }
             fn close(&mut self) {}
         }
 
-        let op = OptionalOperator::<fluree_db_core::MemoryStorage, fluree_db_core::NoCache>::new(
+        let op = OptionalOperator::<fluree_db_core::MemoryStorage>::new(
             Box::new(MockOp),
             required_schema,
             optional_pattern,
@@ -937,7 +937,7 @@ mod tests {
         let required_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
         let optional_pattern = make_optional_pattern();
 
-        let builder = PatternOptionalBuilder::<fluree_db_core::MemoryStorage, fluree_db_core::NoCache>::new(
+        let builder = PatternOptionalBuilder::<fluree_db_core::MemoryStorage>::new(
             required_schema,
             optional_pattern,
         );
@@ -963,7 +963,7 @@ mod tests {
         let required_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
         let optional_pattern = make_optional_pattern();
 
-        let builder = PatternOptionalBuilder::<fluree_db_core::MemoryStorage, fluree_db_core::NoCache>::new(
+        let builder = PatternOptionalBuilder::<fluree_db_core::MemoryStorage>::new(
             required_schema.clone(),
             optional_pattern,
         );
@@ -998,20 +998,20 @@ mod tests {
 
         struct MockOp;
         #[async_trait]
-        impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for MockOp {
+        impl<S: Storage + 'static> Operator<S> for MockOp {
             fn schema(&self) -> &[VarId] {
                 &[]
             }
-            async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
+            async fn open(&mut self, _: &ExecutionContext<'_, S>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+            async fn next_batch(&mut self, _: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
                 Ok(None)
             }
             fn close(&mut self) {}
         }
 
-        let op = OptionalOperator::<fluree_db_core::MemoryStorage, fluree_db_core::NoCache>::new(
+        let op = OptionalOperator::<fluree_db_core::MemoryStorage>::new(
             Box::new(MockOp),
             required_schema.clone(),
             optional_pattern,
@@ -1040,21 +1040,21 @@ mod tests {
 
         struct MockOp;
         #[async_trait]
-        impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for MockOp {
+        impl<S: Storage + 'static> Operator<S> for MockOp {
             fn schema(&self) -> &[VarId] {
                 &[]
             }
-            async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
+            async fn open(&mut self, _: &ExecutionContext<'_, S>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+            async fn next_batch(&mut self, _: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
                 Ok(None)
             }
             fn close(&mut self) {}
         }
 
         // Create using with_builder
-        let builder = PatternOptionalBuilder::<fluree_db_core::MemoryStorage, fluree_db_core::NoCache>::new(
+        let builder = PatternOptionalBuilder::<fluree_db_core::MemoryStorage>::new(
             required_schema.clone(),
             optional_pattern,
         );

@@ -5,7 +5,7 @@
 mod support;
 
 use fluree_db_api::{FlureeBuilder, LedgerState, Novelty};
-use fluree_db_core::{Db, SimpleCache};
+use fluree_db_core::Db;
 use serde_json::{json, Value as JsonValue};
 
 fn ctx() -> JsonValue {
@@ -21,11 +21,11 @@ fn ctx() -> JsonValue {
     })
 }
 
-async fn seed_movie_graph() -> (fluree_db_api::Fluree<fluree_db_core::MemoryStorage, SimpleCache, fluree_db_nameservice::memory::MemoryNameService>, LedgerState<fluree_db_core::MemoryStorage, SimpleCache>) {
+async fn seed_movie_graph() -> (fluree_db_api::Fluree<fluree_db_core::MemoryStorage, fluree_db_nameservice::memory::MemoryNameService>, LedgerState<fluree_db_core::MemoryStorage>) {
     let fluree = FlureeBuilder::memory().build_memory();
     let alias = "it/jsonld-basic:movie";
 
-    let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+    let db0 = Db::genesis(fluree.storage().clone(), alias);
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
     // Minimal “movie -> book -> author” shape to exercise graph crawl + depth.
@@ -98,10 +98,10 @@ fn normalize_object_arrays(value: &mut JsonValue) {
     }
 }
 
-async fn seed_simple_subject_crawl() -> (fluree_db_api::Fluree<fluree_db_core::MemoryStorage, SimpleCache, fluree_db_nameservice::memory::MemoryNameService>, LedgerState<fluree_db_core::MemoryStorage, SimpleCache>) {
+async fn seed_simple_subject_crawl() -> (fluree_db_api::Fluree<fluree_db_core::MemoryStorage, fluree_db_nameservice::memory::MemoryNameService>, LedgerState<fluree_db_core::MemoryStorage>) {
     let fluree = FlureeBuilder::memory().build_memory();
     let alias = "it/jsonld-basic:ssc";
-    let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+    let db0 = Db::genesis(fluree.storage().clone(), alias);
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
     let tx = json!({
@@ -330,7 +330,7 @@ async fn jsonld_query_with_faux_compact_iri_ids() {
     let fluree = FlureeBuilder::memory().build_memory();
     let alias = "it/jsonld-basic:faux-compact";
 
-    let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+    let db0 = Db::genesis(fluree.storage().clone(), alias);
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
     let tx = json!({
@@ -439,7 +439,7 @@ async fn jsonld_rdf_type_query_analytical() {
 async fn jsonld_list_order_preservation_context_container() {
     let fluree = FlureeBuilder::memory().build_memory();
     let alias = "it/jsonld-basic:list-container";
-    let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+    let db0 = Db::genesis(fluree.storage().clone(), alias);
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
     let tx = json!({
@@ -475,7 +475,7 @@ async fn jsonld_list_order_preservation_context_container() {
 async fn jsonld_list_order_preservation_explicit_list() {
     let fluree = FlureeBuilder::memory().build_memory();
     let alias = "it/jsonld-basic:list-explicit";
-    let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+    let db0 = Db::genesis(fluree.storage().clone(), alias);
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
     let tx = json!({

@@ -37,7 +37,7 @@ use crate::pattern::Term;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::{
-    range_with_overlay, FlakeValue, IndexType, NodeCache, RangeMatch, RangeOptions, RangeTest, Sid,
+    range_with_overlay, FlakeValue, IndexType, RangeMatch, RangeOptions, RangeTest, Sid,
     Storage,
 };
 use std::collections::{HashSet, VecDeque};
@@ -54,9 +54,9 @@ pub const DEFAULT_MAX_VISITED: usize = 10_000;
 /// 2. **Correlated mode** (with child): For each input row, read bound var and traverse
 ///
 /// The execution mode is determined at runtime based on the pattern and child bindings.
-pub struct PropertyPathOperator<S: Storage + 'static, C: NodeCache + 'static> {
+pub struct PropertyPathOperator<S: Storage + 'static> {
     /// Optional child operator providing input solutions
-    child: Option<BoxedOperator<S, C>>,
+    child: Option<BoxedOperator<S>>,
     /// Property path pattern to execute
     pattern: PropertyPathPattern,
     /// Output schema (variables from subject and object)
@@ -75,7 +75,7 @@ pub struct PropertyPathOperator<S: Storage + 'static, C: NodeCache + 'static> {
     current_child_row: usize,
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> PropertyPathOperator<S, C> {
+impl<S: Storage + 'static> PropertyPathOperator<S> {
     /// Create a new property path operator
     ///
     /// # Arguments
@@ -84,7 +84,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> PropertyPathOperator<S, C> {
     /// * `pattern` - Property path pattern to execute
     /// * `max_visited` - Maximum nodes to visit (safety bound)
     pub fn new(
-        child: Option<BoxedOperator<S, C>>,
+        child: Option<BoxedOperator<S>>,
         pattern: PropertyPathPattern,
         max_visited: usize,
     ) -> Self {
@@ -125,7 +125,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> PropertyPathOperator<S, C> {
     }
 
     /// Create with default max_visited
-    pub fn with_defaults(child: Option<BoxedOperator<S, C>>, pattern: PropertyPathPattern) -> Self {
+    pub fn with_defaults(child: Option<BoxedOperator<S>>, pattern: PropertyPathPattern) -> Self {
         Self::new(child, pattern, DEFAULT_MAX_VISITED)
     }
 
@@ -135,7 +135,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> PropertyPathOperator<S, C> {
     /// Returns all reachable nodes via the transitive predicate.
     async fn traverse_forward(
         &self,
-        ctx: &ExecutionContext<'_, S, C>,
+        ctx: &ExecutionContext<'_, S>,
         start: &Sid,
     ) -> Result<Vec<Sid>> {
         let mut visited: HashSet<Sid> = HashSet::new();
@@ -226,7 +226,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> PropertyPathOperator<S, C> {
     /// Returns all nodes that can reach the target via the transitive predicate.
     async fn traverse_backward(
         &self,
-        ctx: &ExecutionContext<'_, S, C>,
+        ctx: &ExecutionContext<'_, S>,
         target: &Sid,
     ) -> Result<Vec<Sid>> {
         let mut visited: HashSet<Sid> = HashSet::new();
@@ -308,7 +308,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> PropertyPathOperator<S, C> {
     /// Compute full transitive closure for a predicate (both vars unbound).
     ///
     /// Returns pairs (start, reachable) consistent with modifier semantics.
-    async fn compute_closure(&self, ctx: &ExecutionContext<'_, S, C>) -> Result<Vec<(Sid, Sid)>> {
+    async fn compute_closure(&self, ctx: &ExecutionContext<'_, S>) -> Result<Vec<(Sid, Sid)>> {
         // Pull all edges with this predicate using PSOT (predicate-indexed).
         let range_match = RangeMatch::predicate(self.pattern.predicate.clone());
         let (db, overlay, to_t) = match ctx.active_graphs() {
@@ -398,7 +398,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> PropertyPathOperator<S, C> {
     /// Used for reachability filter when both subject and object are bound.
     async fn path_exists(
         &self,
-        ctx: &ExecutionContext<'_, S, C>,
+        ctx: &ExecutionContext<'_, S>,
         start: &Sid,
         target: &Sid,
     ) -> Result<bool> {
@@ -413,7 +413,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> PropertyPathOperator<S, C> {
     /// Execute unseeded mode (no child operator)
     ///
     /// This is called once during open() to compute all results.
-    async fn execute_unseeded(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+    async fn execute_unseeded(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
         let results = match (&self.pattern.subject, &self.pattern.object) {
             (Term::Sid(subj), Term::Var(_)) => {
                 // Subject constant, object variable -> forward traversal
@@ -465,7 +465,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> PropertyPathOperator<S, C> {
     /// Process a single child row in correlated mode
     async fn process_correlated_row(
         &self,
-        ctx: &ExecutionContext<'_, S, C>,
+        ctx: &ExecutionContext<'_, S>,
         child_batch: &Batch,
         row_idx: usize,
     ) -> Result<Vec<Vec<Binding>>> {
@@ -614,14 +614,14 @@ impl<S: Storage + 'static, C: NodeCache + 'static> PropertyPathOperator<S, C> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C>
-    for PropertyPathOperator<S, C>
+impl<S: Storage + 'static> Operator<S>
+    for PropertyPathOperator<S>
 {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
         if self.child.is_some() {
             // Correlated mode: open child
             self.child.as_mut().unwrap().open(ctx).await?;
@@ -633,7 +633,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C>
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }
@@ -788,7 +788,7 @@ mod tests {
             Term::Var(VarId(0)),
         );
 
-        let op: PropertyPathOperator<fluree_db_core::MemoryStorage, fluree_db_core::NoCache> =
+        let op: PropertyPathOperator<fluree_db_core::MemoryStorage> =
             PropertyPathOperator::with_defaults(None, pattern);
 
         assert_eq!(op.schema(), &[VarId(0)]);
@@ -804,7 +804,7 @@ mod tests {
             Term::Sid(Sid::new(1, "bob")),
         );
 
-        let op: PropertyPathOperator<fluree_db_core::MemoryStorage, fluree_db_core::NoCache> =
+        let op: PropertyPathOperator<fluree_db_core::MemoryStorage> =
             PropertyPathOperator::with_defaults(None, pattern);
 
         assert_eq!(op.schema(), &[VarId(0)]);
@@ -820,7 +820,7 @@ mod tests {
             Term::Var(VarId(1)),
         );
 
-        let op: PropertyPathOperator<fluree_db_core::MemoryStorage, fluree_db_core::NoCache> =
+        let op: PropertyPathOperator<fluree_db_core::MemoryStorage> =
             PropertyPathOperator::with_defaults(None, pattern);
 
         assert_eq!(op.schema(), &[VarId(0), VarId(1)]);
@@ -835,7 +835,7 @@ mod tests {
             Term::Var(VarId(0)),
         );
 
-        let op: PropertyPathOperator<fluree_db_core::MemoryStorage, fluree_db_core::NoCache> =
+        let op: PropertyPathOperator<fluree_db_core::MemoryStorage> =
             PropertyPathOperator::new(None, pattern, 100);
 
         assert_eq!(op.max_visited, 100);

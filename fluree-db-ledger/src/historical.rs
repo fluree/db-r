@@ -18,7 +18,7 @@
 //!
 //! // Load a view at t=50
 //! let view = HistoricalLedgerView::load_at(
-//!     &ns, "mydb:main", storage, cache, 50
+//!     &ns, "mydb:main", storage, 50
 //! ).await?;
 //!
 //! // Query using the view as an overlay provider
@@ -26,7 +26,7 @@
 //! ```
 
 use crate::error::{LedgerError, Result};
-use fluree_db_core::{Db, Flake, IndexType, NodeCache, OverlayProvider, Storage};
+use fluree_db_core::{Db, Flake, IndexType, OverlayProvider, Storage};
 use fluree_db_nameservice::NameService;
 use fluree_db_novelty::{generate_commit_flakes, trace_commits, Novelty};
 use futures::StreamExt;
@@ -44,16 +44,16 @@ use std::sync::Arc;
 ///
 /// Unlike `LedgerState`, this is immutable and cannot be updated.
 #[derive(Debug)]
-pub struct HistoricalLedgerView<S, C> {
+pub struct HistoricalLedgerView<S> {
     /// The indexed database (head index or genesis)
-    pub db: Db<S, C>,
+    pub db: Db<S>,
     /// Optional novelty overlay (commits between index_t and to_t)
     overlay: Option<Arc<Novelty>>,
     /// Time bound for all queries
     to_t: i64,
 }
 
-impl<S: Storage + Clone + 'static, C: NodeCache> HistoricalLedgerView<S, C> {
+impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
     /// Load a historical view of a ledger at a specific time
     ///
     /// # Algorithm
@@ -67,7 +67,6 @@ impl<S: Storage + Clone + 'static, C: NodeCache> HistoricalLedgerView<S, C> {
     /// * `ns` - Nameservice for ledger discovery
     /// * `alias` - Ledger alias (e.g., "mydb:main")
     /// * `storage` - Storage backend
-    /// * `cache` - Node cache
     /// * `target_t` - The time to load the view at
     ///
     /// # Errors
@@ -78,10 +77,8 @@ impl<S: Storage + Clone + 'static, C: NodeCache> HistoricalLedgerView<S, C> {
         ns: &N,
         alias: &str,
         storage: S,
-        cache: impl Into<Arc<C>>,
         target_t: i64,
     ) -> Result<Self> {
-        let cache = cache.into();
         let record = ns
             .lookup(alias)
             .await?
@@ -95,10 +92,10 @@ impl<S: Storage + Clone + 'static, C: NodeCache> HistoricalLedgerView<S, C> {
         // Always use head index if available (indexes are cumulative, contain all historical data)
         // Fall back to genesis only if no index exists yet
         let (db, index_t) = if let Some(addr) = &record.index_address {
-            let db = Db::load(storage.clone(), Arc::clone(&cache), addr).await?;
+            let db = Db::load(storage.clone(), addr).await?;
             (db, record.index_t)
         } else {
-            let db = Db::genesis(storage.clone(), Arc::clone(&cache), &record.address);
+            let db = Db::genesis(storage.clone(), &record.address);
             (db, 0)
         };
 
@@ -186,7 +183,7 @@ impl<S: Storage + Clone + 'static, C: NodeCache> HistoricalLedgerView<S, C> {
     /// Create a historical view directly from components
     ///
     /// This is useful for testing or when you've already loaded the components.
-    pub fn new(db: Db<S, C>, overlay: Option<Arc<Novelty>>, to_t: i64) -> Self {
+    pub fn new(db: Db<S>, overlay: Option<Arc<Novelty>>, to_t: i64) -> Self {
         Self { db, overlay, to_t }
     }
 
@@ -223,7 +220,7 @@ impl<S: Storage + Clone + 'static, C: NodeCache> HistoricalLedgerView<S, C> {
 ///
 /// This allows the view to be used directly as an overlay provider in queries.
 /// The `to_t` filtering is handled automatically.
-impl<S: Storage, C: NodeCache> OverlayProvider for HistoricalLedgerView<S, C> {
+impl<S: Storage> OverlayProvider for HistoricalLedgerView<S> {
     fn epoch(&self) -> u64 {
         self.overlay.as_ref().map(|n| n.epoch).unwrap_or(0)
     }
@@ -248,7 +245,7 @@ impl<S: Storage, C: NodeCache> OverlayProvider for HistoricalLedgerView<S, C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::{FlakeValue, MemoryStorage, NoCache, Sid};
+    use fluree_db_core::{FlakeValue, MemoryStorage, Sid};
     use fluree_db_nameservice::memory::MemoryNameService;
     use fluree_db_nameservice::Publisher;
 
@@ -267,8 +264,7 @@ mod tests {
     #[tokio::test]
     async fn test_historical_view_new() {
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage, cache, "test:main");
+        let db = Db::genesis(storage, "test:main");
 
         let view = HistoricalLedgerView::new(db, None, 10);
 
@@ -281,8 +277,7 @@ mod tests {
     #[tokio::test]
     async fn test_historical_view_with_overlay() {
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage, cache, "test:main");
+        let db = Db::genesis(storage, "test:main");
 
         let mut novelty = Novelty::new(0);
         novelty
@@ -299,8 +294,7 @@ mod tests {
     #[tokio::test]
     async fn test_historical_view_overlay_provider() {
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage, cache, "test:main");
+        let db = Db::genesis(storage, "test:main");
 
         let mut novelty = Novelty::new(0);
         novelty
@@ -330,10 +324,9 @@ mod tests {
     async fn test_load_at_not_found() {
         let ns = MemoryNameService::new();
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
 
         let result =
-            HistoricalLedgerView::load_at(&ns, "nonexistent:main", storage, cache, 10).await;
+            HistoricalLedgerView::load_at(&ns, "nonexistent:main", storage, 10).await;
 
         assert!(matches!(result, Err(LedgerError::NotFound(_))));
     }
@@ -342,7 +335,6 @@ mod tests {
     async fn test_load_at_future_time() {
         let ns = MemoryNameService::new();
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
 
         // Create a ledger with commits up to t=5
         ns.publish_commit("test:main", "commit-5", 5).await.unwrap();
@@ -353,7 +345,7 @@ mod tests {
         storage.insert("commit-5", serde_json::to_vec(&commit).unwrap());
 
         // Try to load at t=10 (future)
-        let result = HistoricalLedgerView::load_at(&ns, "test:main", storage, cache, 10).await;
+        let result = HistoricalLedgerView::load_at(&ns, "test:main", storage, 10).await;
 
         assert!(matches!(result, Err(LedgerError::FutureTime { .. })));
     }
@@ -362,7 +354,6 @@ mod tests {
     async fn test_load_at_genesis_fallback() {
         let ns = MemoryNameService::new();
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
 
         // Create a ledger with commits but no index
         ns.publish_commit("test:main", "commit-5", 5).await.unwrap();
@@ -373,7 +364,7 @@ mod tests {
         storage.insert("commit-5", serde_json::to_vec(&commit).unwrap());
 
         // Load at t=5 - should use genesis db since no index exists
-        let view = HistoricalLedgerView::load_at(&ns, "test:main", storage, cache, 5)
+        let view = HistoricalLedgerView::load_at(&ns, "test:main", storage, 5)
             .await
             .unwrap();
 

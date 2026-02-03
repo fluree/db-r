@@ -651,7 +651,7 @@ pub(crate) async fn load_ledger_for_query(
     state: &AppState,
     alias: &str,
     span: &tracing::Span,
-) -> Result<LedgerState<fluree_db_api::FileStorage, fluree_db_api::SimpleCache>> {
+) -> Result<LedgerState<fluree_db_api::FileStorage>> {
     let fluree = state.fluree.as_file();
 
     // Get cached handle (loads if not cached)

@@ -19,7 +19,6 @@
 //! ] .
 //! ```
 
-use fluree_db_core::cache::NodeCache;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::flake::Flake;
 use fluree_db_core::namespaces::{is_rdf_type};
@@ -488,8 +487,8 @@ impl RestrictionIndex {
 ///    - owl:onProperty
 ///    - owl:hasValue / owl:someValuesFrom / owl:allValuesFrom / etc.
 /// 3. Builds a RestrictionIndex for efficient lookup during rule application
-pub async fn extract_restrictions<S: Storage, C: NodeCache>(
-    db: &Db<S, C>,
+pub async fn extract_restrictions<S: Storage>(
+    db: &Db<S>,
     overlay: &dyn OverlayProvider,
     to_t: i64,
 ) -> Result<RestrictionIndex> {

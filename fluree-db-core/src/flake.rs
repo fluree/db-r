@@ -350,6 +350,14 @@ impl Flake {
             FlakeValue::DateTime(v) => 16 + v.original().len(), // boxed + original string
             FlakeValue::Date(v) => 16 + v.original().len(),
             FlakeValue::Time(v) => 16 + v.original().len(),
+            FlakeValue::GYear(v) => 16 + v.original().len(),
+            FlakeValue::GYearMonth(v) => 16 + v.original().len(),
+            FlakeValue::GMonth(v) => 16 + v.original().len(),
+            FlakeValue::GDay(v) => 16 + v.original().len(),
+            FlakeValue::GMonthDay(v) => 16 + v.original().len(),
+            FlakeValue::YearMonthDuration(v) => 16 + v.original().len(),
+            FlakeValue::DayTimeDuration(v) => 16 + v.original().len(),
+            FlakeValue::Duration(v) => 16 + v.original().len(),
             FlakeValue::String(s) => 8 + s.len(),
             FlakeValue::Json(s) => 8 + s.len(), // JSON stored as string
             FlakeValue::Ref(sid) => 8 + sid.name.len(),
@@ -365,7 +373,7 @@ impl Flake {
         base + o_size + m_size + 9
     }
 
-    /// Fast deterministic size estimate for stats (`DbRootStats.size`)
+    /// Fast deterministic size estimate for stats (`IndexStats.size`)
     ///
     /// Mirrors the intent of Clojure's `flake/size-flake`: **speed over accuracy**.
     /// This is *not* the storage byte size of index nodes; it is an estimate of
@@ -386,6 +394,14 @@ impl Flake {
             FlakeValue::DateTime(v) => 16 + v.original().len() as u64,
             FlakeValue::Date(v) => 16 + v.original().len() as u64,
             FlakeValue::Time(v) => 16 + v.original().len() as u64,
+            FlakeValue::GYear(v) => 16 + v.original().len() as u64,
+            FlakeValue::GYearMonth(v) => 16 + v.original().len() as u64,
+            FlakeValue::GMonth(v) => 16 + v.original().len() as u64,
+            FlakeValue::GDay(v) => 16 + v.original().len() as u64,
+            FlakeValue::GMonthDay(v) => 16 + v.original().len() as u64,
+            FlakeValue::YearMonthDuration(v) => 16 + v.original().len() as u64,
+            FlakeValue::DayTimeDuration(v) => 16 + v.original().len() as u64,
+            FlakeValue::Duration(v) => 16 + v.original().len() as u64,
             FlakeValue::String(s) => s.len() as u64,
             FlakeValue::Json(s) => s.len() as u64, // JSON stored as string
             FlakeValue::Ref(sid) => 8 + sid.name.len() as u64,

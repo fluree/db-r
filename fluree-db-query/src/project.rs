@@ -9,21 +9,21 @@ use crate::error::{QueryError, Result};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{NodeCache, Storage};
+use fluree_db_core::Storage;
 
 /// Project operator - selects and reorders columns from child
-pub struct ProjectOperator<S: Storage + 'static, C: NodeCache + 'static> {
+pub struct ProjectOperator<S: Storage + 'static> {
     /// Child operator
-    child: BoxedOperator<S, C>,
+    child: BoxedOperator<S>,
     /// Variables to project (in output order)
     vars: Vec<VarId>,
     /// Operator state
     state: OperatorState,
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> ProjectOperator<S, C> {
+impl<S: Storage + 'static> ProjectOperator<S> {
     /// Create a new project operator
-    pub fn new(child: BoxedOperator<S, C>, vars: Vec<VarId>) -> Self {
+    pub fn new(child: BoxedOperator<S>, vars: Vec<VarId>) -> Self {
         Self {
             child,
             vars,
@@ -33,12 +33,12 @@ impl<S: Storage + 'static, C: NodeCache + 'static> ProjectOperator<S, C> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ProjectOperator<S, C> {
+impl<S: Storage + 'static> Operator<S> for ProjectOperator<S> {
     fn schema(&self) -> &[VarId] {
         &self.vars
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
         let _span = tracing::trace_span!("project").entered();
         drop(_span);
         if !self.state.can_open() {
@@ -53,7 +53,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for ProjectOpe
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
         if !self.state.can_next() {
             if self.state == OperatorState::Created {
                 return Err(QueryError::OperatorNotOpened);

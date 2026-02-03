@@ -5,9 +5,9 @@
 
 use crate::config::ServerConfig;
 use std::env;
-use tracing_subscriber::{
-    layer::SubscriberExt, registry::LookupSpan, util::SubscriberInitExt, EnvFilter, Layer,
-};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+#[cfg(feature = "otel")]
+use tracing_subscriber::registry::LookupSpan;
 
 /// Telemetry configuration
 #[derive(Debug, Clone)]

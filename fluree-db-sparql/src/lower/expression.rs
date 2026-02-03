@@ -7,6 +7,7 @@ use crate::ast::expr::{BinaryOp, Expression, FunctionName, UnaryOp};
 use crate::ast::term::{Literal, LiteralValue};
 use crate::span::SourceSpan;
 
+use fluree_db_core::FlakeValue;
 use fluree_db_query::ir::{
     ArithmeticOp, CompareOp, FilterExpr, FilterValue, FunctionName as IrFunctionName,
 };
@@ -198,7 +199,19 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 Ok(FilterValue::Double(val))
             }
             LiteralValue::Boolean(b) => Ok(FilterValue::Bool(*b)),
-            LiteralValue::Typed { value, .. } => Ok(FilterValue::String(value.to_string())),
+            LiteralValue::Typed { value, datatype } => {
+                let fv = self.lower_typed_literal(value, datatype)?;
+                match fv {
+                    FlakeValue::Long(n) => Ok(FilterValue::Long(n)),
+                    FlakeValue::Double(d) => Ok(FilterValue::Double(d)),
+                    FlakeValue::Boolean(b) => Ok(FilterValue::Bool(b)),
+                    FlakeValue::String(s) => Ok(FilterValue::String(s)),
+                    fv if fv.is_temporal() || fv.is_duration() => {
+                        Ok(FilterValue::Temporal(fv))
+                    }
+                    _ => Ok(FilterValue::String(value.to_string())),
+                }
+            }
         }
     }
 

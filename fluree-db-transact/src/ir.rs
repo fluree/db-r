@@ -317,6 +317,18 @@ pub struct TxnOpts {
     /// explicitly wrapped as {"@variable": "?x"}.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub object_var_parsing: Option<bool>,
+
+    /// Whether to store the original transaction payload for audit/history.
+    ///
+    /// When `Some(true)`, the API layer may persist the raw transaction JSON
+    /// alongside the commit record (so it can be retrieved via history with
+    /// `txn: true`). When `None`/`Some(false)`, the raw transaction is not stored
+    /// unless explicitly provided (e.g., signed credential envelope).
+    ///
+    /// Note: This flag is intentionally *opt-in* to avoid large memory and
+    /// storage overhead for bulk ingest (e.g., Turtle expanded to huge JSON-LD).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store_raw_txn: Option<bool>,
 }
 
 impl TxnOpts {
@@ -343,6 +355,12 @@ impl TxnOpts {
     /// Set the context
     pub fn context(mut self, ctx: serde_json::Value) -> Self {
         self.context = Some(ctx);
+        self
+    }
+
+    /// Opt in/out of storing raw transaction payload for audit/history.
+    pub fn store_raw_txn(mut self, enabled: bool) -> Self {
+        self.store_raw_txn = Some(enabled);
         self
     }
 }

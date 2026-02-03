@@ -5,7 +5,6 @@
 
 use std::time::Instant;
 
-use fluree_db_core::cache::NodeCache;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::flake::Flake;
 use fluree_vocab::jsonld_names::ID as JSONLD_ID;
@@ -40,8 +39,8 @@ use crate::{FrozenSameAs, ReasoningDiagnostics, Result};
 /// 2. Seeds initial facts from base assertions
 /// 3. Iteratively applies rules until fixpoint or budget exhausted
 /// 4. Returns derived facts and diagnostics
-pub async fn run_fixpoint<S: Storage, C: NodeCache>(
-    db: &Db<S, C>,
+pub async fn run_fixpoint<S: Storage>(
+    db: &Db<S>,
     overlay: &dyn OverlayProvider,
     to_t: i64,
     budget: &ReasoningBudget,
@@ -493,8 +492,8 @@ pub async fn run_fixpoint<S: Storage, C: NodeCache>(
 /// - Facts with inverse-functional properties (for prp-ifp)
 /// - Facts with restricted properties (hasValue, someValuesFrom, etc.)
 /// - owl:sameAs facts
-async fn seed_initial_delta<S: Storage, C: NodeCache>(
-    db: &Db<S, C>,
+async fn seed_initial_delta<S: Storage>(
+    db: &Db<S>,
     overlay: &dyn OverlayProvider,
     ontology: &OntologyRL,
     restrictions: &RestrictionIndex,

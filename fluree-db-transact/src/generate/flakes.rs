@@ -8,22 +8,33 @@ use crate::ir::{TemplateTerm, TripleTemplate};
 use crate::namespace::NS_FLUREE_LEDGER;
 use crate::namespace::NamespaceRegistry;
 use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
-use fluree_vocab::namespaces::{JSON_LD, XSD};
+use fluree_vocab::namespaces::{JSON_LD, RDF, XSD};
 use fluree_db_query::{Batch, Binding};
+use once_cell::sync::Lazy;
 
-// Well-known datatype SIDs (match fluree-db-core + fluree-db-query conventions)
+// Well-known datatype SIDs, cached to avoid per-call Arc<str> allocation.
+// Clone is ~5ns (atomic Arc bump) vs ~30-50ns for Sid::new().
 
-fn dt_id() -> Sid {
-    Sid::new(JSON_LD, "id")
-}
-
-fn dt_xsd(name: &str) -> Sid {
-    Sid::new(XSD, name)
-}
-
-fn dt_fluree_ledger(name: &str) -> Sid {
-    Sid::new(NS_FLUREE_LEDGER, name)
-}
+pub(crate) static DT_ID: Lazy<Sid> = Lazy::new(|| Sid::new(JSON_LD, "id"));
+pub(crate) static DT_BOOLEAN: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "boolean"));
+pub(crate) static DT_INTEGER: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "integer"));
+pub(crate) static DT_DOUBLE: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "double"));
+pub(crate) static DT_DECIMAL: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "decimal"));
+pub(crate) static DT_DATE_TIME: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "dateTime"));
+pub(crate) static DT_DATE: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "date"));
+pub(crate) static DT_TIME: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "time"));
+pub(crate) static DT_STRING: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "string"));
+pub(crate) static DT_JSON: Lazy<Sid> = Lazy::new(|| Sid::new(RDF, "JSON"));
+pub(crate) static DT_LANG_STRING: Lazy<Sid> = Lazy::new(|| Sid::new(RDF, "langString"));
+pub(crate) static DT_VECTOR: Lazy<Sid> = Lazy::new(|| Sid::new(NS_FLUREE_LEDGER, "vector"));
+pub(crate) static DT_G_YEAR: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "gYear"));
+pub(crate) static DT_G_YEAR_MONTH: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "gYearMonth"));
+pub(crate) static DT_G_MONTH: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "gMonth"));
+pub(crate) static DT_G_DAY: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "gDay"));
+pub(crate) static DT_G_MONTH_DAY: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "gMonthDay"));
+pub(crate) static DT_YEAR_MONTH_DURATION: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "yearMonthDuration"));
+pub(crate) static DT_DAY_TIME_DURATION: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "dayTimeDuration"));
+pub(crate) static DT_DURATION: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "duration"));
 
 /// Generates flakes from triple templates
 ///
@@ -135,7 +146,7 @@ impl<'a> FlakeGenerator<'a> {
 
         // Language-tagged literals use rdf:langString datatype (Clojure parity).
         let dt = if template.language.is_some() || bound_lang.is_some() {
-            dt.map(|_| Sid::new(3, "langString"))
+            dt.map(|_| DT_LANG_STRING.clone())
         } else {
             dt
         };
@@ -258,7 +269,7 @@ impl<'a> FlakeGenerator<'a> {
         match term {
             TemplateTerm::Sid(sid) => {
                 // Reference type
-                Ok((Some(FlakeValue::Ref(sid.clone())), Some(dt_id())))
+                Ok((Some(FlakeValue::Ref(sid.clone())), Some(DT_ID.clone())))
             }
             TemplateTerm::Value(val) => {
                 let dt = explicit_dt
@@ -273,10 +284,10 @@ impl<'a> FlakeGenerator<'a> {
                 if let Some(binding) = bindings.get(row, *var_id) {
                     match binding {
                         Binding::Sid(sid) => {
-                            Ok((Some(FlakeValue::Ref(sid.clone())), Some(dt_id())))
+                            Ok((Some(FlakeValue::Ref(sid.clone())), Some(DT_ID.clone())))
                         }
                         Binding::IriMatch { primary_sid, .. } => {
-                            Ok((Some(FlakeValue::Ref(primary_sid.clone())), Some(dt_id())))
+                            Ok((Some(FlakeValue::Ref(primary_sid.clone())), Some(DT_ID.clone())))
                         }
                         Binding::Lit { val, dt, .. } => Ok((Some(val.clone()), Some(dt.clone()))),
                         Binding::Unbound | Binding::Poisoned => Ok((None, None)),
@@ -293,7 +304,7 @@ impl<'a> FlakeGenerator<'a> {
             }
             TemplateTerm::BlankNode(label) => {
                 let sid = self.skolemize_blank_node(label);
-                Ok((Some(FlakeValue::Ref(sid)), Some(dt_id())))
+                Ok((Some(FlakeValue::Ref(sid)), Some(DT_ID.clone())))
             }
         }
     }
@@ -317,22 +328,30 @@ impl<'a> FlakeGenerator<'a> {
 /// This is used both for flake generation and for VALUES clause binding conversion.
 pub fn infer_datatype(val: &FlakeValue) -> Sid {
     match val {
-        FlakeValue::Ref(_) => dt_id(),
-        FlakeValue::Boolean(_) => dt_xsd("boolean"),
+        FlakeValue::Ref(_) => DT_ID.clone(),
+        FlakeValue::Boolean(_) => DT_BOOLEAN.clone(),
         // JSON-LD default for integral numbers is xsd:integer.
         // Preserve explicit xsd:long only when the source literal is explicitly typed.
-        FlakeValue::Long(_) => dt_xsd("integer"),
-        FlakeValue::Double(_) => dt_xsd("double"),
-        FlakeValue::BigInt(_) => dt_xsd("integer"),
-        FlakeValue::Decimal(_) => dt_xsd("decimal"),
-        FlakeValue::DateTime(_) => dt_xsd("dateTime"),
-        FlakeValue::Date(_) => dt_xsd("date"),
-        FlakeValue::Time(_) => dt_xsd("time"),
-        FlakeValue::String(_) => dt_xsd("string"),
-        FlakeValue::Json(_) => Sid::new(3, "JSON"), // rdf:JSON (namespace code 3 = RDF)
-        FlakeValue::Vector(_) => dt_fluree_ledger("vector"),
+        FlakeValue::Long(_) => DT_INTEGER.clone(),
+        FlakeValue::Double(_) => DT_DOUBLE.clone(),
+        FlakeValue::BigInt(_) => DT_INTEGER.clone(),
+        FlakeValue::Decimal(_) => DT_DECIMAL.clone(),
+        FlakeValue::DateTime(_) => DT_DATE_TIME.clone(),
+        FlakeValue::Date(_) => DT_DATE.clone(),
+        FlakeValue::Time(_) => DT_TIME.clone(),
+        FlakeValue::String(_) => DT_STRING.clone(),
+        FlakeValue::Json(_) => DT_JSON.clone(),
+        FlakeValue::Vector(_) => DT_VECTOR.clone(),
+        FlakeValue::GYear(_) => DT_G_YEAR.clone(),
+        FlakeValue::GYearMonth(_) => DT_G_YEAR_MONTH.clone(),
+        FlakeValue::GMonth(_) => DT_G_MONTH.clone(),
+        FlakeValue::GDay(_) => DT_G_DAY.clone(),
+        FlakeValue::GMonthDay(_) => DT_G_MONTH_DAY.clone(),
+        FlakeValue::YearMonthDuration(_) => DT_YEAR_MONTH_DURATION.clone(),
+        FlakeValue::DayTimeDuration(_) => DT_DAY_TIME_DURATION.clone(),
+        FlakeValue::Duration(_) => DT_DURATION.clone(),
         // Null isn't a standard RDF literal; treat as xsd:string for now (MVP).
-        FlakeValue::Null => dt_xsd("string"),
+        FlakeValue::Null => DT_STRING.clone(),
     }
 }
 

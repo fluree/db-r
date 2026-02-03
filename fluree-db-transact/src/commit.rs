@@ -7,18 +7,25 @@ use crate::address::parse_commit_id;
 use crate::error::{Result, TransactError};
 use crate::namespace::NamespaceRegistry;
 use chrono::Utc;
-use fluree_db_core::{ContentAddressedWrite, ContentKind, NodeCache, Storage};
+use fluree_db_core::{ContentAddressedWrite, ContentKind, Storage};
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, Publisher};
 use fluree_db_novelty::generate_commit_flakes;
 use fluree_db_novelty::{Commit, CommitData, CommitRef};
+#[cfg(not(feature = "commit-v2"))]
 use serde::Serialize;
+#[cfg(not(feature = "commit-v2"))]
 use sha2::{Digest, Sha256};
+#[cfg(not(feature = "commit-v2"))]
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::Instrument;
 
 /// Hashable commit representation (excludes address/id/time to avoid self-reference and nondeterminism)
+///
+/// Only used in the non-v2 path. When commit-v2 is enabled, the blob's trailing
+/// SHA-256 serves as the content address directly.
+#[cfg(not(feature = "commit-v2"))]
 #[derive(Serialize)]
 struct CommitForHash<'a> {
     t: i64,
@@ -29,6 +36,7 @@ struct CommitForHash<'a> {
     txn: &'a Option<String>,
 }
 
+#[cfg(not(feature = "commit-v2"))]
 fn compute_commit_id(commit: &Commit) -> String {
     let previous = commit.previous_address().map(|s| s.to_string());
     let for_hash = CommitForHash {
@@ -116,17 +124,16 @@ impl CommitOpts {
 /// # Returns
 ///
 /// A tuple of (CommitReceipt, new LedgerState)
-pub async fn commit<S, C, N>(
-    view: LedgerView<S, C>,
+pub async fn commit<S, N>(
+    view: LedgerView<S>,
     mut ns_registry: NamespaceRegistry,
     storage: &S,
     nameservice: &N,
     index_config: &IndexConfig,
     opts: CommitOpts,
-) -> Result<(CommitReceipt, LedgerState<S, C>)>
+) -> Result<(CommitReceipt, LedgerState<S>)>
 where
     S: Storage + ContentAddressedWrite + Clone + 'static,
-    C: NodeCache,
     N: NameService + Publisher,
 {
     let span = tracing::debug_span!(
@@ -152,6 +159,7 @@ where
         let delta_bytes: usize = flakes.iter().map(|f| f.size_bytes()).sum();
         let current_bytes = base.novelty_size();
         let max_bytes = index_config.reindex_max_bytes;
+        tracing::Span::current().record("flake_count", flakes.len());
         if current_bytes + delta_bytes >= max_bytes {
             return Err(TransactError::NoveltyWouldExceed {
                 current_bytes,
@@ -166,13 +174,12 @@ where
             verify_sequencing(&base, current.as_ref())?;
             Ok::<_, TransactError>(())
         }
-        .instrument(tracing::debug_span!("verify_seq"))
+        .instrument(tracing::debug_span!("commit_nameservice_lookup"))
         .await?;
 
         // 6. Build commit record
         let new_t = base.t() + 1;
         let flake_count = flakes.len();
-        tracing::Span::current().record("flake_count", flake_count);
 
         // Capture namespace delta once:
         // - write into commit record for persistence
@@ -195,12 +202,13 @@ where
                 let res = storage
                     .content_write_bytes(ContentKind::Txn, base.alias(), &txn_bytes)
                     .await?;
+                tracing::info!(raw_txn_bytes = txn_bytes.len(), "raw txn stored");
                 Ok::<_, TransactError>(Some(res.address))
             } else {
                 Ok(None)
             }
         }
-        .instrument(tracing::debug_span!("raw_txn_write"))
+        .instrument(tracing::debug_span!("commit_write_raw_txn"))
         .await?;
 
         let mut commit_record = Commit::new("", new_t, flakes.clone())
@@ -253,20 +261,44 @@ where
         // Important: the on-disk commit blob is written *without* `address` / `id`
         // set (to avoid self-reference). We inject them into the in-memory struct
         // after the write for downstream logic (metadata flakes, receipt, etc.).
-        // Compute stable commit ID (intentionally excludes wall-clock timestamp).
-        let commit_id = compute_commit_id(&commit_record);
-        let commit_hash_hex = commit_id
-            .strip_prefix("sha256:")
-            .unwrap_or(commit_id.as_str());
 
-        let bytes = serde_json::to_vec(&commit_record)?;
+        // With commit-v2: the blob's trailing SHA-256 IS the content address.
+        // Without: compute a separate content ID via postcard + SHA-256.
+        #[cfg(feature = "commit-v2")]
+        let (commit_id, commit_hash_hex, bytes) = {
+            let span = tracing::debug_span!("commit_write_commit_blob");
+            let _g = span.enter();
+            let result = crate::commit_v2::write_commit(&commit_record, true)?;
+            let commit_id = format!("sha256:{}", &result.content_hash_hex);
+            (commit_id, result.content_hash_hex, result.bytes)
+        };
+
+        #[cfg(not(feature = "commit-v2"))]
+        let (commit_id, commit_hash_hex, bytes) = {
+            let commit_id = {
+                let span = tracing::debug_span!("commit_compute_id");
+                let _g = span.enter();
+                compute_commit_id(&commit_record)
+            };
+            let commit_hash_hex = commit_id
+                .strip_prefix("sha256:")
+                .unwrap_or(commit_id.as_str())
+                .to_string();
+            let bytes = {
+                let span = tracing::debug_span!("commit_write_commit_blob");
+                let _g = span.enter();
+                serde_json::to_vec(&commit_record)?
+            };
+            (commit_id, commit_hash_hex, bytes)
+        };
+
         let storage_write_bytes = bytes.len();
         let address = async {
             let write_res = storage
                 .content_write_bytes_with_hash(
                     ContentKind::Commit,
                     base.alias(),
-                    commit_hash_hex,
+                    &commit_hash_hex,
                     &bytes,
                 )
                 .await?;
@@ -277,6 +309,7 @@ where
             bytes_written = storage_write_bytes,
         ))
         .await?;
+        tracing::Span::current().record("bytes_written", storage_write_bytes);
 
         // Update in-memory commit with its address and content ID
         commit_record.address = address.clone();
@@ -288,7 +321,7 @@ where
                 .publish_commit(base.alias(), &address, new_t)
                 .await
         }
-        .instrument(tracing::debug_span!("ns_publish"))
+        .instrument(tracing::debug_span!("commit_publish_nameservice"))
         .await?;
 
         // 9. Generate commit metadata flakes + build new state
@@ -301,6 +334,11 @@ where
             // (matching Clojure's behavior where metadata flakes are derived separately)
             let commit_metadata_flakes =
                 generate_commit_flakes(&commit_record, base.alias(), new_t);
+
+            tracing::info!(
+                metadata_flakes = commit_metadata_flakes.len(),
+                "commit metadata flakes generated"
+            );
 
             // Build new state - merge commit_metadata_flakes with transaction flakes
             let mut all_flakes = flakes;
@@ -339,13 +377,12 @@ where
 }
 
 /// Verify that this commit follows the expected sequence
-fn verify_sequencing<S, C>(
-    base: &LedgerState<S, C>,
+fn verify_sequencing<S>(
+    base: &LedgerState<S>,
     current: Option<&fluree_db_nameservice::NsRecord>,
 ) -> Result<()>
 where
     S: Storage + Clone + 'static,
-    C: NodeCache,
 {
     match current {
         None => {
@@ -407,15 +444,14 @@ mod tests {
     use super::*;
     use crate::ir::{TemplateTerm, TripleTemplate, Txn};
     use crate::stage::{stage, StageOptions};
-    use fluree_db_core::{Db, FlakeValue, MemoryStorage, NoCache, Sid};
+    use fluree_db_core::{Db, FlakeValue, MemoryStorage, Sid};
     use fluree_db_nameservice::memory::MemoryNameService;
     use fluree_db_novelty::Novelty;
 
     #[tokio::test]
     async fn test_commit_simple_insert() {
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage.clone(), cache, "test:main");
+        let db = Db::genesis(storage.clone(), "test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -456,8 +492,7 @@ mod tests {
     #[tokio::test]
     async fn test_commit_empty_transaction() {
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage.clone(), cache, "test:main");
+        let db = Db::genesis(storage.clone(), "test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -488,8 +523,7 @@ mod tests {
     #[tokio::test]
     async fn test_commit_sequence() {
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage.clone(), cache, "test:main");
+        let db = Db::genesis(storage.clone(), "test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -555,8 +589,7 @@ mod tests {
     #[tokio::test]
     async fn test_commit_predictive_sizing() {
         let storage = MemoryStorage::new();
-        let cache = NoCache::new();
-        let db = Db::genesis(storage.clone(), cache, "test:main");
+        let db = Db::genesis(storage.clone(), "test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 

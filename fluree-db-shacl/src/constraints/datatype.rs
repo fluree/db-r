@@ -88,6 +88,14 @@ fn infer_node_kind(value: &FlakeValue) -> Option<NodeKind> {
         | FlakeValue::DateTime(_)
         | FlakeValue::Date(_)
         | FlakeValue::Time(_)
+        | FlakeValue::GYear(_)
+        | FlakeValue::GYearMonth(_)
+        | FlakeValue::GMonth(_)
+        | FlakeValue::GDay(_)
+        | FlakeValue::GMonthDay(_)
+        | FlakeValue::YearMonthDuration(_)
+        | FlakeValue::DayTimeDuration(_)
+        | FlakeValue::Duration(_)
         | FlakeValue::Json(_) => Some(NodeKind::Literal),
         FlakeValue::Vector(_) => Some(NodeKind::Literal), // Treat vectors as literals
         FlakeValue::Null => None,

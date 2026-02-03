@@ -6,10 +6,10 @@ use crate::query::helpers::{
 use crate::query::nameservice_builder::NameserviceQueryBuilder;
 use crate::{
     ExecutableQuery, Fluree, LedgerState, QueryResult,
-    Result, SimpleCache, Storage, VirtualGraphPublisher,
+    Result, Storage, VirtualGraphPublisher,
 };
 
-impl<S, N> Fluree<S, SimpleCache, N>
+impl<S, N> Fluree<S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
     N: crate::NameService + VirtualGraphPublisher + Clone + Send + Sync + 'static,
@@ -72,7 +72,7 @@ where
     /// Execute a JSON-LD query with R2RML virtual graph support.
     pub async fn query_vg(
         &self,
-        ledger: &LedgerState<S, SimpleCache>,
+        ledger: &LedgerState<S>,
         query_json: &JsonValue,
     ) -> Result<QueryResult> {
         let (vars, parsed) = parse_jsonld_query(query_json, &ledger.db)?;
@@ -105,7 +105,7 @@ where
     /// Execute a SPARQL query with R2RML virtual graph support.
     pub async fn sparql_vg(
         &self,
-        ledger: &LedgerState<S, SimpleCache>,
+        ledger: &LedgerState<S>,
         sparql: &str,
     ) -> Result<QueryResult> {
         let (vars, parsed) = parse_sparql_to_ir(sparql, &ledger.db)?;

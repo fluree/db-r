@@ -28,9 +28,10 @@ use crate::error::Result;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{NodeCache, Storage};
+use fluree_db_core::Storage;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// GROUP BY operator - partitions solutions by group key variables.
 ///
@@ -38,9 +39,9 @@ use std::sync::Arc;
 /// output row where:
 /// - Group key variables retain their single value
 /// - Non-grouped variables become `Grouped(Vec<Binding>)` containing all values
-pub struct GroupByOperator<S: Storage + 'static, C: NodeCache + 'static> {
+pub struct GroupByOperator<S: Storage + 'static> {
     /// Child operator providing input solutions
-    child: BoxedOperator<S, C>,
+    child: BoxedOperator<S>,
     /// Output schema (same as input schema)
     schema: Arc<[VarId]>,
     /// Operator state
@@ -53,7 +54,7 @@ pub struct GroupByOperator<S: Storage + 'static, C: NodeCache + 'static> {
     group_key_indices: Vec<usize>,
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> GroupByOperator<S, C> {
+impl<S: Storage + 'static> GroupByOperator<S> {
     /// Create a new GROUP BY operator.
     ///
     /// # Arguments
@@ -64,7 +65,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> GroupByOperator<S, C> {
     /// # Panics
     ///
     /// Panics if any group variable is not in the child schema.
-    pub fn new(child: BoxedOperator<S, C>, group_vars: Vec<VarId>) -> Self {
+    pub fn new(child: BoxedOperator<S>, group_vars: Vec<VarId>) -> Self {
         let schema: Arc<[VarId]> = Arc::from(child.schema().to_vec().into_boxed_slice());
 
         // Compute indices for group key columns
@@ -138,12 +139,12 @@ impl<S: Storage + 'static, C: NodeCache + 'static> GroupByOperator<S, C> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for GroupByOperator<S, C> {
+impl<S: Storage + 'static> Operator<S> for GroupByOperator<S> {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
         let _span = tracing::trace_span!("group_by").entered();
         drop(_span);
         self.child.open(ctx).await?;
@@ -153,21 +154,59 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for GroupByOpe
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }
 
         // If we haven't consumed all input yet, do so now
         if self.emit_iter.is_none() {
+            let span = tracing::info_span!(
+                "groupby_blocking",
+                group_key_cols = self.group_key_indices.len(),
+                schema_cols = self.schema.len(),
+                input_batches = tracing::field::Empty,
+                input_rows = tracing::field::Empty,
+                groups = tracing::field::Empty,
+                drain_ms = tracing::field::Empty,
+                child_next_ms = tracing::field::Empty,
+                process_rows_ms = tracing::field::Empty
+            );
+            let _g = span.enter();
+            let drain_start = Instant::now();
+            let mut input_batches: u64 = 0;
+            let mut input_rows: u64 = 0;
+            let mut child_next_ms: u64 = 0;
+            let mut process_rows_ms: u64 = 0;
+
             // Drain all input from child
-            while let Some(batch) = self.child.next_batch(ctx).await? {
+            loop {
+                // Span around child.next_batch(): captures time spent in upstream operators
+                // (scan/join/filter/etc). This will show up as the "gaps" in OTEL.
+                let child_span = tracing::info_span!("groupby_child_next_batch");
+                let next_start = Instant::now();
+                let next = {
+                    let _cg = child_span.enter();
+                    self.child.next_batch(ctx).await?
+                };
+                child_next_ms += (next_start.elapsed().as_secs_f64() * 1000.0) as u64;
+
+                let Some(batch) = next else { break; };
+                input_batches += 1;
                 if batch.is_empty() {
                     continue;
                 }
 
                 // Process each row
+                let proc_span = tracing::info_span!(
+                    "groupby_process_batch",
+                    rows = batch.len(),
+                    schema_cols = self.schema.len()
+                );
+                let proc_start = Instant::now();
+                let _pg = proc_span.enter();
                 for row_idx in 0..batch.len() {
+                    input_rows += 1;
                     // Extract the complete row
                     let row: Vec<Binding> = (0..self.schema.len())
                         .map(|col| batch.get_by_col(row_idx, col).clone())
@@ -179,7 +218,18 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for GroupByOpe
                     // Add row to group
                     self.groups.entry(group_key).or_default().push(row);
                 }
+                process_rows_ms += (proc_start.elapsed().as_secs_f64() * 1000.0) as u64;
             }
+
+            span.record("input_batches", &input_batches);
+            span.record("input_rows", &input_rows);
+            span.record("groups", &(self.groups.len() as u64));
+            span.record("child_next_ms", &child_next_ms);
+            span.record("process_rows_ms", &process_rows_ms);
+            span.record(
+                "drain_ms",
+                &((drain_start.elapsed().as_secs_f64() * 1000.0) as u64),
+            );
 
             // Handle empty group case (no group vars = implicit single group)
             // If there's no input at all, produce no output
@@ -248,7 +298,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for GroupByOpe
 mod tests {
     use super::*;
     use crate::seed::SeedOperator;
-    use fluree_db_core::{Db, FlakeValue, MemoryStorage, NoCache, Sid};
+    use fluree_db_core::{Db, FlakeValue, MemoryStorage, Sid};
 
     fn xsd_long() -> Sid {
         Sid::new(2, "long")
@@ -258,8 +308,8 @@ mod tests {
         Sid::new(2, "string")
     }
 
-    fn make_test_db() -> Db<MemoryStorage, NoCache> {
-        Db::genesis(MemoryStorage::new(), NoCache, "test/main")
+    fn make_test_db() -> Db<MemoryStorage> {
+        Db::genesis(MemoryStorage::new(), "test/main")
     }
 
     #[test]
@@ -272,7 +322,7 @@ mod tests {
             vec![Binding::lit(FlakeValue::Long(30), xsd_long())],
         ];
         let batch = Batch::new(schema.clone(), columns).unwrap();
-        let seed: BoxedOperator<MemoryStorage, NoCache> =
+        let seed: BoxedOperator<MemoryStorage> =
             Box::new(SeedOperator::from_batch_row(&batch, 0));
 
         // GROUP BY ?city
@@ -294,7 +344,7 @@ mod tests {
             vec![Binding::Unbound],
         ];
         let batch = Batch::new(schema.clone(), columns).unwrap();
-        let seed: BoxedOperator<MemoryStorage, NoCache> =
+        let seed: BoxedOperator<MemoryStorage> =
             Box::new(SeedOperator::from_batch_row(&batch, 0));
 
         // GROUP BY ?city (?city is VarId(0), column 0)
@@ -315,7 +365,7 @@ mod tests {
             vec![Binding::lit(FlakeValue::Long(30), xsd_long())],
         ];
         let batch = Batch::new(schema.clone(), columns).unwrap();
-        let seed: BoxedOperator<MemoryStorage, NoCache> =
+        let seed: BoxedOperator<MemoryStorage> =
             Box::new(SeedOperator::from_batch_row(&batch, 0));
 
         let op = GroupByOperator::new(seed, vec![VarId(0)]);
@@ -370,23 +420,20 @@ mod tests {
             batch: Option<Batch>,
         }
         #[async_trait]
-        impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for BatchOperator {
+        impl<S: Storage + 'static> Operator<S> for BatchOperator {
             fn schema(&self) -> &[VarId] {
                 &self.schema
             }
-            async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
+            async fn open(&mut self, _: &ExecutionContext<'_, S>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(
-                &mut self,
-                _: &ExecutionContext<'_, S, C>,
-            ) -> Result<Option<Batch>> {
+            async fn next_batch(&mut self, _: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
                 Ok(self.batch.take())
             }
             fn close(&mut self) {}
         }
 
-        let child: BoxedOperator<MemoryStorage, NoCache> = Box::new(BatchOperator {
+        let child: BoxedOperator<MemoryStorage> = Box::new(BatchOperator {
             schema: schema.clone(),
             batch: Some(batch),
         });
@@ -462,23 +509,20 @@ mod tests {
             batch: Option<Batch>,
         }
         #[async_trait]
-        impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for BatchOperator {
+        impl<S: Storage + 'static> Operator<S> for BatchOperator {
             fn schema(&self) -> &[VarId] {
                 &self.schema
             }
-            async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
+            async fn open(&mut self, _: &ExecutionContext<'_, S>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(
-                &mut self,
-                _: &ExecutionContext<'_, S, C>,
-            ) -> Result<Option<Batch>> {
+            async fn next_batch(&mut self, _: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
                 Ok(self.batch.take())
             }
             fn close(&mut self) {}
         }
 
-        let child: BoxedOperator<MemoryStorage, NoCache> = Box::new(BatchOperator {
+        let child: BoxedOperator<MemoryStorage> = Box::new(BatchOperator {
             schema: schema.clone(),
             batch: Some(batch),
         });
@@ -526,24 +570,21 @@ mod tests {
             schema: Arc<[VarId]>,
         }
         #[async_trait]
-        impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for NoRowsOperator {
+        impl<S: Storage + 'static> Operator<S> for NoRowsOperator {
             fn schema(&self) -> &[VarId] {
                 &self.schema
             }
-            async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
+            async fn open(&mut self, _: &ExecutionContext<'_, S>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(
-                &mut self,
-                _: &ExecutionContext<'_, S, C>,
-            ) -> Result<Option<Batch>> {
+            async fn next_batch(&mut self, _: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
                 Ok(None) // Truly no rows
             }
             fn close(&mut self) {}
         }
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
-        let child: BoxedOperator<MemoryStorage, NoCache> = Box::new(NoRowsOperator {
+        let child: BoxedOperator<MemoryStorage> = Box::new(NoRowsOperator {
             schema: schema.clone(),
         });
 
@@ -588,23 +629,20 @@ mod tests {
             batch: Option<Batch>,
         }
         #[async_trait]
-        impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for BatchOperator {
+        impl<S: Storage + 'static> Operator<S> for BatchOperator {
             fn schema(&self) -> &[VarId] {
                 &self.schema
             }
-            async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
+            async fn open(&mut self, _: &ExecutionContext<'_, S>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(
-                &mut self,
-                _: &ExecutionContext<'_, S, C>,
-            ) -> Result<Option<Batch>> {
+            async fn next_batch(&mut self, _: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
                 Ok(self.batch.take())
             }
             fn close(&mut self) {}
         }
 
-        let child: BoxedOperator<MemoryStorage, NoCache> = Box::new(BatchOperator {
+        let child: BoxedOperator<MemoryStorage> = Box::new(BatchOperator {
             schema: schema.clone(),
             batch: Some(batch),
         });
@@ -640,7 +678,7 @@ mod tests {
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
         let columns = vec![vec![Binding::Unbound], vec![Binding::Unbound]];
         let batch = Batch::new(schema.clone(), columns).unwrap();
-        let seed: BoxedOperator<MemoryStorage, NoCache> =
+        let seed: BoxedOperator<MemoryStorage> =
             Box::new(SeedOperator::from_batch_row(&batch, 0));
 
         // GROUP BY ?unknown (VarId(99) not in schema)

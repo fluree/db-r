@@ -14,12 +14,12 @@ mod support;
 
 use fluree_db_api::{FlureeBuilder, IndexConfig, LedgerState, Novelty};
 use fluree_db_core::serde::json::parse_db_root;
-use fluree_db_core::{Db, NodeCache, SimpleCache, Storage, StorageRead};
+use fluree_db_core::{Db, Storage, StorageRead};
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::{json, Value as JsonValue};
 use support::start_background_indexer_local;
 
-fn property_count<S: Storage, C: NodeCache>(db: &Db<S, C>, iri: &str) -> Option<u64> {
+fn property_count<S: Storage>(db: &Db<S>, iri: &str) -> Option<u64> {
     let stats = db.stats.as_ref()?;
     let props = stats.properties.as_ref()?;
     for p in props {
@@ -33,7 +33,7 @@ fn property_count<S: Storage, C: NodeCache>(db: &Db<S, C>, iri: &str) -> Option<
     None
 }
 
-fn class_count<S: Storage, C: NodeCache>(db: &Db<S, C>, iri: &str) -> Option<u64> {
+fn class_count<S: Storage>(db: &Db<S>, iri: &str) -> Option<u64> {
     let stats = db.stats.as_ref()?;
     let classes = stats.classes.as_ref()?;
     for c in classes {
@@ -63,7 +63,7 @@ async fn property_and_class_statistics_persist_in_db_root() {
     local
         .run_until(async move {
             let alias = "it/indexing-stats:main";
-            let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let mut index_cfg = IndexConfig::default();
@@ -106,7 +106,6 @@ async fn property_and_class_statistics_persist_in_db_root() {
 
             let loaded = Db::load(
                 fluree.storage().clone(),
-                SimpleCache::new(10_000),
                 &root_address,
             )
             .await
@@ -176,7 +175,7 @@ async fn class_statistics_decrement_after_delete_refresh() {
     local
         .run_until(async move {
             let alias = "it/indexing-stats-retracts:main";
-            let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let mut index_cfg = IndexConfig::default();
@@ -235,7 +234,7 @@ async fn class_statistics_decrement_after_delete_refresh() {
                 fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
             };
 
-            let loaded2 = Db::load(fluree.storage().clone(), SimpleCache::new(10_000), &root2)
+            let loaded2 = Db::load(fluree.storage().clone(), &root2)
                 .await
                 .expect("Db::load(root2)");
             assert_eq!(class_count(&loaded2, "http://example.org/Person"), Some(2));
@@ -259,7 +258,7 @@ async fn statistics_work_with_memory_storage_when_indexed() {
     local
         .run_until(async move {
             let alias = "it/indexing-stats-memory:main";
-            let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let mut index_cfg = IndexConfig::default();
@@ -291,7 +290,7 @@ async fn statistics_work_with_memory_storage_when_indexed() {
                 fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
             };
 
-            let loaded = Db::load(fluree.storage().clone(), SimpleCache::new(10_000), &root)
+            let loaded = Db::load(fluree.storage().clone(), &root)
                 .await
                 .expect("Db::load(root)");
 
@@ -342,7 +341,7 @@ async fn ledger_info_api_returns_expected_structure() {
     local
         .run_until(async move {
             let alias = "test/ledger-info:main";
-            let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let mut index_cfg = IndexConfig::default();
@@ -385,7 +384,6 @@ async fn ledger_info_api_returns_expected_structure() {
             // ================================================================
             assert!(info.get("commit").is_some(), "should have 'commit' key");
             assert!(info.get("nameservice").is_some(), "should have 'nameservice' key");
-            assert!(info.get("namespace-codes").is_some(), "should have 'namespace-codes' key");
             assert!(info.get("stats").is_some(), "should have 'stats' key");
             assert!(info.get("index").is_some(), "should have 'index' key");
 
@@ -413,18 +411,6 @@ async fn ledger_info_api_returns_expected_structure() {
             assert!(ns.get("@type").is_some(), "nameservice should have @type");
             assert!(ns.get("f:t").is_some(), "nameservice should have f:t");
             assert_eq!(ns["f:status"], "ready", "nameservice f:status should be 'ready'");
-
-            // ================================================================
-            // Verify namespace-codes (inverted: prefix → code)
-            // ================================================================
-            let ns_codes = &info["namespace-codes"];
-            assert!(ns_codes.is_object(), "namespace-codes should be object");
-            // Check some expected namespace codes
-            assert!(ns_codes.get("").is_some(), "should have empty prefix");
-            assert!(ns_codes.get("@").is_some(), "should have '@' prefix");
-            // Example namespace should be present since we used ex:
-            assert!(ns_codes.get("http://example.org/").is_some(),
-                "should have http://example.org/ prefix");
 
             // ================================================================
             // Verify stats structure
@@ -518,7 +504,7 @@ async fn ledger_info_api_with_context_compacts_stats_iris() {
     local
         .run_until(async move {
             let alias = "test/ledger-info-ctx:main";
-            let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let mut index_cfg = IndexConfig::default();
@@ -593,18 +579,13 @@ async fn ledger_info_api_with_context_compacts_stats_iris() {
             // Verify class properties are also compacted
             if let Some(person_stats) = classes.get("ex:Person") {
                 if let Some(class_props) = person_stats.get("properties") {
-                    assert!(class_props.get("ex:name").is_some(),
-                        "Class property should be compacted to ex:name");
-
-                    // Types should also be compacted if matching context
-                    if let Some(name_in_class) = class_props.get("ex:name") {
-                        if let Some(types) = name_in_class.get("types") {
-                            // xsd:string should be in types
-                            assert!(types.get("xsd:string").is_some(),
-                                "Type xsd:string should be compacted. Got keys: {:?}",
-                                types.as_object().map(|o| o.keys().collect::<Vec<_>>()));
-                        }
-                    }
+                    let arr = class_props
+                        .as_array()
+                        .expect("class properties should be an array of compacted property IRIs");
+                    assert!(
+                        arr.iter().any(|v| v.as_str() == Some("ex:name")),
+                        "Class property should be compacted to ex:name"
+                    );
                 }
             }
 
@@ -642,7 +623,6 @@ async fn ledger_info_before_commit_returns_null_commit() {
     assert!(info["commit"].is_null(), "commit should be null when no commits");
 
     // Other keys should still be present
-    assert!(info.get("namespace-codes").is_some(), "should have namespace-codes");
     assert!(info.get("stats").is_some(), "should have stats");
 }
 
@@ -671,7 +651,7 @@ async fn ndv_cardinality_estimates_are_accurate() {
     local
         .run_until(async move {
             let alias = "test/ndv-accuracy:main";
-            let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let mut index_cfg = IndexConfig::default();
@@ -715,7 +695,7 @@ async fn ndv_cardinality_estimates_are_accurate() {
                 fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
             };
 
-            let loaded = Db::load(fluree.storage().clone(), SimpleCache::new(10_000), &root)
+            let loaded = Db::load(fluree.storage().clone(), &root)
                 .await
                 .expect("Db::load(root)");
 
@@ -808,7 +788,7 @@ async fn selectivity_calculation_is_correct() {
     local
         .run_until(async move {
             let alias = "test/selectivity:main";
-            let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let mut index_cfg = IndexConfig::default();
@@ -917,7 +897,7 @@ async fn multi_class_entities_tracked_correctly() {
     local
         .run_until(async move {
             let alias = "test/multi-class:main";
-            let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let mut index_cfg = IndexConfig::default();
@@ -1032,7 +1012,7 @@ async fn class_property_type_distribution_tracked() {
     local
         .run_until(async move {
             let alias = "test/type-distribution:main";
-            let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let mut index_cfg = IndexConfig::default();
@@ -1156,7 +1136,7 @@ async fn large_dataset_statistics_accuracy() {
     local
         .run_until(async move {
             let alias = "test/large-dataset:main";
-            let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
             let mut index_cfg = IndexConfig::default();
@@ -1229,7 +1209,7 @@ async fn large_dataset_statistics_accuracy() {
                 fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
             };
 
-            let loaded = Db::load(fluree.storage().clone(), SimpleCache::new(10_000), &root)
+            let loaded = Db::load(fluree.storage().clone(), &root)
                 .await
                 .expect("Db::load(root)");
 

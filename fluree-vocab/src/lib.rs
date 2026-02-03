@@ -116,6 +116,21 @@ pub mod xsd {
     /// xsd:time IRI
     pub const TIME: &str = "http://www.w3.org/2001/XMLSchema#time";
 
+    /// xsd:gYear IRI
+    pub const G_YEAR: &str = "http://www.w3.org/2001/XMLSchema#gYear";
+
+    /// xsd:gYearMonth IRI
+    pub const G_YEAR_MONTH: &str = "http://www.w3.org/2001/XMLSchema#gYearMonth";
+
+    /// xsd:gMonth IRI
+    pub const G_MONTH: &str = "http://www.w3.org/2001/XMLSchema#gMonth";
+
+    /// xsd:gDay IRI
+    pub const G_DAY: &str = "http://www.w3.org/2001/XMLSchema#gDay";
+
+    /// xsd:gMonthDay IRI
+    pub const G_MONTH_DAY: &str = "http://www.w3.org/2001/XMLSchema#gMonthDay";
+
     /// xsd:duration IRI
     pub const DURATION: &str = "http://www.w3.org/2001/XMLSchema#duration";
 
@@ -468,6 +483,21 @@ pub mod xsd_names {
 
     /// xsd:hexBinary local name
     pub const HEX_BINARY: &str = "hexBinary";
+
+    /// xsd:gYear local name
+    pub const G_YEAR: &str = "gYear";
+
+    /// xsd:gMonth local name
+    pub const G_MONTH: &str = "gMonth";
+
+    /// xsd:gDay local name
+    pub const G_DAY: &str = "gDay";
+
+    /// xsd:gYearMonth local name
+    pub const G_YEAR_MONTH: &str = "gYearMonth";
+
+    /// xsd:gMonthDay local name
+    pub const G_MONTH_DAY: &str = "gMonthDay";
 
     // ========================================================================
     // Classification Helpers (for SID-based datatype checking)

@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use fluree_db_api::{FlureeClient, NodeCache};
+use fluree_db_api::FlureeClient;
 
 use crate::metrics::collector::{CacheState, MetricsCollector, QueryTiming};
 use crate::setup;
@@ -43,11 +43,12 @@ pub async fn run(
 
     for query in &queries {
         for &conc in &concurrency_levels {
-            // Cold run — clear the node cache before each iteration so every
-            // cold measurement starts from a truly empty cache.
+            // Cold run — the NodeCache generic was removed from Connection in
+            // the perf-optimize refactor, so we can no longer clear the cache
+            // from the public API. The "cold" label is kept for structural
+            // parity but the run may benefit from a warm cache.
+            // TODO: re-add cache clearing once a public API is available.
             for _ in 0..args.query_iterations {
-                fluree.connection().cache().clear();
-
                 let timing = run_query_at_concurrency(
                     fluree,
                     &alias,

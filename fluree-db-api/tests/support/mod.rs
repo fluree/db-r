@@ -7,7 +7,7 @@
 // don't reference every helper.
 #![allow(dead_code)]
 
-use fluree_db_api::{IndexConfig, LedgerState, Novelty, SimpleCache};
+use fluree_db_api::{IndexConfig, LedgerState, Novelty};
 use fluree_db_core::{Db, MemoryStorage};
 use serde_json::{json, Value as JsonValue};
 use std::sync::Arc;
@@ -22,12 +22,11 @@ use tokio::task::LocalSet;
 /// Type alias for memory-backed Fluree instance.
 pub type MemoryFluree = fluree_db_api::Fluree<
     MemoryStorage,
-    SimpleCache,
     fluree_db_nameservice::memory::MemoryNameService,
 >;
 
 /// Type alias for memory-backed ledger state.
-pub type MemoryLedger = LedgerState<MemoryStorage, SimpleCache>;
+pub type MemoryLedger = LedgerState<MemoryStorage>;
 
 // =============================================================================
 // Context helpers
@@ -56,7 +55,7 @@ pub fn default_context() -> JsonValue {
 /// This is the Rust equivalent of `(fluree/create conn "ledger")` prior to the first commit:
 /// the nameservice has no record yet, and `commit()` will create one via `publish_commit()`.
 pub fn genesis_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let db = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+    let db = Db::genesis(fluree.storage().clone(), alias);
     LedgerState::new(db, Novelty::new(0))
 }
 

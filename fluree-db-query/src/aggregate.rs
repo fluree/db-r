@@ -21,9 +21,10 @@ use crate::error::Result;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{FlakeValue, NodeCache, Sid, Storage};
+use fluree_db_core::{FlakeValue, Sid, Storage};
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Aggregate function types
 #[derive(Debug, Clone, PartialEq)]
@@ -70,9 +71,9 @@ pub struct AggregateSpec {
 ///
 /// Expects input from `GroupByOperator` where non-grouped columns contain
 /// `Grouped(Vec<Binding>)` values. Replaces those with aggregate results.
-pub struct AggregateOperator<S: Storage + 'static, C: NodeCache + 'static> {
+pub struct AggregateOperator<S: Storage + 'static> {
     /// Child operator (typically GroupByOperator)
-    child: BoxedOperator<S, C>,
+    child: BoxedOperator<S>,
     /// Aggregate specifications
     aggregates: Vec<AggregateSpec>,
     /// Output schema
@@ -90,7 +91,7 @@ pub struct AggregateOperator<S: Storage + 'static, C: NodeCache + 'static> {
     child_col_count: usize,
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> AggregateOperator<S, C> {
+impl<S: Storage + 'static> AggregateOperator<S> {
     /// Create a new aggregate operator
     ///
     /// # Arguments
@@ -101,7 +102,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> AggregateOperator<S, C> {
     /// The output schema includes:
     /// - All columns from child (with aggregate input vars replaced by output vars)
     /// - Additional columns for COUNT(*) aggregates (which have no input var)
-    pub fn new(child: BoxedOperator<S, C>, aggregates: Vec<AggregateSpec>) -> Self {
+    pub fn new(child: BoxedOperator<S>, aggregates: Vec<AggregateSpec>) -> Self {
         let child_schema = child.schema().to_vec();
         let child_col_count = child_schema.len();
 
@@ -168,12 +169,12 @@ impl<S: Storage + 'static, C: NodeCache + 'static> AggregateOperator<S, C> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for AggregateOperator<S, C> {
+impl<S: Storage + 'static> Operator<S> for AggregateOperator<S> {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
         let _span = tracing::trace_span!("aggregate").entered();
         drop(_span);
         self.child.open(ctx).await?;
@@ -181,10 +182,19 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for AggregateO
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }
+
+        let span = tracing::info_span!(
+            "aggregate_batch",
+            aggregates = self.aggregates.len(),
+            rows_in = tracing::field::Empty,
+            ms = tracing::field::Empty
+        );
+        let _g = span.enter();
+        let start = Instant::now();
 
         let batch = match self.child.next_batch(ctx).await? {
             Some(b) => b,
@@ -197,6 +207,8 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for AggregateO
         if batch.is_empty() {
             return Ok(Some(Batch::empty(self.schema.clone())?));
         }
+
+        span.record("rows_in", &(batch.len() as u64));
 
         let num_cols = self.schema.len();
         let mut output_columns: Vec<Vec<Binding>> = Vec::with_capacity(num_cols);
@@ -270,7 +282,9 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for AggregateO
             }
         }
 
-        Ok(Some(Batch::new(self.schema.clone(), output_columns)?))
+        let out = Batch::new(self.schema.clone(), output_columns)?;
+        span.record("ms", &((start.elapsed().as_secs_f64() * 1000.0) as u64));
+        Ok(Some(out))
     }
 
     fn close(&mut self) {

@@ -8,7 +8,7 @@
 mod support;
 
 use fluree_db_api::{FlureeBuilder, LedgerState, Novelty};
-use fluree_db_core::{Db, SimpleCache};
+use fluree_db_core::Db;
 use serde_json::{json, Value as JsonValue};
 
 fn ctx_ex_schema() -> JsonValue {
@@ -31,12 +31,12 @@ fn ctx_ex() -> JsonValue {
 async fn seed_users(
     alias: &str,
 ) -> (
-    fluree_db_api::Fluree<fluree_db_core::MemoryStorage, SimpleCache, fluree_db_nameservice::memory::MemoryNameService>,
-    LedgerState<fluree_db_core::MemoryStorage, SimpleCache>,
+    fluree_db_api::Fluree<fluree_db_core::MemoryStorage, fluree_db_nameservice::memory::MemoryNameService>,
+    LedgerState<fluree_db_core::MemoryStorage>,
 ) {
     let fluree = FlureeBuilder::memory().build_memory();
 
-    let db0 = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
+    let db0 = Db::genesis(fluree.storage().clone(), alias);
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
     let seeded = fluree
@@ -60,8 +60,8 @@ async fn seed_users(
 }
 
 async fn query_names(
-    fluree: &fluree_db_api::Fluree<fluree_db_core::MemoryStorage, SimpleCache, fluree_db_nameservice::memory::MemoryNameService>,
-    ledger: &LedgerState<fluree_db_core::MemoryStorage, SimpleCache>,
+    fluree: &fluree_db_api::Fluree<fluree_db_core::MemoryStorage, fluree_db_nameservice::memory::MemoryNameService>,
+    ledger: &LedgerState<fluree_db_core::MemoryStorage>,
 ) -> Vec<String> {
     let q = json!({
         "@context": ctx_ex_schema(),
@@ -262,7 +262,7 @@ async fn update_where_bind_hash_functions() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-        SimpleCache::new(10_000),
+
         "it/transact-update:hash-functions",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -327,7 +327,7 @@ async fn update_where_bind_datetime_functions() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-        SimpleCache::new(10_000),
+
         "it/transact-update:datetime-functions",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -437,7 +437,7 @@ async fn update_where_bind_numeric_and_math_functions() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-        SimpleCache::new(10_000),
+
         "it/transact-update:numeric-functions",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -544,7 +544,7 @@ async fn update_where_bind_string_functions() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-        SimpleCache::new(10_000),
+
         "it/transact-update:string-functions",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -641,7 +641,7 @@ async fn update_where_bind_functional_forms() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-        SimpleCache::new(10_000),
+
         "it/transact-update:functional-forms",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -728,7 +728,7 @@ async fn update_where_bind_rdf_term_functions() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-        SimpleCache::new(10_000),
+
         "it/transact-update:rdf-term-functions",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -833,7 +833,7 @@ async fn update_where_bind_error_handling_unknown_function() {
 
     let db0 = Db::genesis(
         fluree.storage().clone(),
-        SimpleCache::new(10_000),
+
         "it/transact-update:error-handling-parse",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -879,7 +879,7 @@ async fn update_where_bind_error_handling_unknown_function() {
 
     let db0 = Db::genesis(
         fluree.storage().clone(),
-        SimpleCache::new(10_000),
+
         "it/transact-update:error-handling-query",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -928,7 +928,7 @@ async fn update_where_bind_error_handling_runtime_type_mismatch() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-        SimpleCache::new(10_000),
+
         "it/transact-update:error-runtime",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -979,7 +979,7 @@ async fn update_where_bind_error_handling_invalid_iri() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-        SimpleCache::new(10_000),
+
         "it/transact-update:error-invalid-iri",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -1030,7 +1030,7 @@ async fn update_where_bind_error_handling_invalid_datatype_iri() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-        SimpleCache::new(10_000),
+
         "it/transact-update:error-invalid-dt-iri",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -1081,7 +1081,7 @@ async fn update_where_bind_error_handling_invalid_iri_type() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-        SimpleCache::new(10_000),
+
         "it/transact-update:error-iri-type",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -1132,7 +1132,7 @@ async fn update_where_bind_error_handling_strdt_non_string() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-        SimpleCache::new(10_000),
+
         "it/transact-update:error-strdt-non-string",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -1183,7 +1183,7 @@ async fn update_where_bind_error_handling_bnode_arity() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-        SimpleCache::new(10_000),
+
         "it/transact-update:error-bnode-arity",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -1234,7 +1234,7 @@ async fn update_where_bind_error_handling_strlang_non_string() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-        SimpleCache::new(10_000),
+
         "it/transact-update:error-strlang-non-string",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -1285,7 +1285,7 @@ async fn update_where_bind_error_handling_iri_arity() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-        SimpleCache::new(10_000),
+
         "it/transact-update:error-iri-arity",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -1336,7 +1336,7 @@ async fn update_where_bind_error_handling_strdt_arity() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-        SimpleCache::new(10_000),
+
         "it/transact-update:error-strdt-arity",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -1387,7 +1387,7 @@ async fn update_where_bind_error_handling_strlang_arity() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-        SimpleCache::new(10_000),
+
         "it/transact-update:error-strlang-arity",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -1438,7 +1438,7 @@ async fn update_where_bind_error_handling_in_requires_list() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-        SimpleCache::new(10_000),
+
         "it/transact-update:error-in-list",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
