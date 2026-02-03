@@ -177,8 +177,6 @@ pub fn evaluate_to_binding_with_context_strict<S: Storage, C: NodeCache>(
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S, C>>,
 ) -> Result<Binding> {
-    use crate::context::WellKnownDatatypes;
-
     // Evaluate to comparable value, errors become None
     let comparable = match eval_to_comparable(expr, row) {
         Ok(Some(val)) => val,
@@ -194,58 +192,7 @@ pub fn evaluate_to_binding_with_context_strict<S: Storage, C: NodeCache>(
         Err(err) => return Err(err),
     };
 
-    // Convert ComparableValue to Binding
-    let datatypes = WellKnownDatatypes::new();
-    match comparable {
-        ComparableValue::Long(n) => Ok(Binding::lit(FlakeValue::Long(n), datatypes.xsd_long)),
-        ComparableValue::Double(d) => Ok(Binding::lit(FlakeValue::Double(d), datatypes.xsd_double)),
-        ComparableValue::String(s) => Ok(Binding::lit(FlakeValue::String(s.to_string()), datatypes.xsd_string)),
-        ComparableValue::Bool(b) => Ok(Binding::lit(FlakeValue::Boolean(b), datatypes.xsd_boolean)),
-        ComparableValue::Sid(sid) => Ok(Binding::Sid(sid)),
-        ComparableValue::Vector(v) => Ok(Binding::lit(FlakeValue::Vector(v.to_vec()), datatypes.fluree_vector)),
-        ComparableValue::BigInt(n) => Ok(Binding::lit(FlakeValue::BigInt(n), datatypes.xsd_integer)),
-        ComparableValue::Decimal(d) => Ok(Binding::lit(FlakeValue::Decimal(d), datatypes.xsd_decimal)),
-        ComparableValue::DateTime(dt) => Ok(Binding::lit(FlakeValue::DateTime(dt), datatypes.xsd_datetime)),
-        ComparableValue::Date(d) => Ok(Binding::lit(FlakeValue::Date(d), datatypes.xsd_date)),
-        ComparableValue::Time(t) => Ok(Binding::lit(FlakeValue::Time(t), datatypes.xsd_time)),
-        ComparableValue::Iri(iri) => {
-            let Some(ctx) = ctx else {
-                return Err(QueryError::InvalidFilter(
-                    "bind evaluation requires database context for iri()".to_string(),
-                ));
-            };
-            match ctx.db.encode_iri(&iri) {
-                Some(sid) => Ok(Binding::Sid(sid)),
-                None => Err(QueryError::InvalidFilter(format!(
-                    "Unknown IRI or namespace: {}",
-                    iri
-                ))),
-            }
-        }
-        ComparableValue::TypedLiteral { val, dt_iri, lang } => {
-            let Some(ctx) = ctx else {
-                return Err(QueryError::InvalidFilter(
-                    "bind evaluation requires database context for str-dt/str-lang".to_string(),
-                ));
-            };
-            Ok(if let Some(lang) = lang {
-                let dt = fluree_db_core::Sid::new(3, "langString");
-                Binding::lit_lang(val, dt, lang)
-            } else if let Some(dt_iri) = dt_iri {
-                match ctx.db.encode_iri(&dt_iri) {
-                    Some(dt) => Binding::lit(val, dt),
-                    None => {
-                        return Err(QueryError::InvalidFilter(format!(
-                            "Unknown datatype IRI: {}",
-                            dt_iri
-                        )));
-                    }
-                }
-            } else {
-                Binding::lit(val, datatypes.xsd_string)
-            })
-        }
-    }
+    comparable.try_into_binding(ctx)
 }
 
 fn has_unbound_vars(expr: &FilterExpr, row: &RowView) -> bool {
@@ -418,6 +365,83 @@ impl ComparableValue {
             ComparableValue::Time(_) => "Time",
             ComparableValue::Iri(_) => "IRI",
             ComparableValue::TypedLiteral { .. } => "TypedLiteral",
+        }
+    }
+
+    fn try_into_binding<S: Storage, C: NodeCache>(
+        self,
+        ctx: Option<&ExecutionContext<'_, S, C>>,
+    ) -> Result<Binding> {
+        let datatypes = WellKnownDatatypes::new();
+        match self {
+            ComparableValue::Long(n) => Ok(Binding::lit(FlakeValue::Long(n), datatypes.xsd_long)),
+            ComparableValue::Double(d) => {
+                Ok(Binding::lit(FlakeValue::Double(d), datatypes.xsd_double))
+            }
+            ComparableValue::String(s) => Ok(Binding::lit(
+                FlakeValue::String(s.to_string()),
+                datatypes.xsd_string,
+            )),
+            ComparableValue::Bool(b) => {
+                Ok(Binding::lit(FlakeValue::Boolean(b), datatypes.xsd_boolean))
+            }
+            ComparableValue::Sid(sid) => Ok(Binding::Sid(sid)),
+            ComparableValue::Vector(v) => Ok(Binding::lit(
+                FlakeValue::Vector(v.to_vec()),
+                datatypes.fluree_vector,
+            )),
+            ComparableValue::BigInt(n) => {
+                Ok(Binding::lit(FlakeValue::BigInt(n), datatypes.xsd_integer))
+            }
+            ComparableValue::Decimal(d) => {
+                Ok(Binding::lit(FlakeValue::Decimal(d), datatypes.xsd_decimal))
+            }
+            ComparableValue::DateTime(dt) => {
+                Ok(Binding::lit(FlakeValue::DateTime(dt), datatypes.xsd_datetime))
+            }
+            ComparableValue::Date(d) => {
+                Ok(Binding::lit(FlakeValue::Date(d), datatypes.xsd_date))
+            }
+            ComparableValue::Time(t) => {
+                Ok(Binding::lit(FlakeValue::Time(t), datatypes.xsd_time))
+            }
+            ComparableValue::Iri(iri) => {
+                let Some(ctx) = ctx else {
+                    return Err(QueryError::InvalidFilter(
+                        "bind evaluation requires database context for iri()".to_string(),
+                    ));
+                };
+                match ctx.db.encode_iri(&iri) {
+                    Some(sid) => Ok(Binding::Sid(sid)),
+                    None => Err(QueryError::InvalidFilter(format!(
+                        "Unknown IRI or namespace: {}",
+                        iri
+                    ))),
+                }
+            }
+            ComparableValue::TypedLiteral { val, dt_iri, lang } => {
+                let Some(ctx) = ctx else {
+                    return Err(QueryError::InvalidFilter(
+                        "bind evaluation requires database context for str-dt/str-lang".to_string(),
+                    ));
+                };
+                Ok(if let Some(lang) = lang {
+                    let dt = fluree_db_core::Sid::new(3, "langString");
+                    Binding::lit_lang(val, dt, lang)
+                } else if let Some(dt_iri) = dt_iri {
+                    match ctx.db.encode_iri(&dt_iri) {
+                        Some(dt) => Binding::lit(val, dt),
+                        None => {
+                            return Err(QueryError::InvalidFilter(format!(
+                                "Unknown datatype IRI: {}",
+                                dt_iri
+                            )));
+                        }
+                    }
+                } else {
+                    Binding::lit(val, datatypes.xsd_string)
+                })
+            }
         }
     }
 }
