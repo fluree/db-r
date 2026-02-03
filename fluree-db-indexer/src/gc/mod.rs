@@ -2,14 +2,15 @@
 //!
 //! Garbage collection for content-addressed storage.
 //!
-//! During incremental refresh, some index nodes are replaced while others are reused.
-//! The GC system tracks replaced nodes and provides a mechanism to clean them up
-//! after they're no longer needed.
+//! During index building, CAS artifacts (dicts, branches, leaves) that are no
+//! longer referenced by the new root are recorded in a garbage manifest.
+//! The GC collector walks the `prev_index` chain, identifies gc-eligible roots,
+//! and deletes their obsolete artifacts.
 //!
 //! ## Design
 //!
-//! 1. **During refresh**: Track replaced node addresses in `RefreshStats.replaced_nodes`
-//! 2. **After refresh**: Write a garbage record file with all replaced addresses
+//! 1. **During build**: Compute `old_root.all_cas_addresses() \ new_root.all_cas_addresses()`
+//! 2. **After build**: Write a garbage record with the replaced addresses
 //! 3. **On-demand cleanup**: Walk the prev-index chain, identify eligible garbage,
 //!    and delete nodes not reachable from any live index
 //!
@@ -116,61 +117,3 @@ pub async fn load_garbage_record<S: Storage>(
     Ok(record)
 }
 
-/// Collect garbage addresses from replaced node lists.
-///
-/// Merges replaced node addresses from all index trees and any obsolete
-/// sketch files. Returns a sorted, deduplicated list.
-pub fn collect_garbage_addresses(
-    replaced_node_lists: &[&[String]],
-    obsolete_sketches: Vec<String>,
-) -> Vec<String> {
-    let mut all_garbage: Vec<String> = Vec::new();
-
-    // Collect replaced nodes from all index stats
-    for list in replaced_node_lists {
-        all_garbage.extend(list.iter().cloned());
-    }
-
-    // Include obsolete sketch files
-    all_garbage.extend(obsolete_sketches);
-
-    // Sort and dedupe for determinism
-    all_garbage.sort();
-    all_garbage.dedup();
-
-    all_garbage
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_collect_garbage_addresses_empty() {
-        let lists: Vec<&[String]> = vec![];
-        let result = collect_garbage_addresses(&lists, vec![]);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_collect_garbage_addresses_merges_and_dedupes() {
-        let list1 = vec!["addr1".to_string(), "addr2".to_string()];
-        let list2 = vec!["addr2".to_string(), "addr3".to_string()];
-
-        let result = collect_garbage_addresses(
-            &[list1.as_slice(), list2.as_slice()],
-            vec!["sketch1".to_string()],
-        );
-
-        // Should be sorted and deduped
-        assert_eq!(result, vec!["addr1", "addr2", "addr3", "sketch1"]);
-    }
-
-    #[test]
-    fn test_collect_garbage_addresses_sorts() {
-        let list = vec!["z".to_string(), "a".to_string(), "m".to_string()];
-
-        let result = collect_garbage_addresses(&[list.as_slice()], vec![]);
-        assert_eq!(result, vec!["a", "m", "z"]);
-    }
-}

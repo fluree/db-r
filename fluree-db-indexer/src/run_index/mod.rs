@@ -58,6 +58,7 @@ pub use replay::{replay_leaflet, ReplayedLeaflet};
 pub use index_root::{
     BinaryIndexRoot, BinaryIndexRootV2, BinaryIndexRootAny, GraphEntry, GraphEntryV2,
     GraphOrderAddresses, GraphAddresses, DictAddresses,
+    BinaryPrevIndexRef, BinaryGarbageRef,
     BINARY_INDEX_ROOT_VERSION, BINARY_INDEX_ROOT_VERSION_V2, parse_index_root,
 };
 

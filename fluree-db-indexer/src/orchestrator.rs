@@ -10,9 +10,6 @@
 //! because it uses the unified indexing pipeline (`build_index_for_ledger`) which
 //! can fall back to batched rebuild with checkpoint cleanup.
 //!
-//! For lighter trait bounds (refresh-only, no `Send` required),
-//! use `refresh_index_for_ledger` directly instead of the orchestrator.
-//!
 //! # Thread Safety Note
 //!
 //! While storage must be `Send + Sync`, the background indexer worker is designed
