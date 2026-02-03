@@ -49,8 +49,9 @@ pub mod reasoning;
 pub mod rewrite;
 pub mod vector;
 pub mod rewrite_owl_ql;
-#[cfg(feature = "binary-index")]
+pub mod dict_overlay;
 pub mod binary_scan;
+pub mod binary_range;
 pub mod scan;
 pub mod seed;
 pub mod sort;
@@ -100,7 +101,7 @@ pub use project::ProjectOperator;
 pub use property_join::PropertyJoinOperator;
 pub use property_path::{PropertyPathOperator, DEFAULT_MAX_VISITED};
 pub use r2rml::{NoOpR2rmlProvider, R2rmlProvider, R2rmlScanOperator, R2rmlTableProvider};
-#[cfg(feature = "binary-index")]
+pub use binary_range::BinaryRangeProvider;
 pub use binary_scan::{BinaryScanOperator, DeferredScanOperator};
 pub use scan::{ScanOperator, scan_stats_reset};
 pub use graph_view::{GraphView, ResolvedGraphView, BaseView, AsOf, WithPolicy, WithReasoning};

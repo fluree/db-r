@@ -867,7 +867,7 @@ fn expand_predicate_pattern(
 mod tests {
     use super::*;
     use crate::var_registry::VarId;
-    use fluree_db_core::serde::json::{DbRootSchema, SchemaPredicateInfo, SchemaPredicates};
+    use fluree_db_core::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};
     use fluree_db_core::{Sid, SidInterner};
     use fluree_vocab::namespaces::RDF;
 
@@ -894,7 +894,7 @@ mod tests {
             },
         ];
 
-        let schema = DbRootSchema {
+        let schema = IndexSchema {
             t: 1,
             pred: SchemaPredicates {
                 keys: vec![
@@ -1048,7 +1048,7 @@ mod tests {
             });
         }
 
-        let schema = DbRootSchema {
+        let schema = IndexSchema {
             t: 1,
             pred: SchemaPredicates {
                 keys: vec![
@@ -1157,7 +1157,7 @@ mod tests {
             });
         }
 
-        let schema = DbRootSchema {
+        let schema = IndexSchema {
             t: 1,
             pred: SchemaPredicates {
                 keys: vec![
@@ -1255,7 +1255,7 @@ mod tests {
             },
         ];
 
-        let schema = DbRootSchema {
+        let schema = IndexSchema {
             t: 1,
             pred: SchemaPredicates {
                 keys: vec![
@@ -1366,7 +1366,7 @@ mod tests {
             });
         }
 
-        let schema = DbRootSchema {
+        let schema = IndexSchema {
             t: 1,
             pred: SchemaPredicates {
                 keys: vec![
@@ -1437,7 +1437,7 @@ mod tests {
             },
         ];
 
-        let schema = DbRootSchema {
+        let schema = IndexSchema {
             t: 1,
             pred: SchemaPredicates {
                 keys: vec![

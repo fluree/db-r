@@ -12,7 +12,7 @@
 //! This is the direction needed for query expansion: when querying `?s rdf:type Animal`,
 //! we expand to include instances of Dog, Cat, etc.
 
-use crate::serde::json::DbRootSchema;
+use crate::index_schema::IndexSchema;
 use crate::sid::Sid;
 use smallvec::SmallVec;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -39,18 +39,18 @@ struct SchemaHierarchyInner {
     subclasses_closure: HashMap<Sid, Arc<[Sid]>>,
     /// Transitive closure: property P -> all descendants of P (NOT including P itself)
     subproperties_closure: HashMap<Sid, Arc<[Sid]>>,
-    /// Epoch derived from DbRootSchema.t
+    /// Epoch derived from IndexSchema.t
     epoch: u64,
 }
 
 impl SchemaHierarchy {
-    /// Build a SchemaHierarchy from a DbRootSchema.
+    /// Build a SchemaHierarchy from a IndexSchema.
     ///
     /// Computes transitive closures for all class and property hierarchies.
     /// Handles cycles gracefully (no infinite loops).
-    pub fn from_db_root_schema(schema: &DbRootSchema) -> Self {
+    pub fn from_db_root_schema(schema: &IndexSchema) -> Self {
         // Build direct parent -> children maps by inverting the stored relationships.
-        // In DbRootSchema:
+        // In IndexSchema:
         //   - subclass_of contains *parent* classes (Dog.subclass_of = [Animal])
         //   - parent_props contains *parent* properties (hasFurColor.parent_props = [hasColor])
         //
@@ -216,10 +216,10 @@ fn compute_descendants(start: &Sid, direct: &HashMap<Sid, SmallVec<[Sid; 2]>>) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serde::json::{SchemaPredicateInfo, SchemaPredicates};
+    use crate::index_schema::{SchemaPredicateInfo, SchemaPredicates};
     use crate::sid::SidInterner;
 
-    fn make_schema(entries: Vec<(i32, &str, Vec<(i32, &str)>, Vec<(i32, &str)>)>) -> DbRootSchema {
+    fn make_schema(entries: Vec<(i32, &str, Vec<(i32, &str)>, Vec<(i32, &str)>)>) -> IndexSchema {
         let interner = SidInterner::new();
         let vals: Vec<SchemaPredicateInfo> = entries
             .into_iter()
@@ -242,7 +242,7 @@ mod tests {
             })
             .collect();
 
-        DbRootSchema {
+        IndexSchema {
             t: 1,
             pred: SchemaPredicates {
                 keys: vec![
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn test_empty_schema() {
-        let schema = DbRootSchema::default();
+        let schema = IndexSchema::default();
         let hierarchy = SchemaHierarchy::from_db_root_schema(&schema);
 
         assert!(hierarchy.is_empty());

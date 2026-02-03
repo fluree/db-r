@@ -12,8 +12,9 @@
 //! - Stats with decoded IRIs and computed selectivity
 
 use crate::format::iri::IriCompactor;
-use fluree_db_core::serde::json::{
-    ClassStatEntry, DbRootSchema, DbRootStats, GraphStatsEntry, PropertyStatEntry, SchemaPredicateInfo,
+use fluree_db_core::{
+    ClassStatEntry, GraphPropertyStatEntry, IndexSchema, IndexStats, GraphStatsEntry,
+    PropertyStatEntry, SchemaPredicateInfo,
 };
 use fluree_db_core::value_id::DatatypeId;
 use fluree_db_core::{NodeCache, Sid, Storage};
@@ -29,7 +30,7 @@ use std::collections::HashMap;
 type SchemaIndex<'a> = HashMap<Sid, &'a SchemaPredicateInfo>;
 
 /// Build a schema index for fast hierarchy lookups
-fn build_schema_index(schema: &DbRootSchema) -> SchemaIndex<'_> {
+fn build_schema_index(schema: &IndexSchema) -> SchemaIndex<'_> {
     schema
         .pred
         .vals
@@ -101,7 +102,7 @@ where
         .map(build_schema_index)
         .unwrap_or_default();
 
-    // Get current stats (always returns DbRootStats)
+    // Get current stats (always returns IndexStats)
     let mut stats = ledger.current_stats();
 
     // Pre-index fallback: if no graph stats from index, try loading the pre-index manifest
@@ -383,7 +384,7 @@ pub fn vg_record_to_jsonld(record: &VgNsRecord) -> JsonValue {
 /// Build stats section with decoded IRIs and hierarchy fields.
 fn build_stats<S, C>(
     ledger: &LedgerState<S, C>,
-    stats: &DbRootStats,
+    stats: &IndexStats,
     compactor: &IriCompactor,
     schema_index: &SchemaIndex,
 ) -> Result<JsonValue>
@@ -569,7 +570,7 @@ fn decode_class_stats(
 ///
 /// This is produced by the ingest tool (`finalize_pre_index_stats`) and can be used
 /// to feed query planning with NDV/count stats before an index refresh has published
-/// its own `DbRootStats.graphs`.
+/// its own `IndexStats.graphs`.
 pub fn parse_pre_index_manifest(bytes: &[u8]) -> std::result::Result<Vec<GraphStatsEntry>, String> {
     let json: JsonValue =
         serde_json::from_slice(bytes).map_err(|e| format!("invalid JSON: {}", e))?;
@@ -625,7 +626,7 @@ pub fn parse_pre_index_manifest(bytes: &[u8]) -> std::result::Result<Vec<GraphSt
                 })
                 .collect();
 
-            properties.push(fluree_db_core::serde::json::GraphPropertyStatEntry {
+            properties.push(GraphPropertyStatEntry {
                 p_id,
                 count,
                 ndv_values,

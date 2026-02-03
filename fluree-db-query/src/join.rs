@@ -11,7 +11,6 @@ use crate::error::{QueryError, Result};
 use crate::operator::{Operator, OperatorState};
 use crate::pattern::{Term, TriplePattern};
 use crate::policy::QueryPolicyEnforcer;
-use crate::scan::ScanOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::{
@@ -24,29 +23,17 @@ use std::time::Instant;
 
 /// Create a right-side scan operator for a join.
 ///
-/// When the `binary-index` feature is enabled and a `BinaryIndexStore` is available
-/// on the execution context (and conditions are met), uses `BinaryScanOperator`
-/// for faster local-file scans. Otherwise falls back to the standard `ScanOperator`.
+/// Uses `DeferredScanOperator` which selects between `BinaryScanOperator`
+/// and `ScanOperator` at open() time based on the execution context.
 fn make_right_scan<S: Storage + 'static, C: NodeCache + 'static>(
     pattern: TriplePattern,
     object_bounds: &Option<ObjectBounds>,
     _ctx: &ExecutionContext<'_, S, C>,
 ) -> Box<dyn Operator<S, C>> {
-    #[cfg(feature = "binary-index")]
-    if _ctx.binary_store.is_some() {
-        // Use DeferredScanOperator so joins can use the binary path even when
-        // object bounds exist (FILTER pushdown). DeferredScanOperator will
-        // select binary vs B-tree at open() time and safely fall back.
-        return Box::new(crate::binary_scan::DeferredScanOperator::<S, C>::new(
-            pattern,
-            object_bounds.clone(),
-        ));
-    }
-
-    match object_bounds {
-        Some(bounds) => Box::new(ScanOperator::new(pattern).with_object_bounds(bounds.clone())),
-        None => Box::new(ScanOperator::new(pattern)),
-    }
+    Box::new(crate::binary_scan::DeferredScanOperator::<S, C>::new(
+        pattern,
+        object_bounds.clone(),
+    ))
 }
 
 /// Position in a triple pattern (subject, predicate, object)
@@ -729,7 +716,6 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
     ) -> Result<()> {
         // When a binary index store is available, use it directly instead
         // of the B-tree MultiSeekCursor (which may be empty for binary-only imports).
-        #[cfg(feature = "binary-index")]
         if ctx.binary_store.is_some() {
             let span = tracing::info_span!(
                 "join_flush_batched_binary",
@@ -947,7 +933,6 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
     ///
     /// This avoids opening/decompressing leaflets once per subject, which can be
     /// catastrophically slow for large left batches.
-    #[cfg(feature = "binary-index")]
     async fn flush_batched_accumulator_binary(
         &mut self,
         ctx: &ExecutionContext<'_, S, C>,
@@ -1743,7 +1728,6 @@ mod tests {
     ///
     /// Previously, join right-scans with `object_bounds=Some(...)` could fall back to
     /// `ScanOperator` (B-tree), which yields 0 results in binary-only ingest mode.
-    #[cfg(feature = "binary-index")]
     #[tokio::test]
     async fn test_join_right_scan_with_object_bounds_uses_binary_path() {
         use crate::execute::{build_operator_tree, run_operator, ExecutableQuery};

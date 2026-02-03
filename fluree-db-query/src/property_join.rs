@@ -34,11 +34,7 @@ use fluree_db_core::{NodeCache, ObjectBounds, Sid, Storage};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[cfg(feature = "binary-index")]
 use crate::binary_scan::DeferredScanOperator;
-
-#[cfg(not(feature = "binary-index"))]
-use crate::scan::ScanOperator;
 
 /// Internal temp var for object position in predicate scans.
 ///
@@ -49,24 +45,11 @@ use crate::scan::ScanOperator;
 /// 3. This var never escapes to external schemas or user code
 const TEMP_OBJECT_VAR: VarId = VarId(u16::MAX - 1);
 
-#[cfg(feature = "binary-index")]
 fn make_property_join_scan<S: Storage + 'static, C: NodeCache + 'static>(
     pattern: TriplePattern,
     bounds: Option<ObjectBounds>,
 ) -> BoxedOperator<S, C> {
     Box::new(DeferredScanOperator::<S, C>::new(pattern, bounds))
-}
-
-#[cfg(not(feature = "binary-index"))]
-fn make_property_join_scan<S: Storage + 'static, C: NodeCache + 'static>(
-    pattern: TriplePattern,
-    bounds: Option<ObjectBounds>,
-) -> BoxedOperator<S, C> {
-    let mut scan = ScanOperator::new(pattern);
-    if let Some(b) = bounds {
-        scan = scan.with_object_bounds(b);
-    }
-    Box::new(scan)
 }
 
 /// Property-join operator for same-subject multi-predicate patterns

@@ -14,7 +14,7 @@
 
 use crate::dataset::QueryConnectionOptions;
 use crate::error::{ApiError, Result};
-use fluree_db_core::serde::json::DbRootStats;
+use fluree_db_core::IndexStats;
 use fluree_db_core::{Db, FlakeValue, NodeCache, Sid, Storage};
 use fluree_db_novelty::Novelty;
 use fluree_db_policy::{
@@ -128,7 +128,7 @@ pub async fn build_policy_context_from_opts<S: Storage + Clone + 'static, C: Nod
     //
     // We use current_stats() which merges indexed stats with novelty updates.
     // This ensures class→property relationships from uncommitted transactions are included.
-    let stats: Option<DbRootStats> = if let Some(novelty) = novelty_for_stats {
+    let stats: Option<IndexStats> = if let Some(novelty) = novelty_for_stats {
         let indexed = db.stats.as_ref().cloned().unwrap_or_default();
         Some(fluree_db_novelty::current_stats(&indexed, novelty))
     } else {

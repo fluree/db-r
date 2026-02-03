@@ -11,7 +11,7 @@
 //! - Each policy is indexed once per property (no duplicates)
 
 use crate::types::{PolicyAction, PolicyRestriction, PolicySet, PropertyPolicyEntry, TargetMode};
-use fluree_db_core::serde::json::DbRootStats;
+use fluree_db_core::IndexStats;
 use fluree_db_core::Sid;
 use fluree_vocab::namespaces::{JSON_LD, RDF};
 use std::collections::HashSet;
@@ -49,7 +49,7 @@ fn is_implicit_property(sid: &Sid) -> bool {
 /// - `defaults` - Default-bucket policy indices
 pub fn build_policy_set(
     restrictions: Vec<PolicyRestriction>,
-    stats: Option<&DbRootStats>,
+    stats: Option<&IndexStats>,
     action_filter: PolicyAction,
 ) -> PolicySet {
     let mut set = PolicySet::new();
@@ -140,7 +140,7 @@ pub fn build_policy_set(
 /// Get all properties used by instances of a class from stats.
 ///
 /// Returns an empty vec if the class is not found or stats are unavailable.
-fn get_properties_for_class(class_sid: &Sid, stats: &DbRootStats) -> Vec<Sid> {
+fn get_properties_for_class(class_sid: &Sid, stats: &IndexStats) -> Vec<Sid> {
     let Some(ref classes) = stats.classes else {
         return vec![];
     };
@@ -161,7 +161,7 @@ fn get_properties_for_class(class_sid: &Sid, stats: &DbRootStats) -> Vec<Sid> {
 /// Get all classes that use a given property from stats.
 ///
 /// Returns an empty HashSet if the property is not found or stats are unavailable.
-pub fn get_all_classes_for_property(property_sid: &Sid, stats: &DbRootStats) -> HashSet<Sid> {
+pub fn get_all_classes_for_property(property_sid: &Sid, stats: &IndexStats) -> HashSet<Sid> {
     let Some(ref classes) = stats.classes else {
         return HashSet::new();
     };
@@ -189,7 +189,7 @@ pub fn get_all_classes_for_property(property_sid: &Sid, stats: &DbRootStats) -> 
 pub fn compute_class_check_needed(
     for_classes: &HashSet<Sid>,
     property_sid: &Sid,
-    stats: Option<&DbRootStats>,
+    stats: Option<&IndexStats>,
 ) -> bool {
     // Implicit properties always need class check (shared across all classes)
     if is_implicit_property(property_sid) {
@@ -213,7 +213,7 @@ pub fn compute_class_check_needed(
 mod tests {
     use super::*;
     use crate::types::PolicyValue;
-    use fluree_db_core::serde::json::{ClassPropertyUsage, ClassStatEntry};
+    use fluree_db_core::{ClassPropertyUsage, ClassStatEntry};
 
     fn make_sid(ns: i32, name: &str) -> Sid {
         Sid::new(ns, name)
@@ -270,8 +270,8 @@ mod tests {
         }
     }
 
-    fn make_stats_with_class(class_sid: Sid, property_sids: Vec<Sid>) -> DbRootStats {
-        DbRootStats {
+    fn make_stats_with_class(class_sid: Sid, property_sids: Vec<Sid>) -> IndexStats {
+        IndexStats {
             flakes: 100,
             size: 5000,
             properties: None,
@@ -389,7 +389,7 @@ mod tests {
         let ssn_prop = make_sid(100, "ssn");
 
         // Stats: Person uses name, ssn; Company uses name only
-        let stats = DbRootStats {
+        let stats = IndexStats {
             flakes: 100,
             size: 5000,
             properties: None,

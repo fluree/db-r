@@ -34,6 +34,8 @@ pub mod cache;
 pub mod error;
 pub mod serde;
 pub mod overlay;
+pub mod query_bounds;
+pub mod range_provider;
 pub mod range;
 pub mod db;
 pub mod namespaces;
@@ -47,6 +49,8 @@ pub mod address_path;
 pub mod prefetch;
 pub mod coerce;
 pub mod value_id;
+pub mod index_stats;
+pub mod index_schema;
 
 // Re-export main types
 pub use sid::{Sid, SidInterner};
@@ -72,6 +76,7 @@ pub use cache::{NodeCache, SimpleCache, NoCache, CacheKey, CacheStats};
 pub use cache::MokaNodeCache;
 pub use overlay::{OverlayProvider, NoOverlay};
 pub use error::{Error, Result};
+pub use range_provider::RangeProvider;
 pub use range::{range, range_with_overlay, range_bounded_with_overlay, RangeTest, RangeMatch, RangeOptions, ObjectBounds, RangeCursor, MultiSeekCursor, BATCHED_JOIN_SIZE, resolve_node_materialized_with_overlay};
 #[cfg(feature = "native")]
 pub use range::{set_max_concurrent_leaf_parses, DEFAULT_MAX_CONCURRENT_LEAF_PARSES};
@@ -92,6 +97,8 @@ pub use tracking::{FuelExceededError, PolicyStats, Tracker, TrackingOptions, Tra
 pub use coerce::{coerce_value, coerce_json_value, CoercionError, CoercionResult};
 pub use address::{ParsedFlureeAddress, parse_fluree_address, extract_identifier, extract_path};
 pub use value_id::{ObjKind, ObjKey, ObjKeyError, DatatypeId};
+pub use index_stats::{IndexStats, PropertyStatEntry, ClassStatEntry, ClassPropertyUsage, GraphPropertyStatEntry, GraphStatsEntry};
+pub use index_schema::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};
 
 /// Prelude module for convenient imports of storage traits and common types.
 ///

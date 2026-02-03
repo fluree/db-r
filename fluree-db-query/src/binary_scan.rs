@@ -51,7 +51,7 @@ use std::sync::Arc;
 ///
 /// TSPO (time-ordered) is not built in the binary indexes, so it falls
 /// back to SPOT. Callers requiring time-travel should use `ScanOperator`.
-fn index_type_to_sort_order(idx: IndexType) -> RunSortOrder {
+pub(crate) fn index_type_to_sort_order(idx: IndexType) -> RunSortOrder {
     match idx {
         IndexType::Spot => RunSortOrder::Spot,
         IndexType::Psot => RunSortOrder::Psot,
@@ -377,7 +377,7 @@ impl BinaryScanOperator {
 
 /// Derive per-predicate numeric shape from real DB stats (no run-dir files).
 ///
-/// Uses graph-scoped property datatype counts from `DbRootStats.graphs`.
+/// Uses graph-scoped property datatype counts from `IndexStats.graphs`.
 /// Returns `None` when stats are unavailable or the predicate is not present.
 fn numeric_shape_from_db_stats<S: Storage + 'static, C: NodeCache + 'static>(
     ctx: &ExecutionContext<'_, S, C>,
@@ -769,61 +769,60 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for BinaryScan
 
 /// Translate overlay flakes from Sid/FlakeValue space to integer-ID space.
 ///
-/// Collects all overlay flakes via the provider's push API and translates each
-/// to an `OverlayOp` using the store's reverse dictionaries. Returns an error
-/// description if any flake references a subject, predicate, value, datatype,
-/// or language tag not present in the binary index dictionaries.
-fn translate_overlay_flakes(
+/// Uses `DictOverlay` to allocate ephemeral IDs for subjects, predicates,
+/// strings, and language tags not yet in the persisted binary dictionaries.
+/// This makes overlay translation infallible — every flake is always
+/// translatable.
+pub(crate) fn translate_overlay_flakes(
     overlay: &dyn OverlayProvider,
-    store: &BinaryIndexStore,
+    dict_overlay: &mut crate::dict_overlay::DictOverlay,
     to_t: i64,
-) -> std::result::Result<Vec<OverlayOp>, String> {
+) -> Vec<OverlayOp> {
     let mut ops = Vec::new();
-    let mut error: Option<String> = None;
+    let mut io_error: Option<std::io::Error> = None;
 
     // Collect all overlay flakes (no boundary filtering — the cursor
     // partitions per-leaf internally via find_overlay_for_leaf).
     overlay.for_each_overlay_flake(
         IndexType::Spot, None, None, true, to_t,
         &mut |flake| {
-            if error.is_some() { return; }
-            match translate_one_flake(flake, store) {
+            if io_error.is_some() { return; }
+            match translate_one_flake(flake, dict_overlay) {
                 Ok(op) => ops.push(op),
-                Err(reason) => error = Some(reason),
+                Err(e) => {
+                    // IO errors from mmap reads are truly exceptional; log and
+                    // stop collecting (remaining flakes will be missing from
+                    // overlay, but this is a storage-level failure, not a
+                    // dictionary gap).
+                    tracing::error!(%e, "IO error during overlay translation");
+                    io_error = Some(e);
+                }
             }
         },
     );
 
-    match error {
-        Some(reason) => Err(reason),
-        None => Ok(ops),
-    }
+    ops
 }
 
-/// Translate a single Flake to an OverlayOp using the store's dictionaries.
+/// Translate a single Flake to an OverlayOp using the DictOverlay.
+///
+/// All dictionary lookups that previously returned `Err("unknown ...")` now
+/// delegate to `DictOverlay::assign_*` methods, which allocate ephemeral IDs
+/// for entities not in the persisted dictionaries. Only true IO errors
+/// (mmap read failures) propagate.
 fn translate_one_flake(
     flake: &Flake,
-    store: &BinaryIndexStore,
-) -> std::result::Result<OverlayOp, String> {
-    let s_id = store.sid_to_s_id(&flake.s)
-        .map_err(|e| format!("s_id lookup: {}", e))?
-        .ok_or_else(|| format!("unknown subject: {}", flake.s))?;
-
-    let p_id = store.sid_to_p_id(&flake.p)
-        .ok_or_else(|| format!("unknown predicate: {}", flake.p))?;
-
-    let (o_kind, o_key) = store.value_to_obj_pair(&flake.o)
-        .map_err(|e| format!("value lookup: {}", e))?
-        .ok_or_else(|| "unknown object value".to_string())?;
-
-    let dt = store.find_dt_id(&flake.dt)
-        .ok_or_else(|| format!("unknown datatype: {}", flake.dt))?;
+    dict_overlay: &mut crate::dict_overlay::DictOverlay,
+) -> std::io::Result<OverlayOp> {
+    let s_id = dict_overlay.assign_subject_id_from_sid(&flake.s)?;
+    let p_id = dict_overlay.assign_predicate_id_from_sid(&flake.p);
+    let (o_kind, o_key) = dict_overlay.value_to_obj_pair(&flake.o)?;
+    let dt = dict_overlay.assign_dt_id(&flake.dt);
 
     let (lang_id, i_val) = match &flake.m {
         Some(meta) => {
             let lang_id = match &meta.lang {
-                Some(tag) => store.find_lang_id(tag)
-                    .ok_or_else(|| format!("unknown language tag: {}", tag))?,
+                Some(tag) => dict_overlay.assign_lang_id(tag),
                 None => 0,
             };
             let i_val = meta.i.unwrap_or(NO_LIST_INDEX);
@@ -865,12 +864,12 @@ fn translate_one_flake(
 /// - Not in history mode
 /// - Time-travel is within binary index coverage (`to_t >= store.base_t()`)
 /// - No history range query (`from_t` is `None`)
-/// - `ObjectBounds` are supported when the predicate is bound and its numeric
-///   shape is `IntOnly` or `FloatOnly` (Mixed/unknown falls back to `ScanOperator`)
-/// - If overlay is set: all overlay flakes are translatable to binary dict IDs
-///   (falls back to `ScanOperator` if overlay contains new subjects/predicates)
 ///
-/// Otherwise, falls back to the standard `ScanOperator`.
+/// Overlay flakes are always translatable via `DictOverlay` (ephemeral IDs
+/// are allocated for entities not yet in the persisted dictionaries).
+///
+/// When conditions are not met, falls back to `ScanOperator` (b-tree path).
+/// The b-tree fallback will be removed once all consumers provide a binary store.
 pub struct DeferredScanOperator<S: Storage + 'static, C: NodeCache + 'static> {
     pattern: TriplePattern,
     object_bounds: Option<ObjectBounds>,
@@ -950,19 +949,26 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for DeferredSc
             && binary_can_handle_bounds;
 
         // When binary path is selected and overlay exists, translate overlay
-        // flakes to integer-ID space. Fall back to ScanOperator if any flake
-        // uses subjects/predicates/values not in the binary dictionaries.
-        let (use_binary, overlay_data) = if use_binary && ctx.overlay.is_some() {
-            let store = ctx.binary_store.as_ref().unwrap();
-            match translate_overlay_flakes(ctx.overlay(), store, ctx.to_t) {
-                Ok(ops) => (true, Some((ops, ctx.overlay().epoch()))),
-                Err(reason) => {
-                    tracing::debug!(%reason, "overlay untranslatable for binary path");
-                    (false, None)
-                }
+        // flakes to integer-ID space using DictOverlay (infallible — ephemeral
+        // IDs are allocated for entities not in the persisted dictionaries).
+        // TODO(Phase 2): pass dict_overlay into BinaryScanOperator for
+        // decode-time ephemeral ID resolution.
+        let (overlay_data, _dict_overlay) = if use_binary && ctx.overlay.is_some() {
+            let store = ctx.binary_store.as_ref().unwrap().clone();
+            let mut dict_ov = crate::dict_overlay::DictOverlay::new(store);
+            let ops = translate_overlay_flakes(ctx.overlay(), &mut dict_ov, ctx.to_t);
+            let epoch = ctx.overlay().epoch();
+            if ops.is_empty() {
+                (None, Some(dict_ov))
+            } else {
+                (Some((ops, epoch)), Some(dict_ov))
             }
+        } else if use_binary {
+            // No overlay, but still create DictOverlay for decode-time use
+            let store = ctx.binary_store.as_ref().unwrap().clone();
+            (None, Some(crate::dict_overlay::DictOverlay::new(store)))
         } else {
-            (use_binary, None)
+            (None, None)
         };
 
         let mut inner: BoxedOperator<S, C> = if use_binary {

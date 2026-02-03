@@ -1,9 +1,9 @@
 //! Pre-built statistics lookup for query optimization.
 //!
 //! `StatsView` provides O(1) lookups of property and class statistics,
-//! built from `DbRootStats` at query time.
+//! built from `IndexStats` at query time.
 
-use crate::serde::json::DbRootStats;
+use crate::index_stats::IndexStats;
 use crate::sid::Sid;
 use crate::value_id::DatatypeId;
 use std::collections::HashMap;
@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 /// Pre-built stats lookup for query optimization.
 ///
-/// Built from `DbRootStats` at query time, provides O(1) lookups for
+/// Built from `IndexStats` at query time, provides O(1) lookups for
 /// property and class statistics used in selectivity estimation.
 #[derive(Debug, Default, Clone)]
 pub struct StatsView {
@@ -30,7 +30,7 @@ pub struct StatsView {
     pub classes_by_iri: HashMap<Arc<str>, u64>,
     /// Graph-scoped property stats keyed by numeric IDs: g_id -> (p_id -> data).
     ///
-    /// Populated from `DbRootStats.graphs` when present. Provides per-graph
+    /// Populated from `IndexStats.graphs` when present. Provides per-graph
     /// property lookups with datatype breakdown. The aggregate Sid-keyed
     /// `properties` map remains the primary source for the query planner.
     pub graph_properties: HashMap<u32, HashMap<u32, GraphPropertyStatData>>,
@@ -61,11 +61,11 @@ pub struct PropertyStatData {
 }
 
 impl StatsView {
-    /// Build from DbRootStats.
+    /// Build from IndexStats.
     ///
     /// Note: `PropertyStatEntry.sid` is already `(i32, String)` matching `Sid::new` shape,
     /// so no namespace_codes lookup is needed.
-    pub fn from_db_stats(stats: &DbRootStats) -> Self {
+    pub fn from_db_stats(stats: &IndexStats) -> Self {
         let mut view = StatsView::default();
 
         if let Some(ref props) = stats.properties {
@@ -114,13 +114,13 @@ impl StatsView {
         view
     }
 
-    /// Build from DbRootStats, also deriving IRI-keyed maps using a namespace table.
+    /// Build from IndexStats, also deriving IRI-keyed maps using a namespace table.
     ///
-    /// This does **not** change how stats are persisted (still SID-keyed in `DbRootStats`).
+    /// This does **not** change how stats are persisted (still SID-keyed in `IndexStats`).
     /// It just builds additional lookup maps that allow planning code to consult stats
     /// when query terms are represented as IRIs rather than SIDs.
     pub fn from_db_stats_with_namespaces(
-        stats: &DbRootStats,
+        stats: &IndexStats,
         namespace_codes: &HashMap<i32, String>,
     ) -> Self {
         let mut view = StatsView::from_db_stats(stats);
@@ -199,11 +199,11 @@ impl StatsView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::serde::json::{ClassStatEntry, PropertyStatEntry};
+    use crate::index_stats::{ClassStatEntry, PropertyStatEntry};
 
     #[test]
     fn test_empty_stats() {
-        let stats = DbRootStats {
+        let stats = IndexStats {
             flakes: 0,
             size: 0,
             properties: None,
@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn test_property_lookup() {
-        let stats = DbRootStats {
+        let stats = IndexStats {
             flakes: 100,
             size: 1000,
             properties: Some(vec![PropertyStatEntry {
@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn test_class_lookup() {
         let class_sid = Sid::new(2, "Person");
-        let stats = DbRootStats {
+        let stats = IndexStats {
             flakes: 100,
             size: 1000,
             properties: None,

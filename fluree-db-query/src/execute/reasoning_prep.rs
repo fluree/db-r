@@ -8,7 +8,7 @@ use crate::rewrite::ReasoningModes;
 use fluree_db_core::{
     is_rdfs_subclass_of, is_rdfs_subproperty_of,
     overlay::OverlayProvider,
-    serde::json::{DbRootSchema, SchemaPredicateInfo},
+    IndexSchema, SchemaPredicateInfo,
     Db, NodeCache, SchemaHierarchy, Storage,
 };
 use fluree_db_reasoner::{DerivedFactsBuilder, DerivedFactsOverlay, FrozenSameAs, ReasoningOptions};
@@ -63,7 +63,7 @@ pub fn schema_hierarchy_with_overlay<S: Storage + 'static, C: NodeCache + 'stati
     //
     // Important: in memory-backed tests, schema relationships often exist only in novelty,
     // while `db.schema` reflects the last indexed root. We need a merged view for entailment.
-    let mut schema: DbRootSchema = db.schema.clone().unwrap_or_default();
+    let mut schema: IndexSchema = db.schema.clone().unwrap_or_default();
     schema.t = to_t;
 
     // Index existing vals by id for merging.

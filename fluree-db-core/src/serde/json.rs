@@ -754,124 +754,17 @@ impl RawBranchNode {
 }
 
 // === DB Root Stats ===
+//
+// Canonical types moved to `crate::index_stats`. Re-exported here for
+// backward compatibility with existing `serde::json::DbRootStats` imports.
 
-/// Per-property statistics entry
-///
-/// Contains HLL-derived NDV estimates for a single property.
-/// Stored sorted by SID in the db-root for determinism.
-#[derive(Debug, Clone)]
-pub struct PropertyStatEntry {
-    /// Predicate SID as (namespace_code, name)
-    pub sid: (i32, String),
-    /// Total number of flakes with this property (including history)
-    pub count: u64,
-    /// Estimated number of distinct object values (via HLL)
-    pub ndv_values: u64,
-    /// Estimated number of distinct subjects using this property (via HLL)
-    pub ndv_subjects: u64,
-    /// Most recent transaction time that modified this property
-    pub last_modified_t: i64,
-}
+use crate::index_stats::{
+    IndexStats, PropertyStatEntry, ClassStatEntry, ClassPropertyUsage,
+    GraphPropertyStatEntry, GraphStatsEntry,
+};
 
-/// Basic index statistics (fast estimates)
-///
-/// These are designed to be maintained incrementally during indexing/refresh and
-/// **must not require walking the full index tree** (which can be many GBs).
-///
-/// Semantics mirror the Clojure implementation:
-/// - `flakes`: total number of flakes in the index (including history; after dedup)
-/// - `size`: estimated total bytes of flakes in the index (speed over accuracy)
-/// - `properties`: per-property HLL statistics (optional, requires hll-stats feature)
-/// - `classes`: per-class property usage statistics (optional)
-#[derive(Debug, Clone, Default)]
-pub struct DbRootStats {
-    /// Total number of flakes in the index (including history; after dedup)
-    pub flakes: u64,
-    /// Estimated total bytes of flakes in the index (not storage bytes of index nodes)
-    pub size: u64,
-    /// DEPRECATED: Sid-keyed aggregate view, kept for backward compatibility with
-    /// StatsView, current_stats(), and the query planner. Derived from `graphs`
-    /// when both are present. Will be removed once all consumers migrate to
-    /// ID-based lookups via `graphs`.
-    pub properties: Option<Vec<PropertyStatEntry>>,
-    /// Per-class property usage statistics (sorted by class SID for determinism)
-    /// Tracks which properties are used by instances of each class.
-    ///
-    /// IMPORTANT: Detailed per-property stats (counts/NDV/datatypes) must live in
-    /// `graphs[*].properties` (graph-scoped) and NOT under classes.
-    pub classes: Option<Vec<ClassStatEntry>>,
-    /// Per-graph statistics keyed by numeric IDs (authoritative, ID-based).
-    /// Each entry contains per-property stats including datatype usage.
-    /// Sorted by g_id for determinism.
-    pub graphs: Option<Vec<GraphStatsEntry>>,
-}
-
-// === Class-Property Statistics ===
-
-/// Statistics for a single class (rdf:type target)
-///
-/// Tracks property usage patterns for instances of this class.
-/// Used for query optimization (selectivity estimation) and schema inference.
-#[derive(Debug, Clone)]
-pub struct ClassStatEntry {
-    /// The class SID (target of rdf:type assertions)
-    pub class_sid: Sid,
-    /// Number of instances of this class
-    pub count: u64,
-    /// Properties used by instances of this class (sorted by property SID)
-    pub properties: Vec<ClassPropertyUsage>,
-}
-
-/// Property usage statistics within a class
-///
-/// For each property used by instances of a class, this is intentionally just the
-/// property identity. Detailed counts and datatype distributions are tracked in
-/// graph-scoped property stats (`DbRootStats.graphs`).
-#[derive(Debug, Clone)]
-pub struct ClassPropertyUsage {
-    /// The property SID
-    pub property_sid: Sid,
-}
-
-// === Graph-Scoped Statistics (ID-Based) ===
-
-/// Per-property stats within a graph, keyed by numeric IDs from GlobalDicts.
-///
-/// This is the authoritative ID-based stats format. The Sid-keyed
-/// `PropertyStatEntry` above is a deprecated interim adapter.
-#[derive(Debug, Clone)]
-pub struct GraphPropertyStatEntry {
-    /// Predicate dictionary ID (from GlobalDicts.predicates)
-    pub p_id: u32,
-    /// Total number of asserted flakes with this property (after dedup; retractions decrement)
-    pub count: u64,
-    /// Estimated number of distinct object values (via HLL)
-    pub ndv_values: u64,
-    /// Estimated number of distinct subjects using this property (via HLL)
-    pub ndv_subjects: u64,
-    /// Most recent transaction time that modified this property
-    pub last_modified_t: i64,
-    /// Per-datatype flake counts: (DatatypeId.0, count)
-    pub datatypes: Vec<(u8, u64)>,
-}
-
-/// Stats for a single named graph within a ledger.
-///
-/// Each entry corresponds to one graph in the binary index, identified
-/// by `g_id` from GlobalDicts.graphs (0 = default, 1 = txn-meta).
-#[derive(Debug, Clone)]
-pub struct GraphStatsEntry {
-    /// Graph dictionary ID (0 = default graph)
-    pub g_id: u32,
-    /// Total number of flakes in this graph (after dedup)
-    pub flakes: u64,
-    /// Byte size of flakes in this graph in the binary index.
-    /// Set to 0 in the pre-index manifest (binary index not yet built).
-    /// Populated by index build/refresh.
-    pub size: u64,
-    /// Per-property statistics within this graph (sorted by p_id for determinism)
-    pub properties: Vec<GraphPropertyStatEntry>,
-}
+/// Backward-compatible alias for [`IndexStats`].
+pub type DbRootStats = IndexStats;
 
 /// Raw property stat entry as it appears in JSON
 ///
@@ -1155,66 +1048,14 @@ pub struct RawGarbageRef {
 }
 
 // === Schema ===
+//
+// Canonical types moved to `crate::index_schema`. Re-exported here for
+// backward compatibility with existing `serde::json::DbRootSchema` imports.
 
-/// Predicate info entry in schema
-///
-/// Each entry describes a predicate/class with its relationships:
-/// - id: The predicate/class SID
-/// - subclass_of: Parent classes (for rdfs:subClassOf)
-/// - parent_props: Parent properties (for rdfs:subPropertyOf)
-/// - child_props: Child properties (inverse of subPropertyOf)
-#[derive(Debug, Clone)]
-pub struct SchemaPredicateInfo {
-    /// Predicate/class SID
-    pub id: Sid,
-    /// Parent classes (from rdfs:subClassOf assertions)
-    pub subclass_of: Vec<Sid>,
-    /// Parent properties (from rdfs:subPropertyOf assertions)
-    pub parent_props: Vec<Sid>,
-    /// Child properties (inverse of subPropertyOf)
-    pub child_props: Vec<Sid>,
-}
+use crate::index_schema::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};
 
-/// Schema predicates structure (Clojure-compatible format)
-///
-/// Uses a columnar format with fixed keys and values arrays:
-/// - keys: ["id", "subclassOf", "parentProps", "childProps"]
-/// - vals: [[sid, [parents], [parent_props], [child_props]], ...]
-#[derive(Debug, Clone, Default)]
-pub struct SchemaPredicates {
-    /// Fixed keys: ["id", "subclassOf", "parentProps", "childProps"]
-    pub keys: Vec<String>,
-    /// Values: one entry per predicate, sorted by SID for determinism
-    pub vals: Vec<SchemaPredicateInfo>,
-}
-
-/// Index schema persisted in db-root
-///
-/// Tracks class/property hierarchy information for query optimization.
-#[derive(Debug, Clone)]
-pub struct DbRootSchema {
-    /// Transaction ID when schema was last updated
-    pub t: i64,
-    /// Predicate/class metadata
-    pub pred: SchemaPredicates,
-}
-
-impl Default for DbRootSchema {
-    fn default() -> Self {
-        Self {
-            t: 0,
-            pred: SchemaPredicates {
-                keys: vec![
-                    "id".to_string(),
-                    "subclassOf".to_string(),
-                    "parentProps".to_string(),
-                    "childProps".to_string(),
-                ],
-                vals: Vec::new(),
-            },
-        }
-    }
-}
+/// Backward-compatible alias for [`IndexSchema`].
+pub type DbRootSchema = IndexSchema;
 
 /// Raw schema predicates as it appears in JSON
 #[derive(Debug, Deserialize)]

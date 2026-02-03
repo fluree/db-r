@@ -15,8 +15,11 @@ use crate::comparator::IndexType;
 use crate::error::{Error, Result};
 use crate::flake::Flake;
 use crate::index::{ChildRef, IndexNode};
+use crate::range_provider::RangeProvider;
 use crate::schema_hierarchy::SchemaHierarchy;
-use crate::serde::json::{parse_db_root, DbRoot, DbRootConfig, DbRootSchema, DbRootStats};
+use crate::index_stats::IndexStats;
+use crate::index_schema::IndexSchema;
+use crate::serde::json::{parse_db_root, DbRoot, DbRootConfig};
 use crate::sid::{Sid, SidInterner};
 use crate::storage::Storage;
 use crate::namespaces::default_namespace_codes;
@@ -36,7 +39,6 @@ pub const EMPTY_NODE_ID: &str = "empty";
 /// Generic over:
 /// - `S`: Storage backend
 /// - `C`: Node cache
-#[derive(Debug)]
 pub struct Db<S, C> {
     /// Ledger alias (e.g., "mydb/main")
     pub alias: String,
@@ -60,11 +62,11 @@ pub struct Db<S, C> {
     pub namespace_codes: HashMap<i32, String>,
 
     /// Index statistics (flakes count, total size)
-    pub stats: Option<DbRootStats>,
+    pub stats: Option<IndexStats>,
     /// Index configuration (reindex thresholds)
     pub config: Option<DbRootConfig>,
     /// Schema (class/property hierarchy)
-    pub schema: Option<DbRootSchema>,
+    pub schema: Option<IndexSchema>,
 
     /// Cached schema hierarchy for reasoning (lazily computed)
     schema_hierarchy_cache: OnceCell<SchemaHierarchy>,
@@ -77,6 +79,17 @@ pub struct Db<S, C> {
     /// Wrapped in `Arc` to allow cheap cloning for `spawn_blocking` CPU offload
     /// during leaf parsing (native only).
     pub sid_interner: Arc<SidInterner>,
+
+    /// Optional binary range provider.
+    ///
+    /// When set, `range_with_overlay()` delegates to this provider instead of
+    /// traversing the b-tree.  This allows the binary columnar index to serve
+    /// all existing range callers (reasoner, API, policy, SHACL) without
+    /// modifying them.
+    ///
+    /// Set via `Db::with_range_provider()` after construction, typically by
+    /// the ledger loading path once a `BinaryIndexStore` is available.
+    pub range_provider: Option<Arc<dyn RangeProvider>>,
 
     /// Storage backend
     pub storage: S,
@@ -105,9 +118,26 @@ impl<S: Clone, C> Clone for Db<S, C> {
             schema: self.schema.clone(),
             schema_hierarchy_cache: self.schema_hierarchy_cache.clone(),
             sid_interner: self.sid_interner.clone(),
+            range_provider: self.range_provider.clone(),
             storage: self.storage.clone(),
             cache: Arc::clone(&self.cache), // Share cache across clones for prefetch
         }
+    }
+}
+
+impl<S: std::fmt::Debug, C: std::fmt::Debug> std::fmt::Debug for Db<S, C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Db")
+            .field("alias", &self.alias)
+            .field("t", &self.t)
+            .field("version", &self.version)
+            .field("spot", &self.spot)
+            .field("psot", &self.psot)
+            .field("post", &self.post)
+            .field("opst", &self.opst)
+            .field("tspo", &self.tspo)
+            .field("range_provider", &self.range_provider.as_ref().map(|_| "..."))
+            .finish_non_exhaustive()
     }
 }
 
@@ -148,8 +178,48 @@ impl<S: Storage, C: NodeCache> Db<S, C> {
             schema: None, // Genesis has no schema
             schema_hierarchy_cache: OnceCell::new(),
             sid_interner: Arc::new(SidInterner::with_capacity(4096)),
+            range_provider: None,
             storage,
             cache,
+        }
+    }
+
+    /// Create a Db from metadata only (no b-tree index roots).
+    ///
+    /// Used when the binary columnar index is the source of truth and b-tree
+    /// roots are not available.  The Db carries namespace codes, stats, and
+    /// schema for callers that need ledger metadata, while all actual range
+    /// queries go through `BinaryIndexStore` / `BinaryScanOperator`.
+    ///
+    /// B-tree index roots are set to `None`, so any call to `range()` or
+    /// `get_index_root()` that relies on them will return an error.
+    pub fn new_meta(
+        alias: String,
+        t: i64,
+        namespace_codes: HashMap<i32, String>,
+        stats: Option<IndexStats>,
+        schema: Option<IndexSchema>,
+        storage: S,
+        cache: impl Into<Arc<C>>,
+    ) -> Self {
+        Self {
+            alias,
+            t,
+            version: 2,
+            spot: None,
+            psot: None,
+            post: None,
+            opst: None,
+            tspo: None,
+            namespace_codes,
+            stats,
+            config: None,
+            schema,
+            schema_hierarchy_cache: OnceCell::new(),
+            sid_interner: Arc::new(SidInterner::with_capacity(256)),
+            range_provider: None,
+            storage,
+            cache: cache.into(),
         }
     }
 
@@ -189,9 +259,20 @@ impl<S: Storage, C: NodeCache> Db<S, C> {
             schema: root.schema,
             schema_hierarchy_cache: OnceCell::new(),
             sid_interner: Arc::new(SidInterner::with_capacity(4096)),
+            range_provider: None,
             storage,
             cache: cache.into(),
         }
+    }
+
+    /// Attach a range provider for binary index queries.
+    ///
+    /// When set, `range_with_overlay()` delegates to this provider instead
+    /// of traversing the b-tree, allowing all existing callers to seamlessly
+    /// use the binary columnar index.
+    pub fn with_range_provider(mut self, provider: Arc<dyn RangeProvider>) -> Self {
+        self.range_provider = Some(provider);
+        self
     }
 
     /// Get the index root for a specific index type

@@ -120,6 +120,11 @@ impl NsRecord {
 }
 
 /// Virtual graph type enumeration
+///
+/// Legacy/internal naming note:
+/// - This crate historically uses "VG" ("virtual graph") for non-ledger graph sources.
+/// - Product/docs may prefer the umbrella term "Graph Source".
+/// - For a low-churn transition, see the `GraphSource*` aliases defined below.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VgType {
     /// BM25 full-text search index
@@ -164,7 +169,7 @@ impl VgType {
 
 /// Virtual graph nameservice record
 ///
-/// This struct holds metadata for virtual graphs (BM25, R2RML, Iceberg, etc.)
+/// This struct holds metadata for non-ledger graph sources (BM25, R2RML, Iceberg, etc.)
 /// stored in the nameservice. Virtual graphs are separate from ledgers but
 /// follow a similar ns@v2 storage pattern.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -335,6 +340,40 @@ pub enum NsLookupResult {
     /// Record not found
     NotFound,
 }
+
+// ============================================================================
+// Graph Source naming (non-breaking aliases)
+// ============================================================================
+//
+// We are converging on "Graph Source" as the umbrella term for anything addressable
+// by a graph IRI/name in query execution (ledger graphs, indexes, mappings, etc.).
+//
+// Internally, the nameservice has long used "VG" to mean "non-ledger graph source".
+// These aliases allow new code/docs to use "GraphSource*" names without forcing a
+// breaking rename across the crate graph.
+//
+/// Graph source type (legacy: `VgType`).
+pub type GraphSourceType = VgType;
+
+/// Graph source nameservice record (legacy: `VgNsRecord`).
+///
+/// Note: This currently represents *non-ledger* graph sources only.
+pub type GraphSourceRecord = VgNsRecord;
+
+/// Graph source snapshot entry (legacy: `VgSnapshotEntry`).
+pub type GraphSourceSnapshotEntry = VgSnapshotEntry;
+
+/// Graph source snapshot history (legacy: `VgSnapshotHistory`).
+pub type GraphSourceSnapshotHistory = VgSnapshotHistory;
+
+/// Graph source publisher (legacy: `VirtualGraphPublisher`).
+///
+/// This is intentionally a thin wrapper to allow code to speak in "graph source"
+/// terms while reusing the existing nameservice storage format and invariants.
+#[async_trait]
+pub trait GraphSourcePublisher: VirtualGraphPublisher {}
+
+impl<T: VirtualGraphPublisher + ?Sized> GraphSourcePublisher for T {}
 
 /// Read-only nameservice lookup trait
 ///

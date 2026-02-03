@@ -212,19 +212,19 @@ impl<S: Storage + Clone + 'static, C: NodeCache> LedgerState<S, C> {
 
     /// Get current stats (indexed + novelty merged)
     ///
-    /// Always returns a DbRootStats, even for genesis/no-index ledgers.
+    /// Always returns an IndexStats, even for genesis/no-index ledgers.
     /// Falls back to default stats and applies novelty deltas.
     ///
     /// This is the canonical way to get up-to-date statistics for a ledger,
     /// as it includes both the indexed stats and any uncommitted changes
     /// from the novelty layer.
-    pub fn current_stats(&self) -> fluree_db_core::serde::json::DbRootStats {
+    pub fn current_stats(&self) -> fluree_db_core::IndexStats {
         let indexed = self
             .db
             .stats
             .as_ref()
             .cloned()
-            .unwrap_or_default(); // DbRootStats::default() for genesis/no-index
+            .unwrap_or_default(); // IndexStats::default() for genesis/no-index
         fluree_db_novelty::current_stats(&indexed, self.novelty.as_ref())
     }
 

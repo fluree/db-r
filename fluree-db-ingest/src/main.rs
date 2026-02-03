@@ -1079,7 +1079,6 @@ async fn run_build_index(args: &Args) -> Result<(), Box<dyn std::error::Error>> 
     use fluree_db_indexer::run_index::BinaryIndexStore;
     use fluree_db_api::{Publisher};
     use fluree_db_core::StorageWrite;
-    use std::fmt::Write;
 
     let run_dir = default_run_dir(args);
     let index_dir = default_index_dir(args);
@@ -1124,8 +1123,11 @@ async fn run_build_index(args: &Args) -> Result<(), Box<dyn std::error::Error>> 
 
     // Publish binary index root to nameservice (index source of truth).
     //
-    // We write a small descriptor JSON under the ledger path and publish its
-    // address + max_t. Consumers can then locate the binary index and stats.
+    // We write a versioned BinaryIndexRoot descriptor under the ledger path
+    // and publish its address + max_t. Consumers load the binary index from
+    // the address prefixes stored in the root.
+    use fluree_db_indexer::run_index::BinaryIndexRoot;
+
     let fluree = FlureeBuilder::file(args.db_dir.to_string_lossy().to_string()).build()?;
     let storage = fluree.storage();
     let ns = fluree.nameservice();
@@ -1134,21 +1136,21 @@ async fn run_build_index(args: &Args) -> Result<(), Box<dyn std::error::Error>> 
     let index_t = store.max_t();
     let ap = alias_prefix(&args.ledger);
     let root_addr = format!("fluree:file://{}/index/binary-index-root.json", ap);
-    let stats_addr = format!("fluree:file://{}/stats/pre-index-stats.json", ap);
 
-    let mut json = String::with_capacity(512);
-    let _ = writeln!(json, "{{");
-    let _ = writeln!(json, "  \"schema_version\": 1,");
-    let _ = writeln!(json, "  \"ledger\": {:?},", args.ledger);
-    let _ = writeln!(json, "  \"index_t\": {},", index_t);
-    let _ = writeln!(json, "  \"run_dir\": {:?},", run_dir.to_string_lossy());
-    let _ = writeln!(json, "  \"index_dir\": {:?},", index_dir.to_string_lossy());
-    let _ = writeln!(json, "  \"stats_manifest\": {:?},", stats_addr);
-    let _ = writeln!(json, "  \"graphs\": {:?},", store.graph_ids());
-    let _ = writeln!(json, "  \"orders\": [\"spot\",\"psot\",\"post\",\"opst\"]");
-    let _ = writeln!(json, "}}");
+    let runs_prefix = format!("file://{}", run_dir.to_string_lossy());
+    let index_prefix = format!("file://{}", index_dir.to_string_lossy());
 
-    storage.write_bytes(&root_addr, json.as_bytes()).await?;
+    let root = BinaryIndexRoot::from_store(
+        &store,
+        &args.ledger,
+        &runs_prefix,
+        &index_prefix,
+    );
+
+    let root_bytes = root.to_json_bytes()
+        .map_err(|e| format!("failed to serialize binary index root: {}", e))?;
+
+    storage.write_bytes(&root_addr, &root_bytes).await?;
     ns.publish_index(&args.ledger, &root_addr, index_t).await?;
     info!(
         ledger = %args.ledger,
@@ -1301,7 +1303,7 @@ fn format_sid(sid: &fluree_db_core::Sid, ns: &std::collections::HashMap<i32, Str
 async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     use fluree_db_api::FlureeBuilder;
     use fluree_db_core::{Db, NoCache, Sid, StatsView, StorageRead};
-    use fluree_db_core::serde::json::DbRootStats;
+    use fluree_db_core::IndexStats;
     use fluree_db_indexer::run_index::BinaryIndexStore;
     use fluree_db_query::context::ExecutionContext;
     use fluree_db_query::parse::encode::MemoryEncoder;
@@ -1384,7 +1386,7 @@ async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    db.stats = Some(DbRootStats {
+    db.stats = Some(IndexStats {
         flakes: 0,
         size: 0,
         properties: None,
@@ -1664,15 +1666,64 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         if let Some(index_addr) = ns_record.and_then(|r| r.index_address) {
-            let db = fluree_db_core::Db::load(storage.clone(), fluree_db_core::cache::NoCache, &index_addr).await?;
-            info!(
-                index_addr = %index_addr,
-                stats_present = db.stats.is_some(),
-                stats_graphs = db.stats.as_ref().and_then(|s| s.graphs.as_ref()).map(|g| g.len()).unwrap_or(0),
-                stats_classes = db.stats.as_ref().and_then(|s| s.classes.as_ref()).map(|c| c.len()).unwrap_or(0),
-                stats_properties = db.stats.as_ref().and_then(|s| s.properties.as_ref()).map(|p| p.len()).unwrap_or(0),
-                "Loaded db-root stats"
-            );
+            // In binary-index-only mode, nameservice index_address points at the binary index root
+            // descriptor (JSON), not a b-tree db-root. So we just load/print the descriptor.
+            match storage.read_bytes(&index_addr).await {
+                Ok(bytes) => {
+                    info!(
+                        index_addr = %index_addr,
+                        bytes = bytes.len(),
+                        "Loaded index root descriptor"
+                    );
+
+                    if args.dump_stats_manifest {
+                        if let Ok(s) = std::str::from_utf8(&bytes) {
+                            println!("{}", s);
+                        }
+                    } else if let Ok(s) = std::str::from_utf8(&bytes) {
+                        // Minimal extraction without serde_json.
+                        fn extract_string(json: &str, key: &str) -> Option<String> {
+                            let needle = format!("\"{}\":", key);
+                            let idx = json.find(&needle)? + needle.len();
+                            let rest = json[idx..].trim_start();
+                            if !rest.starts_with('"') {
+                                return None;
+                            }
+                            let rest = &rest[1..];
+                            let end = rest.find('"')?;
+                            Some(rest[..end].to_string())
+                        }
+                        fn extract_i64(json: &str, key: &str) -> Option<i64> {
+                            let needle = format!("\"{}\":", key);
+                            let idx = json.find(&needle)? + needle.len();
+                            let rest = json[idx..].trim_start();
+                            let end = rest
+                                .find(|c: char| !c.is_ascii_digit() && c != '-') 
+                                .unwrap_or(rest.len());
+                            rest[..end].trim().parse::<i64>().ok()
+                        }
+
+                        let schema_version = extract_i64(s, "schema_version");
+                        let index_t = extract_i64(s, "index_t");
+                        let run_dir = extract_string(s, "run_dir");
+                        let index_dir = extract_string(s, "index_dir");
+                        let stats_manifest = extract_string(s, "stats_manifest");
+
+                        info!(
+                            index_addr = %index_addr,
+                            schema_version,
+                            index_t,
+                            run_dir = run_dir.as_deref().unwrap_or(""),
+                            index_dir = index_dir.as_deref().unwrap_or(""),
+                            stats_manifest = stats_manifest.as_deref().unwrap_or(""),
+                            "Binary index root summary"
+                        );
+                    }
+                }
+                Err(e) => {
+                    info!(index_addr = %index_addr, "Failed to read index root descriptor: {}", e);
+                }
+            }
         } else {
             info!("No index_address in nameservice; cannot load db-root stats");
         }

@@ -373,7 +373,7 @@ impl Flake {
         base + o_size + m_size + 9
     }
 
-    /// Fast deterministic size estimate for stats (`DbRootStats.size`)
+    /// Fast deterministic size estimate for stats (`IndexStats.size`)
     ///
     /// Mirrors the intent of Clojure's `flake/size-flake`: **speed over accuracy**.
     /// This is *not* the storage byte size of index nodes; it is an estimate of

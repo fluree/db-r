@@ -22,6 +22,7 @@ use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 
 // ============================================================================
 // Manifest types (deserialized from index_manifest_{order}.json)
@@ -129,7 +130,12 @@ pub struct BinaryIndexStore {
     /// Per-predicate numbig arenas: p_id → equality-only arena for overflow BigInt/BigDecimal.
     numbig_forward: HashMap<u32, super::numbig_dict::NumBigArena>,
     /// LRU cache for decoded leaflet regions (Region 1 and Region 2).
-    leaflet_cache: Option<LeafletCache>,
+    ///
+    /// Wrapped in `Arc` so a single cache can be shared across multiple
+    /// `BinaryIndexStore` instances (e.g., multiple ledgers in the same
+    /// connection). This gives one global budget ("give Fluree 8 GB")
+    /// instead of per-store budgets that can't be controlled together.
+    leaflet_cache: Option<Arc<LeafletCache>>,
 }
 
 /// Backward-compatible type alias.
@@ -402,7 +408,7 @@ impl BinaryIndexStore {
             leaflet_cache_gib = (leaflet_cache_bytes as f64) / (1024.0 * 1024.0 * 1024.0),
             "initializing leaflet cache"
         );
-        let leaflet_cache = Some(LeafletCache::with_max_bytes(leaflet_cache_bytes));
+        let leaflet_cache = Some(Arc::new(LeafletCache::with_max_bytes(leaflet_cache_bytes)));
 
         Ok(Self {
             graphs,
@@ -428,6 +434,31 @@ impl BinaryIndexStore {
             numbig_forward,
             leaflet_cache,
         })
+    }
+
+    /// Load a BinaryIndexStore using a shared leaflet cache.
+    ///
+    /// The provided cache is shared across all stores that receive the same
+    /// `Arc`, giving one global budget instead of per-store budgets. This
+    /// is the recommended constructor for multi-ledger deployments.
+    ///
+    /// Pass `None` to disable caching entirely (e.g., during index builds).
+    pub fn load_with_cache(
+        run_dir: &Path,
+        index_dir: &Path,
+        cache: Option<Arc<LeafletCache>>,
+    ) -> io::Result<Self> {
+        let mut store = Self::load(run_dir, index_dir)?;
+        store.leaflet_cache = cache;
+        Ok(store)
+    }
+
+    /// Replace the leaflet cache on an already-loaded store.
+    ///
+    /// Use this to attach a shared cache after construction, or to
+    /// disable caching by passing `None`.
+    pub fn set_leaflet_cache(&mut self, cache: Option<Arc<LeafletCache>>) {
+        self.leaflet_cache = cache;
     }
 
     // ========================================================================
@@ -880,9 +911,24 @@ impl BinaryIndexStore {
         &self.prefix_trie
     }
 
+    /// Number of subjects in the forward dictionary.
+    pub fn subject_count(&self) -> u32 {
+        self.subject_offsets.len() as u32
+    }
+
     /// Number of predicates in the dictionary.
     pub fn predicate_count(&self) -> u32 {
         self.predicates.len()
+    }
+
+    /// Number of strings in the forward dictionary.
+    pub fn string_count(&self) -> u32 {
+        self.string_offsets.len() as u32
+    }
+
+    /// Number of language tags in the dictionary.
+    pub fn language_tag_count(&self) -> u16 {
+        self.language_tags.len()
     }
 
     /// Get pre-computed dt_sids (dt_id → Sid).
@@ -906,7 +952,7 @@ impl BinaryIndexStore {
 
     /// Get the leaflet cache (if enabled).
     pub fn leaflet_cache(&self) -> Option<&LeafletCache> {
-        self.leaflet_cache.as_ref()
+        self.leaflet_cache.as_deref()
     }
 
     /// Find dt_id for a datatype Sid.

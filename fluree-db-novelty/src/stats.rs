@@ -17,9 +17,7 @@
 use crate::Novelty;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::is_rdf_type;
-use fluree_db_core::serde::json::{
-    ClassPropertyUsage, ClassStatEntry, DbRootStats, PropertyStatEntry,
-};
+use fluree_db_core::{ClassPropertyUsage, ClassStatEntry, IndexStats, PropertyStatEntry};
 use fluree_db_core::{FlakeValue, Sid};
 use std::collections::{HashMap, HashSet};
 
@@ -35,14 +33,14 @@ use std::collections::{HashMap, HashSet};
 ///
 /// # Returns
 ///
-/// Updated `DbRootStats` with:
+/// Updated `IndexStats` with:
 /// - Property counts updated from novelty
 /// - Class counts updated from novelty
 /// - Class->property details updated from novelty
 /// - NDV/selectivity preserved from indexed stats
 ///
 /// If novelty is empty, returns a clone of the indexed stats.
-pub fn current_stats(indexed: &DbRootStats, novelty: &Novelty) -> DbRootStats {
+pub fn current_stats(indexed: &IndexStats, novelty: &Novelty) -> IndexStats {
     if novelty.is_empty() {
         return indexed.clone();
     }
@@ -80,7 +78,7 @@ pub fn current_stats(indexed: &DbRootStats, novelty: &Novelty) -> DbRootStats {
         }
     }
 
-    // Convert back to DbRootStats format
+    // Convert back to IndexStats format
     finalize_stats(indexed, property_counts, class_data)
 }
 
@@ -88,7 +86,7 @@ pub fn current_stats(indexed: &DbRootStats, novelty: &Novelty) -> DbRootStats {
 type PropertyCountMap = HashMap<(i32, String), i64>;
 
 /// Build property counts from indexed stats
-fn build_property_counts(indexed: &DbRootStats) -> PropertyCountMap {
+fn build_property_counts(indexed: &IndexStats) -> PropertyCountMap {
     let mut counts = HashMap::new();
     if let Some(ref props) = indexed.properties {
         for entry in props {
@@ -111,12 +109,12 @@ struct PropertyDataMut {
     /// Count of asserted flakes for this (class, property) pair (delta).
     ///
     /// We intentionally do NOT track datatype/ref/lang breakdowns here; detailed
-    /// property stats live in graph-scoped stats (`DbRootStats.graphs`).
+    /// property stats live in graph-scoped stats (`IndexStats.graphs`).
     count_delta: i64,
 }
 
 /// Build class data from indexed stats
-fn build_class_data(indexed: &DbRootStats) -> HashMap<Sid, ClassDataMut> {
+fn build_class_data(indexed: &IndexStats) -> HashMap<Sid, ClassDataMut> {
     let mut class_data = HashMap::new();
     if let Some(ref classes) = indexed.classes {
         for entry in classes {
@@ -174,12 +172,12 @@ fn build_subject_class_map(
     subject_classes
 }
 
-/// Convert mutable stats back to DbRootStats format
+/// Convert mutable stats back to IndexStats format
 fn finalize_stats(
-    indexed: &DbRootStats,
+    indexed: &IndexStats,
     property_counts: PropertyCountMap,
     class_data: HashMap<Sid, ClassDataMut>,
-) -> DbRootStats {
+) -> IndexStats {
     // Convert property counts, preserving NDV from indexed
     let properties = if property_counts.is_empty() {
         indexed.properties.clone()
@@ -255,7 +253,7 @@ fn finalize_stats(
         }
     };
 
-    DbRootStats {
+    IndexStats {
         flakes: indexed.flakes,
         size: indexed.size,
         properties,
@@ -327,7 +325,7 @@ mod tests {
 
     #[test]
     fn test_empty_novelty_returns_indexed() {
-        let indexed = DbRootStats {
+        let indexed = IndexStats {
             flakes: 100,
             size: 5000,
             properties: Some(vec![PropertyStatEntry {
@@ -350,7 +348,7 @@ mod tests {
 
     #[test]
     fn test_property_count_update() {
-        let indexed = DbRootStats {
+        let indexed = IndexStats {
             flakes: 10,
             size: 500,
             properties: Some(vec![PropertyStatEntry {
@@ -385,7 +383,7 @@ mod tests {
 
     #[test]
     fn test_class_count_from_type_flakes() {
-        let indexed = DbRootStats::default();
+        let indexed = IndexStats::default();
 
         let mut novelty = Novelty::new(0);
         let flakes = vec![
@@ -412,7 +410,7 @@ mod tests {
 
     #[test]
     fn test_class_property_details() {
-        let indexed = DbRootStats::default();
+        let indexed = IndexStats::default();
 
         let mut novelty = Novelty::new(0);
         let alice = make_sid(100, "alice");
@@ -447,7 +445,7 @@ mod tests {
 
     #[test]
     fn test_retraction_decrements_counts() {
-        let indexed = DbRootStats {
+        let indexed = IndexStats {
             flakes: 10,
             size: 500,
             properties: Some(vec![PropertyStatEntry {
@@ -484,7 +482,7 @@ mod tests {
 
     #[test]
     fn test_property_presence_tracking_with_lang_values() {
-        let indexed = DbRootStats::default();
+        let indexed = IndexStats::default();
 
         let mut novelty = Novelty::new(0);
         let alice = make_sid(100, "alice");

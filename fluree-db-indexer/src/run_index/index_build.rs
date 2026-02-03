@@ -475,6 +475,14 @@ pub fn build_all_indexes(
                     tracing::warn!(order = ?order, dir = %run_dir.display(), "run dir missing, skipping");
                     return None;
                 }
+                // Skip orders with no run files (e.g. OPST when no IRI refs exist)
+                let has_run_files = discover_run_files(&run_dir)
+                    .map(|files| !files.is_empty())
+                    .unwrap_or(false);
+                if !has_run_files {
+                    tracing::warn!(order = ?order, dir = %run_dir.display(), "no run files, skipping");
+                    return None;
+                }
 
                 let base = base_run_dir.to_path_buf();
                 let idx_dir = index_dir.to_path_buf();
