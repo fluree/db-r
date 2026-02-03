@@ -46,6 +46,18 @@ pub enum QueryError {
     #[error("Invalid filter: {0}")]
     InvalidFilter(String),
 
+    /// Unknown function name encountered during function evaluation
+    #[error("Unknown function: {0}")]
+    UnknownFunction(String),
+
+    /// Type mismatch in function
+    #[error("Type mismatch in {function}: expected {expected}, got {actual}")]
+    FunctionTypeMismatch {
+        function: String,
+        expected: String,
+        actual: String,
+    },
+
     /// Resource limit exceeded
     #[error("Resource limit exceeded: {0}")]
     ResourceLimit(String),
