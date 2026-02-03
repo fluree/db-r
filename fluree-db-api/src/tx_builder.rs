@@ -26,6 +26,7 @@ use fluree_db_core::ContentAddressedWrite;
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::Publisher;
 use fluree_db_transact::{CommitOpts, NamespaceRegistry, Txn, TxnOpts, TxnType};
+use tracing::Instrument;
 
 // ============================================================================
 // TransactOperation (private)
@@ -600,6 +601,18 @@ where
 {
     core.validate().map_err(|e| ApiError::Builder(e))?;
 
+    let txn_type_label = core.pre_built_txn.as_ref()
+        .map(|t| format!("{:?}", t.txn_type))
+        .or_else(|| core.operation.as_ref().map(|op| format!("{:?}", op.txn_type())))
+        .unwrap_or_else(|| "Unknown".to_string());
+    let span = tracing::info_span!(
+        "transact",
+        txn_type = %txn_type_label,
+        t = tracing::field::Empty,
+        flake_count = tracing::field::Empty,
+    );
+    async {
+
     let index_config = core.index_config.unwrap_or_default();
     let store_raw_txn = core.txn_opts.store_raw_txn.unwrap_or(false);
 
@@ -721,10 +734,16 @@ where
     // Update cache
     write_guard.replace(new_state);
 
+    tracing::Span::current().record("t", receipt.t);
+    tracing::Span::current().record("flake_count", receipt.flake_count as u64);
+
     Ok(TransactResultRef {
         receipt,
         indexing: indexing_status,
     })
+    }
+    .instrument(span)
+    .await
 }
 
 #[cfg(test)]

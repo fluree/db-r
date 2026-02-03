@@ -55,6 +55,7 @@ pub use gc::{
 use fluree_db_core::{ContentAddressedWrite, Storage, StorageWrite};
 use fluree_db_nameservice::{NameService, Publisher};
 use serde::{Deserialize, Serialize};
+use tracing::Instrument;
 
 /// Normalize an alias for comparison purposes
 ///
@@ -594,9 +595,8 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService,
 {
-    let span = tracing::info_span!("index_build", ledger_alias = alias);
-    let _guard = span.enter();
-
+    let span = tracing::info_span!("index", ledger_alias = alias);
+    async {
     // Look up the ledger record
     let record = nameservice
         .lookup(alias)
@@ -626,6 +626,9 @@ where
         let _ = (storage, config);
         Err(IndexerError::BTreePipelineRemoved)
     }
+    }
+    .instrument(span)
+    .await
 }
 
 /// Binary index build implementation (commit-v2 feature required).
@@ -677,8 +680,11 @@ where
     let storage = storage.clone();
     let alias = alias.to_string();
     let handle = tokio::runtime::Handle::current();
+    // Capture the current span so child spans inside spawn_blocking are parented correctly.
+    let parent_span = tracing::Span::current();
 
     tokio::task::spawn_blocking(move || {
+        let _guard = parent_span.enter();
         handle.block_on(async {
             std::fs::create_dir_all(&run_dir)
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;

@@ -53,7 +53,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{oneshot, watch, Mutex, Notify};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, warn, Instrument};
 
 // =============================================================================
 // Indexing Status & Completion Types
@@ -796,6 +796,7 @@ where
                         max_old_indexes: Some(self.config.gc_max_old_indexes),
                         min_time_garbage_mins: Some(self.config.gc_min_time_mins),
                     };
+                    let gc_span = tracing::debug_span!("index_gc", root_address = %gc_root);
                     tokio::spawn(async move {
                         if let Err(e) =
                             crate::gc::clean_garbage(&gc_storage, &gc_root, gc_config).await
@@ -808,7 +809,7 @@ where
                         } else {
                             debug!(root_address = %gc_root, "Background GC completed");
                         }
-                    });
+                    }.instrument(gc_span));
 
                     // Resolve waiters
                     let mut states = self.states.lock().await;

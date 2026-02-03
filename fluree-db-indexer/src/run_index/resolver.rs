@@ -89,6 +89,13 @@ impl CommitResolver {
         let t = commit_ops.t;
         let mut count = 0u32;
 
+        let span = tracing::trace_span!(
+            "resolve_commit",
+            t = t,
+            ops = tracing::field::Empty,
+        );
+        let _guard = span.enter();
+
         commit_ops.for_each_op(|raw_op: RawOp<'_>| {
             let record = self.resolve_single_op(&raw_op, t, dicts)?;
 
@@ -120,6 +127,7 @@ impl CommitResolver {
             Ok(())
         })?;
 
+        span.record("ops", count);
         Ok(count)
     }
 
@@ -136,6 +144,9 @@ impl CommitResolver {
         dicts: &mut GlobalDicts,
         writer: &mut W,
     ) -> Result<(u32, i64), ResolverError> {
+        let span = tracing::trace_span!("resolve_blob");
+        let _guard = span.enter();
+
         let commit_ops = load_commit_ops(bytes)?;
         self.apply_namespace_delta(&commit_ops.envelope.namespace_delta);
         let mut op_count = self.resolve_commit_ops(&commit_ops, dicts, writer)?;

@@ -95,7 +95,7 @@ mod inner {
 
         // 1. Create ImportSink + parse TTL
         let ns_codes_before = state.ns_registry.code_count();
-        let _parse_span = tracing::info_span!(
+        let _parse_span = tracing::debug_span!(
             "import_parse",
             t = new_t,
             ttl_bytes = ttl.len(),
@@ -110,7 +110,7 @@ mod inner {
 
         // 2. Retrieve writer, get namespace delta, build envelope
         let (writer, op_count, envelope) = {
-            let _span = tracing::info_span!("import_build_envelope", t = new_t).entered();
+            let _span = tracing::debug_span!("import_build_envelope", t = new_t).entered();
             let writer = sink.finish()
                 .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
             let op_count = writer.op_count();
@@ -145,7 +145,7 @@ mod inner {
 
         // 4. Finalize blob
         let result = {
-            let _span = tracing::info_span!("import_finish_blob", t = new_t, op_count).entered();
+            let _span = tracing::debug_span!("import_finish_blob", t = new_t, op_count).entered();
             writer.finish(&envelope)?
         };
         let commit_id = format!("sha256:{}", &result.content_hash_hex);
@@ -153,7 +153,7 @@ mod inner {
 
         // 5. Store
         let write_res = {
-            let _span = tracing::info_span!("import_store", t = new_t, blob_bytes).entered();
+            let _span = tracing::debug_span!("import_store", t = new_t, blob_bytes).entered();
             storage
                 .content_write_bytes_with_hash(
                     ContentKind::Commit,
@@ -225,7 +225,7 @@ mod inner {
     ) -> Result<ParsedChunk> {
         let txn_id = format!("{}-{}", ledger_alias, t);
 
-        let _parse_span = tracing::info_span!(
+        let _parse_span = tracing::debug_span!(
             "parse_chunk",
             t,
             ttl_bytes = ttl.len(),
@@ -266,7 +266,7 @@ mod inner {
     {
         let new_t = state.t + 1;
 
-        let _span = tracing::info_span!("finalize_parsed_chunk", t = new_t).entered();
+        let _span = tracing::debug_span!("finalize_parsed_chunk", t = new_t).entered();
 
         // Merge any new namespaces from clone into main registry
         for (code, prefix) in &parsed.ns_delta {

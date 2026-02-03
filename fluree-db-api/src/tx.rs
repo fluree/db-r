@@ -18,6 +18,7 @@ use fluree_db_shacl::ShaclEngine;
 #[cfg(feature = "shacl")]
 use fluree_db_transact::stage_with_shacl;
 use serde_json::Value as JsonValue;
+use tracing::Instrument;
 
 fn ledger_alias_from_txn(txn_json: &JsonValue) -> Result<&str> {
     let obj = txn_json.as_object().ok_or_else(|| {
@@ -405,6 +406,13 @@ where
         commit_opts: CommitOpts,
         index_config: &IndexConfig,
     ) -> Result<TransactResult<S>> {
+        let span = tracing::info_span!(
+            "transact",
+            txn_type = ?txn_type,
+            t = tracing::field::Empty,
+            flake_count = tracing::field::Empty,
+        );
+        async {
         let store_raw_txn = txn_opts.store_raw_txn.unwrap_or(false);
 
         let StageResult { view, ns_registry } = self
@@ -446,6 +454,9 @@ where
                 .await?
         };
 
+        tracing::Span::current().record("t", receipt.t);
+        tracing::Span::current().record("flake_count", receipt.flake_count as u64);
+
         // Compute indexing status AFTER publish_commit succeeds
         let indexing_enabled = self.indexing_mode.is_enabled() && self.defaults_indexing_enabled();
         let indexing_needed = ledger.should_reindex(index_config);
@@ -470,6 +481,9 @@ where
             ledger,
             indexing: indexing_status,
         })
+        }
+        .instrument(span)
+        .await
     }
 
     /// Insert new data into the ledger

@@ -144,6 +144,16 @@ impl RunWriter {
             return Ok(());
         }
 
+        let otel_name = format!("flush_run_buffer({}, run={})", self.config.sort_order.dir_name(), self.run_count);
+        let span = tracing::debug_span!(
+            "flush_run_buffer",
+            order = %self.config.sort_order.dir_name(),
+            run = self.run_count,
+            records = self.buffer.len(),
+            "otel.name" = %otel_name,
+        );
+        let _guard = span.enter();
+
         // 1. Wait for any pending background flush
         self.join_pending_flush()?;
 
@@ -166,10 +176,13 @@ impl RunWriter {
         let record_count = full_buffer.len();
 
         // 4. Spawn background sort + write
+        // Capture current span so background thread is parented correctly in Jaeger.
+        let parent_span = tracing::Span::current();
         self.pending_flush = Some(
             std::thread::Builder::new()
                 .name(format!("flush-{}", sort_order.dir_name()))
                 .spawn(move || {
+                    let _guard = parent_span.enter();
                     let mut buf = full_buffer;
 
                     let sort_start = std::time::Instant::now();

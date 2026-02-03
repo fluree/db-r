@@ -25,6 +25,17 @@ cargo run --release -p fluree-bench -- ingest --data-size-mb 10
 cargo run --release -p fluree-bench -- full --data-size-mb 50 --concurrency 4
 ```
 
+## Features
+
+`fluree-bench` enables `commit-v2` by default, which writes the binary commit
+format required by the binary indexer. This ensures background indexing works
+correctly during ingest benchmarks.
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `commit-v2` | **yes** | Binary commit format (required for indexing) |
+| `bench-otel` | no | OpenTelemetry trace export to Jaeger/Tempo |
+
 ## Subcommands
 
 | Command | Purpose |
@@ -95,7 +106,7 @@ The ingest report includes:
 The query report shows a matrix of median latency across:
 - Query complexity (simple count, filtered, multi-hop join, aggregate)
 - Concurrency levels
-- Cache state (cold vs warm — the node cache is cleared before each cold iteration)
+- Cache state (cold vs warm)
 
 ## OTEL / Jaeger Integration
 

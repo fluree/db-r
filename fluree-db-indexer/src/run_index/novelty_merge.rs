@@ -139,6 +139,13 @@ pub fn merge_novelty(input: &MergeInput<'_>) -> MergeOutput {
     let existing_len = input.r1_s_ids.len();
     let novelty_len = input.novelty.len();
 
+    let span = tracing::debug_span!(
+        "novelty_merge",
+        existing_count = existing_len,
+        novelty_count = novelty_len,
+    );
+    let _guard = span.enter();
+
     // Pre-allocate output at existing size (may grow or shrink slightly)
     let mut out_s = Vec::with_capacity(existing_len + novelty_len);
     let mut out_p = Vec::with_capacity(existing_len + novelty_len);

@@ -118,6 +118,10 @@ pub struct BinaryScanOperator {
     overlay_ops: Vec<OverlayOp>,
     /// Overlay epoch for cache key differentiation.
     overlay_epoch: u64,
+    /// Tracing span for operator lifetime (trace level).
+    span: tracing::Span,
+    /// Count of flakes scanned for span recording.
+    flakes_scanned: u64,
 }
 
 impl BinaryScanOperator {
@@ -165,6 +169,12 @@ impl BinaryScanOperator {
 
         let p_is_var = matches!(pattern.p, Term::Var(_));
 
+        let span = tracing::trace_span!(
+            "binary_scan",
+            index = ?index,
+            flakes_scanned = tracing::field::Empty,
+        );
+
         Self {
             pattern,
             index,
@@ -183,6 +193,8 @@ impl BinaryScanOperator {
             object_bounds,
             overlay_ops: Vec::new(),
             overlay_epoch: 0,
+            span,
+            flakes_scanned: 0,
         }
     }
 
@@ -746,6 +758,8 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
             return Ok(None);
         }
 
+        self.flakes_scanned += produced as u64;
+
         if self.schema.is_empty() {
             return Ok(Some(Batch::empty_schema_with_len(produced)));
         }
@@ -755,6 +769,7 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
     }
 
     fn close(&mut self) {
+        self.span.record("flakes_scanned", self.flakes_scanned);
         self.cursor = None;
         self.sid_cache.clear();
         self.p_sids.clear();
@@ -947,6 +962,16 @@ impl<S: Storage + 'static> Operator<S> for DeferredScanOperator<S> {
             && !ctx.history_mode
             && ctx.from_t.is_none()
             && binary_can_handle_bounds;
+
+        // One lightweight span per deferred scan recording which mode was chosen.
+        // Dropped immediately (not held across awaits) to avoid Send issues.
+        {
+            let _deferred_span = tracing::trace_span!(
+                "deferred_scan",
+                mode = if use_binary { "binary" } else { "btree" },
+            )
+            .entered();
+        }
 
         // When binary path is selected and overlay exists, translate overlay
         // flakes to integer-ID space using DictOverlay (infallible — ephemeral

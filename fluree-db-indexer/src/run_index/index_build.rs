@@ -132,7 +132,8 @@ pub fn build_index(config: IndexBuildConfig) -> Result<IndexBuildResult, IndexBu
     let order = config.sort_order;
     let order_name = order.dir_name();
     let start = Instant::now();
-    let _span = tracing::info_span!("build_index", order = order_name).entered();
+    let otel_name = format!("build_index({})", order_name);
+    let _span = tracing::debug_span!("build_index", order = order_name, "otel.name" = %otel_name).entered();
 
     // ---- Step 1: Discover run files ----
     let mut run_paths = discover_run_files(&config.run_dir)?;
@@ -445,7 +446,7 @@ pub fn build_all_indexes(
     leaflets_per_leaf: usize,
     zstd_level: i32,
 ) -> Result<Vec<(RunSortOrder, IndexBuildResult)>, IndexBuildError> {
-    let _span = tracing::info_span!("build_all_indexes").entered();
+    let _span = tracing::debug_span!("build_all_indexes").entered();
     let start = Instant::now();
 
     // Pre-compute unified language dict from SPOT run files
@@ -487,7 +488,11 @@ pub fn build_all_indexes(
                 let base = base_run_dir.to_path_buf();
                 let idx_dir = index_dir.to_path_buf();
 
+                // Capture current span so child threads are parented correctly in Jaeger.
+                let parent_span = tracing::Span::current();
+
                 Some((order, s.spawn(move || {
+                    let _guard = parent_span.enter();
                     let config = IndexBuildConfig {
                         run_dir,
                         dicts_dir: base,
