@@ -57,9 +57,6 @@ usearch = { version = "2.16", optional = true }
 native = ["fluree-db-core/native"]
 # Enable embedded vector search (HNSW-based approximate nearest neighbor)
 vector = ["dep:usearch"]
-# DEPRECATED: binary-index is now always enabled; this feature is kept for backward
-# compatibility with crates that activate it. Will be removed in Phase 5.
-binary-index = []
 
 [dev-dependencies]
 # tokio is now a regular dependency

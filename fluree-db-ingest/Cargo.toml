@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [features]
 # Binary commit format v2 (compact binary instead of JSON)
-commit-v2 = ["fluree-db-api/commit-v2", "dep:fluree-db-core", "dep:fluree-db-transact", "dep:fluree-db-indexer", "dep:fluree-db-query", "dep:fluree-db-sparql", "fluree-db-query/binary-index"]
+commit-v2 = ["fluree-db-api/commit-v2", "dep:fluree-db-core", "dep:fluree-db-transact", "dep:fluree-db-indexer", "dep:fluree-db-query", "dep:fluree-db-sparql"]
 # Optional OpenTelemetry span export (OTLP) for profiling.
 otel = ["dep:tracing-opentelemetry", "dep:opentelemetry", "dep:opentelemetry-otlp", "dep:opentelemetry_sdk"]
 
@@ -20,7 +20,7 @@ fluree-db-api = { path = "../fluree-db-api", features = ["native"] }
 fluree-db-core = { path = "../fluree-db-core", optional = true }
 fluree-db-transact = { path = "../fluree-db-transact", features = ["commit-v2"], optional = true }
 fluree-db-indexer = { path = "../fluree-db-indexer", features = ["commit-v2", "hll-stats"], optional = true }
-fluree-db-query = { path = "../fluree-db-query", features = ["binary-index"], optional = true }
+fluree-db-query = { path = "../fluree-db-query", optional = true }
 fluree-db-sparql = { path = "../fluree-db-sparql", features = ["lowering"], optional = true }
 tokio.workspace = true
 clap.workspace = true
