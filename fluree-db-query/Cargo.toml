@@ -42,6 +42,8 @@ md-5 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 # Random number generation
 rand = { workspace = true }
+# Hashing for leaflet cache keys (matches indexer)
+xxhash-rust = "0.8"
 # URL encoding
 percent-encoding = "2"
 # Async runtime - needed for block_in_place in policy evaluation

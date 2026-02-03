@@ -580,18 +580,13 @@ async fn ledger_info_api_with_context_compacts_stats_iris() {
             // Verify class properties are also compacted
             if let Some(person_stats) = classes.get("ex:Person") {
                 if let Some(class_props) = person_stats.get("properties") {
-                    assert!(class_props.get("ex:name").is_some(),
-                        "Class property should be compacted to ex:name");
-
-                    // Types should also be compacted if matching context
-                    if let Some(name_in_class) = class_props.get("ex:name") {
-                        if let Some(types) = name_in_class.get("types") {
-                            // xsd:string should be in types
-                            assert!(types.get("xsd:string").is_some(),
-                                "Type xsd:string should be compacted. Got keys: {:?}",
-                                types.as_object().map(|o| o.keys().collect::<Vec<_>>()));
-                        }
-                    }
+                    let arr = class_props
+                        .as_array()
+                        .expect("class properties should be an array of compacted property IRIs");
+                    assert!(
+                        arr.iter().any(|v| v.as_str() == Some("ex:name")),
+                        "Class property should be compacted to ex:name"
+                    );
                 }
             }
 

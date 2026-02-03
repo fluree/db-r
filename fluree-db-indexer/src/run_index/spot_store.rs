@@ -21,6 +21,7 @@ use memmap2::Mmap;
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 // ============================================================================
 // Manifest types (deserialized from index_manifest_{order}.json)
@@ -127,8 +128,6 @@ pub struct BinaryIndexStore {
     base_t: i64,
     /// Per-predicate numbig arenas: p_id → equality-only arena for overflow BigInt/BigDecimal.
     numbig_forward: HashMap<u32, super::numbig_dict::NumBigArena>,
-    /// Per-predicate numeric shape stats (IntOnly / FloatOnly / Mixed).
-    numeric_shapes: HashMap<u32, super::numfloat_dict::NumericShape>,
     /// LRU cache for decoded leaflet regions (Region 1 and Region 2).
     leaflet_cache: Option<LeafletCache>,
 }
@@ -140,8 +139,7 @@ impl BinaryIndexStore {
     /// Load a BinaryIndexStore from run_dir (dictionaries) and index_dir (index files).
     ///
     /// Loads per-order manifests (`index_manifest_spot.json`, `index_manifest_psot.json`,
-    /// etc.) and builds per-graph, per-order branch manifests. Falls back to
-    /// `index_manifest.json` for backward compatibility with SPOT-only builds.
+    /// etc.) and builds per-graph, per-order branch manifests.
     pub fn load(run_dir: &Path, index_dir: &Path) -> io::Result<Self> {
         let _span = tracing::info_span!("BinaryIndexStore::load", ?run_dir, ?index_dir).entered();
 
@@ -203,46 +201,11 @@ impl BinaryIndexStore {
             any_manifest_loaded = true;
         }
 
-        // Fallback: try legacy index_manifest.json (SPOT-only)
         if !any_manifest_loaded {
-            let legacy_path = index_dir.join("index_manifest.json");
-            if legacy_path.exists() {
-                let manifest_json = std::fs::read_to_string(&legacy_path)?;
-                let manifest: IndexManifest = serde_json::from_str(&manifest_json)
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-                max_t = manifest.max_t;
-
-                for entry in &manifest.graphs {
-                    let graph_dir = index_dir.join(&entry.directory);
-                    let branch_path = if let Some(ref hash) = entry.branch_hash {
-                        graph_dir.join(format!("{}.fbr", hash))
-                    } else {
-                        find_branch_file(&graph_dir).unwrap_or_else(|_| graph_dir.join("branch.fbr"))
-                    };
-
-                    if branch_path.exists() {
-                        let branch = read_branch_manifest(&branch_path)?;
-                        tracing::info!(
-                            g_id = entry.g_id,
-                            order = "spot",
-                            leaves = branch.leaves.len(),
-                            "loaded branch manifest (legacy)"
-                        );
-
-                        let graph_index = graphs
-                            .entry(entry.g_id)
-                            .or_insert_with(|| GraphIndex {
-                                orders: HashMap::new(),
-                            });
-
-                        graph_index.orders.insert(RunSortOrder::Spot, OrderIndex {
-                            branch,
-                            leaf_dir: graph_dir,
-                        });
-                    }
-                }
-            }
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "no per-order index manifests found (expected index_manifest_{spot,psot,post,opst}.json)",
+            ));
         }
 
         // ---- Load predicate dict ----
@@ -412,19 +375,6 @@ impl BinaryIndexStore {
             }
         }
 
-        // ---- Load numeric shapes ----
-        let shapes_path = run_dir.join("numeric_shapes.json");
-        let numeric_shapes = if shapes_path.exists() {
-            super::numfloat_dict::read_numeric_shapes(&shapes_path)?
-        } else {
-            HashMap::new() // old indexes: fall back to ScanOperator for all range queries
-        };
-        if !numeric_shapes.is_empty() {
-            tracing::info!(
-                predicates = numeric_shapes.len(),
-                "loaded numeric shapes"
-            );
-        }
 
         // Log summary of loaded orders
         let mut order_summary = Vec::new();
@@ -440,8 +390,19 @@ impl BinaryIndexStore {
             "BinaryIndexStore loaded"
         );
 
-        // ---- Initialize leaflet cache (1.5 GB default) ----
-        let leaflet_cache = Some(LeafletCache::with_max_bytes(1_500_000_000));
+        // ---- Initialize leaflet cache ----
+        // Default: 8 GiB (tuned for large batched joins / repeated scans).
+        // Override with `FLUREE_LEAFLET_CACHE_BYTES` (exact bytes).
+        let leaflet_cache_bytes: u64 = std::env::var("FLUREE_LEAFLET_CACHE_BYTES")
+            .ok()
+            .and_then(|s| u64::from_str(&s).ok())
+            .unwrap_or(8 * 1024 * 1024 * 1024);
+        tracing::info!(
+            leaflet_cache_bytes,
+            leaflet_cache_gib = (leaflet_cache_bytes as f64) / (1024.0 * 1024.0 * 1024.0),
+            "initializing leaflet cache"
+        );
+        let leaflet_cache = Some(LeafletCache::with_max_bytes(leaflet_cache_bytes));
 
         Ok(Self {
             graphs,
@@ -465,7 +426,6 @@ impl BinaryIndexStore {
             max_t,
             base_t: max_t,
             numbig_forward,
-            numeric_shapes,
             leaflet_cache,
         })
     }
@@ -966,14 +926,8 @@ impl BinaryIndexStore {
     }
 
     // ========================================================================
-    // Numeric shape + value → ObjKind/ObjKey translation
+    // Value → ObjKind/ObjKey translation
     // ========================================================================
-
-    /// Get numeric shape for a predicate. Returns `None` if unknown
-    /// (predicate has no numeric values or shapes file is absent).
-    pub fn numeric_shape(&self, p_id: u32) -> Option<super::numfloat_dict::NumericShape> {
-        self.numeric_shapes.get(&p_id).copied()
-    }
 
     /// Translate a FlakeValue to `(ObjKind, ObjKey)` using per-predicate context.
     ///

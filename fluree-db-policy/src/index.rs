@@ -282,9 +282,6 @@ mod tests {
                     .into_iter()
                     .map(|p| ClassPropertyUsage {
                         property_sid: p,
-                        types: vec![],
-                        ref_classes: vec![],
-                        langs: vec![],
                     })
                     .collect(),
             }]),
@@ -403,15 +400,9 @@ mod tests {
                     properties: vec![
                         ClassPropertyUsage {
                             property_sid: name_prop.clone(),
-                            types: vec![],
-                            ref_classes: vec![],
-                            langs: vec![],
                         },
                         ClassPropertyUsage {
                             property_sid: ssn_prop.clone(),
-                            types: vec![],
-                            ref_classes: vec![],
-                            langs: vec![],
                         },
                     ],
                 },
@@ -420,9 +411,6 @@ mod tests {
                     count: 5,
                     properties: vec![ClassPropertyUsage {
                         property_sid: name_prop.clone(),
-                        types: vec![],
-                        ref_classes: vec![],
-                        langs: vec![],
                     }],
                 },
             ]),

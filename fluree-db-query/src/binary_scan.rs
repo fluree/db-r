@@ -31,12 +31,14 @@ use crate::pattern::{Term, TriplePattern};
 use crate::scan::ScanOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
+use fluree_db_core::value_id::DatatypeId;
 use fluree_db_core::value_id::{ObjKind, ObjKey};
 use fluree_db_core::{Flake, FlakeValue, IndexType, NodeCache, ObjectBounds, OverlayProvider, Sid, Storage};
 use fluree_db_indexer::run_index::{
     BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, OverlayOp,
 };
 use fluree_db_indexer::run_index::run_record::{RunSortOrder, NO_LIST_INDEX};
+use fluree_db_indexer::run_index::numfloat_dict::NumericShape;
 use fluree_vocab::namespaces::FLUREE_LEDGER;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -373,6 +375,58 @@ impl BinaryScanOperator {
     }
 }
 
+/// Derive per-predicate numeric shape from real DB stats (no run-dir files).
+///
+/// Uses graph-scoped property datatype counts from `DbRootStats.graphs`.
+/// Returns `None` when stats are unavailable or the predicate is not present.
+fn numeric_shape_from_db_stats<S: Storage + 'static, C: NodeCache + 'static>(
+    ctx: &ExecutionContext<'_, S, C>,
+    _pred_iri: &str,
+    pred_sid_binary: &Sid,
+) -> Option<NumericShape> {
+    let stats = ctx.db.stats.as_ref()?;
+
+    // Prefer graph-scoped stats when available (authoritative ID-based view).
+    // (Not always present yet; many deployments only have class-property stats.)
+    if let Some(graphs) = stats.graphs.as_ref() {
+        let g = graphs.iter().find(|g| g.g_id == ctx.binary_g_id)?;
+        let p_id = ctx
+            .binary_store
+            .as_ref()
+            .and_then(|s| s.sid_to_p_id(pred_sid_binary))?;
+        if let Some(p) = g.properties.iter().find(|p| p.p_id == p_id) {
+            let mut has_int = false;
+            let mut has_float = false;
+            let mut has_decimal = false;
+            for &(dt_raw, count) in &p.datatypes {
+                if count == 0 {
+                    continue;
+                }
+                let dt = DatatypeId::from_u8(dt_raw);
+                if dt.is_integer_type() {
+                    has_int = true;
+                } else if dt.is_float_type() {
+                    has_float = true;
+                } else if dt == DatatypeId::DECIMAL {
+                    has_decimal = true;
+                }
+            }
+            if has_decimal {
+                return None;
+            }
+            return match (has_int, has_float) {
+                (true, false) => Some(NumericShape::IntOnly),
+                (false, true) => Some(NumericShape::FloatOnly),
+                (true, true) => Some(NumericShape::Mixed),
+                (false, false) => None,
+            };
+        }
+    }
+
+    // No fallback: class-property stats no longer carry datatype breakdowns.
+    None
+}
+
 #[async_trait]
 impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for BinaryScanOperator {
     fn schema(&self) -> &[VarId] {
@@ -445,9 +499,15 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for BinaryScan
                 if let Some(ref obj_bounds) = self.object_bounds {
                     if let Some(ref p) = p_sid {
                         if let Some(p_id) = self.store.sid_to_p_id(p) {
-                            if let Some(shape) = self.store.numeric_shape(p_id) {
+                            let shape = {
+                                let pred_iri_for_stats = self.store.sid_to_iri(p);
+                                numeric_shape_from_db_stats(ctx, &pred_iri_for_stats, p)
+                            };
+                            let mut narrowed: Option<(ObjKind, ObjKey, ObjKind, ObjKey)> = None;
+                            if let Some(shape) = shape {
                                 match self.store.translate_object_bounds(obj_bounds, p_id, shape) {
                                     Some((min_ok, min_okey, max_ok, max_okey)) => {
+                                        narrowed = Some((min_ok, min_okey, max_ok, max_okey));
                                         min_key.o_kind = min_ok.as_u8();
                                         min_key.o_key = min_okey.as_u64();
                                         max_key.o_kind = max_ok.as_u8();
@@ -464,7 +524,74 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for BinaryScan
                                     }
                                 }
                             }
-                            // shape is None → no narrowing, rely on post-filter only
+
+                            // One-per-scan debug line to verify pushdown + float-only narrowing.
+                            // This should be low volume: it only triggers when ObjectBounds exist.
+                            let pred_iri = self.store.sid_to_iri(p);
+                            let lower = obj_bounds
+                                .lower
+                                .as_ref()
+                                .map(|(v, inc)| (format!("{:?}", v), *inc));
+                            let upper = obj_bounds
+                                .upper
+                                .as_ref()
+                                .map(|(v, inc)| (format!("{:?}", v), *inc));
+                            let stats_graphs_len = ctx
+                                .db
+                                .stats
+                                .as_ref()
+                                .and_then(|s| s.graphs.as_ref())
+                                .map(|g| g.len())
+                                .unwrap_or(0);
+                            let stats_classes_len = ctx
+                                .db
+                                .stats
+                                .as_ref()
+                                .and_then(|s| s.classes.as_ref())
+                                .map(|c| c.len())
+                                .unwrap_or(0);
+                            match (shape, narrowed) {
+                                (Some(shape), Some((min_ok, _, max_ok, _))) => {
+                                    tracing::debug!(
+                                        predicate = %pred_iri,
+                                        p_id,
+                                        index = ?self.index,
+                                        shape = ?shape,
+                                        narrowed_min_kind = %min_ok,
+                                        narrowed_max_kind = %max_ok,
+                                        lower = ?lower,
+                                        upper = ?upper,
+                                        stats_graphs = stats_graphs_len,
+                                        stats_classes = stats_classes_len,
+                                        "binary scan: object bounds pushed down (narrowed key range)"
+                                    );
+                                }
+                                (Some(shape), None) => {
+                                    tracing::debug!(
+                                        predicate = %pred_iri,
+                                        p_id,
+                                        index = ?self.index,
+                                        shape = ?shape,
+                                        lower = ?lower,
+                                        upper = ?upper,
+                                        stats_graphs = stats_graphs_len,
+                                        stats_classes = stats_classes_len,
+                                        "binary scan: object bounds pushed down (no safe narrowing; post-filter)"
+                                    );
+                                }
+                                (None, _) => {
+                                    tracing::debug!(
+                                        predicate = %pred_iri,
+                                        p_id,
+                                        index = ?self.index,
+                                        lower = ?lower,
+                                        upper = ?upper,
+                                        stats_graphs = stats_graphs_len,
+                                        stats_classes = stats_classes_len,
+                                        "binary scan: object bounds pushed down (no stats-derived numeric shape; post-filter)"
+                                    );
+                                }
+                            }
                         }
                     }
                 }

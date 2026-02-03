@@ -795,8 +795,10 @@ pub struct DbRootStats {
     /// ID-based lookups via `graphs`.
     pub properties: Option<Vec<PropertyStatEntry>>,
     /// Per-class property usage statistics (sorted by class SID for determinism)
-    /// Tracks which properties are used by instances of each class, with datatype,
-    /// reference class, and language tag breakdown.
+    /// Tracks which properties are used by instances of each class.
+    ///
+    /// IMPORTANT: Detailed per-property stats (counts/NDV/datatypes) must live in
+    /// `graphs[*].properties` (graph-scoped) and NOT under classes.
     pub classes: Option<Vec<ClassStatEntry>>,
     /// Per-graph statistics keyed by numeric IDs (authoritative, ID-based).
     /// Each entry contains per-property stats including datatype usage.
@@ -822,20 +824,13 @@ pub struct ClassStatEntry {
 
 /// Property usage statistics within a class
 ///
-/// For each property used by instances of a class, tracks:
-/// - Datatypes used (e.g., xsd:string, xsd:integer)
-/// - Referenced classes (for @id/@ref properties)
-/// - Language tags (for rdf:langString values)
+/// For each property used by instances of a class, this is intentionally just the
+/// property identity. Detailed counts and datatype distributions are tracked in
+/// graph-scoped property stats (`DbRootStats.graphs`).
 #[derive(Debug, Clone)]
 pub struct ClassPropertyUsage {
     /// The property SID
     pub property_sid: Sid,
-    /// Datatype usage: datatype SID → count
-    pub types: Vec<(Sid, u64)>,
-    /// Referenced classes: class SID → count (for @id datatype refs)
-    pub ref_classes: Vec<(Sid, u64)>,
-    /// Language tag usage: language tag → count (for rdf:langString)
-    pub langs: Vec<(String, u64)>,
 }
 
 // === Graph-Scoped Statistics (ID-Based) ===
@@ -1043,18 +1038,15 @@ impl<'de> serde::Deserialize<'de> for RawClassStatEntry {
 
 /// Raw class property usage as it appears in JSON
 ///
-/// Clojure format: `[[property_sid], [[types], [ref_classes], [langs]]]`
-/// Where types/ref_classes are `[[sid, count], ...]` and langs are `[[lang_string, count], ...]`
+/// New format: `[[property_sid]]`
+///
+/// We also accept the legacy Clojure format:
+/// `[[property_sid], [[types], [ref_classes], [langs]]]` but we intentionally
+/// ignore the detailed breakdowns.
 #[derive(Debug)]
 pub struct RawClassPropertyUsage {
     /// Property SID as (namespace_code, name)
     pub property_sid: (i32, String),
-    /// Datatype counts: (sid, count) pairs
-    pub types: Option<Vec<((i32, String), u64)>>,
-    /// Referenced class counts: (sid, count) pairs
-    pub ref_classes: Option<Vec<((i32, String), u64)>>,
-    /// Language tag counts: (lang, count) pairs
-    pub langs: Option<Vec<(String, u64)>>,
 }
 
 impl<'de> serde::Deserialize<'de> for RawClassPropertyUsage {
@@ -1082,21 +1074,11 @@ impl<'de> serde::Deserialize<'de> for RawClassPropertyUsage {
                     .next_element()?
                     .ok_or_else(|| de::Error::invalid_length(0, &self))?;
 
-                // Second element: [[types], [ref_classes], [langs]]
-                // Each is a list of [sid/string, count] pairs
-                let usage_data: (
-                    Vec<((i32, String), u64)>,  // types: [[datatype_sid, count], ...]
-                    Vec<((i32, String), u64)>,  // ref_classes: [[class_sid, count], ...]
-                    Vec<(String, u64)>,         // langs: [[lang_string, count], ...]
-                ) = seq
-                    .next_element()?
-                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                // Optional second element: legacy detailed structure. Ignore if present.
+                let _ignored: Option<serde_json::Value> = seq.next_element()?;
 
                 Ok(RawClassPropertyUsage {
                     property_sid,
-                    types: if usage_data.0.is_empty() { None } else { Some(usage_data.0) },
-                    ref_classes: if usage_data.1.is_empty() { None } else { Some(usage_data.1) },
-                    langs: if usage_data.2.is_empty() { None } else { Some(usage_data.2) },
                 })
             }
         }
@@ -1383,22 +1365,8 @@ impl RawDbRoot {
                         let properties = c.properties.as_ref().map(|props| {
                             props.iter().map(|p| {
                                 let property_sid = Sid::new(p.property_sid.0, &p.property_sid.1);
-                                let types = p.types.as_ref()
-                                    .map(|t| t.iter().map(|((ns, name), count)| {
-                                        (Sid::new(*ns, name), *count)
-                                    }).collect())
-                                    .unwrap_or_default();
-                                let ref_classes = p.ref_classes.as_ref()
-                                    .map(|r| r.iter().map(|((ns, name), count)| {
-                                        (Sid::new(*ns, name), *count)
-                                    }).collect())
-                                    .unwrap_or_default();
-                                let langs = p.langs.clone().unwrap_or_default();
                                 ClassPropertyUsage {
                                     property_sid,
-                                    types,
-                                    ref_classes,
-                                    langs,
                                 }
                             }).collect()
                         }).unwrap_or_default();
@@ -2196,22 +2164,12 @@ pub fn serialize_db_root(root: &DbRoot) -> Result<Vec<u8>> {
 
         // Classes - compact array format for Clojure compatibility
         // Format: [[class_sid], [count, [property_usages...]]]
-        // Property usage format: [[property_sid], [[types], [ref_classes], [langs]]]
+        // Property usage format (new): [[property_sid]]
         if let Some(ref classes) = stats.classes {
             let classes_array: Vec<serde_json::Value> = classes.iter().map(|c| {
                 let props_array: Vec<serde_json::Value> = c.properties.iter().map(|p| {
-                    let types: Vec<serde_json::Value> = p.types.iter()
-                        .map(|(sid, count)| serde_json::json!([[sid.namespace_code, &*sid.name], count]))
-                        .collect();
-                    let refs: Vec<serde_json::Value> = p.ref_classes.iter()
-                        .map(|(sid, count)| serde_json::json!([[sid.namespace_code, &*sid.name], count]))
-                        .collect();
-                    let langs: Vec<serde_json::Value> = p.langs.iter()
-                        .map(|(lang, count)| serde_json::json!([lang, count]))
-                        .collect();
                     serde_json::json!([
-                        [p.property_sid.namespace_code, &*p.property_sid.name],
-                        [types, refs, langs]
+                        [p.property_sid.namespace_code, &*p.property_sid.name]
                     ])
                 }).collect();
                 serde_json::json!([

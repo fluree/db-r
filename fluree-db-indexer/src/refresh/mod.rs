@@ -61,6 +61,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::stats::{compute_class_property_stats_parallel, SchemaExtractor};
 use fluree_db_core::serde::json::DbRootSchema;
+use fluree_db_core::serde::json::{GraphPropertyStatEntry, GraphStatsEntry};
 
 /// Result of refreshing all index trees
 #[derive(Debug, Clone)]
@@ -333,6 +334,69 @@ where
     };
 
     let stats_flakes = spot.size;
+    // If graph-scoped stats are not present in the existing db-root, try to load
+    // them from the pre-index stats manifest produced during bulk import/run-generation.
+    //
+    // This allows us to publish datatype breakdowns (needed for numeric kind narrowing)
+    // without depending on any local `runs/` directory.
+    let pre_index_graphs: Option<Vec<GraphStatsEntry>> = {
+        let alias_prefix = fluree_db_core::address_path::alias_to_path_prefix(alias)
+            .unwrap_or_else(|_| alias.replace(':', "/"));
+        let addr_primary = format!("fluree:file://{}/stats/pre-index-stats.json", alias_prefix);
+        match storage.read_bytes(&addr_primary).await {
+            Ok(bytes) => {
+                // Minimal JSON parser for the manifest shape (see ingest tool).
+                let json: serde_json::Value = match serde_json::from_slice(&bytes) {
+                    Ok(v) => v,
+                    Err(_) => serde_json::Value::Null,
+                };
+                let graphs_arr = json.get("graphs").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                if graphs_arr.is_empty() {
+                    None
+                } else {
+                    let mut entries = Vec::with_capacity(graphs_arr.len());
+                    for g in graphs_arr {
+                        let g_id = g.get("g_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                        let flakes = g.get("flakes").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let size = g.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let props_arr = g.get("properties").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                        let mut properties = Vec::with_capacity(props_arr.len());
+                        for p in props_arr {
+                            let p_id = p.get("p_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                            let count = p.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let ndv_values = p.get("ndv_values").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let ndv_subjects = p.get("ndv_subjects").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let last_modified_t = p.get("last_modified_t").and_then(|v| v.as_i64()).unwrap_or(0);
+                            let dt_arr = p.get("datatypes").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                            let datatypes: Vec<(u8, u64)> = dt_arr
+                                .iter()
+                                .filter_map(|pair| {
+                                    let arr = pair.as_array()?;
+                                    if arr.len() == 2 {
+                                        Some((arr[0].as_u64()? as u8, arr[1].as_u64()?))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            properties.push(GraphPropertyStatEntry {
+                                p_id,
+                                count,
+                                ndv_values,
+                                ndv_subjects,
+                                last_modified_t,
+                                datatypes,
+                            });
+                        }
+                        entries.push(GraphStatsEntry { g_id, flakes, size, properties });
+                    }
+                    Some(entries)
+                }
+            }
+            Err(_) => None,
+        }
+    };
+
     let db_root_stats = fluree_db_core::serde::json::DbRootStats {
         flakes: stats_flakes,
         size,
@@ -345,7 +409,7 @@ where
                 // Multi-graph stats exist from import/ID-based path — preserve them.
                 db.stats.as_ref().and_then(|s| s.graphs.clone())
             }
-            _ => None, // No prior multi-graph stats; refresh doesn't produce graph-scoped stats yet.
+            _ => pre_index_graphs, // Use pre-index manifest graphs when available.
         },
     };
 

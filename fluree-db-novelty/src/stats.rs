@@ -7,7 +7,7 @@
 //!
 //! - Property counts (total assertions per predicate)
 //! - Class counts (total instances per class)
-//! - Class->property details: types, ref_classes, langs
+//! - Class->property list: properties used by instances
 //!
 //! # What Gets Preserved
 //!
@@ -21,7 +21,6 @@ use fluree_db_core::serde::json::{
     ClassPropertyUsage, ClassStatEntry, DbRootStats, PropertyStatEntry,
 };
 use fluree_db_core::{FlakeValue, Sid};
-use fluree_vocab::namespaces::JSON_LD;
 use std::collections::{HashMap, HashSet};
 
 /// Compute current stats by merging indexed stats with novelty updates.
@@ -55,7 +54,7 @@ pub fn current_stats(indexed: &DbRootStats, novelty: &Novelty) -> DbRootStats {
     // First pass: collect rdf:type flakes to build subject->classes mapping
     let subject_classes = build_subject_class_map(novelty, &mut class_data);
 
-    // Second pass: update property counts and class-property details
+    // Second pass: update property counts and class->property list
     for flake_id in novelty.iter_index(IndexType::Post) {
         let flake = novelty.get_flake(flake_id);
         let delta = if flake.op { 1i64 } else { -1i64 };
@@ -65,42 +64,18 @@ pub fn current_stats(indexed: &DbRootStats, novelty: &Novelty) -> DbRootStats {
         let prop_count = property_counts.entry(sid_key).or_insert(0);
         *prop_count += delta;
 
-        // Skip rdf:type for class-property details (already handled)
+        // Skip rdf:type for class-property list (already handled)
         if is_rdf_type(&flake.p) {
             continue;
         }
 
-        // Update class-property details for subjects with known classes
+        // Update class->property list for subjects with known classes
         if let Some(classes) = subject_classes.get(&flake.s) {
             for class_sid in classes {
                 let class = class_data.entry(class_sid.clone()).or_default();
                 let prop = class.properties.entry(flake.p.clone()).or_default();
-
-                // Track datatype
-                let dt_count = prop.types.entry(flake.dt.clone()).or_insert(0);
-                *dt_count += delta;
-
-                // Track ref-class for @id refs (namespace_code=JSON_LD, name="id")
-                if flake.dt.namespace_code == JSON_LD && flake.dt.name.as_ref() == "id" {
-                    if let FlakeValue::Ref(ref_sid) = &flake.o {
-                        // Look up the type of the referenced subject
-                        if let Some(ref_classes) = subject_classes.get(ref_sid) {
-                            for ref_class in ref_classes {
-                                let rc_count =
-                                    prop.ref_classes.entry(ref_class.clone()).or_insert(0);
-                                *rc_count += delta;
-                            }
-                        }
-                    }
-                }
-
-                // Track language tags
-                if let Some(ref meta) = flake.m {
-                    if let Some(ref lang) = meta.lang {
-                        let lang_count = prop.langs.entry(lang.clone()).or_insert(0);
-                        *lang_count += delta;
-                    }
-                }
+                // Track presence (conservative superset)
+                prop.count_delta += delta;
             }
         }
     }
@@ -133,9 +108,11 @@ struct ClassDataMut {
 /// Internal mutable property data for stats computation
 #[derive(Debug, Default)]
 struct PropertyDataMut {
-    types: HashMap<Sid, i64>,
-    ref_classes: HashMap<Sid, i64>,
-    langs: HashMap<String, i64>,
+    /// Count of asserted flakes for this (class, property) pair (delta).
+    ///
+    /// We intentionally do NOT track datatype/ref/lang breakdowns here; detailed
+    /// property stats live in graph-scoped stats (`DbRootStats.graphs`).
+    count_delta: i64,
 }
 
 /// Build class data from indexed stats
@@ -145,23 +122,9 @@ fn build_class_data(indexed: &DbRootStats) -> HashMap<Sid, ClassDataMut> {
         for entry in classes {
             let mut props = HashMap::new();
             for prop_usage in &entry.properties {
-                let prop_data = PropertyDataMut {
-                    types: prop_usage
-                        .types
-                        .iter()
-                        .map(|(sid, count)| (sid.clone(), *count as i64))
-                        .collect(),
-                    ref_classes: prop_usage
-                        .ref_classes
-                        .iter()
-                        .map(|(sid, count)| (sid.clone(), *count as i64))
-                        .collect(),
-                    langs: prop_usage
-                        .langs
-                        .iter()
-                        .map(|(lang, count)| (lang.clone(), *count as i64))
-                        .collect(),
-                };
+                // Prior stats only carry the property identity. Treat presence as 1 so we
+                // preserve the property list, but do not attempt to “undo” it on retractions.
+                let prop_data = PropertyDataMut { count_delta: 1 };
                 props.insert(prop_usage.property_sid.clone(), prop_data);
             }
             let data = ClassDataMut {
@@ -273,45 +236,8 @@ fn finalize_stats(
 
                 let properties: Vec<ClassPropertyUsage> = prop_entries
                     .into_iter()
-                    .filter(|(_, prop)| {
-                        // Keep property if any non-zero counts
-                        prop.types.values().any(|&v| v > 0)
-                            || prop.ref_classes.values().any(|&v| v > 0)
-                            || prop.langs.values().any(|&v| v > 0)
-                    })
-                    .map(|(property_sid, prop)| {
-                        // Sort sub-collections for determinism
-                        let mut types: Vec<_> = prop
-                            .types
-                            .into_iter()
-                            .filter(|(_, count)| *count > 0)
-                            .map(|(sid, count)| (sid, count.max(0) as u64))
-                            .collect();
-                        types.sort_by(|a, b| sid_cmp(&a.0, &b.0));
-
-                        let mut ref_classes: Vec<_> = prop
-                            .ref_classes
-                            .into_iter()
-                            .filter(|(_, count)| *count > 0)
-                            .map(|(sid, count)| (sid, count.max(0) as u64))
-                            .collect();
-                        ref_classes.sort_by(|a, b| sid_cmp(&a.0, &b.0));
-
-                        let mut langs: Vec<_> = prop
-                            .langs
-                            .into_iter()
-                            .filter(|(_, count)| *count > 0)
-                            .map(|(lang, count)| (lang, count.max(0) as u64))
-                            .collect();
-                        langs.sort();
-
-                        ClassPropertyUsage {
-                            property_sid,
-                            types,
-                            ref_classes,
-                            langs,
-                        }
-                    })
+                    .filter(|(_, prop)| prop.count_delta > 0)
+                    .map(|(property_sid, _prop)| ClassPropertyUsage { property_sid })
                     .collect();
 
                 ClassStatEntry {
@@ -517,9 +443,6 @@ mod tests {
             .find(|p| p.property_sid == name_prop);
 
         assert!(name_usage.is_some());
-        // Should track xsd:long datatype (count 2)
-        let types = &name_usage.unwrap().types;
-        assert!(!types.is_empty());
     }
 
     #[test]
@@ -560,7 +483,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lang_tag_tracking() {
+    fn test_property_presence_tracking_with_lang_values() {
         let indexed = DbRootStats::default();
 
         let mut novelty = Novelty::new(0);
@@ -584,10 +507,8 @@ mod tests {
             .iter()
             .find(|p| p.property_sid == label)
             .unwrap();
-
-        // Should have both language tags
-        assert_eq!(label_usage.langs.len(), 2);
-        assert!(label_usage.langs.iter().any(|(l, _)| l == "en"));
-        assert!(label_usage.langs.iter().any(|(l, _)| l == "es"));
+        // Language-tag details are not tracked at class-property level anymore;
+        // this test only verifies the property is associated with the class.
+        let _ = label_usage;
     }
 }

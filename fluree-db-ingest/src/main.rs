@@ -10,6 +10,22 @@ use fluree_db_api::{FlureeBuilder, IndexConfig};
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
+fn alias_prefix(alias: &str) -> String {
+    fluree_db_core::address_path::alias_to_path_prefix(alias).unwrap_or_else(|_| alias.replace(':', "/"))
+}
+
+fn default_run_dir(args: &Args) -> PathBuf {
+    args.run_dir
+        .clone()
+        .unwrap_or_else(|| args.db_dir.join(alias_prefix(&args.ledger)).join("runs"))
+}
+
+fn default_index_dir(args: &Args) -> PathBuf {
+    args.index_dir
+        .clone()
+        .unwrap_or_else(|| args.db_dir.join(alias_prefix(&args.ledger)).join("index"))
+}
+
 fn init_logging() {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::EnvFilter;
@@ -201,10 +217,7 @@ async fn run_import(
             MultiOrderRunWriter, MultiOrderConfig, persist_namespaces,
         };
 
-        let run_dir = args
-            .run_dir
-            .clone()
-            .unwrap_or_else(|| args.db_dir.join("runs"));
+        let run_dir = default_run_dir(args);
         std::fs::create_dir_all(&run_dir)?;
         let subject_fwd = run_dir.join("subjects.fwd");
         let budget = args.run_budget_mb * 1024 * 1024;
@@ -450,10 +463,7 @@ async fn run_import(
         );
 
         // Finalize and persist pre-index stats
-        let run_dir = args
-            .run_dir
-            .clone()
-            .unwrap_or_else(|| args.db_dir.join("runs"));
+        let run_dir = default_run_dir(args);
         finalize_pre_index_stats(
             &mut run_result, &run_dir, state.t, state.cumulative_flakes,
             storage, &args.ledger,
@@ -551,9 +561,13 @@ async fn finalize_pre_index_stats<S: fluree_db_core::StorageWrite>(
         Err(e) => error!("Failed to write pre-index stats manifest: {}", e),
     }
 
-    // Also write manifest to content-addressed storage so ledger-info can read it
+    // Also write manifest to content-addressed storage so other components can read it
     // before any index build, using the well-known address.
-    let storage_addr = format!("fluree:file://{}/stats/pre-index-stats.json", alias);
+    //
+    // IMPORTANT: storage paths must be canonical `name/branch` (no `:`).
+    let alias_prefix = fluree_db_core::address_path::alias_to_path_prefix(alias)
+        .unwrap_or_else(|_| alias.replace(':', "/"));
+    let storage_addr = format!("fluree:file://{}/stats/pre-index-stats.json", alias_prefix);
     match storage.write_bytes(&storage_addr, json.as_bytes()).await {
         Ok(()) => info!("Pre-index stats manifest written to storage: {}", storage_addr),
         Err(e) => error!("Failed to write pre-index stats to storage: {}", e),
@@ -622,10 +636,7 @@ async fn run_import_parallel(
             MultiOrderRunWriter, RunGenerationResult, RunSortOrder,
         };
 
-        let run_dir = args
-            .run_dir
-            .clone()
-            .unwrap_or_else(|| args.db_dir.join("runs"));
+        let run_dir = default_run_dir(args);
         std::fs::create_dir_all(&run_dir)?;
         let subject_fwd = run_dir.join("subjects.fwd");
         let budget = args.run_budget_mb * 1024 * 1024;
@@ -949,10 +960,7 @@ async fn run_import_parallel(
         );
 
         // Finalize and persist pre-index stats
-        let run_dir = args
-            .run_dir
-            .clone()
-            .unwrap_or_else(|| args.db_dir.join("runs"));
+        let run_dir = default_run_dir(args);
         finalize_pre_index_stats(
             &mut run_result, &run_dir, state.t, state.cumulative_flakes,
             storage, &args.ledger,
@@ -1015,7 +1023,7 @@ struct Args {
     run_budget_mb: usize,
 
     /// Build multi-order indexes (SPOT, PSOT, POST, OPST) from run files.
-    /// Can be combined with --import --generate-runs, or run standalone.
+    /// Can be combined with --import --generate-runs, or run standalone (requires commits present).
     #[arg(long)]
     build_index: bool,
 
@@ -1051,20 +1059,30 @@ struct Args {
     /// Has no effect in --import mode.
     #[arg(long)]
     enable_indexing: bool,
+
+    /// Dump stats diagnostics (nameservice record, pre-index manifest presence, db-root stats).
+    #[arg(long)]
+    dump_stats: bool,
+
+    /// When used with --dump-stats, also print the full pre-index stats manifest JSON.
+    #[arg(long)]
+    dump_stats_manifest: bool,
+
+    /// When used with --dump-stats, exit after printing diagnostics (no query/import/build).
+    #[arg(long)]
+    dump_stats_only: bool,
 }
 
 #[cfg(feature = "commit-v2")]
-fn run_build_index(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_build_index(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     use fluree_db_indexer::run_index::{build_all_indexes, RunSortOrder};
+    use fluree_db_indexer::run_index::BinaryIndexStore;
+    use fluree_db_api::{Publisher};
+    use fluree_db_core::StorageWrite;
+    use std::fmt::Write;
 
-    let run_dir = args
-        .run_dir
-        .clone()
-        .unwrap_or_else(|| args.db_dir.join("runs"));
-    let index_dir = args
-        .index_dir
-        .clone()
-        .unwrap_or_else(|| args.db_dir.join("index"));
+    let run_dir = default_run_dir(args);
+    let index_dir = default_index_dir(args);
 
     let orders = RunSortOrder::all_build_orders();
 
@@ -1104,21 +1122,51 @@ fn run_build_index(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Publish binary index root to nameservice (index source of truth).
+    //
+    // We write a small descriptor JSON under the ledger path and publish its
+    // address + max_t. Consumers can then locate the binary index and stats.
+    let fluree = FlureeBuilder::file(args.db_dir.to_string_lossy().to_string()).build()?;
+    let storage = fluree.storage();
+    let ns = fluree.nameservice();
+
+    let store = BinaryIndexStore::load(&run_dir, &index_dir)?;
+    let index_t = store.max_t();
+    let ap = alias_prefix(&args.ledger);
+    let root_addr = format!("fluree:file://{}/index/binary-index-root.json", ap);
+    let stats_addr = format!("fluree:file://{}/stats/pre-index-stats.json", ap);
+
+    let mut json = String::with_capacity(512);
+    let _ = writeln!(json, "{{");
+    let _ = writeln!(json, "  \"schema_version\": 1,");
+    let _ = writeln!(json, "  \"ledger\": {:?},", args.ledger);
+    let _ = writeln!(json, "  \"index_t\": {},", index_t);
+    let _ = writeln!(json, "  \"run_dir\": {:?},", run_dir.to_string_lossy());
+    let _ = writeln!(json, "  \"index_dir\": {:?},", index_dir.to_string_lossy());
+    let _ = writeln!(json, "  \"stats_manifest\": {:?},", stats_addr);
+    let _ = writeln!(json, "  \"graphs\": {:?},", store.graph_ids());
+    let _ = writeln!(json, "  \"orders\": [\"spot\",\"psot\",\"post\",\"opst\"]");
+    let _ = writeln!(json, "}}");
+
+    storage.write_bytes(&root_addr, json.as_bytes()).await?;
+    ns.publish_index(&args.ledger, &root_addr, index_t).await?;
+    info!(
+        ledger = %args.ledger,
+        index_t,
+        index_address = %root_addr,
+        "Published binary index to nameservice"
+    );
+
     Ok(())
 }
+
 
 #[cfg(feature = "commit-v2")]
 fn run_query(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     use fluree_db_indexer::run_index::BinaryIndexStore;
 
-    let run_dir = args
-        .run_dir
-        .clone()
-        .unwrap_or_else(|| args.db_dir.join("runs"));
-    let index_dir = args
-        .index_dir
-        .clone()
-        .unwrap_or_else(|| args.db_dir.join("index"));
+    let run_dir = default_run_dir(args);
+    let index_dir = default_index_dir(args);
 
     info!("Loading BinaryIndexStore from {:?} + {:?}", run_dir, index_dir);
     let store = BinaryIndexStore::load(&run_dir, &index_dir)?;
@@ -1181,14 +1229,8 @@ fn run_query(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 fn run_list_predicates(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     use fluree_db_indexer::run_index::BinaryIndexStore;
 
-    let run_dir = args
-        .run_dir
-        .clone()
-        .unwrap_or_else(|| args.db_dir.join("runs"));
-    let index_dir = args
-        .index_dir
-        .clone()
-        .unwrap_or_else(|| args.db_dir.join("index"));
+    let run_dir = default_run_dir(args);
+    let index_dir = default_index_dir(args);
 
     let store = BinaryIndexStore::load(&run_dir, &index_dir)?;
     let count = store.predicate_count();
@@ -1257,7 +1299,9 @@ fn format_sid(sid: &fluree_db_core::Sid, ns: &std::collections::HashMap<i32, Str
 /// 6. Print results
 #[cfg(feature = "commit-v2")]
 async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
-    use fluree_db_core::{Db, MemoryStorage, NoCache};
+    use fluree_db_api::FlureeBuilder;
+    use fluree_db_core::{Db, NoCache, Sid, StatsView, StorageRead};
+    use fluree_db_core::serde::json::DbRootStats;
     use fluree_db_indexer::run_index::BinaryIndexStore;
     use fluree_db_query::context::ExecutionContext;
     use fluree_db_query::parse::encode::MemoryEncoder;
@@ -1267,14 +1311,8 @@ async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::Arc;
 
     let sparql = args.sparql.as_ref().unwrap();
-    let run_dir = args
-        .run_dir
-        .clone()
-        .unwrap_or_else(|| args.db_dir.join("runs"));
-    let index_dir = args
-        .index_dir
-        .clone()
-        .unwrap_or_else(|| args.db_dir.join("index"));
+    let run_dir = default_run_dir(args);
+    let index_dir = default_index_dir(args);
 
     info!("Loading BinaryIndexStore from {:?} + {:?}", run_dir, index_dir);
     let store = Arc::new(BinaryIndexStore::load(&run_dir, &index_dir)?);
@@ -1317,18 +1355,125 @@ async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         vars.len(),
     );
 
+    // 2b. Build a Db shell for query execution (no b-tree indexes).
+    //
+    // For binary-index-only mode we source:
+    // - namespace codes from the BinaryIndexStore dicts
+    // - stats graphs from the persisted pre-index manifest
+    let fluree = FlureeBuilder::file(args.db_dir.to_string_lossy().to_string()).build()?;
+    let storage = fluree.storage().clone();
+    let mut db: Db<_, NoCache> = Db::genesis(storage.clone(), NoCache, &args.ledger);
+    db.t = store.max_t();
+    db.namespace_codes = store.namespace_codes().clone();
+
+    // Load graph-scoped stats manifest (canonical storage path: name/branch).
+    let alias_prefix = fluree_db_core::address_path::alias_to_path_prefix(&args.ledger)
+        .unwrap_or_else(|_| args.ledger.replace(':', "/"));
+    let manifest_addr = format!("fluree:file://{}/stats/pre-index-stats.json", alias_prefix);
+    let graphs = match storage.read_bytes(&manifest_addr).await {
+        Ok(bytes) => match fluree_db_api::ledger_info::parse_pre_index_manifest(&bytes) {
+            Ok(g) => g,
+            Err(e) => {
+                error!(manifest_addr = %manifest_addr, "Failed to parse pre-index stats manifest: {}", e);
+                Vec::new()
+            }
+        },
+        Err(e) => {
+            error!(manifest_addr = %manifest_addr, "Pre-index stats manifest missing: {}", e);
+            Vec::new()
+        }
+    };
+
+    db.stats = Some(DbRootStats {
+        flakes: 0,
+        size: 0,
+        properties: None,
+        classes: None,
+        graphs: if graphs.is_empty() { None } else { Some(graphs) },
+    });
+
+    let stats_view: Option<Arc<StatsView>> = db
+        .stats
+        .as_ref()
+        .map(|s| Arc::new(StatsView::from_db_stats_with_namespaces(s, &db.namespace_codes)));
+
+    info!(
+        stats_present = db.stats.is_some(),
+        stats_graphs = db.stats.as_ref().and_then(|s| s.graphs.as_ref()).map(|g| g.len()).unwrap_or(0),
+        stats_classes = db.stats.as_ref().and_then(|s| s.classes.as_ref()).map(|c| c.len()).unwrap_or(0),
+        stats_properties = db.stats.as_ref().and_then(|s| s.properties.as_ref()).map(|p| p.len()).unwrap_or(0),
+        "Loaded db-root stats (binary-only)"
+    );
+
+    // Log property stats for predicates in this query (NDV + per-datatype counts),
+    // sourced from the real db-root stats.
+    if db.stats.as_ref().and_then(|s| s.graphs.as_ref()).is_some() {
+        use fluree_db_core::value_id::DatatypeId;
+        let mut seen: std::collections::HashSet<Sid> = std::collections::HashSet::new();
+
+        let graphs = db.stats.as_ref().and_then(|s| s.graphs.as_ref()).unwrap();
+        let g0 = graphs.iter().find(|g| g.g_id == 0);
+
+        for pat in &parsed_query.patterns {
+            if let fluree_db_query::Pattern::Triple(tp) = pat {
+                if let fluree_db_query::Term::Sid(pred) = &tp.p {
+                    if !seen.insert(pred.clone()) {
+                        continue;
+                    }
+                    let iri = format_sid(pred, &db.namespace_codes);
+                    let p_id = store.sid_to_p_id(pred);
+                    let p_id = match p_id {
+                        Some(id) => id,
+                        None => {
+                            info!(predicate = %iri, p_id = None::<u32>, "property stats missing");
+                            continue;
+                        }
+                    };
+
+                    let Some(g0) = g0 else {
+                        info!(predicate = %iri, p_id, "property stats missing");
+                        continue;
+                    };
+                    let Some(ps) = g0.properties.iter().find(|p| p.p_id == p_id) else {
+                        info!(predicate = %iri, p_id, "property stats missing");
+                        continue;
+                    };
+
+                    let mut dt_counts: Vec<String> = ps
+                        .datatypes
+                        .iter()
+                        .filter_map(|&(dt, c)| {
+                            let sid = DatatypeId::from_u8(dt).to_sid()?;
+                            Some(format!("{}={}", format_sid(sid, &db.namespace_codes), c))
+                        })
+                        .collect();
+                    dt_counts.sort();
+
+                    info!(
+                        predicate = %iri,
+                        p_id,
+                        count = ps.count,
+                        ndv_values = ps.ndv_values,
+                        ndv_subjects = ps.ndv_subjects,
+                        datatypes = %dt_counts.join(", "),
+                        "property stats"
+                    );
+                }
+            }
+        }
+    }
+
     // Helper: build operator tree + context, execute, return batches + timing
     let parse_plan_elapsed = query_start.elapsed();
 
     // --- Run 1: Cold execution ---
     info!("=== Cold execution (run 1) ===");
     let exec_query = ExecutableQuery::simple(parsed_query.clone());
-    let cold_operator = build_operator_tree::<MemoryStorage, NoCache>(
+    let cold_operator = build_operator_tree::<_, NoCache>(
         &parsed_query,
         &exec_query.options,
-        None,
+        stats_view.clone(),
     )?;
-    let db = Db::genesis(MemoryStorage::new(), NoCache, &args.ledger);
     let mut cold_ctx = ExecutionContext::new(&db, &vars)
         .with_binary_store(store.clone(), 0);
     cold_ctx.to_t = store.max_t();
@@ -1346,13 +1491,12 @@ async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     // --- Run 2: Hot execution (same store, fresh operator tree) ---
     info!("=== Hot execution (run 2) ===");
     let exec_query2 = ExecutableQuery::simple(parsed_query.clone());
-    let hot_operator = build_operator_tree::<MemoryStorage, NoCache>(
+    let hot_operator = build_operator_tree::<_, NoCache>(
         &parsed_query,
         &exec_query2.options,
-        None,
+        stats_view.clone(),
     )?;
-    let db2 = Db::genesis(MemoryStorage::new(), NoCache, &args.ledger);
-    let mut hot_ctx = ExecutionContext::new(&db2, &vars)
+    let mut hot_ctx = ExecutionContext::new(&db, &vars)
         .with_binary_store(store.clone(), 0);
     hot_ctx.to_t = store.max_t();
 
@@ -1463,6 +1607,82 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let overall_start = Instant::now();
     let mut total_flakes: u64 = 0;
 
+    // ---- Stats dump (diagnostics) ----
+    if args.dump_stats {
+        use fluree_db_api::{FlureeBuilder, NameService};
+        use fluree_db_core::StorageRead;
+
+        let fluree = FlureeBuilder::file(args.db_dir.to_string_lossy().to_string()).build()?;
+        let storage = fluree.storage().clone();
+        let ns = fluree.nameservice();
+
+        let ns_record = ns.lookup(&args.ledger).await?;
+        info!(
+            ledger = %args.ledger,
+            ns_present = ns_record.is_some(),
+            commit_t = ns_record.as_ref().map(|r| r.commit_t).unwrap_or(0),
+            index_t = ns_record.as_ref().map(|r| r.index_t).unwrap_or(0),
+            index_address = ns_record
+                .as_ref()
+                .and_then(|r| r.index_address.as_ref())
+                .map(|s| s.as_str())
+                .unwrap_or(""),
+            "Nameservice ledger record"
+        );
+
+        let alias_prefix = fluree_db_core::address_path::alias_to_path_prefix(&args.ledger)
+            .unwrap_or_else(|_| args.ledger.replace(':', "/"));
+        let manifest_addr = format!("fluree:file://{}/stats/pre-index-stats.json", alias_prefix);
+        match storage.read_bytes(&manifest_addr).await {
+            Ok(bytes) => {
+                info!(
+                    manifest_addr = %manifest_addr,
+                    manifest_bytes = bytes.len(),
+                    "Found pre-index stats manifest in storage"
+                );
+                if args.dump_stats_manifest {
+                    if let Ok(s) = std::str::from_utf8(&bytes) {
+                        println!("{}", s);
+                    } else {
+                        println!("<pre-index-stats.json is not valid UTF-8>");
+                    }
+                } else if let Ok(graphs) = fluree_db_api::ledger_info::parse_pre_index_manifest(&bytes) {
+                    let prop_count: usize = graphs.iter().map(|g| g.properties.len()).sum();
+                    info!(
+                        manifest_addr = %manifest_addr,
+                        graphs = graphs.len(),
+                        properties = prop_count,
+                        "Pre-index stats manifest summary"
+                    );
+                } else {
+                    info!(manifest_addr = %manifest_addr, "Pre-index stats manifest is not valid JSON");
+                }
+            }
+            Err(_) => {
+                info!(manifest_addr = %manifest_addr, "Pre-index stats manifest NOT found in storage");
+            }
+        }
+
+        if let Some(index_addr) = ns_record.and_then(|r| r.index_address) {
+            let db = fluree_db_core::Db::load(storage.clone(), fluree_db_core::cache::NoCache, &index_addr).await?;
+            info!(
+                index_addr = %index_addr,
+                stats_present = db.stats.is_some(),
+                stats_graphs = db.stats.as_ref().and_then(|s| s.graphs.as_ref()).map(|g| g.len()).unwrap_or(0),
+                stats_classes = db.stats.as_ref().and_then(|s| s.classes.as_ref()).map(|c| c.len()).unwrap_or(0),
+                stats_properties = db.stats.as_ref().and_then(|s| s.properties.as_ref()).map(|p| p.len()).unwrap_or(0),
+                "Loaded db-root stats"
+            );
+        } else {
+            info!("No index_address in nameservice; cannot load db-root stats");
+        }
+
+        if args.dump_stats_only {
+            shutdown_tracer();
+            return Ok(());
+        }
+    }
+
     let has_special_mode = args.import
         || args.build_index
         || args.query_subject.is_some()
@@ -1509,7 +1729,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.build_index {
         #[cfg(feature = "commit-v2")]
         {
-            run_build_index(&args)?;
+            run_build_index(&args).await?;
         }
         #[cfg(not(feature = "commit-v2"))]
         {

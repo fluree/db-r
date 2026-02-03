@@ -13,8 +13,7 @@
 
 use crate::format::iri::IriCompactor;
 use fluree_db_core::serde::json::{
-    ClassPropertyUsage, ClassStatEntry, DbRootSchema, DbRootStats, GraphStatsEntry,
-    PropertyStatEntry, SchemaPredicateInfo,
+    ClassStatEntry, DbRootSchema, DbRootStats, GraphStatsEntry, PropertyStatEntry, SchemaPredicateInfo,
 };
 use fluree_db_core::value_id::DatatypeId;
 use fluree_db_core::{NodeCache, Sid, Storage};
@@ -107,11 +106,11 @@ where
 
     // Pre-index fallback: if no graph stats from index, try loading the pre-index manifest
     if stats.graphs.is_none() {
-        let manifest_addr = format!(
-            "fluree:file://{}/stats/pre-index-stats.json",
-            ledger.db.alias
-        );
-        if let Ok(bytes) = ledger.db.storage.read_bytes(&manifest_addr).await {
+        let alias_prefix = fluree_db_core::address_path::alias_to_path_prefix(&ledger.db.alias)
+            .unwrap_or_else(|_| ledger.db.alias.replace(':', "/"));
+        let manifest_addr_primary =
+            format!("fluree:file://{}/stats/pre-index-stats.json", alias_prefix);
+        if let Ok(bytes) = ledger.db.storage.read_bytes(&manifest_addr_primary).await {
             match parse_pre_index_manifest(&bytes) {
                 Ok(graphs) => {
                     tracing::debug!(
@@ -527,8 +526,8 @@ fn decode_class_stats(
             }
         }
 
-        // Decode class→property breakdowns (these DO have types/ref-classes/langs)
-        let mut props_obj = Map::new();
+        // Decode class→property list (no per-property breakdowns here; those live in graph stats)
+        let mut props_arr: Vec<JsonValue> = Vec::new();
         for usage in &entry.properties {
             let prop_iri = compactor
                 .decode_sid(&usage.property_sid)
@@ -539,62 +538,14 @@ fn decode_class_stats(
                     _ => LedgerInfoError::Storage(e.to_string()),
                 })?;
             let prop_compacted = compactor.compact_vocab_iri(&prop_iri);
-
-            props_obj.insert(
-                prop_compacted,
-                decode_class_property_usage(usage, compactor)?,
-            );
+            props_arr.push(json!(prop_compacted));
         }
-        class_obj.insert("properties".to_string(), JsonValue::Object(props_obj));
+        class_obj.insert("properties".to_string(), JsonValue::Array(props_arr));
 
         result.insert(compacted, JsonValue::Object(class_obj));
     }
 
     Ok(JsonValue::Object(result))
-}
-
-/// Decode class→property usage details (types, ref-classes, langs).
-fn decode_class_property_usage(
-    usage: &ClassPropertyUsage,
-    compactor: &IriCompactor,
-) -> Result<JsonValue> {
-    // Decode types map
-    let mut types_obj = Map::new();
-    for (type_sid, count) in &usage.types {
-        let type_iri = compactor.decode_sid(type_sid).map_err(|e| match e {
-            crate::format::FormatError::UnknownNamespace(code) => {
-                LedgerInfoError::UnknownNamespace(code)
-            }
-            _ => LedgerInfoError::Storage(e.to_string()),
-        })?;
-        let type_compacted = compactor.compact_vocab_iri(&type_iri);
-        types_obj.insert(type_compacted, json!(count));
-    }
-
-    // Decode ref_classes map
-    let mut refs_obj = Map::new();
-    for (ref_sid, count) in &usage.ref_classes {
-        let ref_iri = compactor.decode_sid(ref_sid).map_err(|e| match e {
-            crate::format::FormatError::UnknownNamespace(code) => {
-                LedgerInfoError::UnknownNamespace(code)
-            }
-            _ => LedgerInfoError::Storage(e.to_string()),
-        })?;
-        let ref_compacted = compactor.compact_vocab_iri(&ref_iri);
-        refs_obj.insert(ref_compacted, json!(count));
-    }
-
-    // langs is already String→u64
-    let mut langs_obj = Map::new();
-    for (lang, count) in &usage.langs {
-        langs_obj.insert(lang.clone(), json!(count));
-    }
-
-    Ok(json!({
-        "types": types_obj,
-        "ref-classes": refs_obj,
-        "langs": langs_obj,
-    }))
 }
 
 /// Parse a pre-index stats manifest (JSON) into `GraphStatsEntry` entries.
@@ -614,7 +565,12 @@ fn decode_class_property_usage(
 ///   ]
 /// }
 /// ```
-fn parse_pre_index_manifest(bytes: &[u8]) -> std::result::Result<Vec<GraphStatsEntry>, String> {
+/// Parse a pre-index stats manifest (JSON) into `GraphStatsEntry` entries.
+///
+/// This is produced by the ingest tool (`finalize_pre_index_stats`) and can be used
+/// to feed query planning with NDV/count stats before an index refresh has published
+/// its own `DbRootStats.graphs`.
+pub fn parse_pre_index_manifest(bytes: &[u8]) -> std::result::Result<Vec<GraphStatsEntry>, String> {
     let json: JsonValue =
         serde_json::from_slice(bytes).map_err(|e| format!("invalid JSON: {}", e))?;
 

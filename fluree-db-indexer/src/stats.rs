@@ -26,7 +26,7 @@
 use fluree_db_core::Flake;
 use fluree_db_core::Sid;
 use fluree_db_core::Storage;
-use fluree_vocab::namespaces::{JSON_LD, RDF};
+use fluree_vocab::namespaces::RDF;
 use std::collections::HashSet;
 
 #[cfg(feature = "hll-stats")]
@@ -1855,12 +1855,11 @@ struct ClassData {
 /// Internal property usage data during extraction
 #[derive(Debug, Default)]
 struct PropertyData {
-    /// Datatype counts: datatype SID → delta
-    types: std::collections::HashMap<Sid, i64>,
-    /// Reference class counts: class SID → delta
-    ref_classes: std::collections::HashMap<Sid, i64>,
-    /// Language tag counts: lang → delta
-    langs: std::collections::HashMap<String, i64>,
+    /// Count of asserted flakes for this (class, property) pair (delta).
+    ///
+    /// We intentionally do NOT track datatype/ref/lang breakdowns here; those live
+    /// in graph-scoped property stats (`DbRootStats.graphs[*].properties`).
+    count_delta: i64,
 }
 
 impl ClassPropertyExtractor {
@@ -1879,17 +1878,9 @@ impl ClassPropertyExtractor {
                 for class_entry in classes {
                     let mut props = std::collections::HashMap::new();
                     for prop_usage in &class_entry.properties {
-                        let prop_data = PropertyData {
-                            types: prop_usage.types.iter()
-                                .map(|(sid, count)| (sid.clone(), *count as i64))
-                                .collect(),
-                            ref_classes: prop_usage.ref_classes.iter()
-                                .map(|(sid, count)| (sid.clone(), *count as i64))
-                                .collect(),
-                            langs: prop_usage.langs.iter()
-                                .map(|(lang, count)| (lang.clone(), *count as i64))
-                                .collect(),
-                        };
+                        // Prior stats only carry the property identity. Treat presence as 1 so we
+                        // preserve the property list, but do not attempt to “undo” it on retractions.
+                        let prop_data = PropertyData { count_delta: 1 };
                         props.insert(prop_usage.property_sid.clone(), prop_data);
                     }
                     let data = ClassData {
@@ -1969,40 +1960,12 @@ impl ClassPropertyExtractor {
                 .entry(flake.p.clone())
                 .or_default();
 
-            // Track datatype
-            let dt_count = prop_data.types
-                .entry(flake.dt.clone())
-                .or_insert(0);
-            *dt_count += delta;
-
-            // Track ref-class for @id refs
-            // $id datatype has namespace_code=JSON_LD, name="id"
-            if flake.dt.namespace_code == JSON_LD && flake.dt.name.as_ref() == "id" {
-                if let FlakeValue::Ref(ref_sid) = &flake.o {
-                    // Look up class of referenced entity
-                    if let Some(ref_classes) = self.subject_classes.get(ref_sid) {
-                        for ref_class in ref_classes {
-                            let ref_count = prop_data.ref_classes
-                                .entry(ref_class.clone())
-                                .or_insert(0);
-                            *ref_count += delta;
-                        }
-                    }
-                }
-            }
-
-            // Track language tag for rdf:langString
-            // rdf:langString has namespace_code=RDF, name="langString"
-            if flake.dt.namespace_code == RDF && flake.dt.name.as_ref() == "langString" {
-                if let Some(ref meta) = flake.m {
-                    if let Some(ref lang) = meta.lang {
-                        let lang_count = prop_data.langs
-                            .entry(lang.clone())
-                            .or_insert(0);
-                        *lang_count += delta;
-                    }
-                }
-            }
+            // Track presence for this (class, property) pair.
+            //
+            // NOTE: If a property is fully retracted from a class, we do not have enough
+            // baseline information to reliably remove it without an expensive index walk,
+            // so this list is treated as a conservative superset.
+            prop_data.count_delta += delta;
         }
     }
 
@@ -2022,44 +1985,8 @@ impl ClassPropertyExtractor {
                 // Convert properties (sorted by property SID)
                 let mut properties: Vec<ClassPropertyUsage> = data.properties
                     .into_iter()
-                    .filter(|(_, prop_data)| {
-                        // Keep if any count is positive
-                        prop_data.types.values().any(|&c| c > 0) ||
-                        prop_data.ref_classes.values().any(|&c| c > 0) ||
-                        prop_data.langs.values().any(|&c| c > 0)
-                    })
-                    .map(|(property_sid, prop_data)| {
-                        // Convert types (sorted by SID)
-                        let mut types: Vec<(Sid, u64)> = prop_data.types
-                            .into_iter()
-                            .filter(|(_, count)| *count > 0)
-                            .map(|(sid, count)| (sid, count.max(0) as u64))
-                            .collect();
-                        types.sort_by(|a, b| a.0.cmp(&b.0));
-
-                        // Convert ref_classes (sorted by SID)
-                        let mut ref_classes: Vec<(Sid, u64)> = prop_data.ref_classes
-                            .into_iter()
-                            .filter(|(_, count)| *count > 0)
-                            .map(|(sid, count)| (sid, count.max(0) as u64))
-                            .collect();
-                        ref_classes.sort_by(|a, b| a.0.cmp(&b.0));
-
-                        // Convert langs (sorted alphabetically)
-                        let mut langs: Vec<(String, u64)> = prop_data.langs
-                            .into_iter()
-                            .filter(|(_, count)| *count > 0)
-                            .map(|(lang, count)| (lang, count.max(0) as u64))
-                            .collect();
-                        langs.sort_by(|a, b| a.0.cmp(&b.0));
-
-                        ClassPropertyUsage {
-                            property_sid,
-                            types,
-                            ref_classes,
-                            langs,
-                        }
-                    })
+                    .filter(|(_, prop_data)| prop_data.count_delta > 0)
+                    .map(|(property_sid, _prop_data)| ClassPropertyUsage { property_sid })
                     .collect();
 
                 // Sort properties by SID for determinism
@@ -2202,29 +2129,13 @@ where
         extractor.collect_type_flake(flake);
     }
 
-    // Phase 2: Collect subjects we may need class membership for.
-    // - subjects present in novelty
-    // - referenced subjects from @id refs (so we can attribute ref-classes)
+    // Phase 2: Collect subjects we may need class membership for (subjects present in novelty).
     let novelty_subjects: HashSet<Sid> = novelty_flakes
         .iter()
         .map(|f| f.s.clone())
         .collect();
 
-    // Also collect referenced subjects (@id refs) that might need class lookup
-    let referenced_subjects: HashSet<Sid> = novelty_flakes.iter()
-        .filter(|f| f.dt.namespace_code == JSON_LD && f.dt.name.as_ref() == "id")
-        .filter_map(|f| match &f.o {
-            FlakeValue::Ref(ref_sid) => Some(ref_sid.clone()),
-            _ => None,
-        })
-        .collect();
-
-    // Combine all subjects we care about (Clojure parity: lookup includes subjects even
-    // if they have rdf:type changes in novelty, so we can apply novelty deltas to base).
-    let all_subjects_to_lookup: HashSet<Sid> = novelty_subjects
-        .union(&referenced_subjects)
-        .cloned()
-        .collect();
+    let all_subjects_to_lookup: HashSet<Sid> = novelty_subjects;
 
     // Phase 3: Build novelty rdf:type deltas by subject.
     // We apply these to the base class set from PSOT (assertions only).
@@ -2284,7 +2195,7 @@ mod class_property_stats_tests {
     use fluree_db_core::cache::NoCache;
     use fluree_db_core::serde::json::DbRootStats;
     use fluree_db_core::{Db, FlakeValue, MemoryStorage, Sid};
-    use fluree_vocab::namespaces::{EMPTY, XSD};
+    use fluree_vocab::namespaces::{EMPTY, JSON_LD, XSD};
 
     fn make_type_flake(subject: &str, class: &str, t: i64, op: bool) -> Flake {
         Flake::new(

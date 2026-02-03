@@ -17,7 +17,6 @@ use fluree_db_core::temporal::{
     Date, DateTime, DayTimeDuration, Duration as XsdDuration, GDay, GMonth, GMonthDay, GYear,
     GYearMonth, Time, YearMonthDuration,
 };
-use fluree_db_core::value::FlakeValue;
 use super::global_dict::dt_ids;
 use fluree_db_core::value_id::{ObjKind, ObjKey};
 use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
@@ -39,9 +38,6 @@ pub struct CommitResolver {
     ns_prefixes: HashMap<i32, String>,
     /// Reusable xxh3 streaming hasher (avoids per-op hasher construction).
     hasher: Xxh3,
-    /// Per-predicate tracking: bit 0 = has NUM_INT, bit 1 = has NUM_F64, bit 2 = has NUM_BIG.
-    /// Used to compute `NumericShape` for the binary scan path.
-    numeric_tag_usage: HashMap<u32, u8>,
     /// Optional per-(graph, property) stats hook. When set, `on_record()` is
     /// called for every resolved user-data op (not txn-meta).
     #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
@@ -54,7 +50,6 @@ impl CommitResolver {
         Self {
             ns_prefixes: fluree_db_core::default_namespace_codes(),
             hasher: Xxh3::new(),
-            numeric_tag_usage: HashMap::new(),
             #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
             stats_hook: None,
         }
@@ -100,11 +95,18 @@ impl CommitResolver {
             // Feed resolved record to ID-based stats hook (user-data ops only)
             #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
             if let Some(ref mut hook) = self.stats_hook {
+                // IMPORTANT: `record.dt` is the binary run's datatype-dict ID (dt_id),
+                // not `fluree_db_core::DatatypeId`. For stats we want stable datatypes,
+                // so derive DatatypeId from the commit's declared datatype IRI.
+                let dt = fluree_db_core::value_id::DatatypeId::from_ns_name(
+                    raw_op.dt_ns_code,
+                    raw_op.dt_name,
+                );
                 hook.on_record(
                     record.g_id,
                     record.p_id,
                     record.s_id,
-                    fluree_db_core::value_id::DatatypeId::from_u8(record.dt as u8),
+                    dt,
                     crate::stats::value_hash(record.o_kind, record.o_key),
                     record.t,
                     record.op != 0,
@@ -150,28 +152,6 @@ impl CommitResolver {
     /// Access the accumulated namespace prefix map (code -> prefix IRI).
     pub fn ns_prefixes(&self) -> &HashMap<i32, String> {
         &self.ns_prefixes
-    }
-
-    /// Compute per-predicate numeric shapes from accumulated tag usage.
-    ///
-    /// Returns a map from p_id to `NumericShape` (IntOnly, FloatOnly, or Mixed).
-    /// Only includes predicates that have NumInt or NumF64 values.
-    pub fn numeric_shapes(&self) -> HashMap<u32, super::numfloat_dict::NumericShape> {
-        use super::numfloat_dict::NumericShape;
-        self.numeric_tag_usage
-            .iter()
-            .filter_map(|(&p_id, &bits)| {
-                // Only consider bits 0 (INT) and 1 (F64); bit 2 (BIG) is separate
-                let int_f64_bits = bits & 0x3;
-                let shape = match int_f64_bits {
-                    0x1 => NumericShape::IntOnly,
-                    0x2 => NumericShape::FloatOnly,
-                    0x3 => NumericShape::Mixed,
-                    _ => return None, // Only has NumBig, or no numeric values
-                };
-                Some((p_id, shape))
-            })
-            .collect()
     }
 
     /// Emit txn-meta RunRecords for a single commit into the txn-meta graph (g_id=1).
@@ -458,12 +438,11 @@ impl CommitResolver {
         &mut self,
         obj: &RawObject<'_>,
         p_id: u32,
-        dt_id: u16,
+        _dt_id: u16,
         dicts: &mut GlobalDicts,
     ) -> Result<(ObjKind, ObjKey), String> {
         match obj {
             RawObject::Long(v) => {
-                *self.numeric_tag_usage.entry(p_id).or_default() |= 0x1;
                 Ok((ObjKind::NUM_INT, ObjKey::encode_i64(*v)))
             }
             RawObject::Double(v) => {
@@ -471,14 +450,12 @@ impl CommitResolver {
                 if v.is_finite() && v.fract() == 0.0 {
                     let as_i64 = *v as i64;
                     if (as_i64 as f64) == *v {
-                        *self.numeric_tag_usage.entry(p_id).or_default() |= 0x1;
                         return Ok((ObjKind::NUM_INT, ObjKey::encode_i64(as_i64)));
                     }
                 }
                 // Reject NaN and Inf
                 let key = ObjKey::encode_f64(*v)
                     .map_err(|e| format!("f64 encode for p_id={}: {}", p_id, e))?;
-                *self.numeric_tag_usage.entry(p_id).or_default() |= 0x2;
                 Ok((ObjKind::NUM_F64, key))
             }
             RawObject::Str(s) => {
@@ -528,18 +505,15 @@ impl CommitResolver {
             RawObject::BigIntStr(s) => {
                 // Try to parse as i64 first for NumInt fast path
                 if let Ok(v) = s.parse::<i64>() {
-                    *self.numeric_tag_usage.entry(p_id).or_default() |= 0x1;
                     return Ok((ObjKind::NUM_INT, ObjKey::encode_i64(v)));
                 }
                 // Parse as BigInt
                 match s.parse::<BigInt>() {
                     Ok(bi) => {
                         if let Some(v) = num_traits::ToPrimitive::to_i64(&bi) {
-                            *self.numeric_tag_usage.entry(p_id).or_default() |= 0x1;
                             return Ok((ObjKind::NUM_INT, ObjKey::encode_i64(v)));
                         }
                         // Overflow BigInt -> NumBig
-                        *self.numeric_tag_usage.entry(p_id).or_default() |= 0x4;
                         let handle = dicts
                             .numbigs
                             .entry(p_id)
@@ -558,7 +532,6 @@ impl CommitResolver {
                 // All typed xsd:decimal values route to NumBig by default
                 match s.parse::<BigDecimal>() {
                     Ok(bd) => {
-                        *self.numeric_tag_usage.entry(p_id).or_default() |= 0x4;
                         let handle = dicts
                             .numbigs
                             .entry(p_id)
