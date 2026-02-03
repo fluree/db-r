@@ -11,6 +11,7 @@ use crate::{
     ApiError, ExecutableQuery, Fluree, NameService, QueryResult, Result, Storage,
     Tracker, TrackingOptions,
 };
+use fluree_db_query::execute::{ContextConfig, execute_prepared, prepare_execution};
 
 // ============================================================================
 // Dataset Query Execution
@@ -236,6 +237,10 @@ where
     }
 
     /// Execute against dataset (multi-ledger).
+    ///
+    /// Calls `prepare_execution` + `execute_prepared` directly so that
+    /// `binary_store` from the primary view is threaded into the
+    /// `ExecutionContext` for `BinaryScanOperator`.
     async fn execute_dataset_internal(
         &self,
         dataset: &FlureeDataSetView<S>,
@@ -255,50 +260,40 @@ where
 
         let runtime_dataset = dataset.as_runtime_dataset();
 
-        let batches = if let Some((from_t, to_t)) = dataset.history_time_range() {
-            fluree_db_query::execute_with_dataset_history(
-                &primary.db,
-                primary.overlay.as_ref(),
-                vars,
-                executable,
-                to_t,
-                Some(from_t),
-                &runtime_dataset,
-                if tracker.is_enabled() { Some(tracker) } else { None },
-            )
+        let prepared = prepare_execution(&primary.db, primary.overlay.as_ref(), executable, primary.to_t)
             .await
-            .map_err(query_error_to_api_error)?
-        } else if tracker.is_enabled() {
-            fluree_db_query::execute_with_dataset_tracked(
-                &primary.db,
-                primary.overlay.as_ref(),
-                vars,
-                executable,
-                primary.to_t,
-                None,
-                &runtime_dataset,
-                tracker,
-            )
-            .await
-            .map_err(query_error_to_api_error)?
-        } else {
-            fluree_db_query::execute_with_dataset(
-                &primary.db,
-                primary.overlay.as_ref(),
-                vars,
-                executable,
-                primary.to_t,
-                None,
-                &runtime_dataset,
-            )
-            .await
-            .map_err(query_error_to_api_error)?
+            .map_err(query_error_to_api_error)?;
+
+        let (from_t, to_t, history_mode) = match dataset.history_time_range() {
+            Some((hist_from, hist_to)) => (Some(hist_from), hist_to, true),
+            None => (None, primary.to_t, false),
         };
 
-        Ok(batches)
+        let config = ContextConfig {
+            tracker: if tracker.is_enabled() { Some(tracker) } else { None },
+            dataset: Some(&runtime_dataset),
+            binary_store: primary.binary_store.clone(),
+            history_mode,
+            strict_bind_errors: true,
+            ..Default::default()
+        };
+
+        execute_prepared(
+            &primary.db,
+            vars,
+            primary.overlay.as_ref(),
+            prepared,
+            to_t,
+            from_t,
+            config,
+        )
+        .await
+        .map_err(query_error_to_api_error)
     }
 
     /// Execute against dataset with tracking.
+    ///
+    /// Threads `binary_store` from the primary view into the execution context.
     async fn execute_dataset_tracked(
         &self,
         dataset: &FlureeDataSetView<S>,
@@ -312,31 +307,33 @@ where
 
         let runtime_dataset = dataset.as_runtime_dataset();
 
-        if let Some((from_t, to_t)) = dataset.history_time_range() {
-            fluree_db_query::execute_with_dataset_history(
-                &primary.db,
-                primary.overlay.as_ref(),
-                vars,
-                executable,
-                to_t,
-                Some(from_t),
-                &runtime_dataset,
-                Some(tracker),
-            )
-            .await
-        } else {
-            fluree_db_query::execute_with_dataset_tracked(
-                &primary.db,
-                primary.overlay.as_ref(),
-                vars,
-                executable,
-                primary.to_t,
-                None,
-                &runtime_dataset,
-                tracker,
-            )
-            .await
-        }
+        let prepared = prepare_execution(&primary.db, primary.overlay.as_ref(), executable, primary.to_t)
+            .await?;
+
+        let (from_t, to_t, history_mode) = match dataset.history_time_range() {
+            Some((hist_from, hist_to)) => (Some(hist_from), hist_to, true),
+            None => (None, primary.to_t, false),
+        };
+
+        let config = ContextConfig {
+            tracker: Some(tracker),
+            dataset: Some(&runtime_dataset),
+            binary_store: primary.binary_store.clone(),
+            history_mode,
+            strict_bind_errors: true,
+            ..Default::default()
+        };
+
+        execute_prepared(
+            &primary.db,
+            vars,
+            primary.overlay.as_ref(),
+            prepared,
+            to_t,
+            from_t,
+            config,
+        )
+        .await
     }
 }
 

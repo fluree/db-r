@@ -50,7 +50,6 @@
 
 use crate::address_path::alias_to_path_prefix;
 use crate::error::Result;
-use crate::IndexType;
 use async_trait::async_trait;
 use sha2::Digest;
 use std::fmt::Debug;
@@ -212,8 +211,6 @@ pub enum ContentKind {
     Commit,
     /// Txn JSON blob
     Txn,
-    /// Index node (leaf or branch) for a specific index ordering
-    IndexNode { index_type: IndexType },
     /// DB root index node (the "root pointer" written each refresh)
     IndexRoot,
     /// Garbage record (GC metadata)
@@ -318,9 +315,6 @@ pub fn content_path(kind: ContentKind, alias: &str, hash_hex: &str) -> String {
     match kind {
         ContentKind::Commit => format!("{}/commit/{}.json", prefix, hash_hex),
         ContentKind::Txn => format!("{}/txn/{}.json", prefix, hash_hex),
-        ContentKind::IndexNode { index_type } => {
-            format!("{}/index/{}/{}.json", prefix, index_type.name(), hash_hex)
-        }
         ContentKind::IndexRoot => format!("{}/index/roots/{}.json", prefix, hash_hex),
         ContentKind::GarbageRecord => format!("{}/index/garbage/{}.json", prefix, hash_hex),
         ContentKind::ReindexCheckpoint => format!("{}/index/reindex-checkpoint.json", prefix),

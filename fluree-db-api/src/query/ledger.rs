@@ -42,6 +42,13 @@ where
     }
 
     /// Internal helper for query execution.
+    ///
+    /// Note: This path uses `LedgerState` which does not carry `binary_store`.
+    /// Queries still execute correctly via `Db.range_provider` (which serves
+    /// all `range_with_overlay()` callers automatically). The faster
+    /// `BinaryScanOperator` path is available through the view-based API
+    /// (`query_view` / `execute_view_internal`) which threads `binary_store`
+    /// from `LedgerSnapshot` into `ContextConfig`.
     async fn execute_query_internal(
         &self,
         ledger: &LedgerState<S>,

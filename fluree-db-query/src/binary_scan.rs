@@ -120,6 +120,13 @@ pub struct BinaryScanOperator {
     overlay_ops: Vec<OverlayOp>,
     /// Overlay epoch for cache key differentiation.
     overlay_epoch: u64,
+    /// Dictionary overlay for decode-time ephemeral ID resolution.
+    ///
+    /// When set, all ID→value decoding goes through DictOverlay instead of
+    /// directly through the store. This handles ephemeral subjects, predicates,
+    /// strings, and lang tags that are in novelty but not yet in the persisted
+    /// binary index.
+    dict_overlay: Option<crate::dict_overlay::DictOverlay>,
 }
 
 impl BinaryScanOperator {
@@ -185,6 +192,7 @@ impl BinaryScanOperator {
             object_bounds,
             overlay_ops: Vec::new(),
             overlay_epoch: 0,
+            dict_overlay: None,
         }
     }
 
@@ -215,17 +223,31 @@ impl BinaryScanOperator {
         self.overlay_epoch = epoch;
     }
 
+    /// Set the dictionary overlay for ephemeral ID resolution at decode time.
+    ///
+    /// Must be the same DictOverlay that was used for `translate_overlay_flakes()`
+    /// so ephemeral IDs in overlay ops resolve correctly.
+    pub fn set_dict_overlay(&mut self, overlay: crate::dict_overlay::DictOverlay) {
+        self.dict_overlay = Some(overlay);
+    }
+
     /// Resolve s_id to Sid, using cache for amortized lookups.
     ///
-    /// On cache miss: s_id → IRI (forward file) → encode_iri → Sid.
+    /// When a DictOverlay is present, delegates to it (handles both persisted
+    /// and ephemeral subject IDs). Otherwise, uses the store directly.
     fn resolve_s_id(&mut self, s_id: u32) -> Result<Sid> {
         if let Some(sid) = self.sid_cache.get(&s_id) {
             return Ok(sid.clone());
         }
 
-        let iri = self.store.resolve_subject_iri(s_id)
-            .map_err(|e| QueryError::Internal(format!("resolve s_id {}: {}", s_id, e)))?;
-        let sid = self.store.encode_iri(&iri);
+        let sid = if let Some(ref dict_ov) = self.dict_overlay {
+            dict_ov.resolve_subject_sid(s_id)
+                .map_err(|e| QueryError::Internal(format!("resolve s_id {}: {}", s_id, e)))?
+        } else {
+            let iri = self.store.resolve_subject_iri(s_id)
+                .map_err(|e| QueryError::Internal(format!("resolve s_id {}: {}", s_id, e)))?;
+            self.store.encode_iri(&iri)
+        };
         self.sid_cache.insert(s_id, sid.clone());
         Ok(sid)
     }
@@ -239,6 +261,37 @@ impl BinaryScanOperator {
         self.p_is_var
             && self.p_sids.get(p_id as usize)
                 .map_or(false, |s| s.namespace_code == FLUREE_LEDGER)
+    }
+
+    /// Decode an object value, routing through DictOverlay when present.
+    #[inline]
+    fn decode_obj(&self, o_kind: u8, o_key: u64, p_id: u32) -> std::io::Result<FlakeValue> {
+        match &self.dict_overlay {
+            Some(ov) => ov.decode_value(o_kind, o_key, p_id),
+            None => self.store.decode_value(o_kind, o_key, p_id),
+        }
+    }
+
+    /// Resolve a predicate ID to Sid, handling ephemeral IDs via DictOverlay.
+    #[inline]
+    fn resolve_p_id(&self, p_id: u32) -> Sid {
+        let idx = p_id as usize;
+        if idx < self.p_sids.len() {
+            return self.p_sids[idx].clone();
+        }
+        // Ephemeral or out-of-range p_id: try DictOverlay, then store
+        if let Some(ref ov) = self.dict_overlay {
+            if let Some(sid) = ov.resolve_predicate_sid(p_id) {
+                return sid;
+            }
+        }
+        match self.store.resolve_predicate_iri(p_id) {
+            Some(iri) => self.store.encode_iri(iri),
+            None => {
+                tracing::warn!(p_id, "unresolvable predicate ID in batch_to_bindings");
+                Sid::new(0, "")
+            }
+        }
     }
 
     /// Convert a DecodedBatch into columnar Bindings.
@@ -263,7 +316,7 @@ impl BinaryScanOperator {
             // (ObjKind, ObjKey) pair (e.g. string literal — no reverse string index),
             // decode each row's object and skip non-matching rows.
             if let Some(ref filter_val) = self.bound_o_filter {
-                let decoded_val = self.store.decode_value(decoded.o_kinds[row], decoded.o_keys[row], decoded.p_ids[row])
+                let decoded_val = self.decode_obj(decoded.o_kinds[row], decoded.o_keys[row], decoded.p_ids[row])
                     .map_err(|e| QueryError::Internal(
                         format!("decode object for filter: {}", e),
                     ))?;
@@ -276,7 +329,7 @@ impl BinaryScanOperator {
             // POST key range provides coarse leaf filtering; this handles
             // inclusive/exclusive boundaries and cross-type comparisons exactly.
             if let Some(ref obj_bounds) = self.object_bounds {
-                let decoded_val = self.store.decode_value(decoded.o_kinds[row], decoded.o_keys[row], decoded.p_ids[row])
+                let decoded_val = self.decode_obj(decoded.o_kinds[row], decoded.o_keys[row], decoded.p_ids[row])
                     .map_err(|e| QueryError::Internal(
                         format!("decode object for bounds: {}", e),
                     ))?;
@@ -296,39 +349,36 @@ impl BinaryScanOperator {
 
             // Predicate binding
             if self.p_var_pos.is_some() {
-                let p_id = decoded.p_ids[row] as usize;
-                let sid = if p_id < self.p_sids.len() {
-                    self.p_sids[p_id].clone()
-                } else {
-                    // Fallback (shouldn't happen with valid indexes)
-                    match self.store.resolve_predicate_iri(p_id as u32) {
-                        Some(iri) => self.store.encode_iri(iri),
-                        None => Sid::new(0, ""),
-                    }
-                };
+                let sid = self.resolve_p_id(decoded.p_ids[row]);
                 columns[col_idx].push(Binding::Sid(sid));
                 col_idx += 1;
             }
 
             // Object binding
             if self.o_var_pos.is_some() {
-                let val = self.store.decode_value(decoded.o_kinds[row], decoded.o_keys[row], decoded.p_ids[row])
+                let val = self.decode_obj(decoded.o_kinds[row], decoded.o_keys[row], decoded.p_ids[row])
                     .map_err(|e| QueryError::Internal(format!("decode object: {}", e)))?;
 
                 let binding = match val {
                     FlakeValue::Ref(ref sid) => Binding::Sid(sid.clone()),
                     other => {
                         // Literal: requires datatype/lang/index/t metadata.
-                        let dt_id = decoded.dt_values[row] as usize;
-                        let dt_sid = self.store
-                            .dt_sids()
-                            .get(dt_id)
-                            .cloned()
-                            .unwrap_or_else(|| Sid::new(0, ""));
+                        let dt_id = decoded.dt_values[row] as u16;
+                        let dt_sid = match &self.dict_overlay {
+                            Some(ov) => ov.decode_dt_sid(dt_id),
+                            None => self.store
+                                .dt_sids()
+                                .get(dt_id as usize)
+                                .cloned()
+                                .unwrap_or_else(|| Sid::new(0, "")),
+                        };
 
                         let lang_id = decoded.lang_ids[row];
                         let i_val = decoded.i_values[row];
-                        let meta = self.store.decode_meta(lang_id, i_val);
+                        let meta = match &self.dict_overlay {
+                            Some(ov) => ov.decode_meta(lang_id, i_val),
+                            None => self.store.decode_meta(lang_id, i_val),
+                        };
                         let t = decoded.t_values[row];
 
                         Binding::Lit {
@@ -761,6 +811,7 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
         self.sid_cache.clear();
         self.p_sids.clear();
         self.bound_o_filter = None;
+        self.dict_overlay = None;
         self.state = OperatorState::Closed;
     }
 }
@@ -951,12 +1002,11 @@ impl<S: Storage + 'static> Operator<S> for DeferredScanOperator<S> {
             && ctx.from_t.is_none()
             && binary_can_handle_bounds;
 
-        // When binary path is selected and overlay exists, translate overlay
-        // flakes to integer-ID space using DictOverlay (infallible — ephemeral
-        // IDs are allocated for entities not in the persisted dictionaries).
-        // TODO(Phase 2): pass dict_overlay into BinaryScanOperator for
-        // decode-time ephemeral ID resolution.
-        let (overlay_data, _dict_overlay) = if use_binary && ctx.overlay.is_some() {
+        // When binary path is selected, create a DictOverlay for ephemeral
+        // ID resolution during both overlay translation and result decoding.
+        // If overlay exists, translate flakes to integer-ID space (infallible —
+        // ephemeral IDs are allocated for entities not in persisted dictionaries).
+        let (overlay_data, dict_overlay) = if use_binary && ctx.overlay.is_some() {
             let store = ctx.binary_store.as_ref().unwrap().clone();
             let mut dict_ov = crate::dict_overlay::DictOverlay::new(store);
             let ops = translate_overlay_flakes(ctx.overlay(), &mut dict_ov, ctx.to_t);
@@ -984,6 +1034,9 @@ impl<S: Storage + 'static> Operator<S> for DeferredScanOperator<S> {
             );
             if let Some((ops, epoch)) = overlay_data {
                 op.set_overlay(ops, epoch);
+            }
+            if let Some(dict_ov) = dict_overlay {
+                op.set_dict_overlay(dict_ov);
             }
             Box::new(op)
         } else {
