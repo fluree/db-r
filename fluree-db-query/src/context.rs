@@ -77,10 +77,9 @@ pub struct ExecutionContext<'a, S: Storage + 'static> {
     pub strict_bind_errors: bool,
     /// Optional binary columnar index store for fast local-file scans.
     ///
-    /// When present, scan operators use `BinaryScanOperator` for queries
-    /// against the binary columnar indexes. When absent, falls back to
-    /// `ScanOperator` (b-tree path). Will become mandatory once the
-    /// b-tree path is fully removed.
+    /// When present, scan operators use the binary cursor path for queries
+    /// against the binary columnar indexes. When absent, scans fall back
+    /// to `range_with_overlay()`.
     pub binary_store: Option<Arc<BinaryIndexStore>>,
     /// Graph ID for binary index scans (typically 0 for default graph).
     pub binary_g_id: u32,

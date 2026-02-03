@@ -61,6 +61,10 @@ pub enum QueryError {
     /// Policy evaluation error
     #[error("Policy error: {0}")]
     Policy(String),
+
+    /// Query mode not yet supported with binary indexes
+    #[error("Unsupported mode: {0}")]
+    UnsupportedMode(String),
 }
 
 impl QueryError {

@@ -1296,7 +1296,7 @@ fn format_sid(sid: &fluree_db_core::Sid, ns: &std::collections::HashMap<i32, Str
 /// 1. Load BinaryIndexStore from run_dir + index_dir
 /// 2. Parse SPARQL string → SparqlAst
 /// 3. Lower to ParsedQuery using namespace-based IRI encoding
-/// 4. Build operator tree (DeferredScanOperator auto-selects binary path)
+/// 4. Build operator tree (ScanOperator auto-selects binary path)
 /// 5. Execute with ExecutionContext that has binary_store set
 /// 6. Print results
 #[cfg(feature = "commit-v2")]

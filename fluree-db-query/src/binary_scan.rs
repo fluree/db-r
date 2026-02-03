@@ -1,6 +1,7 @@
-//! BinaryScanOperator: reads from binary columnar indexes and converts to bindings.
+//! Scan operators for WHERE-clause triple-pattern evaluation.
 //!
-//! Replaces `ScanOperator` for queries when a `BinaryIndexStore` is available.
+//! `ScanOperator` is the entry point — it selects between `BinaryScanOperator`
+//! (fast streaming cursors) and `RangeScanOperator` (range_with_overlay fallback).
 //! Works entirely in integer-ID space (s_id, p_id, ObjKind/ObjKey) and only resolves
 //! to Sid/FlakeValue at the Binding output boundary.
 //!
@@ -52,7 +53,7 @@ use std::sync::Arc;
 /// Map from fluree-db-core's `IndexType` to `RunSortOrder`.
 ///
 /// TSPO (time-ordered) is not built in the binary indexes, so it falls
-/// back to SPOT. Callers requiring time-travel should use `ScanOperator`.
+/// back to SPOT. Time-travel is handled via Region 3 history in leaflets.
 pub(crate) fn index_type_to_sort_order(idx: IndexType) -> RunSortOrder {
     match idx {
         IndexType::Spot => RunSortOrder::Spot,
@@ -74,15 +75,15 @@ pub(crate) fn index_type_to_sort_order(idx: IndexType) -> RunSortOrder {
 ///
 /// # When to Use
 ///
-/// Created instead of `ScanOperator` when a `BinaryIndexStore` is available
-/// on the execution context. Falls back to `ScanOperator` for normal B-tree
-/// index queries (e.g., when no binary index is loaded).
+/// Used by `ScanOperator` when a `BinaryIndexStore` is available and the query
+/// mode is compatible (single-ledger, non-history, time within index coverage).
+/// Otherwise `ScanOperator` falls back to `RangeScanOperator`.
 ///
 /// # Single-Ledger Only
 ///
 /// This operator is designed for single-ledger mode (no cross-ledger joins).
 /// It creates `Binding::Sid` for IRI positions. Multi-ledger `IriMatch` bindings
-/// are not supported — use `ScanOperator` for dataset queries.
+/// are not yet supported.
 pub struct BinaryScanOperator {
     /// The triple pattern to match.
     pattern: TriplePattern,
@@ -116,7 +117,7 @@ pub struct BinaryScanOperator {
     bound_o_filter: Option<FlakeValue>,
     /// Object bounds for range post-filtering (set when binary path handles range queries).
     object_bounds: Option<ObjectBounds>,
-    /// Pre-translated overlay operations (set by DeferredScanOperator).
+    /// Pre-translated overlay operations (set by ScanOperator).
     overlay_ops: Vec<OverlayOp>,
     /// Overlay epoch for cache key differentiation.
     overlay_epoch: u64,
@@ -148,7 +149,7 @@ impl BinaryScanOperator {
         );
 
         // When object bounds are present and default index is PSOT, switch to POST
-        // for object-range scanning (matches ScanOperator::with_object_bounds behavior).
+        // for object-range scanning.
         if object_bounds.is_some() && index == IndexType::Psot {
             index = IndexType::Post;
         }
@@ -215,7 +216,7 @@ impl BinaryScanOperator {
 
     /// Set pre-translated overlay operations and epoch for query-time merge.
     ///
-    /// Called by `DeferredScanOperator` after translating overlay Flakes to
+    /// Called by `ScanOperator` after translating overlay Flakes to
     /// integer-ID space. The ops are sorted by the cursor's sort order during
     /// `open()` and passed to the `BinaryCursor` for per-leaf merge.
     pub fn set_overlay(&mut self, ops: Vec<OverlayOp>, epoch: u64) {
@@ -255,7 +256,7 @@ impl BinaryScanOperator {
     /// Check if a predicate p_id corresponds to a fluree:ledger internal predicate.
     ///
     /// Internal predicates are filtered out when the pattern's predicate is a variable
-    /// (wildcard), matching ScanOperator's `skip_internal_predicate` behavior.
+    /// (wildcard) to skip internal predicates.
     #[inline]
     fn is_internal_predicate(&self, p_id: u32) -> bool {
         self.p_is_var
@@ -898,33 +899,26 @@ fn translate_one_flake(
 }
 
 // ============================================================================
-// DeferredScanOperator
+// ScanOperator
 // ============================================================================
 
-/// Deferred scan operator that selects between `BinaryScanOperator` and
-/// `RangeFallbackOperator` at `open()` time based on the `ExecutionContext`.
+/// The sole scan operator for WHERE-clause triple patterns.
 ///
-/// The query planner creates operators at plan time, before the
-/// `ExecutionContext` exists.  `DeferredScanOperator` bridges this gap by
-/// holding the pattern and optional object bounds, then materializing the
-/// appropriate scan operator once `open()` provides access to the context.
+/// Created at plan time (before the `ExecutionContext` exists) with just the
+/// pattern and optional object bounds. At `open()` time it inspects the context
+/// and selects the appropriate scan strategy:
 ///
-/// # Binary path eligibility
+/// - **Binary cursor path**: When `ctx.binary_store` is present and the query
+///   mode is compatible (not multi-ledger, not history, time within index
+///   coverage). This is the fast streaming path via `BinaryScanOperator`.
 ///
-/// The binary path is selected when **all** of the following hold:
-/// - `ctx.binary_store` is `Some`
-/// - Not in multi-ledger (dataset) mode
-/// - Not in history mode
-/// - Time-travel is within binary index coverage (`to_t >= store.base_t()`)
-/// - No history range query (`from_t` is `None`)
+/// - **Range-based fallback**: When the binary cursor path is not available —
+///   pre-index databases, history mode, time-travel before `base_t`. Delegates
+///   to `range_with_overlay()` via `RangeScanOperator`.
 ///
 /// Overlay flakes are always translatable via `DictOverlay` (ephemeral IDs
 /// are allocated for entities not yet in the persisted dictionaries).
-///
-/// When the binary path is not available, falls back to `RangeFallbackOperator`
-/// which delegates to `range_with_overlay()`. This handles genesis databases
-/// (t=0, overlay-only) and databases with a `RangeProvider` but no binary store.
-pub struct DeferredScanOperator<S: Storage + 'static> {
+pub struct ScanOperator<S: Storage + 'static> {
     pattern: TriplePattern,
     object_bounds: Option<ObjectBounds>,
     schema: Arc<[VarId]>,
@@ -932,11 +926,10 @@ pub struct DeferredScanOperator<S: Storage + 'static> {
     state: OperatorState,
 }
 
-impl<S: Storage + 'static> DeferredScanOperator<S> {
-    /// Create a new deferred scan operator.
+impl<S: Storage + 'static> ScanOperator<S> {
+    /// Create a new scan operator for a triple pattern.
     ///
-    /// Schema is computed from the pattern variables (matches both
-    /// `ScanOperator` and `BinaryScanOperator` schema computation).
+    /// Schema is computed from the pattern variables.
     pub fn new(pattern: TriplePattern, object_bounds: Option<ObjectBounds>) -> Self {
         let mut schema_vec = Vec::with_capacity(3);
         if let Term::Var(v) = &pattern.s {
@@ -960,7 +953,7 @@ impl<S: Storage + 'static> DeferredScanOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for DeferredScanOperator<S> {
+impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
     fn schema(&self) -> &[VarId] {
         match &self.inner {
             Some(op) => op.schema(),
@@ -976,33 +969,20 @@ impl<S: Storage + 'static> Operator<S> for DeferredScanOperator<S> {
             return Err(QueryError::OperatorAlreadyOpened);
         }
 
-        // Check if the binary index covers the requested time range.
-        // Point-in-time time-travel (to_t < max_t) requires Region 3 history,
-        // which is only available for t >= base_t (the initial full build's max_t).
-        let binary_covers_time = ctx.binary_store.as_ref()
-            .map_or(false, |s| ctx.to_t >= s.base_t());
+        // Determine whether the binary cursor path can handle this query.
+        // Binary cursors require: store present, single-ledger, time within
+        // coverage, no history mode, no time-range queries.  Everything else
+        // falls back to range_with_overlay() which works for multi-ledger,
+        // pre-index, history, and time-travel-before-base_t via the
+        // RangeProvider trait.
+        let use_binary = ctx.binary_store.as_ref().map_or(false, |s| {
+            !ctx.is_multi_ledger()
+                && ctx.to_t >= s.base_t()
+                && !ctx.history_mode
+                && ctx.from_t.is_none()
+        });
 
-        // Check if binary path can handle object bounds
-        let binary_can_handle_bounds = match &self.object_bounds {
-            None => true, // no bounds: always OK
-            Some(_bounds) => {
-                // Bounds are always *semantically* supported in the binary path because
-                // `BinaryScanOperator` applies `ObjectBounds` as a post-filter after decoding.
-                //
-                // We only use numeric shape to optionally *narrow* the key range; Mixed/unknown
-                // shapes simply skip narrowing (but still filter correctly post-scan).
-                ctx.binary_store.is_some()
-            }
-        };
-
-        let use_binary = ctx.binary_store.is_some()
-            && binary_covers_time
-            && !ctx.is_multi_ledger()
-            && !ctx.history_mode
-            && ctx.from_t.is_none()
-            && binary_can_handle_bounds;
-
-        // When binary path is selected, create a DictOverlay for ephemeral
+        // When the binary path is selected, create a DictOverlay for ephemeral
         // ID resolution during both overlay translation and result decoding.
         // If overlay exists, translate flakes to integer-ID space (infallible —
         // ephemeral IDs are allocated for entities not in persisted dictionaries).
@@ -1017,7 +997,6 @@ impl<S: Storage + 'static> Operator<S> for DeferredScanOperator<S> {
                 (Some((ops, epoch)), Some(dict_ov))
             }
         } else if use_binary {
-            // No overlay, but still create DictOverlay for decode-time use
             let store = ctx.binary_store.as_ref().unwrap().clone();
             (None, Some(crate::dict_overlay::DictOverlay::new(store)))
         } else {
@@ -1040,8 +1019,9 @@ impl<S: Storage + 'static> Operator<S> for DeferredScanOperator<S> {
             }
             Box::new(op)
         } else {
-            // Fallback: use range_with_overlay() for genesis/pre-index databases
-            Box::new(RangeFallbackOperator::<S>::new(
+            // Fallback: range_with_overlay() for pre-index, history, or
+            // time-travel-before-base_t queries.
+            Box::new(RangeScanOperator::<S>::new(
                 self.pattern.clone(),
                 self.object_bounds.clone(),
             ))
@@ -1070,19 +1050,24 @@ impl<S: Storage + 'static> Operator<S> for DeferredScanOperator<S> {
 }
 
 // ============================================================================
-// RangeFallbackOperator — overlay/range_provider path (no binary index)
+// RangeScanOperator — range_with_overlay() path
 // ============================================================================
 
-/// Range-based fallback scan operator for databases without a binary index.
+/// Range-based scan operator that delegates to `range_with_overlay()`.
 ///
-/// Used when `BinaryScanOperator` is not available:
-/// - Genesis databases (t=0, no index) — returns overlay-only flakes
-/// - Databases with a `RangeProvider` but no `BinaryIndexStore`
-/// - Conditions that exclude the binary path (history mode, multi-ledger, etc.)
+/// Used when the binary cursor path is not available:
+/// - Pre-index databases (no `BinaryIndexStore` yet — indexing is async)
+/// - History mode queries
+/// - Time-travel before `base_t`
 ///
-/// Delegates to `range_with_overlay()` on `open()` and pre-computes all
-/// matching flakes, which are then returned as batches via `next_batch()`.
-struct RangeFallbackOperator<S: Storage + 'static> {
+/// When a `RangeProvider` is attached to the `Db` (the normal post-index
+/// state), `range_with_overlay()` routes through it, so queries still
+/// execute against the binary index — just via materialized collection
+/// rather than streaming cursors.
+///
+/// For genesis databases (t=0, no index, no provider), returns overlay-only
+/// flakes.
+struct RangeScanOperator<S: Storage + 'static> {
     pattern: TriplePattern,
     object_bounds: Option<ObjectBounds>,
     schema: Arc<[VarId]>,
@@ -1094,7 +1079,7 @@ struct RangeFallbackOperator<S: Storage + 'static> {
     _marker: std::marker::PhantomData<S>,
 }
 
-impl<S: Storage + 'static> RangeFallbackOperator<S> {
+impl<S: Storage + 'static> RangeScanOperator<S> {
     fn new(pattern: TriplePattern, object_bounds: Option<ObjectBounds>) -> Self {
         let mut schema_vec = Vec::with_capacity(3);
         let mut s_var_pos = None;
@@ -1253,7 +1238,7 @@ impl<S: Storage + 'static> RangeFallbackOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for RangeFallbackOperator<S> {
+impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }

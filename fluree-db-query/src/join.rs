@@ -21,14 +21,15 @@ use std::time::Instant;
 
 /// Create a right-side scan operator for a join.
 ///
-/// Uses `DeferredScanOperator` which selects between `BinaryScanOperator`
-/// and `ScanOperator` at open() time based on the execution context.
+/// Uses `ScanOperator` which selects between `BinaryScanOperator` (streaming
+/// cursor) and `RangeScanOperator` (range fallback) at `open()` time based
+/// on the execution context.
 fn make_right_scan<S: Storage + 'static>(
     pattern: TriplePattern,
     object_bounds: &Option<ObjectBounds>,
     _ctx: &ExecutionContext<'_, S>,
 ) -> Box<dyn Operator<S>> {
-    Box::new(crate::binary_scan::DeferredScanOperator::<S>::new(
+    Box::new(crate::binary_scan::ScanOperator::<S>::new(
         pattern,
         object_bounds.clone(),
     ))

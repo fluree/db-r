@@ -34,7 +34,7 @@ use fluree_db_core::{ObjectBounds, Sid, Storage};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::binary_scan::DeferredScanOperator;
+use crate::binary_scan::ScanOperator;
 
 /// Internal temp var for object position in predicate scans.
 ///
@@ -49,7 +49,7 @@ fn make_property_join_scan<S: Storage + 'static>(
     pattern: TriplePattern,
     bounds: Option<ObjectBounds>,
 ) -> BoxedOperator<S> {
-    Box::new(DeferredScanOperator::<S>::new(pattern, bounds))
+    Box::new(ScanOperator::<S>::new(pattern, bounds))
 }
 
 /// Property-join operator for same-subject multi-predicate patterns
@@ -260,10 +260,8 @@ impl<S: Storage + 'static> Operator<S> for PropertyJoinOperator {
 
             // Create scan with optional bounds pushdown for this object variable.
             //
-            // IMPORTANT: Under `binary-index`, we must use `DeferredScanOperator` so
-            // the operator can select the binary scan path when available. Using
-            // `ScanOperator` directly will yield empty results in binary-only imports
-            // (no B-tree nodes to scan).
+            // `ScanOperator` selects between binary cursor and range fallback
+            // at open() time based on the execution context.
             let bounds = self.object_bounds.get(obj_var).cloned();
             let mut scan: BoxedOperator<S> = make_property_join_scan::<S>(pattern, bounds);
             scan.open(ctx).await?;
