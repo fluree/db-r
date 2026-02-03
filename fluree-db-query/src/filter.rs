@@ -401,6 +401,27 @@ enum ComparableValue {
     },
 }
 
+impl ComparableValue {
+    /// Get a human-readable type name for this value
+    fn type_name(&self) -> &'static str {
+        match self {
+            ComparableValue::Long(_) => "Long",
+            ComparableValue::Double(_) => "Double",
+            ComparableValue::String(_) => "String",
+            ComparableValue::Bool(_) => "Bool",
+            ComparableValue::Sid(_) => "IRI (Subject ID)",
+            ComparableValue::Vector(_) => "Vector",
+            ComparableValue::BigInt(_) => "BigInt",
+            ComparableValue::Decimal(_) => "Decimal",
+            ComparableValue::DateTime(_) => "DateTime",
+            ComparableValue::Date(_) => "Date",
+            ComparableValue::Time(_) => "Time",
+            ComparableValue::Iri(_) => "IRI",
+            ComparableValue::TypedLiteral { .. } => "TypedLiteral",
+        }
+    }
+}
+
 /// Evaluate expression to a comparable value
 fn eval_to_comparable(expr: &FilterExpr, row: &RowView) -> Result<Option<ComparableValue>> {
     match expr {
