@@ -108,12 +108,18 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for FilterOper
             }
 
             // Collect row indices where filter evaluates to true
-            let keep_indices: Vec<usize> = (0..batch.len())
-                .filter_map(|row_idx| {
-                    let row = batch.row_view(row_idx)?;
-                    evaluate(&self.expr, &row).ok().filter(|&pass| pass).map(|_| row_idx)
-                })
-                .collect();
+            let mut keep_indices: Vec<usize> = Vec::new();
+            for row_idx in 0..batch.len() {
+                let row = match batch.row_view(row_idx) {
+                    Some(r) => r,
+                    None => continue,
+                };
+                match evaluate(&self.expr, &row) {
+                    Ok(true) => keep_indices.push(row_idx),
+                    Ok(false) => {} // Filter out
+                    Err(e) => return Err(e), // Propagate error
+                }
+            }
 
             if keep_indices.is_empty() {
                 continue;
@@ -841,10 +847,10 @@ fn comparable_to_string(val: &ComparableValue) -> Option<&str> {
     match val {
         ComparableValue::String(s) => Some(s.as_ref()),
         ComparableValue::Iri(s) => Some(s.as_ref()),
-        ComparableValue::TypedLiteral { val, .. } => match val {
-            FlakeValue::String(s) => Some(s.as_str()),
-            _ => None,
-        },
+        ComparableValue::TypedLiteral {
+            val: FlakeValue::String(s),
+            ..
+        } => Some(s.as_str()),
         _ => None,
     }
 }
@@ -887,11 +893,16 @@ where
 {
     check_arity(args, 1, fn_name)?;
     let val = eval_to_comparable(&args[0], row)?;
-    Ok(match val {
-        Some(ComparableValue::Long(n)) => Some(ComparableValue::Long(long_op(n))),
-        Some(ComparableValue::Double(d)) => Some(ComparableValue::Double(double_op(d))),
-        _ => None,
-    })
+    match val {
+        Some(ComparableValue::Long(n)) => Ok(Some(ComparableValue::Long(long_op(n)))),
+        Some(ComparableValue::Double(d)) => Ok(Some(ComparableValue::Double(double_op(d)))),
+        Some(other) => Err(QueryError::FunctionTypeMismatch {
+            function: fn_name.to_string(),
+            expected: "numeric (Long or Double)".to_string(),
+            actual: other.type_name().to_string(),
+        }),
+        None => Ok(None), // Unbound variable - not a type error
+    }
 }
 
 /// Evaluate a unary string transformation function (String -> String)
@@ -908,10 +919,15 @@ where
 {
     check_arity(args, 1, fn_name)?;
     let val = eval_to_comparable(&args[0], row)?;
-    Ok(match val {
-        Some(ComparableValue::String(s)) => Some(ComparableValue::String(Arc::from(transform(&s)))),
-        _ => None,
-    })
+    match val {
+        Some(ComparableValue::String(s)) => Ok(Some(ComparableValue::String(Arc::from(transform(&s))))),
+        Some(other) => Err(QueryError::FunctionTypeMismatch {
+            function: fn_name.to_string(),
+            expected: "String".to_string(),
+            actual: other.type_name().to_string(),
+        }),
+        None => Ok(None),
+    }
 }
 
 /// Evaluate a unary string-to-long function (String -> Long)
@@ -928,10 +944,15 @@ where
 {
     check_arity(args, 1, fn_name)?;
     let val = eval_to_comparable(&args[0], row)?;
-    Ok(match val {
-        Some(ComparableValue::String(s)) => Some(ComparableValue::Long(transform(&s))),
-        _ => None,
-    })
+    match val {
+        Some(ComparableValue::String(s)) => Ok(Some(ComparableValue::Long(transform(&s)))),
+        Some(other) => Err(QueryError::FunctionTypeMismatch {
+            function: fn_name.to_string(),
+            expected: "String".to_string(),
+            actual: other.type_name().to_string(),
+        }),
+        None => Ok(None),
+    }
 }
 
 /// Evaluate a binary string predicate (String, String -> Bool)
@@ -947,12 +968,17 @@ where
     F: Fn(&str, &str) -> bool,
 {
     check_arity(args, 2, fn_name)?;
-    let haystack = eval_to_comparable(&args[0], row)?;
-    let needle = eval_to_comparable(&args[1], row)?;
-    Ok(match (haystack, needle) {
-        (Some(ComparableValue::String(h)), Some(ComparableValue::String(n))) => pred(&h, &n),
-        _ => false,
-    })
+    let arg1 = eval_to_comparable(&args[0], row)?;
+    let arg2 = eval_to_comparable(&args[1], row)?;
+    match (&arg1, &arg2) {
+        (Some(ComparableValue::String(h)), Some(ComparableValue::String(n))) => Ok(pred(h, n)),
+        (None, _) | (_, None) => Ok(false), // Unbound - semantic false
+        (Some(a), Some(b)) => Err(QueryError::FunctionTypeMismatch {
+            function: fn_name.to_string(),
+            expected: "String, String".to_string(),
+            actual: format!("{}, {}", a.type_name(), b.type_name()),
+        }),
+    }
 }
 
 /// Evaluate a binary string function (String, String -> String)
@@ -970,12 +996,17 @@ where
     check_arity(args, 2, fn_name)?;
     let arg1 = eval_to_comparable(&args[0], row)?;
     let arg2 = eval_to_comparable(&args[1], row)?;
-    Ok(match (arg1, arg2) {
+    match (&arg1, &arg2) {
         (Some(ComparableValue::String(s1)), Some(ComparableValue::String(s2))) => {
-            func(&s1, &s2).map(|r| ComparableValue::String(Arc::from(r)))
+            Ok(func(s1, s2).map(|r| ComparableValue::String(Arc::from(r))))
         }
-        _ => None,
-    })
+        (None, _) | (_, None) => Ok(None), // Unbound
+        (Some(a), Some(b)) => Err(QueryError::FunctionTypeMismatch {
+            function: fn_name.to_string(),
+            expected: "String, String".to_string(),
+            actual: format!("{}, {}", a.type_name(), b.type_name()),
+        }),
+    }
 }
 
 /// Evaluate a string hash function
@@ -1046,15 +1077,24 @@ fn extract_vector_pair(
     check_arity(args, 2, fn_name)?;
     let v1 = eval_to_comparable(&args[0], row)?;
     let v2 = eval_to_comparable(&args[1], row)?;
-    match (v1, v2) {
+    match (&v1, &v2) {
         (Some(ComparableValue::Vector(a)), Some(ComparableValue::Vector(b))) => {
             if a.len() != b.len() {
-                Ok(None) // Vectors must have same dimension
+                Err(QueryError::FunctionTypeMismatch {
+                    function: fn_name.to_string(),
+                    expected: format!("vectors of same dimension (got {} and {})", a.len(), b.len()),
+                    actual: "vectors of different dimensions".to_string(),
+                })
             } else {
                 Ok(Some((Arc::clone(a), Arc::clone(b))))
             }
         }
-        _ => Ok(None),
+        (None, _) | (_, None) => Ok(None), // Unbound
+        (Some(a), Some(b)) => Err(QueryError::FunctionTypeMismatch {
+            function: fn_name.to_string(),
+            expected: "Vector, Vector".to_string(),
+            actual: format!("{}, {}", a.type_name(), b.type_name()),
+        }),
     }
 }
 
@@ -1155,7 +1195,7 @@ where
 {
     check_arity(args, 1, fn_name)?;
     let val = eval_to_comparable(&args[0], row)?;
-    Ok(val.map_or(false, |v| check(&v)))
+    Ok(val.is_some_and(|v| check(&v)))
 }
 
 /// Evaluate a function to its actual value type (for use in expressions)
@@ -1284,18 +1324,23 @@ fn eval_function_to_value(
                 String::new()
             };
 
-            match (input, pattern, replacement) {
+            match (&input, &pattern, &replacement) {
                 (
                     Some(ComparableValue::String(s)),
                     Some(ComparableValue::String(p)),
                     Some(ComparableValue::String(r)),
                 ) => {
-                    let re = build_regex_with_flags(&p, &flags)?;
+                    let re = build_regex_with_flags(p, &flags)?;
                     Ok(Some(ComparableValue::String(Arc::from(
-                        re.replace_all(&s, r.as_ref()).into_owned(),
+                        re.replace_all(s, r.as_ref()).into_owned(),
                     ))))
                 }
-                _ => Ok(None),
+                (None, _, _) | (_, None, _) | (_, _, None) => Ok(None), // Unbound
+                (Some(a), Some(b), Some(c)) => Err(QueryError::FunctionTypeMismatch {
+                    function: "REPLACE".to_string(),
+                    expected: "String, String, String".to_string(),
+                    actual: format!("{}, {}, {}", a.type_name(), b.type_name(), c.type_name()),
+                }),
             }
         }
 
@@ -1388,30 +1433,39 @@ fn eval_function_to_value(
                 None
             };
 
-            match (input, start) {
+            match (&input, &start) {
                 (Some(ComparableValue::String(s)), Some(ComparableValue::Long(start_1))) => {
                     // SPARQL uses 1-based indexing, convert to 0-based
                     // Handle negative/zero start: clamp to 1
-                    let start_0 = if start_1 < 1 { 0 } else { (start_1 - 1) as usize };
+                    let start_0 = if *start_1 < 1 { 0 } else { (*start_1 - 1) as usize };
 
                     // Handle start beyond string length
                     if start_0 >= s.len() {
                         return Ok(Some(ComparableValue::String(Arc::from(""))));
                     }
 
-                    let result = match length {
-                        Some(ComparableValue::Long(len)) if len > 0 => {
-                            let end = start_0 + (len as usize);
+                    let result = match &length {
+                        Some(ComparableValue::Long(len)) if *len > 0 => {
+                            let end = start_0 + (*len as usize);
                             let end = end.min(s.len());
                             &s[start_0..end]
                         }
                         Some(ComparableValue::Long(_)) => "", // Non-positive length
                         None => &s[start_0..], // No length = rest of string
-                        _ => return Ok(None),
+                        Some(other) => return Err(QueryError::FunctionTypeMismatch {
+                            function: "SUBSTR".to_string(),
+                            expected: "Long (length)".to_string(),
+                            actual: other.type_name().to_string(),
+                        }),
                     };
                     Ok(Some(ComparableValue::String(Arc::from(result))))
                 }
-                _ => Ok(None),
+                (None, _) | (_, None) => Ok(None), // Unbound
+                (Some(a), Some(b)) => Err(QueryError::FunctionTypeMismatch {
+                    function: "SUBSTR".to_string(),
+                    expected: "String, Long".to_string(),
+                    actual: format!("{}, {}", a.type_name(), b.type_name()),
+                }),
             }
         }
 
@@ -1541,18 +1595,20 @@ fn eval_function_to_value(
             check_arity(args, 2, "STRDT")?;
             let val = eval_to_comparable(&args[0], row)?;
             let dt = eval_to_comparable(&args[1], row)?;
-            match (val, dt) {
+            match (&val, &dt) {
                 (Some(ComparableValue::String(s)), Some(dt_val)) => {
                     Ok(Some(ComparableValue::TypedLiteral {
                         val: FlakeValue::String(s.to_string()),
-                        dt_iri: comparable_to_string(&dt_val).map(Arc::from),
+                        dt_iri: comparable_to_string(dt_val).map(Arc::from),
                         lang: None,
                     }))
                 }
-                (Some(_), Some(_)) => Err(QueryError::InvalidFilter(
-                    "STRDT requires a string lexical form".to_string(),
-                )),
-                _ => Ok(None),
+                (None, _) | (_, None) => Ok(None), // Unbound
+                (Some(other), Some(_)) => Err(QueryError::FunctionTypeMismatch {
+                    function: "STRDT".to_string(),
+                    expected: "String (lexical form)".to_string(),
+                    actual: other.type_name().to_string(),
+                }),
             }
         }
 
@@ -1561,18 +1617,20 @@ fn eval_function_to_value(
             check_arity(args, 2, "STRLANG")?;
             let val = eval_to_comparable(&args[0], row)?;
             let lang = eval_to_comparable(&args[1], row)?;
-            match (val, lang) {
+            match (&val, &lang) {
                 (Some(ComparableValue::String(s)), Some(lang_val)) => {
                     Ok(Some(ComparableValue::TypedLiteral {
                         val: FlakeValue::String(s.to_string()),
                         dt_iri: None,
-                        lang: comparable_to_string(&lang_val).map(Arc::from),
+                        lang: comparable_to_string(lang_val).map(Arc::from),
                     }))
                 }
-                (Some(_), Some(_)) => Err(QueryError::InvalidFilter(
-                    "STRLANG requires a string lexical form".to_string(),
-                )),
-                _ => Ok(None),
+                (None, _) | (_, None) => Ok(None), // Unbound
+                (Some(other), Some(_)) => Err(QueryError::FunctionTypeMismatch {
+                    function: "STRLANG".to_string(),
+                    expected: "String (lexical form)".to_string(),
+                    actual: other.type_name().to_string(),
+                }),
             }
         }
 
@@ -1582,9 +1640,12 @@ fn eval_function_to_value(
             match eval_to_comparable(&args[0], row)? {
                 Some(ComparableValue::String(s)) => Ok(Some(ComparableValue::Iri(s))),
                 Some(ComparableValue::Sid(sid)) => Ok(Some(ComparableValue::Sid(sid))),
-                Some(_) => Err(QueryError::InvalidFilter(
-                    "IRI requires a string or IRI argument".to_string(),
-                )),
+                Some(ComparableValue::Iri(iri)) => Ok(Some(ComparableValue::Iri(iri))),
+                Some(other) => Err(QueryError::FunctionTypeMismatch {
+                    function: "IRI".to_string(),
+                    expected: "String or IRI".to_string(),
+                    actual: other.type_name().to_string(),
+                }),
                 None => Ok(None),
             }
         }
@@ -1602,8 +1663,8 @@ fn eval_function_to_value(
             )))))
         }
 
-        // Custom/unknown function - not implemented
-        FunctionName::Custom(_) => Ok(None),
+        // Custom/unknown function - return error
+        FunctionName::Custom(name) => Err(QueryError::UnknownFunction(name.clone())),
     }
 }
 
