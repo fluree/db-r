@@ -542,8 +542,8 @@ impl Time {
 }
 
 fn is_strict_date_lexical(s: &str) -> bool {
-    let (date_part, tz_part) = if s.ends_with('Z') {
-        (&s[..s.len() - 1], Some("Z"))
+    let (date_part, tz_part) = if let Some(stripped) = s.strip_suffix('Z') {
+        (stripped, Some("Z"))
     } else if let Some(idx) = s.rfind(['+', '-']) {
         if idx == 10 {
             (&s[..idx], Some(&s[idx..]))
@@ -587,8 +587,8 @@ fn is_strict_date_lexical(s: &str) -> bool {
 }
 
 fn is_strict_time_lexical(s: &str) -> bool {
-    let (time_part, tz_part) = if s.ends_with('Z') {
-        (&s[..s.len() - 1], Some("Z"))
+    let (time_part, tz_part) = if let Some(stripped) = s.strip_suffix('Z') {
+        (stripped, Some("Z"))
     } else if s.len() >= 6 {
         let tail = &s[s.len() - 6..];
         if (tail.starts_with('+') || tail.starts_with('-')) && tail.as_bytes()[3] == b':' {
@@ -687,8 +687,8 @@ impl fmt::Display for Time {
 /// Parse an optional timezone suffix from the end of a string.
 /// Returns (value_part, optional_timezone_offset).
 fn parse_tz_suffix(s: &str) -> (&str, Option<FixedOffset>) {
-    if s.ends_with('Z') {
-        (&s[..s.len() - 1], Some(FixedOffset::east_opt(0).unwrap()))
+    if let Some(stripped) = s.strip_suffix('Z') {
+        (stripped, Some(FixedOffset::east_opt(0).unwrap()))
     } else if s.len() >= 6 {
         let tail = &s[s.len() - 6..];
         if (tail.starts_with('+') || tail.starts_with('-')) && tail.as_bytes()[3] == b':' {
@@ -1282,20 +1282,17 @@ impl YearMonthDuration {
     ///
     /// No day (`D`) or time (`T`) components are allowed.
     pub fn parse(s: &str) -> Result<Self, String> {
-        let (negative, rest) = if s.starts_with('-') {
-            (true, &s[1..])
-        } else {
-            (false, s)
-        };
+        let (negative, rest) = s
+            .strip_prefix('-')
+            .map(|r| (true, r))
+            .unwrap_or((false, s));
 
-        if !rest.starts_with('P') {
-            return Err(format!(
+        let body = rest.strip_prefix('P').ok_or_else(|| {
+            format!(
                 "yearMonthDuration must start with 'P' (or '-P'): {}",
                 s
-            ));
-        }
-
-        let body = &rest[1..]; // after 'P'
+            )
+        })?;
 
         // Reject if it contains 'D' or 'T' — those are day/time components
         if body.contains('D') || body.contains('T') {
@@ -1450,20 +1447,17 @@ impl DayTimeDuration {
     ///
     /// No year (`Y`) or month (`M` before `T`) components are allowed.
     pub fn parse(s: &str) -> Result<Self, String> {
-        let (negative, rest) = if s.starts_with('-') {
-            (true, &s[1..])
-        } else {
-            (false, s)
-        };
+        let (negative, rest) = s
+            .strip_prefix('-')
+            .map(|r| (true, r))
+            .unwrap_or((false, s));
 
-        if !rest.starts_with('P') {
-            return Err(format!(
+        let body = rest.strip_prefix('P').ok_or_else(|| {
+            format!(
                 "dayTimeDuration must start with 'P' (or '-P'): {}",
                 s
-            ));
-        }
-
-        let body = &rest[1..]; // after 'P'
+            )
+        })?;
 
         // Reject year component
         if body.contains('Y') {
@@ -1726,17 +1720,14 @@ impl Duration {
     ///
     /// Accepts: `"P1Y2M3DT4H5M6S"`, `"P1Y"`, `"PT1H"`, `"-P1Y2M3DT4H5M6.789S"`
     pub fn parse(s: &str) -> Result<Self, String> {
-        let (negative, rest) = if s.starts_with('-') {
-            (true, &s[1..])
-        } else {
-            (false, s)
-        };
+        let (negative, rest) = s
+            .strip_prefix('-')
+            .map(|r| (true, r))
+            .unwrap_or((false, s));
 
-        if !rest.starts_with('P') {
-            return Err(format!("Duration must start with 'P' (or '-P'): {}", s));
-        }
-
-        let body = &rest[1..]; // after 'P'
+        let body = rest.strip_prefix('P').ok_or_else(|| {
+            format!("Duration must start with 'P' (or '-P'): {}", s)
+        })?;
 
         // Split on 'T' to separate date-part from time-part
         let (date_part, time_part) = if let Some(t_pos) = body.find('T') {
@@ -1951,6 +1942,7 @@ impl PartialEq for Duration {
 
 impl Eq for Duration {}
 
+#[allow(clippy::non_canonical_partial_ord_impl)]
 impl PartialOrd for Duration {
     /// Partial ordering for durations.
     ///

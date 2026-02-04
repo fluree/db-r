@@ -53,7 +53,7 @@ pub use stats::{IndexStatsHook, NoOpStatsHook, StatsArtifacts, StatsSummary};
 // - ReindexProgress, ProgressCallback (for observability)
 // - CURRENT_INDEX_VERSION, DEFAULT_BATCH_BYTES, DEFAULT_MAX_BATCH_COMMITS, DEFAULT_CHECKPOINT_INTERVAL
 
-use fluree_db_core::{ContentAddressedWrite, Storage, StorageWrite};
+use fluree_db_core::{Storage, StorageWrite};
 use fluree_db_nameservice::{NameService, Publisher};
 use serde::{Deserialize, Serialize};
 
@@ -613,7 +613,7 @@ where
     let head_commit_addr = record
         .commit_address
         .clone()
-        .ok_or_else(|| IndexerError::NoCommits)?;
+        .ok_or(IndexerError::NoCommits)?;
 
     // Determine output directory for binary index artifacts
     let data_dir = config

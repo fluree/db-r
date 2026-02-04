@@ -267,13 +267,13 @@ pub async fn run_operator<S: Storage + 'static>(
     );
     let _guard = span.enter();
 
-    span.record("from_t", &ctx.from_t);
+    span.record("from_t", ctx.from_t);
 
     let open_start = Instant::now();
     operator.open(ctx).await?;
     span.record(
         "open_ms",
-        &((open_start.elapsed().as_secs_f64() * 1000.0) as u64),
+        (open_start.elapsed().as_secs_f64() * 1000.0) as u64,
     );
 
     let mut results = Vec::new();
@@ -309,10 +309,10 @@ pub async fn run_operator<S: Storage + 'static>(
     // If the operator is blocking, results often arrive in a small number of batches.
     // We record overall totals here; operator-level spans provide the breakdown.
     let total_ms = (run_start.elapsed().as_secs_f64() * 1000.0) as u64;
-    span.record("total_ms", &total_ms);
-    span.record("total_batches", &(batch_count as u64));
-    span.record("total_rows", &(total_rows as u64));
-    span.record("max_batch_ms", &max_batch_ms);
+    span.record("total_ms", total_ms);
+    span.record("total_batches", batch_count as u64);
+    span.record("total_rows", total_rows as u64);
+    span.record("max_batch_ms", max_batch_ms);
     tracing::info!(
         total_batches = batch_count,
         total_rows,

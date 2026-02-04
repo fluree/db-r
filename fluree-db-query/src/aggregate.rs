@@ -206,7 +206,7 @@ impl<S: Storage + 'static> Operator<S> for AggregateOperator<S> {
             return Ok(Some(Batch::empty(self.schema.clone())?));
         }
 
-        span.record("rows_in", &(batch.len() as u64));
+        span.record("rows_in", batch.len() as u64);
 
         let num_cols = self.schema.len();
         let mut output_columns: Vec<Vec<Binding>> = Vec::with_capacity(num_cols);
@@ -281,7 +281,7 @@ impl<S: Storage + 'static> Operator<S> for AggregateOperator<S> {
         }
 
         let out = Batch::new(self.schema.clone(), output_columns)?;
-        span.record("ms", &((start.elapsed().as_secs_f64() * 1000.0) as u64));
+        span.record("ms", (start.elapsed().as_secs_f64() * 1000.0) as u64);
         Ok(Some(out))
     }
 
@@ -430,7 +430,7 @@ fn agg_median(values: &[Binding]) -> Binding {
     numbers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     let len = numbers.len();
-    let median = if len % 2 == 0 {
+    let median = if len.is_multiple_of(2) {
         (numbers[len / 2 - 1] + numbers[len / 2]) / 2.0
     } else {
         numbers[len / 2]

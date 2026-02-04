@@ -11,5 +11,5 @@ pub use cancellation::apply_cancellation;
 pub use flakes::{infer_datatype, FlakeGenerator};
 pub(crate) use flakes::{
     DT_BOOLEAN, DT_DATE, DT_DATE_TIME, DT_DECIMAL, DT_DOUBLE, DT_ID, DT_INTEGER, DT_JSON,
-    DT_LANG_STRING, DT_STRING, DT_TIME, DT_VECTOR,
+    DT_LANG_STRING, DT_STRING, DT_TIME,
 };

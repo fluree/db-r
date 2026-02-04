@@ -113,7 +113,7 @@ fn plan_patterns_to_json(
                 let used = tp.o_bound() && n > 0;
                 inputs.insert("used-values-ndv?".to_string(), json!(used));
                 if let Some(c) = inp.count {
-                    let sel = if n == 0 { 1 } else { ((c + n - 1) / n).max(1) };
+                    let sel = if n == 0 { 1 } else { c.div_ceil(n).max(1) };
                     let clamped = sel == 1 && c > 0 && n > c;
                     inputs.insert("clamped-to-one?".to_string(), json!(clamped));
                 } else {

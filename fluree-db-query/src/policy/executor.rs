@@ -185,7 +185,7 @@ impl<'a, S: Storage + 'static> QueryPolicyExecutor<'a, S> {
 
         // Check if there's at least one result
         let has_results = match operator.next_batch(&ctx).await {
-            Ok(Some(batch)) => batch.len() > 0,
+            Ok(Some(batch)) => !batch.is_empty(),
             Ok(None) => false,
             Err(e) => {
                 operator.close();

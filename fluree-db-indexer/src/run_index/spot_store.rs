@@ -1086,7 +1086,7 @@ impl BinaryIndexStore {
     pub fn has_order(&self, g_id: u32, order: RunSortOrder) -> bool {
         self.graphs
             .get(&g_id)
-            .map_or(false, |g| g.orders.contains_key(&order))
+            .is_some_and(|g| g.orders.contains_key(&order))
     }
 
     /// Get the available sort orders for a graph.
@@ -1768,8 +1768,7 @@ fn cache_bytes_to_file(
         // same content, so if target now exists we can discard our tmp.
         let _ = std::fs::remove_file(&tmp);
         if !target.exists() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 format!("failed to cache {}.{} to {:?}", hash, ext, cache_dir),
             ));
         }

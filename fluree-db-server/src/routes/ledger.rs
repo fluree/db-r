@@ -105,7 +105,7 @@ async fn create_local(state: Arc<AppState>, request: Request) -> Result<impl Int
         .ok_or_else(|| ServerError::bad_request("Missing required field: ledger"))
     {
         Ok(alias) => {
-            span.record("ledger_alias", &alias);
+            span.record("ledger_alias", alias);
             alias.to_string()
         }
         Err(e) => {
@@ -319,7 +319,7 @@ pub async fn info(
         .ok_or(ServerError::MissingLedger)
     {
         Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
+            span.record("ledger_alias", alias.as_str());
             alias
         }
         Err(e) => {
@@ -448,7 +448,7 @@ pub async fn exists(
         .ok_or(ServerError::MissingLedger)
     {
         Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
+            span.record("ledger_alias", alias.as_str());
             alias.clone()
         }
         Err(e) => {

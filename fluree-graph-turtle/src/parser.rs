@@ -882,8 +882,8 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
 
         let (base_scheme, base_authority, base_path, _base_query) = parse_iri_components(base);
 
-        let (scheme, authority, path, query) = if reference.starts_with("//") {
-            let (ref_authority, ref_path, ref_query) = parse_hier_part(&reference[2..]);
+        let (scheme, authority, path, query) = if let Some(rest) = reference.strip_prefix("//") {
+            let (ref_authority, ref_path, ref_query) = parse_hier_part(rest);
             (
                 base_scheme.to_string(),
                 Some(ref_authority),
@@ -898,12 +898,12 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
                 remove_dot_segments(ref_path),
                 ref_query.map(|s| s.to_string()),
             )
-        } else if reference.starts_with('?') {
+        } else if let Some(query_rest) = reference.strip_prefix('?') {
             (
                 base_scheme.to_string(),
                 base_authority.map(|s| s.to_string()),
                 base_path.to_string(),
-                Some(reference[1..].to_string()),
+                Some(query_rest.to_string()),
             )
         } else if reference.starts_with('#') {
             (

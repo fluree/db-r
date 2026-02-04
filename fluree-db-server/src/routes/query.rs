@@ -184,7 +184,7 @@ pub async fn query(
         // Get ledger alias
         let alias = match get_ledger_alias(None, &headers, &query_json) {
             Ok(alias) => {
-                span.record("ledger_alias", &alias.as_str());
+                span.record("ledger_alias", alias.as_str());
                 alias
             }
             Err(e) => {
@@ -270,7 +270,7 @@ pub async fn query_ledger(
     // Get ledger alias (path takes precedence)
     let alias = match get_ledger_alias(Some(&ledger), &headers, &query_json) {
         Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
+            span.record("ledger_alias", alias.as_str());
             alias
         }
         Err(e) => {
@@ -536,7 +536,7 @@ pub async fn explain(
     // Get ledger alias
     let alias = match get_ledger_alias(None, &headers, &query_json) {
         Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
+            span.record("ledger_alias", alias.as_str());
             alias
         }
         Err(e) => {
@@ -640,7 +640,7 @@ pub(crate) async fn load_ledger_for_query(
                 );
 
                 if let Some(mgr) = fluree.ledger_manager() {
-                    mgr.reload(alias).await.map_err(|e| ServerError::Api(e))?;
+                    mgr.reload(alias).await.map_err(ServerError::Api)?;
                     state.refresh_counter.fetch_add(1, Ordering::Relaxed);
                 }
             }

@@ -408,6 +408,7 @@ fn write_col_p_id(buf: &mut Vec<u8>, records: &[RunRecord], p_width: u8) {
 }
 
 /// Write a fixed u32 column.
+#[allow(dead_code)]
 fn write_col_u32(buf: &mut Vec<u8>, records: &[RunRecord], field_fn: fn(&RunRecord) -> u32) {
     for r in records {
         buf.extend_from_slice(&field_fn(r).to_le_bytes());
@@ -435,7 +436,7 @@ fn encode_region1_spot(records: &[RunRecord], p_width: u8) -> Vec<u8> {
     let rle = build_rle_u64(records, |r| r.s_id.as_u64());
     let row_count = records.len();
     let buf_size =
-        4 + rle.len() * 12 + row_count * (p_width as usize) + row_count * 1 + row_count * 8;
+        4 + rle.len() * 12 + row_count * (p_width as usize) + row_count + row_count * 8;
     let mut buf = Vec::with_capacity(buf_size);
     write_rle_u64(&mut buf, &rle);
     write_col_p_id(&mut buf, records, p_width);
@@ -448,7 +449,7 @@ fn encode_region1_spot(records: &[RunRecord], p_width: u8) -> Vec<u8> {
 fn encode_region1_psot(records: &[RunRecord]) -> Vec<u8> {
     let rle = build_rle_u32(records, |r| r.p_id);
     let row_count = records.len();
-    let buf_size = 4 + rle.len() * 8 + row_count * 8 + row_count * 1 + row_count * 8;
+    let buf_size = 4 + rle.len() * 8 + row_count * 8 + row_count + row_count * 8;
     let mut buf = Vec::with_capacity(buf_size);
     write_rle_u32(&mut buf, &rle);
     write_col_u64(&mut buf, records, |r| r.s_id.as_u64());
@@ -461,7 +462,7 @@ fn encode_region1_psot(records: &[RunRecord]) -> Vec<u8> {
 fn encode_region1_post(records: &[RunRecord]) -> Vec<u8> {
     let rle = build_rle_u32(records, |r| r.p_id);
     let row_count = records.len();
-    let buf_size = 4 + rle.len() * 8 + row_count * 1 + row_count * 8 + row_count * 8;
+    let buf_size = 4 + rle.len() * 8 + row_count + row_count * 8 + row_count * 8;
     let mut buf = Vec::with_capacity(buf_size);
     write_rle_u32(&mut buf, &rle);
     write_col_u8(&mut buf, records, |r| r.o_kind);
@@ -498,7 +499,7 @@ fn encode_region1_opst(records: &[RunRecord], p_width: u8) -> Vec<u8> {
 /// `dt_width` controls the byte width of each dt value: 1 (u8), 2 (u16), or 4 (u32).
 fn encode_region2(records: &[RunRecord], dt_width: u8) -> Vec<u8> {
     let row_count = records.len();
-    let bitmap_bytes = (row_count + 7) / 8;
+    let bitmap_bytes = row_count.div_ceil(8);
 
     // Pre-count sparse entries
     let lang_count = records.iter().filter(|r| r.lang_id != 0).count();
@@ -1035,6 +1036,7 @@ fn read_col_u8(data: &[u8], pos: &mut usize, row_count: usize) -> io::Result<Vec
 }
 
 /// Read a fixed u32 column.
+#[allow(dead_code)]
 fn read_col_u32(data: &[u8], pos: &mut usize, row_count: usize) -> io::Result<Vec<u32>> {
     let mut vals = Vec::with_capacity(row_count);
     for _ in 0..row_count {
@@ -1144,7 +1146,7 @@ fn decode_region2(
         ));
     }
     let dw = dt_width as usize;
-    let bitmap_bytes = (row_count + 7) / 8;
+    let bitmap_bytes = row_count.div_ceil(8);
     let mut pos = 0;
 
     // dt array (u8/u16, zero-extended to u32)

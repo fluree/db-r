@@ -156,10 +156,10 @@ fn discover_chunks(dir: &std::path::Path) -> Result<Vec<PathBuf>, std::io::Error
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| {
-            p.extension().map_or(false, |ext| ext == "ttl")
+            p.extension().is_some_and(|ext| ext == "ttl")
                 && p.file_name()
                     .and_then(|n| n.to_str())
-                    .map_or(false, |n| n.starts_with("chunk_"))
+                    .is_some_and(|n| n.starts_with("chunk_"))
         })
         .collect();
     chunks.sort();
@@ -405,7 +405,7 @@ async fn run_import(args: &Args, chunks: &[PathBuf]) -> Result<u64, Box<dyn std:
 
         // Periodic checkpoint: publish nameservice head
         let chunks_since_start = i - args.start + 1;
-        if args.publish_every > 0 && chunks_since_start % args.publish_every == 0 {
+        if args.publish_every > 0 && chunks_since_start.is_multiple_of(args.publish_every) {
             nameservice
                 .publish_commit(&args.ledger, &result.address, result.t)
                 .await?;
@@ -899,7 +899,7 @@ async fn run_import_parallel(
 
                 // Periodic nameservice checkpoint
                 let chunks_since_start = next_expected - args.start + 1;
-                if args.publish_every > 0 && chunks_since_start % args.publish_every == 0 {
+                if args.publish_every > 0 && chunks_since_start.is_multiple_of(args.publish_every) {
                     nameservice
                         .publish_commit(&args.ledger, &result.address, result.t)
                         .await?;
@@ -1304,7 +1304,7 @@ async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let query_start = Instant::now();
     info!("Parsing SPARQL: {}", sparql);
     let parse_output = parse_sparql(sparql);
-    if let Some(ref diags) = parse_output.diagnostics.first() {
+    if let Some(diags) = parse_output.diagnostics.first() {
         if diags.severity == fluree_db_sparql::Severity::Error {
             for d in &parse_output.diagnostics {
                 error!("  SPARQL parse: {}", d.message);

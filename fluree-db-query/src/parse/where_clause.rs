@@ -179,7 +179,7 @@ pub fn parse_where_array_element(
             // - string S-expression: "(+ ?x 1)"
             // - data expr: ["+", "?x", 1]
             // - wrapped expr: ["expr", [...]]
-            if arr.len() < 3 || (arr.len() - 1) % 2 != 0 {
+            if arr.len() < 3 || !(arr.len() - 1).is_multiple_of(2) {
                 return Err(ParseError::InvalidWhere(
                     "bind requires pairs of arguments: variable and expression".to_string(),
                 ));

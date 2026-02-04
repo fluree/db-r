@@ -1560,16 +1560,12 @@ fn parquet_type_to_field_type(parquet_type: &Arc<SchemaType>) -> FieldType {
             || converted_type == parquet::basic::ConvertedType::TIMESTAMP_MICROS
         {
             // Check logical type for UTC info if available
-            if let Some(logical_type) = basic_info.logical_type() {
-                if let parquet::basic::LogicalType::Timestamp {
-                    is_adjusted_to_u_t_c,
-                    ..
-                } = logical_type
-                {
-                    if is_adjusted_to_u_t_c {
-                        return FieldType::TimestampTz;
-                    }
-                }
+            if let Some(parquet::basic::LogicalType::Timestamp {
+                is_adjusted_to_u_t_c: true,
+                ..
+            }) = basic_info.logical_type()
+            {
+                return FieldType::TimestampTz;
             }
             return FieldType::Timestamp;
         }
@@ -1577,13 +1573,13 @@ fn parquet_type_to_field_type(parquet_type: &Arc<SchemaType>) -> FieldType {
         // Check for decimal annotation
         if converted_type == parquet::basic::ConvertedType::DECIMAL {
             // Try to get precision/scale from logical type
-            if let Some(logical_type) = basic_info.logical_type() {
-                if let parquet::basic::LogicalType::Decimal { precision, scale } = logical_type {
-                    return FieldType::Decimal {
-                        precision: precision as u8,
-                        scale: scale as i8,
-                    };
-                }
+            if let Some(parquet::basic::LogicalType::Decimal { precision, scale }) =
+                basic_info.logical_type()
+            {
+                return FieldType::Decimal {
+                    precision: precision as u8,
+                    scale: scale as i8,
+                };
             }
             // Fallback: use default precision/scale if not available
             return FieldType::Decimal {

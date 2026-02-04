@@ -238,12 +238,10 @@ fn load_private_key(input: &str) -> Result<SigningKey, Box<dyn std::error::Error
         }
     }
 
-    Err(format!(
-        "Invalid private key format. Expected:\n\
+    Err("Invalid private key format. Expected:\n\
          - Hex: 0x<64 hex chars> or <64 hex chars>\n\
          - Base58: z<base58> or <base58> (32 bytes)\n\
-         - File: @/path/to/keyfile"
-    )
+         - File: @/path/to/keyfile".to_string()
     .into())
 }
 
@@ -288,7 +286,7 @@ fn create_jws(
     signing_key: &SigningKey,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let pubkey = signing_key.verifying_key().to_bytes();
-    let pubkey_b64 = URL_SAFE_NO_PAD.encode(&pubkey);
+    let pubkey_b64 = URL_SAFE_NO_PAD.encode(pubkey);
 
     // Create header with embedded JWK
     let header = json!({

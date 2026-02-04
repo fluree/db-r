@@ -308,7 +308,7 @@ where
 
     /// Stage + commit the transaction, returning the updated ledger state.
     pub async fn execute(self) -> Result<TransactResult<S>> {
-        self.core.validate().map_err(|e| ApiError::Builder(e))?;
+        self.core.validate().map_err(ApiError::Builder)?;
 
         let op = self.core.operation.unwrap(); // safe: validate checks
 
@@ -377,7 +377,7 @@ where
     ///
     /// Returns a [`Staged`] that can be queried and later committed.
     pub async fn stage(self) -> Result<Staged<S>> {
-        self.core.validate().map_err(|e| ApiError::Builder(e))?;
+        self.core.validate().map_err(ApiError::Builder)?;
 
         let op = self.core.operation.unwrap();
 
@@ -400,7 +400,7 @@ where
 
         // If policy is set, use the tracked+policy staging path
         if let Some(policy) = &self.core.policy {
-            let tracker = Tracker::new(self.core.tracking.unwrap_or_else(|| TrackingOptions {
+            let tracker = Tracker::new(self.core.tracking.unwrap_or(TrackingOptions {
                 track_time: true,
                 track_fuel: true,
                 track_policy: true,
@@ -588,7 +588,7 @@ where
     S: Storage + ContentAddressedWrite + Clone + Send + Sync + 'static,
     N: NameService + Publisher + Clone + Send + Sync + 'static,
 {
-    core.validate().map_err(|e| ApiError::Builder(e))?;
+    core.validate().map_err(ApiError::Builder)?;
 
     let index_config = core.index_config.unwrap_or_default();
     let store_raw_txn = core.txn_opts.store_raw_txn.unwrap_or(false);
@@ -635,7 +635,7 @@ where
 
             // Stage
             let stage_result = if let Some(policy) = &core.policy {
-                let tracker = Tracker::new(core.tracking.unwrap_or_else(|| TrackingOptions {
+                let tracker = Tracker::new(core.tracking.unwrap_or(TrackingOptions {
                     track_time: true,
                     track_fuel: true,
                     track_policy: true,

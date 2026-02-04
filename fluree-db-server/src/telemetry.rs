@@ -5,7 +5,7 @@
 
 use crate::config::ServerConfig;
 use std::env;
-use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Layer};
+use tracing_subscriber::{layer::SubscriberExt, EnvFilter};
 
 /// Telemetry configuration
 #[derive(Debug, Clone)]
@@ -420,7 +420,7 @@ pub fn log_query_text(query_text: &str, config: &TelemetryConfig, span: &tracing
     let (info_text, debug_text, trace_text) = handle_query_text_logging(query_text, config);
 
     if let Some(hash) = info_text {
-        span.record("query_hash", &hash.as_str());
+        span.record("query_hash", hash.as_str());
         tracing::info!(query_hash = %hash, "query logged");
     }
 

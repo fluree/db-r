@@ -196,7 +196,7 @@ fn capture_selectivity_inputs(
         PatternType::BoundSubject => {
             if inputs.count.is_none() {
                 Some(FallbackReason::NoPropertyStats)
-            } else if inputs.ndv_subjects.map_or(true, |n| n == 0) {
+            } else if inputs.ndv_subjects.is_none_or(|n| n == 0) {
                 Some(FallbackReason::MissingNdv)
             } else {
                 None
@@ -205,7 +205,7 @@ fn capture_selectivity_inputs(
         PatternType::BoundObject => {
             if inputs.count.is_none() {
                 Some(FallbackReason::NoPropertyStats)
-            } else if inputs.ndv_values.map_or(true, |n| n == 0) {
+            } else if inputs.ndv_values.is_none_or(|n| n == 0) {
                 Some(FallbackReason::MissingNdv)
             } else {
                 None

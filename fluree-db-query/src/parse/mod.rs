@@ -953,13 +953,8 @@ fn parse_selection_specs(
     Ok((forward, reverse, has_wildcard))
 }
 
-/// Parse depth parameter from query
-///
-/// Returns the depth value (default 0) or error if invalid.
 // parse_depth moved to options module
-
 // WHERE clause parsing functions moved to where_clause module
-
 // parse_values_clause and parse_values_cell moved to values module
 
 /// Parse filter value - can be a string expression "(> ?age 45)" or data expression ["expr", [...]]
@@ -1001,16 +996,13 @@ fn parse_filter_value(value: &JsonValue) -> Result<UnresolvedFilterExpr> {
 /// - Expressions: `(op arg1 arg2 ...)`
 /// - Nested: `(and (> ?x 10) (< ?y 100))`
 ///
-/// # Limitations
-/// - Quoted strings cannot contain whitespace, parentheses, or escape sequences
-///   (e.g., `"Smith Jr"` with a space will not parse correctly)
-/// - For complex string comparisons, use the data expression format instead:
-///   `["filter", ["=", "?name", "Smith Jr"]]`
+// Limitations of S-expression filter parsing:
+// - Quoted strings cannot contain whitespace, parentheses, or escape sequences
+//   (e.g., `"Smith Jr"` with a space will not parse correctly)
+// - For complex string comparisons, use the data expression format instead:
+//   `["filter", ["=", "?name", "Smith Jr"]]`
 // Filter parsing functions moved to filter_sexpr and filter_data modules
-
-// ============================================================================
 // Query modifier parsing - moved to options module
-// ============================================================================
 
 /// Validate that a string looks like a variable (starts with ?)
 fn validate_var_name(name: &str) -> Result<()> {

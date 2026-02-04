@@ -134,7 +134,7 @@ fn parse_query_time_rule<S: Storage>(
         let rule_id = if let Some(id_str) = json.get("@id").and_then(|v| v.as_str()) {
             Sid::new(0, id_str)
         } else {
-            Sid::new(0, &format!("_:query_rule_{}", index))
+            Sid::new(0, format!("_:query_rule_{}", index))
         };
 
         return parse_rule_definition(&rule_id, rule_value, db);
@@ -142,7 +142,7 @@ fn parse_query_time_rule<S: Storage>(
 
     // Direct rule format
     // Generate a synthetic rule ID
-    let rule_id = Sid::new(0, &format!("_:query_rule_{}", index));
+    let rule_id = Sid::new(0, format!("_:query_rule_{}", index));
     parse_rule_definition(&rule_id, json, db)
 }
 
@@ -1126,8 +1126,8 @@ pub async fn execute_datalog_rules_with_query_rules<S: Storage>(
                     flake.dt.clone(),
                     flake.m.clone(),
                 );
-                if !all_derived.contains_key(&key) {
-                    all_derived.insert(key, flake);
+                if let std::collections::hash_map::Entry::Vacant(e) = all_derived.entry(key) {
+                    e.insert(flake);
                     new_facts_this_round += 1;
                 }
             }

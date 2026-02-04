@@ -497,10 +497,8 @@ impl<'a> IncrementalUpdater<'a> {
 
         // Remove documents not in results
         for key in existing_keys {
-            if !seen_iris.contains(&key.subject_iri) {
-                if self.index.remove_document(&key) {
-                    result.removed += 1;
-                }
+            if !seen_iris.contains(&key.subject_iri) && self.index.remove_document(&key) {
+                result.removed += 1;
             }
         }
 

@@ -844,7 +844,7 @@ impl RangeValue {
     pub fn to_flake_value(&self) -> FlakeValue {
         match self {
             RangeValue::Long(n) => FlakeValue::Long(*n),
-            RangeValue::Double(d) => FlakeValue::Double((*d).into()),
+            RangeValue::Double(d) => FlakeValue::Double(*d),
             RangeValue::String(s) => FlakeValue::String(s.clone()),
             RangeValue::Temporal(fv) => fv.clone(),
         }

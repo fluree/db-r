@@ -162,7 +162,7 @@ async fn extract_credential(req: Request<axum::body::Body>) -> Result<MaybeCrede
     let body_str = std::str::from_utf8(&body).ok();
 
     // Detect if this is a signed credential
-    let is_jws = is_jwt_content_type || body_str.map(|s| looks_like_jws(s)).unwrap_or(false);
+    let is_jws = is_jwt_content_type || body_str.map(looks_like_jws).unwrap_or(false);
 
     // If it's a JWS string
     if is_jws {

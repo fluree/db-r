@@ -221,14 +221,14 @@ impl<S: Storage + 'static> Operator<S> for GroupByOperator<S> {
                 process_rows_ms += (proc_start.elapsed().as_secs_f64() * 1000.0) as u64;
             }
 
-            span.record("input_batches", &input_batches);
-            span.record("input_rows", &input_rows);
-            span.record("groups", &(self.groups.len() as u64));
-            span.record("child_next_ms", &child_next_ms);
-            span.record("process_rows_ms", &process_rows_ms);
+            span.record("input_batches", input_batches);
+            span.record("input_rows", input_rows);
+            span.record("groups", self.groups.len() as u64);
+            span.record("child_next_ms", child_next_ms);
+            span.record("process_rows_ms", process_rows_ms);
             span.record(
                 "drain_ms",
-                &((drain_start.elapsed().as_secs_f64() * 1000.0) as u64),
+                (drain_start.elapsed().as_secs_f64() * 1000.0) as u64,
             );
 
             // Handle empty group case (no group vars = implicit single group)

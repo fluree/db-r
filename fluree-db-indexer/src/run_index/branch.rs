@@ -253,7 +253,7 @@ pub fn find_branch_file(dir: &Path) -> io::Result<PathBuf> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().map_or(false, |ext| ext == "fbr") {
+        if path.extension().is_some_and(|ext| ext == "fbr") {
             return Ok(path);
         }
     }

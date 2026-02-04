@@ -844,7 +844,7 @@ fn parse_value_object(
     let explicit_lang: Option<Arc<str>> = obj
         .get("@language")
         .and_then(|l| l.as_str())
-        .map(|l| Arc::from(l));
+        .map(Arc::from);
 
     // Optional @t - Fluree-specific transaction time binding (must be a variable like "?t")
     let explicit_t_var: Option<Arc<str>> = if let Some(t_val) = obj.get("@t") {

@@ -359,11 +359,11 @@ pub fn read_language_dict(path: &Path) -> io::Result<LanguageTagDict> {
 ///
 /// Returns `Err` if the range is out of bounds. Uses `debug_assert` for
 /// UTF-8 validation (we wrote the data — corruption is a debug concern).
-pub fn read_forward_entry<'a>(
-    forward_mmap: &'a memmap2::Mmap,
+pub fn read_forward_entry(
+    forward_mmap: &memmap2::Mmap,
     offset: u64,
     len: u32,
-) -> io::Result<&'a str> {
+) -> io::Result<&str> {
     let start = offset as usize;
     let end = start + len as usize;
     if end > forward_mmap.len() {

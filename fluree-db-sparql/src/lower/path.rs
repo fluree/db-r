@@ -301,7 +301,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
     ///
     /// SPARQL AST wraps parenthesized expressions in `Group { path, .. }`.
     /// E.g., `(ex:name|ex:nick)` parses as `Group { path: Alternative { .. } }`.
-    fn unwrap_group<'p>(path: &'p SparqlPropertyPath) -> &'p SparqlPropertyPath {
+    fn unwrap_group(path: &SparqlPropertyPath) -> &SparqlPropertyPath {
         match path {
             SparqlPropertyPath::Group { path: inner, .. } => Self::unwrap_group(inner),
             other => other,
@@ -415,7 +415,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
     }
 
     /// Collect the leaf paths from an `Alternative` binary tree.
-    fn collect_alt_leaves<'p>(path: &'p SparqlPropertyPath) -> Vec<&'p SparqlPropertyPath> {
+    fn collect_alt_leaves(path: &SparqlPropertyPath) -> Vec<&SparqlPropertyPath> {
         let mut leaves = Vec::new();
         Self::flatten_alternatives(path, &mut leaves);
         leaves
@@ -432,7 +432,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 match inner_unwrapped {
                     SparqlPropertyPath::Iri(_) | SparqlPropertyPath::A { .. } => Ok(()),
                     other => Err(LowerError::invalid_property_path(
-                        &format!(
+                        format!(
                             "Alternative steps within a sequence must be simple predicates or \
                              inverse simple predicates (^ex:p); got inverse of {}",
                             sparql_path_name(other),
@@ -442,7 +442,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 }
             }
             other => Err(LowerError::invalid_property_path(
-                &format!(
+                format!(
                     "Alternative steps within a sequence must be simple predicates or \
                      inverse simple predicates (^ex:p); got {}",
                     sparql_path_name(other),
@@ -486,7 +486,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         let n = combos.len();
         if n > MAX_SEQUENCE_EXPANSION {
             return Err(LowerError::invalid_property_path(
-                &format!(
+                format!(
                     "Property path sequence expands to {} chains (limit {})",
                     n, MAX_SEQUENCE_EXPANSION,
                 ),
@@ -556,7 +556,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 Ok(TriplePattern::new(prev.clone(), p, next.clone()))
             }
             SparqlPropertyPath::A { .. } => {
-                let p = Term::Iri(Arc::from(TYPE.as_ref()));
+                let p = Term::Iri(Arc::from(TYPE));
                 Ok(TriplePattern::new(prev.clone(), p, next.clone()))
             }
             SparqlPropertyPath::Inverse { path: inner, .. } => {
@@ -565,7 +565,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 Ok(TriplePattern::new(next.clone(), p, prev.clone()))
             }
             other => Err(LowerError::invalid_property_path(
-                &format!(
+                format!(
                     "Sequence (/) steps must be simple predicates, inverse simple \
                      predicates (^ex:p), or alternatives of simple predicates \
                      ((ex:a|ex:b)); got {}",
@@ -609,7 +609,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 ))])
             }
             SparqlPropertyPath::A { .. } => {
-                let p = Term::Iri(Arc::from(TYPE.as_ref()));
+                let p = Term::Iri(Arc::from(TYPE));
                 Ok(vec![Pattern::Triple(TriplePattern::new(
                     s.clone(),
                     p,
@@ -631,7 +631,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 self.lower_sequence_chain(s, &steps, o, span)
             }
             other => Err(LowerError::invalid_property_path(
-                &format!(
+                format!(
                     "Alternative (|) branches support simple predicates, inverse simple \
                      predicates (^ex:p), or sequence chains (ex:a/ex:b); got {}",
                     sparql_path_name(other),

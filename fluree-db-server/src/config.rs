@@ -132,7 +132,7 @@ impl StorageProxyConfig {
             let has_trusted = self
                 .trusted_issuers
                 .as_ref()
-                .map_or(false, |v| !v.is_empty())
+                .is_some_and(|v| !v.is_empty())
                 || !events_auth.trusted_issuers.is_empty()
                 || self.insecure_accept_any_issuer;
 

@@ -304,12 +304,12 @@ impl<S: Storage + 'static> Operator<S> for SortOperator<S> {
             all_rows.sort_by(|a, b| self.compare_rows(a, b));
             let sort_ms = (sort_start.elapsed().as_secs_f64() * 1000.0) as u64;
 
-            span.record("input_batches", &input_batches);
-            span.record("input_rows", &input_rows);
-            span.record("drain_ms", &drain_ms);
-            span.record("sort_ms", &sort_ms);
-            span.record("child_next_ms", &child_next_ms);
-            span.record("build_rows_ms", &build_rows_ms);
+            span.record("input_batches", input_batches);
+            span.record("input_rows", input_rows);
+            span.record("drain_ms", drain_ms);
+            span.record("sort_ms", sort_ms);
+            span.record("child_next_ms", child_next_ms);
+            span.record("build_rows_ms", build_rows_ms);
 
             self.buffer = Some(all_rows);
         }

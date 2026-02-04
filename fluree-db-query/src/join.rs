@@ -760,7 +760,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
         ctx: &ExecutionContext<'_, S>,
     ) -> Result<()> {
         use fluree_db_core::FlakeValue;
-        use fluree_db_core::{DatatypeDictId, ListIndex};
+        use fluree_db_core::ListIndex;
         use fluree_db_indexer::run_index::leaf::read_leaf_header;
         use fluree_db_indexer::run_index::leaflet::{
             decode_leaflet_region1, decode_leaflet_region2, LeafletHeader,

@@ -1428,7 +1428,7 @@ pub mod index {
     pub const TIMEOUT: &str = "timeout";
 
     /// BM25-specific configuration properties
-
+    ///
     /// fidx:BM25 - BM25 index type identifier
     pub const BM25: &str = "BM25";
 
@@ -1445,7 +1445,7 @@ pub mod index {
     pub const VECTOR: &str = "vector";
 
     /// Virtual graph configuration properties
-
+    ///
     /// fidx:config - VG configuration JSON (stored in nameservice)
     pub const CONFIG: &str = "config";
 

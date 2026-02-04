@@ -368,10 +368,10 @@ fn discover_run_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().map_or(false, |ext| ext == "frn")
+        if path.extension().is_some_and(|ext| ext == "frn")
             && path
                 .file_stem()
-                .map_or(false, |s| s.to_string_lossy().starts_with("run_"))
+                .is_some_and(|s| s.to_string_lossy().starts_with("run_"))
         {
             paths.push(path);
         }

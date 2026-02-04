@@ -772,24 +772,24 @@ impl BinaryCursor {
 
             batch.row_count = batch.s_ids.len();
             if batch.row_count > 0 {
-                span.record("leaflets", &leaflets);
-                span.record("r1_hits", &r1_hits);
-                span.record("r1_misses", &r1_misses);
-                span.record("r2_hits", &r2_hits);
-                span.record("r2_misses", &r2_misses);
-                span.record("ms", &((start.elapsed().as_secs_f64() * 1000.0) as u64));
+                span.record("leaflets", leaflets);
+                span.record("r1_hits", r1_hits);
+                span.record("r1_misses", r1_misses);
+                span.record("r2_hits", r2_hits);
+                span.record("r2_misses", r2_misses);
+                span.record("ms", (start.elapsed().as_secs_f64() * 1000.0) as u64);
                 return Ok(Some(batch));
             }
             // Empty after filtering — continue to next leaf
         }
 
         self.exhausted = true;
-        span.record("leaflets", &0u64);
-        span.record("r1_hits", &0u64);
-        span.record("r1_misses", &0u64);
-        span.record("r2_hits", &0u64);
-        span.record("r2_misses", &0u64);
-        span.record("ms", &((start.elapsed().as_secs_f64() * 1000.0) as u64));
+        span.record("leaflets", 0u64);
+        span.record("r1_hits", 0u64);
+        span.record("r1_misses", 0u64);
+        span.record("r2_hits", 0u64);
+        span.record("r2_misses", 0u64);
+        span.record("ms", (start.elapsed().as_secs_f64() * 1000.0) as u64);
         Ok(None)
     }
 

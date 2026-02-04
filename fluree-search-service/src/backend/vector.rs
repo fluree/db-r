@@ -238,7 +238,7 @@ impl<L: VectorIndexLoader> VectorBackend<L> {
                 self.loader
                     .find_snapshot_for_t(vg_alias, target_t)
                     .await?
-                    .ok_or_else(|| ServiceError::NoSnapshotForAsOfT { as_of_t: target_t })
+                    .ok_or(ServiceError::NoSnapshotForAsOfT { as_of_t: target_t })
             }
             None => {
                 // Use latest available

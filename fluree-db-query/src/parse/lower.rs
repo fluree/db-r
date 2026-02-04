@@ -178,7 +178,7 @@ impl ParsedQuery {
             select: self.select.clone(),
             patterns,
             options: self.options.clone(),
-            select_mode: self.select_mode.clone(),
+            select_mode: self.select_mode,
             construct_template: self.construct_template.clone(),
             graph_select: self.graph_select.clone(),
         }

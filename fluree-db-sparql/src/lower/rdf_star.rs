@@ -101,7 +101,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                     } else {
                         // Other predicates on quoted triples are not supported
                         return Err(LowerError::not_implemented(
-                            &format!(
+                            format!(
                                 "RDF-star quoted triple with predicate '{}' (only f:t and f:op are supported)",
                                 predicate_iri
                             ),

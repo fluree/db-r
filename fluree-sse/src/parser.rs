@@ -74,11 +74,7 @@ impl SseParser {
                 self.current_event_type = Some(value.trim().to_string());
             } else if let Some(value) = line.strip_prefix("data:") {
                 // Handle both "data: value" and "data:value"
-                let value = if value.starts_with(' ') {
-                    &value[1..]
-                } else {
-                    value
-                };
+                let value = value.strip_prefix(' ').unwrap_or(value);
                 self.current_data.push(value.to_string());
             } else if let Some(value) = line.strip_prefix("id:") {
                 self.current_id = Some(value.trim().to_string());

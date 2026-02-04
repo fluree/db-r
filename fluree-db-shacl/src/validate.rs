@@ -345,8 +345,7 @@ impl ShaclEngine {
                 violation_count: report.violation_count(),
                 warning_count: report.warning_count(),
                 details,
-            }
-            .into())
+            })
         }
     }
 }

@@ -260,18 +260,15 @@ impl<'a, S: Storage> DataSet<'a, S> {
     /// should be aware that duplicate aliases may cause ambiguous behavior.
     pub fn find_by_ledger_alias(&self, ledger_alias: &str) -> Option<&GraphRef<'a, S>> {
         // Check default graphs first
-        for graph in &self.default_graphs {
-            if graph.ledger_alias.as_ref() == ledger_alias {
-                return Some(graph);
-            }
-        }
-        // Check named graphs
-        for (_, graph) in &self.named_graphs {
-            if graph.ledger_alias.as_ref() == ledger_alias {
-                return Some(graph);
-            }
-        }
-        None
+        self.default_graphs
+            .iter()
+            .find(|graph| graph.ledger_alias.as_ref() == ledger_alias)
+            .or_else(|| {
+                // Check named graphs
+                self.named_graphs
+                    .values()
+                    .find(|graph| graph.ledger_alias.as_ref() == ledger_alias)
+            })
     }
 }
 

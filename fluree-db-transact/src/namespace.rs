@@ -311,7 +311,7 @@ impl NamespaceRegistry {
         }
 
         // No known prefix matched; fall back to split heuristic for new prefixes.
-        let split_pos = iri.rfind(|c| c == '/' || c == '#');
+        let split_pos = iri.rfind(['/', '#']);
         let (prefix, local) = match split_pos {
             Some(pos) => (&iri[..=pos], &iri[pos + 1..]),
             None => ("", iri),

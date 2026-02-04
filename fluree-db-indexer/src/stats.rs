@@ -195,6 +195,7 @@ impl Default for PropertyHll {
 /// Uses `HllSketch256` (p=8) for direct serialization and incremental merging.
 /// This is feature-gated behind `hll-stats` (default enabled).
 #[cfg(feature = "hll-stats")]
+#[derive(Default)]
 pub struct HllStatsHook {
     flake_count: usize,
     /// Per-property HLL sketches, keyed by predicate SID
@@ -202,14 +203,6 @@ pub struct HllStatsHook {
 }
 
 #[cfg(feature = "hll-stats")]
-impl Default for HllStatsHook {
-    fn default() -> Self {
-        Self {
-            flake_count: 0,
-            properties: HashMap::new(),
-        }
-    }
-}
 
 #[cfg(feature = "hll-stats")]
 impl HllStatsHook {
@@ -253,7 +246,7 @@ impl IndexStatsHook for HllStatsHook {
         let entry = self
             .properties
             .entry(flake.p.clone())
-            .or_insert_with(PropertyHll::new);
+            .or_default();
 
         // Update count
         if flake.op {
@@ -451,6 +444,12 @@ pub struct IdStatsHook {
 }
 
 #[cfg(feature = "hll-stats")]
+impl Default for IdStatsHook {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IdStatsHook {
     pub fn new() -> Self {
         Self {
@@ -572,8 +571,8 @@ impl IdStatsHook {
                 props.push(GraphPropertyStatEntry {
                     p_id: key.p_id,
                     count,
-                    ndv_values: hll.values_hll.estimate() as u64,
-                    ndv_subjects: hll.subjects_hll.estimate() as u64,
+                    ndv_values: hll.values_hll.estimate(),
+                    ndv_subjects: hll.subjects_hll.estimate(),
                     last_modified_t: hll.last_modified_t,
                     datatypes,
                 });
@@ -645,8 +644,8 @@ impl IdStatsHook {
                 GraphPropertyStatEntry {
                     p_id,
                     count,
-                    ndv_values: hll.values_hll.estimate() as u64,
-                    ndv_subjects: hll.subjects_hll.estimate() as u64,
+                    ndv_values: hll.values_hll.estimate(),
+                    ndv_subjects: hll.subjects_hll.estimate(),
                     last_modified_t: hll.last_modified_t,
                     datatypes,
                 }

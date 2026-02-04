@@ -152,8 +152,6 @@ impl IntoResponse for ForwardingError {
             ForwardingError::Request(e) => {
                 if e.is_timeout() {
                     StatusCode::GATEWAY_TIMEOUT
-                } else if e.is_connect() {
-                    StatusCode::BAD_GATEWAY
                 } else {
                     StatusCode::BAD_GATEWAY
                 }
