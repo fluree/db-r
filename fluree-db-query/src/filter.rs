@@ -252,7 +252,7 @@ pub fn evaluate(expr: &FilterExpr, row: &RowView) -> Result<bool> {
             let right_val = eval_to_comparable(right, row)?;
 
             match (left_val, right_val) {
-                (Some(l), Some(r)) => Ok(compare_values(&l, &r, *op)),
+                (Some(l), Some(r)) => Ok(op.compare(&l, &r)),
                 // Either side unbound/null -> comparison is false
                 _ => Ok(false),
             }
@@ -331,7 +331,7 @@ pub fn evaluate(expr: &FilterExpr, row: &RowView) -> Result<bool> {
             }
         }
 
-        FilterExpr::Function { name, args } => evaluate_function(name, args, row),
+        FilterExpr::Function { name, args } => name.eval_bool(args, row),
     }
 }
 
@@ -532,7 +532,7 @@ fn eval_to_comparable(expr: &FilterExpr, row: &RowView) -> Result<Option<Compara
             let l = eval_to_comparable(left, row)?;
             let r = eval_to_comparable(right, row)?;
             match (l, r) {
-                (Some(lv), Some(rv)) => Ok(eval_arithmetic(*op, lv, rv)),
+                (Some(lv), Some(rv)) => Ok(op.eval(lv, rv)),
                 _ => Ok(None),
             }
         }
@@ -571,159 +571,145 @@ fn eval_to_comparable(expr: &FilterExpr, row: &RowView) -> Result<Option<Compara
 
         FilterExpr::Function { name, args } => {
             // Evaluate functions to their actual value type
-            eval_function_to_value(name, args, row)
+            name.eval_value(args, row)
         }
     }
 }
 
-/// Evaluate arithmetic operation on two comparable values
-fn eval_arithmetic(
-    op: ArithmeticOp,
-    left: ComparableValue,
-    right: ComparableValue,
-) -> Option<ComparableValue> {
-    use num_traits::Zero;
+impl ArithmeticOp {
+    /// Evaluate this arithmetic operation on two comparable values
+    fn eval(self, left: ComparableValue, right: ComparableValue) -> Option<ComparableValue> {
+        use num_traits::Zero;
 
-    match (left, right) {
-        // Long + Long = Long
-        (ComparableValue::Long(a), ComparableValue::Long(b)) => {
-            let result = match op {
-                ArithmeticOp::Add => a.checked_add(b)?,
-                ArithmeticOp::Sub => a.checked_sub(b)?,
-                ArithmeticOp::Mul => a.checked_mul(b)?,
-                ArithmeticOp::Div => {
-                    if b == 0 {
-                        return None;
+        match (left, right) {
+            // Long + Long = Long
+            (ComparableValue::Long(a), ComparableValue::Long(b)) => {
+                let result = match self {
+                    ArithmeticOp::Add => a.checked_add(b)?,
+                    ArithmeticOp::Sub => a.checked_sub(b)?,
+                    ArithmeticOp::Mul => a.checked_mul(b)?,
+                    ArithmeticOp::Div => {
+                        if b == 0 {
+                            return None;
+                        }
+                        a.checked_div(b)?
                     }
-                    a.checked_div(b)?
-                }
-            };
-            Some(ComparableValue::Long(result))
-        }
-        // Double + Double = Double
-        (ComparableValue::Double(a), ComparableValue::Double(b)) => {
-            let result = match op {
-                ArithmeticOp::Add => a + b,
-                ArithmeticOp::Sub => a - b,
-                ArithmeticOp::Mul => a * b,
-                ArithmeticOp::Div => {
-                    if b == 0.0 {
-                        return None;
+                };
+                Some(ComparableValue::Long(result))
+            }
+            // Double + Double = Double
+            (ComparableValue::Double(a), ComparableValue::Double(b)) => {
+                let result = match self {
+                    ArithmeticOp::Add => a + b,
+                    ArithmeticOp::Sub => a - b,
+                    ArithmeticOp::Mul => a * b,
+                    ArithmeticOp::Div => {
+                        if b == 0.0 {
+                            return None;
+                        }
+                        a / b
                     }
-                    a / b
-                }
-            };
-            Some(ComparableValue::Double(result))
-        }
-        // BigInt + BigInt = BigInt
-        (ComparableValue::BigInt(a), ComparableValue::BigInt(b)) => {
-            let result = match op {
-                ArithmeticOp::Add => *a + &*b,
-                ArithmeticOp::Sub => *a - &*b,
-                ArithmeticOp::Mul => *a * &*b,
-                ArithmeticOp::Div => {
-                    if b.is_zero() {
-                        return None;
+                };
+                Some(ComparableValue::Double(result))
+            }
+            // BigInt + BigInt = BigInt
+            (ComparableValue::BigInt(a), ComparableValue::BigInt(b)) => {
+                let result = match self {
+                    ArithmeticOp::Add => *a + &*b,
+                    ArithmeticOp::Sub => *a - &*b,
+                    ArithmeticOp::Mul => *a * &*b,
+                    ArithmeticOp::Div => {
+                        if b.is_zero() {
+                            return None;
+                        }
+                        *a / &*b
                     }
-                    *a / &*b
-                }
-            };
-            Some(ComparableValue::BigInt(Box::new(result)))
-        }
-        // Decimal + Decimal = Decimal
-        (ComparableValue::Decimal(a), ComparableValue::Decimal(b)) => {
-            let result = match op {
-                ArithmeticOp::Add => &*a + &*b,
-                ArithmeticOp::Sub => &*a - &*b,
-                ArithmeticOp::Mul => &*a * &*b,
-                ArithmeticOp::Div => {
-                    if b.is_zero() {
-                        return None;
+                };
+                Some(ComparableValue::BigInt(Box::new(result)))
+            }
+            // Decimal + Decimal = Decimal
+            (ComparableValue::Decimal(a), ComparableValue::Decimal(b)) => {
+                let result = match self {
+                    ArithmeticOp::Add => &*a + &*b,
+                    ArithmeticOp::Sub => &*a - &*b,
+                    ArithmeticOp::Mul => &*a * &*b,
+                    ArithmeticOp::Div => {
+                        if b.is_zero() {
+                            return None;
+                        }
+                        &*a / &*b
                     }
-                    &*a / &*b
-                }
-            };
-            Some(ComparableValue::Decimal(Box::new(result)))
+                };
+                Some(ComparableValue::Decimal(Box::new(result)))
+            }
+            // Mixed numeric types -> promote to higher precision
+            // Long <-> Double -> Double
+            (ComparableValue::Long(a), ComparableValue::Double(b)) => self.eval(
+                ComparableValue::Double(a as f64),
+                ComparableValue::Double(b),
+            ),
+            (ComparableValue::Double(a), ComparableValue::Long(b)) => self.eval(
+                ComparableValue::Double(a),
+                ComparableValue::Double(b as f64),
+            ),
+            // Long <-> BigInt -> BigInt
+            (ComparableValue::Long(a), ComparableValue::BigInt(b)) => self.eval(
+                ComparableValue::BigInt(Box::new(BigInt::from(a))),
+                ComparableValue::BigInt(b),
+            ),
+            (ComparableValue::BigInt(a), ComparableValue::Long(b)) => self.eval(
+                ComparableValue::BigInt(a),
+                ComparableValue::BigInt(Box::new(BigInt::from(b))),
+            ),
+            // Long <-> Decimal -> Decimal
+            (ComparableValue::Long(a), ComparableValue::Decimal(b)) => self.eval(
+                ComparableValue::Decimal(Box::new(BigDecimal::from(a))),
+                ComparableValue::Decimal(b),
+            ),
+            (ComparableValue::Decimal(a), ComparableValue::Long(b)) => self.eval(
+                ComparableValue::Decimal(a),
+                ComparableValue::Decimal(Box::new(BigDecimal::from(b))),
+            ),
+            // BigInt <-> Decimal -> Decimal
+            (ComparableValue::BigInt(a), ComparableValue::Decimal(b)) => self.eval(
+                ComparableValue::Decimal(Box::new(BigDecimal::from((*a).clone()))),
+                ComparableValue::Decimal(b),
+            ),
+            (ComparableValue::Decimal(a), ComparableValue::BigInt(b)) => self.eval(
+                ComparableValue::Decimal(a),
+                ComparableValue::Decimal(Box::new(BigDecimal::from((*b).clone()))),
+            ),
+            // Double <-> BigInt -> Double (lossy)
+            (ComparableValue::Double(a), ComparableValue::BigInt(b)) => {
+                use num_traits::ToPrimitive;
+                b.to_f64()
+                    .and_then(|bf| self.eval(ComparableValue::Double(a), ComparableValue::Double(bf)))
+            }
+            (ComparableValue::BigInt(a), ComparableValue::Double(b)) => {
+                use num_traits::ToPrimitive;
+                a.to_f64()
+                    .and_then(|af| self.eval(ComparableValue::Double(af), ComparableValue::Double(b)))
+            }
+            // Double <-> Decimal -> Decimal (if possible)
+            (ComparableValue::Double(a), ComparableValue::Decimal(b)) => {
+                BigDecimal::try_from(a).ok().and_then(|ad| {
+                    self.eval(
+                        ComparableValue::Decimal(Box::new(ad)),
+                        ComparableValue::Decimal(b),
+                    )
+                })
+            }
+            (ComparableValue::Decimal(a), ComparableValue::Double(b)) => {
+                BigDecimal::try_from(b).ok().and_then(|bd| {
+                    self.eval(
+                        ComparableValue::Decimal(a),
+                        ComparableValue::Decimal(Box::new(bd)),
+                    )
+                })
+            }
+            // Non-numeric types can't do arithmetic
+            _ => None,
         }
-        // Mixed numeric types -> promote to higher precision
-        // Long <-> Double -> Double
-        (ComparableValue::Long(a), ComparableValue::Double(b)) => eval_arithmetic(
-            op,
-            ComparableValue::Double(a as f64),
-            ComparableValue::Double(b),
-        ),
-        (ComparableValue::Double(a), ComparableValue::Long(b)) => eval_arithmetic(
-            op,
-            ComparableValue::Double(a),
-            ComparableValue::Double(b as f64),
-        ),
-        // Long <-> BigInt -> BigInt
-        (ComparableValue::Long(a), ComparableValue::BigInt(b)) => eval_arithmetic(
-            op,
-            ComparableValue::BigInt(Box::new(BigInt::from(a))),
-            ComparableValue::BigInt(b),
-        ),
-        (ComparableValue::BigInt(a), ComparableValue::Long(b)) => eval_arithmetic(
-            op,
-            ComparableValue::BigInt(a),
-            ComparableValue::BigInt(Box::new(BigInt::from(b))),
-        ),
-        // Long <-> Decimal -> Decimal
-        (ComparableValue::Long(a), ComparableValue::Decimal(b)) => eval_arithmetic(
-            op,
-            ComparableValue::Decimal(Box::new(BigDecimal::from(a))),
-            ComparableValue::Decimal(b),
-        ),
-        (ComparableValue::Decimal(a), ComparableValue::Long(b)) => eval_arithmetic(
-            op,
-            ComparableValue::Decimal(a),
-            ComparableValue::Decimal(Box::new(BigDecimal::from(b))),
-        ),
-        // BigInt <-> Decimal -> Decimal
-        (ComparableValue::BigInt(a), ComparableValue::Decimal(b)) => eval_arithmetic(
-            op,
-            ComparableValue::Decimal(Box::new(BigDecimal::from((*a).clone()))),
-            ComparableValue::Decimal(b),
-        ),
-        (ComparableValue::Decimal(a), ComparableValue::BigInt(b)) => eval_arithmetic(
-            op,
-            ComparableValue::Decimal(a),
-            ComparableValue::Decimal(Box::new(BigDecimal::from((*b).clone()))),
-        ),
-        // Double <-> BigInt -> Double (lossy)
-        (ComparableValue::Double(a), ComparableValue::BigInt(b)) => {
-            use num_traits::ToPrimitive;
-            b.to_f64().and_then(|bf| {
-                eval_arithmetic(op, ComparableValue::Double(a), ComparableValue::Double(bf))
-            })
-        }
-        (ComparableValue::BigInt(a), ComparableValue::Double(b)) => {
-            use num_traits::ToPrimitive;
-            a.to_f64().and_then(|af| {
-                eval_arithmetic(op, ComparableValue::Double(af), ComparableValue::Double(b))
-            })
-        }
-        // Double <-> Decimal -> Decimal (if possible)
-        (ComparableValue::Double(a), ComparableValue::Decimal(b)) => {
-            BigDecimal::try_from(a).ok().and_then(|ad| {
-                eval_arithmetic(
-                    op,
-                    ComparableValue::Decimal(Box::new(ad)),
-                    ComparableValue::Decimal(b),
-                )
-            })
-        }
-        (ComparableValue::Decimal(a), ComparableValue::Double(b)) => {
-            BigDecimal::try_from(b).ok().and_then(|bd| {
-                eval_arithmetic(
-                    op,
-                    ComparableValue::Decimal(a),
-                    ComparableValue::Decimal(Box::new(bd)),
-                )
-            })
-        }
-        // Non-numeric types can't do arithmetic
-        _ => None,
     }
 }
 
@@ -747,56 +733,49 @@ impl From<&ComparableValue> for FlakeValue {
     }
 }
 
-/// Compare two values with the given operator
-///
-/// Delegates to FlakeValue's comparison methods to avoid duplicating logic.
-fn compare_values(left: &ComparableValue, right: &ComparableValue, op: CompareOp) -> bool {
-    // Convert to FlakeValue and use its comparison methods
-    let left_fv: FlakeValue = left.into();
-    let right_fv: FlakeValue = right.into();
-
-    // Try numeric comparison first (handles all numeric cross-type comparisons)
-    if let Some(ordering) = left_fv.numeric_cmp(&right_fv) {
-        return match op {
+impl CompareOp {
+    /// Apply this comparison operator to an ordering result
+    fn apply(self, ordering: Ordering) -> bool {
+        match self {
             CompareOp::Eq => ordering == Ordering::Equal,
             CompareOp::Ne => ordering != Ordering::Equal,
             CompareOp::Lt => ordering == Ordering::Less,
             CompareOp::Le => ordering != Ordering::Greater,
             CompareOp::Gt => ordering == Ordering::Greater,
             CompareOp::Ge => ordering != Ordering::Less,
-        };
+        }
     }
 
-    // Try temporal comparison (same-type temporal only)
-    if let Some(ordering) = left_fv.temporal_cmp(&right_fv) {
-        return match op {
-            CompareOp::Eq => ordering == Ordering::Equal,
-            CompareOp::Ne => ordering != Ordering::Equal,
-            CompareOp::Lt => ordering == Ordering::Less,
-            CompareOp::Le => ordering != Ordering::Greater,
-            CompareOp::Gt => ordering == Ordering::Greater,
-            CompareOp::Ge => ordering != Ordering::Less,
+    /// Compare two values with this operator
+    ///
+    /// Delegates to FlakeValue's comparison methods to avoid duplicating logic.
+    fn compare(self, left: &ComparableValue, right: &ComparableValue) -> bool {
+        // Convert to FlakeValue and use its comparison methods
+        let left_fv: FlakeValue = left.into();
+        let right_fv: FlakeValue = right.into();
+
+        // Try numeric comparison first (handles all numeric cross-type comparisons)
+        if let Some(ordering) = left_fv.numeric_cmp(&right_fv) {
+            return self.apply(ordering);
+        }
+
+        // Try temporal comparison (same-type temporal only)
+        if let Some(ordering) = left_fv.temporal_cmp(&right_fv) {
+            return self.apply(ordering);
+        }
+
+        // Fall back to same-type comparisons for non-numeric, non-temporal types
+        let ordering = match (left, right) {
+            (ComparableValue::String(a), ComparableValue::String(b)) => a.cmp(b),
+            (ComparableValue::Bool(a), ComparableValue::Bool(b)) => a.cmp(b),
+            (ComparableValue::Sid(a), ComparableValue::Sid(b)) => a.cmp(b),
+            // Raw IRIs from VGs compare by string value
+            (ComparableValue::Iri(a), ComparableValue::Iri(b)) => a.cmp(b),
+            // Type mismatch -> always not equal
+            _ => return matches!(self, CompareOp::Ne),
         };
-    }
 
-    // Fall back to same-type comparisons for non-numeric, non-temporal types
-    let ordering = match (left, right) {
-        (ComparableValue::String(a), ComparableValue::String(b)) => a.cmp(b),
-        (ComparableValue::Bool(a), ComparableValue::Bool(b)) => a.cmp(b),
-        (ComparableValue::Sid(a), ComparableValue::Sid(b)) => a.cmp(b),
-        // Raw IRIs from VGs compare by string value
-        (ComparableValue::Iri(a), ComparableValue::Iri(b)) => a.cmp(b),
-        // Type mismatch -> always not equal
-        _ => return matches!(op, CompareOp::Ne),
-    };
-
-    match op {
-        CompareOp::Eq => ordering == Ordering::Equal,
-        CompareOp::Ne => ordering != Ordering::Equal,
-        CompareOp::Lt => ordering == Ordering::Less,
-        CompareOp::Le => ordering != Ordering::Greater,
-        CompareOp::Gt => ordering == Ordering::Greater,
-        CompareOp::Ge => ordering != Ordering::Less,
+        self.apply(ordering)
     }
 }
 
@@ -1240,15 +1219,12 @@ where
     Ok(val.is_some_and(|v| check(&v)))
 }
 
-/// Evaluate a function to its actual value type (for use in expressions)
-///
-/// This is used when functions appear in arithmetic contexts like `STRLEN(?x) + 1`.
-fn eval_function_to_value(
-    name: &FunctionName,
-    args: &[FilterExpr],
-    row: &RowView,
-) -> Result<Option<ComparableValue>> {
-    match name {
+impl FunctionName {
+    /// Evaluate this function to its actual value type (for use in expressions)
+    ///
+    /// This is used when functions appear in arithmetic contexts like `STRLEN(?x) + 1`.
+    fn eval_value(&self, args: &[FilterExpr], row: &RowView) -> Result<Option<ComparableValue>> {
+        match self {
         // String functions that return integers
         FunctionName::Strlen => eval_string_to_long(args, row, "STRLEN", |s| s.len() as i64),
 
@@ -1326,9 +1302,7 @@ fn eval_function_to_value(
         | FunctionName::Contains
         | FunctionName::StrStarts
         | FunctionName::StrEnds
-        | FunctionName::Regex => Ok(Some(ComparableValue::Bool(evaluate_function(
-            name, args, row,
-        )?))),
+        | FunctionName::Regex => Ok(Some(ComparableValue::Bool(self.eval_bool(args, row)?))),
 
         // String functions - P7
         FunctionName::Concat => {
@@ -1726,11 +1700,11 @@ fn eval_function_to_value(
         // Custom/unknown function - return error
         FunctionName::Custom(name) => Err(QueryError::UnknownFunction(name.clone())),
     }
-}
+    }
 
-/// Evaluate a function call (boolean context)
-fn evaluate_function(name: &FunctionName, args: &[FilterExpr], row: &RowView) -> Result<bool> {
-    match name {
+    /// Evaluate this function call in boolean context
+    fn eval_bool(&self, args: &[FilterExpr], row: &RowView) -> Result<bool> {
+        match self {
         FunctionName::Bound => {
             check_arity(args, 1, "BOUND")?;
             match &args[0] {
@@ -1877,14 +1851,14 @@ fn evaluate_function(name: &FunctionName, args: &[FilterExpr], row: &RowView) ->
 
         // Boolean-returning functions - evaluate via eval_function_to_value
         FunctionName::LangMatches | FunctionName::SameTerm => {
-            match eval_function_to_value(name, args, row)? {
+            match self.eval_value(args, row)? {
                 Some(ComparableValue::Bool(b)) => Ok(b),
                 _ => Ok(false),
             }
         }
 
         // Power - numeric truthiness
-        FunctionName::Power => match eval_function_to_value(name, args, row)? {
+        FunctionName::Power => match self.eval_value(args, row)? {
             Some(ComparableValue::Long(n)) => Ok(n != 0),
             Some(ComparableValue::Double(d)) => Ok(!d.is_nan() && d != 0.0),
             _ => Ok(false),
@@ -1894,7 +1868,7 @@ fn evaluate_function(name: &FunctionName, args: &[FilterExpr], row: &RowView) ->
         FunctionName::DotProduct
         | FunctionName::CosineSimilarity
         | FunctionName::EuclideanDistance => {
-            match eval_function_to_value(name, args, row)? {
+            match self.eval_value(args, row)? {
                 // Follow SPARQL EBV-ish numeric truthiness:
                 //  - NaN => false
                 //  - 0.0 => false
@@ -1906,14 +1880,14 @@ fn evaluate_function(name: &FunctionName, args: &[FilterExpr], row: &RowView) ->
 
         // T(?var) - Fluree-specific transaction time
         // In boolean context: t=0 is falsy, non-zero is truthy (follows numeric EBV)
-        FunctionName::T => match eval_function_to_value(name, args, row)? {
+        FunctionName::T => match self.eval_value(args, row)? {
             Some(ComparableValue::Long(t)) => Ok(t != 0),
             _ => Ok(false),
         },
 
         // OP(?var) - Fluree-specific operation type for history queries
         // In boolean context: always truthy if op metadata exists (assert or retract)
-        FunctionName::Op => match eval_function_to_value(name, args, row)? {
+        FunctionName::Op => match self.eval_value(args, row)? {
             Some(ComparableValue::String(_)) => Ok(true),
             _ => Ok(false),
         },
@@ -1922,6 +1896,7 @@ fn evaluate_function(name: &FunctionName, args: &[FilterExpr], row: &RowView) ->
             "Unknown function: {}",
             name
         ))),
+    }
     }
 }
 
@@ -2095,30 +2070,26 @@ mod tests {
     #[test]
     fn test_compare_values_cross_type_numeric() {
         // Long vs Double
-        assert!(compare_values(
+        assert!(CompareOp::Eq.compare(
             &ComparableValue::Long(10),
             &ComparableValue::Double(10.0),
-            CompareOp::Eq
         ));
-        assert!(compare_values(
+        assert!(CompareOp::Lt.compare(
             &ComparableValue::Long(10),
             &ComparableValue::Double(10.5),
-            CompareOp::Lt
         ));
     }
 
     #[test]
     fn test_compare_values_type_mismatch() {
         // String vs Long -> only Ne is true
-        assert!(!compare_values(
+        assert!(!CompareOp::Eq.compare(
             &ComparableValue::String(Arc::from("10")),
             &ComparableValue::Long(10),
-            CompareOp::Eq
         ));
-        assert!(compare_values(
+        assert!(CompareOp::Ne.compare(
             &ComparableValue::String(Arc::from("10")),
             &ComparableValue::Long(10),
-            CompareOp::Ne
         ));
     }
 
