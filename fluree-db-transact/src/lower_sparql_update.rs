@@ -60,6 +60,16 @@ const XSD_DOUBLE: &str = "http://www.w3.org/2001/XMLSchema#double";
 const XSD_DECIMAL: &str = "http://www.w3.org/2001/XMLSchema#decimal";
 const XSD_BOOLEAN: &str = "http://www.w3.org/2001/XMLSchema#boolean";
 
+/// Result of converting a SPARQL term to an unresolved term with metadata.
+struct UnresolvedTermWithMeta {
+    /// The unresolved term
+    term: UnresolvedTerm,
+    /// Optional datatype IRI
+    datatype: Option<Arc<str>>,
+    /// Optional language tag
+    lang: Option<Arc<str>>,
+}
+
 /// Errors that can occur during SPARQL UPDATE lowering.
 #[derive(Debug, Error)]
 pub enum LowerError {
@@ -348,18 +358,18 @@ fn lower_triple_to_where(
 ) -> Result<UnresolvedPattern, LowerError> {
     let s = subject_to_unresolved(&triple.subject, prologue)?;
     let p = predicate_to_unresolved(&triple.predicate, prologue)?;
-    let (o, dt_iri, lang) = object_to_unresolved(&triple.object, prologue)?;
+    let obj = object_to_unresolved(&triple.object, prologue)?;
 
-    let pattern = if dt_iri.is_some() || lang.is_some() {
+    let pattern = if obj.datatype.is_some() || obj.lang.is_some() {
         UnresolvedTriplePattern {
             s,
             p,
-            o,
-            dt_iri,
-            lang,
+            o: obj.term,
+            dt_iri: obj.datatype,
+            lang: obj.lang,
         }
     } else {
-        UnresolvedTriplePattern::new(s, p, o)
+        UnresolvedTriplePattern::new(s, p, obj.term)
     };
 
     Ok(UnresolvedPattern::Triple(pattern))
@@ -444,24 +454,22 @@ fn predicate_to_unresolved(
     }
 }
 
-/// Convert SPARQL Term (object position) to UnresolvedTerm.
-///
-/// Returns the term, optional datatype IRI, and optional language tag.
+/// Convert SPARQL Term (object position) to UnresolvedTerm with metadata.
 fn object_to_unresolved(
     term: &Term,
     prologue: &Prologue,
-) -> Result<(UnresolvedTerm, Option<Arc<str>>, Option<Arc<str>>), LowerError> {
+) -> Result<UnresolvedTermWithMeta, LowerError> {
     match term {
-        Term::Var(v) => Ok((
-            UnresolvedTerm::Var(Arc::from(format!("?{}", v.name))),
-            None,
-            None,
-        )),
-        Term::Iri(iri) => Ok((
-            UnresolvedTerm::Iri(Arc::from(expand_iri(iri, prologue)?)),
-            None,
-            None,
-        )),
+        Term::Var(v) => Ok(UnresolvedTermWithMeta {
+            term: UnresolvedTerm::Var(Arc::from(format!("?{}", v.name))),
+            datatype: None,
+            lang: None,
+        }),
+        Term::Iri(iri) => Ok(UnresolvedTermWithMeta {
+            term: UnresolvedTerm::Iri(Arc::from(expand_iri(iri, prologue)?)),
+            datatype: None,
+            lang: None,
+        }),
         Term::Literal(lit) => literal_to_unresolved(lit, prologue),
         Term::BlankNode(bn) => Err(LowerError::BlankNodeInWhere { span: bn.span }),
     }
@@ -471,46 +479,54 @@ fn object_to_unresolved(
 fn literal_to_unresolved(
     lit: &Literal,
     prologue: &Prologue,
-) -> Result<(UnresolvedTerm, Option<Arc<str>>, Option<Arc<str>>), LowerError> {
+) -> Result<UnresolvedTermWithMeta, LowerError> {
     match &lit.value {
-        SparqlLiteralValue::Simple(s) => Ok((
-            UnresolvedTerm::Literal(LiteralValue::String(Arc::from(s.as_ref()))),
-            None,
-            None,
-        )),
-        SparqlLiteralValue::LangTagged { value, lang } => Ok((
-            UnresolvedTerm::Literal(LiteralValue::String(Arc::from(value.as_ref()))),
-            None,
-            Some(Arc::from(lang.as_ref())),
-        )),
+        SparqlLiteralValue::Simple(s) => Ok(UnresolvedTermWithMeta {
+            term: UnresolvedTerm::Literal(LiteralValue::String(Arc::from(s.as_ref()))),
+            datatype: None,
+            lang: None,
+        }),
+        SparqlLiteralValue::LangTagged { value, lang } => Ok(UnresolvedTermWithMeta {
+            term: UnresolvedTerm::Literal(LiteralValue::String(Arc::from(value.as_ref()))),
+            datatype: None,
+            lang: Some(Arc::from(lang.as_ref())),
+        }),
         SparqlLiteralValue::Typed { value, datatype } => {
             let dt_iri = expand_iri(datatype, prologue)?;
             let coerced = coerce_typed_value(value, &dt_iri);
-            Ok((coerced, Some(Arc::from(dt_iri)), None))
+            Ok(UnresolvedTermWithMeta {
+                term: coerced,
+                datatype: Some(Arc::from(dt_iri)),
+                lang: None,
+            })
         }
-        SparqlLiteralValue::Integer(i) => Ok((
-            UnresolvedTerm::Literal(LiteralValue::Long(*i)),
-            Some(Arc::from(XSD_INTEGER)),
-            None,
-        )),
-        SparqlLiteralValue::Double(d) => Ok((
-            UnresolvedTerm::Literal(LiteralValue::Double(*d)),
-            Some(Arc::from(XSD_DOUBLE)),
-            None,
-        )),
+        SparqlLiteralValue::Integer(i) => Ok(UnresolvedTermWithMeta {
+            term: UnresolvedTerm::Literal(LiteralValue::Long(*i)),
+            datatype: Some(Arc::from(XSD_INTEGER)),
+            lang: None,
+        }),
+        SparqlLiteralValue::Double(d) => Ok(UnresolvedTermWithMeta {
+            term: UnresolvedTerm::Literal(LiteralValue::Double(*d)),
+            datatype: Some(Arc::from(XSD_DOUBLE)),
+            lang: None,
+        }),
         SparqlLiteralValue::Decimal(s) => {
             // Try to parse as f64; on failure, keep as string with datatype
             let term = match s.parse::<f64>() {
                 Ok(d) => UnresolvedTerm::Literal(LiteralValue::Double(d)),
                 Err(_) => UnresolvedTerm::Literal(LiteralValue::String(Arc::from(s.as_ref()))),
             };
-            Ok((term, Some(Arc::from(XSD_DECIMAL)), None))
+            Ok(UnresolvedTermWithMeta {
+                term,
+                datatype: Some(Arc::from(XSD_DECIMAL)),
+                lang: None,
+            })
         }
-        SparqlLiteralValue::Boolean(b) => Ok((
-            UnresolvedTerm::Literal(LiteralValue::Boolean(*b)),
-            Some(Arc::from(XSD_BOOLEAN)),
-            None,
-        )),
+        SparqlLiteralValue::Boolean(b) => Ok(UnresolvedTermWithMeta {
+            term: UnresolvedTerm::Literal(LiteralValue::Boolean(*b)),
+            datatype: Some(Arc::from(XSD_BOOLEAN)),
+            lang: None,
+        }),
     }
 }
 
