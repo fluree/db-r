@@ -163,14 +163,14 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 let aggregate_aliases = self.collect_aggregate_alias_names(&select_query.select);
 
                 // Lower SELECT expression bindings (e.g., SELECT (SHA512(?x) AS ?hash))
-                let (select_binds, post_binds) =
+                let select_binds =
                     self.lower_select_expression_binds(&select_query.select, &aggregate_aliases)?;
-                patterns.extend(select_binds);
+                patterns.extend(select_binds.pre);
 
                 // Lower solution modifiers to QueryOptions
                 let mut options =
                     self.lower_solution_modifiers(&select_query.modifiers, &select_query.select)?;
-                options.post_binds = post_binds;
+                options.post_binds = select_binds.post;
 
                 // Build a JSON-LD-like context from SPARQL prologue prefixes so formatters can compact IRIs.
                 let ctx = self.build_jsonld_context()?;
