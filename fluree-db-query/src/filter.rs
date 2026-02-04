@@ -669,22 +669,23 @@ fn eval_arithmetic(op: ArithmeticOp, left: ComparableValue, right: ComparableVal
     }
 }
 
-/// Convert ComparableValue to FlakeValue for comparison delegation
-fn comparable_to_flake(val: &ComparableValue) -> FlakeValue {
-    match val {
-        ComparableValue::Long(n) => FlakeValue::Long(*n),
-        ComparableValue::Double(d) => FlakeValue::Double(*d),
-        ComparableValue::String(s) => FlakeValue::String(s.to_string()),
-        ComparableValue::Bool(b) => FlakeValue::Boolean(*b),
-        ComparableValue::Sid(sid) => FlakeValue::Ref(sid.clone()),
-        ComparableValue::Vector(v) => FlakeValue::Vector(v.to_vec()),
-        ComparableValue::BigInt(n) => FlakeValue::BigInt(n.clone()),
-        ComparableValue::Decimal(d) => FlakeValue::Decimal(d.clone()),
-        ComparableValue::DateTime(dt) => FlakeValue::DateTime(dt.clone()),
-        ComparableValue::Date(d) => FlakeValue::Date(d.clone()),
-        ComparableValue::Time(t) => FlakeValue::Time(t.clone()),
-        ComparableValue::Iri(s) => FlakeValue::String(s.to_string()),
-        ComparableValue::TypedLiteral { val, .. } => val.clone(),
+impl From<&ComparableValue> for FlakeValue {
+    fn from(val: &ComparableValue) -> Self {
+        match val {
+            ComparableValue::Long(n) => FlakeValue::Long(*n),
+            ComparableValue::Double(d) => FlakeValue::Double(*d),
+            ComparableValue::String(s) => FlakeValue::String(s.to_string()),
+            ComparableValue::Bool(b) => FlakeValue::Boolean(*b),
+            ComparableValue::Sid(sid) => FlakeValue::Ref(sid.clone()),
+            ComparableValue::Vector(v) => FlakeValue::Vector(v.to_vec()),
+            ComparableValue::BigInt(n) => FlakeValue::BigInt(n.clone()),
+            ComparableValue::Decimal(d) => FlakeValue::Decimal(d.clone()),
+            ComparableValue::DateTime(dt) => FlakeValue::DateTime(dt.clone()),
+            ComparableValue::Date(d) => FlakeValue::Date(d.clone()),
+            ComparableValue::Time(t) => FlakeValue::Time(t.clone()),
+            ComparableValue::Iri(s) => FlakeValue::String(s.to_string()),
+            ComparableValue::TypedLiteral { val, .. } => val.clone(),
+        }
     }
 }
 
@@ -693,8 +694,8 @@ fn comparable_to_flake(val: &ComparableValue) -> FlakeValue {
 /// Delegates to FlakeValue's comparison methods to avoid duplicating logic.
 fn compare_values(left: &ComparableValue, right: &ComparableValue, op: CompareOp) -> bool {
     // Convert to FlakeValue and use its comparison methods
-    let left_fv = comparable_to_flake(left);
-    let right_fv = comparable_to_flake(right);
+    let left_fv: FlakeValue = left.into();
+    let right_fv: FlakeValue = right.into();
 
     // Try numeric comparison first (handles all numeric cross-type comparisons)
     if let Some(ordering) = left_fv.numeric_cmp(&right_fv) {
