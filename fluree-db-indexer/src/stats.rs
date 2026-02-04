@@ -2312,10 +2312,10 @@ where
 #[cfg(test)]
 mod class_property_stats_tests {
     use super::*;
-    use fluree_db_core::IndexStats;
-    use fluree_db_core::{Db, FlakeValue, MemoryStorage, Sid};
-    use fluree_vocab::namespaces::{EMPTY, JSON_LD, XSD};
+    use fluree_db_core::{FlakeValue, Sid};
 
+    // These helpers are kept for future test rewrites (see comment below).
+    #[allow(dead_code)]
     fn make_type_flake(subject: &str, class: &str, t: i64, op: bool) -> Flake {
         Flake::new(
             Sid::new(100, subject),
@@ -2329,6 +2329,7 @@ mod class_property_stats_tests {
         )
     }
 
+    #[allow(dead_code)]
     fn make_prop_flake(subject: &str, prop: &str, t: i64) -> Flake {
         Flake::new(
             Sid::new(100, subject),

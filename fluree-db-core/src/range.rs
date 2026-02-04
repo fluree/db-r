@@ -349,7 +349,7 @@ mod tests {
             .with_lower(FlakeValue::Double(0.0), true)
             .with_upper(FlakeValue::Double(1.0), false);
 
-        assert!(!bounds.matches(&FlakeValue::Double((-0.1))));
+        assert!(!bounds.matches(&FlakeValue::Double(-0.1)));
         assert!(bounds.matches(&FlakeValue::Double(0.0)));
         assert!(bounds.matches(&FlakeValue::Double(0.5)));
         assert!(bounds.matches(&FlakeValue::Double(0.99)));

@@ -13,7 +13,7 @@
 mod support;
 
 use fluree_db_api::{FlureeBuilder, IndexConfig, LedgerState, Novelty};
-use fluree_db_core::{Db, Storage, StorageRead};
+use fluree_db_core::{Db, Storage};
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::{json, Value as JsonValue};
 use support::start_background_indexer_local;
