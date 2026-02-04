@@ -450,6 +450,21 @@ Use JSON-LD for:
 - JavaScript/TypeScript apps
 - REST API interactions
 
+## Bulk import (Rust API)
+
+For high-throughput ingest of large Turtle datasets into a **fresh ledger**, prefer the bulk import
+pipeline exposed by `fluree-db-api`:
+
+- See: [Using Fluree as a Rust library → Bulk import Turtle chunks](../getting-started/rust-api.md#bulk-import-turtle-chunks-high-throughput)
+
+This pipeline:
+- Parses Turtle in parallel, but **writes commits serially** (hash-linked commit chain).
+- Streams run generation during import and builds multi-order binary indexes (SPOT/PSOT/POST/OPST).
+- Writes a V2 index root to CAS and publishes it to the nameservice so queries can use the normal
+  `view()` / `query_view()` path.
+  
+Temporary `tmp_import/` session files are cleaned up on success (configurable).
+
 ## Tools and Libraries
 
 ### Command-Line Tools

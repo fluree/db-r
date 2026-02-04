@@ -438,15 +438,180 @@ impl Default for PredicateDict {
 }
 
 // ============================================================================
-// StringValueDict (global for Phase 4)
+// StringValueDict (xxh3_128 reverse map, file-backed forward map)
 // ============================================================================
 
-/// Global string value dictionary. Same structure as PredicateDict.
+/// Global string value dictionary with file-backed forward storage.
+///
+/// Uses xxh3_128 hashing for the reverse map (like SubjectDict), avoiding
+/// storage of string values in memory. String bytes are written to an
+/// append-only file; only the hash→id map, offsets, and lengths stay in RAM.
+///
+/// Memory per entry: ~52 bytes (FxHashMap<u128,u32> ~40B + offset 8B + len 4B).
+/// At 80M entries: ~4.2GB vs ~16GB with the old in-memory approach.
 ///
 /// Phase 4 limitation: all string/decimal/double/JSON values share one
-/// global dictionary. LEX_ID ordering is by insertion order, not lexicographic.
-/// Per-predicate string dictionaries are a later optimization.
-pub type StringValueDict = PredicateDict;
+/// global dictionary. Per-predicate string dictionaries are a later optimization.
+pub struct StringValueDict {
+    /// Reverse: xxh3_128(string) → str_id.
+    /// 128-bit hash makes collisions negligible (~10^-22 at 80M entries).
+    reverse: FxHashMap<u128, u32>,
+    /// Forward: sequential insertion index → byte offset into forward file.
+    forward_offsets: Vec<u64>,
+    /// Forward: sequential insertion index → byte length in forward file.
+    forward_lens: Vec<u32>,
+    /// Append-only file of string bytes (no length prefix — lengths in forward_lens).
+    forward_file: Option<BufWriter<std::fs::File>>,
+    /// Path to the forward file (for reading back entries).
+    forward_path: PathBuf,
+    /// Current write offset in the forward file.
+    forward_write_offset: u64,
+    /// Total number of entries.
+    count: u32,
+}
+
+impl StringValueDict {
+    /// Create a new StringValueDict with a forward file at the given path.
+    pub fn new(forward_path: impl AsRef<Path>) -> io::Result<Self> {
+        let path = forward_path.as_ref().to_path_buf();
+        let file = std::fs::File::create(&path)?;
+        Ok(Self {
+            reverse: FxHashMap::default(),
+            forward_offsets: Vec::new(),
+            forward_lens: Vec::new(),
+            forward_file: Some(BufWriter::new(file)),
+            forward_path: path,
+            forward_write_offset: 0,
+            count: 0,
+        })
+    }
+
+    /// Create a StringValueDict without a forward file (in-memory only, for tests).
+    pub fn new_memory() -> Self {
+        Self {
+            reverse: FxHashMap::default(),
+            forward_offsets: Vec::new(),
+            forward_lens: Vec::new(),
+            forward_file: None,
+            forward_path: PathBuf::new(),
+            forward_write_offset: 0,
+            count: 0,
+        }
+    }
+
+    /// Look up or insert a string, returning its sequential u32 ID.
+    ///
+    /// On cache hit: hash + HashMap lookup (no allocation, no I/O).
+    /// On miss: hash + HashMap insert + file write (string bytes go to disk).
+    pub fn get_or_insert(&mut self, s: &str) -> io::Result<u32> {
+        let hash = xxhash_rust::xxh3::xxh3_128(s.as_bytes());
+        if let Some(&id) = self.reverse.get(&hash) {
+            return Ok(id);
+        }
+
+        let id = self.count;
+        let bytes = s.as_bytes();
+        let offset = self.forward_write_offset;
+        let len = bytes.len() as u32;
+
+        if let Some(ref mut writer) = self.forward_file {
+            writer.write_all(bytes)?;
+        }
+
+        self.forward_offsets.push(offset);
+        self.forward_lens.push(len);
+        self.forward_write_offset += len as u64;
+        self.reverse.insert(hash, id);
+        self.count += 1;
+        Ok(id)
+    }
+
+    /// Look up a string without inserting.
+    pub fn get(&self, s: &str) -> Option<u32> {
+        let hash = xxhash_rust::xxh3::xxh3_128(s.as_bytes());
+        self.reverse.get(&hash).copied()
+    }
+
+    /// Number of entries in the dictionary.
+    pub fn len(&self) -> u32 {
+        self.count
+    }
+
+    /// Check if the dictionary is empty.
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// Flush the forward file buffer to disk.
+    pub fn flush(&mut self) -> io::Result<()> {
+        if let Some(ref mut writer) = self.forward_file {
+            writer.flush()?;
+        }
+        Ok(())
+    }
+
+    /// Forward offset table (for persisting the index).
+    pub fn forward_offsets(&self) -> &[u64] {
+        &self.forward_offsets
+    }
+
+    /// Forward length table (for persisting the index).
+    pub fn forward_lens(&self) -> &[u32] {
+        &self.forward_lens
+    }
+
+    /// Read all entries as (id, value_bytes) pairs from the forward file.
+    ///
+    /// Call `flush()` first to ensure all buffered writes are visible.
+    pub fn all_entries(&self) -> io::Result<Vec<(u64, Vec<u8>)>> {
+        let data = std::fs::read(&self.forward_path)?;
+        let mut entries = Vec::with_capacity(self.count as usize);
+        for i in 0..self.count as usize {
+            let offset = self.forward_offsets[i] as usize;
+            let len = self.forward_lens[i] as usize;
+            entries.push((i as u64, data[offset..offset + len].to_vec()));
+        }
+        Ok(entries)
+    }
+
+    /// Write a reverse hash index for O(log N) string → str_id lookup.
+    ///
+    /// Format: `LRV1` magic (4B) + count (u32) + sorted records of
+    /// `(hash_hi: u64, hash_lo: u64, str_id: u32)` — 20 bytes per record.
+    ///
+    /// The hashes are already stored in the reverse map, so no string
+    /// re-reading or re-hashing is needed.
+    pub fn write_reverse_index(&self, path: &Path) -> io::Result<()> {
+        let mut entries: Vec<(u64, u64, u32)> = Vec::with_capacity(self.reverse.len());
+
+        for (&hash, &str_id) in &self.reverse {
+            let hi = (hash >> 64) as u64;
+            let lo = hash as u64;
+            entries.push((hi, lo, str_id));
+        }
+
+        entries.sort_unstable();
+
+        let mut file = BufWriter::new(std::fs::File::create(path)?);
+        file.write_all(b"LRV1")?;
+        file.write_all(&(entries.len() as u32).to_le_bytes())?;
+
+        for &(hi, lo, str_id) in &entries {
+            file.write_all(&hi.to_le_bytes())?;
+            file.write_all(&lo.to_le_bytes())?;
+            file.write_all(&str_id.to_le_bytes())?;
+        }
+
+        file.flush()?;
+        tracing::info!(
+            path = %path.display(),
+            entries = entries.len(),
+            size_mb = (entries.len() * 20) / (1024 * 1024),
+            "string reverse index written"
+        );
+        Ok(())
+    }
+}
 
 // ============================================================================
 // LanguageTagDict (per-run)
@@ -587,16 +752,20 @@ pub struct GlobalDicts {
 }
 
 impl GlobalDicts {
-    /// Create GlobalDicts with file-backed subject dict.
+    /// Create GlobalDicts with file-backed subject and string dictionaries.
+    ///
+    /// Creates `subjects.fwd` and `strings.fwd` in the given `run_dir`.
+    /// The same `run_dir` must be passed to `persist()` later.
     ///
     /// Pre-inserts the txn-meta graph name (`ledger#transactions`) as the first
     /// graph entry, guaranteeing `g_id = 1` for txn-meta regardless of import order.
-    pub fn new(subject_forward_path: impl AsRef<Path>) -> io::Result<Self> {
+    pub fn new(run_dir: impl AsRef<Path>) -> io::Result<Self> {
+        let dir = run_dir.as_ref();
         let mut dicts = Self {
-            subjects: SubjectDict::new(subject_forward_path)?,
+            subjects: SubjectDict::new(dir.join("subjects.fwd"))?,
             predicates: PredicateDict::new(),
             graphs: PredicateDict::new(),
-            strings: StringValueDict::new(),
+            strings: StringValueDict::new(dir.join("strings.fwd"))?,
             languages: LanguageTagDict::new(),
             datatypes: new_datatype_dict(),
             numbigs: FxHashMap::default(),
@@ -609,7 +778,7 @@ impl GlobalDicts {
         Ok(dicts)
     }
 
-    /// Create GlobalDicts with in-memory subject dict (for tests).
+    /// Create GlobalDicts with in-memory dictionaries (no disk files, for tests).
     ///
     /// Pre-inserts the txn-meta graph name (`ledger#transactions`) as the first
     /// graph entry, guaranteeing `g_id = 1` for txn-meta regardless of import order.
@@ -618,7 +787,7 @@ impl GlobalDicts {
             subjects: SubjectDict::new_memory(),
             predicates: PredicateDict::new(),
             graphs: PredicateDict::new(),
-            strings: StringValueDict::new(),
+            strings: StringValueDict::new_memory(),
             languages: LanguageTagDict::new(),
             datatypes: new_datatype_dict(),
             numbigs: FxHashMap::default(),
@@ -636,11 +805,11 @@ impl GlobalDicts {
     /// Writes:
     /// - `subjects.idx` — subject forward-file offset/len index
     /// - `subjects.sids` — sid64 mapping (sequential index → sid64)
-    /// - `strings.fwd` + `strings.idx` — string value forward file + index
+    /// - `strings.idx` — string value forward-file index (fwd file already written incrementally)
     /// - `graphs.dict` — graph dictionary
     /// - `predicates.json` — predicate id→IRI table (for index-build p_width + tooling)
     pub fn persist(&mut self, run_dir: &Path) -> io::Result<()> {
-        use super::dict_io::{write_predicate_dict, write_string_dict, write_subject_index,
+        use super::dict_io::{write_predicate_dict, write_subject_index,
                              write_subject_sid_map};
 
         // Flush subject forward file
@@ -659,11 +828,14 @@ impl GlobalDicts {
             self.subjects.forward_sids(),
         )?;
 
-        // Write string dict (forward file + index)
-        write_string_dict(
-            &run_dir.join("strings.fwd"),
+        // Flush string forward file and write index.
+        // The forward file (strings.fwd) is written incrementally during import;
+        // we only need to flush remaining buffered bytes and write the index.
+        self.strings.flush()?;
+        write_subject_index(
             &run_dir.join("strings.idx"),
-            &self.strings,
+            self.strings.forward_offsets(),
+            self.strings.forward_lens(),
         )?;
 
         // Write predicate id → IRI table (JSON array by id).
@@ -956,7 +1128,7 @@ mod tests {
         let mut dicts = GlobalDicts::new_memory();
         dicts.subjects.get_or_insert("http://example.org/Alice", 100).unwrap();
         dicts.predicates.get_or_insert("http://example.org/name");
-        dicts.strings.get_or_insert("Alice");
+        dicts.strings.get_or_insert("Alice").unwrap();
         dicts.languages.get_or_insert(Some("en"));
 
         assert_eq!(dicts.subjects.len(), 1);
@@ -965,6 +1137,59 @@ mod tests {
         assert_eq!(dicts.languages.len(), 1);
         // datatypes dict has 14 reserved entries
         assert_eq!(dicts.datatypes.len(), 14);
+    }
+
+    // ---- StringValueDict tests ----
+
+    #[test]
+    fn test_string_value_dict_insert_and_dedup() {
+        let mut dict = StringValueDict::new_memory();
+        let id1 = dict.get_or_insert("hello").unwrap();
+        let id2 = dict.get_or_insert("world").unwrap();
+        let id1_again = dict.get_or_insert("hello").unwrap();
+
+        assert_eq!(id1, 0);
+        assert_eq!(id2, 1);
+        assert_eq!(id1, id1_again);
+        assert_eq!(dict.len(), 2);
+    }
+
+    #[test]
+    fn test_string_value_dict_get() {
+        let mut dict = StringValueDict::new_memory();
+        dict.get_or_insert("alpha").unwrap();
+        dict.get_or_insert("beta").unwrap();
+
+        assert_eq!(dict.get("alpha"), Some(0));
+        assert_eq!(dict.get("beta"), Some(1));
+        assert_eq!(dict.get("gamma"), None);
+    }
+
+    #[test]
+    fn test_string_value_dict_with_file() {
+        let dir = std::env::temp_dir().join("fluree_test_string_value_dict");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("strings.fwd");
+
+        let mut dict = StringValueDict::new(&path).unwrap();
+        dict.get_or_insert("Alice").unwrap();
+        dict.get_or_insert("Bob").unwrap();
+        dict.get_or_insert("Charlie").unwrap();
+        dict.flush().unwrap();
+
+        // Verify forward file exists and has content
+        let meta = std::fs::metadata(&path).unwrap();
+        assert!(meta.len() > 0);
+
+        // Read back all entries from file
+        let entries = dict.all_entries().unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(&entries[0].1, b"Alice");
+        assert_eq!(&entries[1].1, b"Bob");
+        assert_eq!(&entries[2].1, b"Charlie");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ---- Datatype dict tests ----

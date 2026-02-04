@@ -655,8 +655,7 @@ where
             };
 
             // ---- Phase B: Resolve commits with multi-order run writer ----
-            let subject_forward_path = run_dir.join("subjects.fwd");
-            let mut dicts = run_index::GlobalDicts::new(&subject_forward_path)
+            let mut dicts = run_index::GlobalDicts::new(&run_dir)
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
             let mut resolver = run_index::CommitResolver::new();
             resolver.set_stats_hook(crate::stats::IdStatsHook::new());
@@ -1055,8 +1054,9 @@ async fn upload_dicts_to_cas<S: Storage>(
     let subject_forward = upload_tree(storage, alias, sf_tree, DictKind::SubjectForward).await?;
     let subject_reverse = upload_tree(storage, alias, sr_tree, DictKind::SubjectReverse).await?;
 
-    // String trees
-    let string_pairs = dicts.strings.all_entries();
+    // String trees (read from file-backed forward file)
+    let string_pairs = dicts.strings.all_entries()
+        .map_err(|e| IndexerError::StorageWrite(format!("read string entries: {}", e)))?;
 
     let mut str_fwd: Vec<ForwardEntry> = string_pairs.iter()
         .map(|(id, val)| ForwardEntry { id: *id, value: val.clone() })

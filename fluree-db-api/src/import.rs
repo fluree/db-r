@@ -383,9 +383,9 @@ where
         .unwrap_or_else(|_| normalized_alias.replace(':', "/"));
 
     // Derive session dir from storage's data directory.
-    // For file storage: {data_dir}/{alias_path}/tmp_import/{uuid}/
-    let session_uuid = uuid_v4();
-    let session_dir = derive_session_dir(storage, &alias_prefix, &session_uuid);
+    // For file storage: {data_dir}/{alias_path}/tmp_import/{session_id}/
+    let sid = session_id();
+    let session_dir = derive_session_dir(storage, &alias_prefix, &sid);
     let run_dir = session_dir.join("runs");
     let index_dir = session_dir.join("index");
     std::fs::create_dir_all(&run_dir)?;
@@ -429,6 +429,11 @@ where
                         "import session directory cleaned up"
                     );
                 }
+            } else {
+                tracing::info!(
+                    session_dir = %session_dir.display(),
+                    "cleanup disabled; import artifacts retained"
+                );
             }
 
             let total_elapsed = pipeline_start.elapsed();
@@ -573,7 +578,6 @@ where
     let run_start = Instant::now();
 
     // ---- Spawn background run resolver (three session-scoped singletons) ----
-    let subject_fwd = run_dir.join("subjects.fwd");
     std::fs::create_dir_all(run_dir)?;
     let budget = config.run_budget_mb * 1024 * 1024;
     let mo_config = MultiOrderConfig {
@@ -592,9 +596,9 @@ where
     > = std::thread::Builder::new()
         .name("run-resolver".into())
         .spawn(move || {
-            // Singleton 1: GlobalDicts
+            // Singleton 1: GlobalDicts (file-backed subjects + strings in run_dir)
             let mut dicts =
-                GlobalDicts::new(&subject_fwd).map_err(|e| format!("init dicts: {}", e))?;
+                GlobalDicts::new(&run_dir_clone).map_err(|e| format!("init dicts: {}", e))?;
             // Singleton 2: CommitResolver
             let mut resolver = CommitResolver::new();
             resolver.set_stats_hook(fluree_db_indexer::stats::IdStatsHook::new());
@@ -1109,29 +1113,25 @@ where
 // Helpers
 // ============================================================================
 
-/// Generate a simple UUID v4 for session directory naming.
-fn uuid_v4() -> String {
+/// Generate a unique session identifier for directory naming.
+///
+/// Uses nanosecond timestamp XOR'd for uniqueness. Not cryptographic,
+/// just unique enough for concurrent session directories.
+fn session_id() -> String {
     use std::time::SystemTime;
     let seed = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    // Simple pseudo-random hex string (not cryptographic, just unique enough for dir naming)
     format!("{:032x}", seed ^ (seed >> 64))
 }
 
-/// Derive the session directory path from the storage backend.
+/// Derive the session directory path.
 ///
-/// For file-based storage, this is `{data_dir}/{alias_prefix}/tmp_import/{session_uuid}/`.
-/// Falls back to OS temp dir if data dir can't be determined.
-fn derive_session_dir<S: Storage>(_storage: &S, alias_prefix: &str, session_uuid: &str) -> PathBuf {
-    // Try to use the storage's data directory via the StorageRead trait.
-    // File storage paths follow: fluree:file://{data_dir}/{alias_prefix}/...
-    // For now, use the standard pattern: data_dir is typically the cwd or configured path.
-    //
-    // Since we can't generically extract a data dir from Storage trait,
-    // we use a well-known path under the OS temp directory as the session root.
-    // The cleanup phase will remove this directory on success.
+/// Uses `{temp_dir}/fluree-import/{alias_prefix}/tmp_import/{session_id}/`.
+/// The cleanup phase removes this directory on success; on failure it is
+/// kept for debugging (logged with full path).
+fn derive_session_dir<S: Storage>(_storage: &S, alias_prefix: &str, sid: &str) -> PathBuf {
     let base = std::env::temp_dir().join("fluree-import");
-    base.join(alias_prefix).join("tmp_import").join(session_uuid)
+    base.join(alias_prefix).join("tmp_import").join(sid)
 }

@@ -215,8 +215,7 @@ pub async fn generate_runs<S: StorageRead>(
 
     // ---- Phase 2: Initialize resolver + writer + dicts ----
     let run_dir = config.run_dir.clone();
-    let subject_forward_path = run_dir.join("subjects.fwd");
-    let mut dicts = GlobalDicts::new(&subject_forward_path)?;
+    let mut dicts = GlobalDicts::new(&run_dir)?;
     let mut resolver = CommitResolver::new();
     let mut writer = RunWriter::new(config);
 

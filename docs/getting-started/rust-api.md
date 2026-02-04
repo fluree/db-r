@@ -83,6 +83,52 @@ async fn main() -> Result<()> {
 }
 ```
 
+### Bulk import Turtle chunks (high throughput)
+
+For initial ledger bootstraps (large Turtle datasets), Fluree exposes a bulk import pipeline as a
+first-class Rust API:
+
+```rust
+use fluree_db_api::{FlureeBuilder, Result};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let fluree = FlureeBuilder::file("./data").build()?;
+
+    // `chunks_dir` can be:
+    // - a directory containing `chunk_*.ttl` files (sorted lexicographically), OR
+    // - a single `.ttl` file.
+    let result = fluree
+        .create("dblp:main")
+        .import("./chunks_dir")
+        .threads(8)          // parallel TTL parsing; commits remain serial
+        .run_budget_mb(4096) // run writer total memory budget (split across 4 orders)
+        .build_index(true)   // write a V2 index root and publish it
+        .publish_every(50)   // nameservice checkpoints during long imports (0 disables)
+        .cleanup(true)       // delete tmp import files on success
+        .execute()
+        .await?;
+
+    println!(
+        "import complete: t={}, flakes={}, root={:?}",
+        result.t, result.flake_count, result.root_address
+    );
+
+    // Query normally after import (loads the published V2 root from CAS).
+    let view = fluree.view("dblp:main").await?;
+    let qr = fluree
+        .query_view(&view, "SELECT * WHERE { ?s ?p ?o } LIMIT 10")
+        .await?;
+    println!("rows={}", qr.batches.iter().map(|b| b.len()).sum::<usize>());
+
+    Ok(())
+}
+```
+
+**Temporary files:** the bulk import pipeline uses a session-scoped `tmp_import/` directory and
+removes it only on full success (unless `.cleanup(false)` is set). On failure, it keeps the
+session directory and logs its path for debugging.
+
 ### With S3 Storage
 
 Requires `fluree-db-api` feature `aws` and standard AWS credential/region configuration.
