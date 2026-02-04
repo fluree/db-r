@@ -363,7 +363,7 @@ impl Expression {
     }
 
     /// Create a logical NOT.
-    pub fn not(expr: Expression) -> Self {
+    pub fn negate(expr: Expression) -> Self {
         match expr {
             Expression::AlwaysTrue => Expression::AlwaysFalse,
             Expression::AlwaysFalse => Expression::AlwaysTrue,
@@ -525,16 +525,16 @@ mod tests {
     #[test]
     fn test_expression_not_simplification() {
         // NOT TRUE = FALSE
-        let expr = Expression::not(Expression::AlwaysTrue);
+        let expr = Expression::negate(Expression::AlwaysTrue);
         assert!(matches!(expr, Expression::AlwaysFalse));
 
         // NOT FALSE = TRUE
-        let expr = Expression::not(Expression::AlwaysFalse);
+        let expr = Expression::negate(Expression::AlwaysFalse);
         assert!(matches!(expr, Expression::AlwaysTrue));
 
         // NOT NOT expr = expr
         let inner = Expression::eq(1, "id", LiteralValue::Int32(1));
-        let expr = Expression::not(Expression::not(inner.clone()));
+        let expr = Expression::negate(Expression::negate(inner.clone()));
         // Should be the same comparison
         assert!(matches!(expr, Expression::Comparison { .. }));
     }

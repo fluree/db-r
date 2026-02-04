@@ -272,10 +272,6 @@ impl GraphSource {
         self
     }
 
-    /// Create from identifier string
-    pub fn from_str(s: &str) -> Self {
-        Self::new(s)
-    }
 }
 
 impl From<&str> for GraphSource {

@@ -300,7 +300,7 @@ impl<L: VectorIndexLoader> SearchBackend for VectorBackend<L> {
         // Validate metric if the client specified one
         if let Some(metric_str) = requested_metric {
             use fluree_db_query::vector::DistanceMetric;
-            let requested = DistanceMetric::from_str(metric_str).ok_or_else(|| {
+            let requested = DistanceMetric::parse(metric_str).ok_or_else(|| {
                 ServiceError::InvalidRequest {
                     message: format!("Unknown distance metric: '{}'", metric_str),
                 }

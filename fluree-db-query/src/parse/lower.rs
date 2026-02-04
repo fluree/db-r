@@ -352,7 +352,7 @@ pub fn lower_unresolved_pattern<E: IriEncoder>(
                 }
             };
 
-            let metric = DistanceMetric::from_str(&vsp.metric).unwrap_or(DistanceMetric::Cosine);
+            let metric = DistanceMetric::parse(&vsp.metric).unwrap_or(DistanceMetric::Cosine);
 
             let id_var = vars.get_or_insert(&vsp.id_var);
             let mut pat = VectorSearchPattern::new(vg_alias, target, id_var).with_metric(metric);

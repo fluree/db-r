@@ -75,10 +75,19 @@ impl FlakeMeta {
         }
     }
 
+}
+
+impl PartialOrd for FlakeMeta {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(std::cmp::Ord::cmp(self, other))
+    }
+}
+
+impl Ord for FlakeMeta {
     /// Compare metadata for ordering
     ///
     /// Compares by list index, then by presence/absence of fields.
-    pub fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Compare by i (list index) - primary discriminator
         match (&self.i, &other.i) {
             (Some(a), Some(b)) => a.cmp(b),
@@ -94,18 +103,6 @@ impl FlakeMeta {
                 }
             }
         }
-    }
-}
-
-impl PartialOrd for FlakeMeta {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(std::cmp::Ord::cmp(self, other))
-    }
-}
-
-impl Ord for FlakeMeta {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        FlakeMeta::cmp(self, other)
     }
 }
 

@@ -65,13 +65,21 @@ pub enum DistanceMetric {
 
 impl DistanceMetric {
     /// Parse from string (case-insensitive)
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "cosine" | "cos" => Some(DistanceMetric::Cosine),
             "dot" | "dotproduct" | "inner" | "ip" => Some(DistanceMetric::Dot),
             "euclidean" | "l2" | "euclid" => Some(DistanceMetric::Euclidean),
             _ => None,
         }
+    }
+}
+
+impl std::str::FromStr for DistanceMetric {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or_else(|| format!("unknown distance metric: {}", s))
     }
 }
 
@@ -229,27 +237,27 @@ mod tests {
     #[test]
     fn test_distance_metric_from_str() {
         assert_eq!(
-            DistanceMetric::from_str("cosine"),
+            DistanceMetric::parse("cosine"),
             Some(DistanceMetric::Cosine)
         );
         assert_eq!(
-            DistanceMetric::from_str("COSINE"),
+            DistanceMetric::parse("COSINE"),
             Some(DistanceMetric::Cosine)
         );
-        assert_eq!(DistanceMetric::from_str("dot"), Some(DistanceMetric::Dot));
+        assert_eq!(DistanceMetric::parse("dot"), Some(DistanceMetric::Dot));
         assert_eq!(
-            DistanceMetric::from_str("dotproduct"),
+            DistanceMetric::parse("dotproduct"),
             Some(DistanceMetric::Dot)
         );
         assert_eq!(
-            DistanceMetric::from_str("l2"),
+            DistanceMetric::parse("l2"),
             Some(DistanceMetric::Euclidean)
         );
         assert_eq!(
-            DistanceMetric::from_str("euclidean"),
+            DistanceMetric::parse("euclidean"),
             Some(DistanceMetric::Euclidean)
         );
-        assert_eq!(DistanceMetric::from_str("invalid"), None);
+        assert_eq!(DistanceMetric::parse("invalid"), None);
     }
 
     #[test]

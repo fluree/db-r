@@ -28,7 +28,7 @@ pub enum FileFormat {
 
 impl FileFormat {
     /// Parse from string.
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s.to_uppercase().as_str() {
             "PARQUET" => Self::Parquet,
             "ORC" => Self::Orc,
@@ -318,7 +318,7 @@ fn parse_data_file(value: &AvroValue) -> Result<DataFile> {
     };
 
     let file_format = match get_field("file_format") {
-        Some(AvroValue::String(s)) => FileFormat::from_str(s),
+        Some(AvroValue::String(s)) => FileFormat::parse(s),
         _ => FileFormat::Parquet,
     };
 
@@ -545,11 +545,11 @@ mod tests {
 
     #[test]
     fn test_file_format_parsing() {
-        assert_eq!(FileFormat::from_str("PARQUET"), FileFormat::Parquet);
-        assert_eq!(FileFormat::from_str("parquet"), FileFormat::Parquet);
-        assert_eq!(FileFormat::from_str("ORC"), FileFormat::Orc);
-        assert_eq!(FileFormat::from_str("AVRO"), FileFormat::Avro);
-        assert_eq!(FileFormat::from_str("unknown"), FileFormat::Parquet);
+        assert_eq!(FileFormat::parse("PARQUET"), FileFormat::Parquet);
+        assert_eq!(FileFormat::parse("parquet"), FileFormat::Parquet);
+        assert_eq!(FileFormat::parse("ORC"), FileFormat::Orc);
+        assert_eq!(FileFormat::parse("AVRO"), FileFormat::Avro);
+        assert_eq!(FileFormat::parse("unknown"), FileFormat::Parquet);
     }
 
     #[test]

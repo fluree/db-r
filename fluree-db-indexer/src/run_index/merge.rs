@@ -76,7 +76,7 @@ impl KWayMerge {
     }
 
     /// Pop the next record in global SPOT order (no deduplication).
-    pub fn next(&mut self) -> io::Result<Option<RunRecord>> {
+    pub fn next_record(&mut self) -> io::Result<Option<RunRecord>> {
         let entry = match self.heap.pop() {
             Some(Reverse(e)) => e,
             None => return Ok(None),
@@ -109,7 +109,7 @@ impl KWayMerge {
     /// Records are consumed in SPOT order (ascending `t` for same base key),
     /// so the last consumed duplicate has the highest `t`.
     pub fn next_deduped(&mut self) -> io::Result<Option<RunRecord>> {
-        let mut best = match self.next()? {
+        let mut best = match self.next_record()? {
             Some(r) => r,
             None => return Ok(None),
         };
@@ -118,7 +118,7 @@ impl KWayMerge {
         loop {
             match self.heap.peek() {
                 Some(Reverse(entry)) if same_identity(&best, &entry.record) => {
-                    let dup = self.next()?.unwrap();
+                    let dup = self.next_record()?.unwrap();
                     // Keep the record with higher t (for same identity, later t wins)
                     if dup.t > best.t || (dup.t == best.t && dup.op >= best.op) {
                         best = dup;
@@ -286,7 +286,7 @@ mod tests {
         let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
 
         let mut results = Vec::new();
-        while let Some(rec) = merge.next().unwrap() {
+        while let Some(rec) = merge.next_record().unwrap() {
             results.push(rec);
         }
 
@@ -431,9 +431,9 @@ mod tests {
         let streams = open_streams(&[p0, p1]);
         let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
 
-        let rec = merge.next().unwrap().unwrap();
+        let rec = merge.next_record().unwrap().unwrap();
         assert_eq!(rec.s_id, SubjectId::from_u64(1));
-        assert!(merge.next().unwrap().is_none());
+        assert!(merge.next_record().unwrap().is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -468,7 +468,7 @@ mod tests {
         let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
 
         let mut results = Vec::new();
-        while let Some(rec) = merge.next().unwrap() {
+        while let Some(rec) = merge.next_record().unwrap() {
             results.push(rec);
         }
 
