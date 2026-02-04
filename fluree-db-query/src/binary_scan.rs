@@ -32,16 +32,16 @@ use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::value_id::DatatypeId;
-use fluree_db_core::value_id::{ObjKind, ObjKey};
+use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::{
     range_with_overlay, Db, Flake, FlakeValue, IndexType, ObjectBounds, OverlayProvider,
     RangeMatch, RangeOptions, RangeTest, Sid, Storage,
 };
+use fluree_db_indexer::run_index::numfloat_dict::NumericShape;
+use fluree_db_indexer::run_index::run_record::{RunSortOrder, NO_LIST_INDEX};
 use fluree_db_indexer::run_index::{
     BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, OverlayOp,
 };
-use fluree_db_indexer::run_index::run_record::{RunSortOrder, NO_LIST_INDEX};
-use fluree_db_indexer::run_index::numfloat_dict::NumericShape;
 use fluree_vocab::namespaces::FLUREE_LEDGER;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -117,6 +117,10 @@ pub struct BinaryScanOperator {
     bound_o_filter: Option<FlakeValue>,
     /// Object bounds for range post-filtering (set when binary path handles range queries).
     object_bounds: Option<ObjectBounds>,
+    /// Tracing span for this operator's lifetime.
+    span: tracing::Span,
+    /// Running count of flakes scanned (recorded on close).
+    flakes_scanned: u64,
     /// Pre-translated overlay operations (set by ScanOperator).
     overlay_ops: Vec<OverlayOp>,
     /// Overlay epoch for cache key differentiation.
@@ -175,6 +179,12 @@ impl BinaryScanOperator {
 
         let p_is_var = matches!(pattern.p, Term::Var(_));
 
+        let span = tracing::trace_span!(
+            "binary_scan",
+            index = ?index,
+            flakes_scanned = tracing::field::Empty,
+        );
+
         Self {
             pattern,
             index,
@@ -194,6 +204,8 @@ impl BinaryScanOperator {
             overlay_ops: Vec::new(),
             overlay_epoch: 0,
             dict_overlay: None,
+            span,
+            flakes_scanned: 0,
         }
     }
 
@@ -242,10 +254,13 @@ impl BinaryScanOperator {
         }
 
         let sid = if let Some(ref dict_ov) = self.dict_overlay {
-            dict_ov.resolve_subject_sid(s_id)
+            dict_ov
+                .resolve_subject_sid(s_id)
                 .map_err(|e| QueryError::Internal(format!("resolve s_id {}: {}", s_id, e)))?
         } else {
-            let iri = self.store.resolve_subject_iri(s_id)
+            let iri = self
+                .store
+                .resolve_subject_iri(s_id)
                 .map_err(|e| QueryError::Internal(format!("resolve s_id {}: {}", s_id, e)))?;
             self.store.encode_iri(&iri)
         };
@@ -260,7 +275,9 @@ impl BinaryScanOperator {
     #[inline]
     fn is_internal_predicate(&self, p_id: u32) -> bool {
         self.p_is_var
-            && self.p_sids.get(p_id as usize)
+            && self
+                .p_sids
+                .get(p_id as usize)
                 .map_or(false, |s| s.namespace_code == FLUREE_LEDGER)
     }
 
@@ -317,10 +334,15 @@ impl BinaryScanOperator {
             // (ObjKind, ObjKey) pair (e.g. string literal — no reverse string index),
             // decode each row's object and skip non-matching rows.
             if let Some(ref filter_val) = self.bound_o_filter {
-                let decoded_val = self.decode_obj(decoded.o_kinds[row], decoded.o_keys[row], decoded.p_ids[row])
-                    .map_err(|e| QueryError::Internal(
-                        format!("decode object for filter: {}", e),
-                    ))?;
+                let decoded_val = self
+                    .decode_obj(
+                        decoded.o_kinds[row],
+                        decoded.o_keys[row],
+                        decoded.p_ids[row],
+                    )
+                    .map_err(|e| {
+                        QueryError::Internal(format!("decode object for filter: {}", e))
+                    })?;
                 if decoded_val != *filter_val {
                     continue;
                 }
@@ -330,10 +352,15 @@ impl BinaryScanOperator {
             // POST key range provides coarse leaf filtering; this handles
             // inclusive/exclusive boundaries and cross-type comparisons exactly.
             if let Some(ref obj_bounds) = self.object_bounds {
-                let decoded_val = self.decode_obj(decoded.o_kinds[row], decoded.o_keys[row], decoded.p_ids[row])
-                    .map_err(|e| QueryError::Internal(
-                        format!("decode object for bounds: {}", e),
-                    ))?;
+                let decoded_val = self
+                    .decode_obj(
+                        decoded.o_kinds[row],
+                        decoded.o_keys[row],
+                        decoded.p_ids[row],
+                    )
+                    .map_err(|e| {
+                        QueryError::Internal(format!("decode object for bounds: {}", e))
+                    })?;
                 if !obj_bounds.matches(&decoded_val) {
                     continue;
                 }
@@ -357,7 +384,12 @@ impl BinaryScanOperator {
 
             // Object binding
             if self.o_var_pos.is_some() {
-                let val = self.decode_obj(decoded.o_kinds[row], decoded.o_keys[row], decoded.p_ids[row])
+                let val = self
+                    .decode_obj(
+                        decoded.o_kinds[row],
+                        decoded.o_keys[row],
+                        decoded.p_ids[row],
+                    )
                     .map_err(|e| QueryError::Internal(format!("decode object: {}", e)))?;
 
                 let binding = match val {
@@ -367,7 +399,8 @@ impl BinaryScanOperator {
                         let dt_id = decoded.dt_values[row] as u16;
                         let dt_sid = match &self.dict_overlay {
                             Some(ov) => ov.decode_dt_sid(dt_id),
-                            None => self.store
+                            None => self
+                                .store
                                 .dt_sids()
                                 .get(dt_id as usize)
                                 .cloned()
@@ -496,12 +529,12 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
 
         // Pre-compute p_sids for all predicates (typically ~96 for DBLP)
         let pred_count = self.store.predicate_count();
-        self.p_sids = (0..pred_count).map(|p_id| {
-            match self.store.resolve_predicate_iri(p_id) {
+        self.p_sids = (0..pred_count)
+            .map(|p_id| match self.store.resolve_predicate_iri(p_id) {
                 Some(iri) => self.store.encode_iri(iri),
                 None => Sid::new(0, ""),
-            }
-        }).collect();
+            })
+            .collect();
 
         // Extract bound terms from the pattern
         let (s_sid, p_sid, o_val) = self.extract_bound_terms();
@@ -509,13 +542,16 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
         let order = index_type_to_sort_order(self.index);
 
         // Translate to RunRecord bounds
-        let bounds = self.store.translate_range(
-            s_sid.as_ref(),
-            p_sid.as_ref(),
-            o_val.as_ref(),
-            order,
-            self.g_id,
-        ).map_err(|e| QueryError::Internal(format!("translate_range: {}", e)))?;
+        let bounds = self
+            .store
+            .translate_range(
+                s_sid.as_ref(),
+                p_sid.as_ref(),
+                o_val.as_ref(),
+                order,
+                self.g_id,
+            )
+            .map_err(|e| QueryError::Internal(format!("translate_range: {}", e)))?;
 
         // If translate_range returned None but we had an object value,
         // the value may be untranslatable (e.g., string literal with no
@@ -525,18 +561,13 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
             some @ Some(_) => some,
             None => {
                 if o_val.is_some() {
-                    let retry = self.store.translate_range(
-                        s_sid.as_ref(),
-                        p_sid.as_ref(),
-                        None,
-                        order,
-                        self.g_id,
-                    ).map_err(|e| QueryError::Internal(format!("translate_range: {}", e)))?;
+                    let retry = self
+                        .store
+                        .translate_range(s_sid.as_ref(), p_sid.as_ref(), None, order, self.g_id)
+                        .map_err(|e| QueryError::Internal(format!("translate_range: {}", e)))?;
                     if retry.is_some() {
                         self.bound_o_filter = o_val.clone();
-                        tracing::debug!(
-                            "object value untranslatable, using post-filter scan"
-                        );
+                        tracing::debug!("object value untranslatable, using post-filter scan");
                     }
                     retry
                 } else {
@@ -718,29 +749,35 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
 
                 // Sort and pass pre-translated overlay ops for query-time merge.
                 if !self.overlay_ops.is_empty() {
-                    self.overlay_ops.sort_by(|a, b| {
-                        match order {
-                            RunSortOrder::Spot => a.s_id.cmp(&b.s_id)
-                                .then(a.p_id.cmp(&b.p_id))
-                                .then(a.o_kind.cmp(&b.o_kind))
-                                .then(a.o_key.cmp(&b.o_key))
-                                .then(a.dt.cmp(&b.dt)),
-                            RunSortOrder::Psot => a.p_id.cmp(&b.p_id)
-                                .then(a.s_id.cmp(&b.s_id))
-                                .then(a.o_kind.cmp(&b.o_kind))
-                                .then(a.o_key.cmp(&b.o_key))
-                                .then(a.dt.cmp(&b.dt)),
-                            RunSortOrder::Post => a.p_id.cmp(&b.p_id)
-                                .then(a.o_kind.cmp(&b.o_kind))
-                                .then(a.o_key.cmp(&b.o_key))
-                                .then(a.dt.cmp(&b.dt))
-                                .then(a.s_id.cmp(&b.s_id)),
-                            RunSortOrder::Opst => a.o_kind.cmp(&b.o_kind)
-                                .then(a.o_key.cmp(&b.o_key))
-                                .then(a.dt.cmp(&b.dt))
-                                .then(a.p_id.cmp(&b.p_id))
-                                .then(a.s_id.cmp(&b.s_id)),
-                        }
+                    self.overlay_ops.sort_by(|a, b| match order {
+                        RunSortOrder::Spot => a
+                            .s_id
+                            .cmp(&b.s_id)
+                            .then(a.p_id.cmp(&b.p_id))
+                            .then(a.o_kind.cmp(&b.o_kind))
+                            .then(a.o_key.cmp(&b.o_key))
+                            .then(a.dt.cmp(&b.dt)),
+                        RunSortOrder::Psot => a
+                            .p_id
+                            .cmp(&b.p_id)
+                            .then(a.s_id.cmp(&b.s_id))
+                            .then(a.o_kind.cmp(&b.o_kind))
+                            .then(a.o_key.cmp(&b.o_key))
+                            .then(a.dt.cmp(&b.dt)),
+                        RunSortOrder::Post => a
+                            .p_id
+                            .cmp(&b.p_id)
+                            .then(a.o_kind.cmp(&b.o_kind))
+                            .then(a.o_key.cmp(&b.o_key))
+                            .then(a.dt.cmp(&b.dt))
+                            .then(a.s_id.cmp(&b.s_id)),
+                        RunSortOrder::Opst => a
+                            .o_kind
+                            .cmp(&b.o_kind)
+                            .then(a.o_key.cmp(&b.o_key))
+                            .then(a.dt.cmp(&b.dt))
+                            .then(a.p_id.cmp(&b.p_id))
+                            .then(a.s_id.cmp(&b.s_id)),
                     });
                     cursor.set_overlay_ops(std::mem::take(&mut self.overlay_ops));
                 }
@@ -765,6 +802,8 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
             return Ok(None);
         }
 
+        let _guard = self.span.clone().entered();
+
         let batch_size = ctx.batch_size;
         let num_vars = self.schema.len();
         let mut columns: Vec<Vec<Binding>> = (0..num_vars)
@@ -782,7 +821,9 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
 
             match cursor.next_leaf() {
                 Ok(Some(decoded)) => {
-                    produced += self.batch_to_bindings(&decoded, &mut columns)?;
+                    let rows = self.batch_to_bindings(&decoded, &mut columns)?;
+                    self.flakes_scanned += rows as u64;
+                    produced += rows;
                 }
                 Ok(None) => {
                     // Cursor exhausted
@@ -808,6 +849,7 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
     }
 
     fn close(&mut self) {
+        self.span.record("flakes_scanned", self.flakes_scanned);
         self.cursor = None;
         self.sid_cache.clear();
         self.p_sids.clear();
@@ -837,23 +879,22 @@ pub(crate) fn translate_overlay_flakes(
 
     // Collect all overlay flakes (no boundary filtering — the cursor
     // partitions per-leaf internally via find_overlay_for_leaf).
-    overlay.for_each_overlay_flake(
-        IndexType::Spot, None, None, true, to_t,
-        &mut |flake| {
-            if io_error.is_some() { return; }
-            match translate_one_flake(flake, dict_overlay) {
-                Ok(op) => ops.push(op),
-                Err(e) => {
-                    // IO errors from mmap reads are truly exceptional; log and
-                    // stop collecting (remaining flakes will be missing from
-                    // overlay, but this is a storage-level failure, not a
-                    // dictionary gap).
-                    tracing::error!(%e, "IO error during overlay translation");
-                    io_error = Some(e);
-                }
+    overlay.for_each_overlay_flake(IndexType::Spot, None, None, true, to_t, &mut |flake| {
+        if io_error.is_some() {
+            return;
+        }
+        match translate_one_flake(flake, dict_overlay) {
+            Ok(op) => ops.push(op),
+            Err(e) => {
+                // IO errors from mmap reads are truly exceptional; log and
+                // stop collecting (remaining flakes will be missing from
+                // overlay, but this is a storage-level failure, not a
+                // dictionary gap).
+                tracing::error!(%e, "IO error during overlay translation");
+                io_error = Some(e);
             }
-        },
-    );
+        }
+    });
 
     ops
 }
@@ -1002,6 +1043,15 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
         } else {
             (None, None)
         };
+
+        tracing::trace!(
+            mode = if use_binary {
+                "binary"
+            } else {
+                "range_fallback"
+            },
+            "scan mode selected"
+        );
 
         let mut inner: BoxedOperator<S> = if use_binary {
             let store = ctx.binary_store.as_ref().unwrap().clone();
@@ -1293,7 +1343,9 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
                 .map_err(|e| QueryError::execution(e.to_string()))?;
                 // Pre-filter per graph (overlay may return a superset).
                 all_flakes.extend(
-                    graph_flakes.into_iter().filter(|f| self.flake_matches(f, graph.db)),
+                    graph_flakes
+                        .into_iter()
+                        .filter(|f| self.flake_matches(f, graph.db)),
                 );
             }
             all_flakes
@@ -1333,10 +1385,14 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
             let match_count = if is_multi_graph {
                 flakes.len()
             } else {
-                flakes.iter().filter(|f| self.flake_matches(f, ctx.db)).count()
+                flakes
+                    .iter()
+                    .filter(|f| self.flake_matches(f, ctx.db))
+                    .count()
             };
             if match_count > 0 {
-                self.batches.push_back(Batch::empty_schema_with_len(match_count));
+                self.batches
+                    .push_back(Batch::empty_schema_with_len(match_count));
             }
         } else {
             let mut columns: Vec<Vec<Binding>> =

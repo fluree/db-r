@@ -75,46 +75,46 @@ impl QueryPolicyEnforcer {
 
         let flakes_checked = flakes.len();
         async {
-        // Create executor using the GRAPH's db/overlay/to_t (not ctx-level!)
-        let executor = QueryPolicyExecutor::with_overlay(db, overlay, to_t);
+            // Create executor using the GRAPH's db/overlay/to_t (not ctx-level!)
+            let executor = QueryPolicyExecutor::with_overlay(db, overlay, to_t);
 
-        let mut result = Vec::with_capacity(flakes_checked);
+            let mut result = Vec::with_capacity(flakes_checked);
 
-        for flake in flakes {
-            // Schema flakes always allowed
-            if is_schema_flake(&flake.p, &flake.o) {
-                result.push(flake);
-                continue;
+            for flake in flakes {
+                // Schema flakes always allowed
+                if is_schema_flake(&flake.p, &flake.o) {
+                    result.push(flake);
+                    continue;
+                }
+
+                // Get subject classes from cache
+                let subject_classes = self
+                    .policy
+                    .get_cached_subject_classes(&flake.s)
+                    .unwrap_or_default();
+
+                // Async policy check with f:query support
+                match self
+                    .policy
+                    .allow_view_flake_async(
+                        &flake.s,
+                        &flake.p,
+                        &flake.o,
+                        &subject_classes,
+                        &executor,
+                        tracker,
+                    )
+                    .await
+                {
+                    Ok(true) => result.push(flake),
+                    Ok(false) => {} // Filtered out
+                    Err(_) => {}    // On error, conservatively deny
+                }
             }
 
-            // Get subject classes from cache
-            let subject_classes = self
-                .policy
-                .get_cached_subject_classes(&flake.s)
-                .unwrap_or_default();
+            tracing::Span::current().record("flakes_allowed", result.len());
 
-            // Async policy check with f:query support
-            match self
-                .policy
-                .allow_view_flake_async(
-                    &flake.s,
-                    &flake.p,
-                    &flake.o,
-                    &subject_classes,
-                    &executor,
-                    tracker,
-                )
-                .await
-            {
-                Ok(true) => result.push(flake),
-                Ok(false) => {} // Filtered out
-                Err(_) => {}    // On error, conservatively deny
-            }
-        }
-
-        tracing::Span::current().record("flakes_allowed", result.len());
-
-        Ok(result)
+            Ok(result)
         }
         .instrument(tracing::debug_span!(
             "policy_eval",

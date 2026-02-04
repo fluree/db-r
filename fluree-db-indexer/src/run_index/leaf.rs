@@ -22,7 +22,7 @@
 
 use super::leaflet::LeafletEncoder;
 use super::run_record::{RunRecord, RunSortOrder};
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::io;
 use std::path::PathBuf;
 
@@ -171,7 +171,15 @@ impl LeafWriter {
         leaflets_per_leaf: usize,
         zstd_level: i32,
     ) -> Self {
-        Self::with_widths(output_dir, leaflet_rows, leaflets_per_leaf, zstd_level, 1, 2, RunSortOrder::Spot)
+        Self::with_widths(
+            output_dir,
+            leaflet_rows,
+            leaflets_per_leaf,
+            zstd_level,
+            1,
+            2,
+            RunSortOrder::Spot,
+        )
     }
 
     /// Create a LeafWriter with explicit field widths and sort order.
@@ -189,7 +197,9 @@ impl LeafWriter {
         sort_order: RunSortOrder,
     ) -> Self {
         Self {
-            leaflet_encoder: LeafletEncoder::with_widths_and_order(zstd_level, p_width, dt_width, sort_order),
+            leaflet_encoder: LeafletEncoder::with_widths_and_order(
+                zstd_level, p_width, dt_width, sort_order,
+            ),
             output_dir,
             leaflet_rows,
             leaflets_per_leaf,
@@ -483,13 +493,20 @@ pub fn read_leaf_header(data: &[u8]) -> io::Result<LeafFileHeader> {
 mod tests {
     use super::*;
     use crate::run_index::global_dict::dt_ids;
-    use fluree_db_core::value_id::{ObjKind, ObjKey};
+    use fluree_db_core::value_id::{ObjKey, ObjKind};
 
     fn make_record(s_id: u32, p_id: u32, val: i64, t: i64) -> RunRecord {
         RunRecord::new(
-            0, s_id, p_id,
-            ObjKind::NUM_INT, ObjKey::encode_i64(val),
-            t, true, dt_ids::INTEGER, 0, None,
+            0,
+            s_id,
+            p_id,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(val),
+            t,
+            true,
+            dt_ids::INTEGER,
+            0,
+            None,
         )
     }
 
@@ -587,9 +604,12 @@ mod tests {
             let leaflet_data =
                 &data[entry.offset as usize..entry.offset as usize + entry.compressed_len as usize];
             let decoded = super::super::leaflet::decode_leaflet(
-                leaflet_data, header.p_width, header.dt_width,
+                leaflet_data,
+                header.p_width,
+                header.dt_width,
                 crate::run_index::run_record::RunSortOrder::Spot,
-            ).unwrap();
+            )
+            .unwrap();
             all_s_ids.extend_from_slice(&decoded.s_ids);
         }
 

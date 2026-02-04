@@ -160,6 +160,14 @@ pub async fn clean_garbage<S>(
 where
     S: Storage,
 {
+    let gc_span = tracing::info_span!(
+        "gc_clean",
+        root_address = %current_root_address,
+        chain_len = tracing::field::Empty,
+        indexes_cleaned = tracing::field::Empty,
+        nodes_deleted = tracing::field::Empty,
+    );
+
     let max_old_indexes = config.max_old_indexes.unwrap_or(DEFAULT_MAX_OLD_INDEXES) as usize;
     let min_age_mins = config
         .min_time_garbage_mins
@@ -169,6 +177,8 @@ where
 
     // 1. Walk prev_index chain to collect all index versions (tolerant of missing roots)
     let index_chain = walk_prev_index_chain(storage, current_root_address).await?;
+
+    gc_span.record("chain_len", index_chain.len() as u64);
 
     // Retention: keep current + max_old_indexes
     // With max_old_indexes=5, keep_count=6 (indices 0..5)
@@ -200,6 +210,11 @@ where
 
     let mut deleted_count = 0;
     let mut indexes_cleaned = 0;
+
+    tracing::debug!(
+        eligible_count = index_chain.len() - keep_count,
+        "gc starting deletion of eligible indexes"
+    );
 
     for i in (keep_count..index_chain.len()).rev() {
         let manifest_entry = &index_chain[i - 1];
@@ -280,6 +295,8 @@ where
     }
 
     if indexes_cleaned > 0 || deleted_count > 0 {
+        gc_span.record("indexes_cleaned", indexes_cleaned as u64);
+        gc_span.record("nodes_deleted", deleted_count as u64);
         tracing::info!(
             indexes_cleaned = indexes_cleaned,
             nodes_deleted = deleted_count,
@@ -837,9 +854,18 @@ mod tests {
         storage.write_bytes(addr3, root3.as_bytes()).await.unwrap();
         storage.write_bytes(addr4, root4.as_bytes()).await.unwrap();
         storage.write_bytes(addr5, root5.as_bytes()).await.unwrap();
-        storage.write_bytes(garbage_addr2, garbage2.as_bytes()).await.unwrap();
-        storage.write_bytes(garbage_addr3, garbage3.as_bytes()).await.unwrap();
-        storage.write_bytes(garbage_addr4, garbage4.as_bytes()).await.unwrap();
+        storage
+            .write_bytes(garbage_addr2, garbage2.as_bytes())
+            .await
+            .unwrap();
+        storage
+            .write_bytes(garbage_addr3, garbage3.as_bytes())
+            .await
+            .unwrap();
+        storage
+            .write_bytes(garbage_addr4, garbage4.as_bytes())
+            .await
+            .unwrap();
         storage.write_bytes(node_from_t1, b"t1 data").await.unwrap();
         storage.write_bytes(node_from_t2, b"t2 data").await.unwrap();
         storage.write_bytes(node_from_t3, b"t3 data").await.unwrap();
@@ -927,8 +953,14 @@ mod tests {
         storage.write_bytes(addr2, root2.as_bytes()).await.unwrap();
         storage.write_bytes(addr3, root3.as_bytes()).await.unwrap();
         storage.write_bytes(addr4, root4.as_bytes()).await.unwrap();
-        storage.write_bytes(garbage_addr2, garbage2.as_bytes()).await.unwrap();
-        storage.write_bytes(garbage_addr3, garbage3.as_bytes()).await.unwrap();
+        storage
+            .write_bytes(garbage_addr2, garbage2.as_bytes())
+            .await
+            .unwrap();
+        storage
+            .write_bytes(garbage_addr3, garbage3.as_bytes())
+            .await
+            .unwrap();
 
         let config = CleanGarbageConfig {
             max_old_indexes: Some(1),

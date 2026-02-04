@@ -38,9 +38,9 @@ mod runner;
 mod where_plan;
 
 // Re-export public types
+pub use runner::execute_prepared;
 pub use runner::ContextConfig;
 pub use runner::ExecutableQuery;
-pub use runner::execute_prepared;
 
 // Re-export internal helpers for use in lib.rs
 pub use where_plan::build_where_operators_seeded;
@@ -74,9 +74,10 @@ pub use runner::prepare_execution;
 use runner::{
     execute_prepared_with_dataset, execute_prepared_with_dataset_and_bm25,
     execute_prepared_with_dataset_and_policy, execute_prepared_with_dataset_and_policy_and_bm25,
-    execute_prepared_with_dataset_and_policy_and_providers, execute_prepared_with_dataset_and_providers,
-    execute_prepared_with_dataset_history, execute_prepared_with_overlay,
-    execute_prepared_with_overlay_tracked, execute_prepared_with_policy, execute_prepared_with_r2rml,
+    execute_prepared_with_dataset_and_policy_and_providers,
+    execute_prepared_with_dataset_and_providers, execute_prepared_with_dataset_history,
+    execute_prepared_with_overlay, execute_prepared_with_overlay_tracked,
+    execute_prepared_with_policy, execute_prepared_with_r2rml,
 };
 
 /// Execute a query with full modifier support
@@ -104,143 +105,145 @@ pub async fn execute<S: Storage + 'static>(
         pattern_count = query.query.patterns.len()
     );
     async {
-    tracing::debug!("starting query execution");
+        tracing::debug!("starting query execution");
 
-    let ctx = ExecutionContext::new(db, vars).with_strict_bind_errors();
+        let ctx = ExecutionContext::new(db, vars).with_strict_bind_errors();
 
-    // Steps 1-2: Reasoning preparation (hierarchy, modes, ontology)
-    let (hierarchy, reasoning, ontology) = async {
-        let hierarchy = db.schema_hierarchy();
+        // Steps 1-2: Reasoning preparation (hierarchy, modes, ontology)
+        let (hierarchy, reasoning, ontology) = async {
+            let hierarchy = db.schema_hierarchy();
 
-        // Compute effective reasoning modes (auto-RDFS when hierarchy exists)
-        let reasoning = effective_reasoning_modes(&query.options.reasoning, hierarchy.is_some());
+            // Compute effective reasoning modes (auto-RDFS when hierarchy exists)
+            let reasoning =
+                effective_reasoning_modes(&query.options.reasoning, hierarchy.is_some());
 
-        tracing::Span::current().record("rdfs", reasoning.rdfs);
-        tracing::Span::current().record("owl2ql", reasoning.owl2ql);
-        tracing::Span::current().record("owl2rl", reasoning.owl2rl);
+            tracing::Span::current().record("rdfs", reasoning.rdfs);
+            tracing::Span::current().record("owl2ql", reasoning.owl2ql);
+            tracing::Span::current().record("owl2rl", reasoning.owl2rl);
 
-        if reasoning.rdfs || reasoning.owl2ql || reasoning.owl2rl {
-            tracing::debug!("reasoning enabled");
-        }
-
-        // Build ontology for OWL2-QL mode (if enabled)
-        let ontology = if reasoning.owl2ql {
-            tracing::debug!("building OWL2-QL ontology");
-            Some(crate::rewrite_owl_ql::Ontology::from_db(db, db.t as u64).await?)
-        } else {
-            None
-        };
-
-        Ok::<_, crate::error::QueryError>((hierarchy, reasoning, ontology))
-    }
-    .instrument(tracing::debug_span!(
-        "reasoning_prep",
-        rdfs = tracing::field::Empty,
-        owl2ql = tracing::field::Empty,
-        owl2rl = tracing::field::Empty,
-    ))
-    .await?;
-
-    // Step 3: Pattern rewriting for reasoning (RDFS/OWL expansion)
-    let rewritten_patterns = {
-        let span = tracing::debug_span!(
-            "pattern_rewrite",
-            patterns_before = query.query.patterns.len(),
-            patterns_after = tracing::field::Empty,
-        );
-        let _guard = span.enter();
-
-        fn encode_term<S: Storage + 'static>(db: &Db<S>, t: &Term) -> Term {
-            match t {
-                Term::Iri(iri) => db
-                    .encode_iri(iri)
-                    .map(Term::Sid)
-                    .unwrap_or_else(|| t.clone()),
-                _ => t.clone(),
+            if reasoning.rdfs || reasoning.owl2ql || reasoning.owl2rl {
+                tracing::debug!("reasoning enabled");
             }
-        }
 
-        fn encode_patterns_for_reasoning<S: Storage + 'static>(
-            db: &Db<S>,
-            patterns: &[Pattern],
-        ) -> Vec<Pattern> {
-            patterns
-                .iter()
-                .map(|p| match p {
-                    Pattern::Triple(tp) => Pattern::Triple(TriplePattern {
-                        s: encode_term(db, &tp.s),
-                        p: encode_term(db, &tp.p),
-                        o: encode_term(db, &tp.o),
-                        dt: tp.dt.clone(),
-                        lang: tp.lang.clone(),
-                    }),
-                    Pattern::Optional(inner) => {
-                        Pattern::Optional(encode_patterns_for_reasoning(db, inner))
-                    }
-                    Pattern::Union(branches) => Pattern::Union(
-                        branches
-                            .iter()
-                            .map(|b| encode_patterns_for_reasoning(db, b))
-                            .collect(),
-                    ),
-                    Pattern::Minus(inner) => {
-                        Pattern::Minus(encode_patterns_for_reasoning(db, inner))
-                    }
-                    Pattern::Exists(inner) => {
-                        Pattern::Exists(encode_patterns_for_reasoning(db, inner))
-                    }
-                    Pattern::NotExists(inner) => {
-                        Pattern::NotExists(encode_patterns_for_reasoning(db, inner))
-                    }
-                    Pattern::Graph { name, patterns } => Pattern::Graph {
-                        name: name.clone(),
-                        patterns: encode_patterns_for_reasoning(db, patterns),
-                    },
-                    _ => p.clone(),
-                })
-                .collect()
-        }
+            // Build ontology for OWL2-QL mode (if enabled)
+            let ontology = if reasoning.owl2ql {
+                tracing::debug!("building OWL2-QL ontology");
+                Some(crate::rewrite_owl_ql::Ontology::from_db(db, db.t as u64).await?)
+            } else {
+                None
+            };
 
-        let patterns_for_rewrite = if reasoning.rdfs || reasoning.owl2ql {
-            encode_patterns_for_reasoning(db, &query.query.patterns)
-        } else {
-            query.query.patterns.clone()
+            Ok::<_, crate::error::QueryError>((hierarchy, reasoning, ontology))
+        }
+        .instrument(tracing::debug_span!(
+            "reasoning_prep",
+            rdfs = tracing::field::Empty,
+            owl2ql = tracing::field::Empty,
+            owl2rl = tracing::field::Empty,
+        ))
+        .await?;
+
+        // Step 3: Pattern rewriting for reasoning (RDFS/OWL expansion)
+        let rewritten_patterns = {
+            let span = tracing::debug_span!(
+                "pattern_rewrite",
+                patterns_before = query.query.patterns.len(),
+                patterns_after = tracing::field::Empty,
+            );
+            let _guard = span.enter();
+
+            fn encode_term<S: Storage + 'static>(db: &Db<S>, t: &Term) -> Term {
+                match t {
+                    Term::Iri(iri) => db
+                        .encode_iri(iri)
+                        .map(Term::Sid)
+                        .unwrap_or_else(|| t.clone()),
+                    _ => t.clone(),
+                }
+            }
+
+            fn encode_patterns_for_reasoning<S: Storage + 'static>(
+                db: &Db<S>,
+                patterns: &[Pattern],
+            ) -> Vec<Pattern> {
+                patterns
+                    .iter()
+                    .map(|p| match p {
+                        Pattern::Triple(tp) => Pattern::Triple(TriplePattern {
+                            s: encode_term(db, &tp.s),
+                            p: encode_term(db, &tp.p),
+                            o: encode_term(db, &tp.o),
+                            dt: tp.dt.clone(),
+                            lang: tp.lang.clone(),
+                        }),
+                        Pattern::Optional(inner) => {
+                            Pattern::Optional(encode_patterns_for_reasoning(db, inner))
+                        }
+                        Pattern::Union(branches) => Pattern::Union(
+                            branches
+                                .iter()
+                                .map(|b| encode_patterns_for_reasoning(db, b))
+                                .collect(),
+                        ),
+                        Pattern::Minus(inner) => {
+                            Pattern::Minus(encode_patterns_for_reasoning(db, inner))
+                        }
+                        Pattern::Exists(inner) => {
+                            Pattern::Exists(encode_patterns_for_reasoning(db, inner))
+                        }
+                        Pattern::NotExists(inner) => {
+                            Pattern::NotExists(encode_patterns_for_reasoning(db, inner))
+                        }
+                        Pattern::Graph { name, patterns } => Pattern::Graph {
+                            name: name.clone(),
+                            patterns: encode_patterns_for_reasoning(db, patterns),
+                        },
+                        _ => p.clone(),
+                    })
+                    .collect()
+            }
+
+            let patterns_for_rewrite = if reasoning.rdfs || reasoning.owl2ql {
+                encode_patterns_for_reasoning(db, &query.query.patterns)
+            } else {
+                query.query.patterns.clone()
+            };
+            let (rewritten_patterns, _diag) = rewrite_query_patterns(
+                &patterns_for_rewrite,
+                hierarchy,
+                &reasoning,
+                ontology.as_ref(),
+            );
+
+            tracing::Span::current().record("patterns_after", rewritten_patterns.len());
+
+            if rewritten_patterns.len() != query.query.patterns.len() {
+                tracing::debug!("patterns rewritten for reasoning");
+            }
+
+            rewritten_patterns
         };
-        let (rewritten_patterns, _diag) = rewrite_query_patterns(
-            &patterns_for_rewrite,
-            hierarchy,
-            &reasoning,
-            ontology.as_ref(),
-        );
 
-        tracing::Span::current().record("patterns_after", rewritten_patterns.len());
+        // Build query with rewritten patterns
+        let rewritten_query = query.query.with_patterns(rewritten_patterns);
 
-        if rewritten_patterns.len() != query.query.patterns.len() {
-            tracing::debug!("patterns rewritten for reasoning");
-        }
+        // Step 4: Build the operator tree (planning)
+        let operator = {
+            let span =
+                tracing::debug_span!("plan", pattern_count = rewritten_query.patterns.len(),);
+            let _guard = span.enter();
 
-        rewritten_patterns
-    };
+            let stats_view = db.stats.as_ref().map(|s| {
+                Arc::new(StatsView::from_db_stats_with_namespaces(
+                    s,
+                    &db.namespace_codes,
+                ))
+            });
+            build_operator_tree(&rewritten_query, &query.options, stats_view)?
+        };
 
-    // Build query with rewritten patterns
-    let rewritten_query = query.query.with_patterns(rewritten_patterns);
-
-    // Step 4: Build the operator tree (planning)
-    let operator = {
-        let span = tracing::debug_span!("plan", pattern_count = rewritten_query.patterns.len(),);
-        let _guard = span.enter();
-
-        let stats_view = db.stats.as_ref().map(|s| {
-            Arc::new(StatsView::from_db_stats_with_namespaces(
-                s,
-                &db.namespace_codes,
-            ))
-        });
-        build_operator_tree(&rewritten_query, &query.options, stats_view)?
-    };
-
-    // Execute: open, drain batches, close
-    run_operator(operator, &ctx).await
+        // Execute: open, drain batches, close
+        run_operator(operator, &ctx).await
     }
     .instrument(span)
     .await
@@ -544,10 +547,7 @@ pub async fn execute_with_dataset_and_policy<'a, S: Storage + 'static>(
 /// Execute a query against a dataset (multi-graph) with policy enforcement, with optional tracking.
 ///
 /// This mirrors `execute_with_dataset_and_policy`, but attaches `tracker` to the execution context.
-pub async fn execute_with_dataset_and_policy_tracked<
-    'a,
-    S: Storage + 'static,
->(
+pub async fn execute_with_dataset_and_policy_tracked<'a, S: Storage + 'static>(
     db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     vars: &VarRegistry,
@@ -634,11 +634,7 @@ pub async fn execute_with_dataset_and_bm25<'a, 'b, S: Storage + 'static>(
 /// * `policy` - Policy context for access control
 /// * `bm25_provider` - Provider for BM25 index lookups
 /// * `tracker` - Optional execution tracker
-pub async fn execute_with_dataset_and_policy_and_bm25<
-    'a,
-    'b,
-    S: Storage + 'static,
->(
+pub async fn execute_with_dataset_and_policy_and_bm25<'a, 'b, S: Storage + 'static>(
     db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     vars: &VarRegistry,
@@ -833,8 +829,7 @@ mod tests {
             graph_select: None,
         };
 
-        let result =
-            build_operator_tree::<MemoryStorage>(&query, &QueryOptions::default(), None);
+        let result = build_operator_tree::<MemoryStorage>(&query, &QueryOptions::default(), None);
         match result {
             Err(e) => assert!(e.to_string().contains("not found")),
             Ok(_) => panic!("Expected error for invalid select var"),

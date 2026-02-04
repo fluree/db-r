@@ -6,8 +6,8 @@
 
 use super::ast::{
     UnresolvedIndexSearchPattern, UnresolvedIndexSearchTarget, UnresolvedPathExpr,
-    UnresolvedVectorSearchPattern, UnresolvedVectorSearchTarget, UnresolvedPattern,
-    UnresolvedQuery, UnresolvedTerm, UnresolvedTriplePattern,
+    UnresolvedPattern, UnresolvedQuery, UnresolvedTerm, UnresolvedTriplePattern,
+    UnresolvedVectorSearchPattern, UnresolvedVectorSearchTarget,
 };
 use super::error::{ParseError, Result};
 use super::PathAliasMap;
@@ -184,12 +184,9 @@ fn parse_index_search_pattern(
     query: &mut UnresolvedQuery,
 ) -> Result<()> {
     // Extract "graph" - the virtual graph alias (required)
-    let vg_alias = map
-        .get("graph")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            ParseError::InvalidWhere("index search: 'graph' must be a string".to_string())
-        })?;
+    let vg_alias = map.get("graph").and_then(|v| v.as_str()).ok_or_else(|| {
+        ParseError::InvalidWhere("index search: 'graph' must be a string".to_string())
+    })?;
 
     // Extract "idx:target" - the search query (required)
     let target_val = map.get("idx:target").ok_or_else(|| {
@@ -219,7 +216,10 @@ fn parse_index_search_pattern(
     let (id_var, score_var, ledger_var) = parse_index_search_result(result_val)?;
 
     // Extract "idx:sync" (optional, default false)
-    let sync = map.get("idx:sync").and_then(|v| v.as_bool()).unwrap_or(false);
+    let sync = map
+        .get("idx:sync")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     // Extract "idx:timeout" (optional)
     let timeout = map.get("idx:timeout").and_then(|v| v.as_u64());
@@ -329,7 +329,10 @@ fn parse_vector_search_pattern(
     let (id_var, score_var, ledger_var) = parse_index_search_result(result_val)?;
 
     // Extract "idx:sync" (optional, default false)
-    let sync = map.get("idx:sync").and_then(|v| v.as_bool()).unwrap_or(false);
+    let sync = map
+        .get("idx:sync")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     // Extract "idx:timeout" (optional)
     let timeout = map.get("idx:timeout").and_then(|v| v.as_u64());
@@ -352,7 +355,9 @@ fn parse_vector_search_pattern(
         pattern = pattern.with_timeout(t);
     }
 
-    query.patterns.push(UnresolvedPattern::VectorSearch(pattern));
+    query
+        .patterns
+        .push(UnresolvedPattern::VectorSearch(pattern));
     Ok(())
 }
 
@@ -372,14 +377,11 @@ fn parse_index_search_result(
         }
         // Nested object: {"idx:id": "?doc", "idx:score": "?score", ...}
         JsonValue::Object(obj) => {
-            let id_str = obj
-                .get("idx:id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    ParseError::InvalidWhere(
-                        "index search: nested idx:result must have 'idx:id'".to_string(),
-                    )
-                })?;
+            let id_str = obj.get("idx:id").and_then(|v| v.as_str()).ok_or_else(|| {
+                ParseError::InvalidWhere(
+                    "index search: nested idx:result must have 'idx:id'".to_string(),
+                )
+            })?;
 
             if !is_variable(id_str) {
                 return Err(ParseError::InvalidWhere(
@@ -434,9 +436,7 @@ pub fn parse_node_map(
     }
 
     // Determine subject: explicit @id (or aliased @id) or generated unique variable
-    let subject = if let Some(id_val) = map
-        .get("@id")
-        .or_else(|| map.get(context.id_key.as_str()))
+    let subject = if let Some(id_val) = map.get("@id").or_else(|| map.get(context.id_key.as_str()))
     {
         parse_subject(id_val, context)?
     } else {
@@ -716,12 +716,12 @@ fn parse_property(
                     pattern = pattern.with_lang(lang.as_ref());
                 }
             }
-            
+
             // Add pattern if not already added by any of the above
             if !pattern_added {
                 query.add_pattern(pattern);
             }
-            
+
             return Ok(());
         }
     }
@@ -731,43 +731,43 @@ fn parse_property(
         if nested_map.contains_key("@variable") {
             // Explicit variable wrapper should be treated as a value.
         } else {
-        // Determine the nested subject:
-        // - If nested object has an explicit @id, use it (var or IRI).
-        // - Otherwise generate an implicit variable (?__n0, ?__n1, ...).
-        //
-        // IMPORTANT: If we used a generated var while the nested object has an explicit @id,
-        // we'd break correlation between the connecting triple and the nested properties.
-        let nested_subject = if let Some(id_val) = nested_map.get("@id") {
-            parse_subject(id_val, context)?
-        } else {
-            let nested_subject_name = format!("?__n{}", *nested_counter);
-            *nested_counter += 1;
-            UnresolvedTerm::var(&nested_subject_name)
-        };
+            // Determine the nested subject:
+            // - If nested object has an explicit @id, use it (var or IRI).
+            // - Otherwise generate an implicit variable (?__n0, ?__n1, ...).
+            //
+            // IMPORTANT: If we used a generated var while the nested object has an explicit @id,
+            // we'd break correlation between the connecting triple and the nested properties.
+            let nested_subject = if let Some(id_val) = nested_map.get("@id") {
+                parse_subject(id_val, context)?
+            } else {
+                let nested_subject_name = format!("?__n{}", *nested_counter);
+                *nested_counter += 1;
+                UnresolvedTerm::var(&nested_subject_name)
+            };
 
-        // ORDERING: Emit connecting triple FIRST.
-        // This ensures deterministic join order for the planner.
-        let connecting_pattern = build_triple_pattern(
-            subject,
-            predicate,
-            nested_subject.clone(),
-            is_reverse,
-            dt_iri.as_deref(),
-        );
-        query.add_pattern(connecting_pattern);
+            // ORDERING: Emit connecting triple FIRST.
+            // This ensures deterministic join order for the planner.
+            let connecting_pattern = build_triple_pattern(
+                subject,
+                predicate,
+                nested_subject.clone(),
+                is_reverse,
+                dt_iri.as_deref(),
+            );
+            query.add_pattern(connecting_pattern);
 
-        // Parse nested object's properties (after connecting triple)
-        parse_nested_node_map(
-            nested_map,
-            &nested_subject,
-            context,
-            path_aliases,
-            query,
-            nested_counter,
-            object_var_parsing,
-        )?;
+            // Parse nested object's properties (after connecting triple)
+            parse_nested_node_map(
+                nested_map,
+                &nested_subject,
+                context,
+                path_aliases,
+                query,
+                nested_counter,
+                object_var_parsing,
+            )?;
 
-        return Ok(());
+            return Ok(());
         }
     }
 
@@ -813,14 +813,15 @@ fn parse_value_object(
     context: &ParsedContext,
     object_var_parsing: bool,
 ) -> Result<ParsedValueObject> {
-    let value_val = obj.get("@value").ok_or_else(|| {
-        ParseError::InvalidWhere("value object must contain @value".to_string())
-    })?;
+    let value_val = obj
+        .get("@value")
+        .ok_or_else(|| ParseError::InvalidWhere("value object must contain @value".to_string()))?;
 
     // Optional @type - can be a constant IRI or a variable like "?type"
-    let explicit_dt_raw: Option<Arc<str>> = obj.get("@type").and_then(|t| t.as_str()).map(Arc::from);
-    
-    let (explicit_dt, explicit_dt_var): (Option<Arc<str>>, Option<Arc<str>>) = 
+    let explicit_dt_raw: Option<Arc<str>> =
+        obj.get("@type").and_then(|t| t.as_str()).map(Arc::from);
+
+    let (explicit_dt, explicit_dt_var): (Option<Arc<str>>, Option<Arc<str>>) =
         if let Some(ref dt) = explicit_dt_raw {
             if is_variable(dt) {
                 // @type is a variable like "?type" - we'll bind it with DATATYPE() function
@@ -830,16 +831,20 @@ fn parse_value_object(
             } else {
                 // @type is a constant IRI - expand and normalize it
                 let (expanded, _) = details(dt, context);
-                (Some(Arc::from(normalize_numeric_datatype(expanded.as_str()))), None)
+                (
+                    Some(Arc::from(normalize_numeric_datatype(expanded.as_str()))),
+                    None,
+                )
             }
         } else {
             (None, None)
         };
 
     // Optional @language (can be a constant string or a variable like "?lang")
-    let explicit_lang: Option<Arc<str>> = obj.get("@language").and_then(|l| l.as_str()).map(|l| {
-        Arc::from(l)
-    });
+    let explicit_lang: Option<Arc<str>> = obj
+        .get("@language")
+        .and_then(|l| l.as_str())
+        .map(|l| Arc::from(l));
 
     // Optional @t - Fluree-specific transaction time binding (must be a variable like "?t")
     let explicit_t_var: Option<Arc<str>> = if let Some(t_val) = obj.get("@t") {
@@ -850,7 +855,7 @@ fn parse_value_object(
             Some(Arc::from(t_str))
         } else {
             return Err(ParseError::InvalidWhere(
-                "@t must be a variable (e.g., \"?t\"), not a constant value".to_string()
+                "@t must be a variable (e.g., \"?t\"), not a constant value".to_string(),
             ));
         }
     } else {
@@ -862,7 +867,10 @@ fn parse_value_object(
     // Can also be a constant "assert" or "retract" to filter by operation type.
     let explicit_op_var: Option<Arc<str>> = if let Some(op_val) = obj.get("@op") {
         let op_str = op_val.as_str().ok_or_else(|| {
-            ParseError::InvalidWhere("@op must be a string (variable like \"?op\" or constant \"assert\"/\"retract\")".to_string())
+            ParseError::InvalidWhere(
+                "@op must be a string (variable like \"?op\" or constant \"assert\"/\"retract\")"
+                    .to_string(),
+            )
         })?;
         if is_variable(op_str) {
             Some(Arc::from(op_str))
@@ -871,7 +879,8 @@ fn parse_value_object(
             Some(Arc::from(op_str))
         } else {
             return Err(ParseError::InvalidWhere(
-                "@op must be a variable (e.g., \"?op\") or one of \"assert\", \"retract\"".to_string()
+                "@op must be a variable (e.g., \"?op\") or one of \"assert\", \"retract\""
+                    .to_string(),
             ));
         }
     } else {
@@ -980,9 +989,7 @@ fn parse_nested_node_map(
         }
 
         // Handle @type specially
-        if key == "@type"
-            || key == "type"
-            || Some(key.as_str()) == context.type_key.as_str().into()
+        if key == "@type" || key == "type" || Some(key.as_str()) == context.type_key.as_str().into()
         {
             parse_type_property(value, &actual_subject, context, query, object_var_parsing)?;
             continue;

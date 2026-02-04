@@ -51,40 +51,36 @@ pub struct ReplayedLeaflet {
 ///
 /// Compares only the sort-key columns (s_id, p_id, o_kind, o_key, dt) — not t
 /// or op, since those are not part of the index ordering.
-fn cmp_r3_for_order(
-    a: &Region3Entry,
-    b: &Region3Entry,
-    order: RunSortOrder,
-) -> std::cmp::Ordering {
+fn cmp_r3_for_order(a: &Region3Entry, b: &Region3Entry, order: RunSortOrder) -> std::cmp::Ordering {
     match order {
-        RunSortOrder::Spot => {
-            a.s_id.cmp(&b.s_id)
-                .then(a.p_id.cmp(&b.p_id))
-                .then(a.o_kind.cmp(&b.o_kind))
-                .then(a.o_key.cmp(&b.o_key))
-                .then(a.dt.cmp(&b.dt))
-        }
-        RunSortOrder::Psot => {
-            a.p_id.cmp(&b.p_id)
-                .then(a.s_id.cmp(&b.s_id))
-                .then(a.o_kind.cmp(&b.o_kind))
-                .then(a.o_key.cmp(&b.o_key))
-                .then(a.dt.cmp(&b.dt))
-        }
-        RunSortOrder::Post => {
-            a.p_id.cmp(&b.p_id)
-                .then(a.o_kind.cmp(&b.o_kind))
-                .then(a.o_key.cmp(&b.o_key))
-                .then(a.dt.cmp(&b.dt))
-                .then(a.s_id.cmp(&b.s_id))
-        }
-        RunSortOrder::Opst => {
-            a.o_kind.cmp(&b.o_kind)
-                .then(a.o_key.cmp(&b.o_key))
-                .then(a.dt.cmp(&b.dt))
-                .then(a.p_id.cmp(&b.p_id))
-                .then(a.s_id.cmp(&b.s_id))
-        }
+        RunSortOrder::Spot => a
+            .s_id
+            .cmp(&b.s_id)
+            .then(a.p_id.cmp(&b.p_id))
+            .then(a.o_kind.cmp(&b.o_kind))
+            .then(a.o_key.cmp(&b.o_key))
+            .then(a.dt.cmp(&b.dt)),
+        RunSortOrder::Psot => a
+            .p_id
+            .cmp(&b.p_id)
+            .then(a.s_id.cmp(&b.s_id))
+            .then(a.o_kind.cmp(&b.o_kind))
+            .then(a.o_key.cmp(&b.o_key))
+            .then(a.dt.cmp(&b.dt)),
+        RunSortOrder::Post => a
+            .p_id
+            .cmp(&b.p_id)
+            .then(a.o_kind.cmp(&b.o_kind))
+            .then(a.o_key.cmp(&b.o_key))
+            .then(a.dt.cmp(&b.dt))
+            .then(a.s_id.cmp(&b.s_id)),
+        RunSortOrder::Opst => a
+            .o_kind
+            .cmp(&b.o_kind)
+            .then(a.o_key.cmp(&b.o_key))
+            .then(a.dt.cmp(&b.dt))
+            .then(a.p_id.cmp(&b.p_id))
+            .then(a.s_id.cmp(&b.s_id)),
     }
 }
 
@@ -104,34 +100,30 @@ fn cmp_row_vs_r3(
     order: RunSortOrder,
 ) -> std::cmp::Ordering {
     match order {
-        RunSortOrder::Spot => {
-            s_id.cmp(&entry.s_id)
-                .then(p_id.cmp(&entry.p_id))
-                .then(o_kind.cmp(&entry.o_kind))
-                .then(o_key.cmp(&entry.o_key))
-                .then((dt as u16).cmp(&entry.dt))
-        }
-        RunSortOrder::Psot => {
-            p_id.cmp(&entry.p_id)
-                .then(s_id.cmp(&entry.s_id))
-                .then(o_kind.cmp(&entry.o_kind))
-                .then(o_key.cmp(&entry.o_key))
-                .then((dt as u16).cmp(&entry.dt))
-        }
-        RunSortOrder::Post => {
-            p_id.cmp(&entry.p_id)
-                .then(o_kind.cmp(&entry.o_kind))
-                .then(o_key.cmp(&entry.o_key))
-                .then((dt as u16).cmp(&entry.dt))
-                .then(s_id.cmp(&entry.s_id))
-        }
-        RunSortOrder::Opst => {
-            o_kind.cmp(&entry.o_kind)
-                .then(o_key.cmp(&entry.o_key))
-                .then((dt as u16).cmp(&entry.dt))
-                .then(p_id.cmp(&entry.p_id))
-                .then(s_id.cmp(&entry.s_id))
-        }
+        RunSortOrder::Spot => s_id
+            .cmp(&entry.s_id)
+            .then(p_id.cmp(&entry.p_id))
+            .then(o_kind.cmp(&entry.o_kind))
+            .then(o_key.cmp(&entry.o_key))
+            .then((dt as u16).cmp(&entry.dt)),
+        RunSortOrder::Psot => p_id
+            .cmp(&entry.p_id)
+            .then(s_id.cmp(&entry.s_id))
+            .then(o_kind.cmp(&entry.o_kind))
+            .then(o_key.cmp(&entry.o_key))
+            .then((dt as u16).cmp(&entry.dt)),
+        RunSortOrder::Post => p_id
+            .cmp(&entry.p_id)
+            .then(o_kind.cmp(&entry.o_kind))
+            .then(o_key.cmp(&entry.o_key))
+            .then((dt as u16).cmp(&entry.dt))
+            .then(s_id.cmp(&entry.s_id)),
+        RunSortOrder::Opst => o_kind
+            .cmp(&entry.o_kind)
+            .then(o_key.cmp(&entry.o_key))
+            .then((dt as u16).cmp(&entry.dt))
+            .then(p_id.cmp(&entry.p_id))
+            .then(s_id.cmp(&entry.s_id)),
     }
 }
 
@@ -282,7 +274,18 @@ pub fn replay_leaflet(
         match cmp {
             std::cmp::Ordering::Less => {
                 // R1 row comes first — emit it
-                emit_r1_row(&mut out, r1_idx, r1_s_ids, r1_p_ids, r1_o_kinds, r1_o_keys, r2_dt, r2_t, r2_lang_ids, r2_i);
+                emit_r1_row(
+                    &mut out,
+                    r1_idx,
+                    r1_s_ids,
+                    r1_p_ids,
+                    r1_o_kinds,
+                    r1_o_keys,
+                    r2_dt,
+                    r2_t,
+                    r2_lang_ids,
+                    r2_i,
+                );
                 r1_idx += 1;
             }
             std::cmp::Ordering::Greater => {
@@ -298,7 +301,18 @@ pub fn replay_leaflet(
                 // include entry is a distinct restored fact at the same sort
                 // position. Emit R1 first to maintain stable ordering,
                 // then the include entry.
-                emit_r1_row(&mut out, r1_idx, r1_s_ids, r1_p_ids, r1_o_kinds, r1_o_keys, r2_dt, r2_t, r2_lang_ids, r2_i);
+                emit_r1_row(
+                    &mut out,
+                    r1_idx,
+                    r1_s_ids,
+                    r1_p_ids,
+                    r1_o_kinds,
+                    r1_o_keys,
+                    r2_dt,
+                    r2_t,
+                    r2_lang_ids,
+                    r2_i,
+                );
                 emit_include_entry(&mut out, &include[inc_idx]);
                 r1_idx += 1;
                 inc_idx += 1;
@@ -318,7 +332,18 @@ pub fn replay_leaflet(
             r2_i[r1_idx],
         );
         if !exclude.contains(&r1_key) {
-            emit_r1_row(&mut out, r1_idx, r1_s_ids, r1_p_ids, r1_o_kinds, r1_o_keys, r2_dt, r2_t, r2_lang_ids, r2_i);
+            emit_r1_row(
+                &mut out,
+                r1_idx,
+                r1_s_ids,
+                r1_p_ids,
+                r1_o_kinds,
+                r1_o_keys,
+                r2_dt,
+                r2_t,
+                r2_lang_ids,
+                r2_i,
+            );
         }
         r1_idx += 1;
     }
@@ -380,8 +405,8 @@ fn emit_include_entry(out: &mut ReplayedLeaflet, entry: &Region3Entry) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::run_record::NO_LIST_INDEX;
+    use super::*;
 
     /// Helper: build a Region3Entry.
     fn r3(s_id: u32, p_id: u32, o_kind: u8, o_key: u64, t_signed: i64, dt: u16) -> Region3Entry {
@@ -420,8 +445,8 @@ mod tests {
     fn test_replay_all_entries_before_target_returns_none() {
         // All R3 entries are at or before t_target
         let r3_entries = vec![
-            r3(1, 10, 0, 100, 3, 1),  // assert at t=3
-            r3(2, 10, 0, 200, 2, 1),  // assert at t=2
+            r3(1, 10, 0, 100, 3, 1), // assert at t=3
+            r3(2, 10, 0, 200, 2, 1), // assert at t=2
         ];
 
         let result = replay_leaflet(
@@ -464,7 +489,10 @@ mod tests {
             RunSortOrder::Spot,
         );
         let out = result.expect("should produce replay");
-        assert_eq!(out.row_count, 0, "fact asserted at t=5 should not exist at t=3");
+        assert_eq!(
+            out.row_count, 0,
+            "fact asserted at t=5 should not exist at t=3"
+        );
     }
 
     #[test]
@@ -478,7 +506,7 @@ mod tests {
         ];
 
         let result = replay_leaflet(
-            &[],  // empty current state (fact was retracted)
+            &[], // empty current state (fact was retracted)
             &[],
             &[],
             &[],
@@ -512,17 +540,17 @@ mod tests {
         // Expected at t=5: s=1, s=3, s=4
 
         let r3_entries = vec![
-            r3(2, 10, 0, 200, 8, 1),   // assert at t=8 → exclude
-            r3(3, 10, 0, 300, -7, 1),  // retract at t=7 → include
+            r3(2, 10, 0, 200, 8, 1),  // assert at t=8 → exclude
+            r3(3, 10, 0, 300, -7, 1), // retract at t=7 → include
         ];
 
         let result = replay_leaflet(
-            &[1, 2, 4],       // current R1 s_ids
+            &[1, 2, 4], // current R1 s_ids
             &[10, 10, 10],
             &[0, 0, 0],
             &[100, 200, 400],
             &[1, 1, 1],
-            &[3, 8, 3],       // t values
+            &[3, 8, 3], // t values
             &[0, 0, 0],
             &[NO_LIST_INDEX, NO_LIST_INDEX, NO_LIST_INDEX],
             &r3_entries,
@@ -545,12 +573,12 @@ mod tests {
         // The t=7 retract should be ignored (same key already seen).
 
         let r3_entries = vec![
-            r3(1, 10, 0, 100, 10, 1),  // assert at t=10 (first seen → exclude)
-            r3(1, 10, 0, 100, -7, 1),  // retract at t=7 (ignored, key already seen)
+            r3(1, 10, 0, 100, 10, 1), // assert at t=10 (first seen → exclude)
+            r3(1, 10, 0, 100, -7, 1), // retract at t=7 (ignored, key already seen)
         ];
 
         let result = replay_leaflet(
-            &[1],        // fact is in current state (asserted at t=10)
+            &[1], // fact is in current state (asserted at t=10)
             &[10],
             &[0],
             &[100],
@@ -582,8 +610,8 @@ mod tests {
         ];
 
         let result = replay_leaflet(
-            &[1, 3],       // current s_ids (PSOT order: p=10 s=1, p=20 s=3)
-            &[10, 20],     // p_ids
+            &[1, 3],   // current s_ids (PSOT order: p=10 s=1, p=20 s=3)
+            &[10, 20], // p_ids
             &[0, 0],
             &[100, 300],
             &[1, 1],
@@ -610,8 +638,8 @@ mod tests {
         // Expected SPOT: s=1, s=3, s=5
 
         let r3_entries = vec![
-            r3(1, 10, 0, 100, -8, 1),  // retract at t=8 → include
-            r3(5, 10, 0, 500, -7, 1),  // retract at t=7 → include
+            r3(1, 10, 0, 100, -8, 1), // retract at t=8 → include
+            r3(5, 10, 0, 500, -7, 1), // retract at t=7 → include
         ];
 
         let result = replay_leaflet(
@@ -637,8 +665,8 @@ mod tests {
         // All current rows are excluded — result should be empty.
 
         let r3_entries = vec![
-            r3(1, 10, 0, 100, 8, 1),  // assert at t=8 → exclude
-            r3(2, 10, 0, 200, 7, 1),  // assert at t=7 → exclude
+            r3(1, 10, 0, 100, 8, 1), // assert at t=8 → exclude
+            r3(2, 10, 0, 200, 7, 1), // assert at t=7 → exclude
         ];
 
         let result = replay_leaflet(
@@ -664,8 +692,8 @@ mod tests {
         // abs_t == t_target → break condition, not processed.
 
         let r3_entries = vec![
-            r3(2, 10, 0, 200, 8, 1),  // assert at t=8 → exclude (8 > 5)
-            r3(1, 10, 0, 100, 5, 1),  // assert at t=5 → NOT excluded (5 == 5, stop)
+            r3(2, 10, 0, 200, 8, 1), // assert at t=8 → exclude (8 > 5)
+            r3(1, 10, 0, 100, 5, 1), // assert at t=5 → NOT excluded (5 == 5, stop)
         ];
 
         let result = replay_leaflet(
@@ -710,25 +738,49 @@ mod tests {
         //   Result: fact is excluded. Correct — at t=2 the fact didn't exist yet.
 
         let r3_entries = vec![
-            r3(1, 10, 0, 100, 8, 1),   // assert at t=8 (newest)
-            r3(1, 10, 0, 100, -5, 1),  // retract at t=5
-            r3(1, 10, 0, 100, 3, 1),   // assert at t=3 (oldest)
+            r3(1, 10, 0, 100, 8, 1),  // assert at t=8 (newest)
+            r3(1, 10, 0, 100, -5, 1), // retract at t=5
+            r3(1, 10, 0, 100, 3, 1),  // assert at t=3 (oldest)
         ];
 
         // Current R1: fact is present (asserted at t=8)
         let result_t6 = replay_leaflet(
-            &[1], &[10], &[0], &[100], &[1], &[8], &[0], &[NO_LIST_INDEX],
-            &r3_entries, 6, RunSortOrder::Spot,
+            &[1],
+            &[10],
+            &[0],
+            &[100],
+            &[1],
+            &[8],
+            &[0],
+            &[NO_LIST_INDEX],
+            &r3_entries,
+            6,
+            RunSortOrder::Spot,
         );
         let out = result_t6.expect("should produce replay");
-        assert_eq!(out.row_count, 0, "at t=6, fact was retracted (retract at t=5)");
+        assert_eq!(
+            out.row_count, 0,
+            "at t=6, fact was retracted (retract at t=5)"
+        );
 
         let result_t4 = replay_leaflet(
-            &[1], &[10], &[0], &[100], &[1], &[8], &[0], &[NO_LIST_INDEX],
-            &r3_entries, 4, RunSortOrder::Spot,
+            &[1],
+            &[10],
+            &[0],
+            &[100],
+            &[1],
+            &[8],
+            &[0],
+            &[NO_LIST_INDEX],
+            &r3_entries,
+            4,
+            RunSortOrder::Spot,
         );
         let out = result_t4.expect("should produce replay");
-        assert_eq!(out.row_count, 0, "at t=4, fact was asserted at t=3 but R3 assert at t=8 excludes");
+        assert_eq!(
+            out.row_count, 0,
+            "at t=4, fact was asserted at t=3 but R3 assert at t=8 excludes"
+        );
         // Note: this test demonstrates the first-seen-per-key limitation.
         // The t=8 assert masks the t=3 assert. The R1 row (which has the
         // t=8 snapshot) is excluded, and the t=3 assert is not separately
@@ -749,13 +801,22 @@ mod tests {
         //   The retract at t=5 is not processed because first-seen wins.
 
         let r3_entries = vec![
-            r3(1, 10, 0, 100, 8, 1),   // assert at t=8 (newest, first-seen)
-            r3(1, 10, 0, 100, -5, 1),  // retract at t=5
+            r3(1, 10, 0, 100, 8, 1),  // assert at t=8 (newest, first-seen)
+            r3(1, 10, 0, 100, -5, 1), // retract at t=5
         ];
 
         let result = replay_leaflet(
-            &[1], &[10], &[0], &[100], &[1], &[8], &[0], &[NO_LIST_INDEX],
-            &r3_entries, 4, RunSortOrder::Spot,
+            &[1],
+            &[10],
+            &[0],
+            &[100],
+            &[1],
+            &[8],
+            &[0],
+            &[NO_LIST_INDEX],
+            &r3_entries,
+            4,
+            RunSortOrder::Spot,
         );
         let out = result.expect("should produce replay");
         assert_eq!(out.row_count, 0);
@@ -776,24 +837,25 @@ mod tests {
         // These have the same sort-key (s_id=1, p_id=10, o=100, dt=11)
         // but different lang_id, so cmp_row_vs_r3 returns Equal.
 
-        let r3_entries = vec![
-            Region3Entry {
-                s_id: 1, p_id: 10, o_kind: 0, o_key: 100,
-                t_signed: -8, // retract at t=8
-                dt: 11,       // LANG_STRING
-                lang_id: 2,   // French
-                i: NO_LIST_INDEX,
-            },
-        ];
+        let r3_entries = vec![Region3Entry {
+            s_id: 1,
+            p_id: 10,
+            o_kind: 0,
+            o_key: 100,
+            t_signed: -8, // retract at t=8
+            dt: 11,       // LANG_STRING
+            lang_id: 2,   // French
+            i: NO_LIST_INDEX,
+        }];
 
         let result = replay_leaflet(
-            &[1],              // s_ids
-            &[10],             // p_ids
-            &[0],              // o_kinds
-            &[100],            // o_keys
-            &[11],             // dt (LANG_STRING)
-            &[3],              // t
-            &[1],              // lang_ids (English)
+            &[1],   // s_ids
+            &[10],  // p_ids
+            &[0],   // o_kinds
+            &[100], // o_keys
+            &[11],  // dt (LANG_STRING)
+            &[3],   // t
+            &[1],   // lang_ids (English)
             &[NO_LIST_INDEX],
             &r3_entries,
             5, // want state at t=5 (retraction at t=8 → include French back)
@@ -830,20 +892,20 @@ mod tests {
         // Expected: s=2, s=4 (in SPOT order)
 
         let r3_entries = vec![
-            r3(5, 10, 0, 500, 10, 1),  // assert at t=10
-            r3(2, 10, 0, 200, -9, 1),  // retract at t=9
-            r3(4, 10, 0, 400, -8, 1),  // retract at t=8
-            r3(3, 10, 0, 300, 7, 1),   // assert at t=7
-            r3(1, 10, 0, 100, 6, 1),   // assert at t=6
+            r3(5, 10, 0, 500, 10, 1), // assert at t=10
+            r3(2, 10, 0, 200, -9, 1), // retract at t=9
+            r3(4, 10, 0, 400, -8, 1), // retract at t=8
+            r3(3, 10, 0, 300, 7, 1),  // assert at t=7
+            r3(1, 10, 0, 100, 6, 1),  // assert at t=6
         ];
 
         let result = replay_leaflet(
-            &[1, 3, 5],           // current R1 s_ids
+            &[1, 3, 5], // current R1 s_ids
             &[10, 10, 10],
             &[0, 0, 0],
             &[100, 300, 500],
             &[1, 1, 1],
-            &[6, 7, 10],          // t values
+            &[6, 7, 10], // t values
             &[0, 0, 0],
             &[NO_LIST_INDEX, NO_LIST_INDEX, NO_LIST_INDEX],
             &r3_entries,

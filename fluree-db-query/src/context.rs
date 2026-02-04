@@ -46,7 +46,7 @@ pub struct ExecutionContext<'a, S: Storage + 'static> {
     /// Maximum batch size for operators
     pub batch_size: usize,
     /// Optional policy enforcer for async policy evaluation with f:query support
-    /// 
+    ///
     /// When present, scan operators should use this for per-leaf batch filtering
     /// via `filter_flakes`. This provides full f:query support without deadlocks.
     pub policy_enforcer: Option<Arc<QueryPolicyEnforcer>>,
@@ -242,7 +242,7 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
     }
 
     /// Add policy enforcer to this execution context
-    /// 
+    ///
     /// This enables per-leaf batch filtering with full f:query policy support.
     /// The enforcer wraps a PolicyContext and provides async evaluation.
     /// Access the raw PolicyContext via `enforcer.policy()` if needed.
@@ -450,7 +450,7 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
 /// Well-known datatype SIDs
 ///
 /// These are common XSD datatypes used in Fluree.
-/// 
+///
 /// Also provides fast datatype family equivalence checking for the scan loop.
 /// Integer family: xsd:integer, xsd:long, xsd:int, xsd:short, xsd:byte
 /// Float family: xsd:double, xsd:float

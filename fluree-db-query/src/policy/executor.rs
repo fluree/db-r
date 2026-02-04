@@ -6,7 +6,10 @@ use crate::context::ExecutionContext;
 use crate::execute::build_where_operators_seeded;
 use crate::var_registry::VarRegistry;
 use fluree_db_core::{Db, OverlayProvider, Sid, Storage};
-use fluree_db_policy::{PolicyQuery, PolicyQueryExecutor, PolicyQueryFut, Result as PolicyResult, UNBOUND_IDENTITY_PREFIX};
+use fluree_db_policy::{
+    PolicyQuery, PolicyQueryExecutor, PolicyQueryFut, Result as PolicyResult,
+    UNBOUND_IDENTITY_PREFIX,
+};
 use std::collections::HashMap;
 
 /// Policy query executor that runs queries against a database
@@ -42,9 +45,7 @@ impl<'a, S: Storage> QueryPolicyExecutor<'a, S> {
     }
 }
 
-impl<'a, S: Storage + 'static> PolicyQueryExecutor
-    for QueryPolicyExecutor<'a, S>
-{
+impl<'a, S: Storage + 'static> PolicyQueryExecutor for QueryPolicyExecutor<'a, S> {
     fn evaluate_policy_query<'b>(
         &'b self,
         query: &'b PolicyQuery,
@@ -76,8 +77,10 @@ impl<'a, S: Storage + 'static> QueryPolicyExecutor<'a, S> {
             }
         })?;
 
-        let obj = query_json.as_object_mut().ok_or_else(|| fluree_db_policy::PolicyError::QueryExecution {
-            message: "Policy query must be a JSON object".to_string(),
+        let obj = query_json.as_object_mut().ok_or_else(|| {
+            fluree_db_policy::PolicyError::QueryExecution {
+                message: "Policy query must be a JSON object".to_string(),
+            }
         })?;
 
         // Force select + limit for policy queries (Clojure semantics)
@@ -107,15 +110,15 @@ impl<'a, S: Storage + 'static> QueryPolicyExecutor<'a, S> {
                     return serde_json::Value::Null;
                 }
                 // Decode SID to IRI for JSON representation
-                let iri = self.db.decode_sid(sid).unwrap_or_else(|| sid.name.to_string());
+                let iri = self
+                    .db
+                    .decode_sid(sid)
+                    .unwrap_or_else(|| sid.name.to_string());
                 serde_json::json!({"@id": iri})
             })
             .collect();
 
-        let values_clause = serde_json::json!([
-            "values",
-            [var_names.clone(), [values_row]]
-        ]);
+        let values_clause = serde_json::json!(["values", [var_names.clone(), [values_row]]]);
 
         // Inject VALUES into WHERE clause (or create WHERE if missing)
         let where_clause = obj.get_mut("where");
@@ -166,10 +169,11 @@ impl<'a, S: Storage + 'static> QueryPolicyExecutor<'a, S> {
         // Note: policy_enforcer is None by default (root context)
 
         // Build the where clause operators (VALUES is now part of parsed patterns)
-        let mut operator = build_where_operators_seeded(None, &patterns, None)
-            .map_err(|e| fluree_db_policy::PolicyError::QueryExecution {
+        let mut operator = build_where_operators_seeded(None, &patterns, None).map_err(|e| {
+            fluree_db_policy::PolicyError::QueryExecution {
                 message: e.to_string(),
-            })?;
+            }
+        })?;
 
         // Execute with limit 1 (we only need to know if there are any results)
         operator

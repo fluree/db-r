@@ -148,7 +148,8 @@ impl<S: Storage + 'static> VectorSearchOperator<S> {
         }
 
         let schema: Arc<[VarId]> = Arc::from(schema_vars.into_boxed_slice());
-        let out_pos: HashMap<VarId, usize> = schema.iter().enumerate().map(|(i, v)| (*v, i)).collect();
+        let out_pos: HashMap<VarId, usize> =
+            schema.iter().enumerate().map(|(i, v)| (*v, i)).collect();
 
         Self {
             child,
@@ -182,7 +183,10 @@ impl<S: Storage + 'static> VectorSearchOperator<S> {
                     }
                     _ => Ok(None),
                 },
-                Some(Binding::Sid(_)) | Some(Binding::IriMatch { .. }) | Some(Binding::Iri(_)) | Some(Binding::Grouped(_)) => Ok(None),
+                Some(Binding::Sid(_))
+                | Some(Binding::IriMatch { .. })
+                | Some(Binding::Iri(_))
+                | Some(Binding::Grouped(_)) => Ok(None),
             },
         }
     }
@@ -232,9 +236,9 @@ impl<S: Storage + 'static> Operator<S> for VectorSearchOperator<S> {
             return Ok(None);
         }
 
-        let provider = ctx
-            .vector_provider
-            .ok_or_else(|| QueryError::InvalidQuery("Vector provider not configured".to_string()))?;
+        let provider = ctx.vector_provider.ok_or_else(|| {
+            QueryError::InvalidQuery("Vector provider not configured".to_string())
+        })?;
 
         // Pull one child batch; expand each row by vector search results.
         let input_batch = match self.child.next_batch(ctx).await? {
@@ -257,7 +261,11 @@ impl<S: Storage + 'static> Operator<S> for VectorSearchOperator<S> {
 
         let child_schema = self.child.schema();
         let child_cols: Vec<&[Binding]> = (0..child_schema.len())
-            .map(|i| input_batch.column_by_idx(i).expect("child batch schema mismatch"))
+            .map(|i| {
+                input_batch
+                    .column_by_idx(i)
+                    .expect("child batch schema mismatch")
+            })
             .collect();
 
         let limit = self.pattern.limit.unwrap_or(10);
@@ -280,7 +288,11 @@ impl<S: Storage + 'static> Operator<S> for VectorSearchOperator<S> {
                     &query_vector,
                     self.pattern.metric,
                     limit,
-                    if ctx.dataset.is_some() { None } else { Some(ctx.to_t) },
+                    if ctx.dataset.is_some() {
+                        None
+                    } else {
+                        Some(ctx.to_t)
+                    },
                     self.pattern.sync,
                     self.pattern.timeout,
                 )
@@ -292,7 +304,9 @@ impl<S: Storage + 'static> Operator<S> for VectorSearchOperator<S> {
                 // The hit already contains the canonical IRI and ledger alias.
                 // IMPORTANT: Encode SID using the hit's source ledger (not primary db)
                 // so that primary_sid is consistent with ledger_alias.
-                let id_binding = if let Some(sid) = ctx.encode_iri_in_ledger(hit.iri.as_ref(), hit.ledger_alias.as_ref()) {
+                let id_binding = if let Some(sid) =
+                    ctx.encode_iri_in_ledger(hit.iri.as_ref(), hit.ledger_alias.as_ref())
+                {
                     // Have a valid SID in the hit's source ledger - use IriMatch with full provenance
                     Binding::iri_match(hit.iri.clone(), sid, hit.ledger_alias.clone())
                 } else {
@@ -333,7 +347,10 @@ impl<S: Storage + 'static> Operator<S> for VectorSearchOperator<S> {
 
                 // Emit output row (columnar): start with child columns.
                 for (col_idx, &var) in child_schema.iter().enumerate() {
-                    let out_idx = *self.out_pos.get(&var).expect("output schema missing child var");
+                    let out_idx = *self
+                        .out_pos
+                        .get(&var)
+                        .expect("output schema missing child var");
                     columns[out_idx].push(child_cols[col_idx][row_idx].clone());
                 }
 
@@ -622,16 +639,15 @@ mod tests {
         let id = vars.get_or_insert("?doc");
         let ledger = vars.get_or_insert("?source");
 
-        let provider = MockVectorProvider::with_results(vec![
-            VectorSearchHit::new("http://example.org/doc1", "docs:main", 0.9),
-        ]);
+        let provider = MockVectorProvider::with_results(vec![VectorSearchHit::new(
+            "http://example.org/doc1",
+            "docs:main",
+            0.9,
+        )]);
 
-        let vsp = VectorSearchPattern::new(
-            "embeddings:main",
-            VectorSearchTarget::Const(vec![0.5]),
-            id,
-        )
-        .with_ledger_var(ledger);
+        let vsp =
+            VectorSearchPattern::new("embeddings:main", VectorSearchTarget::Const(vec![0.5]), id)
+                .with_ledger_var(ledger);
 
         let patterns = vec![Pattern::VectorSearch(vsp)];
 

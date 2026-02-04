@@ -283,7 +283,9 @@ impl<S: Storage + 'static> Operator<S> for SortOperator<S> {
                     self.child.next_batch(ctx).await?
                 };
                 child_next_ms += (next_start.elapsed().as_secs_f64() * 1000.0) as u64;
-                let Some(batch) = next else { break; };
+                let Some(batch) = next else {
+                    break;
+                };
 
                 input_batches += 1;
                 let build_span = tracing::info_span!("sort_build_rows_batch", rows = batch.len());

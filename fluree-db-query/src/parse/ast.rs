@@ -1025,7 +1025,10 @@ impl UnresolvedQuery {
 
     /// Get all triple patterns (flattening nested structures)
     pub fn triple_patterns(&self) -> Vec<&UnresolvedTriplePattern> {
-        fn collect<'a>(patterns: &'a [UnresolvedPattern], out: &mut Vec<&'a UnresolvedTriplePattern>) {
+        fn collect<'a>(
+            patterns: &'a [UnresolvedPattern],
+            out: &mut Vec<&'a UnresolvedTriplePattern>,
+        ) {
             for p in patterns {
                 match p {
                     UnresolvedPattern::Triple(tp) => out.push(tp),
@@ -1038,7 +1041,9 @@ impl UnresolvedQuery {
                             collect(branch, out);
                         }
                     }
-                    UnresolvedPattern::Graph { patterns: inner, .. } => collect(inner, out),
+                    UnresolvedPattern::Graph {
+                        patterns: inner, ..
+                    } => collect(inner, out),
                     UnresolvedPattern::Filter(_)
                     | UnresolvedPattern::Bind { .. }
                     | UnresolvedPattern::Values { .. }

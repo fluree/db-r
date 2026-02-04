@@ -22,7 +22,9 @@ pub mod serialize;
 pub mod text;
 
 // Re-export commonly used types
-pub use analyzer::{Analyzer, ClojureParityTokenizer, SnowballStemmerFilter, StopwordFilter, Token};
+pub use analyzer::{
+    Analyzer, ClojureParityTokenizer, SnowballStemmerFilter, StopwordFilter, Token,
+};
 pub use builder::{
     Bm25IndexBuilder, BuilderError, IncrementalUpdateResult, IncrementalUpdater,
     MultiBm25IndexBuilder,
@@ -31,7 +33,9 @@ pub use index::{
     Bm25Config, Bm25Index, Bm25Stats, CompiledPropertyDeps, DocKey, PropertyDeps, SparseVector,
     TermEntry, VgWatermark,
 };
-pub use operator::{Bm25IndexProvider, Bm25SearchOperator, Bm25SearchProvider, Bm25SearchResult, SearchHit};
+pub use operator::{
+    Bm25IndexProvider, Bm25SearchOperator, Bm25SearchProvider, Bm25SearchResult, SearchHit,
+};
 pub use scoring::{bm25_score, compute_idf, compute_term_score, Bm25Scorer};
 pub use serialize::{deserialize, read_snapshot, serialize, write_snapshot, SerializeError};
 pub use text::{extract_and_analyze, extract_text};

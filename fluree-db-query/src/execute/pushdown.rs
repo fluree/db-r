@@ -275,7 +275,10 @@ mod tests {
         assert!(merged.is_some());
         let (val, inclusive) = merged.unwrap();
         assert_eq!(val, FlakeValue::Long(10));
-        assert!(!inclusive, "Should be exclusive when merging inclusive + exclusive");
+        assert!(
+            !inclusive,
+            "Should be exclusive when merging inclusive + exclusive"
+        );
     }
 
     #[test]

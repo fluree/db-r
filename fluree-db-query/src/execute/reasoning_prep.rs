@@ -6,12 +6,12 @@
 use crate::reasoning::{global_reasoning_cache, reason_owl2rl, ReasoningOverlay};
 use crate::rewrite::ReasoningModes;
 use fluree_db_core::{
-    is_rdfs_subclass_of, is_rdfs_subproperty_of,
-    overlay::OverlayProvider,
-    IndexSchema, SchemaPredicateInfo,
-    Db, SchemaHierarchy, Storage,
+    is_rdfs_subclass_of, is_rdfs_subproperty_of, overlay::OverlayProvider, Db, IndexSchema,
+    SchemaHierarchy, SchemaPredicateInfo, Storage,
 };
-use fluree_db_reasoner::{DerivedFactsBuilder, DerivedFactsOverlay, FrozenSameAs, ReasoningOptions};
+use fluree_db_reasoner::{
+    DerivedFactsBuilder, DerivedFactsOverlay, FrozenSameAs, ReasoningOptions,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -151,7 +151,9 @@ pub fn effective_reasoning_modes(
     configured: &ReasoningModes,
     hierarchy_available: bool,
 ) -> ReasoningModes {
-    configured.clone().effective_with_hierarchy(hierarchy_available)
+    configured
+        .clone()
+        .effective_with_hierarchy(hierarchy_available)
 }
 
 /// Compute derived facts from OWL2-RL reasoning and/or user-defined datalog rules

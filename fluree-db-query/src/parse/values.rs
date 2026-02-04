@@ -97,9 +97,9 @@ pub fn parse_values_clause(
 
     // vals
     let vals_val = &arr[1];
-    let vals_arr = vals_val.as_array().ok_or_else(|| {
-        ParseError::InvalidWhere("values rows must be an array".to_string())
-    })?;
+    let vals_arr = vals_val
+        .as_array()
+        .ok_or_else(|| ParseError::InvalidWhere("values rows must be an array".to_string()))?;
 
     let mut rows: Vec<Vec<UnresolvedValue>> = Vec::with_capacity(vals_arr.len());
     for row_val in vals_arr {
@@ -218,10 +218,7 @@ fn parse_typed_literal(
         ParseError::InvalidWhere("values object must contain @id or @value/@type".to_string())
     })?;
 
-    let lang = map
-        .get("@language")
-        .and_then(|v| v.as_str())
-        .map(Arc::from);
+    let lang = map.get("@language").and_then(|v| v.as_str()).map(Arc::from);
 
     let dt_iri = map.get("@type").and_then(|v| v.as_str()).map(|t| {
         if t == "@id" {
@@ -286,14 +283,14 @@ fn parse_vector_literal(arr: &[JsonValue], dt_iri: Option<&str>) -> Result<Liter
         dt == "https://ns.flur.ee/ledger#vector"
             || (dt.ends_with("#vector") && dt.contains("ns.flur.ee/ledger"))
     });
-    
+
     if !is_vec {
         return Err(ParseError::InvalidWhere(
             "Array @value is only supported for https://ns.flur.ee/ledger#vector typed literals"
                 .to_string(),
         ));
     }
-    
+
     let mut vec = Vec::with_capacity(arr.len());
     for v in arr {
         let f = v.as_f64().ok_or_else(|| {
@@ -337,10 +334,7 @@ mod tests {
     #[test]
     fn test_parse_values_multiple_vars() {
         let context = test_context();
-        let values_json = json!([
-            ["?x", "?y"],
-            [[1, "Alice"], [2, "Bob"]]
-        ]);
+        let values_json = json!([["?x", "?y"], [[1, "Alice"], [2, "Bob"]]]);
         let pattern = parse_values_clause(&values_json, &context).unwrap();
 
         match pattern {
@@ -377,14 +371,12 @@ mod tests {
         let pattern = parse_values_clause(&values_json, &context).unwrap();
 
         match pattern {
-            UnresolvedPattern::Values { vars: _, rows } => {
-                match &rows[0][0] {
-                    UnresolvedValue::Iri(iri) => {
-                        assert_eq!(iri.as_ref(), "http://example.org/alice");
-                    }
-                    _ => panic!("Expected IRI"),
+            UnresolvedPattern::Values { vars: _, rows } => match &rows[0][0] {
+                UnresolvedValue::Iri(iri) => {
+                    assert_eq!(iri.as_ref(), "http://example.org/alice");
                 }
-            }
+                _ => panic!("Expected IRI"),
+            },
             _ => panic!("Expected Values pattern"),
         }
     }
@@ -394,7 +386,7 @@ mod tests {
         let context = test_context();
         let values_json = json!([
             ["?x", "?y"],
-            [[1, "Alice"], [2]]  // Second row has wrong length
+            [[1, "Alice"], [2]] // Second row has wrong length
         ]);
         let result = parse_values_clause(&values_json, &context);
         assert!(result.is_err());
@@ -403,7 +395,7 @@ mod tests {
     #[test]
     fn test_parse_values_invalid_var_name() {
         let context = test_context();
-        let values_json = json!(["x", [1, 2]]);  // Missing '?'
+        let values_json = json!(["x", [1, 2]]); // Missing '?'
         let result = parse_values_clause(&values_json, &context);
         assert!(result.is_err());
     }

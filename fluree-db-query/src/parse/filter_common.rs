@@ -63,10 +63,10 @@ where
     F: Fn(&T) -> Result<UnresolvedFilterExpr>,
 {
     validate_arg_count(args, 2, context)?;
-    
+
     let left = parser(&args[0])?;
     let right = parser(&args[1])?;
-    
+
     Ok(UnresolvedFilterExpr::Compare {
         op,
         left: Box::new(left),
@@ -91,10 +91,10 @@ where
     F: Fn(&T) -> Result<UnresolvedFilterExpr>,
 {
     validate_arg_count(args, 2, context)?;
-    
+
     let left = parser(&args[0])?;
     let right = parser(&args[1])?;
-    
+
     Ok(UnresolvedFilterExpr::Arithmetic {
         op,
         left: Box::new(left),
@@ -108,7 +108,7 @@ where
     F: Fn(&T) -> Result<UnresolvedFilterExpr>,
 {
     validate_min_arg_count(args, 1, "'and'")?;
-    
+
     let exprs: Result<Vec<_>> = args.iter().map(parser).collect();
     Ok(UnresolvedFilterExpr::And(exprs?))
 }
@@ -119,7 +119,7 @@ where
     F: Fn(&T) -> Result<UnresolvedFilterExpr>,
 {
     validate_min_arg_count(args, 1, "'or'")?;
-    
+
     let exprs: Result<Vec<_>> = args.iter().map(parser).collect();
     Ok(UnresolvedFilterExpr::Or(exprs?))
 }
@@ -130,7 +130,7 @@ where
     F: Fn(&T) -> Result<UnresolvedFilterExpr>,
 {
     validate_arg_count(args, 1, "'not'")?;
-    
+
     let expr = parser(&args[0])?;
     Ok(UnresolvedFilterExpr::Not(Box::new(expr)))
 }
@@ -141,7 +141,7 @@ where
     F: Fn(&T) -> Result<UnresolvedFilterExpr>,
 {
     validate_arg_count(args, 1, "unary negation")?;
-    
+
     let expr = parser(&args[0])?;
     Ok(UnresolvedFilterExpr::Negate(Box::new(expr)))
 }
@@ -209,41 +209,56 @@ mod tests {
         assert_eq!(parse_compare_op("="), Some(UnresolvedCompareOp::Eq));
         assert_eq!(parse_compare_op("eq"), Some(UnresolvedCompareOp::Eq));
         assert_eq!(parse_compare_op("EQ"), Some(UnresolvedCompareOp::Eq));
-        
+
         assert_eq!(parse_compare_op("!="), Some(UnresolvedCompareOp::Ne));
         assert_eq!(parse_compare_op("<>"), Some(UnresolvedCompareOp::Ne));
         assert_eq!(parse_compare_op("ne"), Some(UnresolvedCompareOp::Ne));
-        
+
         assert_eq!(parse_compare_op("<"), Some(UnresolvedCompareOp::Lt));
         assert_eq!(parse_compare_op("lt"), Some(UnresolvedCompareOp::Lt));
-        
+
         assert_eq!(parse_compare_op("<="), Some(UnresolvedCompareOp::Le));
         assert_eq!(parse_compare_op("le"), Some(UnresolvedCompareOp::Le));
-        
+
         assert_eq!(parse_compare_op(">"), Some(UnresolvedCompareOp::Gt));
         assert_eq!(parse_compare_op("gt"), Some(UnresolvedCompareOp::Gt));
-        
+
         assert_eq!(parse_compare_op(">="), Some(UnresolvedCompareOp::Ge));
         assert_eq!(parse_compare_op("ge"), Some(UnresolvedCompareOp::Ge));
-        
+
         assert_eq!(parse_compare_op("unknown"), None);
     }
 
     #[test]
     fn test_parse_arithmetic_op() {
         assert_eq!(parse_arithmetic_op("+"), Some(UnresolvedArithmeticOp::Add));
-        assert_eq!(parse_arithmetic_op("add"), Some(UnresolvedArithmeticOp::Add));
-        assert_eq!(parse_arithmetic_op("ADD"), Some(UnresolvedArithmeticOp::Add));
-        
+        assert_eq!(
+            parse_arithmetic_op("add"),
+            Some(UnresolvedArithmeticOp::Add)
+        );
+        assert_eq!(
+            parse_arithmetic_op("ADD"),
+            Some(UnresolvedArithmeticOp::Add)
+        );
+
         assert_eq!(parse_arithmetic_op("-"), Some(UnresolvedArithmeticOp::Sub));
-        assert_eq!(parse_arithmetic_op("sub"), Some(UnresolvedArithmeticOp::Sub));
-        
+        assert_eq!(
+            parse_arithmetic_op("sub"),
+            Some(UnresolvedArithmeticOp::Sub)
+        );
+
         assert_eq!(parse_arithmetic_op("*"), Some(UnresolvedArithmeticOp::Mul));
-        assert_eq!(parse_arithmetic_op("mul"), Some(UnresolvedArithmeticOp::Mul));
-        
+        assert_eq!(
+            parse_arithmetic_op("mul"),
+            Some(UnresolvedArithmeticOp::Mul)
+        );
+
         assert_eq!(parse_arithmetic_op("/"), Some(UnresolvedArithmeticOp::Div));
-        assert_eq!(parse_arithmetic_op("div"), Some(UnresolvedArithmeticOp::Div));
-        
+        assert_eq!(
+            parse_arithmetic_op("div"),
+            Some(UnresolvedArithmeticOp::Div)
+        );
+
         assert_eq!(parse_arithmetic_op("unknown"), None);
     }
 
@@ -251,17 +266,12 @@ mod tests {
     fn test_build_binary_compare() {
         // Test with a simple identity parser
         let args = vec![1, 2];
-        let parser = |x: &i32| -> Result<UnresolvedFilterExpr> {
-            Ok(UnresolvedFilterExpr::long(*x as i64))
-        };
-        
-        let expr = build_binary_compare(
-            &args,
-            UnresolvedCompareOp::Eq,
-            parser,
-            "test comparison"
-        ).unwrap();
-        
+        let parser =
+            |x: &i32| -> Result<UnresolvedFilterExpr> { Ok(UnresolvedFilterExpr::long(*x as i64)) };
+
+        let expr = build_binary_compare(&args, UnresolvedCompareOp::Eq, parser, "test comparison")
+            .unwrap();
+
         match expr {
             UnresolvedFilterExpr::Compare { op, left, right } => {
                 assert_eq!(op, UnresolvedCompareOp::Eq);
@@ -275,12 +285,11 @@ mod tests {
     #[test]
     fn test_build_and() {
         let args = vec![true, false];
-        let parser = |x: &bool| -> Result<UnresolvedFilterExpr> {
-            Ok(UnresolvedFilterExpr::boolean(*x))
-        };
-        
+        let parser =
+            |x: &bool| -> Result<UnresolvedFilterExpr> { Ok(UnresolvedFilterExpr::boolean(*x)) };
+
         let expr = build_and(&args, parser).unwrap();
-        
+
         match expr {
             UnresolvedFilterExpr::And(exprs) => {
                 assert_eq!(exprs.len(), 2);
@@ -292,12 +301,11 @@ mod tests {
     #[test]
     fn test_build_not() {
         let args = vec![true];
-        let parser = |x: &bool| -> Result<UnresolvedFilterExpr> {
-            Ok(UnresolvedFilterExpr::boolean(*x))
-        };
-        
+        let parser =
+            |x: &bool| -> Result<UnresolvedFilterExpr> { Ok(UnresolvedFilterExpr::boolean(*x)) };
+
         let expr = build_not(&args, parser).unwrap();
-        
+
         match expr {
             UnresolvedFilterExpr::Not(inner) => {
                 assert!(matches!(*inner, UnresolvedFilterExpr::Const(_)));

@@ -7,21 +7,22 @@
 //! branch manifests. Dictionaries (subjects, strings, predicates, datatypes) are shared
 //! across all orders.
 
-use super::branch::{find_branch_file, read_branch_manifest, read_branch_manifest_from_bytes, BranchManifest};
-use super::dict_io::{
-    read_forward_entry, read_forward_index, read_forward_index_from_bytes,
-    read_language_dict, read_language_dict_from_bytes,
-    read_predicate_dict, read_predicate_dict_from_bytes,
+use super::branch::{
+    find_branch_file, read_branch_manifest, read_branch_manifest_from_bytes, BranchManifest,
 };
-use super::index_root::BinaryIndexRootV2;
+use super::dict_io::{
+    read_forward_entry, read_forward_index, read_forward_index_from_bytes, read_language_dict,
+    read_language_dict_from_bytes, read_predicate_dict, read_predicate_dict_from_bytes,
+};
 use super::global_dict::{LanguageTagDict, PredicateDict};
+use super::index_root::BinaryIndexRootV2;
 use super::leaf::read_leaf_header;
 use super::leaflet::decode_leaflet;
 use super::leaflet_cache::LeafletCache;
 use super::prefix_trie::PrefixTrie;
 use super::run_record::{RunRecord, RunSortOrder, NO_LIST_INDEX};
-use fluree_db_core::value_id::{ObjKind, ObjKey};
 use fluree_db_core::storage::{extract_hash_from_address, StorageRead};
+use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
 use memmap2::Mmap;
 use std::collections::HashMap;
@@ -198,16 +199,17 @@ impl BinaryIndexStore {
                         "loaded branch manifest"
                     );
 
-                    let graph_index = graphs
-                        .entry(entry.g_id)
-                        .or_insert_with(|| GraphIndex {
-                            orders: HashMap::new(),
-                        });
-
-                    graph_index.orders.insert(order, OrderIndex {
-                        branch,
-                        leaf_dir: graph_dir,
+                    let graph_index = graphs.entry(entry.g_id).or_insert_with(|| GraphIndex {
+                        orders: HashMap::new(),
                     });
+
+                    graph_index.orders.insert(
+                        order,
+                        OrderIndex {
+                            branch,
+                            leaf_dir: graph_dir,
+                        },
+                    );
                 }
             }
             any_manifest_loaded = true;
@@ -240,7 +242,10 @@ impl BinaryIndexStore {
         } else {
             None
         };
-        tracing::info!(subjects = subject_offsets.len(), "loaded subject forward index");
+        tracing::info!(
+            subjects = subject_offsets.len(),
+            "loaded subject forward index"
+        );
 
         // ---- Load string forward file + index ----
         let string_fwd_path = run_dir.join("strings.fwd");
@@ -256,7 +261,10 @@ impl BinaryIndexStore {
         } else {
             None
         };
-        tracing::info!(strings = string_offsets.len(), "loaded string forward index");
+        tracing::info!(
+            strings = string_offsets.len(),
+            "loaded string forward index"
+        );
 
         // ---- Load namespace codes ----
         let ns_path = run_dir.join("namespaces.json");
@@ -351,19 +359,20 @@ impl BinaryIndexStore {
         // ---- Load datatype dict → pre-compute dt_sids ----
         let dt_path = run_dir.join("datatypes.dict");
         let dt_dict = read_predicate_dict(&dt_path)?;
-        let dt_sids: Vec<Sid> = (0..dt_dict.len()).map(|id| {
-            let iri = dt_dict.resolve(id).unwrap_or("");
-            match prefix_trie.longest_match(iri) {
-                Some((code, prefix_len)) => Sid::new(code, &iri[prefix_len..]),
-                None => Sid::new(0, iri),
-            }
-        }).collect();
+        let dt_sids: Vec<Sid> = (0..dt_dict.len())
+            .map(|id| {
+                let iri = dt_dict.resolve(id).unwrap_or("");
+                match prefix_trie.longest_match(iri) {
+                    Some((code, prefix_len)) => Sid::new(code, &iri[prefix_len..]),
+                    None => Sid::new(0, iri),
+                }
+            })
+            .collect();
         tracing::info!(datatypes = dt_dict.len(), "loaded datatype dict → dt_sids");
 
         // ---- Load numbig arenas ----
         let nb_dir = run_dir.join("numbig");
-        let mut numbig_forward: HashMap<u32, super::numbig_dict::NumBigArena> =
-            HashMap::new();
+        let mut numbig_forward: HashMap<u32, super::numbig_dict::NumBigArena> = HashMap::new();
         if nb_dir.exists() && nb_dir.is_dir() {
             for entry in std::fs::read_dir(&nb_dir)? {
                 let entry = entry?;
@@ -387,11 +396,13 @@ impl BinaryIndexStore {
             }
         }
 
-
         // Log summary of loaded orders
         let mut order_summary = Vec::new();
         for &order in &all_orders {
-            let graph_count = graphs.values().filter(|g| g.orders.contains_key(&order)).count();
+            let graph_count = graphs
+                .values()
+                .filter(|g| g.orders.contains_key(&order))
+                .count();
             if graph_count > 0 {
                 order_summary.push(format!("{}({}g)", order.dir_name(), graph_count));
             }
@@ -483,7 +494,8 @@ impl BinaryIndexStore {
         std::fs::create_dir_all(cache_dir)?;
 
         // ---- Load predicate dict (cache-aware) ----
-        let pred_bytes = fetch_cached_bytes(storage, &root.dict_addresses.predicates, cache_dir, "dict").await?;
+        let pred_bytes =
+            fetch_cached_bytes(storage, &root.dict_addresses.predicates, cache_dir, "dict").await?;
         let predicates = read_predicate_dict_from_bytes(&pred_bytes)?;
         let mut predicate_reverse = HashMap::with_capacity(predicates.len() as usize);
         for i in 0..predicates.len() {
@@ -494,27 +506,54 @@ impl BinaryIndexStore {
         tracing::info!(predicates = predicates.len(), "loaded predicate dict");
 
         // ---- Load subject forward index (cache-aware) ----
-        let subj_idx_bytes = fetch_cached_bytes(storage, &root.dict_addresses.subject_index, cache_dir, "idx").await?;
+        let subj_idx_bytes = fetch_cached_bytes(
+            storage,
+            &root.dict_addresses.subject_index,
+            cache_dir,
+            "idx",
+        )
+        .await?;
         let (subject_offsets, subject_lens) = read_forward_index_from_bytes(&subj_idx_bytes)?;
-        tracing::info!(subjects = subject_offsets.len(), "loaded subject forward index");
+        tracing::info!(
+            subjects = subject_offsets.len(),
+            "loaded subject forward index"
+        );
 
         // ---- Load subject forward file (mmap'd, cache-aware) ----
-        let subject_forward = fetch_and_mmap(storage, &root.dict_addresses.subject_forward, cache_dir, "fwd").await?;
+        let subject_forward = fetch_and_mmap(
+            storage,
+            &root.dict_addresses.subject_forward,
+            cache_dir,
+            "fwd",
+        )
+        .await?;
 
         // ---- Load string forward index (cache-aware) ----
-        let str_idx_bytes = fetch_cached_bytes(storage, &root.dict_addresses.string_index, cache_dir, "idx").await?;
+        let str_idx_bytes =
+            fetch_cached_bytes(storage, &root.dict_addresses.string_index, cache_dir, "idx")
+                .await?;
         let (string_offsets, string_lens) = if !str_idx_bytes.is_empty() {
             read_forward_index_from_bytes(&str_idx_bytes)?
         } else {
             (Vec::new(), Vec::new())
         };
-        tracing::info!(strings = string_offsets.len(), "loaded string forward index");
+        tracing::info!(
+            strings = string_offsets.len(),
+            "loaded string forward index"
+        );
 
         // ---- Load string forward file (mmap'd, cache-aware) ----
-        let string_forward = fetch_and_mmap(storage, &root.dict_addresses.string_forward, cache_dir, "fwd").await?;
+        let string_forward = fetch_and_mmap(
+            storage,
+            &root.dict_addresses.string_forward,
+            cache_dir,
+            "fwd",
+        )
+        .await?;
 
         // ---- Namespace codes (from root, not from storage) ----
-        let namespace_codes: HashMap<i32, String> = root.namespace_codes
+        let namespace_codes: HashMap<i32, String> = root
+            .namespace_codes
             .iter()
             .map(|(&k, v)| (k, v.clone()))
             .collect();
@@ -532,7 +571,13 @@ impl BinaryIndexStore {
         // ---- Load subject reverse hash index (mmap'd, strict validation) ----
         // V2 root requires this artifact — error on missing/invalid, not silent absent.
         let (subject_reverse, subject_reverse_count) = {
-            let mmap = fetch_and_mmap(storage, &root.dict_addresses.subject_reverse, cache_dir, "rev").await?;
+            let mmap = fetch_and_mmap(
+                storage,
+                &root.dict_addresses.subject_reverse,
+                cache_dir,
+                "rev",
+            )
+            .await?;
             match mmap {
                 Some(m) if m.len() >= 8 && &m[0..4] == b"SRV1" => {
                     let count = u32::from_le_bytes(m[4..8].try_into().unwrap());
@@ -540,7 +585,12 @@ impl BinaryIndexStore {
                     if m.len() < expected {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
-                            format!("subjects.rev truncated: {} < {} (count={})", m.len(), expected, count),
+                            format!(
+                                "subjects.rev truncated: {} < {} (count={})",
+                                m.len(),
+                                expected,
+                                count
+                            ),
                         ));
                     }
                     tracing::info!(entries = count, "loaded subject reverse index");
@@ -563,7 +613,13 @@ impl BinaryIndexStore {
 
         // ---- Load string reverse hash index (mmap'd, strict validation) ----
         let (string_reverse, string_reverse_count) = {
-            let mmap = fetch_and_mmap(storage, &root.dict_addresses.string_reverse, cache_dir, "rev").await?;
+            let mmap = fetch_and_mmap(
+                storage,
+                &root.dict_addresses.string_reverse,
+                cache_dir,
+                "rev",
+            )
+            .await?;
             match mmap {
                 Some(m) if m.len() >= 8 && &m[0..4] == b"LRV1" => {
                     let count = u32::from_le_bytes(m[4..8].try_into().unwrap());
@@ -571,7 +627,12 @@ impl BinaryIndexStore {
                     if m.len() < expected {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
-                            format!("strings.rev truncated: {} < {} (count={})", m.len(), expected, count),
+                            format!(
+                                "strings.rev truncated: {} < {} (count={})",
+                                m.len(),
+                                expected,
+                                count
+                            ),
                         ));
                     }
                     tracing::info!(entries = count, "loaded string reverse index");
@@ -593,7 +654,8 @@ impl BinaryIndexStore {
         };
 
         // ---- Load language tag dict (cache-aware) ----
-        let lang_bytes = fetch_cached_bytes(storage, &root.dict_addresses.languages, cache_dir, "dict").await?;
+        let lang_bytes =
+            fetch_cached_bytes(storage, &root.dict_addresses.languages, cache_dir, "dict").await?;
         let language_tags = if !lang_bytes.is_empty() {
             read_language_dict_from_bytes(&lang_bytes)?
         } else {
@@ -602,15 +664,18 @@ impl BinaryIndexStore {
         tracing::info!(tags = language_tags.len(), "loaded language dict");
 
         // ---- Load datatype dict → pre-compute dt_sids (cache-aware) ----
-        let dt_bytes = fetch_cached_bytes(storage, &root.dict_addresses.datatypes, cache_dir, "dict").await?;
+        let dt_bytes =
+            fetch_cached_bytes(storage, &root.dict_addresses.datatypes, cache_dir, "dict").await?;
         let dt_dict = read_predicate_dict_from_bytes(&dt_bytes)?;
-        let dt_sids: Vec<Sid> = (0..dt_dict.len()).map(|id| {
-            let iri = dt_dict.resolve(id).unwrap_or("");
-            match prefix_trie.longest_match(iri) {
-                Some((code, prefix_len)) => Sid::new(code, &iri[prefix_len..]),
-                None => Sid::new(0, iri),
-            }
-        }).collect();
+        let dt_sids: Vec<Sid> = (0..dt_dict.len())
+            .map(|id| {
+                let iri = dt_dict.resolve(id).unwrap_or("");
+                match prefix_trie.longest_match(iri) {
+                    Some((code, prefix_len)) => Sid::new(code, &iri[prefix_len..]),
+                    None => Sid::new(0, iri),
+                }
+            })
+            .collect();
         tracing::info!(datatypes = dt_dict.len(), "loaded datatype dict → dt_sids");
 
         // ---- Load numbig arenas (cache-aware) ----
@@ -645,7 +710,8 @@ impl BinaryIndexStore {
                 })?;
 
                 // Load branch manifest (cache-aware), resolving leaf paths against cache_dir
-                let branch_bytes = fetch_cached_bytes(storage, &order_addrs.branch, cache_dir, "fbr").await?;
+                let branch_bytes =
+                    fetch_cached_bytes(storage, &order_addrs.branch, cache_dir, "fbr").await?;
                 let branch = read_branch_manifest_from_bytes(&branch_bytes, Some(cache_dir))?;
                 tracing::info!(
                     g_id = graph_entry.g_id,
@@ -660,20 +726,36 @@ impl BinaryIndexStore {
                     ensure_leaf_cached(storage, leaf_addr, cache_dir).await?;
                 }
 
-                order_indexes.insert(order, OrderIndex {
-                    branch,
-                    leaf_dir: cache_dir.to_path_buf(),
-                });
+                order_indexes.insert(
+                    order,
+                    OrderIndex {
+                        branch,
+                        leaf_dir: cache_dir.to_path_buf(),
+                    },
+                );
             }
 
-            graphs.insert(graph_entry.g_id, GraphIndex { orders: order_indexes });
+            graphs.insert(
+                graph_entry.g_id,
+                GraphIndex {
+                    orders: order_indexes,
+                },
+            );
         }
 
         // Log summary of loaded orders
-        let all_orders = [RunSortOrder::Spot, RunSortOrder::Psot, RunSortOrder::Post, RunSortOrder::Opst];
+        let all_orders = [
+            RunSortOrder::Spot,
+            RunSortOrder::Psot,
+            RunSortOrder::Post,
+            RunSortOrder::Opst,
+        ];
         let mut order_summary = Vec::new();
         for &order in &all_orders {
-            let graph_count = graphs.values().filter(|g| g.orders.contains_key(&order)).count();
+            let graph_count = graphs
+                .values()
+                .filter(|g| g.orders.contains_key(&order))
+                .count();
             if graph_count > 0 {
                 order_summary.push(format!("{}({}g)", order.dir_name(), graph_count));
             }
@@ -755,7 +837,8 @@ impl BinaryIndexStore {
     ///
     /// Looks up the namespace prefix by code and concatenates with the name.
     pub fn sid_to_iri(&self, sid: &Sid) -> String {
-        let prefix = self.namespace_codes
+        let prefix = self
+            .namespace_codes
             .get(&sid.namespace_code)
             .map(|s| s.as_str())
             .unwrap_or("");
@@ -768,7 +851,11 @@ impl BinaryIndexStore {
         if idx >= self.subject_offsets.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("s_id {} out of range (max {})", s_id, self.subject_offsets.len()),
+                format!(
+                    "s_id {} out of range (max {})",
+                    s_id,
+                    self.subject_offsets.len()
+                ),
             ));
         }
         let mmap = self.subject_forward.as_ref().ok_or_else(|| {
@@ -794,7 +881,11 @@ impl BinaryIndexStore {
         if idx >= self.string_offsets.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("str_id {} out of range (max {})", str_id, self.string_offsets.len()),
+                format!(
+                    "str_id {} out of range (max {})",
+                    str_id,
+                    self.string_offsets.len()
+                ),
             ));
         }
         let mmap = self.string_forward.as_ref().ok_or_else(|| {
@@ -835,18 +926,14 @@ impl BinaryIndexStore {
             FlakeValue::Null => Ok(Some((ObjKind::NULL, ObjKey::from_u64(0)))),
             FlakeValue::Boolean(b) => Ok(Some((ObjKind::BOOL, ObjKey::encode_bool(*b)))),
             FlakeValue::Long(n) => Ok(Some((ObjKind::NUM_INT, ObjKey::encode_i64(*n)))),
-            FlakeValue::Ref(sid) => {
-                match self.sid_to_s_id(sid)? {
-                    Some(s_id) => Ok(Some((ObjKind::REF_ID, ObjKey::encode_u32_id(s_id)))),
-                    None => Ok(None),
-                }
-            }
-            FlakeValue::String(s) => {
-                match self.find_string_id(s)? {
-                    Some(str_id) => Ok(Some((ObjKind::LEX_ID, ObjKey::encode_u32_id(str_id)))),
-                    None => Ok(None),
-                }
-            }
+            FlakeValue::Ref(sid) => match self.sid_to_s_id(sid)? {
+                Some(s_id) => Ok(Some((ObjKind::REF_ID, ObjKey::encode_u32_id(s_id)))),
+                None => Ok(None),
+            },
+            FlakeValue::String(s) => match self.find_string_id(s)? {
+                Some(str_id) => Ok(Some((ObjKind::LEX_ID, ObjKey::encode_u32_id(str_id)))),
+                None => Ok(None),
+            },
             FlakeValue::Double(d) => {
                 // Integer-valued doubles that fit i64 → NUM_INT
                 if d.is_finite() && d.fract() == 0.0 {
@@ -1013,12 +1100,16 @@ impl BinaryIndexStore {
                             let o = i * record_size;
                             let h = u64::from_le_bytes(data[o..o + 8].try_into().unwrap());
                             let l = u64::from_le_bytes(data[o + 8..o + 16].try_into().unwrap());
-                            if (h, l) != (target_hi, target_lo) { break; }
+                            if (h, l) != (target_hi, target_lo) {
+                                break;
+                            }
                             let id = u32::from_le_bytes(data[o + 16..o + 20].try_into().unwrap());
                             if self.resolve_subject_iri(id)? == iri {
                                 return Ok(Some(id));
                             }
-                            if i == 0 { break; }
+                            if i == 0 {
+                                break;
+                            }
                             i -= 1;
                         }
                     }
@@ -1027,7 +1118,9 @@ impl BinaryIndexStore {
                         let o = i * record_size;
                         let h = u64::from_le_bytes(data[o..o + 8].try_into().unwrap());
                         let l = u64::from_le_bytes(data[o + 8..o + 16].try_into().unwrap());
-                        if (h, l) != (target_hi, target_lo) { break; }
+                        if (h, l) != (target_hi, target_lo) {
+                            break;
+                        }
                         let id = u32::from_le_bytes(data[o + 16..o + 20].try_into().unwrap());
                         if self.resolve_subject_iri(id)? == iri {
                             return Ok(Some(id));
@@ -1092,12 +1185,16 @@ impl BinaryIndexStore {
                             let o = i * record_size;
                             let h = u64::from_le_bytes(data[o..o + 8].try_into().unwrap());
                             let l = u64::from_le_bytes(data[o + 8..o + 16].try_into().unwrap());
-                            if (h, l) != (target_hi, target_lo) { break; }
+                            if (h, l) != (target_hi, target_lo) {
+                                break;
+                            }
                             let id = u32::from_le_bytes(data[o + 16..o + 20].try_into().unwrap());
                             if self.resolve_string_value(id)? == value {
                                 return Ok(Some(id));
                             }
-                            if i == 0 { break; }
+                            if i == 0 {
+                                break;
+                            }
                             i -= 1;
                         }
                     }
@@ -1106,7 +1203,9 @@ impl BinaryIndexStore {
                         let o = i * record_size;
                         let h = u64::from_le_bytes(data[o..o + 8].try_into().unwrap());
                         let l = u64::from_le_bytes(data[o + 8..o + 16].try_into().unwrap());
-                        if (h, l) != (target_hi, target_lo) { break; }
+                        if (h, l) != (target_hi, target_lo) {
+                            break;
+                        }
                         let id = u32::from_le_bytes(data[o + 16..o + 20].try_into().unwrap());
                         if self.resolve_string_value(id)? == value {
                             return Ok(Some(id));
@@ -1131,7 +1230,8 @@ impl BinaryIndexStore {
 
     /// Get the branch manifest for a graph and sort order.
     pub fn branch_for_order(&self, g_id: u32, order: RunSortOrder) -> Option<&BranchManifest> {
-        self.graphs.get(&g_id)
+        self.graphs
+            .get(&g_id)
             .and_then(|g| g.orders.get(&order))
             .map(|oi| &oi.branch)
     }
@@ -1143,20 +1243,23 @@ impl BinaryIndexStore {
 
     /// Get the leaf directory for a graph and sort order.
     pub fn leaf_dir_for_order(&self, g_id: u32, order: RunSortOrder) -> Option<&Path> {
-        self.graphs.get(&g_id)
+        self.graphs
+            .get(&g_id)
             .and_then(|g| g.orders.get(&order))
             .map(|oi| oi.leaf_dir.as_path())
     }
 
     /// Check if a given sort order is available for a graph.
     pub fn has_order(&self, g_id: u32, order: RunSortOrder) -> bool {
-        self.graphs.get(&g_id)
+        self.graphs
+            .get(&g_id)
             .map_or(false, |g| g.orders.contains_key(&order))
     }
 
     /// Get the available sort orders for a graph.
     pub fn available_orders(&self, g_id: u32) -> Vec<RunSortOrder> {
-        self.graphs.get(&g_id)
+        self.graphs
+            .get(&g_id)
             .map(|g| {
                 let mut orders: Vec<_> = g.orders.keys().copied().collect();
                 orders.sort_by_key(|o| o.dir_name());
@@ -1235,7 +1338,10 @@ impl BinaryIndexStore {
     /// Iterates the pre-computed `dt_sids` vec (typically <20 entries).
     /// Returns `None` if the datatype is not in the dictionary.
     pub fn find_dt_id(&self, dt_sid: &Sid) -> Option<u16> {
-        self.dt_sids.iter().position(|s| s == dt_sid).map(|i| i as u16)
+        self.dt_sids
+            .iter()
+            .position(|s| s == dt_sid)
+            .map(|i| i as u16)
     }
 
     /// Find lang_id for a language tag string.
@@ -1431,7 +1537,9 @@ impl BinaryIndexStore {
         let o_val = self.decode_value(o_kind, o_key, p_id)?;
 
         // Datatype: dt_id → Sid via pre-computed dt_sids vec
-        let dt_sid = self.dt_sids.get(dt_raw as usize)
+        let dt_sid = self
+            .dt_sids
+            .get(dt_raw as usize)
             .cloned()
             .unwrap_or_else(|| Sid::new(0, ""));
 
@@ -1484,8 +1592,9 @@ impl BinaryIndexStore {
             let micros = ObjKey::from_u64(o_key).decode_time();
             let secs = (micros / 1_000_000) as u32;
             let frac_micros = (micros % 1_000_000) as u32;
-            let time = chrono::NaiveTime::from_num_seconds_from_midnight_opt(secs, frac_micros * 1000)
-                .unwrap_or(chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+            let time =
+                chrono::NaiveTime::from_num_seconds_from_midnight_opt(secs, frac_micros * 1000)
+                    .unwrap_or(chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
             let iso = time.format("%H:%M:%S%.6f").to_string();
             return match fluree_db_core::temporal::Time::parse(&iso) {
                 Ok(t) => Ok(FlakeValue::Time(Box::new(t))),
@@ -1494,8 +1603,7 @@ impl BinaryIndexStore {
         }
         if o_kind == ObjKind::DATE_TIME.as_u8() {
             let epoch_micros = ObjKey::from_u64(o_key).decode_datetime();
-            let dt = chrono::DateTime::from_timestamp_micros(epoch_micros)
-                .unwrap_or_default();
+            let dt = chrono::DateTime::from_timestamp_micros(epoch_micros).unwrap_or_default();
             let iso = dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string();
             return match fluree_db_core::temporal::DateTime::parse(&iso) {
                 Ok(d) => Ok(FlakeValue::DateTime(Box::new(d))),
@@ -1604,11 +1712,7 @@ impl BinaryIndexStore {
     /// Query all flakes for a subject in a graph (using SPOT index).
     ///
     /// Returns Flakes in SPOT order.
-    pub fn query_subject_flakes(
-        &self,
-        g_id: u32,
-        s_id: u32,
-    ) -> io::Result<Vec<Flake>> {
+    pub fn query_subject_flakes(&self, g_id: u32, s_id: u32) -> io::Result<Vec<Flake>> {
         self.query_subject_predicate_flakes(g_id, s_id, None)
     }
 
@@ -1643,7 +1747,12 @@ impl BinaryIndexStore {
                     break;
                 }
                 let leaflet_bytes = &leaf_data[dir_entry.offset as usize..end];
-                let decoded = decode_leaflet(leaflet_bytes, header.p_width, header.dt_width, RunSortOrder::Spot)?;
+                let decoded = decode_leaflet(
+                    leaflet_bytes,
+                    header.p_width,
+                    header.dt_width,
+                    RunSortOrder::Spot,
+                )?;
 
                 for row in 0..decoded.row_count {
                     let row_s_id = decoded.s_ids[row];
@@ -1837,14 +1946,20 @@ async fn fetch_cached_bytes<S: StorageRead>(
     cache_dir: &Path,
     ext: &str,
 ) -> io::Result<Vec<u8>> {
-    let hash = extract_hash_from_address(address)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData,
-            format!("cannot extract hash from address: {}", address)))?;
+    let hash = extract_hash_from_address(address).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("cannot extract hash from address: {}", address),
+        )
+    })?;
     let cached = cache_dir.join(format!("{}.{}", hash, ext));
     if cached.exists() {
         return std::fs::read(&cached);
     }
-    let bytes = storage.read_bytes(address).await.map_err(storage_to_io_error)?;
+    let bytes = storage
+        .read_bytes(address)
+        .await
+        .map_err(storage_to_io_error)?;
     cache_bytes_to_file(cache_dir, &hash, ext, &bytes)?;
     Ok(bytes)
 }
@@ -1857,9 +1972,12 @@ async fn fetch_and_mmap<S: StorageRead>(
     cache_dir: &Path,
     ext: &str,
 ) -> io::Result<Option<Mmap>> {
-    let hash = extract_hash_from_address(address)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData,
-            format!("cannot extract hash from address: {}", address)))?;
+    let hash = extract_hash_from_address(address).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("cannot extract hash from address: {}", address),
+        )
+    })?;
     let cached = cache_dir.join(format!("{}.{}", hash, ext));
     if cached.exists() {
         let meta = std::fs::metadata(&cached)?;
@@ -1869,7 +1987,10 @@ async fn fetch_and_mmap<S: StorageRead>(
         let file = std::fs::File::open(&cached)?;
         return Ok(Some(unsafe { Mmap::map(&file)? }));
     }
-    let bytes = storage.read_bytes(address).await.map_err(storage_to_io_error)?;
+    let bytes = storage
+        .read_bytes(address)
+        .await
+        .map_err(storage_to_io_error)?;
     if bytes.is_empty() {
         return Ok(None);
     }
@@ -1885,14 +2006,20 @@ async fn ensure_leaf_cached<S: StorageRead>(
     address: &str,
     cache_dir: &Path,
 ) -> io::Result<()> {
-    let hash = extract_hash_from_address(address)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData,
-            format!("cannot extract hash from leaf address: {}", address)))?;
+    let hash = extract_hash_from_address(address).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("cannot extract hash from leaf address: {}", address),
+        )
+    })?;
     let cached = cache_dir.join(format!("{}.fli", hash));
     if cached.exists() {
         return Ok(());
     }
-    let bytes = storage.read_bytes(address).await.map_err(storage_to_io_error)?;
+    let bytes = storage
+        .read_bytes(address)
+        .await
+        .map_err(storage_to_io_error)?;
     cache_bytes_to_file(cache_dir, &hash, "fli", &bytes)?;
     Ok(())
 }

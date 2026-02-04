@@ -139,8 +139,7 @@ impl NumBigArena {
             return handle;
         }
         let handle = self.values.len() as u32;
-        self.values
-            .push(StoredBigValue::BigDec { unscaled, scale });
+        self.values.push(StoredBigValue::BigDec { unscaled, scale });
         self.dedup.insert(repr, handle);
         handle
     }

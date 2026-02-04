@@ -120,11 +120,7 @@ pub fn build_operator_tree<S: Storage + 'static>(
     // Post-aggregation BINDs (e.g., SELECT (CEIL(?avg) AS ?ceil))
     if !options.post_binds.is_empty() {
         for (var, expr) in &options.post_binds {
-            operator = Box::new(crate::bind::BindOperator::new(
-                operator,
-                *var,
-                expr.clone(),
-            ));
+            operator = Box::new(crate::bind::BindOperator::new(operator, *var, expr.clone()));
         }
     }
 
@@ -247,8 +243,7 @@ mod tests {
             graph_select: None,
         };
 
-        let result =
-            build_operator_tree::<MemoryStorage>(&query, &QueryOptions::default(), None);
+        let result = build_operator_tree::<MemoryStorage>(&query, &QueryOptions::default(), None);
         match result {
             Err(e) => assert!(e.to_string().contains("not found")),
             Ok(_) => panic!("Expected error for invalid select var"),
@@ -280,8 +275,7 @@ mod tests {
     #[test]
     fn test_build_operator_tree_empty_patterns() {
         let query = make_simple_query(vec![], vec![]);
-        let result =
-            build_operator_tree::<MemoryStorage>(&query, &QueryOptions::default(), None);
+        let result = build_operator_tree::<MemoryStorage>(&query, &QueryOptions::default(), None);
         assert!(result.is_ok());
 
         let op = result.unwrap();

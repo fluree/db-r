@@ -403,14 +403,15 @@ pub enum BinaryIndexRootAny {
 pub fn parse_index_root(bytes: &[u8]) -> serde_json::Result<BinaryIndexRootAny> {
     // Peek at the version field without fully parsing.
     let peek: serde_json::Value = serde_json::from_slice(bytes)?;
-    let version = peek
-        .get("version")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(1) as u32;
+    let version = peek.get("version").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
 
     match version {
-        1 => Ok(BinaryIndexRootAny::V1(BinaryIndexRoot::from_json_bytes(bytes)?)),
-        2 => Ok(BinaryIndexRootAny::V2(BinaryIndexRootV2::from_json_bytes(bytes)?)),
+        1 => Ok(BinaryIndexRootAny::V1(BinaryIndexRoot::from_json_bytes(
+            bytes,
+        )?)),
+        2 => Ok(BinaryIndexRootAny::V2(BinaryIndexRootV2::from_json_bytes(
+            bytes,
+        )?)),
         v => Err(serde::de::Error::custom(format!(
             "unsupported binary index root version: {}",
             v
@@ -429,12 +430,10 @@ mod tests {
             ledger_alias: "test/main".to_string(),
             index_t: 42,
             base_t: 1,
-            graphs: vec![
-                GraphEntry {
-                    g_id: 0,
-                    directory: "graph_0".to_string(),
-                },
-            ],
+            graphs: vec![GraphEntry {
+                g_id: 0,
+                directory: "graph_0".to_string(),
+            }],
             orders: vec!["spot".to_string(), "psot".to_string()],
             namespace_codes: {
                 let mut m = HashMap::new();
@@ -459,7 +458,11 @@ mod tests {
         let result = BinaryIndexRoot::from_json_bytes(json.as_bytes());
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("unsupported binary index root version"), "error: {}", err);
+        assert!(
+            err.contains("unsupported binary index root version"),
+            "error: {}",
+            err
+        );
     }
 
     fn sample_dict_addresses() -> DictAddresses {
@@ -542,12 +545,28 @@ mod tests {
         }];
 
         let root1 = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, &ns, sample_dict_addresses(), graph_addrs.clone(),
-            None, None, None, None,
+            "test/main",
+            42,
+            1,
+            &ns,
+            sample_dict_addresses(),
+            graph_addrs.clone(),
+            None,
+            None,
+            None,
+            None,
         );
         let root2 = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, &ns, sample_dict_addresses(), graph_addrs,
-            None, None, None, None,
+            "test/main",
+            42,
+            1,
+            &ns,
+            sample_dict_addresses(),
+            graph_addrs,
+            None,
+            None,
+            None,
+            None,
         );
 
         let bytes1 = root1.to_json_bytes().unwrap();
@@ -582,8 +601,16 @@ mod tests {
     #[test]
     fn parse_index_root_v2() {
         let root = BinaryIndexRootV2::from_cas_artifacts(
-            "x", 0, 0, &HashMap::new(), sample_dict_addresses(), vec![],
-            None, None, None, None,
+            "x",
+            0,
+            0,
+            &HashMap::new(),
+            sample_dict_addresses(),
+            vec![],
+            None,
+            None,
+            None,
+            None,
         );
         let bytes = root.to_json_bytes().unwrap();
         let result = parse_index_root(&bytes).unwrap();
@@ -605,8 +632,16 @@ mod tests {
             "graphs": [{"g_id": 1, "flakes": 10000, "size": 0}]
         });
         let root = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, &HashMap::new(), sample_dict_addresses(), vec![],
-            Some(stats.clone()), None, None, None,
+            "test/main",
+            42,
+            1,
+            &HashMap::new(),
+            sample_dict_addresses(),
+            vec![],
+            Some(stats.clone()),
+            None,
+            None,
+            None,
         );
 
         // Round-trip through JSON
@@ -657,21 +692,35 @@ mod tests {
             g_id: 0,
             orders: {
                 let mut m = BTreeMap::new();
-                m.insert("spot".into(), GraphOrderAddresses {
-                    branch: "cas://g0_spot_br".into(),
-                    leaves: vec!["cas://g0_spot_l0".into(), "cas://g0_spot_l1".into()],
-                });
-                m.insert("psot".into(), GraphOrderAddresses {
-                    branch: "cas://g0_psot_br".into(),
-                    leaves: vec!["cas://g0_psot_l0".into()],
-                });
+                m.insert(
+                    "spot".into(),
+                    GraphOrderAddresses {
+                        branch: "cas://g0_spot_br".into(),
+                        leaves: vec!["cas://g0_spot_l0".into(), "cas://g0_spot_l1".into()],
+                    },
+                );
+                m.insert(
+                    "psot".into(),
+                    GraphOrderAddresses {
+                        branch: "cas://g0_psot_br".into(),
+                        leaves: vec!["cas://g0_psot_l0".into()],
+                    },
+                );
                 m
             },
         }];
 
         let root = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 10, 1, &HashMap::new(), dicts, graph_addrs,
-            None, None, None, None,
+            "test/main",
+            10,
+            1,
+            &HashMap::new(),
+            dicts,
+            graph_addrs,
+            None,
+            None,
+            None,
+            None,
         );
 
         let addrs = root.all_cas_addresses();
@@ -695,31 +744,62 @@ mod tests {
     #[test]
     fn v2_round_trip_with_gc_fields() {
         let root = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, &HashMap::new(), sample_dict_addresses(), vec![],
-            None, None,
-            Some(BinaryPrevIndexRef { t: 40, address: "cas://prev_root".into() }),
-            Some(BinaryGarbageRef { address: "cas://garbage_record".into() }),
+            "test/main",
+            42,
+            1,
+            &HashMap::new(),
+            sample_dict_addresses(),
+            vec![],
+            None,
+            None,
+            Some(BinaryPrevIndexRef {
+                t: 40,
+                address: "cas://prev_root".into(),
+            }),
+            Some(BinaryGarbageRef {
+                address: "cas://garbage_record".into(),
+            }),
         );
 
         let bytes = root.to_json_bytes().unwrap();
         let parsed = BinaryIndexRootV2::from_json_bytes(&bytes).unwrap();
         assert_eq!(parsed.prev_index.as_ref().unwrap().t, 40);
-        assert_eq!(parsed.prev_index.as_ref().unwrap().address, "cas://prev_root");
-        assert_eq!(parsed.garbage.as_ref().unwrap().address, "cas://garbage_record");
+        assert_eq!(
+            parsed.prev_index.as_ref().unwrap().address,
+            "cas://prev_root"
+        );
+        assert_eq!(
+            parsed.garbage.as_ref().unwrap().address,
+            "cas://garbage_record"
+        );
     }
 
     #[test]
     fn v2_round_trip_without_gc_fields() {
         // When prev_index and garbage are None, they should not appear in JSON
         let root = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, &HashMap::new(), sample_dict_addresses(), vec![],
-            None, None, None, None,
+            "test/main",
+            42,
+            1,
+            &HashMap::new(),
+            sample_dict_addresses(),
+            vec![],
+            None,
+            None,
+            None,
+            None,
         );
 
         let bytes = root.to_json_bytes().unwrap();
         let json_str = std::str::from_utf8(&bytes).unwrap();
-        assert!(!json_str.contains("prev_index"), "None prev_index should be skipped");
-        assert!(!json_str.contains("garbage"), "None garbage should be skipped");
+        assert!(
+            !json_str.contains("prev_index"),
+            "None prev_index should be skipped"
+        );
+        assert!(
+            !json_str.contains("garbage"),
+            "None garbage should be skipped"
+        );
 
         let parsed = BinaryIndexRootV2::from_json_bytes(&bytes).unwrap();
         assert_eq!(parsed.prev_index, None);

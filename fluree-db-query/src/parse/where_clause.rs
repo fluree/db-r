@@ -251,16 +251,14 @@ pub fn parse_where_array_element(
                             object_var_parsing,
                         )?
                     }
-                    JsonValue::Array(items) => {
-                        parse_subquery_patterns(
-                            items,
-                            context,
-                            path_aliases,
-                            subject_counter,
-                            nested_counter,
-                            object_var_parsing,
-                        )?
-                    }
+                    JsonValue::Array(items) => parse_subquery_patterns(
+                        items,
+                        context,
+                        path_aliases,
+                        subject_counter,
+                        nested_counter,
+                        object_var_parsing,
+                    )?,
                     _ => {
                         return Err(ParseError::InvalidWhere(
                             "union branches must be objects or arrays".to_string(),
@@ -364,9 +362,9 @@ pub fn parse_where_array_element(
                 ));
             }
             // Second element is the graph name (string or variable)
-            let graph_name = arr[1]
-                .as_str()
-                .ok_or_else(|| ParseError::InvalidWhere("graph name must be a string".to_string()))?;
+            let graph_name = arr[1].as_str().ok_or_else(|| {
+                ParseError::InvalidWhere("graph name must be a string".to_string())
+            })?;
             // Remaining elements are patterns
             let graph_patterns = parse_subquery_patterns(
                 &arr[2..],
@@ -607,7 +605,16 @@ mod tests {
         let mut query = UnresolvedQuery::new(context.clone());
         let arr = vec![json!("filter"), json!([">", "?age", 18])];
         let empty_aliases = PathAliasMap::new();
-        parse_where_array_element(&arr, &context, &empty_aliases, &mut query, &mut 0, &mut 0, true).unwrap();
+        parse_where_array_element(
+            &arr,
+            &context,
+            &empty_aliases,
+            &mut query,
+            &mut 0,
+            &mut 0,
+            true,
+        )
+        .unwrap();
         // Filter added to patterns
         assert!(!query.patterns.is_empty());
     }
@@ -618,7 +625,16 @@ mod tests {
         let mut query = UnresolvedQuery::new(context.clone());
         let arr = vec![json!("bind"), json!("?doubled"), json!(["+", "?x", "?x"])];
         let empty_aliases = PathAliasMap::new();
-        parse_where_array_element(&arr, &context, &empty_aliases, &mut query, &mut 0, &mut 0, true).unwrap();
+        parse_where_array_element(
+            &arr,
+            &context,
+            &empty_aliases,
+            &mut query,
+            &mut 0,
+            &mut 0,
+            true,
+        )
+        .unwrap();
         assert!(!query.patterns.is_empty());
     }
 
@@ -628,7 +644,16 @@ mod tests {
         let mut query = UnresolvedQuery::new(context.clone());
         let arr = vec![json!("optional"), json!({"ex:email": "?email"})];
         let empty_aliases = PathAliasMap::new();
-        parse_where_array_element(&arr, &context, &empty_aliases, &mut query, &mut 0, &mut 0, true).unwrap();
+        parse_where_array_element(
+            &arr,
+            &context,
+            &empty_aliases,
+            &mut query,
+            &mut 0,
+            &mut 0,
+            true,
+        )
+        .unwrap();
         assert!(!query.patterns.is_empty());
     }
 
@@ -642,7 +667,16 @@ mod tests {
             json!({"ex:type": "Organization"}),
         ];
         let empty_aliases = PathAliasMap::new();
-        parse_where_array_element(&arr, &context, &empty_aliases, &mut query, &mut 0, &mut 0, true).unwrap();
+        parse_where_array_element(
+            &arr,
+            &context,
+            &empty_aliases,
+            &mut query,
+            &mut 0,
+            &mut 0,
+            true,
+        )
+        .unwrap();
         assert!(!query.patterns.is_empty());
     }
 
@@ -652,7 +686,16 @@ mod tests {
         let mut query = UnresolvedQuery::new(context.clone());
         let arr = vec![json!("exists"), json!({"ex:verified": true})];
         let empty_aliases = PathAliasMap::new();
-        parse_where_array_element(&arr, &context, &empty_aliases, &mut query, &mut 0, &mut 0, true).unwrap();
+        parse_where_array_element(
+            &arr,
+            &context,
+            &empty_aliases,
+            &mut query,
+            &mut 0,
+            &mut 0,
+            true,
+        )
+        .unwrap();
         assert!(!query.patterns.is_empty());
     }
 
@@ -662,7 +705,15 @@ mod tests {
         let mut query = UnresolvedQuery::new(context.clone());
         let arr = vec![json!("invalid_keyword")];
         let empty_aliases = PathAliasMap::new();
-        let result = parse_where_array_element(&arr, &context, &empty_aliases, &mut query, &mut 0, &mut 0, true);
+        let result = parse_where_array_element(
+            &arr,
+            &context,
+            &empty_aliases,
+            &mut query,
+            &mut 0,
+            &mut 0,
+            true,
+        );
         assert!(result.is_err());
     }
 
@@ -672,7 +723,15 @@ mod tests {
         let mut query = UnresolvedQuery::new(context.clone());
         let arr: Vec<JsonValue> = vec![];
         let empty_aliases = PathAliasMap::new();
-        let result = parse_where_array_element(&arr, &context, &empty_aliases, &mut query, &mut 0, &mut 0, true);
+        let result = parse_where_array_element(
+            &arr,
+            &context,
+            &empty_aliases,
+            &mut query,
+            &mut 0,
+            &mut 0,
+            true,
+        );
         assert!(result.is_err());
     }
 }

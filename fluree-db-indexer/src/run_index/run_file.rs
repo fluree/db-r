@@ -66,7 +66,11 @@ impl RunFileHeader {
         if buf.len() < RUN_HEADER_LEN {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("run file header too small: {} < {}", buf.len(), RUN_HEADER_LEN),
+                format!(
+                    "run file header too small: {} < {}",
+                    buf.len(),
+                    RUN_HEADER_LEN
+                ),
             ));
         }
         if buf[0..4] != RUN_MAGIC {
@@ -293,7 +297,7 @@ pub struct RunFileInfo {
 mod tests {
     use super::*;
     use crate::run_index::global_dict::dt_ids;
-    use fluree_db_core::value_id::{ObjKind, ObjKey};
+    use fluree_db_core::value_id::{ObjKey, ObjKind};
 
     #[test]
     fn test_header_round_trip() {
@@ -346,9 +350,42 @@ mod tests {
         lang_dict.get_or_insert(Some("en"));
 
         let records = vec![
-            RunRecord::new(0, 1, 1, ObjKind::NUM_INT, ObjKey::encode_i64(10), 1, true, dt_ids::INTEGER, 0, None),
-            RunRecord::new(0, 1, 2, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true, dt_ids::STRING, 1, None),
-            RunRecord::new(0, 2, 1, ObjKind::NUM_INT, ObjKey::encode_i64(20), 2, true, dt_ids::LONG, 0, Some(0)),
+            RunRecord::new(
+                0,
+                1,
+                1,
+                ObjKind::NUM_INT,
+                ObjKey::encode_i64(10),
+                1,
+                true,
+                dt_ids::INTEGER,
+                0,
+                None,
+            ),
+            RunRecord::new(
+                0,
+                1,
+                2,
+                ObjKind::LEX_ID,
+                ObjKey::encode_u32_id(5),
+                1,
+                true,
+                dt_ids::STRING,
+                1,
+                None,
+            ),
+            RunRecord::new(
+                0,
+                2,
+                1,
+                ObjKind::NUM_INT,
+                ObjKey::encode_i64(20),
+                2,
+                true,
+                dt_ids::LONG,
+                0,
+                Some(0),
+            ),
         ];
 
         let info = write_run_file(&path, &records, &lang_dict, RunSortOrder::Spot, 1, 2).unwrap();

@@ -4,9 +4,9 @@
 //! entire 1 GB run files into memory. Suitable for k-way merge where
 //! 21 concurrent streams would otherwise require 21 GB.
 
+use super::global_dict::LanguageTagDict;
 use super::run_file::{deserialize_lang_dict, RunFileHeader, RUN_HEADER_LEN};
 use super::run_record::RunRecord;
-use super::global_dict::LanguageTagDict;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
@@ -158,17 +158,24 @@ impl StreamingRunReader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::run_index::run_file::write_run_file;
-    use crate::run_index::run_record::{RunSortOrder, cmp_spot};
     use crate::run_index::global_dict::dt_ids;
-    use fluree_db_core::value_id::{ObjKind, ObjKey};
+    use crate::run_index::run_file::write_run_file;
+    use crate::run_index::run_record::{cmp_spot, RunSortOrder};
+    use fluree_db_core::value_id::{ObjKey, ObjKind};
     use std::cmp::Ordering;
 
     fn make_record(s_id: u32, p_id: u32, val: i64, t: i64) -> RunRecord {
         RunRecord::new(
-            0, s_id, p_id,
-            ObjKind::NUM_INT, ObjKey::encode_i64(val),
-            t, true, dt_ids::INTEGER, 0, None,
+            0,
+            s_id,
+            p_id,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(val),
+            t,
+            true,
+            dt_ids::INTEGER,
+            0,
+            None,
         )
     }
 
@@ -180,9 +187,8 @@ mod tests {
         let path = dir.join("test.frn");
 
         let lang_dict = LanguageTagDict::new();
-        let mut records: Vec<RunRecord> = (0..100)
-            .map(|i| make_record(i, 1, i as i64, 1))
-            .collect();
+        let mut records: Vec<RunRecord> =
+            (0..100).map(|i| make_record(i, 1, i as i64, 1)).collect();
         records.sort_unstable_by(cmp_spot);
 
         write_run_file(&path, &records, &lang_dict, RunSortOrder::Spot, 1, 1).unwrap();
@@ -249,9 +255,42 @@ mod tests {
         lang_dict.get_or_insert(Some("fr")); // local id 2
 
         let records = vec![
-            RunRecord::new(0, 1, 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(0), 1, true, dt_ids::LANG_STRING, 1, None),
-            RunRecord::new(0, 1, 2, ObjKind::LEX_ID, ObjKey::encode_u32_id(1), 1, true, dt_ids::LANG_STRING, 2, None),
-            RunRecord::new(0, 2, 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(2), 1, true, dt_ids::STRING, 0, None),
+            RunRecord::new(
+                0,
+                1,
+                1,
+                ObjKind::LEX_ID,
+                ObjKey::encode_u32_id(0),
+                1,
+                true,
+                dt_ids::LANG_STRING,
+                1,
+                None,
+            ),
+            RunRecord::new(
+                0,
+                1,
+                2,
+                ObjKind::LEX_ID,
+                ObjKey::encode_u32_id(1),
+                1,
+                true,
+                dt_ids::LANG_STRING,
+                2,
+                None,
+            ),
+            RunRecord::new(
+                0,
+                2,
+                1,
+                ObjKind::LEX_ID,
+                ObjKey::encode_u32_id(2),
+                1,
+                true,
+                dt_ids::STRING,
+                0,
+                None,
+            ),
         ];
 
         write_run_file(&path, &records, &lang_dict, RunSortOrder::Spot, 1, 1).unwrap();

@@ -191,7 +191,9 @@ impl<S: Storage + 'static> Operator<S> for GroupByOperator<S> {
                 };
                 child_next_ms += (next_start.elapsed().as_secs_f64() * 1000.0) as u64;
 
-                let Some(batch) = next else { break; };
+                let Some(batch) = next else {
+                    break;
+                };
                 input_batches += 1;
                 if batch.is_empty() {
                     continue;
@@ -322,8 +324,7 @@ mod tests {
             vec![Binding::lit(FlakeValue::Long(30), xsd_long())],
         ];
         let batch = Batch::new(schema.clone(), columns).unwrap();
-        let seed: BoxedOperator<MemoryStorage> =
-            Box::new(SeedOperator::from_batch_row(&batch, 0));
+        let seed: BoxedOperator<MemoryStorage> = Box::new(SeedOperator::from_batch_row(&batch, 0));
 
         // GROUP BY ?city
         let op = GroupByOperator::new(seed, vec![VarId(0)]);
@@ -344,8 +345,7 @@ mod tests {
             vec![Binding::Unbound],
         ];
         let batch = Batch::new(schema.clone(), columns).unwrap();
-        let seed: BoxedOperator<MemoryStorage> =
-            Box::new(SeedOperator::from_batch_row(&batch, 0));
+        let seed: BoxedOperator<MemoryStorage> = Box::new(SeedOperator::from_batch_row(&batch, 0));
 
         // GROUP BY ?city (?city is VarId(0), column 0)
         let op = GroupByOperator::new(seed, vec![VarId(0)]);
@@ -365,8 +365,7 @@ mod tests {
             vec![Binding::lit(FlakeValue::Long(30), xsd_long())],
         ];
         let batch = Batch::new(schema.clone(), columns).unwrap();
-        let seed: BoxedOperator<MemoryStorage> =
-            Box::new(SeedOperator::from_batch_row(&batch, 0));
+        let seed: BoxedOperator<MemoryStorage> = Box::new(SeedOperator::from_batch_row(&batch, 0));
 
         let op = GroupByOperator::new(seed, vec![VarId(0)]);
 
@@ -678,8 +677,7 @@ mod tests {
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
         let columns = vec![vec![Binding::Unbound], vec![Binding::Unbound]];
         let batch = Batch::new(schema.clone(), columns).unwrap();
-        let seed: BoxedOperator<MemoryStorage> =
-            Box::new(SeedOperator::from_batch_row(&batch, 0));
+        let seed: BoxedOperator<MemoryStorage> = Box::new(SeedOperator::from_batch_row(&batch, 0));
 
         // GROUP BY ?unknown (VarId(99) not in schema)
         let _op = GroupByOperator::new(seed, vec![VarId(99)]);

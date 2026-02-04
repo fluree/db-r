@@ -212,10 +212,7 @@ impl Analyzer {
 
     /// Analyze text and return just the token strings.
     pub fn analyze_to_strings(&self, text: &str) -> Vec<String> {
-        self.analyze(text)
-            .into_iter()
-            .map(|t| t.text)
-            .collect()
+        self.analyze(text).into_iter().map(|t| t.text).collect()
     }
 
     /// Analyze text and compute term frequencies.

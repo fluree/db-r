@@ -185,7 +185,12 @@ mod tests {
     use super::*;
 
     fn make_key(leaf_id: u128, leaflet_index: u8, to_t: i64, epoch: u64) -> LeafletCacheKey {
-        LeafletCacheKey { leaf_id, leaflet_index, to_t, epoch }
+        LeafletCacheKey {
+            leaf_id,
+            leaflet_index,
+            to_t,
+            epoch,
+        }
     }
 
     fn make_r1(row_count: usize) -> CachedRegion1 {

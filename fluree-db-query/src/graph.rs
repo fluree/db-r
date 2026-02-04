@@ -305,8 +305,14 @@ impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
                         // If graph doesn't exist in dataset → empty result (Clojure parity)
                         if let Some(ref ds) = ctx.dataset {
                             if ds.has_named_graph(iri) {
-                                self.execute_in_graph(ctx, &parent_batch, row_idx, iri.clone(), None)
-                                    .await?;
+                                self.execute_in_graph(
+                                    ctx,
+                                    &parent_batch,
+                                    row_idx,
+                                    iri.clone(),
+                                    None,
+                                )
+                                .await?;
                             }
                             // else: graph not found → no output for this row
                         } else {
@@ -319,8 +325,14 @@ impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
 
                             // Execute if R2RML VG or if graph name matches db's alias (Clojure parity)
                             if is_r2rml_vg || iri.as_ref() == ctx.db.alias {
-                                self.execute_in_graph(ctx, &parent_batch, row_idx, iri.clone(), None)
-                                    .await?;
+                                self.execute_in_graph(
+                                    ctx,
+                                    &parent_batch,
+                                    row_idx,
+                                    iri.clone(),
+                                    None,
+                                )
+                                .await?;
                             }
                             // else: graph name doesn't match alias and not R2RML VG → no output
                         }
@@ -447,10 +459,9 @@ mod tests {
     #[test]
     fn test_graph_operator_schema_with_iri() {
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
-        let child: BoxedOperator<fluree_db_core::MemoryStorage> =
-            Box::new(TestChildOperator {
-                schema: child_schema.clone(),
-            });
+        let child: BoxedOperator<fluree_db_core::MemoryStorage> = Box::new(TestChildOperator {
+            schema: child_schema.clone(),
+        });
 
         let patterns = vec![Pattern::Triple(TriplePattern::new(
             Term::Var(VarId(0)),
@@ -473,10 +484,9 @@ mod tests {
     #[test]
     fn test_graph_operator_schema_with_var() {
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
-        let child: BoxedOperator<fluree_db_core::MemoryStorage> =
-            Box::new(TestChildOperator {
-                schema: child_schema,
-            });
+        let child: BoxedOperator<fluree_db_core::MemoryStorage> = Box::new(TestChildOperator {
+            schema: child_schema,
+        });
 
         let patterns = vec![Pattern::Triple(TriplePattern::new(
             Term::Var(VarId(0)),
@@ -503,7 +513,9 @@ mod tests {
             t: None,
             op: None,
         };
-        let iri = GraphOperator::<fluree_db_core::MemoryStorage>::extract_graph_iri_from_binding(&binding);
+        let iri = GraphOperator::<fluree_db_core::MemoryStorage>::extract_graph_iri_from_binding(
+            &binding,
+        );
         assert_eq!(iri, Some(Arc::from("http://example.org/graph1")));
 
         // Non-string binding returns None
@@ -514,11 +526,15 @@ mod tests {
             t: None,
             op: None,
         };
-        let iri = GraphOperator::<fluree_db_core::MemoryStorage>::extract_graph_iri_from_binding(&binding);
+        let iri = GraphOperator::<fluree_db_core::MemoryStorage>::extract_graph_iri_from_binding(
+            &binding,
+        );
         assert_eq!(iri, None);
 
         // Unbound returns None
-        let iri = GraphOperator::<fluree_db_core::MemoryStorage>::extract_graph_iri_from_binding(&Binding::Unbound);
+        let iri = GraphOperator::<fluree_db_core::MemoryStorage>::extract_graph_iri_from_binding(
+            &Binding::Unbound,
+        );
         assert_eq!(iri, None);
     }
 }

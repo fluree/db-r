@@ -80,7 +80,12 @@ impl<S: Storage + 'static> ValuesOperator<S> {
     /// Check if a value row is compatible with an input row
     ///
     /// Returns false if any overlapping variable has a mismatched value.
-    fn is_compatible(&self, ctx: &ExecutionContext<'_, S>, input_row: &[&Binding], value_row: &[Binding]) -> bool {
+    fn is_compatible(
+        &self,
+        ctx: &ExecutionContext<'_, S>,
+        input_row: &[&Binding],
+        value_row: &[Binding],
+    ) -> bool {
         for (val_idx, overlap_pos) in self.overlap_positions.iter().enumerate() {
             if let Some(child_pos) = overlap_pos {
                 // This value var exists in child schema - check compatibility
@@ -239,7 +244,6 @@ mod tests {
     use super::*;
     use fluree_db_core::{FlakeValue, MemoryStorage, Sid};
 
-
     fn xsd_long() -> Sid {
         Sid::new(2, "long")
     }
@@ -252,15 +256,15 @@ mod tests {
     fn test_values_operator_schema_no_overlap() {
         // Child has ?a, VALUES adds ?x ?y
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
-        let child = Box::new(TestEmptyWithSchema { schema: child_schema });
+        let child = Box::new(TestEmptyWithSchema {
+            schema: child_schema,
+        });
 
         let value_vars = vec![VarId(1), VarId(2)];
-        let value_rows = vec![
-            vec![
-                Binding::lit(FlakeValue::Long(1), xsd_long()),
-                Binding::lit(FlakeValue::String("a".into()), xsd_string()),
-            ],
-        ];
+        let value_rows = vec![vec![
+            Binding::lit(FlakeValue::Long(1), xsd_long()),
+            Binding::lit(FlakeValue::String("a".into()), xsd_string()),
+        ]];
 
         let op = ValuesOperator::<MemoryStorage>::new(child, value_vars, value_rows);
 
@@ -275,15 +279,15 @@ mod tests {
     fn test_values_operator_schema_with_overlap() {
         // Child has ?a ?b, VALUES uses ?a ?c (overlap on ?a)
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
-        let child = Box::new(TestEmptyWithSchema { schema: child_schema });
+        let child = Box::new(TestEmptyWithSchema {
+            schema: child_schema,
+        });
 
         let value_vars = vec![VarId(0), VarId(2)]; // ?a overlaps, ?c is new
-        let value_rows = vec![
-            vec![
-                Binding::lit(FlakeValue::Long(1), xsd_long()),
-                Binding::lit(FlakeValue::Long(100), xsd_long()),
-            ],
-        ];
+        let value_rows = vec![vec![
+            Binding::lit(FlakeValue::Long(1), xsd_long()),
+            Binding::lit(FlakeValue::Long(100), xsd_long()),
+        ]];
 
         let op = ValuesOperator::<MemoryStorage>::new(child, value_vars, value_rows);
 
@@ -305,15 +309,15 @@ mod tests {
         let ctx = ExecutionContext::new(&db, &vars);
 
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
-        let child = Box::new(TestEmptyWithSchema { schema: child_schema });
+        let child = Box::new(TestEmptyWithSchema {
+            schema: child_schema,
+        });
 
         let value_vars = vec![VarId(0), VarId(1)]; // ?a overlaps
-        let value_rows = vec![
-            vec![
-                Binding::lit(FlakeValue::Long(10), xsd_long()),
-                Binding::lit(FlakeValue::Long(20), xsd_long()),
-            ],
-        ];
+        let value_rows = vec![vec![
+            Binding::lit(FlakeValue::Long(10), xsd_long()),
+            Binding::lit(FlakeValue::Long(20), xsd_long()),
+        ]];
 
         let op = ValuesOperator::<MemoryStorage>::new(child, value_vars, value_rows);
 

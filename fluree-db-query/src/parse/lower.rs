@@ -5,8 +5,8 @@
 
 use super::ast::{
     LiteralValue, UnresolvedAggregateFn, UnresolvedAggregateSpec, UnresolvedConstructTemplate,
-    UnresolvedFilterExpr, UnresolvedGraphSelectSpec, UnresolvedNestedSelectSpec,
-    UnresolvedOptions, UnresolvedPathExpr, UnresolvedPattern, UnresolvedQuery, UnresolvedRoot,
+    UnresolvedFilterExpr, UnresolvedGraphSelectSpec, UnresolvedNestedSelectSpec, UnresolvedOptions,
+    UnresolvedPathExpr, UnresolvedPattern, UnresolvedQuery, UnresolvedRoot,
     UnresolvedSelectionSpec, UnresolvedSortDirection, UnresolvedSortSpec, UnresolvedTerm,
     UnresolvedTriplePattern, UnresolvedValue,
 };
@@ -16,8 +16,8 @@ use crate::aggregate::{AggregateFn, AggregateSpec};
 use crate::binding::Binding;
 use crate::context::WellKnownDatatypes;
 use crate::ir::{
-    FilterExpr, FunctionName, PathModifier, Pattern, IndexSearchPattern, IndexSearchTarget,
-    VectorSearchPattern, VectorSearchTarget, PropertyPathPattern, SubqueryPattern,
+    FilterExpr, FunctionName, IndexSearchPattern, IndexSearchTarget, PathModifier, Pattern,
+    PropertyPathPattern, SubqueryPattern, VectorSearchPattern, VectorSearchTarget,
 };
 use crate::vector::DistanceMetric;
 // Re-export graph select types for external use
@@ -147,7 +147,9 @@ impl ParsedQuery {
                             collect(branch, out);
                         }
                     }
-                    Pattern::Graph { patterns: inner, .. } => collect(inner, out),
+                    Pattern::Graph {
+                        patterns: inner, ..
+                    } => collect(inner, out),
                     Pattern::Filter(_)
                     | Pattern::Bind { .. }
                     | Pattern::Values { .. }
@@ -350,12 +352,10 @@ pub fn lower_unresolved_pattern<E: IriEncoder>(
                 }
             };
 
-            let metric = DistanceMetric::from_str(&vsp.metric)
-                .unwrap_or(DistanceMetric::Cosine);
+            let metric = DistanceMetric::from_str(&vsp.metric).unwrap_or(DistanceMetric::Cosine);
 
             let id_var = vars.get_or_insert(&vsp.id_var);
-            let mut pat = VectorSearchPattern::new(vg_alias, target, id_var)
-                .with_metric(metric);
+            let mut pat = VectorSearchPattern::new(vg_alias, target, id_var).with_metric(metric);
 
             if let Some(limit) = vsp.limit {
                 pat = pat.with_limit(limit);
@@ -389,8 +389,7 @@ pub fn lower_unresolved_pattern<E: IriEncoder>(
                 GraphName::Iri(Arc::from(name.as_ref()))
             };
 
-            let lowered_patterns =
-                lower_unresolved_patterns(patterns, encoder, vars, pp_counter)?;
+            let lowered_patterns = lower_unresolved_patterns(patterns, encoder, vars, pp_counter)?;
 
             Ok(vec![Pattern::Graph {
                 name: ir_name,
@@ -427,7 +426,11 @@ fn lower_values_cell<E: IriEncoder>(cell: &UnresolvedValue, encoder: &E) -> Resu
                 .ok_or_else(|| ParseError::UnknownNamespace(iri.to_string()))?;
             Ok(Binding::Sid(sid))
         }
-        UnresolvedValue::Literal { value, dt_iri, lang } => {
+        UnresolvedValue::Literal {
+            value,
+            dt_iri,
+            lang,
+        } => {
             // Language-tagged literals always use rdf:langString (Clojure/JSON-LD semantics).
             //
             // NOTE: Even if a datatype is provided, rdf:langString is the correct datatype
@@ -527,13 +530,13 @@ fn lower_triple_pattern<E: IriEncoder>(
         let dt_sid = encoder
             .encode_iri(dt_iri)
             .ok_or_else(|| ParseError::UnknownNamespace(dt_iri.to_string()))?;
-        
+
         // Coerce literal values based on datatype
         if let Term::Value(ref value) = o {
             let coerced = coerce_value_by_datatype(value.clone(), dt_iri)?;
             o = Term::Value(coerced);
         }
-        
+
         Some(dt_sid)
     } else {
         None
@@ -614,8 +617,7 @@ fn lower_path_to_patterns<E: IriEncoder>(
         // Inverse: ^path
         UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
             // Inverse-transitive: ^p+ or ^p* → PropertyPathPattern with swapped s/o
-            UnresolvedPathExpr::OneOrMore(tp_inner)
-            | UnresolvedPathExpr::ZeroOrMore(tp_inner) => {
+            UnresolvedPathExpr::OneOrMore(tp_inner) | UnresolvedPathExpr::ZeroOrMore(tp_inner) => {
                 let iri = expect_simple_iri(tp_inner)?;
                 let modifier = match inner.as_ref() {
                     UnresolvedPathExpr::OneOrMore(_) => PathModifier::OneOrMore,
@@ -686,32 +688,26 @@ fn rewrite_inverse_of_complex(path: &UnresolvedPathExpr) -> Option<UnresolvedPat
                 Some(rewrite_inverse_of_complex(&cancelled).unwrap_or(cancelled))
             }
             // ^(a/b/c) → (^c)/(^b)/(^a)
-            UnresolvedPathExpr::Sequence(steps) => {
-                Some(UnresolvedPathExpr::Sequence(
-                    steps
-                        .iter()
-                        .rev()
-                        .map(|step| {
-                            let inv =
-                                UnresolvedPathExpr::Inverse(Box::new(step.clone()));
-                            rewrite_inverse_of_complex(&inv).unwrap_or(inv)
-                        })
-                        .collect(),
-                ))
-            }
+            UnresolvedPathExpr::Sequence(steps) => Some(UnresolvedPathExpr::Sequence(
+                steps
+                    .iter()
+                    .rev()
+                    .map(|step| {
+                        let inv = UnresolvedPathExpr::Inverse(Box::new(step.clone()));
+                        rewrite_inverse_of_complex(&inv).unwrap_or(inv)
+                    })
+                    .collect(),
+            )),
             // ^(a|b|c) → (^a)|(^b)|(^c)
-            UnresolvedPathExpr::Alternative(branches) => {
-                Some(UnresolvedPathExpr::Alternative(
-                    branches
-                        .iter()
-                        .map(|branch| {
-                            let inv =
-                                UnresolvedPathExpr::Inverse(Box::new(branch.clone()));
-                            rewrite_inverse_of_complex(&inv).unwrap_or(inv)
-                        })
-                        .collect(),
-                ))
-            }
+            UnresolvedPathExpr::Alternative(branches) => Some(UnresolvedPathExpr::Alternative(
+                branches
+                    .iter()
+                    .map(|branch| {
+                        let inv = UnresolvedPathExpr::Inverse(Box::new(branch.clone()));
+                        rewrite_inverse_of_complex(&inv).unwrap_or(inv)
+                    })
+                    .collect(),
+            )),
             // Simple inverse (^p), transitive (^p+, ^p*), etc. — existing handling
             _ => None,
         },
@@ -946,11 +942,7 @@ fn lower_sequence_step_triple(
 }
 
 /// Lower a degenerate single-step sequence to a pattern list.
-fn lower_sequence_step(
-    step: &UnresolvedPathExpr,
-    s: &Term,
-    o: &Term,
-) -> Result<Vec<Pattern>> {
+fn lower_sequence_step(step: &UnresolvedPathExpr, s: &Term, o: &Term) -> Result<Vec<Pattern>> {
     let triple = lower_sequence_step_triple(step, s, o)?;
     Ok(vec![Pattern::Triple(triple)])
 }
@@ -992,9 +984,7 @@ fn lower_alternative_branch(
                 path_expr_name(other),
             ))),
         },
-        UnresolvedPathExpr::Sequence(steps) => {
-            lower_sequence_chain(s, steps, o, vars, pp_counter)
-        }
+        UnresolvedPathExpr::Sequence(steps) => lower_sequence_chain(s, steps, o, vars, pp_counter),
         other => Err(ParseError::InvalidWhere(format!(
             "Alternative (|) branches support simple predicates, inverse simple \
              predicates (^ex:p), or sequence chains (ex:a/ex:b); got {}",
@@ -1043,8 +1033,7 @@ fn lower_subquery<E: IriEncoder>(
         .collect();
 
     // Lower WHERE patterns
-    let patterns =
-        lower_unresolved_patterns(&subquery.patterns, encoder, vars, pp_counter)?;
+    let patterns = lower_unresolved_patterns(&subquery.patterns, encoder, vars, pp_counter)?;
 
     // Build SubqueryPattern with options
     let mut sq = SubqueryPattern::new(select, patterns);
@@ -1179,7 +1168,10 @@ fn lower_selection_spec<E: IriEncoder>(
     match spec {
         UnresolvedSelectionSpec::Id => Ok(SelectionSpec::Id),
         UnresolvedSelectionSpec::Wildcard => Ok(SelectionSpec::Wildcard),
-        UnresolvedSelectionSpec::Property { predicate, sub_spec } => {
+        UnresolvedSelectionSpec::Property {
+            predicate,
+            sub_spec,
+        } => {
             let sid = encoder
                 .encode_iri(predicate)
                 .ok_or_else(|| ParseError::UnknownNamespace(predicate.clone()))?;
@@ -1277,7 +1269,11 @@ pub(crate) fn lower_filter_expr(
             let lowered = lower_filter_expr(inner, vars)?;
             Ok(FilterExpr::Not(Box::new(lowered)))
         }
-        UnresolvedFilterExpr::In { expr, values, negated } => {
+        UnresolvedFilterExpr::In {
+            expr,
+            values,
+            negated,
+        } => {
             let lowered_expr = lower_filter_expr(expr, vars)?;
             let lowered_values: Result<Vec<FilterExpr>> =
                 values.iter().map(|v| lower_filter_expr(v, vars)).collect();
@@ -1566,7 +1562,9 @@ mod tests {
         // Double
         let term = UnresolvedTerm::double(3.14);
         let lowered = lower_term(&term, &encoder, &mut vars).unwrap();
-        assert!(matches!(lowered, Term::Value(FlakeValue::Double(d)) if (d - 3.14).abs() < f64::EPSILON));
+        assert!(
+            matches!(lowered, Term::Value(FlakeValue::Double(d)) if (d - 3.14).abs() < f64::EPSILON)
+        );
 
         // Boolean
         let term = UnresolvedTerm::boolean(true);
@@ -1589,7 +1587,9 @@ mod tests {
 
         assert!(matches!(lowered.s, Term::Var(VarId(0))));
         // Predicate IRI is lowered to Term::Iri for deferred encoding
-        assert!(matches!(lowered.p, Term::Iri(ref iri) if iri.as_ref() == "http://schema.org/name"));
+        assert!(
+            matches!(lowered.p, Term::Iri(ref iri) if iri.as_ref() == "http://schema.org/name")
+        );
         assert!(matches!(lowered.o, Term::Var(VarId(1))));
         assert!(lowered.dt.is_none());
     }
@@ -1649,7 +1649,9 @@ mod tests {
 
         assert!(result.is_ok());
         let lowered = result.unwrap();
-        assert!(matches!(lowered, Term::Iri(ref iri) if iri.as_ref() == "http://unknown.org/thing"));
+        assert!(
+            matches!(lowered, Term::Iri(ref iri) if iri.as_ref() == "http://unknown.org/thing")
+        );
     }
 
     #[test]
@@ -1674,10 +1676,7 @@ mod tests {
 
     #[test]
     fn test_coerce_string_to_integer() {
-        let result = coerce_value_by_datatype(
-            FlakeValue::String("42".to_string()),
-            xsd::INTEGER
-        );
+        let result = coerce_value_by_datatype(FlakeValue::String("42".to_string()), xsd::INTEGER);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), FlakeValue::Long(42));
     }
@@ -1686,10 +1685,8 @@ mod tests {
     fn test_coerce_string_to_bigint() {
         // String too large for i64
         let big_num = "99999999999999999999999999999";
-        let result = coerce_value_by_datatype(
-            FlakeValue::String(big_num.to_string()),
-            xsd::INTEGER
-        );
+        let result =
+            coerce_value_by_datatype(FlakeValue::String(big_num.to_string()), xsd::INTEGER);
         assert!(result.is_ok());
         match result.unwrap() {
             FlakeValue::BigInt(bi) => {
@@ -1703,7 +1700,7 @@ mod tests {
     fn test_coerce_string_to_decimal_becomes_bigdecimal() {
         let result = coerce_value_by_datatype(
             FlakeValue::String("3.14159265358979323846".to_string()),
-            xsd::DECIMAL
+            xsd::DECIMAL,
         );
         assert!(result.is_ok());
         match result.unwrap() {
@@ -1718,48 +1715,34 @@ mod tests {
     #[test]
     fn test_coerce_json_long_to_decimal_becomes_double() {
         // JSON numbers with xsd:decimal → Double (per policy)
-        let result = coerce_value_by_datatype(
-            FlakeValue::Long(42),
-            xsd::DECIMAL
-        );
+        let result = coerce_value_by_datatype(FlakeValue::Long(42), xsd::DECIMAL);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), FlakeValue::Double(42.0));
     }
 
     #[test]
     fn test_coerce_string_to_double() {
-        let result = coerce_value_by_datatype(
-            FlakeValue::String("3.14".to_string()),
-            xsd::DOUBLE
-        );
+        let result = coerce_value_by_datatype(FlakeValue::String("3.14".to_string()), xsd::DOUBLE);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), FlakeValue::Double(3.14));
     }
 
     #[test]
     fn test_coerce_string_to_boolean() {
-        let result_true = coerce_value_by_datatype(
-            FlakeValue::String("true".to_string()),
-            xsd::BOOLEAN
-        );
+        let result_true =
+            coerce_value_by_datatype(FlakeValue::String("true".to_string()), xsd::BOOLEAN);
         assert_eq!(result_true.unwrap(), FlakeValue::Boolean(true));
 
-        let result_false = coerce_value_by_datatype(
-            FlakeValue::String("false".to_string()),
-            xsd::BOOLEAN
-        );
+        let result_false =
+            coerce_value_by_datatype(FlakeValue::String("false".to_string()), xsd::BOOLEAN);
         assert_eq!(result_false.unwrap(), FlakeValue::Boolean(false));
 
-        let result_one = coerce_value_by_datatype(
-            FlakeValue::String("1".to_string()),
-            xsd::BOOLEAN
-        );
+        let result_one =
+            coerce_value_by_datatype(FlakeValue::String("1".to_string()), xsd::BOOLEAN);
         assert_eq!(result_one.unwrap(), FlakeValue::Boolean(true));
 
-        let result_zero = coerce_value_by_datatype(
-            FlakeValue::String("0".to_string()),
-            xsd::BOOLEAN
-        );
+        let result_zero =
+            coerce_value_by_datatype(FlakeValue::String("0".to_string()), xsd::BOOLEAN);
         assert_eq!(result_zero.unwrap(), FlakeValue::Boolean(false));
     }
 
@@ -1769,60 +1752,42 @@ mod tests {
 
     #[test]
     fn test_coerce_number_to_string_errors() {
-        let result = coerce_value_by_datatype(
-            FlakeValue::Long(42),
-            xsd::STRING
-        );
+        let result = coerce_value_by_datatype(FlakeValue::Long(42), xsd::STRING);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ParseError::TypeCoercion(_)));
     }
 
     #[test]
     fn test_coerce_double_to_string_errors() {
-        let result = coerce_value_by_datatype(
-            FlakeValue::Double(3.14),
-            xsd::STRING
-        );
+        let result = coerce_value_by_datatype(FlakeValue::Double(3.14), xsd::STRING);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ParseError::TypeCoercion(_)));
     }
 
     #[test]
     fn test_coerce_boolean_to_string_errors() {
-        let result = coerce_value_by_datatype(
-            FlakeValue::Boolean(true),
-            xsd::STRING
-        );
+        let result = coerce_value_by_datatype(FlakeValue::Boolean(true), xsd::STRING);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ParseError::TypeCoercion(_)));
     }
 
     #[test]
     fn test_coerce_number_to_boolean_errors() {
-        let result = coerce_value_by_datatype(
-            FlakeValue::Long(1),
-            xsd::BOOLEAN
-        );
+        let result = coerce_value_by_datatype(FlakeValue::Long(1), xsd::BOOLEAN);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ParseError::TypeCoercion(_)));
     }
 
     #[test]
     fn test_coerce_double_to_boolean_errors() {
-        let result = coerce_value_by_datatype(
-            FlakeValue::Double(1.0),
-            xsd::BOOLEAN
-        );
+        let result = coerce_value_by_datatype(FlakeValue::Double(1.0), xsd::BOOLEAN);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ParseError::TypeCoercion(_)));
     }
 
     #[test]
     fn test_coerce_non_integral_double_to_integer_errors() {
-        let result = coerce_value_by_datatype(
-            FlakeValue::Double(3.14),
-            xsd::INTEGER
-        );
+        let result = coerce_value_by_datatype(FlakeValue::Double(3.14), xsd::INTEGER);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, ParseError::TypeCoercion(_)));
@@ -1831,60 +1796,45 @@ mod tests {
 
     #[test]
     fn test_coerce_integral_double_to_integer_succeeds() {
-        let result = coerce_value_by_datatype(
-            FlakeValue::Double(42.0),
-            xsd::INTEGER
-        );
+        let result = coerce_value_by_datatype(FlakeValue::Double(42.0), xsd::INTEGER);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), FlakeValue::Long(42));
     }
 
     #[test]
     fn test_coerce_boolean_to_numeric_errors() {
-        let result = coerce_value_by_datatype(
-            FlakeValue::Boolean(true),
-            xsd::INTEGER
-        );
+        let result = coerce_value_by_datatype(FlakeValue::Boolean(true), xsd::INTEGER);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ParseError::TypeCoercion(_)));
     }
 
     #[test]
     fn test_coerce_number_to_temporal_errors() {
-        let result = coerce_value_by_datatype(
-            FlakeValue::Long(12345),
-            xsd::DATE_TIME
-        );
+        let result = coerce_value_by_datatype(FlakeValue::Long(12345), xsd::DATE_TIME);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ParseError::TypeCoercion(_)));
     }
 
     #[test]
     fn test_coerce_invalid_string_to_integer_errors() {
-        let result = coerce_value_by_datatype(
-            FlakeValue::String("not-a-number".to_string()),
-            xsd::INTEGER
-        );
+        let result =
+            coerce_value_by_datatype(FlakeValue::String("not-a-number".to_string()), xsd::INTEGER);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ParseError::TypeCoercion(_)));
     }
 
     #[test]
     fn test_coerce_invalid_string_to_decimal_errors() {
-        let result = coerce_value_by_datatype(
-            FlakeValue::String("not-a-number".to_string()),
-            xsd::DECIMAL
-        );
+        let result =
+            coerce_value_by_datatype(FlakeValue::String("not-a-number".to_string()), xsd::DECIMAL);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ParseError::TypeCoercion(_)));
     }
 
     #[test]
     fn test_coerce_invalid_string_to_boolean_errors() {
-        let result = coerce_value_by_datatype(
-            FlakeValue::String("maybe".to_string()),
-            xsd::BOOLEAN
-        );
+        let result =
+            coerce_value_by_datatype(FlakeValue::String("maybe".to_string()), xsd::BOOLEAN);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ParseError::TypeCoercion(_)));
     }
@@ -1892,17 +1842,12 @@ mod tests {
     #[test]
     fn test_coerce_passthrough_same_type() {
         // Already correct type - should pass through unchanged
-        let result = coerce_value_by_datatype(
-            FlakeValue::Long(42),
-            xsd::INTEGER
-        );
+        let result = coerce_value_by_datatype(FlakeValue::Long(42), xsd::INTEGER);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), FlakeValue::Long(42));
 
-        let result2 = coerce_value_by_datatype(
-            FlakeValue::String("hello".to_string()),
-            xsd::STRING
-        );
+        let result2 =
+            coerce_value_by_datatype(FlakeValue::String("hello".to_string()), xsd::STRING);
         assert!(result2.is_ok());
         assert_eq!(result2.unwrap(), FlakeValue::String("hello".to_string()));
     }
@@ -1918,11 +1863,9 @@ mod tests {
         let mut pp_counter: u32 = 0;
 
         // ^ex:knows+ — inverse of one-or-more
-        let path = UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::OneOrMore(
-            Box::new(UnresolvedPathExpr::Iri(Arc::from(
-                "http://example.org/knows",
-            ))),
-        )));
+        let path = UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::OneOrMore(Box::new(
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/knows")),
+        ))));
         let pattern = UnresolvedPattern::Path {
             subject: UnresolvedTerm::var("?s"),
             path,
@@ -1950,11 +1893,9 @@ mod tests {
         let mut pp_counter: u32 = 0;
 
         // ^ex:knows* — inverse of zero-or-more
-        let path = UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::ZeroOrMore(
-            Box::new(UnresolvedPathExpr::Iri(Arc::from(
-                "http://example.org/knows",
-            ))),
-        )));
+        let path = UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::ZeroOrMore(Box::new(
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/knows")),
+        ))));
         let pattern = UnresolvedPattern::Path {
             subject: UnresolvedTerm::var("?s"),
             path,
@@ -2012,10 +1953,7 @@ mod tests {
         let mut vars = VarRegistry::new();
         let mut pp_counter: u32 = 0;
 
-        let path = make_sequence_path(&[
-            "http://example.org/friend",
-            "http://example.org/name",
-        ]);
+        let path = make_sequence_path(&["http://example.org/friend", "http://example.org/name"]);
         let pattern = make_path_pattern("?s", path, "?name");
 
         let results =
@@ -2153,8 +2091,7 @@ mod tests {
         ]);
         let pattern = make_path_pattern("?s", path, "?o");
 
-        let result =
-            lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter);
+        let result = lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter);
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -2251,8 +2188,11 @@ mod tests {
             // Each branch should have 2 triple patterns (two-step chain)
             for (i, branch) in branches.iter().enumerate() {
                 assert_eq!(
-                    branch.len(), 2,
-                    "Branch {} should have 2 triples, got {}", i, branch.len()
+                    branch.len(),
+                    2,
+                    "Branch {} should have 2 triples, got {}",
+                    i,
+                    branch.len()
                 );
                 assert!(matches!(branch[0], Pattern::Triple(_)));
                 assert!(matches!(branch[1], Pattern::Triple(_)));
@@ -2268,7 +2208,9 @@ mod tests {
 
             // Second branch: ?s --colleague--> ?__pp1 --name--> ?name
             let t2 = extract_triple(&branches[1][0]);
-            assert!(matches!(&t2.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/colleague"));
+            assert!(
+                matches!(&t2.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/colleague")
+            );
             assert!(matches!(&t2.o, Term::Var(vid) if vars.name(*vid) == "?__pp1"));
             let t3 = extract_triple(&branches[1][1]);
             assert!(matches!(&t3.s, Term::Var(vid) if vars.name(*vid) == "?__pp1"));
@@ -2459,10 +2401,22 @@ mod tests {
                 })
                 .collect();
 
-            assert_eq!(combos[0], ("http://example.org/a".into(), "http://example.org/c".into()));
-            assert_eq!(combos[1], ("http://example.org/a".into(), "http://example.org/d".into()));
-            assert_eq!(combos[2], ("http://example.org/b".into(), "http://example.org/c".into()));
-            assert_eq!(combos[3], ("http://example.org/b".into(), "http://example.org/d".into()));
+            assert_eq!(
+                combos[0],
+                ("http://example.org/a".into(), "http://example.org/c".into())
+            );
+            assert_eq!(
+                combos[1],
+                ("http://example.org/a".into(), "http://example.org/d".into())
+            );
+            assert_eq!(
+                combos[2],
+                ("http://example.org/b".into(), "http://example.org/c".into())
+            );
+            assert_eq!(
+                combos[3],
+                ("http://example.org/b".into(), "http://example.org/d".into())
+            );
         } else {
             panic!("Expected Pattern::Union, got {:?}", results[0]);
         }
@@ -2535,8 +2489,7 @@ mod tests {
         let path = UnresolvedPathExpr::Sequence(steps);
         let pattern = make_path_pattern("?s", path, "?o");
 
-        let result =
-            lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter);
+        let result = lower_unresolved_pattern(&pattern, &encoder, &mut vars, &mut pp_counter);
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -2667,7 +2620,11 @@ mod tests {
             UnresolvedPathExpr::Sequence(steps) => {
                 assert_eq!(steps.len(), 3);
                 // Reversed: c, b, a
-                let expected = ["http://example.org/c", "http://example.org/b", "http://example.org/a"];
+                let expected = [
+                    "http://example.org/c",
+                    "http://example.org/b",
+                    "http://example.org/a",
+                ];
                 for (i, exp_iri) in expected.iter().enumerate() {
                     match &steps[i] {
                         UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
@@ -2762,7 +2719,10 @@ mod tests {
                     UnresolvedPathExpr::Iri(iri) => {
                         assert_eq!(iri.as_ref(), "http://example.org/a")
                     }
-                    other => panic!("Expected Iri (double-inverse cancelled) for step 1, got {:?}", other),
+                    other => panic!(
+                        "Expected Iri (double-inverse cancelled) for step 1, got {:?}",
+                        other
+                    ),
                 }
             }
             other => panic!("Expected Sequence, got {:?}", other),
@@ -2798,7 +2758,10 @@ mod tests {
                     UnresolvedPathExpr::Iri(iri) => {
                         assert_eq!(iri.as_ref(), "http://example.org/b")
                     }
-                    other => panic!("Expected Iri (double-inverse cancelled) for branch 1, got {:?}", other),
+                    other => panic!(
+                        "Expected Iri (double-inverse cancelled) for branch 1, got {:?}",
+                        other
+                    ),
                 }
             }
             other => panic!("Expected Alternative, got {:?}", other),
@@ -2817,11 +2780,9 @@ mod tests {
     #[test]
     fn test_rewrite_no_change_for_inverse_transitive() {
         // ^(a+) → None (handled by existing code)
-        let path = UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::OneOrMore(
-            Box::new(UnresolvedPathExpr::Iri(Arc::from(
-                "http://example.org/a",
-            ))),
-        )));
+        let path = UnresolvedPathExpr::Inverse(Box::new(UnresolvedPathExpr::OneOrMore(Box::new(
+            UnresolvedPathExpr::Iri(Arc::from("http://example.org/a")),
+        ))));
         assert!(rewrite_inverse_of_complex(&path).is_none());
     }
 
