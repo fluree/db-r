@@ -921,7 +921,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                         )
                     } else {
                         r1_cache_misses += 1;
-                        let (lh, s_ids, p_ids, o_kinds, o_keys) = decode_leaflet_region1(
+                        let (lh, cols) = decode_leaflet_region1(
                             leaflet_bytes,
                             header.p_width,
                             RunSortOrder::Psot,
@@ -930,11 +930,11 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                         let row_count = lh.row_count as usize;
                         let cached_r1 = CachedRegion1 {
                             s_ids: SubjectIdColumn::from_wide(
-                                s_ids.into_iter().map(SubjectId::from_u64).collect(),
+                                cols.s_ids.into_iter().map(SubjectId::from_u64).collect(),
                             ),
-                            p_ids: StdArc::from(p_ids.into_boxed_slice()),
-                            o_kinds: StdArc::from(o_kinds.into_boxed_slice()),
-                            o_keys: StdArc::from(o_keys.into_boxed_slice()),
+                            p_ids: StdArc::from(cols.p_ids.into_boxed_slice()),
+                            o_kinds: StdArc::from(cols.o_kinds.into_boxed_slice()),
+                            o_keys: StdArc::from(cols.o_keys.into_boxed_slice()),
                             row_count,
                         };
                         let s_ids = cached_r1.s_ids.clone();
@@ -945,17 +945,17 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                         (Some(lh), s_ids, p_ids, o_kinds, o_keys)
                     }
                 } else {
-                    let (lh, s_ids, p_ids, o_kinds, o_keys) =
+                    let (lh, cols) =
                         decode_leaflet_region1(leaflet_bytes, header.p_width, RunSortOrder::Psot)
                             .map_err(|e| QueryError::Internal(format!("decode region1: {}", e)))?;
                     (
                         Some(lh),
                         SubjectIdColumn::from_wide(
-                            s_ids.into_iter().map(SubjectId::from_u64).collect(),
+                            cols.s_ids.into_iter().map(SubjectId::from_u64).collect(),
                         ),
-                        StdArc::from(p_ids.into_boxed_slice()),
-                        StdArc::from(o_kinds.into_boxed_slice()),
-                        StdArc::from(o_keys.into_boxed_slice()),
+                        StdArc::from(cols.p_ids.into_boxed_slice()),
+                        StdArc::from(cols.o_kinds.into_boxed_slice()),
+                        StdArc::from(cols.o_keys.into_boxed_slice()),
                     )
                 };
 
@@ -1035,15 +1035,15 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                                 &lh_owned
                             }
                         };
-                        let (dt_values, t_values, lang_ids, i_values) =
+                        let cols =
                             decode_leaflet_region2(leaflet_bytes, lh, header.dt_width).map_err(
                                 |e| QueryError::Internal(format!("decode region2: {}", e)),
                             )?;
                         let cached_r2 = CachedRegion2 {
-                            dt_values: StdArc::from(dt_values.into_boxed_slice()),
-                            t_values: StdArc::from(t_values.into_boxed_slice()),
-                            lang_ids: StdArc::from(lang_ids.into_boxed_slice()),
-                            i_values: StdArc::from(i_values.into_boxed_slice()),
+                            dt_values: StdArc::from(cols.dt_values.into_boxed_slice()),
+                            t_values: StdArc::from(cols.t_values.into_boxed_slice()),
+                            lang_ids: StdArc::from(cols.lang_values.into_boxed_slice()),
+                            i_values: StdArc::from(cols.i_values.into_boxed_slice()),
                         };
                         let dt_values = cached_r2.dt_values.clone();
                         let t_values = cached_r2.t_values.clone();
@@ -1064,14 +1064,14 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                             &lh_owned
                         }
                     };
-                    let (dt_values, t_values, lang_ids, i_values) =
+                    let cols =
                         decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)
                             .map_err(|e| QueryError::Internal(format!("decode region2: {}", e)))?;
                     (
-                        StdArc::from(dt_values.into_boxed_slice()),
-                        StdArc::from(t_values.into_boxed_slice()),
-                        StdArc::from(lang_ids.into_boxed_slice()),
-                        StdArc::from(i_values.into_boxed_slice()),
+                        StdArc::from(cols.dt_values.into_boxed_slice()),
+                        StdArc::from(cols.t_values.into_boxed_slice()),
+                        StdArc::from(cols.lang_values.into_boxed_slice()),
+                        StdArc::from(cols.i_values.into_boxed_slice()),
                     )
                 };
 

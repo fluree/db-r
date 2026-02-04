@@ -17,6 +17,40 @@ use std::io;
 pub const LEAFLET_HEADER_LEN: usize = 61;
 
 // ============================================================================
+// Region column types
+// ============================================================================
+
+/// Decoded columns from Region 1 (core columns).
+///
+/// These are the primary flake components: subject, predicate, object kind/key.
+#[derive(Debug, Clone)]
+pub struct TripleColumns {
+    /// Subject IDs
+    pub s_ids: Vec<u64>,
+    /// Predicate IDs
+    pub p_ids: Vec<u32>,
+    /// Object kind indicators
+    pub o_kinds: Vec<u8>,
+    /// Object keys (value IDs or inline values)
+    pub o_keys: Vec<u64>,
+}
+
+/// Decoded columns from Region 2 (metadata columns).
+///
+/// These are the flake metadata: datatype, transaction, language, list index.
+#[derive(Debug, Clone)]
+pub struct MetadataColumns {
+    /// Datatype IDs
+    pub dt_values: Vec<u32>,
+    /// Transaction IDs
+    pub t_values: Vec<i64>,
+    /// Language tags (sparse, 0 = no language)
+    pub lang_values: Vec<u16>,
+    /// List indices (sparse, 0 = not a list item)
+    pub i_values: Vec<i32>,
+}
+
+// ============================================================================
 // Leaflet header
 // ============================================================================
 
@@ -771,13 +805,11 @@ pub struct DecodedLeaflet {
 ///
 /// This is used by `BinaryCursor` to apply integer-ID filters before paying to
 /// decompress/parse Region 2 metadata (dt/t/lang/i).
-///
-/// Returns `(header, s_ids, p_ids, o_kinds, o_keys)`.
 pub fn decode_leaflet_region1(
     data: &[u8],
     p_width: u8,
     sort_order: RunSortOrder,
-) -> io::Result<(LeafletHeader, Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
+) -> io::Result<(LeafletHeader, TripleColumns)> {
     // New format: no "legacy width=0" defaults.
     if p_width != 2 && p_width != 4 {
         return Err(io::Error::new(
@@ -810,8 +842,8 @@ pub fn decode_leaflet_region1(
     })?;
 
     // ---- Decode Region 1 ----
-    let (s_ids, p_ids, o_kinds, o_keys) = decode_region1(&r1_raw, row_count, p_width, sort_order)?;
-    Ok((header, s_ids, p_ids, o_kinds, o_keys))
+    let cols = decode_region1(&r1_raw, row_count, p_width, sort_order)?;
+    Ok((header, cols))
 }
 
 /// Decode Region 2 of a leaflet (metadata columns) using a previously-read header.
@@ -822,7 +854,7 @@ pub fn decode_leaflet_region2(
     data: &[u8],
     header: &LeafletHeader,
     dt_width: u8,
-) -> io::Result<(Vec<u32>, Vec<i64>, Vec<u16>, Vec<i32>)> {
+) -> io::Result<MetadataColumns> {
     // dt widens from u8 → u16; Region 2 must match the leaf header's dt_width.
     if dt_width != 1 && dt_width != 2 {
         return Err(io::Error::new(
@@ -866,21 +898,19 @@ pub fn decode_leaflet(
     dt_width: u8,
     sort_order: RunSortOrder,
 ) -> io::Result<DecodedLeaflet> {
-    let (header, s_ids, p_ids, o_kinds, o_keys) =
-        decode_leaflet_region1(data, p_width, sort_order)?;
-    let (dt_values, t_values, lang_ids, i_values) =
-        decode_leaflet_region2(data, &header, dt_width)?;
+    let (header, r1) = decode_leaflet_region1(data, p_width, sort_order)?;
+    let r2 = decode_leaflet_region2(data, &header, dt_width)?;
 
     Ok(DecodedLeaflet {
         row_count: header.row_count as usize,
-        s_ids,
-        p_ids,
-        o_kinds,
-        o_keys,
-        dt_values,
-        t_values,
-        lang_ids,
-        i_values,
+        s_ids: r1.s_ids,
+        p_ids: r1.p_ids,
+        o_kinds: r1.o_kinds,
+        o_keys: r1.o_keys,
+        dt_values: r2.dt_values,
+        t_values: r2.t_values,
+        lang_ids: r2.lang_values,
+        i_values: r2.i_values,
     })
 }
 
@@ -889,14 +919,12 @@ pub fn decode_leaflet(
 // ============================================================================
 
 /// Decode Region 1 for the given sort order.
-///
-/// Returns `(s_ids, p_ids, o_kinds, o_keys)` regardless of sort order.
 fn decode_region1(
     data: &[u8],
     row_count: usize,
     p_width: u8,
     order: RunSortOrder,
-) -> io::Result<(Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
+) -> io::Result<TripleColumns> {
     match order {
         RunSortOrder::Spot => decode_region1_spot(data, row_count, p_width),
         RunSortOrder::Psot => decode_region1_psot(data, row_count),
@@ -1074,39 +1102,39 @@ fn decode_region1_spot(
     data: &[u8],
     row_count: usize,
     p_width: u8,
-) -> io::Result<(Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
+) -> io::Result<TripleColumns> {
     let mut pos = 0;
     let s_ids = decode_rle_u64(data, &mut pos, row_count)?;
     let p_ids = read_col_p_id(data, &mut pos, row_count, p_width)?;
     let o_kinds = read_col_u8(data, &mut pos, row_count)?;
     let o_keys = read_col_u64(data, &mut pos, row_count)?;
-    Ok((s_ids, p_ids, o_kinds, o_keys))
+    Ok(TripleColumns { s_ids, p_ids, o_kinds, o_keys })
 }
 
 /// PSOT: RLE(p_id:u32), s_id[u64], o_kind[u8], o_key[u64]
 fn decode_region1_psot(
     data: &[u8],
     row_count: usize,
-) -> io::Result<(Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
+) -> io::Result<TripleColumns> {
     let mut pos = 0;
     let p_ids = decode_rle_u32(data, &mut pos, row_count)?;
     let s_ids = read_col_u64(data, &mut pos, row_count)?;
     let o_kinds = read_col_u8(data, &mut pos, row_count)?;
     let o_keys = read_col_u64(data, &mut pos, row_count)?;
-    Ok((s_ids, p_ids, o_kinds, o_keys))
+    Ok(TripleColumns { s_ids, p_ids, o_kinds, o_keys })
 }
 
 /// POST: RLE(p_id:u32), o_kind[u8], o_key[u64], s_id[u64]
 fn decode_region1_post(
     data: &[u8],
     row_count: usize,
-) -> io::Result<(Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
+) -> io::Result<TripleColumns> {
     let mut pos = 0;
     let p_ids = decode_rle_u32(data, &mut pos, row_count)?;
     let o_kinds = read_col_u8(data, &mut pos, row_count)?;
     let o_keys = read_col_u64(data, &mut pos, row_count)?;
     let s_ids = read_col_u64(data, &mut pos, row_count)?;
-    Ok((s_ids, p_ids, o_kinds, o_keys))
+    Ok(TripleColumns { s_ids, p_ids, o_kinds, o_keys })
 }
 
 /// OPST: RLE(o_key:u64), p_id[pw], s_id[u64]
@@ -1116,7 +1144,7 @@ fn decode_region1_opst(
     data: &[u8],
     row_count: usize,
     p_width: u8,
-) -> io::Result<(Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
+) -> io::Result<TripleColumns> {
     use fluree_db_core::value_id::ObjKind;
     let mut pos = 0;
     let o_keys = decode_rle_u64(data, &mut pos, row_count)?;
@@ -1124,7 +1152,7 @@ fn decode_region1_opst(
     let s_ids = read_col_u64(data, &mut pos, row_count)?;
     // OPST is always REF_ID — fill o_kinds with the constant
     let o_kinds = vec![ObjKind::REF_ID.as_u8(); row_count];
-    Ok((s_ids, p_ids, o_kinds, o_keys))
+    Ok(TripleColumns { s_ids, p_ids, o_kinds, o_keys })
 }
 
 /// Decode Region 2: dt[] + t[] + lang bitmap + i bitmap.
@@ -1134,7 +1162,7 @@ fn decode_region2(
     data: &[u8],
     row_count: usize,
     dt_width: u8,
-) -> io::Result<(Vec<u32>, Vec<i64>, Vec<u16>, Vec<i32>)> {
+) -> io::Result<MetadataColumns> {
     if dt_width != 1 && dt_width != 2 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1253,7 +1281,12 @@ fn decode_region2(
         }
     }
 
-    Ok((dt_values, t_values, lang_ids, i_values))
+    Ok(MetadataColumns {
+        dt_values,
+        t_values,
+        lang_values: lang_ids,
+        i_values,
+    })
 }
 
 // ============================================================================
