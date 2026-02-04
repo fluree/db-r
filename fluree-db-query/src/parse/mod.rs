@@ -834,14 +834,14 @@ fn parse_graph_select_object(
         ParseError::InvalidSelect("graph-select value must be an array".to_string())
     })?;
 
-    let (selections, reverse, has_wildcard) = parse_selection_specs(specs_arr, context)?;
+    let specs = parse_selection_specs(specs_arr, context)?;
 
     Ok(UnresolvedGraphSelectSpec {
         root,
-        selections,
-        reverse,
+        selections: specs.forward,
+        reverse: specs.reverse,
         depth: 0, // Will be set later from query-level "depth" parameter
-        has_wildcard,
+        has_wildcard: specs.has_wildcard,
     })
 }
 
@@ -862,17 +862,18 @@ fn make_nested_spec(
     }
 }
 
-/// Parse selection specs array, separating forward and reverse properties
-///
-/// Returns: (forward_selections, reverse_map, has_wildcard)
-fn parse_selection_specs(
-    arr: &[JsonValue],
-    context: &ParsedContext,
-) -> Result<(
-    Vec<UnresolvedSelectionSpec>,
-    std::collections::HashMap<String, Option<Box<UnresolvedNestedSelectSpec>>>,
-    bool,
-)> {
+/// Parsed selection specifications with forward and reverse properties separated.
+struct SelectionSpecs {
+    /// Forward (normal) property selections
+    forward: Vec<UnresolvedSelectionSpec>,
+    /// Reverse property selections mapped by predicate IRI
+    reverse: std::collections::HashMap<String, Option<Box<UnresolvedNestedSelectSpec>>>,
+    /// Whether a wildcard (*) was present
+    has_wildcard: bool,
+}
+
+/// Parse selection specs array, separating forward and reverse properties.
+fn parse_selection_specs(arr: &[JsonValue], context: &ParsedContext) -> Result<SelectionSpecs> {
     let mut forward = Vec::new();
     let mut reverse: std::collections::HashMap<String, Option<Box<UnresolvedNestedSelectSpec>>> =
         std::collections::HashMap::new();
@@ -927,10 +928,10 @@ fn parse_selection_specs(
                 })?;
 
                 // Recursively parse sub-selections - preserves both forward AND reverse
-                let (sub_forward, sub_reverse, sub_has_wildcard) =
-                    parse_selection_specs(sub_arr, context)?;
+                let sub_specs = parse_selection_specs(sub_arr, context)?;
 
-                let nested_spec = make_nested_spec(sub_forward, sub_reverse, sub_has_wildcard);
+                let nested_spec =
+                    make_nested_spec(sub_specs.forward, sub_specs.reverse, sub_specs.has_wildcard);
 
                 let is_reverse = entry.as_ref().and_then(|e| e.reverse.as_ref());
                 if let Some(rev_iri) = is_reverse {
@@ -950,7 +951,11 @@ fn parse_selection_specs(
         }
     }
 
-    Ok((forward, reverse, has_wildcard))
+    Ok(SelectionSpecs {
+        forward,
+        reverse,
+        has_wildcard,
+    })
 }
 
 // parse_depth moved to options module
