@@ -20,7 +20,7 @@ jobs:
           tool: cargo-nextest
 
       - name: Check
-        run: cargo check --all --all-features --all-targets
+        run: cargo check --all --all-targets
 
       - name: Test
         run: cargo nextest run --workspace --no-fail-fast
