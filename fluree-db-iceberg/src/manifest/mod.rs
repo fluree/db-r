@@ -9,11 +9,11 @@
 //! - **Manifest file**: Lists data files with their column statistics (bounds, counts)
 //! - **Value codec**: Decodes Iceberg's binary encoding for bounds comparison
 
-pub mod manifest;
+pub mod data_file;
 pub mod manifest_list;
 pub mod value_codec;
 
-pub use manifest::{
+pub use data_file::{
     parse_manifest, parse_manifest_with_deleted, DataFile, FileFormat, ManifestEntry,
     ManifestEntryStatus, PartitionData,
 };
