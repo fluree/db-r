@@ -300,6 +300,20 @@ impl ObjKey {
         self.0 as u32
     }
 
+    /// Encode a `u64` subject reference (sid64) directly.
+    ///
+    /// Used for REF_ID when subject IDs are namespace-structured 64-bit values.
+    #[inline]
+    pub const fn encode_sid64(id: u64) -> Self {
+        Self(id)
+    }
+
+    /// Decode a `u64` subject reference (sid64).
+    #[inline]
+    pub const fn decode_sid64(self) -> u64 {
+        self.0
+    }
+
     // ---- Date/Time/DateTime convenience wrappers ----
 
     /// Encode days since Unix epoch (signed i32) using the signed transform.
@@ -520,7 +534,7 @@ impl DatatypeId {
     /// This is the primary entry point for the resolver. Matches against
     /// well-known `fluree_vocab` namespace codes and local names.
     #[inline]
-    pub fn from_ns_name(ns_code: i32, name: &str) -> Self {
+    pub fn from_ns_name(ns_code: u16, name: &str) -> Self {
         match ns_code {
             namespaces::XSD => Self::from_xsd_name(name),
             namespaces::RDF => Self::from_rdf_name(name),

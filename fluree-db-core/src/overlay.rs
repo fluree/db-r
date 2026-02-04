@@ -143,7 +143,7 @@ mod tests {
         }
     }
 
-    fn make_flake(s: i32, t: i64) -> Flake {
+    fn make_flake(s: u16, t: i64) -> Flake {
         Flake::new(
             Sid::new(s, format!("s{}", s)),
             Sid::new(1, "p"),

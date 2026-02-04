@@ -13,10 +13,10 @@
 //!   _pad: [u8; 3]
 //!   leaf_count: u32
 //!   _reserved: u32
-//! [LeafEntries: leaf_count × 96 bytes]
+//! [LeafEntries: leaf_count × 104 bytes]
 //!   For each leaf:
-//!     first_key: RunRecord (40 bytes)
-//!     last_key:  RunRecord (40 bytes)
+//!     first_key: RunRecord (44 bytes)
+//!     last_key:  RunRecord (44 bytes)
 //!     row_count: u64
 //!     path_offset: u32
 //!     path_len: u16
@@ -26,7 +26,7 @@
 //! ```
 
 use super::leaf::LeafInfo;
-use super::run_record::{cmp_spot, RunRecord};
+use super::run_record::{cmp_spot, RunRecord, RECORD_WIRE_SIZE};
 use sha2::{Sha256, Digest};
 use std::cmp::Ordering;
 use std::io;
@@ -43,7 +43,7 @@ const BRANCH_VERSION: u8 = 1;
 const BRANCH_HEADER_LEN: usize = 16;
 
 /// Size of each leaf entry in the manifest (excluding path).
-const LEAF_ENTRY_LEN: usize = 96;
+const LEAF_ENTRY_LEN: usize = 104;
 
 // ============================================================================
 // BranchManifest (in-memory)
@@ -143,7 +143,7 @@ impl BranchManifest {
     ///
     /// Returns a range of leaf indices. A subject's facts may span multiple
     /// leaves if the subject has many predicates/objects.
-    pub fn find_leaves_for_subject(&self, g_id: u32, s_id: u32) -> Range<usize> {
+    pub fn find_leaves_for_subject(&self, g_id: u32, s_id: u64) -> Range<usize> {
         if self.leaves.is_empty() {
             return 0..0;
         }
@@ -152,14 +152,14 @@ impl BranchManifest {
         // We want the first leaf whose last_key >= (g_id, s_id, 0, MIN, ...)
         let start = self.leaves.partition_point(|entry| {
             entry.last_key.g_id < g_id
-                || (entry.last_key.g_id == g_id && entry.last_key.s_id < s_id)
+                || (entry.last_key.g_id == g_id && entry.last_key.s_id.as_u64() < s_id)
         });
 
         // Find last leaf that could contain (g_id, s_id):
         // We want the first leaf whose first_key > (g_id, s_id, MAX, MAX, ...)
         let end = self.leaves.partition_point(|entry| {
             entry.first_key.g_id < g_id
-                || (entry.first_key.g_id == g_id && entry.first_key.s_id <= s_id)
+                || (entry.first_key.g_id == g_id && entry.first_key.s_id.as_u64() <= s_id)
         });
 
         start..end
@@ -216,7 +216,7 @@ fn build_branch_bytes(leaves: &[LeafInfo]) -> Vec<u8> {
     buf.extend_from_slice(&0u32.to_le_bytes()); // reserved
 
     // ---- Leaf entries ----
-    let mut rec_buf = [0u8; 40];
+    let mut rec_buf = [0u8; RECORD_WIRE_SIZE];
     for (i, leaf) in leaves.iter().enumerate() {
         leaf.first_key.write_le(&mut rec_buf);
         buf.extend_from_slice(&rec_buf);
@@ -303,10 +303,10 @@ pub fn read_branch_manifest_from_bytes(
     let mut pos = BRANCH_HEADER_LEN;
 
     for _ in 0..leaf_count {
-        let first_key = RunRecord::read_le(data[pos..pos + 40].try_into().unwrap());
-        pos += 40;
-        let last_key = RunRecord::read_le(data[pos..pos + 40].try_into().unwrap());
-        pos += 40;
+        let first_key = RunRecord::read_le(data[pos..pos + RECORD_WIRE_SIZE].try_into().unwrap());
+        pos += RECORD_WIRE_SIZE;
+        let last_key = RunRecord::read_le(data[pos..pos + RECORD_WIRE_SIZE].try_into().unwrap());
+        pos += RECORD_WIRE_SIZE;
         let row_count = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
         pos += 8;
         let path_offset = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
@@ -361,11 +361,12 @@ pub fn read_branch_manifest_from_bytes(
 mod tests {
     use super::*;
     use crate::run_index::global_dict::dt_ids;
+    use fluree_db_core::sid64::Sid64;
     use fluree_db_core::value_id::{ObjKind, ObjKey};
 
-    fn make_record(g_id: u32, s_id: u32, p_id: u32, val: i64, t: i64) -> RunRecord {
+    fn make_record(g_id: u32, s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
         RunRecord::new(
-            g_id, s_id, p_id,
+            g_id, Sid64::from_u64(s_id), p_id,
             ObjKind::NUM_INT, ObjKey::encode_i64(val),
             t, true, dt_ids::INTEGER, 0, None,
         )
@@ -423,10 +424,10 @@ mod tests {
 
         assert_eq!(manifest.leaves.len(), 3);
         assert_eq!(manifest.leaves[0].row_count, 5000);
-        assert_eq!(manifest.leaves[0].first_key.s_id, 1);
-        assert_eq!(manifest.leaves[0].last_key.s_id, 100);
-        assert_eq!(manifest.leaves[1].first_key.s_id, 101);
-        assert_eq!(manifest.leaves[2].last_key.s_id, 300);
+        assert_eq!(manifest.leaves[0].first_key.s_id.as_u64(), 1);
+        assert_eq!(manifest.leaves[0].last_key.s_id.as_u64(), 100);
+        assert_eq!(manifest.leaves[1].first_key.s_id.as_u64(), 101);
+        assert_eq!(manifest.leaves[2].last_key.s_id.as_u64(), 300);
         // Verify content hashes were preserved
         assert_eq!(manifest.leaves[0].content_hash, format!("{:064x}", 0));
         assert_eq!(manifest.leaves[1].content_hash, format!("{:064x}", 1));
@@ -462,12 +463,12 @@ mod tests {
         // Key in leaf 0
         let key = make_record(0, 50, 1, 0, 1);
         let leaf = manifest.find_leaf(&key).unwrap();
-        assert_eq!(leaf.first_key.s_id, 1);
+        assert_eq!(leaf.first_key.s_id.as_u64(), 1);
 
         // Key in leaf 1
         let key = make_record(0, 150, 1, 0, 1);
         let leaf = manifest.find_leaf(&key).unwrap();
-        assert_eq!(leaf.first_key.s_id, 101);
+        assert_eq!(leaf.first_key.s_id.as_u64(), 101);
 
         // Key before all leaves
         let key = make_record(0, 0, 0, 0, 0);

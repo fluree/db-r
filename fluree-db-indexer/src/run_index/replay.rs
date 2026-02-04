@@ -32,7 +32,7 @@ use std::collections::HashSet;
 /// Contains columnar data in the same format as decoded Region 1+2,
 /// representing the database state as it existed at `t_target`.
 pub struct ReplayedLeaflet {
-    pub s_ids: Vec<u32>,
+    pub s_ids: Vec<u64>,
     pub p_ids: Vec<u32>,
     pub o_kinds: Vec<u8>,
     pub o_keys: Vec<u64>,
@@ -95,7 +95,7 @@ fn cmp_r3_for_order(
 /// fit in `u16` (max 65,535 distinct datatype IRIs). The truncation to `u16`
 /// here matches `FactKey::from_decoded_row()` and `Region3Entry.dt`.
 fn cmp_row_vs_r3(
-    s_id: u32,
+    s_id: u64,
     p_id: u32,
     o_kind: u8,
     o_key: u64,
@@ -153,7 +153,7 @@ fn cmp_row_vs_r3(
 /// * `t_target` — Target time to reconstruct state at
 /// * `order` — Sort order of this leaflet (determines merge ordering)
 pub fn replay_leaflet(
-    r1_s_ids: &[u32],
+    r1_s_ids: &[u64],
     r1_p_ids: &[u32],
     r1_o_kinds: &[u8],
     r1_o_keys: &[u64],
@@ -342,7 +342,7 @@ pub fn replay_leaflet(
 fn emit_r1_row(
     out: &mut ReplayedLeaflet,
     idx: usize,
-    s_ids: &[u32],
+    s_ids: &[u64],
     p_ids: &[u32],
     o_kinds: &[u8],
     o_keys: &[u64],
@@ -384,7 +384,7 @@ mod tests {
     use super::super::run_record::NO_LIST_INDEX;
 
     /// Helper: build a Region3Entry.
-    fn r3(s_id: u32, p_id: u32, o_kind: u8, o_key: u64, t_signed: i64, dt: u16) -> Region3Entry {
+    fn r3(s_id: u64, p_id: u32, o_kind: u8, o_key: u64, t_signed: i64, dt: u16) -> Region3Entry {
         Region3Entry {
             s_id,
             p_id,

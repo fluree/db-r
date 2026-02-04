@@ -15,12 +15,12 @@ use super::*;
 use crate::owl;
 
 /// Create a test SID from a namespace code.
-pub(crate) fn sid(n: i32) -> Sid {
+pub(crate) fn sid(n: u16) -> Sid {
     Sid::new(n, format!("test:{}", n))
 }
 
 /// Create a reference flake for testing.
-pub(crate) fn make_ref_flake(s: i32, p: i32, o: i32, t: i64) -> Flake {
+pub(crate) fn make_ref_flake(s: u16, p: u16, o: u16, t: i64) -> Flake {
     Flake::new(
         sid(s),
         sid(p),

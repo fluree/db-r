@@ -32,7 +32,7 @@ pub struct Db<S> {
     pub version: i32,
 
     /// Namespace code -> IRI prefix mapping
-    pub namespace_codes: HashMap<i32, String>,
+    pub namespace_codes: HashMap<u16, String>,
 
     /// Index statistics (flakes count, total size)
     pub stats: Option<IndexStats>,
@@ -41,6 +41,16 @@ pub struct Db<S> {
 
     /// Cached schema hierarchy for reasoning (lazily computed)
     schema_hierarchy_cache: OnceCell<SchemaHierarchy>,
+
+    /// Per-namespace max local_id watermarks from the index root.
+    ///
+    /// Used by `DictNovelty` to route forward lookups between the
+    /// persisted dictionary tree and the novel overlay. Empty vec
+    /// means "everything is novel" (genesis or old root without watermarks).
+    pub subject_watermarks: Vec<u64>,
+
+    /// Max assigned string_id from the index root. 0 = no strings indexed.
+    pub string_watermark: u32,
 
     /// Binary range provider.
     ///
@@ -63,6 +73,8 @@ impl<S: Clone> Clone for Db<S> {
             stats: self.stats.clone(),
             schema: self.schema.clone(),
             schema_hierarchy_cache: self.schema_hierarchy_cache.clone(),
+            subject_watermarks: self.subject_watermarks.clone(),
+            string_watermark: self.string_watermark,
             range_provider: self.range_provider.clone(),
             storage: self.storage.clone(),
         }
@@ -96,6 +108,8 @@ impl<S: Storage> Db<S> {
             stats: None,
             schema: None,
             schema_hierarchy_cache: OnceCell::new(),
+            subject_watermarks: Vec::new(),
+            string_watermark: 0,
             range_provider: None,
             storage,
         }
@@ -110,9 +124,11 @@ impl<S: Storage> Db<S> {
     pub fn new_meta(
         alias: String,
         t: i64,
-        namespace_codes: HashMap<i32, String>,
+        namespace_codes: HashMap<u16, String>,
         stats: Option<IndexStats>,
         schema: Option<IndexSchema>,
+        subject_watermarks: Vec<u64>,
+        string_watermark: u32,
         storage: S,
     ) -> Self {
         Self {
@@ -123,6 +139,8 @@ impl<S: Storage> Db<S> {
             stats,
             schema,
             schema_hierarchy_cache: OnceCell::new(),
+            subject_watermarks,
+            string_watermark,
             range_provider: None,
             storage,
         }
@@ -168,7 +186,7 @@ impl<S: Storage> Db<S> {
         let mut namespace_codes = HashMap::new();
         if let Some(obj) = root["namespace_codes"].as_object() {
             for (k, val) in obj {
-                if let (Ok(code), Some(prefix)) = (k.parse::<i32>(), val.as_str()) {
+                if let (Ok(code), Some(prefix)) = (k.parse::<u16>(), val.as_str()) {
                     namespace_codes.insert(code, prefix.to_string());
                 }
             }
@@ -183,7 +201,18 @@ impl<S: Storage> Db<S> {
             .and_then(|s| serde_json::from_value::<RawDbRootSchema>(s.clone()).ok())
             .map(|ref raw| raw_schema_to_index_schema(raw));
 
-        Ok(Self::new_meta(alias, t, namespace_codes, stats, schema, storage))
+        // Dictionary watermarks (forwards-safe: missing fields default to empty/0)
+        let subject_watermarks = root
+            .get("subject_watermarks")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect())
+            .unwrap_or_default();
+        let string_watermark = root
+            .get("string_watermark")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+
+        Ok(Self::new_meta(alias, t, namespace_codes, stats, schema, subject_watermarks, string_watermark, storage))
     }
 
     /// Attach a range provider for binary index queries.
@@ -196,7 +225,7 @@ impl<S: Storage> Db<S> {
     ///
     /// Returns None if the namespace is not registered.
     pub fn encode_iri(&self, iri: &str) -> Option<Sid> {
-        let mut best_match: Option<(i32, usize)> = None;
+        let mut best_match: Option<(u16, usize)> = None;
 
         for (&code, prefix) in &self.namespace_codes {
             if iri.starts_with(prefix) && prefix.len() > best_match.map(|(_, l)| l).unwrap_or(0) {
@@ -220,7 +249,7 @@ impl<S: Storage> Db<S> {
     }
 
     /// Get all registered namespace codes
-    pub fn namespaces(&self) -> &HashMap<i32, String> {
+    pub fn namespaces(&self) -> &HashMap<u16, String> {
         &self.namespace_codes
     }
 

@@ -1273,44 +1273,55 @@ pub mod fluree {
 
 /// Namespace codes for IRI encoding
 ///
-/// Fluree reserves namespace codes 0-100 for built-in namespaces.
-/// User-defined namespaces start at 101.
+/// Codes 0 through `USER_START - 1` are reserved for built-in namespaces.
+/// User-defined namespaces are allocated contiguously starting at `USER_START`.
+/// Code `OVERFLOW` (0xFFFF) is reserved for IRIs whose namespace could not
+/// be assigned a code (full IRI stored as the SID name).
 pub mod namespaces {
-    /// Code 0: empty / relative IRI prefix
-    pub const EMPTY: i32 = 0;
+    /// Code 0: empty / relative IRI prefix (@base resolution)
+    pub const EMPTY: u16 = 0;
 
     /// Code 1: JSON-LD keywords / internal "@" namespace
-    pub const JSON_LD: i32 = 1;
+    pub const JSON_LD: u16 = 1;
 
     /// Code 2: XSD datatypes
-    pub const XSD: i32 = 2;
+    pub const XSD: u16 = 2;
 
     /// Code 3: RDF
-    pub const RDF: i32 = 3;
+    pub const RDF: u16 = 3;
 
     /// Code 4: RDFS
-    pub const RDFS: i32 = 4;
+    pub const RDFS: u16 = 4;
 
     /// Code 5: SHACL
-    pub const SHACL: i32 = 5;
+    pub const SHACL: u16 = 5;
 
     /// Code 6: OWL
-    pub const OWL: i32 = 6;
+    pub const OWL: u16 = 6;
 
-    /// Code 8: Fluree ledger namespace
-    pub const FLUREE_LEDGER: i32 = 8;
+    /// Code 7: Fluree ledger namespace
+    pub const FLUREE_LEDGER: u16 = 7;
 
-    /// Code 11: DID key prefix
-    pub const DID_KEY: i32 = 11;
+    /// Code 8: DID key prefix
+    pub const DID_KEY: u16 = 8;
 
-    /// Code 12: Fluree commit content address prefix
-    pub const FLUREE_COMMIT: i32 = 12;
+    /// Code 9: Fluree commit content address prefix
+    pub const FLUREE_COMMIT: u16 = 9;
 
-    /// Code 24: blank nodes (_:)
-    pub const BLANK_NODE: i32 = 24;
+    /// Code 10: blank nodes (_:)
+    pub const BLANK_NODE: u16 = 10;
 
-    /// First code available for user-defined namespaces
-    pub const USER_START: i32 = 101;
+    /// First code available for user-defined namespaces.
+    /// Built-in codes occupy 0..=10.
+    pub const USER_START: u16 = 11;
+
+    /// Overflow namespace code (0xFFFE).
+    /// Assigned when all user codes are exhausted. The SID name stores the
+    /// full IRI (no prefix stripping).
+    ///
+    /// Note: 0xFFFF is reserved for `Sid::max()` sentinel, so overflow
+    /// uses 0xFFFE.
+    pub const OVERFLOW: u16 = 0xFFFE;
 }
 
 /// Common predicate local names (for schema extraction, validation, etc.)

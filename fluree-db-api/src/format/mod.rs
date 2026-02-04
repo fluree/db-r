@@ -51,7 +51,7 @@ pub enum FormatError {
 
     /// Unknown namespace code (Sid could not be decoded to IRI)
     #[error("Unknown namespace code: {0}")]
-    UnknownNamespace(i32),
+    UnknownNamespace(u16),
 
     /// Invalid binding state encountered
     #[error("Invalid binding state: {0}")]

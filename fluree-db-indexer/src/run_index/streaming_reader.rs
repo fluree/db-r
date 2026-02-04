@@ -5,12 +5,12 @@
 //! 21 concurrent streams would otherwise require 21 GB.
 
 use super::run_file::{deserialize_lang_dict, RunFileHeader, RUN_HEADER_LEN};
-use super::run_record::RunRecord;
+use super::run_record::{RunRecord, RECORD_WIRE_SIZE};
 use super::global_dict::LanguageTagDict;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
-/// Number of records to buffer per read. 8192 × 40 bytes = 320 KB.
+/// Number of records to buffer per read. 8192 × 44 bytes ≈ 352 KB.
 const BUFFER_SIZE: usize = 8192;
 
 /// Buffered, forward-only reader for run files.
@@ -121,7 +121,7 @@ impl StreamingRunReader {
         }
 
         // Read raw bytes
-        let byte_count = to_read * 40;
+        let byte_count = to_read * RECORD_WIRE_SIZE;
         let mut raw = vec![0u8; byte_count];
         self.file.read_exact(&mut raw)?;
 
@@ -129,8 +129,8 @@ impl StreamingRunReader {
         self.buffer.clear();
         self.buffer.reserve(to_read);
         for i in 0..to_read {
-            let offset = i * 40;
-            let buf: &[u8; 40] = raw[offset..offset + 40].try_into().unwrap();
+            let offset = i * RECORD_WIRE_SIZE;
+            let buf: &[u8; RECORD_WIRE_SIZE] = raw[offset..offset + RECORD_WIRE_SIZE].try_into().unwrap();
             let mut rec = RunRecord::read_le(buf);
 
             // Apply lang_id remapping
@@ -161,12 +161,13 @@ mod tests {
     use crate::run_index::run_file::write_run_file;
     use crate::run_index::run_record::{RunSortOrder, cmp_spot};
     use crate::run_index::global_dict::dt_ids;
+    use fluree_db_core::sid64::Sid64;
     use fluree_db_core::value_id::{ObjKind, ObjKey};
     use std::cmp::Ordering;
 
-    fn make_record(s_id: u32, p_id: u32, val: i64, t: i64) -> RunRecord {
+    fn make_record(s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
         RunRecord::new(
-            0, s_id, p_id,
+            0, Sid64::from_u64(s_id), p_id,
             ObjKind::NUM_INT, ObjKey::encode_i64(val),
             t, true, dt_ids::INTEGER, 0, None,
         )
@@ -217,7 +218,7 @@ mod tests {
         // More records than BUFFER_SIZE to test buffer refill
         let n = BUFFER_SIZE * 2 + 500;
         let lang_dict = LanguageTagDict::new();
-        let mut records: Vec<RunRecord> = (0..n as u32)
+        let mut records: Vec<RunRecord> = (0..n as u64)
             .map(|i| make_record(i, 1, i as i64, 1))
             .collect();
         records.sort_unstable_by(cmp_spot);
@@ -249,9 +250,9 @@ mod tests {
         lang_dict.get_or_insert(Some("fr")); // local id 2
 
         let records = vec![
-            RunRecord::new(0, 1, 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(0), 1, true, dt_ids::LANG_STRING, 1, None),
-            RunRecord::new(0, 1, 2, ObjKind::LEX_ID, ObjKey::encode_u32_id(1), 1, true, dt_ids::LANG_STRING, 2, None),
-            RunRecord::new(0, 2, 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(2), 1, true, dt_ids::STRING, 0, None),
+            RunRecord::new(0, Sid64::from_u64(1), 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(0), 1, true, dt_ids::LANG_STRING, 1, None),
+            RunRecord::new(0, Sid64::from_u64(1), 2, ObjKind::LEX_ID, ObjKey::encode_u32_id(1), 1, true, dt_ids::LANG_STRING, 2, None),
+            RunRecord::new(0, Sid64::from_u64(2), 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(2), 1, true, dt_ids::STRING, 0, None),
         ];
 
         write_run_file(&path, &records, &lang_dict, RunSortOrder::Spot, 1, 1).unwrap();

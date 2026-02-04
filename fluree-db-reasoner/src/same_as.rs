@@ -253,7 +253,7 @@ impl Default for FrozenSameAs {
 mod tests {
     use super::*;
 
-    fn sid(n: i32) -> Sid {
+    fn sid(n: u16) -> Sid {
         Sid::new(n, format!("test:{}", n))
     }
 

@@ -148,11 +148,11 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
         index_t: i64,
         target_t: i64,
         ledger_alias: &str,
-    ) -> Result<(Novelty, std::collections::HashMap<i32, String>)> {
+    ) -> Result<(Novelty, std::collections::HashMap<u16, String>)> {
         use std::collections::HashMap;
 
         let mut novelty = Novelty::new(index_t);
-        let mut merged_ns_delta: HashMap<i32, String> = HashMap::new();
+        let mut merged_ns_delta: HashMap<u16, String> = HashMap::new();
 
         // trace_commits streams from HEAD backwards, stopping at index_t
         let stream = trace_commits(storage, head_address.to_string(), index_t);
@@ -249,7 +249,7 @@ mod tests {
     use fluree_db_nameservice::memory::MemoryNameService;
     use fluree_db_nameservice::Publisher;
 
-    fn make_flake(s: i32, p: i32, o: i64, t: i64) -> Flake {
+    fn make_flake(s: u16, p: u16, o: i64, t: i64) -> Flake {
         Flake::new(
             Sid::new(s, format!("s{}", s)),
             Sid::new(p, format!("p{}", p)),

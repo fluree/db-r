@@ -440,7 +440,7 @@ impl PolicyWrapper {
 mod tests {
     use super::*;
 
-    fn make_sid(ns: i32, name: &str) -> Sid {
+    fn make_sid(ns: u16, name: &str) -> Sid {
         Sid::new(ns, name)
     }
 

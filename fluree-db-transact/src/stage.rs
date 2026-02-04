@@ -901,7 +901,7 @@ mod tests {
         let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default()).await.unwrap();
 
         assert_eq!(view.staged_len(), 1);
-        // Blank nodes use the predefined _: prefix (code 24), no new namespace allocation needed
+        // Blank nodes use the predefined _: prefix (BLANK_NODE code), no new namespace allocation needed
         assert!(ns_registry.has_prefix("_:"));
     }
 

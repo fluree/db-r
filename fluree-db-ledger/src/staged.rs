@@ -277,7 +277,7 @@ mod tests {
     use fluree_db_core::{FlakeValue, MemoryStorage, Sid};
     use fluree_db_novelty::Novelty;
 
-    fn make_flake(s: i32, p: i32, o: i64, t: i64) -> Flake {
+    fn make_flake(s: u16, p: u16, o: i64, t: i64) -> Flake {
         Flake::new(
             Sid::new(s, format!("s{}", s)),
             Sid::new(p, format!("p{}", p)),
@@ -306,7 +306,7 @@ mod tests {
         let staged = StagedOverlay::from_flakes(flakes);
 
         // SPOT should be sorted by subject
-        let spot_subjects: Vec<i32> = staged
+        let spot_subjects: Vec<u16> = staged
             .spot
             .iter()
             .map(|&id| staged.store.get(id).s.namespace_code)

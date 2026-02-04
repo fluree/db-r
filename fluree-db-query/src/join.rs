@@ -15,6 +15,7 @@ use async_trait::async_trait;
 use fluree_db_core::{
     ObjectBounds, Sid, Storage, BATCHED_JOIN_SIZE,
 };
+use fluree_db_core::sid64::{Sid64, SidColumn};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
@@ -779,8 +780,8 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
         };
 
         // 1. Translate Sids → s_id and group accumulator indices by s_id
-        let mut s_id_to_accum_indices: HashMap<u32, Vec<usize>> = HashMap::new();
-        let mut unique_s_ids: Vec<u32> = Vec::new();
+        let mut s_id_to_accum_indices: HashMap<u64, Vec<usize>> = HashMap::new();
+        let mut unique_s_ids: Vec<u64> = Vec::new();
         for (accum_idx, (_, _, sid)) in self.batched_accumulator.iter().enumerate() {
             let s_id = match store
                 .sid_to_s_id(sid)
@@ -816,7 +817,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
         // Restrict scan to the predicate's PSOT range (contiguous partition).
         let min_key = RunRecord {
             g_id,
-            s_id: 0,
+            s_id: Sid64::min(),
             p_id,
             dt: 0,
             o_kind: 0,
@@ -824,12 +825,11 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
             o_key: 0,
             t: i64::MIN,
             lang_id: 0,
-            _pad: [0; 2],
             i: NO_LIST_INDEX,
         };
         let max_key = RunRecord {
             g_id,
-            s_id: u32::MAX,
+            s_id: Sid64::max(),
             p_id,
             dt: u16::MAX,
             o_kind: u8::MAX,
@@ -837,7 +837,6 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
             o_key: u64::MAX,
             t: i64::MAX,
             lang_id: u16::MAX,
-            _pad: [0; 2],
             i: i32::MAX,
         };
         let leaf_range = branch.find_leaves_in_range(&min_key, &max_key, cmp_psot);
@@ -907,7 +906,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                                     .map_err(|e| QueryError::Internal(format!("decode region1: {}", e)))?;
                             let row_count = lh.row_count as usize;
                             let cached_r1 = CachedRegion1 {
-                                s_ids: StdArc::from(s_ids.into_boxed_slice()),
+                                s_ids: SidColumn::from_wide(s_ids.into_iter().map(Sid64::from_u64).collect()),
                                 p_ids: StdArc::from(p_ids.into_boxed_slice()),
                                 o_kinds: StdArc::from(o_kinds.into_boxed_slice()),
                                 o_keys: StdArc::from(o_keys.into_boxed_slice()),
@@ -924,7 +923,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                         let (lh, s_ids, p_ids, o_kinds, o_keys) =
                             decode_leaflet_region1(leaflet_bytes, header.p_width, RunSortOrder::Psot)
                                 .map_err(|e| QueryError::Internal(format!("decode region1: {}", e)))?;
-                        (Some(lh), StdArc::from(s_ids.into_boxed_slice()), StdArc::from(p_ids.into_boxed_slice()), StdArc::from(o_kinds.into_boxed_slice()), StdArc::from(o_keys.into_boxed_slice()))
+                        (Some(lh), SidColumn::from_wide(s_ids.into_iter().map(Sid64::from_u64).collect()), StdArc::from(p_ids.into_boxed_slice()), StdArc::from(o_kinds.into_boxed_slice()), StdArc::from(o_keys.into_boxed_slice()))
                     };
 
                     let row_count = leaflet_header
@@ -939,7 +938,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                     // Collect matching row indices using PSOT's `(p_id, s_id, ...)` ordering:
                     // only consider subjects in this leaflet's subject range, then binary-search
                     // their row ranges (avoids scanning every row).
-                    let mut matches: Vec<(usize, u32)> = Vec::new(); // (row_idx, s_id)
+                    let mut matches: Vec<(usize, u64)> = Vec::new(); // (row_idx, s_id)
                     matches.reserve(64);
 
                     // PSOT leaflets are sorted by p_id then s_id. Boundary leaflets may contain
@@ -949,14 +948,15 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                     if p_start == p_end {
                         continue;
                     }
-                    let leaflet_s_min = s_ids[p_start];
-                    let leaflet_s_max = s_ids[p_end - 1];
+                    let leaflet_s_min = s_ids.get(p_start).as_u64();
+                    let leaflet_s_max = s_ids.get(p_end - 1).as_u64();
                     let subj_start = unique_s_ids.partition_point(|&x| x < leaflet_s_min);
                     let subj_end = unique_s_ids.partition_point(|&x| x <= leaflet_s_max);
                     if subj_start >= subj_end {
                         continue;
                     }
-                    let s_slice = &s_ids[p_start..p_end];
+                    // Extract u64 s_id values for the predicate segment for binary search.
+                    let s_slice: Vec<u64> = (p_start..p_end).map(|i| s_ids.get(i).as_u64()).collect();
                     for &s_id in &unique_s_ids[subj_start..subj_end] {
                         // fast reject (should always be true, but keep it safe)
                         if !s_id_to_accum_indices.contains_key(&s_id) {
@@ -1600,16 +1600,22 @@ mod tests {
         let score2 = "http://example.com/score#s2";
         let concept1 = "http://example.com/concept#c1";
         let concept2 = "http://example.com/concept#c2";
-        let s_id_score1 = subjects.get_or_insert(score1).unwrap();
-        let s_id_score2 = subjects.get_or_insert(score2).unwrap();
-        let s_id_concept1 = subjects.get_or_insert(concept1).unwrap();
-        let s_id_concept2 = subjects.get_or_insert(concept2).unwrap();
+        let ns: u16 = 100; // test namespace
+        let s_id_score1 = subjects.get_or_insert(score1, ns).unwrap();
+        let s_id_score2 = subjects.get_or_insert(score2, ns).unwrap();
+        let s_id_concept1 = subjects.get_or_insert(concept1, ns).unwrap();
+        let s_id_concept2 = subjects.get_or_insert(concept2, ns).unwrap();
 
         subjects.flush().unwrap();
         write_subject_index(
             &run_dir.join("subjects.idx"),
             subjects.forward_offsets(),
             subjects.forward_lens(),
+        )
+        .unwrap();
+        fluree_db_indexer::run_index::dict_io::write_subject_sid_map(
+            &run_dir.join("subjects.sids"),
+            subjects.forward_sids(),
         )
         .unwrap();
         subjects.write_reverse_index(&run_dir.join("subjects.rev")).unwrap();
@@ -1628,7 +1634,7 @@ mod tests {
             // score1 hasScore 0.5
             RunRecord::new(
                 g_id,
-                s_id_score1,
+                Sid64::from_u64(s_id_score1),
                 p_id_has_score,
                 ObjKind::NUM_F64,
                 ObjKey::encode_f64(0.5).unwrap(),
@@ -1641,10 +1647,10 @@ mod tests {
             // score1 refersInstance concept1
             RunRecord::new(
                 g_id,
-                s_id_score1,
+                Sid64::from_u64(s_id_score1),
                 p_id_refers,
                 ObjKind::REF_ID,
-                ObjKey::encode_u32_id(s_id_concept1),
+                ObjKey::encode_sid64(s_id_concept1),
                 t,
                 true,
                 dt_ids::ID,
@@ -1654,7 +1660,7 @@ mod tests {
             // score2 hasScore 0.3
             RunRecord::new(
                 g_id,
-                s_id_score2,
+                Sid64::from_u64(s_id_score2),
                 p_id_has_score,
                 ObjKind::NUM_F64,
                 ObjKey::encode_f64(0.3).unwrap(),
@@ -1667,10 +1673,10 @@ mod tests {
             // score2 refersInstance concept2
             RunRecord::new(
                 g_id,
-                s_id_score2,
+                Sid64::from_u64(s_id_score2),
                 p_id_refers,
                 ObjKind::REF_ID,
-                ObjKey::encode_u32_id(s_id_concept2),
+                ObjKey::encode_sid64(s_id_concept2),
                 t,
                 true,
                 dt_ids::ID,

@@ -15,7 +15,7 @@ fluree-db-reasoner = { path = "../fluree-db-reasoner" }
 fluree-search-protocol = { path = "../fluree-search-protocol" }
 fluree-vocab = { path = "../fluree-vocab" }
 fluree-graph-json-ld = { path = "../fluree-graph-json-ld" }
-fluree-db-indexer = { path = "../fluree-db-indexer", features = ["commit-v2"] }
+fluree-db-indexer = { path = "../fluree-db-indexer" }
 memmap2 = "0.9"
 futures = { workspace = true }
 async-trait = { workspace = true }

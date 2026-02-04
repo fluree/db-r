@@ -18,6 +18,7 @@ use fluree_db_core::temporal::{
     GYearMonth, Time, YearMonthDuration,
 };
 use super::global_dict::dt_ids;
+use fluree_db_core::sid64::Sid64;
 use fluree_db_core::value_id::{ObjKind, ObjKey};
 use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
 use fluree_db_novelty::commit_v2::raw_reader::{CommitOps, RawObject, RawOp};
@@ -35,12 +36,12 @@ pub struct CommitResolver {
     ///
     /// **Invariant:** ns_code -> prefix is stable once assigned. A namespace
     /// delta can introduce new codes but never changes existing mappings.
-    ns_prefixes: HashMap<i32, String>,
+    ns_prefixes: HashMap<u16, String>,
     /// Reusable xxh3 streaming hasher (avoids per-op hasher construction).
     hasher: Xxh3,
     /// Optional per-(graph, property) stats hook. When set, `on_record()` is
     /// called for every resolved user-data op (not txn-meta).
-    #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+    #[cfg(feature = "hll-stats")]
     stats_hook: Option<crate::stats::IdStatsHook>,
 }
 
@@ -50,19 +51,19 @@ impl CommitResolver {
         Self {
             ns_prefixes: fluree_db_core::default_namespace_codes(),
             hasher: Xxh3::new(),
-            #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+            #[cfg(feature = "hll-stats")]
             stats_hook: None,
         }
     }
 
     /// Set the ID-based stats hook for per-op stats collection.
-    #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+    #[cfg(feature = "hll-stats")]
     pub fn set_stats_hook(&mut self, hook: crate::stats::IdStatsHook) {
         self.stats_hook = Some(hook);
     }
 
     /// Take the stats hook out of the resolver (for finalization / merge).
-    #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+    #[cfg(feature = "hll-stats")]
     pub fn take_stats_hook(&mut self) -> Option<crate::stats::IdStatsHook> {
         self.stats_hook.take()
     }
@@ -71,7 +72,7 @@ impl CommitResolver {
     ///
     /// New namespace codes are added; existing codes are never overwritten
     /// (the prefix for a code is stable once assigned).
-    pub fn apply_namespace_delta(&mut self, delta: &HashMap<i32, String>) {
+    pub fn apply_namespace_delta(&mut self, delta: &HashMap<u16, String>) {
         for (&code, prefix) in delta {
             self.ns_prefixes.entry(code).or_insert_with(|| prefix.clone());
         }
@@ -93,7 +94,7 @@ impl CommitResolver {
             let record = self.resolve_single_op(&raw_op, t, dicts)?;
 
             // Feed resolved record to ID-based stats hook (user-data ops only)
-            #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+            #[cfg(feature = "hll-stats")]
             if let Some(ref mut hook) = self.stats_hook {
                 // IMPORTANT: `record.dt` is the binary run's datatype-dict ID (dt_id),
                 // not `fluree_db_core::DatatypeId`. For stats we want stable datatypes,
@@ -105,7 +106,7 @@ impl CommitResolver {
                 hook.on_record(
                     record.g_id,
                     record.p_id,
-                    record.s_id,
+                    record.s_id.as_u64(),
                     dt,
                     crate::stats::value_hash(record.o_kind, record.o_key),
                     record.t,
@@ -150,7 +151,7 @@ impl CommitResolver {
     }
 
     /// Access the accumulated namespace prefix map (code -> prefix IRI).
-    pub fn ns_prefixes(&self) -> &HashMap<i32, String> {
+    pub fn ns_prefixes(&self) -> &HashMap<u16, String> {
         &self.ns_prefixes
     }
 
@@ -194,7 +195,10 @@ impl CommitResolver {
 
         // 3. Resolve commit subject: "fluree:commit:sha256:<hex>"
         let commit_iri = format!("{}{}", fluree::COMMIT, hex);
-        let commit_s_id = dicts.subjects.get_or_insert(&commit_iri)?;
+        let commit_s_id = dicts.subjects.get_or_insert(
+            &commit_iri,
+            fluree_vocab::namespaces::FLUREE_COMMIT,
+        )?;
 
         // 4. Resolve predicate p_ids
         let p_address = dicts
@@ -219,7 +223,7 @@ impl CommitResolver {
         let mut count = 0u32;
 
         // Helper to push a record into the writer
-        let mut push = |s_id: u32,
+        let mut push = |s_id: u64,
                         p_id: u32,
                         o_kind: ObjKind,
                         o_key: ObjKey,
@@ -227,7 +231,7 @@ impl CommitResolver {
          -> Result<(), ResolverError> {
             let record = RunRecord {
                 g_id,
-                s_id,
+                s_id: Sid64::from_u64(s_id),
                 p_id,
                 dt,
                 o_kind: o_kind.as_u8(),
@@ -235,7 +239,6 @@ impl CommitResolver {
                 o_key: o_key.as_u64(),
                 t,
                 lang_id: 0,
-                _pad: [0; 2],
                 i: NO_LIST_INDEX,
             };
             writer
@@ -302,12 +305,15 @@ impl CommitResolver {
         if let Some(prev_ref) = &envelope.previous_ref {
             if let Some(prev_id) = &prev_ref.id {
                 // prev_id is like "fluree:commit:sha256:<hex>"
-                let prev_s_id = dicts.subjects.get_or_insert(prev_id)?;
+                let prev_s_id = dicts.subjects.get_or_insert(
+                    prev_id,
+                    fluree_vocab::namespaces::FLUREE_COMMIT,
+                )?;
                 push(
                     commit_s_id,
                     p_previous,
                     ObjKind::REF_ID,
-                    ObjKey::encode_u32_id(prev_s_id),
+                    ObjKey::encode_sid64(prev_s_id),
                     dt_ids::ID,
                 )?;
             }
@@ -327,7 +333,7 @@ impl CommitResolver {
         let g_id = self.resolve_graph(op.g_ns_code, op.g_name, dicts)
             .map_err(|e| CommitV2Error::InvalidOp(format!("graph resolve: {}", e)))?;
 
-        // 2. Resolve subject (streaming hash)
+        // 2. Resolve subject (streaming hash) → sid64
         let s_id = self.resolve_subject(op.s_ns_code, op.s_name, dicts)
             .map_err(|e| CommitV2Error::InvalidOp(format!("subject resolve: {}", e)))?;
 
@@ -359,7 +365,7 @@ impl CommitResolver {
 
         Ok(RunRecord {
             g_id,
-            s_id,
+            s_id: Sid64::from_u64(s_id),
             p_id,
             dt: dt_id,
             o_kind: o_kind.as_u8(),
@@ -367,7 +373,6 @@ impl CommitResolver {
             o_key: o_key.as_u64(),
             t,
             lang_id,
-            _pad: [0; 2],
             i: i.unwrap_or(NO_LIST_INDEX),
         })
     }
@@ -378,7 +383,7 @@ impl CommitResolver {
     /// Named graphs -> g_id = graphs.get_or_insert(full_iri) + 1.
     fn resolve_graph(
         &mut self,
-        ns_code: i32,
+        ns_code: u16,
         name: &str,
         dicts: &mut GlobalDicts,
     ) -> io::Result<u32> {
@@ -390,13 +395,13 @@ impl CommitResolver {
         Ok(dicts.graphs.get_or_insert_parts(prefix, name) + 1)
     }
 
-    /// Resolve subject IRI -> global s_id using streaming xxh3_128.
+    /// Resolve subject IRI -> global sid64 using streaming xxh3_128.
     fn resolve_subject(
         &mut self,
-        ns_code: i32,
+        ns_code: u16,
         name: &str,
         dicts: &mut GlobalDicts,
-    ) -> io::Result<u32> {
+    ) -> io::Result<u64> {
         // Access ns_prefixes directly (not via lookup_prefix) so the borrow checker
         // can see that ns_prefixes and hasher are disjoint field borrows.
         let prefix = self.ns_prefixes.get(&ns_code).map(|s| s.as_str()).unwrap_or("");
@@ -408,7 +413,7 @@ impl CommitResolver {
         let hash = self.hasher.digest128();
 
         // Closure captures &str refs -- only allocates on miss (novel entry).
-        dicts.subjects.get_or_insert_with_hash(hash, || {
+        dicts.subjects.get_or_insert_with_hash(hash, ns_code, || {
             let mut s = String::with_capacity(prefix.len() + name.len());
             s.push_str(prefix);
             s.push_str(name);
@@ -419,7 +424,7 @@ impl CommitResolver {
     /// Resolve predicate IRI -> global p_id.
     fn resolve_predicate(
         &mut self,
-        ns_code: i32,
+        ns_code: u16,
         name: &str,
         dicts: &mut GlobalDicts,
     ) -> u32 {
@@ -466,23 +471,23 @@ impl CommitResolver {
                 Ok((ObjKind::BOOL, ObjKey::encode_bool(*b)))
             }
             RawObject::Ref { ns_code, name } => {
-                // Resolve ref IRI -> global subject ID -> REF_ID.
+                // Resolve ref IRI -> global sid64 -> REF_ID.
                 let prefix = self.ns_prefixes.get(ns_code).map(|s| s.as_str()).unwrap_or("");
                 self.hasher.reset();
                 self.hasher.update(prefix.as_bytes());
                 self.hasher.update(name.as_bytes());
                 let hash = self.hasher.digest128();
 
-                let id = dicts
+                let sid64 = dicts
                     .subjects
-                    .get_or_insert_with_hash(hash, || {
+                    .get_or_insert_with_hash(hash, *ns_code, || {
                         let mut s = String::with_capacity(prefix.len() + name.len());
                         s.push_str(prefix);
                         s.push_str(name);
                         s
                     })
                     .map_err(|e| format!("ref resolve: {}", e))?;
-                Ok((ObjKind::REF_ID, ObjKey::encode_u32_id(id)))
+                Ok((ObjKind::REF_ID, ObjKey::encode_sid64(sid64)))
             }
             RawObject::DateTimeStr(s) => {
                 DateTime::parse(s)
@@ -599,7 +604,7 @@ impl CommitResolver {
 
     /// Look up the prefix IRI for a namespace code.
     /// Returns "" if the code is unknown (should not happen with proper delta replay).
-    fn lookup_prefix(&self, ns_code: i32) -> &str {
+    fn lookup_prefix(&self, ns_code: u16) -> &str {
         self.ns_prefixes
             .get(&ns_code)
             .map(|s| s.as_str())

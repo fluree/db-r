@@ -121,7 +121,7 @@ impl StatsView {
     /// when query terms are represented as IRIs rather than SIDs.
     pub fn from_db_stats_with_namespaces(
         stats: &IndexStats,
-        namespace_codes: &HashMap<i32, String>,
+        namespace_codes: &HashMap<u16, String>,
     ) -> Self {
         let mut view = StatsView::from_db_stats(stats);
 

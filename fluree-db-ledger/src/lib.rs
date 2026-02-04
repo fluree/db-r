@@ -33,7 +33,7 @@ pub use error::{LedgerError, Result};
 pub use historical::HistoricalLedgerView;
 pub use staged::LedgerView;
 
-use fluree_db_core::{Db, Storage};
+use fluree_db_core::{Db, DictNovelty, Storage};
 use fluree_db_nameservice::{NameService, NsRecord};
 use fluree_db_novelty::{generate_commit_flakes, trace_commits, Novelty};
 use futures::StreamExt;
@@ -71,6 +71,11 @@ pub struct LedgerState<S> {
     pub db: Db<S>,
     /// In-memory overlay of uncommitted transactions
     pub novelty: Arc<Novelty>,
+    /// Dictionary novelty layer for subjects and strings.
+    ///
+    /// Tracks novel dictionary entries introduced since the last index build.
+    /// Populated during commit, read during queries, reset at index application.
+    pub dict_novelty: Arc<DictNovelty>,
     /// Current head commit address
     pub head_commit: Option<String>,
     /// Nameservice record (if loaded via nameservice)
@@ -94,9 +99,19 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
 
         // Handle missing index (genesis fallback)
         // Use record.address which includes the branch (e.g., "test:main")
-        let mut db = match &record.index_address {
-            Some(addr) => Db::load(storage.clone(), addr).await?,
-            None => Db::genesis(storage.clone(), &record.address),
+        let (mut db, dict_novelty) = match &record.index_address {
+            Some(addr) => {
+                let loaded = Db::load(storage.clone(), addr).await?;
+                let dn = DictNovelty::with_watermarks(
+                    loaded.subject_watermarks.clone(),
+                    loaded.string_watermark,
+                );
+                (loaded, dn)
+            }
+            None => (
+                Db::genesis(storage.clone(), &record.address),
+                DictNovelty::new_genesis(),
+            ),
         };
 
         // Load novelty from commits since index_t
@@ -116,6 +131,7 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
         Ok(Self {
             db,
             novelty: Arc::new(novelty),
+            dict_novelty: Arc::new(dict_novelty),
             head_commit: record.commit_address.clone(),
             ns_record: Some(record),
         })
@@ -130,11 +146,11 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
         head_address: &str,
         index_t: i64,
         ledger_alias: &str,
-    ) -> Result<(Novelty, std::collections::HashMap<i32, String>)> {
+    ) -> Result<(Novelty, std::collections::HashMap<u16, String>)> {
         use std::collections::HashMap;
 
         let mut novelty = Novelty::new(index_t);
-        let mut merged_ns_delta: HashMap<i32, String> = HashMap::new();
+        let mut merged_ns_delta: HashMap<u16, String> = HashMap::new();
 
         let stream = trace_commits(storage, head_address.to_string(), index_t);
         futures::pin_mut!(stream);
@@ -160,9 +176,14 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
 
     /// Create a new ledger state from components
     pub fn new(db: Db<S>, novelty: Novelty) -> Self {
+        let dict_novelty = DictNovelty::with_watermarks(
+            db.subject_watermarks.clone(),
+            db.string_watermark,
+        );
         Self {
             db,
             novelty: Arc::new(novelty),
+            dict_novelty: Arc::new(dict_novelty),
             head_commit: None,
             ns_record: None,
         }
@@ -267,9 +288,16 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
         let mut new_novelty = (*self.novelty).clone();
         new_novelty.clear_up_to(new_db.t);
 
+        // Reset dict_novelty with new watermarks from the index root
+        let new_dict_novelty = DictNovelty::with_watermarks(
+            new_db.subject_watermarks.clone(),
+            new_db.string_watermark,
+        );
+
         // Update state
         self.db = new_db;
         self.novelty = Arc::new(new_novelty);
+        self.dict_novelty = Arc::new(new_dict_novelty);
 
         // Update ns_record
         if let Some(ref mut record) = self.ns_record {
@@ -309,9 +337,16 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
         let mut new_novelty = (*self.novelty).clone();
         new_novelty.clear_up_to(new_db.t);
 
+        // Reset dict_novelty with new watermarks from the index root
+        let new_dict_novelty = DictNovelty::with_watermarks(
+            new_db.subject_watermarks.clone(),
+            new_db.string_watermark,
+        );
+
         // Update state
         self.db = new_db;
         self.novelty = Arc::new(new_novelty);
+        self.dict_novelty = Arc::new(new_dict_novelty);
 
         // Update ns_record
         if let Some(ref mut record) = self.ns_record {
@@ -405,7 +440,7 @@ mod tests {
     use fluree_db_core::{Flake, FlakeValue, MemoryStorage, Sid};
     use fluree_db_nameservice::memory::MemoryNameService;
 
-    fn make_flake(s: i32, p: i32, o: i64, t: i64) -> Flake {
+    fn make_flake(s: u16, p: u16, o: i64, t: i64) -> Flake {
         Flake::new(
             Sid::new(s, format!("s{}", s)),
             Sid::new(p, format!("p{}", p)),

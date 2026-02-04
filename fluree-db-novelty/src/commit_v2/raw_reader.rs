@@ -83,19 +83,19 @@ impl CommitOps {
 /// Stack-allocated, no heap allocation per op.
 pub struct RawOp<'a> {
     /// Graph namespace code (0 = empty prefix for default graph).
-    pub g_ns_code: i32,
+    pub g_ns_code: u16,
     /// Graph local name from graph dict ("" for default graph).
     pub g_name: &'a str,
     /// Subject namespace code.
-    pub s_ns_code: i32,
+    pub s_ns_code: u16,
     /// Subject local name from subject dict.
     pub s_name: &'a str,
     /// Predicate namespace code.
-    pub p_ns_code: i32,
+    pub p_ns_code: u16,
     /// Predicate local name from predicate dict.
     pub p_name: &'a str,
     /// Datatype namespace code.
-    pub dt_ns_code: i32,
+    pub dt_ns_code: u16,
     /// Datatype local name from datatype dict.
     pub dt_name: &'a str,
     /// Object value (borrows inline strings from ops buffer).
@@ -111,7 +111,7 @@ pub struct RawOp<'a> {
 /// Object value without allocation. Borrows from ops buffer or dicts.
 pub enum RawObject<'a> {
     /// IRI reference: namespace code + local name from object_ref dict.
-    Ref { ns_code: i32, name: &'a str },
+    Ref { ns_code: u16, name: &'a str },
     /// Integer value (already parsed by varint decoder).
     Long(i64),
     /// Double value (already parsed from LE bytes).
@@ -243,7 +243,7 @@ fn decode_raw_op<'a>(
     dicts: &'a ReadDicts,
 ) -> Result<RawOp<'a>, CommitV2Error> {
     // Graph
-    let g_ns_code = zigzag_decode(decode_varint(data, pos)?) as i32;
+    let g_ns_code = decode_varint(data, pos)? as u16;
     let g_name_id = decode_varint(data, pos)? as u32;
     let g_name = if g_name_id == 0 {
         "" // default graph convention: name_id 0 = empty name
@@ -252,17 +252,17 @@ fn decode_raw_op<'a>(
     };
 
     // Subject
-    let s_ns_code = zigzag_decode(decode_varint(data, pos)?) as i32;
+    let s_ns_code = decode_varint(data, pos)? as u16;
     let s_name_id = decode_varint(data, pos)? as u32;
     let s_name = dicts.subject.get(s_name_id)?;
 
     // Predicate
-    let p_ns_code = zigzag_decode(decode_varint(data, pos)?) as i32;
+    let p_ns_code = decode_varint(data, pos)? as u16;
     let p_name_id = decode_varint(data, pos)? as u32;
     let p_name = dicts.predicate.get(p_name_id)?;
 
     // Datatype
-    let dt_ns_code = zigzag_decode(decode_varint(data, pos)?) as i32;
+    let dt_ns_code = decode_varint(data, pos)? as u16;
     let dt_name_id = decode_varint(data, pos)? as u32;
     let dt_name = dicts.datatype.get(dt_name_id)?;
 
@@ -323,7 +323,7 @@ fn decode_raw_object<'a>(
 ) -> Result<RawObject<'a>, CommitV2Error> {
     match tag {
         OTag::Ref => {
-            let ns_code = zigzag_decode(decode_varint(data, pos)?) as i32;
+            let ns_code = decode_varint(data, pos)? as u16;
             let name_id = decode_varint(data, pos)? as u32;
             let name = dicts.object_ref.get(name_id)?;
             Ok(RawObject::Ref { ns_code, name })

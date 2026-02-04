@@ -172,12 +172,13 @@ mod tests {
     use crate::run_index::run_record::cmp_spot;
     use crate::run_index::run_file::write_run_file;
     use crate::run_index::run_record::RunSortOrder;
+    use fluree_db_core::sid64::Sid64;
     use fluree_db_core::value_id::{ObjKind, ObjKey};
 
-    fn make_record(s_id: u32, p_id: u32, val: i64, t: i64) -> RunRecord {
+    fn make_record(s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
         RunRecord::new(
             0,
-            s_id,
+            Sid64::from_u64(s_id),
             p_id,
             ObjKind::NUM_INT, ObjKey::encode_i64(val),
             t,
@@ -188,10 +189,10 @@ mod tests {
         )
     }
 
-    fn make_lang_record(s_id: u32, p_id: u32, lex_id: u32, t: i64, lang_id: u16) -> RunRecord {
+    fn make_lang_record(s_id: u64, p_id: u32, lex_id: u32, t: i64, lang_id: u16) -> RunRecord {
         RunRecord::new(
             0,
-            s_id,
+            Sid64::from_u64(s_id),
             p_id,
             ObjKind::LEX_ID, ObjKey::encode_u32_id(lex_id),
             t,
@@ -202,10 +203,10 @@ mod tests {
         )
     }
 
-    fn make_list_record(s_id: u32, p_id: u32, val: i64, t: i64, i: i32) -> RunRecord {
+    fn make_list_record(s_id: u64, p_id: u32, val: i64, t: i64, i: i32) -> RunRecord {
         RunRecord::new(
             0,
-            s_id,
+            Sid64::from_u64(s_id),
             p_id,
             ObjKind::NUM_INT, ObjKey::encode_i64(val),
             t,
@@ -273,12 +274,12 @@ mod tests {
 
         assert_eq!(results.len(), 6);
         // Verify global SPOT order
-        assert_eq!(results[0].s_id, 1);
-        assert_eq!(results[1].s_id, 2);
-        assert_eq!(results[2].s_id, 3);
-        assert_eq!(results[3].s_id, 4);
-        assert_eq!(results[4].s_id, 5);
-        assert_eq!(results[5].s_id, 6);
+        assert_eq!(results[0].s_id, Sid64::from_u64(1));
+        assert_eq!(results[1].s_id, Sid64::from_u64(2));
+        assert_eq!(results[2].s_id, Sid64::from_u64(3));
+        assert_eq!(results[3].s_id, Sid64::from_u64(4));
+        assert_eq!(results[4].s_id, Sid64::from_u64(5));
+        assert_eq!(results[5].s_id, Sid64::from_u64(6));
 
         assert!(merge.is_exhausted());
 
@@ -405,7 +406,7 @@ mod tests {
         let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
 
         let rec = merge.next().unwrap().unwrap();
-        assert_eq!(rec.s_id, 1);
+        assert_eq!(rec.s_id, Sid64::from_u64(1));
         assert!(merge.next().unwrap().is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -439,12 +440,12 @@ mod tests {
 
         assert_eq!(results.len(), 6);
         // Verify SPOT order (s_id primary, p_id secondary)
-        assert_eq!((results[0].s_id, results[0].p_id), (1, 1));
-        assert_eq!((results[1].s_id, results[1].p_id), (1, 2));
-        assert_eq!((results[2].s_id, results[2].p_id), (2, 1));
-        assert_eq!((results[3].s_id, results[3].p_id), (3, 1));
-        assert_eq!((results[4].s_id, results[4].p_id), (4, 1));
-        assert_eq!((results[5].s_id, results[5].p_id), (5, 1));
+        assert_eq!((results[0].s_id, results[0].p_id), (Sid64::from_u64(1), 1));
+        assert_eq!((results[1].s_id, results[1].p_id), (Sid64::from_u64(1), 2));
+        assert_eq!((results[2].s_id, results[2].p_id), (Sid64::from_u64(2), 1));
+        assert_eq!((results[3].s_id, results[3].p_id), (Sid64::from_u64(3), 1));
+        assert_eq!((results[4].s_id, results[4].p_id), (Sid64::from_u64(4), 1));
+        assert_eq!((results[5].s_id, results[5].p_id), (Sid64::from_u64(5), 1));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

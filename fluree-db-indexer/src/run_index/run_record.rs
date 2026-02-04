@@ -1,14 +1,21 @@
-//! 40-byte fixed-width run record for external sort.
+//! 48-byte fixed-width run record for external sort.
 //!
 //! Each record represents a single resolved op with global IDs.
 //! The format is `#[repr(C)]` for direct binary I/O.
 
+use fluree_db_core::sid64::Sid64;
 use fluree_db_core::value_id::{ObjKind, ObjKey};
 use std::cmp::Ordering;
 
 use super::global_dict::dt_ids;
 
-/// 40-byte fixed-width record for external sort.
+/// Wire format size of a single RunRecord, in bytes.
+///
+/// The wire format (44 bytes) is compact — no alignment padding between fields.
+/// The in-memory struct is 48 bytes due to `#[repr(C)]` alignment requirements.
+pub const RECORD_WIRE_SIZE: usize = 44;
+
+/// 48-byte fixed-width record for external sort.
 ///
 /// Sort key: `(g_id, …, o_kind, o_key, dt, t, op)` where the prefix depends on
 /// the index order (SPOT, PSOT, POST, OPST).
@@ -17,28 +24,28 @@ use super::global_dict::dt_ids;
 /// ObjKey)` but different XSD types (e.g., `xsd:integer 3` vs `xsd:long 3`)
 /// remain distinguishable.
 ///
-/// ## Wire layout (40 bytes, little-endian)
+/// ## Wire layout (44 bytes, little-endian)
 ///
 /// ```text
 /// g_id:    u32   [0..4]
-/// s_id:    u32   [4..8]
-/// p_id:    u32   [8..12]
-/// dt:      u16   [12..14]   datatype dict index (tie-breaker)
-/// o_kind:  u8    [14..15]   object kind discriminant
-/// op:      u8    [15..16]   assert (1) / retract (0)
-/// o_key:   u64   [16..24]   object key payload (8-byte aligned)
-/// t:       i64   [24..32]
-/// lang_id: u16   [32..34]   language tag id (0 = none)
-/// _pad:    [u8;2][34..36]
-/// i:       i32   [36..40]
+/// s_id:    u64   [4..12]    subject ID (sid64: ns_code << 48 | local_id)
+/// p_id:    u32   [12..16]
+/// dt:      u16   [16..18]   datatype dict index (tie-breaker)
+/// o_kind:  u8    [18]       object kind discriminant
+/// op:      u8    [19]       assert (1) / retract (0)
+/// o_key:   u64   [20..28]   object key payload
+/// t:       i64   [28..36]
+/// lang_id: u16   [36..38]   language tag id (0 = none)
+/// i:       i32   [38..42]
+/// _pad:    [u8;2][42..44]   reserved
 /// ```
 #[derive(Copy, Clone, Eq, PartialEq)]
 #[repr(C)]
 pub struct RunRecord {
     /// Graph ID (0 = default graph).
     pub g_id: u32,
-    /// Subject ID (global dictionary).
-    pub s_id: u32,
+    /// Subject ID (sid64: ns_code << 48 | local_id).
+    pub s_id: Sid64,
     /// Predicate ID (global dictionary).
     pub p_id: u32,
     /// Datatype dict index (for sort-key tie-breaking).
@@ -53,8 +60,6 @@ pub struct RunRecord {
     pub t: i64,
     /// Language tag id (per-run assignment, 0 = none).
     pub lang_id: u16,
-    /// Padding for alignment.
-    pub _pad: [u8; 2],
     /// List index (i32::MIN = none).
     pub i: i32,
 }
@@ -62,14 +67,14 @@ pub struct RunRecord {
 /// Sentinel value for "no list index".
 pub const NO_LIST_INDEX: i32 = i32::MIN;
 
-const _: () = assert!(std::mem::size_of::<RunRecord>() == 40);
+const _: () = assert!(std::mem::size_of::<RunRecord>() == 48);
 
 impl RunRecord {
     /// Create a new RunRecord with all fields.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         g_id: u32,
-        s_id: u32,
+        s_id: Sid64,
         p_id: u32,
         o_kind: ObjKind,
         o_key: ObjKey,
@@ -89,40 +94,38 @@ impl RunRecord {
             o_key: o_key.as_u64(),
             t,
             lang_id,
-            _pad: [0; 2],
             i: i.unwrap_or(NO_LIST_INDEX),
         }
     }
 
-    /// Serialize to 40 bytes, little-endian.
-    pub fn write_le(&self, buf: &mut [u8; 40]) {
+    /// Serialize to [`RECORD_WIRE_SIZE`] (44) bytes, little-endian.
+    pub fn write_le(&self, buf: &mut [u8; RECORD_WIRE_SIZE]) {
         buf[0..4].copy_from_slice(&self.g_id.to_le_bytes());
-        buf[4..8].copy_from_slice(&self.s_id.to_le_bytes());
-        buf[8..12].copy_from_slice(&self.p_id.to_le_bytes());
-        buf[12..14].copy_from_slice(&self.dt.to_le_bytes());
-        buf[14] = self.o_kind;
-        buf[15] = self.op;
-        buf[16..24].copy_from_slice(&self.o_key.to_le_bytes());
-        buf[24..32].copy_from_slice(&self.t.to_le_bytes());
-        buf[32..34].copy_from_slice(&self.lang_id.to_le_bytes());
-        buf[34..36].copy_from_slice(&self._pad);
-        buf[36..40].copy_from_slice(&self.i.to_le_bytes());
+        buf[4..12].copy_from_slice(&self.s_id.as_u64().to_le_bytes());
+        buf[12..16].copy_from_slice(&self.p_id.to_le_bytes());
+        buf[16..18].copy_from_slice(&self.dt.to_le_bytes());
+        buf[18] = self.o_kind;
+        buf[19] = self.op;
+        buf[20..28].copy_from_slice(&self.o_key.to_le_bytes());
+        buf[28..36].copy_from_slice(&self.t.to_le_bytes());
+        buf[36..38].copy_from_slice(&self.lang_id.to_le_bytes());
+        buf[38..42].copy_from_slice(&self.i.to_le_bytes());
+        buf[42..44].fill(0); // reserved
     }
 
-    /// Deserialize from 40 bytes, little-endian.
-    pub fn read_le(buf: &[u8; 40]) -> Self {
+    /// Deserialize from [`RECORD_WIRE_SIZE`] (44) bytes, little-endian.
+    pub fn read_le(buf: &[u8; RECORD_WIRE_SIZE]) -> Self {
         Self {
             g_id: u32::from_le_bytes(buf[0..4].try_into().unwrap()),
-            s_id: u32::from_le_bytes(buf[4..8].try_into().unwrap()),
-            p_id: u32::from_le_bytes(buf[8..12].try_into().unwrap()),
-            dt: u16::from_le_bytes(buf[12..14].try_into().unwrap()),
-            o_kind: buf[14],
-            op: buf[15],
-            o_key: u64::from_le_bytes(buf[16..24].try_into().unwrap()),
-            t: i64::from_le_bytes(buf[24..32].try_into().unwrap()),
-            lang_id: u16::from_le_bytes(buf[32..34].try_into().unwrap()),
-            _pad: [buf[34], buf[35]],
-            i: i32::from_le_bytes(buf[36..40].try_into().unwrap()),
+            s_id: Sid64::from_u64(u64::from_le_bytes(buf[4..12].try_into().unwrap())),
+            p_id: u32::from_le_bytes(buf[12..16].try_into().unwrap()),
+            dt: u16::from_le_bytes(buf[16..18].try_into().unwrap()),
+            o_kind: buf[18],
+            op: buf[19],
+            o_key: u64::from_le_bytes(buf[20..28].try_into().unwrap()),
+            t: i64::from_le_bytes(buf[28..36].try_into().unwrap()),
+            lang_id: u16::from_le_bytes(buf[36..38].try_into().unwrap()),
+            i: i32::from_le_bytes(buf[38..42].try_into().unwrap()),
         }
     }
 
@@ -299,7 +302,7 @@ impl RunSortOrder {
 /// (with `NO_LIST_INDEX` sentinel for non-list facts).
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FactKey {
-    pub s_id: u32,
+    pub s_id: u64,
     pub p_id: u32,
     pub o_kind: u8,
     pub o_key: u64,
@@ -328,7 +331,7 @@ impl FactKey {
     /// Build a FactKey from decoded Region 1+2 row data.
     ///
     /// `dt_raw` is `u32` (Region 2 decode output); truncated to `u16` here.
-    pub fn from_decoded_row(s_id: u32, p_id: u32, o_kind: u8, o_key: u64, dt_raw: u32, lang_id: u16, i: i32) -> Self {
+    pub fn from_decoded_row(s_id: u64, p_id: u32, o_kind: u8, o_key: u64, dt_raw: u32, lang_id: u16, i: i32) -> Self {
         let dt = dt_raw as u16;
         let effective_lang_id = if dt == dt_ids::LANG_STRING { lang_id } else { 0 };
         Self {
@@ -346,7 +349,7 @@ impl FactKey {
     pub fn from_run_record(r: &RunRecord) -> Self {
         let effective_lang_id = if r.dt == dt_ids::LANG_STRING { r.lang_id } else { 0 };
         Self {
-            s_id: r.s_id,
+            s_id: r.s_id.as_u64(),
             p_id: r.p_id,
             o_kind: r.o_kind,
             o_key: r.o_key,
@@ -365,10 +368,10 @@ impl FactKey {
 mod tests {
     use super::*;
 
-    fn make_record(s_id: u32, p_id: u32, o_int: i64, dt: u16, t: i64) -> RunRecord {
+    fn make_record(s_id: u64, p_id: u32, o_int: i64, dt: u16, t: i64) -> RunRecord {
         RunRecord::new(
             0,
-            s_id,
+            Sid64::from_u64(s_id),
             p_id,
             ObjKind::NUM_INT,
             ObjKey::encode_i64(o_int),
@@ -382,14 +385,14 @@ mod tests {
 
     #[test]
     fn test_record_size() {
-        assert_eq!(std::mem::size_of::<RunRecord>(), 40);
+        assert_eq!(std::mem::size_of::<RunRecord>(), 48);
     }
 
     #[test]
     fn test_serialization_round_trip() {
         let rec = RunRecord::new(
             1,
-            42,
+            Sid64::from_u64(42),
             7,
             ObjKind::NUM_INT,
             ObjKey::encode_i64(-100),
@@ -400,7 +403,7 @@ mod tests {
             Some(2),
         );
 
-        let mut buf = [0u8; 40];
+        let mut buf = [0u8; RECORD_WIRE_SIZE];
         rec.write_le(&mut buf);
         let restored = RunRecord::read_le(&buf);
 
@@ -440,13 +443,13 @@ mod tests {
     #[test]
     fn test_spot_ordering_by_dt_tiebreak() {
         let a = RunRecord::new(
-            0, 1, 1,
+            0, Sid64::from_u64(1), 1,
             ObjKind::NUM_INT, ObjKey::encode_i64(3),
             1, true,
             dt_ids::INTEGER, 0, None,
         );
         let b = RunRecord::new(
-            0, 1, 1,
+            0, Sid64::from_u64(1), 1,
             ObjKind::NUM_INT, ObjKey::encode_i64(3),
             1, true,
             dt_ids::LONG, 0, None,
@@ -464,15 +467,15 @@ mod tests {
 
     #[test]
     fn test_spot_ordering_by_op() {
-        let a = RunRecord::new(0, 1, 1, ObjKind::NUM_INT, ObjKey::encode_i64(0), 1, false, dt_ids::INTEGER, 0, None);
-        let b = RunRecord::new(0, 1, 1, ObjKind::NUM_INT, ObjKey::encode_i64(0), 1, true, dt_ids::INTEGER, 0, None);
+        let a = RunRecord::new(0, Sid64::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(0), 1, false, dt_ids::INTEGER, 0, None);
+        let b = RunRecord::new(0, Sid64::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(0), 1, true, dt_ids::INTEGER, 0, None);
         assert_eq!(cmp_spot(&a, &b), Ordering::Less);
     }
 
     #[test]
     fn test_spot_ordering_by_graph() {
-        let a = RunRecord::new(0, 1, 1, ObjKind::NUM_INT, ObjKey::encode_i64(0), 1, true, dt_ids::INTEGER, 0, None);
-        let b = RunRecord::new(1, 1, 1, ObjKind::NUM_INT, ObjKey::encode_i64(0), 1, true, dt_ids::INTEGER, 0, None);
+        let a = RunRecord::new(0, Sid64::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(0), 1, true, dt_ids::INTEGER, 0, None);
+        let b = RunRecord::new(1, Sid64::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(0), 1, true, dt_ids::INTEGER, 0, None);
         assert_eq!(cmp_spot(&a, &b), Ordering::Less);
     }
 
@@ -487,24 +490,24 @@ mod tests {
         ];
         records.sort_unstable_by(cmp_spot);
 
-        assert_eq!(records[0].s_id, 1);
+        assert_eq!(records[0].s_id, Sid64::from_u64(1));
         assert_eq!(records[0].p_id, 1);
         assert_eq!(records[0].o_key, ObjKey::encode_i64(0).as_u64());
-        assert_eq!(records[1].s_id, 1);
+        assert_eq!(records[1].s_id, Sid64::from_u64(1));
         assert_eq!(records[1].p_id, 1);
         assert_eq!(records[1].o_key, ObjKey::encode_i64(10).as_u64());
-        assert_eq!(records[2].s_id, 1);
+        assert_eq!(records[2].s_id, Sid64::from_u64(1));
         assert_eq!(records[2].p_id, 2);
-        assert_eq!(records[3].s_id, 2);
-        assert_eq!(records[4].s_id, 3);
+        assert_eq!(records[3].s_id, Sid64::from_u64(2));
+        assert_eq!(records[4].s_id, Sid64::from_u64(3));
     }
 
     #[test]
     fn test_no_list_index_sentinel() {
-        let rec = RunRecord::new(0, 1, 1, ObjKind::NULL, ObjKey::ZERO, 1, true, dt_ids::STRING, 0, None);
+        let rec = RunRecord::new(0, Sid64::from_u64(1), 1, ObjKind::NULL, ObjKey::ZERO, 1, true, dt_ids::STRING, 0, None);
         assert_eq!(rec.i, NO_LIST_INDEX);
 
-        let rec2 = RunRecord::new(0, 1, 1, ObjKind::NULL, ObjKey::ZERO, 1, true, dt_ids::STRING, 0, Some(5));
+        let rec2 = RunRecord::new(0, Sid64::from_u64(1), 1, ObjKind::NULL, ObjKey::ZERO, 1, true, dt_ids::STRING, 0, Some(5));
         assert_eq!(rec2.i, 5);
     }
 
@@ -578,13 +581,13 @@ mod tests {
     #[test]
     fn test_post_ordering_dt_before_subject() {
         let a = RunRecord::new(
-            0, 2, 5,
+            0, Sid64::from_u64(2), 5,
             ObjKind::NUM_INT, ObjKey::encode_i64(10),
             1, true,
             dt_ids::INTEGER, 0, None,
         );
         let b = RunRecord::new(
-            0, 1, 5,
+            0, Sid64::from_u64(1), 5,
             ObjKind::NUM_INT, ObjKey::encode_i64(10),
             1, true,
             dt_ids::LONG, 0, None,
@@ -604,13 +607,13 @@ mod tests {
     #[test]
     fn test_opst_ordering_dt_before_predicate() {
         let a = RunRecord::new(
-            0, 10, 10,
+            0, Sid64::from_u64(10), 10,
             ObjKind::NUM_INT, ObjKey::encode_i64(5),
             1, true,
             dt_ids::INTEGER, 0, None,
         );
         let b = RunRecord::new(
-            0, 1, 1,
+            0, Sid64::from_u64(1), 1,
             ObjKind::NUM_INT, ObjKey::encode_i64(5),
             1, true,
             dt_ids::LONG, 0, None,
@@ -640,7 +643,7 @@ mod tests {
     #[test]
     fn test_is_iri_ref_true_for_iri() {
         let rec = RunRecord::new(
-            0, 1, 1,
+            0, Sid64::from_u64(1), 1,
             ObjKind::REF_ID, ObjKey::encode_u32_id(42),
             1, true,
             dt_ids::ID, 0, None,
@@ -657,7 +660,7 @@ mod tests {
     #[test]
     fn test_is_iri_ref_false_for_null() {
         let rec = RunRecord::new(
-            0, 1, 1,
+            0, Sid64::from_u64(1), 1,
             ObjKind::NULL, ObjKey::ZERO,
             1, true,
             dt_ids::STRING, 0, None,
@@ -671,12 +674,12 @@ mod tests {
     fn test_spot_ordering_cross_kind() {
         // NumInt should sort before NumF64 (0x03 < 0x04)
         let int_rec = RunRecord::new(
-            0, 1, 1,
+            0, Sid64::from_u64(1), 1,
             ObjKind::NUM_INT, ObjKey::encode_i64(100),
             1, true, dt_ids::INTEGER, 0, None,
         );
         let f64_rec = RunRecord::new(
-            0, 1, 1,
+            0, Sid64::from_u64(1), 1,
             ObjKind::NUM_F64, ObjKey::encode_f64(0.001).unwrap(),
             1, true, dt_ids::DOUBLE, 0, None,
         );
@@ -688,11 +691,11 @@ mod tests {
     #[test]
     fn test_fact_key_same_identity() {
         let a = FactKey::from_run_record(&RunRecord::new(
-            0, 10, 5, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
+            0, Sid64::from_u64(10), 5, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
             dt_ids::INTEGER, 0, None,
         ));
         let b = FactKey::from_run_record(&RunRecord::new(
-            0, 10, 5, ObjKind::NUM_INT, ObjKey::encode_i64(42), 99, false,
+            0, Sid64::from_u64(10), 5, ObjKind::NUM_INT, ObjKey::encode_i64(42), 99, false,
             dt_ids::INTEGER, 0, None,
         ));
         assert_eq!(a, b);
@@ -701,11 +704,11 @@ mod tests {
     #[test]
     fn test_fact_key_different_subject() {
         let a = FactKey::from_run_record(&RunRecord::new(
-            0, 10, 5, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
+            0, Sid64::from_u64(10), 5, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
             dt_ids::INTEGER, 0, None,
         ));
         let b = FactKey::from_run_record(&RunRecord::new(
-            0, 11, 5, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
+            0, Sid64::from_u64(11), 5, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
             dt_ids::INTEGER, 0, None,
         ));
         assert_ne!(a, b);
@@ -714,11 +717,11 @@ mod tests {
     #[test]
     fn test_fact_key_different_dt() {
         let a = FactKey::from_run_record(&RunRecord::new(
-            0, 10, 5, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
+            0, Sid64::from_u64(10), 5, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
             dt_ids::INTEGER, 0, None,
         ));
         let b = FactKey::from_run_record(&RunRecord::new(
-            0, 10, 5, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
+            0, Sid64::from_u64(10), 5, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
             dt_ids::LONG, 0, None,
         ));
         assert_ne!(a, b);
@@ -727,21 +730,21 @@ mod tests {
     #[test]
     fn test_fact_key_lang_effective() {
         let a = FactKey::from_run_record(&RunRecord::new(
-            0, 1, 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true,
+            0, Sid64::from_u64(1), 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true,
             dt_ids::LANG_STRING, 3, None,
         ));
         let b = FactKey::from_run_record(&RunRecord::new(
-            0, 1, 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true,
+            0, Sid64::from_u64(1), 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true,
             dt_ids::LANG_STRING, 4, None,
         ));
         assert_ne!(a, b);
 
         let c = FactKey::from_run_record(&RunRecord::new(
-            0, 1, 1, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
+            0, Sid64::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
             dt_ids::INTEGER, 3, None,
         ));
         let d = FactKey::from_run_record(&RunRecord::new(
-            0, 1, 1, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
+            0, Sid64::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
             dt_ids::INTEGER, 99, None,
         ));
         assert_eq!(c, d);
@@ -751,21 +754,21 @@ mod tests {
     #[test]
     fn test_fact_key_list_index() {
         let a = FactKey::from_run_record(&RunRecord::new(
-            0, 1, 1, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
+            0, Sid64::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
             dt_ids::INTEGER, 0, Some(0),
         ));
         let b = FactKey::from_run_record(&RunRecord::new(
-            0, 1, 1, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
+            0, Sid64::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
             dt_ids::INTEGER, 0, Some(1),
         ));
         assert_ne!(a, b);
 
         let c = FactKey::from_run_record(&RunRecord::new(
-            0, 1, 1, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
+            0, Sid64::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
             dt_ids::INTEGER, 0, None,
         ));
         let d = FactKey::from_run_record(&RunRecord::new(
-            0, 1, 1, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
+            0, Sid64::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
             dt_ids::INTEGER, 0, Some(0),
         ));
         assert_ne!(c, d);
@@ -782,7 +785,7 @@ mod tests {
             NO_LIST_INDEX,
         );
         let from_record = FactKey::from_run_record(&RunRecord::new(
-            0, 10, 5, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
+            0, Sid64::from_u64(10), 5, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
             dt_ids::INTEGER, 0, None,
         ));
         assert_eq!(key, from_record);

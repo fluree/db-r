@@ -15,7 +15,7 @@ use crate::sid::Sid;
 #[derive(Debug, Clone)]
 pub struct PropertyStatEntry {
     /// Predicate SID as (namespace_code, name).
-    pub sid: (i32, String),
+    pub sid: (u16, String),
     /// Total number of flakes with this property (including history).
     pub count: u64,
     /// Estimated number of distinct object values (via HLL).

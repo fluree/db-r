@@ -22,7 +22,7 @@ pub struct IriCompactor {
     /// Namespace code -> IRI prefix (from Db.namespaces())
     ///
     /// Example: `2 -> "http://www.w3.org/2001/XMLSchema#"`
-    namespace_codes: HashMap<i32, String>,
+    namespace_codes: HashMap<u16, String>,
 
     /// Parsed @context from the query (for advanced access / @reverse lookups)
     context: ParsedContext,
@@ -40,7 +40,7 @@ impl IriCompactor {
     ///
     /// Precomputes the reverse lookup tables so that every subsequent
     /// `compact_vocab_iri` / `compact_id_iri` call is a pure lookup.
-    pub fn new(namespace_codes: &HashMap<i32, String>, context: &ParsedContext) -> Self {
+    pub fn new(namespace_codes: &HashMap<u16, String>, context: &ParsedContext) -> Self {
         let compactor = ContextCompactor::new(context);
         let reverse_terms = build_reverse_terms(context);
         Self {
@@ -54,7 +54,7 @@ impl IriCompactor {
     /// Build a compactor with just namespace codes (no @context compaction).
     ///
     /// Useful when the query has no @context, or for testing.
-    pub fn from_namespaces(namespace_codes: &HashMap<i32, String>) -> Self {
+    pub fn from_namespaces(namespace_codes: &HashMap<u16, String>) -> Self {
         let default_ctx = ParsedContext::default();
         let compactor = ContextCompactor::new(&default_ctx);
         Self {
@@ -118,7 +118,7 @@ impl IriCompactor {
     }
 
     /// Check if a namespace code is registered
-    pub fn has_namespace(&self, code: i32) -> bool {
+    pub fn has_namespace(&self, code: u16) -> bool {
         self.namespace_codes.contains_key(&code)
     }
 
@@ -158,7 +158,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn make_test_namespaces() -> HashMap<i32, String> {
+    fn make_test_namespaces() -> HashMap<u16, String> {
         let mut map = HashMap::new();
         map.insert(0, "".to_string());
         map.insert(2, "http://www.w3.org/2001/XMLSchema#".to_string());

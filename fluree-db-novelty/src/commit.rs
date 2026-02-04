@@ -202,7 +202,7 @@ pub struct Commit {
     /// database's namespace table, new codes are allocated and recorded here.
     /// This allows ledger loading to apply namespace updates from commit history.
     #[serde(default)]
-    pub namespace_delta: HashMap<i32, String>,
+    pub namespace_delta: HashMap<u16, String>,
 }
 
 impl Commit {
@@ -264,7 +264,7 @@ impl Commit {
     }
 
     /// Set the namespace delta (new namespace codes introduced by this commit)
-    pub fn with_namespace_delta(mut self, delta: HashMap<i32, String>) -> Self {
+    pub fn with_namespace_delta(mut self, delta: HashMap<u16, String>) -> Self {
         self.namespace_delta = delta;
         self
     }
@@ -398,7 +398,7 @@ pub struct CommitEnvelope {
 
     /// New namespace codes introduced by this commit (code → prefix)
     #[serde(default)]
-    pub namespace_delta: HashMap<i32, String>,
+    pub namespace_delta: HashMap<u16, String>,
 }
 
 /// Sentinel value for unknown index version (legacy `indexed_at` field)
@@ -554,8 +554,8 @@ mod tests {
 
     fn make_test_flake(s: i64, p: i64, o: i64, t: i64) -> Flake {
         Flake::new(
-            Sid::new(s as i32, format!("s{}", s)),
-            Sid::new(p as i32, format!("p{}", p)),
+            Sid::new(s as u16, format!("s{}", s)),
+            Sid::new(p as u16, format!("p{}", p)),
             FlakeValue::Long(o),
             Sid::new(2, "long"),
             t,

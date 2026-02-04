@@ -1,7 +1,8 @@
 //! Op encode/decode: Flake <-> binary op with commit-local Sid encoding.
 //!
-//! Each Sid field is stored as (namespace_code: zigzag varint, name_id: varint)
-//! where name_id is a reference into a per-field string dictionary.
+//! Each Sid field is stored as (namespace_code: varint, name_id: varint)
+//! where namespace_code is a u16 and name_id is a reference into a per-field
+//! string dictionary.
 //!
 //! Op field order:
 //! ```text
@@ -71,21 +72,21 @@ pub struct ReadDicts {
 /// by the v2 format (e.g. `FlakeValue::Vector`).
 pub fn encode_op(flake: &Flake, dicts: &mut CommitDicts, buf: &mut Vec<u8>) -> Result<(), CommitV2Error> {
     // Graph: always (0, 0) = default graph in Phase 1
-    encode_varint(zigzag_encode(0), buf); // g_ns_code
+    encode_varint(0, buf); // g_ns_code
     encode_varint(0, buf); // g_name_id = 0 means default graph
 
     // Subject
-    encode_varint(zigzag_encode(flake.s.namespace_code as i64), buf);
+    encode_varint(flake.s.namespace_code as u64, buf);
     let s_name_id = dicts.subject.insert(flake.s.name.as_ref());
     encode_varint(s_name_id as u64, buf);
 
     // Predicate
-    encode_varint(zigzag_encode(flake.p.namespace_code as i64), buf);
+    encode_varint(flake.p.namespace_code as u64, buf);
     let p_name_id = dicts.predicate.insert(flake.p.name.as_ref());
     encode_varint(p_name_id as u64, buf);
 
     // Datatype
-    encode_varint(zigzag_encode(flake.dt.namespace_code as i64), buf);
+    encode_varint(flake.dt.namespace_code as u64, buf);
     let dt_name_id = dicts.datatype.insert(flake.dt.name.as_ref());
     encode_varint(dt_name_id as u64, buf);
 
@@ -126,7 +127,7 @@ fn encode_object(value: &FlakeValue, dicts: &mut CommitDicts, buf: &mut Vec<u8>)
     match value {
         FlakeValue::Ref(sid) => {
             buf.push(OTag::Ref as u8);
-            encode_varint(zigzag_encode(sid.namespace_code as i64), buf);
+            encode_varint(sid.namespace_code as u64, buf);
             let name_id = dicts.object_ref.insert(sid.name.as_ref());
             encode_varint(name_id as u64, buf);
         }
@@ -224,6 +225,15 @@ fn encode_len_prefixed_str(s: &str, buf: &mut Vec<u8>) {
 // Decode
 // =============================================================================
 
+/// Decode a varint as a u16 namespace code, returning an error if the value
+/// exceeds `u16::MAX`.
+fn decode_ns_code(data: &[u8], pos: &mut usize) -> Result<u16, CommitV2Error> {
+    let raw = decode_varint(data, pos)?;
+    u16::try_from(raw).map_err(|_| {
+        CommitV2Error::InvalidOp(format!("namespace code {} exceeds u16::MAX", raw))
+    })
+}
+
 /// Decode a single op from `data` starting at `*pos`, returning a `Flake`.
 ///
 /// Sids are reconstructed directly from (namespace_code, name) pairs
@@ -235,26 +245,26 @@ pub fn decode_op(
     t: i64,
 ) -> Result<Flake, CommitV2Error> {
     // Graph: validate it's the default graph (Phase 1 only supports default)
-    let g_ns_code = zigzag_decode(decode_varint(data, pos)?) as i32;
+    let g_ns_code = decode_ns_code(data, pos)?;
     let g_name_id = decode_varint(data, pos)? as u32;
     if g_ns_code != 0 || g_name_id != 0 {
         return Err(CommitV2Error::NonDefaultGraph { ns_code: g_ns_code, name_id: g_name_id });
     }
 
     // Subject
-    let s_ns_code = zigzag_decode(decode_varint(data, pos)?) as i32;
+    let s_ns_code = decode_ns_code(data, pos)?;
     let s_name_id = decode_varint(data, pos)? as u32;
     let s_name = dicts.subject.get(s_name_id)?;
     let s = Sid::new(s_ns_code, s_name);
 
     // Predicate
-    let p_ns_code = zigzag_decode(decode_varint(data, pos)?) as i32;
+    let p_ns_code = decode_ns_code(data, pos)?;
     let p_name_id = decode_varint(data, pos)? as u32;
     let p_name = dicts.predicate.get(p_name_id)?;
     let p = Sid::new(p_ns_code, p_name);
 
     // Datatype
-    let dt_ns_code = zigzag_decode(decode_varint(data, pos)?) as i32;
+    let dt_ns_code = decode_ns_code(data, pos)?;
     let dt_name_id = decode_varint(data, pos)? as u32;
     let dt_name = dicts.datatype.get(dt_name_id)?;
     let dt = Sid::new(dt_ns_code, dt_name);
@@ -311,7 +321,7 @@ fn decode_object(
 ) -> Result<FlakeValue, CommitV2Error> {
     match tag {
         OTag::Ref => {
-            let ns_code = zigzag_decode(decode_varint(data, pos)?) as i32;
+            let ns_code = decode_ns_code(data, pos)?;
             let name_id = decode_varint(data, pos)? as u32;
             let name = dicts.object_ref.get(name_id)?;
             Ok(FlakeValue::Ref(Sid::new(ns_code, name)))
@@ -445,7 +455,7 @@ fn decode_len_prefixed_str(data: &[u8], pos: &mut usize) -> Result<String, Commi
 mod tests {
     use super::*;
 
-    fn make_flake_long(s_code: i32, s_name: &str, p_code: i32, p_name: &str, val: i64, t: i64) -> Flake {
+    fn make_flake_long(s_code: u16, s_name: &str, p_code: u16, p_name: &str, val: i64, t: i64) -> Flake {
         Flake::new(
             Sid::new(s_code, s_name),
             Sid::new(p_code, p_name),

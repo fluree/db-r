@@ -16,6 +16,7 @@ use crate::pattern::{Term, TriplePattern};
 use crate::reasoning::ReasoningOverlay;
 use crate::rewrite_owl_ql::Ontology;
 use crate::var_registry::VarRegistry;
+use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::{Db, StatsView, Storage, Tracker};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_reasoner::DerivedFactsOverlay;
@@ -329,6 +330,8 @@ pub struct ContextConfig<'a, 'b, S: Storage + 'static> {
     pub binary_store: Option<Arc<BinaryIndexStore>>,
     /// Graph ID for binary index lookups (default 0 = default graph).
     pub binary_g_id: u32,
+    /// Dictionary novelty layer for binary scan subject/string lookups.
+    pub dict_novelty: Option<Arc<DictNovelty>>,
 }
 
 impl<'a, 'b, S: Storage + 'static> Default for ContextConfig<'a, 'b, S> {
@@ -344,6 +347,7 @@ impl<'a, 'b, S: Storage + 'static> Default for ContextConfig<'a, 'b, S> {
             strict_bind_errors: false,
             binary_store: None,
             binary_g_id: 0,
+            dict_novelty: None,
         }
     }
 }
@@ -402,6 +406,9 @@ pub async fn execute_prepared<'a, 'b, S: Storage + 'static>(
     }
     if let Some(store) = config.binary_store {
         ctx = ctx.with_binary_store(store, config.binary_g_id);
+    }
+    if let Some(dn) = config.dict_novelty {
+        ctx = ctx.with_dict_novelty(dn);
     }
 
     run_operator(prepared.operator, &ctx).await

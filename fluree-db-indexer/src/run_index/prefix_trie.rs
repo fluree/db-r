@@ -17,7 +17,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 struct TrieNode {
     /// Namespace code if a registered prefix ends at this node.
-    code: Option<i32>,
+    code: Option<u16>,
     /// Children sorted by byte value.
     children: Vec<(u8, u32)>,
 }
@@ -47,7 +47,7 @@ impl PrefixTrie {
     ///
     /// Skips the empty prefix (code 0) — unmatched IRIs fall through
     /// to the caller's default handling.
-    pub fn from_namespace_codes(codes: &HashMap<i32, String>) -> Self {
+    pub fn from_namespace_codes(codes: &HashMap<u16, String>) -> Self {
         let mut trie = Self::new();
         for (&code, prefix) in codes {
             if !prefix.is_empty() {
@@ -58,7 +58,7 @@ impl PrefixTrie {
     }
 
     /// Insert a prefix string with its namespace code.
-    pub fn insert(&mut self, prefix: &str, code: i32) {
+    pub fn insert(&mut self, prefix: &str, code: u16) {
         let mut node_idx: u32 = 0;
         for &byte in prefix.as_bytes() {
             let children = &self.nodes[node_idx as usize].children;
@@ -84,9 +84,9 @@ impl PrefixTrie {
     ///
     /// Returns `(namespace_code, prefix_byte_length)` or `None` if no
     /// non-empty prefix matches.
-    pub fn longest_match(&self, iri: &str) -> Option<(i32, usize)> {
+    pub fn longest_match(&self, iri: &str) -> Option<(u16, usize)> {
         let mut node_idx: u32 = 0;
-        let mut best: Option<(i32, usize)> = None;
+        let mut best: Option<(u16, usize)> = None;
 
         for (i, &byte) in iri.as_bytes().iter().enumerate() {
             let children = &self.nodes[node_idx as usize].children;

@@ -8,14 +8,15 @@
 //! ## Predefined Namespace Codes
 //!
 //! Fluree uses predefined codes for common namespaces to ensure compatibility
-//! with existing databases. User-supplied namespaces start at code 101.
+//! with existing databases. User-supplied namespaces start at `USER_START`.
 
 use fluree_db_core::{Db, Sid, Storage};
-use fluree_vocab::namespaces::BLANK_NODE;
+use fluree_vocab::namespaces::{BLANK_NODE, OVERFLOW, USER_START};
 use std::collections::HashMap;
 
-/// First code available for user-defined namespaces
-pub const USER_NS_START: i32 = 101;
+/// First code available for user-defined namespaces.
+/// Re-exported from `fluree_vocab::namespaces::USER_START`.
+pub const USER_NS_START: u16 = USER_START;
 
 /// Blank node prefix (standard RDF blank node syntax)
 pub const BLANK_NODE_PREFIX: &str = "_:";
@@ -36,7 +37,7 @@ pub const BLANK_NODE_ID_PREFIX: &str = "fdb";
 #[derive(Debug, Clone)]
 struct TrieNode {
     /// Namespace code if a registered prefix ends at this node.
-    code: Option<i32>,
+    code: Option<u16>,
     /// Children sorted by byte value. Typically 1-3 entries for URI prefixes.
     children: Vec<(u8, u32)>,
 }
@@ -64,7 +65,7 @@ impl PrefixTrie {
     }
 
     /// Insert a prefix string with its namespace code.
-    fn insert(&mut self, prefix: &str, code: i32) {
+    fn insert(&mut self, prefix: &str, code: u16) {
         let mut node_idx: u32 = 0;
         for &byte in prefix.as_bytes() {
             let children = &self.nodes[node_idx as usize].children;
@@ -92,9 +93,9 @@ impl PrefixTrie {
     /// non-empty prefix matches. The empty prefix (code 0) is intentionally
     /// not stored in the trie — unmatched IRIs fall through to the split
     /// heuristic in `sid_for_iri`.
-    fn longest_match(&self, iri: &str) -> Option<(i32, usize)> {
+    fn longest_match(&self, iri: &str) -> Option<(u16, usize)> {
         let mut node_idx: u32 = 0;
-        let mut best: Option<(i32, usize)> = None;
+        let mut best: Option<(u16, usize)> = None;
 
         for (i, &byte) in iri.as_bytes().iter().enumerate() {
             let children = &self.nodes[node_idx as usize].children;
@@ -114,7 +115,7 @@ impl PrefixTrie {
 }
 
 /// Build the default namespace mappings (single source of truth: `fluree-db-core`).
-fn default_namespaces() -> HashMap<i32, String> {
+fn default_namespaces() -> HashMap<u16, String> {
     fluree_db_core::default_namespace_codes()
 }
 
@@ -132,16 +133,16 @@ fn default_namespaces() -> HashMap<i32, String> {
 #[derive(Debug, Clone)]
 pub struct NamespaceRegistry {
     /// Prefix → code mapping (for exact lookups in get_or_allocate)
-    codes: HashMap<String, i32>,
+    codes: HashMap<String, u16>,
 
     /// Code → prefix mapping (for encoding, matches Db.namespace_codes)
-    names: HashMap<i32, String>,
+    names: HashMap<u16, String>,
 
     /// Next available code for allocation (>= USER_NS_START)
-    next_code: i32,
+    next_code: u16,
 
     /// New allocations this transaction (code → prefix)
-    pub(crate) delta: HashMap<i32, String>,
+    pub(crate) delta: HashMap<u16, String>,
 
     /// Byte-level trie for O(len(iri)) longest-prefix matching.
     /// The empty prefix (code 0) is NOT stored in the trie — unmatched
@@ -153,7 +154,7 @@ impl NamespaceRegistry {
     /// Create a new registry with default namespaces
     pub fn new() -> Self {
         let names = default_namespaces();
-        let codes: HashMap<String, i32> = names
+        let codes: HashMap<String, u16> = names
             .iter()
             .map(|(code, prefix)| (prefix.clone(), *code))
             .collect();
@@ -187,13 +188,19 @@ impl NamespaceRegistry {
             names.insert(*code, prefix.clone());
         }
 
-        let codes: HashMap<String, i32> = names
+        let codes: HashMap<String, u16> = names
             .iter()
             .map(|(code, prefix)| (prefix.clone(), *code))
             .collect();
 
-        // Next code is max of existing codes + 1, but at least USER_NS_START
-        let max_code = names.keys().max().copied().unwrap_or(0);
+        // Next code is max of existing non-sentinel codes + 1, but at least USER_NS_START.
+        // Exclude OVERFLOW from max_code since it's a sentinel, not an allocated code.
+        let max_code = names
+            .keys()
+            .filter(|&&c| c < OVERFLOW)
+            .max()
+            .copied()
+            .unwrap_or(0);
         let next_code = (max_code + 1).max(USER_NS_START);
 
         let mut trie = PrefixTrie::new();
@@ -212,16 +219,25 @@ impl NamespaceRegistry {
         }
     }
 
-    /// Get the code for a prefix, allocating a new one if needed
+    /// Get the code for a prefix, allocating a new one if needed.
     ///
     /// If the prefix is not yet registered, a new code is allocated
-    /// and recorded in the delta for persistence.
-    pub fn get_or_allocate(&mut self, prefix: &str) -> i32 {
+    /// and recorded in the delta for persistence. If all codes in
+    /// `USER_START..OVERFLOW` are exhausted, returns `OVERFLOW` as a
+    /// pure sentinel — OVERFLOW is never inserted into codes/names/delta/trie.
+    /// The caller (`sid_for_iri`) handles overflow by using the full IRI as
+    /// the SID name.
+    pub fn get_or_allocate(&mut self, prefix: &str) -> u16 {
         if let Some(&code) = self.codes.get(prefix) {
             return code;
         }
 
-        // Allocate new code
+        // All codes exhausted — return OVERFLOW sentinel without registering.
+        // The caller will use the full IRI as the SID name.
+        if self.next_code >= OVERFLOW {
+            return OVERFLOW;
+        }
+
         let code = self.next_code;
         self.next_code += 1;
 
@@ -237,18 +253,18 @@ impl NamespaceRegistry {
         code
     }
 
-    /// Get the namespace code for blank nodes (always `BLANK_NODE` = 24)
-    pub fn blank_node_code(&self) -> i32 {
+    /// Get the namespace code for blank nodes.
+    pub fn blank_node_code(&self) -> u16 {
         BLANK_NODE
     }
 
     /// Look up a code without allocating
-    pub fn get_code(&self, prefix: &str) -> Option<i32> {
+    pub fn get_code(&self, prefix: &str) -> Option<u16> {
         self.codes.get(prefix).copied()
     }
 
     /// Look up a prefix by code
-    pub fn get_prefix(&self, code: i32) -> Option<&str> {
+    pub fn get_prefix(&self, code: u16) -> Option<&str> {
         self.names.get(&code).map(|s| s.as_str())
     }
 
@@ -266,12 +282,12 @@ impl NamespaceRegistry {
     ///
     /// Returns the map of new allocations (code → prefix) for
     /// inclusion in the commit record.
-    pub fn take_delta(&mut self) -> HashMap<i32, String> {
+    pub fn take_delta(&mut self) -> HashMap<u16, String> {
         std::mem::take(&mut self.delta)
     }
 
     /// Get a reference to the delta without consuming it
-    pub fn delta(&self) -> &HashMap<i32, String> {
+    pub fn delta(&self) -> &HashMap<u16, String> {
         &self.delta
     }
 
@@ -285,6 +301,9 @@ impl NamespaceRegistry {
     /// Uses a byte-level trie for O(len(iri)) longest-prefix matching,
     /// independent of the number of registered namespaces. Falls back to
     /// splitting on the last `/` or `#` for IRIs with no matching prefix.
+    ///
+    /// When namespace codes are exhausted (`get_or_allocate` returns `OVERFLOW`),
+    /// the full IRI is used as the SID name — no prefix splitting.
     pub fn sid_for_iri(&mut self, iri: &str) -> Sid {
         // Trie lookup: O(len(iri)), handles nested prefixes correctly
         if let Some((code, prefix_len)) = self.trie.longest_match(iri) {
@@ -299,15 +318,24 @@ impl NamespaceRegistry {
         };
 
         let code = self.get_or_allocate(prefix);
-        Sid::new(code, local)
+        if code == OVERFLOW {
+            // Overflow: store the full IRI as name, no prefix splitting
+            Sid::new(OVERFLOW, iri)
+        } else {
+            Sid::new(code, local)
+        }
     }
 
     /// Register a namespace code if not already present.
     ///
     /// Used to merge allocations from a parallel parser clone back into the
     /// main registry. If the prefix is already registered (under any code),
-    /// this is a no-op.
-    pub fn ensure_code(&mut self, code: i32, prefix: &str) {
+    /// this is a no-op. OVERFLOW codes are ignored since they are pure
+    /// sentinels and should never be registered.
+    pub fn ensure_code(&mut self, code: u16, prefix: &str) {
+        if code >= OVERFLOW {
+            return; // OVERFLOW is a sentinel, never register it
+        }
         if self.codes.contains_key(prefix) {
             return;
         }
@@ -322,9 +350,9 @@ impl NamespaceRegistry {
         }
     }
 
-    /// Create a Sid for a blank node
+    /// Create a Sid for a blank node.
     ///
-    /// Blank nodes use the predefined namespace code 24 (_:) and generate
+    /// Blank nodes use the predefined `BLANK_NODE` namespace code and generate
     /// a unique local name in the format: `fdb-{unique_id}`
     ///
     /// The `unique_id` should be globally unique (e.g., timestamp + random suffix).
@@ -390,7 +418,6 @@ mod tests {
     fn test_blank_node_code_is_fixed() {
         let registry = NamespaceRegistry::new();
         assert_eq!(registry.blank_node_code(), BLANK_NODE);
-        assert_eq!(registry.blank_node_code(), 24);
     }
 
     #[test]

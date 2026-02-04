@@ -31,7 +31,7 @@ pub struct SpotCursor {
     /// Current position within leaf_range.
     current_idx: usize,
     /// Filter: subject s_id.
-    filter_s_id: u32,
+    filter_s_id: u64,
     /// Filter: predicate p_id (None = all predicates).
     filter_p_id: Option<u32>,
     exhausted: bool,
@@ -45,7 +45,7 @@ impl SpotCursor {
     pub fn for_subject(
         store: Arc<BinaryIndexStore>,
         g_id: u32,
-        s_id: u32,
+        s_id: u64,
         p_id: Option<u32>,
     ) -> Self {
         let leaf_range = store

@@ -273,6 +273,7 @@ where
             tracker: if tracker.is_enabled() { Some(tracker) } else { None },
             dataset: Some(&runtime_dataset),
             binary_store: primary.binary_store.clone(),
+            dict_novelty: primary.dict_novelty.clone(),
             history_mode,
             strict_bind_errors: true,
             ..Default::default()
@@ -319,6 +320,7 @@ where
             tracker: Some(tracker),
             dataset: Some(&runtime_dataset),
             binary_store: primary.binary_store.clone(),
+            dict_novelty: primary.dict_novelty.clone(),
             history_mode,
             strict_bind_errors: true,
             ..Default::default()

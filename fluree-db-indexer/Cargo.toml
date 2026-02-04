@@ -13,11 +13,9 @@ embedded-orchestrator = ["dep:fluree-db-ledger"]
 # Enable HLL-based property statistics (NDV estimation)
 # Uses our own minimal HllSketch256 implementation (no external HLL crate needed)
 hll-stats = ["fluree-db-core/hll-stats"]
-# Enable run-based index generation from commit-v2 blobs
-commit-v2 = ["fluree-db-core/native", "dep:rustc-hash", "dep:xxhash-rust", "dep:zstd", "dep:memmap2", "dep:chrono", "dep:moka", "dep:num-bigint", "dep:num-traits", "dep:bigdecimal"]
 
 [dependencies]
-fluree-db-core = { path = "../fluree-db-core" }
+fluree-db-core = { path = "../fluree-db-core", features = ["native"] }
 fluree-db-novelty = { path = "../fluree-db-novelty" }
 fluree-vocab = { path = "../fluree-vocab" }
 fluree-db-nameservice = { path = "../fluree-db-nameservice" }
@@ -38,16 +36,16 @@ hex.workspace = true
 # Observability
 tracing.workspace = true
 
-# Run-index dependencies (optional, for commit-v2 feature)
-rustc-hash = { version = "2", optional = true }
-xxhash-rust = { workspace = true, features = ["xxh3"], optional = true }
-zstd = { workspace = true, optional = true }
-memmap2 = { version = "0.9", optional = true }
-chrono = { workspace = true, optional = true }
-moka = { workspace = true, optional = true }
-num-bigint = { version = "0.4", features = ["serde"], optional = true }
-num-traits = { version = "0.2", optional = true }
-bigdecimal = { version = "0.4", features = ["serde"], optional = true }
+# Run-index dependencies
+rustc-hash = "2"
+xxhash-rust = { workspace = true, features = ["xxh3"] }
+zstd.workspace = true
+memmap2 = "0.9"
+chrono.workspace = true
+moka.workspace = true
+num-bigint = { version = "0.4", features = ["serde"] }
+num-traits = "0.2"
+bigdecimal = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]

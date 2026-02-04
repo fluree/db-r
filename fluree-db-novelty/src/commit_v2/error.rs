@@ -34,7 +34,7 @@ pub enum CommitV2Error {
     /// FlakeValue variant not supported in commit-v2 format.
     UnsupportedValue(String),
     /// Non-default graph encountered; Phase 1 only supports default graph.
-    NonDefaultGraph { ns_code: i32, name_id: u32 },
+    NonDefaultGraph { ns_code: u16, name_id: u32 },
 }
 
 impl fmt::Display for CommitV2Error {

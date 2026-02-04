@@ -778,7 +778,7 @@ mod tests {
     use crate::types::{PolicyAction, PolicySet, PropertyPolicyEntry, TargetMode};
     use fluree_vocab::namespaces::RDFS;
 
-    fn make_sid(ns: i32, name: &str) -> Sid {
+    fn make_sid(ns: u16, name: &str) -> Sid {
         Sid::new(ns, name)
     }
 

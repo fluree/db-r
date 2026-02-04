@@ -156,7 +156,7 @@ mod tests {
     }
 
     fn make_hierarchy(
-        entries: Vec<(i32, &str, Vec<(i32, &str)>)>,
+        entries: Vec<(u16, &str, Vec<(u16, &str)>)>,
     ) -> (SchemaHierarchy, SidInterner) {
         let interner = SidInterner::new();
         let vals: Vec<SchemaPredicateInfo> = entries

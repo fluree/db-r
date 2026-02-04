@@ -198,7 +198,7 @@ where
     }
 
     // Step 2: Create bounded SPOT scan
-    // Commit subjects have namespace FLUREE_COMMIT (12) with hex hash as name
+    // Commit subjects use the FLUREE_COMMIT namespace with hex hash as name
     let start_sid = Sid::new(FLUREE_COMMIT, sha_normalized);
     // Use tilde (~) as end bound since it sorts after all hex characters (0-9, a-f)
     let end_prefix = format!("{}~", sha_normalized);

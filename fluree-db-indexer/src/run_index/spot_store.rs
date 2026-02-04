@@ -9,10 +9,11 @@
 
 use super::branch::{find_branch_file, read_branch_manifest, read_branch_manifest_from_bytes, BranchManifest};
 use super::dict_io::{
-    read_forward_entry, read_forward_index, read_forward_index_from_bytes,
+    read_forward_index,
     read_language_dict, read_language_dict_from_bytes,
     read_predicate_dict,
     read_predicate_dict_from_bytes,
+    read_subject_sid_map,
 };
 use super::index_root::BinaryIndexRootV2;
 use super::global_dict::{LanguageTagDict, PredicateDict};
@@ -21,10 +22,15 @@ use super::leaflet::decode_leaflet;
 use super::leaflet_cache::LeafletCache;
 use super::prefix_trie::PrefixTrie;
 use super::run_record::{RunRecord, RunSortOrder, NO_LIST_INDEX};
+use crate::dict_tree::{DictTreeReader, DictBranch};
+use crate::dict_tree::reader::LeafSource;
+use crate::dict_tree::forward_leaf::ForwardEntry;
+use crate::dict_tree::reverse_leaf::{ReverseEntry, subject_reverse_key};
+use crate::dict_tree::builder;
+use fluree_db_core::sid64::Sid64;
 use fluree_db_core::value_id::{ObjKind, ObjKey};
 use fluree_db_core::storage::{extract_hash_from_address, StorageRead};
 use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
-use memmap2::Mmap;
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -98,29 +104,21 @@ pub struct BinaryIndexStore {
     predicates: PredicateDict,
     /// Reverse predicate lookup (IRI → p_id).
     predicate_reverse: HashMap<String, u32>,
-    /// Subject forward file (mmap'd subjects.fwd).
-    subject_forward: Option<Mmap>,
-    /// Subject forward index (offsets + lens).
-    subject_offsets: Vec<u64>,
-    subject_lens: Vec<u32>,
-    /// String forward file (mmap'd strings.fwd).
-    string_forward: Option<Mmap>,
-    /// String forward index (offsets + lens).
-    string_offsets: Vec<u64>,
-    string_lens: Vec<u32>,
+    /// Subject forward tree reader (sid64 → suffix bytes, ns-compressed).
+    subject_forward_tree: Option<DictTreeReader>,
+    /// Subject reverse tree reader ([ns_code BE][suffix] → sid64, ns-compressed).
+    subject_reverse_tree: Option<DictTreeReader>,
+    /// String forward tree reader (string_id → value).
+    string_forward_tree: Option<DictTreeReader>,
+    /// String reverse tree reader (value → string_id).
+    string_reverse_tree: Option<DictTreeReader>,
     /// Namespace codes (code → prefix).
-    namespace_codes: HashMap<i32, String>,
+    namespace_codes: HashMap<u16, String>,
     /// Reverse namespace lookup (prefix → code) for Sid → IRI reconstruction.
     #[allow(dead_code)]
-    namespace_reverse: HashMap<String, i32>,
+    namespace_reverse: HashMap<String, u16>,
     /// PrefixTrie for O(len(iri)) longest-prefix matching.
     prefix_trie: PrefixTrie,
-    /// Subject reverse hash index (mmap'd subjects.rev).
-    subject_reverse: Option<Mmap>,
-    subject_reverse_count: u32,
-    /// String reverse hash index (mmap'd strings.rev).
-    string_reverse: Option<Mmap>,
-    string_reverse_count: u32,
     /// Language tag dict (id → tag string, 1-based).
     language_tags: LanguageTagDict,
     /// Datatype IRI → Sid, pre-computed from run_dir/datatypes.dict (FRD1).
@@ -243,43 +241,14 @@ impl BinaryIndexStore {
             ));
         };
 
-        // ---- Load subject forward file + index ----
-        let subject_fwd_path = run_dir.join("subjects.fwd");
-        let subject_idx_path = run_dir.join("subjects.idx");
-        let (subject_offsets, subject_lens) = read_forward_index(&subject_idx_path)?;
-        let subject_forward = if subject_fwd_path.exists() {
-            let file = std::fs::File::open(&subject_fwd_path)?;
-            Some(unsafe { Mmap::map(&file)? })
-        } else {
-            None
-        };
-        tracing::info!(subjects = subject_offsets.len(), "loaded subject forward index");
-
-        // ---- Load string forward file + index ----
-        let string_fwd_path = run_dir.join("strings.fwd");
-        let string_idx_path = run_dir.join("strings.idx");
-        let (string_offsets, string_lens) = if string_idx_path.exists() {
-            read_forward_index(&string_idx_path)?
-        } else {
-            (Vec::new(), Vec::new())
-        };
-        let string_forward = if string_fwd_path.exists() {
-            let file = std::fs::File::open(&string_fwd_path)?;
-            Some(unsafe { Mmap::map(&file)? })
-        } else {
-            None
-        };
-        tracing::info!(strings = string_offsets.len(), "loaded string forward index");
-
-        // ---- Load namespace codes ----
+        // ---- Load namespace codes (before subject trees, needed for compression) ----
         let ns_path = run_dir.join("namespaces.json");
         let namespace_codes = if ns_path.exists() {
             load_namespace_codes(&ns_path)?
         } else {
             fluree_db_core::default_namespace_codes()
         };
-        // Build reverse lookup (prefix → code)
-        let namespace_reverse: HashMap<String, i32> = namespace_codes
+        let namespace_reverse: HashMap<String, u16> = namespace_codes
             .iter()
             .map(|(&code, prefix)| (prefix.clone(), code))
             .collect();
@@ -290,67 +259,80 @@ impl BinaryIndexStore {
             "loaded namespace codes + built prefix trie"
         );
 
-        // ---- Load subject reverse hash index ----
-        let rev_path = run_dir.join("subjects.rev");
-        let (subject_reverse, subject_reverse_count) = if rev_path.exists() {
-            let data = std::fs::read(&rev_path)?;
-            if data.len() < 8 || &data[0..4] != b"SRV1" {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "subjects.rev: invalid magic",
-                ));
-            }
-            let count = u32::from_le_bytes(data[4..8].try_into().unwrap());
-            let expected_len = 8 + count as usize * 20;
-            if data.len() < expected_len {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "subjects.rev truncated: {} < {} (count={})",
-                        data.len(),
-                        expected_len,
-                        count
-                    ),
-                ));
-            }
-            let file = std::fs::File::open(&rev_path)?;
-            let mmap = unsafe { Mmap::map(&file)? };
-            tracing::info!(entries = count, "loaded subject reverse index");
-            (Some(mmap), count)
-        } else {
-            (None, 0)
-        };
+        // ---- Build subject trees from flat files ----
+        // Forward tree stores suffix only (ns_code is in sid64).
+        // Reverse tree keys are [ns_code BE][suffix] for namespace compression.
+        let subject_fwd_path = run_dir.join("subjects.fwd");
+        let subject_idx_path = run_dir.join("subjects.idx");
+        let sids_path = run_dir.join("subjects.sids");
+        let (subject_forward_tree, subject_reverse_tree) =
+            if subject_idx_path.exists() && subject_fwd_path.exists() {
+                let (offsets, lens) = read_forward_index(&subject_idx_path)?;
+                let fwd_data = std::fs::read(&subject_fwd_path)?;
+                let sids: Vec<u64> = if sids_path.exists() {
+                    read_subject_sid_map(&sids_path)?
+                } else {
+                    (0..offsets.len() as u64).collect()
+                };
+                // Build forward entries with suffix-only values (strip namespace prefix)
+                let mut fwd_entries: Vec<ForwardEntry> = Vec::with_capacity(sids.len());
+                let mut rev_entries: Vec<ReverseEntry> = Vec::with_capacity(sids.len());
+                for (&sid, (&off, &len)) in sids.iter().zip(offsets.iter().zip(lens.iter())) {
+                    let iri = &fwd_data[off as usize..(off as usize + len as usize)];
+                    let iri_str = std::str::from_utf8(iri).unwrap_or("");
+                    let ns_code = Sid64::from_u64(sid).ns_code();
+                    let prefix = namespace_codes.get(&ns_code).map(|s| s.as_str()).unwrap_or("");
+                    let suffix = if iri_str.starts_with(prefix) && !prefix.is_empty() {
+                        &iri[prefix.len()..]
+                    } else {
+                        iri
+                    };
+                    fwd_entries.push(ForwardEntry {
+                        id: sid,
+                        value: suffix.to_vec(),
+                    });
+                    rev_entries.push(ReverseEntry {
+                        key: subject_reverse_key(ns_code, suffix),
+                        id: sid,
+                    });
+                }
+                fwd_entries.sort_by_key(|e| e.id);
+                rev_entries.sort_by(|a, b| a.key.cmp(&b.key));
+                let fwd_reader = build_dict_reader_forward(fwd_entries)?;
+                let rev_reader = build_dict_reader_reverse(rev_entries)?;
+                tracing::info!(subjects = sids.len(), "built subject trees from flat files (ns-compressed)");
+                (Some(fwd_reader), Some(rev_reader))
+            } else {
+                (None, None)
+            };
 
-        // ---- Load string reverse hash index ----
-        let str_rev_path = run_dir.join("strings.rev");
-        let (string_reverse, string_reverse_count) = if str_rev_path.exists() {
-            let data = std::fs::read(&str_rev_path)?;
-            if data.len() < 8 || &data[0..4] != b"LRV1" {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "strings.rev: invalid magic",
-                ));
-            }
-            let count = u32::from_le_bytes(data[4..8].try_into().unwrap());
-            let expected_len = 8 + count as usize * 20;
-            if data.len() < expected_len {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "strings.rev truncated: {} < {} (count={})",
-                        data.len(),
-                        expected_len,
-                        count
-                    ),
-                ));
-            }
-            let file = std::fs::File::open(&str_rev_path)?;
-            let mmap = unsafe { Mmap::map(&file)? };
-            tracing::info!(entries = count, "loaded string reverse index");
-            (Some(mmap), count)
-        } else {
-            (None, 0)
-        };
+        // ---- Build string trees from flat files ----
+        // Strings use raw value bytes (no namespace compression).
+        let string_fwd_path = run_dir.join("strings.fwd");
+        let string_idx_path = run_dir.join("strings.idx");
+        let (string_forward_tree, string_reverse_tree) =
+            if string_idx_path.exists() && string_fwd_path.exists() {
+                let (offsets, lens) = read_forward_index(&string_idx_path)?;
+                let fwd_data = std::fs::read(&string_fwd_path)?;
+                let fwd_entries: Vec<ForwardEntry> = offsets.iter()
+                    .zip(lens.iter())
+                    .enumerate()
+                    .map(|(i, (&off, &len))| ForwardEntry {
+                        id: i as u64,
+                        value: fwd_data[off as usize..(off as usize + len as usize)].to_vec(),
+                    })
+                    .collect();
+                let mut rev_entries: Vec<ReverseEntry> = fwd_entries.iter()
+                    .map(|e| ReverseEntry { key: e.value.clone(), id: e.id })
+                    .collect();
+                rev_entries.sort_by(|a, b| a.key.cmp(&b.key));
+                let fwd_reader = build_dict_reader_forward(fwd_entries)?;
+                let rev_reader = build_dict_reader_reverse(rev_entries)?;
+                tracing::info!(strings = offsets.len(), "built string trees from flat files");
+                (Some(fwd_reader), Some(rev_reader))
+            } else {
+                (None, None)
+            };
 
         // ---- Load language tag dict ----
         let lang_path = run_dir.join("languages.dict");
@@ -433,19 +415,13 @@ impl BinaryIndexStore {
             graphs,
             predicates,
             predicate_reverse,
-            subject_forward,
-            subject_offsets,
-            subject_lens,
-            string_forward,
-            string_offsets,
-            string_lens,
+            subject_forward_tree,
+            subject_reverse_tree,
+            string_forward_tree,
+            string_reverse_tree,
             namespace_codes,
             namespace_reverse,
             prefix_trie,
-            subject_reverse,
-            subject_reverse_count,
-            string_reverse,
-            string_reverse_count,
             language_tags,
             dt_sids,
             max_t,
@@ -517,32 +493,38 @@ impl BinaryIndexStore {
             (dict, rev)
         };
 
-        // ---- Load subject forward index (cache-aware) ----
-        let subj_idx_bytes = fetch_cached_bytes(storage, &root.dict_addresses.subject_index, cache_dir, "idx").await?;
-        let (subject_offsets, subject_lens) = read_forward_index_from_bytes(&subj_idx_bytes)?;
-        tracing::info!(subjects = subject_offsets.len(), "loaded subject forward index");
+        // ---- Load subject dict trees from CAS ----
+        let subject_forward_tree = Some(
+            load_dict_tree_from_cas(storage, &root.dict_addresses.subject_forward, cache_dir, "sdl", leaflet_cache.as_ref()).await?
+        );
+        let subject_reverse_tree = Some(
+            load_dict_tree_from_cas(storage, &root.dict_addresses.subject_reverse, cache_dir, "srl", leaflet_cache.as_ref()).await?
+        );
+        tracing::info!(
+            subj_fwd_entries = subject_forward_tree.as_ref().unwrap().total_entries(),
+            subj_rev_entries = subject_reverse_tree.as_ref().unwrap().total_entries(),
+            "loaded subject dict trees"
+        );
 
-        // ---- Load subject forward file (mmap'd, cache-aware) ----
-        let subject_forward = fetch_and_mmap(storage, &root.dict_addresses.subject_forward, cache_dir, "fwd").await?;
-
-        // ---- Load string forward index (cache-aware) ----
-        let str_idx_bytes = fetch_cached_bytes(storage, &root.dict_addresses.string_index, cache_dir, "idx").await?;
-        let (string_offsets, string_lens) = if !str_idx_bytes.is_empty() {
-            read_forward_index_from_bytes(&str_idx_bytes)?
-        } else {
-            (Vec::new(), Vec::new())
-        };
-        tracing::info!(strings = string_offsets.len(), "loaded string forward index");
-
-        // ---- Load string forward file (mmap'd, cache-aware) ----
-        let string_forward = fetch_and_mmap(storage, &root.dict_addresses.string_forward, cache_dir, "fwd").await?;
+        // ---- Load string dict trees from CAS ----
+        let string_forward_tree = Some(
+            load_dict_tree_from_cas(storage, &root.dict_addresses.string_forward, cache_dir, "tfl", leaflet_cache.as_ref()).await?
+        );
+        let string_reverse_tree = Some(
+            load_dict_tree_from_cas(storage, &root.dict_addresses.string_reverse, cache_dir, "trl", leaflet_cache.as_ref()).await?
+        );
+        tracing::info!(
+            str_fwd_entries = string_forward_tree.as_ref().unwrap().total_entries(),
+            str_rev_entries = string_reverse_tree.as_ref().unwrap().total_entries(),
+            "loaded string dict trees"
+        );
 
         // ---- Namespace codes (from root, not from storage) ----
-        let namespace_codes: HashMap<i32, String> = root.namespace_codes
+        let namespace_codes: HashMap<u16, String> = root.namespace_codes
             .iter()
             .map(|(&k, v)| (k, v.clone()))
             .collect();
-        let namespace_reverse: HashMap<String, i32> = namespace_codes
+        let namespace_reverse: HashMap<String, u16> = namespace_codes
             .iter()
             .map(|(&code, prefix)| (prefix.clone(), code))
             .collect();
@@ -552,69 +534,6 @@ impl BinaryIndexStore {
             trie_nodes = prefix_trie.node_count(),
             "loaded namespace codes + built prefix trie"
         );
-
-        // ---- Load subject reverse hash index (mmap'd, strict validation) ----
-        // V2 root requires this artifact — error on missing/invalid, not silent absent.
-        let (subject_reverse, subject_reverse_count) = {
-            let mmap = fetch_and_mmap(storage, &root.dict_addresses.subject_reverse, cache_dir, "rev").await?;
-            match mmap {
-                Some(m) if m.len() >= 8 && &m[0..4] == b"SRV1" => {
-                    let count = u32::from_le_bytes(m[4..8].try_into().unwrap());
-                    let expected = 8 + count as usize * 20;
-                    if m.len() < expected {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("subjects.rev truncated: {} < {} (count={})", m.len(), expected, count),
-                        ));
-                    }
-                    tracing::info!(entries = count, "loaded subject reverse index");
-                    (Some(m), count)
-                }
-                Some(m) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("subjects.rev: invalid magic or too small (len={})", m.len()),
-                    ));
-                }
-                None => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "subjects.rev: empty content for required artifact",
-                    ));
-                }
-            }
-        };
-
-        // ---- Load string reverse hash index (mmap'd, strict validation) ----
-        let (string_reverse, string_reverse_count) = {
-            let mmap = fetch_and_mmap(storage, &root.dict_addresses.string_reverse, cache_dir, "rev").await?;
-            match mmap {
-                Some(m) if m.len() >= 8 && &m[0..4] == b"LRV1" => {
-                    let count = u32::from_le_bytes(m[4..8].try_into().unwrap());
-                    let expected = 8 + count as usize * 20;
-                    if m.len() < expected {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("strings.rev truncated: {} < {} (count={})", m.len(), expected, count),
-                        ));
-                    }
-                    tracing::info!(entries = count, "loaded string reverse index");
-                    (Some(m), count)
-                }
-                Some(m) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("strings.rev: invalid magic or too small (len={})", m.len()),
-                    ));
-                }
-                None => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "strings.rev: empty content for required artifact",
-                    ));
-                }
-            }
-        };
 
         // ---- Load language tag dict (cache-aware) ----
         let lang_bytes = fetch_cached_bytes(storage, &root.dict_addresses.languages, cache_dir, "dict").await?;
@@ -714,19 +633,13 @@ impl BinaryIndexStore {
             graphs,
             predicates,
             predicate_reverse,
-            subject_forward,
-            subject_offsets,
-            subject_lens,
-            string_forward,
-            string_offsets,
-            string_lens,
+            subject_forward_tree,
+            subject_reverse_tree,
+            string_forward_tree,
+            string_reverse_tree,
             namespace_codes,
             namespace_reverse,
             prefix_trie,
-            subject_reverse,
-            subject_reverse_count,
-            string_reverse,
-            string_reverse_count,
             language_tags,
             dt_sids,
             max_t: root.index_t,
@@ -755,8 +668,22 @@ impl BinaryIndexStore {
     /// Replace the leaflet cache on an already-loaded store.
     ///
     /// Use this to attach a shared cache after construction, or to
-    /// disable caching by passing `None`.
+    /// disable caching by passing `None`. Propagates to dict tree readers
+    /// so they share the same global budget.
     pub fn set_leaflet_cache(&mut self, cache: Option<Arc<LeafletCache>>) {
+        // Propagate to dict tree readers
+        if let Some(tree) = &mut self.subject_forward_tree {
+            tree.set_cache(cache.clone());
+        }
+        if let Some(tree) = &mut self.subject_reverse_tree {
+            tree.set_cache(cache.clone());
+        }
+        if let Some(tree) = &mut self.string_forward_tree {
+            tree.set_cache(cache.clone());
+        }
+        if let Some(tree) = &mut self.string_reverse_tree {
+            tree.set_cache(cache.clone());
+        }
         self.leaflet_cache = cache;
     }
 
@@ -786,20 +713,30 @@ impl BinaryIndexStore {
         format!("{}{}", prefix, sid.name)
     }
 
-    /// Resolve s_id → full IRI string.
-    pub fn resolve_subject_iri(&self, s_id: u32) -> io::Result<String> {
-        let idx = s_id as usize;
-        if idx >= self.subject_offsets.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("s_id {} out of range (max {})", s_id, self.subject_offsets.len()),
-            ));
-        }
-        let mmap = self.subject_forward.as_ref().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "subject forward file not loaded")
+    /// Resolve s_id → full IRI string via the forward dict tree.
+    ///
+    /// The forward tree stores only the suffix (namespace prefix stripped).
+    /// Reconstructs the full IRI by prepending the namespace prefix looked
+    /// up from `namespace_codes` using the ns_code embedded in the sid64.
+    pub fn resolve_subject_iri(&self, s_id: u64) -> io::Result<String> {
+        let tree = self.subject_forward_tree.as_ref().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "subject forward tree not loaded")
         })?;
-        let iri = read_forward_entry(mmap, self.subject_offsets[idx], self.subject_lens[idx])?;
-        Ok(iri.to_string())
+        let suffix_bytes = tree.forward_lookup(s_id)?.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("s_id {} not found in subject forward tree", s_id),
+            )
+        })?;
+        let suffix = String::from_utf8(suffix_bytes).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, e)
+        })?;
+        let ns_code = Sid64::from_u64(s_id).ns_code();
+        let prefix = self.namespace_codes
+            .get(&ns_code)
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        Ok(format!("{}{}", prefix, suffix))
     }
 
     /// Resolve p_id → full IRI string.
@@ -812,20 +749,17 @@ impl BinaryIndexStore {
         self.predicate_reverse.get(iri).copied()
     }
 
-    /// Resolve a string dict entry by ID.
+    /// Resolve a string dict entry by ID via the forward dict tree.
     pub fn resolve_string_value(&self, str_id: u32) -> io::Result<String> {
-        let idx = str_id as usize;
-        if idx >= self.string_offsets.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("str_id {} out of range (max {})", str_id, self.string_offsets.len()),
-            ));
-        }
-        let mmap = self.string_forward.as_ref().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "string forward file not loaded")
+        let tree = self.string_forward_tree.as_ref().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "string forward tree not loaded")
         })?;
-        let s = read_forward_entry(mmap, self.string_offsets[idx], self.string_lens[idx])?;
-        Ok(s.to_string())
+        tree.forward_lookup_str(str_id as u64)?.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("str_id {} not found in string forward tree", str_id),
+            )
+        })
     }
 
     // ========================================================================
@@ -835,7 +769,7 @@ impl BinaryIndexStore {
     /// Translate a Sid to s_id via the reverse hash index.
     ///
     /// Reconstructs the full IRI from the Sid, then looks it up in subjects.rev.
-    pub fn sid_to_s_id(&self, sid: &Sid) -> io::Result<Option<u32>> {
+    pub fn sid_to_s_id(&self, sid: &Sid) -> io::Result<Option<u64>> {
         let iri = self.sid_to_iri(sid);
         self.find_subject_id(&iri)
     }
@@ -861,7 +795,7 @@ impl BinaryIndexStore {
             FlakeValue::Long(n) => Ok(Some((ObjKind::NUM_INT, ObjKey::encode_i64(*n)))),
             FlakeValue::Ref(sid) => {
                 match self.sid_to_s_id(sid)? {
-                    Some(s_id) => Ok(Some((ObjKind::REF_ID, ObjKey::encode_u32_id(s_id)))),
+                    Some(s_id) => Ok(Some((ObjKind::REF_ID, ObjKey::from_u64(s_id)))),
                     None => Ok(None),
                 }
             }
@@ -957,7 +891,7 @@ impl BinaryIndexStore {
 
         let min_key = RunRecord {
             g_id,
-            s_id: s_id.unwrap_or(0),
+            s_id: Sid64::from_u64(s_id.unwrap_or(0)),
             p_id: p_id.unwrap_or(0),
             dt: 0,
             o_kind: min_o_kind,
@@ -965,13 +899,12 @@ impl BinaryIndexStore {
             o_key: min_o_key,
             t: i64::MIN,
             lang_id: 0,
-            _pad: [0; 2],
             i: NO_LIST_INDEX,
         };
 
         let max_key = RunRecord {
             g_id,
-            s_id: s_id.unwrap_or(u32::MAX),
+            s_id: Sid64::from_u64(s_id.unwrap_or(u64::MAX)),
             p_id: p_id.unwrap_or(u32::MAX),
             dt: u16::MAX,
             o_kind: max_o_kind,
@@ -979,7 +912,6 @@ impl BinaryIndexStore {
             o_key: max_o_key,
             t: i64::MAX,
             lang_id: u16::MAX,
-            _pad: [0; 2],
             i: i32::MAX,
         };
 
@@ -990,158 +922,63 @@ impl BinaryIndexStore {
     // Subject reverse lookup (IRI → s_id)
     // ========================================================================
 
-    /// Find s_id for an IRI via the reverse hash index (O(log N) binary search).
-    pub fn find_subject_id(&self, iri: &str) -> io::Result<Option<u32>> {
-        let mmap = match &self.subject_reverse {
-            Some(m) => m,
-            None => return Ok(None),
-        };
-        if self.subject_reverse_count == 0 {
-            return Ok(None);
-        }
-
-        let hash = xxhash_rust::xxh3::xxh3_128(iri.as_bytes());
-        let target_hi = (hash >> 64) as u64;
-        let target_lo = hash as u64;
-
-        // Binary search over sorted (hash_hi, hash_lo, s_id) records.
-        // Each record is 20 bytes. Data starts at offset 8 (after magic + count).
-        let data = &mmap[8..];
-        let count = self.subject_reverse_count as usize;
-        let record_size = 20;
-
-        let mut lo = 0usize;
-        let mut hi = count;
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            let off = mid * record_size;
-            let mid_hi = u64::from_le_bytes(data[off..off + 8].try_into().unwrap());
-            let mid_lo = u64::from_le_bytes(data[off + 8..off + 16].try_into().unwrap());
-
-            match (mid_hi, mid_lo).cmp(&(target_hi, target_lo)) {
-                std::cmp::Ordering::Less => lo = mid + 1,
-                std::cmp::Ordering::Greater => hi = mid,
-                std::cmp::Ordering::Equal => {
-                    // Verify via forward map to guard against hash collisions.
-                    let s_id = u32::from_le_bytes(data[off + 16..off + 20].try_into().unwrap());
-                    let resolved = self.resolve_subject_iri(s_id)?;
-                    if resolved == iri {
-                        return Ok(Some(s_id));
-                    }
-                    // Hash collision (extremely rare with xxh3_128): scan adjacent
-                    // records that share the same hash.
-                    // Scan backward
-                    if mid > 0 {
-                        let mut i = mid - 1;
-                        loop {
-                            let o = i * record_size;
-                            let h = u64::from_le_bytes(data[o..o + 8].try_into().unwrap());
-                            let l = u64::from_le_bytes(data[o + 8..o + 16].try_into().unwrap());
-                            if (h, l) != (target_hi, target_lo) { break; }
-                            let id = u32::from_le_bytes(data[o + 16..o + 20].try_into().unwrap());
-                            if self.resolve_subject_iri(id)? == iri {
-                                return Ok(Some(id));
-                            }
-                            if i == 0 { break; }
-                            i -= 1;
-                        }
-                    }
-                    // Scan forward
-                    for i in (mid + 1)..count {
-                        let o = i * record_size;
-                        let h = u64::from_le_bytes(data[o..o + 8].try_into().unwrap());
-                        let l = u64::from_le_bytes(data[o + 8..o + 16].try_into().unwrap());
-                        if (h, l) != (target_hi, target_lo) { break; }
-                        let id = u32::from_le_bytes(data[o + 16..o + 20].try_into().unwrap());
-                        if self.resolve_subject_iri(id)? == iri {
-                            return Ok(Some(id));
-                        }
-                    }
-                    return Ok(None);
-                }
+    /// Find s_id for an IRI via the reverse dict tree (O(log N) B-tree search).
+    ///
+    /// Parses the IRI into `(ns_code, suffix)` via the prefix trie, builds a
+    /// compressed reverse key `[ns_code BE][suffix]`, and looks it up.
+    pub fn find_subject_id(&self, iri: &str) -> io::Result<Option<u64>> {
+        match &self.subject_reverse_tree {
+            Some(tree) => {
+                let (ns_code, prefix_len) = self.prefix_trie
+                    .longest_match(iri)
+                    .unwrap_or((0, 0));
+                let suffix = &iri[prefix_len..];
+                let key = subject_reverse_key(ns_code, suffix.as_bytes());
+                tree.reverse_lookup(&key)
             }
+            None => Ok(None),
         }
+    }
 
-        Ok(None)
+    /// Find subject ID by namespace code and suffix (avoids IRI construction).
+    ///
+    /// Same as `find_subject_id(iri)` but skips prefix_trie decomposition
+    /// when the caller already has `(ns_code, suffix)` from a `Sid`.
+    pub fn find_subject_id_by_parts(&self, ns_code: u16, suffix: &str) -> io::Result<Option<u64>> {
+        match &self.subject_reverse_tree {
+            Some(tree) => {
+                let key = subject_reverse_key(ns_code, suffix.as_bytes());
+                tree.reverse_lookup(&key)
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Get the namespace prefix for a given namespace code.
+    ///
+    /// Returns `Err` if the code is not in `namespace_codes` (corrupt root).
+    pub fn namespace_prefix(&self, ns_code: u16) -> io::Result<&str> {
+        self.namespace_codes
+            .get(&ns_code)
+            .map(|s| s.as_str())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("namespace code {} not in index root", ns_code),
+                )
+            })
     }
 
     // ========================================================================
     // String reverse lookup (string → str_id)
     // ========================================================================
 
-    /// Find str_id for a string value via the reverse hash index (O(log N) binary search).
+    /// Find str_id for a string value via the reverse dict tree (O(log N) B-tree search).
     pub fn find_string_id(&self, value: &str) -> io::Result<Option<u32>> {
-        let mmap = match &self.string_reverse {
-            Some(m) => m,
-            None => return Ok(None),
-        };
-        if self.string_reverse_count == 0 {
-            return Ok(None);
+        match &self.string_reverse_tree {
+            Some(tree) => tree.reverse_lookup(value.as_bytes()).map(|opt| opt.map(|id| id as u32)),
+            None => Ok(None),
         }
-
-        let hash = xxhash_rust::xxh3::xxh3_128(value.as_bytes());
-        let target_hi = (hash >> 64) as u64;
-        let target_lo = hash as u64;
-
-        // Binary search over sorted (hash_hi, hash_lo, str_id) records.
-        // Each record is 20 bytes. Data starts at offset 8 (after magic + count).
-        let data = &mmap[8..];
-        let count = self.string_reverse_count as usize;
-        let record_size = 20;
-
-        let mut lo = 0usize;
-        let mut hi = count;
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            let off = mid * record_size;
-            let mid_hi = u64::from_le_bytes(data[off..off + 8].try_into().unwrap());
-            let mid_lo = u64::from_le_bytes(data[off + 8..off + 16].try_into().unwrap());
-
-            match (mid_hi, mid_lo).cmp(&(target_hi, target_lo)) {
-                std::cmp::Ordering::Less => lo = mid + 1,
-                std::cmp::Ordering::Greater => hi = mid,
-                std::cmp::Ordering::Equal => {
-                    // Verify via forward map to guard against hash collisions.
-                    let str_id = u32::from_le_bytes(data[off + 16..off + 20].try_into().unwrap());
-                    let resolved = self.resolve_string_value(str_id)?;
-                    if resolved == value {
-                        return Ok(Some(str_id));
-                    }
-                    // Hash collision (extremely rare with xxh3_128): scan adjacent
-                    // records that share the same hash.
-                    // Scan backward
-                    if mid > 0 {
-                        let mut i = mid - 1;
-                        loop {
-                            let o = i * record_size;
-                            let h = u64::from_le_bytes(data[o..o + 8].try_into().unwrap());
-                            let l = u64::from_le_bytes(data[o + 8..o + 16].try_into().unwrap());
-                            if (h, l) != (target_hi, target_lo) { break; }
-                            let id = u32::from_le_bytes(data[o + 16..o + 20].try_into().unwrap());
-                            if self.resolve_string_value(id)? == value {
-                                return Ok(Some(id));
-                            }
-                            if i == 0 { break; }
-                            i -= 1;
-                        }
-                    }
-                    // Scan forward
-                    for i in (mid + 1)..count {
-                        let o = i * record_size;
-                        let h = u64::from_le_bytes(data[o..o + 8].try_into().unwrap());
-                        let l = u64::from_le_bytes(data[o + 8..o + 16].try_into().unwrap());
-                        if (h, l) != (target_hi, target_lo) { break; }
-                        let id = u32::from_le_bytes(data[o + 16..o + 20].try_into().unwrap());
-                        if self.resolve_string_value(id)? == value {
-                            return Ok(Some(id));
-                        }
-                    }
-                    return Ok(None);
-                }
-            }
-        }
-
-        Ok(None)
     }
 
     // ========================================================================
@@ -1201,7 +1038,7 @@ impl BinaryIndexStore {
     // ========================================================================
 
     /// Get the namespace code → prefix mapping.
-    pub fn namespace_codes(&self) -> &HashMap<i32, String> {
+    pub fn namespace_codes(&self) -> &HashMap<u16, String> {
         &self.namespace_codes
     }
 
@@ -1212,7 +1049,9 @@ impl BinaryIndexStore {
 
     /// Number of subjects in the forward dictionary.
     pub fn subject_count(&self) -> u32 {
-        self.subject_offsets.len() as u32
+        self.subject_forward_tree.as_ref()
+            .map(|t| t.total_entries() as u32)
+            .unwrap_or(0)
     }
 
     /// Number of predicates in the dictionary.
@@ -1222,7 +1061,9 @@ impl BinaryIndexStore {
 
     /// Number of strings in the forward dictionary.
     pub fn string_count(&self) -> u32 {
-        self.string_offsets.len() as u32
+        self.string_forward_tree.as_ref()
+            .map(|t| t.total_entries() as u32)
+            .unwrap_or(0)
     }
 
     /// Number of language tags in the dictionary.
@@ -1429,7 +1270,7 @@ impl BinaryIndexStore {
     /// PrefixTrie makes this O(len(iri)) per call.
     pub fn row_to_flake(
         &self,
-        s_id: u32,
+        s_id: u64,
         p_id: u32,
         o_kind: u8,
         o_key: u64,
@@ -1483,7 +1324,7 @@ impl BinaryIndexStore {
             return Ok(FlakeValue::Double(ObjKey::from_u64(o_key).decode_f64()));
         }
         if o_kind == ObjKind::REF_ID.as_u8() {
-            let ref_s_id = o_key as u32;
+            let ref_s_id = o_key;
             let ref_iri = self.resolve_subject_iri(ref_s_id)?;
             return Ok(FlakeValue::Ref(self.encode_iri(&ref_iri)));
         }
@@ -1631,7 +1472,7 @@ impl BinaryIndexStore {
     pub fn query_subject_flakes(
         &self,
         g_id: u32,
-        s_id: u32,
+        s_id: u64,
     ) -> io::Result<Vec<Flake>> {
         self.query_subject_predicate_flakes(g_id, s_id, None)
     }
@@ -1641,7 +1482,7 @@ impl BinaryIndexStore {
     pub fn query_subject_predicate_flakes(
         &self,
         g_id: u32,
-        s_id: u32,
+        s_id: u64,
         p_id: Option<u32>,
     ) -> io::Result<Vec<Flake>> {
         let branch = self
@@ -1873,34 +1714,95 @@ async fn fetch_cached_bytes<S: StorageRead>(
     Ok(bytes)
 }
 
-/// Fetch artifact, cache locally, and mmap. Returns from local cache on hit.
-/// Returns `None` only for empty content (0-byte file cannot be mmap'd).
-async fn fetch_and_mmap<S: StorageRead>(
+/// Build an in-memory `DictTreeReader` from forward entries (id → value).
+///
+/// Entries are partitioned into leaves, each leaf serialized and kept in memory.
+/// Used by `load()` to convert flat dict files into tree readers.
+fn build_dict_reader_forward(entries: Vec<ForwardEntry>) -> io::Result<DictTreeReader> {
+    let result = builder::build_forward_tree(entries, builder::DEFAULT_TARGET_LEAF_BYTES)?;
+    let mut leaf_map = HashMap::new();
+    for (artifact, bl) in result.leaves.iter().zip(result.branch.leaves.iter()) {
+        leaf_map.insert(bl.address.clone(), artifact.bytes.clone());
+    }
+    Ok(DictTreeReader::from_memory(result.branch, leaf_map))
+}
+
+/// Build an in-memory `DictTreeReader` from reverse entries (key → id).
+///
+/// Entries must be pre-sorted by key.
+fn build_dict_reader_reverse(entries: Vec<ReverseEntry>) -> io::Result<DictTreeReader> {
+    let result = builder::build_reverse_tree(entries, builder::DEFAULT_TARGET_LEAF_BYTES)?;
+    let mut leaf_map = HashMap::new();
+    for (artifact, bl) in result.leaves.iter().zip(result.branch.leaves.iter()) {
+        leaf_map.insert(bl.address.clone(), artifact.bytes.clone());
+    }
+    Ok(DictTreeReader::from_memory(result.branch, leaf_map))
+}
+
+/// Load a `DictTreeReader` from CAS by fetching branch + leaf artifacts.
+///
+/// Downloads branch manifest, decodes it, validates that the branch's
+/// leaf addresses match the root's leaf list (GC integrity), then eagerly
+/// fetches all leaf artifacts to the local cache directory. Returns a
+/// reader backed by `LeafSource::LocalFiles`.
+///
+/// If `leaflet_cache` is provided, the reader will use it for in-memory
+/// caching of leaf blobs (keyed by `xxh3_128(cas_address)`, immutable).
+async fn load_dict_tree_from_cas<S: StorageRead>(
     storage: &S,
-    address: &str,
+    addrs: &super::index_root::DictTreeAddresses,
     cache_dir: &Path,
-    ext: &str,
-) -> io::Result<Option<Mmap>> {
-    let hash = extract_hash_from_address(address)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData,
-            format!("cannot extract hash from address: {}", address)))?;
-    let cached = cache_dir.join(format!("{}.{}", hash, ext));
-    if cached.exists() {
-        let meta = std::fs::metadata(&cached)?;
-        if meta.len() == 0 {
-            return Ok(None);
+    leaf_ext: &str,
+    leaflet_cache: Option<&Arc<LeafletCache>>,
+) -> io::Result<DictTreeReader> {
+    // Fetch and decode branch
+    let branch_bytes = fetch_cached_bytes(storage, &addrs.branch, cache_dir, "dtb").await?;
+    let branch = DictBranch::decode(&branch_bytes)?;
+
+    // Validate branch/root leaf list consistency.
+    // The root's `addrs.leaves` is the authoritative set that GC uses to
+    // determine reachable artifacts. If the branch references leaves not
+    // in the root's list, GC could delete them. Warn (don't fail) since
+    // this is a consistency check, not a hard requirement for loading.
+    if branch.leaves.len() != addrs.leaves.len() {
+        tracing::warn!(
+            branch_leaves = branch.leaves.len(),
+            root_leaves = addrs.leaves.len(),
+            "dict tree: branch leaf count does not match root leaf list"
+        );
+    }
+    let root_leaf_set: std::collections::HashSet<&str> = addrs.leaves.iter().map(|s| s.as_str()).collect();
+    for bl in &branch.leaves {
+        if !root_leaf_set.contains(bl.address.as_str()) {
+            tracing::warn!(
+                address = %bl.address,
+                "dict tree: branch references leaf not in root's leaf list (GC may delete it)"
+            );
         }
-        let file = std::fs::File::open(&cached)?;
-        return Ok(Some(unsafe { Mmap::map(&file)? }));
     }
-    let bytes = storage.read_bytes(address).await.map_err(storage_to_io_error)?;
-    if bytes.is_empty() {
-        return Ok(None);
+
+    // Pre-fetch all leaves to local cache, build address → path mapping.
+    // Iterates branch leaves (the authoritative set for lookups).
+    let mut file_map = HashMap::new();
+    for leaf in &branch.leaves {
+        let hash = extract_hash_from_address(&leaf.address)
+            .ok_or_else(|| io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("cannot extract hash from dict leaf address: {}", leaf.address),
+            ))?;
+        let cached_path = cache_dir.join(format!("{}.{}", hash, leaf_ext));
+        if !cached_path.exists() {
+            let bytes = storage.read_bytes(&leaf.address).await.map_err(storage_to_io_error)?;
+            cache_bytes_to_file(cache_dir, &hash, leaf_ext, &bytes)?;
+        }
+        file_map.insert(leaf.address.clone(), cached_path);
     }
-    let path = cache_bytes_to_file(cache_dir, &hash, ext, &bytes)?;
-    drop(bytes);
-    let file = std::fs::File::open(&path)?;
-    Ok(Some(unsafe { Mmap::map(&file)? }))
+
+    let leaf_source = LeafSource::LocalFiles(file_map);
+    match leaflet_cache {
+        Some(cache) => Ok(DictTreeReader::with_cache(branch, leaf_source, Arc::clone(cache))),
+        None => Ok(DictTreeReader::new(branch, leaf_source)),
+    }
 }
 
 /// Ensure a leaf file exists in the local cache. Skips download on cache hit.
@@ -1922,7 +1824,7 @@ async fn ensure_leaf_cached<S: StorageRead>(
 }
 
 /// Load namespace codes from namespaces.json.
-fn load_namespace_codes(path: &Path) -> io::Result<HashMap<i32, String>> {
+fn load_namespace_codes(path: &Path) -> io::Result<HashMap<u16, String>> {
     let json_str = std::fs::read_to_string(path)?;
     let entries: Vec<serde_json::Value> = serde_json::from_str(&json_str)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -1930,9 +1832,9 @@ fn load_namespace_codes(path: &Path) -> io::Result<HashMap<i32, String>> {
     let mut codes = HashMap::with_capacity(entries.len());
     for entry in entries {
         let code = entry["code"]
-            .as_i64()
+            .as_u64()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing code"))?
-            as i32;
+            as u16;
         let prefix = entry["prefix"]
             .as_str()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing prefix"))?

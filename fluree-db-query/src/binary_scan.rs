@@ -108,7 +108,7 @@ pub struct BinaryScanOperator {
     /// Pre-computed p_id → Sid (all predicates, done once at open).
     p_sids: Vec<Sid>,
     /// Cached s_id → Sid for amortized IRI resolution.
-    sid_cache: HashMap<u32, Sid>,
+    sid_cache: HashMap<u64, Sid>,
     /// Whether predicate is a variable (for internal predicate filtering).
     p_is_var: bool,
     /// Bound object value for post-filtering when the value cannot be translated
@@ -236,7 +236,7 @@ impl BinaryScanOperator {
     ///
     /// When a DictOverlay is present, delegates to it (handles both persisted
     /// and ephemeral subject IDs). Otherwise, uses the store directly.
-    fn resolve_s_id(&mut self, s_id: u32) -> Result<Sid> {
+    fn resolve_s_id(&mut self, s_id: u64) -> Result<Sid> {
         if let Some(sid) = self.sid_cache.get(&s_id) {
             return Ok(sid.clone());
         }
@@ -992,7 +992,9 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
         // ephemeral IDs are allocated for entities not in persisted dictionaries).
         let (overlay_data, dict_overlay) = if use_binary && ctx.overlay.is_some() {
             let store = ctx.binary_store.as_ref().unwrap().clone();
-            let mut dict_ov = crate::dict_overlay::DictOverlay::new(store);
+            let dn = ctx.dict_novelty.clone()
+                .unwrap_or_else(|| Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized()));
+            let mut dict_ov = crate::dict_overlay::DictOverlay::new(store, dn);
             let ops = translate_overlay_flakes(ctx.overlay(), &mut dict_ov, ctx.to_t);
             let epoch = ctx.overlay().epoch();
             if ops.is_empty() {
@@ -1002,7 +1004,9 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
             }
         } else if use_binary {
             let store = ctx.binary_store.as_ref().unwrap().clone();
-            (None, Some(crate::dict_overlay::DictOverlay::new(store)))
+            let dn = ctx.dict_novelty.clone()
+                .unwrap_or_else(|| Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized()));
+            (None, Some(crate::dict_overlay::DictOverlay::new(store, dn)))
         } else {
             (None, None)
         };

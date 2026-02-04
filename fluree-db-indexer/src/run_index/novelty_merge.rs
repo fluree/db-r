@@ -9,6 +9,7 @@
 
 use super::leaflet::Region3Entry;
 use super::run_record::{FactKey, RunRecord, RunSortOrder};
+use fluree_db_core::sid64::SidColumn;
 use std::cmp::Ordering;
 
 // ============================================================================
@@ -18,7 +19,7 @@ use std::cmp::Ordering;
 /// Input to the novelty merge: decoded leaflet columns + novelty operations.
 pub struct MergeInput<'a> {
     // Decoded current leaflet Regions 1+2
-    pub r1_s_ids: &'a [u32],
+    pub r1_s_ids: &'a SidColumn,
     pub r1_p_ids: &'a [u32],
     pub r1_o_kinds: &'a [u8],
     pub r1_o_keys: &'a [u64],
@@ -37,7 +38,7 @@ pub struct MergeInput<'a> {
 /// Output of the novelty merge: updated leaflet columns + new Region 3.
 pub struct MergeOutput {
     // Updated Region 1+2 columns (new current state)
-    pub s_ids: Vec<u32>,
+    pub s_ids: Vec<u64>,
     pub p_ids: Vec<u32>,
     pub o_kinds: Vec<u8>,
     pub o_keys: Vec<u64>,
@@ -60,7 +61,7 @@ pub struct MergeOutput {
 /// Only compares the identity columns (s_id, p_id, o, dt) — not t/op.
 /// Returns `Ordering::Equal` when both represent the same fact identity.
 fn cmp_row_vs_record(
-    s_id: u32,
+    s_id: u64,
     p_id: u32,
     o_kind: u8,
     o_key: u64,
@@ -68,9 +69,10 @@ fn cmp_row_vs_record(
     rec: &RunRecord,
     order: RunSortOrder,
 ) -> Ordering {
+    let rec_s_id = rec.s_id.as_u64();
     match order {
         RunSortOrder::Spot => {
-            s_id.cmp(&rec.s_id)
+            s_id.cmp(&rec_s_id)
                 .then(p_id.cmp(&rec.p_id))
                 .then(o_kind.cmp(&rec.o_kind))
                 .then(o_key.cmp(&rec.o_key))
@@ -78,7 +80,7 @@ fn cmp_row_vs_record(
         }
         RunSortOrder::Psot => {
             p_id.cmp(&rec.p_id)
-                .then(s_id.cmp(&rec.s_id))
+                .then(s_id.cmp(&rec_s_id))
                 .then(o_kind.cmp(&rec.o_kind))
                 .then(o_key.cmp(&rec.o_key))
                 .then((dt as u16).cmp(&rec.dt))
@@ -88,14 +90,14 @@ fn cmp_row_vs_record(
                 .then(o_kind.cmp(&rec.o_kind))
                 .then(o_key.cmp(&rec.o_key))
                 .then((dt as u16).cmp(&rec.dt))
-                .then(s_id.cmp(&rec.s_id))
+                .then(s_id.cmp(&rec_s_id))
         }
         RunSortOrder::Opst => {
             o_kind.cmp(&rec.o_kind)
                 .then(o_key.cmp(&rec.o_key))
                 .then((dt as u16).cmp(&rec.dt))
                 .then(p_id.cmp(&rec.p_id))
-                .then(s_id.cmp(&rec.s_id))
+                .then(s_id.cmp(&rec_s_id))
         }
     }
 }
@@ -104,7 +106,7 @@ fn cmp_row_vs_record(
 ///
 /// Uses FactKey semantics: (s_id, p_id, o, dt, effective_lang_id, i).
 fn same_identity_row_vs_record(
-    s_id: u32,
+    s_id: u64,
     p_id: u32,
     o_kind: u8,
     o_key: u64,
@@ -158,7 +160,7 @@ pub fn merge_novelty(input: &MergeInput<'_>) -> MergeOutput {
     while ei < existing_len && ni < novelty_len {
         let nov = &input.novelty[ni];
         let cmp = cmp_row_vs_record(
-            input.r1_s_ids[ei],
+            input.r1_s_ids.get(ei).as_u64(),
             input.r1_p_ids[ei],
             input.r1_o_kinds[ei],
             input.r1_o_keys[ei],
@@ -186,7 +188,7 @@ pub fn merge_novelty(input: &MergeInput<'_>) -> MergeOutput {
             Ordering::Equal => {
                 // Sort-order position match — check full identity
                 if same_identity_row_vs_record(
-                    input.r1_s_ids[ei],
+                    input.r1_s_ids.get(ei).as_u64(),
                     input.r1_p_ids[ei],
                     input.r1_o_kinds[ei],
                     input.r1_o_keys[ei],
@@ -202,7 +204,7 @@ pub fn merge_novelty(input: &MergeInput<'_>) -> MergeOutput {
 
                         // Record retraction of old value in R3
                         new_r3.push(Region3Entry {
-                            s_id: input.r1_s_ids[ei],
+                            s_id: input.r1_s_ids.get(ei).as_u64(),
                             p_id: input.r1_p_ids[ei],
                             o_kind: input.r1_o_kinds[ei],
                             o_key: input.r1_o_keys[ei],
@@ -341,7 +343,7 @@ fn dedup_adjacent_asserts(entries: &mut Vec<Region3Entry>) {
 fn emit_existing(
     input: &MergeInput<'_>,
     row: usize,
-    s: &mut Vec<u32>,
+    s: &mut Vec<u64>,
     p: &mut Vec<u32>,
     ok: &mut Vec<u8>,
     okey: &mut Vec<u64>,
@@ -350,7 +352,7 @@ fn emit_existing(
     lang: &mut Vec<u16>,
     i: &mut Vec<i32>,
 ) {
-    s.push(input.r1_s_ids[row]);
+    s.push(input.r1_s_ids.get(row).as_u64());
     p.push(input.r1_p_ids[row]);
     ok.push(input.r1_o_kinds[row]);
     okey.push(input.r1_o_keys[row]);
@@ -364,7 +366,7 @@ fn emit_existing(
 #[inline]
 fn emit_novelty(
     rec: &RunRecord,
-    s: &mut Vec<u32>,
+    s: &mut Vec<u64>,
     p: &mut Vec<u32>,
     ok: &mut Vec<u8>,
     okey: &mut Vec<u64>,
@@ -373,7 +375,7 @@ fn emit_novelty(
     lang: &mut Vec<u16>,
     i: &mut Vec<i32>,
 ) {
-    s.push(rec.s_id);
+    s.push(rec.s_id.as_u64());
     p.push(rec.p_id);
     ok.push(rec.o_kind);
     okey.push(rec.o_key);
@@ -392,12 +394,13 @@ mod tests {
     use super::*;
     use super::super::global_dict::dt_ids;
     use super::super::run_record::NO_LIST_INDEX;
+    use fluree_db_core::sid64::{Sid64, SidColumn, SidEncoding};
     use fluree_db_core::value_id::{ObjKind, ObjKey};
 
     /// Helper: build a RunRecord for testing.
-    fn rec(s_id: u32, p_id: u32, val: i64, t: i64, assert: bool) -> RunRecord {
+    fn rec(s_id: u64, p_id: u32, val: i64, t: i64, assert: bool) -> RunRecord {
         RunRecord::new(
-            0, s_id, p_id,
+            0, Sid64::from_u64(s_id), p_id,
             ObjKind::NUM_INT, ObjKey::encode_i64(val),
             t, assert, dt_ids::INTEGER, 0, None,
         )
@@ -405,7 +408,7 @@ mod tests {
 
     /// Helper: build MergeInput from vecs (takes ownership via slices).
     struct TestLeaflet {
-        s_ids: Vec<u32>,
+        s_ids: SidColumn,
         p_ids: Vec<u32>,
         o_kinds: Vec<u8>,
         o_keys: Vec<u64>,
@@ -417,8 +420,9 @@ mod tests {
 
     impl TestLeaflet {
         fn from_records(records: &[RunRecord]) -> Self {
+            let s_id_u64s: Vec<u64> = records.iter().map(|r| r.s_id.as_u64()).collect();
             Self {
-                s_ids: records.iter().map(|r| r.s_id).collect(),
+                s_ids: SidColumn::from_u64_vec(s_id_u64s, SidEncoding::Wide),
                 p_ids: records.iter().map(|r| r.p_id).collect(),
                 o_kinds: records.iter().map(|r| r.o_kind).collect(),
                 o_keys: records.iter().map(|r| r.o_key).collect(),
@@ -711,18 +715,18 @@ mod tests {
         // Two facts with same (s, p, o, dt=LANG_STRING) but different lang_id
         // should be treated as distinct identities
         let r1 = RunRecord::new(
-            0, 1, 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true,
+            0, Sid64::from_u64(1), 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true,
             dt_ids::LANG_STRING, 1, None, // lang_id=1
         );
         let r2 = RunRecord::new(
-            0, 1, 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true,
+            0, Sid64::from_u64(1), 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true,
             dt_ids::LANG_STRING, 2, None, // lang_id=2
         );
         let leaflet = TestLeaflet::from_records(&[r1, r2]);
 
         // Retract only lang_id=1 version
         let novelty = vec![RunRecord::new(
-            0, 1, 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 5, false,
+            0, Sid64::from_u64(1), 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 5, false,
             dt_ids::LANG_STRING, 1, None,
         )];
         let input = leaflet.as_input(&novelty, &[]);

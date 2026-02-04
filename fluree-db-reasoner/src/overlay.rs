@@ -267,11 +267,11 @@ mod tests {
     use super::*;
     use fluree_db_core::value::FlakeValue;
 
-    fn sid(n: i32) -> Sid {
+    fn sid(n: u16) -> Sid {
         Sid::new(n, format!("test:{}", n))
     }
 
-    fn make_flake(s: i32, p: i32, o: i64, t: i64) -> Flake {
+    fn make_flake(s: u16, p: u16, o: i64, t: i64) -> Flake {
         // Flake::new(s, p, o, dt, t, op, m)
         Flake::new(sid(s), sid(p), FlakeValue::Long(o), sid(0), t, true, None)
     }

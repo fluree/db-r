@@ -43,7 +43,7 @@ impl IriEncoder for NoEncoder {
 /// Useful for testing or when the full database isn't available.
 #[derive(Debug, Default)]
 pub struct MemoryEncoder {
-    namespaces: std::collections::HashMap<String, i32>,
+    namespaces: std::collections::HashMap<String, u16>,
 }
 
 impl MemoryEncoder {
@@ -53,7 +53,7 @@ impl MemoryEncoder {
     }
 
     /// Add a namespace mapping
-    pub fn add_namespace(&mut self, prefix: impl Into<String>, code: i32) -> &mut Self {
+    pub fn add_namespace(&mut self, prefix: impl Into<String>, code: u16) -> &mut Self {
         self.namespaces.insert(prefix.into(), code);
         self
     }
@@ -73,7 +73,7 @@ impl MemoryEncoder {
 impl IriEncoder for MemoryEncoder {
     fn encode_iri(&self, iri: &str) -> Option<Sid> {
         // Find the longest matching namespace prefix
-        let mut best_match: Option<(i32, usize)> = None;
+        let mut best_match: Option<(u16, usize)> = None;
 
         for (prefix, &code) in &self.namespaces {
             if iri.starts_with(prefix) && prefix.len() > best_match.map(|(_, l)| l).unwrap_or(0) {

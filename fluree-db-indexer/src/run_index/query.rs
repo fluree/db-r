@@ -22,7 +22,7 @@ use serde_json;
 /// A single fact from the index, with human-readable projections.
 #[derive(Debug)]
 pub struct FactRow {
-    pub s_id: u32,
+    pub s_id: u64,
     pub p_id: u32,
     pub p_iri: String,
     pub o_kind: u8,
@@ -150,7 +150,7 @@ impl SpotQuery {
     }
 
     /// Look up all facts for a subject by s_id in a specific graph.
-    pub fn query_by_sid(&self, g_id: u32, s_id: u32) -> io::Result<Vec<FactRow>> {
+    pub fn query_by_sid(&self, g_id: u32, s_id: u64) -> io::Result<Vec<FactRow>> {
         let manifest = match self.branches.get(&g_id) {
             Some(m) => m,
             None => return Ok(Vec::new()),
@@ -224,7 +224,7 @@ impl SpotQuery {
     }
 
     /// Brute-force search for a subject IRI → s_id.
-    pub fn find_subject_id(&self, iri: &str) -> io::Result<Option<u32>> {
+    pub fn find_subject_id(&self, iri: &str) -> io::Result<Option<u64>> {
         let mmap = match &self.subject_forward {
             Some(m) => m,
             None => return Ok(None),
@@ -238,7 +238,7 @@ impl SpotQuery {
         {
             let entry = read_forward_entry(mmap, offset, len)?;
             if entry == iri {
-                return Ok(Some(id as u32));
+                return Ok(Some(id as u64));
             }
         }
 
@@ -263,7 +263,7 @@ impl SpotQuery {
             }
             ObjKind::REF_ID => {
                 let id = key.decode_u32_id();
-                self.resolve_subject_iri(id)
+                self.resolve_subject_iri(id as u64)
                     .unwrap_or_else(|_| format!("<iri:{}>", id))
             }
             ObjKind::LEX_ID => {
@@ -293,7 +293,7 @@ impl SpotQuery {
     }
 
     /// Resolve a subject IRI by s_id from the mmap'd forward file.
-    fn resolve_subject_iri(&self, s_id: u32) -> io::Result<String> {
+    fn resolve_subject_iri(&self, s_id: u64) -> io::Result<String> {
         let mmap = self
             .subject_forward
             .as_ref()

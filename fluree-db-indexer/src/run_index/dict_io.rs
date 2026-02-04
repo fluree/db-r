@@ -142,6 +142,71 @@ pub fn write_subject_index(path: &Path, offsets: &[u64], lens: &[u32]) -> io::Re
 }
 
 // ============================================================================
+// Subject sid64 mapping
+// ============================================================================
+
+/// Magic bytes for a subject sid mapping file.
+const SID_MAP_MAGIC: [u8; 4] = *b"SSM1";
+
+/// Write a subject sid64 mapping file: sequential insertion index → sid64.
+///
+/// Format: `SSM1` magic (4B) + count (u64) + `[sid64: u64] × count`.
+///
+/// At query time, this mapping is loaded to build a reverse lookup
+/// (sid64 → sequential index) for forward file resolution.
+pub fn write_subject_sid_map(path: &Path, sids: &[u64]) -> io::Result<()> {
+    let mut file = io::BufWriter::new(std::fs::File::create(path)?);
+    file.write_all(&SID_MAP_MAGIC)?;
+    let count = sids.len() as u64;
+    file.write_all(&count.to_le_bytes())?;
+    for &sid in sids {
+        file.write_all(&sid.to_le_bytes())?;
+    }
+    file.flush()?;
+    Ok(())
+}
+
+/// Read a subject sid64 mapping from a byte buffer.
+pub fn read_subject_sid_map_from_bytes(data: &[u8]) -> io::Result<Vec<u64>> {
+    if data.len() < 12 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "subject sid map too small",
+        ));
+    }
+    if data[0..4] != SID_MAP_MAGIC {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "subject sid map: invalid magic",
+        ));
+    }
+    let count = u64::from_le_bytes(data[4..12].try_into().unwrap()) as usize;
+    let expected_len = 12 + count * 8;
+    if data.len() < expected_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "subject sid map truncated: {} < {} (count={})",
+                data.len(), expected_len, count
+            ),
+        ));
+    }
+
+    let mut sids = Vec::with_capacity(count);
+    let mut pos = 12;
+    for _ in 0..count {
+        sids.push(u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap()));
+        pos += 8;
+    }
+    Ok(sids)
+}
+
+/// Read a subject sid64 mapping from a file.
+pub fn read_subject_sid_map(path: &Path) -> io::Result<Vec<u64>> {
+    read_subject_sid_map_from_bytes(&std::fs::read(path)?)
+}
+
+// ============================================================================
 // Forward index (shared format for subjects.idx and strings.idx)
 // ============================================================================
 

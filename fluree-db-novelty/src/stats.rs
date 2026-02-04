@@ -83,7 +83,7 @@ pub fn current_stats(indexed: &IndexStats, novelty: &Novelty) -> IndexStats {
 }
 
 /// Property count by (namespace_code, name)
-type PropertyCountMap = HashMap<(i32, String), i64>;
+type PropertyCountMap = HashMap<(u16, String), i64>;
 
 /// Build property counts from indexed stats
 fn build_property_counts(indexed: &IndexStats) -> PropertyCountMap {
@@ -183,7 +183,7 @@ fn finalize_stats(
         indexed.properties.clone()
     } else {
         // Build lookup for indexed property data (for NDV preservation)
-        let indexed_props: HashMap<(i32, String), &PropertyStatEntry> = indexed
+        let indexed_props: HashMap<(u16, String), &PropertyStatEntry> = indexed
             .properties
             .as_ref()
             .map(|props| props.iter().map(|p| (p.sid.clone(), p)).collect())
@@ -287,7 +287,7 @@ mod tests {
     use crate::Novelty;
     use fluree_db_core::{Flake, FlakeMeta, Sid};
 
-    fn make_sid(ns: i32, name: &str) -> Sid {
+    fn make_sid(ns: u16, name: &str) -> Sid {
         Sid::new(ns, name)
     }
 

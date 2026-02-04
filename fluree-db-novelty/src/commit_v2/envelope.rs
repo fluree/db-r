@@ -40,7 +40,7 @@ pub struct CommitV2Envelope {
     pub v: i32,
     pub previous: Option<String>,
     pub previous_ref: Option<CommitRef>,
-    pub namespace_delta: HashMap<i32, String>,
+    pub namespace_delta: HashMap<u16, String>,
     pub txn: Option<String>,
     pub time: Option<String>,
     pub data: Option<CommitData>,
@@ -470,16 +470,16 @@ fn decode_index_ref(data: &[u8], pos: &mut usize) -> Result<IndexRef, CommitV2Er
 }
 
 // =============================================================================
-// namespace_delta (HashMap<i32, String>)
+// namespace_delta (HashMap<u16, String>)
 // =============================================================================
 
-fn encode_ns_delta(delta: &HashMap<i32, String>, buf: &mut Vec<u8>) {
+fn encode_ns_delta(delta: &HashMap<u16, String>, buf: &mut Vec<u8>) {
     encode_varint(delta.len() as u64, buf);
     // Sort by key for deterministic encoding
     let mut entries: Vec<_> = delta.iter().collect();
     entries.sort_by_key(|(k, _)| **k);
     for (code, prefix) in entries {
-        encode_varint(zigzag_encode(*code as i64), buf);
+        encode_varint(*code as u64, buf);
         encode_len_str(prefix, buf);
     }
 }
@@ -487,11 +487,11 @@ fn encode_ns_delta(delta: &HashMap<i32, String>, buf: &mut Vec<u8>) {
 fn decode_ns_delta(
     data: &[u8],
     pos: &mut usize,
-) -> Result<HashMap<i32, String>, CommitV2Error> {
+) -> Result<HashMap<u16, String>, CommitV2Error> {
     let count = decode_varint(data, pos)? as usize;
     let mut map = HashMap::with_capacity(count);
     for _ in 0..count {
-        let code = zigzag_decode(decode_varint(data, pos)?) as i32;
+        let code = decode_varint(data, pos)? as u16;
         let prefix = decode_len_str(data, pos)?;
         map.insert(code, prefix);
     }
@@ -608,7 +608,7 @@ mod tests {
     #[test]
     fn test_round_trip_large_namespace_delta() {
         let mut commit = make_minimal_commit();
-        commit.namespace_delta = (0..200)
+        commit.namespace_delta = (0u16..200)
             .map(|i| (i, format!("ns{}:", i)))
             .collect();
 
@@ -617,17 +617,17 @@ mod tests {
 
         let d = decode_envelope(&buf).unwrap();
         assert_eq!(d.namespace_delta.len(), 200);
-        for i in 0..200 {
+        for i in 0u16..200 {
             assert_eq!(d.namespace_delta[&i], format!("ns{}:", i));
         }
     }
 
     #[test]
-    fn test_round_trip_negative_ns_codes() {
+    fn test_round_trip_various_ns_codes() {
         let mut commit = make_minimal_commit();
         commit.namespace_delta = HashMap::from([
-            (-1, "f:".into()),
-            (-100, "rdf:".into()),
+            (1, "f:".into()),
+            (50, "rdf:".into()),
             (0, "default:".into()),
             (999, "ex:".into()),
         ]);
@@ -636,8 +636,8 @@ mod tests {
         encode_envelope(&commit, &mut buf).unwrap();
 
         let d = decode_envelope(&buf).unwrap();
-        assert_eq!(d.namespace_delta[&-1], "f:");
-        assert_eq!(d.namespace_delta[&-100], "rdf:");
+        assert_eq!(d.namespace_delta[&1], "f:");
+        assert_eq!(d.namespace_delta[&50], "rdf:");
         assert_eq!(d.namespace_delta[&0], "default:");
         assert_eq!(d.namespace_delta[&999], "ex:");
     }

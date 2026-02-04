@@ -1036,9 +1036,9 @@ mod tests {
     use std::collections::HashMap;
 
     fn make_flake(
-        s_code: i32,
+        s_code: u16,
         s_name: &str,
-        p_code: i32,
+        p_code: u16,
         p_name: &str,
         val: i64,
         t: i64,
@@ -1055,7 +1055,6 @@ mod tests {
     }
 
     async fn store_commit(storage: &MemoryStorage, commit: &Commit) -> String {
-        #[cfg(feature = "commit-v2")]
         let bytes = {
             use fluree_db_novelty::commit_v2::envelope::{encode_envelope_fields, CommitV2Envelope};
             use fluree_db_novelty::commit_v2::format::{
@@ -1150,8 +1149,6 @@ mod tests {
             blob
         };
 
-        #[cfg(not(feature = "commit-v2"))]
-        let bytes = serde_json::to_vec(commit).unwrap();
         let hash = {
             use sha2::{Digest, Sha256};
             let h = Sha256::digest(&bytes);
@@ -1209,7 +1206,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "commit-v2")]
     async fn test_orchestrator_needs_indexing_index_current() {
         let storage = MemoryStorage::new();
         let ns = Arc::new(MemoryNameService::new());
@@ -1248,7 +1244,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "commit-v2")]
     async fn test_orchestrator_needs_indexing_index_behind() {
         let storage = MemoryStorage::new();
         let ns = Arc::new(MemoryNameService::new());
@@ -1303,7 +1298,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "commit-v2")]
     async fn test_orchestrator_index_ledger() {
         let storage = MemoryStorage::new();
         let ns = Arc::new(MemoryNameService::new());
@@ -1338,7 +1332,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "commit-v2")]
     async fn test_orchestrator_index_and_publish() {
         let storage = MemoryStorage::new();
         let ns = Arc::new(MemoryNameService::new());
@@ -1377,7 +1370,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "commit-v2")]
     async fn test_orchestrator_returns_existing_when_current() {
         let storage = MemoryStorage::new();
         let ns = Arc::new(MemoryNameService::new());
@@ -1666,9 +1658,9 @@ mod embedded_tests {
     use std::collections::HashMap;
 
     fn make_flake(
-        s_code: i32,
+        s_code: u16,
         s_name: &str,
-        p_code: i32,
+        p_code: u16,
         p_name: &str,
         val: i64,
         t: i64,
@@ -1697,7 +1689,6 @@ mod embedded_tests {
         )
     }
 
-    #[cfg(feature = "commit-v2")]
     async fn store_commit(storage: &MemoryStorage, commit: &Commit) -> String {
         use fluree_db_novelty::commit_v2::envelope::{encode_envelope_fields, CommitV2Envelope};
         use fluree_db_novelty::commit_v2::format::{
@@ -1853,7 +1844,6 @@ mod embedded_tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "commit-v2")]
     async fn test_maybe_refresh_above_threshold_attempts_refresh() {
         let storage = MemoryStorage::new();
         let ns = MemoryNameService::new();
@@ -1910,7 +1900,6 @@ mod embedded_tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "commit-v2")]
     async fn test_require_refresh_success_path() {
         let storage = MemoryStorage::new();
         let ns = MemoryNameService::new();

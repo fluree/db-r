@@ -104,7 +104,7 @@ pub fn is_owl_transitive_property(sid: &Sid) -> bool {
 }
 
 /// Baseline namespace codes (code -> prefix) matching Fluree's reserved codepoints.
-pub fn default_namespace_codes() -> HashMap<i32, String> {
+pub fn default_namespace_codes() -> HashMap<u16, String> {
     let mut map = HashMap::new();
     map.insert(EMPTY, "".to_string());
     map.insert(JSON_LD, "@".to_string());

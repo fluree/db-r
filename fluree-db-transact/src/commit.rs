@@ -7,7 +7,7 @@ use crate::address::parse_commit_id;
 use crate::error::{Result, TransactError};
 use crate::namespace::NamespaceRegistry;
 use chrono::Utc;
-use fluree_db_core::{ContentAddressedWrite, ContentKind, Storage};
+use fluree_db_core::{ContentAddressedWrite, ContentKind, DictNovelty, Flake, FlakeValue, Storage};
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, Publisher};
 use fluree_db_novelty::{Commit, CommitData, CommitRef};
@@ -282,6 +282,14 @@ where
     let mut all_flakes = flakes;
     all_flakes.extend(commit_metadata_flakes);
 
+    // 10.1 Populate DictNovelty with subjects/strings from this commit
+    let mut dict_novelty = base.dict_novelty.clone();
+    {
+        let span = tracing::info_span!("commit_populate_dict_novelty");
+        let _g = span.enter();
+        populate_dict_novelty(Arc::make_mut(&mut dict_novelty), &all_flakes);
+    }
+
     let mut new_novelty = (*base.novelty).clone();
     {
         let span = tracing::info_span!("commit_apply_to_novelty");
@@ -292,6 +300,7 @@ where
     let new_state = LedgerState {
         db: base.db,
         novelty: Arc::new(new_novelty),
+        dict_novelty,
         head_commit: Some(address.clone()),
         ns_record: base.ns_record,
     };
@@ -304,6 +313,42 @@ where
     };
 
     Ok((receipt, new_state))
+}
+
+/// Populate DictNovelty with subjects and strings from committed flakes.
+///
+/// Scans each flake for:
+/// - Subject IDs (`flake.s`) — registered as novel subjects
+/// - Object references (`FlakeValue::Ref`) — registered as novel subjects
+/// - String values (`FlakeValue::String`, `FlakeValue::Json`) — registered as novel strings
+///
+/// Does NOT check the persisted tree — some entries may shadow persisted subjects.
+/// This is safe because `DictOverlay` checks the persisted tree first for reverse
+/// lookups (canonical ID wins).
+fn populate_dict_novelty(dict_novelty: &mut DictNovelty, flakes: &[Flake]) {
+    dict_novelty.ensure_initialized();
+
+    for flake in flakes {
+        // Subject
+        dict_novelty
+            .subjects
+            .assign_or_lookup(flake.s.namespace_code, &flake.s.name);
+
+        // Object references
+        if let FlakeValue::Ref(ref sid) = flake.o {
+            dict_novelty
+                .subjects
+                .assign_or_lookup(sid.namespace_code, &sid.name);
+        }
+
+        // String values
+        match &flake.o {
+            FlakeValue::String(s) | FlakeValue::Json(s) => {
+                dict_novelty.strings.assign_or_lookup(s);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Verify that this commit follows the expected sequence

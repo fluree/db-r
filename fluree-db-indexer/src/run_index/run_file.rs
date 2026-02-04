@@ -12,11 +12,11 @@
 //! [Language tag dictionary]
 //!   count: u16
 //!   entries: [len: u8, utf8_bytes]*
-//! [Records: record_count × 40 bytes]
+//! [Records: record_count × RECORD_WIRE_SIZE bytes]
 //! ```
 
 use super::global_dict::LanguageTagDict;
-use super::run_record::{RunRecord, RunSortOrder};
+use super::run_record::{RunRecord, RunSortOrder, RECORD_WIRE_SIZE};
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -206,7 +206,7 @@ pub fn write_run_file(
     file.write_all(&lang_bytes)?;
 
     // Write records
-    let mut rec_buf = [0u8; 40];
+    let mut rec_buf = [0u8; RECORD_WIRE_SIZE];
     for rec in records {
         rec.write_le(&mut rec_buf);
         file.write_all(&rec_buf)?;
@@ -252,7 +252,7 @@ pub fn read_run_file(path: &Path) -> io::Result<(RunFileHeader, LanguageTagDict,
 
     // Read records
     let rec_start = header.records_offset as usize;
-    let rec_byte_count = (header.record_count as usize) * 40;
+    let rec_byte_count = (header.record_count as usize) * RECORD_WIRE_SIZE;
     if rec_start + rec_byte_count > data.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -263,9 +263,9 @@ pub fn read_run_file(path: &Path) -> io::Result<(RunFileHeader, LanguageTagDict,
     let mut records = Vec::with_capacity(header.record_count as usize);
     let mut pos = rec_start;
     for _ in 0..header.record_count {
-        let buf: &[u8; 40] = data[pos..pos + 40].try_into().unwrap();
+        let buf: &[u8; RECORD_WIRE_SIZE] = data[pos..pos + RECORD_WIRE_SIZE].try_into().unwrap();
         records.push(RunRecord::read_le(buf));
-        pos += 40;
+        pos += RECORD_WIRE_SIZE;
     }
 
     Ok((header, lang_dict, records))
@@ -293,6 +293,7 @@ pub struct RunFileInfo {
 mod tests {
     use super::*;
     use crate::run_index::global_dict::dt_ids;
+    use fluree_db_core::sid64::Sid64;
     use fluree_db_core::value_id::{ObjKind, ObjKey};
 
     #[test]
@@ -346,9 +347,9 @@ mod tests {
         lang_dict.get_or_insert(Some("en"));
 
         let records = vec![
-            RunRecord::new(0, 1, 1, ObjKind::NUM_INT, ObjKey::encode_i64(10), 1, true, dt_ids::INTEGER, 0, None),
-            RunRecord::new(0, 1, 2, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true, dt_ids::STRING, 1, None),
-            RunRecord::new(0, 2, 1, ObjKind::NUM_INT, ObjKey::encode_i64(20), 2, true, dt_ids::LONG, 0, Some(0)),
+            RunRecord::new(0, Sid64::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(10), 1, true, dt_ids::INTEGER, 0, None),
+            RunRecord::new(0, Sid64::from_u64(1), 2, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true, dt_ids::STRING, 1, None),
+            RunRecord::new(0, Sid64::from_u64(2), 1, ObjKind::NUM_INT, ObjKey::encode_i64(20), 2, true, dt_ids::LONG, 0, Some(0)),
         ];
 
         let info = write_run_file(&path, &records, &lang_dict, RunSortOrder::Spot, 1, 2).unwrap();
@@ -364,12 +365,12 @@ mod tests {
         assert_eq!(restored_lang.resolve(1), Some("en"));
 
         assert_eq!(restored_records.len(), 3);
-        assert_eq!(restored_records[0].s_id, 1);
+        assert_eq!(restored_records[0].s_id, Sid64::from_u64(1));
         assert_eq!(restored_records[0].p_id, 1);
         assert_eq!(restored_records[0].o_kind, ObjKind::NUM_INT.as_u8());
         assert_eq!(restored_records[0].o_key, ObjKey::encode_i64(10).as_u64());
         assert_eq!(restored_records[1].lang_id, 1);
-        assert_eq!(restored_records[2].s_id, 2);
+        assert_eq!(restored_records[2].s_id, Sid64::from_u64(2));
         assert_eq!(restored_records[2].i, 0);
 
         let _ = std::fs::remove_dir_all(&dir);

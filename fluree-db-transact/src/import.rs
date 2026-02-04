@@ -205,7 +205,7 @@ mod inner {
         pub op_count: u32,
         /// Namespace allocations from this chunk's cloned registry.
         /// Usually empty after chunk 0 establishes all known namespaces.
-        pub ns_delta: HashMap<i32, String>,
+        pub ns_delta: HashMap<u16, String>,
     }
 
     /// Parse a TTL chunk into a `StreamingCommitWriter`. Thread-safe.

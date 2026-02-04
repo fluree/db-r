@@ -164,7 +164,6 @@ fn discover_chunks(dir: &std::path::Path) -> Result<Vec<PathBuf>, std::io::Error
     Ok(chunks)
 }
 
-#[cfg(feature = "commit-v2")]
 async fn run_import(
     args: &Args,
     chunks: &[PathBuf],
@@ -248,10 +247,7 @@ async fn run_import(
                         .map_err(|e| format!("init dicts: {}", e))?;
                     let mut resolver = CommitResolver::new();
 
-                    // Enable per-(graph, property) stats collection
                     // Enable per-(graph, property) stats collection.
-                    // Uses commit-v2 cfg since hll-stats is the indexer's default feature.
-                    #[cfg(feature = "commit-v2")]
                     resolver.set_stats_hook(fluree_db_indexer::stats::IdStatsHook::new());
 
                     let mut writer = MultiOrderRunWriter::new(config)
@@ -319,9 +315,9 @@ async fn run_import(
                         subject_count: dicts.subjects.len(),
                         predicate_count: dicts.predicates.len(),
                         string_count: dicts.strings.len(),
+                        needs_wide: dicts.subjects.needs_wide(),
                         total_records,
                         commit_count,
-                        #[cfg(feature = "commit-v2")]
                         stats_hook: resolver.take_stats_hook(),
                     })
                 })
@@ -481,7 +477,6 @@ async fn run_import(
 /// `fluree:file://{alias}/index/stats-sketches/{kind}/g{g_id}/p{p_id}_t{t}.hll`.
 ///
 /// The manifest is readable by `ledger-info` before any index build.
-#[cfg(feature = "commit-v2")]
 async fn finalize_pre_index_stats<S: fluree_db_core::StorageWrite>(
     run_result: &mut fluree_db_indexer::run_index::RunGenerationResult,
     run_dir: &std::path::Path,
@@ -579,7 +574,6 @@ async fn finalize_pre_index_stats<S: fluree_db_core::StorageWrite>(
 /// Chunk 0 is parsed serially to establish all namespace codes, then chunks
 /// 1..N are parsed in parallel with cloned NamespaceRegistries. Commits are
 /// finalized in chunk order (serial) because of the hash-chain constraint.
-#[cfg(feature = "commit-v2")]
 async fn run_import_parallel(
     args: &Args,
     chunks: &[PathBuf],
@@ -657,10 +651,7 @@ async fn run_import_parallel(
                         GlobalDicts::new(&subject_fwd).map_err(|e| format!("init dicts: {}", e))?;
                     let mut resolver = CommitResolver::new();
 
-                    // Enable per-(graph, property) stats collection
                     // Enable per-(graph, property) stats collection.
-                    // Uses commit-v2 cfg since hll-stats is the indexer's default feature.
-                    #[cfg(feature = "commit-v2")]
                     resolver.set_stats_hook(fluree_db_indexer::stats::IdStatsHook::new());
 
                     let mut writer = MultiOrderRunWriter::new(config)
@@ -728,9 +719,9 @@ async fn run_import_parallel(
                         subject_count: dicts.subjects.len(),
                         predicate_count: dicts.predicates.len(),
                         string_count: dicts.strings.len(),
+                        needs_wide: dicts.subjects.needs_wide(),
                         total_records,
                         commit_count,
-                        #[cfg(feature = "commit-v2")]
                         stats_hook: resolver.take_stats_hook(),
                     })
                 })
@@ -997,7 +988,6 @@ struct Args {
 
     /// Import mode: bypass staging/novelty, write commit chain directly.
     /// Much faster for bulk import of clean TTL data into a fresh ledger.
-    /// Requires the `commit-v2` feature.
     #[arg(long)]
     import: bool,
 
@@ -1010,7 +1000,7 @@ struct Args {
     no_compress: bool,
 
     /// Generate multi-order run files (SPOT, PSOT, POST, OPST) in a background thread during import.
-    /// Requires --import and the commit-v2 feature.
+    /// Requires --import.
     #[arg(long)]
     generate_runs: bool,
 
@@ -1037,7 +1027,7 @@ struct Args {
 
     /// Query a subject by numeric ID (requires built index). Searches default graph (g_id=0).
     #[arg(long)]
-    query_sid: Option<u32>,
+    query_sid: Option<u64>,
 
     /// List all predicate IRIs stored in the binary index.
     #[arg(long)]
@@ -1073,12 +1063,8 @@ struct Args {
     dump_stats_only: bool,
 }
 
-#[cfg(feature = "commit-v2")]
 async fn run_build_index(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     use fluree_db_indexer::run_index::{build_all_indexes, RunSortOrder};
-    use fluree_db_indexer::run_index::BinaryIndexStore;
-    use fluree_db_api::{Publisher};
-    use fluree_db_core::StorageWrite;
 
     let run_dir = default_run_dir(args);
     let index_dir = default_index_dir(args);
@@ -1121,49 +1107,10 @@ async fn run_build_index(args: &Args) -> Result<(), Box<dyn std::error::Error>> 
         }
     }
 
-    // Publish binary index root to nameservice (index source of truth).
-    //
-    // We write a versioned BinaryIndexRoot descriptor under the ledger path
-    // and publish its address + max_t. Consumers load the binary index from
-    // the address prefixes stored in the root.
-    use fluree_db_indexer::run_index::BinaryIndexRoot;
-
-    let fluree = FlureeBuilder::file(args.db_dir.to_string_lossy().to_string()).build()?;
-    let storage = fluree.storage();
-    let ns = fluree.nameservice();
-
-    let store = BinaryIndexStore::load(&run_dir, &index_dir)?;
-    let index_t = store.max_t();
-    let ap = alias_prefix(&args.ledger);
-    let root_addr = format!("fluree:file://{}/index/binary-index-root.json", ap);
-
-    let runs_prefix = format!("file://{}", run_dir.to_string_lossy());
-    let index_prefix = format!("file://{}", index_dir.to_string_lossy());
-
-    let root = BinaryIndexRoot::from_store(
-        &store,
-        &args.ledger,
-        &runs_prefix,
-        &index_prefix,
-    );
-
-    let root_bytes = root.to_json_bytes()
-        .map_err(|e| format!("failed to serialize binary index root: {}", e))?;
-
-    storage.write_bytes(&root_addr, &root_bytes).await?;
-    ns.publish_index(&args.ledger, &root_addr, index_t).await?;
-    info!(
-        ledger = %args.ledger,
-        index_t,
-        index_address = %root_addr,
-        "Published binary index to nameservice"
-    );
-
     Ok(())
 }
 
 
-#[cfg(feature = "commit-v2")]
 fn run_query(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     use fluree_db_indexer::run_index::BinaryIndexStore;
 
@@ -1227,7 +1174,6 @@ fn run_query(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(feature = "commit-v2")]
 fn run_list_predicates(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     use fluree_db_indexer::run_index::BinaryIndexStore;
 
@@ -1257,7 +1203,6 @@ fn run_list_predicates(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(feature = "commit-v2")]
 fn print_flake(f: &fluree_db_core::Flake, store: &fluree_db_indexer::run_index::BinaryIndexStore) {
     let ns = store.namespace_codes();
     let s = format_sid(&f.s, ns);
@@ -1284,8 +1229,7 @@ fn print_flake(f: &fluree_db_core::Flake, store: &fluree_db_indexer::run_index::
     }
 }
 
-#[cfg(feature = "commit-v2")]
-fn format_sid(sid: &fluree_db_core::Sid, ns: &std::collections::HashMap<i32, String>) -> String {
+fn format_sid(sid: &fluree_db_core::Sid, ns: &std::collections::HashMap<u16, String>) -> String {
     let prefix = ns.get(&sid.namespace_code).map(|s| s.as_str()).unwrap_or("");
     format!("{}{}", prefix, sid.name)
 }
@@ -1299,10 +1243,9 @@ fn format_sid(sid: &fluree_db_core::Sid, ns: &std::collections::HashMap<i32, Str
 /// 4. Build operator tree (ScanOperator auto-selects binary path)
 /// 5. Execute with ExecutionContext that has binary_store set
 /// 6. Print results
-#[cfg(feature = "commit-v2")]
 async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     use fluree_db_api::FlureeBuilder;
-    use fluree_db_core::{Db, NoCache, Sid, StatsView, StorageRead};
+    use fluree_db_core::{Db, Sid, StatsView, StorageRead};
     use fluree_db_core::IndexStats;
     use fluree_db_indexer::run_index::BinaryIndexStore;
     use fluree_db_query::context::ExecutionContext;
@@ -1364,7 +1307,7 @@ async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     // - stats graphs from the persisted pre-index manifest
     let fluree = FlureeBuilder::file(args.db_dir.to_string_lossy().to_string()).build()?;
     let storage = fluree.storage().clone();
-    let mut db: Db<_, NoCache> = Db::genesis(storage.clone(), NoCache, &args.ledger);
+    let mut db: Db<_> = Db::genesis(storage.clone(), &args.ledger);
     db.t = store.max_t();
     db.namespace_codes = store.namespace_codes().clone();
 
@@ -1471,7 +1414,7 @@ async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     // --- Run 1: Cold execution ---
     info!("=== Cold execution (run 1) ===");
     let exec_query = ExecutableQuery::simple(parsed_query.clone());
-    let cold_operator = build_operator_tree::<_, NoCache>(
+    let cold_operator = build_operator_tree::<_>(
         &parsed_query,
         &exec_query.options,
         stats_view.clone(),
@@ -1493,7 +1436,7 @@ async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     // --- Run 2: Hot execution (same store, fresh operator tree) ---
     info!("=== Hot execution (run 2) ===");
     let exec_query2 = ExecutableQuery::simple(parsed_query.clone());
-    let hot_operator = build_operator_tree::<_, NoCache>(
+    let hot_operator = build_operator_tree::<_>(
         &parsed_query,
         &exec_query2.options,
         stats_view.clone(),
@@ -1759,71 +1702,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 args.start
             );
 
-            #[cfg(feature = "commit-v2")]
-            {
-                total_flakes = if args.parse_threads > 0 {
-                    run_import_parallel(&args, &chunks).await?
-                } else {
-                    run_import(&args, &chunks).await?
-                };
-            }
-            #[cfg(not(feature = "commit-v2"))]
-            {
-                error!("Import mode requires the `commit-v2` feature.");
-                shutdown_tracer();
-                return Err("commit-v2 feature required for import mode".into());
-            }
+            total_flakes = if args.parse_threads > 0 {
+                run_import_parallel(&args, &chunks).await?
+            } else {
+                run_import(&args, &chunks).await?
+            };
         }
     }
 
     // ---- Build multi-order indexes (Phase C) ----
     if args.build_index {
-        #[cfg(feature = "commit-v2")]
-        {
-            run_build_index(&args).await?;
-        }
-        #[cfg(not(feature = "commit-v2"))]
-        {
-            error!("--build-index requires the `commit-v2` feature.");
-            shutdown_tracer();
-            return Err("commit-v2 feature required".into());
-        }
+        run_build_index(&args).await?;
     }
 
     // ---- Query ----
     if args.query_subject.is_some() || args.query_sid.is_some() {
-        #[cfg(feature = "commit-v2")]
-        {
-            run_query(&args)?;
-        }
-        #[cfg(not(feature = "commit-v2"))]
-        {
-            error!("--query-subject/--query-sid require the `commit-v2` feature.");
-            shutdown_tracer();
-            return Err("commit-v2 feature required".into());
-        }
+        run_query(&args)?;
     }
 
     // ---- List predicates ----
     if args.list_predicates {
-        #[cfg(feature = "commit-v2")]
-        {
-            run_list_predicates(&args)?;
-        }
+        run_list_predicates(&args)?;
     }
 
     // ---- SPARQL query against binary indexes ----
     if args.sparql.is_some() {
-        #[cfg(feature = "commit-v2")]
-        {
-            run_sparql(&args).await?;
-        }
-        #[cfg(not(feature = "commit-v2"))]
-        {
-            error!("--sparql requires the `commit-v2` feature.");
-            shutdown_tracer();
-            return Err("commit-v2 feature required".into());
-        }
+        run_sparql(&args).await?;
     }
 
     if has_special_mode {

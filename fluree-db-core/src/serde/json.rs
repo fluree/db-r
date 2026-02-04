@@ -6,54 +6,35 @@ use crate::sid::Sid;
 use crate::temporal::{DateTime, Date, Time};
 use crate::value::FlakeValue;
 use bigdecimal::BigDecimal;
+use fluree_vocab::namespaces::{JSON_LD, XSD};
 use fluree_vocab::xsd_names;
 use num_bigint::BigInt;
 use std::str::FromStr;
 use serde::Deserialize;
 use std::collections::HashMap;
 
-/// The $id datatype namespace code (for references)
-const ID_NAMESPACE_CODE: i32 = 1;
-const ID_NAME: &str = "id";
-
-/// XSD namespace code
-const XSD_NAMESPACE_CODE: i32 = 2;
-
 fn is_id_dt(dt: &Sid) -> bool {
-    dt.namespace_code == ID_NAMESPACE_CODE && dt.name.as_ref() == ID_NAME
+    dt.namespace_code == JSON_LD && dt.name.as_ref() == "id"
 }
 
-/// Check if datatype is xsd:dateTime
 fn is_datetime_dt(dt: &Sid) -> bool {
-    dt.namespace_code == XSD_NAMESPACE_CODE && dt.name.as_ref() == "dateTime"
+    dt.namespace_code == XSD && dt.name.as_ref() == xsd_names::DATE_TIME
 }
 
-/// Check if datatype is xsd:date
 fn is_date_dt(dt: &Sid) -> bool {
-    dt.namespace_code == XSD_NAMESPACE_CODE && dt.name.as_ref() == "date"
+    dt.namespace_code == XSD && dt.name.as_ref() == xsd_names::DATE
 }
 
-/// Check if datatype is xsd:time
 fn is_time_dt(dt: &Sid) -> bool {
-    dt.namespace_code == XSD_NAMESPACE_CODE && dt.name.as_ref() == "time"
+    dt.namespace_code == XSD && dt.name.as_ref() == xsd_names::TIME
 }
 
-/// Check if datatype is in the XSD integer family (14 types)
-///
-/// This includes: integer, long, int, short, byte, unsignedLong, unsignedInt,
-/// unsignedShort, unsignedByte, nonNegativeInteger, positiveInteger,
-/// nonPositiveInteger, negativeInteger
-///
-/// All of these can be represented as BigInt and need special handling for
-/// round-trip serialization (BigInt serializes as string, so on deserialization
-/// we need to recognize these types and parse back to BigInt).
 fn is_integer_family_dt(dt: &Sid) -> bool {
-    dt.namespace_code == XSD_NAMESPACE_CODE && xsd_names::is_integer_family_name(dt.name.as_ref())
+    dt.namespace_code == XSD && xsd_names::is_integer_family_name(dt.name.as_ref())
 }
 
-/// Check if datatype is xsd:decimal (arbitrary precision)
 fn is_decimal_dt(dt: &Sid) -> bool {
-    dt.namespace_code == XSD_NAMESPACE_CODE && dt.name.as_ref() == "decimal"
+    dt.namespace_code == XSD && dt.name.as_ref() == xsd_names::DECIMAL
 }
 
 // === Raw JSON structures for deserialization ===
@@ -96,10 +77,12 @@ impl RawFlake {
 pub fn deserialize_sid(value: &serde_json::Value) -> Result<Sid> {
     match value {
         serde_json::Value::Array(arr) if arr.len() == 2 => {
-            let ns_code = arr[0]
-                .as_i64()
-                .ok_or_else(|| Error::other("SID namespace_code must be integer"))?
-                as i32;
+            let raw_code = arr[0]
+                .as_u64()
+                .ok_or_else(|| Error::other("SID namespace_code must be integer"))?;
+            let ns_code = u16::try_from(raw_code).map_err(|_| {
+                Error::other(format!("SID namespace_code {} exceeds u16::MAX", raw_code))
+            })?;
             let name = arr[1]
                 .as_str()
                 .ok_or_else(|| Error::other("SID name must be string"))?
@@ -302,7 +285,7 @@ impl RawLeafNode {
                 let dt = sid_dict.get(dt_idx).cloned().ok_or_else(|| Error::other(format!("Invalid dt_idx: {}", dt_idx)))?;
 
                 // o: index if reference, otherwise literal
-                let o = if dt.namespace_code == ID_NAMESPACE_CODE && dt.name.as_ref() == ID_NAME {
+                let o = if is_id_dt(&dt) {
                     let o_idx = rf.0[2].as_i64().ok_or_else(|| Error::other("o_idx must be integer"))? as usize;
                     let o_sid = sid_dict.get(o_idx).cloned().ok_or_else(|| Error::other(format!("Invalid o_idx: {}", o_idx)))?;
                     FlakeValue::Ref(o_sid)
@@ -334,7 +317,7 @@ use crate::index_stats::{
 #[derive(Debug, Deserialize)]
 pub struct RawPropertyStatEntry {
     /// SID as (namespace_code, name)
-    pub sid: (i32, String),
+    pub sid: (u16, String),
     pub count: u64,
     pub ndv_values: u64,
     pub ndv_subjects: u64,
@@ -398,7 +381,7 @@ pub struct RawGraphStatsEntry {
 #[derive(Debug)]
 pub struct RawClassStatEntry {
     /// Class SID as (namespace_code, name)
-    pub class_sid: (i32, String),
+    pub class_sid: (u16, String),
     pub count: u64,
     pub properties: Option<Vec<RawClassPropertyUsage>>,
 }
@@ -424,7 +407,7 @@ impl<'de> serde::Deserialize<'de> for RawClassStatEntry {
                 A: SeqAccess<'de>,
             {
                 // First element: class SID as [namespace_code, name]
-                let class_sid: (i32, String) = seq
+                let class_sid: (u16, String) = seq
                     .next_element()?
                     .ok_or_else(|| de::Error::invalid_length(0, &self))?;
 
@@ -455,7 +438,7 @@ impl<'de> serde::Deserialize<'de> for RawClassStatEntry {
 #[derive(Debug)]
 pub struct RawClassPropertyUsage {
     /// Property SID as (namespace_code, name)
-    pub property_sid: (i32, String),
+    pub property_sid: (u16, String),
 }
 
 impl<'de> serde::Deserialize<'de> for RawClassPropertyUsage {
@@ -479,7 +462,7 @@ impl<'de> serde::Deserialize<'de> for RawClassPropertyUsage {
                 A: SeqAccess<'de>,
             {
                 // First element: property SID as [namespace_code, name]
-                let property_sid: (i32, String) = seq
+                let property_sid: (u16, String) = seq
                     .next_element()?
                     .ok_or_else(|| de::Error::invalid_length(0, &self))?;
 

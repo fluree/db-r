@@ -39,18 +39,24 @@ use serde_json;
 ///
 /// Novel entries: construct full IRI, append to forward file, insert into map.
 ///
-/// Memory: ~52 bytes/entry (HashMap entry ~40B + forward vecs 12B).
-/// At 100M subjects: ~5.2GB RAM. This is intentionally "big iron" mode;
+/// Subject IDs are namespace-structured 64-bit values (sid64):
+///   `sid64 = (ns_code_u16 << 48) | local_id_u48`
+/// Per-namespace counters ensure local_ids are dense within each namespace.
+///
+/// Memory: ~60 bytes/entry (HashMap entry ~48B + forward vecs 20B).
+/// At 100M subjects: ~6GB RAM. This is intentionally "big iron" mode;
 /// production dictionary uses the partitioned-on-disk strategy from VALUE_ID_PROPOSAL.
 pub struct SubjectDict {
-    /// Reverse: xxh3_128(iri) → id.
+    /// Reverse: xxh3_128(iri) → sid64 (raw u64).
     /// 128-bit hash makes collisions negligible (~10^-22 at 100M entries).
-    reverse: FxHashMap<u128, u32>,
-    /// Forward: id → offset into forward_file.
+    reverse: FxHashMap<u128, u64>,
+    /// Forward: sequential insertion index → offset into forward_file.
     /// Separate vecs for proper alignment (avoids 16B padded tuple).
     forward_offsets: Vec<u64>,
-    /// Forward: id → byte length of IRI in forward_file.
+    /// Forward: sequential insertion index → byte length of IRI in forward_file.
     forward_lens: Vec<u32>,
+    /// Forward: sequential insertion index → sid64 (for writing sid mapping file).
+    forward_sids: Vec<u64>,
     /// Append-only file of IRI bytes (no length prefix — lengths in forward_lens).
     forward_file: Option<BufWriter<std::fs::File>>,
     /// Path to the forward file (for diagnostics/reopening).
@@ -58,11 +64,20 @@ pub struct SubjectDict {
     forward_path: PathBuf,
     /// Current write offset in the forward file.
     forward_write_offset: u64,
-    /// Next ID to assign (0-based).
-    next_id: u32,
+    /// Per-namespace next local_id counter. Indexed by ns_code (u16).
+    /// Grows on demand when a new namespace is first seen.
+    next_local_ids: Vec<u64>,
+    /// Total number of entries across all namespaces.
+    count: u64,
+    /// Set when any namespace's local_id exceeds u16::MAX.
+    /// Once set, never reverts. Determines narrow vs wide leaflet encoding.
+    needs_wide: bool,
 }
 
 impl SubjectDict {
+    /// Maximum local_id value within a 48-bit field.
+    const MAX_LOCAL_ID: u64 = (1u64 << 48) - 1;
+
     /// Create a new SubjectDict with a forward file at the given path.
     pub fn new(forward_path: impl AsRef<Path>) -> io::Result<Self> {
         let path = forward_path.as_ref().to_path_buf();
@@ -71,10 +86,13 @@ impl SubjectDict {
             reverse: FxHashMap::default(),
             forward_offsets: Vec::new(),
             forward_lens: Vec::new(),
+            forward_sids: Vec::new(),
             forward_file: Some(BufWriter::new(file)),
             forward_path: path,
             forward_write_offset: 0,
-            next_id: 0,
+            next_local_ids: Vec::new(),
+            count: 0,
+            needs_wide: false,
         })
     }
 
@@ -84,31 +102,62 @@ impl SubjectDict {
             reverse: FxHashMap::default(),
             forward_offsets: Vec::new(),
             forward_lens: Vec::new(),
+            forward_sids: Vec::new(),
             forward_file: None,
             forward_path: PathBuf::new(),
             forward_write_offset: 0,
-            next_id: 0,
+            next_local_ids: Vec::new(),
+            count: 0,
+            needs_wide: false,
         }
     }
 
     /// Look up or insert an IRI by its pre-computed xxh3_128 hash.
     ///
+    /// `ns_code` is the namespace code for this subject (determines which
+    /// per-namespace counter allocates the local_id portion of the sid64).
+    ///
     /// `iri_builder` is only called for novel entries (to get the full IRI
     /// for the forward file). Repeat subjects never call it.
+    ///
+    /// Returns the raw sid64 value (`(ns_code << 48) | local_id`).
     pub fn get_or_insert_with_hash<F>(
         &mut self,
         hash: u128,
+        ns_code: u16,
         iri_builder: F,
-    ) -> io::Result<u32>
+    ) -> io::Result<u64>
     where
         F: FnOnce() -> String,
     {
-        if let Some(&id) = self.reverse.get(&hash) {
-            return Ok(id);
+        if let Some(&sid64) = self.reverse.get(&hash) {
+            return Ok(sid64);
         }
 
-        let id = self.next_id;
-        self.next_id = id.checked_add(1).expect("SubjectDict: u32 ID overflow");
+        // Allocate next local_id for this namespace
+        let ns_idx = ns_code as usize;
+        if ns_idx >= self.next_local_ids.len() {
+            self.next_local_ids.resize(ns_idx + 1, 0);
+        }
+        let local_id = self.next_local_ids[ns_idx];
+        if local_id > Self::MAX_LOCAL_ID {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!(
+                    "SubjectDict: local_id overflow for ns_code {} (exceeded 2^48)",
+                    ns_code
+                ),
+            ));
+        }
+        self.next_local_ids[ns_idx] = local_id + 1;
+
+        // Track wide requirement
+        if local_id > u16::MAX as u64 {
+            self.needs_wide = true;
+        }
+
+        // Construct sid64
+        let sid64 = ((ns_code as u64) << 48) | local_id;
 
         // Write to forward file if available
         let iri = iri_builder();
@@ -122,27 +171,50 @@ impl SubjectDict {
 
         self.forward_offsets.push(offset);
         self.forward_lens.push(len);
+        self.forward_sids.push(sid64);
         self.forward_write_offset += len as u64;
 
-        self.reverse.insert(hash, id);
-        Ok(id)
+        self.reverse.insert(hash, sid64);
+        self.count += 1;
+        Ok(sid64)
     }
 
     /// Convenience: compute xxh3_128 from the IRI string and insert.
-    pub fn get_or_insert(&mut self, iri: &str) -> io::Result<u32> {
+    ///
+    /// `ns_code` is the namespace code for this subject.
+    pub fn get_or_insert(&mut self, iri: &str, ns_code: u16) -> io::Result<u64> {
         let hash = xxhash_rust::xxh3::xxh3_128(iri.as_bytes());
         let iri_owned = iri.to_string();
-        self.get_or_insert_with_hash(hash, move || iri_owned)
+        self.get_or_insert_with_hash(hash, ns_code, move || iri_owned)
     }
 
     /// Number of entries in the dictionary.
-    pub fn len(&self) -> u32 {
-        self.next_id
+    pub fn len(&self) -> u64 {
+        self.count
     }
 
     /// Check if the dictionary is empty.
     pub fn is_empty(&self) -> bool {
-        self.next_id == 0
+        self.count == 0
+    }
+
+    /// Whether any namespace's local_id has exceeded u16::MAX.
+    ///
+    /// When true, leaflet columns must use wide (u64) encoding.
+    /// When false, narrow (u32) encoding suffices.
+    pub fn needs_wide(&self) -> bool {
+        self.needs_wide
+    }
+
+    /// Per-namespace max assigned local_id watermarks for `DictNovelty`.
+    ///
+    /// Returns `watermarks[i]` = max local_id for namespace code `i`.
+    /// 0 for namespaces with no assigned subjects.
+    pub fn subject_watermarks(&self) -> Vec<u64> {
+        self.next_local_ids
+            .iter()
+            .map(|&next| next.saturating_sub(1))
+            .collect()
     }
 
     /// Flush the forward file buffer to disk.
@@ -153,32 +225,56 @@ impl SubjectDict {
         Ok(())
     }
 
-    /// Forward offset table: `offsets[id]` = byte offset into subjects.fwd.
+    /// Read all entries as (sid64, iri_bytes) pairs.
+    ///
+    /// Reads the forward file from disk. Call `flush()` first to ensure
+    /// all buffered writes are visible.
+    pub fn read_all_entries(&self) -> io::Result<Vec<(u64, Vec<u8>)>> {
+        let data = std::fs::read(&self.forward_path)?;
+        let mut entries = Vec::with_capacity(self.count as usize);
+        for seq in 0..self.count as usize {
+            let offset = self.forward_offsets[seq] as usize;
+            let len = self.forward_lens[seq] as usize;
+            let sid64 = self.forward_sids[seq];
+            entries.push((sid64, data[offset..offset + len].to_vec()));
+        }
+        Ok(entries)
+    }
+
+    /// Forward offset table: `offsets[seq]` = byte offset into subjects.fwd.
+    /// Indexed by sequential insertion order (not sid64).
     pub fn forward_offsets(&self) -> &[u64] {
         &self.forward_offsets
     }
 
-    /// Forward length table: `lens[id]` = byte length of IRI in subjects.fwd.
+    /// Forward length table: `lens[seq]` = byte length of IRI in subjects.fwd.
+    /// Indexed by sequential insertion order (not sid64).
     pub fn forward_lens(&self) -> &[u32] {
         &self.forward_lens
     }
 
+    /// Sid64 table: `sids[seq]` = sid64 for the seq-th inserted subject.
+    /// Used to write the sid mapping file alongside the forward index.
+    pub fn forward_sids(&self) -> &[u64] {
+        &self.forward_sids
+    }
+
     /// Write a reverse hash index to `subjects.rev` for O(log N) IRI → s_id lookup.
     ///
-    /// Format: `SRV1` magic (4B) + count (u32) + sorted records of
-    /// `(hash_hi: u64, hash_lo: u64, s_id: u32)` — 20 bytes per record.
+    /// Format: `SRV2` magic (4B) + count (u64) + sorted records of
+    /// `(hash_hi: u64, hash_lo: u64, sid64: u64)` — 24 bytes per record.
     ///
     /// Sorted by (hash_hi, hash_lo) for binary search at query time.
     pub fn write_reverse_index(&self, path: &Path) -> io::Result<()> {
         use std::io::Write;
 
-        let mut entries: Vec<(u64, u64, u32)> = self
+        let mut entries: Vec<(u64, u64, u64)> = self
             .reverse
             .iter()
-            .map(|(&hash, &s_id)| {
+            .map(|(&hash, &sid64)| {
                 let hi = (hash >> 64) as u64;
                 let lo = hash as u64;
-                (hi, lo, s_id)
+                (hi, lo, sid64)
             })
             .collect();
 
@@ -186,21 +282,21 @@ impl SubjectDict {
         entries.sort_unstable();
 
         let mut file = io::BufWriter::new(std::fs::File::create(path)?);
-        file.write_all(b"SRV1")?;
-        file.write_all(&(entries.len() as u32).to_le_bytes())?;
+        file.write_all(b"SRV2")?;
+        file.write_all(&(entries.len() as u64).to_le_bytes())?;
 
-        for &(hi, lo, s_id) in &entries {
+        for &(hi, lo, sid64) in &entries {
             file.write_all(&hi.to_le_bytes())?;
             file.write_all(&lo.to_le_bytes())?;
-            file.write_all(&s_id.to_le_bytes())?;
+            file.write_all(&sid64.to_le_bytes())?;
         }
 
         file.flush()?;
         tracing::info!(
             path = %path.display(),
             entries = entries.len(),
-            size_mb = (entries.len() * 20) / (1024 * 1024),
-            "subject reverse index written"
+            size_mb = (entries.len() * 24) / (1024 * 1024),
+            "subject reverse index written (SRV2)"
         );
         Ok(())
     }
@@ -283,6 +379,15 @@ impl PredicateDict {
 
     pub fn is_empty(&self) -> bool {
         self.forward.is_empty()
+    }
+
+    /// Return all entries as (id, value_bytes) pairs. Already in-memory.
+    pub fn all_entries(&self) -> Vec<(u64, Vec<u8>)> {
+        self.forward
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (i as u64, s.as_bytes().to_vec()))
+            .collect()
     }
 
     /// Write a reverse hash index for O(log N) string → str_id lookup.
@@ -550,11 +655,13 @@ impl GlobalDicts {
     ///
     /// Writes:
     /// - `subjects.idx` — subject forward-file offset/len index
+    /// - `subjects.sids` — sid64 mapping (sequential index → sid64)
     /// - `strings.fwd` + `strings.idx` — string value forward file + index
     /// - `graphs.dict` — graph dictionary
     /// - `predicates.json` — predicate id→IRI table (for index-build p_width + tooling)
     pub fn persist(&mut self, run_dir: &Path) -> io::Result<()> {
-        use super::dict_io::{write_predicate_dict, write_string_dict, write_subject_index};
+        use super::dict_io::{write_predicate_dict, write_string_dict, write_subject_index,
+                             write_subject_sid_map};
 
         // Flush subject forward file
         self.subjects.flush()?;
@@ -564,6 +671,12 @@ impl GlobalDicts {
             &run_dir.join("subjects.idx"),
             self.subjects.forward_offsets(),
             self.subjects.forward_lens(),
+        )?;
+
+        // Write sid64 mapping (sequential index → sid64)
+        write_subject_sid_map(
+            &run_dir.join("subjects.sids"),
+            self.subjects.forward_sids(),
         )?;
 
         // Write string dict (forward file + index)
@@ -662,13 +775,17 @@ mod tests {
     #[test]
     fn test_subject_dict_insert_and_dedup() {
         let mut dict = SubjectDict::new_memory();
+        let ns: u16 = 100; // test namespace
 
-        let id1 = dict.get_or_insert("http://example.org/Alice").unwrap();
-        let id2 = dict.get_or_insert("http://example.org/Bob").unwrap();
-        let id1_again = dict.get_or_insert("http://example.org/Alice").unwrap();
+        let id1 = dict.get_or_insert("http://example.org/Alice", ns).unwrap();
+        let id2 = dict.get_or_insert("http://example.org/Bob", ns).unwrap();
+        let id1_again = dict.get_or_insert("http://example.org/Alice", ns).unwrap();
 
-        assert_eq!(id1, 0);
-        assert_eq!(id2, 1);
+        // sid64 = (ns << 48) | local_id
+        let expected_0 = (ns as u64) << 48;
+        let expected_1 = ((ns as u64) << 48) | 1;
+        assert_eq!(id1, expected_0);
+        assert_eq!(id2, expected_1);
         assert_eq!(id1, id1_again);
         assert_eq!(dict.len(), 2);
     }
@@ -676,6 +793,7 @@ mod tests {
     #[test]
     fn test_subject_dict_streaming_hash() {
         let mut dict = SubjectDict::new_memory();
+        let ns: u16 = 100;
 
         // Simulate streaming hash: prefix + name
         let prefix = "http://example.org/";
@@ -689,13 +807,13 @@ mod tests {
 
         let full_iri = format!("{}{}", prefix, name);
         let id1 = dict
-            .get_or_insert_with_hash(hash, || full_iri.clone())
+            .get_or_insert_with_hash(hash, ns, || full_iri.clone())
             .unwrap();
 
         // Same hash → same ID (no iri_builder called)
         let mut called = false;
         let id2 = dict
-            .get_or_insert_with_hash(hash, || {
+            .get_or_insert_with_hash(hash, ns, || {
                 called = true;
                 full_iri.clone()
             })
@@ -713,8 +831,8 @@ mod tests {
         let path = dir.join("subjects.fwd");
 
         let mut dict = SubjectDict::new(&path).unwrap();
-        dict.get_or_insert("http://example.org/Alice").unwrap();
-        dict.get_or_insert("http://example.org/Bob").unwrap();
+        dict.get_or_insert("http://example.org/Alice", 100).unwrap();
+        dict.get_or_insert("http://example.org/Bob", 100).unwrap();
         dict.flush().unwrap();
 
         // Verify forward file exists and has content
@@ -725,14 +843,47 @@ mod tests {
     }
 
     #[test]
-    fn test_subject_dict_sequential_ids() {
+    fn test_subject_dict_per_namespace_ids() {
         let mut dict = SubjectDict::new_memory();
-        for i in 0..100 {
+
+        // Insert subjects in two different namespaces
+        let ns_a: u16 = 10;
+        let ns_b: u16 = 20;
+
+        let id_a0 = dict.get_or_insert("http://a.org/x", ns_a).unwrap();
+        let id_b0 = dict.get_or_insert("http://b.org/y", ns_b).unwrap();
+        let id_a1 = dict.get_or_insert("http://a.org/z", ns_a).unwrap();
+
+        // Each namespace has its own local_id counter
+        assert_eq!(id_a0, (10u64 << 48) | 0); // ns_a, local_id=0
+        assert_eq!(id_b0, (20u64 << 48) | 0); // ns_b, local_id=0
+        assert_eq!(id_a1, (10u64 << 48) | 1); // ns_a, local_id=1
+
+        assert_eq!(dict.len(), 3);
+        assert!(!dict.needs_wide());
+    }
+
+    #[test]
+    fn test_subject_dict_needs_wide() {
+        let mut dict = SubjectDict::new_memory();
+        let ns: u16 = 5;
+
+        // Insert u16::MAX + 1 subjects to trigger needs_wide
+        for i in 0..=(u16::MAX as u64) {
             let iri = format!("http://example.org/entity/{}", i);
-            let id = dict.get_or_insert(&iri).unwrap();
-            assert_eq!(id, i as u32);
+            dict.get_or_insert(&iri, ns).unwrap();
         }
-        assert_eq!(dict.len(), 100);
+        // At this point local_id went from 0 to 65535 (u16::MAX) → still narrow
+        // The u16::MAX-th subject has local_id = 65535, which fits u16
+        // But the (u16::MAX+1)-th subject gets local_id = 65536, which exceeds u16
+        assert_eq!(dict.len(), (u16::MAX as u64) + 1);
+        // local_ids 0..=65535 all fit u16, 65536 exceeds → needs_wide should be true
+        // Actually: 65536 subjects means local_ids 0..65535. The 65536th (index 65535)
+        // has local_id=65535 which equals u16::MAX. We inserted u16::MAX+1 subjects,
+        // so the last one (65536th) has local_id=65535. Not yet wide.
+        // Let's insert one more to actually trigger it.
+        dict.get_or_insert("http://example.org/entity/overflow", ns).unwrap();
+        assert!(dict.needs_wide(), "should need wide after exceeding u16::MAX local_id");
     }
 
     // ---- PredicateDict tests ----
@@ -822,7 +973,7 @@ mod tests {
     #[test]
     fn test_global_dicts_memory() {
         let mut dicts = GlobalDicts::new_memory();
-        dicts.subjects.get_or_insert("http://example.org/Alice").unwrap();
+        dicts.subjects.get_or_insert("http://example.org/Alice", 100).unwrap();
         dicts.predicates.get_or_insert("http://example.org/name");
         dicts.strings.get_or_insert("Alice");
         dicts.languages.get_or_insert(Some("en"));

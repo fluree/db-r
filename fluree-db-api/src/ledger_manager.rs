@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 
 use std::path::PathBuf;
 
+use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::{alias as core_alias, Storage};
 use fluree_db_indexer::run_index::{BinaryIndexStore, LeafletCache};
 use fluree_db_ledger::LedgerState;
@@ -68,6 +69,8 @@ pub struct LedgerSnapshot<S> {
     pub db: Db<S>,
     /// In-memory overlay of uncommitted transactions
     pub novelty: Arc<Novelty>,
+    /// Dictionary novelty layer (subjects and strings since last index build)
+    pub dict_novelty: Arc<fluree_db_core::DictNovelty>,
     /// Current transaction t value
     pub t: i64,
     /// Current head commit address
@@ -90,6 +93,7 @@ impl<S: Storage + Clone + 'static> LedgerSnapshot<S> {
         Self {
             db: state.db.clone(), // Cheap: Arc fields
             novelty: Arc::clone(&state.novelty),
+            dict_novelty: Arc::clone(&state.dict_novelty),
             t: state.t(),
             head_commit: state.head_commit.clone(),
             ns_record: state.ns_record.clone(),
@@ -125,9 +129,11 @@ impl<S: Storage + Clone + 'static> LedgerSnapshot<S> {
     /// This creates a LedgerState with the same data as the snapshot.
     /// Use this when you need to pass the state to APIs that expect LedgerState.
     pub fn to_ledger_state(self) -> LedgerState<S> {
+        let dict_novelty = self.dict_novelty;
         LedgerState {
             db: self.db,
             novelty: self.novelty,
+            dict_novelty,
             head_commit: self.head_commit,
             ns_record: self.ns_record,
         }
@@ -348,7 +354,8 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
             .await
             .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
         let arc_store = Arc::new(store);
-        let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), 0);
+        let dn = Arc::new(DictNovelty::new_uninitialized());
+        let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);
 
         // Build metadata-only Db from root
         let ns_codes = root.namespace_codes.into_iter().collect();
@@ -368,6 +375,8 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
             ns_codes,
             stats,
             schema,
+            root.subject_watermarks,
+            root.string_watermark,
             storage.clone(),
         );
         db.range_provider = Some(Arc::new(provider));
@@ -532,7 +541,8 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
         .await
         .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
     let arc_store = Arc::new(store);
-    let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), 0);
+    let dn = Arc::new(DictNovelty::new_uninitialized());
+    let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);
     state.db.range_provider = Some(Arc::new(provider));
     Ok(Some(arc_store))
 }

@@ -62,7 +62,7 @@ pub struct TransportFlake {
 /// Stored as [namespace_code, name] tuple for reconstruction.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TransportSid {
-    pub ns: i32,
+    pub ns: u16,
     pub name: String,
 }
 
@@ -334,7 +334,7 @@ pub enum FlakesTransportError {
 mod tests {
     use super::*;
 
-    fn make_sid(ns: i32, name: &str) -> Sid {
+    fn make_sid(ns: u16, name: &str) -> Sid {
         Sid::new(ns, name)
     }
 

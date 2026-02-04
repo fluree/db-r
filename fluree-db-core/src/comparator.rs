@@ -248,7 +248,7 @@ mod tests {
     use crate::sid::Sid;
     use crate::value::FlakeValue;
 
-    fn make_flake(s: i32, p: i32, o: i64, t: i64) -> Flake {
+    fn make_flake(s: u16, p: u16, o: i64, t: i64) -> Flake {
         Flake::new(
             Sid::new(s, format!("s{}", s)),
             Sid::new(p, format!("p{}", p)),

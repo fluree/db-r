@@ -48,9 +48,13 @@ pub mod coerce;
 pub mod value_id;
 pub mod index_stats;
 pub mod index_schema;
+pub mod sid64;
+pub mod dict_novelty;
 
 // Re-export main types
 pub use sid::{Sid, SidInterner};
+pub use sid64::{Sid64, SidColumn, SidEncoding};
+pub use dict_novelty::DictNovelty;
 pub use value::{FlakeValue, parse_integer, parse_decimal, parse_double, parse_integer_string, parse_decimal_string};
 pub use temporal::{DateTime, Date, Time};
 pub use alias::{

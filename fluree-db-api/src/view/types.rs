@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::{Db, NoOverlay, OverlayProvider, Storage};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_ledger::{HistoricalLedgerView, LedgerState};
@@ -121,6 +122,9 @@ pub struct FlureeView<S: Storage + 'static> {
     /// When set, `ScanOperator` uses this for direct columnar scans
     /// via `BinaryScanOperator`.
     pub(crate) binary_store: Option<Arc<BinaryIndexStore>>,
+
+    /// Dictionary novelty layer for binary scan subject/string lookups.
+    pub(crate) dict_novelty: Option<Arc<DictNovelty>>,
 }
 
 impl<S: Storage + 'static> std::fmt::Debug for FlureeView<S> {
@@ -172,6 +176,7 @@ impl<S: Storage + Clone + 'static> FlureeView<S> {
             reasoning: None,
             reasoning_precedence: ReasoningModePrecedence::default(),
             binary_store: None,
+            dict_novelty: None,
         }
     }
 
@@ -187,13 +192,15 @@ impl<S: Storage + Clone + 'static> FlureeView<S> {
     /// ```
     pub fn from_ledger_state(ledger: &LedgerState<S>) -> Self {
         let novelty = ledger.novelty.clone();
-        Self::new(
+        let mut view = Self::new(
             Arc::new(ledger.db.clone()),
             novelty.clone() as Arc<dyn OverlayProvider>,
             Some(novelty),
             ledger.t(),
             ledger.alias(),
-        )
+        );
+        view.dict_novelty = Some(ledger.dict_novelty.clone());
+        view
     }
 
     /// Create a view from a `HistoricalLedgerView` (time-travel snapshot).
@@ -258,13 +265,15 @@ impl<S: Storage + Clone + 'static> FlureeView<S> {
         }
 
         let combined = Arc::new(combined);
-        Ok(Self::new(
+        let mut view = Self::new(
             Arc::new(base.db.clone()),
             combined.clone() as Arc<dyn OverlayProvider>,
             Some(combined),
             staged_t,
             base.alias(),
-        ))
+        );
+        view.dict_novelty = Some(base.dict_novelty.clone());
+        Ok(view)
     }
 
     /// Create a view from the **base** (pre-transaction) state of a

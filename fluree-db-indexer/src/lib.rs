@@ -23,8 +23,8 @@ pub mod error;
 pub mod gc;
 #[cfg(feature = "hll-stats")]
 pub mod hll;
-#[cfg(feature = "commit-v2")]
 pub mod run_index;
+pub mod dict_tree;
 pub mod orchestrator;
 pub mod stats;
 
@@ -535,7 +535,7 @@ where
 /// Builds a binary columnar index from the commit chain. The pipeline:
 /// 1. Walks the commit chain and generates sorted run files
 /// 2. Builds per-graph leaf/branch indexes for all sort orders
-/// 3. Creates a `BinaryIndexRoot` descriptor and writes it to storage
+/// 3. Creates a `BinaryIndexRootV2` descriptor and writes it to storage
 ///
 /// Returns early if the index is already current (no work needed).
 ///
@@ -573,16 +573,7 @@ where
         }
     }
 
-    #[cfg(feature = "commit-v2")]
-    {
-        build_binary_index(storage, alias, &record, config).await
-    }
-
-    #[cfg(not(feature = "commit-v2"))]
-    {
-        let _ = (storage, config);
-        Err(IndexerError::BTreePipelineRemoved)
-    }
+    build_binary_index(storage, alias, &record, config).await
 }
 
 /// Binary index build implementation (commit-v2 feature required).
@@ -596,8 +587,7 @@ where
 /// 2. Resolve commits in forward order using `MultiOrderRunWriter` to produce
 ///    per-order sorted run files (SPOT, PSOT, POST, OPST)
 /// 3. Build per-graph leaf/branch indexes from run files
-/// 4. Write `BinaryIndexRoot` descriptor to storage
-#[cfg(feature = "commit-v2")]
+/// 4. Write `BinaryIndexRootV2` descriptor to storage
 async fn build_binary_index<S>(
     storage: &S,
     alias: &str,
@@ -670,7 +660,7 @@ where
             let mut dicts = run_index::GlobalDicts::new(&subject_forward_path)
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
             let mut resolver = run_index::CommitResolver::new();
-            #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+            #[cfg(feature = "hll-stats")]
             resolver.set_stats_hook(crate::stats::IdStatsHook::new());
 
             let multi_config = run_index::MultiOrderConfig {
@@ -703,7 +693,7 @@ where
                 );
             }
 
-            #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+            #[cfg(feature = "hll-stats")]
             let id_stats_hook = resolver.take_stats_hook();
 
             let total_records = writer.total_records();
@@ -750,7 +740,7 @@ where
                 .map_err(|e| IndexerError::StorageRead(e.to_string()))?;
 
             // Build predicate p_id -> (ns_code, suffix) mapping for the root (compact).
-            let predicate_sids: Vec<(i32, String)> = (0..dicts.predicates.len())
+            let predicate_sids: Vec<(u16, String)> = (0..dicts.predicates.len())
                 .map(|p_id| {
                     let iri = dicts.predicates.resolve(p_id).unwrap_or("");
                     let sid = store.encode_iri(iri);
@@ -761,7 +751,7 @@ where
             // D.2: Upload dictionary artifacts to CAS
             let numbig_p_ids: Vec<u32> = dicts.numbigs.keys().copied().collect();
             let dict_addresses = upload_dicts_to_cas(
-                &storage, &alias, &run_dir, &numbig_p_ids,
+                &storage, &alias, &run_dir, &dicts, &numbig_p_ids,
             ).await?;
 
             // D.3: Upload index artifacts (branches + leaves) to CAS
@@ -775,7 +765,7 @@ where
             // stats with datatype counts + HLL NDV). Fallback: SPOT build result for per-graph
             // flake counts only.
             let stats_json = {
-                #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+                #[cfg(feature = "hll-stats")]
                 if let Some(hook) = id_stats_hook {
                     let id_result = hook.finalize();
 
@@ -844,7 +834,7 @@ where
                     })
                 }
 
-                #[cfg(not(all(feature = "hll-stats", feature = "commit-v2")))]
+                #[cfg(not(feature = "hll-stats"))]
                 {
                     let (_, spot_result) = build_results
                         .iter()
@@ -878,18 +868,29 @@ where
             };
 
             // D.5: Build v2 root with CAS addresses and stats (initially without GC fields)
+            let sid_encoding = if dicts.subjects.needs_wide() {
+                fluree_db_core::SidEncoding::Wide
+            } else {
+                fluree_db_core::SidEncoding::Narrow
+            };
+            let subject_watermarks = dicts.subjects.subject_watermarks();
+            let string_watermark = dicts.strings.len().saturating_sub(1);
+
             let mut root = run_index::BinaryIndexRootV2::from_cas_artifacts(
                 &alias,
                 store.max_t(),
                 store.base_t(),
                 predicate_sids,
                 store.namespace_codes(),
+                sid_encoding,
                 dict_addresses,
                 graph_addresses,
                 Some(stats_json),
                 None, // schema: requires predicate definitions (future)
                 None, // prev_index: set below after garbage computation
                 None, // garbage: set below after garbage computation
+                subject_watermarks,
+                string_watermark,
             );
 
             // D.5.1: Compute garbage and link prev_index for GC chain.
@@ -988,23 +989,26 @@ where
     .map_err(|e| IndexerError::StorageWrite(format!("index build task panicked: {}", e)))?
 }
 
-/// Upload all dictionary artifacts from `run_dir` to CAS.
+/// Build dictionary CoW trees and upload all dictionary artifacts to CAS.
 ///
-/// Reads each file that `GlobalDicts::persist()` and `build_all_indexes()`
-/// wrote to disk, uploads via `content_write_bytes`, and returns the full
-/// CAS addresses.
-#[cfg(feature = "commit-v2")]
+/// Small-cardinality dictionaries (graphs, datatypes, languages) are uploaded
+/// as flat blobs. Subject and string dictionaries are built into CoW trees
+/// (branch + leaves) for O(log n) lookup at query time.
 async fn upload_dicts_to_cas<S: Storage>(
     storage: &S,
     alias: &str,
     run_dir: &std::path::Path,
+    dicts: &run_index::GlobalDicts,
     numbig_p_ids: &[u32],
 ) -> Result<run_index::DictAddresses> {
     use fluree_db_core::{ContentKind, DictKind};
     use std::collections::BTreeMap;
+    use dict_tree::builder::{self, TreeBuildResult};
+    use dict_tree::forward_leaf::ForwardEntry;
+    use dict_tree::reverse_leaf::ReverseEntry;
 
     /// Read a file and upload to CAS, returning the address.
-    async fn upload_one<S: Storage>(
+    async fn upload_flat<S: Storage>(
         storage: &S,
         alias: &str,
         path: &std::path::Path,
@@ -1025,29 +1029,104 @@ async fn upload_dicts_to_cas<S: Storage>(
         Ok(result.address)
     }
 
-    let graphs = upload_one(storage, alias, &run_dir.join("graphs.dict"), DictKind::Graphs).await?;
-    let datatypes = upload_one(storage, alias, &run_dir.join("datatypes.dict"), DictKind::Datatypes).await?;
-    let languages = upload_one(storage, alias, &run_dir.join("languages.dict"), DictKind::Languages).await?;
-    let subject_forward = upload_one(storage, alias, &run_dir.join("subjects.fwd"), DictKind::SubjectForward).await?;
-    let subject_index = upload_one(storage, alias, &run_dir.join("subjects.idx"), DictKind::SubjectIndex).await?;
-    let subject_reverse = upload_one(storage, alias, &run_dir.join("subjects.rev"), DictKind::SubjectReverse).await?;
-    let string_forward = upload_one(storage, alias, &run_dir.join("strings.fwd"), DictKind::StringForward).await?;
-    let string_index = upload_one(storage, alias, &run_dir.join("strings.idx"), DictKind::StringIndex).await?;
-    let string_reverse = upload_one(storage, alias, &run_dir.join("strings.rev"), DictKind::StringReverse).await?;
+    /// Upload a tree build result (branch + leaves) to CAS.
+    async fn upload_tree<S: Storage>(
+        storage: &S,
+        alias: &str,
+        result: TreeBuildResult,
+        dict: DictKind,
+    ) -> Result<run_index::DictTreeAddresses> {
+        let mut leaf_addresses = Vec::with_capacity(result.leaves.len());
+        let mut hash_to_address = std::collections::HashMap::new();
 
+        for leaf in &result.leaves {
+            let cas_result = storage
+                .content_write_bytes(ContentKind::DictBlob { dict }, alias, &leaf.bytes)
+                .await
+                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+            leaf_addresses.push(cas_result.address.clone());
+            hash_to_address.insert(leaf.hash.clone(), cas_result.address);
+        }
+
+        // Finalize branch with actual CAS addresses, then upload
+        let (_, branch_bytes, _) =
+            builder::finalize_branch(result.branch, &hash_to_address)
+                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+        let branch_result = storage
+            .content_write_bytes(ContentKind::DictBlob { dict }, alias, &branch_bytes)
+            .await
+            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+        Ok(run_index::DictTreeAddresses {
+            branch: branch_result.address,
+            leaves: leaf_addresses,
+        })
+    }
+
+    // Small flat dicts
+    let graphs = upload_flat(storage, alias, &run_dir.join("graphs.dict"), DictKind::Graphs).await?;
+    let datatypes = upload_flat(storage, alias, &run_dir.join("datatypes.dict"), DictKind::Datatypes).await?;
+    let languages = upload_flat(storage, alias, &run_dir.join("languages.dict"), DictKind::Languages).await?;
+
+    // Subject trees
+    let subject_pairs = dicts.subjects.read_all_entries()
+        .map_err(|e| IndexerError::StorageRead(format!("read subject entries: {}", e)))?;
+
+    let mut subj_fwd: Vec<ForwardEntry> = subject_pairs.iter()
+        .map(|(sid, iri)| ForwardEntry { id: *sid, value: iri.clone() })
+        .collect();
+    subj_fwd.sort_unstable_by_key(|e| e.id);
+
+    let mut subj_rev: Vec<ReverseEntry> = subject_pairs.into_iter()
+        .map(|(sid, iri)| ReverseEntry { key: iri, id: sid })
+        .collect();
+    subj_rev.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+
+    let sf_tree = builder::build_forward_tree(subj_fwd, builder::DEFAULT_TARGET_LEAF_BYTES)
+        .map_err(|e| IndexerError::StorageWrite(format!("build subject fwd tree: {}", e)))?;
+    let sr_tree = builder::build_reverse_tree(subj_rev, builder::DEFAULT_TARGET_LEAF_BYTES)
+        .map_err(|e| IndexerError::StorageWrite(format!("build subject rev tree: {}", e)))?;
+
+    let subject_forward = upload_tree(storage, alias, sf_tree, DictKind::SubjectForward).await?;
+    let subject_reverse = upload_tree(storage, alias, sr_tree, DictKind::SubjectReverse).await?;
+
+    // String trees
+    let string_pairs = dicts.strings.all_entries();
+
+    let mut str_fwd: Vec<ForwardEntry> = string_pairs.iter()
+        .map(|(id, val)| ForwardEntry { id: *id, value: val.clone() })
+        .collect();
+    str_fwd.sort_unstable_by_key(|e| e.id);
+
+    let mut str_rev: Vec<ReverseEntry> = string_pairs.into_iter()
+        .map(|(id, val)| ReverseEntry { key: val, id })
+        .collect();
+    str_rev.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+
+    let stf_tree = builder::build_forward_tree(str_fwd, builder::DEFAULT_TARGET_LEAF_BYTES)
+        .map_err(|e| IndexerError::StorageWrite(format!("build string fwd tree: {}", e)))?;
+    let str_tree = builder::build_reverse_tree(str_rev, builder::DEFAULT_TARGET_LEAF_BYTES)
+        .map_err(|e| IndexerError::StorageWrite(format!("build string rev tree: {}", e)))?;
+
+    let string_forward = upload_tree(storage, alias, stf_tree, DictKind::StringForward).await?;
+    let string_reverse = upload_tree(storage, alias, str_tree, DictKind::StringReverse).await?;
+
+    // Per-predicate numbig arenas
     let mut numbig = BTreeMap::new();
     let nb_dir = run_dir.join("numbig");
     for &p_id in numbig_p_ids {
         let path = nb_dir.join(format!("p_{}.nba", p_id));
         if path.exists() {
-            let addr = upload_one(storage, alias, &path, DictKind::NumBig { p_id }).await?;
+            let addr = upload_flat(storage, alias, &path, DictKind::NumBig { p_id }).await?;
             numbig.insert(p_id.to_string(), addr);
         }
     }
 
     tracing::info!(
-        dict_count = 9 + numbig.len(),
-        "dictionary artifacts uploaded to CAS"
+        subject_count = dicts.subjects.len(),
+        string_count = dicts.strings.len(),
+        numbig_count = numbig.len(),
+        "dictionary trees built and uploaded to CAS"
     );
 
     Ok(run_index::DictAddresses {
@@ -1055,10 +1134,8 @@ async fn upload_dicts_to_cas<S: Storage>(
         datatypes,
         languages,
         subject_forward,
-        subject_index,
         subject_reverse,
         string_forward,
-        string_index,
         string_reverse,
         numbig,
     })
@@ -1069,7 +1146,6 @@ async fn upload_dicts_to_cas<S: Storage>(
 /// Reads each `.fbr` and `.fli` file from the index directory, uploads via
 /// `content_write_bytes_with_hash` (reusing the existing SHA-256 hashes from
 /// the build), and returns per-graph CAS addresses.
-#[cfg(feature = "commit-v2")]
 async fn upload_indexes_to_cas<S: Storage>(
     storage: &S,
     alias: &str,

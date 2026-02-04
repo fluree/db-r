@@ -1,7 +1,7 @@
 //! Subject ID (SID) - compact IRI representation
 //!
 //! A SID is composed of:
-//! - `namespace_code`: i32 mapping to a namespace prefix (e.g., 2 = "http://www.w3.org/2001/XMLSchema#")
+//! - `namespace_code`: u16 mapping to a namespace prefix (e.g., 2 = "http://www.w3.org/2001/XMLSchema#")
 //! - `name`: Arc<str> local part after the namespace prefix (cheap clones)
 //!
 //! ## Ordering
@@ -12,6 +12,8 @@
 //! ## Sentinels
 //!
 //! `Sid::min()` and `Sid::max()` provide bounds for wildcard queries.
+//! `Sid::max()` uses `u16::MAX` (0xFFFF) as namespace_code, which is strictly
+//! above all data namespace codes including OVERFLOW (0xFFFE).
 //!
 //! ## Interning
 //!
@@ -34,13 +36,13 @@ use std::sync::Arc;
 /// Serializes as `[namespace_code, name]` tuple in JSON.
 #[derive(Clone, Debug)]
 pub struct Sid {
-    pub namespace_code: i32,
+    pub namespace_code: u16,
     pub name: Arc<str>,
 }
 
 impl Sid {
     /// Create a new SID
-    pub fn new(namespace_code: i32, name: impl AsRef<str>) -> Self {
+    pub fn new(namespace_code: u16, name: impl AsRef<str>) -> Self {
         Self {
             namespace_code,
             name: Arc::from(name.as_ref()),
@@ -50,7 +52,7 @@ impl Sid {
     /// Create a new SID with a pre-interned name
     ///
     /// Use this when you already have an `Arc<str>` from an interner.
-    pub fn with_arc(namespace_code: i32, name: Arc<str>) -> Self {
+    pub fn with_arc(namespace_code: u16, name: Arc<str>) -> Self {
         Self { namespace_code, name }
     }
 
@@ -67,11 +69,11 @@ impl Sid {
 
     /// Maximum possible SID (for range query upper bounds)
     ///
-    /// Uses i32::MAX namespace_code, which sorts after any valid SID.
+    /// Uses u16::MAX namespace_code, which sorts after any valid SID.
     /// The name is empty because we only need to exceed the namespace_code.
     pub fn max() -> Self {
         Self {
-            namespace_code: i32::MAX,
+            namespace_code: u16::MAX,
             name: Arc::from(""),
         }
     }
@@ -83,7 +85,7 @@ impl Sid {
 
     /// Check if this is the maximum sentinel
     pub fn is_max(&self) -> bool {
-        self.namespace_code == i32::MAX
+        self.namespace_code == u16::MAX
     }
 
     /// Get the name as a string slice
@@ -163,8 +165,8 @@ impl<'de> Deserialize<'de> for Sid {
     where
         D: Deserializer<'de>,
     {
-        // Deserialize as (i32, String) tuple, then convert to Arc<str>
-        let (namespace_code, name): (i32, String) = Deserialize::deserialize(deserializer)?;
+        // Deserialize as (u16, String) tuple, then convert to Arc<str>
+        let (namespace_code, name): (u16, String) = Deserialize::deserialize(deserializer)?;
         Ok(Sid {
             namespace_code,
             name: Arc::from(name),
@@ -195,7 +197,7 @@ impl<'de> Deserialize<'de> for Sid {
 pub struct SidInterner {
     /// Map from (namespace_code, name) to interned Arc<str>
     /// Uses Arc<str> as key to avoid allocation on cache hits via raw_entry API
-    names: RwLock<HashMap<(i32, Arc<str>), ()>>,
+    names: RwLock<HashMap<(u16, Arc<str>), ()>>,
 }
 
 impl Default for SidInterner {
@@ -220,7 +222,7 @@ impl SidInterner {
     }
 
     /// Compute hash using the map's hasher
-    fn hash_key(map: &HashMap<(i32, Arc<str>), ()>, namespace_code: i32, name: &str) -> u64 {
+    fn hash_key(map: &HashMap<(u16, Arc<str>), ()>, namespace_code: u16, name: &str) -> u64 {
         use std::hash::BuildHasher;
         let mut hasher = map.hasher().build_hasher();
         namespace_code.hash(&mut hasher);
@@ -235,7 +237,7 @@ impl SidInterner {
     /// Arc<str> and caches it.
     ///
     /// Uses raw_entry API to avoid allocating on cache hits.
-    pub fn intern(&self, namespace_code: i32, name: &str) -> Sid {
+    pub fn intern(&self, namespace_code: u16, name: &str) -> Sid {
         let mut names = self.names.write();
         let hash = Self::hash_key(&names, namespace_code, name);
 
@@ -303,8 +305,8 @@ impl SidInterner {
         let names = self.names.read();
         let mut size = 0;
         for ((_, key), value) in names.iter() {
-            // Box<str> + Arc<str> overhead + string bytes (shared)
-            size += std::mem::size_of::<(i32, Box<str>)>()
+            // Key tuple + Arc<str> overhead + string bytes (shared)
+            size += std::mem::size_of::<(u16, Box<str>)>()
                 + std::mem::size_of::<Arc<str>>()
                 + key.len();
             // The Arc<str> content is shared, so don't double count

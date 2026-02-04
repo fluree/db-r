@@ -1,12 +1,12 @@
 //! Run-based index generation pipeline.
 //!
 //! This module implements Phase B of `INDEX_BUILD_STRATEGY.md`: walking the
-//! commit-v2 chain, resolving commit-local IDs to global numeric IDs, and
+//! binary commit chain, resolving commit-local IDs to global numeric IDs, and
 //! producing sorted run files for external-merge index building.
 //!
 //! ## Sub-modules
 //!
-//! - [`run_record`]: Fixed-width 40-byte record type + SPOT comparator
+//! - [`run_record`]: Fixed-width 48-byte (in-memory) / 44-byte (wire) record type + SPOT comparator
 //! - [`global_dict`]: Global dictionaries (subject, predicate, string value)
 //! - [`run_writer`]: Memory-bounded buffer + flush to sorted run files
 //! - [`run_file`]: Run file binary format (header + lang dict + records)
@@ -56,10 +56,11 @@ pub use leaflet_cache::{LeafletCache, LeafletCacheKey, CachedRegion1, CachedRegi
 pub use novelty_merge::{merge_novelty, MergeInput, MergeOutput};
 pub use replay::{replay_leaflet, ReplayedLeaflet};
 pub use index_root::{
-    BinaryIndexRoot, BinaryIndexRootV2, BinaryIndexRootAny, GraphEntry, GraphEntryV2,
-    GraphOrderAddresses, GraphAddresses, DictAddresses,
+    BinaryIndexRootV2, GraphEntryV2,
+    GraphOrderAddresses, GraphAddresses,
+    DictAddresses, DictTreeAddresses,
     BinaryPrevIndexRef, BinaryGarbageRef,
-    BINARY_INDEX_ROOT_VERSION, BINARY_INDEX_ROOT_VERSION_V2, parse_index_root,
+    BINARY_INDEX_ROOT_VERSION_V2,
 };
 
 use fluree_db_core::StorageRead;
@@ -78,11 +79,14 @@ pub struct RunGenerationResult {
     /// The run files produced (sorted SPOT runs).
     pub run_files: Vec<RunFileInfo>,
     /// Number of distinct subjects in the global dictionary.
-    pub subject_count: u32,
+    pub subject_count: u64,
     /// Number of distinct predicates in the global dictionary.
     pub predicate_count: u32,
     /// Number of distinct string values in the global dictionary.
     pub string_count: u32,
+    /// Whether any namespace's local subject ID exceeded u16::MAX,
+    /// requiring wide (u64) subject ID encoding in leaflets.
+    pub needs_wide: bool,
     /// Total RunRecords emitted across all run files.
     pub total_records: u64,
     /// Number of commits processed.
@@ -90,7 +94,7 @@ pub struct RunGenerationResult {
     /// ID-based stats hook accumulated across all resolved commits.
     /// Contains per-(graph, property) HLL sketches and datatype usage.
     /// `None` if stats collection was not enabled.
-    #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+    #[cfg(feature = "hll-stats")]
     pub stats_hook: Option<crate::stats::IdStatsHook>,
 }
 
@@ -141,7 +145,7 @@ impl std::error::Error for RunGenError {}
 /// [{"code": 0, "prefix": ""}, {"code": 3, "prefix": "http://..."}]
 /// ```
 pub fn persist_namespaces(
-    ns_prefixes: &HashMap<i32, String>,
+    ns_prefixes: &HashMap<u16, String>,
     run_dir: &Path,
 ) -> io::Result<()> {
     let mut entries: Vec<_> = ns_prefixes.iter().collect();
@@ -163,7 +167,7 @@ pub fn persist_namespaces(
     Ok(())
 }
 
-/// Walk the commit-v2 chain from `head_commit_address` back to genesis,
+/// Walk the binary commit chain from `head_commit_address` back to genesis,
 /// resolve all ops to global numeric IDs, and produce sorted SPOT run files.
 ///
 /// # Pipeline
@@ -255,9 +259,10 @@ pub async fn generate_runs<S: StorageRead>(
         subject_count: dicts.subjects.len(),
         predicate_count: dicts.predicates.len(),
         string_count: dicts.strings.len(),
+        needs_wide: dicts.subjects.needs_wide(),
         total_records: writer_result.total_records,
         commit_count: addresses.len(),
-        #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+        #[cfg(feature = "hll-stats")]
         stats_hook: resolver.take_stats_hook(),
     };
 

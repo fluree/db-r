@@ -12,7 +12,7 @@ use fluree_db_nameservice::memory::MemoryNameService;
 use fluree_db_nameservice::Publisher;
 use fluree_db_novelty::Commit;
 
-fn make_flake(s: i32, p: i32, o: i64, t: i64) -> Flake {
+fn make_flake(s: u16, p: u16, o: i64, t: i64) -> Flake {
     Flake::new(
         Sid::new(s, format!("s{}", s)),
         Sid::new(p, format!("p{}", p)),

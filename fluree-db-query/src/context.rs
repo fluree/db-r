@@ -9,9 +9,10 @@ use crate::policy::QueryPolicyEnforcer;
 use crate::r2rml::{R2rmlProvider, R2rmlTableProvider};
 use crate::var_registry::VarRegistry;
 use crate::vector::VectorIndexProvider;
+use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::{Db, NoOverlay, OverlayProvider, Sid, Storage, Tracker};
 use fluree_db_indexer::run_index::BinaryIndexStore;
-use fluree_vocab::namespaces::{JSON_LD, XSD};
+use fluree_vocab::namespaces::{FLUREE_LEDGER, JSON_LD, RDF, XSD};
 use fluree_vocab::xsd_names;
 use std::sync::Arc;
 
@@ -83,6 +84,12 @@ pub struct ExecutionContext<'a, S: Storage + 'static> {
     pub binary_store: Option<Arc<BinaryIndexStore>>,
     /// Graph ID for binary index scans (typically 0 for default graph).
     pub binary_g_id: u32,
+    /// Dictionary novelty layer for subject/string lookups in binary scans.
+    ///
+    /// When present, `DictOverlay` delegates subject/string lookups to this
+    /// shared layer (populated during commit). When absent, an uninitialized
+    /// `DictNovelty` is used as fallback (routes everything to persisted tree).
+    pub dict_novelty: Option<Arc<DictNovelty>>,
 }
 
 impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
@@ -108,6 +115,7 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
             strict_bind_errors: false,
             binary_store: None,
             binary_g_id: 0,
+            dict_novelty: None,
         }
     }
 
@@ -133,6 +141,7 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
             strict_bind_errors: false,
             binary_store: None,
             binary_g_id: 0,
+            dict_novelty: None,
         }
     }
 
@@ -168,6 +177,7 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
             strict_bind_errors: false,
             binary_store: None,
             binary_g_id: 0,
+            dict_novelty: None,
         }
     }
 
@@ -199,6 +209,7 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
             strict_bind_errors: false,
             binary_store: None,
             binary_g_id: 0,
+            dict_novelty: None,
         }
     }
 
@@ -406,6 +417,7 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
             strict_bind_errors: self.strict_bind_errors,
             binary_store: self.binary_store.clone(),
             binary_g_id: self.binary_g_id,
+            dict_novelty: self.dict_novelty.clone(),
         }
     }
 
@@ -433,6 +445,7 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
             strict_bind_errors: self.strict_bind_errors,
             binary_store: self.binary_store.clone(),
             binary_g_id: self.binary_g_id,
+            dict_novelty: self.dict_novelty.clone(),
         }
     }
 
@@ -443,6 +456,12 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
     pub fn with_binary_store(mut self, store: Arc<BinaryIndexStore>, g_id: u32) -> Self {
         self.binary_store = Some(store);
         self.binary_g_id = g_id;
+        self
+    }
+
+    /// Attach a dictionary novelty layer for binary scan subject/string lookups.
+    pub fn with_dict_novelty(mut self, dict_novelty: Arc<DictNovelty>) -> Self {
+        self.dict_novelty = Some(dict_novelty);
         self
     }
 }
@@ -537,11 +556,9 @@ impl WellKnownDatatypes {
             xsd_duration: Sid::new(XSD, xsd_names::DURATION),
             xsd_day_time_duration: Sid::new(XSD, xsd_names::DAY_TIME_DURATION),
             xsd_year_month_duration: Sid::new(XSD, xsd_names::YEAR_MONTH_DURATION),
-            id_type: Sid::new(JSON_LD, "id"), // @ namespace for internal types
-            // Reserved Fluree ledger namespace code is 8 (https://ns.flur.ee/ledger#)
-            fluree_vector: Sid::new(8, "vector"),
-            // RDF namespace code is 3
-            rdf_json: Sid::new(3, "JSON"),
+            id_type: Sid::new(JSON_LD, "id"),
+            fluree_vector: Sid::new(FLUREE_LEDGER, "vector"),
+            rdf_json: Sid::new(RDF, "JSON"),
         }
     }
 

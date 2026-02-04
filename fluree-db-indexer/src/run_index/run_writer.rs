@@ -192,7 +192,7 @@ impl RunWriter {
                     )?;
                     let write_elapsed = write_start.elapsed();
 
-                    let file_bytes = info.record_count * 40;
+                    let file_bytes = info.record_count * super::run_record::RECORD_WIRE_SIZE as u64;
                     tracing::info!(
                         run = run_index,
                         records = record_count,
@@ -362,12 +362,13 @@ impl RecordSink for MultiOrderRunWriter {
 mod tests {
     use super::*;
     use crate::run_index::global_dict::dt_ids;
+    use fluree_db_core::sid64::Sid64;
     use fluree_db_core::value_id::{ObjKind, ObjKey};
 
-    fn make_test_record(s_id: u32, p_id: u32, val: i64, t: i64) -> RunRecord {
+    fn make_test_record(s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
         RunRecord::new(
             0,
-            s_id,
+            Sid64::from_u64(s_id),
             p_id,
             ObjKind::NUM_INT, ObjKey::encode_i64(val),
             t,
@@ -415,9 +416,9 @@ mod tests {
             super::super::run_file::read_run_file(&result.run_files[0].path).unwrap();
         assert_eq!(header.record_count, 3);
         // SPOT order: s_id 1, 2, 3
-        assert_eq!(records[0].s_id, 1);
-        assert_eq!(records[1].s_id, 2);
-        assert_eq!(records[2].s_id, 3);
+        assert_eq!(records[0].s_id, Sid64::from_u64(1));
+        assert_eq!(records[1].s_id, Sid64::from_u64(2));
+        assert_eq!(records[2].s_id, Sid64::from_u64(3));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -428,9 +429,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        // Set budget to exactly 2 records (80 bytes)
+        // Set budget to exactly 2 records (96 bytes at 48 bytes/record)
         let config = RunWriterConfig {
-            buffer_budget_bytes: 80,
+            buffer_budget_bytes: 96,
             sort_order: RunSortOrder::Spot,
             run_dir: dir.clone(),
         };
@@ -439,7 +440,7 @@ mod tests {
         let mut lang_dict = LanguageTagDict::new();
 
         // Push 5 records — should produce 3 run files (2+2+1)
-        for i in 0..5u32 {
+        for i in 0..5u64 {
             writer
                 .push(make_test_record(i, 1, i as i64, 1), &mut lang_dict)
                 .unwrap();
@@ -539,7 +540,7 @@ mod tests {
 
         // Push 1 IRI record
         let iri_rec = RunRecord::new(
-            0, 3, 1,
+            0, Sid64::from_u64(3), 1,
             ObjKind::REF_ID, ObjKey::encode_u32_id(42),
             1, true,
             dt_ids::ID,

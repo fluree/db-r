@@ -52,7 +52,7 @@ pub enum LedgerInfoError {
     Storage(String),
 
     #[error("Unknown namespace code: {0}")]
-    UnknownNamespace(i32),
+    UnknownNamespace(u16),
 }
 
 /// Result type for ledger info operations

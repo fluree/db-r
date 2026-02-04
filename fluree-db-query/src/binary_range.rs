@@ -20,6 +20,7 @@
 
 use crate::binary_scan::index_type_to_sort_order;
 use crate::dict_overlay::DictOverlay;
+use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::range::{RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::{Flake, IndexType, OverlayProvider, RangeProvider, Sid};
 use fluree_db_indexer::run_index::{
@@ -248,13 +249,14 @@ fn decode_batch_to_flakes(
 /// use the binary index without code changes.
 pub struct BinaryRangeProvider {
     store: Arc<BinaryIndexStore>,
+    dict_novelty: Arc<DictNovelty>,
     g_id: u32,
 }
 
 impl BinaryRangeProvider {
-    /// Create a new provider for the given store and default graph.
-    pub fn new(store: Arc<BinaryIndexStore>, g_id: u32) -> Self {
-        Self { store, g_id }
+    /// Create a new provider for the given store, dict novelty, and default graph.
+    pub fn new(store: Arc<BinaryIndexStore>, dict_novelty: Arc<DictNovelty>, g_id: u32) -> Self {
+        Self { store, dict_novelty, g_id }
     }
 }
 
@@ -268,7 +270,7 @@ impl RangeProvider for BinaryRangeProvider {
         overlay: &dyn OverlayProvider,
     ) -> io::Result<Vec<Flake>> {
         // Create a per-call DictOverlay for ephemeral ID handling.
-        let mut dict_ov = DictOverlay::new(self.store.clone());
+        let mut dict_ov = DictOverlay::new(self.store.clone(), self.dict_novelty.clone());
 
         // Always pass the overlay — translate_overlay_flakes handles empty
         // overlays by returning an empty vec, which is a no-op.
