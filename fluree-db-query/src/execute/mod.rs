@@ -880,12 +880,12 @@ mod tests {
             )),
         ];
 
-        let (end, values, triples, binds, filters) = collect_inner_join_block(&patterns, 0);
-        assert_eq!(end, patterns.len(), "block should consume all patterns");
-        assert_eq!(values.len(), 0, "expected 0 VALUES in the block");
-        assert_eq!(binds.len(), 0, "expected 0 BINDs in the block");
-        assert_eq!(triples.len(), 3, "expected 3 triples in the block");
-        assert_eq!(filters.len(), 1, "expected 1 filter in the block");
+        let block = collect_inner_join_block(&patterns, 0);
+        assert_eq!(block.end_index, patterns.len(), "block should consume all patterns");
+        assert_eq!(block.values.len(), 0, "expected 0 VALUES in the block");
+        assert_eq!(block.binds.len(), 0, "expected 0 BINDs in the block");
+        assert_eq!(block.triples.len(), 3, "expected 3 triples in the block");
+        assert_eq!(block.filters.len(), 1, "expected 1 filter in the block");
 
         let mut stats = StatsView::default();
         stats.properties.insert(
@@ -913,7 +913,7 @@ mod tests {
             },
         );
 
-        let ordered = reorder_patterns(triples, Some(&stats));
+        let ordered = reorder_patterns(block.triples, Some(&stats));
         let first_pred = ordered[0].p.as_sid().expect("predicate should be Sid");
         assert_eq!(
             &*first_pred.name, "notation",

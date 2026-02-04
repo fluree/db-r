@@ -35,6 +35,26 @@ use std::sync::Arc;
 use super::pushdown::extract_bounds_from_filters;
 
 // ============================================================================
+// Inner join block result type
+// ============================================================================
+
+/// Result of collecting an inner-join block from a pattern list.
+///
+/// Contains all the components needed to build a joined block of patterns.
+pub struct InnerJoinBlock {
+    /// Index past the last consumed pattern
+    pub end_index: usize,
+    /// VALUES patterns (vars and rows)
+    pub values: Vec<(Vec<VarId>, Vec<Vec<crate::binding::Binding>>)>,
+    /// Triple patterns
+    pub triples: Vec<TriplePattern>,
+    /// BIND patterns (var and expression)
+    pub binds: Vec<(VarId, FilterExpr)>,
+    /// FILTER expressions
+    pub filters: Vec<FilterExpr>,
+}
+
+// ============================================================================
 // Helper functions to reduce duplication in build_where_operators_seeded
 // ============================================================================
 
@@ -205,16 +225,7 @@ pub fn build_where_operators<S: Storage + 'static>(
 /// by its expression are already bound by preceding patterns (original order).
 ///
 /// `VALUES` is always safe to include because it is an inner-join constraint/seed.
-pub fn collect_inner_join_block(
-    patterns: &[Pattern],
-    start: usize,
-) -> (
-    usize,
-    Vec<(Vec<VarId>, Vec<Vec<crate::binding::Binding>>)>,
-    Vec<TriplePattern>,
-    Vec<(VarId, FilterExpr)>,
-    Vec<FilterExpr>,
-) {
+pub fn collect_inner_join_block(patterns: &[Pattern], start: usize) -> InnerJoinBlock {
     let mut i = start;
     let mut values: Vec<(Vec<VarId>, Vec<Vec<crate::binding::Binding>>)> = Vec::new();
     let mut triples: Vec<TriplePattern> = Vec::new();
@@ -262,7 +273,13 @@ pub fn collect_inner_join_block(
         }
     }
 
-    (i, values, triples, binds, filters)
+    InnerJoinBlock {
+        end_index: i,
+        values,
+        triples,
+        binds,
+        filters,
+    }
 }
 
 /// Internal helper to build WHERE operators with an optional initial seed operator.
@@ -304,8 +321,12 @@ pub fn build_where_operators_seeded<S: Storage + 'static>(
                 // - reordering triples for join efficiency
                 // - delaying filters until their vars are bound (never earlier)
                 let start = i;
-                let (end, block_values, triples, block_binds, block_filters) =
-                    collect_inner_join_block(patterns, start);
+                let block = collect_inner_join_block(patterns, start);
+                let end = block.end_index;
+                let block_values = block.values;
+                let triples = block.triples;
+                let block_binds = block.binds;
+                let block_filters = block.filters;
                 // IMPORTANT: `collect_inner_join_block` may consume *zero* patterns when the
                 // current pattern is a BIND/FILTER that is not safe to hoist into a block
                 // (e.g., it references vars that are not yet bound in left-to-right order).
@@ -801,12 +822,12 @@ mod tests {
             )),
         ];
 
-        let (end, values, triples, binds, filters) = collect_inner_join_block(&patterns, 0);
-        assert_eq!(end, patterns.len(), "block should consume all patterns");
-        assert_eq!(values.len(), 0, "expected 0 VALUES in the block");
-        assert_eq!(binds.len(), 0, "expected 0 BINDs in the block");
-        assert_eq!(triples.len(), 3, "expected 3 triples in the block");
-        assert_eq!(filters.len(), 1, "expected 1 filter in the block");
+        let block = collect_inner_join_block(&patterns, 0);
+        assert_eq!(block.end_index, patterns.len(), "block should consume all patterns");
+        assert_eq!(block.values.len(), 0, "expected 0 VALUES in the block");
+        assert_eq!(block.binds.len(), 0, "expected 0 BINDs in the block");
+        assert_eq!(block.triples.len(), 3, "expected 3 triples in the block");
+        assert_eq!(block.filters.len(), 1, "expected 1 filter in the block");
 
         // Stats: make "notation" look far more selective than the score predicates.
         let mut stats = StatsView::default();
@@ -835,7 +856,7 @@ mod tests {
             },
         );
 
-        let ordered = reorder_patterns_seeded(triples, Some(&stats), &HashSet::new());
+        let ordered = reorder_patterns_seeded(block.triples, Some(&stats), &HashSet::new());
         let first_pred = ordered[0].p.as_sid().expect("predicate should be Sid");
         assert_eq!(
             &*first_pred.name, "notation",
@@ -865,13 +886,13 @@ mod tests {
             )),
         ];
 
-        let (end, values, triples, binds, filters) = collect_inner_join_block(&patterns, 0);
-        assert_eq!(end, patterns.len());
-        assert_eq!(values.len(), 1, "VALUES should be included in block");
-        assert_eq!(binds.len(), 0, "expected 0 BINDs in the block");
-        assert_eq!(triples.len(), 1);
+        let block = collect_inner_join_block(&patterns, 0);
+        assert_eq!(block.end_index, patterns.len());
+        assert_eq!(block.values.len(), 1, "VALUES should be included in block");
+        assert_eq!(block.binds.len(), 0, "expected 0 BINDs in the block");
+        assert_eq!(block.triples.len(), 1);
         assert_eq!(
-            filters.len(),
+            block.filters.len(),
             1,
             "FILTER referencing VALUES var should be safe"
         );
@@ -899,16 +920,16 @@ mod tests {
             }),
         ];
 
-        let (end, values, triples, binds, filters) = collect_inner_join_block(&patterns, 0);
-        assert_eq!(end, patterns.len());
-        assert_eq!(values.len(), 0);
-        assert_eq!(triples.len(), 1);
+        let block = collect_inner_join_block(&patterns, 0);
+        assert_eq!(block.end_index, patterns.len());
+        assert_eq!(block.values.len(), 0);
+        assert_eq!(block.triples.len(), 1);
         assert_eq!(
-            binds.len(),
+            block.binds.len(),
             1,
             "expected BIND to be included in inner-join block"
         );
-        assert_eq!(filters.len(), 1);
+        assert_eq!(block.filters.len(), 1);
     }
 
     #[test]
