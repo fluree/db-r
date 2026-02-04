@@ -608,138 +608,172 @@ fn eval_to_comparable(expr: &FilterExpr, row: &RowView) -> Result<Option<Compara
     }
 }
 
+/// Numeric value for arithmetic operations
+///
+/// This type unifies the numeric variants of `ComparableValue` to simplify
+/// type promotion and arithmetic evaluation.
+#[derive(Debug, Clone)]
+enum NumericValue {
+    Long(i64),
+    Double(f64),
+    BigInt(Box<BigInt>),
+    Decimal(Box<BigDecimal>),
+}
+
+impl NumericValue {
+    /// Extract a numeric value from a ComparableValue, if it is numeric
+    fn from_comparable(cv: ComparableValue) -> Option<Self> {
+        match cv {
+            ComparableValue::Long(n) => Some(NumericValue::Long(n)),
+            ComparableValue::Double(d) => Some(NumericValue::Double(d)),
+            ComparableValue::BigInt(n) => Some(NumericValue::BigInt(n)),
+            ComparableValue::Decimal(d) => Some(NumericValue::Decimal(d)),
+            _ => None,
+        }
+    }
+
+    /// Convert back to a ComparableValue
+    fn into_comparable(self) -> ComparableValue {
+        match self {
+            NumericValue::Long(n) => ComparableValue::Long(n),
+            NumericValue::Double(d) => ComparableValue::Double(d),
+            NumericValue::BigInt(n) => ComparableValue::BigInt(n),
+            NumericValue::Decimal(d) => ComparableValue::Decimal(d),
+        }
+    }
+
+    /// Promote two numeric values to a common type for arithmetic
+    ///
+    /// Promotion rules:
+    /// - Same types: no conversion needed
+    /// - Long + Double → Double
+    /// - Long + BigInt → BigInt
+    /// - Long + Decimal → Decimal
+    /// - BigInt + Decimal → Decimal
+    /// - Double + BigInt → Double (lossy, may fail)
+    /// - Double + Decimal → Decimal (may fail for non-finite doubles)
+    fn promote_pair(a: Self, b: Self) -> Option<(Self, Self)> {
+        use num_traits::ToPrimitive;
+
+        match (&a, &b) {
+            // Same types - no promotion needed
+            (NumericValue::Long(_), NumericValue::Long(_))
+            | (NumericValue::Double(_), NumericValue::Double(_))
+            | (NumericValue::BigInt(_), NumericValue::BigInt(_))
+            | (NumericValue::Decimal(_), NumericValue::Decimal(_)) => Some((a, b)),
+
+            // Long <-> Double → Double
+            (NumericValue::Long(n), NumericValue::Double(_)) => {
+                Some((NumericValue::Double(*n as f64), b))
+            }
+            (NumericValue::Double(_), NumericValue::Long(n)) => {
+                Some((a, NumericValue::Double(*n as f64)))
+            }
+
+            // Long <-> BigInt → BigInt
+            (NumericValue::Long(n), NumericValue::BigInt(_)) => {
+                Some((NumericValue::BigInt(Box::new(BigInt::from(*n))), b))
+            }
+            (NumericValue::BigInt(_), NumericValue::Long(n)) => {
+                Some((a, NumericValue::BigInt(Box::new(BigInt::from(*n)))))
+            }
+
+            // Long <-> Decimal → Decimal
+            (NumericValue::Long(n), NumericValue::Decimal(_)) => {
+                Some((NumericValue::Decimal(Box::new(BigDecimal::from(*n))), b))
+            }
+            (NumericValue::Decimal(_), NumericValue::Long(n)) => {
+                Some((a, NumericValue::Decimal(Box::new(BigDecimal::from(*n)))))
+            }
+
+            // BigInt <-> Decimal → Decimal
+            (NumericValue::BigInt(n), NumericValue::Decimal(_)) => Some((
+                NumericValue::Decimal(Box::new(BigDecimal::from((**n).clone()))),
+                b,
+            )),
+            (NumericValue::Decimal(_), NumericValue::BigInt(n)) => Some((
+                a,
+                NumericValue::Decimal(Box::new(BigDecimal::from((**n).clone()))),
+            )),
+
+            // Double <-> BigInt → Double (lossy)
+            (NumericValue::Double(_), NumericValue::BigInt(n)) => {
+                Some((a, NumericValue::Double(n.to_f64()?)))
+            }
+            (NumericValue::BigInt(n), NumericValue::Double(_)) => {
+                Some((NumericValue::Double(n.to_f64()?), b))
+            }
+
+            // Double <-> Decimal → Decimal
+            (NumericValue::Double(d), NumericValue::Decimal(_)) => Some((
+                NumericValue::Decimal(Box::new(BigDecimal::try_from(*d).ok()?)),
+                b,
+            )),
+            (NumericValue::Decimal(_), NumericValue::Double(d)) => Some((
+                a,
+                NumericValue::Decimal(Box::new(BigDecimal::try_from(*d).ok()?)),
+            )),
+        }
+    }
+}
+
 impl ArithmeticOp {
     /// Evaluate this arithmetic operation on two comparable values
     fn eval(self, left: ComparableValue, right: ComparableValue) -> Option<ComparableValue> {
+        let left = NumericValue::from_comparable(left)?;
+        let right = NumericValue::from_comparable(right)?;
+        let (left, right) = NumericValue::promote_pair(left, right)?;
+
+        self.eval_same_type(left, right)
+            .map(NumericValue::into_comparable)
+    }
+
+    /// Evaluate arithmetic on two values of the same numeric type
+    fn eval_same_type(self, left: NumericValue, right: NumericValue) -> Option<NumericValue> {
         use num_traits::Zero;
 
         match (left, right) {
-            // Long + Long = Long
-            (ComparableValue::Long(a), ComparableValue::Long(b)) => {
+            (NumericValue::Long(a), NumericValue::Long(b)) => {
                 let result = match self {
                     ArithmeticOp::Add => a.checked_add(b)?,
                     ArithmeticOp::Sub => a.checked_sub(b)?,
                     ArithmeticOp::Mul => a.checked_mul(b)?,
-                    ArithmeticOp::Div => {
-                        if b == 0 {
-                            return None;
-                        }
-                        a.checked_div(b)?
-                    }
+                    ArithmeticOp::Div if b == 0 => return None,
+                    ArithmeticOp::Div => a.checked_div(b)?,
                 };
-                Some(ComparableValue::Long(result))
+                Some(NumericValue::Long(result))
             }
-            // Double + Double = Double
-            (ComparableValue::Double(a), ComparableValue::Double(b)) => {
+            (NumericValue::Double(a), NumericValue::Double(b)) => {
                 let result = match self {
                     ArithmeticOp::Add => a + b,
                     ArithmeticOp::Sub => a - b,
                     ArithmeticOp::Mul => a * b,
-                    ArithmeticOp::Div => {
-                        if b == 0.0 {
-                            return None;
-                        }
-                        a / b
-                    }
+                    ArithmeticOp::Div if b == 0.0 => return None,
+                    ArithmeticOp::Div => a / b,
                 };
-                Some(ComparableValue::Double(result))
+                Some(NumericValue::Double(result))
             }
-            // BigInt + BigInt = BigInt
-            (ComparableValue::BigInt(a), ComparableValue::BigInt(b)) => {
+            (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
                 let result = match self {
                     ArithmeticOp::Add => *a + &*b,
                     ArithmeticOp::Sub => *a - &*b,
                     ArithmeticOp::Mul => *a * &*b,
-                    ArithmeticOp::Div => {
-                        if b.is_zero() {
-                            return None;
-                        }
-                        *a / &*b
-                    }
+                    ArithmeticOp::Div if b.is_zero() => return None,
+                    ArithmeticOp::Div => *a / &*b,
                 };
-                Some(ComparableValue::BigInt(Box::new(result)))
+                Some(NumericValue::BigInt(Box::new(result)))
             }
-            // Decimal + Decimal = Decimal
-            (ComparableValue::Decimal(a), ComparableValue::Decimal(b)) => {
+            (NumericValue::Decimal(a), NumericValue::Decimal(b)) => {
                 let result = match self {
                     ArithmeticOp::Add => &*a + &*b,
                     ArithmeticOp::Sub => &*a - &*b,
                     ArithmeticOp::Mul => &*a * &*b,
-                    ArithmeticOp::Div => {
-                        if b.is_zero() {
-                            return None;
-                        }
-                        &*a / &*b
-                    }
+                    ArithmeticOp::Div if b.is_zero() => return None,
+                    ArithmeticOp::Div => &*a / &*b,
                 };
-                Some(ComparableValue::Decimal(Box::new(result)))
+                Some(NumericValue::Decimal(Box::new(result)))
             }
-            // Mixed numeric types -> promote to higher precision
-            // Long <-> Double -> Double
-            (ComparableValue::Long(a), ComparableValue::Double(b)) => self.eval(
-                ComparableValue::Double(a as f64),
-                ComparableValue::Double(b),
-            ),
-            (ComparableValue::Double(a), ComparableValue::Long(b)) => self.eval(
-                ComparableValue::Double(a),
-                ComparableValue::Double(b as f64),
-            ),
-            // Long <-> BigInt -> BigInt
-            (ComparableValue::Long(a), ComparableValue::BigInt(b)) => self.eval(
-                ComparableValue::BigInt(Box::new(BigInt::from(a))),
-                ComparableValue::BigInt(b),
-            ),
-            (ComparableValue::BigInt(a), ComparableValue::Long(b)) => self.eval(
-                ComparableValue::BigInt(a),
-                ComparableValue::BigInt(Box::new(BigInt::from(b))),
-            ),
-            // Long <-> Decimal -> Decimal
-            (ComparableValue::Long(a), ComparableValue::Decimal(b)) => self.eval(
-                ComparableValue::Decimal(Box::new(BigDecimal::from(a))),
-                ComparableValue::Decimal(b),
-            ),
-            (ComparableValue::Decimal(a), ComparableValue::Long(b)) => self.eval(
-                ComparableValue::Decimal(a),
-                ComparableValue::Decimal(Box::new(BigDecimal::from(b))),
-            ),
-            // BigInt <-> Decimal -> Decimal
-            (ComparableValue::BigInt(a), ComparableValue::Decimal(b)) => self.eval(
-                ComparableValue::Decimal(Box::new(BigDecimal::from((*a).clone()))),
-                ComparableValue::Decimal(b),
-            ),
-            (ComparableValue::Decimal(a), ComparableValue::BigInt(b)) => self.eval(
-                ComparableValue::Decimal(a),
-                ComparableValue::Decimal(Box::new(BigDecimal::from((*b).clone()))),
-            ),
-            // Double <-> BigInt -> Double (lossy)
-            (ComparableValue::Double(a), ComparableValue::BigInt(b)) => {
-                use num_traits::ToPrimitive;
-                b.to_f64()
-                    .and_then(|bf| self.eval(ComparableValue::Double(a), ComparableValue::Double(bf)))
-            }
-            (ComparableValue::BigInt(a), ComparableValue::Double(b)) => {
-                use num_traits::ToPrimitive;
-                a.to_f64()
-                    .and_then(|af| self.eval(ComparableValue::Double(af), ComparableValue::Double(b)))
-            }
-            // Double <-> Decimal -> Decimal (if possible)
-            (ComparableValue::Double(a), ComparableValue::Decimal(b)) => {
-                BigDecimal::try_from(a).ok().and_then(|ad| {
-                    self.eval(
-                        ComparableValue::Decimal(Box::new(ad)),
-                        ComparableValue::Decimal(b),
-                    )
-                })
-            }
-            (ComparableValue::Decimal(a), ComparableValue::Double(b)) => {
-                BigDecimal::try_from(b).ok().and_then(|bd| {
-                    self.eval(
-                        ComparableValue::Decimal(a),
-                        ComparableValue::Decimal(Box::new(bd)),
-                    )
-                })
-            }
-            // Non-numeric types can't do arithmetic
+            // After promotion, both values should be the same type
             _ => None,
         }
     }
