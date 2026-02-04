@@ -48,7 +48,7 @@ fn test_value_codec_roundtrip_all_types() {
     for (type_str, original) in test_cases {
         let encoded = encode_value(&original);
         let decoded = decode_by_type_string(&encoded, Some(type_str))
-            .expect(&format!("decoding {} bytes {:?}", type_str, encoded));
+            .unwrap_or_else(|_| panic!("decoding {} bytes {:?}", type_str, encoded));
 
         // Handle timestamptz specially - it decodes to TimestampTz variant
         let matches = match (&original, &decoded) {
@@ -99,7 +99,7 @@ fn test_integer_boundaries() {
 /// Test string ordering is preserved.
 #[test]
 fn test_string_ordering() {
-    let strings = vec!["", "A", "B", "a", "apple", "banana", "cherry", "z"];
+    let strings = ["", "A", "B", "a", "apple", "banana", "cherry", "z"];
 
     let typed_values: Vec<TypedValue> = strings
         .iter()

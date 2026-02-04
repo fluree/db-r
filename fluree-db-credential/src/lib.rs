@@ -112,7 +112,7 @@ fn verify_vc_object(credential: &JsonValue) -> Result<VerifiedCredential> {
         // which only provides RFC 8785 JSON canonicalization.
         //
         // For now, return an error indicating VC support needs additional work.
-        return Err(CredentialError::VcNotEnabled);
+        Err(CredentialError::VcNotEnabled)
     }
 
     #[cfg(not(feature = "vc"))]
@@ -129,7 +129,7 @@ mod tests {
 
     fn create_test_jws(payload: &str, signing_key: &SigningKey) -> String {
         let pubkey = signing_key.verifying_key().to_bytes();
-        let pubkey_b64 = URL_SAFE_NO_PAD.encode(&pubkey);
+        let pubkey_b64 = URL_SAFE_NO_PAD.encode(pubkey);
 
         let header = serde_json::json!({
             "alg": "EdDSA",

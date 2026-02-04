@@ -167,15 +167,15 @@ fn can_contain_comparison(
     match op {
         ComparisonOp::Eq => {
             // value must be in [lower, upper]
-            let in_range = match (&lower_typed, &upper_typed) {
+            
+            match (&lower_typed, &upper_typed) {
                 (Some(l), Some(u)) => {
                     lit_typed.ge(l).unwrap_or(true) && lit_typed.le(u).unwrap_or(true)
                 }
                 (Some(l), None) => lit_typed.ge(l).unwrap_or(true),
                 (None, Some(u)) => lit_typed.le(u).unwrap_or(true),
                 (None, None) => true,
-            };
-            in_range
+            }
         }
         ComparisonOp::NotEq => {
             // Can only prune if all values equal the excluded value
@@ -330,36 +330,36 @@ fn evaluate_comparison(
             (Column::Boolean(vals), LiteralValue::Boolean(lit)) => vals
                 .get(i)
                 .and_then(|v| *v)
-                .map_or(false, |v| compare_op(v, *lit, op)),
+                .is_some_and(|v| compare_op(v, *lit, op)),
             (Column::Int32(vals), LiteralValue::Int32(lit)) => vals
                 .get(i)
                 .and_then(|v| *v)
-                .map_or(false, |v| compare_op(v, *lit, op)),
+                .is_some_and(|v| compare_op(v, *lit, op)),
             (Column::Int64(vals), LiteralValue::Int64(lit)) => vals
                 .get(i)
                 .and_then(|v| *v)
-                .map_or(false, |v| compare_op(v, *lit, op)),
+                .is_some_and(|v| compare_op(v, *lit, op)),
             (Column::Float32(vals), LiteralValue::Float32(lit)) => vals
                 .get(i)
                 .and_then(|v| *v)
-                .map_or(false, |v| compare_op_f32(v, *lit, op)),
+                .is_some_and(|v| compare_op_f32(v, *lit, op)),
             (Column::Float64(vals), LiteralValue::Float64(lit)) => vals
                 .get(i)
                 .and_then(|v| *v)
-                .map_or(false, |v| compare_op_f64(v, *lit, op)),
+                .is_some_and(|v| compare_op_f64(v, *lit, op)),
             (Column::String(vals), LiteralValue::String(lit)) => vals
                 .get(i)
                 .and_then(|v| v.as_ref())
-                .map_or(false, |v| compare_op(v.as_str(), lit.as_str(), op)),
+                .is_some_and(|v| compare_op(v.as_str(), lit.as_str(), op)),
             (Column::Date(vals), LiteralValue::Date(lit)) => vals
                 .get(i)
                 .and_then(|v| *v)
-                .map_or(false, |v| compare_op(v, *lit, op)),
+                .is_some_and(|v| compare_op(v, *lit, op)),
             (Column::Timestamp(vals), LiteralValue::Timestamp(lit))
             | (Column::TimestampTz(vals), LiteralValue::Timestamp(lit)) => vals
                 .get(i)
                 .and_then(|v| *v)
-                .map_or(false, |v| compare_op(v, *lit, op)),
+                .is_some_and(|v| compare_op(v, *lit, op)),
             _ => false, // Type mismatch
         };
 

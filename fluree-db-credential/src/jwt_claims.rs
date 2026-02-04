@@ -195,8 +195,8 @@ impl EventsTokenPayload {
             || self
                 .events_ledgers
                 .as_ref()
-                .map_or(false, |l| !l.is_empty())
-            || self.events_vgs.as_ref().map_or(false, |v| !v.is_empty())
+                .is_some_and(|l| !l.is_empty())
+            || self.events_vgs.as_ref().is_some_and(|v| !v.is_empty())
     }
 
     /// Check if token grants storage proxy permissions.
@@ -207,7 +207,7 @@ impl EventsTokenPayload {
             || self
                 .storage_ledgers
                 .as_ref()
-                .map_or(false, |l| !l.is_empty())
+                .is_some_and(|l| !l.is_empty())
     }
 
     /// Resolve identity: fluree.identity takes precedence, then sub.

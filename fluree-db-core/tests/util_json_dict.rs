@@ -28,7 +28,7 @@ fn generate_test_flakes(num_flakes: usize) -> Vec<Flake> {
             };
 
             Flake::new(
-                Sid::new(8, &format!("subject-{}", subj_id)),
+                Sid::new(8, format!("subject-{}", subj_id)),
                 Sid::new(8, predicates[pred_id]),
                 value,
                 Sid::new(2, dt_name),
@@ -45,9 +45,9 @@ fn generate_reference_flakes(num_flakes: usize) -> Vec<Flake> {
     (0..num_flakes)
         .map(|i| {
             Flake::new(
-                Sid::new(8, &format!("subject-{}", i)),
+                Sid::new(8, format!("subject-{}", i)),
                 Sid::new(8, "ref"),
-                FlakeValue::Ref(Sid::new(8, &format!("target-{}", i % 10))),
+                FlakeValue::Ref(Sid::new(8, format!("target-{}", i % 10))),
                 Sid::new(1, "id"), // $id datatype
                 (i + 1) as i64,
                 true,
@@ -85,7 +85,7 @@ mod tests {
         assert_eq!(json_value["version"], 2, "Should use version 2 format");
         assert!(json_value["dict"].is_array(), "Should have dictionary key");
         assert!(
-            json_value["dict"].as_array().unwrap().len() > 0,
+            !json_value["dict"].as_array().unwrap().is_empty(),
             "Dictionary should not be empty"
         );
 

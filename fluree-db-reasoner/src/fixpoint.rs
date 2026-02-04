@@ -539,7 +539,7 @@ async fn seed_initial_delta<S: Storage>(
     // Stored separately because chain_component_predicates returns owned Sids
     let chain_components = ontology.chain_component_predicates();
     for p in &chain_components {
-        if !predicates_to_query.iter().any(|&q| q == p) {
+        if !predicates_to_query.contains(&p) {
             predicates_to_query.push(p);
         }
     }
@@ -569,7 +569,7 @@ async fn seed_initial_delta<S: Storage>(
     // Stored separately because all_key_properties returns owned Sids
     let key_properties = ontology.all_key_properties();
     for p in &key_properties {
-        if !predicates_to_query.iter().any(|&q| q == p) {
+        if !predicates_to_query.contains(&p) {
             predicates_to_query.push(p);
         }
     }
@@ -578,7 +578,7 @@ async fn seed_initial_delta<S: Storage>(
     // Stored separately because restricted_properties returns owned Sids
     let restricted_props: Vec<Sid> = restrictions.restricted_properties().cloned().collect();
     for p in &restricted_props {
-        if !predicates_to_query.iter().any(|&q| q == p) {
+        if !predicates_to_query.contains(&p) {
             predicates_to_query.push(p);
         }
     }

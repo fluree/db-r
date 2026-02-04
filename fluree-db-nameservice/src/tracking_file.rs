@@ -172,12 +172,12 @@ impl RemoteTrackingStore for FileTrackingStore {
                     NameServiceError::storage(format!("Failed to read directory entry: {}", e))
                 })?;
                 let path = entry.path();
-                if path.extension().map_or(false, |ext| ext == "json") {
+                if path.extension().is_some_and(|ext| ext == "json") {
                     // Skip tmp files
                     if path
                         .file_name()
                         .and_then(|f| f.to_str())
-                        .map_or(false, |f| f.ends_with(".json.tmp"))
+                        .is_some_and(|f| f.ends_with(".json.tmp"))
                     {
                         continue;
                     }

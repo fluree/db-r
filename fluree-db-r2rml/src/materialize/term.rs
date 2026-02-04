@@ -404,11 +404,11 @@ fn column_to_string(col: &Column, row_idx: usize) -> Option<String> {
             .get(row_idx)
             .and_then(|v| v.as_ref())
             .map(|b| base64_encode(b)),
-        Column::Date(v) => v.get(row_idx).and_then(|v| *v).map(|d| format_date(d)),
+        Column::Date(v) => v.get(row_idx).and_then(|v| *v).map(format_date),
         Column::Timestamp(v) | Column::TimestampTz(v) => v
             .get(row_idx)
             .and_then(|v| *v)
-            .map(|ts| format_timestamp(ts)),
+            .map(format_timestamp),
         Column::Decimal { values, scale, .. } => values
             .get(row_idx)
             .and_then(|v| *v)

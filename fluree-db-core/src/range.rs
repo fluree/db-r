@@ -236,7 +236,7 @@ fn collect_overlay_only<O: OverlayProvider + ?Sized>(
         }
     });
 
-    flakes.sort_by(|a, b| cmp(a, b));
+    flakes.sort_by(cmp);
 
     // Remove stale: keep newest occurrence of each fact key, drop retractions.
     remove_stale_flakes(flakes)
@@ -346,14 +346,14 @@ mod tests {
     #[test]
     fn test_object_bounds_with_doubles() {
         let bounds = ObjectBounds::new()
-            .with_lower(FlakeValue::Double(0.0.into()), true)
-            .with_upper(FlakeValue::Double(1.0.into()), false);
+            .with_lower(FlakeValue::Double(0.0), true)
+            .with_upper(FlakeValue::Double(1.0), false);
 
-        assert!(!bounds.matches(&FlakeValue::Double((-0.1).into())));
-        assert!(bounds.matches(&FlakeValue::Double(0.0.into())));
-        assert!(bounds.matches(&FlakeValue::Double(0.5.into())));
-        assert!(bounds.matches(&FlakeValue::Double(0.99.into())));
-        assert!(!bounds.matches(&FlakeValue::Double(1.0.into())));
+        assert!(!bounds.matches(&FlakeValue::Double((-0.1))));
+        assert!(bounds.matches(&FlakeValue::Double(0.0)));
+        assert!(bounds.matches(&FlakeValue::Double(0.5)));
+        assert!(bounds.matches(&FlakeValue::Double(0.99)));
+        assert!(!bounds.matches(&FlakeValue::Double(1.0)));
     }
 
     #[test]

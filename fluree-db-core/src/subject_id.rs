@@ -161,19 +161,16 @@ impl<'de> Deserialize<'de> for SubjectId {
 /// read from and written to persistent storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum SubjectIdEncoding {
     /// Narrow: `u32 = (ns_code_u16 << 16) | local_id_u16`.
     /// Valid only when all local IDs fit in `u16`.
+    #[default]
     Narrow,
     /// Wide: full `u64 = (ns_code_u16 << 48) | local_id_u48`.
     Wide,
 }
 
-impl Default for SubjectIdEncoding {
-    fn default() -> Self {
-        Self::Narrow
-    }
-}
 
 // === SubjectIdColumn: compact array of subject IDs ===
 

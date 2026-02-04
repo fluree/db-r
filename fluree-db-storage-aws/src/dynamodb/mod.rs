@@ -469,7 +469,7 @@ impl StatusPublisher for DynamoDbNameService {
         let extra = item
             .get(ATTR_STATUS_META)
             .and_then(|v| v.as_m().ok())
-            .map(|m| Self::dynamo_map_to_json_map(m))
+            .map(Self::dynamo_map_to_json_map)
             .unwrap_or_default();
 
         Ok(Some(StatusValue::new(
@@ -613,7 +613,7 @@ impl ConfigPublisher for DynamoDbNameService {
             None
         } else {
             let extra = config_meta
-                .map(|m| Self::dynamo_map_to_json_map(m))
+                .map(Self::dynamo_map_to_json_map)
                 .unwrap_or_default();
             Some(ConfigPayload {
                 default_context,
@@ -646,7 +646,7 @@ impl ConfigPublisher for DynamoDbNameService {
         }
 
         // Check if expected payload has any legacy config data (default_context or extra)
-        let has_legacy_config_data = exp.payload.as_ref().map_or(false, |p| {
+        let has_legacy_config_data = exp.payload.as_ref().is_some_and(|p| {
             p.default_context.is_some() || !p.extra.is_empty()
         });
 

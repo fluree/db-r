@@ -39,12 +39,14 @@ pub enum TargetMode {
 
 /// Policy action - which operations this policy applies to
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum PolicyAction {
     /// View (query) operations only
     View,
     /// Modify (transaction) operations only
     Modify,
     /// Both view and modify operations
+    #[default]
     Both,
 }
 
@@ -110,11 +112,6 @@ impl<'a> PolicyDecision<'a> {
     }
 }
 
-impl Default for PolicyAction {
-    fn default() -> Self {
-        Self::Both
-    }
-}
 
 /// Policy value - the effect of the policy
 #[derive(Debug, Clone)]

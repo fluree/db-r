@@ -58,7 +58,7 @@ impl FileConnection {
     /// Creates a new cache for the returned Db. For shared caching,
     /// use a custom Connection with your own cache type.
     pub async fn load_db_fresh_cache(&self, root_address: &str) -> Result<Db<FileStorage>> {
-        let storage = FileStorage::new(&self.storage.base_path());
+        let storage = FileStorage::new(self.storage.base_path());
         Ok(Db::load(storage, root_address).await?)
     }
 }

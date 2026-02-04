@@ -249,12 +249,10 @@ mod tests {
         assert!(list_1 < list_2);
 
         // Sorting should preserve list order
-        let mut triples = vec![
-            list_2.clone(),
+        let mut triples = [list_2.clone(),
             list_0.clone(),
             list_1.clone(),
-            normal.clone(),
-        ];
+            normal.clone()];
         triples.sort();
 
         assert_eq!(triples[0], normal);

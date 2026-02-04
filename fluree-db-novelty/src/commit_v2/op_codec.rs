@@ -38,6 +38,12 @@ pub struct CommitDicts {
     pub object_ref: StringDictBuilder,
 }
 
+impl Default for CommitDicts {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CommitDicts {
     pub fn new() -> Self {
         Self {

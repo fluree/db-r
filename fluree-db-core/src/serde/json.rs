@@ -115,21 +115,21 @@ pub fn deserialize_object(value: &serde_json::Value, dt: &Sid) -> Result<FlakeVa
         if let serde_json::Value::String(s) = value {
             return DateTime::parse(s)
                 .map(|dt| FlakeValue::DateTime(Box::new(dt)))
-                .map_err(|e| Error::other(e));
+                .map_err(Error::other);
         }
     }
     if is_date_dt(dt) {
         if let serde_json::Value::String(s) = value {
             return Date::parse(s)
                 .map(|d| FlakeValue::Date(Box::new(d)))
-                .map_err(|e| Error::other(e));
+                .map_err(Error::other);
         }
     }
     if is_time_dt(dt) {
         if let serde_json::Value::String(s) = value {
             return Time::parse(s)
                 .map(|t| FlakeValue::Time(Box::new(t)))
-                .map_err(|e| Error::other(e));
+                .map_err(Error::other);
         }
     }
 

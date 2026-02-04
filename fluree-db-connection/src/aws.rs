@@ -83,6 +83,7 @@ static SDK_CONFIG: OnceCell<aws_config::SdkConfig> = OnceCell::new();
 
 /// S3 storage configuration
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct S3Config {
     /// S3 bucket name (supports both standard S3 and S3 Express directory buckets)
     pub bucket: String,
@@ -92,15 +93,6 @@ pub struct S3Config {
     pub timeout_ms: Option<u64>,
 }
 
-impl Default for S3Config {
-    fn default() -> Self {
-        Self {
-            bucket: String::new(),
-            prefix: None,
-            timeout_ms: None,
-        }
-    }
-}
 
 impl From<S3Config> for RawS3Config {
     fn from(config: S3Config) -> Self {

@@ -581,7 +581,7 @@ mod tests {
     #[test]
     fn test_overflow_watermark_routing() {
         // With a persisted overflow watermark, new IDs start above it
-        let mut subject_wm = vec![10, 20]; // ns 0 and 1
+        let subject_wm = vec![10, 20]; // ns 0 and 1
                                            // Simulate an overflow watermark being passed through the root
                                            // (in practice this would be a separate field, but with_watermarks
                                            // handles the extraction if the vec happens to be long enough)

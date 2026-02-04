@@ -507,7 +507,7 @@ fn test_normalize_complex_nested() {
 #[test]
 fn test_normalize_scientific_notation() {
     let data = json!({
-        "numbers": [333333333.33333329, 1E30, 4.50, 2e-3, 0.000000000000000000000000001]
+        "numbers": [333_333_333.333_333_3, 1E30, 4.50, 2e-3, 0.000000000000000000000000001]
     });
 
     let result = normalize_data(&data);

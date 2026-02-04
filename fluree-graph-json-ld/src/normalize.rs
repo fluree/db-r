@@ -227,7 +227,7 @@ mod tests {
     #[test]
     fn test_normalize_numbers_and_literals() {
         let data = json!({
-            "numbers": [333333333.33333329, 1E30, 4.50, 2e-3, 0.000000000000000000000000001],
+            "numbers": [333_333_333.333_333_3, 1E30, 4.50, 2e-3, 0.000000000000000000000000001],
             "literals": [null, true, false]
         });
 

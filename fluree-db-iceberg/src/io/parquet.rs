@@ -288,10 +288,9 @@ impl<'a, S: IcebergStorage> ParquetReader<'a, S> {
                             // Real column - get value from row
                             row_fields
                                 .get(row_idx)
-                                .map(|field| {
+                                .and_then(|field| {
                                     convert_field_to_column_value(field, &field_info.field_type)
                                 })
-                                .flatten()
                         }
                         None => {
                             // NULL column (schema evolution) - always NULL

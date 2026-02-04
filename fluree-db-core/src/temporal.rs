@@ -241,8 +241,7 @@ impl Date {
         }
 
         // Try parsing with timezone suffix
-        if s.ends_with('Z') {
-            let date_part = &s[..s.len() - 1];
+        if let Some(date_part) = s.strip_suffix('Z') {
             if let Ok(date) = NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
                 return Ok(Self {
                     date,
@@ -253,7 +252,7 @@ impl Date {
         }
 
         // Try parsing with explicit offset (e.g., +05:00 or -05:00)
-        if let Some(offset_start) = s.rfind(|c| c == '+' || c == '-') {
+        if let Some(offset_start) = s.rfind(['+', '-']) {
             // Make sure this is actually a timezone, not just a negative year
             if offset_start > 0 && s[offset_start..].contains(':') {
                 let date_part = &s[..offset_start];
@@ -420,8 +419,7 @@ impl Time {
         }
 
         // Try parsing with Z suffix
-        if s.ends_with('Z') {
-            let time_part = &s[..s.len() - 1];
+        if let Some(time_part) = s.strip_suffix('Z') {
             for fmt in &["%H:%M:%S%.f", "%H:%M:%S"] {
                 if let Ok(time) = NaiveTime::parse_from_str(time_part, fmt) {
                     return Ok(Self {
@@ -434,7 +432,7 @@ impl Time {
         }
 
         // Try parsing with explicit offset
-        if let Some(offset_start) = s.rfind(|c| c == '+' || c == '-') {
+        if let Some(offset_start) = s.rfind(['+', '-']) {
             if s[offset_start..].contains(':') {
                 let time_part = &s[..offset_start];
                 let offset_part = &s[offset_start..];
@@ -546,7 +544,7 @@ impl Time {
 fn is_strict_date_lexical(s: &str) -> bool {
     let (date_part, tz_part) = if s.ends_with('Z') {
         (&s[..s.len() - 1], Some("Z"))
-    } else if let Some(idx) = s.rfind(|c| c == '+' || c == '-') {
+    } else if let Some(idx) = s.rfind(['+', '-']) {
         if idx == 10 {
             (&s[..idx], Some(&s[idx..]))
         } else {
@@ -855,9 +853,9 @@ impl GYearMonth {
         // Handle negative years. The format is YYYY-MM or -YYYY-MM.
         // For negative years, the string starts with '-', so we need to find
         // the separator '-' that is NOT the leading negative sign.
-        let (year, month) = if value.starts_with('-') {
+        let (year, month) = if let Some(rest) = value.strip_prefix('-') {
             // Negative year: find the '-' separator after position 0
-            let rest = &value[1..]; // skip leading '-'
+            // skip leading '-'
             let dash_pos = rest
                 .rfind('-')
                 .ok_or_else(|| format!("Cannot parse gYearMonth: {}", s))?;
@@ -2639,7 +2637,7 @@ mod tests {
     #[test]
     fn test_dtd_parse_hours_minutes() {
         let d = DayTimeDuration::parse("PT1H30M").unwrap();
-        assert_eq!(d.micros(), 1 * 3_600_000_000_i64 + 30 * 60_000_000);
+        assert_eq!(d.micros(), 3_600_000_000_i64 + 30 * 60_000_000);
     }
 
     #[test]

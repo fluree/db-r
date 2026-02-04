@@ -1002,10 +1002,9 @@ fn parse_iri_components(iri: &str) -> (&str, Option<&str>, &str, Option<&str>) {
         None => return ("", None, iri, None),
     };
 
-    let (authority, path_query) = if rest.starts_with("//") {
-        let after_slashes = &rest[2..];
+    let (authority, path_query) = if let Some(after_slashes) = rest.strip_prefix("//") {
         let auth_end = after_slashes
-            .find(|c| c == '/' || c == '?' || c == '#')
+            .find(['/', '?', '#'])
             .unwrap_or(after_slashes.len());
         (Some(&after_slashes[..auth_end]), &after_slashes[auth_end..])
     } else {
@@ -1019,7 +1018,7 @@ fn parse_iri_components(iri: &str) -> (&str, Option<&str>, &str, Option<&str>) {
 
 fn parse_hier_part(s: &str) -> (String, String, Option<String>) {
     let auth_end = s
-        .find(|c| c == '/' || c == '?' || c == '#')
+        .find(['/', '?', '#'])
         .unwrap_or(s.len());
     let authority = s[..auth_end].to_string();
     let rest = &s[auth_end..];
