@@ -52,7 +52,6 @@ pub mod rewrite_owl_ql;
 pub mod dict_overlay;
 pub mod binary_scan;
 pub mod binary_range;
-pub mod scan;
 pub mod seed;
 pub mod sort;
 pub mod subquery;
@@ -87,8 +86,6 @@ pub use execute::{
     execute_with_overlay_at_tracked, execute_with_policy, execute_with_policy_tracked,
     execute_with_r2rml, run_operator, ExecutableQuery,
 };
-#[cfg(feature = "native")]
-pub use execute::{PrefetchResources, execute_with_r2rml_prefetch};
 pub use options::QueryOptions;
 pub use groupby::GroupByOperator;
 pub use having::HavingOperator;
@@ -103,7 +100,6 @@ pub use property_path::{PropertyPathOperator, DEFAULT_MAX_VISITED};
 pub use r2rml::{NoOpR2rmlProvider, R2rmlProvider, R2rmlScanOperator, R2rmlTableProvider};
 pub use binary_range::BinaryRangeProvider;
 pub use binary_scan::{BinaryScanOperator, DeferredScanOperator};
-pub use scan::{ScanOperator, scan_stats_reset};
 pub use graph_view::{GraphView, ResolvedGraphView, BaseView, AsOf, WithPolicy, WithReasoning};
 pub use seed::{EmptyOperator, SeedOperator};
 pub use sort::{compare_bindings, compare_flake_values, SortDirection, SortOperator, SortSpec};
@@ -146,7 +142,7 @@ pub async fn execute_pattern<S: Storage + 'static>(
     pattern: TriplePattern,
 ) -> Result<Vec<Batch>> {
     let ctx = ExecutionContext::new(db, vars);
-    let mut scan = ScanOperator::new(pattern);
+    let mut scan = DeferredScanOperator::<S>::new(pattern, None);
 
     scan.open(&ctx).await?;
 
@@ -155,7 +151,7 @@ pub async fn execute_pattern<S: Storage + 'static>(
         batches.push(batch);
     }
 
-    <ScanOperator as Operator<S>>::close(&mut scan);
+    scan.close();
     Ok(batches)
 }
 
@@ -205,7 +201,7 @@ pub async fn execute_pattern_at<S: Storage + 'static>(
     from_t: Option<i64>,
 ) -> Result<Vec<Batch>> {
     let ctx = ExecutionContext::with_time(db, vars, to_t, from_t);
-    let mut scan = ScanOperator::new(pattern);
+    let mut scan = DeferredScanOperator::<S>::new(pattern, None);
 
     scan.open(&ctx).await?;
 
@@ -214,7 +210,7 @@ pub async fn execute_pattern_at<S: Storage + 'static>(
         batches.push(batch);
     }
 
-    <ScanOperator as Operator<S>>::close(&mut scan);
+    scan.close();
     Ok(batches)
 }
 
@@ -238,7 +234,7 @@ pub async fn execute_pattern_with_overlay<S: Storage + 'static>(
     pattern: TriplePattern,
 ) -> Result<Vec<Batch>> {
     let ctx = ExecutionContext::with_overlay(db, vars, overlay);
-    let mut scan = ScanOperator::new(pattern);
+    let mut scan = DeferredScanOperator::<S>::new(pattern, None);
 
     scan.open(&ctx).await?;
 
@@ -247,7 +243,7 @@ pub async fn execute_pattern_with_overlay<S: Storage + 'static>(
         batches.push(batch);
     }
 
-    <ScanOperator as Operator<S>>::close(&mut scan);
+    scan.close();
     Ok(batches)
 }
 
@@ -265,7 +261,7 @@ pub async fn execute_pattern_with_overlay_at<S: Storage + 'static>(
     from_t: Option<i64>,
 ) -> Result<Vec<Batch>> {
     let ctx = ExecutionContext::with_time_and_overlay(db, vars, to_t, from_t, overlay);
-    let mut scan = ScanOperator::new(pattern);
+    let mut scan = DeferredScanOperator::<S>::new(pattern, None);
 
     scan.open(&ctx).await?;
 
@@ -274,7 +270,7 @@ pub async fn execute_pattern_with_overlay_at<S: Storage + 'static>(
         batches.push(batch);
     }
 
-    <ScanOperator as Operator<S>>::close(&mut scan);
+    scan.close();
     Ok(batches)
 }
 

@@ -10,14 +10,12 @@ use crate::dataset::ActiveGraphs;
 use crate::error::{QueryError, Result};
 use crate::operator::{Operator, OperatorState};
 use crate::pattern::{Term, TriplePattern};
-use crate::policy::QueryPolicyEnforcer;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::{
-    Db, Flake, IndexType, MultiSeekCursor, ObjectBounds, OverlayProvider, RangeOptions,
-    Sid, Storage, BATCHED_JOIN_SIZE,
+    ObjectBounds, Sid, Storage, BATCHED_JOIN_SIZE,
 };
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -509,9 +507,11 @@ impl<S: Storage + 'static> Operator<S> for NestedLoopJoinOperator<S> {
         }
 
         // Check if batched mode is usable at runtime:
+        // - Binary store must be available (batched path reads leaf files directly)
         // - Single-db mode (ActiveGraphs::Single), subjects are Binding::Sid
         // - Dataset mode with exactly one graph (ActiveGraphs::Many len==1), subjects are Binding::IriMatch
         let use_batched = self.batched_eligible
+            && ctx.binary_store.is_some()
             && match ctx.active_graphs() {
                 ActiveGraphs::Single => true,
                 ActiveGraphs::Many(graphs) => graphs.len() == 1,
@@ -733,224 +733,20 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
         &mut self,
         ctx: &ExecutionContext<'_, S>,
     ) -> Result<()> {
-        // When a binary index store is available, use it directly instead
-        // of the B-tree MultiSeekCursor (which may be empty for binary-only imports).
-        if ctx.binary_store.is_some() {
-            let span = tracing::info_span!(
-                "join_flush_batched_binary",
-                accum_len = self.batched_accumulator.len(),
-                batch_size = ctx.batch_size,
-                to_t = ctx.to_t
-            );
-            let _g = span.enter();
-            return self.flush_batched_accumulator_binary(ctx).await;
-        }
-
-        match ctx.active_graphs() {
-            ActiveGraphs::Single => {
-                self.flush_batched_accumulator(
-                    ctx,
-                    ctx.db,
-                    ctx.overlay(),
-                    ctx.to_t,
-                    ctx.policy_enforcer.as_deref(),
-                )
-                .await
-            }
-            ActiveGraphs::Many(graphs) if graphs.len() == 1 => {
-                let graph = graphs[0];
-                // Prefer graph-level policy enforcer over ctx-level
-                let enforcer = graph
-                    .policy_enforcer
-                    .as_ref()
-                    .or(ctx.policy_enforcer.as_ref())
-                    .map(|e| e.as_ref());
-                self.flush_batched_accumulator(ctx, graph.db, graph.overlay, graph.to_t, enforcer)
-                    .await
-            }
-            _ => Ok(()), // Not eligible in multi-graph mode
-        }
-    }
-
-    /// Flush the batched accumulator: group by SID, seek through PSOT/SPOT, emit joined rows.
-    async fn flush_batched_accumulator(
-        &mut self,
-        ctx: &ExecutionContext<'_, S>,
-        db: &Db<S>,
-        overlay: &dyn OverlayProvider,
-        to_t: i64,
-        policy_enforcer: Option<&QueryPolicyEnforcer>,
-    ) -> Result<()> {
-        if self.batched_accumulator.is_empty() {
-            return Ok(());
+        if ctx.binary_store.is_none() {
+            return Err(crate::error::QueryError::execution(
+                "binary_store is required for batched joins — b-tree fallback has been removed",
+            ));
         }
 
         let span = tracing::info_span!(
-            "join_flush_batched_btree",
+            "join_flush_batched_binary",
             accum_len = self.batched_accumulator.len(),
             batch_size = ctx.batch_size,
-            to_t = to_t
+            to_t = ctx.to_t
         );
         let _g = span.enter();
-
-        let pred_sid = self.batched_predicate.as_ref().unwrap().clone();
-
-        // 1. Group by SID preserving order: BTreeMap<Sid, Vec<usize>>
-        //    where values are indices into batched_accumulator (sequence numbers)
-        let mut sid_to_accum_indices: BTreeMap<Sid, Vec<usize>> = BTreeMap::new();
-        for (accum_idx, (_, _, sid)) in self.batched_accumulator.iter().enumerate() {
-            sid_to_accum_indices
-                .entry(sid.clone())
-                .or_default()
-                .push(accum_idx);
-        }
-
-        // 2. Build sorted ranges (PSOT order: all share predicate, sorted by SID)
-        let sorted_sids: Vec<Sid> = sid_to_accum_indices.keys().cloned().collect();
-        let ranges: Vec<(Flake, Flake)> = sorted_sids
-            .iter()
-            .map(|sid| {
-                (
-                    Flake::min_for_subject_predicate(sid.clone(), pred_sid.clone()),
-                    Flake::max_for_subject_predicate(sid.clone(), pred_sid.clone()),
-                )
-            })
-            .collect();
-
-        // 3. Choose index: prefer PSOT, fall back to SPOT
-        let index_type = if db.get_index_root(IndexType::Psot).is_ok() {
-            IndexType::Psot
-        } else {
-            IndexType::Spot
-        };
-
-        let mut opts = RangeOptions::new().with_to_t(to_t);
-        if ctx.history_mode {
-            opts = opts.with_history_mode();
-        }
-        if let Some(from_t) = ctx.from_t {
-            opts = opts.with_from_t(from_t);
-        }
-
-        let mut cursor = MultiSeekCursor::new(db, index_type, ranges, opts)?;
-
-        // 4. Iterate ranges, join with left rows, collect output in accumulator order
-        // We use a scatter buffer: Vec<Vec<Vec<Binding>>> indexed by accum_idx
-        // Each accum_idx maps to possibly multiple output rows (one per matching flake)
-        let accum_len = self.batched_accumulator.len();
-        let mut scatter: Vec<Vec<Vec<Binding>>> = Vec::with_capacity(accum_len);
-        scatter.resize_with(accum_len, Vec::new);
-
-        let mut range_idx = 0usize;
-
-        let scan_span = tracing::info_span!("join_flush_seek_ranges", ranges = sorted_sids.len());
-        let _sg = scan_span.enter();
-        while let Some(flakes) = cursor.next_range_flakes(db, overlay).await? {
-            let sid = &sorted_sids[range_idx];
-            let accum_indices = sid_to_accum_indices.get(sid).unwrap();
-
-            // Apply policy filtering (graph-aware).
-            let mut flakes = flakes;
-            if let Some(enforcer) = policy_enforcer {
-                if !enforcer.is_root() {
-                    if enforcer.policy().wrapper().has_class_policies() {
-                        let unique_subjects: Vec<Sid> = flakes
-                            .iter()
-                            .map(|f| f.s.clone())
-                            .collect::<HashSet<_>>()
-                            .into_iter()
-                            .collect();
-                        enforcer
-                            .populate_class_cache_for_graph(db, overlay, to_t, &unique_subjects)
-                            .await?;
-                    }
-                    flakes = enforcer
-                        .filter_flakes_for_graph(db, overlay, to_t, &ctx.tracker, flakes)
-                        .await?;
-                }
-            }
-
-            for flake in &flakes {
-                // Convert flake object to binding
-                let obj_binding = Binding::from_object_with_t(
-                    flake.o.clone(),
-                    flake.dt.clone(),
-                    flake.m.clone(),
-                    flake.t,
-                );
-
-                // For each left row mapped to this SID
-                for &accum_idx in accum_indices {
-                    let (batch_idx, row_idx, _) = &self.batched_accumulator[accum_idx];
-                    let left_batch = &self.stored_left_batches[*batch_idx];
-
-                    // Build combined row: all left columns + new right columns
-                    let mut combined = Vec::with_capacity(self.combined_schema.len());
-                    for col in 0..self.left_schema.len() {
-                        combined.push(left_batch.get_by_col(*row_idx, col).clone());
-                    }
-                    // The new right variables — for eligible patterns, there's exactly
-                    // one new var (the object). Push it.
-                    for _ in &self.right_new_vars {
-                        combined.push(obj_binding.clone());
-                    }
-
-                    scatter[accum_idx].push(combined);
-                }
-            }
-
-            range_idx += 1;
-        }
-
-        // 5. Emit in left-row order (scatter-gather by accumulator index)
-        let batch_size = ctx.batch_size;
-        let num_cols = self.combined_schema.len();
-        let mut output_columns: Vec<Vec<Binding>> = (0..num_cols)
-            .map(|_| Vec::with_capacity(batch_size))
-            .collect();
-        let mut rows_added = 0;
-
-        for accum_idx in 0..accum_len {
-            for combined in scatter[accum_idx].drain(..) {
-                for (col, val) in combined.into_iter().enumerate() {
-                    output_columns[col].push(val);
-                }
-                rows_added += 1;
-
-                if rows_added >= batch_size {
-                    // Emit a batch
-                    if num_cols == 0 {
-                        self.batched_output
-                            .push_back(Batch::empty_schema_with_len(rows_added));
-                    } else {
-                        let batch = Batch::new(self.combined_schema.clone(), output_columns)?;
-                        self.batched_output.push_back(batch);
-                    }
-                    output_columns = (0..num_cols)
-                        .map(|_| Vec::with_capacity(batch_size))
-                        .collect();
-                    rows_added = 0;
-                }
-            }
-        }
-
-        // Emit remaining rows
-        if rows_added > 0 {
-            if num_cols == 0 {
-                self.batched_output
-                    .push_back(Batch::empty_schema_with_len(rows_added));
-            } else {
-                let batch = Batch::new(self.combined_schema.clone(), output_columns)?;
-                self.batched_output.push_back(batch);
-            }
-        }
-
-        // 6. Clear accumulator and stored batches
-        self.batched_accumulator.clear();
-        self.stored_left_batches.clear();
-        self.current_left_batch_stored_idx = None;
-
-        Ok(())
+        self.flush_batched_accumulator_binary(ctx).await
     }
 
     /// Binary-index variant of flush_batched_accumulator.
@@ -1030,18 +826,10 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
         let mut scatter: Vec<Vec<Vec<Binding>>> = Vec::with_capacity(accum_len);
         scatter.resize_with(accum_len, Vec::new);
 
-        // 3. Prefer PSOT for batched property joins:
-        // old engine optimized this shape by scanning predicate-bounded PSOT segments.
-        let branch = match store.branch_for_order(g_id, RunSortOrder::Psot) {
-            Some(b) => b,
-            None => {
-                // No PSOT index for this graph
-                self.batched_accumulator.clear();
-                self.stored_left_batches.clear();
-                self.current_left_batch_stored_idx = None;
-                return Ok(());
-            }
-        };
+        // 3. PSOT for batched property joins: contiguous predicate partition.
+        let branch = store
+            .branch_for_order(g_id, RunSortOrder::Psot)
+            .expect("PSOT index must exist for every graph");
 
         // Restrict scan to the predicate's PSOT range (contiguous partition).
         let min_key = RunRecord {

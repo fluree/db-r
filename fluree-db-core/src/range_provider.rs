@@ -17,9 +17,8 @@ use crate::query_bounds::{RangeMatch, RangeOptions, RangeTest};
 
 /// A range query backend that can execute range queries against an index.
 ///
-/// This trait abstracts the index implementation (b-tree vs binary columnar)
-/// so callers can use the same `range_with_overlay()` API regardless of which
-/// index is active.
+/// This trait abstracts the index implementation so callers can use the same
+/// `range_with_overlay()` API regardless of which index is active.
 ///
 /// Implementations must return results in the correct index order (SPOT, PSOT,
 /// POST, or OPST) matching the requested `IndexType`.
@@ -46,4 +45,26 @@ pub trait RangeProvider: Send + Sync {
         opts: &RangeOptions,
         overlay: &dyn OverlayProvider,
     ) -> std::io::Result<Vec<Flake>>;
+
+    /// Execute a bounded range query with explicit start/end flakes.
+    ///
+    /// This is the bounded-range equivalent of [`range()`](Self::range).
+    /// Used for subject-range queries (e.g., SHA prefix scans) that need
+    /// to scan between two different subjects.
+    ///
+    /// The default implementation returns `Unsupported`.  Implementors that
+    /// support arbitrary interval scans should override this method.
+    fn range_bounded(
+        &self,
+        _index: IndexType,
+        _start_bound: &Flake,
+        _end_bound: &Flake,
+        _opts: &RangeOptions,
+        _overlay: &dyn OverlayProvider,
+    ) -> std::io::Result<Vec<Flake>> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "range_bounded not supported by this provider",
+        ))
+    }
 }

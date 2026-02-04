@@ -33,8 +33,13 @@ where
     pub(crate) async fn load_view(&self, alias: &str) -> Result<FlureeView<S>> {
         let handle = self.ledger_cached(alias).await?;
         let snapshot = handle.snapshot().await;
+        let binary_store = snapshot.binary_store.clone();
         let ledger = snapshot.to_ledger_state();
-        Ok(FlureeView::from_ledger_state(&ledger))
+        let view = FlureeView::from_ledger_state(&ledger);
+        Ok(match binary_store {
+            Some(store) => view.with_binary_store(store),
+            None => view,
+        })
     }
 
     /// Load a historical view at a specific transaction time.

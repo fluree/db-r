@@ -2,15 +2,30 @@
 
 use crate::error::{Error, Result};
 use crate::flake::{Flake, FlakeMeta};
-use crate::index::ChildRef;
 use crate::sid::Sid;
+
+/// Minimal ChildRef for v1 index root parsing (GC collector needs this).
+///
+/// Formerly lived in `crate::index` (b-tree code, now removed). Retained here
+/// so that `DbRoot`, `RawDbRoot`, `parse_db_root`, and `parse_branch_node`
+/// continue to compile for the GC collector which must traverse old v1 roots.
+#[derive(Debug, Clone)]
+pub struct ChildRef {
+    pub id: String,
+    pub leaf: bool,
+    pub first: Option<Flake>,
+    pub rhs: Option<Flake>,
+    pub size: u64,
+    pub bytes: Option<u64>,
+    pub leftmost: bool,
+}
 use crate::temporal::{DateTime, Date, Time};
 use crate::value::FlakeValue;
 use bigdecimal::BigDecimal;
 use fluree_vocab::xsd_names;
 use num_bigint::BigInt;
 use std::str::FromStr;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::HashMap;
 use simd_json::prelude::*;
 use std::cell::RefCell;
@@ -702,57 +717,6 @@ impl RawLeafNode {
     }
 }
 
-// === Branch Node ===
-
-/// Raw child node reference as it appears in JSON
-#[derive(Debug, Deserialize)]
-pub struct RawChildRef {
-    pub id: String,
-    pub leaf: bool,
-    #[serde(default)]
-    pub first: Option<RawFlake>,
-    #[serde(default)]
-    pub rhs: Option<RawFlake>,
-    #[serde(default)]
-    pub size: u64,
-    /// Serialized byte size of this node (added for accurate cache eviction)
-    #[serde(default)]
-    pub bytes: Option<u64>,
-    #[serde(rename = "leftmost?", default)]
-    pub leftmost: bool,
-}
-
-impl RawChildRef {
-    /// Convert to ChildRef
-    pub fn to_child_ref(&self) -> Result<ChildRef> {
-        let first = self.first.as_ref().map(|rf| rf.to_flake()).transpose()?;
-        let rhs = self.rhs.as_ref().map(|rf| rf.to_flake()).transpose()?;
-
-        Ok(ChildRef {
-            id: self.id.clone(),
-            leaf: self.leaf,
-            first,
-            rhs,
-            size: self.size,
-            bytes: self.bytes,
-            leftmost: self.leftmost,
-        })
-    }
-}
-
-/// Raw branch node as it appears in JSON
-#[derive(Debug, Deserialize)]
-pub struct RawBranchNode {
-    pub children: Vec<RawChildRef>,
-}
-
-impl RawBranchNode {
-    /// Convert to child refs
-    pub fn to_children(&self) -> Result<Vec<ChildRef>> {
-        self.children.iter().map(|rc| rc.to_child_ref()).collect()
-    }
-}
-
 // === DB Root Stats ===
 //
 // Canonical types moved to `crate::index_stats`. Re-exported here for
@@ -1185,73 +1149,7 @@ impl RawDbRoot {
             .collect();
 
         // Convert stats if present
-        let stats = self.stats.as_ref().and_then(|s| {
-            // Only create DbRootStats if at least one field is present
-            if s.flakes.is_some() || s.size.is_some() || s.properties.is_some() || s.classes.is_some() || s.graphs.is_some() {
-                // Convert properties if present
-                let properties = s.properties.as_ref().map(|props| {
-                    props.iter().map(|p| PropertyStatEntry {
-                        sid: p.sid.clone(),
-                        count: p.count,
-                        ndv_values: p.ndv_values,
-                        ndv_subjects: p.ndv_subjects,
-                        last_modified_t: p.last_modified_t,
-                    }).collect()
-                });
-
-                // Convert classes if present
-                let classes = s.classes.as_ref().map(|class_list| {
-                    class_list.iter().map(|c| {
-                        let class_sid = Sid::new(c.class_sid.0, &c.class_sid.1);
-                        let properties = c.properties.as_ref().map(|props| {
-                            props.iter().map(|p| {
-                                let property_sid = Sid::new(p.property_sid.0, &p.property_sid.1);
-                                ClassPropertyUsage {
-                                    property_sid,
-                                }
-                            }).collect()
-                        }).unwrap_or_default();
-                        ClassStatEntry {
-                            class_sid,
-                            count: c.count,
-                            properties,
-                        }
-                    }).collect()
-                });
-
-                // Convert graphs if present
-                let graphs = s.graphs.as_ref().map(|graph_list| {
-                    graph_list.iter().map(|g| {
-                        let properties = g.properties.as_ref().map(|props| {
-                            props.iter().map(|p| GraphPropertyStatEntry {
-                                p_id: p.p_id,
-                                count: p.count,
-                                ndv_values: p.ndv_values,
-                                ndv_subjects: p.ndv_subjects,
-                                last_modified_t: p.last_modified_t,
-                                datatypes: p.datatypes.clone().unwrap_or_default(),
-                            }).collect()
-                        }).unwrap_or_default();
-                        GraphStatsEntry {
-                            g_id: g.g_id,
-                            flakes: g.flakes,
-                            size: g.size,
-                            properties,
-                        }
-                    }).collect()
-                });
-
-                Some(DbRootStats {
-                    flakes: s.flakes.unwrap_or(0),
-                    size: s.size.unwrap_or(0),
-                    properties,
-                    classes,
-                    graphs,
-                })
-            } else {
-                None
-            }
-        });
+        let stats = self.stats.as_ref().and_then(raw_stats_to_index_stats);
 
         // Convert config if present
         let config = self.config.as_ref().and_then(|c| {
@@ -1279,44 +1177,7 @@ impl RawDbRoot {
         });
 
         // Convert schema if present
-        let schema = self.schema.as_ref().map(|s| {
-            let pred = s.pred.as_ref().map(|p| {
-                // Parse vals: each entry is [sid, [subclass_of], [parent_props], [child_props]]
-                let vals = p.vals.iter().filter_map(|entry| {
-                    if entry.len() < 4 {
-                        return None;
-                    }
-                    // Parse SID from first element
-                    let id = deserialize_sid(&entry[0]).ok()?;
-                    // Parse subclass_of from second element (array of SIDs)
-                    let subclass_of = entry[1].as_array()
-                        .map(|arr| arr.iter().filter_map(|v| deserialize_sid(v).ok()).collect())
-                        .unwrap_or_default();
-                    // Parse parent_props from third element
-                    let parent_props = entry[2].as_array()
-                        .map(|arr| arr.iter().filter_map(|v| deserialize_sid(v).ok()).collect())
-                        .unwrap_or_default();
-                    // Parse child_props from fourth element
-                    let child_props = entry[3].as_array()
-                        .map(|arr| arr.iter().filter_map(|v| deserialize_sid(v).ok()).collect())
-                        .unwrap_or_default();
-                    Some(SchemaPredicateInfo {
-                        id,
-                        subclass_of,
-                        parent_props,
-                        child_props,
-                    })
-                }).collect();
-                SchemaPredicates {
-                    keys: p.keys.clone(),
-                    vals,
-                }
-            }).unwrap_or_default();
-            DbRootSchema {
-                t: s.t,
-                pred,
-            }
-        });
+        let schema = self.schema.as_ref().map(raw_schema_to_index_schema);
 
         // Convert garbage if present
         let garbage = self.garbage.as_ref().map(|g| GarbageRef {
@@ -1341,6 +1202,148 @@ impl RawDbRoot {
             garbage,
         })
     }
+}
+
+// === Raw → Typed conversion helpers ===
+//
+// Extracted from RawDbRoot::to_db_root() so both v1 (RawDbRoot) and v2
+// (BinaryIndexRootV2) roots can share the same canonical interpretation.
+
+/// Convert raw stats to IndexStats.
+///
+/// Returns None if no meaningful stat fields are present.
+pub fn raw_stats_to_index_stats(s: &RawDbRootStats) -> Option<IndexStats> {
+    if s.flakes.is_some()
+        || s.size.is_some()
+        || s.properties.is_some()
+        || s.classes.is_some()
+        || s.graphs.is_some()
+    {
+        let properties = s.properties.as_ref().map(|props| {
+            props
+                .iter()
+                .map(|p| PropertyStatEntry {
+                    sid: p.sid.clone(),
+                    count: p.count,
+                    ndv_values: p.ndv_values,
+                    ndv_subjects: p.ndv_subjects,
+                    last_modified_t: p.last_modified_t,
+                })
+                .collect()
+        });
+
+        let classes = s.classes.as_ref().map(|class_list| {
+            class_list
+                .iter()
+                .map(|c| {
+                    let class_sid = Sid::new(c.class_sid.0, &c.class_sid.1);
+                    let properties = c
+                        .properties
+                        .as_ref()
+                        .map(|props| {
+                            props
+                                .iter()
+                                .map(|p| {
+                                    let property_sid =
+                                        Sid::new(p.property_sid.0, &p.property_sid.1);
+                                    ClassPropertyUsage { property_sid }
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    ClassStatEntry {
+                        class_sid,
+                        count: c.count,
+                        properties,
+                    }
+                })
+                .collect()
+        });
+
+        let graphs = s.graphs.as_ref().map(|graph_list| {
+            graph_list
+                .iter()
+                .map(|g| {
+                    let properties = g
+                        .properties
+                        .as_ref()
+                        .map(|props| {
+                            props
+                                .iter()
+                                .map(|p| GraphPropertyStatEntry {
+                                    p_id: p.p_id,
+                                    count: p.count,
+                                    ndv_values: p.ndv_values,
+                                    ndv_subjects: p.ndv_subjects,
+                                    last_modified_t: p.last_modified_t,
+                                    datatypes: p.datatypes.clone().unwrap_or_default(),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    GraphStatsEntry {
+                        g_id: g.g_id,
+                        flakes: g.flakes,
+                        size: g.size,
+                        properties,
+                    }
+                })
+                .collect()
+        });
+
+        Some(IndexStats {
+            flakes: s.flakes.unwrap_or(0),
+            size: s.size.unwrap_or(0),
+            properties,
+            classes,
+            graphs,
+        })
+    } else {
+        None
+    }
+}
+
+/// Convert raw schema to IndexSchema.
+pub fn raw_schema_to_index_schema(s: &RawDbRootSchema) -> IndexSchema {
+    let pred = s
+        .pred
+        .as_ref()
+        .map(|p| {
+            let vals = p
+                .vals
+                .iter()
+                .filter_map(|entry| {
+                    if entry.len() < 4 {
+                        return None;
+                    }
+                    let id = deserialize_sid(&entry[0]).ok()?;
+                    let subclass_of = entry[1]
+                        .as_array()
+                        .map(|arr| arr.iter().filter_map(|v| deserialize_sid(v).ok()).collect())
+                        .unwrap_or_default();
+                    let parent_props = entry[2]
+                        .as_array()
+                        .map(|arr| arr.iter().filter_map(|v| deserialize_sid(v).ok()).collect())
+                        .unwrap_or_default();
+                    let child_props = entry[3]
+                        .as_array()
+                        .map(|arr| arr.iter().filter_map(|v| deserialize_sid(v).ok()).collect())
+                        .unwrap_or_default();
+                    Some(SchemaPredicateInfo {
+                        id,
+                        subclass_of,
+                        parent_props,
+                        child_props,
+                    })
+                })
+                .collect();
+            SchemaPredicates {
+                keys: p.keys.clone(),
+                vals,
+            }
+        })
+        .unwrap_or_default();
+    IndexSchema { t: s.t, pred }
 }
 
 // === Serialization structures ===
@@ -1437,50 +1440,6 @@ fn build_sid_dictionary(flakes: &[Flake]) -> (Vec<Sid>, HashMap<Sid, usize>) {
         .collect();
 
     (dict, sid_to_idx)
-}
-
-/// Serializable index root for ChildRef
-#[derive(Serialize)]
-struct SerializableIndexRoot<'a> {
-    id: &'a str,
-    leaf: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    first: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    rhs: Option<serde_json::Value>,
-    size: u64,
-    /// Serialized byte size (omitted for backward compatibility with old indexes)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    bytes: Option<u64>,
-    #[serde(rename = "leftmost?")]
-    leftmost: bool,
-}
-
-impl<'a> SerializableIndexRoot<'a> {
-    fn from_child_ref(child: &'a ChildRef) -> Self {
-        Self {
-            id: &child.id,
-            leaf: child.leaf,
-            first: child.first.as_ref().map(serialize_flake_v1),
-            rhs: child.rhs.as_ref().map(serialize_flake_v1),
-            size: child.size,
-            bytes: child.bytes,
-            leftmost: child.leftmost,
-        }
-    }
-}
-
-/// Serialize a single flake in v1 format (inline SIDs)
-fn serialize_flake_v1(flake: &Flake) -> serde_json::Value {
-    serde_json::json!([
-        serialize_sid(&flake.s),
-        serialize_sid(&flake.p),
-        serialize_object(&flake.o, &flake.dt),
-        serialize_sid(&flake.dt),
-        flake.t,
-        flake.op,
-        serialize_meta(&flake.m)
-    ])
 }
 
 /// Serialize a single flake in v2 format (dictionary indices)
@@ -1864,14 +1823,6 @@ pub fn parse_leaf_node_interned(mut bytes: Vec<u8>, interner: &crate::SidInterne
     }
 }
 
-/// Parse a branch node from JSON bytes (uses SIMD-accelerated parsing)
-///
-/// Takes ownership of bytes to avoid copying - simd-json mutates in place.
-pub fn parse_branch_node(mut bytes: Vec<u8>) -> Result<Vec<ChildRef>> {
-    let raw: RawBranchNode = simd_json::from_slice(&mut bytes)?;
-    raw.to_children()
-}
-
 /// Parse a DB root from JSON bytes (uses SIMD-accelerated parsing)
 ///
 /// Takes ownership of bytes to avoid copying - simd-json mutates in place.
@@ -1916,249 +1867,6 @@ pub fn serialize_leaf_node(flakes: &[Flake]) -> Result<Vec<u8>> {
     serde_json::to_vec(&leaf).map_err(Into::into)
 }
 
-/// Serialize a branch node to JSON bytes
-///
-/// Branch nodes contain child references with boundary flakes.
-pub fn serialize_branch_node(children: &[ChildRef]) -> Result<Vec<u8>> {
-    let children_json: Vec<serde_json::Value> = children.iter()
-        .map(|c| {
-            let root = SerializableIndexRoot::from_child_ref(c);
-            serde_json::to_value(&root).map_err(|e| Error::other(format!("Failed to serialize child ref: {}", e)))
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    let branch = serde_json::json!({
-        "children": children_json
-    });
-
-    serde_json::to_vec(&branch).map_err(Into::into)
-}
-
-/// Serialize a DbRoot to JSON bytes (deterministic)
-///
-/// Uses sorted keys for namespace_codes to ensure deterministic output.
-/// The namespace codes are written as string keys in NUMERIC sorted order
-/// (not lexicographic - "1", "2", "10" not "1", "10", "2").
-pub fn serialize_db_root(root: &DbRoot) -> Result<Vec<u8>> {
-    // Sort namespace_codes by numeric key value (not lexicographic string order)
-    let mut sorted_ns: Vec<_> = root.namespace_codes.iter().collect();
-    sorted_ns.sort_by_key(|(k, _)| *k);
-
-    // Build the root object with sorted keys
-    let mut root_obj = serde_json::Map::new();
-
-    root_obj.insert("ledger-alias".to_string(), serde_json::Value::String(root.alias.clone()));
-    root_obj.insert("t".to_string(), serde_json::Value::Number(root.t.into()));
-    root_obj.insert("v".to_string(), serde_json::Value::Number(root.version.into()));
-
-    // Namespace codes with numeric-sorted string keys
-    // serde_json::Map preserves insertion order, so we insert in sorted order
-    let mut ns_obj = serde_json::Map::new();
-    for (k, v) in sorted_ns {
-        ns_obj.insert(k.to_string(), serde_json::Value::String(v.clone()));
-    }
-    root_obj.insert("namespace-codes".to_string(), serde_json::Value::Object(ns_obj));
-
-    // Index roots
-    if let Some(ref spot) = root.spot {
-        let spot_root = SerializableIndexRoot::from_child_ref(spot);
-        root_obj.insert("spot".to_string(), serde_json::to_value(&spot_root)?);
-    }
-    if let Some(ref psot) = root.psot {
-        let psot_root = SerializableIndexRoot::from_child_ref(psot);
-        root_obj.insert("psot".to_string(), serde_json::to_value(&psot_root)?);
-    }
-    if let Some(ref post) = root.post {
-        let post_root = SerializableIndexRoot::from_child_ref(post);
-        root_obj.insert("post".to_string(), serde_json::to_value(&post_root)?);
-    }
-    if let Some(ref opst) = root.opst {
-        let opst_root = SerializableIndexRoot::from_child_ref(opst);
-        root_obj.insert("opst".to_string(), serde_json::to_value(&opst_root)?);
-    }
-    if let Some(ref tspo) = root.tspo {
-        let tspo_root = SerializableIndexRoot::from_child_ref(tspo);
-        root_obj.insert("tspo".to_string(), serde_json::to_value(&tspo_root)?);
-    }
-
-    // Optional timestamp
-    if let Some(ts) = root.timestamp {
-        root_obj.insert("timestamp".to_string(), serde_json::Value::Number(ts.into()));
-    }
-
-    // Stats (flakes, size, properties) - sorted keys for determinism
-    if let Some(ref stats) = root.stats {
-        let mut stats_obj = serde_json::Map::new();
-        stats_obj.insert("flakes".to_string(), serde_json::Value::Number(stats.flakes.into()));
-
-        // Properties - compact array format for Clojure compatibility
-        // Format: [[sid], [count, ndv_values, ndv_subjects, 0, 0, last_modified_t]]
-        if let Some(ref properties) = stats.properties {
-            let props_array: Vec<serde_json::Value> = properties.iter().map(|p| {
-                serde_json::json!([
-                    [p.sid.0, p.sid.1],
-                    [p.count, p.ndv_values, p.ndv_subjects, 0, 0, p.last_modified_t]
-                ])
-            }).collect();
-            stats_obj.insert("properties".to_string(), serde_json::Value::Array(props_array));
-        }
-
-        // Classes - compact array format for Clojure compatibility
-        // Format: [[class_sid], [count, [property_usages...]]]
-        // Property usage format (new): [[property_sid]]
-        if let Some(ref classes) = stats.classes {
-            let classes_array: Vec<serde_json::Value> = classes.iter().map(|c| {
-                let props_array: Vec<serde_json::Value> = c.properties.iter().map(|p| {
-                    serde_json::json!([
-                        [p.property_sid.namespace_code, &*p.property_sid.name]
-                    ])
-                }).collect();
-                serde_json::json!([
-                    [c.class_sid.namespace_code, &*c.class_sid.name],
-                    [c.count, props_array]
-                ])
-            }).collect();
-            stats_obj.insert("classes".to_string(), serde_json::Value::Array(classes_array));
-        }
-
-        // Graphs - ID-based per-graph stats (new format, not Clojure compact arrays)
-        // Format: [{"g_id": u32, "flakes": u64, "size": u64, "properties": [...]}]
-        if let Some(ref graphs) = stats.graphs {
-            let graphs_array: Vec<serde_json::Value> = graphs.iter().map(|g| {
-                let props_array: Vec<serde_json::Value> = g.properties.iter().map(|p| {
-                    let dt_array: Vec<serde_json::Value> = p.datatypes.iter()
-                        .map(|(dt_id, count)| serde_json::json!([dt_id, count]))
-                        .collect();
-                    serde_json::json!({
-                        "p_id": p.p_id,
-                        "count": p.count,
-                        "ndv_values": p.ndv_values,
-                        "ndv_subjects": p.ndv_subjects,
-                        "last_modified_t": p.last_modified_t,
-                        "datatypes": dt_array
-                    })
-                }).collect();
-                serde_json::json!({
-                    "g_id": g.g_id,
-                    "flakes": g.flakes,
-                    "size": g.size,
-                    "properties": props_array
-                })
-            }).collect();
-            stats_obj.insert("graphs".to_string(), serde_json::Value::Array(graphs_array));
-        }
-
-        stats_obj.insert("size".to_string(), serde_json::Value::Number(stats.size.into()));
-        root_obj.insert("stats".to_string(), serde_json::Value::Object(stats_obj));
-    }
-
-    // Config - sorted keys for determinism (kebab-case to match Clojure)
-    if let Some(ref config) = root.config {
-        let mut config_obj = serde_json::Map::new();
-        // Only include fields that are present, in sorted order
-        if let Some(max_old) = config.max_old_indexes {
-            config_obj.insert(
-                "max-old-indexes".to_string(),
-                serde_json::Value::Number(max_old.into()),
-            );
-        }
-        if let Some(min_time) = config.min_time_garbage_mins {
-            config_obj.insert(
-                "min-time-garbage-mins".to_string(),
-                serde_json::Value::Number(min_time.into()),
-            );
-        }
-        if let Some(max_bytes) = config.reindex_max_bytes {
-            config_obj.insert(
-                "reindex-max-bytes".to_string(),
-                serde_json::Value::Number(max_bytes.into()),
-            );
-        }
-        if let Some(min_bytes) = config.reindex_min_bytes {
-            config_obj.insert(
-                "reindex-min-bytes".to_string(),
-                serde_json::Value::Number(min_bytes.into()),
-            );
-        }
-        if !config_obj.is_empty() {
-            root_obj.insert("config".to_string(), serde_json::Value::Object(config_obj));
-        }
-    }
-
-    // Previous index reference - fixed field order (t, then address) for determinism
-    if let Some(ref prev) = root.prev_index {
-        let mut prev_obj = serde_json::Map::new();
-        prev_obj.insert("t".to_string(), serde_json::Value::Number(prev.t.into()));
-        prev_obj.insert(
-            "address".to_string(),
-            serde_json::Value::String(prev.address.clone()),
-        );
-        root_obj.insert("prev-index".to_string(), serde_json::Value::Object(prev_obj));
-    }
-
-    // Schema - class/property hierarchy for query optimization
-    if let Some(ref schema) = root.schema {
-        let mut schema_obj = serde_json::Map::new();
-        schema_obj.insert("t".to_string(), serde_json::Value::Number(schema.t.into()));
-
-        // Build pred object with keys and vals
-        let mut pred_obj = serde_json::Map::new();
-        // Force canonical keys for Clojure compatibility (ignore stored keys)
-        pred_obj.insert(
-            "keys".to_string(),
-            serde_json::json!(["id", "subclassOf", "parentProps", "childProps"]),
-        );
-
-        // vals: each entry is [sid, [subclass_of], [parent_props], [child_props]]
-        // Sorted by SID for determinism
-        let mut sorted_vals: Vec<_> = schema.pred.vals.iter().collect();
-        sorted_vals.sort_by(|a, b| a.id.cmp(&b.id));
-
-        let vals_array: Vec<serde_json::Value> = sorted_vals.iter().map(|entry| {
-            // Sort inner SID vectors for determinism
-            let mut subclass_sorted: Vec<_> = entry.subclass_of.iter().collect();
-            subclass_sorted.sort();
-            let subclass_of: Vec<serde_json::Value> = subclass_sorted.iter()
-                .map(|sid| serialize_sid(sid))
-                .collect();
-
-            let mut parent_sorted: Vec<_> = entry.parent_props.iter().collect();
-            parent_sorted.sort();
-            let parent_props: Vec<serde_json::Value> = parent_sorted.iter()
-                .map(|sid| serialize_sid(sid))
-                .collect();
-
-            let mut child_sorted: Vec<_> = entry.child_props.iter().collect();
-            child_sorted.sort();
-            let child_props: Vec<serde_json::Value> = child_sorted.iter()
-                .map(|sid| serialize_sid(sid))
-                .collect();
-
-            serde_json::json!([
-                serialize_sid(&entry.id),
-                subclass_of,
-                parent_props,
-                child_props
-            ])
-        }).collect();
-        pred_obj.insert("vals".to_string(), serde_json::Value::Array(vals_array));
-
-        schema_obj.insert("pred".to_string(), serde_json::Value::Object(pred_obj));
-        root_obj.insert("schema".to_string(), serde_json::Value::Object(schema_obj));
-    }
-
-    // Garbage reference - just the address
-    if let Some(ref garbage) = root.garbage {
-        let mut garbage_obj = serde_json::Map::new();
-        garbage_obj.insert(
-            "address".to_string(),
-            serde_json::Value::String(garbage.address.clone()),
-        );
-        root_obj.insert("garbage".to_string(), serde_json::Value::Object(garbage_obj));
-    }
-
-    serde_json::to_vec(&serde_json::Value::Object(root_obj)).map_err(Into::into)
-}
 
 #[cfg(test)]
 mod tests {
@@ -2288,33 +1996,6 @@ mod tests {
         assert_eq!(flakes[2].t, 102);
     }
 
-    #[test]
-    fn test_deserialize_branch_node() {
-        let json = r#"{
-            "children": [
-                {
-                    "id": "child1",
-                    "leaf": true,
-                    "first": [[1, "a"], [2, "p"], "v", [3, "s"], 1, true, null],
-                    "size": 100,
-                    "leftmost?": true
-                },
-                {
-                    "id": "child2",
-                    "leaf": false,
-                    "size": 200
-                }
-            ]
-        }"#;
-
-        let children = parse_branch_node(json.as_bytes().to_vec()).unwrap();
-        assert_eq!(children.len(), 2);
-        assert_eq!(children[0].id, "child1");
-        assert!(children[0].leaf);
-        assert!(children[0].leftmost);
-        assert_eq!(children[1].id, "child2");
-        assert!(!children[1].leaf);
-    }
 
     #[test]
     fn test_deserialize_db_root() {
@@ -2482,297 +2163,7 @@ mod tests {
         assert!(!parsed[4].op); // retraction
     }
 
-    #[test]
-    fn test_serialize_branch_node_roundtrip() {
-        use crate::flake::Flake;
-        use crate::index::ChildRef;
-        use crate::sid::Sid;
-        use crate::value::FlakeValue;
 
-        let children = vec![
-            ChildRef {
-                id: "child1".to_string(),
-                leaf: true,
-                first: Some(Flake::new(
-                    Sid::new(1, "a"),
-                    Sid::new(2, "p"),
-                    FlakeValue::String("v".to_string()),
-                    Sid::new(3, "string"),
-                    1,
-                    true,
-                    None,
-                )),
-                rhs: None,
-                size: 100,
-                bytes: Some(500),
-                leftmost: true,
-            },
-            ChildRef {
-                id: "child2".to_string(),
-                leaf: false,
-                first: None,
-                rhs: None,
-                size: 200,
-                bytes: None,
-                leftmost: false,
-            },
-        ];
 
-        let bytes = serialize_branch_node(&children).unwrap();
-        let parsed = parse_branch_node(bytes.clone()).unwrap();
 
-        assert_eq!(parsed.len(), 2);
-        assert_eq!(parsed[0].id, "child1");
-        assert!(parsed[0].leaf);
-        assert!(parsed[0].leftmost);
-        assert_eq!(parsed[0].size, 100);
-        assert!(parsed[0].first.is_some());
-
-        assert_eq!(parsed[1].id, "child2");
-        assert!(!parsed[1].leaf);
-        assert_eq!(parsed[1].size, 200);
-    }
-
-    #[test]
-    fn test_serialize_db_root_roundtrip() {
-        use crate::index::ChildRef;
-        use std::collections::HashMap;
-
-        let mut namespace_codes = HashMap::new();
-        namespace_codes.insert(0, "".to_string());
-        namespace_codes.insert(1, "@".to_string());
-        namespace_codes.insert(2, "http://www.w3.org/2001/XMLSchema#".to_string());
-        namespace_codes.insert(100, "http://example.org/".to_string());
-
-        let root = DbRoot {
-            alias: "test/main".to_string(),
-            t: 42,
-            version: 2,
-            namespace_codes,
-            spot: Some(ChildRef {
-                id: "spot-root".to_string(),
-                leaf: false,
-                first: None,
-                rhs: None,
-                size: 1000,
-                bytes: Some(2000),
-                leftmost: true,
-            }),
-            psot: Some(ChildRef {
-                id: "psot-root".to_string(),
-                leaf: false,
-                first: None,
-                rhs: None,
-                size: 1000,
-                bytes: None,
-                leftmost: true,
-            }),
-            post: None,
-            opst: None,
-            tspo: None,
-            timestamp: Some(1234567890),
-            stats: Some(DbRootStats {
-                flakes: 5000,
-                size: 123456,
-                properties: None,
-                classes: None,
-                graphs: None,
-            }),
-            config: Some(DbRootConfig {
-                reindex_min_bytes: Some(1000000),
-                reindex_max_bytes: Some(10000000),
-                max_old_indexes: Some(5),
-                min_time_garbage_mins: Some(30),
-            }),
-            prev_index: Some(PrevIndexRef {
-                t: 41,
-                address: "fluree:file://test/index/root/prev.json".to_string(),
-            }),
-            schema: Some(DbRootSchema {
-                t: 42,
-                pred: SchemaPredicates {
-                    keys: vec![
-                        "id".to_string(),
-                        "subclassOf".to_string(),
-                        "parentProps".to_string(),
-                        "childProps".to_string(),
-                    ],
-                    vals: vec![
-                        SchemaPredicateInfo {
-                            id: Sid::new(100, "Person"),
-                            subclass_of: vec![Sid::new(100, "Thing")],
-                            parent_props: vec![],
-                            child_props: vec![],
-                        },
-                        SchemaPredicateInfo {
-                            id: Sid::new(100, "name"),
-                            subclass_of: vec![],
-                            parent_props: vec![],
-                            child_props: vec![],
-                        },
-                    ],
-                },
-            }),
-            garbage: Some(GarbageRef {
-                address: "fluree:file://test/main/index/garbage/t42.json".to_string(),
-            }),
-        };
-
-        let bytes = serialize_db_root(&root).unwrap();
-        let parsed = parse_db_root(bytes.clone()).unwrap();
-
-        assert_eq!(parsed.alias, "test/main");
-        assert_eq!(parsed.t, 42);
-        assert_eq!(parsed.version, 2);
-        assert_eq!(parsed.namespace_codes.len(), 4);
-        assert_eq!(parsed.namespace_codes.get(&100), Some(&"http://example.org/".to_string()));
-        assert!(parsed.spot.is_some());
-        assert_eq!(parsed.spot.as_ref().unwrap().id, "spot-root");
-        assert!(parsed.psot.is_some());
-        assert!(parsed.post.is_none());
-
-        // Verify stats
-        assert!(parsed.stats.is_some());
-        let stats = parsed.stats.unwrap();
-        assert_eq!(stats.flakes, 5000);
-        assert_eq!(stats.size, 123456);
-
-        // Verify config
-        assert!(parsed.config.is_some());
-        let config = parsed.config.unwrap();
-        assert_eq!(config.reindex_min_bytes, Some(1000000));
-        assert_eq!(config.reindex_max_bytes, Some(10000000));
-        assert_eq!(config.max_old_indexes, Some(5));
-
-        // Verify prev_index
-        assert!(parsed.prev_index.is_some());
-        let prev = parsed.prev_index.unwrap();
-        assert_eq!(prev.t, 41);
-        assert_eq!(prev.address, "fluree:file://test/index/root/prev.json");
-
-        // Verify schema
-        assert!(parsed.schema.is_some());
-        let schema = parsed.schema.unwrap();
-        assert_eq!(schema.t, 42);
-        assert_eq!(schema.pred.keys.len(), 4);
-        assert_eq!(schema.pred.keys[0], "id");
-        assert_eq!(schema.pred.keys[1], "subclassOf");
-        assert_eq!(schema.pred.vals.len(), 2);
-        // Vals are sorted by SID, so "Person" comes before "name"
-        assert_eq!(schema.pred.vals[0].id.name.as_ref(), "Person");
-        assert_eq!(schema.pred.vals[0].subclass_of.len(), 1);
-        assert_eq!(schema.pred.vals[0].subclass_of[0].name.as_ref(), "Thing");
-        assert_eq!(schema.pred.vals[1].id.name.as_ref(), "name");
-
-        // Verify garbage
-        assert!(parsed.garbage.is_some());
-        let garbage = parsed.garbage.unwrap();
-        assert_eq!(garbage.address, "fluree:file://test/main/index/garbage/t42.json");
-    }
-
-    #[test]
-    fn test_serialize_db_root_deterministic() {
-        use std::collections::HashMap;
-
-        // Create two identical roots with namespace_codes inserted in different order
-        let mut ns1 = HashMap::new();
-        ns1.insert(100, "http://a.org/".to_string());
-        ns1.insert(50, "http://b.org/".to_string());
-        ns1.insert(200, "http://c.org/".to_string());
-
-        let mut ns2 = HashMap::new();
-        ns2.insert(200, "http://c.org/".to_string());
-        ns2.insert(100, "http://a.org/".to_string());
-        ns2.insert(50, "http://b.org/".to_string());
-
-        let root1 = DbRoot {
-            alias: "test".to_string(),
-            t: 1,
-            version: 2,
-            namespace_codes: ns1,
-            spot: None,
-            psot: None,
-            post: None,
-            opst: None,
-            tspo: None,
-            timestamp: None,
-            stats: None,
-            config: None,
-            prev_index: None,
-            schema: None,
-            garbage: None,
-        };
-
-        let root2 = DbRoot {
-            alias: "test".to_string(),
-            t: 1,
-            version: 2,
-            namespace_codes: ns2,
-            spot: None,
-            psot: None,
-            post: None,
-            opst: None,
-            tspo: None,
-            timestamp: None,
-            stats: None,
-            config: None,
-            prev_index: None,
-            schema: None,
-            garbage: None,
-        };
-
-        let bytes1 = serialize_db_root(&root1).unwrap();
-        let bytes2 = serialize_db_root(&root2).unwrap();
-
-        // Serialization should be identical regardless of insertion order
-        assert_eq!(bytes1, bytes2, "Serialization should be deterministic");
-    }
-
-    #[test]
-    fn test_serialize_db_root_numeric_key_ordering() {
-        use std::collections::HashMap;
-
-        // Use keys that would sort differently lexicographically vs numerically
-        // Lexicographic: "1", "10", "2", "3"
-        // Numeric:       1, 2, 3, 10
-        let mut ns = HashMap::new();
-        ns.insert(10, "http://ten.org/".to_string());
-        ns.insert(1, "http://one.org/".to_string());
-        ns.insert(3, "http://three.org/".to_string());
-        ns.insert(2, "http://two.org/".to_string());
-
-        let root = DbRoot {
-            alias: "test".to_string(),
-            t: 1,
-            version: 2,
-            namespace_codes: ns,
-            spot: None,
-            psot: None,
-            post: None,
-            opst: None,
-            tspo: None,
-            timestamp: None,
-            stats: None,
-            config: None,
-            prev_index: None,
-            schema: None,
-            garbage: None,
-        };
-
-        let bytes = serialize_db_root(&root).unwrap();
-        let json_str = String::from_utf8(bytes).unwrap();
-
-        // The keys should appear in numeric order: 1, 2, 3, 10
-        // NOT lexicographic order: 1, 10, 2, 3
-        let pos_1 = json_str.find("\"1\":").expect("key 1 not found");
-        let pos_2 = json_str.find("\"2\":").expect("key 2 not found");
-        let pos_3 = json_str.find("\"3\":").expect("key 3 not found");
-        let pos_10 = json_str.find("\"10\":").expect("key 10 not found");
-
-        assert!(
-            pos_1 < pos_2 && pos_2 < pos_3 && pos_3 < pos_10,
-            "Keys should be in numeric order (1, 2, 3, 10), not lexicographic (1, 10, 2, 3). JSON: {}",
-            json_str
-        );
-    }
 }

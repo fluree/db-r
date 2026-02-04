@@ -41,12 +41,12 @@ pub use orchestrator::{maybe_refresh_after_commit, require_refresh_before_commit
 pub use stats::{IndexStatsHook, NoOpStatsHook, StatsArtifacts, StatsSummary};
 pub use gc::{
     CleanGarbageConfig, CleanGarbageResult, GarbageRecord, GarbageRef,
-    clean_garbage, collect_garbage_addresses, load_garbage_record, write_garbage_record,
+    clean_garbage, load_garbage_record, write_garbage_record,
     DEFAULT_MAX_OLD_INDEXES, DEFAULT_MIN_TIME_GARBAGE_MINS,
 };
 
 // Note: The following types/functions are defined in this module and are automatically public:
-// - build_index_for_ledger (heavy bounds: Storage + Send), refresh_index_for_ledger (light bounds)
+// - build_index_for_ledger (heavy bounds: Storage + Send)
 // - BatchedRebuildConfig, BatchedRebuildResult, batched_rebuild_from_commits, batched_rebuild_resume
 // - ReindexCheckpoint, IndexerConfigSnapshot, checkpoint_address, load_checkpoint, write_checkpoint, delete_checkpoint
 // - ReindexProgress, ProgressCallback (for observability)
@@ -532,48 +532,6 @@ where
     Err(IndexerError::BTreePipelineRemoved)
 }
 
-/// Refresh-only entry point with lighter trait bounds
-///
-/// **Note**: The b-tree index pipeline has been removed. This function currently
-/// returns an error unless the index is already current. It will be rewired
-/// to the binary index pipeline.
-pub async fn refresh_index_for_ledger<S, N>(
-    _storage: &S,
-    nameservice: &N,
-    alias: &str,
-    _config: IndexerConfig,
-) -> Result<IndexResult>
-where
-    S: Storage + StorageWrite + ContentAddressedWrite + Sync + Clone + 'static,
-    N: NameService,
-{
-    // Look up the ledger record
-    let record = nameservice
-        .lookup(alias)
-        .await
-        .map_err(|e| IndexerError::NameService(e.to_string()))?
-        .ok_or_else(|| IndexerError::LedgerNotFound(alias.to_string()))?;
-
-    // Require an existing index
-    let index_addr = record
-        .index_address
-        .as_ref()
-        .ok_or_else(|| IndexerError::NoIndex)?;
-
-    // If index is already current, return it directly (no work needed)
-    if record.index_t >= record.commit_t {
-        return Ok(IndexResult {
-            root_address: index_addr.clone(),
-            index_t: record.index_t,
-            alias: alias.to_string(),
-            stats: IndexStats::default(),
-        });
-    }
-
-    // B-tree refresh pipeline removed. Will be rewired to binary index pipeline.
-    Err(IndexerError::BTreePipelineRemoved)
-}
-
 /// External indexer entry point
 ///
 /// Builds a binary columnar index from the commit chain. The pipeline:
@@ -679,6 +637,7 @@ where
     // Capture values for the blocking task
     let storage = storage.clone();
     let alias = alias.to_string();
+    let prev_root_address = record.index_address.clone();
     let handle = tokio::runtime::Handle::current();
     // Capture the current span so child spans inside spawn_blocking are parented correctly.
     let parent_span = tracing::Span::current();
@@ -802,15 +761,100 @@ where
                 &storage, &alias, &build_results,
             ).await?;
 
-            // D.4: Build v2 root with CAS addresses
-            let root = run_index::BinaryIndexRootV2::from_cas_artifacts(
+            // D.4: Build stats JSON for the planner (RawDbRootStats format).
+            // Use the SPOT build result for per-graph flake counts (all orders
+            // index the same data, just in different sort orders).
+            let stats_json = {
+                let (_, spot_result) = build_results
+                    .iter()
+                    .find(|(order, _)| *order == run_index::RunSortOrder::Spot)
+                    .expect("SPOT index must always be present in build results");
+
+                let graph_stats: Vec<serde_json::Value> = spot_result
+                    .graphs
+                    .iter()
+                    .map(|g| {
+                        serde_json::json!({
+                            "g_id": g.g_id,
+                            "flakes": g.total_rows,
+                            "size": 0
+                        })
+                    })
+                    .collect();
+
+                let total_flakes: u64 = spot_result
+                    .graphs
+                    .iter()
+                    .map(|g| g.total_rows)
+                    .sum();
+
+                serde_json::json!({
+                    "flakes": total_flakes,
+                    "size": 0,
+                    "graphs": graph_stats
+                })
+            };
+
+            // D.5: Build v2 root with CAS addresses and stats (initially without GC fields)
+            let mut root = run_index::BinaryIndexRootV2::from_cas_artifacts(
                 &alias,
                 store.max_t(),
                 store.base_t(),
                 store.namespace_codes(),
                 dict_addresses,
                 graph_addresses,
+                Some(stats_json),
+                None, // schema: requires predicate definitions (future)
+                None, // prev_index: set below after garbage computation
+                None, // garbage: set below after garbage computation
             );
+
+            // D.5.1: Compute garbage and link prev_index for GC chain.
+            //
+            // Strategy: use all_cas_addresses() on both old and new roots to
+            // compute the set difference. This guarantees both sides use the
+            // same enumeration method, eliminating divergence risk.
+            if let Some(prev_addr) = prev_root_address.as_deref() {
+                // Try to load the previous root as a v2 binary root.
+                // If it's a v1 or legacy DbRoot, skip GC linking — mixed-format
+                // chains will start a fresh GC chain from this root.
+                let prev_bytes = storage.read_bytes(prev_addr).await.ok();
+                let prev_root = prev_bytes
+                    .as_deref()
+                    .and_then(|b| run_index::BinaryIndexRootV2::from_json_bytes(b).ok());
+
+                if let Some(prev) = prev_root {
+                    let old_addrs: std::collections::HashSet<String> =
+                        prev.all_cas_addresses().into_iter().collect();
+                    let new_addrs: std::collections::HashSet<String> =
+                        root.all_cas_addresses().into_iter().collect();
+                    let garbage_addrs: Vec<String> =
+                        old_addrs.difference(&new_addrs).cloned().collect();
+
+                    let garbage_count = garbage_addrs.len();
+
+                    root.garbage = gc::write_garbage_record(
+                        &storage,
+                        &alias,
+                        store.max_t(),
+                        garbage_addrs,
+                    )
+                    .await
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?
+                    .map(|r| run_index::BinaryGarbageRef { address: r.address });
+
+                    root.prev_index = Some(run_index::BinaryPrevIndexRef {
+                        t: prev.index_t,
+                        address: prev_addr.to_string(),
+                    });
+
+                    tracing::info!(
+                        prev_t = prev.index_t,
+                        garbage_count,
+                        "GC chain linked to previous binary index root"
+                    );
+                }
+            }
 
             tracing::info!(
                 index_t = root.index_t,
@@ -819,7 +863,7 @@ where
                 "binary index built (v2), writing CAS root"
             );
 
-            // D.5: Write root to CAS (auto-hash of canonical compact JSON)
+            // D.6: Write root to CAS (auto-hash of canonical compact JSON)
             let root_bytes = root
                 .to_json_bytes()
                 .map_err(|e| IndexerError::Serialization(e.to_string()))?;

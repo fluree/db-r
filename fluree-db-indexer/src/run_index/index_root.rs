@@ -190,6 +190,33 @@ pub struct GraphAddresses {
 }
 
 // ============================================================================
+// GC chain types (prev_index / garbage)
+// ============================================================================
+
+/// Reference to the previous index root in the GC chain.
+///
+/// The garbage collector walks this chain backwards to determine which roots
+/// (and their associated CAS artifacts) are eligible for deletion.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BinaryPrevIndexRef {
+    /// `index_t` of the previous root.
+    pub t: i64,
+    /// CAS address of the previous root JSON blob.
+    pub address: String,
+}
+
+/// Reference to this root's garbage manifest.
+///
+/// The garbage manifest lists CAS addresses that were replaced when building
+/// this root from the previous one. The GC collector reads this to know which
+/// objects to delete when this root ages out of the retention window.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BinaryGarbageRef {
+    /// CAS address of the garbage record JSON blob.
+    pub address: String,
+}
+
+// ============================================================================
 // BinaryIndexRootV2 (CAS-4)
 // ============================================================================
 
@@ -238,6 +265,14 @@ pub struct BinaryIndexRootV2 {
     /// Schema hierarchy metadata.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema: Option<serde_json::Value>,
+
+    /// Link to the previous index root (for GC chain traversal).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_index: Option<BinaryPrevIndexRef>,
+
+    /// Link to this root's garbage manifest (CAS addresses replaced by this build).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub garbage: Option<BinaryGarbageRef>,
 }
 
 impl BinaryIndexRootV2 {
@@ -262,6 +297,11 @@ impl BinaryIndexRootV2 {
     }
 
     /// Build a v2 root from CAS upload results.
+    ///
+    /// `stats` and `schema` are optional JSON blobs matching the
+    /// `RawDbRootStats`/`RawDbRootSchema` format from `fluree-db-core`.
+    /// When present, `Db::load()` will parse them into `IndexStats`/`IndexSchema`
+    /// for the query planner.
     pub fn from_cas_artifacts(
         ledger_alias: &str,
         index_t: i64,
@@ -269,6 +309,10 @@ impl BinaryIndexRootV2 {
         namespace_codes: &HashMap<i32, String>,
         dict_addresses: DictAddresses,
         graph_addresses: Vec<GraphAddresses>,
+        stats: Option<serde_json::Value>,
+        schema: Option<serde_json::Value>,
+        prev_index: Option<BinaryPrevIndexRef>,
+        garbage: Option<BinaryGarbageRef>,
     ) -> Self {
         let ns_codes: BTreeMap<i32, String> = namespace_codes
             .iter()
@@ -291,9 +335,56 @@ impl BinaryIndexRootV2 {
             graphs,
             namespace_codes: ns_codes,
             dict_addresses,
-            stats: None,
-            schema: None,
+            stats,
+            schema,
+            prev_index,
+            garbage,
         }
+    }
+
+    /// Collect all CAS content-artifact addresses referenced by this root.
+    ///
+    /// Includes: dict artifacts (11 standard + numbig), branch manifests, and
+    /// leaf files for every graph × order. Does NOT include the root's own
+    /// address or the garbage manifest address — those are managed by the GC
+    /// chain (prev_index / garbage pointers).
+    ///
+    /// Returns a sorted, deduplicated `Vec<String>`.
+    pub fn all_cas_addresses(&self) -> Vec<String> {
+        let mut addrs = Vec::new();
+
+        // Dict artifacts (11 standard)
+        let d = &self.dict_addresses;
+        addrs.push(d.predicates.clone());
+        addrs.push(d.graphs.clone());
+        addrs.push(d.datatypes.clone());
+        addrs.push(d.languages.clone());
+        addrs.push(d.subject_forward.clone());
+        addrs.push(d.subject_index.clone());
+        addrs.push(d.subject_reverse.clone());
+        addrs.push(d.string_forward.clone());
+        addrs.push(d.string_index.clone());
+        addrs.push(d.string_reverse.clone());
+        addrs.push(d.namespaces.clone());
+
+        // Per-predicate numbig arenas
+        for addr in d.numbig.values() {
+            addrs.push(addr.clone());
+        }
+
+        // Per-graph, per-order branches + leaves
+        for graph in &self.graphs {
+            for order_addrs in graph.orders.values() {
+                addrs.push(order_addrs.branch.clone());
+                for leaf in &order_addrs.leaves {
+                    addrs.push(leaf.clone());
+                }
+            }
+        }
+
+        addrs.sort();
+        addrs.dedup();
+        addrs
     }
 }
 
@@ -418,6 +509,8 @@ mod tests {
             dict_addresses: sample_dict_addresses(),
             stats: None,
             schema: None,
+            prev_index: None,
+            garbage: None,
         };
 
         let bytes = root.to_json_bytes().expect("serialize");
@@ -450,9 +543,11 @@ mod tests {
 
         let root1 = BinaryIndexRootV2::from_cas_artifacts(
             "test/main", 42, 1, &ns, sample_dict_addresses(), graph_addrs.clone(),
+            None, None, None, None,
         );
         let root2 = BinaryIndexRootV2::from_cas_artifacts(
             "test/main", 42, 1, &ns, sample_dict_addresses(), graph_addrs,
+            None, None, None, None,
         );
 
         let bytes1 = root1.to_json_bytes().unwrap();
@@ -488,6 +583,7 @@ mod tests {
     fn parse_index_root_v2() {
         let root = BinaryIndexRootV2::from_cas_artifacts(
             "x", 0, 0, &HashMap::new(), sample_dict_addresses(), vec![],
+            None, None, None, None,
         );
         let bytes = root.to_json_bytes().unwrap();
         let result = parse_index_root(&bytes).unwrap();
@@ -499,5 +595,134 @@ mod tests {
         let json = r#"{"version": 99}"#;
         let result = parse_index_root(json.as_bytes());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn v2_stats_round_trip() {
+        let stats = serde_json::json!({
+            "flakes": 12345,
+            "size": 0,
+            "graphs": [{"g_id": 1, "flakes": 10000, "size": 0}]
+        });
+        let root = BinaryIndexRootV2::from_cas_artifacts(
+            "test/main", 42, 1, &HashMap::new(), sample_dict_addresses(), vec![],
+            Some(stats.clone()), None, None, None,
+        );
+
+        // Round-trip through JSON
+        let bytes = root.to_json_bytes().unwrap();
+        let parsed = BinaryIndexRootV2::from_json_bytes(&bytes).unwrap();
+        assert_eq!(parsed.stats, Some(stats));
+        assert_eq!(parsed.schema, None);
+    }
+
+    #[test]
+    fn v2_stats_parseable_as_raw_db_root_stats() {
+        // Verify the stats JSON we produce is compatible with RawDbRootStats
+        let stats = serde_json::json!({
+            "flakes": 12345,
+            "size": 0,
+            "graphs": [{"g_id": 1, "flakes": 10000, "size": 0}]
+        });
+        let raw: fluree_db_core::serde::json::RawDbRootStats =
+            serde_json::from_value(stats).unwrap();
+        assert_eq!(raw.flakes, Some(12345));
+        assert_eq!(raw.graphs.as_ref().unwrap().len(), 1);
+        assert_eq!(raw.graphs.as_ref().unwrap()[0].g_id, 1);
+        assert_eq!(raw.graphs.as_ref().unwrap()[0].flakes, 10000);
+    }
+
+    #[test]
+    fn all_cas_addresses_collects_all_artifacts() {
+        let mut numbig = BTreeMap::new();
+        numbig.insert("5".to_string(), "cas://numbig_5".into());
+        numbig.insert("12".to_string(), "cas://numbig_12".into());
+
+        let dicts = DictAddresses {
+            predicates: "cas://pred".into(),
+            graphs: "cas://graphs".into(),
+            datatypes: "cas://dt".into(),
+            languages: "cas://lang".into(),
+            subject_forward: "cas://sf".into(),
+            subject_index: "cas://si".into(),
+            subject_reverse: "cas://sr".into(),
+            string_forward: "cas://stf".into(),
+            string_index: "cas://sti".into(),
+            string_reverse: "cas://str".into(),
+            namespaces: "cas://ns".into(),
+            numbig,
+        };
+
+        let graph_addrs = vec![GraphAddresses {
+            g_id: 0,
+            orders: {
+                let mut m = BTreeMap::new();
+                m.insert("spot".into(), GraphOrderAddresses {
+                    branch: "cas://g0_spot_br".into(),
+                    leaves: vec!["cas://g0_spot_l0".into(), "cas://g0_spot_l1".into()],
+                });
+                m.insert("psot".into(), GraphOrderAddresses {
+                    branch: "cas://g0_psot_br".into(),
+                    leaves: vec!["cas://g0_psot_l0".into()],
+                });
+                m
+            },
+        }];
+
+        let root = BinaryIndexRootV2::from_cas_artifacts(
+            "test/main", 10, 1, &HashMap::new(), dicts, graph_addrs,
+            None, None, None, None,
+        );
+
+        let addrs = root.all_cas_addresses();
+
+        // 11 standard dicts + 2 numbig + 2 branches + 3 leaves = 18
+        assert_eq!(addrs.len(), 18);
+
+        // Verify sorted
+        for w in addrs.windows(2) {
+            assert!(w[0] <= w[1], "not sorted: {} > {}", w[0], w[1]);
+        }
+
+        // Spot-check specific addresses
+        assert!(addrs.contains(&"cas://pred".to_string()));
+        assert!(addrs.contains(&"cas://numbig_5".to_string()));
+        assert!(addrs.contains(&"cas://g0_spot_br".to_string()));
+        assert!(addrs.contains(&"cas://g0_spot_l1".to_string()));
+        assert!(addrs.contains(&"cas://g0_psot_l0".to_string()));
+    }
+
+    #[test]
+    fn v2_round_trip_with_gc_fields() {
+        let root = BinaryIndexRootV2::from_cas_artifacts(
+            "test/main", 42, 1, &HashMap::new(), sample_dict_addresses(), vec![],
+            None, None,
+            Some(BinaryPrevIndexRef { t: 40, address: "cas://prev_root".into() }),
+            Some(BinaryGarbageRef { address: "cas://garbage_record".into() }),
+        );
+
+        let bytes = root.to_json_bytes().unwrap();
+        let parsed = BinaryIndexRootV2::from_json_bytes(&bytes).unwrap();
+        assert_eq!(parsed.prev_index.as_ref().unwrap().t, 40);
+        assert_eq!(parsed.prev_index.as_ref().unwrap().address, "cas://prev_root");
+        assert_eq!(parsed.garbage.as_ref().unwrap().address, "cas://garbage_record");
+    }
+
+    #[test]
+    fn v2_round_trip_without_gc_fields() {
+        // When prev_index and garbage are None, they should not appear in JSON
+        let root = BinaryIndexRootV2::from_cas_artifacts(
+            "test/main", 42, 1, &HashMap::new(), sample_dict_addresses(), vec![],
+            None, None, None, None,
+        );
+
+        let bytes = root.to_json_bytes().unwrap();
+        let json_str = std::str::from_utf8(&bytes).unwrap();
+        assert!(!json_str.contains("prev_index"), "None prev_index should be skipped");
+        assert!(!json_str.contains("garbage"), "None garbage should be skipped");
+
+        let parsed = BinaryIndexRootV2::from_json_bytes(&bytes).unwrap();
+        assert_eq!(parsed.prev_index, None);
+        assert_eq!(parsed.garbage, None);
     }
 }

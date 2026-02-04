@@ -478,7 +478,7 @@ impl BinaryIndexStore {
         cache_dir: &Path,
         leaflet_cache: Option<Arc<LeafletCache>>,
     ) -> io::Result<Self> {
-        let _span = tracing::info_span!("BinaryIndexStore::load_from_root").entered();
+        tracing::info!("BinaryIndexStore::load_from_root starting");
 
         std::fs::create_dir_all(cache_dir)?;
 
@@ -1620,15 +1620,13 @@ impl BinaryIndexStore {
         s_id: u32,
         p_id: Option<u32>,
     ) -> io::Result<Vec<Flake>> {
-        let branch = match self.branch_for_order(g_id, RunSortOrder::Spot) {
-            Some(b) => b,
-            None => return Ok(Vec::new()),
-        };
+        let branch = self
+            .branch_for_order(g_id, RunSortOrder::Spot)
+            .expect("SPOT index must exist for every graph");
 
-        let _leaf_dir = match self.leaf_dir_for_order(g_id, RunSortOrder::Spot) {
-            Some(d) => d,
-            None => return Ok(Vec::new()),
-        };
+        let _leaf_dir = self
+            .leaf_dir_for_order(g_id, RunSortOrder::Spot)
+            .expect("SPOT leaf dir must exist for every graph");
 
         let leaf_range = branch.find_leaves_for_subject(g_id, s_id);
         let mut flakes = Vec::new();

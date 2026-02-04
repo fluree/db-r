@@ -16,11 +16,8 @@ use crate::pattern::{Term, TriplePattern};
 use crate::reasoning::ReasoningOverlay;
 use crate::rewrite_owl_ql::Ontology;
 use crate::var_registry::VarRegistry;
-#[cfg(feature = "native")]
-use fluree_db_core::OverlayProvider;
-#[cfg(feature = "native")]
-use fluree_db_core::PrefetchService;
 use fluree_db_core::{Db, StatsView, Storage, Tracker};
+use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_reasoner::DerivedFactsOverlay;
 use std::sync::Arc;
 use std::time::Instant;
@@ -375,23 +372,13 @@ pub struct ContextConfig<'a, 'b, S: Storage + 'static> {
     pub history_mode: bool,
     /// When true, bind evaluation errors become query errors.
     pub strict_bind_errors: bool,
-    /// Prefetch resources for background cache warming (native only).
+    /// Binary columnar index store for `BinaryScanOperator`.
     ///
-    /// When provided, the execution context will use these to prefetch upcoming
-    /// index nodes during query execution.
-    #[cfg(feature = "native")]
-    pub prefetch: Option<PrefetchResources<S>>,
-}
-
-/// Resources needed for prefetch (native only).
-#[cfg(feature = "native")]
-pub struct PrefetchResources<S: Storage + 'static> {
-    /// The prefetch service (shared across queries)
-    pub service: Arc<PrefetchService<S>>,
-    /// Arc-wrapped database for `'static` lifetime in spawned tasks
-    pub db: Arc<Db<S>>,
-    /// Arc-wrapped overlay for `'static` lifetime in spawned tasks
-    pub overlay: Arc<dyn OverlayProvider>,
+    /// This is the explicit path — separate from `Db.range_provider` which
+    /// serves the transparent `range_with_overlay()` callers.
+    pub binary_store: Option<Arc<BinaryIndexStore>>,
+    /// Graph ID for binary index lookups (default 0 = default graph).
+    pub binary_g_id: u32,
 }
 
 impl<'a, 'b, S: Storage + 'static> Default for ContextConfig<'a, 'b, S> {
@@ -405,8 +392,8 @@ impl<'a, 'b, S: Storage + 'static> Default for ContextConfig<'a, 'b, S> {
             vector_provider: None,
             history_mode: false,
             strict_bind_errors: false,
-            #[cfg(feature = "native")]
-            prefetch: None,
+            binary_store: None,
+            binary_g_id: 0,
         }
     }
 }
@@ -464,9 +451,8 @@ pub async fn execute_prepared<'a, 'b, S: Storage + 'static>(
     if config.strict_bind_errors {
         ctx = ctx.with_strict_bind_errors();
     }
-    #[cfg(feature = "native")]
-    if let Some(prefetch) = config.prefetch {
-        ctx = ctx.with_prefetch_resources(prefetch.service, prefetch.db, prefetch.overlay);
+    if let Some(store) = config.binary_store {
+        ctx = ctx.with_binary_store(store, config.binary_g_id);
     }
 
     run_operator(prepared.operator, &ctx).await
@@ -582,41 +568,6 @@ pub async fn execute_prepared_with_r2rml<'a, 'b, S: Storage + 'static>(
             tracker: Some(tracker),
             r2rml: Some((r2rml_provider, r2rml_table_provider)),
             strict_bind_errors: true,
-            ..Default::default()
-        },
-    )
-    .await
-}
-
-/// Execute with R2RML providers and background prefetch (native only).
-///
-/// This is the same as `execute_prepared_with_r2rml` but includes prefetch resources
-/// for warming the index cache during query execution.
-#[cfg(feature = "native")]
-pub async fn execute_prepared_with_r2rml_prefetch<'a, 'b, S: Storage + 'static>(
-    db: &Db<S>,
-    vars: &VarRegistry,
-    overlay: &'a dyn fluree_db_core::OverlayProvider,
-    prepared: PreparedExecution<S>,
-    to_t: i64,
-    from_t: Option<i64>,
-    tracker: &'a Tracker,
-    r2rml_provider: &'b dyn crate::r2rml::R2rmlProvider,
-    r2rml_table_provider: &'b dyn crate::r2rml::R2rmlTableProvider,
-    prefetch: PrefetchResources<S>,
-) -> Result<Vec<Batch>> {
-    execute_prepared(
-        db,
-        vars,
-        overlay,
-        prepared,
-        to_t,
-        from_t,
-        ContextConfig {
-            tracker: Some(tracker),
-            r2rml: Some((r2rml_provider, r2rml_table_provider)),
-            strict_bind_errors: true,
-            prefetch: Some(prefetch),
             ..Default::default()
         },
     )

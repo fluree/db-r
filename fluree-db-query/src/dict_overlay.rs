@@ -15,9 +15,11 @@
 //! let iri = overlay.resolve_subject_iri(s_id)?;
 //! ```
 
+use fluree_db_core::flake::FlakeMeta;
 use fluree_db_core::sid::Sid;
 use fluree_db_core::value::FlakeValue;
 use fluree_db_core::value_id::{ObjKind, ObjKey};
+use fluree_db_indexer::run_index::run_record::NO_LIST_INDEX;
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::collections::HashMap;
 use std::io;
@@ -522,6 +524,40 @@ impl DictOverlay {
             .get(dt_id as usize)
             .cloned()
             .unwrap_or_else(|| Sid::new(0, ""))
+    }
+
+    /// Decode lang_id and i_val into FlakeMeta.
+    ///
+    /// Handles both persisted lang_ids (delegated to store) and ephemeral
+    /// lang_ids allocated by `assign_lang_id()`.
+    pub fn decode_meta(&self, lang_id: u16, i_val: i32) -> Option<FlakeMeta> {
+        let has_lang = lang_id != 0;
+        let has_idx = i_val != NO_LIST_INDEX;
+
+        if !has_lang && !has_idx {
+            return None;
+        }
+
+        let mut meta = FlakeMeta::new();
+        if has_lang {
+            let ephemeral_start = self.base_lang_count + 1;
+            let tag = if lang_id < ephemeral_start {
+                // Persisted lang_id — delegate to store
+                self.store.decode_meta(lang_id, NO_LIST_INDEX)
+                    .and_then(|m| m.lang)
+            } else {
+                // Ephemeral lang_id
+                let idx = (lang_id - ephemeral_start) as usize;
+                self.ext_lang_tag_values.get(idx).cloned()
+            };
+            if let Some(tag) = tag {
+                meta = FlakeMeta::with_lang(tag);
+            }
+        }
+        if has_idx {
+            meta.i = Some(i_val);
+        }
+        Some(meta)
     }
 }
 

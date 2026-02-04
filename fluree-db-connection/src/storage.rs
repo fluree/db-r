@@ -1,8 +1,8 @@
 //! Storage and cache factory functions
 
-use crate::config::{CacheConfig, StorageConfig, StorageType};
+use crate::config::{StorageConfig, StorageType};
 use crate::error::{ConnectionError, Result};
-use fluree_db_core::{MemoryStorage, SimpleCache};
+use fluree_db_core::MemoryStorage;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 use fluree_db_core::FileStorage;
 
@@ -15,16 +15,6 @@ pub fn create_memory_storage() -> MemoryStorage {
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub fn create_file_storage(base_path: &str) -> FileStorage {
     FileStorage::new(base_path)
-}
-
-/// Create a cache instance from configuration
-pub fn create_cache(config: &CacheConfig) -> SimpleCache {
-    SimpleCache::new(config.max_entries)
-}
-
-/// Create a cache instance with specified max entries
-pub fn create_simple_cache(max_entries: usize) -> SimpleCache {
-    SimpleCache::new(max_entries)
 }
 
 /// Validate storage config and return the path for file storage
@@ -55,7 +45,6 @@ pub fn validate_storage_config(config: &StorageConfig) -> Result<Option<&str>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::NodeCache;
     use std::sync::Arc;
 
     #[test]
@@ -122,15 +111,5 @@ mod tests {
         let result = validate_storage_config(&config);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("S3Storage"));
-    }
-
-    #[test]
-    fn test_create_cache() {
-        let config = CacheConfig {
-            max_mb: 100,
-            max_entries: 500,
-        };
-        let cache = create_cache(&config);
-        assert_eq!(cache.len(), 0);
     }
 }

@@ -129,7 +129,7 @@ pub use fluree_db_indexer::{
 // Re-export commonly used types from child crates
 pub use fluree_db_connection::{ConnectionConfig, StorageType};
 pub use fluree_db_core::{
-    ContentAddressedWrite, ContentKind, ContentWriteResult, MemoryStorage, NodeCache,
+    ContentAddressedWrite, ContentKind, ContentWriteResult, MemoryStorage,
     OverlayProvider, Storage, StorageRead, StorageWrite,
 };
 #[cfg(feature = "native")]
@@ -175,11 +175,6 @@ pub use fluree_db_core::{
 };
 
 use fluree_db_connection::Connection;
-#[cfg(feature = "native")]
-use fluree_db_core::{PrefetchService, PrefetchConfig};
-#[cfg(feature = "native")]
-pub use fluree_db_core::prefetch_stats_reset;
-pub use fluree_db_query::scan_stats_reset;
 #[cfg(feature = "native")]
 use fluree_db_nameservice::file::FileNameService;
 use fluree_db_nameservice::memory::MemoryNameService;
@@ -1007,8 +1002,6 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
             nameservice,
             indexing_mode,
             r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
-            #[cfg(feature = "native")]
-            prefetch: PrefetchService::start(PrefetchConfig::default()),
             ledger_manager: None,
         });
     }
@@ -1061,8 +1054,6 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
                 nameservice,
                 indexing_mode,
                 r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
-                #[cfg(feature = "native")]
-                prefetch: PrefetchService::start(PrefetchConfig::default()),
                 ledger_manager: None,
             })
         }
@@ -1135,8 +1126,6 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
                     nameservice,
                     indexing_mode,
                     r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
-                    #[cfg(feature = "native")]
-                    prefetch: PrefetchService::start(PrefetchConfig::default()),
                     ledger_manager: None,
                 })
             }
@@ -1607,8 +1596,6 @@ impl FlureeBuilder {
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
             r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
-            #[cfg(feature = "native")]
-            prefetch: PrefetchService::start(PrefetchConfig::default()),
             ledger_manager,
         })
     }
@@ -1727,8 +1714,6 @@ impl FlureeBuilder {
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
             r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
-            #[cfg(feature = "native")]
-            prefetch: PrefetchService::start(PrefetchConfig::default()),
             ledger_manager: None,
         })
     }
@@ -1761,8 +1746,6 @@ impl FlureeBuilder {
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
             r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
-            #[cfg(feature = "native")]
-            prefetch: PrefetchService::start(PrefetchConfig::disabled()),
             ledger_manager,
         }
     }
@@ -1795,8 +1778,6 @@ impl FlureeBuilder {
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
             r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
-            #[cfg(feature = "native")]
-            prefetch: PrefetchService::start(PrefetchConfig::disabled()),
             ledger_manager: None,
         }
     }
@@ -1860,8 +1841,6 @@ impl FlureeBuilder {
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
             r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
-            #[cfg(feature = "native")]
-            prefetch: PrefetchService::start(PrefetchConfig::default()),
             ledger_manager: None,
         })
     }
@@ -1941,8 +1920,6 @@ impl FlureeBuilder {
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
             r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
-            #[cfg(feature = "native")]
-            prefetch: PrefetchService::start(PrefetchConfig::default()),
             ledger_manager: None,
         })
     }
@@ -1965,12 +1942,6 @@ pub struct Fluree<S: Storage + 'static, N> {
     pub indexing_mode: tx::IndexingMode,
     /// R2RML cache for compiled mappings and table metadata
     r2rml_cache: std::sync::Arc<virtual_graph::R2rmlCache>,
-    /// Background prefetch service for warming index cache (native only)
-    ///
-    /// Automatically warms the cache for upcoming index nodes during query execution.
-    /// This overlaps I/O with CPU-bound leaf parsing for better performance.
-    #[cfg(feature = "native")]
-    prefetch: Arc<PrefetchService<S>>,
     /// Optional ledger manager for connection-level caching
     ///
     /// When enabled via `FlureeBuilder::with_ledger_caching()`, loaded ledgers
@@ -1992,8 +1963,6 @@ where
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
             r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
-            #[cfg(feature = "native")]
-            prefetch: PrefetchService::start(PrefetchConfig::default()),
             ledger_manager: None,
         }
     }
@@ -2009,8 +1978,6 @@ where
             nameservice,
             indexing_mode,
             r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
-            #[cfg(feature = "native")]
-            prefetch: PrefetchService::start(PrefetchConfig::default()),
             ledger_manager: None,
         }
     }
@@ -2317,7 +2284,7 @@ where
     ///
     /// For full termination, the caller should also:
     /// - Abort the maintenance task JoinHandle (if spawned via `spawn_maintenance`)
-    /// - Drop the Fluree instance (stops the indexer worker and prefetch service)
+    /// - Drop the Fluree instance (stops the indexer worker)
     pub async fn disconnect(&self) {
         // 1. Cancel background indexing and wait for idle
         if let tx::IndexingMode::Background(handle) = &self.indexing_mode {

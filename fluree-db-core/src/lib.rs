@@ -28,9 +28,7 @@ pub mod sid;
 pub mod value;
 pub mod flake;
 pub mod comparator;
-pub mod index;
 pub mod storage;
-pub mod cache;
 pub mod error;
 pub mod serde;
 pub mod overlay;
@@ -46,7 +44,6 @@ pub mod temporal;
 pub mod alias;
 pub mod address;
 pub mod address_path;
-pub mod prefetch;
 pub mod coerce;
 pub mod value_id;
 pub mod index_stats;
@@ -62,7 +59,6 @@ pub use alias::{
 };
 pub use flake::{Flake, FlakeMeta};
 pub use comparator::IndexType;
-pub use index::{IndexNode, ChildRef, ResolvedNode};
 pub use storage::{
     ContentAddressedWrite, ContentKind, ContentWriteResult, DictKind, MemoryStorage, ReadHint,
     Storage, StorageRead, StorageWrite,
@@ -71,20 +67,11 @@ pub use storage::{
 };
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use storage::FileStorage;
-pub use cache::{NodeCache, SimpleCache, NoCache, CacheKey, CacheStats};
-#[cfg(all(feature = "native", feature = "moka", feature = "dashmap", not(target_arch = "wasm32")))]
-pub use cache::MokaNodeCache;
 pub use overlay::{OverlayProvider, NoOverlay};
 pub use error::{Error, Result};
 pub use range_provider::RangeProvider;
-pub use range::{range, range_with_overlay, range_bounded_with_overlay, RangeTest, RangeMatch, RangeOptions, ObjectBounds, RangeCursor, MultiSeekCursor, BATCHED_JOIN_SIZE, resolve_node_materialized_with_overlay};
-#[cfg(feature = "native")]
-pub use range::{set_max_concurrent_leaf_parses, DEFAULT_MAX_CONCURRENT_LEAF_PARSES};
-#[cfg(feature = "native")]
-pub use prefetch::{PrefetchService, PrefetchConfig, PrefetchRequest, DEFAULT_PREFETCH_WORKERS, DEFAULT_PREFETCH_QUEUE_DEPTH, prefetch_stats_reset};
-#[cfg(not(feature = "native"))]
-pub use prefetch::{PrefetchService, PrefetchConfig};
-pub use db::{Db, EMPTY_NODE_ID};
+pub use range::{range, range_with_overlay, range_bounded_with_overlay, RangeTest, RangeMatch, RangeOptions, ObjectBounds, BATCHED_JOIN_SIZE};
+pub use db::Db;
 pub use namespaces::{
     default_namespace_codes, is_owl_inverse_of, is_owl_equivalent_class, is_owl_equivalent_property,
     is_owl_same_as, is_owl_symmetric_property, is_owl_transitive_property,

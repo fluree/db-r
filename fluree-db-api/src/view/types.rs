@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use fluree_db_core::{Db, NoOverlay, OverlayProvider, Storage};
+use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_ledger::{HistoricalLedgerView, LedgerState};
 use fluree_db_novelty::Novelty;
 use fluree_db_policy::PolicyContext;
@@ -111,6 +112,15 @@ pub struct FlureeView<S: Storage + 'static> {
 
     /// Precedence for reasoning mode resolution.
     reasoning_precedence: ReasoningModePrecedence,
+
+    // ========================================================================
+    // Binary index store (optional, v2 only)
+    // ========================================================================
+    /// Binary columnar index store for `BinaryScanOperator`.
+    ///
+    /// When set, `DeferredScanOperator` uses this for direct columnar scans
+    /// instead of falling back to `ScanOperator`.
+    pub(crate) binary_store: Option<Arc<BinaryIndexStore>>,
 }
 
 impl<S: Storage + 'static> std::fmt::Debug for FlureeView<S> {
@@ -161,6 +171,7 @@ impl<S: Storage + Clone + 'static> FlureeView<S> {
             policy_enforcer: None,
             reasoning: None,
             reasoning_precedence: ReasoningModePrecedence::default(),
+            binary_store: None,
         }
     }
 
@@ -302,6 +313,23 @@ impl<S: Storage + 'static> FlureeView<S> {
     pub fn as_of(mut self, to_t: i64) -> Self {
         self.to_t = to_t;
         self
+    }
+}
+
+// ============================================================================
+// Binary Store
+// ============================================================================
+
+impl<S: Storage + 'static> FlureeView<S> {
+    /// Attach a binary index store for `BinaryScanOperator`.
+    pub fn with_binary_store(mut self, store: Arc<BinaryIndexStore>) -> Self {
+        self.binary_store = Some(store);
+        self
+    }
+
+    /// Get the binary index store (if any).
+    pub fn binary_store(&self) -> Option<&Arc<BinaryIndexStore>> {
+        self.binary_store.as_ref()
     }
 }
 

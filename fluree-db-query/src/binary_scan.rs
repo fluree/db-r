@@ -28,19 +28,21 @@ use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::pattern::{Term, TriplePattern};
-use crate::scan::ScanOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::value_id::DatatypeId;
 use fluree_db_core::value_id::{ObjKind, ObjKey};
-use fluree_db_core::{Flake, FlakeValue, IndexType, ObjectBounds, OverlayProvider, Sid, Storage};
+use fluree_db_core::{
+    range_with_overlay, Db, Flake, FlakeValue, IndexType, ObjectBounds, OverlayProvider,
+    RangeMatch, RangeOptions, RangeTest, Sid, Storage,
+};
 use fluree_db_indexer::run_index::{
     BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, OverlayOp,
 };
 use fluree_db_indexer::run_index::run_record::{RunSortOrder, NO_LIST_INDEX};
 use fluree_db_indexer::run_index::numfloat_dict::NumericShape;
 use fluree_vocab::namespaces::FLUREE_LEDGER;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 // ============================================================================
@@ -118,6 +120,13 @@ pub struct BinaryScanOperator {
     overlay_ops: Vec<OverlayOp>,
     /// Overlay epoch for cache key differentiation.
     overlay_epoch: u64,
+    /// Dictionary overlay for decode-time ephemeral ID resolution.
+    ///
+    /// When set, all ID→value decoding goes through DictOverlay instead of
+    /// directly through the store. This handles ephemeral subjects, predicates,
+    /// strings, and lang tags that are in novelty but not yet in the persisted
+    /// binary index.
+    dict_overlay: Option<crate::dict_overlay::DictOverlay>,
     /// Tracing span for operator lifetime (trace level).
     span: tracing::Span,
     /// Count of flakes scanned for span recording.
@@ -193,6 +202,7 @@ impl BinaryScanOperator {
             object_bounds,
             overlay_ops: Vec::new(),
             overlay_epoch: 0,
+            dict_overlay: None,
             span,
             flakes_scanned: 0,
         }
@@ -225,17 +235,31 @@ impl BinaryScanOperator {
         self.overlay_epoch = epoch;
     }
 
+    /// Set the dictionary overlay for ephemeral ID resolution at decode time.
+    ///
+    /// Must be the same DictOverlay that was used for `translate_overlay_flakes()`
+    /// so ephemeral IDs in overlay ops resolve correctly.
+    pub fn set_dict_overlay(&mut self, overlay: crate::dict_overlay::DictOverlay) {
+        self.dict_overlay = Some(overlay);
+    }
+
     /// Resolve s_id to Sid, using cache for amortized lookups.
     ///
-    /// On cache miss: s_id → IRI (forward file) → encode_iri → Sid.
+    /// When a DictOverlay is present, delegates to it (handles both persisted
+    /// and ephemeral subject IDs). Otherwise, uses the store directly.
     fn resolve_s_id(&mut self, s_id: u32) -> Result<Sid> {
         if let Some(sid) = self.sid_cache.get(&s_id) {
             return Ok(sid.clone());
         }
 
-        let iri = self.store.resolve_subject_iri(s_id)
-            .map_err(|e| QueryError::Internal(format!("resolve s_id {}: {}", s_id, e)))?;
-        let sid = self.store.encode_iri(&iri);
+        let sid = if let Some(ref dict_ov) = self.dict_overlay {
+            dict_ov.resolve_subject_sid(s_id)
+                .map_err(|e| QueryError::Internal(format!("resolve s_id {}: {}", s_id, e)))?
+        } else {
+            let iri = self.store.resolve_subject_iri(s_id)
+                .map_err(|e| QueryError::Internal(format!("resolve s_id {}: {}", s_id, e)))?;
+            self.store.encode_iri(&iri)
+        };
         self.sid_cache.insert(s_id, sid.clone());
         Ok(sid)
     }
@@ -249,6 +273,37 @@ impl BinaryScanOperator {
         self.p_is_var
             && self.p_sids.get(p_id as usize)
                 .map_or(false, |s| s.namespace_code == FLUREE_LEDGER)
+    }
+
+    /// Decode an object value, routing through DictOverlay when present.
+    #[inline]
+    fn decode_obj(&self, o_kind: u8, o_key: u64, p_id: u32) -> std::io::Result<FlakeValue> {
+        match &self.dict_overlay {
+            Some(ov) => ov.decode_value(o_kind, o_key, p_id),
+            None => self.store.decode_value(o_kind, o_key, p_id),
+        }
+    }
+
+    /// Resolve a predicate ID to Sid, handling ephemeral IDs via DictOverlay.
+    #[inline]
+    fn resolve_p_id(&self, p_id: u32) -> Sid {
+        let idx = p_id as usize;
+        if idx < self.p_sids.len() {
+            return self.p_sids[idx].clone();
+        }
+        // Ephemeral or out-of-range p_id: try DictOverlay, then store
+        if let Some(ref ov) = self.dict_overlay {
+            if let Some(sid) = ov.resolve_predicate_sid(p_id) {
+                return sid;
+            }
+        }
+        match self.store.resolve_predicate_iri(p_id) {
+            Some(iri) => self.store.encode_iri(iri),
+            None => {
+                tracing::warn!(p_id, "unresolvable predicate ID in batch_to_bindings");
+                Sid::new(0, "")
+            }
+        }
     }
 
     /// Convert a DecodedBatch into columnar Bindings.
@@ -273,7 +328,7 @@ impl BinaryScanOperator {
             // (ObjKind, ObjKey) pair (e.g. string literal — no reverse string index),
             // decode each row's object and skip non-matching rows.
             if let Some(ref filter_val) = self.bound_o_filter {
-                let decoded_val = self.store.decode_value(decoded.o_kinds[row], decoded.o_keys[row], decoded.p_ids[row])
+                let decoded_val = self.decode_obj(decoded.o_kinds[row], decoded.o_keys[row], decoded.p_ids[row])
                     .map_err(|e| QueryError::Internal(
                         format!("decode object for filter: {}", e),
                     ))?;
@@ -286,7 +341,7 @@ impl BinaryScanOperator {
             // POST key range provides coarse leaf filtering; this handles
             // inclusive/exclusive boundaries and cross-type comparisons exactly.
             if let Some(ref obj_bounds) = self.object_bounds {
-                let decoded_val = self.store.decode_value(decoded.o_kinds[row], decoded.o_keys[row], decoded.p_ids[row])
+                let decoded_val = self.decode_obj(decoded.o_kinds[row], decoded.o_keys[row], decoded.p_ids[row])
                     .map_err(|e| QueryError::Internal(
                         format!("decode object for bounds: {}", e),
                     ))?;
@@ -306,39 +361,36 @@ impl BinaryScanOperator {
 
             // Predicate binding
             if self.p_var_pos.is_some() {
-                let p_id = decoded.p_ids[row] as usize;
-                let sid = if p_id < self.p_sids.len() {
-                    self.p_sids[p_id].clone()
-                } else {
-                    // Fallback (shouldn't happen with valid indexes)
-                    match self.store.resolve_predicate_iri(p_id as u32) {
-                        Some(iri) => self.store.encode_iri(iri),
-                        None => Sid::new(0, ""),
-                    }
-                };
+                let sid = self.resolve_p_id(decoded.p_ids[row]);
                 columns[col_idx].push(Binding::Sid(sid));
                 col_idx += 1;
             }
 
             // Object binding
             if self.o_var_pos.is_some() {
-                let val = self.store.decode_value(decoded.o_kinds[row], decoded.o_keys[row], decoded.p_ids[row])
+                let val = self.decode_obj(decoded.o_kinds[row], decoded.o_keys[row], decoded.p_ids[row])
                     .map_err(|e| QueryError::Internal(format!("decode object: {}", e)))?;
 
                 let binding = match val {
                     FlakeValue::Ref(ref sid) => Binding::Sid(sid.clone()),
                     other => {
                         // Literal: requires datatype/lang/index/t metadata.
-                        let dt_id = decoded.dt_values[row] as usize;
-                        let dt_sid = self.store
-                            .dt_sids()
-                            .get(dt_id)
-                            .cloned()
-                            .unwrap_or_else(|| Sid::new(0, ""));
+                        let dt_id = decoded.dt_values[row] as u16;
+                        let dt_sid = match &self.dict_overlay {
+                            Some(ov) => ov.decode_dt_sid(dt_id),
+                            None => self.store
+                                .dt_sids()
+                                .get(dt_id as usize)
+                                .cloned()
+                                .unwrap_or_else(|| Sid::new(0, "")),
+                        };
 
                         let lang_id = decoded.lang_ids[row];
                         let i_val = decoded.i_values[row];
-                        let meta = self.store.decode_meta(lang_id, i_val);
+                        let meta = match &self.dict_overlay {
+                            Some(ov) => ov.decode_meta(lang_id, i_val),
+                            None => self.store.decode_meta(lang_id, i_val),
+                        };
                         let t = decoded.t_values[row];
 
                         Binding::Lit {
@@ -774,6 +826,7 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
         self.sid_cache.clear();
         self.p_sids.clear();
         self.bound_o_filter = None;
+        self.dict_overlay = None;
         self.state = OperatorState::Closed;
     }
 }
@@ -864,7 +917,7 @@ fn translate_one_flake(
 // ============================================================================
 
 /// Deferred scan operator that selects between `BinaryScanOperator` and
-/// `ScanOperator` at `open()` time based on the `ExecutionContext`.
+/// `RangeFallbackOperator` at `open()` time based on the `ExecutionContext`.
 ///
 /// The query planner creates operators at plan time, before the
 /// `ExecutionContext` exists.  `DeferredScanOperator` bridges this gap by
@@ -883,8 +936,9 @@ fn translate_one_flake(
 /// Overlay flakes are always translatable via `DictOverlay` (ephemeral IDs
 /// are allocated for entities not yet in the persisted dictionaries).
 ///
-/// When conditions are not met, falls back to `ScanOperator` (b-tree path).
-/// The b-tree fallback will be removed once all consumers provide a binary store.
+/// When the binary path is not available, falls back to `RangeFallbackOperator`
+/// which delegates to `range_with_overlay()`. This handles genesis databases
+/// (t=0, overlay-only) and databases with a `RangeProvider` but no binary store.
 pub struct DeferredScanOperator<S: Storage + 'static> {
     pattern: TriplePattern,
     object_bounds: Option<ObjectBounds>,
@@ -968,17 +1022,16 @@ impl<S: Storage + 'static> Operator<S> for DeferredScanOperator<S> {
         {
             let _deferred_span = tracing::trace_span!(
                 "deferred_scan",
-                mode = if use_binary { "binary" } else { "btree" },
+                mode = if use_binary { "binary" } else { "range_fallback" },
             )
             .entered();
         }
 
-        // When binary path is selected and overlay exists, translate overlay
-        // flakes to integer-ID space using DictOverlay (infallible — ephemeral
-        // IDs are allocated for entities not in the persisted dictionaries).
-        // TODO(Phase 2): pass dict_overlay into BinaryScanOperator for
-        // decode-time ephemeral ID resolution.
-        let (overlay_data, _dict_overlay) = if use_binary && ctx.overlay.is_some() {
+        // When binary path is selected, create a DictOverlay for ephemeral
+        // ID resolution during both overlay translation and result decoding.
+        // If overlay exists, translate flakes to integer-ID space (infallible —
+        // ephemeral IDs are allocated for entities not in persisted dictionaries).
+        let (overlay_data, dict_overlay) = if use_binary && ctx.overlay.is_some() {
             let store = ctx.binary_store.as_ref().unwrap().clone();
             let mut dict_ov = crate::dict_overlay::DictOverlay::new(store);
             let ops = translate_overlay_flakes(ctx.overlay(), &mut dict_ov, ctx.to_t);
@@ -1007,13 +1060,16 @@ impl<S: Storage + 'static> Operator<S> for DeferredScanOperator<S> {
             if let Some((ops, epoch)) = overlay_data {
                 op.set_overlay(ops, epoch);
             }
+            if let Some(dict_ov) = dict_overlay {
+                op.set_dict_overlay(dict_ov);
+            }
             Box::new(op)
         } else {
-            let scan = ScanOperator::new(self.pattern.clone());
-            match &self.object_bounds {
-                Some(bounds) => Box::new(scan.with_object_bounds(bounds.clone())),
-                None => Box::new(scan),
-            }
+            // Fallback: use range_with_overlay() for genesis/pre-index databases
+            Box::new(RangeFallbackOperator::<S>::new(
+                self.pattern.clone(),
+                self.object_bounds.clone(),
+            ))
         };
 
         inner.open(ctx).await?;
@@ -1034,6 +1090,296 @@ impl<S: Storage + 'static> Operator<S> for DeferredScanOperator<S> {
             op.close();
         }
         self.inner = None;
+        self.state = OperatorState::Closed;
+    }
+}
+
+// ============================================================================
+// RangeFallbackOperator — overlay/range_provider path (no binary index)
+// ============================================================================
+
+/// Range-based fallback scan operator for databases without a binary index.
+///
+/// Used when `BinaryScanOperator` is not available:
+/// - Genesis databases (t=0, no index) — returns overlay-only flakes
+/// - Databases with a `RangeProvider` but no `BinaryIndexStore`
+/// - Conditions that exclude the binary path (history mode, multi-ledger, etc.)
+///
+/// Delegates to `range_with_overlay()` on `open()` and pre-computes all
+/// matching flakes, which are then returned as batches via `next_batch()`.
+struct RangeFallbackOperator<S: Storage + 'static> {
+    pattern: TriplePattern,
+    object_bounds: Option<ObjectBounds>,
+    schema: Arc<[VarId]>,
+    s_var_pos: Option<usize>,
+    p_var_pos: Option<usize>,
+    o_var_pos: Option<usize>,
+    state: OperatorState,
+    batches: VecDeque<Batch>,
+    _marker: std::marker::PhantomData<S>,
+}
+
+impl<S: Storage + 'static> RangeFallbackOperator<S> {
+    fn new(pattern: TriplePattern, object_bounds: Option<ObjectBounds>) -> Self {
+        let mut schema_vec = Vec::with_capacity(3);
+        let mut s_var_pos = None;
+        let mut p_var_pos = None;
+        let mut o_var_pos = None;
+
+        if let Term::Var(v) = &pattern.s {
+            s_var_pos = Some(schema_vec.len());
+            schema_vec.push(*v);
+        }
+        if let Term::Var(v) = &pattern.p {
+            p_var_pos = Some(schema_vec.len());
+            schema_vec.push(*v);
+        }
+        if let Term::Var(v) = &pattern.o {
+            o_var_pos = Some(schema_vec.len());
+            schema_vec.push(*v);
+        }
+
+        Self {
+            pattern,
+            object_bounds,
+            schema: Arc::from(schema_vec.into_boxed_slice()),
+            s_var_pos,
+            p_var_pos,
+            o_var_pos,
+            state: OperatorState::Created,
+            batches: VecDeque::new(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Build a `RangeMatch` from the pattern's bound terms.
+    fn build_range_match(&self, db: &Db<S>) -> RangeMatch {
+        let mut rm = RangeMatch::new();
+
+        match &self.pattern.s {
+            Term::Sid(sid) => rm.s = Some(sid.clone()),
+            Term::Iri(iri) => {
+                if let Some(sid) = db.encode_iri(iri) {
+                    rm.s = Some(sid);
+                }
+            }
+            _ => {}
+        }
+
+        match &self.pattern.p {
+            Term::Sid(sid) => rm.p = Some(sid.clone()),
+            Term::Iri(iri) => {
+                if let Some(sid) = db.encode_iri(iri) {
+                    rm.p = Some(sid);
+                }
+            }
+            _ => {}
+        }
+
+        match &self.pattern.o {
+            Term::Sid(sid) => rm.o = Some(FlakeValue::Ref(sid.clone())),
+            Term::Value(val) => rm.o = Some(val.clone()),
+            Term::Iri(iri) => {
+                if let Some(sid) = db.encode_iri(iri) {
+                    rm.o = Some(FlakeValue::Ref(sid));
+                }
+            }
+            _ => {}
+        }
+
+        if let Some(dt) = &self.pattern.dt {
+            rm.dt = Some(dt.clone());
+        }
+
+        rm
+    }
+
+    /// Check if a flake matches the pattern's bound terms.
+    ///
+    /// `range_with_overlay` may return a superset (especially in the
+    /// overlay-only genesis path), so we post-filter here.
+    fn flake_matches(&self, f: &Flake, db: &Db<S>) -> bool {
+        match &self.pattern.s {
+            Term::Sid(sid) if &f.s != sid => return false,
+            Term::Iri(iri) => match db.encode_iri(iri) {
+                Some(sid) if f.s != sid => return false,
+                None => return false,
+                _ => {}
+            },
+            _ => {}
+        }
+
+        match &self.pattern.p {
+            Term::Sid(sid) if &f.p != sid => return false,
+            Term::Iri(iri) => match db.encode_iri(iri) {
+                Some(sid) if f.p != sid => return false,
+                None => return false,
+                _ => {}
+            },
+            _ => {}
+        }
+
+        match &self.pattern.o {
+            Term::Sid(sid) => {
+                if f.o != FlakeValue::Ref(sid.clone()) {
+                    return false;
+                }
+            }
+            Term::Value(val) if &f.o != val => return false,
+            Term::Iri(iri) => match db.encode_iri(iri) {
+                Some(sid) if f.o != FlakeValue::Ref(sid.clone()) => return false,
+                None => return false,
+                _ => {}
+            },
+            _ => {}
+        }
+
+        if let Some(dt) = &self.pattern.dt {
+            if &f.dt != dt {
+                return false;
+            }
+        }
+
+        if let Some(bounds) = &self.object_bounds {
+            if !bounds.matches(&f.o) {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Convert a single flake to binding values matching the schema.
+    fn flake_to_row(&self, f: &Flake, history_mode: bool) -> Vec<Binding> {
+        let mut row = Vec::with_capacity(self.schema.len());
+
+        if self.s_var_pos.is_some() {
+            row.push(Binding::Sid(f.s.clone()));
+        }
+        if self.p_var_pos.is_some() {
+            row.push(Binding::Sid(f.p.clone()));
+        }
+        if self.o_var_pos.is_some() {
+            let binding = match &f.o {
+                FlakeValue::Ref(sid) => Binding::Sid(sid.clone()),
+                val => Binding::Lit {
+                    val: val.clone(),
+                    dt: f.dt.clone(),
+                    lang: None,
+                    t: if history_mode { Some(f.t) } else { None },
+                    op: if history_mode { Some(f.op) } else { None },
+                },
+            };
+            row.push(binding);
+        }
+
+        row
+    }
+}
+
+#[async_trait]
+impl<S: Storage + 'static> Operator<S> for RangeFallbackOperator<S> {
+    fn schema(&self) -> &[VarId] {
+        &self.schema
+    }
+
+    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+        if !self.state.can_open() {
+            if self.state.is_closed() {
+                return Err(QueryError::OperatorClosed);
+            }
+            return Err(QueryError::OperatorAlreadyOpened);
+        }
+
+        let mut index = IndexType::for_query(
+            self.pattern.s_bound(),
+            self.pattern.p_bound(),
+            self.pattern.o_bound(),
+            self.pattern.o_is_ref(),
+        );
+
+        // When object bounds are present and default index is PSOT, switch to POST
+        // for object-range scanning (matches BinaryScanOperator behavior).
+        if self.object_bounds.is_some() && index == IndexType::Psot {
+            index = IndexType::Post;
+        }
+
+        let range_match = self.build_range_match(ctx.db);
+        let mut opts = RangeOptions::new().with_to_t(ctx.to_t);
+        if let Some(from_t) = ctx.from_t {
+            opts = opts.with_from_t(from_t);
+        }
+        if ctx.history_mode {
+            opts = opts.with_history_mode();
+        }
+        if let Some(ref bounds) = self.object_bounds {
+            opts = opts.with_object_bounds(bounds.clone());
+        }
+
+        let flakes = range_with_overlay(
+            ctx.db,
+            ctx.overlay(),
+            index,
+            RangeTest::Eq,
+            range_match,
+            opts,
+        )
+        .await
+        .map_err(|e| QueryError::execution(e.to_string()))?;
+
+        // Post-filter: overlay-only path may return a superset of matches
+        let batch_size = ctx.batch_size;
+        let ncols = self.schema.len();
+
+        if ncols == 0 {
+            // All terms bound (existence check): count matches, emit empty-schema batch
+            let match_count = flakes.iter().filter(|f| self.flake_matches(f, ctx.db)).count();
+            if match_count > 0 {
+                self.batches.push_back(Batch::empty_schema_with_len(match_count));
+            }
+        } else {
+            let mut columns: Vec<Vec<Binding>> =
+                (0..ncols).map(|_| Vec::with_capacity(batch_size)).collect();
+            let mut row_count = 0;
+
+            for f in &flakes {
+                if !self.flake_matches(f, ctx.db) {
+                    continue;
+                }
+
+                let row = self.flake_to_row(f, ctx.history_mode);
+                for (col_idx, binding) in row.into_iter().enumerate() {
+                    columns[col_idx].push(binding);
+                }
+                row_count += 1;
+
+                if row_count >= batch_size {
+                    let batch = Batch::new(self.schema.clone(), columns)
+                        .map_err(|e| QueryError::execution(format!("batch construction: {e}")))?;
+                    self.batches.push_back(batch);
+                    columns = (0..ncols).map(|_| Vec::with_capacity(batch_size)).collect();
+                    row_count = 0;
+                }
+            }
+
+            // Final partial batch
+            if row_count > 0 {
+                let batch = Batch::new(self.schema.clone(), columns)
+                    .map_err(|e| QueryError::execution(format!("batch construction: {e}")))?;
+                self.batches.push_back(batch);
+            }
+        }
+
+        self.state = OperatorState::Open;
+        Ok(())
+    }
+
+    async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+        Ok(self.batches.pop_front())
+    }
+
+    fn close(&mut self) {
+        self.batches.clear();
         self.state = OperatorState::Closed;
     }
 }

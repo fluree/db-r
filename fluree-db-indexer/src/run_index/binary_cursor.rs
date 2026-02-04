@@ -463,10 +463,10 @@ impl BinaryCursor {
         need_region2: bool,
     ) -> Self {
         let cmp = cmp_for_order(order);
-        let leaf_indices = store
+        let branch = store
             .branch_for_order(g_id, order)
-            .map(|b| b.find_leaves_in_range(min_key, max_key, cmp))
-            .unwrap_or(0..0);
+            .expect("all four index orders must exist for every graph");
+        let leaf_indices = branch.find_leaves_in_range(min_key, max_key, cmp);
 
         let current_idx = leaf_indices.start;
         let exhausted = leaf_indices.is_empty();
@@ -497,10 +497,10 @@ impl BinaryCursor {
         p_id: Option<u32>,
         need_region2: bool,
     ) -> Self {
-        let leaf_indices = store
+        let branch = store
             .branch_for_order(g_id, RunSortOrder::Spot)
-            .map(|b| b.find_leaves_for_subject(g_id, s_id))
-            .unwrap_or(0..0);
+            .expect("SPOT index must exist for every graph");
+        let leaf_indices = branch.find_leaves_for_subject(g_id, s_id);
 
         let current_idx = leaf_indices.start;
         let exhausted = leaf_indices.is_empty();
@@ -605,14 +605,10 @@ impl BinaryCursor {
         let _g = span.enter();
         let start = Instant::now();
 
-        let branch = match self.store.branch_for_order(self.g_id, self.order) {
-            Some(b) => b,
-            None => {
-                self.exhausted = true;
-                span.record("ms", &((start.elapsed().as_secs_f64() * 1000.0) as u64));
-                return Ok(None);
-            }
-        };
+        let branch = self
+            .store
+            .branch_for_order(self.g_id, self.order)
+            .expect("all four index orders must exist for every graph");
 
         let time_traveling = self.is_time_traveling();
         let has_overlay = self.has_overlay();

@@ -16,17 +16,47 @@
 use super::{load_garbage_record, CleanGarbageConfig, CleanGarbageResult};
 use super::{DEFAULT_MAX_OLD_INDEXES, DEFAULT_MIN_TIME_GARBAGE_MINS};
 use crate::error::Result;
-use fluree_db_core::serde::json::{parse_db_root, DbRoot};
+use fluree_db_core::serde::json::parse_db_root;
 use fluree_db_core::Storage;
 
-/// Entry in the prev-index chain
+/// Entry in the prev-index chain.
+///
+/// Format-agnostic: works with both legacy `DbRoot` and `BinaryIndexRootV2`.
 struct IndexChainEntry {
-    /// Transaction time of this index
+    /// Transaction time of this index.
     t: i64,
-    /// Address of the db-root
+    /// CAS address of this root blob.
     address: String,
-    /// Parsed db-root (for accessing garbage, prev_index, etc.)
-    root: DbRoot,
+    /// CAS address of the previous root in the chain (if any).
+    prev_index_address: Option<String>,
+    /// CAS address of this root's garbage manifest (if any).
+    garbage_address: Option<String>,
+}
+
+/// Extract the GC-relevant fields from a root blob, regardless of format.
+///
+/// When `commit-v2` is enabled, tries `BinaryIndexRootV2` first (serde_json
+/// on borrowed `&[u8]`). Falls back to legacy `DbRoot` (simd_json on owned
+/// `Vec<u8>`).
+fn parse_chain_fields(bytes: &[u8]) -> Result<(i64, Option<String>, Option<String>)> {
+    // Try v2 first (non-consuming — serde_json works on &[u8])
+    #[cfg(feature = "commit-v2")]
+    {
+        if let Ok(root) = crate::run_index::BinaryIndexRootV2::from_json_bytes(bytes) {
+            return Ok((
+                root.index_t,
+                root.prev_index.map(|p| p.address),
+                root.garbage.map(|g| g.address),
+            ));
+        }
+    }
+    // Fall back to legacy DbRoot (simd_json mutates, needs owned Vec)
+    let root = parse_db_root(bytes.to_vec())?;
+    Ok((
+        root.t,
+        root.prev_index.map(|p| p.address),
+        root.garbage.map(|g| g.address),
+    ))
 }
 
 /// Walk the prev-index chain starting from the current root.
@@ -63,18 +93,19 @@ async fn walk_prev_index_chain<S: Storage>(
             }
         };
 
-        let root = parse_db_root(bytes)?;
+        let (t, prev_index_address, garbage_address) = parse_chain_fields(&bytes)?;
 
         chain.push(IndexChainEntry {
-            t: root.t,
+            t,
             address: current_address.clone(),
-            root,
+            prev_index_address,
+            garbage_address,
         });
 
         // Move to previous index if exists
-        match chain.last().and_then(|e| e.root.prev_index.as_ref()) {
-            Some(prev) => {
-                current_address = prev.address.clone();
+        match chain.last().and_then(|e| e.prev_index_address.as_ref()) {
+            Some(prev_addr) => {
+                current_address = prev_addr.clone();
             }
             None => break,
         }
@@ -177,8 +208,8 @@ where
 
         // Manifest from the newer entry lists nodes from entry_to_delete
         // that were replaced when manifest_entry was built.
-        let garbage_ref = match &manifest_entry.root.garbage {
-            Some(g) => g,
+        let garbage_addr = match &manifest_entry.garbage_address {
+            Some(addr) => addr,
             None => {
                 tracing::debug!(
                     t = manifest_entry.t,
@@ -189,7 +220,7 @@ where
         };
 
         // Load the garbage record to check age
-        let record = match load_garbage_record(storage, &garbage_ref.address).await {
+        let record = match load_garbage_record(storage, garbage_addr).await {
             Ok(r) => r,
             Err(e) => {
                 tracing::debug!(
@@ -227,10 +258,10 @@ where
         }
 
         // Delete entry_to_delete's own garbage manifest
-        if let Some(ref old_garbage) = entry_to_delete.root.garbage {
-            if let Err(e) = storage.delete(&old_garbage.address).await {
+        if let Some(ref old_garbage_addr) = entry_to_delete.garbage_address {
+            if let Err(e) = storage.delete(old_garbage_addr).await {
                 tracing::debug!(
-                    address = %old_garbage.address,
+                    address = %old_garbage_addr,
                     error = %e,
                     "Failed to delete old garbage manifest (may already be deleted)"
                 );
@@ -955,5 +986,66 @@ mod tests {
         assert!(storage.read_bytes(addr2).await.is_ok());
         assert!(storage.read_bytes(addr3).await.is_ok());
         assert!(storage.read_bytes(addr4).await.is_ok());
+    }
+
+    #[test]
+    fn test_parse_chain_fields_legacy_dbroot() {
+        let json = r#"{
+            "ledger-alias": "test/main",
+            "t": 5,
+            "v": 2,
+            "namespace-codes": {},
+            "prev-index": {"t": 4, "address": "cas://prev"},
+            "garbage": {"address": "cas://garbage"}
+        }"#;
+        let (t, prev, garbage) = parse_chain_fields(json.as_bytes()).unwrap();
+        assert_eq!(t, 5);
+        assert_eq!(prev.as_deref(), Some("cas://prev"));
+        assert_eq!(garbage.as_deref(), Some("cas://garbage"));
+    }
+
+    #[test]
+    fn test_parse_chain_fields_legacy_no_gc() {
+        let json = r#"{
+            "ledger-alias": "test/main",
+            "t": 1,
+            "v": 2,
+            "namespace-codes": {}
+        }"#;
+        let (t, prev, garbage) = parse_chain_fields(json.as_bytes()).unwrap();
+        assert_eq!(t, 1);
+        assert_eq!(prev, None);
+        assert_eq!(garbage, None);
+    }
+
+    #[cfg(feature = "commit-v2")]
+    #[test]
+    fn test_parse_chain_fields_v2_root() {
+        use crate::run_index::{
+            BinaryIndexRootV2, BinaryPrevIndexRef, BinaryGarbageRef,
+            DictAddresses, GraphAddresses, GraphOrderAddresses,
+        };
+        use std::collections::{BTreeMap, HashMap};
+
+        let dicts = DictAddresses {
+            predicates: "a".into(), graphs: "b".into(),
+            datatypes: "c".into(), languages: "d".into(),
+            subject_forward: "e".into(), subject_index: "f".into(),
+            subject_reverse: "g".into(), string_forward: "h".into(),
+            string_index: "i".into(), string_reverse: "j".into(),
+            namespaces: "k".into(), numbig: BTreeMap::new(),
+        };
+        let root = BinaryIndexRootV2::from_cas_artifacts(
+            "test/main", 10, 1, &HashMap::new(), dicts, vec![],
+            None, None,
+            Some(BinaryPrevIndexRef { t: 8, address: "cas://prev_v2".into() }),
+            Some(BinaryGarbageRef { address: "cas://garbage_v2".into() }),
+        );
+        let bytes = root.to_json_bytes().unwrap();
+
+        let (t, prev, garbage) = parse_chain_fields(&bytes).unwrap();
+        assert_eq!(t, 10);
+        assert_eq!(prev.as_deref(), Some("cas://prev_v2"));
+        assert_eq!(garbage.as_deref(), Some("cas://garbage_v2"));
     }
 }

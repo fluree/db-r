@@ -280,6 +280,48 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
         Ok(())
     }
 
+    /// Apply a pre-loaded Db as the new index.
+    ///
+    /// Same validation as `apply_index()` but takes an already-loaded Db,
+    /// avoiding the `Db::load()` I/O call. This enables the API level to:
+    /// 1. Read root bytes once
+    /// 2. Load `BinaryIndexStore` and attach `BinaryRangeProvider` to the Db
+    /// 3. Apply the enriched Db here in a brief, non-async swap
+    ///
+    /// The caller is responsible for ensuring the Db has `range_provider` set
+    /// if it's a binary-only (v2) Db.
+    pub fn apply_loaded_db(&mut self, new_db: Db<S>, index_address: &str) -> Result<()> {
+        // Verify alias matches
+        if new_db.alias != self.db.alias {
+            return Err(LedgerError::alias_mismatch(&new_db.alias, &self.db.alias));
+        }
+
+        // Verify forward progress on index
+        let current_index_t = self.db.t;
+        if new_db.t < current_index_t {
+            return Err(LedgerError::stale_index(new_db.t, current_index_t));
+        }
+        if new_db.t == current_index_t {
+            return Ok(());
+        }
+
+        // Clear novelty up to new index_t
+        let mut new_novelty = (*self.novelty).clone();
+        new_novelty.clear_up_to(new_db.t);
+
+        // Update state
+        self.db = new_db;
+        self.novelty = Arc::new(new_novelty);
+
+        // Update ns_record
+        if let Some(ref mut record) = self.ns_record {
+            record.index_address = Some(index_address.to_string());
+            record.index_t = self.db.t;
+        }
+
+        Ok(())
+    }
+
     /// Check nameservice for newer index and apply if available
     ///
     /// Returns `true` if a newer index was applied, `false` otherwise.
@@ -446,10 +488,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_index_success() {
-        use fluree_db_core::serde::json::{serialize_db_root, DbRoot};
-        use fluree_db_core::index::ChildRef;
         use fluree_db_core::IndexType;
-        use std::collections::HashMap;
 
         let storage = MemoryStorage::new();
         let db = Db::genesis(storage.clone(), "test:main");
@@ -464,42 +503,17 @@ mod tests {
         // Check active flakes via index iterator (arena has 2, and 2 are active)
         assert_eq!(state.novelty.iter_index(IndexType::Spot).count(), 2);
 
-        // Create a new index at t=1
-        let mut namespace_codes = HashMap::new();
-        namespace_codes.insert(0, "".to_string());
-        namespace_codes.insert(1, "@".to_string());
-
-        let empty_root = ChildRef {
-            id: "empty".to_string(),
-            leaf: true,
-            first: None,
-            rhs: None,
-            size: 0,
-            bytes: Some(0),
-            leftmost: true,
-        };
-
-        let db_root = DbRoot {
-            alias: "test:main".to_string(),
-            t: 1,
-            version: 2,
-            namespace_codes,
-            spot: Some(empty_root.clone()),
-            psot: Some(empty_root.clone()),
-            post: Some(empty_root.clone()),
-            opst: Some(empty_root.clone()),
-            tspo: Some(empty_root),
-            timestamp: None,
-            stats: None,
-            config: None,
-            prev_index: None,
-            schema: None,
-            garbage: None,
-        };
-
-        let root_bytes = serialize_db_root(&db_root).unwrap();
+        // Create a v2 index root at t=1
+        let root_json = serde_json::json!({
+            "version": 2,
+            "ledger_alias": "test:main",
+            "index_t": 1,
+            "namespace_codes": { "0": "", "1": "@" },
+            "dicts": {},
+            "graphs": []
+        });
         let storage = state.db.storage.clone();
-        storage.insert("index-root-1", root_bytes);
+        storage.insert("index-root-1", serde_json::to_vec(&root_json).unwrap());
 
         // Apply the index
         state.apply_index("index-root-1").await.unwrap();
@@ -513,51 +527,23 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_index_alias_mismatch() {
-        use fluree_db_core::serde::json::{serialize_db_root, DbRoot};
-        use fluree_db_core::index::ChildRef;
-        use std::collections::HashMap;
-
         let storage = MemoryStorage::new();
         let db = Db::genesis(storage.clone(), "test:main");
         let novelty = Novelty::new(0);
 
         let mut state = LedgerState::new(db, novelty);
 
-        // Create an index for a different ledger
-        let mut namespace_codes = HashMap::new();
-        namespace_codes.insert(0, "".to_string());
-
-        let empty_root = ChildRef {
-            id: "empty".to_string(),
-            leaf: true,
-            first: None,
-            rhs: None,
-            size: 0,
-            bytes: Some(0),
-            leftmost: true,
-        };
-
-        let db_root = DbRoot {
-            alias: "other:ledger".to_string(), // Different alias!
-            t: 1,
-            version: 2,
-            namespace_codes,
-            spot: Some(empty_root.clone()),
-            psot: Some(empty_root.clone()),
-            post: Some(empty_root.clone()),
-            opst: Some(empty_root.clone()),
-            tspo: Some(empty_root),
-            timestamp: None,
-            stats: None,
-            config: None,
-            prev_index: None,
-            schema: None,
-            garbage: None,
-        };
-
-        let root_bytes = serialize_db_root(&db_root).unwrap();
+        // Create a v2 index root for a different ledger
+        let root_json = serde_json::json!({
+            "version": 2,
+            "ledger_alias": "other:ledger",
+            "index_t": 1,
+            "namespace_codes": { "0": "" },
+            "dicts": {},
+            "graphs": []
+        });
         let storage = state.db.storage.clone();
-        storage.insert("bad-index", root_bytes);
+        storage.insert("bad-index", serde_json::to_vec(&root_json).unwrap());
 
         // Should fail with alias mismatch
         let result = state.apply_index("bad-index").await;
@@ -566,74 +552,34 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_index_stale() {
-        use fluree_db_core::serde::json::{serialize_db_root, DbRoot};
-        use fluree_db_core::index::ChildRef;
-        use std::collections::HashMap;
-
         let storage = MemoryStorage::new();
 
-        // Start with a db at t=2
-        let mut namespace_codes = HashMap::new();
-        namespace_codes.insert(0, "".to_string());
-
-        let empty_root = ChildRef {
-            id: "empty".to_string(),
-            leaf: true,
-            first: None,
-            rhs: None,
-            size: 0,
-            bytes: Some(0),
-            leftmost: true,
-        };
-
-        let db_root_t2 = DbRoot {
-            alias: "test:main".to_string(),
-            t: 2,
-            version: 2,
-            namespace_codes: namespace_codes.clone(),
-            spot: Some(empty_root.clone()),
-            psot: Some(empty_root.clone()),
-            post: Some(empty_root.clone()),
-            opst: Some(empty_root.clone()),
-            tspo: Some(empty_root.clone()),
-            timestamp: None,
-            stats: None,
-            config: None,
-            prev_index: None,
-            schema: None,
-            garbage: None,
-        };
-
-        let root_bytes_t2 = serialize_db_root(&db_root_t2).unwrap();
-        let storage = storage;
-        storage.insert("index-root-t2", root_bytes_t2);
+        // Create a v2 index root at t=2
+        let root_json_t2 = serde_json::json!({
+            "version": 2,
+            "ledger_alias": "test:main",
+            "index_t": 2,
+            "namespace_codes": { "0": "" },
+            "dicts": {},
+            "graphs": []
+        });
+        storage.insert("index-root-t2", serde_json::to_vec(&root_json_t2).unwrap());
 
         let db = Db::load(storage.clone(), "index-root-t2").await.unwrap();
         let novelty = Novelty::new(2);
         let mut state = LedgerState::new(db, novelty);
         assert_eq!(state.index_t(), 2);
 
-        // Create an older index at t=1
-        let db_root_t1 = DbRoot {
-            alias: "test:main".to_string(),
-            t: 1,
-            version: 2,
-            namespace_codes,
-            spot: Some(empty_root.clone()),
-            psot: Some(empty_root.clone()),
-            post: Some(empty_root.clone()),
-            opst: Some(empty_root.clone()),
-            tspo: Some(empty_root),
-            timestamp: None,
-            stats: None,
-            config: None,
-            prev_index: None,
-            schema: None,
-            garbage: None,
-        };
-
-        let root_bytes_t1 = serialize_db_root(&db_root_t1).unwrap();
-        storage.insert("index-root-t1", root_bytes_t1);
+        // Create an older v2 index root at t=1
+        let root_json_t1 = serde_json::json!({
+            "version": 2,
+            "ledger_alias": "test:main",
+            "index_t": 1,
+            "namespace_codes": { "0": "" },
+            "dicts": {},
+            "graphs": []
+        });
+        storage.insert("index-root-t1", serde_json::to_vec(&root_json_t1).unwrap());
 
         // Should fail with stale index error
         let result = state.apply_index("index-root-t1").await;
@@ -642,72 +588,33 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_index_equal_t_noop() {
-        use fluree_db_core::serde::json::{serialize_db_root, DbRoot};
-        use fluree_db_core::index::ChildRef;
-        use std::collections::HashMap;
-
         let storage = MemoryStorage::new();
 
-        let mut namespace_codes = HashMap::new();
-        namespace_codes.insert(0, "".to_string());
-
-        let empty_root = ChildRef {
-            id: "empty".to_string(),
-            leaf: true,
-            first: None,
-            rhs: None,
-            size: 0,
-            bytes: Some(0),
-            leftmost: true,
-        };
-
-        let db_root = DbRoot {
-            alias: "test:main".to_string(),
-            t: 1,
-            version: 2,
-            namespace_codes: namespace_codes.clone(),
-            spot: Some(empty_root.clone()),
-            psot: Some(empty_root.clone()),
-            post: Some(empty_root.clone()),
-            opst: Some(empty_root.clone()),
-            tspo: Some(empty_root.clone()),
-            timestamp: None,
-            stats: None,
-            config: None,
-            prev_index: None,
-            schema: None,
-            garbage: None,
-        };
-
-        let root_bytes = serialize_db_root(&db_root).unwrap();
-        let storage = storage;
-        storage.insert("index-root", root_bytes);
+        // Create a v2 index root at t=1
+        let root_json = serde_json::json!({
+            "version": 2,
+            "ledger_alias": "test:main",
+            "index_t": 1,
+            "namespace_codes": { "0": "" },
+            "dicts": {},
+            "graphs": []
+        });
+        storage.insert("index-root", serde_json::to_vec(&root_json).unwrap());
 
         let db = Db::load(storage.clone(), "index-root").await.unwrap();
         let novelty = Novelty::new(1);
         let mut state = LedgerState::new(db, novelty);
 
-        // Create another index at same t
-        let db_root_same_t = DbRoot {
-            alias: "test:main".to_string(),
-            t: 1, // Same t
-            version: 2,
-            namespace_codes,
-            spot: Some(empty_root.clone()),
-            psot: Some(empty_root.clone()),
-            post: Some(empty_root.clone()),
-            opst: Some(empty_root.clone()),
-            tspo: Some(empty_root),
-            timestamp: None,
-            stats: None,
-            config: None,
-            prev_index: None,
-            schema: None,
-            garbage: None,
-        };
-
-        let root_bytes_same = serialize_db_root(&db_root_same_t).unwrap();
-        storage.insert("index-root-same", root_bytes_same);
+        // Create another v2 index root at same t
+        let root_json_same = serde_json::json!({
+            "version": 2,
+            "ledger_alias": "test:main",
+            "index_t": 1,
+            "namespace_codes": { "0": "" },
+            "dicts": {},
+            "graphs": []
+        });
+        storage.insert("index-root-same", serde_json::to_vec(&root_json_same).unwrap());
 
         // Should succeed as no-op
         let result = state.apply_index("index-root-same").await;
