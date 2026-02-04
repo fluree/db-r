@@ -38,6 +38,9 @@ pub const MIN_COMMIT_LEN: usize = HEADER_LEN + FOOTER_LEN + HASH_LEN; // 128
 /// Bit 0: ops section is zstd-compressed.
 pub const FLAG_ZSTD: u8 = 0x01;
 
+/// Bit 1: commit has a signature block after the hash.
+pub const FLAG_HAS_COMMIT_SIG: u8 = 0x02;
+
 // --- Per-op flags ---
 
 /// Bit 0: 1 = assert, 0 = retract.
@@ -107,6 +110,124 @@ impl OTag {
 // Header
 // =============================================================================
 
+/// A single commit signature (proof of which node wrote the commit).
+///
+/// Independently verifiable using the domain-separated commit digest:
+/// `to_sign = SHA-256("fluree/commit/v1" || varint(alias.len()) || alias || commit_hash)`
+#[derive(Clone, Debug)]
+pub struct CommitSignature {
+    /// Signer identity (did:key:z6Mk...)
+    pub signer: String,
+    /// Ed25519 signature (64 bytes) over domain-separated commit digest
+    pub signature: [u8; 64],
+    /// Signing timestamp (epoch millis, informational only — not part of signed digest)
+    pub timestamp: i64,
+}
+
+/// Maximum number of signatures in a signature block (decode cap).
+const MAX_SIG_COUNT: u16 = 64;
+
+/// Maximum signer DID string length (decode cap).
+const MAX_SIGNER_LEN: usize = 256;
+
+/// Encode a signature block into a buffer.
+///
+/// Format: `sig_count: u16` (LE) + for each signature:
+/// `signer_len: u16` (LE) + `signer` + `signature: [u8; 64]` + `timestamp: i64` (LE)
+pub fn encode_sig_block(sigs: &[CommitSignature], buf: &mut Vec<u8>) {
+    buf.extend_from_slice(&(sigs.len() as u16).to_le_bytes());
+    for sig in sigs {
+        let signer_bytes = sig.signer.as_bytes();
+        buf.extend_from_slice(&(signer_bytes.len() as u16).to_le_bytes());
+        buf.extend_from_slice(signer_bytes);
+        buf.extend_from_slice(&sig.signature);
+        buf.extend_from_slice(&sig.timestamp.to_le_bytes());
+    }
+}
+
+/// Decode a signature block from a byte slice.
+///
+/// Returns the parsed signatures and verifies the entire block is consumed.
+pub fn decode_sig_block(data: &[u8]) -> Result<Vec<CommitSignature>, CommitV2Error> {
+    if data.len() < 2 {
+        return Err(CommitV2Error::UnexpectedEof);
+    }
+    let sig_count = u16::from_le_bytes(data[0..2].try_into().unwrap());
+    if sig_count > MAX_SIG_COUNT {
+        return Err(CommitV2Error::EnvelopeDecode(format!(
+            "signature count {} exceeds maximum {}",
+            sig_count, MAX_SIG_COUNT
+        )));
+    }
+
+    let mut pos = 2;
+    let mut sigs = Vec::with_capacity(sig_count as usize);
+    for _ in 0..sig_count {
+        // signer_len
+        if pos + 2 > data.len() {
+            return Err(CommitV2Error::UnexpectedEof);
+        }
+        let signer_len = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap()) as usize;
+        pos += 2;
+        if signer_len > MAX_SIGNER_LEN {
+            return Err(CommitV2Error::EnvelopeDecode(format!(
+                "signer length {} exceeds maximum {}",
+                signer_len, MAX_SIGNER_LEN
+            )));
+        }
+
+        // signer
+        if pos + signer_len > data.len() {
+            return Err(CommitV2Error::UnexpectedEof);
+        }
+        let signer = std::str::from_utf8(&data[pos..pos + signer_len])
+            .map_err(|e| CommitV2Error::EnvelopeDecode(format!("invalid signer UTF-8: {}", e)))?;
+        pos += signer_len;
+
+        // signature (64 bytes)
+        if pos + 64 > data.len() {
+            return Err(CommitV2Error::UnexpectedEof);
+        }
+        let mut signature = [0u8; 64];
+        signature.copy_from_slice(&data[pos..pos + 64]);
+        pos += 64;
+
+        // timestamp (i64 LE)
+        if pos + 8 > data.len() {
+            return Err(CommitV2Error::UnexpectedEof);
+        }
+        let timestamp = i64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
+        pos += 8;
+
+        sigs.push(CommitSignature {
+            signer: signer.to_string(),
+            signature,
+            timestamp,
+        });
+    }
+
+    if pos != data.len() {
+        return Err(CommitV2Error::EnvelopeDecode(format!(
+            "signature block: consumed {} of {} bytes",
+            pos, data.len()
+        )));
+    }
+
+    Ok(sigs)
+}
+
+/// Compute the encoded size of a signature block.
+pub fn sig_block_size(sigs: &[CommitSignature]) -> usize {
+    let mut size = 2; // sig_count: u16
+    for sig in sigs {
+        size += 2; // signer_len: u16
+        size += sig.signer.as_bytes().len();
+        size += 64; // signature
+        size += 8;  // timestamp: i64
+    }
+    size
+}
+
 /// 32-byte fixed header.
 #[derive(Debug, Clone)]
 pub struct CommitV2Header {
@@ -115,6 +236,8 @@ pub struct CommitV2Header {
     pub t: i64,
     pub op_count: u32,
     pub envelope_len: u32,
+    /// Length of the signature block appended after the hash (0 if unsigned).
+    pub sig_block_len: u16,
 }
 
 impl CommitV2Header {
@@ -127,8 +250,9 @@ impl CommitV2Header {
         buf[6..14].copy_from_slice(&self.t.to_le_bytes());
         buf[14..18].copy_from_slice(&self.op_count.to_le_bytes());
         buf[18..22].copy_from_slice(&self.envelope_len.to_le_bytes());
-        // reserved bytes 22..32
-        buf[22..32].fill(0);
+        buf[22..24].copy_from_slice(&self.sig_block_len.to_le_bytes());
+        // reserved bytes 24..32
+        buf[24..32].fill(0);
     }
 
     /// Read the header from the first 32 bytes of `buf`.
@@ -150,6 +274,7 @@ impl CommitV2Header {
         let t = i64::from_le_bytes(buf[6..14].try_into().unwrap());
         let op_count = u32::from_le_bytes(buf[14..18].try_into().unwrap());
         let envelope_len = u32::from_le_bytes(buf[18..22].try_into().unwrap());
+        let sig_block_len = u16::from_le_bytes(buf[22..24].try_into().unwrap());
 
         Ok(Self {
             version,
@@ -157,6 +282,7 @@ impl CommitV2Header {
             t,
             op_count,
             envelope_len,
+            sig_block_len,
         })
     }
 }
@@ -236,6 +362,7 @@ mod tests {
             t: 42,
             op_count: 1000,
             envelope_len: 256,
+            sig_block_len: 0,
         };
         let mut buf = [0u8; HEADER_LEN];
         header.write_to(&mut buf);
@@ -246,6 +373,25 @@ mod tests {
         assert_eq!(parsed.t, 42);
         assert_eq!(parsed.op_count, 1000);
         assert_eq!(parsed.envelope_len, 256);
+        assert_eq!(parsed.sig_block_len, 0);
+    }
+
+    #[test]
+    fn test_header_with_sig_block_len() {
+        let header = CommitV2Header {
+            version: VERSION,
+            flags: FLAG_ZSTD | FLAG_HAS_COMMIT_SIG,
+            t: 10,
+            op_count: 50,
+            envelope_len: 128,
+            sig_block_len: 200,
+        };
+        let mut buf = [0u8; HEADER_LEN];
+        header.write_to(&mut buf);
+
+        let parsed = CommitV2Header::read_from(&buf).unwrap();
+        assert_eq!(parsed.flags, FLAG_ZSTD | FLAG_HAS_COMMIT_SIG);
+        assert_eq!(parsed.sig_block_len, 200);
     }
 
     #[test]

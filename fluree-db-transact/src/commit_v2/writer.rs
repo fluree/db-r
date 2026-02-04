@@ -63,7 +63,7 @@ mod tests {
         ];
 
         let commit = make_test_commit(flakes, 1);
-        let result = write_commit(&commit, false).unwrap();
+        let result = write_commit(&commit, false, None).unwrap();
         assert!(!result.content_hash_hex.is_empty());
         assert_eq!(&result.bytes[0..4], &MAGIC);
 
@@ -90,8 +90,8 @@ mod tests {
             .collect();
 
         let commit = make_test_commit(flakes, 5);
-        let result_c = write_commit(&commit, true).unwrap();
-        let result_u = write_commit(&commit, false).unwrap();
+        let result_c = write_commit(&commit, true, None).unwrap();
+        let result_u = write_commit(&commit, false, None).unwrap();
 
         assert!(
             result_c.bytes.len() < result_u.bytes.len(),
@@ -121,7 +121,7 @@ mod tests {
         )];
 
         let commit = make_test_commit(flakes, 1);
-        let result = write_commit(&commit, false).unwrap();
+        let result = write_commit(&commit, false, None).unwrap();
         let decoded = read_commit(&result.bytes).unwrap();
 
         match &decoded.flakes[0].o {
@@ -144,7 +144,7 @@ mod tests {
         ];
 
         let commit = make_test_commit(flakes, 1);
-        let result = write_commit(&commit, false).unwrap();
+        let result = write_commit(&commit, false, None).unwrap();
         let decoded = read_commit(&result.bytes).unwrap();
 
         assert_eq!(decoded.flakes.len(), 5);
@@ -162,7 +162,7 @@ mod tests {
         ];
 
         let commit = make_test_commit(flakes, 1);
-        let result = write_commit(&commit, false).unwrap();
+        let result = write_commit(&commit, false, None).unwrap();
         let decoded = read_commit(&result.bytes).unwrap();
 
         assert_eq!(decoded.flakes.len(), 3);
@@ -180,7 +180,7 @@ mod tests {
         commit.previous_ref = Some(CommitRef::new("prev-addr").with_id("fluree:commit:sha256:abc"));
         commit.namespace_delta = HashMap::from([(200, "ex:".to_string())]);
 
-        let result = write_commit(&commit, false).unwrap();
+        let result = write_commit(&commit, false, None).unwrap();
         let envelope = read_commit_envelope(&result.bytes).unwrap();
 
         assert_eq!(envelope.t, 5);
@@ -193,7 +193,7 @@ mod tests {
         let flakes = vec![Flake::new(Sid::new(101, "x"), Sid::new(101, "v"), FlakeValue::Long(1), Sid::new(2, "integer"), 1, true, None)];
 
         let commit = make_test_commit(flakes, 1);
-        let mut result = write_commit(&commit, false).unwrap();
+        let mut result = write_commit(&commit, false, None).unwrap();
 
         let mid = result.bytes.len() / 2;
         result.bytes[mid] ^= 0xFF;
@@ -212,7 +212,7 @@ mod tests {
 
         commit.flakes.push(Flake::new(Sid::new(101, "x"), Sid::new(101, "v"), FlakeValue::Long(1), Sid::new(2, "integer"), 10, true, None));
 
-        let result = write_commit(&commit, false).unwrap();
+        let result = write_commit(&commit, false, None).unwrap();
         let decoded = read_commit(&result.bytes).unwrap();
 
         assert_eq!(decoded.t, 10);
@@ -234,7 +234,7 @@ mod tests {
             .collect();
 
         let commit = make_test_commit(flakes, 42);
-        let result = write_commit(&commit, true).unwrap();
+        let result = write_commit(&commit, true, None).unwrap();
         let decoded = read_commit(&result.bytes).unwrap();
 
         assert_eq!(decoded.flakes.len(), 1000);

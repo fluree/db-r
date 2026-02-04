@@ -2093,6 +2093,7 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 1.0.69",
 ]
 
@@ -2254,6 +2255,7 @@ dependencies = [
  "bigdecimal",
  "chrono",
  "fluree-db-core",
+ "fluree-db-credential",
  "fluree-vocab",
  "futures",
  "hex",

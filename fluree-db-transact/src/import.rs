@@ -132,6 +132,7 @@ mod inner {
             time: Some(state.import_time.clone()),
             data: None, // DB stats not maintained during import
             index: None,
+            txn_signature: None,
         };
 
             (writer, op_count, envelope)
@@ -282,6 +283,7 @@ mod inner {
             time: Some(state.import_time.clone()),
             data: None,
             index: None,
+            txn_signature: None,
         };
 
         let result = parsed.writer.finish(&envelope)?;

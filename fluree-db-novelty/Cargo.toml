@@ -7,6 +7,7 @@ license = "Apache-2.0"
 
 [dependencies]
 fluree-db-core = { path = "../fluree-db-core" }
+fluree-db-credential = { path = "../fluree-db-credential" }
 fluree-vocab = { path = "../fluree-vocab" }
 async-trait = { workspace = true }
 thiserror = { workspace = true }

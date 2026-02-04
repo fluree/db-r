@@ -508,7 +508,7 @@ mod tests {
         // Store the commit as v2 binary
         let commit = fluree_db_novelty::Commit::new("commit-1", 1, vec![make_flake(1, 1, 100, 1)]);
         let storage = storage;
-        let blob = fluree_db_novelty::commit_v2::write_commit(&commit, false).unwrap();
+        let blob = fluree_db_novelty::commit_v2::write_commit(&commit, false, None).unwrap();
         storage.insert("commit-1", blob.bytes);
 
         // Load ledger - should use genesis since no index exists

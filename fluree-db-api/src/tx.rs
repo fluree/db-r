@@ -891,11 +891,13 @@ where
             ..Default::default()
         };
 
-        // CommitOpts: author for provenance, raw_txn for storage
-        // We set raw_txn here; the raw_txn preservation fix ensures it won't be overwritten
+        // CommitOpts: author for provenance, raw_txn for storage, txn_signature for audit
         let commit_opts = CommitOpts::default()
             .author(verified.did.clone())
-            .with_raw_txn(raw_credential);
+            .with_raw_txn(raw_credential)
+            .with_txn_signature(fluree_db_novelty::TxnSignature {
+                signer: verified.did.clone(),
+            });
 
         // Use transact_tracked_with_policy and extract result
         let index_config = self.default_index_config();

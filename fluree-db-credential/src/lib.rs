@@ -35,11 +35,101 @@ mod jws;
 pub mod jwt_claims;
 
 pub use did::{did_from_pubkey, pubkey_from_did};
+pub use ed25519::{sign_ed25519, SigningKey};
 pub use error::{CredentialError, Result};
 pub use jws::{verify_jws, JwsVerified};
 pub use jwt_claims::{ClaimsError, EventsTokenPayload};
 
+use sha2::{Digest, Sha256};
 use serde_json::Value as JsonValue;
+
+/// Domain separator for commit signature digests.
+const COMMIT_DOMAIN_SEPARATOR: &[u8] = b"fluree/commit/v1";
+
+/// Compute the domain-separated digest for commit signing/verification.
+///
+/// ```text
+/// to_sign = SHA-256("fluree/commit/v1" || varint(ledger_alias.len()) || ledger_alias || commit_hash)
+/// ```
+///
+/// The domain separator prevents cross-protocol replay. The ledger alias
+/// prevents cross-ledger replay. The commit hash binds the signature to
+/// the specific commit content.
+fn compute_commit_digest(commit_hash: &[u8; 32], ledger_alias: &str) -> [u8; 32] {
+    let alias_bytes = ledger_alias.as_bytes();
+    let mut hasher = Sha256::new();
+    hasher.update(COMMIT_DOMAIN_SEPARATOR);
+    // Length-prefix the alias (varint-style: single byte for len < 128)
+    let alias_len = alias_bytes.len();
+    let mut len_buf = [0u8; 10];
+    let len_bytes = encode_varint_to_buf(alias_len as u64, &mut len_buf);
+    hasher.update(len_bytes);
+    hasher.update(alias_bytes);
+    hasher.update(commit_hash);
+    hasher.finalize().into()
+}
+
+/// Encode a u64 as a varint into a fixed buffer, returning the used slice.
+fn encode_varint_to_buf(mut value: u64, buf: &mut [u8; 10]) -> &[u8] {
+    let mut i = 0;
+    loop {
+        let byte = (value & 0x7F) as u8;
+        value >>= 7;
+        if value == 0 {
+            buf[i] = byte;
+            i += 1;
+            break;
+        }
+        buf[i] = byte | 0x80;
+        i += 1;
+    }
+    &buf[..i]
+}
+
+/// Sign a commit hash with domain separation and ledger binding.
+///
+/// Computes the domain-separated digest and signs it with Ed25519.
+///
+/// # Arguments
+/// * `signing_key` - Ed25519 signing key
+/// * `commit_hash` - 32-byte SHA-256 hash of the commit blob content
+/// * `ledger_alias` - Canonical ledger alias (must be immutable for verification)
+///
+/// # Returns
+/// 64-byte Ed25519 signature
+pub fn sign_commit_digest(
+    signing_key: &SigningKey,
+    commit_hash: &[u8; 32],
+    ledger_alias: &str,
+) -> [u8; 64] {
+    let digest = compute_commit_digest(commit_hash, ledger_alias);
+    sign_ed25519(signing_key, &digest)
+}
+
+/// Verify a commit signature against a commit hash and ledger alias.
+///
+/// Recomputes the domain-separated digest and verifies the Ed25519 signature.
+///
+/// # Arguments
+/// * `signer_did` - Signer's did:key identifier (used to derive public key)
+/// * `signature` - 64-byte Ed25519 signature
+/// * `commit_hash` - 32-byte SHA-256 hash of the commit blob content
+/// * `ledger_alias` - Canonical ledger alias
+///
+/// # Errors
+/// - `InvalidDid` if the DID format is invalid
+/// - `InvalidPublicKey` if the public key can't be extracted
+/// - `InvalidSignature` if the signature doesn't verify
+pub fn verify_commit_digest(
+    signer_did: &str,
+    signature: &[u8; 64],
+    commit_hash: &[u8; 32],
+    ledger_alias: &str,
+) -> Result<()> {
+    let pubkey = pubkey_from_did(signer_did)?;
+    let digest = compute_commit_digest(commit_hash, ledger_alias);
+    ed25519::verify_ed25519(&pubkey, &digest, signature)
+}
 
 /// Input type for verify() - accepts either JWS string or JSON
 #[derive(Debug, Clone)]
@@ -202,6 +292,57 @@ mod tests {
 
         let result = verify(CredentialInput::Jws(&jws));
         assert!(matches!(result, Err(CredentialError::JsonParse(_))));
+    }
+
+    #[test]
+    fn test_sign_and_verify_commit_digest() {
+        let key = SigningKey::from_bytes(&[99u8; 32]);
+        let commit_hash = [0xABu8; 32];
+        let alias = "books:main";
+
+        let signature = sign_commit_digest(&key, &commit_hash, alias);
+        let did = did_from_pubkey(&key.verifying_key().to_bytes());
+
+        assert!(verify_commit_digest(&did, &signature, &commit_hash, alias).is_ok());
+    }
+
+    #[test]
+    fn test_verify_commit_digest_wrong_alias() {
+        let key = SigningKey::from_bytes(&[99u8; 32]);
+        let commit_hash = [0xABu8; 32];
+
+        let signature = sign_commit_digest(&key, &commit_hash, "books:main");
+        let did = did_from_pubkey(&key.verifying_key().to_bytes());
+
+        // Wrong alias should fail verification
+        let result = verify_commit_digest(&did, &signature, &commit_hash, "users:main");
+        assert!(matches!(result, Err(CredentialError::InvalidSignature(_))));
+    }
+
+    #[test]
+    fn test_verify_commit_digest_wrong_hash() {
+        let key = SigningKey::from_bytes(&[99u8; 32]);
+        let commit_hash = [0xABu8; 32];
+
+        let signature = sign_commit_digest(&key, &commit_hash, "books:main");
+        let did = did_from_pubkey(&key.verifying_key().to_bytes());
+
+        let wrong_hash = [0xCDu8; 32];
+        let result = verify_commit_digest(&did, &signature, &wrong_hash, "books:main");
+        assert!(matches!(result, Err(CredentialError::InvalidSignature(_))));
+    }
+
+    #[test]
+    fn test_verify_commit_digest_wrong_signer() {
+        let key = SigningKey::from_bytes(&[99u8; 32]);
+        let other_key = SigningKey::from_bytes(&[88u8; 32]);
+        let commit_hash = [0xABu8; 32];
+
+        let signature = sign_commit_digest(&key, &commit_hash, "books:main");
+        let wrong_did = did_from_pubkey(&other_key.verifying_key().to_bytes());
+
+        let result = verify_commit_digest(&wrong_did, &signature, &commit_hash, "books:main");
+        assert!(matches!(result, Err(CredentialError::InvalidSignature(_))));
     }
 
     #[test]

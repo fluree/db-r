@@ -20,6 +20,9 @@ bs58 = "0.5"
 serde.workspace = true
 serde_json.workspace = true
 
+# SHA-256 for commit digest computation
+sha2 = { workspace = true }
+
 # Error handling
 thiserror.workspace = true
 

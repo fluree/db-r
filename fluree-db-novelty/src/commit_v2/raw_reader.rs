@@ -462,6 +462,7 @@ mod tests {
             time: None,
             data: None,
             index: None,
+            txn_signature: None,
         };
         let mut envelope_bytes = Vec::new();
         encode_envelope_fields(&envelope, &mut envelope_bytes).unwrap();
@@ -502,6 +503,7 @@ mod tests {
             t,
             op_count: flakes.len() as u32,
             envelope_len,
+            sig_block_len: 0,
         };
 
         // Assemble

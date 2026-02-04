@@ -12,7 +12,7 @@
 
 use super::error::CommitV2Error;
 use super::varint::{decode_varint, encode_varint, zigzag_decode, zigzag_encode};
-use crate::{Commit, CommitData, CommitRef, IndexRef};
+use crate::{Commit, CommitData, CommitRef, IndexRef, TxnSignature};
 use std::collections::HashMap;
 
 // --- Presence flag bits ---
@@ -22,6 +22,7 @@ const FLAG_TXN: u8 = 0x08;
 const FLAG_TIME: u8 = 0x10;
 const FLAG_DATA: u8 = 0x20;
 const FLAG_INDEX: u8 = 0x40;
+const FLAG_TXN_SIGNATURE: u8 = 0x80;
 
 /// Maximum recursion depth for CommitData.previous chain.
 const MAX_COMMIT_DATA_DEPTH: usize = 16;
@@ -42,6 +43,7 @@ pub struct CommitV2Envelope {
     pub time: Option<String>,
     pub data: Option<CommitData>,
     pub index: Option<IndexRef>,
+    pub txn_signature: Option<TxnSignature>,
 }
 
 impl CommitV2Envelope {
@@ -57,6 +59,7 @@ impl CommitV2Envelope {
             time: commit.time.clone(),
             data: commit.data.clone(),
             index: commit.index.clone(),
+            txn_signature: commit.txn_signature.clone(),
         }
     }
 }
@@ -96,6 +99,9 @@ pub fn encode_envelope_fields(
     if envelope.index.is_some() {
         flags |= FLAG_INDEX;
     }
+    if envelope.txn_signature.is_some() {
+        flags |= FLAG_TXN_SIGNATURE;
+    }
     buf.push(flags);
 
     // Fields in bit order (skip legacy FLAG_PREVIOUS bit 0)
@@ -117,7 +123,9 @@ pub fn encode_envelope_fields(
     if let Some(index) = &envelope.index {
         encode_index_ref(index, buf);
     }
-    // No FLAG_INDEXED_AT written
+    if let Some(txn_sig) = &envelope.txn_signature {
+        encode_len_str(&txn_sig.signer, buf);
+    }
 
     Ok(())
 }
@@ -189,6 +197,19 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
         None
     };
 
+    let txn_signature = if flags & FLAG_TXN_SIGNATURE != 0 {
+        let signer = decode_len_str(data, &mut pos)?;
+        if signer.len() > 256 {
+            return Err(CommitV2Error::EnvelopeDecode(format!(
+                "txn_signature signer length {} exceeds maximum 256",
+                signer.len()
+            )));
+        }
+        Some(TxnSignature { signer })
+    } else {
+        None
+    };
+
     if pos != data.len() {
         return Err(CommitV2Error::EnvelopeDecode(format!(
             "trailing bytes: consumed {} of {} bytes",
@@ -206,6 +227,7 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
         time,
         data: data_field,
         index,
+        txn_signature,
     })
 }
 

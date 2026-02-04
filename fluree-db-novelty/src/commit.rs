@@ -18,6 +18,7 @@
 //! would need to be ancestry-based (e.g., comparing commit addresses or
 //! using Merkle ancestry proofs) rather than `t`-based.
 
+use crate::commit_v2::format::CommitSignature;
 use crate::{NoveltyError, Result};
 use fluree_db_core::{Flake, Storage};
 use futures::stream::{self, Stream};
@@ -142,6 +143,16 @@ impl IndexRef {
     }
 }
 
+/// Transaction signature — audit record of who submitted a transaction.
+///
+/// This is metadata, not independently verifiable. The raw JWS (stored
+/// via `raw_txn`) is the actual cryptographic proof for re-verification.
+#[derive(Clone, Debug)]
+pub struct TxnSignature {
+    /// Verified signer identity (did:key:z6Mk...)
+    pub signer: String,
+}
+
 /// A commit represents a single transaction in the ledger
 #[derive(Clone, Debug)]
 pub struct Commit {
@@ -183,6 +194,12 @@ pub struct Commit {
     /// database's namespace table, new codes are allocated and recorded here.
     /// This allows ledger loading to apply namespace updates from commit history.
     pub namespace_delta: HashMap<u16, String>,
+
+    /// Transaction signature (audit metadata: who submitted the transaction)
+    pub txn_signature: Option<TxnSignature>,
+
+    /// Commit signatures (cryptographic proof of which node(s) wrote this commit)
+    pub commit_signatures: Vec<CommitSignature>,
 }
 
 impl Commit {
@@ -200,6 +217,8 @@ impl Commit {
             index: None,
             txn: None,
             namespace_delta: HashMap::new(),
+            txn_signature: None,
+            commit_signatures: Vec::new(),
         }
     }
 
@@ -236,6 +255,12 @@ impl Commit {
     /// Set the namespace delta (new namespace codes introduced by this commit)
     pub fn with_namespace_delta(mut self, delta: HashMap<u16, String>) -> Self {
         self.namespace_delta = delta;
+        self
+    }
+
+    /// Set the transaction signature (audit metadata)
+    pub fn with_txn_signature(mut self, sig: TxnSignature) -> Self {
+        self.txn_signature = Some(sig);
         self
     }
 
