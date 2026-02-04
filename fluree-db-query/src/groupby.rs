@@ -33,6 +33,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+/// Type alias for a group entry: (group_key, rows_in_group)
+type GroupEntry = (Vec<Binding>, Vec<Vec<Binding>>);
+
 /// GROUP BY operator - partitions solutions by group key variables.
 ///
 /// For each unique combination of group key values, collects all rows into a single
@@ -49,7 +52,7 @@ pub struct GroupByOperator<S: Storage + 'static> {
     /// Accumulated groups: group_key -> list of complete rows
     groups: HashMap<Vec<Binding>, Vec<Vec<Binding>>>,
     /// Iterator for emitting grouped results
-    emit_iter: Option<std::vec::IntoIter<(Vec<Binding>, Vec<Vec<Binding>>)>>,
+    emit_iter: Option<std::vec::IntoIter<GroupEntry>>,
     /// Indices of group key columns in the schema
     group_key_indices: Vec<usize>,
 }
