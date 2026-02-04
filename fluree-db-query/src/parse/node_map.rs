@@ -15,6 +15,16 @@ use fluree_graph_json_ld::{details, details_with_vocab, ParsedContext, TypeValue
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
 
+/// Result of parsing an index search result specification.
+struct IndexSearchResultVars {
+    /// The variable for the document/result ID
+    id: Arc<str>,
+    /// Optional variable for the search score
+    score: Option<Arc<str>>,
+    /// Optional variable for the ledger alias
+    ledger: Option<Arc<str>>,
+}
+
 /// rdf:type IRI constant (re-exported from vocab crate for convenience)
 pub(crate) use fluree_vocab::rdf::TYPE as RDF_TYPE;
 use fluree_vocab::xsd;
@@ -213,7 +223,7 @@ fn parse_index_search_pattern(
         ParseError::InvalidWhere("index search: 'idx:result' is required".to_string())
     })?;
 
-    let (id_var, score_var, ledger_var) = parse_index_search_result(result_val)?;
+    let result_vars = parse_index_search_result(result_val)?;
 
     // Extract "idx:sync" (optional, default false)
     let sync = map
@@ -224,15 +234,15 @@ fn parse_index_search_pattern(
     // Extract "idx:timeout" (optional)
     let timeout = map.get("idx:timeout").and_then(|v| v.as_u64());
 
-    let mut pattern = UnresolvedIndexSearchPattern::new(vg_alias, target, id_var.as_ref());
+    let mut pattern = UnresolvedIndexSearchPattern::new(vg_alias, target, result_vars.id.as_ref());
 
     if let Some(limit) = limit {
         pattern = pattern.with_limit(limit);
     }
-    if let Some(sv) = score_var {
+    if let Some(sv) = result_vars.score {
         pattern = pattern.with_score_var(sv.as_ref());
     }
-    if let Some(lv) = ledger_var {
+    if let Some(lv) = result_vars.ledger {
         pattern = pattern.with_ledger_var(lv.as_ref());
     }
     if sync {
@@ -326,7 +336,7 @@ fn parse_vector_search_pattern(
         ParseError::InvalidWhere("vector search: 'idx:result' is required".to_string())
     })?;
 
-    let (id_var, score_var, ledger_var) = parse_index_search_result(result_val)?;
+    let result_vars = parse_index_search_result(result_val)?;
 
     // Extract "idx:sync" (optional, default false)
     let sync = map
@@ -337,15 +347,16 @@ fn parse_vector_search_pattern(
     // Extract "idx:timeout" (optional)
     let timeout = map.get("idx:timeout").and_then(|v| v.as_u64());
 
-    let mut pattern = UnresolvedVectorSearchPattern::new(vg_alias, target, metric, id_var.as_ref());
+    let mut pattern =
+        UnresolvedVectorSearchPattern::new(vg_alias, target, metric, result_vars.id.as_ref());
 
     if let Some(limit) = limit {
         pattern = pattern.with_limit(limit);
     }
-    if let Some(sv) = score_var {
+    if let Some(sv) = result_vars.score {
         pattern = pattern.with_score_var(sv.as_ref());
     }
-    if let Some(lv) = ledger_var {
+    if let Some(lv) = result_vars.ledger {
         pattern = pattern.with_ledger_var(lv.as_ref());
     }
     if sync {
@@ -362,9 +373,7 @@ fn parse_vector_search_pattern(
 }
 
 /// Parse the idx:result value (variable or nested object with id/score/ledger).
-fn parse_index_search_result(
-    result_val: &JsonValue,
-) -> Result<(Arc<str>, Option<Arc<str>>, Option<Arc<str>>)> {
+fn parse_index_search_result(result_val: &JsonValue) -> Result<IndexSearchResultVars> {
     match result_val {
         // Simple variable: "?doc"
         JsonValue::String(s) => {
@@ -373,7 +382,11 @@ fn parse_index_search_result(
                     "index search: idx:result variable must start with ?".to_string(),
                 ));
             }
-            Ok((Arc::from(s.as_str()), None, None))
+            Ok(IndexSearchResultVars {
+                id: Arc::from(s.as_str()),
+                score: None,
+                ledger: None,
+            })
         }
         // Nested object: {"idx:id": "?doc", "idx:score": "?score", ...}
         JsonValue::Object(obj) => {
@@ -404,7 +417,11 @@ fn parse_index_search_result(
                 Arc::from(s)
             });
 
-            Ok((Arc::from(id_str), score_var, ledger_var))
+            Ok(IndexSearchResultVars {
+                id: Arc::from(id_str),
+                score: score_var,
+                ledger: ledger_var,
+            })
         }
         _ => Err(ParseError::InvalidWhere(
             "index search: idx:result must be a variable or object".to_string(),
