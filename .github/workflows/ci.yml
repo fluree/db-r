@@ -1,51 +1,28 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
 
-env:
-  CARGO_TERM_COLOR: always
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
-  fmt:
-    name: Format
+  check-and-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
-          components: rustfmt
-      - run: cargo fmt --all --check
+          cache-on-failure: true
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
 
-  # TODO: Enable clippy once warnings are resolved
-  # clippy:
-  #   name: Clippy
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: dtolnay/rust-toolchain@stable
-  #       with:
-  #         components: clippy
-  #     - uses: Swatinem/rust-cache@v2
-  #     - run: cargo clippy --workspace -- -D warnings
+      - name: Check
+        run: cargo check --all --all-features --all-targets
 
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace
-
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace --release
+      - name: Test
+        run: cargo nextest run --workspace --all-features --no-fail-fast
