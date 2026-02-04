@@ -223,16 +223,17 @@ pub fn build_index(config: IndexBuildConfig) -> Result<IndexBuildResult, IndexBu
     let mut current_writer: Option<LeafWriter> = None;
 
     while let Some(record) = merge.next_deduped()? {
+        // Track max t for manifest metadata (must happen before retraction
+        // skip so that retraction-only commits are still reflected in max_t).
+        if record.t > max_t {
+            max_t = record.t;
+        }
+
         // Snapshot semantics: if dedup selected a retract (op=0), the fact is
         // no longer asserted and must be excluded from the snapshot index.
         if record.op == 0 {
             retract_count += 1;
             continue;
-        }
-
-        // Track max t for manifest metadata.
-        if record.t > max_t {
-            max_t = record.t;
         }
 
         let g_id = record.g_id;

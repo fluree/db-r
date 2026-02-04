@@ -11,6 +11,8 @@ use crate::{
     time_resolve, ApiError, Fluree, NameService, QueryConnectionOptions, Result,
     Storage, TimeSpec,
 };
+use fluree_db_indexer::run_index::{BinaryIndexRootV2, BinaryIndexStore, BINARY_INDEX_ROOT_VERSION_V2};
+use fluree_db_query::BinaryRangeProvider;
 use fluree_db_query::rewrite::ReasoningModes;
 
 // ============================================================================
@@ -32,7 +34,47 @@ where
     /// [`graph()`](Self::graph) which returns a lazy [`Graph`](crate::Graph) handle.
     pub(crate) async fn load_view(&self, alias: &str) -> Result<FlureeView<S>> {
         let handle = self.ledger_cached(alias).await?;
-        let snapshot = handle.snapshot().await;
+        let mut snapshot = handle.snapshot().await;
+
+        // If no binary store attached but nameservice has an index address,
+        // load the BinaryIndexStore and attach BinaryRangeProvider.
+        // This handles the non-cached path (FlureeBuilder::file() without ledger_manager).
+        if snapshot.binary_store.is_none() {
+            if let Some(index_addr) = snapshot
+                .ns_record
+                .as_ref()
+                .and_then(|r| r.index_address.as_ref())
+                .cloned()
+            {
+                let storage = self.storage();
+                let bytes = storage
+                    .read_bytes(&index_addr)
+                    .await
+                    .map_err(|e| ApiError::internal(format!("read index root: {}", e)))?;
+                if let Ok(root) = serde_json::from_slice::<BinaryIndexRootV2>(&bytes) {
+                    if root.version == BINARY_INDEX_ROOT_VERSION_V2 {
+                        let cache_dir = std::env::temp_dir().join("fluree-cache");
+                        let store = BinaryIndexStore::load_from_root(
+                            storage,
+                            &root,
+                            &cache_dir,
+                            None,
+                        )
+                        .await
+                        .map_err(|e| {
+                            ApiError::internal(format!("load binary index: {}", e))
+                        })?;
+                        let arc_store = Arc::new(store);
+                        let dn = snapshot.dict_novelty.clone();
+                        let provider =
+                            BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);
+                        snapshot.db.range_provider = Some(Arc::new(provider));
+                        snapshot.binary_store = Some(arc_store);
+                    }
+                }
+            }
+        }
+
         let binary_store = snapshot.binary_store.clone();
         let ledger = snapshot.to_ledger_state();
         let view = FlureeView::from_ledger_state(&ledger);

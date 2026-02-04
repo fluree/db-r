@@ -6,7 +6,6 @@
 //! - Background indexing orchestration
 //! - Namespace delta replay
 //! - Garbage collection support
-//! - Checkpoint/resume infrastructure for long-running rebuilds
 //!
 //! ## Design
 //!
@@ -16,7 +15,6 @@
 //! 2. **External**: Standalone Lambda-style indexer
 //!
 //! The binary index pipeline (`run_index::index_build`) is the sole indexing path.
-//! Legacy b-tree index code has been removed.
 
 pub mod config;
 pub mod error;
@@ -44,15 +42,12 @@ pub use gc::{
 };
 
 // Note: The following types/functions are defined in this module and are automatically public:
-// - build_index_for_ledger (heavy bounds: Storage + Send)
-// - BatchedRebuildConfig, BatchedRebuildResult, batched_rebuild_from_commits, batched_rebuild_resume
-// - ReindexCheckpoint, IndexerConfigSnapshot, checkpoint_address, load_checkpoint, write_checkpoint, delete_checkpoint
-// - ReindexProgress, ProgressCallback (for observability)
-// - CURRENT_INDEX_VERSION, DEFAULT_BATCH_BYTES, DEFAULT_MAX_BATCH_COMMITS, DEFAULT_CHECKPOINT_INTERVAL
+// - build_index_for_ledger (nameservice-aware entry point)
+// - build_binary_index (direct entry point given an NsRecord)
+// - CURRENT_INDEX_VERSION
 
-use fluree_db_core::{ContentAddressedWrite, Storage, StorageWrite};
+use fluree_db_core::Storage;
 use fluree_db_nameservice::{NameService, Publisher};
-use serde::{Deserialize, Serialize};
 
 /// Normalize an alias for comparison purposes
 ///
@@ -123,411 +118,8 @@ pub struct IndexStats {
     pub total_bytes: usize,
 }
 
-/// Default batch size in bytes (100MB)
-pub const DEFAULT_BATCH_BYTES: usize = 100_000_000;
-
-/// Default maximum commits per batch
-pub const DEFAULT_MAX_BATCH_COMMITS: usize = 100_000;
-
 /// Current index version for compatibility checking
 pub const CURRENT_INDEX_VERSION: i32 = 2;
-
-/// Default checkpoint interval (every batch)
-pub const DEFAULT_CHECKPOINT_INTERVAL: u32 = 1;
-
-// =============================================================================
-// Progress Tracking for Observability
-// =============================================================================
-
-/// Progress information for long-running reindex operations
-///
-/// Reported after each batch flush to provide visibility into progress.
-/// Use with `BatchedRebuildConfig.progress_callback` to receive updates.
-#[derive(Debug, Clone)]
-pub struct ReindexProgress {
-    /// Ledger alias being reindexed
-    pub alias: String,
-    /// Total commits to process (known after initial scan)
-    pub total_commits: usize,
-    /// Commits processed so far
-    pub commits_processed: usize,
-    /// Batches flushed so far
-    pub batches_flushed: usize,
-    /// Total bytes of novelty flushed so far
-    pub bytes_flushed: u64,
-    /// Current t being processed
-    pub current_t: i64,
-    /// Target t (final commit)
-    pub target_t: i64,
-    /// Commits processed per second (rolling average based on elapsed time)
-    pub commits_per_sec: f64,
-    /// Estimated seconds remaining (based on throughput)
-    /// None if not enough data to estimate
-    pub estimated_remaining_secs: Option<f64>,
-}
-
-impl ReindexProgress {
-    /// Calculate percentage complete (0.0 to 100.0)
-    pub fn percent_complete(&self) -> f64 {
-        if self.total_commits == 0 {
-            return 100.0;
-        }
-        (self.commits_processed as f64 / self.total_commits as f64) * 100.0
-    }
-}
-
-/// Callback type for progress updates during batched rebuild
-///
-/// Invoked synchronously after each batch flush. If you need async processing,
-/// spawn your own task inside the callback. Avoid blocking operations as they
-/// will slow down the reindex.
-pub type ProgressCallback = std::sync::Arc<dyn Fn(ReindexProgress) + Send + Sync>;
-
-// =============================================================================
-// Checkpointing for Resumable Reindex
-// =============================================================================
-
-/// Persisted checkpoint for resumable reindex operations
-///
-/// Checkpoints are stored in the same storage backend as commits/indexes at:
-/// `fluree:file://{alias_with_slashes}/reindex-checkpoint.json`
-///
-/// Resume semantics: `last_processed_t` is the authoritative boundary. Commits
-/// with `t > last_processed_t` will be processed on resume. The `last_processed_commit`
-/// field is informational (for debugging/logging) - filtering uses `last_processed_t`.
-///
-/// On resume, the intermediate index is loaded and its actual `t` is validated
-/// against `last_processed_t` to ensure consistency.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReindexCheckpoint {
-    /// Ledger alias being reindexed
-    pub alias: String,
-    /// Address of the head commit we're rebuilding to
-    pub target_head: String,
-    /// Target t we're rebuilding to
-    pub target_t: i64,
-    /// Current progress: address of last processed commit (informational, for logging)
-    pub last_processed_commit: String,
-    /// Current progress: t of last processed commit (authoritative resume boundary)
-    pub last_processed_t: i64,
-    /// Address of intermediate index (after last flush)
-    pub intermediate_index: Option<String>,
-    /// Timestamp when checkpoint was written (ms since epoch)
-    pub checkpoint_time_ms: i64,
-    /// Batch size configuration (preserved for resume)
-    pub batch_bytes: usize,
-    /// Max commits per batch (preserved for resume)
-    pub max_batch_commits: usize,
-    /// Checkpoint interval - how often to write checkpoints (preserved for resume)
-    pub checkpoint_interval: u32,
-    /// Number of batches flushed so far
-    pub batches_flushed: usize,
-    /// IndexerConfig serialized for resume (leaf/branch thresholds)
-    #[serde(default)]
-    pub indexer_config: Option<IndexerConfigSnapshot>,
-}
-
-/// Snapshot of IndexerConfig for checkpoint persistence
-///
-/// This captures the essential configuration needed to resume with the
-/// same indexer settings. Uses Option fields to be forward-compatible.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct IndexerConfigSnapshot {
-    /// Target leaf node size in bytes
-    pub leaf_target_bytes: Option<u64>,
-    /// Maximum leaf node size in bytes
-    pub leaf_max_bytes: Option<u64>,
-    /// Target children per branch node
-    pub branch_target_children: Option<usize>,
-    /// Maximum children per branch node
-    pub branch_max_children: Option<usize>,
-    /// GC: Maximum old index versions to retain
-    #[serde(default)]
-    pub gc_max_old_indexes: Option<u32>,
-    /// GC: Minimum age in minutes before GC eligible
-    #[serde(default)]
-    pub gc_min_time_mins: Option<u32>,
-}
-
-impl From<&IndexerConfig> for IndexerConfigSnapshot {
-    fn from(config: &IndexerConfig) -> Self {
-        Self {
-            leaf_target_bytes: Some(config.leaf_target_bytes),
-            leaf_max_bytes: Some(config.leaf_max_bytes),
-            branch_target_children: Some(config.branch_target_children),
-            branch_max_children: Some(config.branch_max_children),
-            gc_max_old_indexes: Some(config.gc_max_old_indexes),
-            gc_min_time_mins: Some(config.gc_min_time_mins),
-        }
-    }
-}
-
-impl IndexerConfigSnapshot {
-    /// Convert back to IndexerConfig, using defaults for missing fields
-    pub fn to_indexer_config(&self) -> IndexerConfig {
-        let default = IndexerConfig::default();
-        IndexerConfig {
-            leaf_target_bytes: self.leaf_target_bytes.unwrap_or(default.leaf_target_bytes),
-            leaf_max_bytes: self.leaf_max_bytes.unwrap_or(default.leaf_max_bytes),
-            branch_target_children: self.branch_target_children.unwrap_or(default.branch_target_children),
-            branch_max_children: self.branch_max_children.unwrap_or(default.branch_max_children),
-            gc_max_old_indexes: self.gc_max_old_indexes.unwrap_or(default.gc_max_old_indexes),
-            gc_min_time_mins: self.gc_min_time_mins.unwrap_or(default.gc_min_time_mins),
-            data_dir: None,
-        }
-    }
-}
-
-/// Get the storage address for a reindex checkpoint
-///
-/// Format: `fluree:file://{ledger}/{branch}/index/reindex-checkpoint.json`
-/// (canonical layout; works for S3 because it ignores the scheme and extracts the path).
-pub fn checkpoint_address(alias: &str) -> String {
-    let prefix = fluree_db_core::address_path::alias_to_path_prefix(alias)
-        .unwrap_or_else(|_| alias.replace(':', "/"));
-    format!("fluree:file://{}/index/reindex-checkpoint.json", prefix)
-}
-
-/// Load a reindex checkpoint from storage
-///
-/// Returns `None` if no checkpoint exists. Returns an error if the checkpoint
-/// exists but is corrupt or unreadable.
-///
-/// # Not-Found Detection
-///
-/// Storage backends don't have a standard "not found" error type, so detection
-/// relies on string matching against common patterns ("not found", "does not exist",
-/// "no such file"). If a storage backend uses unusual error messages, this may
-/// incorrectly treat not-found as a real error. In practice, all major storage
-/// implementations use these patterns.
-pub async fn load_checkpoint<S: Storage>(
-    storage: &S,
-    alias: &str,
-) -> Result<Option<ReindexCheckpoint>> {
-    let address = checkpoint_address(alias);
-    match storage.read_bytes(&address).await {
-        Ok(bytes) => {
-            let checkpoint: ReindexCheckpoint = serde_json::from_slice(&bytes)
-                .map_err(|e| IndexerError::Checkpoint(format!(
-                    "Failed to parse checkpoint at {}: {}", address, e
-                )))?;
-            Ok(Some(checkpoint))
-        }
-        Err(e) => {
-            // Best-effort detection of "not found" errors via string matching.
-            // See doc comment above for caveats.
-            let msg = e.to_string().to_lowercase();
-            if msg.contains("not found") || msg.contains("does not exist") || msg.contains("no such file") {
-                Ok(None)
-            } else {
-                Err(IndexerError::Checkpoint(format!(
-                    "Failed to read checkpoint at {}: {}", address, e
-                )))
-            }
-        }
-    }
-}
-
-/// Write a reindex checkpoint to storage
-pub async fn write_checkpoint<S: fluree_db_core::StorageWrite>(
-    storage: &S,
-    checkpoint: &ReindexCheckpoint,
-) -> Result<()> {
-    let address = checkpoint_address(&checkpoint.alias);
-    let bytes = serde_json::to_vec_pretty(checkpoint)
-        .map_err(|e| IndexerError::Checkpoint(format!(
-            "Failed to serialize checkpoint: {}", e
-        )))?;
-    storage.write_bytes(&address, &bytes).await
-        .map_err(|e| IndexerError::Checkpoint(format!(
-            "Failed to write checkpoint to {}: {}", address, e
-        )))?;
-    tracing::debug!(
-        address = %address,
-        last_processed_t = checkpoint.last_processed_t,
-        "Checkpoint written"
-    );
-    Ok(())
-}
-
-/// Delete a reindex checkpoint from storage
-pub async fn delete_checkpoint<S: StorageWrite>(
-    storage: &S,
-    alias: &str,
-) -> Result<()> {
-    let address = checkpoint_address(alias);
-    // Ignore errors - checkpoint may not exist
-    let _ = storage.delete(&address).await;
-    tracing::debug!(address = %address, "Checkpoint deleted");
-    Ok(())
-}
-
-/// Configuration for batched rebuild
-#[derive(Clone)]
-pub struct BatchedRebuildConfig {
-    /// Indexer configuration (leaf/branch sizes)
-    pub indexer_config: IndexerConfig,
-
-    /// Memory budget for batched rebuild (default: 100MB)
-    /// When novelty exceeds this, intermediate index is flushed
-    pub batch_bytes: usize,
-
-    /// Maximum commits per batch (default: 100,000)
-    /// Secondary ceiling for ledgers with many tiny commits
-    pub max_batch_commits: usize,
-
-    /// Enable checkpointing for resumable reindex (default: false)
-    pub checkpoint: bool,
-
-    /// Checkpoint interval - flush checkpoint every N batches (default: 1)
-    pub checkpoint_interval: u32,
-
-    /// Optional callback invoked after each batch flush with progress info
-    ///
-    /// Invoked synchronously - avoid blocking operations.
-    /// Set to None to disable progress reporting.
-    pub progress_callback: Option<ProgressCallback>,
-}
-
-impl std::fmt::Debug for BatchedRebuildConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BatchedRebuildConfig")
-            .field("indexer_config", &self.indexer_config)
-            .field("batch_bytes", &self.batch_bytes)
-            .field("max_batch_commits", &self.max_batch_commits)
-            .field("checkpoint", &self.checkpoint)
-            .field("checkpoint_interval", &self.checkpoint_interval)
-            .field("progress_callback", &self.progress_callback.as_ref().map(|_| "<callback>"))
-            .finish()
-    }
-}
-
-impl Default for BatchedRebuildConfig {
-    fn default() -> Self {
-        Self {
-            indexer_config: IndexerConfig::default(),
-            batch_bytes: DEFAULT_BATCH_BYTES,
-            max_batch_commits: DEFAULT_MAX_BATCH_COMMITS,
-            checkpoint: false,
-            checkpoint_interval: DEFAULT_CHECKPOINT_INTERVAL,
-            progress_callback: None,
-        }
-    }
-}
-
-impl BatchedRebuildConfig {
-    /// Create with custom indexer config
-    pub fn with_indexer_config(mut self, config: IndexerConfig) -> Self {
-        self.indexer_config = config;
-        self
-    }
-
-    /// Set the batch size in bytes
-    pub fn with_batch_bytes(mut self, bytes: usize) -> Self {
-        self.batch_bytes = bytes;
-        self
-    }
-
-    /// Set the maximum commits per batch
-    pub fn with_max_batch_commits(mut self, max: usize) -> Self {
-        self.max_batch_commits = max;
-        self
-    }
-
-    /// Enable checkpointing for resumable reindex
-    pub fn with_checkpoint(mut self, enabled: bool) -> Self {
-        self.checkpoint = enabled;
-        self
-    }
-
-    /// Set checkpoint interval (flush checkpoint every N batches)
-    pub fn with_checkpoint_interval(mut self, interval: u32) -> Self {
-        self.checkpoint_interval = interval;
-        self
-    }
-
-    /// Set progress callback for receiving updates after each batch
-    ///
-    /// The callback is invoked synchronously after each batch flush.
-    /// It receives a `ReindexProgress` struct with current progress info.
-    pub fn with_progress_callback(mut self, callback: ProgressCallback) -> Self {
-        self.progress_callback = Some(callback);
-        self
-    }
-}
-
-/// Result of batched rebuild
-#[derive(Debug, Clone)]
-pub struct BatchedRebuildResult {
-    /// Final index result
-    pub index_result: IndexResult,
-    /// Number of batches flushed during rebuild
-    pub batches_flushed: usize,
-}
-
-/// Memory-bounded batched rebuild from commit history
-///
-/// **Note**: The b-tree index pipeline has been removed. This function currently
-/// returns an error. It will be rewired to the binary index pipeline.
-pub async fn batched_rebuild_from_commits<S>(
-    _storage: &S,
-    _head_commit_address: &str,
-    _alias: &str,
-    _config: BatchedRebuildConfig,
-) -> Result<BatchedRebuildResult>
-where
-    S: Storage + Clone + Send + Sync + 'static,
-{
-    // B-tree index pipeline removed. Will be rewired to binary index pipeline.
-    Err(IndexerError::BTreePipelineRemoved)
-}
-
-/// Resume a batched rebuild from a checkpoint
-///
-/// Loads a previously saved checkpoint and continues the rebuild from where it left off.
-///
-/// # Checkpoint Validation
-///
-/// - Verifies `checkpoint.target_head` matches `current_head_address` (no new commits)
-/// - Validates loaded intermediate index's `t` matches `checkpoint.last_processed_t`
-/// - If mismatch detected, returns appropriate error
-///
-/// # Resume Semantics
-///
-/// The checkpoint's `last_processed_t` is the authoritative resume boundary. Commits
-/// with `t > last_processed_t` will be processed. The intermediate index is loaded
-/// and its actual `t` is validated against the checkpoint for consistency.
-///
-/// # Configuration Preservation
-///
-/// Batch configuration (batch_bytes, max_batch_commits, checkpoint_interval) is
-/// restored from the checkpoint. IndexerConfig is restored from checkpoint if present
-/// (checkpoint wins); otherwise falls back to the provided `indexer_config_override`.
-/// This ensures resume uses the same settings as the original reindex.
-///
-/// # Arguments
-///
-/// * `storage` - Storage backend
-/// * `current_head_address` - Current head commit address (for validation)
-/// * `checkpoint` - The checkpoint to resume from
-/// * `indexer_config_override` - Fallback indexer config if checkpoint doesn't have one
-///
-/// # Errors
-///
-/// - `CheckpointHeadMismatch` if ledger has new commits since checkpoint
-/// - `Checkpoint` if intermediate index cannot be loaded or t mismatch
-pub async fn batched_rebuild_resume<S>(
-    _storage: &S,
-    _current_head_address: &str,
-    _checkpoint: ReindexCheckpoint,
-    _indexer_config_override: IndexerConfig,
-) -> Result<BatchedRebuildResult>
-where
-    S: Storage + Clone + Send + Sync + 'static,
-{
-    // B-tree index pipeline removed. Will be rewired to binary index pipeline.
-    Err(IndexerError::BTreePipelineRemoved)
-}
 
 /// External indexer entry point
 ///
@@ -537,9 +129,7 @@ where
 /// 3. Creates a `BinaryIndexRootV2` descriptor and writes it to storage
 ///
 /// Returns early if the index is already current (no work needed).
-///
-/// Requires the `commit-v2` feature for the binary pipeline. Without it,
-/// returns `BTreePipelineRemoved`.
+/// Use `build_binary_index` directly to force a rebuild regardless.
 pub async fn build_index_for_ledger<S, N>(
     storage: &S,
     nameservice: &N,
@@ -575,7 +165,11 @@ where
     build_binary_index(storage, alias, &record, config).await
 }
 
-/// Binary index build implementation (commit-v2 feature required).
+/// Build a binary index from an existing nameservice record.
+///
+/// Unlike `build_index_for_ledger`, this skips the nameservice lookup and
+/// the "already current" early-return check. Use this when you already have
+/// the `NsRecord` and want to force a rebuild (e.g., `reindex`).
 ///
 /// Runs the entire pipeline on a blocking thread via `spawn_blocking` +
 /// `handle.block_on()` because internal dictionaries contain non-Send types
@@ -587,7 +181,7 @@ where
 ///    per-order sorted run files (SPOT, PSOT, POST, OPST)
 /// 3. Build per-graph leaf/branch indexes from run files
 /// 4. Write `BinaryIndexRootV2` descriptor to storage
-async fn build_binary_index<S>(
+pub async fn build_binary_index<S>(
     storage: &S,
     alias: &str,
     record: &fluree_db_nameservice::NsRecord,
@@ -650,7 +244,6 @@ where
                 }
 
                 addrs.reverse(); // chronological order (genesis first)
-                tracing::info!(commit_count = addrs.len(), "commit chain traversed");
                 addrs
             };
 
@@ -661,7 +254,7 @@ where
             resolver.set_stats_hook(crate::stats::IdStatsHook::new());
 
             let multi_config = run_index::MultiOrderConfig {
-                total_budget_bytes: 256 * 1024 * 1024,
+                total_budget_bytes: config.run_budget_bytes,
                 orders: run_index::RunSortOrder::all_build_orders().to_vec(),
                 base_run_dir: run_dir.clone(),
             };
@@ -709,14 +302,6 @@ where
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
             dicts.strings.write_reverse_index(&run_dir.join("strings.rev"))
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-            tracing::info!(
-                total_records,
-                commits = addresses.len(),
-                subjects = dicts.subjects.len(),
-                predicates = dicts.predicates.len(),
-                "run generation complete, building indexes"
-            );
 
             // ---- Phase C: Build per-graph indexes for all sort orders ----
             let build_results = run_index::build_all_indexes(
@@ -1122,8 +707,18 @@ pub async fn upload_indexes_to_cas<S: Storage>(
     let mut graph_map: BTreeMap<u32, BTreeMap<String, run_index::GraphOrderAddresses>> =
         BTreeMap::new();
 
-    for (order, result) in build_results {
+    let total_order_count = build_results.len();
+    for (order_idx, (order, result)) in build_results.iter().enumerate() {
         let order_name = order.dir_name().to_string();
+        let order_graphs = result.graphs.len();
+        let order_total_leaves: usize = result.graphs.iter().map(|g| g.leaf_count as usize).sum();
+        tracing::info!(
+            order = %order_name.to_uppercase(),
+            graphs = order_graphs,
+            leaves = order_total_leaves,
+            progress = format!("{}/{}", order_idx + 1, total_order_count),
+            "uploading index order to CAS"
+        );
 
         for graph_result in &result.graphs {
             let g_id = graph_result.g_id;
@@ -1152,8 +747,9 @@ pub async fn upload_indexes_to_cas<S: Storage>(
                 ))?;
 
             // Upload each leaf file
-            let mut leaf_addresses = Vec::with_capacity(branch_manifest.leaves.len());
-            for leaf_entry in &branch_manifest.leaves {
+            let total_leaves = branch_manifest.leaves.len();
+            let mut leaf_addresses = Vec::with_capacity(total_leaves);
+            for (leaf_idx, leaf_entry) in branch_manifest.leaves.iter().enumerate() {
                 let leaf_bytes = std::fs::read(&leaf_entry.path)
                     .map_err(|e| IndexerError::StorageRead(
                         format!("read leaf {}: {}", leaf_entry.path.display(), e),
@@ -1168,14 +764,24 @@ pub async fn upload_indexes_to_cas<S: Storage>(
                     .await
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                 leaf_addresses.push(leaf_write.address);
+
+                if total_leaves >= 100 && (leaf_idx + 1) % 500 == 0 {
+                    tracing::info!(
+                        order = %order_name,
+                        g_id,
+                        leaf = leaf_idx + 1,
+                        total_leaves,
+                        "leaf upload progress"
+                    );
+                }
             }
 
-            tracing::debug!(
+            tracing::info!(
                 g_id,
                 order = %order_name,
                 leaves = leaf_addresses.len(),
                 branch = %branch_write.address,
-                "graph/order index artifacts uploaded to CAS"
+                "graph/order index uploaded to CAS"
             );
 
             graph_map
@@ -1305,53 +911,91 @@ pub async fn upload_dicts_from_disk<S: Storage>(
     }
 
     // ---- 1. Upload flat dicts ----
+    tracing::info!("uploading flat dictionary artifacts (graphs, datatypes, languages)");
     let graphs = upload_flat(storage, alias, &run_dir.join("graphs.dict"), DictKind::Graphs).await?;
     let datatypes = upload_flat(storage, alias, &run_dir.join("datatypes.dict"), DictKind::Datatypes).await?;
     let languages = upload_flat(storage, alias, &run_dir.join("languages.dict"), DictKind::Languages).await?;
+    tracing::info!("flat dicts uploaded");
 
     // ---- 2. Read subjects.fwd + subjects.idx + subjects.sids → build trees ----
+    //
+    // Memory strategy: build forward and reverse trees in SEPARATE passes so
+    // we never hold both entry sets simultaneously. Each pass iterates through
+    // the same fwd_data/offsets/lens but only allocates one entry vec at a time.
+    // Subject data (fwd_data, offsets, lens) is dropped before string processing.
+    tracing::info!("reading subject dictionary files from disk");
     let sids_path = run_dir.join("subjects.sids");
     let sids: Vec<u64> = run_index::dict_io::read_subject_sid_map(&sids_path)
         .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", sids_path.display(), e)))?;
 
-    let subj_idx_path = run_dir.join("subjects.idx");
-    let (subj_offsets, subj_lens) = run_index::dict_io::read_forward_index(&subj_idx_path)
-        .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", subj_idx_path.display(), e)))?;
+    // Subject forward + reverse trees (scoped to drop fwd_data before strings)
+    let (subject_forward, subject_reverse) = {
+        let subj_idx_path = run_dir.join("subjects.idx");
+        let (subj_offsets, subj_lens) = run_index::dict_io::read_forward_index(&subj_idx_path)
+            .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", subj_idx_path.display(), e)))?;
+        let subj_fwd_data = std::fs::read(run_dir.join("subjects.fwd"))
+            .map_err(|e| IndexerError::StorageRead(format!("read subjects.fwd: {}", e)))?;
+        tracing::info!(
+            subjects = sids.len(),
+            fwd_bytes = subj_fwd_data.len(),
+            "subject dict files loaded"
+        );
 
-    let subj_fwd_data = std::fs::read(run_dir.join("subjects.fwd"))
-        .map_err(|e| IndexerError::StorageRead(format!("read subjects.fwd: {}", e)))?;
-
-    // Build forward entries (suffix-only, ns-compressed) and reverse entries
-    let mut subj_fwd_entries: Vec<ForwardEntry> = Vec::with_capacity(sids.len());
-    let mut subj_rev_entries: Vec<ReverseEntry> = Vec::with_capacity(sids.len());
-    for (&sid, (&off, &len)) in sids.iter().zip(subj_offsets.iter().zip(subj_lens.iter())) {
-        let iri = &subj_fwd_data[off as usize..(off as usize + len as usize)];
-        let iri_str = std::str::from_utf8(iri).unwrap_or("");
-        let ns_code = SubjectId::from_u64(sid).ns_code();
-        let prefix = namespace_codes.get(&ns_code).map(|s| s.as_str()).unwrap_or("");
-        let suffix = if iri_str.starts_with(prefix) && !prefix.is_empty() {
-            &iri[prefix.len()..]
-        } else {
-            iri
+        // Helper closure: extract ns-compressed suffix from IRI
+        let subject_suffix = |sid: u64, off: u64, len: u32| -> (u16, Vec<u8>) {
+            let iri = &subj_fwd_data[off as usize..(off as usize + len as usize)];
+            let iri_str = std::str::from_utf8(iri).unwrap_or("");
+            let ns_code = SubjectId::from_u64(sid).ns_code();
+            let prefix = namespace_codes.get(&ns_code).map(|s| s.as_str()).unwrap_or("");
+            let suffix = if iri_str.starts_with(prefix) && !prefix.is_empty() {
+                &iri[prefix.len()..]
+            } else {
+                iri
+            };
+            (ns_code, suffix.to_vec())
         };
-        subj_fwd_entries.push(ForwardEntry { id: sid, value: suffix.to_vec() });
-        subj_rev_entries.push(ReverseEntry {
-            key: subject_reverse_key(ns_code, suffix),
-            id: sid,
-        });
-    }
-    subj_fwd_entries.sort_by_key(|e| e.id);
-    subj_rev_entries.sort_by(|a, b| a.key.cmp(&b.key));
 
-    let sf_tree = builder::build_forward_tree(subj_fwd_entries, builder::DEFAULT_TARGET_LEAF_BYTES)
-        .map_err(|e| IndexerError::StorageWrite(format!("build subject fwd tree: {}", e)))?;
-    let sr_tree = builder::build_reverse_tree(subj_rev_entries, builder::DEFAULT_TARGET_LEAF_BYTES)
-        .map_err(|e| IndexerError::StorageWrite(format!("build subject rev tree: {}", e)))?;
+        // Pass 1: forward tree (entries sorted by id)
+        tracing::info!("building subject forward tree");
+        let sf_tree = {
+            let mut entries: Vec<ForwardEntry> = Vec::with_capacity(sids.len());
+            for (&sid, (&off, &len)) in sids.iter().zip(subj_offsets.iter().zip(subj_lens.iter())) {
+                let (_ns, suffix) = subject_suffix(sid, off, len);
+                entries.push(ForwardEntry { id: sid, value: suffix });
+            }
+            entries.sort_by_key(|e| e.id);
+            builder::build_forward_tree(entries, builder::DEFAULT_TARGET_LEAF_BYTES)
+                .map_err(|e| IndexerError::StorageWrite(format!("build subject fwd tree: {}", e)))?
+        }; // entries dropped
+        tracing::info!(leaves = sf_tree.leaves.len(), "uploading subject forward tree to CAS");
+        let subject_forward = upload_tree(storage, alias, sf_tree, DictKind::SubjectForward).await?;
 
-    let subject_forward = upload_tree(storage, alias, sf_tree, DictKind::SubjectForward).await?;
-    let subject_reverse = upload_tree(storage, alias, sr_tree, DictKind::SubjectReverse).await?;
+        // Pass 2: reverse tree (entries sorted by key)
+        tracing::info!("building subject reverse tree");
+        let sr_tree = {
+            let mut entries: Vec<ReverseEntry> = Vec::with_capacity(sids.len());
+            for (&sid, (&off, &len)) in sids.iter().zip(subj_offsets.iter().zip(subj_lens.iter())) {
+                let (ns_code, suffix) = subject_suffix(sid, off, len);
+                entries.push(ReverseEntry {
+                    key: subject_reverse_key(ns_code, &suffix),
+                    id: sid,
+                });
+            }
+            entries.sort_by(|a, b| a.key.cmp(&b.key));
+            builder::build_reverse_tree(entries, builder::DEFAULT_TARGET_LEAF_BYTES)
+                .map_err(|e| IndexerError::StorageWrite(format!("build subject rev tree: {}", e)))?
+        }; // entries dropped
+        tracing::info!(leaves = sr_tree.leaves.len(), "uploading subject reverse tree to CAS");
+        let subject_reverse = upload_tree(storage, alias, sr_tree, DictKind::SubjectReverse).await?;
+
+        tracing::info!("subject CoW trees uploaded");
+        (subject_forward, subject_reverse)
+    }; // subj_fwd_data, subj_offsets, subj_lens all dropped here
 
     // ---- 3. Read strings.fwd + strings.idx → build trees ----
+    //
+    // Same two-pass strategy: forward tree first, drop entries, then reverse tree.
+    tracing::info!("reading string dictionary files from disk");
     let str_idx_path = run_dir.join("strings.idx");
     let str_fwd_path = run_dir.join("strings.fwd");
     let (string_count, string_forward, string_reverse) = if str_idx_path.exists() && str_fwd_path.exists() {
@@ -1359,28 +1003,49 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", str_idx_path.display(), e)))?;
         let str_fwd_data = std::fs::read(&str_fwd_path)
             .map_err(|e| IndexerError::StorageRead(format!("read strings.fwd: {}", e)))?;
+        let count = str_offsets.len();
+        tracing::info!(
+            strings = count,
+            fwd_bytes = str_fwd_data.len(),
+            "string dict files loaded"
+        );
 
-        let str_fwd_entries: Vec<ForwardEntry> = str_offsets.iter()
-            .zip(str_lens.iter())
-            .enumerate()
-            .map(|(i, (&off, &len))| ForwardEntry {
-                id: i as u64,
-                value: str_fwd_data[off as usize..(off as usize + len as usize)].to_vec(),
-            })
-            .collect();
-        let count = str_fwd_entries.len();
-        let mut str_rev_entries: Vec<ReverseEntry> = str_fwd_entries.iter()
-            .map(|e| ReverseEntry { key: e.value.clone(), id: e.id })
-            .collect();
-        str_rev_entries.sort_by(|a, b| a.key.cmp(&b.key));
-
-        let stf_tree = builder::build_forward_tree(str_fwd_entries, builder::DEFAULT_TARGET_LEAF_BYTES)
-            .map_err(|e| IndexerError::StorageWrite(format!("build string fwd tree: {}", e)))?;
-        let str_tree = builder::build_reverse_tree(str_rev_entries, builder::DEFAULT_TARGET_LEAF_BYTES)
-            .map_err(|e| IndexerError::StorageWrite(format!("build string rev tree: {}", e)))?;
-
+        // Pass 1: forward tree
+        tracing::info!("building string forward tree");
+        let stf_tree = {
+            let entries: Vec<ForwardEntry> = str_offsets.iter()
+                .zip(str_lens.iter())
+                .enumerate()
+                .map(|(i, (&off, &len))| ForwardEntry {
+                    id: i as u64,
+                    value: str_fwd_data[off as usize..(off as usize + len as usize)].to_vec(),
+                })
+                .collect();
+            builder::build_forward_tree(entries, builder::DEFAULT_TARGET_LEAF_BYTES)
+                .map_err(|e| IndexerError::StorageWrite(format!("build string fwd tree: {}", e)))?
+        }; // entries dropped
+        tracing::info!(leaves = stf_tree.leaves.len(), "uploading string forward tree to CAS");
         let sf = upload_tree(storage, alias, stf_tree, DictKind::StringForward).await?;
+
+        // Pass 2: reverse tree
+        tracing::info!("building string reverse tree");
+        let str_tree = {
+            let mut entries: Vec<ReverseEntry> = str_offsets.iter()
+                .zip(str_lens.iter())
+                .enumerate()
+                .map(|(i, (&off, &len))| ReverseEntry {
+                    key: str_fwd_data[off as usize..(off as usize + len as usize)].to_vec(),
+                    id: i as u64,
+                })
+                .collect();
+            entries.sort_by(|a, b| a.key.cmp(&b.key));
+            builder::build_reverse_tree(entries, builder::DEFAULT_TARGET_LEAF_BYTES)
+                .map_err(|e| IndexerError::StorageWrite(format!("build string rev tree: {}", e)))?
+        }; // entries dropped
+        tracing::info!(leaves = str_tree.leaves.len(), "uploading string reverse tree to CAS");
         let sr = upload_tree(storage, alias, str_tree, DictKind::StringReverse).await?;
+
+        tracing::info!("string CoW trees uploaded");
         (count, sf, sr)
     } else {
         // No strings persisted — empty trees

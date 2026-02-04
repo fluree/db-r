@@ -16,10 +16,8 @@ use fluree_db_core::{
     Storage,
 };
 use fluree_db_indexer::{
-    BatchedRebuildConfig, CleanGarbageConfig, ReindexCheckpoint,
-    batched_rebuild_from_commits, batched_rebuild_resume, clean_garbage,
-    load_checkpoint, delete_checkpoint,
-    DEFAULT_BATCH_BYTES, DEFAULT_MAX_BATCH_COMMITS, DEFAULT_CHECKPOINT_INTERVAL,
+    CleanGarbageConfig,
+    build_binary_index, clean_garbage,
 };
 use fluree_db_nameservice::{AdminPublisher, NameService, Publisher, VirtualGraphPublisher};
 use std::time::Duration;
@@ -125,60 +123,11 @@ impl TriggerIndexOptions {
 }
 
 /// Options for reindex operation
-#[derive(Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ReindexOptions {
-    /// Indexer configuration (leaf/branch sizes)
+    /// Indexer configuration (leaf/branch sizes, GC settings)
     /// If not specified, uses IndexerConfig::default()
     pub indexer_config: Option<fluree_db_indexer::IndexerConfig>,
-
-    /// Memory budget for batched rebuild (default: 100MB)
-    /// When novelty exceeds this, intermediate index is flushed
-    pub batch_bytes: Option<usize>,
-
-    /// Maximum commits per batch (default: 100,000)
-    /// Secondary ceiling for ledgers with many tiny commits
-    pub max_batch_commits: Option<usize>,
-
-    /// Enable checkpointing for resumable reindex (default: false)
-    /// When enabled, progress is saved after each batch so the reindex
-    /// can be resumed if interrupted.
-    pub checkpoint: bool,
-
-    /// Checkpoint interval - flush checkpoint every N batches (default: 1)
-    /// Only used when checkpoint is true.
-    pub checkpoint_interval: Option<u32>,
-
-    /// Optional callback invoked after each batch flush with progress info
-    ///
-    /// Invoked synchronously - avoid blocking operations.
-    /// Use this to track reindex progress in long-running operations.
-    pub progress_callback: Option<fluree_db_indexer::ProgressCallback>,
-}
-
-impl std::fmt::Debug for ReindexOptions {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ReindexOptions")
-            .field("indexer_config", &self.indexer_config)
-            .field("batch_bytes", &self.batch_bytes)
-            .field("max_batch_commits", &self.max_batch_commits)
-            .field("checkpoint", &self.checkpoint)
-            .field("checkpoint_interval", &self.checkpoint_interval)
-            .field("progress_callback", &self.progress_callback.as_ref().map(|_| "<callback>"))
-            .finish()
-    }
-}
-
-impl Default for ReindexOptions {
-    fn default() -> Self {
-        Self {
-            indexer_config: None,
-            batch_bytes: None,
-            max_batch_commits: None,
-            checkpoint: false,
-            checkpoint_interval: None,
-            progress_callback: None,
-        }
-    }
 }
 
 impl ReindexOptions {
@@ -187,50 +136,6 @@ impl ReindexOptions {
     /// Controls leaf/branch node sizes in the resulting index.
     pub fn with_indexer_config(mut self, config: fluree_db_indexer::IndexerConfig) -> Self {
         self.indexer_config = Some(config);
-        self
-    }
-
-    /// Set the memory budget for batched rebuild
-    ///
-    /// When accumulated novelty exceeds this threshold, an intermediate index
-    /// is flushed and novelty is reset. Default: 100MB.
-    pub fn with_batch_bytes(mut self, bytes: usize) -> Self {
-        self.batch_bytes = Some(bytes);
-        self
-    }
-
-    /// Set the maximum commits per batch
-    ///
-    /// Secondary ceiling for ledgers with many tiny commits. Default: 100,000.
-    pub fn with_max_batch_commits(mut self, max: usize) -> Self {
-        self.max_batch_commits = Some(max);
-        self
-    }
-
-    /// Enable checkpointing for resumable reindex
-    ///
-    /// When enabled, progress is saved after each batch so the reindex
-    /// can be resumed with `resume_reindex` if interrupted.
-    pub fn with_checkpoint(mut self, enabled: bool) -> Self {
-        self.checkpoint = enabled;
-        self
-    }
-
-    /// Set checkpoint interval (flush checkpoint every N batches)
-    ///
-    /// Only used when checkpoint is enabled. Default: 1 (every batch).
-    pub fn with_checkpoint_interval(mut self, interval: u32) -> Self {
-        self.checkpoint_interval = Some(interval);
-        self
-    }
-
-    /// Set progress callback for receiving updates after each batch
-    ///
-    /// The callback is invoked synchronously after each batch flush.
-    /// It receives a `ReindexProgress` struct with current progress info.
-    /// Use this to monitor long-running reindex operations.
-    pub fn with_progress_callback(mut self, callback: fluree_db_indexer::ProgressCallback) -> Self {
-        self.progress_callback = Some(callback);
         self
     }
 }
@@ -659,18 +564,11 @@ where
 {
     /// Full offline reindex from commit history
     ///
-    /// Rebuilds the index by replaying all commits. This operation:
+    /// Rebuilds the binary index by replaying all commits. This operation:
     /// 1. Cancels any background indexing
-    /// 2. Performs full rebuild from commit history
+    /// 2. Builds a fresh binary columnar index from the commit chain
     /// 3. Validates ledger hasn't advanced (conflict detection)
     /// 4. Publishes new index (allows same t via AdminPublisher)
-    ///
-    /// # Index path
-    /// Index files are written to `fluree:file://{alias.replace(':','/')}/index/...`
-    ///
-    /// # Race note
-    /// `cancel()` does not abort an in-progress index build—it prevents retries
-    /// and resolves waiters. `wait_for_idle()` waits until the worker becomes idle.
     ///
     /// # Errors
     /// - `NotFound` if ledger doesn't exist or has no commits
@@ -692,8 +590,9 @@ where
         }
 
         let initial_commit_t = record.commit_t;
-        let head_address = record.commit_address
-            .ok_or_else(|| ApiError::NotFound("No commits to reindex".to_string()))?;
+        if record.commit_address.is_none() {
+            return Err(ApiError::NotFound("No commits to reindex".to_string()));
+        }
 
         // 2. Cancel background indexing if active
         if let IndexingMode::Background(handle) = &self.indexing_mode {
@@ -702,34 +601,22 @@ where
             handle.wait_for_idle(&alias).await;
         }
 
-        // 3. Perform batched rebuild
+        // 3. Build binary index from commit chain
         let indexer_config = opts.indexer_config.clone().unwrap_or_default();
-        // Save GC settings before moving config
         let gc_max_old_indexes = indexer_config.gc_max_old_indexes;
         let gc_min_time_mins = indexer_config.gc_min_time_mins;
 
-        let batched_config = BatchedRebuildConfig {
-            indexer_config,
-            batch_bytes: opts.batch_bytes.unwrap_or(DEFAULT_BATCH_BYTES),
-            max_batch_commits: opts.max_batch_commits.unwrap_or(DEFAULT_MAX_BATCH_COMMITS),
-            checkpoint: opts.checkpoint,
-            checkpoint_interval: opts.checkpoint_interval.unwrap_or(DEFAULT_CHECKPOINT_INTERVAL),
-            progress_callback: opts.progress_callback.clone(),
-        };
-
-        let batched_result = batched_rebuild_from_commits(
+        let index_result = build_binary_index(
             self.storage(),
-            &head_address,
             &alias,
-            batched_config,
+            &record,
+            indexer_config,
         ).await?;
-
-        let index_result = batched_result.index_result;
 
         info!(
             alias = %alias,
-            batches_flushed = batched_result.batches_flushed,
-            "Batched rebuild complete"
+            index_t = index_result.index_t,
+            "Binary index build complete"
         );
 
         // 4. Conflict detection: check if ledger advanced during rebuild
@@ -758,7 +645,6 @@ where
         );
 
         // 6. Spawn async garbage collection (non-blocking)
-        // GC runs in the background to clean up old index versions
         let storage_clone = self.storage().clone();
         let root_address_clone = index_result.root_address.clone();
         let gc_config = CleanGarbageConfig {
@@ -783,159 +669,6 @@ where
             root_address: index_result.root_address,
             stats: index_result.stats,
         })
-    }
-
-    /// Resume a previously checkpointed reindex operation
-    ///
-    /// Loads the checkpoint for the ledger and continues the reindex from where
-    /// it left off. Use this after a reindex was interrupted (crash, timeout, etc.)
-    /// when checkpointing was enabled.
-    ///
-    /// # Arguments
-    ///
-    /// * `alias` - Ledger alias (e.g., "mydb" or "mydb:main")
-    ///
-    /// # Errors
-    ///
-    /// - `NotFound` if no checkpoint exists for this ledger
-    /// - `ReindexConflict` (409) if ledger has new commits since checkpoint
-    /// - Various storage/index errors during rebuild
-    pub async fn resume_reindex(&self, alias: &str) -> Result<ReindexResult> {
-        let alias = normalize_alias(alias);
-        info!(alias = %alias, "Resuming reindex from checkpoint");
-
-        // 1. Load checkpoint
-        let checkpoint = load_checkpoint(self.storage(), &alias).await
-            .map_err(|e| ApiError::internal(format!("Failed to load checkpoint: {}", e)))?
-            .ok_or_else(|| ApiError::NotFound(
-                format!("No reindex checkpoint found for ledger: {}", alias)
-            ))?;
-
-        info!(
-            alias = %alias,
-            last_processed_t = checkpoint.last_processed_t,
-            target_t = checkpoint.target_t,
-            batches_flushed = checkpoint.batches_flushed,
-            "Checkpoint loaded"
-        );
-
-        // 2. Look up current state
-        let record = self.nameservice.lookup(&alias).await?
-            .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {}", alias)))?;
-
-        if record.retracted {
-            return Err(ApiError::NotFound(format!("Ledger is retracted: {}", alias)));
-        }
-
-        let head_address = record.commit_address
-            .ok_or_else(|| ApiError::NotFound("No commits to reindex".to_string()))?;
-
-        // 3. Validate head hasn't changed (batched_rebuild_resume will also check)
-        if head_address != checkpoint.target_head {
-            // Delete stale checkpoint
-            let _ = delete_checkpoint(self.storage(), &alias).await;
-            return Err(ApiError::ReindexConflict {
-                expected: checkpoint.target_t,
-                found: record.commit_t,
-            });
-        }
-
-        // 4. Cancel background indexing if active
-        if let IndexingMode::Background(handle) = &self.indexing_mode {
-            info!(alias = %alias, "Cancelling background indexing for resume");
-            handle.cancel(&alias).await;
-            handle.wait_for_idle(&alias).await;
-        }
-
-        // 5. Resume batched rebuild
-        // Restore indexer config from checkpoint (includes GC settings), fall back to defaults
-        let indexer_config = checkpoint
-            .indexer_config
-            .as_ref()
-            .map(|snap| snap.to_indexer_config())
-            .unwrap_or_default();
-        let gc_max_old_indexes = indexer_config.gc_max_old_indexes;
-        let gc_min_time_mins = indexer_config.gc_min_time_mins;
-
-        let batched_result = batched_rebuild_resume(
-            self.storage(),
-            &head_address,
-            checkpoint,
-            indexer_config,
-        ).await?;
-
-        let index_result = batched_result.index_result;
-
-        info!(
-            alias = %alias,
-            batches_flushed = batched_result.batches_flushed,
-            "Resumed rebuild complete"
-        );
-
-        // 6. Publish new index
-        self.nameservice
-            .publish_index_allow_equal(&alias, &index_result.root_address, index_result.index_t)
-            .await?;
-
-        info!(
-            alias = %alias,
-            index_t = index_result.index_t,
-            root_address = %index_result.root_address,
-            "Resume reindex completed"
-        );
-
-        // 7. Spawn async garbage collection
-        let storage_clone = self.storage().clone();
-        let root_address_clone = index_result.root_address.clone();
-        let gc_config = CleanGarbageConfig {
-            max_old_indexes: Some(gc_max_old_indexes),
-            min_time_garbage_mins: Some(gc_min_time_mins),
-        };
-        tokio::spawn(async move {
-            if let Err(e) = clean_garbage(&storage_clone, &root_address_clone, gc_config).await {
-                tracing::warn!(
-                    error = %e,
-                    root_address = %root_address_clone,
-                    "Background garbage collection failed (non-fatal)"
-                );
-            }
-        });
-
-        Ok(ReindexResult {
-            alias,
-            index_t: index_result.index_t,
-            root_address: index_result.root_address,
-            stats: index_result.stats,
-        })
-    }
-
-    /// Check if a reindex checkpoint exists for a ledger
-    ///
-    /// Returns the checkpoint details if one exists, or `None` if no checkpoint
-    /// is present. Use this to check if a resume is possible before calling
-    /// `resume_reindex`.
-    ///
-    /// # Arguments
-    ///
-    /// * `alias` - Ledger alias (e.g., "mydb" or "mydb:main")
-    pub async fn reindex_checkpoint(&self, alias: &str) -> Result<Option<ReindexCheckpoint>> {
-        let alias = normalize_alias(alias);
-        load_checkpoint(self.storage(), &alias).await
-            .map_err(|e| ApiError::internal(format!("Failed to load checkpoint: {}", e)))
-    }
-
-    /// Delete a reindex checkpoint for a ledger
-    ///
-    /// Use this to clean up a stale checkpoint if you don't want to resume
-    /// and instead want to start a fresh reindex.
-    ///
-    /// # Arguments
-    ///
-    /// * `alias` - Ledger alias (e.g., "mydb" or "mydb:main")
-    pub async fn delete_reindex_checkpoint(&self, alias: &str) -> Result<()> {
-        let alias = normalize_alias(alias);
-        delete_checkpoint(self.storage(), &alias).await
-            .map_err(|e| ApiError::internal(format!("Failed to delete checkpoint: {}", e)))
     }
 }
 

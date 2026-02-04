@@ -724,6 +724,7 @@ mod tests {
             previous_ref: None,
             namespace_delta: HashMap::new(),
             txn: None, time: None, data: None, index: None,
+            txn_signature: None,
         };
         let mut envelope_bytes = Vec::new();
         encode_envelope_fields(&envelope, &mut envelope_bytes).unwrap();
@@ -748,6 +749,7 @@ mod tests {
         let header = CommitV2Header {
             version: format::VERSION, flags: 0, t,
             op_count: flakes.len() as u32, envelope_len,
+            sig_block_len: 0,
         };
 
         let total_len = HEADER_LEN + envelope_bytes.len() + ops_buf.len()
@@ -1065,6 +1067,7 @@ mod tests {
             time: Some("2025-06-15T12:00:00Z".into()),
             data: None,
             index: None,
+            txn_signature: None,
         };
 
         let count = resolver
@@ -1161,6 +1164,7 @@ mod tests {
             time: None,
             data: None,
             index: None,
+            txn_signature: None,
         };
 
         let count = resolver

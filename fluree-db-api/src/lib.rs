@@ -70,8 +70,6 @@ pub use admin::{
     // Index maintenance
     IndexStatusResult, ReindexOptions, ReindexResult, TriggerIndexOptions, TriggerIndexResult,
 };
-// Re-export checkpoint and progress types from indexer
-pub use fluree_db_indexer::{IndexerConfigSnapshot, ProgressCallback, ReindexCheckpoint, ReindexProgress};
 pub use dataset::{
     DatasetParseError, DatasetSpec, GraphSource, QueryConnectionOptions, TimeSpec,
 };
@@ -234,6 +232,10 @@ impl StorageRead for AnyStorage {
 
     async fn list_prefix(&self, prefix: &str) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
         self.0.list_prefix(prefix).await
+    }
+
+    fn resolve_local_path(&self, address: &str) -> Option<std::path::PathBuf> {
+        self.0.resolve_local_path(address)
     }
 }
 
@@ -673,6 +675,10 @@ impl StorageRead for AddressIdentifierResolverStorage {
     /// List always uses the default storage
     async fn list_prefix(&self, prefix: &str) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
         self.default.list_prefix(prefix).await
+    }
+
+    fn resolve_local_path(&self, address: &str) -> Option<std::path::PathBuf> {
+        self.route(address).resolve_local_path(address)
     }
 }
 
