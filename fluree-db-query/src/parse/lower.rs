@@ -493,6 +493,7 @@ fn lower_values_cell<E: IriEncoder>(cell: &UnresolvedValue, encoder: &E) -> Resu
 /// - String @value + xsd:dateTime/date/time → DateTime/Date/Time
 /// - JSON number @value + xsd:string → ERROR (incompatible)
 /// - JSON boolean @value + xsd:string → ERROR (incompatible)
+///
 /// Coerce a FlakeValue to match the target datatype.
 ///
 /// This is a thin wrapper around `fluree_db_core::coerce::coerce_value` that
