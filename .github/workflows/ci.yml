@@ -25,4 +25,4 @@ jobs:
         run: cargo check --all --all-features --all-targets
 
       - name: Test
-        run: cargo nextest run --workspace --no-fail-fast
+        run: cargo nextest run --workspace --all-features --no-fail-fast
