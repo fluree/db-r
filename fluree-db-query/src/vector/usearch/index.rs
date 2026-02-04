@@ -23,6 +23,9 @@ pub const USEARCH_CRATE_VERSION: &str = "2.16";
 /// Hash IDs have high bit cleared (0..2^63), collision IDs have it set (2^63..2^64).
 const COLLISION_ID_HIGH_BIT: u64 = 1 << 63;
 
+/// Type alias for collision overflow map: (ledger_alias, iri) -> assigned_id
+type CollisionMap = BTreeMap<(Arc<str>, Arc<str>), u64>;
+
 /// Compute stable point ID from ledger alias and IRI.
 ///
 /// Uses SHA-256 truncated to u64 for stability across Rust versions and platforms.
@@ -57,7 +60,7 @@ pub struct PointIdAssigner {
     /// Collision overflow: (ledger_alias, iri) -> assigned_id
     /// Uses BTreeMap for deterministic serialization order.
     #[serde(with = "collision_map_serde")]
-    collisions: BTreeMap<(Arc<str>, Arc<str>), u64>,
+    collisions: CollisionMap,
     /// Next collision ID to assign (starts at 2^63, the collision range)
     next_collision_id: u64,
 }
@@ -75,7 +78,7 @@ mod collision_map_serde {
     }
 
     pub fn serialize<S>(
-        map: &BTreeMap<(Arc<str>, Arc<str>), u64>,
+        map: &CollisionMap,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error>
     where
@@ -93,9 +96,7 @@ mod collision_map_serde {
         entries.serialize(serializer)
     }
 
-    pub fn deserialize<'de, D>(
-        deserializer: D,
-    ) -> std::result::Result<BTreeMap<(Arc<str>, Arc<str>), u64>, D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> std::result::Result<CollisionMap, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -119,10 +120,7 @@ impl PointIdAssigner {
     }
 
     /// Create from snapshot data.
-    pub fn from_snapshot(
-        primary: BTreeMap<u64, (Arc<str>, Arc<str>)>,
-        collisions: BTreeMap<(Arc<str>, Arc<str>), u64>,
-    ) -> Self {
+    pub fn from_snapshot(primary: BTreeMap<u64, (Arc<str>, Arc<str>)>, collisions: CollisionMap) -> Self {
         // Derive next_collision_id from existing overflow IDs
         // If there are existing collisions, continue from max+1
         // Otherwise start at the high-bit boundary
@@ -226,7 +224,7 @@ impl PointIdAssigner {
     }
 
     /// Get the collision map (for serialization).
-    pub fn collision_map(&self) -> &BTreeMap<(Arc<str>, Arc<str>), u64> {
+    pub fn collision_map(&self) -> &CollisionMap {
         &self.collisions
     }
 
