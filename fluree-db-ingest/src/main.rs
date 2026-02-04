@@ -208,8 +208,8 @@ struct Args {
     #[arg(long, default_value_t = 256)]
     run_budget_mb: usize,
 
-    /// Build multi-order indexes (SPOT, PSOT, POST, OPST) from run files.
-    /// Can be combined with --import --generate-runs, or run standalone (requires commits present).
+    /// Build multi-order indexes (SPOT, PSOT, POST, OPST).
+    /// Included automatically with --import. Can also be run standalone from existing run files.
     #[arg(long)]
     build_index: bool,
 
@@ -640,7 +640,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         builder = builder
             .run_budget_mb(args.run_budget_mb)
-            .build_index(args.build_index)
             .compress(!args.no_compress)
             .publish_every(args.publish_every);
 

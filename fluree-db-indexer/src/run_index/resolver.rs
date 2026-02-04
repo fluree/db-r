@@ -247,7 +247,7 @@ impl CommitResolver {
         // === Commit subject records ===
 
         // ledger:address (STRING)
-        let addr_str_id = dicts.strings.get_or_insert(commit_address);
+        let addr_str_id = dicts.strings.get_or_insert(commit_address)?;
         push(
             commit_s_id,
             p_address,
@@ -257,7 +257,7 @@ impl CommitResolver {
         )?;
 
         // ledger:alias (STRING)
-        let alias_str_id = dicts.strings.get_or_insert(ledger_alias);
+        let alias_str_id = dicts.strings.get_or_insert(ledger_alias)?;
         push(
             commit_s_id,
             p_alias,
@@ -459,7 +459,8 @@ impl CommitResolver {
                 Ok((ObjKind::NUM_F64, key))
             }
             RawObject::Str(s) => {
-                let id = dicts.strings.get_or_insert(s);
+                let id = dicts.strings.get_or_insert(s)
+                    .map_err(|e| format!("string dict write: {}", e))?;
                 Ok((ObjKind::LEX_ID, ObjKey::encode_u32_id(id)))
             }
             RawObject::Boolean(b) => Ok((ObjKind::BOOL, ObjKey::encode_bool(*b))),
@@ -524,7 +525,8 @@ impl CommitResolver {
                     }
                     Err(_) => {
                         // Cannot parse as BigInt -- store as string
-                        let id = dicts.strings.get_or_insert(s);
+                        let id = dicts.strings.get_or_insert(s)
+                            .map_err(|e| format!("string dict write: {}", e))?;
                         Ok((ObjKind::LEX_ID, ObjKey::encode_u32_id(id)))
                     }
                 }
@@ -542,13 +544,15 @@ impl CommitResolver {
                     }
                     Err(_) => {
                         // Cannot parse as BigDecimal -- store as string
-                        let id = dicts.strings.get_or_insert(s);
+                        let id = dicts.strings.get_or_insert(s)
+                            .map_err(|e| format!("string dict write: {}", e))?;
                         Ok((ObjKind::LEX_ID, ObjKey::encode_u32_id(id)))
                     }
                 }
             }
             RawObject::JsonStr(s) => {
-                let id = dicts.strings.get_or_insert(s);
+                let id = dicts.strings.get_or_insert(s)
+                    .map_err(|e| format!("string dict write: {}", e))?;
                 Ok((ObjKind::JSON_ID, ObjKey::encode_u32_id(id)))
             }
             RawObject::Null => Ok((ObjKind::NULL, ObjKey::ZERO)),
@@ -597,7 +601,8 @@ impl CommitResolver {
                 // General xsd:duration has no total order — store as canonical string
                 let d = XsdDuration::parse(s).map_err(|e| format!("duration parse: {}", e))?;
                 let canonical = d.to_canonical_string();
-                let id = dicts.strings.get_or_insert(&canonical);
+                let id = dicts.strings.get_or_insert(&canonical)
+                    .map_err(|e| format!("string dict write: {}", e))?;
                 Ok((ObjKind::LEX_ID, ObjKey::encode_u32_id(id)))
             }
         }
