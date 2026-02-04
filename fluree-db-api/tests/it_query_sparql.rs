@@ -333,7 +333,10 @@ async fn sparql_select_star_returns_object_rows() {
         {"?person": "ex:jbob", "?handle": "jbob", "?favNums": 9}
     ]);
 
-    assert_eq!(normalize_object_rows(&jsonld), normalize_object_rows(&expected));
+    assert_eq!(
+        normalize_object_rows(&jsonld),
+        normalize_object_rows(&expected)
+    );
 }
 
 #[tokio::test]
@@ -354,10 +357,7 @@ async fn sparql_lang_filter_limits_language_tagged_literals() {
 
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
-    assert_eq!(
-        jsonld,
-        json!([{"@value": "Heyyyy", "@language": "en"}])
-    );
+    assert_eq!(jsonld, json!([{"@value": "Heyyyy", "@language": "en"}]));
 }
 
 #[tokio::test]
@@ -419,7 +419,10 @@ async fn sparql_optional_includes_unbound_values_as_null() {
         ["ex:jdoe", 99]
     ]);
 
-    assert_eq!(normalize_rows_array(&jsonld), normalize_rows_array(&expected));
+    assert_eq!(
+        normalize_rows_array(&jsonld),
+        normalize_rows_array(&expected)
+    );
 }
 
 #[tokio::test]
@@ -461,7 +464,10 @@ async fn sparql_optional_multi_pattern_allows_partial_binding() {
         ["ex:jdoe", 99, null]
     ]);
 
-    assert_eq!(normalize_rows_array(&jsonld), normalize_rows_array(&expected));
+    assert_eq!(
+        normalize_rows_array(&jsonld),
+        normalize_rows_array(&expected)
+    );
 }
 
 #[tokio::test]
@@ -492,7 +498,10 @@ async fn sparql_group_by_with_optional_preserves_grouped_lists() {
         ["ex:jdoe", [3, 7, 42, 99]]
     ]);
 
-    assert_eq!(normalize_rows_array(&jsonld), normalize_rows_array(&expected));
+    assert_eq!(
+        normalize_rows_array(&jsonld),
+        normalize_rows_array(&expected)
+    );
 }
 
 #[tokio::test]
@@ -523,7 +532,10 @@ async fn sparql_omitted_subjects_match_expanded_subject_bindings() {
         ["ex:jdoe", "Jane Doe", 99]
     ]);
 
-    assert_eq!(normalize_rows_array(&jsonld), normalize_rows_array(&expected));
+    assert_eq!(
+        normalize_rows_array(&jsonld),
+        normalize_rows_array(&expected)
+    );
 }
 
 #[tokio::test]
@@ -549,7 +561,10 @@ async fn sparql_scalar_sha512_function_binds_values() {
         "fee256e1850ef33410630557356ea3efd56856e9045e59350dbceb6b5794041d50991093c07ad871e1124e6961f2198c178057cf391435051ac24eb8952bc401"
     ]);
 
-    assert_eq!(normalize_rows_array(&jsonld), normalize_rows_array(&expected));
+    assert_eq!(
+        normalize_rows_array(&jsonld),
+        normalize_rows_array(&expected)
+    );
 }
 
 #[tokio::test]
@@ -695,11 +710,7 @@ async fn sparql_group_concat_aggregate_per_group() {
 
     assert_eq!(
         normalize_rows_array(&jsonld),
-        normalize_rows_array(&json!([
-            ["0, 3, 5, 6, 7, 8, 9"],
-            ["3, 7, 42, 99"],
-            ["23"]
-        ]))
+        normalize_rows_array(&json!([["0, 3, 5, 6, 7, 8, 9"], ["3, 7, 42, 99"], ["23"]]))
     );
 }
 
@@ -916,10 +927,7 @@ async fn sparql_order_by_ascending_sorts_results() {
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
 
-    assert_eq!(
-        jsonld,
-        json!(["bbob", "dankeshön", "jbob", "jdoe"])
-    );
+    assert_eq!(jsonld, json!(["bbob", "dankeshön", "jbob", "jdoe"]));
 }
 
 #[tokio::test]
@@ -939,10 +947,7 @@ async fn sparql_order_by_descending_sorts_results() {
     let result = fluree.query_sparql(&ledger, query).await.unwrap();
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
 
-    assert_eq!(
-        jsonld,
-        json!(["jdoe", "jbob", "dankeshön", "bbob"])
-    );
+    assert_eq!(jsonld, json!(["jdoe", "jbob", "dankeshön", "bbob"]));
 }
 
 #[tokio::test]
@@ -1237,10 +1242,7 @@ async fn sparql_property_path_inverse_object_var() {
         .await
         .expect("inverse path query should succeed");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
-    assert_eq!(
-        normalize_rows(&jsonld),
-        normalize_rows(&json!(["ex:a"]))
-    );
+    assert_eq!(normalize_rows(&jsonld), normalize_rows(&json!(["ex:a"])));
 }
 
 #[tokio::test]
@@ -1258,10 +1260,7 @@ async fn sparql_property_path_inverse_subject_var() {
         .await
         .expect("inverse path subject var query should succeed");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
-    assert_eq!(
-        normalize_rows(&jsonld),
-        normalize_rows(&json!(["ex:b"]))
-    );
+    assert_eq!(normalize_rows(&jsonld), normalize_rows(&json!(["ex:b"])));
 }
 
 #[tokio::test]
@@ -1451,10 +1450,7 @@ async fn sparql_property_path_sequence_two_step() {
         .await
         .expect("two-step sequence query should succeed");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
-    assert_eq!(
-        normalize_rows(&jsonld),
-        normalize_rows(&json!(["Bob"]))
-    );
+    assert_eq!(normalize_rows(&jsonld), normalize_rows(&json!(["Bob"])));
 }
 
 #[tokio::test]
@@ -1472,10 +1468,7 @@ async fn sparql_property_path_sequence_three_step() {
         .await
         .expect("three-step sequence query should succeed");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
-    assert_eq!(
-        normalize_rows(&jsonld),
-        normalize_rows(&json!(["Carol"]))
-    );
+    assert_eq!(normalize_rows(&jsonld), normalize_rows(&json!(["Carol"])));
 }
 
 #[tokio::test]
@@ -1493,10 +1486,7 @@ async fn sparql_property_path_sequence_with_inverse() {
         .await
         .expect("sequence with inverse query should succeed");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
-    assert_eq!(
-        normalize_rows(&jsonld),
-        normalize_rows(&json!(["Alice"]))
-    );
+    assert_eq!(normalize_rows(&jsonld), normalize_rows(&json!(["Alice"])));
 }
 
 #[tokio::test]
@@ -1807,4 +1797,3 @@ async fn sparql_property_path_inverse_of_alternative() {
         normalize_rows(&json!(["ex:alice"]))
     );
 }
-

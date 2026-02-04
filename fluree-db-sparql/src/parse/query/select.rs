@@ -1,8 +1,6 @@
 //! SELECT query parsing.
 
-use crate::ast::{
-    SelectClause, SelectModifier, SelectQuery, SelectVariable, SelectVariables, Var,
-};
+use crate::ast::{SelectClause, SelectModifier, SelectQuery, SelectVariable, SelectVariables, Var};
 use crate::diag::{DiagCode, Diagnostic};
 use crate::lex::TokenKind;
 
@@ -138,7 +136,8 @@ impl<'a> super::Parser<'a> {
 
             // Expect closing paren
             if !self.stream.match_token(&TokenKind::RParen) {
-                self.stream.error_at_current("expected ')' after alias variable");
+                self.stream
+                    .error_at_current("expected ')' after alias variable");
                 return None;
             }
 

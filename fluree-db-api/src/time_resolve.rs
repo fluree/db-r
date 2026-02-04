@@ -16,14 +16,14 @@ use std::collections::HashSet;
 
 use chrono::{TimeZone, Utc};
 use fluree_db_core::cache::NodeCache;
-use fluree_vocab::namespaces::{FLUREE_COMMIT, FLUREE_LEDGER};
-use fluree_vocab::ledger::TIME as LEDGER_TIME;
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::storage::Storage;
 use fluree_db_core::{
     range_bounded_with_overlay, range_with_overlay, Db, Flake, FlakeValue, IndexType, ObjectBounds,
     RangeMatch, RangeOptions, RangeTest, Sid,
 };
+use fluree_vocab::ledger::TIME as LEDGER_TIME;
+use fluree_vocab::namespaces::{FLUREE_COMMIT, FLUREE_LEDGER};
 
 use crate::error::{ApiError, Result};
 
@@ -82,9 +82,25 @@ where
     let probe_match = RangeMatch::predicate(time_predicate.clone());
 
     let earliest_flakes = if let Some(ovl) = overlay {
-        range_with_overlay(db, ovl, IndexType::Post, RangeTest::Eq, probe_match, probe_opts).await?
+        range_with_overlay(
+            db,
+            ovl,
+            IndexType::Post,
+            RangeTest::Eq,
+            probe_match,
+            probe_opts,
+        )
+        .await?
     } else {
-        range_with_overlay(db, &fluree_db_core::NoOverlay, IndexType::Post, RangeTest::Eq, probe_match, probe_opts).await?
+        range_with_overlay(
+            db,
+            &fluree_db_core::NoOverlay,
+            IndexType::Post,
+            RangeTest::Eq,
+            probe_match,
+            probe_opts,
+        )
+        .await?
     };
 
     if earliest_flakes.is_empty() {
@@ -114,16 +130,31 @@ where
         .with_to_t(current_t)
         .with_flake_limit(1)
         .with_object_bounds(
-            ObjectBounds::new()
-                .with_lower(FlakeValue::Long(target_epoch_ms), false) // exclusive: > target
+            ObjectBounds::new().with_lower(FlakeValue::Long(target_epoch_ms), false), // exclusive: > target
         );
 
     let search_match = RangeMatch::predicate(time_predicate);
 
     let after_flakes = if let Some(ovl) = overlay {
-        range_with_overlay(db, ovl, IndexType::Post, RangeTest::Eq, search_match, search_opts).await?
+        range_with_overlay(
+            db,
+            ovl,
+            IndexType::Post,
+            RangeTest::Eq,
+            search_match,
+            search_opts,
+        )
+        .await?
     } else {
-        range_with_overlay(db, &fluree_db_core::NoOverlay, IndexType::Post, RangeTest::Eq, search_match, search_opts).await?
+        range_with_overlay(
+            db,
+            &fluree_db_core::NoOverlay,
+            IndexType::Post,
+            RangeTest::Eq,
+            search_match,
+            search_opts,
+        )
+        .await?
     };
 
     if after_flakes.is_empty() {
@@ -219,7 +250,15 @@ where
     let flakes = if let Some(ovl) = overlay {
         range_bounded_with_overlay(db, ovl, IndexType::Spot, start_bound, end_bound, opts).await?
     } else {
-        range_bounded_with_overlay(db, &fluree_db_core::NoOverlay, IndexType::Spot, start_bound, end_bound, opts).await?
+        range_bounded_with_overlay(
+            db,
+            &fluree_db_core::NoOverlay,
+            IndexType::Spot,
+            start_bound,
+            end_bound,
+            opts,
+        )
+        .await?
     };
 
     // Step 3: Collect unique commit subjects
@@ -275,7 +314,11 @@ where
                 "Ambiguous SHA prefix: {}. Multiple commits match: {:?}{}",
                 sha_normalized,
                 commit_ids,
-                if matching_commits.len() > 5 { " ..." } else { "" }
+                if matching_commits.len() > 5 {
+                    " ..."
+                } else {
+                    ""
+                }
             )))
         }
     }
@@ -294,12 +337,8 @@ mod tests {
         ];
 
         for (input, expected) in cases {
-            let normalized = input
-                .strip_prefix("fluree:commit:")
-                .unwrap_or(input);
-            let normalized = normalized
-                .strip_prefix("sha256:")
-                .unwrap_or(normalized);
+            let normalized = input.strip_prefix("fluree:commit:").unwrap_or(input);
+            let normalized = normalized.strip_prefix("sha256:").unwrap_or(normalized);
             assert_eq!(normalized, expected, "Failed for input: {}", input);
         }
     }

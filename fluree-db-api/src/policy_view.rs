@@ -169,7 +169,11 @@ pub async fn wrap_policy_view<'a, S: Storage + Clone + 'static, C: NodeCache + '
 /// Wrap a historical ledger view with policy based on query connection options.
 ///
 /// Similar to `wrap_policy_view` but for historical views.
-pub async fn wrap_policy_view_historical<'a, S: Storage + Clone + 'static, C: NodeCache + 'static>(
+pub async fn wrap_policy_view_historical<
+    'a,
+    S: Storage + Clone + 'static,
+    C: NodeCache + 'static,
+>(
     view: &'a HistoricalLedgerView<S, C>,
     opts: &QueryConnectionOptions,
 ) -> Result<PolicyWrappedView<'a, S, C>> {
@@ -185,7 +189,10 @@ pub async fn wrap_policy_view_historical<'a, S: Storage + Clone + 'static, C: No
     )
     .await?;
 
-    Ok(PolicyWrappedView::from_historical(view, Arc::new(policy_ctx)))
+    Ok(PolicyWrappedView::from_historical(
+        view,
+        Arc::new(policy_ctx),
+    ))
 }
 
 /// Build a policy context from options without wrapping a view.

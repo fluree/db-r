@@ -143,9 +143,18 @@ mod tests {
 
     #[test]
     fn test_add_trailing_slash() {
-        assert_eq!(add_trailing_slash("http://example.org"), "http://example.org/");
-        assert_eq!(add_trailing_slash("http://example.org/"), "http://example.org/");
-        assert_eq!(add_trailing_slash("http://example.org#"), "http://example.org#");
+        assert_eq!(
+            add_trailing_slash("http://example.org"),
+            "http://example.org/"
+        );
+        assert_eq!(
+            add_trailing_slash("http://example.org/"),
+            "http://example.org/"
+        );
+        assert_eq!(
+            add_trailing_slash("http://example.org#"),
+            "http://example.org#"
+        );
     }
 
     #[test]

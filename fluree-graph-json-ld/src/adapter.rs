@@ -138,9 +138,9 @@ fn process_node<S: GraphSink>(
     let subject_id = if let Some(id) = forced_subject {
         id
     } else if let Some(id_val) = obj.get("@id") {
-        let id_str = id_val.as_str().ok_or_else(|| {
-            AdapterError::InvalidStructure("@id must be a string".to_string())
-        })?;
+        let id_str = id_val
+            .as_str()
+            .ok_or_else(|| AdapterError::InvalidStructure("@id must be a string".to_string()))?;
         if id_str.starts_with("_:") {
             sink.term_blank(Some(strip_blank_prefix(id_str)))
         } else {
@@ -238,9 +238,11 @@ fn process_value<S: GraphSink>(value: &Value, sink: &mut S) -> Result<ProcessedV
             Ok(ProcessedValue::Single(subject_id))
         }
         // Direct scalar values (shouldn't happen in properly expanded JSON-LD)
-        Value::String(s) => Ok(ProcessedValue::Single(
-            sink.term_literal(s, Datatype::xsd_string(), None),
-        )),
+        Value::String(s) => Ok(ProcessedValue::Single(sink.term_literal(
+            s,
+            Datatype::xsd_string(),
+            None,
+        ))),
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 Ok(ProcessedValue::Single(sink.term_literal_value(
@@ -256,10 +258,9 @@ fn process_value<S: GraphSink>(value: &Value, sink: &mut S) -> Result<ProcessedV
                 Ok(ProcessedValue::None)
             }
         }
-        Value::Bool(b) => Ok(ProcessedValue::Single(sink.term_literal_value(
-            LiteralValue::Boolean(*b),
-            Datatype::xsd_boolean(),
-        ))),
+        Value::Bool(b) => Ok(ProcessedValue::Single(
+            sink.term_literal_value(LiteralValue::Boolean(*b), Datatype::xsd_boolean()),
+        )),
         _ => Ok(ProcessedValue::None),
     }
 }
@@ -345,10 +346,9 @@ fn process_list_item<S: GraphSink>(value: &Value, sink: &mut S) -> Result<Option
                 Ok(None)
             }
         }
-        Value::Bool(b) => Ok(Some(sink.term_literal_value(
-            LiteralValue::Boolean(*b),
-            Datatype::xsd_boolean(),
-        ))),
+        Value::Bool(b) => Ok(Some(
+            sink.term_literal_value(LiteralValue::Boolean(*b), Datatype::xsd_boolean()),
+        )),
         _ => Ok(None),
     }
 }
@@ -392,23 +392,20 @@ fn process_literal<S: GraphSink>(
         }
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                Ok(ProcessedValue::Single(sink.term_literal_value(
-                    LiteralValue::Integer(i),
-                    datatype,
-                )))
+                Ok(ProcessedValue::Single(
+                    sink.term_literal_value(LiteralValue::Integer(i), datatype),
+                ))
             } else if let Some(f) = n.as_f64() {
-                Ok(ProcessedValue::Single(sink.term_literal_value(
-                    LiteralValue::Double(f),
-                    datatype,
-                )))
+                Ok(ProcessedValue::Single(
+                    sink.term_literal_value(LiteralValue::Double(f), datatype),
+                ))
             } else {
                 Ok(ProcessedValue::None)
             }
         }
-        Value::Bool(b) => Ok(ProcessedValue::Single(sink.term_literal_value(
-            LiteralValue::Boolean(*b),
-            datatype,
-        ))),
+        Value::Bool(b) => Ok(ProcessedValue::Single(
+            sink.term_literal_value(LiteralValue::Boolean(*b), datatype),
+        )),
         // Handle @json typed values
         Value::Object(_) | Value::Array(_) => {
             if datatype.is_json() {
@@ -447,8 +444,12 @@ mod tests {
 
         let triple = graph.iter().next().unwrap();
         assert!(matches!(&triple.s, Term::Iri(iri) if iri.as_ref() == "http://example.org/alice"));
-        assert!(matches!(&triple.p, Term::Iri(iri) if iri.as_ref() == "http://xmlns.com/foaf/0.1/name"));
-        assert!(matches!(&triple.o, Term::Literal { value: LiteralValue::String(s), .. } if s.as_ref() == "Alice"));
+        assert!(
+            matches!(&triple.p, Term::Iri(iri) if iri.as_ref() == "http://xmlns.com/foaf/0.1/name")
+        );
+        assert!(
+            matches!(&triple.o, Term::Literal { value: LiteralValue::String(s), .. } if s.as_ref() == "Alice")
+        );
     }
 
     #[test]
@@ -468,7 +469,13 @@ mod tests {
         assert_eq!(graph.len(), 1);
 
         let triple = graph.iter().next().unwrap();
-        assert!(matches!(&triple.o, Term::Literal { value: LiteralValue::Integer(30), .. }));
+        assert!(matches!(
+            &triple.o,
+            Term::Literal {
+                value: LiteralValue::Integer(30),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -489,7 +496,11 @@ mod tests {
 
         let triple = graph.iter().next().unwrap();
         match &triple.o {
-            Term::Literal { value, language, datatype } => {
+            Term::Literal {
+                value,
+                language,
+                datatype,
+            } => {
                 assert!(matches!(value, LiteralValue::String(s) if s.as_ref() == "Alice"));
                 assert!(language.as_ref().map(|l| l.as_ref()) == Some("en"));
                 assert!(datatype.is_lang_string());
@@ -512,8 +523,12 @@ mod tests {
         assert_eq!(graph.len(), 1);
 
         let triple = graph.iter().next().unwrap();
-        assert!(matches!(&triple.p, Term::Iri(iri) if iri.as_ref() == "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"));
-        assert!(matches!(&triple.o, Term::Iri(iri) if iri.as_ref() == "http://xmlns.com/foaf/0.1/Person"));
+        assert!(
+            matches!(&triple.p, Term::Iri(iri) if iri.as_ref() == "http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
+        );
+        assert!(
+            matches!(&triple.o, Term::Iri(iri) if iri.as_ref() == "http://xmlns.com/foaf/0.1/Person")
+        );
     }
 
     #[test]
@@ -641,7 +656,11 @@ mod tests {
         // Both should have the same blank node object
         match (&knows_triples[0].o, &knows_triples[1].o) {
             (Term::BlankNode(id1), Term::BlankNode(id2)) => {
-                assert_eq!(id1.as_str(), id2.as_str(), "Blank nodes should have same identity");
+                assert_eq!(
+                    id1.as_str(),
+                    id2.as_str(),
+                    "Blank nodes should have same identity"
+                );
             }
             _ => panic!("Expected blank node objects"),
         }
@@ -743,7 +762,10 @@ mod tests {
 
         // All triples should be list elements
         for triple in graph.iter() {
-            assert!(triple.is_list_element(), "All triples should be list elements");
+            assert!(
+                triple.is_list_element(),
+                "All triples should be list elements"
+            );
         }
 
         // Sort and verify order
@@ -755,9 +777,15 @@ mod tests {
         assert_eq!(items[2].list_index(), Some(2));
 
         // Verify values
-        assert!(matches!(&items[0].o, Term::Literal { value: LiteralValue::String(s), .. } if s.as_ref() == "Alice"));
-        assert!(matches!(&items[1].o, Term::Literal { value: LiteralValue::String(s), .. } if s.as_ref() == "Bob"));
-        assert!(matches!(&items[2].o, Term::Literal { value: LiteralValue::String(s), .. } if s.as_ref() == "Charlie"));
+        assert!(
+            matches!(&items[0].o, Term::Literal { value: LiteralValue::String(s), .. } if s.as_ref() == "Alice")
+        );
+        assert!(
+            matches!(&items[1].o, Term::Literal { value: LiteralValue::String(s), .. } if s.as_ref() == "Bob")
+        );
+        assert!(
+            matches!(&items[2].o, Term::Literal { value: LiteralValue::String(s), .. } if s.as_ref() == "Charlie")
+        );
     }
 
     #[test]
@@ -782,7 +810,9 @@ mod tests {
         let items: Vec<_> = graph.iter().collect();
 
         assert_eq!(items[0].list_index(), Some(0));
-        assert!(matches!(&items[0].o, Term::Iri(iri) if iri.as_ref() == "http://example.org/alice"));
+        assert!(
+            matches!(&items[0].o, Term::Iri(iri) if iri.as_ref() == "http://example.org/alice")
+        );
 
         assert_eq!(items[1].list_index(), Some(1));
         assert!(matches!(&items[1].o, Term::Iri(iri) if iri.as_ref() == "http://example.org/bob"));
@@ -810,7 +840,11 @@ mod tests {
 
         let graph = sink.finish();
         // 2 list item triples + 2 name triples for embedded nodes = 4
-        assert_eq!(graph.len(), 4, "Should have 4 triples (2 list items + 2 embedded names)");
+        assert_eq!(
+            graph.len(),
+            4,
+            "Should have 4 triples (2 list items + 2 embedded names)"
+        );
 
         // Find list element triples
         let list_triples: Vec<_> = graph.iter().filter(|t| t.is_list_element()).collect();
@@ -818,7 +852,10 @@ mod tests {
 
         // List items should point to blank nodes
         for triple in &list_triples {
-            assert!(matches!(&triple.o, Term::BlankNode(_)), "List items should be blank nodes");
+            assert!(
+                matches!(&triple.o, Term::BlankNode(_)),
+                "List items should be blank nodes"
+            );
         }
     }
 
@@ -847,13 +884,27 @@ mod tests {
 
         // Verify types and indices
         assert_eq!(items[0].list_index(), Some(0));
-        assert!(matches!(&items[0].o, Term::Literal { value: LiteralValue::String(s), .. } if s.as_ref() == "string"));
+        assert!(
+            matches!(&items[0].o, Term::Literal { value: LiteralValue::String(s), .. } if s.as_ref() == "string")
+        );
 
         assert_eq!(items[1].list_index(), Some(1));
-        assert!(matches!(&items[1].o, Term::Literal { value: LiteralValue::Integer(42), .. }));
+        assert!(matches!(
+            &items[1].o,
+            Term::Literal {
+                value: LiteralValue::Integer(42),
+                ..
+            }
+        ));
 
         assert_eq!(items[2].list_index(), Some(2));
-        assert!(matches!(&items[2].o, Term::Literal { value: LiteralValue::Boolean(true), .. }));
+        assert!(matches!(
+            &items[2].o,
+            Term::Literal {
+                value: LiteralValue::Boolean(true),
+                ..
+            }
+        ));
 
         assert_eq!(items[3].list_index(), Some(3));
         assert!(matches!(&items[3].o, Term::Iri(iri) if iri.as_ref() == "http://example.org/ref"));
@@ -893,20 +944,30 @@ mod tests {
         to_graph_events(&expanded, &mut sink).unwrap();
 
         let mut graph = sink.finish();
-        assert_eq!(graph.len(), 3, "Should preserve all items including duplicates");
+        assert_eq!(
+            graph.len(),
+            3,
+            "Should preserve all items including duplicates"
+        );
 
         graph.sort();
         let items: Vec<_> = graph.iter().collect();
 
         // Verify duplicates are preserved with correct indices
         assert_eq!(items[0].list_index(), Some(0));
-        assert!(matches!(&items[0].o, Term::Literal { value: LiteralValue::String(s), .. } if s.as_ref() == "repeat"));
+        assert!(
+            matches!(&items[0].o, Term::Literal { value: LiteralValue::String(s), .. } if s.as_ref() == "repeat")
+        );
 
         assert_eq!(items[1].list_index(), Some(1));
-        assert!(matches!(&items[1].o, Term::Literal { value: LiteralValue::String(s), .. } if s.as_ref() == "middle"));
+        assert!(
+            matches!(&items[1].o, Term::Literal { value: LiteralValue::String(s), .. } if s.as_ref() == "middle")
+        );
 
         assert_eq!(items[2].list_index(), Some(2));
-        assert!(matches!(&items[2].o, Term::Literal { value: LiteralValue::String(s), .. } if s.as_ref() == "repeat"));
+        assert!(
+            matches!(&items[2].o, Term::Literal { value: LiteralValue::String(s), .. } if s.as_ref() == "repeat")
+        );
     }
 
     #[test]

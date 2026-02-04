@@ -1,9 +1,6 @@
 use serde_json::Value as JsonValue;
 
-use crate::query::helpers::{
-    parse_dataset_spec,
-    tracker_for_limits,
-};
+use crate::query::helpers::{parse_dataset_spec, tracker_for_limits};
 use crate::{
     ApiError, ExecutableQuery, Fluree, FlureeDataSetView, FlureeIndexProvider, QueryResult, Result,
     SimpleCache, Storage, StorageWrite, VarRegistry,
@@ -14,7 +11,13 @@ use fluree_db_query::parse::parse_query;
 impl<S, N> Fluree<S, SimpleCache, N>
 where
     S: Storage + StorageWrite + Clone + Send + Sync + 'static,
-    N: crate::NameService + crate::Publisher + crate::VirtualGraphPublisher + Clone + Send + Sync + 'static,
+    N: crate::NameService
+        + crate::Publisher
+        + crate::VirtualGraphPublisher
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
     /// Execute a query against a loaded dataset with BM25 and vector index provider support.
     ///
@@ -62,7 +65,11 @@ where
                     &runtime_dataset,
                     &provider,
                     &provider,
-                    if tracker.is_enabled() { Some(&tracker) } else { None },
+                    if tracker.is_enabled() {
+                        Some(&tracker)
+                    } else {
+                        None
+                    },
                 )
                 .await?
             }
@@ -77,7 +84,11 @@ where
                     None,
                     &runtime_dataset,
                     &provider,
-                    if tracker.is_enabled() { Some(&tracker) } else { None },
+                    if tracker.is_enabled() {
+                        Some(&tracker)
+                    } else {
+                        None
+                    },
                 )
                 .await?
             }
@@ -133,5 +144,4 @@ where
 
         self.query_dataset_with_bm25(&dataset, query_json).await
     }
-
 }

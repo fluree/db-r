@@ -61,9 +61,9 @@ use crate::storage::Storage;
 #[cfg(feature = "native")]
 use crate::Db;
 #[cfg(feature = "native")]
-use std::sync::Arc;
-#[cfg(feature = "native")]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "native")]
+use std::sync::Arc;
 #[cfg(feature = "native")]
 use tokio::sync::{mpsc, Semaphore};
 
@@ -260,7 +260,7 @@ where
                         req.history_mode,
                     )
                     .await;
-                    
+
                     PREFETCH_COMPLETED.fetch_add(1, Ordering::Relaxed);
                 });
             }

@@ -7,12 +7,12 @@
 //! The verified identity (DID) is extracted and used for policy enforcement.
 
 use crate::Result;
-use fluree_db_credential::{
-    verify, verify_jws, CredentialInput, JwsVerified, VerifiedCredential,
-};
+use fluree_db_credential::{verify, verify_jws, CredentialInput, JwsVerified, VerifiedCredential};
 
 // Re-export for API consumers
-pub use fluree_db_credential::{CredentialError, CredentialInput as Input, JwsVerified as JwsResult};
+pub use fluree_db_credential::{
+    CredentialError, CredentialInput as Input, JwsVerified as JwsResult,
+};
 
 /// Verify credential (JWS string or JSON) and extract subject + identity + context
 ///

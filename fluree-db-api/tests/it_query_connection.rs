@@ -107,7 +107,11 @@ async fn seed_people_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger 
             {"@id":"ex:bob","@type":"ex:Person","schema:name":"Bob","schema:age":25}
         ]
     });
-    fluree.insert(ledger0, &insert).await.expect("insert").ledger
+    fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert")
+        .ledger
 }
 
 async fn seed_people2_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
@@ -119,7 +123,11 @@ async fn seed_people2_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger
             {"@id":"ex:diana","@type":"ex:Person","schema:name":"Diana","schema:age":28}
         ]
     });
-    fluree.insert(ledger0, &insert).await.expect("insert").ledger
+    fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert")
+        .ledger
 }
 
 #[tokio::test]
@@ -214,7 +222,6 @@ async fn query_connection_from_named_selecting_subgraphs_depth_3() {
     );
 }
 
-
 #[tokio::test]
 async fn query_connection_from_combined_datasets_direct_select_vars() {
     assert_index_defaults();
@@ -243,7 +250,11 @@ async fn query_connection_from_combined_datasets_direct_select_vars() {
         normalize_rows_array(&jsonld),
         normalize_rows_array(&json!([
             ["Gone with the Wind", "0-582-41805-4", "Margaret Mitchell"],
-            ["The Hitchhiker's Guide to the Galaxy", "0-330-25864-8", "Douglas Adams"]
+            [
+                "The Hitchhiker's Guide to the Galaxy",
+                "0-330-25864-8",
+                "Douglas Adams"
+            ]
         ]))
     );
 }
@@ -284,7 +295,11 @@ async fn query_connection_from_named_with_graph_patterns() {
         normalize_rows_array(&jsonld),
         normalize_rows_array(&json!([
             ["Gone with the Wind", "0-582-41805-4", "Margaret Mitchell"],
-            ["The Hitchhiker's Guide to the Galaxy", "0-330-25864-8", "Douglas Adams"]
+            [
+                "The Hitchhiker's Guide to the Galaxy",
+                "0-330-25864-8",
+                "Douglas Adams"
+            ]
         ]))
     );
 }
@@ -546,4 +561,3 @@ WHERE {
         "fuel should be a positive integer"
     );
 }
-

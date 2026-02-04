@@ -93,7 +93,12 @@ async fn subclass_creative_work_returns_book_and_movie_instances() {
         "select": ["?p","?o"],
         "where": {"@id":"https://www.wikidata.org/wiki/Q836821","?p":"?o"}
     });
-    let any = fluree.query(&ledger, &q_any).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let any = fluree
+        .query(&ledger, &q_any)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert!(
         !any.as_array().unwrap().is_empty(),
         "expected some triples for wiki/Q836821, got none"
@@ -103,14 +108,27 @@ async fn subclass_creative_work_returns_book_and_movie_instances() {
         "select": ["?t"],
         "where": [{"@id":"https://www.wikidata.org/wiki/Q836821","@type":"?t"}]
     });
-    let types = fluree.query(&ledger, &q_types).await.unwrap().to_jsonld(&ledger.db).unwrap();
-    assert!(!types.as_array().unwrap().is_empty(), "expected at least one rdf:type for wiki/Q836821");
+    let types = fluree
+        .query(&ledger, &q_types)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
+    assert!(
+        !types.as_array().unwrap().is_empty(),
+        "expected at least one rdf:type for wiki/Q836821"
+    );
 
     let q_movie = json!({
         "select": ["?s"],
         "where": {"@id":"?s","@type":"https://schema.org/Movie"}
     });
-    let movie_rows = fluree.query(&ledger, &q_movie).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let movie_rows = fluree
+        .query(&ledger, &q_movie)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(movie_rows, json!(["https://www.wikidata.org/wiki/Q836821"]));
 
     let q = json!({
@@ -118,7 +136,13 @@ async fn subclass_creative_work_returns_book_and_movie_instances() {
         "where": {"@id":"?s","@type":"https://schema.org/CreativeWork"}
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld_async(&ledger.db).await.unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld_async(&ledger.db)
+        .await
+        .unwrap();
     assert_eq!(
         normalize_rows(&rows),
         normalize_rows(&json!([
@@ -170,7 +194,11 @@ async fn seed_humanoid(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
             {"@id":"schema:Person","rdfs:subClassOf":{"@id":"ex:Humanoid"}}
         ]
     });
-    fluree.update(db1, &json!({"insert": insert_schema})).await.unwrap().ledger
+    fluree
+        .update(db1, &json!({"insert": insert_schema}))
+        .await
+        .unwrap()
+        .ledger
 }
 
 #[tokio::test]
@@ -189,7 +217,13 @@ async fn subclass_inferencing_issue_core_48() {
         "where": {"@id":"?s","@type":"ex:Humanoid"},
         "select": {"?s":["*"]}
     });
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld_async(&ledger.db).await.unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld_async(&ledger.db)
+        .await
+        .unwrap();
     assert_eq!(
         normalize_rows(&rows),
         normalize_rows(&json!([
@@ -207,7 +241,9 @@ async fn subclass_inferencing_after_load_issue_core_48() {
     let temp_dir = TempDir::new().unwrap();
     let storage_path = temp_dir.path().to_str().unwrap();
 
-    let fluree = FlureeBuilder::file(storage_path).build().expect("build file fluree");
+    let fluree = FlureeBuilder::file(storage_path)
+        .build()
+        .expect("build file fluree");
     let ledger_alias = "subclass-inferencing-test:main";
 
     let ctx = json!({
@@ -240,7 +276,9 @@ async fn subclass_inferencing_after_load_issue_core_48() {
     });
     let _ledger2 = fluree.update(ledger1, &insert_schema).await.unwrap().ledger;
 
-    let fluree2 = FlureeBuilder::file(storage_path).build().expect("build file fluree2");
+    let fluree2 = FlureeBuilder::file(storage_path)
+        .build()
+        .expect("build file fluree2");
     let loaded = fluree2.ledger(ledger_alias).await.unwrap();
 
     let q = json!({
@@ -317,10 +355,14 @@ async fn subclass_nested_stages() {
         "select": ["?s"],
         "where": {"@id":"?s","@type":"ex:Human"}
     });
-    let rows = fluree.query(&db3, &q).await.unwrap().to_jsonld(&db3.db).unwrap();
+    let rows = fluree
+        .query(&db3, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&db3.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&rows),
-        normalize_rows(&json!(["ex:alice","ex:brian","ex:laura"]))
+        normalize_rows(&json!(["ex:alice", "ex:brian", "ex:laura"]))
     );
 }
-

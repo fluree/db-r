@@ -115,11 +115,7 @@ where
     }
 
     /// Load a snapshot at a flexible time specification.
-    pub async fn view_at(
-        &self,
-        alias: &str,
-        spec: TimeSpec,
-    ) -> Result<FlureeView<S, SimpleCache>> {
+    pub async fn view_at(&self, alias: &str, spec: TimeSpec) -> Result<FlureeView<S, SimpleCache>> {
         self.load_view_at(alias, spec).await
     }
 }

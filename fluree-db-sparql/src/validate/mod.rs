@@ -35,8 +35,7 @@ use crate::ast::query::{
 };
 use crate::ast::term::{PredicateTerm, SubjectTerm, Term};
 use crate::ast::update::{
-    DeleteData, DeleteWhere, InsertData, Modify, QuadData, UpdateOperation,
-    UsingClause,
+    DeleteData, DeleteWhere, InsertData, Modify, QuadData, UpdateOperation, UsingClause,
 };
 use crate::diag::{DiagCode, Diagnostic, Label};
 use crate::span::SourceSpan;
@@ -401,19 +400,26 @@ mod tests {
     #[test]
     fn test_insert_data_variable_subject() {
         let diags = validate_query("INSERT DATA { ?s <http://example.org/p> \"value\" }");
-        assert!(diags.iter().any(|d| d.code == DiagCode::VariableInGroundData));
+        assert!(diags
+            .iter()
+            .any(|d| d.code == DiagCode::VariableInGroundData));
     }
 
     #[test]
     fn test_insert_data_variable_predicate() {
         let diags = validate_query("INSERT DATA { <http://example.org/s> ?p \"value\" }");
-        assert!(diags.iter().any(|d| d.code == DiagCode::VariableInGroundData));
+        assert!(diags
+            .iter()
+            .any(|d| d.code == DiagCode::VariableInGroundData));
     }
 
     #[test]
     fn test_insert_data_variable_object() {
-        let diags = validate_query("INSERT DATA { <http://example.org/s> <http://example.org/p> ?o }");
-        assert!(diags.iter().any(|d| d.code == DiagCode::VariableInGroundData));
+        let diags =
+            validate_query("INSERT DATA { <http://example.org/s> <http://example.org/p> ?o }");
+        assert!(diags
+            .iter()
+            .any(|d| d.code == DiagCode::VariableInGroundData));
     }
 
     #[test]
@@ -442,7 +448,9 @@ mod tests {
     #[test]
     fn test_delete_data_variable() {
         let diags = validate_query("DELETE DATA { ?s <http://example.org/p> \"value\" }");
-        assert!(diags.iter().any(|d| d.code == DiagCode::VariableInGroundData));
+        assert!(diags
+            .iter()
+            .any(|d| d.code == DiagCode::VariableInGroundData));
     }
 
     // =========================================================================

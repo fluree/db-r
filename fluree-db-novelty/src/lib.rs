@@ -30,8 +30,8 @@ mod error;
 mod stats;
 
 pub use commit::{
-    load_commit, load_commit_envelope, trace_commit_envelopes, trace_commits,
-    Commit, CommitData, CommitEnvelope, CommitRef, IndexRef, INDEX_VERSION_UNKNOWN,
+    load_commit, load_commit_envelope, trace_commit_envelopes, trace_commits, Commit, CommitData,
+    CommitEnvelope, CommitRef, IndexRef, INDEX_VERSION_UNKNOWN,
 };
 pub use commit_flakes::generate_commit_flakes;
 pub use error::{NoveltyError, Result};
@@ -211,10 +211,7 @@ impl Novelty {
         let mut j = 0;
 
         while i < target.len() && j < sorted_batch.len() {
-            let cmp = index.compare(
-                self.store.get(target[i]),
-                self.store.get(sorted_batch[j]),
-            );
+            let cmp = index.compare(self.store.get(target[i]), self.store.get(sorted_batch[j]));
             if cmp != Ordering::Greater {
                 merged.push(target[i]);
                 i += 1;
@@ -244,9 +241,8 @@ impl Novelty {
 
         // Sort by OPST comparator
         let mut sorted_batch = ref_ids;
-        sorted_batch.sort_by(|&a, &b| {
-            IndexType::Opst.compare(self.store.get(a), self.store.get(b))
-        });
+        sorted_batch
+            .sort_by(|&a, &b| IndexType::Opst.compare(self.store.get(a), self.store.get(b)));
 
         // Two-way merge
         let mut merged = Vec::with_capacity(self.opst.len() + sorted_batch.len());
@@ -342,9 +338,7 @@ impl Novelty {
             0
         } else if let Some(f) = first {
             // Exclusive: find first element > first
-            ids.partition_point(|&id| {
-                index.compare(self.store.get(id), f) != Ordering::Greater
-            })
+            ids.partition_point(|&id| index.compare(self.store.get(id), f) != Ordering::Greater)
         } else {
             0
         };
@@ -352,9 +346,7 @@ impl Novelty {
         // Find end index
         let end = if let Some(r) = rhs {
             // Inclusive: find first element > rhs
-            ids.partition_point(|&id| {
-                index.compare(self.store.get(id), r) != Ordering::Greater
-            })
+            ids.partition_point(|&id| index.compare(self.store.get(id), r) != Ordering::Greater)
         } else {
             ids.len()
         };
@@ -572,10 +564,10 @@ mod tests {
 
         // Add mixed flakes - refs and non-refs
         let flakes = vec![
-            make_flake(1, 1, 100, 1, true),     // not a ref
-            make_ref_flake(2, 1, 10, 1),         // ref
-            make_flake(3, 1, 200, 1, true),     // not a ref
-            make_ref_flake(4, 1, 5, 1),          // ref
+            make_flake(1, 1, 100, 1, true), // not a ref
+            make_ref_flake(2, 1, 10, 1),    // ref
+            make_flake(3, 1, 200, 1, true), // not a ref
+            make_ref_flake(4, 1, 5, 1),     // ref
         ];
 
         novelty.apply_commit(flakes, 1).unwrap();
@@ -704,7 +696,12 @@ mod tests {
                 novelty.get_flake(spot_ids[i]),
                 novelty.get_flake(spot_ids[i + 1]),
             );
-            assert_ne!(cmp, Ordering::Greater, "SPOT index not sorted at position {}", i);
+            assert_ne!(
+                cmp,
+                Ordering::Greater,
+                "SPOT index not sorted at position {}",
+                i
+            );
         }
     }
 

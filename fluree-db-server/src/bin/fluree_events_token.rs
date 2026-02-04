@@ -15,9 +15,9 @@
 //! fluree-events-token --private-key @key.pem --all --expires-in 7d --output curl
 //! ```
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use clap::{Parser, ValueEnum};
-use ed25519_dalek::{SigningKey, Signer};
+use ed25519_dalek::{Signer, SigningKey};
 use fluree_db_credential::did_from_pubkey;
 use serde_json::json;
 use std::fs;
@@ -241,7 +241,9 @@ fn load_private_key(input: &str) -> Result<SigningKey, Box<dyn std::error::Error
     Err("Invalid private key format. Expected:\n\
          - Hex: 0x<64 hex chars> or <64 hex chars>\n\
          - Base58: z<base58> or <base58> (32 bytes)\n\
-         - File: @/path/to/keyfile".to_string().into())
+         - File: @/path/to/keyfile"
+        .to_string()
+        .into())
 }
 
 /// Parse duration string (e.g., "1h", "30m", "7d")
@@ -268,18 +270,22 @@ fn parse_duration(s: &str) -> Result<u64, Box<dyn std::error::Error>> {
         return Err(format!(
             "Invalid duration '{}'. Use format like 30s, 5m, 1h, 7d, 1w",
             s
-        ).into());
+        )
+        .into());
     };
 
-    let num: u64 = num_str.parse().map_err(|_| {
-        format!("Invalid duration number in '{}'", s)
-    })?;
+    let num: u64 = num_str
+        .parse()
+        .map_err(|_| format!("Invalid duration number in '{}'", s))?;
 
     Ok(num * multiplier)
 }
 
 /// Create JWS with embedded JWK
-fn create_jws(claims: &serde_json::Value, signing_key: &SigningKey) -> Result<String, Box<dyn std::error::Error>> {
+fn create_jws(
+    claims: &serde_json::Value,
+    signing_key: &SigningKey,
+) -> Result<String, Box<dyn std::error::Error>> {
     let pubkey = signing_key.verifying_key().to_bytes();
     let pubkey_b64 = URL_SAFE_NO_PAD.encode(pubkey);
 

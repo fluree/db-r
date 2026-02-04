@@ -50,7 +50,10 @@ async fn staging_data_invalid_transactions() {
 
     // This should succeed but with warnings about empty nodes
     let result = fluree.update(ledger3, &empty_node_txn).await;
-    assert!(result.is_ok(), "Should allow empty nodes with other valid data");
+    assert!(
+        result.is_ok(),
+        "Should allow empty nodes with other valid data"
+    );
 }
 
 #[tokio::test]
@@ -227,7 +230,6 @@ async fn object_var_test() {
     assert_eq!(friend_bff["@id"], "ex:bob");
 }
 
-
 #[tokio::test]
 async fn transact_api_test() {
     let fluree = FlureeBuilder::memory().build_memory();
@@ -361,7 +363,10 @@ async fn transact_api_test() {
         "opts": { "meta": true }
     });
     let (_result, tally) = fluree.update_with_ledger_tracked(&txn4).await.unwrap();
-    assert!(tally.is_some(), "tracking tally should be returned when opts.meta is true");
+    assert!(
+        tally.is_some(),
+        "tracking tally should be returned when opts.meta is true"
+    );
 
     // Throws on invalid txn (missing ledger)
     let bad_txn = json!({
@@ -575,12 +580,14 @@ async fn no_where_solutions() {
     assert_eq!(andrew["schema:description"], "He's great!");
 }
 
-
 #[tokio::test]
 async fn transaction_iri_special_char() {
     // Clojure: transact-test/transaction-iri-special-char
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger0 = fluree.create_ledger("transaction-iri-special-char:main").await.unwrap();
+    let ledger0 = fluree
+        .create_ledger("transaction-iri-special-char:main")
+        .await
+        .unwrap();
 
     let tx1 = json!({
         "@context": {"ex": "http://example.org/"},
@@ -643,13 +650,15 @@ async fn transaction_iri_special_char() {
     );
 }
 
-
 #[tokio::test]
 async fn transact_with_explicit_commit() {
     use fluree_db_transact::TxnType;
 
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger0 = fluree.create_ledger("tx/explicit-commit:main").await.unwrap();
+    let ledger0 = fluree
+        .create_ledger("tx/explicit-commit:main")
+        .await
+        .unwrap();
 
     let txn = json!({
         "@context": [default_context(), {"ex": "http://example.org/ns/"}],
@@ -661,7 +670,12 @@ async fn transact_with_explicit_commit() {
         .await
         .unwrap();
     let (receipt, ledger1) = fluree
-        .commit_staged(stage.view, stage.ns_registry, &Default::default(), Default::default())
+        .commit_staged(
+            stage.view,
+            stage.ns_registry,
+            &Default::default(),
+            Default::default(),
+        )
         .await
         .unwrap();
 
@@ -832,7 +846,10 @@ async fn retract_property_removes_only_that_property() {
     let alice = rows[0].as_object().expect("row object");
 
     assert_eq!(alice.get("@id").and_then(|v| v.as_str()), Some("ex:alice"));
-    assert_eq!(alice.get("schema:name").and_then(|v| v.as_str()), Some("Alice"));
+    assert_eq!(
+        alice.get("schema:name").and_then(|v| v.as_str()),
+        Some("Alice")
+    );
     assert!(
         !alice.contains_key("schema:age"),
         "Alice should no longer have schema:age after delete"
@@ -873,8 +890,14 @@ async fn retracting_ordered_lists_removes_list_values() {
 
     let q = json!({"@context": ctx, "select": {"ex:list-test": ["*"]}});
 
-    let before = fluree.query(&seeded.ledger, &q).await.expect("query before");
-    let before_json = before.to_jsonld_async(&seeded.ledger.db).await.expect("to_jsonld_async before");
+    let before = fluree
+        .query(&seeded.ledger, &q)
+        .await
+        .expect("query before");
+    let before_json = before
+        .to_jsonld_async(&seeded.ledger.db)
+        .await
+        .expect("to_jsonld_async before");
 
     assert_eq!(
         before_json,
@@ -897,8 +920,14 @@ async fn retracting_ordered_lists_removes_list_values() {
         .await
         .expect("update delete lists");
 
-    let after = fluree.query(&updated.ledger, &q).await.expect("query after");
-    let after_json = after.to_jsonld_async(&updated.ledger.db).await.expect("to_jsonld_async after");
+    let after = fluree
+        .query(&updated.ledger, &q)
+        .await
+        .expect("query after");
+    let after_json = after
+        .to_jsonld_async(&updated.ledger.db)
+        .await
+        .expect("to_jsonld_async after");
 
     assert_eq!(after_json, json!([{"@id": "ex:list-test"}]));
 }
@@ -1007,7 +1036,10 @@ async fn turtle_insert() {
 #[tokio::test]
 async fn turtle_insert_and_commit() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger0 = fluree.create_ledger("tx/turtle-insert-commit:main").await.unwrap();
+    let ledger0 = fluree
+        .create_ledger("tx/turtle-insert-commit:main")
+        .await
+        .unwrap();
 
     let ledger1 = fluree
         .insert(
@@ -1039,7 +1071,10 @@ async fn turtle_insert_and_commit() {
         .to_jsonld_async(&ledger2.db)
         .await
         .unwrap();
-    assert_eq!(rows, json!([{"@id":"ex:foo","ex:name":"Foo's Name","ex:age":42}]));
+    assert_eq!(
+        rows,
+        json!([{"@id":"ex:foo","ex:name":"Foo's Name","ex:age":42}])
+    );
     assert_eq!(ledger2.t(), 2);
 }
 
@@ -1086,7 +1121,10 @@ ex:foo ex:name "UPDATED Name" ;
 #[tokio::test]
 async fn turtle_upsert_and_commit() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger0 = fluree.create_ledger("tx/turtle-upsert-commit:main").await.unwrap();
+    let ledger0 = fluree
+        .create_ledger("tx/turtle-upsert-commit:main")
+        .await
+        .unwrap();
 
     let ledger1 = fluree
         .insert_turtle(ledger0, TURTLE_SAMPLE)

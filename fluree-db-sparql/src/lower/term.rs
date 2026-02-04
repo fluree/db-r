@@ -18,7 +18,6 @@ use fluree_db_query::var_registry::VarId;
 use fluree_vocab::namespaces::{RDF, XSD};
 use fluree_vocab::{rdf_names, xsd_names};
 
-
 use super::{LowerError, LoweringContext, Result};
 
 impl<'a, E: IriEncoder> LoweringContext<'a, E> {
@@ -117,9 +116,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 // Language-tagged strings become plain strings for now
                 FlakeValue::String(value.to_string())
             }
-            LiteralValue::Typed { value, datatype } => {
-                self.lower_typed_literal(value, datatype)?
-            }
+            LiteralValue::Typed { value, datatype } => self.lower_typed_literal(value, datatype)?,
             LiteralValue::Integer(i) => FlakeValue::Long(*i),
             LiteralValue::Decimal(d) => {
                 let val: f64 = d

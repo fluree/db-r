@@ -717,7 +717,7 @@ impl PolicyContext {
 }
 
 /// Marker prefix for unbound identity SIDs.
-/// 
+///
 /// This prefix is used to identify identity SIDs that were auto-generated because
 /// no identity was provided. The policy_eval code can check for this prefix
 /// to handle unbound identities specially.
@@ -860,7 +860,7 @@ mod tests {
         let subject = make_sid(100, "alice");
         let identity = make_sid(100, "bob");
         let custom_var = make_sid(100, "custom_value");
-        
+
         let mut wrapper_values = std::collections::HashMap::new();
         wrapper_values.insert("?myVar".to_string(), custom_var.clone());
 
@@ -879,7 +879,7 @@ mod tests {
         let subject = make_sid(100, "alice");
         let identity = make_sid(100, "bob");
         let wrong_identity = make_sid(100, "wrong");
-        
+
         let mut wrapper_values = std::collections::HashMap::new();
         wrapper_values.insert("?$identity".to_string(), wrong_identity);
 

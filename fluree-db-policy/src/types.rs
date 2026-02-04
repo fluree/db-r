@@ -38,8 +38,7 @@ pub enum TargetMode {
 }
 
 /// Policy action - which operations this policy applies to
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PolicyAction {
     /// View (query) operations only
     View,
@@ -111,7 +110,6 @@ impl<'a> PolicyDecision<'a> {
         }
     }
 }
-
 
 /// Policy value - the effect of the policy
 #[derive(Debug, Clone)]
@@ -231,11 +229,7 @@ impl PolicySet {
     ///
     /// Order: property-specific -> subject-specific -> defaults
     /// Preserves insertion order within each bucket (like Clojure's conjv).
-    pub fn restrictions_for_flake(
-        &self,
-        subject: &Sid,
-        property: &Sid,
-    ) -> Vec<&PolicyRestriction> {
+    pub fn restrictions_for_flake(&self, subject: &Sid, property: &Sid) -> Vec<&PolicyRestriction> {
         let mut candidates = Vec::new();
 
         // 1. Property-specific (includes class policies mapped here)
@@ -415,12 +409,7 @@ impl PolicyWrapper {
     /// class checking for implicit properties (@id, rdf:type) which are always
     /// indexed with class_check_needed=true. So we check for class_policy alone.
     pub fn has_class_policies(&self) -> bool {
-        let view_has = self
-            .inner
-            .view
-            .restrictions
-            .iter()
-            .any(|r| r.class_policy);
+        let view_has = self.inner.view.restrictions.iter().any(|r| r.class_policy);
 
         let modify_has = self
             .inner
@@ -495,7 +484,8 @@ mod tests {
         set.defaults.push(1);
 
         // Query for the "name" property
-        let candidates = set.restrictions_for_flake(&make_sid(100, "alice"), &make_sid(100, "name"));
+        let candidates =
+            set.restrictions_for_flake(&make_sid(100, "alice"), &make_sid(100, "name"));
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].id, "prop-1");
         assert_eq!(candidates[1].id, "default-1");

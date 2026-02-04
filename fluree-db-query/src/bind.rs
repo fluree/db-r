@@ -63,7 +63,11 @@ impl<S: Storage + 'static, C: NodeCache + 'static> BindOperator<S, C> {
         let (schema, var_position, is_new_var) = match existing_pos {
             Some(pos) => {
                 // Variable exists - schema stays the same
-                (Arc::from(child_schema.to_vec().into_boxed_slice()), pos, false)
+                (
+                    Arc::from(child_schema.to_vec().into_boxed_slice()),
+                    pos,
+                    false,
+                )
             }
             None => {
                 // New variable - add to schema
@@ -84,7 +88,6 @@ impl<S: Storage + 'static, C: NodeCache + 'static> BindOperator<S, C> {
             state: OperatorState::Created,
         }
     }
-
 }
 
 #[async_trait]
@@ -216,7 +219,9 @@ mod tests {
     fn test_bind_operator_new_var_schema() {
         // Child has ?a, BIND adds ?b
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
-        let child = Box::new(TestEmptyWithSchema { schema: child_schema });
+        let child = Box::new(TestEmptyWithSchema {
+            schema: child_schema,
+        });
 
         let expr = FilterExpr::Const(FilterValue::Long(42));
         let op = BindOperator::<MemoryStorage, TestCache>::new(child, VarId(1), expr);
@@ -232,7 +237,9 @@ mod tests {
     fn test_bind_operator_existing_var_schema() {
         // Child has ?a ?b, BIND to ?a (existing)
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
-        let child = Box::new(TestEmptyWithSchema { schema: child_schema });
+        let child = Box::new(TestEmptyWithSchema {
+            schema: child_schema,
+        });
 
         let expr = FilterExpr::Const(FilterValue::Long(42));
         let op = BindOperator::<MemoryStorage, TestCache>::new(child, VarId(0), expr);

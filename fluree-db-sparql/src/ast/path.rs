@@ -33,9 +33,7 @@ pub enum PropertyPath {
     Iri(Iri),
 
     /// The `a` keyword (rdf:type shorthand)
-    A {
-        span: SourceSpan,
-    },
+    A { span: SourceSpan },
 
     /// Inverse path: `^path`
     Inverse {
@@ -317,8 +315,7 @@ mod tests {
     fn test_complex_supported_path() {
         // ^ex:parent/ex:child* - inverse followed by transitive
         let inverse = PropertyPath::inverse(PropertyPath::iri(test_iri()), test_span());
-        let transitive =
-            PropertyPath::one_or_more(PropertyPath::iri(test_iri()), test_span());
+        let transitive = PropertyPath::one_or_more(PropertyPath::iri(test_iri()), test_span());
         let path = PropertyPath::sequence(inverse, transitive, test_span());
 
         assert!(!path.uses_unsupported_features());

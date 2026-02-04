@@ -2,9 +2,9 @@
 
 use crate::config::ConnectionConfig;
 use crate::error::Result;
-use fluree_db_core::{Db, MemoryStorage, NodeCache, SimpleCache, Storage};
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 use fluree_db_core::FileStorage;
+use fluree_db_core::{Db, MemoryStorage, NodeCache, SimpleCache, Storage};
 use std::sync::Arc;
 
 /// A Fluree database connection

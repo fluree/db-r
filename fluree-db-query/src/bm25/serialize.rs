@@ -79,9 +79,7 @@ pub fn deserialize(data: &[u8]) -> Result<Bm25Index> {
     let len = u32::from_be_bytes(len_bytes) as usize;
 
     if data.len() < 9 + len {
-        return Err(SerializeError::InvalidFormat(
-            "Data truncated".to_string(),
-        ));
+        return Err(SerializeError::InvalidFormat("Data truncated".to_string()));
     }
 
     // Deserialize index
@@ -108,8 +106,8 @@ pub fn read_snapshot<R: Read>(mut reader: R) -> Result<Bm25Index> {
 ///
 /// Uses the index contents to generate a deterministic hash.
 pub fn compute_checksum(index: &Bm25Index) -> u64 {
-    use std::hash::{Hash, Hasher};
     use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
 
     let mut hasher = DefaultHasher::new();
 

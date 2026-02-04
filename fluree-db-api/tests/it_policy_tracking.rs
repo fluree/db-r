@@ -9,7 +9,9 @@
 mod support;
 
 use fluree_db_api::policy_builder;
-use fluree_db_api::{CommitOpts, FlureeBuilder, IndexConfig, QueryConnectionOptions, TxnOpts, TxnType};
+use fluree_db_api::{
+    CommitOpts, FlureeBuilder, IndexConfig, QueryConnectionOptions, TxnOpts, TxnType,
+};
 use serde_json::json;
 use std::collections::HashMap;
 use support::{assert_index_defaults, genesis_ledger};
@@ -108,15 +110,20 @@ async fn transact_policy_denied_includes_policy_and_fuel_tracking() {
 
     let policy_stats = err.policy.expect("policy stats should be present");
     assert_eq!(
-        policy_stats.get("http://a.co/wishlistCreatePolicy").unwrap().executed,
+        policy_stats
+            .get("http://a.co/wishlistCreatePolicy")
+            .unwrap()
+            .executed,
         1
     );
     assert_eq!(
-        policy_stats.get("http://a.co/wishlistCreatePolicy").unwrap().allowed,
+        policy_stats
+            .get("http://a.co/wishlistCreatePolicy")
+            .unwrap()
+            .allowed,
         0
     );
 
     // Fuel should be tracked when opts.meta=true. We assert the Clojure-parity expectation (3).
     assert_eq!(err.fuel, Some(3));
 }
-

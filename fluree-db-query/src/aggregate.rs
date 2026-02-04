@@ -142,7 +142,11 @@ impl<S: Storage + 'static, C: NodeCache + 'static> AggregateOperator<S, C> {
         // If no regular aggregates found a Grouped column, find any non-key column
         // (In practice, GROUP BY always produces at least one Grouped column unless
         // all columns are keys, in which case group size is always 1)
-        if group_size_col.is_none() && extra_specs.iter().any(|(_, input_col, _)| input_col.is_none()) {
+        if group_size_col.is_none()
+            && extra_specs
+                .iter()
+                .any(|(_, input_col, _)| input_col.is_none())
+        {
             // Use the first column as fallback - it might be a group key (size=1)
             // or the batch might be empty
             group_size_col = Some(0);
@@ -161,7 +165,6 @@ impl<S: Storage + 'static, C: NodeCache + 'static> AggregateOperator<S, C> {
             child_col_count,
         }
     }
-
 }
 
 #[async_trait]
@@ -377,7 +380,12 @@ fn agg_avg(values: &[Binding]) -> Binding {
 fn agg_min(values: &[Binding]) -> Binding {
     values
         .iter()
-        .filter(|b| !matches!(b, Binding::Unbound | Binding::Poisoned | Binding::Grouped(_)))
+        .filter(|b| {
+            !matches!(
+                b,
+                Binding::Unbound | Binding::Poisoned | Binding::Grouped(_)
+            )
+        })
         .min_by(|a, b| crate::sort::compare_bindings(a, b))
         .cloned()
         .unwrap_or(Binding::Unbound)
@@ -387,7 +395,12 @@ fn agg_min(values: &[Binding]) -> Binding {
 fn agg_max(values: &[Binding]) -> Binding {
     values
         .iter()
-        .filter(|b| !matches!(b, Binding::Unbound | Binding::Poisoned | Binding::Grouped(_)))
+        .filter(|b| {
+            !matches!(
+                b,
+                Binding::Unbound | Binding::Poisoned | Binding::Grouped(_)
+            )
+        })
         .max_by(|a, b| crate::sort::compare_bindings(a, b))
         .cloned()
         .unwrap_or(Binding::Unbound)

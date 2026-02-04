@@ -30,11 +30,7 @@ async fn jsonld_insert_then_query_file_backed() {
     //
     // This is the Rust equivalent of `(fluree/create conn "ledger")` prior to the first commit:
     // the nameservice has no record yet, and `commit()` will create one via publish_commit().
-    let db = Db::genesis(
-        fluree.storage().clone(),
-        SimpleCache::new(10_000),
-        alias,
-    );
+    let db = Db::genesis(fluree.storage().clone(), SimpleCache::new(10_000), alias);
     let ledger0 = LedgerState::new(db, Novelty::new(0));
 
     // Insert JSON-LD data (string-key syntax, no EDN).
@@ -90,7 +86,10 @@ async fn jsonld_insert_then_query_file_backed() {
     let loaded = fluree.ledger(alias).await.expect("reload ledger");
     assert_eq!(loaded.t(), 1);
 
-    let result1 = fluree.query(&loaded, &query).await.expect("query after reload");
+    let result1 = fluree
+        .query(&loaded, &query)
+        .await
+        .expect("query after reload");
     let json1 = result1.to_jsonld(&loaded.db).expect("format to jsonld");
 
     fn extract_names(v: &serde_json::Value) -> Vec<String> {
@@ -111,7 +110,12 @@ async fn jsonld_insert_then_query_file_backed() {
         names
     }
 
-    assert_eq!(extract_names(&json0), vec!["Alice".to_string(), "Bob".to_string()]);
-    assert_eq!(extract_names(&json1), vec!["Alice".to_string(), "Bob".to_string()]);
+    assert_eq!(
+        extract_names(&json0),
+        vec!["Alice".to_string(), "Bob".to_string()]
+    );
+    assert_eq!(
+        extract_names(&json1),
+        vec!["Alice".to_string(), "Bob".to_string()]
+    );
 }
-

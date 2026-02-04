@@ -86,17 +86,25 @@ pub fn compare_bindings(a: &Binding, b: &Binding) -> Ordering {
         (Binding::IriMatch { .. }, _) => Ordering::Less,
 
         // Iri (raw IRI string) sorts after IriMatch but before Lit
-        (Binding::Iri(_), Binding::Unbound | Binding::Poisoned | Binding::Sid(_) | Binding::IriMatch { .. }) => {
-            Ordering::Greater
-        }
+        (
+            Binding::Iri(_),
+            Binding::Unbound | Binding::Poisoned | Binding::Sid(_) | Binding::IriMatch { .. },
+        ) => Ordering::Greater,
         (Binding::Iri(a), Binding::Iri(b)) => a.cmp(b),
         (Binding::Iri(_), _) => Ordering::Less,
 
         // Lit sorts after Iri but before Grouped
-        (Binding::Lit { .. }, Binding::Unbound | Binding::Poisoned | Binding::Sid(_) | Binding::IriMatch { .. } | Binding::Iri(_)) => {
-            Ordering::Greater
+        (
+            Binding::Lit { .. },
+            Binding::Unbound
+            | Binding::Poisoned
+            | Binding::Sid(_)
+            | Binding::IriMatch { .. }
+            | Binding::Iri(_),
+        ) => Ordering::Greater,
+        (Binding::Lit { val: v1, .. }, Binding::Lit { val: v2, .. }) => {
+            compare_flake_values(v1, v2)
         }
-        (Binding::Lit { val: v1, .. }, Binding::Lit { val: v2, .. }) => compare_flake_values(v1, v2),
         (Binding::Lit { .. }, Binding::Grouped(_)) => Ordering::Less,
 
         // Grouped sorts last (should not appear in normal sort contexts)
@@ -502,8 +510,14 @@ mod tests {
 
     #[test]
     fn test_compare_bindings_string() {
-        let a = Binding::lit(FlakeValue::String("apple".to_string()), Sid::new(1, "string"));
-        let b = Binding::lit(FlakeValue::String("banana".to_string()), Sid::new(1, "string"));
+        let a = Binding::lit(
+            FlakeValue::String("apple".to_string()),
+            Sid::new(1, "string"),
+        );
+        let b = Binding::lit(
+            FlakeValue::String("banana".to_string()),
+            Sid::new(1, "string"),
+        );
 
         assert_eq!(compare_bindings(&a, &a), Ordering::Equal);
         assert_eq!(compare_bindings(&a, &b), Ordering::Less);
@@ -694,8 +708,10 @@ mod tests {
 
         let mock = MockOperator::new(vec![]);
 
-        let mut sort_op =
-            SortOperator::<MemoryStorage, NoCache>::new(Box::new(mock), vec![SortSpec::asc(VarId(0))]);
+        let mut sort_op = SortOperator::<MemoryStorage, NoCache>::new(
+            Box::new(mock),
+            vec![SortSpec::asc(VarId(0))],
+        );
         sort_op.open(&ctx).await.unwrap();
 
         let result = sort_op.next_batch(&ctx).await.unwrap();

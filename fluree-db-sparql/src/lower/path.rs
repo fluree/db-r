@@ -205,10 +205,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
     ///
     /// SPARQL parses `a/b/c` as `Sequence(Sequence(a, b), c)`.
     /// This collects all leaves into a flat vec: `[a, b, c]`.
-    fn flatten_sequence<'p>(
-        path: &'p SparqlPropertyPath,
-        out: &mut Vec<&'p SparqlPropertyPath>,
-    ) {
+    fn flatten_sequence<'p>(path: &'p SparqlPropertyPath, out: &mut Vec<&'p SparqlPropertyPath>) {
         match path {
             SparqlPropertyPath::Sequence { left, right, .. } => {
                 Self::flatten_sequence(left, out);
@@ -322,20 +319,17 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
     ///
     /// Returns `Some(rewritten)` if the input was a complex inverse,
     /// `None` if no rewrite was needed (simple/transitive inverse).
-    fn rewrite_inverse_of_complex(
-        path: &SparqlPropertyPath,
-    ) -> Option<SparqlPropertyPath> {
+    fn rewrite_inverse_of_complex(path: &SparqlPropertyPath) -> Option<SparqlPropertyPath> {
         match path {
             SparqlPropertyPath::Inverse { path: inner, span } => {
                 let unwrapped = Self::unwrap_group(inner);
                 match unwrapped {
                     // Double inverse: ^(^x) → x (then normalize)
-                    SparqlPropertyPath::Inverse { path: inner_inner, .. } => {
+                    SparqlPropertyPath::Inverse {
+                        path: inner_inner, ..
+                    } => {
                         let cancelled = inner_inner.as_ref().clone();
-                        Some(
-                            Self::rewrite_inverse_of_complex(&cancelled)
-                                .unwrap_or(cancelled),
-                        )
+                        Some(Self::rewrite_inverse_of_complex(&cancelled).unwrap_or(cancelled))
                     }
                     // ^(a/b/c) → (^c)/(^b)/(^a)
                     SparqlPropertyPath::Sequence { .. } => {
@@ -384,10 +378,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         paths: Vec<SparqlPropertyPath>,
         span: SourceSpan,
     ) -> SparqlPropertyPath {
-        debug_assert!(
-            paths.len() >= 2,
-            "BUG: sequence needs at least 2 steps"
-        );
+        debug_assert!(paths.len() >= 2, "BUG: sequence needs at least 2 steps");
         let mut iter = paths.into_iter().rev();
         let mut acc = iter.next().unwrap();
         for step in iter {
@@ -432,10 +423,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
 
     /// Validate that a leaf inside an Alternative (within a sequence step) is a
     /// simple step: `Iri(_)`, `A`, or `Inverse { path: Iri(_) | A }`.
-    fn validate_simple_sparql_step(
-        step: &SparqlPropertyPath,
-        span: SourceSpan,
-    ) -> Result<()> {
+    fn validate_simple_sparql_step(step: &SparqlPropertyPath, span: SourceSpan) -> Result<()> {
         let unwrapped = Self::unwrap_group(step);
         match unwrapped {
             SparqlPropertyPath::Iri(_) | SparqlPropertyPath::A { .. } => Ok(()),

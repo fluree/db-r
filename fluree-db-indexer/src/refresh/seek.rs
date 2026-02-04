@@ -34,7 +34,10 @@ use std::cmp::Ordering;
 /// Index of the child whose range contains target.
 #[cfg(test)]
 pub fn floor_child(children: &[ChildRef], target: &Flake, index_type: IndexType) -> usize {
-    debug_assert!(!children.is_empty(), "floor_child called with empty children");
+    debug_assert!(
+        !children.is_empty(),
+        "floor_child called with empty children"
+    );
 
     // Debug-only invariant check: children are sorted by boundary
     #[cfg(debug_assertions)]

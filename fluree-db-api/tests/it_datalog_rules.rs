@@ -56,10 +56,18 @@ async fn datalog_grandparent_rule() {
         "select": ["?rule", "?ruleValue"],
         "where": {"@id": "?rule", "f:rule": "?ruleValue"}
     });
-    let rule_rows = fluree.query(&ledger, &rule_check).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rule_rows = fluree
+        .query(&ledger, &rule_check)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let rule_results = normalize_rows(&rule_rows);
     eprintln!("Found rules: {:?}", rule_results);
-    assert!(!rule_results.is_empty(), "Should have found the rule definition");
+    assert!(
+        !rule_results.is_empty(),
+        "Should have found the rule definition"
+    );
 
     // Insert family data
     let family_data = json!({
@@ -81,10 +89,18 @@ async fn datalog_grandparent_rule() {
         "select": ["?parent"],
         "where": {"@id": "ex:alice", "ex:parent": "?parent"}
     });
-    let data_rows = fluree.query(&ledger, &data_check).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let data_rows = fluree
+        .query(&ledger, &data_check)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let data_results = normalize_rows(&data_rows);
     eprintln!("Alice's parents: {:?}", data_results);
-    assert!(data_results.contains(&json!("ex:bob")), "Alice should have parent bob");
+    assert!(
+        data_results.contains(&json!("ex:bob")),
+        "Alice should have parent bob"
+    );
 
     // Query for Alice's grandparent with datalog reasoning enabled
     let q = json!({
@@ -96,7 +112,12 @@ async fn datalog_grandparent_rule() {
         "reasoning": "datalog"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     // Alice's grandparent should be Charlie (via bob)
@@ -161,7 +182,12 @@ async fn datalog_sibling_rule() {
         "reasoning": "datalog"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     // Alice should have Bob as a sibling
@@ -200,7 +226,12 @@ async fn datalog_no_rules_returns_empty() {
         "reasoning": "datalog"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     // Should be empty - no grandparent rule defined
@@ -243,7 +274,11 @@ async fn datalog_combined_with_owl2rl() {
             }
         ]
     });
-    let ledger = fluree.insert(ledger0, &schema_and_rule).await.unwrap().ledger;
+    let ledger = fluree
+        .insert(ledger0, &schema_and_rule)
+        .await
+        .unwrap()
+        .ledger;
 
     // Insert relationship data
     let data = json!({
@@ -267,7 +302,12 @@ async fn datalog_combined_with_owl2rl() {
         "reasoning": ["owl2rl", "datalog"]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     // Alice's friend-of-friend should include Charlie (via bob)
@@ -344,7 +384,12 @@ async fn datalog_recursive_ancestor_rule() {
         "reasoning": "datalog"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     // Alice should have ALL ancestors: bob, charlie, dave
@@ -404,7 +449,11 @@ async fn datalog_chains_off_owl_entailments() {
             }
         ]
     });
-    let ledger = fluree.insert(ledger0, &schema_and_rule).await.unwrap().ledger;
+    let ledger = fluree
+        .insert(ledger0, &schema_and_rule)
+        .await
+        .unwrap()
+        .ledger;
 
     // Insert data:
     // - alice knows bob (explicit)
@@ -509,7 +558,11 @@ async fn datalog_chains_off_owl_entailments() {
             }
         ]
     });
-    let ledger = fluree.insert(ledger, &rule_using_inverse).await.unwrap().ledger;
+    let ledger = fluree
+        .insert(ledger, &rule_using_inverse)
+        .await
+        .unwrap()
+        .ledger;
 
     // Query for what alice learns about - this REQUIRES:
     // 1. OWL inverse to derive alice->friendOf->bob
@@ -523,7 +576,12 @@ async fn datalog_chains_off_owl_entailments() {
         "reasoning": ["owl2rl", "datalog"]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     // Alice should learn about music through the OWL-derived friendOf relationship
@@ -594,7 +652,12 @@ async fn datalog_filter_expression() {
         "reasoning": "datalog"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     // Alice (65), Charlie (70), and Dave (62) should be seniors
@@ -676,7 +739,12 @@ async fn datalog_filter_less_than() {
         "reasoning": "datalog"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     // Widget (50) and Gizmo (99) should be affordable
@@ -736,7 +804,12 @@ async fn datalog_query_time_rules() {
         }]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     // Alice's grandparent should be Charlie (via bob)
@@ -781,7 +854,12 @@ async fn datalog_query_time_rules_with_id() {
         }]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     assert!(
@@ -833,7 +911,12 @@ async fn datalog_query_time_rules_multiple() {
         ]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     // Brian's aunt should be Holly (via mike, carol's brother, whose spouse is holly)
@@ -882,7 +965,12 @@ async fn datalog_query_time_rules_with_filter() {
         }]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     assert!(
@@ -959,7 +1047,12 @@ async fn datalog_query_time_rules_merged_with_db_rules() {
         }]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     // The aunt rule (query-time) chains off the uncle rule (DB-stored)

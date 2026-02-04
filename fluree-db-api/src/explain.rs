@@ -6,7 +6,9 @@
 use crate::error::{ApiError, Result};
 use crate::format::iri::IriCompactor;
 use fluree_db_core::{is_rdf_type, StatsView};
-use fluree_db_query::{parse_query, ExplainPlan, OptimizationStatus, Pattern, Term, TriplePattern, VarRegistry};
+use fluree_db_query::{
+    parse_query, ExplainPlan, OptimizationStatus, Pattern, Term, TriplePattern, VarRegistry,
+};
 use serde_json::{json, Map, Value as JsonValue};
 
 fn status_to_str(s: OptimizationStatus) -> &'static str {
@@ -22,7 +24,11 @@ fn term_to_user_string(term: &Term, vars: &VarRegistry, compactor: &IriCompactor
         Term::Sid(sid) => {
             // Use @type for rdf:type predicate in user output when it appears in property position.
             // For other Sids, compact as vocab IRI.
-            compactor.compact_vocab_iri(&compactor.decode_sid(sid).unwrap_or_else(|_| sid.name.to_string()))
+            compactor.compact_vocab_iri(
+                &compactor
+                    .decode_sid(sid)
+                    .unwrap_or_else(|_| sid.name.to_string()),
+            )
         }
         Term::Iri(iri) => {
             // IRI term (from cross-ledger joins) - compact to user-friendly form
@@ -78,7 +84,9 @@ fn plan_patterns_to_json(
         let key = fluree_db_query::explain::format_pattern(tp);
         let pd = by_pattern_str.get(&key);
         let selectivity = pd.map(|p| p.selectivity_score).unwrap_or(0);
-        let pattern_type = pd.map(|p| p.pattern_type).unwrap_or(fluree_db_query::planner::PatternType::PropertyScan);
+        let pattern_type = pd
+            .map(|p| p.pattern_type)
+            .unwrap_or(fluree_db_query::planner::PatternType::PropertyScan);
 
         let typ = match pattern_type {
             fluree_db_query::planner::PatternType::ClassPattern => "class",
@@ -160,7 +168,10 @@ fn plan_patterns_to_json(
 ///
 /// Returns a JSON object like:
 /// `{ "query": <parsed/echo>, "plan": { ... } }`
-pub async fn explain_jsonld<S: fluree_db_core::Storage + 'static, C: fluree_db_core::NodeCache + 'static>(
+pub async fn explain_jsonld<
+    S: fluree_db_core::Storage + 'static,
+    C: fluree_db_core::NodeCache + 'static,
+>(
     db: &fluree_db_core::Db<S, C>,
     query_json: &JsonValue,
 ) -> Result<JsonValue> {
@@ -168,7 +179,9 @@ pub async fn explain_jsonld<S: fluree_db_core::Storage + 'static, C: fluree_db_c
     let parsed = parse_query(query_json, db, &mut vars)
         .map_err(|e| ApiError::query(format!("Explain parse error: {e}")))?;
 
-    let query_obj = query_json.as_object().ok_or_else(|| ApiError::query("Query must be an object"))?;
+    let query_obj = query_json
+        .as_object()
+        .ok_or_else(|| ApiError::query("Query must be an object"))?;
     let compactor = IriCompactor::new(&db.namespace_codes, &parsed.context);
 
     // Extract triple patterns in query order.
@@ -176,7 +189,10 @@ pub async fn explain_jsonld<S: fluree_db_core::Storage + 'static, C: fluree_db_c
     // stats lookups (which are SID-keyed) work for explain/optimization parity.
     let normalize_term = |t: &Term| -> Term {
         match t {
-            Term::Iri(iri) => db.encode_iri(iri).map(Term::Sid).unwrap_or_else(|| t.clone()),
+            Term::Iri(iri) => db
+                .encode_iri(iri)
+                .map(Term::Sid)
+                .unwrap_or_else(|| t.clone()),
             _ => t.clone(),
         }
     };
@@ -200,7 +216,10 @@ pub async fn explain_jsonld<S: fluree_db_core::Storage + 'static, C: fluree_db_c
         .stats
         .as_ref()
         .map(|s| StatsView::from_db_stats_with_namespaces(s, &db.namespace_codes));
-    let stats_available = stats_view.as_ref().map(|s| s.has_property_stats()).unwrap_or(false);
+    let stats_available = stats_view
+        .as_ref()
+        .map(|s| s.has_property_stats())
+        .unwrap_or(false);
 
     if !stats_available {
         // Clojure parity: no stats => no optimization, include reason + where clause.
@@ -236,4 +255,3 @@ pub async fn explain_jsonld<S: fluree_db_core::Storage + 'static, C: fluree_db_c
         }
     }))
 }
-

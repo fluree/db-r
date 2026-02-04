@@ -85,7 +85,10 @@ impl ForwardingClient {
         // Convert to axum response
         let status = response.status();
         let response_headers = response.headers().clone();
-        let body = response.bytes().await.map_err(ForwardingError::ResponseBody)?;
+        let body = response
+            .bytes()
+            .await
+            .map_err(ForwardingError::ResponseBody)?;
 
         tracing::debug!(
             status = %status,
@@ -115,7 +118,10 @@ impl ForwardingClient {
 }
 
 /// Forward headers from request, skipping hop-by-hop headers
-fn forward_headers(mut builder: reqwest::RequestBuilder, headers: &HeaderMap) -> reqwest::RequestBuilder {
+fn forward_headers(
+    mut builder: reqwest::RequestBuilder,
+    headers: &HeaderMap,
+) -> reqwest::RequestBuilder {
     for (name, value) in headers.iter() {
         let name_str = name.as_str().to_ascii_lowercase();
         if !HOP_BY_HOP_HEADERS.contains(&name_str.as_str()) {

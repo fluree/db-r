@@ -183,8 +183,7 @@ mod tests {
 
     #[test]
     fn test_parse_address_with_identifier_memory() {
-        let parsed =
-            parse_fluree_address("fluree:cache:memory://db/index/root.json").unwrap();
+        let parsed = parse_fluree_address("fluree:cache:memory://db/index/root.json").unwrap();
         assert_eq!(parsed.identifier, Some("cache"));
         assert_eq!(parsed.method, "memory");
         assert_eq!(parsed.path, "db/index/root.json");
@@ -227,10 +226,7 @@ mod tests {
 
     #[test]
     fn test_extract_identifier() {
-        assert_eq!(
-            extract_identifier("fluree:myid:s3://path"),
-            Some("myid")
-        );
+        assert_eq!(extract_identifier("fluree:myid:s3://path"), Some("myid"));
         assert_eq!(
             extract_identifier("fluree:commit-store:file://path"),
             Some("commit-store")
@@ -257,12 +253,10 @@ mod tests {
 
     #[test]
     fn test_path_with_special_characters() {
-        let parsed =
-            parse_fluree_address("fluree:s3://bucket/path/with spaces/file.json").unwrap();
+        let parsed = parse_fluree_address("fluree:s3://bucket/path/with spaces/file.json").unwrap();
         assert_eq!(parsed.path, "bucket/path/with spaces/file.json");
 
-        let parsed =
-            parse_fluree_address("fluree:s3://bucket/path%20encoded/file.json").unwrap();
+        let parsed = parse_fluree_address("fluree:s3://bucket/path%20encoded/file.json").unwrap();
         assert_eq!(parsed.path, "bucket/path%20encoded/file.json");
     }
 

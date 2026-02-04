@@ -51,7 +51,9 @@ async fn property_and_class_statistics_persist_in_db_root() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
 
-    let mut fluree = FlureeBuilder::file(path).build().expect("build file fluree");
+    let mut fluree = FlureeBuilder::file(path)
+        .build()
+        .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -164,7 +166,9 @@ async fn class_statistics_decrement_after_delete_refresh() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
 
-    let mut fluree = FlureeBuilder::file(path).build().expect("build file fluree");
+    let mut fluree = FlureeBuilder::file(path)
+        .build()
+        .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -206,7 +210,8 @@ async fn class_statistics_decrement_after_delete_refresh() {
                 .trigger(r1.ledger.alias(), r1.receipt.t)
                 .await
                 .wait()
-                .await {
+                .await
+            {
                 fluree_db_api::IndexOutcome::Completed { .. } => {}
                 fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
                 fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
@@ -242,7 +247,6 @@ async fn class_statistics_decrement_after_delete_refresh() {
         })
         .await;
 }
-
 
 #[tokio::test]
 async fn statistics_work_with_memory_storage_when_indexed() {
@@ -330,7 +334,9 @@ async fn ledger_info_api_returns_expected_structure() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
 
-    let mut fluree = FlureeBuilder::file(path).build().expect("build file fluree");
+    let mut fluree = FlureeBuilder::file(path)
+        .build()
+        .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -370,7 +376,9 @@ async fn ledger_info_api_returns_expected_structure() {
                 .expect("insert");
 
             // Trigger indexing and wait for completion
-            let completion = handle.trigger(result.ledger.alias(), result.receipt.t).await;
+            let completion = handle
+                .trigger(result.ledger.alias(), result.receipt.t)
+                .await;
             match completion.wait().await {
                 fluree_db_api::IndexOutcome::Completed { .. } => {}
                 fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
@@ -378,14 +386,24 @@ async fn ledger_info_api_returns_expected_structure() {
             }
 
             // Call ledger_info without context
-            let info = fluree.ledger_info(alias).execute().await.expect("ledger_info");
+            let info = fluree
+                .ledger_info(alias)
+                .execute()
+                .await
+                .expect("ledger_info");
 
             // ================================================================
             // Verify top-level keys exist
             // ================================================================
             assert!(info.get("commit").is_some(), "should have 'commit' key");
-            assert!(info.get("nameservice").is_some(), "should have 'nameservice' key");
-            assert!(info.get("namespace-codes").is_some(), "should have 'namespace-codes' key");
+            assert!(
+                info.get("nameservice").is_some(),
+                "should have 'nameservice' key"
+            );
+            assert!(
+                info.get("namespace-codes").is_some(),
+                "should have 'namespace-codes' key"
+            );
             assert!(info.get("stats").is_some(), "should have 'stats' key");
             assert!(info.get("index").is_some(), "should have 'index' key");
 
@@ -394,25 +412,56 @@ async fn ledger_info_api_returns_expected_structure() {
             // ================================================================
             let commit = &info["commit"];
             assert_eq!(commit["@context"], "https://ns.flur.ee/ledger/v1");
-            assert!(commit["type"].as_array().map(|a| a.contains(&json!("Commit"))).unwrap_or(false),
-                "commit.type should be ['Commit']");
-            assert!(json_path_exists(commit, &["address"]), "commit should have address");
-            assert!(json_path_exists(commit, &["alias"]), "commit should have alias");
-            assert!(json_path_exists(commit, &["data"]), "commit should have data");
-            assert!(json_path_exists(commit, &["data", "t"]), "commit.data should have t");
-            assert!(json_path_exists(commit, &["data", "type"]), "commit.data should have type");
-            assert!(commit["data"]["type"].as_array().map(|a| a.contains(&json!("DB"))).unwrap_or(false),
-                "commit.data.type should be ['DB']");
+            assert!(
+                commit["type"]
+                    .as_array()
+                    .map(|a| a.contains(&json!("Commit")))
+                    .unwrap_or(false),
+                "commit.type should be ['Commit']"
+            );
+            assert!(
+                json_path_exists(commit, &["address"]),
+                "commit should have address"
+            );
+            assert!(
+                json_path_exists(commit, &["alias"]),
+                "commit should have alias"
+            );
+            assert!(
+                json_path_exists(commit, &["data"]),
+                "commit should have data"
+            );
+            assert!(
+                json_path_exists(commit, &["data", "t"]),
+                "commit.data should have t"
+            );
+            assert!(
+                json_path_exists(commit, &["data", "type"]),
+                "commit.data should have type"
+            );
+            assert!(
+                commit["data"]["type"]
+                    .as_array()
+                    .map(|a| a.contains(&json!("DB")))
+                    .unwrap_or(false),
+                "commit.data.type should be ['DB']"
+            );
 
             // ================================================================
             // Verify nameservice structure (uses @id, @type, @context keywords)
             // ================================================================
             let ns = &info["nameservice"];
-            assert!(ns.get("@context").is_some(), "nameservice should have @context");
+            assert!(
+                ns.get("@context").is_some(),
+                "nameservice should have @context"
+            );
             assert!(ns.get("@id").is_some(), "nameservice should have @id");
             assert!(ns.get("@type").is_some(), "nameservice should have @type");
             assert!(ns.get("f:t").is_some(), "nameservice should have f:t");
-            assert_eq!(ns["f:status"], "ready", "nameservice f:status should be 'ready'");
+            assert_eq!(
+                ns["f:status"], "ready",
+                "nameservice f:status should be 'ready'"
+            );
 
             // ================================================================
             // Verify namespace-codes (inverted: prefix → code)
@@ -423,8 +472,10 @@ async fn ledger_info_api_returns_expected_structure() {
             assert!(ns_codes.get("").is_some(), "should have empty prefix");
             assert!(ns_codes.get("@").is_some(), "should have '@' prefix");
             // Example namespace should be present since we used ex:
-            assert!(ns_codes.get("http://example.org/").is_some(),
-                "should have http://example.org/ prefix");
+            assert!(
+                ns_codes.get("http://example.org/").is_some(),
+                "should have http://example.org/ prefix"
+            );
 
             // ================================================================
             // Verify stats structure
@@ -433,11 +484,17 @@ async fn ledger_info_api_returns_expected_structure() {
             assert!(stats.get("flakes").is_some(), "stats should have flakes");
             assert!(stats.get("size").is_some(), "stats should have size");
             assert!(stats.get("indexed").is_some(), "stats should have indexed");
-            assert!(stats.get("properties").is_some(), "stats should have properties");
+            assert!(
+                stats.get("properties").is_some(),
+                "stats should have properties"
+            );
             assert!(stats.get("classes").is_some(), "stats should have classes");
 
             // Verify stats.indexed is the index t (integer), not boolean
-            assert!(stats["indexed"].is_i64(), "stats.indexed should be integer (index t)");
+            assert!(
+                stats["indexed"].is_i64(),
+                "stats.indexed should be integer (index t)"
+            );
 
             // Verify property stats have expected fields
             let props = &stats["properties"];
@@ -445,16 +502,36 @@ async fn ledger_info_api_returns_expected_structure() {
 
             // Check ex:name property exists with expected stats fields
             if let Some(name_stats) = props.get("http://example.org/name") {
-                assert!(name_stats.get("count").is_some(), "property should have count");
-                assert!(name_stats.get("ndv-values").is_some(), "property should have ndv-values");
-                assert!(name_stats.get("ndv-subjects").is_some(), "property should have ndv-subjects");
-                assert!(name_stats.get("last-modified-t").is_some(), "property should have last-modified-t");
-                assert!(name_stats.get("selectivity-value").is_some(), "property should have selectivity-value");
-                assert!(name_stats.get("selectivity-subject").is_some(), "property should have selectivity-subject");
+                assert!(
+                    name_stats.get("count").is_some(),
+                    "property should have count"
+                );
+                assert!(
+                    name_stats.get("ndv-values").is_some(),
+                    "property should have ndv-values"
+                );
+                assert!(
+                    name_stats.get("ndv-subjects").is_some(),
+                    "property should have ndv-subjects"
+                );
+                assert!(
+                    name_stats.get("last-modified-t").is_some(),
+                    "property should have last-modified-t"
+                );
+                assert!(
+                    name_stats.get("selectivity-value").is_some(),
+                    "property should have selectivity-value"
+                );
+                assert!(
+                    name_stats.get("selectivity-subject").is_some(),
+                    "property should have selectivity-subject"
+                );
 
                 // Verify selectivity is integer
-                assert!(name_stats["selectivity-value"].is_i64(),
-                    "selectivity-value should be integer");
+                assert!(
+                    name_stats["selectivity-value"].is_i64(),
+                    "selectivity-value should be integer"
+                );
 
                 // ex:name has count 2 (Alice and Bob)
                 assert_eq!(name_stats["count"], 2, "ex:name count should be 2");
@@ -468,19 +545,31 @@ async fn ledger_info_api_returns_expected_structure() {
 
             // Check ex:Person class exists
             if let Some(person_stats) = classes.get("http://example.org/Person") {
-                assert!(person_stats.get("count").is_some(), "class should have count");
-                assert!(person_stats.get("properties").is_some(), "class should have properties");
+                assert!(
+                    person_stats.get("count").is_some(),
+                    "class should have count"
+                );
+                assert!(
+                    person_stats.get("properties").is_some(),
+                    "class should have properties"
+                );
                 assert_eq!(person_stats["count"], 2, "ex:Person count should be 2");
 
                 // Class properties HAVE types/ref-classes/langs (unlike top-level properties)
                 if let Some(class_props) = person_stats.get("properties") {
                     if let Some(name_in_class) = class_props.get("http://example.org/name") {
-                        assert!(name_in_class.get("types").is_some(),
-                            "class property should have types");
-                        assert!(name_in_class.get("ref-classes").is_some(),
-                            "class property should have ref-classes");
-                        assert!(name_in_class.get("langs").is_some(),
-                            "class property should have langs");
+                        assert!(
+                            name_in_class.get("types").is_some(),
+                            "class property should have types"
+                        );
+                        assert!(
+                            name_in_class.get("ref-classes").is_some(),
+                            "class property should have ref-classes"
+                        );
+                        assert!(
+                            name_in_class.get("langs").is_some(),
+                            "class property should have langs"
+                        );
                     }
                 }
             } else {
@@ -506,7 +595,9 @@ async fn ledger_info_api_with_context_compacts_stats_iris() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
 
-    let mut fluree = FlureeBuilder::file(path).build().expect("build file fluree");
+    let mut fluree = FlureeBuilder::file(path)
+        .build()
+        .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -635,14 +726,24 @@ async fn ledger_info_before_commit_returns_null_commit() {
     let _ledger = fluree.create_ledger(alias).await.expect("create_ledger");
 
     // Call ledger_info on genesis ledger (no commits)
-    let info = fluree.ledger_info(alias).execute().await.expect("ledger_info");
+    let info = fluree
+        .ledger_info(alias)
+        .execute()
+        .await
+        .expect("ledger_info");
 
     // commit key should exist but be null
     assert!(info.get("commit").is_some(), "should have 'commit' key");
-    assert!(info["commit"].is_null(), "commit should be null when no commits");
+    assert!(
+        info["commit"].is_null(),
+        "commit should be null when no commits"
+    );
 
     // Other keys should still be present
-    assert!(info.get("namespace-codes").is_some(), "should have namespace-codes");
+    assert!(
+        info.get("namespace-codes").is_some(),
+        "should have namespace-codes"
+    );
     assert!(info.get("stats").is_some(), "should have stats");
 }
 
@@ -659,7 +760,9 @@ async fn ndv_cardinality_estimates_are_accurate() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
 
-    let mut fluree = FlureeBuilder::file(path).build().expect("build file fluree");
+    let mut fluree = FlureeBuilder::file(path)
+        .build()
+        .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -708,7 +811,9 @@ async fn ndv_cardinality_estimates_are_accurate() {
                 .await
                 .expect("insert");
 
-            let completion = handle.trigger(result.ledger.alias(), result.receipt.t).await;
+            let completion = handle
+                .trigger(result.ledger.alias(), result.receipt.t)
+                .await;
             let root = match completion.wait().await {
                 fluree_db_api::IndexOutcome::Completed { root_address, .. } => root_address,
                 fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
@@ -720,25 +825,35 @@ async fn ndv_cardinality_estimates_are_accurate() {
                 .expect("Db::load(root)");
 
             // Check ex:name: 20 distinct values, 20 distinct subjects
-            let name_ndv_values = loaded.stats.as_ref()
+            let name_ndv_values = loaded
+                .stats
+                .as_ref()
                 .and_then(|s| s.properties.as_ref())
-                .and_then(|props| props.iter().find(|p| {
-                    let sid = fluree_db_core::Sid::new(p.sid.0, &p.sid.1);
-                    loaded.decode_sid(&sid)
-                        .map(|iri| iri == "http://example.org/name")
-                        .unwrap_or(false)
-                }))
+                .and_then(|props| {
+                    props.iter().find(|p| {
+                        let sid = fluree_db_core::Sid::new(p.sid.0, &p.sid.1);
+                        loaded
+                            .decode_sid(&sid)
+                            .map(|iri| iri == "http://example.org/name")
+                            .unwrap_or(false)
+                    })
+                })
                 .map(|p| p.ndv_values)
                 .expect("name property should exist");
 
-            let name_ndv_subjects = loaded.stats.as_ref()
+            let name_ndv_subjects = loaded
+                .stats
+                .as_ref()
                 .and_then(|s| s.properties.as_ref())
-                .and_then(|props| props.iter().find(|p| {
-                    let sid = fluree_db_core::Sid::new(p.sid.0, &p.sid.1);
-                    loaded.decode_sid(&sid)
-                        .map(|iri| iri == "http://example.org/name")
-                        .unwrap_or(false)
-                }))
+                .and_then(|props| {
+                    props.iter().find(|p| {
+                        let sid = fluree_db_core::Sid::new(p.sid.0, &p.sid.1);
+                        loaded
+                            .decode_sid(&sid)
+                            .map(|iri| iri == "http://example.org/name")
+                            .unwrap_or(false)
+                    })
+                })
                 .map(|p| p.ndv_subjects)
                 .expect("name property should exist");
 
@@ -753,25 +868,35 @@ async fn ndv_cardinality_estimates_are_accurate() {
             );
 
             // Check ex:status: 5 distinct values, 20 distinct subjects
-            let status_ndv_values = loaded.stats.as_ref()
+            let status_ndv_values = loaded
+                .stats
+                .as_ref()
                 .and_then(|s| s.properties.as_ref())
-                .and_then(|props| props.iter().find(|p| {
-                    let sid = fluree_db_core::Sid::new(p.sid.0, &p.sid.1);
-                    loaded.decode_sid(&sid)
-                        .map(|iri| iri == "http://example.org/status")
-                        .unwrap_or(false)
-                }))
+                .and_then(|props| {
+                    props.iter().find(|p| {
+                        let sid = fluree_db_core::Sid::new(p.sid.0, &p.sid.1);
+                        loaded
+                            .decode_sid(&sid)
+                            .map(|iri| iri == "http://example.org/status")
+                            .unwrap_or(false)
+                    })
+                })
                 .map(|p| p.ndv_values)
                 .expect("status property should exist");
 
-            let status_ndv_subjects = loaded.stats.as_ref()
+            let status_ndv_subjects = loaded
+                .stats
+                .as_ref()
                 .and_then(|s| s.properties.as_ref())
-                .and_then(|props| props.iter().find(|p| {
-                    let sid = fluree_db_core::Sid::new(p.sid.0, &p.sid.1);
-                    loaded.decode_sid(&sid)
-                        .map(|iri| iri == "http://example.org/status")
-                        .unwrap_or(false)
-                }))
+                .and_then(|props| {
+                    props.iter().find(|p| {
+                        let sid = fluree_db_core::Sid::new(p.sid.0, &p.sid.1);
+                        loaded
+                            .decode_sid(&sid)
+                            .map(|iri| iri == "http://example.org/status")
+                            .unwrap_or(false)
+                    })
+                })
                 .map(|p| p.ndv_subjects)
                 .expect("status property should exist");
 
@@ -796,7 +921,9 @@ async fn selectivity_calculation_is_correct() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
 
-    let mut fluree = FlureeBuilder::file(path).build().expect("build file fluree");
+    let mut fluree = FlureeBuilder::file(path)
+        .build()
+        .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -845,7 +972,9 @@ async fn selectivity_calculation_is_correct() {
                 .await
                 .expect("insert");
 
-            let completion = handle.trigger(result.ledger.alias(), result.receipt.t).await;
+            let completion = handle
+                .trigger(result.ledger.alias(), result.receipt.t)
+                .await;
             match completion.wait().await {
                 fluree_db_api::IndexOutcome::Completed { .. } => {}
                 fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
@@ -853,7 +982,11 @@ async fn selectivity_calculation_is_correct() {
             }
 
             // Reload to get ledger_info
-            let info = fluree.ledger_info(alias).execute().await.expect("ledger_info");
+            let info = fluree
+                .ledger_info(alias)
+                .execute()
+                .await
+                .expect("ledger_info");
 
             let stats = &info["stats"];
             let props = &stats["properties"];
@@ -865,33 +998,39 @@ async fn selectivity_calculation_is_correct() {
             // ex:uniqueId: 10 flakes, 10 distinct values, 10 subjects
             // Expected: selectivity-value ≈ 1 (could be 1-2 due to HLL variance)
             // Expected: selectivity-subject ≈ 1 (could be 1-2 due to HLL variance)
-            let unique_id_stats = props.get("http://example.org/uniqueId")
+            let unique_id_stats = props
+                .get("http://example.org/uniqueId")
                 .expect("uniqueId property should exist");
             let uid_sel_val = unique_id_stats["selectivity-value"].as_i64().unwrap();
             let uid_sel_sub = unique_id_stats["selectivity-subject"].as_i64().unwrap();
             assert!(
                 (1..=2).contains(&uid_sel_val),
-                "uniqueId selectivity-value should be 1-2, got {}", uid_sel_val
+                "uniqueId selectivity-value should be 1-2, got {}",
+                uid_sel_val
             );
             assert!(
                 (1..=2).contains(&uid_sel_sub),
-                "uniqueId selectivity-subject should be 1-2, got {}", uid_sel_sub
+                "uniqueId selectivity-subject should be 1-2, got {}",
+                uid_sel_sub
             );
 
             // ex:category: 10 flakes, 2 distinct values, 10 subjects
             // Expected: selectivity-value ≈ 5 (could be 4-6 due to HLL variance)
             // Expected: selectivity-subject ≈ 1 (could be 1-2 due to HLL variance)
-            let category_stats = props.get("http://example.org/category")
+            let category_stats = props
+                .get("http://example.org/category")
                 .expect("category property should exist");
             let cat_sel_val = category_stats["selectivity-value"].as_i64().unwrap();
             let cat_sel_sub = category_stats["selectivity-subject"].as_i64().unwrap();
             assert!(
                 (4..=7).contains(&cat_sel_val),
-                "category selectivity-value should be 4-7 (10 flakes / ~2 values), got {}", cat_sel_val
+                "category selectivity-value should be 4-7 (10 flakes / ~2 values), got {}",
+                cat_sel_val
             );
             assert!(
                 (1..=2).contains(&cat_sel_sub),
-                "category selectivity-subject should be 1-2 (10 flakes / ~10 subjects), got {}", cat_sel_sub
+                "category selectivity-subject should be 1-2 (10 flakes / ~10 subjects), got {}",
+                cat_sel_sub
             );
         })
         .await;
@@ -905,7 +1044,9 @@ async fn multi_class_entities_tracked_correctly() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
 
-    let mut fluree = FlureeBuilder::file(path).build().expect("build file fluree");
+    let mut fluree = FlureeBuilder::file(path)
+        .build()
+        .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -960,7 +1101,9 @@ async fn multi_class_entities_tracked_correctly() {
                 .await
                 .expect("insert");
 
-            let completion = handle.trigger(result.ledger.alias(), result.receipt.t).await;
+            let completion = handle
+                .trigger(result.ledger.alias(), result.receipt.t)
+                .await;
             match completion.wait().await {
                 fluree_db_api::IndexOutcome::Completed { .. } => {}
                 fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
@@ -968,13 +1111,18 @@ async fn multi_class_entities_tracked_correctly() {
             }
 
             // Reload to get ledger_info
-            let info = fluree.ledger_info(alias).execute().await.expect("ledger_info");
+            let info = fluree
+                .ledger_info(alias)
+                .execute()
+                .await
+                .expect("ledger_info");
 
             let stats = &info["stats"];
             let classes = &stats["classes"];
 
             // ex:Person should have count 2 (alice, bob)
-            let person_stats = classes.get("http://example.org/Person")
+            let person_stats = classes
+                .get("http://example.org/Person")
                 .expect("Person class should exist");
             assert_eq!(
                 person_stats["count"].as_i64(),
@@ -983,7 +1131,8 @@ async fn multi_class_entities_tracked_correctly() {
             );
 
             // ex:Employee should have count 1 (alice only)
-            let employee_stats = classes.get("http://example.org/Employee")
+            let employee_stats = classes
+                .get("http://example.org/Employee")
                 .expect("Employee class should exist");
             assert_eq!(
                 employee_stats["count"].as_i64(),
@@ -992,7 +1141,8 @@ async fn multi_class_entities_tracked_correctly() {
             );
 
             // ex:Organization should have count 1 (acme)
-            let org_stats = classes.get("http://example.org/Organization")
+            let org_stats = classes
+                .get("http://example.org/Organization")
                 .expect("Organization class should exist");
             assert_eq!(
                 org_stats["count"].as_i64(),
@@ -1001,7 +1151,8 @@ async fn multi_class_entities_tracked_correctly() {
             );
 
             // ex:LegalEntity should have count 1 (acme)
-            let legal_stats = classes.get("http://example.org/LegalEntity")
+            let legal_stats = classes
+                .get("http://example.org/LegalEntity")
                 .expect("LegalEntity class should exist");
             assert_eq!(
                 legal_stats["count"].as_i64(),
@@ -1020,7 +1171,9 @@ async fn class_property_type_distribution_tracked() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
 
-    let mut fluree = FlureeBuilder::file(path).build().expect("build file fluree");
+    let mut fluree = FlureeBuilder::file(path)
+        .build()
+        .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -1080,7 +1233,9 @@ async fn class_property_type_distribution_tracked() {
                 .await
                 .expect("insert");
 
-            let completion = handle.trigger(result.ledger.alias(), result.receipt.t).await;
+            let completion = handle
+                .trigger(result.ledger.alias(), result.receipt.t)
+                .await;
             match completion.wait().await {
                 fluree_db_api::IndexOutcome::Completed { .. } => {}
                 fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
@@ -1088,23 +1243,31 @@ async fn class_property_type_distribution_tracked() {
             }
 
             // Reload to get ledger_info
-            let info = fluree.ledger_info(alias).execute().await.expect("ledger_info");
+            let info = fluree
+                .ledger_info(alias)
+                .execute()
+                .await
+                .expect("ledger_info");
 
             let stats = &info["stats"];
             let classes = &stats["classes"];
 
-            let person_stats = classes.get("http://example.org/Person")
+            let person_stats = classes
+                .get("http://example.org/Person")
                 .expect("Person class should exist");
 
             // Verify class properties have type distributions
-            let class_props = person_stats.get("properties")
+            let class_props = person_stats
+                .get("properties")
                 .expect("Person should have properties");
 
             // ex:name should have xsd:string type
             if let Some(name_prop) = class_props.get("http://example.org/name") {
                 let types = name_prop.get("types").expect("should have types");
                 assert!(
-                    types.get("http://www.w3.org/2001/XMLSchema#string").is_some(),
+                    types
+                        .get("http://www.w3.org/2001/XMLSchema#string")
+                        .is_some(),
                     "ex:name should have xsd:string type. Got types: {:?}",
                     types
                 );
@@ -1114,7 +1277,9 @@ async fn class_property_type_distribution_tracked() {
             if let Some(age_prop) = class_props.get("http://example.org/age") {
                 let types = age_prop.get("types").expect("should have types");
                 let has_integer_type = types.get("http://www.w3.org/2001/XMLSchema#long").is_some()
-                    || types.get("http://www.w3.org/2001/XMLSchema#integer").is_some();
+                    || types
+                        .get("http://www.w3.org/2001/XMLSchema#integer")
+                        .is_some();
                 assert!(
                     has_integer_type,
                     "ex:age should have integer type. Got types: {:?}",
@@ -1126,7 +1291,9 @@ async fn class_property_type_distribution_tracked() {
             if let Some(active_prop) = class_props.get("http://example.org/active") {
                 let types = active_prop.get("types").expect("should have types");
                 assert!(
-                    types.get("http://www.w3.org/2001/XMLSchema#boolean").is_some(),
+                    types
+                        .get("http://www.w3.org/2001/XMLSchema#boolean")
+                        .is_some(),
                     "ex:active should have xsd:boolean type. Got types: {:?}",
                     types
                 );
@@ -1144,7 +1311,9 @@ async fn large_dataset_statistics_accuracy() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
 
-    let mut fluree = FlureeBuilder::file(path).build().expect("build file fluree");
+    let mut fluree = FlureeBuilder::file(path)
+        .build()
+        .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -1205,7 +1374,10 @@ async fn large_dataset_statistics_accuracy() {
                 // next batch starts from the newly indexed db (true "across indexes").
                 let completion = handle.trigger(ledger.alias(), commit_t).await;
                 match completion.wait().await {
-                    fluree_db_api::IndexOutcome::Completed { index_t, root_address } => {
+                    fluree_db_api::IndexOutcome::Completed {
+                        index_t,
+                        root_address,
+                    } => {
                         assert!(
                             index_t >= commit_t,
                             "index_t ({index_t}) should be >= commit_t ({commit_t})"
@@ -1235,14 +1407,19 @@ async fn large_dataset_statistics_accuracy() {
 
             // Verify counts
             // ex:name: 100 distinct values, 100 subjects
-            let name_prop = loaded.stats.as_ref()
+            let name_prop = loaded
+                .stats
+                .as_ref()
                 .and_then(|s| s.properties.as_ref())
-                .and_then(|props| props.iter().find(|p| {
-                    let sid = fluree_db_core::Sid::new(p.sid.0, &p.sid.1);
-                    loaded.decode_sid(&sid)
-                        .map(|iri| iri == "http://example.org/name")
-                        .unwrap_or(false)
-                }))
+                .and_then(|props| {
+                    props.iter().find(|p| {
+                        let sid = fluree_db_core::Sid::new(p.sid.0, &p.sid.1);
+                        loaded
+                            .decode_sid(&sid)
+                            .map(|iri| iri == "http://example.org/name")
+                            .unwrap_or(false)
+                    })
+                })
                 .expect("name property should exist");
 
             assert_eq!(name_prop.count, 100, "ex:name should have 100 flakes");
@@ -1259,14 +1436,19 @@ async fn large_dataset_statistics_accuracy() {
             );
 
             // ex:department: 5 distinct values, 100 subjects
-            let dept_prop = loaded.stats.as_ref()
+            let dept_prop = loaded
+                .stats
+                .as_ref()
                 .and_then(|s| s.properties.as_ref())
-                .and_then(|props| props.iter().find(|p| {
-                    let sid = fluree_db_core::Sid::new(p.sid.0, &p.sid.1);
-                    loaded.decode_sid(&sid)
-                        .map(|iri| iri == "http://example.org/department")
-                        .unwrap_or(false)
-                }))
+                .and_then(|props| {
+                    props.iter().find(|p| {
+                        let sid = fluree_db_core::Sid::new(p.sid.0, &p.sid.1);
+                        loaded
+                            .decode_sid(&sid)
+                            .map(|iri| iri == "http://example.org/department")
+                            .unwrap_or(false)
+                    })
+                })
                 .expect("department property should exist");
 
             assert_eq!(dept_prop.count, 100, "ex:department should have 100 flakes");
@@ -1282,14 +1464,21 @@ async fn large_dataset_statistics_accuracy() {
             );
 
             // Verify class count
-            let info = fluree.ledger_info(alias).execute().await.expect("ledger_info");
+            let info = fluree
+                .ledger_info(alias)
+                .execute()
+                .await
+                .expect("ledger_info");
 
             let employee_count = info["stats"]["classes"]
                 .get("http://example.org/Employee")
                 .and_then(|c| c["count"].as_i64())
                 .expect("Employee class should exist");
 
-            assert_eq!(employee_count, 100, "Employee class should have 100 instances");
+            assert_eq!(
+                employee_count, 100,
+                "Employee class should have 100 instances"
+            );
         })
         .await;
 }

@@ -51,7 +51,9 @@ mod types;
 
 pub use class_lookup::{lookup_subject_classes, populate_class_cache};
 pub use error::{PolicyError, Result};
-pub use evaluate::{build_policy_values_clause, filter_by_required, PolicyContext, UNBOUND_IDENTITY_PREFIX};
+pub use evaluate::{
+    build_policy_values_clause, filter_by_required, PolicyContext, UNBOUND_IDENTITY_PREFIX,
+};
 pub use index::{build_policy_set, compute_class_check_needed, get_all_classes_for_property};
 pub use query_eval::{NoOpQueryExecutor, PolicyQueryExecutor, PolicyQueryFut};
 pub use schema::is_schema_flake;

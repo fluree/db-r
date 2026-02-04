@@ -50,7 +50,11 @@ impl<S: Storage + 'static, C: NodeCache + 'static> MinusOperator<S, C> {
     /// * `child` - Input solutions operator
     /// * `minus_patterns` - Patterns to execute for anti-join matching
     /// * `stats` - Optional stats for nested query optimization (Arc for cheap cloning)
-    pub fn new(child: BoxedOperator<S, C>, minus_patterns: Vec<Pattern>, stats: Option<Arc<StatsView>>) -> Self {
+    pub fn new(
+        child: BoxedOperator<S, C>,
+        minus_patterns: Vec<Pattern>,
+        stats: Option<Arc<StatsView>>,
+    ) -> Self {
         let schema: Arc<[VarId]> = Arc::from(child.schema().to_vec().into_boxed_slice());
         let child_vars: HashSet<VarId> = child.schema().iter().copied().collect();
 
@@ -59,10 +63,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> MinusOperator<S, C> {
         collect_vars_from_patterns(&minus_patterns, &mut minus_vars);
 
         // Shared vars are the intersection
-        let shared_vars: Vec<VarId> = child_vars
-            .intersection(&minus_vars)
-            .copied()
-            .collect();
+        let shared_vars: Vec<VarId> = child_vars.intersection(&minus_vars).copied().collect();
 
         Self {
             child,
@@ -75,7 +76,13 @@ impl<S: Storage + 'static, C: NodeCache + 'static> MinusOperator<S, C> {
     }
 
     /// Check if an input row matches a MINUS result row on shared variables
-    fn rows_match(&self, input_batch: &Batch, input_row_idx: usize, minus_batch: &Batch, minus_row_idx: usize) -> bool {
+    fn rows_match(
+        &self,
+        input_batch: &Batch,
+        input_row_idx: usize,
+        minus_batch: &Batch,
+        minus_row_idx: usize,
+    ) -> bool {
         self.shared_vars.iter().all(|&var| {
             let input_binding = input_batch.column(var).map(|col| &col[input_row_idx]);
             let minus_binding = minus_batch.column(var).map(|col| &col[minus_row_idx]);
@@ -130,7 +137,11 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for MinusOpera
             for row_idx in 0..input_batch.len() {
                 // Execute MINUS patterns with empty seed (fresh scope)
                 let seed: BoxedOperator<S, C> = Box::new(EmptyOperator::new());
-                let mut minus_op = build_where_operators_seeded(Some(seed), &self.minus_patterns, self.stats.clone())?;
+                let mut minus_op = build_where_operators_seeded(
+                    Some(seed),
+                    &self.minus_patterns,
+                    self.stats.clone(),
+                )?;
 
                 minus_op.open(ctx).await?;
 
@@ -215,11 +226,13 @@ mod tests {
         // Create a child with schema [?s, ?name]
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
         let child: BoxedOperator<fluree_db_core::MemoryStorage, fluree_db_core::NoCache> =
-            Box::new(TestEmptyWithSchema { schema: child_schema });
+            Box::new(TestEmptyWithSchema {
+                schema: child_schema,
+            });
 
         // MINUS pattern references ?s and ?age
         let minus_patterns = vec![Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),  // ?s - shared
+            Term::Var(VarId(0)), // ?s - shared
             Term::Sid(Sid::new(100, "age")),
             Term::Var(VarId(2)), // ?age - not shared
         ))];
@@ -235,7 +248,9 @@ mod tests {
     fn test_minus_schema_preserved() {
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
         let child: BoxedOperator<fluree_db_core::MemoryStorage, fluree_db_core::NoCache> =
-            Box::new(TestEmptyWithSchema { schema: child_schema.clone() });
+            Box::new(TestEmptyWithSchema {
+                schema: child_schema.clone(),
+            });
 
         let op = MinusOperator::new(child, vec![], None);
 

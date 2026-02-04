@@ -63,7 +63,9 @@ impl AddressContext {
     pub fn ledger_alias(&self) -> Option<String> {
         match self {
             AddressContext::LedgerCommit { alias } => Some(alias.clone()),
-            AddressContext::LedgerIndex { ledger, branch } => Some(format!("{}:{}", ledger, branch)),
+            AddressContext::LedgerIndex { ledger, branch } => {
+                Some(format!("{}:{}", ledger, branch))
+            }
             _ => None,
         }
     }
@@ -284,9 +286,10 @@ fn build_binary_flakes_response(
         .header(header::CONTENT_TYPE, "application/x-fluree-flakes");
 
     if emit_debug_headers {
-        builder = builder
-            .header("X-Fluree-Block-Type", "ledger-leaf")
-            .header("X-Fluree-Policy-Applied", if policy_applied { "true" } else { "false" });
+        builder = builder.header("X-Fluree-Block-Type", "ledger-leaf").header(
+            "X-Fluree-Policy-Applied",
+            if policy_applied { "true" } else { "false" },
+        );
     }
 
     builder
@@ -303,17 +306,17 @@ fn build_json_flakes_response(
     // Convert to transport format for JSON serialization
     let transport: Vec<TransportFlake> = flakes.iter().map(TransportFlake::from).collect();
 
-    let json =
-        serde_json::to_vec(&transport).map_err(|e| ServerError::internal(e.to_string()))?;
+    let json = serde_json::to_vec(&transport).map_err(|e| ServerError::internal(e.to_string()))?;
 
     let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/x-fluree-flakes+json");
 
     if emit_debug_headers {
-        builder = builder
-            .header("X-Fluree-Block-Type", "ledger-leaf")
-            .header("X-Fluree-Policy-Applied", if policy_applied { "true" } else { "false" });
+        builder = builder.header("X-Fluree-Block-Type", "ledger-leaf").header(
+            "X-Fluree-Policy-Applied",
+            if policy_applied { "true" } else { "false" },
+        );
     }
 
     builder
@@ -454,9 +457,10 @@ pub async fn get_block(
 
     // Get cached ledger state (for interner)
     let fluree = state.fluree.as_file();
-    let handle = fluree.ledger_cached(&alias).await.map_err(|e| {
-        ServerError::internal(format!("Ledger load failed: {}", e))
-    })?;
+    let handle = fluree
+        .ledger_cached(&alias)
+        .await
+        .map_err(|e| ServerError::internal(format!("Ledger load failed: {}", e)))?;
 
     // Get snapshot (brief lock, then released)
     let snapshot = handle.snapshot().await;
@@ -486,7 +490,9 @@ pub async fn get_block(
     let effective_policy_class = proxy_config.default_policy_class.clone();
 
     // Apply policy filtering if we have identity or policy class
-    let (filtered, policy_applied) = if effective_identity.is_some() || effective_policy_class.is_some() {
+    let (filtered, policy_applied) = if effective_identity.is_some()
+        || effective_policy_class.is_some()
+    {
         // Build policy context from effective identity and policy class
         let opts = QueryConnectionOptions {
             identity: effective_identity.clone(),
@@ -568,7 +574,6 @@ pub async fn get_block(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     fn make_principal(storage_all: bool, storage_ledgers: Vec<&str>) -> StorageProxyPrincipal {
         StorageProxyPrincipal {

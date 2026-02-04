@@ -615,7 +615,10 @@ where
                     }
                 }
             }
-            ResolvedNode::Branch { children, node: branch_node } => {
+            ResolvedNode::Branch {
+                children,
+                node: branch_node,
+            } => {
                 let filtered: Vec<_> = children
                     .iter()
                     .filter(|c| child_intersects_range(c, &start_bound, &end_bound, cmp))
@@ -789,11 +792,7 @@ fn adjust_exclusive_bound(val: &FlakeValue, inclusive: bool, is_lower: bool) -> 
 /// POST orders by: predicate → object → subject → time. By baking object
 /// bounds into the seek flakes, we let the B-tree skip irrelevant nodes
 /// rather than relying solely on post-filtering.
-fn apply_object_bounds_to_flakes(
-    start: &mut Flake,
-    end: &mut Flake,
-    bounds: &ObjectBounds,
-) {
+fn apply_object_bounds_to_flakes(start: &mut Flake, end: &mut Flake, bounds: &ObjectBounds) {
     if let Some((lower_val, inclusive)) = &bounds.lower {
         let adjusted = adjust_exclusive_bound(lower_val, *inclusive, true);
         *start = Flake::new(
@@ -1040,11 +1039,7 @@ fn remove_stale_flakes(flakes: Vec<Flake>) -> Vec<Flake> {
 ///
 /// Combines time-window filtering with fact-key deduplication in a single
 /// reverse pass, cloning only the assertions that survive both filters.
-fn remove_stale_flakes_in_window(
-    flakes: &[Flake],
-    from_t: Option<i64>,
-    to_t: i64,
-) -> Vec<Flake> {
+fn remove_stale_flakes_in_window(flakes: &[Flake], from_t: Option<i64>, to_t: i64) -> Vec<Flake> {
     use std::collections::HashSet;
 
     let mut seen: HashSet<FactKeyRef<'_>> = HashSet::new();
@@ -1295,7 +1290,9 @@ where
             overlay_epoch,
             history_mode,
         ),
-        None => CacheKey::leaf_t_range_with_epoch_and_mode(&node.id, to_t, overlay_epoch, history_mode),
+        None => {
+            CacheKey::leaf_t_range_with_epoch_and_mode(&node.id, to_t, overlay_epoch, history_mode)
+        }
     };
 
     db.cache
@@ -1684,7 +1681,12 @@ impl RangeCursor {
             match resolved {
                 ResolvedNode::Leaf { flakes, .. } => {
                     // Trim to range and apply object bounds filter
-                    let trimmed = trim_to_range(flakes.as_ref(), &self.start_bound, &self.end_bound, self.cmp);
+                    let trimmed = trim_to_range(
+                        flakes.as_ref(),
+                        &self.start_bound,
+                        &self.end_bound,
+                        self.cmp,
+                    );
 
                     let result: Vec<Flake> = if let Some(ref bounds) = self.object_bounds {
                         trimmed
@@ -1714,12 +1716,19 @@ impl RangeCursor {
                     }
                     // Empty leaf after filtering - continue to next
                 }
-                ResolvedNode::Branch { children, node: branch_node } => {
+                ResolvedNode::Branch {
+                    children,
+                    node: branch_node,
+                } => {
                     // Filter children that intersect the range and push in reverse order
                     let filtered: Vec<_> = children
                         .iter()
-                        .filter(|c| child_intersects_range(c, &self.start_bound, &self.end_bound, self.cmp))
-                        .map(|c| IndexNode::from_child_ref(c, self.index, branch_node.alias.clone()))
+                        .filter(|c| {
+                            child_intersects_range(c, &self.start_bound, &self.end_bound, self.cmp)
+                        })
+                        .map(|c| {
+                            IndexNode::from_child_ref(c, self.index, branch_node.alias.clone())
+                        })
                         .collect();
 
                     // Push in reverse so we process left-to-right
@@ -1855,7 +1864,12 @@ impl RangeCursor {
             match resolved {
                 ResolvedNode::Leaf { flakes, .. } => {
                     // Trim to range and apply object bounds filter
-                    let trimmed = trim_to_range(flakes.as_ref(), &self.start_bound, &self.end_bound, self.cmp);
+                    let trimmed = trim_to_range(
+                        flakes.as_ref(),
+                        &self.start_bound,
+                        &self.end_bound,
+                        self.cmp,
+                    );
 
                     let result: Vec<Flake> = if let Some(ref bounds) = self.object_bounds {
                         trimmed
@@ -1872,12 +1886,19 @@ impl RangeCursor {
                     }
                     // Empty leaf after filtering - continue to next
                 }
-                ResolvedNode::Branch { children, node: branch_node } => {
+                ResolvedNode::Branch {
+                    children,
+                    node: branch_node,
+                } => {
                     // Filter children that intersect the range
                     let filtered: Vec<_> = children
                         .iter()
-                        .filter(|c| child_intersects_range(c, &self.start_bound, &self.end_bound, self.cmp))
-                        .map(|c| IndexNode::from_child_ref(c, self.index, branch_node.alias.clone()))
+                        .filter(|c| {
+                            child_intersects_range(c, &self.start_bound, &self.end_bound, self.cmp)
+                        })
+                        .map(|c| {
+                            IndexNode::from_child_ref(c, self.index, branch_node.alias.clone())
+                        })
                         .collect();
 
                     // PREFETCH: Call callback with upcoming nodes BEFORE pushing to stack.
@@ -1892,7 +1913,7 @@ impl RangeCursor {
                     if self.prefetch_n > 0 {
                         let prefetch_nodes: Vec<_> = filtered
                             .iter()
-                            .skip(1)  // Skip first - mainline will get it
+                            .skip(1) // Skip first - mainline will get it
                             .take(self.prefetch_n)
                             .cloned()
                             .collect();
@@ -1916,11 +1937,7 @@ impl RangeCursor {
     ///
     /// This is a convenience method that drains the cursor into a Vec.
     /// For large result sets, prefer using `next_leaf()` directly.
-    pub async fn collect_all<S, C, O>(
-        &mut self,
-        db: &Db<S, C>,
-        overlay: &O,
-    ) -> Result<Vec<Flake>>
+    pub async fn collect_all<S, C, O>(&mut self, db: &Db<S, C>, overlay: &O) -> Result<Vec<Flake>>
     where
         S: Storage,
         C: NodeCache,
@@ -2204,7 +2221,10 @@ impl MultiSeekCursor {
             .await?;
 
             match resolved {
-                ResolvedNode::Branch { children, node: branch_node } => {
+                ResolvedNode::Branch {
+                    children,
+                    node: branch_node,
+                } => {
                     match Self::floor_child(&children, target, after, cmp) {
                         Some(child) => {
                             current_node =
@@ -2213,7 +2233,10 @@ impl MultiSeekCursor {
                         None => return Ok(None), // target is past end of index
                     }
                 }
-                ResolvedNode::Leaf { flakes, node: leaf_node } => {
+                ResolvedNode::Leaf {
+                    flakes,
+                    node: leaf_node,
+                } => {
                     return Ok(Some(LeafState {
                         flakes: flakes.to_vec(),
                         pos: 0,
@@ -2247,7 +2270,7 @@ impl MultiSeekCursor {
         // partition_point returns the first index where the predicate is false,
         // so we get the count of children where first <= target.
         let pp = children.partition_point(|child| match &child.first {
-            None => true,               // leftmost: always <= target
+            None => true,                      // leftmost: always <= target
             Some(_) if child.leftmost => true, // leftmost flag: always <= target
             Some(first) => cmp(first, target) != std::cmp::Ordering::Greater,
         });
@@ -2361,29 +2384,25 @@ mod tests {
     #[test]
     fn test_object_bounds_matches() {
         // Test inclusive lower bound
-        let bounds = ObjectBounds::new()
-            .with_lower(FlakeValue::Long(10), true);
+        let bounds = ObjectBounds::new().with_lower(FlakeValue::Long(10), true);
         assert!(!bounds.matches(&FlakeValue::Long(9)));
         assert!(bounds.matches(&FlakeValue::Long(10)));
         assert!(bounds.matches(&FlakeValue::Long(11)));
 
         // Test exclusive lower bound
-        let bounds = ObjectBounds::new()
-            .with_lower(FlakeValue::Long(10), false);
+        let bounds = ObjectBounds::new().with_lower(FlakeValue::Long(10), false);
         assert!(!bounds.matches(&FlakeValue::Long(9)));
         assert!(!bounds.matches(&FlakeValue::Long(10)));
         assert!(bounds.matches(&FlakeValue::Long(11)));
 
         // Test inclusive upper bound
-        let bounds = ObjectBounds::new()
-            .with_upper(FlakeValue::Long(100), true);
+        let bounds = ObjectBounds::new().with_upper(FlakeValue::Long(100), true);
         assert!(bounds.matches(&FlakeValue::Long(99)));
         assert!(bounds.matches(&FlakeValue::Long(100)));
         assert!(!bounds.matches(&FlakeValue::Long(101)));
 
         // Test exclusive upper bound
-        let bounds = ObjectBounds::new()
-            .with_upper(FlakeValue::Long(100), false);
+        let bounds = ObjectBounds::new().with_upper(FlakeValue::Long(100), false);
         assert!(bounds.matches(&FlakeValue::Long(99)));
         assert!(!bounds.matches(&FlakeValue::Long(100)));
         assert!(!bounds.matches(&FlakeValue::Long(101)));
@@ -2427,8 +2446,7 @@ mod tests {
     #[test]
     fn test_object_bounds_type_mismatch() {
         // Long bounds should not match strings
-        let bounds = ObjectBounds::new()
-            .with_lower(FlakeValue::Long(10), true);
+        let bounds = ObjectBounds::new().with_lower(FlakeValue::Long(10), true);
         assert!(!bounds.matches(&FlakeValue::String("hello".to_string())));
 
         // String bounds should match strings with lexical comparison
@@ -2457,8 +2475,7 @@ mod tests {
         assert!(!bounds.matches(&FlakeValue::Double(100.0)));
 
         // Double bounds should match Long values
-        let bounds = ObjectBounds::new()
-            .with_lower(FlakeValue::Double(3.5), true);
+        let bounds = ObjectBounds::new().with_lower(FlakeValue::Double(3.5), true);
         // Long 4 > 3.5, should match
         assert!(bounds.matches(&FlakeValue::Long(4)));
         // Long 3 < 3.5, should not match
@@ -2469,12 +2486,11 @@ mod tests {
     fn test_object_bounds_mixed_numeric_range() {
         // Query: ?score > 3 (where 3 is Long)
         // Should match Double values like 3.5
-        let bounds = ObjectBounds::new()
-            .with_lower(FlakeValue::Long(3), false); // exclusive: > 3
+        let bounds = ObjectBounds::new().with_lower(FlakeValue::Long(3), false); // exclusive: > 3
 
-        assert!(bounds.matches(&FlakeValue::Double(3.5)));  // 3.5 > 3 ✓
-        assert!(bounds.matches(&FlakeValue::Long(4)));      // 4 > 3 ✓
-        assert!(!bounds.matches(&FlakeValue::Long(3)));     // 3 not > 3
+        assert!(bounds.matches(&FlakeValue::Double(3.5))); // 3.5 > 3 ✓
+        assert!(bounds.matches(&FlakeValue::Long(4))); // 4 > 3 ✓
+        assert!(!bounds.matches(&FlakeValue::Long(3))); // 3 not > 3
         assert!(!bounds.matches(&FlakeValue::Double(3.0))); // 3.0 not > 3
         assert!(!bounds.matches(&FlakeValue::Double(2.9))); // 2.9 not > 3
     }
@@ -2533,7 +2549,8 @@ mod tests {
         println!("Loaded db at t={}", db.t);
 
         // Find the namespace code for http://example.org/
-        let example_ns_code = db.namespace_codes
+        let example_ns_code = db
+            .namespace_codes
             .iter()
             .find(|(_, v)| v.as_str() == "http://example.org/")
             .map(|(k, _)| *k)
@@ -2548,16 +2565,26 @@ mod tests {
 
         println!("Querying SPOT index for subject: {:?}", subject);
 
-        let results = range(&db, IndexType::Spot, RangeTest::Eq, match_val, RangeOptions::default())
-            .await
-            .unwrap();
+        let results = range(
+            &db,
+            IndexType::Spot,
+            RangeTest::Eq,
+            match_val,
+            RangeOptions::default(),
+        )
+        .await
+        .unwrap();
 
         println!("Found {} flakes for person-001-000", results.len());
 
         // person-001-000 should have 7 properties:
         // rdf:type, ex:name, ex:age, ex:score, ex:active, ex:category, ex:birthYear
         // Score = T*100 + P = 1*100 + 0 = 100
-        assert!(results.len() >= 7, "Expected at least 7 flakes, got {}", results.len());
+        assert!(
+            results.len() >= 7,
+            "Expected at least 7 flakes, got {}",
+            results.len()
+        );
 
         // Print the flakes for debugging
         for flake in &results {
@@ -2566,7 +2593,8 @@ mod tests {
         }
 
         // Verify score value
-        let score_flake = results.iter()
+        let score_flake = results
+            .iter()
             .find(|f| f.p.name.as_ref() == "score")
             .expect("Should have score property");
 
@@ -2618,7 +2646,8 @@ mod tests {
 
         // At T=100, persons from T=5 (scores 500-599) should be deleted
         // person-005-000 has score=500, should be deleted at T=20
-        let example_ns_code = db.namespace_codes
+        let example_ns_code = db
+            .namespace_codes
             .iter()
             .find(|(_, v)| v.as_str() == "http://example.org/")
             .map(|(k, _)| *k)
@@ -2628,9 +2657,15 @@ mod tests {
         let existing = Sid::new(example_ns_code, "person-001-050");
         let match_existing = RangeMatch::subject(existing);
 
-        let results = range(&db, IndexType::Spot, RangeTest::Eq, match_existing, RangeOptions::default())
-            .await
-            .unwrap();
+        let results = range(
+            &db,
+            IndexType::Spot,
+            RangeTest::Eq,
+            match_existing,
+            RangeOptions::default(),
+        )
+        .await
+        .unwrap();
 
         println!("person-001-050 has {} flakes", results.len());
         assert!(results.len() >= 7, "person-001-050 should exist");
@@ -2679,7 +2714,8 @@ mod tests {
         let db = Db::load(storage, cache, &root_address).await.unwrap();
         println!("Loaded db at t={}", db.t);
 
-        let example_ns_code = db.namespace_codes
+        let example_ns_code = db
+            .namespace_codes
             .iter()
             .find(|(_, v)| v.as_str() == "http://example.org/")
             .map(|(k, _)| *k)
@@ -2736,7 +2772,11 @@ mod tests {
         .unwrap();
 
         println!("Found {} flakes at latest", results_latest.len());
-        assert_eq!(results_latest.len(), 7, "Should have same 7 flakes at latest");
+        assert_eq!(
+            results_latest.len(),
+            7,
+            "Should have same 7 flakes at latest"
+        );
 
         // Test from_t - query changes in a time range
         println!("\n--- Query time range T=1 to T=10 ---");
@@ -2795,7 +2835,8 @@ mod tests {
 
         let db = Db::load(storage, cache, &root_address).await.unwrap();
 
-        let example_ns_code = db.namespace_codes
+        let example_ns_code = db
+            .namespace_codes
             .iter()
             .find(|(_, v)| v.as_str() == "http://example.org/")
             .map(|(k, _)| *k)
@@ -2879,7 +2920,8 @@ mod tests {
 
         let db = Db::load(storage, cache, &root_address).await.unwrap();
 
-        let example_ns_code = db.namespace_codes
+        let example_ns_code = db
+            .namespace_codes
             .iter()
             .find(|(_, v)| v.as_str() == "http://example.org/")
             .map(|(k, _)| *k)
@@ -2892,7 +2934,10 @@ mod tests {
         // - fixed subject pool of 1000 subjects (t=1..10, p=0..99)
         // - deterministic query schedule with fixed seed
         let subjects: Vec<Sid> = (1..=10)
-            .flat_map(|t| (0..100).map(move |p| Sid::new(example_ns_code, format!("person-{:03}-{:03}", t, p))))
+            .flat_map(|t| {
+                (0..100)
+                    .map(move |p| Sid::new(example_ns_code, format!("person-{:03}-{:03}", t, p)))
+            })
             .collect();
         assert_eq!(subjects.len(), 1000);
 
@@ -2926,14 +2971,19 @@ mod tests {
             warmup_flakes += results.len();
         }
         let warmup_time = warmup_start.elapsed();
-        println!("Warmup: {} queries, {} flakes in {:?}", 1000, warmup_flakes, warmup_time);
+        println!(
+            "Warmup: {} queries, {} flakes in {:?}",
+            1000, warmup_flakes, warmup_time
+        );
 
         let stats_after_warmup = db.cache.stats();
-        println!("Cache after warmup: {} entries, {} hits, {} misses, {:.1}% hit rate",
+        println!(
+            "Cache after warmup: {} entries, {} hits, {} misses, {:.1}% hit rate",
             db.cache.len(),
             stats_after_warmup.hits,
             stats_after_warmup.misses,
-            stats_after_warmup.hit_rate() * 100.0);
+            stats_after_warmup.hit_rate() * 100.0
+        );
 
         // Reset stats for benchmark
         db.cache.reset_stats();
@@ -2980,13 +3030,19 @@ mod tests {
         );
 
         let stats = db.cache.stats();
-        println!("Cache: {} hits, {} misses, {:.1}% hit rate",
-            stats.hits, stats.misses, stats.hit_rate() * 100.0);
+        println!(
+            "Cache: {} hits, {} misses, {:.1}% hit rate",
+            stats.hits,
+            stats.misses,
+            stats.hit_rate() * 100.0
+        );
 
         // Benchmark 1b: Hot cache first-hit (clear cache then run once)
         //
         // This measures the miss-path for the same access pattern.
-        println!("\n--- Benchmark 1b: Single Subject Queries (First-Hit / Cold In-Memory Cache) ---");
+        println!(
+            "\n--- Benchmark 1b: Single Subject Queries (First-Hit / Cold In-Memory Cache) ---"
+        );
         db.cache.clear();
         db.cache.reset_stats();
         let start = Instant::now();
@@ -3011,7 +3067,10 @@ mod tests {
         println!("Queries: {}", num_queries);
         println!("Total flakes: {}", total_flakes);
         println!("Time: {:?}", elapsed);
-        println!("Throughput: {:.0} queries/sec ({:.0} ns/query)", queries_per_sec, ns_per_query);
+        println!(
+            "Throughput: {:.0} queries/sec ({:.0} ns/query)",
+            queries_per_sec, ns_per_query
+        );
         let stats = db.cache.stats();
         println!(
             "Cache: {} hits, {} misses, {:.1}% hit rate",
@@ -3082,7 +3141,10 @@ mod tests {
         println!("Queries: {}", total_queries);
         println!("Total flakes: {}", total_flakes);
         println!("Time: {:?}", elapsed);
-        println!("Throughput: {:.0} queries/sec ({:.0} ns/query)", queries_per_sec, ns_per_query);
+        println!(
+            "Throughput: {:.0} queries/sec ({:.0} ns/query)",
+            queries_per_sec, ns_per_query
+        );
 
         let stats = db.cache.stats();
         println!(
@@ -3132,11 +3194,18 @@ mod tests {
         println!("Queries: {}", cold_queries);
         println!("Total flakes: {}", total_flakes);
         println!("Time: {:?}", elapsed);
-        println!("Throughput: {:.0} queries/sec ({:.0} ns/query)", queries_per_sec, ns_per_query);
+        println!(
+            "Throughput: {:.0} queries/sec ({:.0} ns/query)",
+            queries_per_sec, ns_per_query
+        );
 
         let stats = db.cache.stats();
-        println!("Cache: {} hits, {} misses, {:.1}% hit rate",
-            stats.hits, stats.misses, stats.hit_rate() * 100.0);
+        println!(
+            "Cache: {} hits, {} misses, {:.1}% hit rate",
+            stats.hits,
+            stats.misses,
+            stats.hit_rate() * 100.0
+        );
 
         println!("\n=== Benchmark Complete ===");
     }
@@ -3180,7 +3249,8 @@ mod tests {
             root_file.file_name().to_string_lossy()
         );
 
-        let db = Db::load(storage, cache, &root_address).await
+        let db = Db::load(storage, cache, &root_address)
+            .await
             .expect("Failed to load database");
 
         println!("\n");
@@ -3217,7 +3287,8 @@ mod tests {
         }
 
         // Get the example.org namespace code
-        let example_ns_code = db.namespace_codes
+        let example_ns_code = db
+            .namespace_codes
             .iter()
             .find(|(_, v)| v.as_str() == "http://example.org/")
             .map(|(k, _)| *k)
@@ -3264,7 +3335,13 @@ mod tests {
         println!("{}", "=".repeat(60));
 
         // (t, p, to_t)
-        let tt_tests = [(1, 0, 10), (1, 0, 50), (5, 25, 15), (5, 25, 25), (10, 99, 10)];
+        let tt_tests = [
+            (1, 0, 10),
+            (1, 0, 50),
+            (5, 25, 15),
+            (5, 25, 25),
+            (10, 99, 10),
+        ];
 
         for (t, p, to_t) in tt_tests {
             let sid = person_sid(t, p);

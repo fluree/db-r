@@ -94,10 +94,7 @@ fn get_ledger_alias(
 /// Executes a full transaction with insert, delete, and where clauses.
 /// Supports signed requests (JWS/VC format).
 /// In peer mode, forwards the request to the transaction server.
-pub async fn transact(
-    State(state): State<Arc<AppState>>,
-    request: Request,
-) -> Response {
+pub async fn transact(State(state): State<Arc<AppState>>, request: Request) -> Response {
     // In peer mode, forward to transaction server
     if state.config.server_role == ServerRole::Peer {
         return forward_write_request(&state, request).await;
@@ -108,10 +105,7 @@ pub async fn transact(
 }
 
 /// Local implementation of transact (transaction mode only)
-async fn transact_local(
-    state: Arc<AppState>,
-    request: Request,
-) -> Result<Json<TransactResponse>> {
+async fn transact_local(state: Arc<AppState>, request: Request) -> Result<Json<TransactResponse>> {
     // Extract headers
     let headers_result = FlureeHeaders::from_headers(request.headers());
     let headers = match headers_result {
@@ -137,7 +131,11 @@ async fn transact_local(
 
     // Check if this is a SPARQL UPDATE request
     if credential.is_sparql_update() {
-        tracing::info!(status = "start", format = "sparql-update", "SPARQL UPDATE request received");
+        tracing::info!(
+            status = "start",
+            format = "sparql-update",
+            "SPARQL UPDATE request received"
+        );
         return execute_sparql_update_request(&state, None, &headers, &credential, &span).await;
     }
 
@@ -217,7 +215,11 @@ async fn transact_ledger_local(
 
     // Check if this is a SPARQL UPDATE request
     if credential.is_sparql_update() {
-        tracing::info!(status = "start", format = "sparql-update", "SPARQL UPDATE request received");
+        tracing::info!(
+            status = "start",
+            format = "sparql-update",
+            "SPARQL UPDATE request received"
+        );
         return execute_sparql_update_request(&state, Some(&ledger), &headers, &credential, &span)
             .await;
     }
@@ -257,10 +259,7 @@ async fn transact_ledger_local(
 /// Convenience endpoint for insert-only transactions.
 /// Supports signed requests (JWS/VC format).
 /// In peer mode, forwards the request to the transaction server.
-pub async fn insert(
-    State(state): State<Arc<AppState>>,
-    request: Request,
-) -> Response {
+pub async fn insert(State(state): State<Arc<AppState>>, request: Request) -> Response {
     // In peer mode, forward to transaction server
     if state.config.server_role == ServerRole::Peer {
         return forward_write_request(&state, request).await;
@@ -325,10 +324,7 @@ async fn insert_local(state: Arc<AppState>, request: Request) -> Result<Json<Tra
 /// Convenience endpoint for upsert transactions (insert or update).
 /// Supports signed requests (JWS/VC format).
 /// In peer mode, forwards the request to the transaction server.
-pub async fn upsert(
-    State(state): State<Arc<AppState>>,
-    request: Request,
-) -> Response {
+pub async fn upsert(State(state): State<Arc<AppState>>, request: Request) -> Response {
     // In peer mode, forward to transaction server
     if state.config.server_role == ServerRole::Peer {
         return forward_write_request(&state, request).await;

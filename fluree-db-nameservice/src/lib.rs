@@ -757,8 +757,7 @@ pub trait RefPublisher: Debug + Send + Sync {
 /// Alias format: `ledger-name:branch` (e.g., "mydb:main")
 /// If no branch is specified, defaults to the core default branch.
 pub fn parse_alias(alias: &str) -> Result<(String, String)> {
-    alias::split_alias(alias)
-        .map_err(|e| NameServiceError::invalid_alias(format!("{}", e)))
+    alias::split_alias(alias).map_err(|e| NameServiceError::invalid_alias(format!("{}", e)))
 }
 
 // ---------------------------------------------------------------------------

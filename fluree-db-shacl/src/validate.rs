@@ -141,8 +141,7 @@ impl ShaclEngine {
                 continue;
             }
 
-            let shape_results =
-                validate_shape(db, overlay, focus_node, shape, &all_shapes).await?;
+            let shape_results = validate_shape(db, overlay, focus_node, shape, &all_shapes).await?;
             results.extend(shape_results);
         }
 
@@ -179,12 +178,10 @@ impl ShaclEngine {
             }
 
             // Get focus nodes for this shape (with hierarchy expansion)
-            let focus_nodes =
-                get_focus_nodes(db, overlay, shape, self.hierarchy.as_ref()).await?;
+            let focus_nodes = get_focus_nodes(db, overlay, shape, self.hierarchy.as_ref()).await?;
 
             for focus_node in focus_nodes {
-                let results =
-                    validate_shape(db, overlay, &focus_node, shape, &all_shapes).await?;
+                let results = validate_shape(db, overlay, &focus_node, shape, &all_shapes).await?;
                 all_results.extend(results);
             }
         }
@@ -298,7 +295,9 @@ impl ShaclEngine {
                 .collect();
 
             // Validate this node against applicable shapes
-            let report = self.validate_node(db, overlay, subject, &node_types).await?;
+            let report = self
+                .validate_node(db, overlay, subject, &node_types)
+                .await?;
             all_results.extend(report.results);
         }
 
@@ -464,9 +463,10 @@ fn validate_shape<'a, S: Storage, C: NodeCache, O: OverlayProvider>(
 
         // Validate structural constraints (closed, logical)
         for constraint in &shape.structural_constraints {
-            let constraint_results =
-                validate_structural_constraint(db, overlay, focus_node, constraint, shape, all_shapes)
-                    .await?;
+            let constraint_results = validate_structural_constraint(
+                db, overlay, focus_node, constraint, shape, all_shapes,
+            )
+            .await?;
             results.extend(constraint_results);
         }
 
@@ -551,7 +551,9 @@ fn validate_structural_constraint<'a, S: Storage, C: NodeCache, O: OverlayProvid
                         validate_shape(db, overlay, focus_node, ref_shape, all_shapes).await?;
                     // If the nested shape has NO violations, that's a violation of sh:not
                     if nested_results.is_empty()
-                        || nested_results.iter().all(|r| r.severity != Severity::Violation)
+                        || nested_results
+                            .iter()
+                            .all(|r| r.severity != Severity::Violation)
                     {
                         results.push(ValidationResult {
                             focus_node: focus_node.clone(),
@@ -572,8 +574,15 @@ fn validate_structural_constraint<'a, S: Storage, C: NodeCache, O: OverlayProvid
             NodeConstraint::And(nested_shapes) => {
                 // sh:and - ALL nested shapes must match (no violations)
                 for nested in nested_shapes {
-                    let nested_results =
-                        validate_nested_shape(db, overlay, focus_node, nested.as_ref(), parent_shape, all_shapes).await?;
+                    let nested_results = validate_nested_shape(
+                        db,
+                        overlay,
+                        focus_node,
+                        nested.as_ref(),
+                        parent_shape,
+                        all_shapes,
+                    )
+                    .await?;
                     // Include violations from the nested shape
                     for r in nested_results {
                         if r.severity == Severity::Violation {
@@ -597,8 +606,15 @@ fn validate_structural_constraint<'a, S: Storage, C: NodeCache, O: OverlayProvid
                 let mut all_messages = Vec::new();
 
                 for nested in nested_shapes {
-                    let nested_results =
-                        validate_nested_shape(db, overlay, focus_node, nested.as_ref(), parent_shape, all_shapes).await?;
+                    let nested_results = validate_nested_shape(
+                        db,
+                        overlay,
+                        focus_node,
+                        nested.as_ref(),
+                        parent_shape,
+                        all_shapes,
+                    )
+                    .await?;
                     let has_violations = nested_results
                         .iter()
                         .any(|r| r.severity == Severity::Violation);
@@ -637,8 +653,15 @@ fn validate_structural_constraint<'a, S: Storage, C: NodeCache, O: OverlayProvid
                 let mut conforming_shapes = Vec::new();
 
                 for nested in nested_shapes {
-                    let nested_results =
-                        validate_nested_shape(db, overlay, focus_node, nested.as_ref(), parent_shape, all_shapes).await?;
+                    let nested_results = validate_nested_shape(
+                        db,
+                        overlay,
+                        focus_node,
+                        nested.as_ref(),
+                        parent_shape,
+                        all_shapes,
+                    )
+                    .await?;
                     let has_violations = nested_results
                         .iter()
                         .any(|r| r.severity == Severity::Violation);

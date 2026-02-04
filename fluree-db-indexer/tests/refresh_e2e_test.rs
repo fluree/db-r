@@ -3,7 +3,9 @@ use fluree_db_core::range::{range, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::storage::MemoryStorage;
 use fluree_db_core::value::FlakeValue;
 use fluree_db_core::{Db, Flake, FlakeMeta, IndexType, Sid};
-use fluree_db_indexer::{batched_rebuild_from_commits, refresh_index, BatchedRebuildConfig, IndexerConfig};
+use fluree_db_indexer::{
+    batched_rebuild_from_commits, refresh_index, BatchedRebuildConfig, IndexerConfig,
+};
 use fluree_db_novelty::{Commit, Novelty};
 use std::collections::HashMap;
 
@@ -200,9 +202,13 @@ async fn test_refresh_equals_rebuild_by_query_with_target_t_bound() {
         .index_result;
     assert_eq!(base.index_t, 2);
 
-    let base_db = Db::load(storage.clone(), SimpleCache::new(10_000), &base.root_address)
-        .await
-        .expect("base Db load should succeed");
+    let base_db = Db::load(
+        storage.clone(),
+        SimpleCache::new(10_000),
+        &base.root_address,
+    )
+    .await
+    .expect("base Db load should succeed");
     assert_eq!(base_db.t, 2);
 
     // Apply novelty for commits 3 and 4, but refresh only to target_t = 3.
@@ -255,7 +261,11 @@ async fn test_refresh_equals_rebuild_by_query_with_target_t_bound() {
     ] {
         let a = scan_all(&refresh_db_3, index).await;
         let b = scan_all(&rebuild_db_3, index).await;
-        assert_eq!(a, b, "index {:?} differs between refresh and rebuild", index);
+        assert_eq!(
+            a, b,
+            "index {:?} differs between refresh and rebuild",
+            index
+        );
     }
 
     // Critical bug regression: ensure the t=4 update was NOT integrated when target_t=3.
@@ -318,7 +328,10 @@ async fn test_refresh_equals_rebuild_by_query_with_target_t_bound() {
     ] {
         let a = scan_all(&refresh_db_4, index).await;
         let b = scan_all(&rebuild_db_4, index).await;
-        assert_eq!(a, b, "index {:?} differs at t=4 between refresh and rebuild", index);
+        assert_eq!(
+            a, b,
+            "index {:?} differs at t=4 between refresh and rebuild",
+            index
+        );
     }
 }
-

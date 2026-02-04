@@ -419,18 +419,16 @@ fn apply_single_property_chain(
             // Collect all possible paths
 
             // First, extend backwards to find all possible start nodes
-            let start_nodes = extend_chain_backwards(
-                chain, seed_pos, &binding_in, delta, derived, same_as,
-            );
+            let start_nodes =
+                extend_chain_backwards(chain, seed_pos, &binding_in, delta, derived, same_as);
 
             if start_nodes.is_empty() {
                 continue;
             }
 
             // Then, extend forwards to find all possible end nodes
-            let end_nodes = extend_chain_forwards(
-                chain, seed_pos, &binding_out, delta, derived, same_as,
-            );
+            let end_nodes =
+                extend_chain_forwards(chain, seed_pos, &binding_out, delta, derived, same_as);
 
             if end_nodes.is_empty() {
                 continue;
@@ -893,12 +891,15 @@ pub fn apply_has_key_rule(
                 .iter()
                 .any(|p| delta.get_by_p(p).next().is_some());
 
-            let derived_has_relevant =
-                derived.get_by_p(rdf_type_sid).next().is_some() || key_properties
+            let derived_has_relevant = derived.get_by_p(rdf_type_sid).next().is_some()
+                || key_properties
                     .iter()
                     .any(|p| derived.get_by_p(p).next().is_some());
 
-            if !(delta_has_new_type || delta_has_key_property || same_as_changed && derived_has_relevant) {
+            if !(delta_has_new_type
+                || delta_has_key_property
+                || same_as_changed && derived_has_relevant)
+            {
                 continue;
             }
 

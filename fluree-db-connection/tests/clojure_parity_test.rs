@@ -261,10 +261,7 @@ fn test_json_ld_expansion() {
     let parsed = ConnectionConfig::from_json_ld(&config).expect("Should parse");
     assert_eq!(parsed.parallelism, 16);
     assert_eq!(parsed.cache.max_mb, 2000);
-    assert_eq!(
-        parsed.index_storage.path.as_deref(),
-        Some("/path/to/data")
-    );
+    assert_eq!(parsed.index_storage.path.as_deref(), Some("/path/to/data"));
 }
 
 /// Test error when no Connection node found
@@ -369,17 +366,23 @@ fn test_address_identifiers_parsing() {
 
     let parsed = ConnectionConfig::from_json_ld(&config).expect("Should parse");
 
-    let addr_ids = parsed.address_identifiers.as_ref()
+    let addr_ids = parsed
+        .address_identifiers
+        .as_ref()
         .expect("addressIdentifiers should be present");
     assert_eq!(addr_ids.len(), 2);
 
     // Check commit-storage points to file storage
-    let commit_storage = addr_ids.get("commit-storage").expect("commit-storage should exist");
+    let commit_storage = addr_ids
+        .get("commit-storage")
+        .expect("commit-storage should exist");
     assert!(matches!(commit_storage.storage_type, StorageType::File));
     assert_eq!(commit_storage.path.as_deref(), Some("/data/commits"));
 
     // Check index-storage points to memory storage
-    let index_storage = addr_ids.get("index-storage").expect("index-storage should exist");
+    let index_storage = addr_ids
+        .get("index-storage")
+        .expect("index-storage should exist");
     assert!(matches!(index_storage.storage_type, StorageType::Memory));
 }
 
@@ -433,14 +436,25 @@ fn test_multiple_address_identifiers() {
 
     let parsed = ConnectionConfig::from_json_ld(&config).expect("Should parse");
 
-    let addr_ids = parsed.address_identifiers.as_ref()
+    let addr_ids = parsed
+        .address_identifiers
+        .as_ref()
         .expect("addressIdentifiers should be present");
     assert_eq!(addr_ids.len(), 3);
 
     // All three should be file storages with correct paths
-    assert_eq!(addr_ids.get("store-1").unwrap().path.as_deref(), Some("/data/store1"));
-    assert_eq!(addr_ids.get("store-2").unwrap().path.as_deref(), Some("/data/store2"));
-    assert_eq!(addr_ids.get("store-3").unwrap().path.as_deref(), Some("/data/store3"));
+    assert_eq!(
+        addr_ids.get("store-1").unwrap().path.as_deref(),
+        Some("/data/store1")
+    );
+    assert_eq!(
+        addr_ids.get("store-2").unwrap().path.as_deref(),
+        Some("/data/store2")
+    );
+    assert_eq!(
+        addr_ids.get("store-3").unwrap().path.as_deref(),
+        Some("/data/store3")
+    );
 }
 
 /// Test ConfigGraph correctly resolves array-wrapped references
@@ -476,9 +490,7 @@ fn test_resolve_first_handles_array_wrapped_refs() {
         .unwrap();
 
     // Get the indexStorage field (array-wrapped reference)
-    let storage_field = conn
-        .get("https://ns.flur.ee/system#indexStorage")
-        .unwrap();
+    let storage_field = conn.get("https://ns.flur.ee/system#indexStorage").unwrap();
 
     // resolve_first should unwrap the array and resolve the reference
     let resolved = graph.resolve_first(storage_field);

@@ -12,11 +12,11 @@ use crate::config::ServerConfig;
 use crate::peer::state::PeerState;
 use crate::state::FlureeInstance;
 
-use fluree_db_peer::{LedgerRecord, VgRecord};
-use fluree_sse::{SseEvent, SseParser};
-use fluree_db_api::{NsNotify, NotifyResult, SimpleCache};
+use fluree_db_api::{NotifyResult, NsNotify, SimpleCache};
 use fluree_db_core::alias;
 use fluree_db_nameservice::NsRecord;
+use fluree_db_peer::{LedgerRecord, VgRecord};
+use fluree_sse::{SseEvent, SseParser};
 
 /// Background task that maintains SSE subscription to transaction server
 pub struct PeerSubscriptionTask {
@@ -310,7 +310,11 @@ impl PeerSubscriptionTask {
             Ok(NotifyResult::Current) => {
                 // Already up to date.
             }
-            Ok(result @ (NotifyResult::Reloaded | NotifyResult::IndexUpdated | NotifyResult::CommitApplied)) => {
+            Ok(
+                result @ (NotifyResult::Reloaded
+                | NotifyResult::IndexUpdated
+                | NotifyResult::CommitApplied),
+            ) => {
                 tracing::info!(alias = %record.alias, ?result, "Refreshed cached ledger from SSE update");
             }
             Err(e) => {
@@ -349,8 +353,8 @@ impl PeerSubscriptionTask {
 }
 
 fn ledger_record_to_ns_record(record: &LedgerRecord) -> Result<NsRecord, String> {
-    let (name, branch) =
-        alias::split_alias(&record.alias).map_err(|e| format!("invalid alias '{}': {}", record.alias, e))?;
+    let (name, branch) = alias::split_alias(&record.alias)
+        .map_err(|e| format!("invalid alias '{}': {}", record.alias, e))?;
 
     Ok(NsRecord {
         address: record.alias.clone(),
@@ -453,8 +457,11 @@ mod tests {
 
     #[test]
     fn test_exponential_backoff_increases() {
-        let mut backoff =
-            ExponentialBackoff::new(Duration::from_millis(100), Duration::from_millis(10000), 2.0);
+        let mut backoff = ExponentialBackoff::new(
+            Duration::from_millis(100),
+            Duration::from_millis(10000),
+            2.0,
+        );
 
         // First delay should be around 100ms (±25% jitter)
         let delay1 = backoff.next_delay();
@@ -467,8 +474,11 @@ mod tests {
 
     #[test]
     fn test_exponential_backoff_caps_at_max() {
-        let mut backoff =
-            ExponentialBackoff::new(Duration::from_millis(1000), Duration::from_millis(2000), 10.0);
+        let mut backoff = ExponentialBackoff::new(
+            Duration::from_millis(1000),
+            Duration::from_millis(2000),
+            10.0,
+        );
 
         // First delay
         let _ = backoff.next_delay();
@@ -481,8 +491,11 @@ mod tests {
 
     #[test]
     fn test_exponential_backoff_reset() {
-        let mut backoff =
-            ExponentialBackoff::new(Duration::from_millis(100), Duration::from_millis(10000), 2.0);
+        let mut backoff = ExponentialBackoff::new(
+            Duration::from_millis(100),
+            Duration::from_millis(10000),
+            2.0,
+        );
 
         // Advance several times
         let _ = backoff.next_delay();

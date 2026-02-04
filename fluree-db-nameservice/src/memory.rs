@@ -82,9 +82,7 @@ impl MemoryNameService {
     pub fn create_ledger(&self, alias: &str) -> Result<()> {
         let (ledger_name, branch) = parse_alias(alias)?;
         let record = NsRecord::new(ledger_name, branch);
-        self.records
-            .write()
-            .insert(record.address.clone(), record);
+        self.records.write().insert(record.address.clone(), record);
         Ok(())
     }
 
@@ -224,10 +222,7 @@ impl Publisher for MemoryNameService {
         if did_update {
             // Advance status_v when retracting
             let mut status_values = self.status_values.write();
-            let current_v = status_values
-                .get(&key)
-                .map(|s| s.v)
-                .unwrap_or(1); // Default to 1 if no status exists
+            let current_v = status_values.get(&key).map(|s| s.v).unwrap_or(1); // Default to 1 if no status exists
             status_values.insert(
                 key.clone(),
                 StatusValue::new(current_v + 1, StatusPayload::new("retracted")),
@@ -354,22 +349,20 @@ impl RefPublisher for MemoryNameService {
                 match kind {
                     RefKind::CommitHead => {
                         if let Some(addr) = &new.address {
-                            let _ =
-                                self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                                    alias: key,
-                                    commit_address: addr.clone(),
-                                    commit_t: new.t,
-                                });
+                            let _ = self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
+                                alias: key,
+                                commit_address: addr.clone(),
+                                commit_t: new.t,
+                            });
                         }
                     }
                     RefKind::IndexHead => {
                         if let Some(addr) = &new.address {
-                            let _ =
-                                self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                                    alias: key,
-                                    index_address: addr.clone(),
-                                    index_t: new.t,
-                                });
+                            let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
+                                alias: key,
+                                index_address: addr.clone(),
+                                index_t: new.t,
+                            });
                         }
                     }
                 }
@@ -491,7 +484,8 @@ impl VirtualGraphPublisher for MemoryNameService {
             record.dependencies = dependencies.to_vec();
         } else {
             // Create new VG record
-            let record = VgNsRecord::new(name, branch, vg_type.clone(), config, dependencies.to_vec());
+            let record =
+                VgNsRecord::new(name, branch, vg_type.clone(), config, dependencies.to_vec());
             vg_records.insert(key, record);
         }
 
@@ -584,7 +578,9 @@ impl VirtualGraphPublisher for MemoryNameService {
         }
 
         if did_update {
-            let _ = self.event_tx.send(NameServiceEvent::VgRetracted { alias: key });
+            let _ = self
+                .event_tx
+                .send(NameServiceEvent::VgRetracted { alias: key });
         }
         Ok(())
     }
@@ -778,10 +774,7 @@ impl ConfigPublisher for MemoryNameService {
         self.config_values.write().insert(key.clone(), new.clone());
 
         // Sync default_context to NsRecord.default_context_address
-        let new_default_context = new
-            .payload
-            .as_ref()
-            .and_then(|p| p.default_context.clone());
+        let new_default_context = new.payload.as_ref().and_then(|p| p.default_context.clone());
         if let Some(record) = self.records.write().get_mut(&key) {
             record.default_context_address = new_default_context;
         }
@@ -815,7 +808,9 @@ mod tests {
         assert_eq!(record.commit_t, 5);
 
         // Lower t should be ignored (monotonic)
-        ns.publish_commit("mydb:main", "commit-old", 3).await.unwrap();
+        ns.publish_commit("mydb:main", "commit-old", 3)
+            .await
+            .unwrap();
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
         assert_eq!(record.commit_address, Some("commit-2".to_string()));
@@ -886,10 +881,7 @@ mod tests {
     async fn test_memory_ns_publishing_address() {
         let ns = MemoryNameService::new();
 
-        assert_eq!(
-            ns.publishing_address("mydb"),
-            Some("mydb:main".to_string())
-        );
+        assert_eq!(ns.publishing_address("mydb"), Some("mydb:main".to_string()));
         assert_eq!(
             ns.publishing_address("mydb:dev"),
             Some("mydb:dev".to_string())
@@ -899,7 +891,10 @@ mod tests {
     #[tokio::test]
     async fn test_memory_ns_emits_events_on_publish_commit_monotonic() {
         let ns = MemoryNameService::new();
-        let mut sub = ns.subscribe(crate::SubscriptionScope::alias("mydb:main")).await.unwrap();
+        let mut sub = ns
+            .subscribe(crate::SubscriptionScope::alias("mydb:main"))
+            .await
+            .unwrap();
 
         ns.publish_commit("mydb:main", "commit-1", 1).await.unwrap();
         let evt = sub.receiver.recv().await.unwrap();
@@ -913,7 +908,9 @@ mod tests {
         );
 
         // Lower t should not emit a new event.
-        ns.publish_commit("mydb:main", "commit-old", 0).await.unwrap();
+        ns.publish_commit("mydb:main", "commit-old", 0)
+            .await
+            .unwrap();
         assert!(matches!(sub.receiver.try_recv(), Err(TryRecvError::Empty)));
     }
 
@@ -1123,7 +1120,10 @@ mod tests {
     #[tokio::test]
     async fn test_ref_get_ref_unknown_alias() {
         let ns = MemoryNameService::new();
-        let result = ns.get_ref("nonexistent:main", RefKind::CommitHead).await.unwrap();
+        let result = ns
+            .get_ref("nonexistent:main", RefKind::CommitHead)
+            .await
+            .unwrap();
         assert_eq!(result, None);
     }
 
@@ -1132,12 +1132,20 @@ mod tests {
         let ns = MemoryNameService::new();
         ns.publish_commit("mydb:main", "commit-1", 5).await.unwrap();
 
-        let commit = ns.get_ref("mydb:main", RefKind::CommitHead).await.unwrap().unwrap();
+        let commit = ns
+            .get_ref("mydb:main", RefKind::CommitHead)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(commit.address, Some("commit-1".to_string()));
         assert_eq!(commit.t, 5);
 
         // Index should exist but be at t=0 with no address (unborn-like)
-        let index = ns.get_ref("mydb:main", RefKind::IndexHead).await.unwrap().unwrap();
+        let index = ns
+            .get_ref("mydb:main", RefKind::IndexHead)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(index.address, None);
         assert_eq!(index.t, 0);
     }
@@ -1156,7 +1164,11 @@ mod tests {
             .unwrap();
         assert_eq!(result, CasResult::Updated);
 
-        let current = ns.get_ref("mydb:main", RefKind::CommitHead).await.unwrap().unwrap();
+        let current = ns
+            .get_ref("mydb:main", RefKind::CommitHead)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(current.address, Some("commit-1".to_string()));
         assert_eq!(current.t, 1);
     }
@@ -1229,7 +1241,11 @@ mod tests {
             .unwrap();
         assert_eq!(result, CasResult::Updated);
 
-        let current = ns.get_ref("mydb:main", RefKind::CommitHead).await.unwrap().unwrap();
+        let current = ns
+            .get_ref("mydb:main", RefKind::CommitHead)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(current.address, Some("commit-2".to_string()));
         assert_eq!(current.t, 2);
     }
@@ -1303,23 +1319,35 @@ mod tests {
             address: Some("commit-5".to_string()),
             t: 5,
         };
-        let result = ns.fast_forward_commit("mydb:main", &new_ref, 3).await.unwrap();
+        let result = ns
+            .fast_forward_commit("mydb:main", &new_ref, 3)
+            .await
+            .unwrap();
         assert_eq!(result, CasResult::Updated);
 
-        let current = ns.get_ref("mydb:main", RefKind::CommitHead).await.unwrap().unwrap();
+        let current = ns
+            .get_ref("mydb:main", RefKind::CommitHead)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(current.t, 5);
     }
 
     #[tokio::test]
     async fn test_ref_fast_forward_commit_rejected_stale() {
         let ns = MemoryNameService::new();
-        ns.publish_commit("mydb:main", "commit-1", 10).await.unwrap();
+        ns.publish_commit("mydb:main", "commit-1", 10)
+            .await
+            .unwrap();
 
         let new_ref = RefValue {
             address: Some("commit-old".to_string()),
             t: 5,
         };
-        let result = ns.fast_forward_commit("mydb:main", &new_ref, 3).await.unwrap();
+        let result = ns
+            .fast_forward_commit("mydb:main", &new_ref, 3)
+            .await
+            .unwrap();
         match result {
             CasResult::Conflict { actual } => {
                 assert_eq!(actual.unwrap().t, 10);

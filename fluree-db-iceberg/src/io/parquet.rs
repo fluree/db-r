@@ -76,7 +76,8 @@ impl ParquetFooterCache {
     pub fn new(capacity: usize) -> Self {
         Self {
             cache: Mutex::new(LruCache::new(
-                std::num::NonZeroUsize::new(capacity).unwrap_or(std::num::NonZeroUsize::new(64).unwrap()),
+                std::num::NonZeroUsize::new(capacity)
+                    .unwrap_or(std::num::NonZeroUsize::new(64).unwrap()),
             )),
         }
     }
@@ -95,7 +96,13 @@ impl ParquetFooterCache {
     /// Cache a footer.
     pub async fn put(&self, path: String, file_size: u64, metadata: Arc<ParquetMetaData>) {
         let mut cache = self.cache.lock().await;
-        cache.put(path, CachedFooter { file_size, metadata });
+        cache.put(
+            path,
+            CachedFooter {
+                file_size,
+                metadata,
+            },
+        );
     }
 }
 
@@ -177,7 +184,9 @@ impl<'a, S: IcebergStorage> ParquetReader<'a, S> {
 
         // Cache the footer
         if let Some(cache) = self.footer_cache {
-            cache.put(path.to_string(), file_size, Arc::clone(&metadata)).await;
+            cache
+                .put(path.to_string(), file_size, Arc::clone(&metadata))
+                .await;
         }
 
         Ok(metadata)
@@ -237,10 +246,8 @@ impl<'a, S: IcebergStorage> ParquetReader<'a, S> {
             .collect();
 
         // Build a projected schema for parquet-rs to only decode needed columns
-        let projected_schema = build_projected_schema(
-            metadata.file_metadata().schema(),
-            &real_column_indices,
-        )?;
+        let projected_schema =
+            build_projected_schema(metadata.file_metadata().schema(), &real_column_indices)?;
 
         let mut batches = Vec::new();
 
@@ -251,23 +258,25 @@ impl<'a, S: IcebergStorage> ParquetReader<'a, S> {
             })?;
 
             // Create row iterator for this row group with projection
-            let row_iter = RowIter::from_row_group(
-                Some(projected_schema.clone()),
-                row_group_reader.as_ref(),
-            ).map_err(|e| {
-                IcebergError::Storage(format!("Failed to create row iterator for row group {}: {}", rg_idx, e))
-            })?;
+            let row_iter =
+                RowIter::from_row_group(Some(projected_schema.clone()), row_group_reader.as_ref())
+                    .map_err(|e| {
+                        IcebergError::Storage(format!(
+                            "Failed to create row iterator for row group {}: {}",
+                            rg_idx, e
+                        ))
+                    })?;
 
             // Collect rows into columnar format
             let num_fields = batch_schema.fields.len();
             let estimated_rows = metadata.row_group(rg_idx).num_rows() as usize;
-            let mut column_data: Vec<Vec<Option<ColumnValue>>> =
-                (0..num_fields).map(|_| Vec::with_capacity(estimated_rows)).collect();
+            let mut column_data: Vec<Vec<Option<ColumnValue>>> = (0..num_fields)
+                .map(|_| Vec::with_capacity(estimated_rows))
+                .collect();
 
             for row_result in row_iter {
-                let row = row_result.map_err(|e| {
-                    IcebergError::Storage(format!("Failed to read row: {}", e))
-                })?;
+                let row = row_result
+                    .map_err(|e| IcebergError::Storage(format!("Failed to read row: {}", e)))?;
 
                 // With projection, row columns come in the same order as projected schema.
                 let row_fields: Vec<_> = row.get_column_iter().map(|(_, f)| f).collect();
@@ -277,8 +286,9 @@ impl<'a, S: IcebergStorage> ParquetReader<'a, S> {
                     let value = match batch_to_row_mapping[batch_idx] {
                         Some(row_idx) => {
                             // Real column - get value from row
-                            row_fields.get(row_idx)
-                                .and_then(|field| convert_field_to_column_value(field, &field_info.field_type))
+                            row_fields.get(row_idx).and_then(|field| {
+                                convert_field_to_column_value(field, &field_info.field_type)
+                            })
                         }
                         None => {
                             // NULL column (schema evolution) - always NULL
@@ -334,7 +344,10 @@ impl<'a, S: IcebergStorage> ParquetReader<'a, S> {
         let column_ranges = calculate_column_chunk_ranges(&metadata, &task.projected_field_ids);
 
         // Calculate footer range (last 8 bytes + footer content)
-        let footer_and_size = self.storage.read_range(path, (file_size - 8)..file_size).await?;
+        let footer_and_size = self
+            .storage
+            .read_range(path, (file_size - 8)..file_size)
+            .await?;
         let footer_len = u32::from_le_bytes([
             footer_and_size[0],
             footer_and_size[1],
@@ -544,12 +557,10 @@ pub fn convert_field_to_column_value(
                 _ => Some(ColumnValue::Timestamp(micros)),
             }
         }
-        Field::TimestampMicros(v) => {
-            match field_type {
-                FieldType::TimestampTz => Some(ColumnValue::TimestampTz(*v)),
-                _ => Some(ColumnValue::Timestamp(*v)),
-            }
-        }
+        Field::TimestampMicros(v) => match field_type {
+            FieldType::TimestampTz => Some(ColumnValue::TimestampTz(*v)),
+            _ => Some(ColumnValue::Timestamp(*v)),
+        },
         Field::Decimal(d) => {
             // Convert decimal bytes to i128 unscaled value
             let bytes = d.data();
@@ -617,124 +628,161 @@ pub fn build_columns_from_values(
         let values = &column_data[col_idx];
         let column = match field.field_type {
             FieldType::Boolean => {
-                let data: Vec<Option<bool>> = values.iter().map(|v| {
-                    v.as_ref().and_then(|cv| match cv {
-                        ColumnValue::Boolean(b) => Some(*b),
-                        _ => None,
+                let data: Vec<Option<bool>> = values
+                    .iter()
+                    .map(|v| {
+                        v.as_ref().and_then(|cv| match cv {
+                            ColumnValue::Boolean(b) => Some(*b),
+                            _ => None,
+                        })
                     })
-                }).collect();
+                    .collect();
                 Column::Boolean(data)
             }
             FieldType::Int32 => {
-                let data: Vec<Option<i32>> = values.iter().map(|v| {
-                    v.as_ref().and_then(|cv| match cv {
-                        ColumnValue::Int32(i) => Some(*i),
-                        ColumnValue::Int64(i) => Some(*i as i32),
-                        _ => None,
+                let data: Vec<Option<i32>> = values
+                    .iter()
+                    .map(|v| {
+                        v.as_ref().and_then(|cv| match cv {
+                            ColumnValue::Int32(i) => Some(*i),
+                            ColumnValue::Int64(i) => Some(*i as i32),
+                            _ => None,
+                        })
                     })
-                }).collect();
+                    .collect();
                 Column::Int32(data)
             }
             FieldType::Int64 => {
-                let data: Vec<Option<i64>> = values.iter().map(|v| {
-                    v.as_ref().and_then(|cv| match cv {
-                        ColumnValue::Int64(i) => Some(*i),
-                        ColumnValue::Int32(i) => Some(*i as i64),
-                        _ => None,
+                let data: Vec<Option<i64>> = values
+                    .iter()
+                    .map(|v| {
+                        v.as_ref().and_then(|cv| match cv {
+                            ColumnValue::Int64(i) => Some(*i),
+                            ColumnValue::Int32(i) => Some(*i as i64),
+                            _ => None,
+                        })
                     })
-                }).collect();
+                    .collect();
                 Column::Int64(data)
             }
             FieldType::Float32 => {
-                let data: Vec<Option<f32>> = values.iter().map(|v| {
-                    v.as_ref().and_then(|cv| match cv {
-                        ColumnValue::Float32(f) => Some(*f),
-                        ColumnValue::Float64(f) => Some(*f as f32),
-                        _ => None,
+                let data: Vec<Option<f32>> = values
+                    .iter()
+                    .map(|v| {
+                        v.as_ref().and_then(|cv| match cv {
+                            ColumnValue::Float32(f) => Some(*f),
+                            ColumnValue::Float64(f) => Some(*f as f32),
+                            _ => None,
+                        })
                     })
-                }).collect();
+                    .collect();
                 Column::Float32(data)
             }
             FieldType::Float64 => {
-                let data: Vec<Option<f64>> = values.iter().map(|v| {
-                    v.as_ref().and_then(|cv| match cv {
-                        ColumnValue::Float64(f) => Some(*f),
-                        ColumnValue::Float32(f) => Some(*f as f64),
-                        _ => None,
+                let data: Vec<Option<f64>> = values
+                    .iter()
+                    .map(|v| {
+                        v.as_ref().and_then(|cv| match cv {
+                            ColumnValue::Float64(f) => Some(*f),
+                            ColumnValue::Float32(f) => Some(*f as f64),
+                            _ => None,
+                        })
                     })
-                }).collect();
+                    .collect();
                 Column::Float64(data)
             }
             FieldType::String => {
-                let data: Vec<Option<String>> = values.iter().map(|v| {
-                    v.as_ref().and_then(|cv| match cv {
-                        ColumnValue::String(s) => Some(s.clone()),
-                        ColumnValue::Bytes(b) => Some(String::from_utf8_lossy(b).into_owned()),
-                        _ => None,
+                let data: Vec<Option<String>> = values
+                    .iter()
+                    .map(|v| {
+                        v.as_ref().and_then(|cv| match cv {
+                            ColumnValue::String(s) => Some(s.clone()),
+                            ColumnValue::Bytes(b) => Some(String::from_utf8_lossy(b).into_owned()),
+                            _ => None,
+                        })
                     })
-                }).collect();
+                    .collect();
                 Column::String(data)
             }
             FieldType::Bytes => {
-                let data: Vec<Option<Vec<u8>>> = values.iter().map(|v| {
-                    v.as_ref().and_then(|cv| match cv {
-                        ColumnValue::Bytes(b) => Some(b.clone()),
-                        ColumnValue::String(s) => Some(s.as_bytes().to_vec()),
-                        _ => None,
+                let data: Vec<Option<Vec<u8>>> = values
+                    .iter()
+                    .map(|v| {
+                        v.as_ref().and_then(|cv| match cv {
+                            ColumnValue::Bytes(b) => Some(b.clone()),
+                            ColumnValue::String(s) => Some(s.as_bytes().to_vec()),
+                            _ => None,
+                        })
                     })
-                }).collect();
+                    .collect();
                 Column::Bytes(data)
             }
             FieldType::Date => {
-                let data: Vec<Option<i32>> = values.iter().map(|v| {
-                    v.as_ref().and_then(|cv| match cv {
-                        ColumnValue::Date(i) => Some(*i),
-                        // Fallback for Int32 if source didn't properly tag as Date
-                        ColumnValue::Int32(i) => Some(*i),
-                        _ => None,
+                let data: Vec<Option<i32>> = values
+                    .iter()
+                    .map(|v| {
+                        v.as_ref().and_then(|cv| match cv {
+                            ColumnValue::Date(i) => Some(*i),
+                            // Fallback for Int32 if source didn't properly tag as Date
+                            ColumnValue::Int32(i) => Some(*i),
+                            _ => None,
+                        })
                     })
-                }).collect();
+                    .collect();
                 Column::Date(data)
             }
             FieldType::Timestamp => {
-                let data: Vec<Option<i64>> = values.iter().map(|v| {
-                    v.as_ref().and_then(|cv| match cv {
-                        ColumnValue::Timestamp(i) => Some(*i),
-                        ColumnValue::TimestampTz(i) => Some(*i),
-                        // Fallback for Int64 if source didn't properly tag
-                        ColumnValue::Int64(i) => Some(*i),
-                        ColumnValue::Int32(i) => Some(*i as i64),
-                        _ => None,
+                let data: Vec<Option<i64>> = values
+                    .iter()
+                    .map(|v| {
+                        v.as_ref().and_then(|cv| match cv {
+                            ColumnValue::Timestamp(i) => Some(*i),
+                            ColumnValue::TimestampTz(i) => Some(*i),
+                            // Fallback for Int64 if source didn't properly tag
+                            ColumnValue::Int64(i) => Some(*i),
+                            ColumnValue::Int32(i) => Some(*i as i64),
+                            _ => None,
+                        })
                     })
-                }).collect();
+                    .collect();
                 Column::Timestamp(data)
             }
             FieldType::TimestampTz => {
-                let data: Vec<Option<i64>> = values.iter().map(|v| {
-                    v.as_ref().and_then(|cv| match cv {
-                        ColumnValue::TimestampTz(i) => Some(*i),
-                        ColumnValue::Timestamp(i) => Some(*i),
-                        // Fallback for Int64 if source didn't properly tag
-                        ColumnValue::Int64(i) => Some(*i),
-                        ColumnValue::Int32(i) => Some(*i as i64),
-                        _ => None,
+                let data: Vec<Option<i64>> = values
+                    .iter()
+                    .map(|v| {
+                        v.as_ref().and_then(|cv| match cv {
+                            ColumnValue::TimestampTz(i) => Some(*i),
+                            ColumnValue::Timestamp(i) => Some(*i),
+                            // Fallback for Int64 if source didn't properly tag
+                            ColumnValue::Int64(i) => Some(*i),
+                            ColumnValue::Int32(i) => Some(*i as i64),
+                            _ => None,
+                        })
                     })
-                }).collect();
+                    .collect();
                 Column::TimestampTz(data)
             }
             FieldType::Decimal { precision, scale } => {
-                let data: Vec<Option<i128>> = values.iter().map(|v| {
-                    v.as_ref().and_then(|cv| match cv {
-                        ColumnValue::Decimal(i) => Some(*i),
-                        // Fallback for Int32/Int64: Parquet can encode small-precision
-                        // decimals as INT32/INT64 physical types. These are already
-                        // unscaled values (e.g., decimal(5,2) value 123.45 stored as 12345).
-                        ColumnValue::Int64(i) => Some(*i as i128),
-                        ColumnValue::Int32(i) => Some(*i as i128),
-                        _ => None,
+                let data: Vec<Option<i128>> = values
+                    .iter()
+                    .map(|v| {
+                        v.as_ref().and_then(|cv| match cv {
+                            ColumnValue::Decimal(i) => Some(*i),
+                            // Fallback for Int32/Int64: Parquet can encode small-precision
+                            // decimals as INT32/INT64 physical types. These are already
+                            // unscaled values (e.g., decimal(5,2) value 123.45 stored as 12345).
+                            ColumnValue::Int64(i) => Some(*i as i128),
+                            ColumnValue::Int32(i) => Some(*i as i128),
+                            _ => None,
+                        })
                     })
-                }).collect();
-                Column::Decimal { values: data, precision, scale }
+                    .collect();
+                Column::Decimal {
+                    values: data,
+                    precision,
+                    scale,
+                }
             }
         };
         columns.push(column);
@@ -777,28 +825,23 @@ fn decode_column(
     num_rows: usize,
 ) -> Result<Column> {
     let col_reader = row_group_reader.get_column_reader(col_idx).map_err(|e| {
-        IcebergError::Storage(format!("Failed to get column reader for {}: {}", field.name, e))
+        IcebergError::Storage(format!(
+            "Failed to get column reader for {}: {}",
+            field.name, e
+        ))
     })?;
 
     match col_reader {
-        ColumnReader::BoolColumnReader(mut reader) => {
-            decode_bool_column(&mut reader, num_rows)
-        }
+        ColumnReader::BoolColumnReader(mut reader) => decode_bool_column(&mut reader, num_rows),
         ColumnReader::Int32ColumnReader(mut reader) => {
             decode_int32_column(&mut reader, field, num_rows)
         }
         ColumnReader::Int64ColumnReader(mut reader) => {
             decode_int64_column(&mut reader, field, num_rows)
         }
-        ColumnReader::Int96ColumnReader(mut reader) => {
-            decode_int96_column(&mut reader, num_rows)
-        }
-        ColumnReader::FloatColumnReader(mut reader) => {
-            decode_float_column(&mut reader, num_rows)
-        }
-        ColumnReader::DoubleColumnReader(mut reader) => {
-            decode_double_column(&mut reader, num_rows)
-        }
+        ColumnReader::Int96ColumnReader(mut reader) => decode_int96_column(&mut reader, num_rows),
+        ColumnReader::FloatColumnReader(mut reader) => decode_float_column(&mut reader, num_rows),
+        ColumnReader::DoubleColumnReader(mut reader) => decode_double_column(&mut reader, num_rows),
         ColumnReader::ByteArrayColumnReader(mut reader) => {
             decode_byte_array_column(&mut reader, field, num_rows)
         }
@@ -866,16 +909,15 @@ fn decode_bool_column(
     let mut rep_levels = vec![0i16; num_rows];
 
     let (records_read, values_read, _) = reader
-        .read_records(num_rows, Some(&mut def_levels), Some(&mut rep_levels), &mut values)
+        .read_records(
+            num_rows,
+            Some(&mut def_levels),
+            Some(&mut rep_levels),
+            &mut values,
+        )
         .map_err(|e| IcebergError::Storage(format!("Failed to read bool column: {}", e)))?;
 
-    let result = decode_with_nulls(
-        records_read,
-        values_read,
-        &def_levels,
-        &values,
-        |v| *v,
-    );
+    let result = decode_with_nulls(records_read, values_read, &def_levels, &values, |v| *v);
 
     Ok(Column::Boolean(result))
 }
@@ -891,16 +933,15 @@ fn decode_int32_column(
     let mut rep_levels = vec![0i16; num_rows];
 
     let (records_read, values_read, _) = reader
-        .read_records(num_rows, Some(&mut def_levels), Some(&mut rep_levels), &mut values)
+        .read_records(
+            num_rows,
+            Some(&mut def_levels),
+            Some(&mut rep_levels),
+            &mut values,
+        )
         .map_err(|e| IcebergError::Storage(format!("Failed to read int32 column: {}", e)))?;
 
-    let result = decode_with_nulls(
-        records_read,
-        values_read,
-        &def_levels,
-        &values,
-        |v| *v,
-    );
+    let result = decode_with_nulls(records_read, values_read, &def_levels, &values, |v| *v);
 
     // Return appropriate column type based on field
     match field.field_type {
@@ -920,16 +961,15 @@ fn decode_int64_column(
     let mut rep_levels = vec![0i16; num_rows];
 
     let (records_read, values_read, _) = reader
-        .read_records(num_rows, Some(&mut def_levels), Some(&mut rep_levels), &mut values)
+        .read_records(
+            num_rows,
+            Some(&mut def_levels),
+            Some(&mut rep_levels),
+            &mut values,
+        )
         .map_err(|e| IcebergError::Storage(format!("Failed to read int64 column: {}", e)))?;
 
-    let result = decode_with_nulls(
-        records_read,
-        values_read,
-        &def_levels,
-        &values,
-        |v| *v,
-    );
+    let result = decode_with_nulls(records_read, values_read, &def_levels, &values, |v| *v);
 
     // Return appropriate column type based on field
     match field.field_type {
@@ -950,17 +990,18 @@ fn decode_int96_column(
     let mut rep_levels = vec![0i16; num_rows];
 
     let (records_read, values_read, _) = reader
-        .read_records(num_rows, Some(&mut def_levels), Some(&mut rep_levels), &mut values)
+        .read_records(
+            num_rows,
+            Some(&mut def_levels),
+            Some(&mut rep_levels),
+            &mut values,
+        )
         .map_err(|e| IcebergError::Storage(format!("Failed to read int96 column: {}", e)))?;
 
     // Convert INT96 to microseconds since epoch
-    let result = decode_with_nulls(
-        records_read,
-        values_read,
-        &def_levels,
-        &values,
-        |int96| int96_to_nanos(int96) / 1000,
-    );
+    let result = decode_with_nulls(records_read, values_read, &def_levels, &values, |int96| {
+        int96_to_nanos(int96) / 1000
+    });
 
     Ok(Column::Timestamp(result))
 }
@@ -991,16 +1032,15 @@ fn decode_float_column(
     let mut rep_levels = vec![0i16; num_rows];
 
     let (records_read, values_read, _) = reader
-        .read_records(num_rows, Some(&mut def_levels), Some(&mut rep_levels), &mut values)
+        .read_records(
+            num_rows,
+            Some(&mut def_levels),
+            Some(&mut rep_levels),
+            &mut values,
+        )
         .map_err(|e| IcebergError::Storage(format!("Failed to read float column: {}", e)))?;
 
-    let result = decode_with_nulls(
-        records_read,
-        values_read,
-        &def_levels,
-        &values,
-        |v| *v,
-    );
+    let result = decode_with_nulls(records_read, values_read, &def_levels, &values, |v| *v);
 
     Ok(Column::Float32(result))
 }
@@ -1015,16 +1055,15 @@ fn decode_double_column(
     let mut rep_levels = vec![0i16; num_rows];
 
     let (records_read, values_read, _) = reader
-        .read_records(num_rows, Some(&mut def_levels), Some(&mut rep_levels), &mut values)
+        .read_records(
+            num_rows,
+            Some(&mut def_levels),
+            Some(&mut rep_levels),
+            &mut values,
+        )
         .map_err(|e| IcebergError::Storage(format!("Failed to read double column: {}", e)))?;
 
-    let result = decode_with_nulls(
-        records_read,
-        values_read,
-        &def_levels,
-        &values,
-        |v| *v,
-    );
+    let result = decode_with_nulls(records_read, values_read, &def_levels, &values, |v| *v);
 
     Ok(Column::Float64(result))
 }
@@ -1051,8 +1090,15 @@ fn decode_byte_array_column(
         let mut rep_levels = vec![0i16; batch_size];
 
         let (records_read, values_read, _) = reader
-            .read_records(batch_size, Some(&mut def_levels), Some(&mut rep_levels), &mut values)
-            .map_err(|e| IcebergError::Storage(format!("Failed to read byte array column: {}", e)))?;
+            .read_records(
+                batch_size,
+                Some(&mut def_levels),
+                Some(&mut rep_levels),
+                &mut values,
+            )
+            .map_err(|e| {
+                IcebergError::Storage(format!("Failed to read byte array column: {}", e))
+            })?;
 
         if records_read == 0 {
             break;
@@ -1122,7 +1168,9 @@ fn decode_byte_array_column(
 
 /// Decode fixed length byte array column.
 fn decode_fixed_len_byte_array_column(
-    reader: &mut parquet::column::reader::ColumnReaderImpl<parquet::data_type::FixedLenByteArrayType>,
+    reader: &mut parquet::column::reader::ColumnReaderImpl<
+        parquet::data_type::FixedLenByteArrayType,
+    >,
     num_rows: usize,
 ) -> Result<Column> {
     use parquet::data_type::FixedLenByteArray;
@@ -1140,8 +1188,15 @@ fn decode_fixed_len_byte_array_column(
         let mut rep_levels = vec![0i16; batch_size];
 
         let (records_read, values_read, _) = reader
-            .read_records(batch_size, Some(&mut def_levels), Some(&mut rep_levels), &mut values)
-            .map_err(|e| IcebergError::Storage(format!("Failed to read fixed byte array column: {}", e)))?;
+            .read_records(
+                batch_size,
+                Some(&mut def_levels),
+                Some(&mut rep_levels),
+                &mut values,
+            )
+            .map_err(|e| {
+                IcebergError::Storage(format!("Failed to read fixed byte array column: {}", e))
+            })?;
 
         if records_read == 0 {
             break;
@@ -1170,7 +1225,10 @@ fn decode_fixed_len_byte_array_column(
 }
 
 /// Parse Parquet metadata from footer bytes.
-pub fn parse_parquet_metadata_from_bytes(footer_bytes: &Bytes, _file_size: u64) -> Result<ParquetMetaData> {
+pub fn parse_parquet_metadata_from_bytes(
+    footer_bytes: &Bytes,
+    _file_size: u64,
+) -> Result<ParquetMetaData> {
     // Use parquet's metadata reader
     use parquet::file::metadata::ParquetMetaDataReader;
 
@@ -1367,10 +1425,9 @@ fn iceberg_type_to_field_type(iceberg_type: &serde_json::Value) -> FieldType {
             if let Some(inner) = s.strip_prefix("decimal(").and_then(|s| s.strip_suffix(')')) {
                 let parts: Vec<&str> = inner.split(',').collect();
                 if parts.len() == 2 {
-                    if let (Ok(precision), Ok(scale)) = (
-                        parts[0].trim().parse::<u8>(),
-                        parts[1].trim().parse::<i8>(),
-                    ) {
+                    if let (Ok(precision), Ok(scale)) =
+                        (parts[0].trim().parse::<u8>(), parts[1].trim().parse::<i8>())
+                    {
                         return FieldType::Decimal { precision, scale };
                     }
                 }
@@ -1502,7 +1559,11 @@ fn parquet_type_to_field_type(parquet_type: &Arc<SchemaType>) -> FieldType {
         {
             // Check logical type for UTC info if available
             if let Some(logical_type) = basic_info.logical_type() {
-                if let parquet::basic::LogicalType::Timestamp { is_adjusted_to_u_t_c, .. } = logical_type {
+                if let parquet::basic::LogicalType::Timestamp {
+                    is_adjusted_to_u_t_c,
+                    ..
+                } = logical_type
+                {
                     if is_adjusted_to_u_t_c {
                         return FieldType::TimestampTz;
                     }
@@ -1694,14 +1755,20 @@ mod tests {
                         .unwrap(),
                 ),
                 Arc::new(
-                    parquet::schema::types::Type::primitive_type_builder("name", PhysicalType::BYTE_ARRAY)
-                        .build()
-                        .unwrap(),
+                    parquet::schema::types::Type::primitive_type_builder(
+                        "name",
+                        PhysicalType::BYTE_ARRAY,
+                    )
+                    .build()
+                    .unwrap(),
                 ),
                 Arc::new(
-                    parquet::schema::types::Type::primitive_type_builder("value", PhysicalType::DOUBLE)
-                        .build()
-                        .unwrap(),
+                    parquet::schema::types::Type::primitive_type_builder(
+                        "value",
+                        PhysicalType::DOUBLE,
+                    )
+                    .build()
+                    .unwrap(),
                 ),
             ])
             .build()
@@ -1727,9 +1794,12 @@ mod tests {
                         .unwrap(),
                 ),
                 Arc::new(
-                    parquet::schema::types::Type::primitive_type_builder("name", PhysicalType::BYTE_ARRAY)
-                        .build()
-                        .unwrap(),
+                    parquet::schema::types::Type::primitive_type_builder(
+                        "name",
+                        PhysicalType::BYTE_ARRAY,
+                    )
+                    .build()
+                    .unwrap(),
                 ),
             ])
             .build()
@@ -1739,7 +1809,10 @@ mod tests {
         let mapping = build_field_id_to_column_mapping(&parquet_schema, None);
 
         // Without Iceberg schema and no field IDs in Parquet, mapping should be empty
-        assert!(mapping.is_empty(), "Mapping should be empty without field IDs or schema");
+        assert!(
+            mapping.is_empty(),
+            "Mapping should be empty without field IDs or schema"
+        );
     }
 
     #[test]

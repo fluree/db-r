@@ -101,7 +101,6 @@ impl RdfTerm {
     }
 }
 
-
 /// Expand a template by substituting column placeholders with values
 ///
 /// Template placeholders are in the form `{column_name}`. Values are
@@ -279,26 +278,24 @@ pub fn materialize_object(
             term_type,
         } => {
             match values.get(column) {
-                Some(Some(value)) => {
-                    match term_type {
-                        TermType::Iri => Ok(Some(RdfTerm::iri(value.clone()))),
-                        TermType::BlankNode => Ok(Some(RdfTerm::blank_node(value.clone()))),
-                        TermType::Literal => {
-                            if language.is_some() {
-                                Ok(Some(RdfTerm::lang_string(
-                                    value.clone(),
-                                    language.clone().unwrap(),
-                                )))
-                            } else {
-                                Ok(Some(RdfTerm::Literal {
-                                    value: value.clone(),
-                                    datatype: datatype.clone(),
-                                    language: None,
-                                }))
-                            }
+                Some(Some(value)) => match term_type {
+                    TermType::Iri => Ok(Some(RdfTerm::iri(value.clone()))),
+                    TermType::BlankNode => Ok(Some(RdfTerm::blank_node(value.clone()))),
+                    TermType::Literal => {
+                        if language.is_some() {
+                            Ok(Some(RdfTerm::lang_string(
+                                value.clone(),
+                                language.clone().unwrap(),
+                            )))
+                        } else {
+                            Ok(Some(RdfTerm::Literal {
+                                value: value.clone(),
+                                datatype: datatype.clone(),
+                                language: None,
+                            }))
                         }
                     }
-                }
+                },
                 _ => Ok(None), // Null produces no object
             }
         }
@@ -324,26 +321,24 @@ pub fn materialize_object(
             ..
         } => {
             match expand_template(template, values) {
-                Ok(expanded) => {
-                    match term_type {
-                        TermType::Iri => Ok(Some(RdfTerm::iri(expanded))),
-                        TermType::BlankNode => Ok(Some(RdfTerm::blank_node(expanded))),
-                        TermType::Literal => {
-                            if language.is_some() {
-                                Ok(Some(RdfTerm::lang_string(
-                                    expanded,
-                                    language.clone().unwrap(),
-                                )))
-                            } else {
-                                Ok(Some(RdfTerm::Literal {
-                                    value: expanded,
-                                    datatype: datatype.clone(),
-                                    language: None,
-                                }))
-                            }
+                Ok(expanded) => match term_type {
+                    TermType::Iri => Ok(Some(RdfTerm::iri(expanded))),
+                    TermType::BlankNode => Ok(Some(RdfTerm::blank_node(expanded))),
+                    TermType::Literal => {
+                        if language.is_some() {
+                            Ok(Some(RdfTerm::lang_string(
+                                expanded,
+                                language.clone().unwrap(),
+                            )))
+                        } else {
+                            Ok(Some(RdfTerm::Literal {
+                                value: expanded,
+                                datatype: datatype.clone(),
+                                language: None,
+                            }))
                         }
                     }
-                }
+                },
                 Err(_) => Ok(None), // Null in template produces no object
             }
         }
@@ -387,7 +382,11 @@ pub fn infer_datatype(value: &str) -> Option<&'static str> {
 ///
 /// This avoids allocation for numeric types by formatting directly.
 /// Returns None if the column is not found or the value is null.
-fn column_value_as_string(batch: &ColumnBatch, column_name: &str, row_idx: usize) -> Option<String> {
+fn column_value_as_string(
+    batch: &ColumnBatch,
+    column_name: &str,
+    row_idx: usize,
+) -> Option<String> {
     let col = batch.column_by_name(column_name)?;
     column_to_string(col, row_idx)
 }
@@ -409,11 +408,7 @@ fn column_to_string(col: &Column, row_idx: usize) -> Option<String> {
         Column::Timestamp(v) | Column::TimestampTz(v) => {
             v.get(row_idx).and_then(|v| *v).map(format_timestamp)
         }
-        Column::Decimal {
-            values,
-            scale,
-            ..
-        } => values
+        Column::Decimal { values, scale, .. } => values
             .get(row_idx)
             .and_then(|v| *v)
             .map(|n| format_decimal(n, *scale)),
@@ -520,7 +515,12 @@ fn format_decimal(unscaled: i128, scale: i8) -> String {
         let divisor = 10i128.pow(scale as u32);
         let integer_part = unscaled / divisor;
         let fractional_part = (unscaled % divisor).abs();
-        format!("{}.{:0>width$}", integer_part, fractional_part, width = scale as usize)
+        format!(
+            "{}.{:0>width$}",
+            integer_part,
+            fractional_part,
+            width = scale as usize
+        )
     }
 }
 
@@ -656,26 +656,24 @@ pub fn materialize_object_from_batch(
             datatype,
             language,
             term_type,
-        } => {
-            match column_value_as_string(batch, column, row_idx) {
-                Some(value) => match term_type {
-                    TermType::Iri => Ok(Some(RdfTerm::iri(value))),
-                    TermType::BlankNode => Ok(Some(RdfTerm::blank_node(value))),
-                    TermType::Literal => {
-                        if language.is_some() {
-                            Ok(Some(RdfTerm::lang_string(value, language.clone().unwrap())))
-                        } else {
-                            Ok(Some(RdfTerm::Literal {
-                                value,
-                                datatype: datatype.clone(),
-                                language: None,
-                            }))
-                        }
+        } => match column_value_as_string(batch, column, row_idx) {
+            Some(value) => match term_type {
+                TermType::Iri => Ok(Some(RdfTerm::iri(value))),
+                TermType::BlankNode => Ok(Some(RdfTerm::blank_node(value))),
+                TermType::Literal => {
+                    if language.is_some() {
+                        Ok(Some(RdfTerm::lang_string(value, language.clone().unwrap())))
+                    } else {
+                        Ok(Some(RdfTerm::Literal {
+                            value,
+                            datatype: datatype.clone(),
+                            language: None,
+                        }))
                     }
-                },
-                None => Ok(None),
-            }
-        }
+                }
+            },
+            None => Ok(None),
+        },
 
         ObjectMap::Constant { value } => match value {
             ConstantValue::Iri(iri) => Ok(Some(RdfTerm::iri(iri.clone()))),
@@ -702,7 +700,10 @@ pub fn materialize_object_from_batch(
                 TermType::BlankNode => Ok(Some(RdfTerm::blank_node(expanded))),
                 TermType::Literal => {
                     if language.is_some() {
-                        Ok(Some(RdfTerm::lang_string(expanded, language.clone().unwrap())))
+                        Ok(Some(RdfTerm::lang_string(
+                            expanded,
+                            language.clone().unwrap(),
+                        )))
                     } else {
                         Ok(Some(RdfTerm::Literal {
                             value: expanded,
@@ -798,10 +799,7 @@ mod tests {
 
         let values = HashMap::new();
         let result = materialize_subject(&sm, &values, None).unwrap();
-        assert_eq!(
-            result,
-            Some(RdfTerm::iri("http://example.org/singleton"))
-        );
+        assert_eq!(result, Some(RdfTerm::iri("http://example.org/singleton")));
     }
 
     #[test]
@@ -868,16 +866,16 @@ mod tests {
 
     #[test]
     fn test_materialize_object_template() {
-        let om = ObjectMap::template(
-            "http://example.org/category/{cat}",
-            vec!["cat".to_string()],
-        );
+        let om = ObjectMap::template("http://example.org/category/{cat}", vec!["cat".to_string()]);
 
         let mut values = HashMap::new();
         values.insert("cat".to_string(), Some("books".to_string()));
 
         let result = materialize_object(&om, &values).unwrap();
-        assert_eq!(result, Some(RdfTerm::iri("http://example.org/category/books")));
+        assert_eq!(
+            result,
+            Some(RdfTerm::iri("http://example.org/category/books"))
+        );
     }
 
     #[test]
@@ -974,11 +972,13 @@ mod tests {
         let batch = sample_batch();
 
         // Row 0: id=1, name="Alice"
-        let result = expand_template_from_batch("http://example.org/person/{id}", &batch, 0).unwrap();
+        let result =
+            expand_template_from_batch("http://example.org/person/{id}", &batch, 0).unwrap();
         assert_eq!(result, "http://example.org/person/1");
 
         // Row 1: id=2, name="Bob"
-        let result = expand_template_from_batch("http://example.org/{name}/{id}", &batch, 1).unwrap();
+        let result =
+            expand_template_from_batch("http://example.org/{name}/{id}", &batch, 1).unwrap();
         assert_eq!(result, "http://example.org/Bob/2");
 
         // Row 2: name is null - should error
@@ -1022,7 +1022,10 @@ mod tests {
         let result = materialize_object_from_batch(&om, &batch, 0).unwrap();
         assert_eq!(
             result,
-            Some(RdfTerm::typed("30", "http://www.w3.org/2001/XMLSchema#integer"))
+            Some(RdfTerm::typed(
+                "30",
+                "http://www.w3.org/2001/XMLSchema#integer"
+            ))
         );
     }
 

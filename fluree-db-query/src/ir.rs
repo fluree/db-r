@@ -199,7 +199,10 @@ impl GraphSelectSpec {
                 SelectionSpec::Wildcard => {
                     0u8.hash(hasher);
                 }
-                SelectionSpec::Property { predicate, sub_spec } => {
+                SelectionSpec::Property {
+                    predicate,
+                    sub_spec,
+                } => {
                     1u8.hash(hasher);
                     predicate.hash(hasher);
                     if let Some(nested) = sub_spec {
@@ -607,11 +610,7 @@ pub enum VectorSearchTarget {
 
 impl VectorSearchPattern {
     /// Create a new vector search pattern with just ID binding
-    pub fn new(
-        vg_alias: impl Into<String>,
-        target: VectorSearchTarget,
-        id_var: VarId,
-    ) -> Self {
+    pub fn new(vg_alias: impl Into<String>, target: VectorSearchTarget, id_var: VarId) -> Self {
         Self {
             vg_alias: vg_alias.into(),
             target,
@@ -732,11 +731,7 @@ pub struct R2rmlPattern {
 
 impl R2rmlPattern {
     /// Create a new R2RML pattern with subject and object variables.
-    pub fn new(
-        vg_alias: impl Into<String>,
-        subject_var: VarId,
-        object_var: Option<VarId>,
-    ) -> Self {
+    pub fn new(vg_alias: impl Into<String>, subject_var: VarId, object_var: Option<VarId>) -> Self {
         Self {
             vg_alias: vg_alias.into(),
             subject_var,
@@ -918,15 +913,11 @@ impl Pattern {
         match self {
             Pattern::Triple(tp) => tp.variables(),
             Pattern::Filter(expr) => expr.variables(),
-            Pattern::Optional(inner) => {
-                inner.iter().flat_map(|p| p.variables()).collect()
-            }
-            Pattern::Union(branches) => {
-                branches
-                    .iter()
-                    .flat_map(|branch| branch.iter().flat_map(|p| p.variables()))
-                    .collect()
-            }
+            Pattern::Optional(inner) => inner.iter().flat_map(|p| p.variables()).collect(),
+            Pattern::Union(branches) => branches
+                .iter()
+                .flat_map(|branch| branch.iter().flat_map(|p| p.variables()))
+                .collect(),
             Pattern::Bind { var, expr } => {
                 let mut vars = expr.variables();
                 vars.push(*var);
@@ -942,7 +933,10 @@ impl Pattern {
             Pattern::VectorSearch(vsp) => vsp.variables(),
             Pattern::R2rml(r2rml) => r2rml.variables(),
             Pattern::Graph { name, patterns } => {
-                let mut vars = patterns.iter().flat_map(|p| p.variables()).collect::<Vec<_>>();
+                let mut vars = patterns
+                    .iter()
+                    .flat_map(|p| p.variables())
+                    .collect::<Vec<_>>();
                 if let GraphName::Var(v) = name {
                     vars.push(*v);
                 }
@@ -1007,7 +1001,8 @@ impl FilterExpr {
         match self {
             FilterExpr::Var(v) => vec![*v],
             FilterExpr::Const(_) => vec![],
-            FilterExpr::Compare { left, right, .. } | FilterExpr::Arithmetic { left, right, .. } => {
+            FilterExpr::Compare { left, right, .. }
+            | FilterExpr::Arithmetic { left, right, .. } => {
                 let mut vars = left.variables();
                 vars.extend(right.variables());
                 vars
@@ -1031,9 +1026,7 @@ impl FilterExpr {
                 vars.extend(values.iter().flat_map(|v| v.variables()));
                 vars
             }
-            FilterExpr::Function { args, .. } => {
-                args.iter().flat_map(|a| a.variables()).collect()
-            }
+            FilterExpr::Function { args, .. } => args.iter().flat_map(|a| a.variables()).collect(),
         }
     }
 
@@ -1365,13 +1358,11 @@ mod tests {
         assert!(and_expr.is_range_safe());
 
         // Not range-safe: OR
-        let or_expr = FilterExpr::Or(vec![
-            FilterExpr::Compare {
-                op: CompareOp::Eq,
-                left: Box::new(FilterExpr::Var(VarId(0))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(1))),
-            },
-        ]);
+        let or_expr = FilterExpr::Or(vec![FilterExpr::Compare {
+            op: CompareOp::Eq,
+            left: Box::new(FilterExpr::Var(VarId(0))),
+            right: Box::new(FilterExpr::Const(FilterValue::Long(1))),
+        }]);
         assert!(!or_expr.is_range_safe());
     }
 }

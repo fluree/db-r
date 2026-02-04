@@ -99,19 +99,23 @@ mod node;
 // Re-export main types
 pub use config::IndexerConfig;
 pub use error::{IndexerError, Result};
-pub use orchestrator::{
-    BackgroundIndexerWorker, IndexCompletion, IndexerHandle, IndexerOrchestrator, IndexOutcome,
-    IndexPhase, IndexStatusSnapshot,
+pub use gc::{
+    clean_garbage, collect_garbage_addresses, load_garbage_record, write_garbage_record,
+    CleanGarbageConfig, CleanGarbageResult, GarbageRecord, GarbageRef, DEFAULT_MAX_OLD_INDEXES,
+    DEFAULT_MIN_TIME_GARBAGE_MINS,
 };
 #[cfg(feature = "embedded-orchestrator")]
-pub use orchestrator::{maybe_refresh_after_commit, require_refresh_before_commit, PostCommitIndexResult};
-pub use refresh::{refresh_index, refresh_index_with_prev, RefreshIndexResult, RefreshResult, RefreshStats};
-pub use stats::{IndexStatsHook, NoOpStatsHook, StatsArtifacts, StatsSummary};
-pub use gc::{
-    CleanGarbageConfig, CleanGarbageResult, GarbageRecord, GarbageRef,
-    clean_garbage, collect_garbage_addresses, load_garbage_record, write_garbage_record,
-    DEFAULT_MAX_OLD_INDEXES, DEFAULT_MIN_TIME_GARBAGE_MINS,
+pub use orchestrator::{
+    maybe_refresh_after_commit, require_refresh_before_commit, PostCommitIndexResult,
 };
+pub use orchestrator::{
+    BackgroundIndexerWorker, IndexCompletion, IndexOutcome, IndexPhase, IndexStatusSnapshot,
+    IndexerHandle, IndexerOrchestrator,
+};
+pub use refresh::{
+    refresh_index, refresh_index_with_prev, RefreshIndexResult, RefreshResult, RefreshStats,
+};
+pub use stats::{IndexStatsHook, NoOpStatsHook, StatsArtifacts, StatsSummary};
 
 // Note: The following types/functions are defined in this module and are automatically public:
 // - build_index_for_ledger (heavy bounds: Storage + Send), refresh_index_for_ledger (light bounds)
@@ -125,8 +129,7 @@ use fluree_db_core::serde::json::PrevIndexRef;
 use fluree_db_core::{ContentAddressedWrite, Db, Storage, StorageWrite};
 use fluree_db_nameservice::{NameService, Publisher};
 use fluree_db_novelty::{
-    load_commit, trace_commit_envelopes, trace_commits,
-    Commit, CommitEnvelope, Novelty,
+    load_commit, trace_commit_envelopes, trace_commits, Commit, CommitEnvelope, Novelty,
 };
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -347,9 +350,15 @@ impl IndexerConfigSnapshot {
         IndexerConfig {
             leaf_target_bytes: self.leaf_target_bytes.unwrap_or(default.leaf_target_bytes),
             leaf_max_bytes: self.leaf_max_bytes.unwrap_or(default.leaf_max_bytes),
-            branch_target_children: self.branch_target_children.unwrap_or(default.branch_target_children),
-            branch_max_children: self.branch_max_children.unwrap_or(default.branch_max_children),
-            gc_max_old_indexes: self.gc_max_old_indexes.unwrap_or(default.gc_max_old_indexes),
+            branch_target_children: self
+                .branch_target_children
+                .unwrap_or(default.branch_target_children),
+            branch_max_children: self
+                .branch_max_children
+                .unwrap_or(default.branch_max_children),
+            gc_max_old_indexes: self
+                .gc_max_old_indexes
+                .unwrap_or(default.gc_max_old_indexes),
             gc_min_time_mins: self.gc_min_time_mins.unwrap_or(default.gc_min_time_mins),
         }
     }
@@ -384,21 +393,27 @@ pub async fn load_checkpoint<S: Storage>(
     let address = checkpoint_address(alias);
     match storage.read_bytes(&address).await {
         Ok(bytes) => {
-            let checkpoint: ReindexCheckpoint = serde_json::from_slice(&bytes)
-                .map_err(|e| IndexerError::Checkpoint(format!(
-                    "Failed to parse checkpoint at {}: {}", address, e
-                )))?;
+            let checkpoint: ReindexCheckpoint = serde_json::from_slice(&bytes).map_err(|e| {
+                IndexerError::Checkpoint(format!(
+                    "Failed to parse checkpoint at {}: {}",
+                    address, e
+                ))
+            })?;
             Ok(Some(checkpoint))
         }
         Err(e) => {
             // Best-effort detection of "not found" errors via string matching.
             // See doc comment above for caveats.
             let msg = e.to_string().to_lowercase();
-            if msg.contains("not found") || msg.contains("does not exist") || msg.contains("no such file") {
+            if msg.contains("not found")
+                || msg.contains("does not exist")
+                || msg.contains("no such file")
+            {
                 Ok(None)
             } else {
                 Err(IndexerError::Checkpoint(format!(
-                    "Failed to read checkpoint at {}: {}", address, e
+                    "Failed to read checkpoint at {}: {}",
+                    address, e
                 )))
             }
         }
@@ -412,13 +427,10 @@ pub async fn write_checkpoint<S: fluree_db_core::StorageWrite>(
 ) -> Result<()> {
     let address = checkpoint_address(&checkpoint.alias);
     let bytes = serde_json::to_vec_pretty(checkpoint)
-        .map_err(|e| IndexerError::Checkpoint(format!(
-            "Failed to serialize checkpoint: {}", e
-        )))?;
-    storage.write_bytes(&address, &bytes).await
-        .map_err(|e| IndexerError::Checkpoint(format!(
-            "Failed to write checkpoint to {}: {}", address, e
-        )))?;
+        .map_err(|e| IndexerError::Checkpoint(format!("Failed to serialize checkpoint: {}", e)))?;
+    storage.write_bytes(&address, &bytes).await.map_err(|e| {
+        IndexerError::Checkpoint(format!("Failed to write checkpoint to {}: {}", address, e))
+    })?;
     tracing::debug!(
         address = %address,
         last_processed_t = checkpoint.last_processed_t,
@@ -428,10 +440,7 @@ pub async fn write_checkpoint<S: fluree_db_core::StorageWrite>(
 }
 
 /// Delete a reindex checkpoint from storage
-pub async fn delete_checkpoint<S: StorageWrite>(
-    storage: &S,
-    alias: &str,
-) -> Result<()> {
+pub async fn delete_checkpoint<S: StorageWrite>(storage: &S, alias: &str) -> Result<()> {
     let address = checkpoint_address(alias);
     // Ignore errors - checkpoint may not exist
     let _ = storage.delete(&address).await;
@@ -474,7 +483,10 @@ impl std::fmt::Debug for BatchedRebuildConfig {
             .field("max_batch_commits", &self.max_batch_commits)
             .field("checkpoint", &self.checkpoint)
             .field("checkpoint_interval", &self.checkpoint_interval)
-            .field("progress_callback", &self.progress_callback.as_ref().map(|_| "<callback>"))
+            .field(
+                "progress_callback",
+                &self.progress_callback.as_ref().map(|_| "<callback>"),
+            )
             .finish()
     }
 }
@@ -555,10 +567,12 @@ fn build_prev_index_ref(
     prev_index_address: Option<&String>,
     prev_index_t: Option<i64>,
 ) -> Option<PrevIndexRef> {
-    prev_index_address.zip(prev_index_t).map(|(addr, t)| PrevIndexRef {
-        t,
-        address: addr.clone(),
-    })
+    prev_index_address
+        .zip(prev_index_t)
+        .map(|(addr, t)| PrevIndexRef {
+            t,
+            address: addr.clone(),
+        })
 }
 
 /// Create an IndexResult from a RefreshIndexResult.
@@ -770,8 +784,8 @@ where
         commits_processed += 1;
 
         // Check if we need to flush this batch
-        let should_flush = novelty.size >= config.batch_bytes
-            || commits_in_batch >= config.max_batch_commits;
+        let should_flush =
+            novelty.size >= config.batch_bytes || commits_in_batch >= config.max_batch_commits;
 
         if should_flush {
             let batch_novelty_bytes = novelty.size;
@@ -1092,7 +1106,8 @@ where
             }
             Err(e) => {
                 return Err(IndexerError::Checkpoint(format!(
-                    "Failed to load intermediate index at {}: {}", index_addr, e
+                    "Failed to load intermediate index at {}: {}",
+                    index_addr, e
                 )));
             }
         }
@@ -1262,10 +1277,7 @@ where
     // No remaining commits - checkpoint was at completion
     delete_checkpoint(storage, &checkpoint.alias).await?;
 
-    tracing::info!(
-        index_t = db.t,
-        "Resumed rebuild: no remaining commits"
-    );
+    tracing::info!(index_t = db.t, "Resumed rebuild: no remaining commits");
 
     Ok(BatchedRebuildResult {
         index_result: IndexResult {
@@ -1319,10 +1331,7 @@ where
         .ok_or_else(|| IndexerError::LedgerNotFound(alias.to_string()))?;
 
     // Require an existing index
-    let index_addr = record
-        .index_address
-        .as_ref()
-        .ok_or(IndexerError::NoIndex)?;
+    let index_addr = record.index_address.as_ref().ok_or(IndexerError::NoIndex)?;
 
     // If index is already current, return it directly (no work needed)
     if record.index_t >= record.commit_t {
@@ -1480,7 +1489,12 @@ async fn try_refresh<S>(
 where
     S: Storage + StorageWrite + ContentAddressedWrite + Sync + Clone + 'static,
 {
-    let span = tracing::debug_span!("index_refresh", ledger_alias = alias, from_t = index_t, to_t = commit_t);
+    let span = tracing::debug_span!(
+        "index_refresh",
+        ledger_alias = alias,
+        from_t = index_t,
+        to_t = commit_t
+    );
     let _guard = span.enter();
 
     // 1. Load existing Db from the index
@@ -1517,7 +1531,10 @@ where
     // 3. Apply namespace deltas to Db BEFORE refresh
     // This ensures the refreshed DbRoot has the correct namespace_codes
     if !namespace_delta.is_empty() {
-        tracing::debug!(namespace_update_count = namespace_delta.len(), "applying namespace deltas");
+        tracing::debug!(
+            namespace_update_count = namespace_delta.len(),
+            "applying namespace deltas"
+        );
         for (code, prefix) in &namespace_delta {
             db.namespace_codes.insert(*code, prefix.clone());
         }
@@ -1530,8 +1547,15 @@ where
         address: index_address.to_string(),
     });
     let refresh_result = refresh_index_with_prev(
-        storage, &db, &novelty, commit_t, config.clone(), None, prev_index
-    ).await?;
+        storage,
+        &db,
+        &novelty,
+        commit_t,
+        config.clone(),
+        None,
+        prev_index,
+    )
+    .await?;
 
     tracing::debug!(
         nodes_written = refresh_result.stats.nodes_written,
@@ -1544,10 +1568,7 @@ where
 }
 
 /// Publish index result to nameservice
-pub async fn publish_index_result<P: Publisher>(
-    publisher: &P,
-    result: &IndexResult,
-) -> Result<()> {
+pub async fn publish_index_result<P: Publisher>(publisher: &P, result: &IndexResult) -> Result<()> {
     publisher
         .publish_index(&result.alias, &result.root_address, result.index_t)
         .await
@@ -1577,11 +1598,17 @@ mod tests {
     fn test_normalize_alias_for_comparison() {
         // Canonical format passes through
         assert_eq!(normalize_alias_for_comparison("test:main"), "test:main");
-        assert_eq!(normalize_alias_for_comparison("my-ledger:dev"), "my-ledger:dev");
+        assert_eq!(
+            normalize_alias_for_comparison("my-ledger:dev"),
+            "my-ledger:dev"
+        );
 
         // Storage-path format with single slash converts to canonical
         assert_eq!(normalize_alias_for_comparison("test/main"), "test:main");
-        assert_eq!(normalize_alias_for_comparison("my-ledger/dev"), "my-ledger:dev");
+        assert_eq!(
+            normalize_alias_for_comparison("my-ledger/dev"),
+            "my-ledger:dev"
+        );
 
         // Both formats normalize to the same canonical form
         assert_eq!(
@@ -1594,21 +1621,17 @@ mod tests {
 
         // Canonical format with explicit branch takes precedence over slashes in name
         // "org/project:main" - the colon is the branch separator, not the slash
-        assert_eq!(normalize_alias_for_comparison("org/project:main"), "org/project:main");
+        assert_eq!(
+            normalize_alias_for_comparison("org/project:main"),
+            "org/project:main"
+        );
 
         // Multiple slashes without colon - treated as name with default branch
         // (we don't know which slash is the "branch separator")
         assert_eq!(normalize_alias_for_comparison("a/b/c"), "a/b/c:main");
     }
 
-    fn make_flake(
-        s_code: i32,
-        s_name: &str,
-        p_code: i32,
-        p_name: &str,
-        val: i64,
-        t: i64,
-    ) -> Flake {
+    fn make_flake(s_code: i32, s_name: &str, p_code: i32, p_name: &str, val: i64, t: i64) -> Flake {
         Flake::new(
             Sid::new(s_code, s_name),
             Sid::new(p_code, p_name),
@@ -1754,9 +1777,13 @@ mod tests {
             .unwrap();
 
         // Publish the index
-        ns.publish_index("test:main", &first_result.root_address, first_result.index_t)
-            .await
-            .unwrap();
+        ns.publish_index(
+            "test:main",
+            &first_result.root_address,
+            first_result.index_t,
+        )
+        .await
+        .unwrap();
 
         // Try to build again - should return existing index (no-op)
         let second_result = build_index_for_ledger(&storage, &ns, "test:main", config)
@@ -1803,9 +1830,13 @@ mod tests {
         let initial_result = build_index_for_ledger(&storage, &ns, "test:main", config.clone())
             .await
             .unwrap();
-        ns.publish_index("test:main", &initial_result.root_address, initial_result.index_t)
-            .await
-            .unwrap();
+        ns.publish_index(
+            "test:main",
+            &initial_result.root_address,
+            initial_result.index_t,
+        )
+        .await
+        .unwrap();
 
         // Add more commits at t=2 and t=3
         let flakes_t2 = vec![make_flake(1, "ex:bob", 1, "ex:age", 25, 2)];
@@ -2018,7 +2049,14 @@ mod tests {
         // Create commits 2-5
         let mut addresses = vec![addr1.clone()];
         for t in 2i64..=5 {
-            let flakes = vec![make_flake(t as i32, &format!("ex:s{}", t), 1, "ex:age", t * 10, t)];
+            let flakes = vec![make_flake(
+                t as i32,
+                &format!("ex:s{}", t),
+                1,
+                "ex:age",
+                t * 10,
+                t,
+            )];
             let commit = Commit {
                 address: String::new(),
                 id: None,
@@ -2056,13 +2094,18 @@ mod tests {
             .expect("Batched rebuild should succeed");
 
         // Should have flushed multiple batches (5 commits / 2 per batch = 3 batches)
-        assert!(result.batches_flushed >= 2, "Should flush at least 2 batches, got {}", result.batches_flushed);
+        assert!(
+            result.batches_flushed >= 2,
+            "Should flush at least 2 batches, got {}",
+            result.batches_flushed
+        );
         assert_eq!(result.index_result.index_t, 5);
 
         // Verify we can load the resulting index
-        let db: Db<_, NoCache> = Db::load(storage.clone(), NoCache, &result.index_result.root_address)
-            .await
-            .expect("Should load db from batched rebuild");
+        let db: Db<_, NoCache> =
+            Db::load(storage.clone(), NoCache, &result.index_result.root_address)
+                .await
+                .expect("Should load db from batched rebuild");
         assert_eq!(db.t, 5);
     }
 
@@ -2113,7 +2156,14 @@ mod tests {
         // Create commits 2-5
         let mut addresses = vec![addr1];
         for t in 2i64..=5 {
-            let flakes = vec![make_flake(t as i32, &format!("ex:s{}", t), 1, "ex:age", t * 10, t)];
+            let flakes = vec![make_flake(
+                t as i32,
+                &format!("ex:s{}", t),
+                1,
+                "ex:age",
+                t * 10,
+                t,
+            )];
             let commit = Commit {
                 address: String::new(),
                 id: None,
@@ -2152,26 +2202,33 @@ mod tests {
             progress_callback: Some(callback),
         };
 
-        let result = batched_rebuild_from_commits(
-            &storage,
-            addresses.last().unwrap(),
-            "test:main",
-            config,
-        )
-        .await
-        .expect("Should succeed");
+        let result =
+            batched_rebuild_from_commits(&storage, addresses.last().unwrap(), "test:main", config)
+                .await
+                .expect("Should succeed");
 
         // Verify callback was invoked at least once
         let count = callback_count.load(Ordering::SeqCst);
-        assert!(count >= 1, "Progress callback should be invoked at least once, was invoked {} times", count);
+        assert!(
+            count >= 1,
+            "Progress callback should be invoked at least once, was invoked {} times",
+            count
+        );
 
         // Verify last progress values make sense
-        let last = last_progress.lock().unwrap().clone().expect("Should have progress");
+        let last = last_progress
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("Should have progress");
         assert_eq!(last.alias, "test:main");
         assert_eq!(last.total_commits, 5);
         assert_eq!(last.commits_processed, 5); // Final callback should show all processed
         assert_eq!(last.batches_flushed, result.batches_flushed);
-        assert!(last.commits_per_sec > 0.0, "Should have positive throughput");
+        assert!(
+            last.commits_per_sec > 0.0,
+            "Should have positive throughput"
+        );
     }
 
     #[tokio::test]
@@ -2287,7 +2344,14 @@ mod tests {
         // Create commits 2-10
         let mut addresses = vec![addr1];
         for t in 2i64..=10 {
-            let flakes = vec![make_flake(t as i32, &format!("ex:s{}", t), 1, "ex:age", t * 10, t)];
+            let flakes = vec![make_flake(
+                t as i32,
+                &format!("ex:s{}", t),
+                1,
+                "ex:age",
+                t * 10,
+                t,
+            )];
             let commit = Commit {
                 address: String::new(),
                 id: None,
@@ -2318,14 +2382,10 @@ mod tests {
             progress_callback: None,
         };
 
-        let expected_result = batched_rebuild_from_commits(
-            &storage,
-            head_address,
-            "test:main",
-            config_no_checkpoint,
-        )
-        .await
-        .expect("Full build should succeed");
+        let expected_result =
+            batched_rebuild_from_commits(&storage, head_address, "test:main", config_no_checkpoint)
+                .await
+                .expect("Full build should succeed");
 
         // Now do a build WITH checkpointing
         let config_with_checkpoint = BatchedRebuildConfig {
@@ -2347,11 +2407,19 @@ mod tests {
         .expect("Build with checkpoint should succeed");
 
         // Verify results match
-        assert_eq!(result_with_checkpoint.index_result.index_t, expected_result.index_result.index_t);
+        assert_eq!(
+            result_with_checkpoint.index_result.index_t,
+            expected_result.index_result.index_t
+        );
 
         // Checkpoint should be deleted on successful completion
-        let checkpoint = load_checkpoint(&storage, "test:main").await.expect("Load should not error");
-        assert!(checkpoint.is_none(), "Checkpoint should be deleted after successful completion");
+        let checkpoint = load_checkpoint(&storage, "test:main")
+            .await
+            .expect("Load should not error");
+        assert!(
+            checkpoint.is_none(),
+            "Checkpoint should be deleted after successful completion"
+        );
     }
 
     #[tokio::test]
@@ -2392,7 +2460,14 @@ mod tests {
         // Create commits 2-5 (first half)
         let mut addresses = vec![addr1.clone()];
         for t in 2i64..=5 {
-            let flakes = vec![make_flake(t as i32, &format!("ex:s{}", t), 1, "ex:age", t * 10, t)];
+            let flakes = vec![make_flake(
+                t as i32,
+                &format!("ex:s{}", t),
+                1,
+                "ex:age",
+                t * 10,
+                t,
+            )];
             let commit = Commit {
                 address: String::new(),
                 id: None,
@@ -2414,7 +2489,14 @@ mod tests {
 
         // Create commits 6-10 (second half)
         for t in 6i64..=10 {
-            let flakes = vec![make_flake(t as i32, &format!("ex:s{}", t), 1, "ex:age", t * 10, t)];
+            let flakes = vec![make_flake(
+                t as i32,
+                &format!("ex:s{}", t),
+                1,
+                "ex:age",
+                t * 10,
+                t,
+            )];
             let commit = Commit {
                 address: String::new(),
                 id: None,
@@ -2444,14 +2526,10 @@ mod tests {
             progress_callback: None,
         };
 
-        let partial_result = batched_rebuild_from_commits(
-            &storage,
-            &addr5,
-            "test:main",
-            partial_config,
-        )
-        .await
-        .expect("Partial build should succeed");
+        let partial_result =
+            batched_rebuild_from_commits(&storage, &addr5, "test:main", partial_config)
+                .await
+                .expect("Partial build should succeed");
 
         // The partial index is at t=5
         assert_eq!(partial_result.index_result.index_t, 5);
@@ -2472,17 +2550,15 @@ mod tests {
             indexer_config: Some(IndexerConfigSnapshot::from(&IndexerConfig::small())),
         };
 
-        write_checkpoint(&storage, &checkpoint).await.expect("Should write checkpoint");
+        write_checkpoint(&storage, &checkpoint)
+            .await
+            .expect("Should write checkpoint");
 
         // Step 3: Resume from checkpoint
-        let resume_result = batched_rebuild_resume(
-            &storage,
-            &head_address,
-            checkpoint,
-            IndexerConfig::small(),
-        )
-        .await
-        .expect("Resume should succeed");
+        let resume_result =
+            batched_rebuild_resume(&storage, &head_address, checkpoint, IndexerConfig::small())
+                .await
+                .expect("Resume should succeed");
 
         // Step 4: Do a full build from scratch for comparison
         let full_config = BatchedRebuildConfig {
@@ -2494,26 +2570,26 @@ mod tests {
             progress_callback: None,
         };
 
-        let full_result = batched_rebuild_from_commits(
-            &storage,
-            &head_address,
-            "test:main",
-            full_config,
-        )
-        .await
-        .expect("Full build should succeed");
+        let full_result =
+            batched_rebuild_from_commits(&storage, &head_address, "test:main", full_config)
+                .await
+                .expect("Full build should succeed");
 
         // Step 5: Verify resume produces the same result as full build
         assert_eq!(
-            resume_result.index_result.index_t,
-            full_result.index_result.index_t,
+            resume_result.index_result.index_t, full_result.index_result.index_t,
             "Resume should reach same t as full build"
         );
         assert_eq!(resume_result.index_result.index_t, 10);
 
         // Verify checkpoint is deleted after successful resume
-        let checkpoint_after = load_checkpoint(&storage, "test:main").await.expect("Load should not error");
-        assert!(checkpoint_after.is_none(), "Checkpoint should be deleted after successful resume");
+        let checkpoint_after = load_checkpoint(&storage, "test:main")
+            .await
+            .expect("Load should not error");
+        assert!(
+            checkpoint_after.is_none(),
+            "Checkpoint should be deleted after successful resume"
+        );
     }
 
     #[tokio::test]
@@ -2537,7 +2613,9 @@ mod tests {
             indexer_config: None,
         };
 
-        write_checkpoint(&storage, &checkpoint).await.expect("Should write checkpoint");
+        write_checkpoint(&storage, &checkpoint)
+            .await
+            .expect("Should write checkpoint");
 
         // Try to resume with a different head address
         let result = batched_rebuild_resume(
@@ -2553,7 +2631,8 @@ mod tests {
         let err = result.unwrap_err();
         assert!(
             matches!(err, IndexerError::CheckpointHeadMismatch { .. }),
-            "Expected CheckpointHeadMismatch error, got: {:?}", err
+            "Expected CheckpointHeadMismatch error, got: {:?}",
+            err
         );
     }
 
@@ -2563,10 +2642,8 @@ mod tests {
         let storage = MemoryStorage::new();
 
         // Create initial index with minimal namespaces
-        let namespace_codes: BTreeMap<i32, String> = BTreeMap::from([
-            (0, "fluree:".to_string()),
-            (1, "ex:".to_string()),
-        ]);
+        let namespace_codes: BTreeMap<i32, String> =
+            BTreeMap::from([(0, "fluree:".to_string()), (1, "ex:".to_string())]);
         let initial_flakes = vec![make_flake(1, "ex:s0", 1, "ex:name", 100, 1)];
         let _initial_result = builder::build_index(
             &storage,
@@ -2636,7 +2713,7 @@ mod tests {
         // Use tiny batch size to force namespace deltas to span batches
         let config = BatchedRebuildConfig {
             indexer_config: IndexerConfig::small(),
-            batch_bytes: 50, // Very small
+            batch_bytes: 50,      // Very small
             max_batch_commits: 1, // Force batch after each commit
             checkpoint: false,
             checkpoint_interval: DEFAULT_CHECKPOINT_INTERVAL,
@@ -2648,13 +2725,23 @@ mod tests {
             .expect("Batched rebuild should succeed");
 
         // Verify all namespaces are present in final index
-        let db: Db<_, NoCache> = Db::load(storage.clone(), NoCache, &result.index_result.root_address)
-            .await
-            .expect("Should load final db");
+        let db: Db<_, NoCache> =
+            Db::load(storage.clone(), NoCache, &result.index_result.root_address)
+                .await
+                .expect("Should load final db");
 
-        assert!(db.namespace_codes.contains_key(&1), "Should have ex: namespace");
-        assert!(db.namespace_codes.contains_key(&100), "Should have schema: namespace");
-        assert!(db.namespace_codes.contains_key(&200), "Should have foaf: namespace");
+        assert!(
+            db.namespace_codes.contains_key(&1),
+            "Should have ex: namespace"
+        );
+        assert!(
+            db.namespace_codes.contains_key(&100),
+            "Should have schema: namespace"
+        );
+        assert!(
+            db.namespace_codes.contains_key(&200),
+            "Should have foaf: namespace"
+        );
         assert_eq!(db.namespace_codes.get(&100), Some(&"schema:".to_string()));
         assert_eq!(db.namespace_codes.get(&200), Some(&"foaf:".to_string()));
     }

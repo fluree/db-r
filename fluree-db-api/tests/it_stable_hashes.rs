@@ -55,10 +55,12 @@ async fn stable_commit_id_and_address_for_identical_transaction() {
     let (id1, addr1) = run_once().await;
     let (id2, addr2) = run_once().await;
 
-    assert_eq!(id1, id2, "commit IDs should be stable for identical transactions");
+    assert_eq!(
+        id1, id2,
+        "commit IDs should be stable for identical transactions"
+    );
     assert_eq!(
         addr1, addr2,
         "commit addresses should be stable for identical transactions"
     );
 }
-

@@ -117,7 +117,9 @@ impl LineIndex {
 
     /// Get the byte offset of a line start.
     pub fn line_start(&self, line: u32) -> Option<usize> {
-        self.line_starts.get(line.saturating_sub(1) as usize).copied()
+        self.line_starts
+            .get(line.saturating_sub(1) as usize)
+            .copied()
     }
 
     /// Get the byte offset of a line end (exclusive).

@@ -58,8 +58,7 @@ impl CommitRef {
 ///
 /// Records the cumulative state of the database at this commit point.
 /// This is NOT the flake count of the commit itself, but the total DB state.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct CommitData {
     /// Content-address IRI (e.g., "fluree:db:sha256:...")
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,7 +80,6 @@ pub struct CommitData {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous: Option<Box<CommitData>>,
 }
-
 
 /// Index reference embedded in a commit
 ///
@@ -409,12 +407,14 @@ impl CommitEnvelope {
     pub fn index_ref(&self) -> Option<IndexRef> {
         if let Some(ref idx) = self.index {
             Some(idx.clone())
-        } else { self.indexed_at.as_ref().map(|addr| IndexRef {
+        } else {
+            self.indexed_at.as_ref().map(|addr| IndexRef {
                 id: None,
                 address: addr.clone(),
                 v: INDEX_VERSION_UNKNOWN,
                 t: None,
-            }) }
+            })
+        }
     }
 
     /// Get the effective index address
@@ -432,11 +432,13 @@ impl CommitEnvelope {
 ///
 /// This is more memory-efficient than `load_commit` when you only need
 /// metadata for scanning commit history.
-pub async fn load_commit_envelope<S: Storage>(storage: &S, address: &str) -> Result<CommitEnvelope> {
-    let data = storage
-        .read_bytes(address)
-        .await
-        .map_err(|e| NoveltyError::storage(format!("Failed to read commit envelope {}: {}", address, e)))?;
+pub async fn load_commit_envelope<S: Storage>(
+    storage: &S,
+    address: &str,
+) -> Result<CommitEnvelope> {
+    let data = storage.read_bytes(address).await.map_err(|e| {
+        NoveltyError::storage(format!("Failed to read commit envelope {}: {}", address, e))
+    })?;
 
     let envelope: CommitEnvelope = serde_json::from_slice(&data)?;
     Ok(envelope)
@@ -680,10 +682,10 @@ mod tests {
 
         // Create a chain of commits with flakes: 3 -> 2 -> 1
         let commit1 = Commit::new("commit-1", 1, vec![make_test_flake(1, 1, 1, 1)]);
-        let commit2 = Commit::new("commit-2", 2, vec![make_test_flake(2, 2, 2, 2)])
-            .with_previous("commit-1");
-        let mut commit3 = Commit::new("commit-3", 3, vec![make_test_flake(3, 3, 3, 3)])
-            .with_previous("commit-2");
+        let commit2 =
+            Commit::new("commit-2", 2, vec![make_test_flake(2, 2, 2, 2)]).with_previous("commit-1");
+        let mut commit3 =
+            Commit::new("commit-3", 3, vec![make_test_flake(3, 3, 3, 3)]).with_previous("commit-2");
         commit3.index = Some(IndexRef::new("index-at-3").with_t(3));
 
         storage.insert("commit-1", serde_json::to_vec(&commit1).unwrap());
@@ -729,9 +731,7 @@ mod tests {
         let storage = MemoryStorage::new();
 
         // Create a commit with many flakes
-        let many_flakes: Vec<Flake> = (0..1000)
-            .map(|i| make_test_flake(i, i, i, 1))
-            .collect();
+        let many_flakes: Vec<Flake> = (0..1000).map(|i| make_test_flake(i, i, i, 1)).collect();
         let commit = Commit::new("big-commit", 1, many_flakes)
             .with_namespace_delta(HashMap::from([(50, "test:".to_string())]));
 
@@ -740,6 +740,9 @@ mod tests {
         // Load as envelope - should succeed and ignore flakes
         let envelope = load_commit_envelope(&storage, "big-commit").await.unwrap();
         assert_eq!(envelope.t, 1);
-        assert_eq!(envelope.namespace_delta.get(&50), Some(&"test:".to_string()));
+        assert_eq!(
+            envelope.namespace_delta.get(&50),
+            Some(&"test:".to_string())
+        );
     }
 }

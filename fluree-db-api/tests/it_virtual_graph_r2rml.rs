@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 // Additional imports for engine-level E2E tests
 use fluree_db_api::{
-    execute_with_r2rml, ExecutableQuery, FlureeBuilder, ParsedContext, Pattern,
-    StorageWrite, VarRegistry, VirtualGraphPublisher,
+    execute_with_r2rml, ExecutableQuery, FlureeBuilder, ParsedContext, Pattern, StorageWrite,
+    VarRegistry, VirtualGraphPublisher,
 };
 use fluree_db_core::{NoOverlay, Tracker};
 use fluree_db_query::ir::GraphName;
@@ -225,8 +225,10 @@ async fn test_mock_r2rml_provider() {
 /// Test that R2RML materialization produces correct RDF terms.
 #[test]
 fn test_r2rml_term_materialization() {
-    use fluree_db_r2rml::materialize::{materialize_subject_from_batch, materialize_object_from_batch, RdfTerm};
-    use fluree_db_r2rml::mapping::{SubjectMap, ObjectMap};
+    use fluree_db_r2rml::mapping::{ObjectMap, SubjectMap};
+    use fluree_db_r2rml::materialize::{
+        materialize_object_from_batch, materialize_subject_from_batch, RdfTerm,
+    };
 
     let batch = sample_airline_batch();
 
@@ -259,21 +261,17 @@ fn test_r2rml_term_materialization() {
 /// Test materialization handles null values correctly.
 #[test]
 fn test_r2rml_null_handling() {
-    use fluree_db_r2rml::materialize::{materialize_subject_from_batch, RdfTerm};
     use fluree_db_r2rml::mapping::SubjectMap;
+    use fluree_db_r2rml::materialize::{materialize_subject_from_batch, RdfTerm};
 
     // Create batch with null in template column
-    let schema = BatchSchema::new(vec![
-        FieldInfo {
-            name: "id".to_string(),
-            field_type: FieldType::Int64,
-            nullable: true,
-            field_id: 1,
-        },
-    ]);
-    let columns = vec![
-        Column::Int64(vec![Some(1), None, Some(3)]),
-    ];
+    let schema = BatchSchema::new(vec![FieldInfo {
+        name: "id".to_string(),
+        field_type: FieldType::Int64,
+        nullable: true,
+        field_id: 1,
+    }]);
+    let columns = vec![Column::Int64(vec![Some(1), None, Some(3)])];
     let batch = ColumnBatch::new(Arc::new(schema), columns).unwrap();
 
     let subject_map = SubjectMap::template("http://example.org/{id}");
@@ -284,7 +282,10 @@ fn test_r2rml_null_handling() {
 
     // Row 1: null id - should produce None (skip row)
     let result1 = materialize_subject_from_batch(&subject_map, &batch, 1).unwrap();
-    assert!(result1.is_none(), "Null template column should produce None");
+    assert!(
+        result1.is_none(),
+        "Null template column should produce None"
+    );
 
     // Row 2: non-null id
     let result2 = materialize_subject_from_batch(&subject_map, &batch, 2).unwrap();
@@ -344,8 +345,8 @@ async fn e2e_r2rml_query_iceberg_table() {
     // Default to Polaris (8182) with OAuth2 auth
     let catalog_uri = std::env::var("ICEBERG_CATALOG_URI")
         .unwrap_or_else(|_| "http://localhost:8182/api/catalog".to_string());
-    let warehouse = std::env::var("ICEBERG_WAREHOUSE")
-        .unwrap_or_else(|_| "openflights".to_string());
+    let warehouse =
+        std::env::var("ICEBERG_WAREHOUSE").unwrap_or_else(|_| "openflights".to_string());
     // OAuth2 credential for Polaris: client_id:client_secret
     let oauth2_credential = std::env::var("ICEBERG_OAUTH2_CREDENTIAL")
         .ok()
@@ -354,7 +355,13 @@ async fn e2e_r2rml_query_iceberg_table() {
     eprintln!("E2E Test Configuration:");
     eprintln!("  Catalog URI: {}", catalog_uri);
     eprintln!("  Warehouse: {}", warehouse);
-    eprintln!("  OAuth2: {}", oauth2_credential.as_ref().map(|c| c.split(':').next().unwrap_or("?")).unwrap_or("none"));
+    eprintln!(
+        "  OAuth2: {}",
+        oauth2_credential
+            .as_ref()
+            .map(|c| c.split(':').next().unwrap_or("?"))
+            .unwrap_or("none")
+    );
 
     // Compile R2RML mapping
     let mapping = R2rmlLoader::from_turtle(AIRLINES_R2RML)
@@ -362,7 +369,10 @@ async fn e2e_r2rml_query_iceberg_table() {
         .compile()
         .expect("Failed to compile R2RML");
 
-    eprintln!("Compiled R2RML mapping with {} TriplesMap(s)", mapping.triples_maps.len());
+    eprintln!(
+        "Compiled R2RML mapping with {} TriplesMap(s)",
+        mapping.triples_maps.len()
+    );
 
     // Create a custom provider that uses Iceberg directly
     let provider = IcebergDirectProvider {
@@ -523,10 +533,10 @@ async fn e2e_fluree_r2rml_provider_full_flow() {
     // Configuration from environment
     let catalog_uri = std::env::var("ICEBERG_CATALOG_URI")
         .unwrap_or_else(|_| "http://localhost:8182/api/catalog".to_string());
-    let warehouse = std::env::var("ICEBERG_WAREHOUSE")
-        .unwrap_or_else(|_| "openflights".to_string());
-    let oauth2_credential = std::env::var("ICEBERG_OAUTH2_CREDENTIAL")
-        .unwrap_or_else(|_| "root:s3cr3t".to_string());
+    let warehouse =
+        std::env::var("ICEBERG_WAREHOUSE").unwrap_or_else(|_| "openflights".to_string());
+    let oauth2_credential =
+        std::env::var("ICEBERG_OAUTH2_CREDENTIAL").unwrap_or_else(|_| "root:s3cr3t".to_string());
 
     eprintln!("E2E FlureeR2rmlProvider Full Flow Test:");
     eprintln!("  Catalog URI: {}", catalog_uri);
@@ -607,8 +617,8 @@ async fn e2e_fluree_r2rml_provider_full_flow() {
         }
         Err(e) => {
             eprintln!("  VG creation failed: {}", e);
-            let is_connection_error = e.to_string().contains("connection")
-                || e.to_string().contains("Connection");
+            let is_connection_error =
+                e.to_string().contains("connection") || e.to_string().contains("Connection");
 
             if strict_mode {
                 // In strict mode, fail hard on any error
@@ -732,7 +742,9 @@ impl R2rmlTableProvider for IcebergDirectProvider {
     ) -> QueryResult<Vec<ColumnBatch>> {
         use fluree_db_iceberg::{
             auth::AuthConfig,
-            catalog::{parse_table_identifier, RestCatalogClient, RestCatalogConfig, SendCatalogClient},
+            catalog::{
+                parse_table_identifier, RestCatalogClient, RestCatalogConfig, SendCatalogClient,
+            },
             config_value::ConfigValue,
             io::{S3IcebergStorage, SendIcebergStorage, SendParquetReader},
             metadata::TableMetadata,
@@ -791,7 +803,10 @@ impl R2rmlTableProvider for IcebergDirectProvider {
             .map_err(|e| QueryError::Internal(format!("Load table error: {}", e)))?;
 
         eprintln!("  Metadata location: {}", load_response.metadata_location);
-        eprintln!("  Has vended creds: {}", load_response.credentials.is_some());
+        eprintln!(
+            "  Has vended creds: {}",
+            load_response.credentials.is_some()
+        );
 
         // Create S3 storage
         let storage = if let Some(creds) = load_response.credentials {
@@ -900,7 +915,11 @@ impl R2rmlTableProvider for IcebergDirectProvider {
         }
 
         let total_rows: usize = all_batches.iter().map(|b| b.num_rows).sum();
-        eprintln!("  Loaded {} batches, {} total rows", all_batches.len(), total_rows);
+        eprintln!(
+            "  Loaded {} batches, {} total rows",
+            all_batches.len(),
+            total_rows
+        );
 
         Ok(all_batches)
     }
@@ -957,22 +976,33 @@ fn test_ref_object_map_compilation() {
     eprintln!("Found TriplesMap keys: {:?}", keys);
 
     // Should have two TriplesMap
-    assert_eq!(mapping.triples_maps.len(), 2, "Expected 2 TriplesMap, found: {:?}", keys);
+    assert_eq!(
+        mapping.triples_maps.len(),
+        2,
+        "Expected 2 TriplesMap, found: {:?}",
+        keys
+    );
 
     // RouteMapping should reference AirlineMapping
     // Full IRIs as written in Turtle: http://example.org/mapping#AirlineMapping
-    let route_map = mapping.get("http://example.org/mapping#RouteMapping")
+    let route_map = mapping
+        .get("http://example.org/mapping#RouteMapping")
         .expect("RouteMapping not found");
 
     // Find the operatedBy predicate-object map
-    let operated_by_pom = route_map.predicate_object_maps.iter()
+    let operated_by_pom = route_map
+        .predicate_object_maps
+        .iter()
         .find(|pom| pom.predicate_map.as_constant() == Some("http://example.org/operatedBy"))
         .expect("operatedBy POM not found");
 
     // It should have a RefObjectMap
     match &operated_by_pom.object_map {
         fluree_db_r2rml::mapping::ObjectMap::RefObjectMap(rom) => {
-            assert_eq!(rom.parent_triples_map, "http://example.org/mapping#AirlineMapping");
+            assert_eq!(
+                rom.parent_triples_map,
+                "http://example.org/mapping#AirlineMapping"
+            );
             assert_eq!(rom.join_conditions.len(), 1);
             assert_eq!(rom.join_conditions[0].child_column, "airline_id");
             assert_eq!(rom.join_conditions[0].parent_column, "id");
@@ -983,7 +1013,10 @@ fn test_ref_object_map_compilation() {
     // Test find_maps_referencing index
     let referencing = mapping.find_maps_referencing("http://example.org/mapping#AirlineMapping");
     assert_eq!(referencing.len(), 1);
-    assert_eq!(referencing[0].iri, "http://example.org/mapping#RouteMapping");
+    assert_eq!(
+        referencing[0].iri,
+        "http://example.org/mapping#RouteMapping"
+    );
 }
 
 // =============================================================================
@@ -1036,13 +1069,11 @@ async fn engine_e2e_graph_pattern_r2rml_scan() {
         .db
         .encode_iri("http://example.org/name")
         .expect("example.org namespace should be registered for Sid encoding");
-    let inner_patterns = vec![
-        Pattern::Triple(TriplePattern::new(
-            Term::Var(subject_var),
-            Term::Sid(ex_name_sid),
-            Term::Var(name_var),
-        )),
-    ];
+    let inner_patterns = vec![Pattern::Triple(TriplePattern::new(
+        Term::Var(subject_var),
+        Term::Sid(ex_name_sid),
+        Term::Var(name_var),
+    ))];
 
     let graph_pattern = Pattern::Graph {
         name: GraphName::Iri("airlines-vg:main".into()),
@@ -1196,7 +1227,11 @@ async fn engine_e2e_provider_method_calls() {
     .await;
 
     // Assert execution succeeded
-    assert!(result.is_ok(), "Query execution should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Query execution should succeed: {:?}",
+        result.err()
+    );
 
     // Verify provider methods were called in expected order
     assert!(
@@ -1240,7 +1275,11 @@ fn test_iceberg_create_config_validation_valid() {
 
     // Validation should pass
     let result = config.validate();
-    assert!(result.is_ok(), "Valid config should pass validation: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Valid config should pass validation: {:?}",
+        result.err()
+    );
 
     // Check alias
     assert_eq!(config.vg_alias(), "my-iceberg-vg:main");
@@ -1249,11 +1288,8 @@ fn test_iceberg_create_config_validation_valid() {
 /// Test IcebergCreateConfig validation - empty name.
 #[test]
 fn test_iceberg_create_config_validation_empty_name() {
-    let config = IcebergCreateConfig::new(
-        "",
-        "https://polaris.example.com",
-        "openflights.airlines",
-    );
+    let config =
+        IcebergCreateConfig::new("", "https://polaris.example.com", "openflights.airlines");
 
     let result = config.validate();
     assert!(result.is_err(), "Empty name should fail validation");
@@ -1279,11 +1315,7 @@ fn test_iceberg_create_config_validation_name_with_colon() {
 /// Test IcebergCreateConfig validation - empty catalog URI.
 #[test]
 fn test_iceberg_create_config_validation_empty_uri() {
-    let config = IcebergCreateConfig::new(
-        "my-vg",
-        "",
-        "openflights.airlines",
-    );
+    let config = IcebergCreateConfig::new("my-vg", "", "openflights.airlines");
 
     let result = config.validate();
     assert!(result.is_err(), "Empty catalog URI should fail validation");
@@ -1295,34 +1327,36 @@ fn test_iceberg_create_config_validation_invalid_table() {
     let config = IcebergCreateConfig::new(
         "my-vg",
         "https://polaris.example.com",
-        "invalid_table",  // Missing namespace
+        "invalid_table", // Missing namespace
     );
 
     let result = config.validate();
-    assert!(result.is_err(), "Invalid table identifier should fail validation");
+    assert!(
+        result.is_err(),
+        "Invalid table identifier should fail validation"
+    );
 }
 
 /// Test IcebergCreateConfig builder methods.
 #[test]
 fn test_iceberg_create_config_builder() {
-    let config = IcebergCreateConfig::new(
-        "my-vg",
-        "https://polaris.example.com",
-        "ns.table",
-    )
-    .with_branch("dev")
-    .with_warehouse("my-warehouse")
-    .with_auth_bearer("my-token")
-    .with_vended_credentials(false)
-    .with_s3_region("us-west-2")
-    .with_s3_endpoint("http://localhost:9000")
-    .with_s3_path_style(true);
+    let config = IcebergCreateConfig::new("my-vg", "https://polaris.example.com", "ns.table")
+        .with_branch("dev")
+        .with_warehouse("my-warehouse")
+        .with_auth_bearer("my-token")
+        .with_vended_credentials(false)
+        .with_s3_region("us-west-2")
+        .with_s3_endpoint("http://localhost:9000")
+        .with_s3_path_style(true);
 
     assert_eq!(config.vg_alias(), "my-vg:dev");
     assert_eq!(config.warehouse, Some("my-warehouse".to_string()));
     assert!(!config.vended_credentials);
     assert_eq!(config.s3_region, Some("us-west-2".to_string()));
-    assert_eq!(config.s3_endpoint, Some("http://localhost:9000".to_string()));
+    assert_eq!(
+        config.s3_endpoint,
+        Some("http://localhost:9000".to_string())
+    );
     assert!(config.s3_path_style);
 
     // Validation should still pass
@@ -1340,7 +1374,11 @@ fn test_r2rml_create_config_validation_valid() {
     );
 
     let result = config.validate();
-    assert!(result.is_ok(), "Valid config should pass validation: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Valid config should pass validation: {:?}",
+        result.err()
+    );
 
     assert_eq!(config.vg_alias(), "my-r2rml-vg:main");
 }
@@ -1352,11 +1390,14 @@ fn test_r2rml_create_config_validation_empty_mapping() {
         "my-vg",
         "https://polaris.example.com",
         "openflights.airlines",
-        "",  // Empty mapping source
+        "", // Empty mapping source
     );
 
     let result = config.validate();
-    assert!(result.is_err(), "Empty mapping source should fail validation");
+    assert!(
+        result.is_err(),
+        "Empty mapping source should fail validation"
+    );
     assert!(
         result.unwrap_err().to_string().contains("mapping"),
         "Error should mention 'mapping'"
@@ -1389,19 +1430,17 @@ fn test_r2rml_create_config_builder() {
 /// Test IcebergVgConfig serialization roundtrip.
 #[test]
 fn test_iceberg_vg_config_serialization() {
-    let config = IcebergCreateConfig::new(
-        "test-vg",
-        "https://polaris.example.com",
-        "ns.table",
-    )
-    .with_warehouse("my-warehouse")
-    .with_vended_credentials(true);
+    let config = IcebergCreateConfig::new("test-vg", "https://polaris.example.com", "ns.table")
+        .with_warehouse("my-warehouse")
+        .with_vended_credentials(true);
 
     // Convert to IcebergVgConfig for storage
     let iceberg_config = config.to_iceberg_vg_config();
 
     // Serialize to JSON
-    let json = iceberg_config.to_json().expect("serialization should succeed");
+    let json = iceberg_config
+        .to_json()
+        .expect("serialization should succeed");
 
     // Parse back
     use fluree_db_iceberg::IcebergVgConfig;
@@ -1429,7 +1468,9 @@ fn test_r2rml_vg_config_serialization() {
     let iceberg_config = config.to_iceberg_vg_config();
 
     // Serialize to JSON
-    let json = iceberg_config.to_json().expect("serialization should succeed");
+    let json = iceberg_config
+        .to_json()
+        .expect("serialization should succeed");
 
     // Parse back
     use fluree_db_iceberg::IcebergVgConfig;
@@ -1451,21 +1492,25 @@ fn test_r2rml_vg_config_serialization() {
 async fn integration_create_iceberg_vg() {
     let fluree = FlureeBuilder::memory().build_memory();
 
-    let config = IcebergCreateConfig::new(
-        "test-iceberg-vg",
-        "https://polaris.example.com",
-        "ns.table",
-    );
+    let config =
+        IcebergCreateConfig::new("test-iceberg-vg", "https://polaris.example.com", "ns.table");
 
     // Create the VG - connection test will fail but VG should be registered
     let result = fluree.create_iceberg_vg(config).await;
 
     // Should succeed (connection_tested will be false due to no real catalog)
-    assert!(result.is_ok(), "VG creation should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "VG creation should succeed: {:?}",
+        result.err()
+    );
 
     let create_result = result.unwrap();
     assert_eq!(create_result.vg_alias, "test-iceberg-vg:main");
-    assert!(!create_result.connection_tested, "Connection test should fail without real catalog");
+    assert!(
+        !create_result.connection_tested,
+        "Connection test should fail without real catalog"
+    );
 
     // Verify VG is registered in nameservice
     let vg_record = fluree.nameservice().lookup_vg("test-iceberg-vg:main").await;
@@ -1503,14 +1548,27 @@ async fn integration_create_r2rml_vg_with_mapping() {
     // Create the VG
     let result = fluree.create_r2rml_vg(config).await;
 
-    assert!(result.is_ok(), "VG creation should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "VG creation should succeed: {:?}",
+        result.err()
+    );
 
     let create_result = result.unwrap();
     assert_eq!(create_result.vg_alias, "airlines-rdf:main");
     assert_eq!(create_result.mapping_source, mapping_address);
-    assert!(create_result.mapping_validated, "Mapping should be validated");
-    assert_eq!(create_result.triples_map_count, 1, "Should have 1 TriplesMap");
-    assert!(!create_result.connection_tested, "Connection test should fail without real catalog");
+    assert!(
+        create_result.mapping_validated,
+        "Mapping should be validated"
+    );
+    assert_eq!(
+        create_result.triples_map_count, 1,
+        "Should have 1 TriplesMap"
+    );
+    assert!(
+        !create_result.connection_tested,
+        "Connection test should fail without real catalog"
+    );
 
     // Verify VG is registered in nameservice
     let vg_record = fluree
@@ -1523,7 +1581,10 @@ async fn integration_create_r2rml_vg_with_mapping() {
     // The config JSON should contain the mapping
     let record = vg_record.unwrap();
     let config_json: serde_json::Value = serde_json::from_str(&record.config).unwrap();
-    assert!(config_json.get("mapping").is_some(), "Config should contain mapping");
+    assert!(
+        config_json.get("mapping").is_some(),
+        "Config should contain mapping"
+    );
 }
 
 // =============================================================================
@@ -1558,7 +1619,11 @@ async fn integration_query_vg_provider_wiring() {
     .with_mapping_media_type("text/turtle");
 
     let vg_result = fluree.create_r2rml_vg(config).await;
-    assert!(vg_result.is_ok(), "VG creation should succeed: {:?}", vg_result.err());
+    assert!(
+        vg_result.is_ok(),
+        "VG creation should succeed: {:?}",
+        vg_result.err()
+    );
 
     let vg_alias = vg_result.unwrap().vg_alias;
 
@@ -1633,9 +1698,9 @@ fn sample_routes_batch() -> ColumnBatch {
 
     // Routes with airline_id matching airlines.id
     let columns = vec![
-        Column::Int64(vec![Some(1), Some(1), Some(2), Some(3), Some(999)]),  // airline_id - 999 has no match
-        Column::Int64(vec![Some(100), Some(101), Some(100), Some(102), Some(100)]),  // src_id
-        Column::Int64(vec![Some(200), Some(201), Some(202), Some(200), Some(201)]),  // dst_id
+        Column::Int64(vec![Some(1), Some(1), Some(2), Some(3), Some(999)]), // airline_id - 999 has no match
+        Column::Int64(vec![Some(100), Some(101), Some(100), Some(102), Some(100)]), // src_id
+        Column::Int64(vec![Some(200), Some(201), Some(202), Some(200), Some(201)]), // dst_id
     ];
 
     ColumnBatch::new(Arc::new(schema), columns).unwrap()
@@ -1878,7 +1943,11 @@ fn test_ref_object_map_composite_key_parsing() {
 
     match &parent_pom.object_map {
         ObjectMap::RefObjectMap(rom) => {
-            assert_eq!(rom.join_conditions.len(), 2, "Should have 2 join conditions");
+            assert_eq!(
+                rom.join_conditions.len(),
+                2,
+                "Should have 2 join conditions"
+            );
 
             // Check first condition
             assert_eq!(rom.join_conditions[0].child_column, "child_key1");

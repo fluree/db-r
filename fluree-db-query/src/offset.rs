@@ -242,7 +242,13 @@ mod tests {
 
         // Check that values are offset correctly (should start at 3, not 0)
         let first_val = batch.get_by_col(0, 0);
-        assert!(matches!(first_val, Binding::Lit { val: FlakeValue::Long(3), .. }));
+        assert!(matches!(
+            first_val,
+            Binding::Lit {
+                val: FlakeValue::Long(3),
+                ..
+            }
+        ));
 
         // Should be exhausted
         let result2 = offset_op.next_batch(&ctx).await.unwrap();
@@ -271,7 +277,13 @@ mod tests {
 
         // Should be from second batch (values start at 100)
         let first_val = batch.get_by_col(0, 0);
-        assert!(matches!(first_val, Binding::Lit { val: FlakeValue::Long(100), .. }));
+        assert!(matches!(
+            first_val,
+            Binding::Lit {
+                val: FlakeValue::Long(100),
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
@@ -297,7 +309,13 @@ mod tests {
 
         // Values should start at 102 (skipped 100, 101)
         let first_val = batch.get_by_col(0, 0);
-        assert!(matches!(first_val, Binding::Lit { val: FlakeValue::Long(102), .. }));
+        assert!(matches!(
+            first_val,
+            Binding::Lit {
+                val: FlakeValue::Long(102),
+                ..
+            }
+        ));
 
         // Next batch should be full batch3
         let result2 = offset_op.next_batch(&ctx).await.unwrap();

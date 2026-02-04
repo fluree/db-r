@@ -85,11 +85,7 @@ impl LedgerError {
     }
 
     /// Create a no index at time error
-    pub fn no_index_at_time(
-        alias: impl Into<String>,
-        target_t: i64,
-        earliest_t: i64,
-    ) -> Self {
+    pub fn no_index_at_time(alias: impl Into<String>, target_t: i64, earliest_t: i64) -> Self {
         Self::NoIndexAtTime {
             alias: alias.into(),
             target_t,

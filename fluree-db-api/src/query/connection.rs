@@ -1,7 +1,9 @@
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
 
-use crate::query::helpers::{extract_sparql_dataset_spec, parse_and_validate_sparql, parse_dataset_spec};
+use crate::query::helpers::{
+    extract_sparql_dataset_spec, parse_and_validate_sparql, parse_dataset_spec,
+};
 use crate::view::FlureeDataSetView;
 use crate::{ApiError, Fluree, PolicyContext, QueryResult, Result, SimpleCache, Storage};
 
@@ -69,8 +71,9 @@ where
         query_json: &JsonValue,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
-        let (spec, qc_opts) = parse_dataset_spec(query_json)
-            .map_err(|e| crate::query::TrackedErrorResponse::from_error(400, e.to_string(), None))?;
+        let (spec, qc_opts) = parse_dataset_spec(query_json).map_err(|e| {
+            crate::query::TrackedErrorResponse::from_error(400, e.to_string(), None)
+        })?;
 
         if spec.is_empty() {
             return Err(crate::query::TrackedErrorResponse::from_error(
@@ -83,15 +86,14 @@ where
         // Single-ledger fast path (no time override): use FlureeView API
         if Self::is_single_ledger_fast_path(&spec) {
             let alias = spec.default_graphs[0].identifier.as_str();
-            let view = self
-                .view(alias)
-                .await
-                .map_err(|e| crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None))?;
+            let view = self.view(alias).await.map_err(|e| {
+                crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
+            })?;
 
             let view = if qc_opts.has_any_policy_inputs() {
-                self.wrap_policy(view, &qc_opts)
-                    .await
-                    .map_err(|e| crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None))?
+                self.wrap_policy(view, &qc_opts).await.map_err(|e| {
+                    crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
+                })?
             } else {
                 view
             };
@@ -100,16 +102,15 @@ where
         }
 
         // Single-ledger with time travel: use FlureeView API
-        let single_view = self
-            .try_single_view_from_spec(&spec)
-            .await
-            .map_err(|e| crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None))?;
+        let single_view = self.try_single_view_from_spec(&spec).await.map_err(|e| {
+            crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
+        })?;
 
         if let Some(view) = single_view {
             let view = if qc_opts.has_any_policy_inputs() {
-                self.wrap_policy(view, &qc_opts)
-                    .await
-                    .map_err(|e| crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None))?
+                self.wrap_policy(view, &qc_opts).await.map_err(|e| {
+                    crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
+                })?
             } else {
                 view
             };
@@ -120,11 +121,13 @@ where
         let dataset = if qc_opts.has_any_policy_inputs() {
             self.build_dataset_view_with_policy(&spec, &qc_opts)
                 .await
-                .map_err(|e| crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None))?
+                .map_err(|e| {
+                    crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
+                })?
         } else {
-            self.build_dataset_view(&spec)
-                .await
-                .map_err(|e| crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None))?
+            self.build_dataset_view(&spec).await.map_err(|e| {
+                crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
+            })?
         };
 
         self.query_dataset_view_tracked(&dataset, query_json).await
@@ -176,8 +179,9 @@ where
         policy: &PolicyContext,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
-        let (spec, _qc_opts) = parse_dataset_spec(query_json)
-            .map_err(|e| crate::query::TrackedErrorResponse::from_error(400, e.to_string(), None))?;
+        let (spec, _qc_opts) = parse_dataset_spec(query_json).map_err(|e| {
+            crate::query::TrackedErrorResponse::from_error(400, e.to_string(), None)
+        })?;
 
         if spec.is_empty() {
             return Err(crate::query::TrackedErrorResponse::from_error(
@@ -188,10 +192,9 @@ where
         }
 
         // Try single-ledger path (including with time spec)
-        let single_view = self
-            .try_single_view_from_spec(&spec)
-            .await
-            .map_err(|e| crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None))?;
+        let single_view = self.try_single_view_from_spec(&spec).await.map_err(|e| {
+            crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
+        })?;
 
         if let Some(view) = single_view {
             let view = view.with_policy(Arc::new(policy.clone()));
@@ -199,10 +202,9 @@ where
         }
 
         // Multi-ledger: use FlureeDataSetView and apply explicit policy to each view
-        let dataset = self
-            .build_dataset_view(&spec)
-            .await
-            .map_err(|e| crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None))?;
+        let dataset = self.build_dataset_view(&spec).await.map_err(|e| {
+            crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
+        })?;
         let dataset = apply_policy_to_dataset(dataset, policy);
         self.query_dataset_view_tracked(&dataset, query_json).await
     }
@@ -255,10 +257,12 @@ where
         sparql: &str,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
-        let ast = parse_and_validate_sparql(sparql)
-            .map_err(|e| crate::query::TrackedErrorResponse::from_error(400, e.to_string(), None))?;
-        let spec = extract_sparql_dataset_spec(&ast)
-            .map_err(|e| crate::query::TrackedErrorResponse::from_error(400, e.to_string(), None))?;
+        let ast = parse_and_validate_sparql(sparql).map_err(|e| {
+            crate::query::TrackedErrorResponse::from_error(400, e.to_string(), None)
+        })?;
+        let spec = extract_sparql_dataset_spec(&ast).map_err(|e| {
+            crate::query::TrackedErrorResponse::from_error(400, e.to_string(), None)
+        })?;
 
         if spec.is_empty() {
             return Err(crate::query::TrackedErrorResponse::from_error(
@@ -268,10 +272,9 @@ where
             ));
         }
 
-        let dataset = self
-            .build_dataset_view(&spec)
-            .await
-            .map_err(|e| crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None))?;
+        let dataset = self.build_dataset_view(&spec).await.map_err(|e| {
+            crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
+        })?;
 
         self.query_dataset_view_tracked(&dataset, sparql).await
     }
@@ -287,10 +290,12 @@ where
         policy: &PolicyContext,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
-        let ast = parse_and_validate_sparql(sparql)
-            .map_err(|e| crate::query::TrackedErrorResponse::from_error(400, e.to_string(), None))?;
-        let spec = extract_sparql_dataset_spec(&ast)
-            .map_err(|e| crate::query::TrackedErrorResponse::from_error(400, e.to_string(), None))?;
+        let ast = parse_and_validate_sparql(sparql).map_err(|e| {
+            crate::query::TrackedErrorResponse::from_error(400, e.to_string(), None)
+        })?;
+        let spec = extract_sparql_dataset_spec(&ast).map_err(|e| {
+            crate::query::TrackedErrorResponse::from_error(400, e.to_string(), None)
+        })?;
 
         if spec.is_empty() {
             return Err(crate::query::TrackedErrorResponse::from_error(
@@ -300,10 +305,9 @@ where
             ));
         }
 
-        let dataset = self
-            .build_dataset_view(&spec)
-            .await
-            .map_err(|e| crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None))?;
+        let dataset = self.build_dataset_view(&spec).await.map_err(|e| {
+            crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
+        })?;
         let dataset = apply_policy_to_dataset(dataset, policy);
 
         self.query_dataset_view_tracked(&dataset, sparql).await

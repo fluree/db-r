@@ -205,10 +205,7 @@ mod tests {
             )
             .await;
 
-        assert!(matches!(
-            result,
-            Err(ServiceError::InvalidRequest { .. })
-        ));
+        assert!(matches!(result, Err(ServiceError::InvalidRequest { .. })));
     }
 
     #[tokio::test]
@@ -256,9 +253,6 @@ mod tests {
             )
             .await;
 
-        assert!(matches!(
-            result,
-            Err(ServiceError::InvalidRequest { .. })
-        ));
+        assert!(matches!(result, Err(ServiceError::InvalidRequest { .. })));
     }
 }

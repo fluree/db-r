@@ -492,7 +492,9 @@ mod tests {
                 datatype,
                 language,
             } => {
-                assert!(matches!(value, LiteralValue::Double(d) if (d - 3.14).abs() < f64::EPSILON));
+                assert!(
+                    matches!(value, LiteralValue::Double(d) if (d - 3.14).abs() < f64::EPSILON)
+                );
                 assert_eq!(datatype.as_iri(), dt_iri::XSD_DOUBLE);
                 assert!(language.is_none());
             }

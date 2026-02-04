@@ -53,7 +53,11 @@ async fn inline_policy_with_identity_binding() {
         ]
     });
 
-    let _ledger = fluree.insert(ledger0, &test_data).await.expect("insert test data").ledger;
+    let _ledger = fluree
+        .insert(ledger0, &test_data)
+        .await
+        .expect("insert test data")
+        .ledger;
 
     // Get a reference to the ledger for to_jsonld conversion
     let ledger = fluree
@@ -214,7 +218,11 @@ async fn identity_based_policy_lookup() {
         ]
     });
 
-    let _ledger = fluree.insert(ledger0, &test_data).await.expect("insert test data").ledger;
+    let _ledger = fluree
+        .insert(ledger0, &test_data)
+        .await
+        .expect("insert test data")
+        .ledger;
 
     // Get a reference to the ledger for to_jsonld conversion
     let ledger = fluree

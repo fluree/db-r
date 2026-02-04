@@ -3,7 +3,10 @@
 //! Run with: `cargo run -p fluree-db-server -- --help`
 
 use clap::Parser;
-use fluree_db_server::{FlureeServer, ServerConfig, telemetry::{TelemetryConfig, init_logging, shutdown_tracer}};
+use fluree_db_server::{
+    telemetry::{init_logging, shutdown_tracer, TelemetryConfig},
+    FlureeServer, ServerConfig,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

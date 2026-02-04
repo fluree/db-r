@@ -52,9 +52,8 @@ fn require_child<S: Storage + 'static, C: NodeCache + 'static>(
     operator: Option<BoxedOperator<S, C>>,
     pattern_name: &str,
 ) -> Result<BoxedOperator<S, C>> {
-    operator.ok_or_else(|| {
-        QueryError::InvalidQuery(format!("{} has no input operator", pattern_name))
-    })
+    operator
+        .ok_or_else(|| QueryError::InvalidQuery(format!("{} has no input operator", pattern_name)))
 }
 
 /// Get an operator or create an empty seed if None.
@@ -326,7 +325,11 @@ pub fn build_where_operators_seeded<S: Storage + 'static, C: NodeCache + 'static
                         }
                         Pattern::Values { vars, rows } => {
                             let child = get_or_empty_seed(operator.take());
-                            operator = Some(Box::new(ValuesOperator::new(child, vars.clone(), rows.clone())));
+                            operator = Some(Box::new(ValuesOperator::new(
+                                child,
+                                vars.clone(),
+                                rows.clone(),
+                            )));
                             i = start + 1;
                             continue;
                         }
@@ -364,7 +367,11 @@ pub fn build_where_operators_seeded<S: Storage + 'static, C: NodeCache + 'static
                 // Avoid any dependency bookkeeping and just do seeded reorder + build.
                 if block_binds.is_empty() && block_filters.is_empty() {
                     let reordered = reorder_patterns_seeded(triples, stats.as_deref(), &bound);
-                    operator = Some(build_triple_operators(operator, &reordered, &HashMap::new())?);
+                    operator = Some(build_triple_operators(
+                        operator,
+                        &reordered,
+                        &HashMap::new(),
+                    )?);
                     continue;
                 }
 
@@ -374,7 +381,11 @@ pub fn build_where_operators_seeded<S: Storage + 'static, C: NodeCache + 'static
                     .into_iter()
                     .map(|(var, expr)| {
                         let required_vars: HashSet<VarId> = expr.variables().into_iter().collect();
-                        PendingBind { required_vars, target_var: var, expr }
+                        PendingBind {
+                            required_vars,
+                            target_var: var,
+                            expr,
+                        }
                     })
                     .collect();
                 // Track original indices so "pushdown-consumed" filters can be skipped even
@@ -384,7 +395,11 @@ pub fn build_where_operators_seeded<S: Storage + 'static, C: NodeCache + 'static
                     .enumerate()
                     .map(|(idx, expr)| {
                         let required_vars: HashSet<VarId> = expr.variables().into_iter().collect();
-                        PendingFilter { original_idx: idx, required_vars, expr }
+                        PendingFilter {
+                            original_idx: idx,
+                            required_vars,
+                            expr,
+                        }
                     })
                     .collect();
 
@@ -414,7 +429,11 @@ pub fn build_where_operators_seeded<S: Storage + 'static, C: NodeCache + 'static
                     && is_property_join(&reordered)
                     && object_bounds.is_empty();
                 if can_property_join {
-                    operator = Some(build_triple_operators(operator, &reordered, &object_bounds)?);
+                    operator = Some(build_triple_operators(
+                        operator,
+                        &reordered,
+                        &object_bounds,
+                    )?);
                     // Apply any BINDs/FILTERs that are ready after property join.
                     bound = bound_vars_from_operator(&operator);
                     if let Some(child) = operator.take() {
@@ -457,7 +476,12 @@ pub fn build_where_operators_seeded<S: Storage + 'static, C: NodeCache + 'static
                     // Any remaining binds/filters should now be bound; apply them.
                     if !pending_binds.is_empty() || !pending_filters.is_empty() {
                         let child = require_child(operator, "Filters")?;
-                        operator = Some(apply_all_remaining(child, pending_binds, pending_filters, &filter_idxs_consumed));
+                        operator = Some(apply_all_remaining(
+                            child,
+                            pending_binds,
+                            pending_filters,
+                            &filter_idxs_consumed,
+                        ));
                     }
                 }
             }
@@ -531,7 +555,11 @@ pub fn build_where_operators_seeded<S: Storage + 'static, C: NodeCache + 'static
             Pattern::Minus(inner_patterns) => {
                 // MINUS - anti-join semantics (set difference)
                 let child = require_child(operator, "MINUS pattern")?;
-                operator = Some(Box::new(MinusOperator::new(child, inner_patterns.clone(), stats.clone())));
+                operator = Some(Box::new(MinusOperator::new(
+                    child,
+                    inner_patterns.clone(),
+                    stats.clone(),
+                )));
                 i += 1;
             }
 
@@ -539,14 +567,23 @@ pub fn build_where_operators_seeded<S: Storage + 'static, C: NodeCache + 'static
             Pattern::Exists(inner_patterns) | Pattern::NotExists(inner_patterns) => {
                 let child = require_child(operator, "EXISTS pattern")?;
                 let negated = matches!(&patterns[i], Pattern::NotExists(_));
-                operator = Some(Box::new(ExistsOperator::new(child, inner_patterns.clone(), negated, stats.clone())));
+                operator = Some(Box::new(ExistsOperator::new(
+                    child,
+                    inner_patterns.clone(),
+                    negated,
+                    stats.clone(),
+                )));
                 i += 1;
             }
 
             Pattern::PropertyPath(pp) => {
                 // Property path - transitive graph traversal
                 // Pass existing operator as child for correlation
-                operator = Some(Box::new(PropertyPathOperator::new(operator, pp.clone(), DEFAULT_MAX_VISITED)));
+                operator = Some(Box::new(PropertyPathOperator::new(
+                    operator,
+                    pp.clone(),
+                    DEFAULT_MAX_VISITED,
+                )));
                 i += 1;
             }
 
@@ -569,21 +606,34 @@ pub fn build_where_operators_seeded<S: Storage + 'static, C: NodeCache + 'static
                 // Vector similarity search against a vector virtual graph
                 // If no child operator, use EmptyOperator as seed (allows VectorSearch at position 0)
                 let child = get_or_empty_seed(operator.take());
-                operator = Some(Box::new(crate::vector::VectorSearchOperator::new(child, vsp.clone())));
+                operator = Some(Box::new(crate::vector::VectorSearchOperator::new(
+                    child,
+                    vsp.clone(),
+                )));
                 i += 1;
             }
 
             Pattern::R2rml(r2rml_pattern) => {
                 // R2RML scan against an Iceberg virtual graph
                 let child = require_child(operator, "R2RML pattern")?;
-                operator = Some(Box::new(crate::r2rml::R2rmlScanOperator::new(child, r2rml_pattern.clone())));
+                operator = Some(Box::new(crate::r2rml::R2rmlScanOperator::new(
+                    child,
+                    r2rml_pattern.clone(),
+                )));
                 i += 1;
             }
 
-            Pattern::Graph { name, patterns: inner_patterns } => {
+            Pattern::Graph {
+                name,
+                patterns: inner_patterns,
+            } => {
                 // GRAPH pattern - scope inner patterns to a named graph
                 let child = require_child(operator, "GRAPH pattern")?;
-                operator = Some(Box::new(crate::graph::GraphOperator::new(child, name.clone(), inner_patterns.clone())));
+                operator = Some(Box::new(crate::graph::GraphOperator::new(
+                    child,
+                    name.clone(),
+                    inner_patterns.clone(),
+                )));
                 i += 1;
             }
         }
@@ -626,7 +676,12 @@ pub fn build_scan_or_join<S: Storage + 'static, C: NodeCache + 'static>(
             // Extract object bounds if available for this pattern's object variable
             let bounds = tp.o.as_var().and_then(|v| object_bounds.get(&v).cloned());
 
-            Box::new(NestedLoopJoinOperator::new(left, left_schema, tp.clone(), bounds))
+            Box::new(NestedLoopJoinOperator::new(
+                left,
+                left_schema,
+                tp.clone(),
+                bounds,
+            ))
         }
     }
 }
@@ -642,9 +697,8 @@ pub fn build_triple_operators<S: Storage + 'static, C: NodeCache + 'static>(
     object_bounds: &HashMap<VarId, ObjectBounds>,
 ) -> Result<BoxedOperator<S, C>> {
     if triples.is_empty() {
-        return existing.ok_or_else(|| {
-            QueryError::InvalidQuery("No triple patterns to process".to_string())
-        });
+        return existing
+            .ok_or_else(|| QueryError::InvalidQuery("No triple patterns to process".to_string()));
     }
 
     let mut operator = existing;
@@ -654,7 +708,11 @@ pub fn build_triple_operators<S: Storage + 'static, C: NodeCache + 'static>(
     // IMPORTANT: only apply when there are no object bounds.
     // If bounds exist (from FILTER pushdown), a correlated plan (bounded scan -> join)
     // is usually much cheaper than scanning the other predicate(s) globally.
-    if operator.is_none() && triples.len() >= 2 && is_property_join(triples) && object_bounds.is_empty() {
+    if operator.is_none()
+        && triples.len() >= 2
+        && is_property_join(triples)
+        && object_bounds.is_empty()
+    {
         // Use PropertyJoinOperator for multi-property patterns
         let pj = PropertyJoinOperator::new(triples, object_bounds.clone());
         return Ok(Box::new(pj));
@@ -792,10 +850,7 @@ mod tests {
         let patterns = vec![
             Pattern::Values {
                 vars: vec![VarId(0)],
-                rows: vec![vec![Binding::lit(
-                    FlakeValue::Long(1),
-                    Sid::new(2, "long"),
-                )]],
+                rows: vec![vec![Binding::lit(FlakeValue::Long(1), Sid::new(2, "long"))]],
             },
             Pattern::Filter(FilterExpr::Compare {
                 op: CompareOp::Eq,
@@ -814,7 +869,11 @@ mod tests {
         assert_eq!(values.len(), 1, "VALUES should be included in block");
         assert_eq!(binds.len(), 0, "expected 0 BINDs in the block");
         assert_eq!(triples.len(), 1);
-        assert_eq!(filters.len(), 1, "FILTER referencing VALUES var should be safe");
+        assert_eq!(
+            filters.len(),
+            1,
+            "FILTER referencing VALUES var should be safe"
+        );
     }
 
     #[test]
@@ -843,7 +902,11 @@ mod tests {
         assert_eq!(end, patterns.len());
         assert_eq!(values.len(), 0);
         assert_eq!(triples.len(), 1);
-        assert_eq!(binds.len(), 1, "expected BIND to be included in inner-join block");
+        assert_eq!(
+            binds.len(),
+            1,
+            "expected BIND to be included in inner-join block"
+        );
         assert_eq!(filters.len(), 1);
     }
 
@@ -872,7 +935,10 @@ mod tests {
         // xsd:long is namespace code 2
         let patterns = vec![Pattern::Values {
             vars: vec![VarId(0)],
-            rows: vec![vec![Binding::lit(FlakeValue::Long(42), Sid::new(2, "long"))]],
+            rows: vec![vec![Binding::lit(
+                FlakeValue::Long(42),
+                Sid::new(2, "long"),
+            )]],
         }];
         let result = build_where_operators::<MemoryStorage, NoCache>(&patterns, None);
         assert!(result.is_ok());

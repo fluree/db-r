@@ -42,7 +42,10 @@ async fn seed_people_with_ssn(fluree: &MemoryFluree, alias: &str) {
         ]
     });
 
-    let _ = fluree.insert(ledger0, &txn).await.expect("seed should succeed");
+    let _ = fluree
+        .insert(ledger0, &txn)
+        .await
+        .expect("seed should succeed");
 }
 
 #[tokio::test]
@@ -85,7 +88,10 @@ async fn policy_inline_denies_restricted_property_in_direct_select() {
         }
     });
 
-    let result = fluree.query_connection(&query).await.expect("query_connection");
+    let result = fluree
+        .query_connection(&query)
+        .await
+        .expect("query_connection");
     let ledger = fluree.ledger("policy/inline:main").await.expect("ledger");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
 
@@ -139,10 +145,18 @@ async fn policy_inline_denies_restricted_property_in_graph_crawl() {
         "select": ["?name"],
         "where": { "@id": "?s", "@type": "ex:User", "schema:name": "?name" }
     });
-    let sanity_result = fluree.query_connection(&sanity).await.expect("sanity query_connection");
+    let sanity_result = fluree
+        .query_connection(&sanity)
+        .await
+        .expect("sanity query_connection");
     let ledger = fluree.ledger("policy/inline:main").await.expect("ledger");
-    let sanity_jsonld = sanity_result.to_jsonld(&ledger.db).expect("sanity to_jsonld");
-    assert_eq!(normalize_rows(&sanity_jsonld), normalize_rows(&json!(["Alice", "John"])));
+    let sanity_jsonld = sanity_result
+        .to_jsonld(&ledger.db)
+        .expect("sanity to_jsonld");
+    assert_eq!(
+        normalize_rows(&sanity_jsonld),
+        normalize_rows(&json!(["Alice", "John"]))
+    );
 
     // Use the tracked connection query entrypoint, which performs **policy-aware**
     // graph crawl formatting (Clojure parity).
@@ -173,4 +187,3 @@ async fn policy_inline_denies_restricted_property_in_graph_crawl() {
         ]))
     );
 }
-

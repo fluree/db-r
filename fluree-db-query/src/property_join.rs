@@ -95,7 +95,7 @@ impl PropertyJoinOperator {
     /// # Panics
     ///
     /// Panics if patterns don't form a valid property-join shape
-/// (use `is_property_join_shape` to check first).
+    /// (use `is_property_join_shape` to check first).
     pub fn new(patterns: &[TriplePattern], object_bounds: HashMap<VarId, ObjectBounds>) -> Self {
         assert!(
             crate::planner::is_property_join(patterns),
@@ -230,7 +230,8 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for PropertyJo
         // For each predicate, scan and collect (subject -> values) mappings
         // Key by canonical IRI for cross-ledger correctness.
         // Value: (subject_binding, vec of value-vectors per predicate)
-        let mut all_subject_values: HashMap<Arc<str>, (Binding, Vec<Vec<Binding>>)> = HashMap::new();
+        let mut all_subject_values: HashMap<Arc<str>, (Binding, Vec<Vec<Binding>>)> =
+            HashMap::new();
 
         for (pred_idx, (pred_term, obj_var, dt)) in self.predicates.iter().enumerate() {
             // Create pattern: ?s :pred ?o (temp var for object, accessed by index)
@@ -404,7 +405,11 @@ mod tests {
             vec![Binding::Sid(Sid::new(201, "30"))],    // age
         ];
 
-        let rows = PropertyJoinOperator::generate_rows(op.output_schema().len(), &subject_binding, &values);
+        let rows = PropertyJoinOperator::generate_rows(
+            op.output_schema().len(),
+            &subject_binding,
+            &values,
+        );
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].len(), 3);
         assert!(matches!(&rows[0][0], Binding::Sid(s) if *s == subject_sid));
@@ -428,7 +433,11 @@ mod tests {
             ], // 3 ages
         ];
 
-        let rows = PropertyJoinOperator::generate_rows(op.output_schema().len(), &subject_binding, &values);
+        let rows = PropertyJoinOperator::generate_rows(
+            op.output_schema().len(),
+            &subject_binding,
+            &values,
+        );
         // Cartesian product: 2 * 3 = 6 rows
         assert_eq!(rows.len(), 6);
     }
@@ -444,7 +453,11 @@ mod tests {
             vec![],                                     // no age
         ];
 
-        let rows = PropertyJoinOperator::generate_rows(op.output_schema().len(), &subject_binding, &values);
+        let rows = PropertyJoinOperator::generate_rows(
+            op.output_schema().len(),
+            &subject_binding,
+            &values,
+        );
         // No rows if any predicate is missing
         assert_eq!(rows.len(), 0);
     }

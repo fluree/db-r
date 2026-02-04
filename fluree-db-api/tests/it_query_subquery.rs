@@ -52,8 +52,16 @@ async fn subquery_basic_correlated_join() {
         "orderBy": "?name"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
-    assert_eq!(rows, json!([["Alice",50],["Brian",50],["Cam",34],["Liam",13]]));
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
+    assert_eq!(
+        rows,
+        json!([["Alice", 50], ["Brian", 50], ["Cam", 34], ["Liam", 13]])
+    );
 }
 
 #[tokio::test]
@@ -81,14 +89,48 @@ async fn subquery_unrelated_vars_cartesian_expand() {
         "orderBy": ["?age","?favNums"]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     // Order-insensitive parity; Clojure orders, but Rust is allowed to vary.
     assert_eq!(
         normalize_rows(&rows),
         normalize_rows(&json!([
-            [13,5],[13,7],[13,9],[13,10],[13,11],[13,42],[13,42],[13,76],
-            [34,5],[34,7],[34,9],[34,10],[34,11],[34,42],[34,42],[34,76],
-            [50,5],[50,5],[50,7],[50,7],[50,9],[50,9],[50,10],[50,10],[50,11],[50,11],[50,42],[50,42],[50,42],[50,42],[50,76],[50,76]
+            [13, 5],
+            [13, 7],
+            [13, 9],
+            [13, 10],
+            [13, 11],
+            [13, 42],
+            [13, 42],
+            [13, 76],
+            [34, 5],
+            [34, 7],
+            [34, 9],
+            [34, 10],
+            [34, 11],
+            [34, 42],
+            [34, 42],
+            [34, 76],
+            [50, 5],
+            [50, 5],
+            [50, 7],
+            [50, 7],
+            [50, 9],
+            [50, 9],
+            [50, 10],
+            [50, 10],
+            [50, 11],
+            [50, 11],
+            [50, 42],
+            [50, 42],
+            [50, 42],
+            [50, 42],
+            [50, 76],
+            [50, 76]
         ]))
     );
 }
@@ -122,10 +164,24 @@ async fn subquery_limit_applies_inside_subquery() {
         "orderBy": ["?age","?favNums"]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&rows),
-        normalize_rows(&json!([[13,5],[13,7],[34,5],[34,7],[50,5],[50,5],[50,7],[50,7]]))
+        normalize_rows(&json!([
+            [13, 5],
+            [13, 7],
+            [34, 5],
+            [34, 7],
+            [50, 5],
+            [50, 5],
+            [50, 7],
+            [50, 7]
+        ]))
     );
 }
 
@@ -155,13 +211,39 @@ async fn subquery_distinct_applies_to_subquery_select() {
         "orderBy": ["?age","?favNums"]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&rows),
         normalize_rows(&json!([
-            [13,5],[13,7],[13,9],[13,10],[13,11],[13,42],[13,42],[13,76],
-            [34,5],[34,7],[34,9],[34,10],[34,11],[34,42],[34,42],[34,76],
-            [50,5],[50,7],[50,9],[50,10],[50,11],[50,42],[50,42],[50,76]
+            [13, 5],
+            [13, 7],
+            [13, 9],
+            [13, 10],
+            [13, 11],
+            [13, 42],
+            [13, 42],
+            [13, 76],
+            [34, 5],
+            [34, 7],
+            [34, 9],
+            [34, 10],
+            [34, 11],
+            [34, 42],
+            [34, 42],
+            [34, 76],
+            [50, 5],
+            [50, 7],
+            [50, 9],
+            [50, 10],
+            [50, 11],
+            [50, 42],
+            [50, 42],
+            [50, 76]
         ]))
     );
 }
@@ -187,13 +269,47 @@ async fn multiple_subqueries_parallel() {
         "orderBy": ["?age","?favNums"]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&rows),
         normalize_rows(&json!([
-            [13,5],[13,7],[13,9],[13,10],[13,11],[13,42],[13,42],[13,76],
-            [34,5],[34,7],[34,9],[34,10],[34,11],[34,42],[34,42],[34,76],
-            [50,5],[50,5],[50,7],[50,7],[50,9],[50,9],[50,10],[50,10],[50,11],[50,11],[50,42],[50,42],[50,42],[50,42],[50,76],[50,76]
+            [13, 5],
+            [13, 7],
+            [13, 9],
+            [13, 10],
+            [13, 11],
+            [13, 42],
+            [13, 42],
+            [13, 76],
+            [34, 5],
+            [34, 7],
+            [34, 9],
+            [34, 10],
+            [34, 11],
+            [34, 42],
+            [34, 42],
+            [34, 76],
+            [50, 5],
+            [50, 5],
+            [50, 7],
+            [50, 7],
+            [50, 9],
+            [50, 9],
+            [50, 10],
+            [50, 10],
+            [50, 11],
+            [50, 11],
+            [50, 42],
+            [50, 42],
+            [50, 42],
+            [50, 42],
+            [50, 76],
+            [50, 76]
         ]))
     );
 }
@@ -227,12 +343,17 @@ async fn nested_subqueries_distinct() {
         "orderBy": ["?name","?email","?age"]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     // This is a large cartesian product; just assert cardinality and a few sentinel rows.
     assert_eq!(rows.as_array().unwrap().len(), 48);
     let set = normalize_rows(&rows);
-    assert!(set.contains(&json!(["Alice","alice@example.org",13])));
-    assert!(set.contains(&json!(["Liam","liam@example.org",50])));
+    assert!(set.contains(&json!(["Alice", "alice@example.org", 13])));
+    assert!(set.contains(&json!(["Liam", "liam@example.org", 50])));
 }
 
 #[tokio::test]
@@ -269,7 +390,12 @@ async fn subquery_inside_union() {
         ]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&rows),
         normalize_rows(&json!([
@@ -295,7 +421,12 @@ async fn subquery_union_branch_query_alone_has_results() {
         "groupBy": ["?person"]
     });
 
-    let rows = fluree.query(&ledger, &q_alice).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q_alice)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(rows, json!([["Alice", 42.333333333333336_f64]]));
 }
 
@@ -323,10 +454,14 @@ async fn subquery_with_values_filters_results() {
         ]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&rows),
-        normalize_rows(&json!(["ex:alice","ex:liam"]))
+        normalize_rows(&json!(["ex:alice", "ex:liam"]))
     );
 }
-

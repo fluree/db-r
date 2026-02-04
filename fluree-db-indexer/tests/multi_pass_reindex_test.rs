@@ -2,7 +2,9 @@ use fluree_db_core::cache::SimpleCache;
 use fluree_db_core::range::{range, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::storage::MemoryStorage;
 use fluree_db_core::{Db, Flake, FlakeValue, IndexType, Sid};
-use fluree_db_indexer::{batched_rebuild_from_commits, refresh_index, BatchedRebuildConfig, IndexerConfig};
+use fluree_db_indexer::{
+    batched_rebuild_from_commits, refresh_index, BatchedRebuildConfig, IndexerConfig,
+};
 use fluree_db_novelty::{Commit, Novelty};
 use std::collections::HashMap;
 
@@ -71,9 +73,13 @@ async fn refresh_reuses_unchanged_nodes_with_small_leaf_config() {
         .expect("base rebuild should succeed")
         .index_result;
 
-    let base_db = Db::load(storage.clone(), SimpleCache::new(10_000), &base.root_address)
-        .await
-        .expect("base Db load should succeed");
+    let base_db = Db::load(
+        storage.clone(),
+        SimpleCache::new(10_000),
+        &base.root_address,
+    )
+    .await
+    .expect("base Db load should succeed");
     assert_eq!(base_db.t, 1);
 
     // Commit 2: update a single subject (small novelty set).
@@ -107,18 +113,30 @@ async fn refresh_reuses_unchanged_nodes_with_small_leaf_config() {
         .expect("refresh should succeed");
 
     // Functional check: updated value is present
-    let refreshed_db = Db::load(storage.clone(), SimpleCache::new(10_000), &refreshed.root_address)
-        .await
-        .expect("refreshed db should load");
+    let refreshed_db = Db::load(
+        storage.clone(),
+        SimpleCache::new(10_000),
+        &refreshed.root_address,
+    )
+    .await
+    .expect("refreshed db should load");
     let subject_flakes = scan_subject_values(&refreshed_db, &subject_0).await;
     assert!(
-        subject_flakes.iter().any(|f| matches!(f.o, FlakeValue::String(ref s) if s == "name-0-updated")),
+        subject_flakes
+            .iter()
+            .any(|f| matches!(f.o, FlakeValue::String(ref s) if s == "name-0-updated")),
         "refreshed index should include updated value"
     );
 
     // Structural check: refresh reused nodes and wrote some new ones
-    assert!(refreshed.stats.nodes_reused > 0, "expected some nodes to be reused");
-    assert!(refreshed.stats.nodes_written > 0, "expected some nodes to be written");
+    assert!(
+        refreshed.stats.nodes_reused > 0,
+        "expected some nodes to be reused"
+    );
+    assert!(
+        refreshed.stats.nodes_written > 0,
+        "expected some nodes to be written"
+    );
     assert!(
         !refreshed.stats.replaced_nodes.is_empty(),
         "expected some nodes to be replaced"

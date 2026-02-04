@@ -12,13 +12,13 @@ use fluree_db_core::cache::NodeCache;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::flake::Flake;
 use fluree_db_core::namespaces::is_rdf_nil;
-use fluree_vocab::namespaces::RDF;
-use fluree_vocab::predicates::{RDF_FIRST, RDF_REST};
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::storage::Storage;
 use fluree_db_core::value::FlakeValue;
 use fluree_db_core::{Db, Sid};
+use fluree_vocab::namespaces::RDF;
+use fluree_vocab::predicates::{RDF_FIRST, RDF_REST};
 
 use crate::error::{ReasonerError, Result};
 use crate::owl;
@@ -334,7 +334,8 @@ pub async fn collect_chain_elements<S: Storage, C: NodeCache>(
         if let Some(first_flake) = first_flakes.first() {
             if let FlakeValue::Ref(element_sid) = &first_flake.o {
                 // Try to resolve this element - it might be an owl:inverseOf expression
-                let chain_element = resolve_chain_element(db, overlay, element_sid, to_t, 0).await?;
+                let chain_element =
+                    resolve_chain_element(db, overlay, element_sid, to_t, 0).await?;
                 elements.push(chain_element);
             }
         }
@@ -515,9 +516,9 @@ fn resolve_property_expression_inner<'a, S: Storage, C: NodeCache>(
             if flake.p == inverse_of_sid {
                 if let FlakeValue::Ref(target_sid) = &flake.o {
                     // Recursively resolve the target
-                    let inner = resolve_property_expression_inner(
-                        db, overlay, target_sid, to_t, depth + 1
-                    ).await?;
+                    let inner =
+                        resolve_property_expression_inner(db, overlay, target_sid, to_t, depth + 1)
+                            .await?;
                     // Apply inverse (with double-inverse normalization)
                     return Ok(PropertyExpression::inverse(inner));
                 }
@@ -530,7 +531,8 @@ fn resolve_property_expression_inner<'a, S: Storage, C: NodeCache>(
             if flake.p == chain_axiom_sid {
                 if let FlakeValue::Ref(list_head) = &flake.o {
                     // Parse the chain using collect_chain_elements
-                    let chain_elements = collect_chain_elements(db, overlay, list_head, to_t).await?;
+                    let chain_elements =
+                        collect_chain_elements(db, overlay, list_head, to_t).await?;
                     if chain_elements.len() >= 2 {
                         return Ok(PropertyExpression::chain(chain_elements));
                     }

@@ -110,7 +110,7 @@ fn tokenize_sexpr_inner(
                     current.clear();
                 }
                 chars.next(); // consume '('
-                // Recursively parse the nested list
+                              // Recursively parse the nested list
                 let nested = tokenize_sexpr_inner(chars, true)?;
                 tokens.push(SexprToken::List(nested));
             }
@@ -136,7 +136,7 @@ fn tokenize_sexpr_inner(
                     current.clear();
                 }
                 chars.next(); // consume opening quote
-                // Read until closing quote
+                              // Read until closing quote
                 let mut string_val = String::new();
                 let mut closed = false;
                 while let Some(&sc) = chars.peek() {
@@ -150,8 +150,7 @@ fn tokenize_sexpr_inner(
                 }
                 if !closed {
                     return Err(ParseError::InvalidSelect(
-                        "unclosed string literal in S-expression (missing closing '\")"
-                            .to_string(),
+                        "unclosed string literal in S-expression (missing closing '\")".to_string(),
                     ));
                 }
                 tokens.push(SexprToken::Atom(string_val));
@@ -291,12 +290,12 @@ mod tests {
         let list = tokens[0].as_list().unwrap();
         assert_eq!(list.len(), 3);
         assert_eq!(list[0].as_atom().unwrap(), "as");
-        
+
         let inner = list[1].as_list().unwrap();
         assert_eq!(inner.len(), 2);
         assert_eq!(inner[0].as_atom().unwrap(), "count");
         assert_eq!(inner[1].as_atom().unwrap(), "?x");
-        
+
         assert_eq!(list[2].as_atom().unwrap(), "?y");
     }
 
@@ -357,7 +356,7 @@ mod tests {
     fn test_sexpr_token_as_atom() {
         let token = SexprToken::Atom("foo".to_string());
         assert_eq!(token.as_atom().unwrap(), "foo");
-        
+
         let list_token = SexprToken::List(vec![]);
         assert!(list_token.as_atom().is_err());
     }
@@ -366,7 +365,7 @@ mod tests {
     fn test_sexpr_token_expect_atom() {
         let token = SexprToken::Atom("foo".to_string());
         assert_eq!(token.expect_atom("variable").unwrap(), "foo");
-        
+
         let list_token = SexprToken::List(vec![]);
         let err = list_token.expect_atom("variable").unwrap_err();
         assert!(err.to_string().contains("variable"));

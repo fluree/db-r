@@ -310,8 +310,14 @@ mod tests {
 
         // Use explicit t values to test max_t logic
         // (view_at_t uses historical loading which correctly sets to_t)
-        let view_t1 = fluree.view_at_t("dataset_max_t_test:main", 1).await.unwrap();
-        let view_t0 = fluree.view_at_t("dataset_max_t_test:main", 0).await.unwrap();
+        let view_t1 = fluree
+            .view_at_t("dataset_max_t_test:main", 1)
+            .await
+            .unwrap();
+        let view_t0 = fluree
+            .view_at_t("dataset_max_t_test:main", 0)
+            .await
+            .unwrap();
 
         assert_eq!(view_t1.to_t, 1);
         assert_eq!(view_t0.to_t, 0);

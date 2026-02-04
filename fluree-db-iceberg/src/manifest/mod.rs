@@ -13,6 +13,12 @@ pub mod manifest;
 pub mod manifest_list;
 pub mod value_codec;
 
-pub use manifest::{parse_manifest, parse_manifest_with_deleted, DataFile, FileFormat, ManifestEntry, ManifestEntryStatus, PartitionData};
-pub use manifest_list::{parse_manifest_list, parse_manifest_list_with_deletes, ManifestContent, ManifestListEntry, PartitionFieldSummary};
+pub use manifest::{
+    parse_manifest, parse_manifest_with_deleted, DataFile, FileFormat, ManifestEntry,
+    ManifestEntryStatus, PartitionData,
+};
+pub use manifest_list::{
+    parse_manifest_list, parse_manifest_list_with_deletes, ManifestContent, ManifestListEntry,
+    PartitionFieldSummary,
+};
 pub use value_codec::{decode_bound, decode_by_type_string, encode_value, TypedValue};

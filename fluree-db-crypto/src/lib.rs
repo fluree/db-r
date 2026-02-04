@@ -113,9 +113,10 @@ mod integration_tests {
     async fn test_portability_between_storages() {
         // Encrypt with one storage instance
         let storage1 = MemoryStorage::new();
-        let encrypted1 = EncryptedStorage::new(storage1.clone(), StaticKeyProvider::new(
-            EncryptionKey::new([0x42; 32], 1),
-        ));
+        let encrypted1 = EncryptedStorage::new(
+            storage1.clone(),
+            StaticKeyProvider::new(EncryptionKey::new([0x42; 32], 1)),
+        );
 
         let plaintext = b"portable data";
         encrypted1.write_bytes("test", plaintext).await.unwrap();
@@ -127,9 +128,10 @@ mod integration_tests {
         let storage2 = MemoryStorage::new();
         storage2.write_bytes("test", &raw).await.unwrap();
 
-        let encrypted2 = EncryptedStorage::new(storage2, StaticKeyProvider::new(
-            EncryptionKey::new([0x42; 32], 1),
-        ));
+        let encrypted2 = EncryptedStorage::new(
+            storage2,
+            StaticKeyProvider::new(EncryptionKey::new([0x42; 32], 1)),
+        );
 
         // Should decrypt successfully
         let decrypted = encrypted2.read_bytes("test").await.unwrap();
@@ -140,9 +142,10 @@ mod integration_tests {
     #[tokio::test]
     async fn test_nonces_are_unique() {
         let storage = MemoryStorage::new();
-        let encrypted = EncryptedStorage::new(storage.clone(), StaticKeyProvider::new(
-            EncryptionKey::new([0x42; 32], 1),
-        ));
+        let encrypted = EncryptedStorage::new(
+            storage.clone(),
+            StaticKeyProvider::new(EncryptionKey::new([0x42; 32], 1)),
+        );
 
         // Write the same data twice
         encrypted.write_bytes("test1", b"same").await.unwrap();

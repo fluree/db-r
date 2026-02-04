@@ -99,8 +99,7 @@ impl R2RML {
     // ==========================================================================
 
     /// rr:predicateObjectMap - Links a TriplesMap to a predicate-object map
-    pub const PREDICATE_OBJECT_MAP: &'static str =
-        "http://www.w3.org/ns/r2rml#predicateObjectMap";
+    pub const PREDICATE_OBJECT_MAP: &'static str = "http://www.w3.org/ns/r2rml#predicateObjectMap";
 
     /// rr:predicateMap - Links a predicate-object map to its predicate map
     pub const PREDICATE_MAP: &'static str = "http://www.w3.org/ns/r2rml#predicateMap";

@@ -118,9 +118,7 @@ impl<'a, S: Storage, C: NodeCache> ResolvedGraphView<'a, S, C> {
 
     /// Check if this view has an active (non-root) policy
     pub fn has_policy(&self) -> bool {
-        self.policy_enforcer
-            .map(|e| !e.is_root())
-            .unwrap_or(false)
+        self.policy_enforcer.map(|e| !e.is_root()).unwrap_or(false)
     }
 }
 
@@ -380,8 +378,13 @@ mod tests {
     fn test_wrapper_composition_compiles() {
         // This test just verifies that the wrapper composition types compile
         // and the trait bounds are correct.
-        fn _assert_graph_view<V: GraphView<fluree_db_core::MemoryStorage, fluree_db_core::SimpleCache>>(_: &V) {}
-        
+        fn _assert_graph_view<
+            V: GraphView<fluree_db_core::MemoryStorage, fluree_db_core::SimpleCache>,
+        >(
+            _: &V,
+        ) {
+        }
+
         // Object-safety check (doesn't run, just compiles)
         fn _check_dyn<S: Storage, C: NodeCache>(v: &dyn GraphView<S, C>) {
             let _resolved = v.resolve();

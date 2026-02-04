@@ -219,12 +219,7 @@ impl<S: Storage + Clone + 'static, C: NodeCache> LedgerState<S, C> {
     /// as it includes both the indexed stats and any uncommitted changes
     /// from the novelty layer.
     pub fn current_stats(&self) -> fluree_db_core::serde::json::DbRootStats {
-        let indexed = self
-            .db
-            .stats
-            .as_ref()
-            .cloned()
-            .unwrap_or_default(); // DbRootStats::default() for genesis/no-index
+        let indexed = self.db.stats.as_ref().cloned().unwrap_or_default(); // DbRootStats::default() for genesis/no-index
         fluree_db_novelty::current_stats(&indexed, self.novelty.as_ref())
     }
 
@@ -458,8 +453,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_index_success() {
-        use fluree_db_core::serde::json::{serialize_db_root, DbRoot};
         use fluree_db_core::index::ChildRef;
+        use fluree_db_core::serde::json::{serialize_db_root, DbRoot};
         use fluree_db_core::IndexType;
         use std::collections::HashMap;
 
@@ -469,8 +464,12 @@ mod tests {
 
         // Create novelty with flakes at t=1 and t=2
         let mut novelty = Novelty::new(0);
-        novelty.apply_commit(vec![make_flake(1, 1, 100, 1)], 1).unwrap();
-        novelty.apply_commit(vec![make_flake(2, 1, 200, 2)], 2).unwrap();
+        novelty
+            .apply_commit(vec![make_flake(1, 1, 100, 1)], 1)
+            .unwrap();
+        novelty
+            .apply_commit(vec![make_flake(2, 1, 200, 2)], 2)
+            .unwrap();
 
         let mut state = LedgerState::new(db, novelty);
         assert_eq!(state.index_t(), 0);
@@ -526,8 +525,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_index_alias_mismatch() {
-        use fluree_db_core::serde::json::{serialize_db_root, DbRoot};
         use fluree_db_core::index::ChildRef;
+        use fluree_db_core::serde::json::{serialize_db_root, DbRoot};
         use std::collections::HashMap;
 
         let storage = MemoryStorage::new();
@@ -580,8 +579,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_index_stale() {
-        use fluree_db_core::serde::json::{serialize_db_root, DbRoot};
         use fluree_db_core::index::ChildRef;
+        use fluree_db_core::serde::json::{serialize_db_root, DbRoot};
         use std::collections::HashMap;
 
         let storage = MemoryStorage::new();
@@ -623,7 +622,9 @@ mod tests {
         let storage = storage;
         storage.insert("index-root-t2", root_bytes_t2);
 
-        let db = Db::load(storage.clone(), cache, "index-root-t2").await.unwrap();
+        let db = Db::load(storage.clone(), cache, "index-root-t2")
+            .await
+            .unwrap();
         let novelty = Novelty::new(2);
         let mut state = LedgerState::new(db, novelty);
         assert_eq!(state.index_t(), 2);
@@ -657,8 +658,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_index_equal_t_noop() {
-        use fluree_db_core::serde::json::{serialize_db_root, DbRoot};
         use fluree_db_core::index::ChildRef;
+        use fluree_db_core::serde::json::{serialize_db_root, DbRoot};
         use std::collections::HashMap;
 
         let storage = MemoryStorage::new();
@@ -699,7 +700,9 @@ mod tests {
         let storage = storage;
         storage.insert("index-root", root_bytes);
 
-        let db = Db::load(storage.clone(), cache, "index-root").await.unwrap();
+        let db = Db::load(storage.clone(), cache, "index-root")
+            .await
+            .unwrap();
         let novelty = Novelty::new(1);
         let mut state = LedgerState::new(db, novelty);
 

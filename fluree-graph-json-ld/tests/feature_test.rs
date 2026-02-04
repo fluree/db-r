@@ -106,7 +106,10 @@ fn test_base_with_vocab() {
     // Property uses @vocab
     assert!(obj.contains_key("https://vocab.com/name"));
     // Value with @type: @id uses @base
-    assert_eq!(obj["https://vocab.com/name"][0]["@id"], "https://base.com/relative-link");
+    assert_eq!(
+        obj["https://vocab.com/name"][0]["@id"],
+        "https://base.com/relative-link"
+    );
 }
 
 #[test]
@@ -195,7 +198,10 @@ fn test_base_and_vocab_full() {
     assert_eq!(obj["@id"], "https://base.com/base/iri#joebob");
     assert_eq!(obj["@type"], json!(["https://vocab.com/vocab/iri/Joey"]));
     assert!(obj.contains_key("https://vocab.com/vocab/iri/name"));
-    assert_eq!(obj["https://vocab.com/vocab/iri/name"][0]["@value"], "Joe Bob");
+    assert_eq!(
+        obj["https://vocab.com/vocab/iri/name"][0]["@value"],
+        "Joe Bob"
+    );
     assert_eq!(
         obj["https://vocab.com/vocab/iri/iriProperty"][0]["@id"],
         "https://base.com/base/iri#a-relative-id"
@@ -306,7 +312,10 @@ fn test_shacl_embedded_nodes() {
     let obj = result.as_object().unwrap();
 
     assert_eq!(obj["@id"], "http://example.org/ns/UserShape");
-    assert_eq!(obj["@type"], json!(["http://www.w3.org/ns/shacl#NodeShape"]));
+    assert_eq!(
+        obj["@type"],
+        json!(["http://www.w3.org/ns/shacl#NodeShape"])
+    );
 
     let target_class = &obj["http://www.w3.org/ns/shacl#targetClass"][0];
     assert_eq!(target_class["@id"], "http://example.org/ns/User");

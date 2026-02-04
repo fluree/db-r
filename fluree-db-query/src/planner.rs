@@ -148,7 +148,10 @@ pub(crate) fn calculate_selectivity(pattern: &TriplePattern, stats: Option<&Stat
     let pattern_type = classify_pattern(pattern);
 
     // Helper: get property stats for a predicate represented as Sid or IRI.
-    fn get_prop<'a>(stats: &'a StatsView, pred: &Term) -> Option<&'a fluree_db_core::PropertyStatData> {
+    fn get_prop<'a>(
+        stats: &'a StatsView,
+        pred: &Term,
+    ) -> Option<&'a fluree_db_core::PropertyStatData> {
         if let Some(sid) = pred.as_sid() {
             return stats.get_property(sid);
         }
@@ -279,7 +282,10 @@ pub(crate) fn compare_term(a: &Term, b: &Term) -> std::cmp::Ordering {
 /// Deterministic tie-breaker for equal selectivity scores
 ///
 /// Clojure parity priority, then lexicographic (p, s, o) for reproducibility.
-pub(crate) fn compare_patterns_tiebreaker(a: &TriplePattern, b: &TriplePattern) -> std::cmp::Ordering {
+pub(crate) fn compare_patterns_tiebreaker(
+    a: &TriplePattern,
+    b: &TriplePattern,
+) -> std::cmp::Ordering {
     // Prefer patterns that are "cheaper" even when stats tie.
     //
     // This matters in cases where selectivity scores collide (e.g. missing NDV),
@@ -434,7 +440,10 @@ pub fn reorder_patterns_seeded(
         ordered.push(chosen);
     }
 
-    tracing::debug!(reordered_count = ordered.len(), "pattern reordering completed");
+    tracing::debug!(
+        reordered_count = ordered.len(),
+        "pattern reordering completed"
+    );
 
     ordered
 }
@@ -447,10 +456,7 @@ pub fn can_match_pattern(
     var_states: &HashMap<VarId, BindingState>,
 ) -> bool {
     pattern.variables().iter().all(|v| {
-        var_states
-            .get(v)
-            .map(|s| !s.is_poisoned())
-            .unwrap_or(true) // Unknown vars are fine
+        var_states.get(v).map(|s| !s.is_poisoned()).unwrap_or(true) // Unknown vars are fine
     })
 }
 
@@ -678,12 +684,12 @@ fn compare_range_values(a: &RangeValue, b: &RangeValue) -> std::cmp::Ordering {
         }
         (RangeValue::String(a), RangeValue::String(b)) => a.cmp(b),
         // Cross-type: Long <-> Double
-        (RangeValue::Long(a), RangeValue::Double(b)) => {
-            (*a as f64).partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-        }
-        (RangeValue::Double(a), RangeValue::Long(b)) => {
-            a.partial_cmp(&(*b as f64)).unwrap_or(std::cmp::Ordering::Equal)
-        }
+        (RangeValue::Long(a), RangeValue::Double(b)) => (*a as f64)
+            .partial_cmp(b)
+            .unwrap_or(std::cmp::Ordering::Equal),
+        (RangeValue::Double(a), RangeValue::Long(b)) => a
+            .partial_cmp(&(*b as f64))
+            .unwrap_or(std::cmp::Ordering::Equal),
         // Different types that can't be compared
         _ => std::cmp::Ordering::Equal,
     }
@@ -898,11 +904,7 @@ mod tests {
     use std::sync::Arc;
 
     fn make_pattern(s: VarId, p_name: &str, o: VarId) -> TriplePattern {
-        TriplePattern::new(
-            Term::Var(s),
-            Term::Sid(Sid::new(100, p_name)),
-            Term::Var(o),
-        )
+        TriplePattern::new(Term::Var(s), Term::Sid(Sid::new(100, p_name)), Term::Var(o))
     }
 
     #[test]
@@ -1262,8 +1264,14 @@ mod tests {
         let c = &constraints[0];
 
         // Equality means lower = upper = val, both inclusive
-        assert_eq!(c.lower, Some((RangeValue::String("active".to_string()), true)));
-        assert_eq!(c.upper, Some((RangeValue::String("active".to_string()), true)));
+        assert_eq!(
+            c.lower,
+            Some((RangeValue::String("active".to_string()), true))
+        );
+        assert_eq!(
+            c.upper,
+            Some((RangeValue::String("active".to_string()), true))
+        );
     }
 
     #[test]
@@ -1371,10 +1379,8 @@ mod tests {
     #[test]
     fn test_range_constraint_merge_tighter_lower() {
         // ?age > 10 AND ?age > 20 => lower should be 20
-        let mut c1 = RangeConstraint::new(VarId(0))
-            .with_lower(RangeValue::Long(10), false);
-        let c2 = RangeConstraint::new(VarId(0))
-            .with_lower(RangeValue::Long(20), false);
+        let mut c1 = RangeConstraint::new(VarId(0)).with_lower(RangeValue::Long(10), false);
+        let c2 = RangeConstraint::new(VarId(0)).with_lower(RangeValue::Long(20), false);
 
         c1.merge(&c2);
         assert_eq!(c1.lower, Some((RangeValue::Long(20), false)));
@@ -1383,10 +1389,8 @@ mod tests {
     #[test]
     fn test_range_constraint_merge_tighter_upper() {
         // ?age < 100 AND ?age < 65 => upper should be 65
-        let mut c1 = RangeConstraint::new(VarId(0))
-            .with_upper(RangeValue::Long(100), false);
-        let c2 = RangeConstraint::new(VarId(0))
-            .with_upper(RangeValue::Long(65), false);
+        let mut c1 = RangeConstraint::new(VarId(0)).with_upper(RangeValue::Long(100), false);
+        let c2 = RangeConstraint::new(VarId(0)).with_upper(RangeValue::Long(65), false);
 
         c1.merge(&c2);
         assert_eq!(c1.upper, Some((RangeValue::Long(65), false)));
@@ -1395,10 +1399,8 @@ mod tests {
     #[test]
     fn test_range_constraint_merge_exclusivity() {
         // ?age >= 18 AND ?age > 18 => should be exclusive (tighter)
-        let mut c1 = RangeConstraint::new(VarId(0))
-            .with_lower(RangeValue::Long(18), true); // inclusive
-        let c2 = RangeConstraint::new(VarId(0))
-            .with_lower(RangeValue::Long(18), false); // exclusive
+        let mut c1 = RangeConstraint::new(VarId(0)).with_lower(RangeValue::Long(18), true); // inclusive
+        let c2 = RangeConstraint::new(VarId(0)).with_lower(RangeValue::Long(18), false); // exclusive
 
         c1.merge(&c2);
         // Exclusive is tighter than inclusive at the same value
@@ -1462,13 +1464,11 @@ mod tests {
     #[test]
     fn test_range_constraint_satisfiable_open_ended() {
         // Only lower bound => always satisfiable
-        let c1 = RangeConstraint::new(VarId(0))
-            .with_lower(RangeValue::Long(10), false);
+        let c1 = RangeConstraint::new(VarId(0)).with_lower(RangeValue::Long(10), false);
         assert!(!c1.is_unsatisfiable());
 
         // Only upper bound => always satisfiable
-        let c2 = RangeConstraint::new(VarId(0))
-            .with_upper(RangeValue::Long(10), false);
+        let c2 = RangeConstraint::new(VarId(0)).with_upper(RangeValue::Long(10), false);
         assert!(!c2.is_unsatisfiable());
 
         // No bounds => always satisfiable
@@ -1480,10 +1480,7 @@ mod tests {
 
     #[test]
     fn test_range_value_to_flake_value() {
-        assert_eq!(
-            RangeValue::Long(42).to_flake_value(),
-            FlakeValue::Long(42)
-        );
+        assert_eq!(RangeValue::Long(42).to_flake_value(), FlakeValue::Long(42));
         assert_eq!(
             RangeValue::String("hello".to_string()).to_flake_value(),
             FlakeValue::String("hello".to_string())
@@ -1499,8 +1496,7 @@ mod tests {
     #[test]
     fn test_range_constraint_to_object_bounds() {
         // Lower bound only
-        let c1 = RangeConstraint::new(VarId(0))
-            .with_lower(RangeValue::Long(18), false);
+        let c1 = RangeConstraint::new(VarId(0)).with_lower(RangeValue::Long(18), false);
         let bounds = c1.to_object_bounds().expect("should have bounds");
         assert!(!bounds.is_empty());
         // Verify it filters correctly
@@ -1535,8 +1531,8 @@ mod tests {
         };
 
         // Extract for ?age (VarId(0))
-        let bounds = extract_object_bounds_for_var(&filter, VarId(0))
-            .expect("should extract bounds");
+        let bounds =
+            extract_object_bounds_for_var(&filter, VarId(0)).expect("should extract bounds");
 
         // Should filter 18 out (exclusive) but include 19
         assert!(!bounds.matches(&FlakeValue::Long(18)));
@@ -1560,8 +1556,8 @@ mod tests {
             },
         ]);
 
-        let bounds = extract_object_bounds_for_var(&filter, VarId(0))
-            .expect("should extract bounds");
+        let bounds =
+            extract_object_bounds_for_var(&filter, VarId(0)).expect("should extract bounds");
 
         assert!(!bounds.matches(&FlakeValue::Long(18)));
         assert!(bounds.matches(&FlakeValue::Long(19)));

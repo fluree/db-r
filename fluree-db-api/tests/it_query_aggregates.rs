@@ -376,7 +376,11 @@ async fn aggregates_groupby_multiple_vars_with_grouped_selects() {
     for row in &mut rows {
         let cols = row.as_array_mut().unwrap();
         if let Some(list) = cols.get_mut(2).and_then(|v| v.as_array_mut()) {
-            list.sort_by(|a, b| serde_json::to_string(a).unwrap().cmp(&serde_json::to_string(b).unwrap()));
+            list.sort_by(|a, b| {
+                serde_json::to_string(a)
+                    .unwrap()
+                    .cmp(&serde_json::to_string(b).unwrap())
+            });
         }
     }
     let normalized = JsonValue::Array(rows);

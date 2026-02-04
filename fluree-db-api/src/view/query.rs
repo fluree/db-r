@@ -5,7 +5,8 @@
 
 use crate::query::helpers::{
     build_query_result, parse_and_validate_sparql, parse_jsonld_query, parse_sparql_to_ir,
-    prepare_for_execution, status_for_query_error, tracker_for_limits, tracker_for_tracked_endpoint,
+    prepare_for_execution, status_for_query_error, tracker_for_limits,
+    tracker_for_tracked_endpoint,
 };
 use crate::view::{FlureeView, QueryInput};
 use crate::{
@@ -130,11 +131,9 @@ where
         };
 
         // Build executable with reasoning
-        let executable = self
-            .build_executable_for_view(view, &parsed)
-            .map_err(|e| {
-                crate::query::TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally())
-            })?;
+        let executable = self.build_executable_for_view(view, &parsed).map_err(|e| {
+            crate::query::TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally())
+        })?;
 
         // Execute with tracking (use tracked variant for policy)
         let batches = self
@@ -150,13 +149,8 @@ where
             })?;
 
         // Build result
-        let query_result = build_query_result(
-            vars,
-            parsed,
-            batches,
-            view.to_t,
-            Some(view.overlay.clone()),
-        );
+        let query_result =
+            build_query_result(vars, parsed, batches, view.to_t, Some(view.overlay.clone()));
 
         // Format with tracking
         let result_json = match view.policy() {
@@ -360,7 +354,7 @@ fn query_error_to_status(err: &fluree_db_query::QueryError) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    
+
     use crate::FlureeBuilder;
     use serde_json::json;
 
@@ -456,7 +450,12 @@ mod tests {
             "where": {"@id": "http://example.org/alice", "http://example.org/name": "?name"}
         });
 
-        let result = view.query(&fluree).jsonld(&query).execute_formatted().await.unwrap();
+        let result = view
+            .query(&fluree)
+            .jsonld(&query)
+            .execute_formatted()
+            .await
+            .unwrap();
 
         // Should be JSON-LD formatted
         assert!(result.is_array() || result.is_object());

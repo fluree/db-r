@@ -15,7 +15,9 @@ async fn list_container_serialization_test() {
     let temp_dir = TempDir::new().unwrap();
     let test_dir_str = temp_dir.path().to_str().unwrap();
 
-    let fluree = FlureeBuilder::file(test_dir_str).build().expect("build file fluree");
+    let fluree = FlureeBuilder::file(test_dir_str)
+        .build()
+        .expect("build file fluree");
     let ledger_alias = "crm/test:main";
 
     // Create ledger
@@ -38,7 +40,9 @@ async fn list_container_serialization_test() {
     let _ledger1 = fluree.update(ledger0, &txn).await.unwrap().ledger;
 
     // Create second connection to test loading from disk
-    let fluree2 = FlureeBuilder::file(test_dir_str).build().expect("build file fluree2");
+    let fluree2 = FlureeBuilder::file(test_dir_str)
+        .build()
+        .expect("build file fluree2");
 
     // Try to load the database - this should not fail
     let loaded_ledger = fluree2.ledger(ledger_alias).await.unwrap();
@@ -53,13 +57,22 @@ async fn list_container_serialization_test() {
     let jsonld = result.to_jsonld_async(&loaded_ledger.db).await.unwrap();
 
     // Verify the data was correctly saved and loaded
-    assert!(!jsonld.is_null(), "Database should load successfully from disk");
-    assert_eq!(jsonld.as_array().unwrap().len(), 1, "Should have one contact record");
+    assert!(
+        !jsonld.is_null(),
+        "Database should load successfully from disk"
+    );
+    assert_eq!(
+        jsonld.as_array().unwrap().len(),
+        1,
+        "Should have one contact record"
+    );
 
     // When querying a single-value list, Fluree returns the value directly, not as a list
     let contact = &jsonld.as_array().unwrap()[0];
-    assert_eq!(contact["crm:companyIds"], "company-final",
-               "Single list value should be returned directly");
+    assert_eq!(
+        contact["crm:companyIds"], "company-final",
+        "Single list value should be returned directly"
+    );
 }
 
 #[tokio::test]
@@ -68,7 +81,9 @@ async fn list_container_multiple_values_test() {
     let temp_dir = TempDir::new().unwrap();
     let test_dir_str = temp_dir.path().to_str().unwrap();
 
-    let fluree = FlureeBuilder::file(test_dir_str).build().expect("build file fluree");
+    let fluree = FlureeBuilder::file(test_dir_str)
+        .build()
+        .expect("build file fluree");
     let ledger_alias = "test/lists:main";
 
     // Create ledger
@@ -92,7 +107,9 @@ async fn list_container_multiple_values_test() {
     let _ledger1 = fluree.update(ledger0, &txn).await.unwrap().ledger;
 
     // Load with new connection
-    let fluree2 = FlureeBuilder::file(test_dir_str).build().expect("build file fluree2");
+    let fluree2 = FlureeBuilder::file(test_dir_str)
+        .build()
+        .expect("build file fluree2");
     let loaded_ledger = fluree2.ledger(ledger_alias).await.unwrap();
 
     let query = json!({
@@ -108,8 +125,11 @@ async fn list_container_multiple_values_test() {
 
     assert!(!jsonld.is_null(), "Database should load successfully");
     let thing = &jsonld.as_array().unwrap()[0];
-    assert_eq!(thing["ex:orderedItems"], json!(["first", "second", "third"]),
-               "Ordered list values should be preserved");
+    assert_eq!(
+        thing["ex:orderedItems"],
+        json!(["first", "second", "third"]),
+        "Ordered list values should be preserved"
+    );
 }
 
 #[tokio::test]
@@ -118,7 +138,9 @@ async fn list_container_with_objects_test() {
     let temp_dir = TempDir::new().unwrap();
     let test_dir_str = temp_dir.path().to_str().unwrap();
 
-    let fluree = FlureeBuilder::file(test_dir_str).build().expect("build file fluree");
+    let fluree = FlureeBuilder::file(test_dir_str)
+        .build()
+        .expect("build file fluree");
     let ledger_alias = "test/list-objects:main";
 
     // Create ledger
@@ -147,7 +169,9 @@ async fn list_container_with_objects_test() {
     let _ledger1 = fluree.update(ledger0, &txn).await.unwrap().ledger;
 
     // Load with new connection
-    let fluree2 = FlureeBuilder::file(test_dir_str).build().expect("build file fluree2");
+    let fluree2 = FlureeBuilder::file(test_dir_str)
+        .build()
+        .expect("build file fluree2");
     let loaded_ledger = fluree2.ledger(ledger_alias).await.unwrap();
 
     let query = json!({
@@ -167,6 +191,12 @@ async fn list_container_with_objects_test() {
     let friends = charlie["ex:orderedFriends"].as_array().unwrap();
 
     assert_eq!(friends.len(), 2, "Should have two ordered friends");
-    assert_eq!(friends[0]["schema:name"], "Alice", "First friend should be Alice");
-    assert_eq!(friends[1]["schema:name"], "Bob", "Second friend should be Bob");
+    assert_eq!(
+        friends[0]["schema:name"], "Alice",
+        "First friend should be Alice"
+    );
+    assert_eq!(
+        friends[1]["schema:name"], "Bob",
+        "Second friend should be Bob"
+    );
 }

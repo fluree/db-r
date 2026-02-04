@@ -86,11 +86,7 @@ fn parse_alternative(
 }
 
 /// Sequence (`/`)
-fn parse_sequence(
-    input: &str,
-    pos: &mut usize,
-    ctx: &ParsedContext,
-) -> Result<UnresolvedPathExpr> {
+fn parse_sequence(input: &str, pos: &mut usize, ctx: &ParsedContext) -> Result<UnresolvedPathExpr> {
     let mut parts = vec![parse_elt_or_inverse(input, pos, ctx)?];
     loop {
         skip_ws(input, pos);
@@ -147,11 +143,7 @@ fn parse_elt(input: &str, pos: &mut usize, ctx: &ParsedContext) -> Result<Unreso
 }
 
 /// Primary: full IRI, prefixed name, `a`, or parenthesized group
-fn parse_primary(
-    input: &str,
-    pos: &mut usize,
-    ctx: &ParsedContext,
-) -> Result<UnresolvedPathExpr> {
+fn parse_primary(input: &str, pos: &mut usize, ctx: &ParsedContext) -> Result<UnresolvedPathExpr> {
     skip_ws(input, pos);
     if *pos >= input.len() {
         return Err(ParseError::InvalidContext(
@@ -234,7 +226,10 @@ fn parse_pname(input: &str, pos: &mut usize) -> Result<String> {
 
 /// Characters that terminate an IRI token in path syntax
 fn is_operator_or_delim(ch: char) -> bool {
-    matches!(ch, '/' | '|' | '*' | '+' | '?' | '^' | '(' | ')' | '<' | '>')
+    matches!(
+        ch,
+        '/' | '|' | '*' | '+' | '?' | '^' | '(' | ')' | '<' | '>'
+    )
 }
 
 fn skip_ws(input: &str, pos: &mut usize) {

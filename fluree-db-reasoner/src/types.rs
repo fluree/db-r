@@ -109,7 +109,10 @@ pub struct PropertyChain {
 impl PropertyChain {
     /// Create a new property chain
     pub fn new(derived_property: Sid, chain: Vec<ChainElement>) -> Self {
-        debug_assert!(chain.len() >= 2, "Property chain must have at least 2 elements");
+        debug_assert!(
+            chain.len() >= 2,
+            "Property chain must have at least 2 elements"
+        );
         Self {
             derived_property,
             chain,
@@ -225,4 +228,3 @@ impl PropertyExpression {
         }
     }
 }
-

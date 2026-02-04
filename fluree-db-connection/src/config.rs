@@ -97,10 +97,7 @@ pub enum PublisherType {
         timeout_ms: Option<u64>,
     },
     /// Unsupported publisher
-    Unsupported {
-        type_iri: String,
-        raw: JsonValue,
-    },
+    Unsupported { type_iri: String, raw: JsonValue },
 }
 
 #[derive(Debug, Clone)]
@@ -119,10 +116,7 @@ pub enum StorageType {
     /// S3 storage (not yet supported in Rust implementation)
     S3(S3StorageConfig),
     /// Unsupported storage type (parsed but not instantiatable)
-    Unsupported {
-        type_iri: String,
-        raw: JsonValue,
-    },
+    Unsupported { type_iri: String, raw: JsonValue },
 }
 
 /// Storage configuration
@@ -165,7 +159,10 @@ impl CacheConfig {
     /// Create a cache config with the given max MB, calculating entries automatically.
     pub fn with_max_mb(max_mb: usize) -> Self {
         let max_entries = crate::cache::memory_to_cache_size(max_mb, None);
-        CacheConfig { max_mb, max_entries }
+        CacheConfig {
+            max_mb,
+            max_entries,
+        }
     }
 
     /// Create a cache config with an explicit entry count.
@@ -173,7 +170,10 @@ impl CacheConfig {
         // Estimate MB from entries (reverse of memory_to_cache_size)
         // avg_segment_mb ≈ 0.183 MB
         let max_mb = ((max_entries as f64) * 0.183).ceil() as usize;
-        CacheConfig { max_mb, max_entries }
+        CacheConfig {
+            max_mb,
+            max_entries,
+        }
     }
 }
 
@@ -182,7 +182,10 @@ impl Default for CacheConfig {
         // Use memory-based default: 50% of system memory
         let max_mb = crate::cache::default_cache_max_mb();
         let max_entries = crate::cache::memory_to_cache_size(max_mb, None);
-        CacheConfig { max_mb, max_entries }
+        CacheConfig {
+            max_mb,
+            max_entries,
+        }
     }
 }
 
@@ -400,7 +403,8 @@ impl ConnectionConfig {
 
 /// Parse storage config from a resolved JSON-LD node
 fn parse_storage_node(graph: &ConfigGraph, node: &JsonValue) -> Result<StorageConfig> {
-    let address_identifier = resolve_string(graph, node, vocab::FIELD_ADDRESS_IDENTIFIER).map(Arc::from);
+    let address_identifier =
+        resolve_string(graph, node, vocab::FIELD_ADDRESS_IDENTIFIER).map(Arc::from);
 
     // Determine storage type from properties (not hardcoded strings)
     if node.get(vocab::FIELD_S3_BUCKET).is_some() {
@@ -488,7 +492,8 @@ fn parse_publisher_node(graph: &ConfigGraph, node: &JsonValue) -> Result<Publish
             publisher_type: PublisherType::DynamoDb {
                 table: Arc::from(table),
                 region: resolve_string(graph, node, vocab::FIELD_DYNAMODB_REGION).map(Arc::from),
-                endpoint: resolve_string(graph, node, vocab::FIELD_DYNAMODB_ENDPOINT).map(Arc::from),
+                endpoint: resolve_string(graph, node, vocab::FIELD_DYNAMODB_ENDPOINT)
+                    .map(Arc::from),
                 timeout_ms: resolve_u64(graph, node, vocab::FIELD_DYNAMODB_TIMEOUT_MS),
             },
         });
@@ -535,7 +540,11 @@ fn get_string_field(node: &JsonValue, field: &str) -> Option<String> {
             JsonValue::Array(arr) => arr.first(),
             other => Some(other),
         })
-        .and_then(|v| v.get("@value").and_then(|x| x.as_str()).or_else(|| v.as_str()))
+        .and_then(|v| {
+            v.get("@value")
+                .and_then(|x| x.as_str())
+                .or_else(|| v.as_str())
+        })
         .map(String::from)
 }
 
@@ -545,9 +554,14 @@ fn resolve_string(graph: &ConfigGraph, node: &JsonValue, field: &str) -> Option<
     let resolved = graph.resolve_first(raw).unwrap_or(raw);
 
     // 1) Literal value
-    if let Some(s) = get_string_field(&JsonValue::Object(
-        [(field.to_string(), resolved.clone())].into_iter().collect(),
-    ), field) {
+    if let Some(s) = get_string_field(
+        &JsonValue::Object(
+            [(field.to_string(), resolved.clone())]
+                .into_iter()
+                .collect(),
+        ),
+        field,
+    ) {
         return Some(s);
     }
 
@@ -591,9 +605,7 @@ fn resolve_u64(graph: &ConfigGraph, node: &JsonValue, field: &str) -> Option<u64
             java_prop: get_string_field(resolved, vocab::FIELD_JAVA_PROP),
             default_val: get_string_field(resolved, vocab::FIELD_DEFAULT_VAL),
         };
-        return spec
-            .resolve_string()
-            .and_then(|s| s.parse::<u64>().ok());
+        return spec.resolve_string().and_then(|s| s.parse::<u64>().ok());
     }
 
     None
@@ -640,14 +652,16 @@ fn get_int_field(node: &JsonValue, field: &str) -> Option<i64> {
             JsonValue::Array(arr) => arr.first(),
             other => Some(other),
         })
-        .and_then(|v| v.get("@value").and_then(|x| x.as_i64()).or_else(|| v.as_i64()))
+        .and_then(|v| {
+            v.get("@value")
+                .and_then(|x| x.as_i64())
+                .or_else(|| v.as_i64())
+        })
 }
 
 /// Get @id from node
 fn get_id(node: &JsonValue) -> Option<Arc<str>> {
-    node.get("@id")
-        .and_then(|v| v.as_str())
-        .map(Arc::from)
+    node.get("@id").and_then(|v| v.as_str()).map(Arc::from)
 }
 
 impl CacheConfig {
@@ -697,7 +711,10 @@ impl CacheConfig {
 
         // When both are provided, use explicit values; otherwise derive one from the other
         Ok(match (max_entries, max_mb) {
-            (Some(entries), Some(mb)) => CacheConfig { max_mb: mb, max_entries: entries },
+            (Some(entries), Some(mb)) => CacheConfig {
+                max_mb: mb,
+                max_entries: entries,
+            },
             (Some(entries), None) => CacheConfig::with_max_entries(entries),
             (None, Some(mb)) => CacheConfig::with_max_mb(mb),
             (None, None) => CacheConfig::default(),
@@ -715,15 +732,18 @@ fn resolve_config_value_usize(value: &JsonValue) -> Result<usize> {
     // ConfigurationValue object
     if let Some(obj) = value.as_object() {
         let spec = ConfigValue {
-            env_var: obj.get(vocab::FIELD_ENV_VAR)
+            env_var: obj
+                .get(vocab::FIELD_ENV_VAR)
                 .or_else(|| obj.get("envVar"))
                 .and_then(|v| v.as_str())
                 .map(String::from),
-            java_prop: obj.get(vocab::FIELD_JAVA_PROP)
+            java_prop: obj
+                .get(vocab::FIELD_JAVA_PROP)
                 .or_else(|| obj.get("javaProp"))
                 .and_then(|v| v.as_str())
                 .map(String::from),
-            default_val: obj.get(vocab::FIELD_DEFAULT_VAL)
+            default_val: obj
+                .get(vocab::FIELD_DEFAULT_VAL)
                 .or_else(|| obj.get("defaultVal"))
                 .and_then(|v| v.as_str())
                 .map(String::from),

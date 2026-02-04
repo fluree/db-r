@@ -112,9 +112,9 @@ pub fn split_time_travel_suffix(
             if val.is_empty() {
                 return Err(AliasParseError::new("Missing value after '@t:'"));
             }
-            let t: i64 = val.parse().map_err(|_| {
-                AliasParseError::new(format!("Invalid integer for @t: '{}'", val))
-            })?;
+            let t: i64 = val
+                .parse()
+                .map_err(|_| AliasParseError::new(format!("Invalid integer for @t: '{}'", val)))?;
             Some(AliasTimeSpec::AtT(t))
         } else if let Some(val) = time_str.strip_prefix("iso:") {
             if val.is_empty() {

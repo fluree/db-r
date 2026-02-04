@@ -3,9 +3,7 @@
 //! These tests demonstrate the full stack: connection, ledger loading,
 //! novelty overlay, and query execution.
 
-use fluree_db_api::{
-    Fluree, MemoryStorage, SimpleCache, Term, TriplePattern, VarRegistry,
-};
+use fluree_db_api::{Fluree, MemoryStorage, SimpleCache, Term, TriplePattern, VarRegistry};
 use fluree_db_connection::{Connection, ConnectionConfig};
 use fluree_db_core::{Flake, FlakeValue, Sid};
 use fluree_db_nameservice::memory::MemoryNameService;
@@ -306,10 +304,7 @@ mod file_tests {
             "where": { "@id": "?s", "@type": "?type" }
         });
 
-        let result = fluree
-            .query(&db, &query)
-            .await
-            .expect("Query failed");
+        let result = fluree.query(&db, &query).await.expect("Query failed");
 
         println!(
             "Query returned {} rows in {} batches",
@@ -321,7 +316,10 @@ mod file_tests {
 
         // Verify we can access results via the variable registry
         let s_var = result.vars.get("?s").expect("?s should be registered");
-        let type_var = result.vars.get("?type").expect("?type should be registered");
+        let type_var = result
+            .vars
+            .get("?type")
+            .expect("?type should be registered");
 
         if let Some(batch) = result.batches.first() {
             if let Some(row) = batch.row_view(0) {

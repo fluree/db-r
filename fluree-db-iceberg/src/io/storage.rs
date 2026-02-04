@@ -214,12 +214,7 @@ impl S3IcebergStorage {
     }
 
     /// Read a byte range from S3.
-    async fn get_object_range(
-        &self,
-        bucket: &str,
-        key: &str,
-        range: Range<u64>,
-    ) -> Result<Bytes> {
+    async fn get_object_range(&self, bucket: &str, key: &str, range: Range<u64>) -> Result<Bytes> {
         let range_header = format!("bytes={}-{}", range.start, range.end.saturating_sub(1));
 
         let response = self
@@ -242,14 +237,10 @@ impl S3IcebergStorage {
     }
 
     /// Read multiple byte ranges concurrently with bounded parallelism.
-    pub async fn read_ranges(
-        &self,
-        path: &str,
-        ranges: Vec<Range<u64>>,
-    ) -> Result<Vec<Bytes>> {
+    pub async fn read_ranges(&self, path: &str, ranges: Vec<Range<u64>>) -> Result<Vec<Bytes>> {
         use futures::stream::{self, StreamExt};
-        use tokio::sync::Semaphore;
         use std::sync::Arc;
+        use tokio::sync::Semaphore;
 
         let (bucket, key) = Self::parse_s3_uri(path)?;
         let semaphore = Arc::new(Semaphore::new(self.max_concurrent_reads));
@@ -452,7 +443,8 @@ impl<S: IcebergStorage> RangeOnlyStorage<S> {
 
     /// Get the number of range-read calls.
     pub fn range_read_calls(&self) -> usize {
-        self.range_read_calls.load(std::sync::atomic::Ordering::SeqCst)
+        self.range_read_calls
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Assert that no whole-file reads occurred.
@@ -469,13 +461,15 @@ impl<S: IcebergStorage> RangeOnlyStorage<S> {
 #[async_trait(?Send)]
 impl<S: IcebergStorage> IcebergStorage for RangeOnlyStorage<S> {
     async fn read(&self, path: &str) -> Result<Bytes> {
-        self.read_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.read_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         // Still perform the read but track it
         self.inner.read(path).await
     }
 
     async fn read_range(&self, path: &str, range: Range<u64>) -> Result<Bytes> {
-        self.range_read_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.range_read_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.inner.read_range(path, range).await
     }
 
@@ -492,8 +486,8 @@ mod tests {
     #[cfg(feature = "aws")]
     fn test_parse_s3_uri() {
         // Valid URIs
-        let (bucket, key) = S3IcebergStorage::parse_s3_uri("s3://my-bucket/path/to/file.parquet")
-            .unwrap();
+        let (bucket, key) =
+            S3IcebergStorage::parse_s3_uri("s3://my-bucket/path/to/file.parquet").unwrap();
         assert_eq!(bucket, "my-bucket");
         assert_eq!(key, "path/to/file.parquet");
 

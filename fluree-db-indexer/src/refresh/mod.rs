@@ -45,15 +45,19 @@ use crate::error::Result;
 use crate::gc::{collect_garbage_addresses, write_garbage_record};
 use crate::writer::IndexWriter;
 use fluree_db_core::index::ChildRef;
-use fluree_db_core::serde::json::{serialize_db_root, DbRoot, DbRootConfig, PrevIndexRef};
 #[cfg(feature = "hll-stats")]
 use fluree_db_core::serde::json::PropertyStatEntry;
-use fluree_db_core::{ContentAddressedWrite, ContentKind, Db, IndexType, NodeCache, Storage, StorageWrite};
+use fluree_db_core::serde::json::{serialize_db_root, DbRoot, DbRootConfig, PrevIndexRef};
+use fluree_db_core::{
+    ContentAddressedWrite, ContentKind, Db, IndexType, NodeCache, Storage, StorageWrite,
+};
 use fluree_db_novelty::Novelty;
 use std::time::Instant;
 
 #[cfg(feature = "hll-stats")]
-use crate::stats::{load_hll_sketches, persist_hll_sketches_iter, HllStatsHook, IndexStatsHook, PropertyHll};
+use crate::stats::{
+    load_hll_sketches, persist_hll_sketches_iter, HllStatsHook, IndexStatsHook, PropertyHll,
+};
 #[cfg(feature = "hll-stats")]
 use fluree_db_core::Sid;
 #[cfg(feature = "hll-stats")]
@@ -168,19 +172,29 @@ where
 
     // Validate all roots exist before starting parallel refresh
     let spot_root = db.spot.as_ref().ok_or_else(|| {
-        crate::error::IndexerError::InvalidConfig("Cannot refresh: no existing SPOT root".to_string())
+        crate::error::IndexerError::InvalidConfig(
+            "Cannot refresh: no existing SPOT root".to_string(),
+        )
     })?;
     let psot_root = db.psot.as_ref().ok_or_else(|| {
-        crate::error::IndexerError::InvalidConfig("Cannot refresh: no existing PSOT root".to_string())
+        crate::error::IndexerError::InvalidConfig(
+            "Cannot refresh: no existing PSOT root".to_string(),
+        )
     })?;
     let post_root = db.post.as_ref().ok_or_else(|| {
-        crate::error::IndexerError::InvalidConfig("Cannot refresh: no existing POST root".to_string())
+        crate::error::IndexerError::InvalidConfig(
+            "Cannot refresh: no existing POST root".to_string(),
+        )
     })?;
     let opst_root = db.opst.as_ref().ok_or_else(|| {
-        crate::error::IndexerError::InvalidConfig("Cannot refresh: no existing OPST root".to_string())
+        crate::error::IndexerError::InvalidConfig(
+            "Cannot refresh: no existing OPST root".to_string(),
+        )
     })?;
     let tspo_root = db.tspo.as_ref().ok_or_else(|| {
-        crate::error::IndexerError::InvalidConfig("Cannot refresh: no existing TSPO root".to_string())
+        crate::error::IndexerError::InvalidConfig(
+            "Cannot refresh: no existing TSPO root".to_string(),
+        )
     })?;
 
     // ===========================================================================
@@ -191,31 +205,70 @@ where
 
     // Create the parallel refresh tasks for all 5 index types
     let spot_future = refresh_single_index(
-        storage, spot_root.clone(), IndexType::Spot, novelty, alias, &indexer_config, current_index_t, target_t
+        storage,
+        spot_root.clone(),
+        IndexType::Spot,
+        novelty,
+        alias,
+        &indexer_config,
+        current_index_t,
+        target_t,
     );
     let psot_future = refresh_single_index(
-        storage, psot_root.clone(), IndexType::Psot, novelty, alias, &indexer_config, current_index_t, target_t
+        storage,
+        psot_root.clone(),
+        IndexType::Psot,
+        novelty,
+        alias,
+        &indexer_config,
+        current_index_t,
+        target_t,
     );
     let post_future = refresh_single_index(
-        storage, post_root.clone(), IndexType::Post, novelty, alias, &indexer_config, current_index_t, target_t
+        storage,
+        post_root.clone(),
+        IndexType::Post,
+        novelty,
+        alias,
+        &indexer_config,
+        current_index_t,
+        target_t,
     );
     let opst_future = refresh_single_index(
-        storage, opst_root.clone(), IndexType::Opst, novelty, alias, &indexer_config, current_index_t, target_t
+        storage,
+        opst_root.clone(),
+        IndexType::Opst,
+        novelty,
+        alias,
+        &indexer_config,
+        current_index_t,
+        target_t,
     );
     let tspo_future = refresh_single_index(
-        storage, tspo_root.clone(), IndexType::Tspo, novelty, alias, &indexer_config, current_index_t, target_t
+        storage,
+        tspo_root.clone(),
+        IndexType::Tspo,
+        novelty,
+        alias,
+        &indexer_config,
+        current_index_t,
+        target_t,
     );
 
     // Create HLL stats future (runs in parallel with index refresh)
     #[cfg(feature = "hll-stats")]
     let hll_future = compute_hll_stats_parallel(
-        storage, alias, db.stats.as_ref(), novelty, current_index_t, target_t
+        storage,
+        alias,
+        db.stats.as_ref(),
+        novelty,
+        current_index_t,
+        target_t,
     );
 
     // Create schema extraction future (runs in parallel with index refresh)
-    let schema_future = extract_schema_parallel(
-        db.schema.as_ref(), novelty, current_index_t, target_t
-    );
+    let schema_future =
+        extract_schema_parallel(db.schema.as_ref(), novelty, current_index_t, target_t);
 
     // Create class-property stats future (runs in parallel with index refresh)
     // Collects SPOT novelty flakes for processing
@@ -223,9 +276,8 @@ where
         .iter_index(IndexType::Spot)
         .map(|id| novelty.get_flake(id).clone())
         .collect();
-    let class_stats_future = compute_class_property_stats_parallel(
-        db, db.stats.as_ref(), &spot_flakes
-    );
+    let class_stats_future =
+        compute_class_property_stats_parallel(db, db.stats.as_ref(), &spot_flakes);
 
     // ===========================================================================
     // AWAIT ALL: Join all parallel operations
@@ -233,7 +285,16 @@ where
     // Using tokio::join! to run all operations concurrently
 
     #[cfg(feature = "hll-stats")]
-    let (spot_result, psot_result, post_result, opst_result, tspo_result, hll_result, schema_result, class_stats_result) = tokio::join!(
+    let (
+        spot_result,
+        psot_result,
+        post_result,
+        opst_result,
+        tspo_result,
+        hll_result,
+        schema_result,
+        class_stats_result,
+    ) = tokio::join!(
         spot_future,
         psot_future,
         post_future,
@@ -245,7 +306,15 @@ where
     );
 
     #[cfg(not(feature = "hll-stats"))]
-    let (spot_result, psot_result, post_result, opst_result, tspo_result, schema_result, class_stats_result) = tokio::join!(
+    let (
+        spot_result,
+        psot_result,
+        post_result,
+        opst_result,
+        tspo_result,
+        schema_result,
+        class_stats_result,
+    ) = tokio::join!(
         spot_future,
         psot_future,
         post_future,
@@ -308,7 +377,11 @@ where
         // Compute obsolete sketch addresses before consuming hll_result
         let prior_properties = db.stats.as_ref().and_then(|s| s.properties.as_ref());
         let obsolete = if let Some(prior_props) = prior_properties {
-            crate::stats::compute_obsolete_sketch_addresses(alias, prior_props, &hll_result.properties)
+            crate::stats::compute_obsolete_sketch_addresses(
+                alias,
+                prior_props,
+                &hll_result.properties,
+            )
         } else {
             Vec::new()
         };
@@ -320,7 +393,10 @@ where
     let (updated_properties, obsolete_sketch_addresses): (
         Option<Vec<fluree_db_core::serde::json::PropertyStatEntry>>,
         Vec<String>,
-    ) = (db.stats.as_ref().and_then(|s| s.properties.clone()), Vec::new());
+    ) = (
+        db.stats.as_ref().and_then(|s| s.properties.clone()),
+        Vec::new(),
+    );
 
     // Get class-property stats from parallel extraction
     let updated_classes = match class_stats_result {
@@ -362,13 +438,7 @@ where
     );
 
     // Write garbage record (if there are any replaced nodes)
-    let garbage_ref = write_garbage_record(
-        storage,
-        alias,
-        target_t,
-        garbage_addresses,
-    )
-    .await?;
+    let garbage_ref = write_garbage_record(storage, alias, target_t, garbage_addresses).await?;
 
     // Build and write the new DbRoot
     let db_root = DbRoot {
@@ -432,11 +502,7 @@ async fn refresh_single_index<S>(
 where
     S: Storage + StorageWrite + ContentAddressedWrite,
 {
-    let mut writer = IndexWriter::new(
-        storage,
-        alias,
-        ContentKind::IndexNode { index_type },
-    );
+    let mut writer = IndexWriter::new(storage, alias, ContentKind::IndexNode { index_type });
     let input = RefreshInput {
         storage,
         root,
@@ -561,13 +627,20 @@ mod tests {
     use crate::builder::build_index;
     use crate::config::IndexerConfig;
     use fluree_db_core::cache::NoCache;
-    use fluree_db_core::serde::json::parse_branch_node;
     use fluree_db_core::prelude::*;
+    use fluree_db_core::serde::json::parse_branch_node;
     use fluree_db_core::{range, Db, FlakeValue, RangeMatch, RangeOptions, RangeTest, Sid};
     use fluree_db_novelty::Novelty;
     use std::collections::BTreeMap;
 
-    fn make_flake(s_code: i32, s_name: &str, p_code: i32, p_name: &str, val: i64, t: i64) -> fluree_db_core::Flake {
+    fn make_flake(
+        s_code: i32,
+        s_name: &str,
+        p_code: i32,
+        p_name: &str,
+        val: i64,
+        t: i64,
+    ) -> fluree_db_core::Flake {
         fluree_db_core::Flake::new(
             Sid::new(s_code, s_name),
             Sid::new(p_code, p_name),
@@ -579,7 +652,15 @@ mod tests {
         )
     }
 
-    fn make_ref_flake(s_code: i32, s_name: &str, p_code: i32, p_name: &str, o_code: i32, o_name: &str, t: i64) -> fluree_db_core::Flake {
+    fn make_ref_flake(
+        s_code: i32,
+        s_name: &str,
+        p_code: i32,
+        p_name: &str,
+        o_code: i32,
+        o_name: &str,
+        t: i64,
+    ) -> fluree_db_core::Flake {
         fluree_db_core::Flake::new(
             Sid::new(s_code, s_name),
             Sid::new(p_code, p_name),
@@ -640,14 +721,18 @@ mod tests {
             make_flake(1, "ex:alice", 1, "ex:score", 95, 2),
             make_flake(1, "ex:charlie", 1, "ex:age", 35, 2),
         ];
-        novelty.apply_commit(t2_flakes, 2).expect("Failed to apply t=2 commit");
+        novelty
+            .apply_commit(t2_flakes, 2)
+            .expect("Failed to apply t=2 commit");
 
         // t=3: More updates
         let t3_flakes = vec![
             make_flake(1, "ex:bob", 1, "ex:score", 88, 3),
             make_ref_flake(1, "ex:charlie", 1, "ex:knows", 1, "ex:alice", 3),
         ];
-        novelty.apply_commit(t3_flakes, 3).expect("Failed to apply t=3 commit");
+        novelty
+            .apply_commit(t3_flakes, 3)
+            .expect("Failed to apply t=3 commit");
 
         // Refresh the index to t=3
         let refresh_result = refresh_index(&storage, &db, &novelty, 3, config.clone())
@@ -656,12 +741,16 @@ mod tests {
 
         // Verify the refresh result
         assert_eq!(refresh_result.index_t, 3);
-        assert!(refresh_result.stats.nodes_visited > 0, "Should have visited some nodes");
+        assert!(
+            refresh_result.stats.nodes_visited > 0,
+            "Should have visited some nodes"
+        );
 
         // Load the new Db and verify
-        let new_db: Db<_, NoCache> = Db::load(storage.clone(), NoCache, &refresh_result.root_address)
-            .await
-            .expect("Failed to load refreshed Db");
+        let new_db: Db<_, NoCache> =
+            Db::load(storage.clone(), NoCache, &refresh_result.root_address)
+                .await
+                .expect("Failed to load refreshed Db");
 
         assert_eq!(new_db.t, 3);
         assert_eq!(new_db.alias, "test/ledger");
@@ -679,14 +768,10 @@ mod tests {
         // Setup: Create storage and initial flakes at t=1
         let storage = MemoryStorage::new();
         let config = IndexerConfig::small();
-        let namespace_codes: BTreeMap<i32, String> = BTreeMap::from([
-            (0, "fluree:".to_string()),
-            (1, "ex:".to_string()),
-        ]);
+        let namespace_codes: BTreeMap<i32, String> =
+            BTreeMap::from([(0, "fluree:".to_string()), (1, "ex:".to_string())]);
 
-        let initial_flakes = vec![
-            make_flake(1, "ex:alice", 1, "ex:age", 30, 1),
-        ];
+        let initial_flakes = vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)];
 
         // Build initial index
         let initial_result = build_index(
@@ -713,8 +798,14 @@ mod tests {
             .expect("Failed to refresh index");
 
         // Should reuse all roots since no novelty
-        assert_eq!(refresh_result.stats.nodes_reused, 5, "Should reuse all 5 index roots");
-        assert_eq!(refresh_result.stats.nodes_visited, 0, "Should not visit any nodes");
+        assert_eq!(
+            refresh_result.stats.nodes_reused, 5,
+            "Should reuse all 5 index roots"
+        );
+        assert_eq!(
+            refresh_result.stats.nodes_visited, 0,
+            "Should not visit any nodes"
+        );
     }
 
     #[tokio::test]
@@ -722,14 +813,10 @@ mod tests {
         // Setup
         let storage = MemoryStorage::new();
         let config = IndexerConfig::small();
-        let namespace_codes: BTreeMap<i32, String> = BTreeMap::from([
-            (0, "fluree:".to_string()),
-            (1, "ex:".to_string()),
-        ]);
+        let namespace_codes: BTreeMap<i32, String> =
+            BTreeMap::from([(0, "fluree:".to_string()), (1, "ex:".to_string())]);
 
-        let initial_flakes = vec![
-            make_flake(1, "ex:alice", 1, "ex:age", 30, 1),
-        ];
+        let initial_flakes = vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)];
 
         let initial_result = build_index(
             &storage,
@@ -748,8 +835,12 @@ mod tests {
 
         // Create novelty with flakes at t=2 and t=5
         let mut novelty = Novelty::new(1);
-        novelty.apply_commit(vec![make_flake(1, "ex:bob", 1, "ex:age", 25, 2)], 2).unwrap();
-        novelty.apply_commit(vec![make_flake(1, "ex:charlie", 1, "ex:age", 35, 5)], 5).unwrap();
+        novelty
+            .apply_commit(vec![make_flake(1, "ex:bob", 1, "ex:age", 25, 2)], 2)
+            .unwrap();
+        novelty
+            .apply_commit(vec![make_flake(1, "ex:charlie", 1, "ex:age", 35, 5)], 5)
+            .unwrap();
 
         // Refresh only to t=3 (should include t=2 but NOT t=5)
         let refresh_result = refresh_index(&storage, &db, &novelty, 3, config.clone())
@@ -760,9 +851,10 @@ mod tests {
         assert_eq!(refresh_result.index_t, 3);
 
         // Load and verify
-        let new_db: Db<_, NoCache> = Db::load(storage.clone(), NoCache, &refresh_result.root_address)
-            .await
-            .expect("Failed to load refreshed Db");
+        let new_db: Db<_, NoCache> =
+            Db::load(storage.clone(), NoCache, &refresh_result.root_address)
+                .await
+                .expect("Failed to load refreshed Db");
 
         assert_eq!(new_db.t, 3);
     }
@@ -770,10 +862,8 @@ mod tests {
     #[tokio::test]
     async fn test_refresh_novelty_between_leaf_boundaries_is_included() {
         let storage = MemoryStorage::new();
-        let namespace_codes: BTreeMap<i32, String> = BTreeMap::from([
-            (1, "ex:".to_string()),
-            (2, "xsd:".to_string()),
-        ]);
+        let namespace_codes: BTreeMap<i32, String> =
+            BTreeMap::from([(1, "ex:".to_string()), (2, "xsd:".to_string())]);
 
         fn make_flake(name: &str, t: i64) -> fluree_db_core::Flake {
             fluree_db_core::Flake::new(
@@ -806,10 +896,9 @@ mod tests {
         .await
         .expect("Failed to build initial index");
 
-        let db: Db<_, NoCache> =
-            Db::load(storage.clone(), NoCache, &initial_result.root_address)
-                .await
-                .expect("Failed to load Db");
+        let db: Db<_, NoCache> = Db::load(storage.clone(), NoCache, &initial_result.root_address)
+            .await
+            .expect("Failed to load Db");
 
         let mut novelty = Novelty::new(1);
         novelty
@@ -841,7 +930,10 @@ mod tests {
         );
     }
 
-    async fn assert_boundary_invariants(storage: &MemoryStorage, root: &fluree_db_core::index::ChildRef) {
+    async fn assert_boundary_invariants(
+        storage: &MemoryStorage,
+        root: &fluree_db_core::index::ChildRef,
+    ) {
         let mut stack = vec![root.clone()];
 
         while let Some(node) = stack.pop() {
@@ -868,7 +960,10 @@ mod tests {
                 } else if node.rhs.is_none() {
                     assert!(child.rhs.is_none(), "rightmost child must have rhs=None");
                 } else {
-                    assert_eq!(child.rhs, node.rhs, "rightmost child must inherit parent rhs");
+                    assert_eq!(
+                        child.rhs, node.rhs,
+                        "rightmost child must inherit parent rhs"
+                    );
                 }
             }
 
@@ -879,10 +974,8 @@ mod tests {
     #[tokio::test]
     async fn test_refresh_preserves_boundary_invariants() {
         let storage = MemoryStorage::new();
-        let namespace_codes: BTreeMap<i32, String> = BTreeMap::from([
-            (1, "ex:".to_string()),
-            (2, "xsd:".to_string()),
-        ]);
+        let namespace_codes: BTreeMap<i32, String> =
+            BTreeMap::from([(1, "ex:".to_string()), (2, "xsd:".to_string())]);
 
         fn make_flake(name: &str, t: i64) -> fluree_db_core::Flake {
             fluree_db_core::Flake::new(
@@ -899,9 +992,7 @@ mod tests {
         let flake_bytes = make_flake("s0", 0).size_estimate_bytes();
         let config = IndexerConfig::new(flake_bytes * 2, flake_bytes * 3, 2, 3);
 
-        let initial_flakes: Vec<_> = (0..8)
-            .map(|i| make_flake(&format!("s{}", i), 1))
-            .collect();
+        let initial_flakes: Vec<_> = (0..8).map(|i| make_flake(&format!("s{}", i), 1)).collect();
 
         let initial_result = build_index(
             &storage,
@@ -914,15 +1005,12 @@ mod tests {
         .await
         .expect("Failed to build initial index");
 
-        let db: Db<_, NoCache> =
-            Db::load(storage.clone(), NoCache, &initial_result.root_address)
-                .await
-                .expect("Failed to load Db");
+        let db: Db<_, NoCache> = Db::load(storage.clone(), NoCache, &initial_result.root_address)
+            .await
+            .expect("Failed to load Db");
 
         let mut novelty = Novelty::new(1);
-        let novelty_flakes: Vec<_> = (8..12)
-            .map(|i| make_flake(&format!("s{}", i), 2))
-            .collect();
+        let novelty_flakes: Vec<_> = (8..12).map(|i| make_flake(&format!("s{}", i), 2)).collect();
         novelty.apply_commit(novelty_flakes, 2).unwrap();
 
         let refresh_result = refresh_index(&storage, &db, &novelty, 2, config.clone())
@@ -941,10 +1029,8 @@ mod tests {
     #[tokio::test]
     async fn test_refresh_matches_full_rebuild_for_subject_queries() {
         let storage = MemoryStorage::new();
-        let namespace_codes: BTreeMap<i32, String> = BTreeMap::from([
-            (1, "ex:".to_string()),
-            (2, "xsd:".to_string()),
-        ]);
+        let namespace_codes: BTreeMap<i32, String> =
+            BTreeMap::from([(1, "ex:".to_string()), (2, "xsd:".to_string())]);
 
         fn make_flake(s: &str, p: &str, o: i64, t: i64) -> fluree_db_core::Flake {
             fluree_db_core::Flake::new(
@@ -991,10 +1077,9 @@ mod tests {
         .await
         .expect("Failed to build base index");
 
-        let base_db: Db<_, NoCache> =
-            Db::load(storage.clone(), NoCache, &base_result.root_address)
-                .await
-                .expect("Failed to load base Db");
+        let base_db: Db<_, NoCache> = Db::load(storage.clone(), NoCache, &base_result.root_address)
+            .await
+            .expect("Failed to load base Db");
 
         let mut novelty = Novelty::new(1);
         novelty.apply_commit(novelty_flakes, 2).unwrap();
@@ -1019,10 +1104,9 @@ mod tests {
         .await
         .expect("Failed to build full index");
 
-        let rebuilt_db: Db<_, NoCache> =
-            Db::load(storage.clone(), NoCache, &rebuilt.root_address)
-                .await
-                .expect("Failed to load rebuilt Db");
+        let rebuilt_db: Db<_, NoCache> = Db::load(storage.clone(), NoCache, &rebuilt.root_address)
+            .await
+            .expect("Failed to load rebuilt Db");
 
         let subjects = ["s1", "s2", "s3", "s4"];
         for s in subjects {

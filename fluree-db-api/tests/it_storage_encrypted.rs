@@ -12,10 +12,9 @@ use serde_json::json;
 async fn test_encrypted_memory_create_and_query() {
     // 32-byte test key (in production, use a secure key)
     let key: [u8; 32] = [
-        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
-        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+        0x1e, 0x1f,
     ];
 
     let fluree = FlureeBuilder::new().build_memory_encrypted(key);
@@ -68,8 +67,8 @@ async fn test_encrypted_memory_create_and_query() {
 /// (data encrypted with one key can't be read without the key)
 #[tokio::test]
 async fn test_encrypted_data_requires_key() {
-    use fluree_db_core::prelude::*;
     use fluree_db_api::{EncryptedStorage, EncryptionKey, StaticKeyProvider};
+    use fluree_db_core::prelude::*;
 
     let key: [u8; 32] = [0x42; 32];
 
@@ -84,18 +83,26 @@ async fn test_encrypted_data_requires_key() {
 
     // Raw storage should have encrypted (different) bytes
     let raw_bytes = storage.read_bytes("test/data").await.unwrap();
-    assert_ne!(raw_bytes.as_slice(), plaintext, "Raw bytes should be encrypted");
+    assert_ne!(
+        raw_bytes.as_slice(),
+        plaintext,
+        "Raw bytes should be encrypted"
+    );
 
     // Encrypted storage should decrypt correctly
     let decrypted = encrypted.read_bytes("test/data").await.unwrap();
-    assert_eq!(decrypted.as_slice(), plaintext, "Should decrypt to original");
+    assert_eq!(
+        decrypted.as_slice(),
+        plaintext,
+        "Should decrypt to original"
+    );
 }
 
 /// Test that the encryption envelope is portable (magic bytes present)
 #[tokio::test]
 async fn test_encryption_envelope_format() {
-    use fluree_db_core::prelude::*;
     use fluree_db_api::{EncryptedStorage, EncryptionKey, StaticKeyProvider};
+    use fluree_db_core::prelude::*;
 
     let key: [u8; 32] = [0x42; 32];
 
@@ -142,33 +149,39 @@ async fn test_different_keys_different_ciphertext() {
     // Ciphertexts should be different (different keys + random nonces)
     let ct1 = storage1.read_bytes("data").await.unwrap();
     let ct2 = storage2.read_bytes("data").await.unwrap();
-    assert_ne!(ct1, ct2, "Different keys should produce different ciphertext");
+    assert_ne!(
+        ct1, ct2,
+        "Different keys should produce different ciphertext"
+    );
 }
 
 /// Test FlureeBuilder with base64 encryption key
 #[tokio::test]
 async fn test_builder_with_base64_key() {
     use fluree_db_api::FlureeBuilder;
-    
+
     // Base64-encoded 32-byte key (all zeros for testing)
     let base64_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-    
+
     let builder = FlureeBuilder::new()
         .with_encryption_key_base64(base64_key)
         .expect("Should parse valid base64 key");
-    
-    assert!(builder.has_encryption_key(), "Builder should have encryption key");
+
+    assert!(
+        builder.has_encryption_key(),
+        "Builder should have encryption key"
+    );
 }
 
 /// Test FlureeBuilder rejects invalid base64 keys
 #[tokio::test]
 async fn test_builder_rejects_invalid_base64_key() {
     use fluree_db_api::FlureeBuilder;
-    
+
     // Invalid base64
     let result = FlureeBuilder::new().with_encryption_key_base64("not-valid-base64!!!");
     assert!(result.is_err(), "Should reject invalid base64");
-    
+
     // Valid base64 but wrong length (16 bytes instead of 32)
     let short_key = "AAAAAAAAAAAAAAAAAAAAAA=="; // 16 bytes
     let result = FlureeBuilder::new().with_encryption_key_base64(short_key);

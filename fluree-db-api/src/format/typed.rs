@@ -77,9 +77,7 @@ fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Result<JsonVal
         }
 
         // Raw IRI string (from virtual graph, not in namespace table)
-        Binding::Iri(iri) => {
-            Ok(json!({"@id": iri.as_ref()}))
-        }
+        Binding::Iri(iri) => Ok(json!({"@id": iri.as_ref()})),
 
         // Literal value - always include @type (except language-tagged)
         Binding::Lit { val, dt, lang, .. } => {
@@ -100,12 +98,10 @@ fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Result<JsonVal
                         }))
                     }
                 }
-                FlakeValue::Long(n) => {
-                    Ok(json!({
-                        "@value": n,
-                        "@type": dt_iri
-                    }))
-                }
+                FlakeValue::Long(n) => Ok(json!({
+                    "@value": n,
+                    "@type": dt_iri
+                })),
                 FlakeValue::Double(d) => {
                     // Handle special float values
                     if d.is_nan() || d.is_infinite() {
@@ -127,22 +123,19 @@ fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Result<JsonVal
                         }))
                     }
                 }
-                FlakeValue::Boolean(b) => {
-                    Ok(json!({
-                        "@value": b,
-                        "@type": dt_iri
-                    }))
-                }
-                FlakeValue::Vector(v) => {
-                    Ok(json!({
-                        "@value": v,
-                        "@type": dt_iri
-                    }))
-                }
+                FlakeValue::Boolean(b) => Ok(json!({
+                    "@value": b,
+                    "@type": dt_iri
+                })),
+                FlakeValue::Vector(v) => Ok(json!({
+                    "@value": v,
+                    "@type": dt_iri
+                })),
                 FlakeValue::Json(json_str) => {
                     // @json datatype: deserialize for output
-                    let json_val: JsonValue = serde_json::from_str(json_str)
-                        .map_err(|e| FormatError::InvalidBinding(format!("Invalid JSON in @json value: {}", e)))?;
+                    let json_val: JsonValue = serde_json::from_str(json_str).map_err(|e| {
+                        FormatError::InvalidBinding(format!("Invalid JSON in @json value: {}", e))
+                    })?;
                     Ok(json!({
                         "@value": json_val,
                         "@type": "@json"
@@ -156,43 +149,36 @@ fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Result<JsonVal
                     ))
                 }
                 // Extended numeric types - serialize as string with datatype
-                FlakeValue::BigInt(n) => {
-                    Ok(json!({
-                        "@value": n.to_string(),
-                        "@type": dt_iri
-                    }))
-                }
-                FlakeValue::Decimal(d) => {
-                    Ok(json!({
-                        "@value": d.to_string(),
-                        "@type": dt_iri
-                    }))
-                }
+                FlakeValue::BigInt(n) => Ok(json!({
+                    "@value": n.to_string(),
+                    "@type": dt_iri
+                })),
+                FlakeValue::Decimal(d) => Ok(json!({
+                    "@value": d.to_string(),
+                    "@type": dt_iri
+                })),
                 // Temporal types - serialize as original string with datatype
-                FlakeValue::DateTime(dt) => {
-                    Ok(json!({
-                        "@value": dt.to_string(),
-                        "@type": dt_iri
-                    }))
-                }
-                FlakeValue::Date(d) => {
-                    Ok(json!({
-                        "@value": d.to_string(),
-                        "@type": dt_iri
-                    }))
-                }
-                FlakeValue::Time(t) => {
-                    Ok(json!({
-                        "@value": t.to_string(),
-                        "@type": dt_iri
-                    }))
-                }
+                FlakeValue::DateTime(dt) => Ok(json!({
+                    "@value": dt.to_string(),
+                    "@type": dt_iri
+                })),
+                FlakeValue::Date(d) => Ok(json!({
+                    "@value": d.to_string(),
+                    "@type": dt_iri
+                })),
+                FlakeValue::Time(t) => Ok(json!({
+                    "@value": t.to_string(),
+                    "@type": dt_iri
+                })),
             }
         }
 
         // Grouped values - format as array of typed values
         Binding::Grouped(values) => {
-            let arr: Result<Vec<_>> = values.iter().map(|v| format_binding(v, compactor)).collect();
+            let arr: Result<Vec<_>> = values
+                .iter()
+                .map(|v| format_binding(v, compactor))
+                .collect();
             Ok(JsonValue::Array(arr?))
         }
     }

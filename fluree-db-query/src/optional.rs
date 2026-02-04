@@ -71,11 +71,7 @@ pub trait OptionalBuilder<S: Storage + 'static, C: NodeCache + 'static>: Send + 
     /// - `Ok(None)` - The required row has bindings that make the optional impossible
     ///   (e.g., Poisoned vars in correlation positions)
     /// - `Err(e)` - A planning/building error that should be propagated
-    fn build(
-        &self,
-        required_batch: &Batch,
-        row: usize,
-    ) -> Result<Option<BoxedOperator<S, C>>>;
+    fn build(&self, required_batch: &Batch, row: usize) -> Result<Option<BoxedOperator<S, C>>>;
 
     /// Get the output schema of the optional operator
     ///
@@ -162,7 +158,10 @@ impl<S: Storage + 'static, C: NodeCache + 'static> PatternOptionalBuilder<S, C> 
                 required_schema
                     .iter()
                     .position(|rv| rv == v)
-                    .map(|col| BindInstruction { position, left_col: col })
+                    .map(|col| BindInstruction {
+                        position,
+                        left_col: col,
+                    })
             } else {
                 None
             }
@@ -184,18 +183,19 @@ impl<S: Storage + 'static, C: NodeCache + 'static> PatternOptionalBuilder<S, C> 
             .filter_map(|pattern_var| {
                 let req_col = required_schema.iter().position(|v| v == pattern_var)?;
                 let opt_col = pattern_vars.iter().position(|v| v == pattern_var)?;
-                Some(UnifyInstruction { left_col: req_col, right_col: opt_col })
+                Some(UnifyInstruction {
+                    left_col: req_col,
+                    right_col: opt_col,
+                })
             })
             .collect()
     }
 
     /// Check if any binding used in bind instructions is Poisoned
     fn has_poisoned_binding(&self, required_batch: &Batch, row: usize) -> bool {
-        self.bind_instructions.iter().any(|instr| {
-            required_batch
-                .get_by_col(row, instr.left_col)
-                .is_poisoned()
-        })
+        self.bind_instructions
+            .iter()
+            .any(|instr| required_batch.get_by_col(row, instr.left_col).is_poisoned())
     }
 
     /// Substitute required bindings into pattern
@@ -259,7 +259,10 @@ impl<S: Storage + 'static, C: NodeCache + 'static> PatternOptionalBuilder<S, C> 
                             // Leave as variable
                         }
                         Binding::Grouped(_) => {
-                            debug_assert!(false, "Grouped binding in optional pattern substitution");
+                            debug_assert!(
+                                false,
+                                "Grouped binding in optional pattern substitution"
+                            );
                             // Leave as variable
                         }
                     }
@@ -271,12 +274,10 @@ impl<S: Storage + 'static, C: NodeCache + 'static> PatternOptionalBuilder<S, C> 
     }
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> OptionalBuilder<S, C> for PatternOptionalBuilder<S, C> {
-    fn build(
-        &self,
-        required_batch: &Batch,
-        row: usize,
-    ) -> Result<Option<BoxedOperator<S, C>>> {
+impl<S: Storage + 'static, C: NodeCache + 'static> OptionalBuilder<S, C>
+    for PatternOptionalBuilder<S, C>
+{
+    fn build(&self, required_batch: &Batch, row: usize) -> Result<Option<BoxedOperator<S, C>>> {
         // Check for poisoned bindings - if any correlation var is poisoned,
         // the optional cannot match
         if self.has_poisoned_binding(required_batch, row) {
@@ -412,18 +413,16 @@ impl<S: Storage + 'static, C: NodeCache + 'static> PlanTreeOptionalBuilder<S, C>
 
     /// Check if any shared variable binding is Poisoned
     fn has_poisoned_shared_var(&self, required_batch: &Batch, row: usize) -> bool {
-        self.shared_var_indices.iter().any(|&col| {
-            required_batch.get_by_col(row, col).is_poisoned()
-        })
+        self.shared_var_indices
+            .iter()
+            .any(|&col| required_batch.get_by_col(row, col).is_poisoned())
     }
 }
 
-impl<S: Storage + 'static, C: NodeCache + 'static> OptionalBuilder<S, C> for PlanTreeOptionalBuilder<S, C> {
-    fn build(
-        &self,
-        required_batch: &Batch,
-        row: usize,
-    ) -> Result<Option<BoxedOperator<S, C>>> {
+impl<S: Storage + 'static, C: NodeCache + 'static> OptionalBuilder<S, C>
+    for PlanTreeOptionalBuilder<S, C>
+{
+    fn build(&self, required_batch: &Batch, row: usize) -> Result<Option<BoxedOperator<S, C>>> {
         // Check for poisoned bindings - if any shared var is poisoned,
         // the optional cannot match
         if self.has_poisoned_shared_var(required_batch, row) {
@@ -591,25 +590,29 @@ impl<S: Storage + 'static, C: NodeCache + 'static> OptionalOperator<S, C> {
         //
         // If the optional-side batch doesn't have the shared var column, we treat
         // it as already enforced by correlation/substitution and skip the check.
-        self.optional_builder.unify_instructions().iter().all(|instr| {
-            let var = self.required_schema[instr.left_col];
-            let opt_col = optional_batch.schema().iter().position(|v| *v == var);
-            if let Some(opt_col) = opt_col {
-                let left_val = required_batch.get_by_col(required_row, instr.left_col);
-                let right_val = optional_batch.get_by_col(optional_row, opt_col);
+        self.optional_builder
+            .unify_instructions()
+            .iter()
+            .all(|instr| {
+                let var = self.required_schema[instr.left_col];
+                let opt_col = optional_batch.schema().iter().position(|v| *v == var);
+                if let Some(opt_col) = opt_col {
+                    let left_val = required_batch.get_by_col(required_row, instr.left_col);
+                    let right_val = optional_batch.get_by_col(optional_row, opt_col);
 
-                // Poisoned blocks matching; Unbound is compatible with anything.
-                if left_val.is_poisoned() || right_val.is_poisoned() {
-                    return false;
+                    // Poisoned blocks matching; Unbound is compatible with anything.
+                    if left_val.is_poisoned() || right_val.is_poisoned() {
+                        return false;
+                    }
+                    if matches!(left_val, Binding::Unbound) || matches!(right_val, Binding::Unbound)
+                    {
+                        return true;
+                    }
+                    left_val == right_val
+                } else {
+                    true
                 }
-                if matches!(left_val, Binding::Unbound) || matches!(right_val, Binding::Unbound) {
-                    return true;
-                }
-                left_val == right_val
-            } else {
-                true
-            }
-        })
+            })
     }
 
     /// Combine required row with optional row into output row
@@ -726,7 +729,8 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for OptionalOp
                             }
 
                             // Get the optional batch
-                            let optional_batch = &self.pending_output.front().unwrap().optional_batches[batch_idx];
+                            let optional_batch =
+                                &self.pending_output.front().unwrap().optional_batches[batch_idx];
                             let batch_len = optional_batch.len();
 
                             if row_idx >= batch_len {
@@ -774,7 +778,10 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for OptionalOp
                         }
 
                         if fully_processed {
-                            let needs_poisoned = self.pending_output.front().is_some_and(|pending| !pending.matched);
+                            let needs_poisoned = self
+                                .pending_output
+                                .front()
+                                .is_some_and(|pending| !pending.matched);
                             if needs_poisoned {
                                 let pending = self.pending_output.front_mut().unwrap();
                                 pending.optional_batches.clear();
@@ -913,7 +920,10 @@ mod tests {
             async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+            async fn next_batch(
+                &mut self,
+                _: &ExecutionContext<'_, S, C>,
+            ) -> Result<Option<Batch>> {
                 Ok(None)
             }
             fn close(&mut self) {}
@@ -937,10 +947,10 @@ mod tests {
         let required_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
         let optional_pattern = make_optional_pattern();
 
-        let builder = PatternOptionalBuilder::<fluree_db_core::MemoryStorage, fluree_db_core::NoCache>::new(
-            required_schema,
-            optional_pattern,
-        );
+        let builder = PatternOptionalBuilder::<
+            fluree_db_core::MemoryStorage,
+            fluree_db_core::NoCache,
+        >::new(required_schema, optional_pattern);
 
         // Check schema
         assert_eq!(builder.schema().len(), 2); // ?s, ?email
@@ -963,15 +973,18 @@ mod tests {
         let required_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
         let optional_pattern = make_optional_pattern();
 
-        let builder = PatternOptionalBuilder::<fluree_db_core::MemoryStorage, fluree_db_core::NoCache>::new(
-            required_schema.clone(),
-            optional_pattern,
-        );
+        let builder = PatternOptionalBuilder::<
+            fluree_db_core::MemoryStorage,
+            fluree_db_core::NoCache,
+        >::new(required_schema.clone(), optional_pattern);
 
         // Create a batch with Poisoned in position 0 (which is used for correlation)
         let columns_poisoned = vec![
             vec![Binding::Poisoned],
-            vec![Binding::lit(FlakeValue::String("Alice".to_string()), Sid::new(2, "string"))],
+            vec![Binding::lit(
+                FlakeValue::String("Alice".to_string()),
+                Sid::new(2, "string"),
+            )],
         ];
         let batch_poisoned = Batch::new(required_schema.clone(), columns_poisoned).unwrap();
 
@@ -981,7 +994,10 @@ mod tests {
         // Create a batch with normal bindings
         let columns_normal = vec![
             vec![Binding::Sid(Sid::new(1, "alice"))],
-            vec![Binding::lit(FlakeValue::String("Alice".to_string()), Sid::new(2, "string"))],
+            vec![Binding::lit(
+                FlakeValue::String("Alice".to_string()),
+                Sid::new(2, "string"),
+            )],
         ];
         let batch_normal = Batch::new(required_schema, columns_normal).unwrap();
 
@@ -1005,7 +1021,10 @@ mod tests {
             async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+            async fn next_batch(
+                &mut self,
+                _: &ExecutionContext<'_, S, C>,
+            ) -> Result<Option<Batch>> {
                 Ok(None)
             }
             fn close(&mut self) {}
@@ -1020,7 +1039,10 @@ mod tests {
         // Create a required batch with one row
         let columns = vec![
             vec![Binding::Sid(Sid::new(1, "alice"))],
-            vec![Binding::lit(FlakeValue::String("Alice".to_string()), Sid::new(2, "string"))],
+            vec![Binding::lit(
+                FlakeValue::String("Alice".to_string()),
+                Sid::new(2, "string"),
+            )],
         ];
         let batch = Batch::new(required_schema, columns).unwrap();
 
@@ -1047,22 +1069,22 @@ mod tests {
             async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+            async fn next_batch(
+                &mut self,
+                _: &ExecutionContext<'_, S, C>,
+            ) -> Result<Option<Batch>> {
                 Ok(None)
             }
             fn close(&mut self) {}
         }
 
         // Create using with_builder
-        let builder = PatternOptionalBuilder::<fluree_db_core::MemoryStorage, fluree_db_core::NoCache>::new(
-            required_schema.clone(),
-            optional_pattern,
-        );
-        let op = OptionalOperator::with_builder(
-            Box::new(MockOp),
-            required_schema,
-            Box::new(builder),
-        );
+        let builder = PatternOptionalBuilder::<
+            fluree_db_core::MemoryStorage,
+            fluree_db_core::NoCache,
+        >::new(required_schema.clone(), optional_pattern);
+        let op =
+            OptionalOperator::with_builder(Box::new(MockOp), required_schema, Box::new(builder));
 
         // Should have same schema as new() constructor
         assert_eq!(op.schema().len(), 3);

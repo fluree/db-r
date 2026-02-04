@@ -70,10 +70,7 @@ async fn build_leaves<S: ContentAddressedWrite>(
     let mut leaves = Vec::new();
     let mut start = 0;
     let total = sorted_flakes.len();
-    let target_bytes = config
-        .leaf_target_bytes
-        .min(config.leaf_max_bytes)
-        .max(1);
+    let target_bytes = config.leaf_target_bytes.min(config.leaf_max_bytes).max(1);
 
     while start < total {
         // Determine leaf size by estimated bytes
@@ -195,8 +192,8 @@ async fn build_branch_level<S: ContentAddressedWrite>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::serde::json::parse_branch_node;
     use fluree_db_core::prelude::*;
+    use fluree_db_core::serde::json::parse_branch_node;
     use fluree_db_core::{FlakeValue, Sid};
 
     fn make_flake(name: &str, t: i64) -> Flake {
@@ -244,11 +241,7 @@ mod tests {
         );
         let config = IndexerConfig::small();
 
-        let flakes = vec![
-            make_flake("a", 1),
-            make_flake("b", 2),
-            make_flake("c", 3),
-        ];
+        let flakes = vec![make_flake("a", 1), make_flake("b", 2), make_flake("c", 3)];
 
         let root = build_tree(&flakes, IndexType::Spot, &config, &mut writer)
             .await
@@ -342,7 +335,10 @@ mod tests {
                 } else if node.rhs.is_none() {
                     assert!(child.rhs.is_none(), "rightmost child must have rhs=None");
                 } else {
-                    assert_eq!(child.rhs, node.rhs, "rightmost child must inherit parent rhs");
+                    assert_eq!(
+                        child.rhs, node.rhs,
+                        "rightmost child must inherit parent rhs"
+                    );
                 }
             }
 
