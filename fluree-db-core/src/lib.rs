@@ -4,7 +4,7 @@
 //!
 //! This crate provides:
 //! - Core types: `Sid`, `FlakeValue`, `Flake`
-//! - Index comparators for all 5 orderings (SPOT, PSOT, POST, OPST, TSPO)
+//! - Index comparators for all 4 orderings (SPOT, PSOT, POST, OPST)
 //! - Storage and cache trait interfaces
 //! - Range query implementation
 //!
@@ -46,14 +46,15 @@ pub mod address;
 pub mod address_path;
 pub mod coerce;
 pub mod value_id;
+pub mod ids;
 pub mod index_stats;
 pub mod index_schema;
-pub mod sid64;
+pub mod subject_id;
 pub mod dict_novelty;
 
 // Re-export main types
 pub use sid::{Sid, SidInterner};
-pub use sid64::{Sid64, SidColumn, SidEncoding};
+pub use subject_id::{SubjectId, SubjectIdColumn, SubjectIdEncoding};
 pub use dict_novelty::DictNovelty;
 pub use value::{FlakeValue, parse_integer, parse_decimal, parse_double, parse_integer_string, parse_decimal_string};
 pub use temporal::{DateTime, Date, Time};
@@ -87,7 +88,8 @@ pub use stats_view::{PropertyStatData, StatsView};
 pub use tracking::{FuelExceededError, PolicyStats, Tracker, TrackingOptions, TrackingTally};
 pub use coerce::{coerce_value, coerce_json_value, CoercionError, CoercionResult};
 pub use address::{ParsedFlureeAddress, parse_fluree_address, extract_identifier, extract_path};
-pub use value_id::{ObjKind, ObjKey, ObjKeyError, DatatypeId};
+pub use value_id::{ObjKind, ObjKey, ObjKeyError, ValueTypeTag, ObjPair};
+pub use ids::{PredicateId, GraphId, TxnT, StringId, LangId, ListIndex, DatatypeDictId};
 pub use index_stats::{IndexStats, PropertyStatEntry, ClassStatEntry, ClassPropertyUsage, GraphPropertyStatEntry, GraphStatsEntry};
 pub use index_schema::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};
 

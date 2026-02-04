@@ -42,7 +42,6 @@ struct StagedOverlay {
     psot: Vec<FlakeId>,
     post: Vec<FlakeId>,
     opst: Vec<FlakeId>,
-    tspo: Vec<FlakeId>,
 }
 
 impl StagedOverlay {
@@ -54,7 +53,6 @@ impl StagedOverlay {
                 psot: vec![],
                 post: vec![],
                 opst: vec![],
-                tspo: vec![],
             };
         }
 
@@ -79,16 +77,12 @@ impl StagedOverlay {
             .collect();
         opst.sort_by(|&a, &b| IndexType::Opst.compare(store.get(a), store.get(b)));
 
-        let mut tspo = ids;
-        tspo.sort_by(|&a, &b| IndexType::Tspo.compare(store.get(a), store.get(b)));
-
         Self {
             store,
             spot,
             psot,
             post,
             opst,
-            tspo,
         }
     }
 
@@ -98,7 +92,6 @@ impl StagedOverlay {
             IndexType::Psot => &self.psot,
             IndexType::Post => &self.post,
             IndexType::Opst => &self.opst,
-            IndexType::Tspo => &self.tspo,
         }
     }
 

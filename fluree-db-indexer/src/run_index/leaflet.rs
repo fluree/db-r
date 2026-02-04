@@ -9,7 +9,8 @@
 //!
 //! Each region is independently zstd-compressed.
 
-use super::run_record::{RunRecord, RunSortOrder, NO_LIST_INDEX};
+use super::run_record::{RunRecord, RunSortOrder};
+use fluree_db_core::ListIndex;
 use std::io;
 
 /// Size of the leaflet header in bytes.
@@ -467,7 +468,7 @@ fn encode_region2(records: &[RunRecord], dt_width: u8) -> Vec<u8> {
     let lang_count = records.iter().filter(|r| r.lang_id != 0).count();
     let i_count = records
         .iter()
-        .filter(|r| r.i != NO_LIST_INDEX)
+        .filter(|r| r.i != ListIndex::none().as_i32())
         .count();
 
     let buf_size = row_count * (dt_width as usize) + row_count * 8 + bitmap_bytes + lang_count * 2 + bitmap_bytes + i_count * 4;
@@ -516,7 +517,7 @@ fn encode_region2(records: &[RunRecord], dt_width: u8) -> Vec<u8> {
     let mut i_bitmap = vec![0u8; bitmap_bytes];
     let mut i_values = Vec::with_capacity(i_count);
     for (idx, r) in records.iter().enumerate() {
-        if r.i != NO_LIST_INDEX {
+        if r.i != ListIndex::none().as_i32() {
             i_bitmap[idx / 8] |= 1u8 << (idx % 8);
             i_values.push(r.i);
         }
@@ -558,7 +559,7 @@ pub struct Region3Entry {
     pub t_signed: i64, // positive = assert, negative = retract
     pub dt: u16,
     pub lang_id: u16,
-    pub i: i32,        // NO_LIST_INDEX = i32::MIN if none
+    pub i: i32,        // ListIndex::none() = i32::MIN if none
 }
 
 impl Region3Entry {
@@ -1119,7 +1120,7 @@ fn decode_region2(
     }
 
     // Expand i into per-row vec
-    let mut i_values = vec![NO_LIST_INDEX; row_count];
+    let mut i_values = vec![ListIndex::none().as_i32(); row_count];
     sparse_idx = 0;
     for idx in 0..row_count {
         if i_bitmap[idx / 8] & (1u8 << (idx % 8)) != 0 {
@@ -1138,15 +1139,15 @@ fn decode_region2(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::run_index::global_dict::dt_ids;
-    use fluree_db_core::sid64::Sid64;
+    use fluree_db_core::DatatypeDictId;
+    use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKind, ObjKey};
 
     fn make_record(s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
         RunRecord::new(
-            0, Sid64::from_u64(s_id), p_id,
+            0, SubjectId::from_u64(s_id), p_id,
             ObjKind::NUM_INT, ObjKey::encode_i64(val),
-            t, true, dt_ids::INTEGER, 0, None,
+            t, true, DatatypeDictId::INTEGER.as_u16(), 0, None,
         )
     }
 
@@ -1170,7 +1171,7 @@ mod tests {
         assert_eq!(decoded.o_keys[0], ObjKey::encode_i64(10).as_u64());
         assert_eq!(decoded.o_keys[1], ObjKey::encode_i64(20).as_u64());
         assert_eq!(decoded.t_values, vec![1, 1, 2, 2]);
-        assert_eq!(decoded.dt_values, vec![dt_ids::INTEGER as u32; 4]);
+        assert_eq!(decoded.dt_values, vec![DatatypeDictId::INTEGER.as_u16() as u32; 4]);
     }
 
     #[test]
@@ -1199,18 +1200,18 @@ mod tests {
             make_record(1, 1, 10, 1),
             // Lang string
             RunRecord::new(
-                0, Sid64::from_u64(1), 2, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true,
-                dt_ids::LANG_STRING, 3, None,
+                0, SubjectId::from_u64(1), 2, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true,
+                DatatypeDictId::LANG_STRING.as_u16(), 3, None,
             ),
             // List entry
             RunRecord::new(
-                0, Sid64::from_u64(2), 1, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
-                dt_ids::INTEGER, 0, Some(7),
+                0, SubjectId::from_u64(2), 1, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
+                DatatypeDictId::INTEGER.as_u16(), 0, Some(7),
             ),
             // Both lang and list index
             RunRecord::new(
-                0, Sid64::from_u64(2), 2, ObjKind::LEX_ID, ObjKey::encode_u32_id(8), 1, true,
-                dt_ids::LANG_STRING, 2, Some(3),
+                0, SubjectId::from_u64(2), 2, ObjKind::LEX_ID, ObjKey::encode_u32_id(8), 1, true,
+                DatatypeDictId::LANG_STRING.as_u16(), 2, Some(3),
             ),
         ];
 
@@ -1221,9 +1222,9 @@ mod tests {
         assert_eq!(decoded.row_count, 4);
         // lang_ids: 0, 3, 0, 2
         assert_eq!(decoded.lang_ids, vec![0, 3, 0, 2]);
-        // i_values: NO_LIST_INDEX, NO_LIST_INDEX, 7, 3
-        assert_eq!(decoded.i_values[0], NO_LIST_INDEX);
-        assert_eq!(decoded.i_values[1], NO_LIST_INDEX);
+        // i_values: ListIndex::none().as_i32(), ListIndex::none().as_i32(), 7, 3
+        assert_eq!(decoded.i_values[0], ListIndex::none().as_i32());
+        assert_eq!(decoded.i_values[1], ListIndex::none().as_i32());
         assert_eq!(decoded.i_values[2], 7);
         assert_eq!(decoded.i_values[3], 3);
     }
@@ -1265,13 +1266,13 @@ mod tests {
     fn make_records_for_order_tests() -> Vec<RunRecord> {
         vec![
             // s=1, p=5, o=100
-            RunRecord::new(0, Sid64::from_u64(1), 5, ObjKind::NUM_INT, ObjKey::encode_i64(100), 1, true, dt_ids::INTEGER, 0, None),
+            RunRecord::new(0, SubjectId::from_u64(1), 5, ObjKind::NUM_INT, ObjKey::encode_i64(100), 1, true, DatatypeDictId::INTEGER.as_u16(), 0, None),
             // s=1, p=5, o=200
-            RunRecord::new(0, Sid64::from_u64(1), 5, ObjKind::NUM_INT, ObjKey::encode_i64(200), 2, true, dt_ids::INTEGER, 0, None),
+            RunRecord::new(0, SubjectId::from_u64(1), 5, ObjKind::NUM_INT, ObjKey::encode_i64(200), 2, true, DatatypeDictId::INTEGER.as_u16(), 0, None),
             // s=2, p=3, o=50
-            RunRecord::new(0, Sid64::from_u64(2), 3, ObjKind::NUM_INT, ObjKey::encode_i64(50), 1, true, dt_ids::INTEGER, 0, None),
+            RunRecord::new(0, SubjectId::from_u64(2), 3, ObjKind::NUM_INT, ObjKey::encode_i64(50), 1, true, DatatypeDictId::INTEGER.as_u16(), 0, None),
             // s=3, p=5, o=100
-            RunRecord::new(0, Sid64::from_u64(3), 5, ObjKind::NUM_INT, ObjKey::encode_i64(100), 3, true, dt_ids::INTEGER, 0, None),
+            RunRecord::new(0, SubjectId::from_u64(3), 5, ObjKind::NUM_INT, ObjKey::encode_i64(100), 3, true, DatatypeDictId::INTEGER.as_u16(), 0, None),
         ]
     }
 
@@ -1309,9 +1310,9 @@ mod tests {
     fn test_opst_encode_decode_round_trip() {
         // OPST uses u64 RLE on o_key values
         let records = vec![
-            RunRecord::new(0, Sid64::from_u64(1), 5, ObjKind::REF_ID, ObjKey::encode_u32_id(10), 1, true, dt_ids::ID, 0, None),
-            RunRecord::new(0, Sid64::from_u64(2), 5, ObjKind::REF_ID, ObjKey::encode_u32_id(10), 2, true, dt_ids::ID, 0, None),
-            RunRecord::new(0, Sid64::from_u64(3), 3, ObjKind::REF_ID, ObjKey::encode_u32_id(20), 1, true, dt_ids::ID, 0, None),
+            RunRecord::new(0, SubjectId::from_u64(1), 5, ObjKind::REF_ID, ObjKey::encode_u32_id(10), 1, true, DatatypeDictId::ID.as_u16(), 0, None),
+            RunRecord::new(0, SubjectId::from_u64(2), 5, ObjKind::REF_ID, ObjKey::encode_u32_id(10), 2, true, DatatypeDictId::ID.as_u16(), 0, None),
+            RunRecord::new(0, SubjectId::from_u64(3), 3, ObjKind::REF_ID, ObjKey::encode_u32_id(20), 1, true, DatatypeDictId::ID.as_u16(), 0, None),
         ];
         let encoder = LeafletEncoder::with_widths_and_order(1, 2, 1, RunSortOrder::Opst);
         let encoded = encoder.encode_leaflet(&records);
@@ -1322,7 +1323,7 @@ mod tests {
     #[test]
     fn test_opst_single_record() {
         let records = vec![
-            RunRecord::new(0, Sid64::from_u64(1), 5, ObjKind::REF_ID, ObjKey::encode_u32_id(42), 1, true, dt_ids::ID, 0, None),
+            RunRecord::new(0, SubjectId::from_u64(1), 5, ObjKind::REF_ID, ObjKey::encode_u32_id(42), 1, true, DatatypeDictId::ID.as_u16(), 0, None),
         ];
         let encoder = LeafletEncoder::with_widths_and_order(1, 2, 1, RunSortOrder::Opst);
         let encoded = encoder.encode_leaflet(&records);
@@ -1336,10 +1337,10 @@ mod tests {
         let o_kind = ObjKind::REF_ID;
         let o_key = ObjKey::encode_u32_id(99);
         let records = vec![
-            RunRecord::new(0, Sid64::from_u64(1), 1, o_kind, o_key, 1, true, dt_ids::ID, 0, None),
-            RunRecord::new(0, Sid64::from_u64(2), 1, o_kind, o_key, 1, true, dt_ids::ID, 0, None),
-            RunRecord::new(0, Sid64::from_u64(3), 2, o_kind, o_key, 1, true, dt_ids::ID, 0, None),
-            RunRecord::new(0, Sid64::from_u64(4), 2, o_kind, o_key, 1, true, dt_ids::ID, 0, None),
+            RunRecord::new(0, SubjectId::from_u64(1), 1, o_kind, o_key, 1, true, DatatypeDictId::ID.as_u16(), 0, None),
+            RunRecord::new(0, SubjectId::from_u64(2), 1, o_kind, o_key, 1, true, DatatypeDictId::ID.as_u16(), 0, None),
+            RunRecord::new(0, SubjectId::from_u64(3), 2, o_kind, o_key, 1, true, DatatypeDictId::ID.as_u16(), 0, None),
+            RunRecord::new(0, SubjectId::from_u64(4), 2, o_kind, o_key, 1, true, DatatypeDictId::ID.as_u16(), 0, None),
         ];
         let encoder = LeafletEncoder::with_widths_and_order(1, 2, 1, RunSortOrder::Opst);
         let encoded = encoder.encode_leaflet(&records);
@@ -1351,9 +1352,9 @@ mod tests {
     fn test_opst_alternating_objects() {
         // Worst case for RLE: every record has a different o
         let records = vec![
-            RunRecord::new(0, Sid64::from_u64(1), 1, ObjKind::REF_ID, ObjKey::encode_u32_id(1), 1, true, dt_ids::ID, 0, None),
-            RunRecord::new(0, Sid64::from_u64(2), 1, ObjKind::REF_ID, ObjKey::encode_u32_id(2), 1, true, dt_ids::ID, 0, None),
-            RunRecord::new(0, Sid64::from_u64(3), 1, ObjKind::REF_ID, ObjKey::encode_u32_id(3), 1, true, dt_ids::ID, 0, None),
+            RunRecord::new(0, SubjectId::from_u64(1), 1, ObjKind::REF_ID, ObjKey::encode_u32_id(1), 1, true, DatatypeDictId::ID.as_u16(), 0, None),
+            RunRecord::new(0, SubjectId::from_u64(2), 1, ObjKind::REF_ID, ObjKey::encode_u32_id(2), 1, true, DatatypeDictId::ID.as_u16(), 0, None),
+            RunRecord::new(0, SubjectId::from_u64(3), 1, ObjKind::REF_ID, ObjKey::encode_u32_id(3), 1, true, DatatypeDictId::ID.as_u16(), 0, None),
         ];
         let encoder = LeafletEncoder::with_widths_and_order(1, 2, 1, RunSortOrder::Opst);
         let encoded = encoder.encode_leaflet(&records);
@@ -1393,17 +1394,17 @@ mod tests {
             Region3Entry {
                 s_id: 10, p_id: 5, o_kind: ObjKind::NUM_INT.as_u8(),
                 o_key: ObjKey::encode_i64(100).as_u64(),
-                t_signed: 42, dt: dt_ids::INTEGER, lang_id: 0, i: NO_LIST_INDEX,
+                t_signed: 42, dt: DatatypeDictId::INTEGER.as_u16(), lang_id: 0, i: ListIndex::none().as_i32(),
             },
             Region3Entry {
                 s_id: 10, p_id: 5, o_kind: ObjKind::NUM_INT.as_u8(),
                 o_key: ObjKey::encode_i64(100).as_u64(),
-                t_signed: -40, dt: dt_ids::INTEGER, lang_id: 0, i: NO_LIST_INDEX,
+                t_signed: -40, dt: DatatypeDictId::INTEGER.as_u16(), lang_id: 0, i: ListIndex::none().as_i32(),
             },
             Region3Entry {
                 s_id: 7, p_id: 3, o_kind: ObjKind::LEX_ID.as_u8(),
                 o_key: ObjKey::encode_u32_id(99).as_u64(),
-                t_signed: 38, dt: dt_ids::LANG_STRING, lang_id: 2, i: 5,
+                t_signed: 38, dt: DatatypeDictId::LANG_STRING.as_u16(), lang_id: 2, i: 5,
             },
         ];
         let encoded = encode_region3(&entries);
@@ -1416,8 +1417,8 @@ mod tests {
     fn test_region3_signed_t_encoding() {
         // Assert: op=1 → positive t_signed
         let assert_rec = RunRecord::new(
-            0, Sid64::from_u64(1), 2, ObjKind::NUM_INT, ObjKey::encode_i64(10), 42, true,
-            dt_ids::INTEGER, 0, None,
+            0, SubjectId::from_u64(1), 2, ObjKind::NUM_INT, ObjKey::encode_i64(10), 42, true,
+            DatatypeDictId::INTEGER.as_u16(), 0, None,
         );
         let e = Region3Entry::from_run_record(&assert_rec);
         assert_eq!(e.t_signed, 42);
@@ -1426,8 +1427,8 @@ mod tests {
 
         // Retract: op=0 → negative t_signed
         let retract_rec = RunRecord::new(
-            0, Sid64::from_u64(1), 2, ObjKind::NUM_INT, ObjKey::encode_i64(10), 42, false,
-            dt_ids::INTEGER, 0, None,
+            0, SubjectId::from_u64(1), 2, ObjKind::NUM_INT, ObjKey::encode_i64(10), 42, false,
+            DatatypeDictId::INTEGER.as_u16(), 0, None,
         );
         let e = Region3Entry::from_run_record(&retract_rec);
         assert_eq!(e.t_signed, -42);
@@ -1467,12 +1468,12 @@ mod tests {
             Region3Entry {
                 s_id: 1, p_id: 2, o_kind: ObjKind::NUM_INT.as_u8(),
                 o_key: ObjKey::encode_i64(20).as_u64(),
-                t_signed: 5, dt: dt_ids::INTEGER, lang_id: 0, i: NO_LIST_INDEX,
+                t_signed: 5, dt: DatatypeDictId::INTEGER.as_u16(), lang_id: 0, i: ListIndex::none().as_i32(),
             },
             Region3Entry {
                 s_id: 1, p_id: 2, o_kind: ObjKind::NUM_INT.as_u8(),
                 o_key: ObjKey::encode_i64(15).as_u64(),
-                t_signed: -4, dt: dt_ids::INTEGER, lang_id: 0, i: NO_LIST_INDEX,
+                t_signed: -4, dt: DatatypeDictId::INTEGER.as_u16(), lang_id: 0, i: ListIndex::none().as_i32(),
             },
         ];
 

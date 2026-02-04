@@ -31,7 +31,7 @@ use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::value_id::DatatypeId;
+use fluree_db_core::value_id::ValueTypeTag;
 use fluree_db_core::value_id::{ObjKind, ObjKey};
 use fluree_db_core::{
     range_with_overlay, Db, Flake, FlakeValue, IndexType, ObjectBounds, OverlayProvider,
@@ -40,7 +40,8 @@ use fluree_db_core::{
 use fluree_db_indexer::run_index::{
     BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, OverlayOp,
 };
-use fluree_db_indexer::run_index::run_record::{RunSortOrder, NO_LIST_INDEX};
+use fluree_db_indexer::run_index::run_record::RunSortOrder;
+use fluree_db_core::ListIndex;
 use fluree_db_indexer::run_index::numfloat_dict::NumericShape;
 use fluree_vocab::namespaces::FLUREE_LEDGER;
 use std::collections::{HashMap, VecDeque};
@@ -52,15 +53,12 @@ use std::sync::Arc;
 
 /// Map from fluree-db-core's `IndexType` to `RunSortOrder`.
 ///
-/// TSPO (time-ordered) is not built in the binary indexes, so it falls
-/// back to SPOT. Time-travel is handled via Region 3 history in leaflets.
 pub(crate) fn index_type_to_sort_order(idx: IndexType) -> RunSortOrder {
     match idx {
         IndexType::Spot => RunSortOrder::Spot,
         IndexType::Psot => RunSortOrder::Psot,
         IndexType::Post => RunSortOrder::Post,
         IndexType::Opst => RunSortOrder::Opst,
-        IndexType::Tspo => RunSortOrder::Spot, // fallback: no TSPO in binary indexes
     }
 }
 
@@ -455,12 +453,12 @@ fn numeric_shape_from_db_stats<S: Storage + 'static>(
                 if count == 0 {
                     continue;
                 }
-                let dt = DatatypeId::from_u8(dt_raw);
+                let dt = ValueTypeTag::from_u8(dt_raw);
                 if dt.is_integer_type() {
                     has_int = true;
                 } else if dt.is_float_type() {
                     has_float = true;
-                } else if dt == DatatypeId::DECIMAL {
+                } else if dt == ValueTypeTag::DECIMAL {
                     has_decimal = true;
                 }
             }
@@ -883,10 +881,10 @@ fn translate_one_flake(
                 Some(tag) => dict_overlay.assign_lang_id(tag),
                 None => 0,
             };
-            let i_val = meta.i.unwrap_or(NO_LIST_INDEX);
+            let i_val = meta.i.unwrap_or(ListIndex::none().as_i32());
             (lang_id, i_val)
         }
-        None => (0, NO_LIST_INDEX),
+        None => (0, ListIndex::none().as_i32()),
     };
 
     Ok(OverlayOp {

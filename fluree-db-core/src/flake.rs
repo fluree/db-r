@@ -272,42 +272,6 @@ impl Flake {
         }
     }
 
-    /// Create a minimum flake for TSPO index (transaction-first)
-    pub fn min_tspo() -> Self {
-        Self::min_spot()
-    }
-
-    /// Create a maximum flake for TSPO index
-    pub fn max_tspo() -> Self {
-        Self::max_spot()
-    }
-
-    /// Create a minimum flake with a specific transaction time (for TSPO index)
-    pub fn min_for_t(t: i64) -> Self {
-        Self {
-            s: Sid::min(),
-            p: Sid::min(),
-            o: FlakeValue::min(),
-            dt: Sid::min(),
-            t,
-            op: false,
-            m: Some(FlakeMeta::min()),
-        }
-    }
-
-    /// Create a maximum flake with a specific transaction time (for TSPO index)
-    pub fn max_for_t(t: i64) -> Self {
-        Self {
-            s: Sid::max(),
-            p: Sid::max(),
-            o: FlakeValue::max(),
-            dt: Sid::max(),
-            t,
-            op: true,
-            m: Some(FlakeMeta::max()),
-        }
-    }
-
     /// Check if this is a reference flake (object points to another subject)
     ///
     /// Reference flakes have datatype $id (namespace_code JSON_LD, name "id").

@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use fluree_db_core::{
     ObjectBounds, Sid, Storage, BATCHED_JOIN_SIZE,
 };
-use fluree_db_core::sid64::{Sid64, SidColumn};
+use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
@@ -751,7 +751,8 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
             decode_leaflet_region1, decode_leaflet_region2, LeafletHeader,
         };
         use fluree_db_indexer::run_index::leaflet_cache::{CachedRegion1, CachedRegion2, LeafletCacheKey};
-        use fluree_db_indexer::run_index::run_record::{cmp_psot, RunRecord, RunSortOrder, NO_LIST_INDEX};
+        use fluree_db_indexer::run_index::run_record::{cmp_psot, RunRecord, RunSortOrder};
+        use fluree_db_core::{DatatypeDictId, ListIndex};
         use memmap2::Mmap;
         use std::sync::Arc as StdArc;
         use xxhash_rust::xxh3::xxh3_128;
@@ -817,7 +818,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
         // Restrict scan to the predicate's PSOT range (contiguous partition).
         let min_key = RunRecord {
             g_id,
-            s_id: Sid64::min(),
+            s_id: SubjectId::min(),
             p_id,
             dt: 0,
             o_kind: 0,
@@ -825,11 +826,11 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
             o_key: 0,
             t: i64::MIN,
             lang_id: 0,
-            i: NO_LIST_INDEX,
+            i: ListIndex::none().as_i32(),
         };
         let max_key = RunRecord {
             g_id,
-            s_id: Sid64::max(),
+            s_id: SubjectId::max(),
             p_id,
             dt: u16::MAX,
             o_kind: u8::MAX,
@@ -906,7 +907,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                                     .map_err(|e| QueryError::Internal(format!("decode region1: {}", e)))?;
                             let row_count = lh.row_count as usize;
                             let cached_r1 = CachedRegion1 {
-                                s_ids: SidColumn::from_wide(s_ids.into_iter().map(Sid64::from_u64).collect()),
+                                s_ids: SubjectIdColumn::from_wide(s_ids.into_iter().map(SubjectId::from_u64).collect()),
                                 p_ids: StdArc::from(p_ids.into_boxed_slice()),
                                 o_kinds: StdArc::from(o_kinds.into_boxed_slice()),
                                 o_keys: StdArc::from(o_keys.into_boxed_slice()),
@@ -923,7 +924,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                         let (lh, s_ids, p_ids, o_kinds, o_keys) =
                             decode_leaflet_region1(leaflet_bytes, header.p_width, RunSortOrder::Psot)
                                 .map_err(|e| QueryError::Internal(format!("decode region1: {}", e)))?;
-                        (Some(lh), SidColumn::from_wide(s_ids.into_iter().map(Sid64::from_u64).collect()), StdArc::from(p_ids.into_boxed_slice()), StdArc::from(o_kinds.into_boxed_slice()), StdArc::from(o_keys.into_boxed_slice()))
+                        (Some(lh), SubjectIdColumn::from_wide(s_ids.into_iter().map(SubjectId::from_u64).collect()), StdArc::from(p_ids.into_boxed_slice()), StdArc::from(o_kinds.into_boxed_slice()), StdArc::from(o_keys.into_boxed_slice()))
                     };
 
                     let row_count = leaflet_header
@@ -1543,7 +1544,7 @@ mod tests {
         use fluree_db_indexer::run_index::run_file::write_run_file;
         use fluree_db_indexer::run_index::run_record::{cmp_for_order, RunRecord, RunSortOrder};
         use fluree_db_indexer::run_index::spot_store::BinaryIndexStore;
-        use fluree_db_indexer::run_index::global_dict::dt_ids;
+        use fluree_db_core::DatatypeDictId;
         use fluree_db_core::value_id::{ObjKind, ObjKey};
         use fluree_graph_json_ld::ParsedContext;
 
@@ -1654,52 +1655,52 @@ mod tests {
             // score1 hasScore 0.5
             RunRecord::new(
                 g_id,
-                Sid64::from_u64(s_id_score1),
+                SubjectId::from_u64(s_id_score1),
                 p_id_has_score,
                 ObjKind::NUM_F64,
                 ObjKey::encode_f64(0.5).unwrap(),
                 t,
                 true,
-                dt_ids::DOUBLE,
+                DatatypeDictId::DOUBLE.as_u16(),
                 0,
                 None,
             ),
             // score1 refersInstance concept1
             RunRecord::new(
                 g_id,
-                Sid64::from_u64(s_id_score1),
+                SubjectId::from_u64(s_id_score1),
                 p_id_refers,
                 ObjKind::REF_ID,
                 ObjKey::encode_sid64(s_id_concept1),
                 t,
                 true,
-                dt_ids::ID,
+                DatatypeDictId::ID.as_u16(),
                 0,
                 None,
             ),
             // score2 hasScore 0.3
             RunRecord::new(
                 g_id,
-                Sid64::from_u64(s_id_score2),
+                SubjectId::from_u64(s_id_score2),
                 p_id_has_score,
                 ObjKind::NUM_F64,
                 ObjKey::encode_f64(0.3).unwrap(),
                 t,
                 true,
-                dt_ids::DOUBLE,
+                DatatypeDictId::DOUBLE.as_u16(),
                 0,
                 None,
             ),
             // score2 refersInstance concept2
             RunRecord::new(
                 g_id,
-                Sid64::from_u64(s_id_score2),
+                SubjectId::from_u64(s_id_score2),
                 p_id_refers,
                 ObjKind::REF_ID,
                 ObjKey::encode_sid64(s_id_concept2),
                 t,
                 true,
-                dt_ids::ID,
+                DatatypeDictId::ID.as_u16(),
                 0,
                 None,
             ),

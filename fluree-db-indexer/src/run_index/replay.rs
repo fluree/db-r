@@ -381,7 +381,7 @@ fn emit_include_entry(out: &mut ReplayedLeaflet, entry: &Region3Entry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::run_record::NO_LIST_INDEX;
+    use fluree_db_core::ListIndex;
 
     /// Helper: build a Region3Entry.
     fn r3(s_id: u64, p_id: u32, o_kind: u8, o_key: u64, t_signed: i64, dt: u16) -> Region3Entry {
@@ -393,7 +393,7 @@ mod tests {
             t_signed,
             dt,
             lang_id: 0,
-            i: NO_LIST_INDEX,
+            i: ListIndex::none().as_i32(),
         }
     }
 
@@ -408,7 +408,7 @@ mod tests {
             &[1, 1],
             &[5, 5],
             &[0, 0],
-            &[NO_LIST_INDEX, NO_LIST_INDEX],
+            &[ListIndex::none().as_i32(), ListIndex::none().as_i32()],
             &[], // empty R3
             3,   // t_target
             RunSortOrder::Spot,
@@ -432,7 +432,7 @@ mod tests {
             &[1, 1],
             &[3, 2],
             &[0, 0],
-            &[NO_LIST_INDEX, NO_LIST_INDEX],
+            &[ListIndex::none().as_i32(), ListIndex::none().as_i32()],
             &r3_entries,
             5, // t_target=5, all entries at t<=5
             RunSortOrder::Spot,
@@ -458,7 +458,7 @@ mod tests {
             &[1],
             &[5],
             &[0],
-            &[NO_LIST_INDEX],
+            &[ListIndex::none().as_i32()],
             &r3_entries,
             3, // want state at t=3
             RunSortOrder::Spot,
@@ -524,7 +524,7 @@ mod tests {
             &[1, 1, 1],
             &[3, 8, 3],       // t values
             &[0, 0, 0],
-            &[NO_LIST_INDEX, NO_LIST_INDEX, NO_LIST_INDEX],
+            &[ListIndex::none().as_i32(), ListIndex::none().as_i32(), ListIndex::none().as_i32()],
             &r3_entries,
             5, // t_target
             RunSortOrder::Spot,
@@ -557,7 +557,7 @@ mod tests {
             &[1],
             &[10],
             &[0],
-            &[NO_LIST_INDEX],
+            &[ListIndex::none().as_i32()],
             &r3_entries,
             5,
             RunSortOrder::Spot,
@@ -589,7 +589,7 @@ mod tests {
             &[1, 1],
             &[3, 3],
             &[0, 0],
-            &[NO_LIST_INDEX, NO_LIST_INDEX],
+            &[ListIndex::none().as_i32(), ListIndex::none().as_i32()],
             &r3_entries,
             5,
             RunSortOrder::Psot,
@@ -622,7 +622,7 @@ mod tests {
             &[1],
             &[3],
             &[0],
-            &[NO_LIST_INDEX],
+            &[ListIndex::none().as_i32()],
             &r3_entries,
             5,
             RunSortOrder::Spot,
@@ -649,7 +649,7 @@ mod tests {
             &[1, 1],
             &[8, 7],
             &[0, 0],
-            &[NO_LIST_INDEX, NO_LIST_INDEX],
+            &[ListIndex::none().as_i32(), ListIndex::none().as_i32()],
             &r3_entries,
             5,
             RunSortOrder::Spot,
@@ -676,7 +676,7 @@ mod tests {
             &[1, 1],
             &[5, 8],
             &[0, 0],
-            &[NO_LIST_INDEX, NO_LIST_INDEX],
+            &[ListIndex::none().as_i32(), ListIndex::none().as_i32()],
             &r3_entries,
             5,
             RunSortOrder::Spot,
@@ -717,14 +717,14 @@ mod tests {
 
         // Current R1: fact is present (asserted at t=8)
         let result_t6 = replay_leaflet(
-            &[1], &[10], &[0], &[100], &[1], &[8], &[0], &[NO_LIST_INDEX],
+            &[1], &[10], &[0], &[100], &[1], &[8], &[0], &[ListIndex::none().as_i32()],
             &r3_entries, 6, RunSortOrder::Spot,
         );
         let out = result_t6.expect("should produce replay");
         assert_eq!(out.row_count, 0, "at t=6, fact was retracted (retract at t=5)");
 
         let result_t4 = replay_leaflet(
-            &[1], &[10], &[0], &[100], &[1], &[8], &[0], &[NO_LIST_INDEX],
+            &[1], &[10], &[0], &[100], &[1], &[8], &[0], &[ListIndex::none().as_i32()],
             &r3_entries, 4, RunSortOrder::Spot,
         );
         let out = result_t4.expect("should produce replay");
@@ -754,7 +754,7 @@ mod tests {
         ];
 
         let result = replay_leaflet(
-            &[1], &[10], &[0], &[100], &[1], &[8], &[0], &[NO_LIST_INDEX],
+            &[1], &[10], &[0], &[100], &[1], &[8], &[0], &[ListIndex::none().as_i32()],
             &r3_entries, 4, RunSortOrder::Spot,
         );
         let out = result.expect("should produce replay");
@@ -782,7 +782,7 @@ mod tests {
                 t_signed: -8, // retract at t=8
                 dt: 11,       // LANG_STRING
                 lang_id: 2,   // French
-                i: NO_LIST_INDEX,
+                i: ListIndex::none().as_i32(),
             },
         ];
 
@@ -794,7 +794,7 @@ mod tests {
             &[11],             // dt (LANG_STRING)
             &[3],              // t
             &[1],              // lang_ids (English)
-            &[NO_LIST_INDEX],
+            &[ListIndex::none().as_i32()],
             &r3_entries,
             5, // want state at t=5 (retraction at t=8 → include French back)
             RunSortOrder::Spot,
@@ -845,7 +845,7 @@ mod tests {
             &[1, 1, 1],
             &[6, 7, 10],          // t values
             &[0, 0, 0],
-            &[NO_LIST_INDEX, NO_LIST_INDEX, NO_LIST_INDEX],
+            &[ListIndex::none().as_i32(), ListIndex::none().as_i32(), ListIndex::none().as_i32()],
             &r3_entries,
             5,
             RunSortOrder::Spot,

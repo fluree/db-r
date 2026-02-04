@@ -253,7 +253,7 @@ impl SubjectDict {
         &self.forward_lens
     }
 
-    /// Sid64 table: `sids[seq]` = sid64 for the seq-th inserted subject.
+    /// SubjectId table: `sids[seq]` = subject_id for the seq-th inserted subject.
     /// Used to write the sid mapping file alongside the forward index.
     pub fn forward_sids(&self) -> &[u64] {
         &self.forward_sids
@@ -536,35 +536,15 @@ impl Default for LanguageTagDict {
 // Datatype dict constants (dt_ids)
 // ============================================================================
 
-/// Named constants for reserved datatype dict IDs.
+/// Reserved datatype dictionary IDs.
 ///
-/// These replace `DatatypeId::FOO` constants for the bulk import path.
+/// These constants are defined in `fluree_db_core::DatatypeDictId`.
 /// Only types with special encoding/coercion rules get reserved IDs.
 /// Everything else is dynamically assigned (ID 14+).
 ///
 /// Type is `u16` to match `RunRecord.dt` — most datasets use ≤255 types
 /// (encoded as u8 in leaf Region 2), but u16 supports up to 65535 distinct
 /// datatype IRIs in a single import.
-pub mod dt_ids {
-    // These reserved IDs are stable (insertion order) and intentionally small.
-    // The bulk import path currently enforces `dt_id <= 255` (u8), but the
-    // overall system supports widening to u16 in the binary format when needed.
-    pub const ID: u16 = 0;           // @id — IRI reference sentinel
-    pub const STRING: u16 = 1;       // xsd:string
-    pub const BOOLEAN: u16 = 2;      // xsd:boolean
-    pub const INTEGER: u16 = 3;      // xsd:integer
-    pub const LONG: u16 = 4;         // xsd:long
-    pub const DECIMAL: u16 = 5;      // xsd:decimal
-    pub const DOUBLE: u16 = 6;       // xsd:double
-    pub const FLOAT: u16 = 7;        // xsd:float
-    pub const DATE_TIME: u16 = 8;    // xsd:dateTime
-    pub const DATE: u16 = 9;         // xsd:date
-    pub const TIME: u16 = 10;        // xsd:time
-    pub const LANG_STRING: u16 = 11; // rdf:langString
-    pub const JSON: u16 = 12;        // @json
-    pub const VECTOR: u16 = 13;      // @vector
-    pub const RESERVED_COUNT: u16 = 14;
-}
 
 /// Create a new datatype dict with reserved entries pre-inserted.
 ///
@@ -769,6 +749,7 @@ impl Borrow<str> for BorrowableString {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluree_db_core::DatatypeDictId;
 
     // ---- SubjectDict tests ----
 
@@ -993,29 +974,29 @@ mod tests {
         let d = new_datatype_dict();
         assert_eq!(d.len(), 14);
 
-        // Verify reserved positions match dt_ids constants
-        assert_eq!(d.get("@id"), Some(dt_ids::ID as u32));
-        assert_eq!(d.get(fluree_vocab::xsd::STRING), Some(dt_ids::STRING as u32));
-        assert_eq!(d.get(fluree_vocab::xsd::BOOLEAN), Some(dt_ids::BOOLEAN as u32));
-        assert_eq!(d.get(fluree_vocab::xsd::INTEGER), Some(dt_ids::INTEGER as u32));
-        assert_eq!(d.get(fluree_vocab::xsd::LONG), Some(dt_ids::LONG as u32));
-        assert_eq!(d.get(fluree_vocab::xsd::DECIMAL), Some(dt_ids::DECIMAL as u32));
-        assert_eq!(d.get(fluree_vocab::xsd::DOUBLE), Some(dt_ids::DOUBLE as u32));
-        assert_eq!(d.get(fluree_vocab::xsd::FLOAT), Some(dt_ids::FLOAT as u32));
-        assert_eq!(d.get(fluree_vocab::xsd::DATE_TIME), Some(dt_ids::DATE_TIME as u32));
-        assert_eq!(d.get(fluree_vocab::xsd::DATE), Some(dt_ids::DATE as u32));
-        assert_eq!(d.get(fluree_vocab::xsd::TIME), Some(dt_ids::TIME as u32));
-        assert_eq!(d.get(fluree_vocab::rdf::LANG_STRING), Some(dt_ids::LANG_STRING as u32));
-        assert_eq!(d.get("@json"), Some(dt_ids::JSON as u32));
-        assert_eq!(d.get("@vector"), Some(dt_ids::VECTOR as u32));
+        // Verify reserved positions match DatatypeDictId constants
+        assert_eq!(d.get("@id"), Some(DatatypeDictId::ID.as_u16() as u32));
+        assert_eq!(d.get(fluree_vocab::xsd::STRING), Some(DatatypeDictId::STRING.as_u16() as u32));
+        assert_eq!(d.get(fluree_vocab::xsd::BOOLEAN), Some(DatatypeDictId::BOOLEAN.as_u16() as u32));
+        assert_eq!(d.get(fluree_vocab::xsd::INTEGER), Some(DatatypeDictId::INTEGER.as_u16() as u32));
+        assert_eq!(d.get(fluree_vocab::xsd::LONG), Some(DatatypeDictId::LONG.as_u16() as u32));
+        assert_eq!(d.get(fluree_vocab::xsd::DECIMAL), Some(DatatypeDictId::DECIMAL.as_u16() as u32));
+        assert_eq!(d.get(fluree_vocab::xsd::DOUBLE), Some(DatatypeDictId::DOUBLE.as_u16() as u32));
+        assert_eq!(d.get(fluree_vocab::xsd::FLOAT), Some(DatatypeDictId::FLOAT.as_u16() as u32));
+        assert_eq!(d.get(fluree_vocab::xsd::DATE_TIME), Some(DatatypeDictId::DATE_TIME.as_u16() as u32));
+        assert_eq!(d.get(fluree_vocab::xsd::DATE), Some(DatatypeDictId::DATE.as_u16() as u32));
+        assert_eq!(d.get(fluree_vocab::xsd::TIME), Some(DatatypeDictId::TIME.as_u16() as u32));
+        assert_eq!(d.get(fluree_vocab::rdf::LANG_STRING), Some(DatatypeDictId::LANG_STRING.as_u16() as u32));
+        assert_eq!(d.get("@json"), Some(DatatypeDictId::JSON.as_u16() as u32));
+        assert_eq!(d.get("@vector"), Some(DatatypeDictId::VECTOR.as_u16() as u32));
     }
 
     #[test]
     fn test_datatype_dict_idempotent_insert() {
         let mut d = new_datatype_dict();
         // Re-inserting a reserved type returns the same ID
-        assert_eq!(d.get_or_insert("@id"), dt_ids::ID as u32);
-        assert_eq!(d.get_or_insert(fluree_vocab::xsd::STRING), dt_ids::STRING as u32);
+        assert_eq!(d.get_or_insert("@id"), DatatypeDictId::ID.as_u16() as u32);
+        assert_eq!(d.get_or_insert(fluree_vocab::xsd::STRING), DatatypeDictId::STRING.as_u16() as u32);
         assert_eq!(d.len(), 14); // no new entries
     }
 
@@ -1024,7 +1005,7 @@ mod tests {
         let mut d = new_datatype_dict();
         // Custom/unknown types get dynamic IDs starting at 14
         let g_year_id = d.get_or_insert("http://www.w3.org/2001/XMLSchema#gYear");
-        assert_eq!(g_year_id, dt_ids::RESERVED_COUNT as u32); // 14
+        assert_eq!(g_year_id, DatatypeDictId::RESERVED_COUNT as u32); // 14
         let custom_id = d.get_or_insert("http://example.org/custom#myType");
         assert_eq!(custom_id, 15);
         assert_eq!(d.len(), 16);

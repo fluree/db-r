@@ -27,7 +27,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::sid64::Sid64;
+use crate::subject_id::SubjectId;
 
 /// Namespace code reserved for overflow subjects (full IRI as suffix).
 /// Never stored in watermark vectors; always treated as novel.
@@ -228,7 +228,7 @@ impl SubjectDictNovelty {
             id
         };
 
-        let sid64 = Sid64::new(ns_code, local_id).as_u64();
+        let sid64 = SubjectId::new(ns_code, local_id).as_u64();
         let interned_suffix: Arc<str> = Arc::from(suffix);
 
         self.reverse.insert(key.into_boxed_slice(), sid64);
@@ -424,9 +424,9 @@ mod tests {
         assert_ne!(id2, id3);
 
         // Verify namespace structure
-        let s1 = Sid64::from_u64(id1);
-        let s2 = Sid64::from_u64(id2);
-        let s3 = Sid64::from_u64(id3);
+        let s1 = SubjectId::from_u64(id1);
+        let s2 = SubjectId::from_u64(id2);
+        let s3 = SubjectId::from_u64(id3);
 
         assert_eq!(s1.ns_code(), 2);
         assert_eq!(s2.ns_code(), 2);
@@ -466,7 +466,7 @@ mod tests {
         let mut dn = DictNovelty::with_watermarks(vec![0, 0, 100], 0);
 
         let id = dn.subjects.assign_or_lookup(2, "new_subject");
-        let sid = Sid64::from_u64(id);
+        let sid = SubjectId::from_u64(id);
 
         assert_eq!(sid.ns_code(), 2);
         assert_eq!(sid.local_id(), 101); // starts at watermark + 1
@@ -477,16 +477,16 @@ mod tests {
         let dn = DictNovelty::with_watermarks(vec![0, 0, 100], 0);
 
         // local_id <= watermark → persisted
-        let persisted = Sid64::new(2, 50).as_u64();
+        let persisted = SubjectId::new(2, 50).as_u64();
         assert!(
-            Sid64::from_u64(persisted).local_id()
+            SubjectId::from_u64(persisted).local_id()
                 <= dn.subjects.watermark_for_ns(2)
         );
 
         // local_id > watermark → novel
-        let novel = Sid64::new(2, 101).as_u64();
+        let novel = SubjectId::new(2, 101).as_u64();
         assert!(
-            Sid64::from_u64(novel).local_id()
+            SubjectId::from_u64(novel).local_id()
                 > dn.subjects.watermark_for_ns(2)
         );
     }
@@ -550,7 +550,7 @@ mod tests {
         // Assigning NS_OVERFLOW subjects must NOT resize watermarks/next_local_ids
         // to 65536 entries.
         let id = dn.subjects.assign_or_lookup(NS_OVERFLOW, "http://example.com/full-iri");
-        let sid = Sid64::from_u64(id);
+        let sid = SubjectId::from_u64(id);
         assert_eq!(sid.ns_code(), NS_OVERFLOW);
         assert_eq!(sid.local_id(), 1);
 
@@ -560,7 +560,7 @@ mod tests {
 
         // Second overflow subject gets next local_id
         let id2 = dn.subjects.assign_or_lookup(NS_OVERFLOW, "http://other.com/iri");
-        assert_eq!(Sid64::from_u64(id2).local_id(), 2);
+        assert_eq!(SubjectId::from_u64(id2).local_id(), 2);
 
         // Dedup works
         assert_eq!(dn.subjects.assign_or_lookup(NS_OVERFLOW, "http://example.com/full-iri"), id);

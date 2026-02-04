@@ -1353,7 +1353,7 @@ async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     // Log property stats for predicates in this query (NDV + per-datatype counts),
     // sourced from the real db-root stats.
     if db.stats.as_ref().and_then(|s| s.graphs.as_ref()).is_some() {
-        use fluree_db_core::value_id::DatatypeId;
+        use fluree_db_core::value_id::ValueTypeTag;
         let mut seen: std::collections::HashSet<Sid> = std::collections::HashSet::new();
 
         let graphs = db.stats.as_ref().and_then(|s| s.graphs.as_ref()).unwrap();
@@ -1388,7 +1388,7 @@ async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                         .datatypes
                         .iter()
                         .filter_map(|&(dt, c)| {
-                            let sid = DatatypeId::from_u8(dt).to_sid()?;
+                            let sid = ValueTypeTag::from_u8(dt).to_sid()?;
                             Some(format!("{}={}", format_sid(sid, &db.namespace_codes), c))
                         })
                         .collect();

@@ -153,7 +153,7 @@ pub struct BinaryIndexRootV2 {
     /// local IDs fit in `u16`. `Wide`: full `u64`.
     /// Defaults to `Narrow` for new databases.
     #[serde(default)]
-    pub subject_id_encoding: fluree_db_core::SidEncoding,
+    pub subject_id_encoding: fluree_db_core::SubjectIdEncoding,
 
     /// CAS addresses of all dictionary artifacts.
     pub dict_addresses: DictAddresses,
@@ -222,7 +222,7 @@ impl BinaryIndexRootV2 {
         base_t: i64,
         predicate_sids: Vec<(u16, String)>,
         namespace_codes: &HashMap<u16, String>,
-        subject_id_encoding: fluree_db_core::SidEncoding,
+        subject_id_encoding: fluree_db_core::SubjectIdEncoding,
         dict_addresses: DictAddresses,
         graph_addresses: Vec<GraphAddresses>,
         stats: Option<serde_json::Value>,
@@ -367,7 +367,7 @@ mod tests {
                 m.insert(1, "http://www.w3.org/1999/02/22-rdf-syntax-ns#".into());
                 m
             },
-            subject_id_encoding: fluree_db_core::SidEncoding::Narrow,
+            subject_id_encoding: fluree_db_core::SubjectIdEncoding::Narrow,
             dict_addresses: sample_dict_addresses(),
             stats: None,
             schema: None,
@@ -408,12 +408,12 @@ mod tests {
         let predicate_sids: Vec<(u16, String)> = vec![(0, "p0".to_string())];
 
         let root1 = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, predicate_sids.clone(), &ns, fluree_db_core::SidEncoding::Narrow, sample_dict_addresses(), graph_addrs.clone(),
+            "test/main", 42, 1, predicate_sids.clone(), &ns, fluree_db_core::SubjectIdEncoding::Narrow, sample_dict_addresses(), graph_addrs.clone(),
             None, None, None, None,
             vec![], 0,
         );
         let root2 = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, predicate_sids, &ns, fluree_db_core::SidEncoding::Narrow, sample_dict_addresses(), graph_addrs,
+            "test/main", 42, 1, predicate_sids, &ns, fluree_db_core::SubjectIdEncoding::Narrow, sample_dict_addresses(), graph_addrs,
             None, None, None, None,
             vec![], 0,
         );
@@ -435,7 +435,7 @@ mod tests {
             "graphs": [{"g_id": 1, "flakes": 10000, "size": 0}]
         });
         let root = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, vec![], &HashMap::new(), fluree_db_core::SidEncoding::Narrow, sample_dict_addresses(), vec![],
+            "test/main", 42, 1, vec![], &HashMap::new(), fluree_db_core::SubjectIdEncoding::Narrow, sample_dict_addresses(), vec![],
             Some(stats.clone()), None, None, None,
             vec![], 0,
         );
@@ -509,7 +509,7 @@ mod tests {
         }];
 
         let root = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 10, 1, vec![], &HashMap::new(), fluree_db_core::SidEncoding::Narrow, dicts, graph_addrs,
+            "test/main", 10, 1, vec![], &HashMap::new(), fluree_db_core::SubjectIdEncoding::Narrow, dicts, graph_addrs,
             None, None, None, None,
             vec![], 0,
         );
@@ -537,7 +537,7 @@ mod tests {
     #[test]
     fn v2_round_trip_with_gc_fields() {
         let root = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, vec![], &HashMap::new(), fluree_db_core::SidEncoding::Narrow, sample_dict_addresses(), vec![],
+            "test/main", 42, 1, vec![], &HashMap::new(), fluree_db_core::SubjectIdEncoding::Narrow, sample_dict_addresses(), vec![],
             None, None,
             Some(BinaryPrevIndexRef { t: 40, address: "cas://prev_root".into() }),
             Some(BinaryGarbageRef { address: "cas://garbage_record".into() }),
@@ -555,7 +555,7 @@ mod tests {
     fn v2_round_trip_without_gc_fields() {
         // When prev_index and garbage are None, they should not appear in JSON
         let root = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, vec![], &HashMap::new(), fluree_db_core::SidEncoding::Narrow, sample_dict_addresses(), vec![],
+            "test/main", 42, 1, vec![], &HashMap::new(), fluree_db_core::SubjectIdEncoding::Narrow, sample_dict_addresses(), vec![],
             None, None, None, None,
             vec![], 0,
         );
@@ -573,7 +573,7 @@ mod tests {
     #[test]
     fn watermarks_round_trip() {
         let root = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, vec![], &HashMap::new(), fluree_db_core::SidEncoding::Narrow, sample_dict_addresses(), vec![],
+            "test/main", 42, 1, vec![], &HashMap::new(), fluree_db_core::SubjectIdEncoding::Narrow, sample_dict_addresses(), vec![],
             None, None, None, None,
             vec![100, 200, 300], 500,
         );
@@ -590,7 +590,7 @@ mod tests {
         // Old roots without watermark fields should deserialize with defaults
         // (empty vec / 0) — equivalent to "everything is novel", safe and conservative.
         let root = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, vec![], &HashMap::new(), fluree_db_core::SidEncoding::Narrow, sample_dict_addresses(), vec![],
+            "test/main", 42, 1, vec![], &HashMap::new(), fluree_db_core::SubjectIdEncoding::Narrow, sample_dict_addresses(), vec![],
             None, None, None, None,
             vec![], 0,
         );

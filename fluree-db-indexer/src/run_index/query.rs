@@ -8,7 +8,8 @@ use super::dict_io::{read_forward_entry, read_forward_index};
 use super::global_dict::PredicateDict;
 use super::leaf::read_leaf_header;
 use super::leaflet::decode_leaflet;
-use super::run_record::{RunSortOrder, NO_LIST_INDEX};
+use super::run_record::RunSortOrder;
+use fluree_db_core::ListIndex;
 use fluree_db_core::value_id::{ObjKind, ObjKey};
 use std::collections::HashMap;
 use std::io;
@@ -346,7 +347,7 @@ impl std::fmt::Display for FactRow {
         if self.lang_id != 0 {
             write!(f, " lang:{}", self.lang_id)?;
         }
-        if self.i != NO_LIST_INDEX {
+        if self.i != ListIndex::none().as_i32() {
             write!(f, " i:{}", self.i)?;
         }
         Ok(())

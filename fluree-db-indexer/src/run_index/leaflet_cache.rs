@@ -17,7 +17,7 @@
 //! - `DictLeaf`: keyed by `xxh3_128(cas_address)`. Content-addressed and
 //!   immutable — no epoch/time dimension needed.
 
-use fluree_db_core::sid64::SidColumn;
+use fluree_db_core::subject_id::SubjectIdColumn;
 use moka::sync::Cache;
 use std::io;
 use std::sync::Arc;
@@ -62,11 +62,11 @@ enum CacheKey {
 /// Cached decoded Region 1 (core columns: s_id, p_id, o_kind, o_key).
 ///
 /// Uses `Arc<[T]>` for zero-copy sharing between cache and in-flight cursors.
-/// Subject IDs use [`SidColumn`] for compact storage: narrow mode (u32) saves
+/// Subject IDs use [`SubjectIdColumn`] for compact storage: narrow mode (u32) saves
 /// ~20% cache capacity compared to wide mode (u64).
 #[derive(Clone, Debug)]
 pub struct CachedRegion1 {
-    pub s_ids: SidColumn,
+    pub s_ids: SubjectIdColumn,
     pub p_ids: Arc<[u32]>,
     pub o_kinds: Arc<[u8]>,
     pub o_keys: Arc<[u64]>,
@@ -285,7 +285,7 @@ mod tests {
 
     fn make_r1(row_count: usize) -> CachedRegion1 {
         CachedRegion1 {
-            s_ids: SidColumn::from_narrow(vec![1u32; row_count]),
+            s_ids: SubjectIdColumn::from_narrow(vec![1u32; row_count]),
             p_ids: vec![2u32; row_count].into(),
             o_kinds: vec![0u8; row_count].into(),
             o_keys: vec![3u64; row_count].into(),

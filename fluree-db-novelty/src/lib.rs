@@ -7,7 +7,7 @@
 //! # Design
 //!
 //! - **Arena storage**: Flakes stored once in a central arena, referenced by FlakeId
-//! - **Per-index sorted vectors**: Each index (SPOT, PSOT, POST, OPST, TSPO) maintains
+//! - **Per-index sorted vectors**: Each index (SPOT, PSOT, POST, OPST) maintains
 //!   a sorted vector of FlakeIds ordered by that index's comparator
 //! - **Batch commit**: Epoch bumps once per commit, not per flake
 //! - **LSM-style merge**: Sort batch by index comparator, then linear merge with existing
@@ -50,7 +50,7 @@ pub const MAX_FLAKE_ID: u32 = u32::MAX - 1;
 
 /// Arena-style storage for flakes
 ///
-/// Flakes are stored once and referenced by FlakeId across all 5 indexes.
+/// Flakes are stored once and referenced by FlakeId across all 4 indexes.
 #[derive(Default, Clone)]
 pub struct FlakeStore {
     /// The actual flakes
@@ -116,7 +116,6 @@ pub struct Novelty {
     psot: Vec<FlakeId>,
     post: Vec<FlakeId>,
     opst: Vec<FlakeId>,
-    tspo: Vec<FlakeId>,
 
     /// Total size in bytes (for backpressure)
     pub size: usize,
@@ -143,7 +142,6 @@ impl Novelty {
             psot: Vec::new(),
             post: Vec::new(),
             opst: Vec::new(),
-            tspo: Vec::new(),
             size: 0,
             t,
             epoch: 0,
@@ -153,7 +151,7 @@ impl Novelty {
     /// Apply a batch of flakes from a commit
     ///
     /// Epoch bumps ONCE per call, not per flake.
-    /// This performs 5 sorts (one per index) on the batch, then 5 linear merges.
+    /// This performs 4 sorts (one per index) on the batch, then 4 linear merges.
     pub fn apply_commit(&mut self, flakes: Vec<Flake>, commit_t: i64) -> Result<()> {
         if flakes.is_empty() {
             return Ok(());
@@ -196,12 +194,11 @@ impl Novelty {
         // These merges are independent (read-only access to store + disjoint index vectors),
         // so we can run them in parallel to utilize multiple CPU cores.
         let store = &self.store;
-        let (spot, psot, post, opst, tspo) = (
+        let (spot, psot, post, opst) = (
             &mut self.spot,
             &mut self.psot,
             &mut self.post,
             &mut self.opst,
-            &mut self.tspo,
         );
 
         // Propagate the parent span context into Rayon worker threads so that
@@ -236,13 +233,6 @@ impl Novelty {
                 let span = tracing::info_span!("novelty_merge_opst", batch_len = batch_ids.len());
                 let _g = span.enter();
                 merge_batch_into_opst_refs_only(store, opst, batch_ids)
-            });
-            let parent_tspo = parent.clone();
-            scope.spawn(move |_| {
-                let _p = parent_tspo.enter();
-                let span = tracing::info_span!("novelty_merge_tspo", batch_len = batch_ids.len());
-                let _g = span.enter();
-                merge_batch_into_index(store, tspo, batch_ids, IndexType::Tspo)
             });
         });
 
@@ -281,7 +271,6 @@ impl Novelty {
         self.psot.retain(|&id| alive[id as usize]);
         self.post.retain(|&id| alive[id as usize]);
         self.opst.retain(|&id| alive[id as usize]);
-        self.tspo.retain(|&id| alive[id as usize]);
 
         // Update size
         self.size = new_size;
@@ -309,7 +298,6 @@ impl Novelty {
             IndexType::Psot => &self.psot,
             IndexType::Post => &self.post,
             IndexType::Opst => &self.opst,
-            IndexType::Tspo => &self.tspo,
         };
 
         if ids.is_empty() {
@@ -367,7 +355,6 @@ impl Novelty {
             IndexType::Psot => &self.psot,
             IndexType::Post => &self.post,
             IndexType::Opst => &self.opst,
-            IndexType::Tspo => &self.tspo,
         };
         ids.iter().copied()
     }

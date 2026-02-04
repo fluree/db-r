@@ -481,15 +481,15 @@ pub fn read_leaf_header(data: &[u8]) -> io::Result<LeafFileHeader> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::run_index::global_dict::dt_ids;
-    use fluree_db_core::sid64::Sid64;
+    use fluree_db_core::DatatypeDictId;
+    use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKind, ObjKey};
 
     fn make_record(s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
         RunRecord::new(
-            0, Sid64::from_u64(s_id), p_id,
+            0, SubjectId::from_u64(s_id), p_id,
             ObjKind::NUM_INT, ObjKey::encode_i64(val),
-            t, true, dt_ids::INTEGER, 0, None,
+            t, true, DatatypeDictId::INTEGER.as_u16(), 0, None,
         )
     }
 

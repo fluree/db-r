@@ -292,8 +292,8 @@ pub struct RunFileInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::run_index::global_dict::dt_ids;
-    use fluree_db_core::sid64::Sid64;
+    use fluree_db_core::DatatypeDictId;
+    use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKind, ObjKey};
 
     #[test]
@@ -347,9 +347,9 @@ mod tests {
         lang_dict.get_or_insert(Some("en"));
 
         let records = vec![
-            RunRecord::new(0, Sid64::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(10), 1, true, dt_ids::INTEGER, 0, None),
-            RunRecord::new(0, Sid64::from_u64(1), 2, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true, dt_ids::STRING, 1, None),
-            RunRecord::new(0, Sid64::from_u64(2), 1, ObjKind::NUM_INT, ObjKey::encode_i64(20), 2, true, dt_ids::LONG, 0, Some(0)),
+            RunRecord::new(0, SubjectId::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(10), 1, true, DatatypeDictId::INTEGER.as_u16(), 0, None),
+            RunRecord::new(0, SubjectId::from_u64(1), 2, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true, DatatypeDictId::STRING.as_u16(), 1, None),
+            RunRecord::new(0, SubjectId::from_u64(2), 1, ObjKind::NUM_INT, ObjKey::encode_i64(20), 2, true, DatatypeDictId::LONG.as_u16(), 0, Some(0)),
         ];
 
         let info = write_run_file(&path, &records, &lang_dict, RunSortOrder::Spot, 1, 2).unwrap();
@@ -365,12 +365,12 @@ mod tests {
         assert_eq!(restored_lang.resolve(1), Some("en"));
 
         assert_eq!(restored_records.len(), 3);
-        assert_eq!(restored_records[0].s_id, Sid64::from_u64(1));
+        assert_eq!(restored_records[0].s_id, SubjectId::from_u64(1));
         assert_eq!(restored_records[0].p_id, 1);
         assert_eq!(restored_records[0].o_kind, ObjKind::NUM_INT.as_u8());
         assert_eq!(restored_records[0].o_key, ObjKey::encode_i64(10).as_u64());
         assert_eq!(restored_records[1].lang_id, 1);
-        assert_eq!(restored_records[2].s_id, Sid64::from_u64(2));
+        assert_eq!(restored_records[2].s_id, SubjectId::from_u64(2));
         assert_eq!(restored_records[2].i, 0);
 
         let _ = std::fs::remove_dir_all(&dir);

@@ -19,10 +19,10 @@
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::flake::FlakeMeta;
 use fluree_db_core::sid::Sid;
-use fluree_db_core::sid64::Sid64;
+use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value::FlakeValue;
 use fluree_db_core::value_id::{ObjKind, ObjKey};
-use fluree_db_indexer::run_index::run_record::NO_LIST_INDEX;
+use fluree_db_core::ListIndex;
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::collections::HashMap;
 use std::io;
@@ -198,7 +198,7 @@ impl DictOverlay {
                 io::ErrorKind::InvalidData, format!("s_id {} not found", id),
             ));
         }
-        let sid64 = Sid64::from_u64(id);
+        let sid64 = SubjectId::from_u64(id);
         let wm = self.dict_novelty.subjects.watermark_for_ns(sid64.ns_code());
 
         if sid64.local_id() <= wm {
@@ -573,7 +573,7 @@ impl DictOverlay {
         if o_kind == ObjKind::REF_ID.as_u8() {
             let ref_id = o_key;
             let is_novel = if initialized {
-                let sid64 = Sid64::from_u64(ref_id);
+                let sid64 = SubjectId::from_u64(ref_id);
                 let wm = self.dict_novelty.subjects.watermark_for_ns(sid64.ns_code());
                 sid64.local_id() > wm
             } else {
@@ -643,7 +643,7 @@ impl DictOverlay {
     /// lang_ids allocated by `assign_lang_id()`.
     pub fn decode_meta(&self, lang_id: u16, i_val: i32) -> Option<FlakeMeta> {
         let has_lang = lang_id != 0;
-        let has_idx = i_val != NO_LIST_INDEX;
+        let has_idx = i_val != ListIndex::none().as_i32();
 
         if !has_lang && !has_idx {
             return None;
@@ -654,7 +654,7 @@ impl DictOverlay {
             let ephemeral_start = self.base_lang_count + 1;
             let tag = if lang_id < ephemeral_start {
                 // Persisted lang_id — delegate to store
-                self.store.decode_meta(lang_id, NO_LIST_INDEX)
+                self.store.decode_meta(lang_id, ListIndex::none().as_i32())
                     .and_then(|m| m.lang)
             } else {
                 // Ephemeral lang_id

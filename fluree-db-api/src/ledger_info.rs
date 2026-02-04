@@ -16,7 +16,7 @@ use fluree_db_core::{
     ClassStatEntry, GraphPropertyStatEntry, IndexSchema, IndexStats, GraphStatsEntry,
     PropertyStatEntry, SchemaPredicateInfo,
 };
-use fluree_db_core::value_id::DatatypeId;
+use fluree_db_core::value_id::ValueTypeTag;
 use fluree_db_core::{Sid, Storage};
 use fluree_db_ledger::LedgerState;
 use fluree_db_core::alias as core_alias;
@@ -647,7 +647,7 @@ pub fn parse_pre_index_manifest(bytes: &[u8]) -> std::result::Result<Vec<GraphSt
 
 /// Encode per-graph stats as a JSON array.
 ///
-/// Each entry is keyed by numeric `g_id` and `p_id`. The `DatatypeId` values
+/// Each entry is keyed by numeric `g_id` and `p_id`. The `ValueTypeTag` values
 /// are resolved to compact IRIs (e.g., `"xsd:string"`) via compile-time
 /// constants. Full predicate and graph IRI resolution requires wiring the
 /// predicate/graph dictionaries to the API layer (future work).
@@ -662,10 +662,10 @@ fn encode_graph_stats(graphs: &[GraphStatsEntry]) -> JsonValue {
                 .properties
                 .iter()
                 .map(|p| {
-                    // Resolve DatatypeId to compact IRI via Display
+                    // Resolve ValueTypeTag to compact IRI via Display
                     let mut dt_obj = Map::new();
                     for &(dt_raw, count) in &p.datatypes {
-                        let dt_iri = DatatypeId::from_u8(dt_raw).to_string();
+                        let dt_iri = ValueTypeTag::from_u8(dt_raw).to_string();
                         dt_obj.insert(dt_iri, json!(count));
                     }
 

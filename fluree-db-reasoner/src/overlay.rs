@@ -31,8 +31,6 @@ pub struct DerivedFactsOverlay {
     post: Arc<[Flake]>,
     /// Flakes sorted by OPST index order
     opst: Arc<[Flake]>,
-    /// Flakes sorted by TSPO index order
-    tspo: Arc<[Flake]>,
     /// owl:sameAs equivalence classes
     same_as: FrozenSameAs,
     /// Epoch for cache key differentiation
@@ -57,7 +55,6 @@ impl DerivedFactsOverlay {
             psot: Arc::from([]),
             post: Arc::from([]),
             opst: Arc::from([]),
-            tspo: Arc::from([]),
             same_as,
             epoch,
         }
@@ -71,7 +68,6 @@ impl DerivedFactsOverlay {
     /// * `psot` - Flakes sorted by PSOT order
     /// * `post` - Flakes sorted by POST order
     /// * `opst` - Flakes sorted by OPST order
-    /// * `tspo` - Flakes sorted by TSPO order
     /// * `same_as` - Frozen sameAs equivalence classes
     /// * `epoch` - Epoch for cache differentiation
     pub fn new(
@@ -79,7 +75,6 @@ impl DerivedFactsOverlay {
         psot: Vec<Flake>,
         post: Vec<Flake>,
         opst: Vec<Flake>,
-        tspo: Vec<Flake>,
         same_as: FrozenSameAs,
         epoch: u64,
     ) -> Self {
@@ -88,7 +83,6 @@ impl DerivedFactsOverlay {
             psot: psot.into(),
             post: post.into(),
             opst: opst.into(),
-            tspo: tspo.into(),
             same_as,
             epoch,
         }
@@ -126,7 +120,6 @@ impl DerivedFactsOverlay {
             IndexType::Psot => &self.psot,
             IndexType::Post => &self.post,
             IndexType::Opst => &self.opst,
-            IndexType::Tspo => &self.tspo,
         }
     }
 
@@ -239,7 +232,6 @@ impl DerivedFactsBuilder {
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
-                Vec::new(),
                 same_as,
                 epoch,
             );
@@ -249,16 +241,14 @@ impl DerivedFactsBuilder {
         let mut spot = self.flakes.clone();
         let mut psot = self.flakes.clone();
         let mut post = self.flakes.clone();
-        let mut opst = self.flakes.clone();
-        let mut tspo = self.flakes;
+        let mut opst = self.flakes;
 
         spot.sort_by(|a, b| IndexType::Spot.comparator()(a, b));
         psot.sort_by(|a, b| IndexType::Psot.comparator()(a, b));
         post.sort_by(|a, b| IndexType::Post.comparator()(a, b));
         opst.sort_by(|a, b| IndexType::Opst.comparator()(a, b));
-        tspo.sort_by(|a, b| IndexType::Tspo.comparator()(a, b));
 
-        DerivedFactsOverlay::new(spot, psot, post, opst, tspo, same_as, epoch)
+        DerivedFactsOverlay::new(spot, psot, post, opst, same_as, epoch)
     }
 }
 

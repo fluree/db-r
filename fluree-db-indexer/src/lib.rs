@@ -869,9 +869,9 @@ where
 
             // D.5: Build v2 root with CAS addresses and stats (initially without GC fields)
             let sid_encoding = if dicts.subjects.needs_wide() {
-                fluree_db_core::SidEncoding::Wide
+                fluree_db_core::SubjectIdEncoding::Wide
             } else {
-                fluree_db_core::SidEncoding::Narrow
+                fluree_db_core::SubjectIdEncoding::Narrow
             };
             let subject_watermarks = dicts.subjects.subject_watermarks();
             let string_watermark = dicts.strings.len().saturating_sub(1);

@@ -532,14 +532,14 @@ mod tests {
     use crate::run_index::global_dict::LanguageTagDict;
     use crate::run_index::run_file::write_run_file;
     use crate::run_index::run_record::{cmp_spot, RunRecord};
-    use crate::run_index::global_dict::dt_ids;
+    use fluree_db_core::DatatypeDictId;
     use fluree_db_core::value_id::{ObjKind, ObjKey};
 
     fn make_record(g_id: u32, s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
         RunRecord::new(
-            g_id, fluree_db_core::sid64::Sid64::from_u64(s_id), p_id,
+            g_id, fluree_db_core::subject_id::SubjectId::from_u64(s_id), p_id,
             ObjKind::NUM_INT, ObjKey::encode_i64(val),
-            t, true, dt_ids::INTEGER, 0, None,
+            t, true, DatatypeDictId::INTEGER.as_u16(), 0, None,
         )
     }
 

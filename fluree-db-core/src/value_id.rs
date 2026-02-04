@@ -15,7 +15,7 @@
 //! `NumInt(3)` vs `NumF64(3.0)`) is a query-layer concern resolved via
 //! multi-scan merge, not an index property.
 //!
-//! [`DatatypeId`] is a compact `u8` identifier for XSD/RDF datatypes, used as
+//! [`ValueTypeTag`] is a compact `u8` identifier for XSD/RDF datatypes, used as
 //! a tie-breaker in index sort keys so that values with the same `(ObjKind,
 //! ObjKey)` but different types (e.g., `xsd:integer 3` vs `xsd:long 3`)
 //! remain distinguishable.
@@ -475,19 +475,19 @@ impl fmt::Display for ObjKey {
 }
 
 // ============================================================================
-// DatatypeId
+// ValueTypeTag
 // ============================================================================
 
 /// Compact datatype identifier for index sort-key tie-breaking.
 ///
 /// Maps (namespace_code, local_name) pairs to fixed u8 values.
-/// The ordering of DatatypeId values is arbitrary but stable — it serves
+/// The ordering of ValueTypeTag values is arbitrary but stable — it serves
 /// only to distinguish types that share the same `(ObjKind, ObjKey)` payload.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 #[repr(transparent)]
-pub struct DatatypeId(u8);
+pub struct ValueTypeTag(u8);
 
-impl DatatypeId {
+impl ValueTypeTag {
     // Fixed mapping constants
     pub const STRING: Self = Self(0);
     pub const BOOLEAN: Self = Self(1);
@@ -529,7 +529,7 @@ impl DatatypeId {
     pub const G_MONTH_DAY: Self = Self(37);
     pub const UNKNOWN: Self = Self(255);
 
-    /// Resolve a (namespace_code, local_name) pair to a DatatypeId.
+    /// Resolve a (namespace_code, local_name) pair to a ValueTypeTag.
     ///
     /// This is the primary entry point for the resolver. Matches against
     /// well-known `fluree_vocab` namespace codes and local names.
@@ -543,7 +543,7 @@ impl DatatypeId {
         }
     }
 
-    /// Resolve an XSD local name to DatatypeId.
+    /// Resolve an XSD local name to ValueTypeTag.
     fn from_xsd_name(name: &str) -> Self {
         match name {
             xsd_names::STRING => Self::STRING,
@@ -585,7 +585,7 @@ impl DatatypeId {
         }
     }
 
-    /// Resolve an RDF local name to DatatypeId.
+    /// Resolve an RDF local name to ValueTypeTag.
     fn from_rdf_name(name: &str) -> Self {
         match name {
             rdf_names::LANG_STRING => Self::LANG_STRING,
@@ -594,7 +594,7 @@ impl DatatypeId {
         }
     }
 
-    /// Resolve a JSON-LD local name to DatatypeId.
+    /// Resolve a JSON-LD local name to ValueTypeTag.
     fn from_jsonld_name(name: &str) -> Self {
         match name {
             jsonld_names::ID => Self::JSON_LD_ID,
@@ -686,9 +686,34 @@ impl DatatypeId {
             None
         }
     }
+
+    /// Convert to the corresponding reserved `DatatypeDictId`, if this tag
+    /// has a well-known dictionary position.
+    ///
+    /// Returns `None` for tags that have no reserved dictionary ID (e.g.,
+    /// `ANY_URI`, `UNKNOWN`, numeric sub-types like `INT`, `SHORT`, etc.).
+    pub fn to_reserved_dict_id(&self) -> Option<crate::DatatypeDictId> {
+        use crate::DatatypeDictId;
+        match *self {
+            Self::JSON_LD_ID => Some(DatatypeDictId::ID),
+            Self::STRING => Some(DatatypeDictId::STRING),
+            Self::BOOLEAN => Some(DatatypeDictId::BOOLEAN),
+            Self::INTEGER => Some(DatatypeDictId::INTEGER),
+            Self::LONG => Some(DatatypeDictId::LONG),
+            Self::DECIMAL => Some(DatatypeDictId::DECIMAL),
+            Self::DOUBLE => Some(DatatypeDictId::DOUBLE),
+            Self::FLOAT => Some(DatatypeDictId::FLOAT),
+            Self::DATE_TIME => Some(DatatypeDictId::DATE_TIME),
+            Self::DATE => Some(DatatypeDictId::DATE),
+            Self::TIME => Some(DatatypeDictId::TIME),
+            Self::LANG_STRING => Some(DatatypeDictId::LANG_STRING),
+            Self::RDF_JSON => Some(DatatypeDictId::JSON),
+            _ => None,
+        }
+    }
 }
 
-impl fmt::Display for DatatypeId {
+impl fmt::Display for ValueTypeTag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self.0 {
             0 => "xsd:string",
@@ -730,9 +755,31 @@ impl fmt::Display for DatatypeId {
             36 => "xsd:gYearMonth",
             37 => "xsd:gMonthDay",
             255 => "UNKNOWN",
-            n => return write!(f, "DatatypeId({})", n),
+            n => return write!(f, "ValueTypeTag({})", n),
         };
         write!(f, "{}", name)
+    }
+}
+
+// ============================================================================
+// ObjPair
+// ============================================================================
+
+/// A `(kind, key)` pair representing a typed value in index-space.
+///
+/// This formalizes the common `(ObjKind, ObjKey)` tuple used throughout
+/// comparators, range bounds, and pattern matching. It is **not** a column
+/// type — `ObjKind` and `ObjKey` remain separate columns in leaflet storage.
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+pub struct ObjPair {
+    pub kind: ObjKind,
+    pub key: ObjKey,
+}
+
+impl ObjPair {
+    #[inline]
+    pub fn new(kind: ObjKind, key: ObjKey) -> Self {
+        Self { kind, key }
     }
 }
 
@@ -1044,100 +1091,100 @@ mod tests {
         assert!(big < max);
     }
 
-    // ---- DatatypeId tests (unchanged) ----
+    // ---- ValueTypeTag tests (unchanged) ----
 
     #[test]
     fn test_datatype_from_xsd() {
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "string"), DatatypeId::STRING);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "boolean"), DatatypeId::BOOLEAN);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "integer"), DatatypeId::INTEGER);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "long"), DatatypeId::LONG);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "int"), DatatypeId::INT);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "short"), DatatypeId::SHORT);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "byte"), DatatypeId::BYTE);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "double"), DatatypeId::DOUBLE);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "float"), DatatypeId::FLOAT);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "decimal"), DatatypeId::DECIMAL);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "dateTime"), DatatypeId::DATE_TIME);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "date"), DatatypeId::DATE);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "time"), DatatypeId::TIME);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "anyURI"), DatatypeId::ANY_URI);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "unsignedLong"), DatatypeId::UNSIGNED_LONG);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "unsignedInt"), DatatypeId::UNSIGNED_INT);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "unsignedShort"), DatatypeId::UNSIGNED_SHORT);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "unsignedByte"), DatatypeId::UNSIGNED_BYTE);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "nonNegativeInteger"), DatatypeId::NON_NEGATIVE_INTEGER);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "positiveInteger"), DatatypeId::POSITIVE_INTEGER);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "nonPositiveInteger"), DatatypeId::NON_POSITIVE_INTEGER);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "negativeInteger"), DatatypeId::NEGATIVE_INTEGER);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "normalizedString"), DatatypeId::NORMALIZED_STRING);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "token"), DatatypeId::TOKEN);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "language"), DatatypeId::LANGUAGE);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "duration"), DatatypeId::DURATION);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "dayTimeDuration"), DatatypeId::DAY_TIME_DURATION);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "yearMonthDuration"), DatatypeId::YEAR_MONTH_DURATION);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "base64Binary"), DatatypeId::BASE64_BINARY);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "hexBinary"), DatatypeId::HEX_BINARY);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "gYear"), DatatypeId::G_YEAR);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "gMonth"), DatatypeId::G_MONTH);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "gDay"), DatatypeId::G_DAY);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "gYearMonth"), DatatypeId::G_YEAR_MONTH);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "gMonthDay"), DatatypeId::G_MONTH_DAY);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "string"), ValueTypeTag::STRING);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "boolean"), ValueTypeTag::BOOLEAN);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "integer"), ValueTypeTag::INTEGER);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "long"), ValueTypeTag::LONG);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "int"), ValueTypeTag::INT);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "short"), ValueTypeTag::SHORT);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "byte"), ValueTypeTag::BYTE);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "double"), ValueTypeTag::DOUBLE);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "float"), ValueTypeTag::FLOAT);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "decimal"), ValueTypeTag::DECIMAL);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "dateTime"), ValueTypeTag::DATE_TIME);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "date"), ValueTypeTag::DATE);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "time"), ValueTypeTag::TIME);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "anyURI"), ValueTypeTag::ANY_URI);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "unsignedLong"), ValueTypeTag::UNSIGNED_LONG);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "unsignedInt"), ValueTypeTag::UNSIGNED_INT);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "unsignedShort"), ValueTypeTag::UNSIGNED_SHORT);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "unsignedByte"), ValueTypeTag::UNSIGNED_BYTE);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "nonNegativeInteger"), ValueTypeTag::NON_NEGATIVE_INTEGER);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "positiveInteger"), ValueTypeTag::POSITIVE_INTEGER);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "nonPositiveInteger"), ValueTypeTag::NON_POSITIVE_INTEGER);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "negativeInteger"), ValueTypeTag::NEGATIVE_INTEGER);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "normalizedString"), ValueTypeTag::NORMALIZED_STRING);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "token"), ValueTypeTag::TOKEN);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "language"), ValueTypeTag::LANGUAGE);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "duration"), ValueTypeTag::DURATION);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "dayTimeDuration"), ValueTypeTag::DAY_TIME_DURATION);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "yearMonthDuration"), ValueTypeTag::YEAR_MONTH_DURATION);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "base64Binary"), ValueTypeTag::BASE64_BINARY);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "hexBinary"), ValueTypeTag::HEX_BINARY);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "gYear"), ValueTypeTag::G_YEAR);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "gMonth"), ValueTypeTag::G_MONTH);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "gDay"), ValueTypeTag::G_DAY);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "gYearMonth"), ValueTypeTag::G_YEAR_MONTH);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "gMonthDay"), ValueTypeTag::G_MONTH_DAY);
     }
 
     #[test]
     fn test_datatype_from_rdf() {
-        assert_eq!(DatatypeId::from_ns_name(namespaces::RDF, "langString"), DatatypeId::LANG_STRING);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::RDF, "JSON"), DatatypeId::RDF_JSON);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::RDF, "langString"), ValueTypeTag::LANG_STRING);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::RDF, "JSON"), ValueTypeTag::RDF_JSON);
     }
 
     #[test]
     fn test_datatype_from_jsonld() {
-        assert_eq!(DatatypeId::from_ns_name(namespaces::JSON_LD, "id"), DatatypeId::JSON_LD_ID);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::JSON_LD, "id"), ValueTypeTag::JSON_LD_ID);
     }
 
     #[test]
     fn test_datatype_unknown() {
-        assert_eq!(DatatypeId::from_ns_name(namespaces::XSD, "foobar"), DatatypeId::UNKNOWN);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::RDF, "foobar"), DatatypeId::UNKNOWN);
-        assert_eq!(DatatypeId::from_ns_name(namespaces::JSON_LD, "foobar"), DatatypeId::UNKNOWN);
-        assert_eq!(DatatypeId::from_ns_name(99, "anything"), DatatypeId::UNKNOWN);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "foobar"), ValueTypeTag::UNKNOWN);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::RDF, "foobar"), ValueTypeTag::UNKNOWN);
+        assert_eq!(ValueTypeTag::from_ns_name(namespaces::JSON_LD, "foobar"), ValueTypeTag::UNKNOWN);
+        assert_eq!(ValueTypeTag::from_ns_name(99, "anything"), ValueTypeTag::UNKNOWN);
     }
 
     #[test]
     fn test_datatype_as_u8_from_u8_round_trip() {
         for dt in [
-            DatatypeId::STRING, DatatypeId::BOOLEAN, DatatypeId::INTEGER,
-            DatatypeId::LONG, DatatypeId::DOUBLE, DatatypeId::DATE_TIME,
-            DatatypeId::LANG_STRING, DatatypeId::JSON_LD_ID, DatatypeId::UNKNOWN,
+            ValueTypeTag::STRING, ValueTypeTag::BOOLEAN, ValueTypeTag::INTEGER,
+            ValueTypeTag::LONG, ValueTypeTag::DOUBLE, ValueTypeTag::DATE_TIME,
+            ValueTypeTag::LANG_STRING, ValueTypeTag::JSON_LD_ID, ValueTypeTag::UNKNOWN,
         ] {
             let raw = dt.as_u8();
-            assert_eq!(DatatypeId::from_u8(raw), dt);
+            assert_eq!(ValueTypeTag::from_u8(raw), dt);
         }
     }
 
     #[test]
     fn test_datatype_integer_type_classification() {
         for dt in [
-            DatatypeId::INTEGER, DatatypeId::LONG, DatatypeId::INT,
-            DatatypeId::SHORT, DatatypeId::BYTE, DatatypeId::UNSIGNED_LONG,
-            DatatypeId::UNSIGNED_INT, DatatypeId::UNSIGNED_SHORT,
-            DatatypeId::UNSIGNED_BYTE, DatatypeId::NON_NEGATIVE_INTEGER,
-            DatatypeId::POSITIVE_INTEGER, DatatypeId::NON_POSITIVE_INTEGER,
-            DatatypeId::NEGATIVE_INTEGER,
+            ValueTypeTag::INTEGER, ValueTypeTag::LONG, ValueTypeTag::INT,
+            ValueTypeTag::SHORT, ValueTypeTag::BYTE, ValueTypeTag::UNSIGNED_LONG,
+            ValueTypeTag::UNSIGNED_INT, ValueTypeTag::UNSIGNED_SHORT,
+            ValueTypeTag::UNSIGNED_BYTE, ValueTypeTag::NON_NEGATIVE_INTEGER,
+            ValueTypeTag::POSITIVE_INTEGER, ValueTypeTag::NON_POSITIVE_INTEGER,
+            ValueTypeTag::NEGATIVE_INTEGER,
         ] {
             assert!(dt.is_integer_type(), "{} should be integer type", dt);
             assert!(!dt.is_float_type(), "{} should not be float type", dt);
         }
 
-        for dt in [DatatypeId::DOUBLE, DatatypeId::FLOAT] {
+        for dt in [ValueTypeTag::DOUBLE, ValueTypeTag::FLOAT] {
             assert!(dt.is_float_type(), "{} should be float type", dt);
             assert!(!dt.is_integer_type(), "{} should not be integer type", dt);
         }
 
         for dt in [
-            DatatypeId::STRING, DatatypeId::BOOLEAN, DatatypeId::DATE_TIME,
-            DatatypeId::DATE, DatatypeId::TIME, DatatypeId::LANG_STRING,
+            ValueTypeTag::STRING, ValueTypeTag::BOOLEAN, ValueTypeTag::DATE_TIME,
+            ValueTypeTag::DATE, ValueTypeTag::TIME, ValueTypeTag::LANG_STRING,
         ] {
             assert!(!dt.is_integer_type(), "{} should not be integer type", dt);
             assert!(!dt.is_float_type(), "{} should not be float type", dt);

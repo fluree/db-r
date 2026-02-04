@@ -1,6 +1,6 @@
 //! Index comparators for Flakes
 //!
-//! Fluree uses 5 different index orderings to optimize different query patterns:
+//! Fluree uses 4 different index orderings to optimize different query patterns:
 //!
 //! | Index | Order | Use Case |
 //! |-------|-------|----------|
@@ -8,7 +8,6 @@
 //! | PSOT | p, s, o, t | Predicate-subject lookups |
 //! | POST | p, o, s, t | Property value lookups |
 //! | OPST | o, p, s, t | Reference lookups (object is SID) |
-//! | TSPO | t, s, p, o | Temporal/history queries |
 //!
 //! ## Strict Total Ordering
 //!
@@ -30,8 +29,6 @@ pub enum IndexType {
     Post,
     /// Object-Predicate-Subject-Transaction (for refs only)
     Opst,
-    /// Transaction-Subject-Predicate-Object
-    Tspo,
 }
 
 impl IndexType {
@@ -42,7 +39,6 @@ impl IndexType {
             IndexType::Psot,
             IndexType::Post,
             IndexType::Opst,
-            IndexType::Tspo,
         ]
     }
 
@@ -53,7 +49,6 @@ impl IndexType {
             IndexType::Psot => cmp_psot,
             IndexType::Post => cmp_post,
             IndexType::Opst => cmp_opst,
-            IndexType::Tspo => cmp_tspo,
         }
     }
 
@@ -95,7 +90,6 @@ impl IndexType {
             IndexType::Psot => "psot",
             IndexType::Post => "post",
             IndexType::Opst => "opst",
-            IndexType::Tspo => "tspo",
         }
     }
 }
@@ -115,7 +109,6 @@ impl std::str::FromStr for IndexType {
             "psot" => Ok(IndexType::Psot),
             "post" => Ok(IndexType::Post),
             "opst" => Ok(IndexType::Opst),
-            "tspo" => Ok(IndexType::Tspo),
             _ => Err(format!("Unknown index type: {}", s)),
         }
     }
@@ -192,18 +185,6 @@ pub fn cmp_opst(f1: &Flake, f2: &Flake) -> Ordering {
         .then_with(|| f1.p.cmp(&f2.p))
         .then_with(|| f1.s.cmp(&f2.s))
         .then_with(|| f1.t.cmp(&f2.t))
-        .then_with(|| f1.op.cmp(&f2.op))
-        .then_with(|| cmp_meta(f1, f2))
-}
-
-/// TSPO comparator: Transaction, Subject, Predicate, Object
-///
-/// Used for temporal/history queries like "all facts at time T".
-pub fn cmp_tspo(f1: &Flake, f2: &Flake) -> Ordering {
-    f1.t.cmp(&f2.t)
-        .then_with(|| f1.s.cmp(&f2.s))
-        .then_with(|| f1.p.cmp(&f2.p))
-        .then_with(|| cmp_object(f1, f2))
         .then_with(|| f1.op.cmp(&f2.op))
         .then_with(|| cmp_meta(f1, f2))
 }
@@ -296,17 +277,6 @@ mod tests {
         // POST: p first, then o, then s
         assert_eq!(cmp_post(&f1, &f2), Ordering::Less); // s differs
         assert_eq!(cmp_post(&f1, &f3), Ordering::Less); // o differs
-    }
-
-    #[test]
-    fn test_tspo_ordering() {
-        let f1 = make_flake(1, 1, 1, 1);
-        let f2 = make_flake(1, 1, 1, 2); // different t
-        let f3 = make_flake(2, 1, 1, 1); // different s, same t
-
-        // TSPO: t first
-        assert_eq!(cmp_tspo(&f1, &f2), Ordering::Less); // t differs
-        assert_eq!(cmp_tspo(&f1, &f3), Ordering::Less); // s differs, t same
     }
 
     #[test]

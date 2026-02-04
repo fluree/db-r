@@ -36,7 +36,6 @@ struct SortedOverlay {
     psot: Vec<Flake>,
     post: Vec<Flake>,
     opst: Vec<Flake>,
-    tspo: Vec<Flake>,
     psot_last_call: std::sync::Mutex<Option<(Option<Flake>, Option<Flake>, bool, i64)>>,
 }
 
@@ -52,8 +51,7 @@ impl SortedOverlay {
             spot: sorted(flakes.clone(), IndexType::Spot),
             psot: sorted(flakes.clone(), IndexType::Psot),
             post: sorted(flakes.clone(), IndexType::Post),
-            opst: sorted(flakes.clone(), IndexType::Opst),
-            tspo: sorted(flakes, IndexType::Tspo),
+            opst: sorted(flakes, IndexType::Opst),
             psot_last_call: std::sync::Mutex::new(None),
         }
     }
@@ -64,7 +62,6 @@ impl SortedOverlay {
             IndexType::Psot => &self.psot,
             IndexType::Post => &self.post,
             IndexType::Opst => &self.opst,
-            IndexType::Tspo => &self.tspo,
         }
     }
 

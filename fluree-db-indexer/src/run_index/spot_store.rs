@@ -21,13 +21,14 @@ use super::leaf::read_leaf_header;
 use super::leaflet::decode_leaflet;
 use super::leaflet_cache::LeafletCache;
 use super::prefix_trie::PrefixTrie;
-use super::run_record::{RunRecord, RunSortOrder, NO_LIST_INDEX};
+use super::run_record::{RunRecord, RunSortOrder};
+use fluree_db_core::ListIndex;
 use crate::dict_tree::{DictTreeReader, DictBranch};
 use crate::dict_tree::reader::LeafSource;
 use crate::dict_tree::forward_leaf::ForwardEntry;
 use crate::dict_tree::reverse_leaf::{ReverseEntry, subject_reverse_key};
 use crate::dict_tree::builder;
-use fluree_db_core::sid64::Sid64;
+use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value_id::{ObjKind, ObjKey};
 use fluree_db_core::storage::{extract_hash_from_address, StorageRead};
 use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
@@ -280,7 +281,7 @@ impl BinaryIndexStore {
                 for (&sid, (&off, &len)) in sids.iter().zip(offsets.iter().zip(lens.iter())) {
                     let iri = &fwd_data[off as usize..(off as usize + len as usize)];
                     let iri_str = std::str::from_utf8(iri).unwrap_or("");
-                    let ns_code = Sid64::from_u64(sid).ns_code();
+                    let ns_code = SubjectId::from_u64(sid).ns_code();
                     let prefix = namespace_codes.get(&ns_code).map(|s| s.as_str()).unwrap_or("");
                     let suffix = if iri_str.starts_with(prefix) && !prefix.is_empty() {
                         &iri[prefix.len()..]
@@ -731,7 +732,7 @@ impl BinaryIndexStore {
         let suffix = String::from_utf8(suffix_bytes).map_err(|e| {
             io::Error::new(io::ErrorKind::InvalidData, e)
         })?;
-        let ns_code = Sid64::from_u64(s_id).ns_code();
+        let ns_code = SubjectId::from_u64(s_id).ns_code();
         let prefix = self.namespace_codes
             .get(&ns_code)
             .map(|s| s.as_str())
@@ -845,7 +846,7 @@ impl BinaryIndexStore {
         order: RunSortOrder,
         g_id: u32,
     ) -> io::Result<Option<(RunRecord, RunRecord)>> {
-        use super::run_record::NO_LIST_INDEX;
+        use fluree_db_core::ListIndex;
 
         // OPST guard: only IRI refs exist in OPST index
         if order == RunSortOrder::Opst {
@@ -891,7 +892,7 @@ impl BinaryIndexStore {
 
         let min_key = RunRecord {
             g_id,
-            s_id: Sid64::from_u64(s_id.unwrap_or(0)),
+            s_id: SubjectId::from_u64(s_id.unwrap_or(0)),
             p_id: p_id.unwrap_or(0),
             dt: 0,
             o_kind: min_o_kind,
@@ -899,12 +900,12 @@ impl BinaryIndexStore {
             o_key: min_o_key,
             t: i64::MIN,
             lang_id: 0,
-            i: NO_LIST_INDEX,
+            i: ListIndex::none().as_i32(),
         };
 
         let max_key = RunRecord {
             g_id,
-            s_id: Sid64::from_u64(s_id.unwrap_or(u64::MAX)),
+            s_id: SubjectId::from_u64(s_id.unwrap_or(u64::MAX)),
             p_id: p_id.unwrap_or(u32::MAX),
             dt: u16::MAX,
             o_kind: max_o_kind,
@@ -1436,7 +1437,7 @@ impl BinaryIndexStore {
     /// Decode lang_id and i_val into FlakeMeta.
     pub fn decode_meta(&self, lang_id: u16, i_val: i32) -> Option<FlakeMeta> {
         let has_lang = lang_id != 0;
-        let has_idx = i_val != NO_LIST_INDEX;
+        let has_idx = i_val != ListIndex::none().as_i32();
 
         if !has_lang && !has_idx {
             return None;

@@ -322,7 +322,7 @@ pub struct RawPropertyStatEntry {
     pub ndv_values: u64,
     pub ndv_subjects: u64,
     pub last_modified_t: i64,
-    /// Optional per-datatype usage counts (DatatypeId.0, count).
+    /// Optional per-datatype usage counts (ValueTypeTag.0, count).
     #[serde(default)]
     pub datatypes: Vec<(u8, u64)>,
 }

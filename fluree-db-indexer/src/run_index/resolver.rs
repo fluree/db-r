@@ -9,7 +9,7 @@
 //! 6. Emit RunRecord
 
 use super::global_dict::GlobalDicts;
-use super::run_record::{RunRecord, NO_LIST_INDEX};
+use super::run_record::RunRecord;
 use super::run_writer::RecordSink;
 use bigdecimal::BigDecimal;
 use chrono;
@@ -17,8 +17,8 @@ use fluree_db_core::temporal::{
     Date, DateTime, DayTimeDuration, Duration as XsdDuration, GDay, GMonth, GMonthDay, GYear,
     GYearMonth, Time, YearMonthDuration,
 };
-use super::global_dict::dt_ids;
-use fluree_db_core::sid64::Sid64;
+use fluree_db_core::{DatatypeDictId, ListIndex};
+use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value_id::{ObjKind, ObjKey};
 use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
 use fluree_db_novelty::commit_v2::raw_reader::{CommitOps, RawObject, RawOp};
@@ -97,9 +97,9 @@ impl CommitResolver {
             #[cfg(feature = "hll-stats")]
             if let Some(ref mut hook) = self.stats_hook {
                 // IMPORTANT: `record.dt` is the binary run's datatype-dict ID (dt_id),
-                // not `fluree_db_core::DatatypeId`. For stats we want stable datatypes,
-                // so derive DatatypeId from the commit's declared datatype IRI.
-                let dt = fluree_db_core::value_id::DatatypeId::from_ns_name(
+                // not `fluree_db_core::ValueTypeTag`. For stats we want stable datatypes,
+                // so derive ValueTypeTag from the commit's declared datatype IRI.
+                let dt = fluree_db_core::value_id::ValueTypeTag::from_ns_name(
                     raw_op.dt_ns_code,
                     raw_op.dt_name,
                 );
@@ -231,7 +231,7 @@ impl CommitResolver {
          -> Result<(), ResolverError> {
             let record = RunRecord {
                 g_id,
-                s_id: Sid64::from_u64(s_id),
+                s_id: SubjectId::from_u64(s_id),
                 p_id,
                 dt,
                 o_kind: o_kind.as_u8(),
@@ -239,7 +239,7 @@ impl CommitResolver {
                 o_key: o_key.as_u64(),
                 t,
                 lang_id: 0,
-                i: NO_LIST_INDEX,
+                i: ListIndex::none().as_i32(),
             };
             writer
                 .push(record, &mut dicts.languages)
@@ -257,7 +257,7 @@ impl CommitResolver {
             p_address,
             ObjKind::LEX_ID,
             ObjKey::encode_u32_id(addr_str_id),
-            dt_ids::STRING,
+            DatatypeDictId::STRING.as_u16(),
         )?;
 
         // ledger:alias (STRING)
@@ -267,7 +267,7 @@ impl CommitResolver {
             p_alias,
             ObjKind::LEX_ID,
             ObjKey::encode_u32_id(alias_str_id),
-            dt_ids::STRING,
+            DatatypeDictId::STRING.as_u16(),
         )?;
 
         // ledger:v (INTEGER)
@@ -276,7 +276,7 @@ impl CommitResolver {
             p_v,
             ObjKind::NUM_INT,
             ObjKey::encode_i64(envelope.v as i64),
-            dt_ids::INTEGER,
+            DatatypeDictId::INTEGER.as_u16(),
         )?;
 
         // ledger:time (LONG) -- epoch milliseconds (skipped if ISO parse fails)
@@ -287,7 +287,7 @@ impl CommitResolver {
                     p_time,
                     ObjKind::NUM_INT,
                     ObjKey::encode_i64(epoch_ms),
-                    dt_ids::LONG,
+                    DatatypeDictId::LONG.as_u16(),
                 )?;
             }
         }
@@ -298,7 +298,7 @@ impl CommitResolver {
             p_t,
             ObjKind::NUM_INT,
             ObjKey::encode_i64(t),
-            dt_ids::INTEGER,
+            DatatypeDictId::INTEGER.as_u16(),
         )?;
 
         // ledger:previous (ID) -- ref to previous commit
@@ -314,7 +314,7 @@ impl CommitResolver {
                     p_previous,
                     ObjKind::REF_ID,
                     ObjKey::encode_sid64(prev_s_id),
-                    dt_ids::ID,
+                    DatatypeDictId::ID.as_u16(),
                 )?;
             }
         }
@@ -365,7 +365,7 @@ impl CommitResolver {
 
         Ok(RunRecord {
             g_id,
-            s_id: Sid64::from_u64(s_id),
+            s_id: SubjectId::from_u64(s_id),
             p_id,
             dt: dt_id,
             o_kind: o_kind.as_u8(),
@@ -373,7 +373,7 @@ impl CommitResolver {
             o_key: o_key.as_u64(),
             t,
             lang_id,
-            i: i.unwrap_or(NO_LIST_INDEX),
+            i: i.unwrap_or(ListIndex::none().as_i32()),
         })
     }
 
@@ -903,7 +903,7 @@ mod tests {
         // Verify the ObjKind is DATE_TIME (0x9)
         assert_eq!(records[0].o_kind, ObjKind::DATE_TIME.as_u8());
         // Verify dt is DATE_TIME
-        assert_eq!(records[0].dt, dt_ids::DATE_TIME);
+        assert_eq!(records[0].dt, DatatypeDictId::DATE_TIME.as_u16());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1109,10 +1109,10 @@ mod tests {
         assert!(p_t.is_some(), "ledger:t predicate missing");
         assert!(p_previous.is_some(), "ledger:previous predicate missing");
 
-        // Find the time record and verify it's NUM_INT with dt_ids::LONG
+        // Find the time record and verify it's NUM_INT with DatatypeDictId::LONG
         let time_pid = p_time.unwrap();
         let time_rec = records.iter().find(|r| r.p_id == time_pid).unwrap();
-        assert_eq!(time_rec.dt, dt_ids::LONG, "ledger:time must be dt_ids::LONG");
+        assert_eq!(time_rec.dt, DatatypeDictId::LONG.as_u16(), "ledger:time must be DatatypeDictId::LONG");
         assert_eq!(time_rec.o_kind, ObjKind::NUM_INT.as_u8(), "ledger:time must be NUM_INT");
         // Verify epoch ms is reasonable (2025)
         let epoch_ms = ObjKey::from_u64(time_rec.o_key).decode_i64();
@@ -1121,13 +1121,13 @@ mod tests {
         // Find the t record
         let t_pid = p_t.unwrap();
         let t_rec = records.iter().find(|r| r.p_id == t_pid).unwrap();
-        assert_eq!(t_rec.dt, dt_ids::INTEGER, "ledger:t must be dt_ids::INTEGER");
+        assert_eq!(t_rec.dt, DatatypeDictId::INTEGER.as_u16(), "ledger:t must be DatatypeDictId::INTEGER");
         assert_eq!(t_rec.o_kind, ObjKind::NUM_INT.as_u8(), "ledger:t must be NUM_INT");
 
-        // Find the previous record and verify it's REF_ID with dt_ids::ID
+        // Find the previous record and verify it's REF_ID with DatatypeDictId::ID
         let prev_pid = p_previous.unwrap();
         let prev_rec = records.iter().find(|r| r.p_id == prev_pid).unwrap();
-        assert_eq!(prev_rec.dt, dt_ids::ID, "ledger:previous must be dt_ids::ID");
+        assert_eq!(prev_rec.dt, DatatypeDictId::ID.as_u16(), "ledger:previous must be DatatypeDictId::ID");
         assert_eq!(prev_rec.o_kind, ObjKind::REF_ID.as_u8(), "ledger:previous must be REF_ID");
 
         let _ = std::fs::remove_dir_all(&dir);

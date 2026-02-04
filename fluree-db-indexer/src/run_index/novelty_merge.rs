@@ -9,7 +9,7 @@
 
 use super::leaflet::Region3Entry;
 use super::run_record::{FactKey, RunRecord, RunSortOrder};
-use fluree_db_core::sid64::SidColumn;
+use fluree_db_core::subject_id::SubjectIdColumn;
 use std::cmp::Ordering;
 
 // ============================================================================
@@ -19,7 +19,7 @@ use std::cmp::Ordering;
 /// Input to the novelty merge: decoded leaflet columns + novelty operations.
 pub struct MergeInput<'a> {
     // Decoded current leaflet Regions 1+2
-    pub r1_s_ids: &'a SidColumn,
+    pub r1_s_ids: &'a SubjectIdColumn,
     pub r1_p_ids: &'a [u32],
     pub r1_o_kinds: &'a [u8],
     pub r1_o_keys: &'a [u64],
@@ -392,23 +392,22 @@ fn emit_novelty(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::global_dict::dt_ids;
-    use super::super::run_record::NO_LIST_INDEX;
-    use fluree_db_core::sid64::{Sid64, SidColumn, SidEncoding};
+    use fluree_db_core::{DatatypeDictId, ListIndex};
+    use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn, SubjectIdEncoding};
     use fluree_db_core::value_id::{ObjKind, ObjKey};
 
     /// Helper: build a RunRecord for testing.
     fn rec(s_id: u64, p_id: u32, val: i64, t: i64, assert: bool) -> RunRecord {
         RunRecord::new(
-            0, Sid64::from_u64(s_id), p_id,
+            0, SubjectId::from_u64(s_id), p_id,
             ObjKind::NUM_INT, ObjKey::encode_i64(val),
-            t, assert, dt_ids::INTEGER, 0, None,
+            t, assert, DatatypeDictId::INTEGER.as_u16(), 0, None,
         )
     }
 
     /// Helper: build MergeInput from vecs (takes ownership via slices).
     struct TestLeaflet {
-        s_ids: SidColumn,
+        s_ids: SubjectIdColumn,
         p_ids: Vec<u32>,
         o_kinds: Vec<u8>,
         o_keys: Vec<u64>,
@@ -422,7 +421,7 @@ mod tests {
         fn from_records(records: &[RunRecord]) -> Self {
             let s_id_u64s: Vec<u64> = records.iter().map(|r| r.s_id.as_u64()).collect();
             Self {
-                s_ids: SidColumn::from_u64_vec(s_id_u64s, SidEncoding::Wide),
+                s_ids: SubjectIdColumn::from_u64_vec(s_id_u64s, SubjectIdEncoding::Wide),
                 p_ids: records.iter().map(|r| r.p_id).collect(),
                 o_kinds: records.iter().map(|r| r.o_kind).collect(),
                 o_keys: records.iter().map(|r| r.o_key).collect(),
@@ -590,7 +589,7 @@ mod tests {
             o_kind: ObjKind::NUM_INT.as_u8(),
             o_key: ObjKey::encode_i64(5).as_u64(),
             t_signed: -2, // retraction at t=2
-            dt: dt_ids::INTEGER, lang_id: 0, i: NO_LIST_INDEX,
+            dt: DatatypeDictId::INTEGER.as_u16(), lang_id: 0, i: ListIndex::none().as_i32(),
         }];
 
         let novelty = vec![rec(2, 1, 20, 5, true)]; // new fact
@@ -675,13 +674,13 @@ mod tests {
                 s_id: 1, p_id: 1,
                 o_kind: ObjKind::NUM_INT.as_u8(),
                 o_key: ObjKey::encode_i64(10).as_u64(),
-                t_signed: 5, dt: dt_ids::INTEGER, lang_id: 0, i: NO_LIST_INDEX,
+                t_signed: 5, dt: DatatypeDictId::INTEGER.as_u16(), lang_id: 0, i: ListIndex::none().as_i32(),
             },
             Region3Entry {
                 s_id: 1, p_id: 1,
                 o_kind: ObjKind::NUM_INT.as_u8(),
                 o_key: ObjKey::encode_i64(10).as_u64(),
-                t_signed: 3, dt: dt_ids::INTEGER, lang_id: 0, i: NO_LIST_INDEX,
+                t_signed: 3, dt: DatatypeDictId::INTEGER.as_u16(), lang_id: 0, i: ListIndex::none().as_i32(),
             },
         ];
         dedup_adjacent_asserts(&mut entries);
@@ -697,13 +696,13 @@ mod tests {
                 s_id: 1, p_id: 1,
                 o_kind: ObjKind::NUM_INT.as_u8(),
                 o_key: ObjKey::encode_i64(10).as_u64(),
-                t_signed: -5, dt: dt_ids::INTEGER, lang_id: 0, i: NO_LIST_INDEX,
+                t_signed: -5, dt: DatatypeDictId::INTEGER.as_u16(), lang_id: 0, i: ListIndex::none().as_i32(),
             },
             Region3Entry {
                 s_id: 1, p_id: 1,
                 o_kind: ObjKind::NUM_INT.as_u8(),
                 o_key: ObjKey::encode_i64(10).as_u64(),
-                t_signed: 3, dt: dt_ids::INTEGER, lang_id: 0, i: NO_LIST_INDEX,
+                t_signed: 3, dt: DatatypeDictId::INTEGER.as_u16(), lang_id: 0, i: ListIndex::none().as_i32(),
             },
         ];
         dedup_adjacent_asserts(&mut entries);
@@ -715,19 +714,19 @@ mod tests {
         // Two facts with same (s, p, o, dt=LANG_STRING) but different lang_id
         // should be treated as distinct identities
         let r1 = RunRecord::new(
-            0, Sid64::from_u64(1), 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true,
-            dt_ids::LANG_STRING, 1, None, // lang_id=1
+            0, SubjectId::from_u64(1), 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true,
+            DatatypeDictId::LANG_STRING.as_u16(), 1, None, // lang_id=1
         );
         let r2 = RunRecord::new(
-            0, Sid64::from_u64(1), 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true,
-            dt_ids::LANG_STRING, 2, None, // lang_id=2
+            0, SubjectId::from_u64(1), 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true,
+            DatatypeDictId::LANG_STRING.as_u16(), 2, None, // lang_id=2
         );
         let leaflet = TestLeaflet::from_records(&[r1, r2]);
 
         // Retract only lang_id=1 version
         let novelty = vec![RunRecord::new(
-            0, Sid64::from_u64(1), 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 5, false,
-            dt_ids::LANG_STRING, 1, None,
+            0, SubjectId::from_u64(1), 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 5, false,
+            DatatypeDictId::LANG_STRING.as_u16(), 1, None,
         )];
         let input = leaflet.as_input(&novelty, &[]);
 
@@ -747,7 +746,7 @@ mod tests {
             s_id: 1, p_id: 1,
             o_kind: ObjKind::NUM_INT.as_u8(),
             o_key: ObjKey::encode_i64(10).as_u64(),
-            t_signed: 3, dt: dt_ids::INTEGER, lang_id: 0, i: NO_LIST_INDEX,
+            t_signed: 3, dt: DatatypeDictId::INTEGER.as_u16(), lang_id: 0, i: ListIndex::none().as_i32(),
         }];
 
         // Novelty asserts same fact at t=10 (also triggers an update in the merge walk,
@@ -778,7 +777,7 @@ mod tests {
             s_id: 1, p_id: 1,
             o_kind: ObjKind::NUM_INT.as_u8(),
             o_key: ObjKey::encode_i64(10).as_u64(),
-            t_signed: 10, dt: dt_ids::INTEGER, lang_id: 0, i: NO_LIST_INDEX,
+            t_signed: 10, dt: DatatypeDictId::INTEGER.as_u16(), lang_id: 0, i: ListIndex::none().as_i32(),
         }];
 
         // Novelty that produces an assert at t=3 for same identity
@@ -803,15 +802,15 @@ mod tests {
         let mut entries = vec![
             Region3Entry {
                 s_id: 1, p_id: 1, o_kind: ok, o_key: okey,
-                t_signed: 7, dt: dt_ids::INTEGER, lang_id: 0, i: NO_LIST_INDEX,
+                t_signed: 7, dt: DatatypeDictId::INTEGER.as_u16(), lang_id: 0, i: ListIndex::none().as_i32(),
             },
             Region3Entry {
                 s_id: 1, p_id: 1, o_kind: ok, o_key: okey,
-                t_signed: 5, dt: dt_ids::INTEGER, lang_id: 0, i: NO_LIST_INDEX,
+                t_signed: 5, dt: DatatypeDictId::INTEGER.as_u16(), lang_id: 0, i: ListIndex::none().as_i32(),
             },
             Region3Entry {
                 s_id: 1, p_id: 1, o_kind: ok, o_key: okey,
-                t_signed: 3, dt: dt_ids::INTEGER, lang_id: 0, i: NO_LIST_INDEX,
+                t_signed: 3, dt: DatatypeDictId::INTEGER.as_u16(), lang_id: 0, i: ListIndex::none().as_i32(),
             },
         ];
         dedup_adjacent_asserts(&mut entries);

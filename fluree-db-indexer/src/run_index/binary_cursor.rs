@@ -18,7 +18,7 @@ use super::leaflet_cache::{CachedRegion1, CachedRegion2, LeafletCacheKey};
 use super::replay::replay_leaflet;
 use super::run_record::{cmp_for_order, FactKey, RunRecord, RunSortOrder};
 use super::spot_store::BinaryIndexStore;
-use fluree_db_core::sid64::{Sid64, SidColumn};
+use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
 use memmap2::Mmap;
 use std::cmp::Ordering;
 use std::io;
@@ -107,7 +107,7 @@ fn cmp_row_vs_overlay(
 /// Used for binary-searching overlay ops within a leaf's key range.
 #[inline]
 fn cmp_overlay_vs_record(ov: &OverlayOp, rec: &RunRecord, order: RunSortOrder) -> Ordering {
-    let ov_sid = Sid64::from_u64(ov.s_id);
+    let ov_sid = SubjectId::from_u64(ov.s_id);
     match order {
         RunSortOrder::Spot => ov_sid
             .cmp(&rec.s_id)
@@ -284,7 +284,7 @@ fn merge_overlay(
 
     let merged_count = out_s.len();
     let r1 = CachedRegion1 {
-        s_ids: SidColumn::from_wide(out_s.into_iter().map(Sid64::from_u64).collect()),
+        s_ids: SubjectIdColumn::from_wide(out_s.into_iter().map(SubjectId::from_u64).collect()),
         p_ids: out_p.into(),
         o_kinds: out_o_kinds.into(),
         o_keys: out_o_keys.into(),
@@ -888,7 +888,7 @@ impl BinaryCursor {
             decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
         let row_count = lh.row_count as usize;
         let r1 = CachedRegion1 {
-            s_ids: SidColumn::from_wide(s_ids.into_iter().map(Sid64::from_u64).collect()),
+            s_ids: SubjectIdColumn::from_wide(s_ids.into_iter().map(SubjectId::from_u64).collect()),
             p_ids: p_ids.into(),
             o_kinds: o_kinds.into(),
             o_keys: o_keys.into(),
@@ -981,7 +981,7 @@ impl BinaryCursor {
                     decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
                 let row_count = lh.row_count as usize;
                 let cached_r1 = CachedRegion1 {
-                    s_ids: SidColumn::from_wide(s_ids.into_iter().map(Sid64::from_u64).collect()),
+                    s_ids: SubjectIdColumn::from_wide(s_ids.into_iter().map(SubjectId::from_u64).collect()),
                     p_ids: p_ids.into(),
                     o_kinds: o_kinds.into(),
                     o_keys: o_keys.into(),
@@ -995,7 +995,7 @@ impl BinaryCursor {
                 decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
             let row_count = lh.row_count as usize;
             let r1 = CachedRegion1 {
-                s_ids: SidColumn::from_wide(s_ids.into_iter().map(Sid64::from_u64).collect()),
+                s_ids: SubjectIdColumn::from_wide(s_ids.into_iter().map(SubjectId::from_u64).collect()),
                 p_ids: p_ids.into(),
                 o_kinds: o_kinds.into(),
                 o_keys: o_keys.into(),
@@ -1142,7 +1142,7 @@ impl BinaryCursor {
             Some(replayed) => {
                 // Replay produced new state
                 let r1 = CachedRegion1 {
-                    s_ids: SidColumn::from_wide(replayed.s_ids.into_iter().map(Sid64::from_u64).collect()),
+                    s_ids: SubjectIdColumn::from_wide(replayed.s_ids.into_iter().map(SubjectId::from_u64).collect()),
                     p_ids: replayed.p_ids.into(),
                     o_kinds: replayed.o_kinds.into(),
                     o_keys: replayed.o_keys.into(),
@@ -1176,7 +1176,7 @@ impl BinaryCursor {
                 }
                 let row_count = lh.row_count as usize;
                 let r1 = CachedRegion1 {
-                    s_ids: SidColumn::from_wide(raw_s_ids.into_iter().map(Sid64::from_u64).collect()),
+                    s_ids: SubjectIdColumn::from_wide(raw_s_ids.into_iter().map(SubjectId::from_u64).collect()),
                     p_ids: raw_p_ids.into(),
                     o_kinds: raw_o_kinds.into(),
                     o_keys: raw_o_keys.into(),
@@ -1230,7 +1230,7 @@ impl BinaryCursor {
     /// Apply columnar filter on Region 1 arrays, returning matching row indices.
     fn filter_r1(&self, r1: &CachedRegion1) -> Vec<usize> {
         let mut matches = Vec::with_capacity(64);
-        let filter_sid = self.filter.s_id.map(Sid64::from_u64);
+        let filter_sid = self.filter.s_id.map(SubjectId::from_u64);
         for row in 0..r1.row_count {
             if let Some(filter_s) = filter_sid {
                 if r1.s_ids.get(row) != filter_s {
@@ -1299,12 +1299,11 @@ impl BinaryCursor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::global_dict::dt_ids;
-    use super::super::run_record::NO_LIST_INDEX;
+    use fluree_db_core::{DatatypeDictId, ListIndex};
     use fluree_db_core::value_id::{ObjKey, ObjKind};
 
-    /// Collect SidColumn values as u64 for test assertions.
-    fn sid_col_to_u64(col: &SidColumn) -> Vec<u64> {
+    /// Collect SubjectIdColumn values as u64 for test assertions.
+    fn sid_col_to_u64(col: &SubjectIdColumn) -> Vec<u64> {
         (0..col.len()).map(|i| col.get(i).as_u64()).collect()
     }
 
@@ -1316,9 +1315,9 @@ mod tests {
             o_key: ObjKey::encode_i64(val).as_u64(),
             t,
             op: assert,
-            dt: dt_ids::INTEGER,
+            dt: DatatypeDictId::INTEGER.as_u16(),
             lang_id: 0,
-            i_val: NO_LIST_INDEX,
+            i_val: ListIndex::none().as_i32(),
         }
     }
 
@@ -1328,10 +1327,10 @@ mod tests {
         let p: Vec<u32> = rows.iter().map(|r| r.1).collect();
         let o_kinds: Vec<u8> = vec![ObjKind::NUM_INT.as_u8(); rows.len()];
         let o_keys: Vec<u64> = rows.iter().map(|r| ObjKey::encode_i64(r.2).as_u64()).collect();
-        let dt: Vec<u32> = vec![dt_ids::INTEGER as u32; rows.len()];
+        let dt: Vec<u32> = vec![DatatypeDictId::INTEGER.as_u16() as u32; rows.len()];
         let t: Vec<i64> = rows.iter().map(|r| r.3).collect();
         let lang: Vec<u16> = vec![0; rows.len()];
-        let i: Vec<i32> = vec![NO_LIST_INDEX; rows.len()];
+        let i: Vec<i32> = vec![ListIndex::none().as_i32(); rows.len()];
         (s, p, o_kinds, o_keys, dt, t, lang, i)
     }
 
@@ -1482,7 +1481,7 @@ mod tests {
             s_id: 3, p_id: 1,
             o_kind: ObjKind::NUM_INT.as_u8(),
             o_key: ObjKey::encode_i64(25).as_u64(),
-            t: 5, op: true, dt: dt_ids::INTEGER, lang_id: 0, i_val: NO_LIST_INDEX,
+            t: 5, op: true, dt: DatatypeDictId::INTEGER.as_u16(), lang_id: 0, i_val: ListIndex::none().as_i32(),
         }];
         let (r1, _r2) = merge_overlay(&s, &p, &ok, &okey, &dt, &t, &lang, &i, &overlay, RunSortOrder::Psot);
         assert_eq!(r1.row_count, 4);
@@ -1494,22 +1493,22 @@ mod tests {
     #[test]
     fn test_merge_overlay_same_sort_different_identity() {
         // Two facts with same (s, p, o_kind, o_key, dt) in sort position but different lang_id
-        use super::super::global_dict::dt_ids;
+        use fluree_db_core::DatatypeDictId;
         let s = vec![1u64, 1];
         let p = vec![1u32, 1];
         let o_kind_val = ObjKind::LEX_ID.as_u8();
         let o_key_val = ObjKey::encode_u32_id(5).as_u64();
         let ok = vec![o_kind_val, o_kind_val];
         let okey = vec![o_key_val, o_key_val];
-        let dt = vec![dt_ids::LANG_STRING as u32, dt_ids::LANG_STRING as u32];
+        let dt = vec![DatatypeDictId::LANG_STRING.as_u16() as u32, DatatypeDictId::LANG_STRING.as_u16() as u32];
         let t = vec![1i64, 1];
         let lang = vec![1u16, 2]; // different lang_ids
-        let i = vec![NO_LIST_INDEX, NO_LIST_INDEX];
+        let i = vec![ListIndex::none().as_i32(), ListIndex::none().as_i32()];
 
         // Retract lang_id=1 version only
         let overlay = vec![OverlayOp {
             s_id: 1, p_id: 1, o_kind: o_kind_val, o_key: o_key_val, t: 5, op: false,
-            dt: dt_ids::LANG_STRING, lang_id: 1, i_val: NO_LIST_INDEX,
+            dt: DatatypeDictId::LANG_STRING.as_u16(), lang_id: 1, i_val: ListIndex::none().as_i32(),
         }];
         let (r1, r2) = merge_overlay(&s, &p, &ok, &okey, &dt, &t, &lang, &i, &overlay, RunSortOrder::Spot);
         assert_eq!(r1.row_count, 1);
@@ -1519,10 +1518,10 @@ mod tests {
     #[test]
     fn test_cmp_overlay_vs_record_spot() {
         let ov = make_overlay_op(5, 3, 10, 1, true);
-        let rec = RunRecord::new(0, Sid64::from_u64(5), 3, ObjKind::NUM_INT, ObjKey::encode_i64(10), 1, true, dt_ids::INTEGER, 0, None);
+        let rec = RunRecord::new(0, SubjectId::from_u64(5), 3, ObjKind::NUM_INT, ObjKey::encode_i64(10), 1, true, DatatypeDictId::INTEGER.as_u16(), 0, None);
         assert_eq!(cmp_overlay_vs_record(&ov, &rec, RunSortOrder::Spot), Ordering::Equal);
 
-        let rec2 = RunRecord::new(0, Sid64::from_u64(6), 3, ObjKind::NUM_INT, ObjKey::encode_i64(10), 1, true, dt_ids::INTEGER, 0, None);
+        let rec2 = RunRecord::new(0, SubjectId::from_u64(6), 3, ObjKind::NUM_INT, ObjKey::encode_i64(10), 1, true, DatatypeDictId::INTEGER.as_u16(), 0, None);
         assert_eq!(cmp_overlay_vs_record(&ov, &rec2, RunSortOrder::Spot), Ordering::Less);
     }
 }

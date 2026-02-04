@@ -5,7 +5,7 @@
 
 use crate::index_stats::IndexStats;
 use crate::sid::Sid;
-use crate::value_id::DatatypeId;
+use crate::value_id::ValueTypeTag;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -46,7 +46,7 @@ pub struct GraphPropertyStatData {
     /// Estimated number of distinct subjects using this property (from HLL)
     pub ndv_subjects: u64,
     /// Per-datatype flake counts
-    pub datatypes: Vec<(DatatypeId, u64)>,
+    pub datatypes: Vec<(ValueTypeTag, u64)>,
 }
 
 /// Statistics for a single property.
@@ -102,7 +102,7 @@ impl StatsView {
                             datatypes: p_entry
                                 .datatypes
                                 .iter()
-                                .map(|&(dt, c)| (DatatypeId::from_u8(dt), c))
+                                .map(|&(dt, c)| (ValueTypeTag::from_u8(dt), c))
                                 .collect(),
                         },
                     );

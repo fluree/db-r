@@ -43,7 +43,7 @@ use std::collections::HashMap;
 #[cfg(feature = "hll-stats")]
 use fluree_db_core::{GraphPropertyStatEntry, GraphStatsEntry};
 #[cfg(feature = "hll-stats")]
-use fluree_db_core::value_id::DatatypeId;
+use fluree_db_core::value_id::ValueTypeTag;
 #[cfg(feature = "hll-stats")]
 use xxhash_rust::xxh64::xxh64;
 
@@ -331,7 +331,7 @@ pub struct IdPropertyHll {
     pub subjects_hll: HllSketch256,
     /// Most recent transaction time
     pub last_modified_t: i64,
-    /// Per-datatype flake count deltas: DatatypeId(u8) -> signed count
+    /// Per-datatype flake count deltas: ValueTypeTag(u8) -> signed count
     pub datatypes: HashMap<u8, i64>,
 }
 
@@ -474,7 +474,7 @@ impl IdStatsHook {
         g_id: u32,
         p_id: u32,
         s_id: u64,
-        dt: DatatypeId,
+        dt: ValueTypeTag,
         o_hash: u64,
         t: i64,
         op: bool,

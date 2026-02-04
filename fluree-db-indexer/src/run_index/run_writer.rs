@@ -361,19 +361,19 @@ impl RecordSink for MultiOrderRunWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::run_index::global_dict::dt_ids;
-    use fluree_db_core::sid64::Sid64;
+    use fluree_db_core::DatatypeDictId;
+    use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKind, ObjKey};
 
     fn make_test_record(s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
         RunRecord::new(
             0,
-            Sid64::from_u64(s_id),
+            SubjectId::from_u64(s_id),
             p_id,
             ObjKind::NUM_INT, ObjKey::encode_i64(val),
             t,
             true,
-            dt_ids::INTEGER,
+            DatatypeDictId::INTEGER.as_u16(),
             0,
             None,
         )
@@ -416,9 +416,9 @@ mod tests {
             super::super::run_file::read_run_file(&result.run_files[0].path).unwrap();
         assert_eq!(header.record_count, 3);
         // SPOT order: s_id 1, 2, 3
-        assert_eq!(records[0].s_id, Sid64::from_u64(1));
-        assert_eq!(records[1].s_id, Sid64::from_u64(2));
-        assert_eq!(records[2].s_id, Sid64::from_u64(3));
+        assert_eq!(records[0].s_id, SubjectId::from_u64(1));
+        assert_eq!(records[1].s_id, SubjectId::from_u64(2));
+        assert_eq!(records[2].s_id, SubjectId::from_u64(3));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -540,10 +540,10 @@ mod tests {
 
         // Push 1 IRI record
         let iri_rec = RunRecord::new(
-            0, Sid64::from_u64(3), 1,
+            0, SubjectId::from_u64(3), 1,
             ObjKind::REF_ID, ObjKey::encode_u32_id(42),
             1, true,
-            dt_ids::ID,
+            DatatypeDictId::ID.as_u16(),
             0, None,
         );
         writer.push(iri_rec, &mut lang_dict).unwrap();

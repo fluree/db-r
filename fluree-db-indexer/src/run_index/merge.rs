@@ -4,9 +4,9 @@
 //! `StreamingRunReader` streams into a single globally-sorted sequence.
 //! Provides both raw (`next`) and deduplicating (`next_deduped`) iteration.
 
-use super::run_record::{RunRecord, NO_LIST_INDEX};
+use super::run_record::RunRecord;
 use super::streaming_reader::StreamingRunReader;
-use super::global_dict::dt_ids;
+use fluree_db_core::{DatatypeDictId, ListIndex};
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 use std::io;
@@ -100,7 +100,7 @@ impl KWayMerge {
     /// Conditional identity for dedup:
     /// - Base: `(g_id, s_id, p_id, o, dt)`
     /// - If `dt == LANG_STRING`: also compare `lang_id`
-    /// - If `i != NO_LIST_INDEX`: also compare `i`
+    /// - If `i != ListIndex::none()`: also compare `i`
     ///
     /// Among records with the same identity, keeps the one with the highest `t`.
     /// Records are consumed in SPOT order (ascending `t` for same base key),
@@ -139,7 +139,7 @@ impl KWayMerge {
 /// Base identity: `(g_id, s_id, p_id, o, dt)`.
 /// Extended with `lang_id` when `dt == LANG_STRING` (because "Alice"@en
 /// and "Alice"@fr are distinct RDF literals).
-/// Extended with `i` when `i != NO_LIST_INDEX` (because list entries
+/// Extended with `i` when `i != ListIndex::none()` (because list entries
 /// at different positions are distinct facts).
 #[inline]
 fn same_identity(a: &RunRecord, b: &RunRecord) -> bool {
@@ -149,12 +149,12 @@ fn same_identity(a: &RunRecord, b: &RunRecord) -> bool {
     }
 
     // Conditional: lang_id for rdf:langString
-    if a.dt == dt_ids::LANG_STRING && a.lang_id != b.lang_id {
+    if a.dt == DatatypeDictId::LANG_STRING.as_u16() && a.lang_id != b.lang_id {
         return false;
     }
 
     // Conditional: list index — if either record has an index, require equality
-    if (a.i != NO_LIST_INDEX || b.i != NO_LIST_INDEX) && a.i != b.i {
+    if (a.i != ListIndex::none().as_i32() || b.i != ListIndex::none().as_i32()) && a.i != b.i {
         return false;
     }
 
@@ -172,18 +172,18 @@ mod tests {
     use crate::run_index::run_record::cmp_spot;
     use crate::run_index::run_file::write_run_file;
     use crate::run_index::run_record::RunSortOrder;
-    use fluree_db_core::sid64::Sid64;
+    use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKind, ObjKey};
 
     fn make_record(s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
         RunRecord::new(
             0,
-            Sid64::from_u64(s_id),
+            SubjectId::from_u64(s_id),
             p_id,
             ObjKind::NUM_INT, ObjKey::encode_i64(val),
             t,
             true,
-            dt_ids::INTEGER,
+            DatatypeDictId::INTEGER.as_u16(),
             0,
             None,
         )
@@ -192,12 +192,12 @@ mod tests {
     fn make_lang_record(s_id: u64, p_id: u32, lex_id: u32, t: i64, lang_id: u16) -> RunRecord {
         RunRecord::new(
             0,
-            Sid64::from_u64(s_id),
+            SubjectId::from_u64(s_id),
             p_id,
             ObjKind::LEX_ID, ObjKey::encode_u32_id(lex_id),
             t,
             true,
-            dt_ids::LANG_STRING,
+            DatatypeDictId::LANG_STRING.as_u16(),
             lang_id,
             None,
         )
@@ -206,12 +206,12 @@ mod tests {
     fn make_list_record(s_id: u64, p_id: u32, val: i64, t: i64, i: i32) -> RunRecord {
         RunRecord::new(
             0,
-            Sid64::from_u64(s_id),
+            SubjectId::from_u64(s_id),
             p_id,
             ObjKind::NUM_INT, ObjKey::encode_i64(val),
             t,
             true,
-            dt_ids::INTEGER,
+            DatatypeDictId::INTEGER.as_u16(),
             0,
             Some(i),
         )
@@ -274,12 +274,12 @@ mod tests {
 
         assert_eq!(results.len(), 6);
         // Verify global SPOT order
-        assert_eq!(results[0].s_id, Sid64::from_u64(1));
-        assert_eq!(results[1].s_id, Sid64::from_u64(2));
-        assert_eq!(results[2].s_id, Sid64::from_u64(3));
-        assert_eq!(results[3].s_id, Sid64::from_u64(4));
-        assert_eq!(results[4].s_id, Sid64::from_u64(5));
-        assert_eq!(results[5].s_id, Sid64::from_u64(6));
+        assert_eq!(results[0].s_id, SubjectId::from_u64(1));
+        assert_eq!(results[1].s_id, SubjectId::from_u64(2));
+        assert_eq!(results[2].s_id, SubjectId::from_u64(3));
+        assert_eq!(results[3].s_id, SubjectId::from_u64(4));
+        assert_eq!(results[4].s_id, SubjectId::from_u64(5));
+        assert_eq!(results[5].s_id, SubjectId::from_u64(6));
 
         assert!(merge.is_exhausted());
 
@@ -375,7 +375,7 @@ mod tests {
 
         // Same (s,p,o,dt) but one has list index and one doesn't → distinct facts
         let p0 = write_sorted_run(&dir, "r0.frn", vec![
-            make_record(1, 1, 10, 1),            // i = NO_LIST_INDEX
+            make_record(1, 1, 10, 1),            // i = ListIndex::none()
             make_list_record(1, 1, 10, 1, 0),    // i = 0
         ]);
 
@@ -406,7 +406,7 @@ mod tests {
         let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
 
         let rec = merge.next().unwrap().unwrap();
-        assert_eq!(rec.s_id, Sid64::from_u64(1));
+        assert_eq!(rec.s_id, SubjectId::from_u64(1));
         assert!(merge.next().unwrap().is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -440,12 +440,12 @@ mod tests {
 
         assert_eq!(results.len(), 6);
         // Verify SPOT order (s_id primary, p_id secondary)
-        assert_eq!((results[0].s_id, results[0].p_id), (Sid64::from_u64(1), 1));
-        assert_eq!((results[1].s_id, results[1].p_id), (Sid64::from_u64(1), 2));
-        assert_eq!((results[2].s_id, results[2].p_id), (Sid64::from_u64(2), 1));
-        assert_eq!((results[3].s_id, results[3].p_id), (Sid64::from_u64(3), 1));
-        assert_eq!((results[4].s_id, results[4].p_id), (Sid64::from_u64(4), 1));
-        assert_eq!((results[5].s_id, results[5].p_id), (Sid64::from_u64(5), 1));
+        assert_eq!((results[0].s_id, results[0].p_id), (SubjectId::from_u64(1), 1));
+        assert_eq!((results[1].s_id, results[1].p_id), (SubjectId::from_u64(1), 2));
+        assert_eq!((results[2].s_id, results[2].p_id), (SubjectId::from_u64(2), 1));
+        assert_eq!((results[3].s_id, results[3].p_id), (SubjectId::from_u64(3), 1));
+        assert_eq!((results[4].s_id, results[4].p_id), (SubjectId::from_u64(4), 1));
+        assert_eq!((results[5].s_id, results[5].p_id), (SubjectId::from_u64(5), 1));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
