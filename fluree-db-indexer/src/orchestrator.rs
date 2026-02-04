@@ -1032,7 +1032,7 @@ mod tests {
     use super::*;
     use fluree_db_core::{Flake, FlakeValue, MemoryStorage, Sid, StorageWrite};
     use fluree_db_nameservice::memory::MemoryNameService;
-    use fluree_db_novelty::Commit;
+    use fluree_db_novelty::{Commit, CommitRef};
     use std::collections::HashMap;
 
     fn make_flake(
@@ -1072,7 +1072,6 @@ mod tests {
             let envelope = CommitV2Envelope {
                 t: commit.t,
                 v: commit.v,
-                previous: commit.previous.clone(),
                 previous_ref: commit.previous_ref.clone(),
                 namespace_delta: commit
                     .namespace_delta
@@ -1083,7 +1082,6 @@ mod tests {
                 time: commit.time.clone(),
                 data: commit.data.clone(),
                 index: commit.index.clone(),
-                indexed_at: commit.indexed_at.clone(),
             };
             let mut envelope_bytes = Vec::new();
             encode_envelope_fields(&envelope, &mut envelope_bytes).unwrap();
@@ -1186,11 +1184,9 @@ mod tests {
             v: 2,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
-            previous: None,
             previous_ref: None,
             data: None,
             index: None,
-            indexed_at: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
         };
@@ -1218,11 +1214,9 @@ mod tests {
             v: 2,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
-            previous: None,
             previous_ref: None,
             data: None,
             index: None,
-            indexed_at: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
         };
@@ -1256,11 +1250,9 @@ mod tests {
             v: 2,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
-            previous: None,
             previous_ref: None,
             data: None,
             index: None,
-            indexed_at: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
         };
@@ -1281,11 +1273,9 @@ mod tests {
             v: 2,
             time: None,
             flakes: vec![make_flake(1, "ex:bob", 1, "ex:age", 25, 2)],
-            previous: Some(addr1.clone()),
-            previous_ref: None,
+            previous_ref: Some(CommitRef::new(&addr1)),
             data: None,
             index: None,
-            indexed_at: None,
             txn: None,
             namespace_delta: HashMap::new(),
         };
@@ -1310,11 +1300,9 @@ mod tests {
             v: 2,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
-            previous: None,
             previous_ref: None,
             data: None,
             index: None,
-            indexed_at: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
         };
@@ -1344,11 +1332,9 @@ mod tests {
             v: 2,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
-            previous: None,
             previous_ref: None,
             data: None,
             index: None,
-            indexed_at: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
         };
@@ -1382,11 +1368,9 @@ mod tests {
             v: 2,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
-            previous: None,
             previous_ref: None,
             data: None,
             index: None,
-            indexed_at: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
         };
@@ -1705,7 +1689,6 @@ mod embedded_tests {
         let envelope = CommitV2Envelope {
             t: commit.t,
             v: commit.v,
-            previous: commit.previous.clone(),
             previous_ref: commit.previous_ref.clone(),
             namespace_delta: commit
                 .namespace_delta
@@ -1716,7 +1699,6 @@ mod embedded_tests {
             time: commit.time.clone(),
             data: commit.data.clone(),
             index: commit.index.clone(),
-            indexed_at: commit.indexed_at.clone(),
         };
         let mut envelope_bytes = Vec::new();
         encode_envelope_fields(&envelope, &mut envelope_bytes).unwrap();
@@ -1856,11 +1838,9 @@ mod embedded_tests {
             v: 2,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
-            previous: None,
             previous_ref: None,
             data: None,
             index: None,
-            indexed_at: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
         };
@@ -1912,11 +1892,9 @@ mod embedded_tests {
             v: 2,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
-            previous: None,
             previous_ref: None,
             data: None,
             index: None,
-            indexed_at: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
         };

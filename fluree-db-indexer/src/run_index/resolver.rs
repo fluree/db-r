@@ -721,9 +721,9 @@ mod tests {
 
         let envelope = CommitV2Envelope {
             t, v: 0,
-            previous: None, previous_ref: None,
+            previous_ref: None,
             namespace_delta: HashMap::new(),
-            txn: None, time: None, data: None, index: None, indexed_at: None,
+            txn: None, time: None, data: None, index: None,
         };
         let mut envelope_bytes = Vec::new();
         encode_envelope_fields(&envelope, &mut envelope_bytes).unwrap();
@@ -1059,14 +1059,12 @@ mod tests {
         let envelope = CommitV2Envelope {
             t: 42,
             v: 2,
-            previous: None,
             previous_ref: Some(CommitRef::new("prev-addr").with_id(prev_commit_id.clone())),
             namespace_delta: HashMap::new(),
             txn: None,
             time: Some("2025-06-15T12:00:00Z".into()),
             data: None,
             index: None,
-            indexed_at: None,
         };
 
         let count = resolver
@@ -1157,14 +1155,12 @@ mod tests {
         let envelope = CommitV2Envelope {
             t: 1,
             v: 2,
-            previous: None,
             previous_ref: None,
             namespace_delta: HashMap::new(),
             txn: None,
             time: None,
             data: None,
             index: None,
-            indexed_at: None,
         };
 
         let count = resolver

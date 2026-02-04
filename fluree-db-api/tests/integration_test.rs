@@ -11,6 +11,7 @@ use fluree_db_core::{Flake, FlakeValue, Sid};
 use fluree_db_nameservice::memory::MemoryNameService;
 use fluree_db_nameservice::Publisher;
 use fluree_db_novelty::Commit;
+use fluree_db_transact::commit_v2::write_commit;
 
 fn make_flake(s: u16, p: u16, o: i64, t: i64) -> Flake {
     Flake::new(
@@ -29,9 +30,10 @@ fn create_test_fluree(
     storage: MemoryStorage,
     commits: Vec<(&str, Commit)>,
 ) -> Fluree<MemoryStorage, MemoryNameService> {
-    // Insert commits into storage
+    // Insert commits into storage as v2 binary blobs
     for (addr, commit) in commits {
-        storage.insert(addr, serde_json::to_vec(&commit).unwrap());
+        let result = write_commit(&commit, false).unwrap();
+        storage.insert(addr, result.bytes);
     }
 
     let config = ConnectionConfig::default();
@@ -134,8 +136,8 @@ async fn test_multiple_commits() {
     let commit1 = Commit::new("commit-1", 1, vec![make_flake(1, 10, 100, 1)]);
 
     // Second commit (links to first)
-    let mut commit2 = Commit::new("commit-2", 2, vec![make_flake(2, 10, 200, 2)]);
-    commit2.previous = Some("commit-1".to_string());
+    let commit2 = Commit::new("commit-2", 2, vec![make_flake(2, 10, 200, 2)])
+        .with_previous_ref(fluree_db_novelty::CommitRef::new("commit-1"));
 
     let fluree = create_test_fluree(
         MemoryStorage::new(),

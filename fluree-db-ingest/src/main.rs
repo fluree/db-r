@@ -417,9 +417,9 @@ async fn run_import(
     }
 
     // Final publish
-    if let Some(ref addr) = state.previous_address {
+    if let Some(ref prev_ref) = state.previous_ref {
         nameservice
-            .publish_commit(&args.ledger, addr, state.t)
+            .publish_commit(&args.ledger, &prev_ref.address, state.t)
             .await?;
         info!("Published final nameservice head at t={}", state.t);
     }
@@ -910,9 +910,9 @@ async fn run_import_parallel(
     }
 
     // Final publish
-    if let Some(ref addr) = state.previous_address {
+    if let Some(ref prev_ref) = state.previous_ref {
         nameservice
-            .publish_commit(&args.ledger, addr, state.t)
+            .publish_commit(&args.ledger, &prev_ref.address, state.t)
             .await?;
         info!("Published final nameservice head at t={}", state.t);
     }

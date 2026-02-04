@@ -407,7 +407,6 @@ mod tests {
             )],
             5,
         );
-        commit.previous = Some("prev-addr".into());
         commit.previous_ref = Some(CommitRef::new("prev-addr").with_id("fluree:commit:sha256:abc"));
         commit.namespace_delta = HashMap::from([(200, "ex:".to_string())]);
 
@@ -415,7 +414,6 @@ mod tests {
         let envelope = read_commit_envelope(&result.bytes).unwrap();
 
         assert_eq!(envelope.t, 5);
-        assert_eq!(envelope.previous.as_deref(), Some("prev-addr"));
         assert_eq!(
             envelope.previous_ref.as_ref().unwrap().address,
             "prev-addr"
@@ -457,7 +455,6 @@ mod tests {
         commit.time = Some("2024-01-01T00:00:00Z".into());
         commit.txn = Some("fluree:file://txn/abc123.json".into());
         commit.index = Some(IndexRef::new("fluree:file://index/xyz").with_t(8));
-        commit.indexed_at = Some("legacy-index-addr".into());
 
         // Need at least one flake to avoid empty ops
         commit.flakes.push(Flake::new(
@@ -477,7 +474,6 @@ mod tests {
         assert_eq!(decoded.txn.as_deref(), Some("fluree:file://txn/abc123.json"));
         assert_eq!(decoded.index.as_ref().unwrap().address, "fluree:file://index/xyz");
         assert_eq!(decoded.index.as_ref().unwrap().t, Some(8));
-        assert_eq!(decoded.indexed_at.as_deref(), Some("legacy-index-addr"));
     }
 
     #[test]

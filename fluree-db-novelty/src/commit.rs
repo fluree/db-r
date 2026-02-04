@@ -143,57 +143,38 @@ impl IndexRef {
 }
 
 /// A commit represents a single transaction in the ledger
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct Commit {
     /// Content address of this commit (storage address)
     pub address: String,
 
     /// Content-address IRI (e.g., "fluree:commit:sha256:...")
-    /// Optional for backward compatibility with older commit files.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
 
     /// Transaction time (monotonically increasing)
     pub t: i64,
 
     /// Commit version (default 2)
-    #[serde(default = "default_version")]
     pub v: i32,
 
     /// ISO 8601 timestamp of when the commit was created
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub time: Option<String>,
 
     /// Flakes in this commit (assertions and retractions)
-    #[serde(default)]
     pub flakes: Vec<Flake>,
 
-    /// Previous commit address (None for genesis)
-    /// Legacy field - use `previous_ref` for new commits
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub previous: Option<String>,
-
-    /// Previous commit reference with id and address (new format)
-    #[serde(rename = "previousRef", skip_serializing_if = "Option::is_none")]
+    /// Previous commit reference with id and address
     pub previous_ref: Option<CommitRef>,
 
     /// Embedded DB metadata (cumulative state)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<CommitData>,
 
     /// Index reference (if indexed at this commit)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub index: Option<IndexRef>,
-
-    /// Index address at time of commit (if reindexed at this point)
-    /// Legacy field - use `index` for new commits
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub indexed_at: Option<String>,
 
     /// Transaction address (storage address of the original transaction JSON)
     /// When present, the raw transaction JSON can be loaded from this address.
     /// Only set when the transaction included a txn payload (Clojure parity).
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub txn: Option<String>,
 
     /// New namespace codes introduced by this commit (code → prefix)
@@ -201,7 +182,6 @@ pub struct Commit {
     /// When transactions introduce new IRIs with prefixes not yet in the
     /// database's namespace table, new codes are allocated and recorded here.
     /// This allows ledger loading to apply namespace updates from commit history.
-    #[serde(default)]
     pub namespace_delta: HashMap<u16, String>,
 }
 
@@ -215,11 +195,9 @@ impl Commit {
             v: 2,
             time: None,
             flakes,
-            previous: None,
             previous_ref: None,
             data: None,
             index: None,
-            indexed_at: None,
             txn: None,
             namespace_delta: HashMap::new(),
         }
@@ -237,17 +215,9 @@ impl Commit {
         self
     }
 
-    /// Set the previous commit address (legacy format)
-    pub fn with_previous(mut self, prev: impl Into<String>) -> Self {
-        self.previous = Some(prev.into());
-        self
-    }
-
-    /// Set the previous commit reference (new format with id and address)
+    /// Set the previous commit reference
     pub fn with_previous_ref(mut self, prev_ref: CommitRef) -> Self {
         self.previous_ref = Some(prev_ref);
-        // Also set legacy field for backward compatibility
-        self.previous = Some(self.previous_ref.as_ref().unwrap().address.clone());
         self
     }
 
@@ -269,49 +239,34 @@ impl Commit {
         self
     }
 
-    /// Get the effective previous commit address
-    ///
-    /// Returns the address from `previous_ref` if present, otherwise falls back to `previous`.
+    /// Get the previous commit address (if any)
     pub fn previous_address(&self) -> Option<&str> {
-        self.previous_ref
-            .as_ref()
-            .map(|r| r.address.as_str())
-            .or(self.previous.as_deref())
+        self.previous_ref.as_ref().map(|r| r.address.as_str())
     }
 
-    /// Get the effective previous commit content-address IRI
-    ///
-    /// Returns the id from `previous_ref` if present.
+    /// Get the previous commit content-address IRI (if any)
     pub fn previous_id(&self) -> Option<&str> {
         self.previous_ref.as_ref().and_then(|r| r.id.as_deref())
     }
 
-    /// Get the effective index address
-    ///
-    /// Returns the address from `index` if present, otherwise falls back to `indexed_at`.
+    /// Get the index address (if indexed at this commit)
     pub fn index_address(&self) -> Option<&str> {
-        self.index
-            .as_ref()
-            .map(|r| r.address.as_str())
-            .or(self.indexed_at.as_deref())
+        self.index.as_ref().map(|r| r.address.as_str())
     }
 }
 
 /// Load a single commit from storage
+///
+/// The commit blob must be in v2 binary format (magic header `FLv2`).
 pub async fn load_commit<S: Storage>(storage: &S, address: &str) -> Result<Commit> {
     let data = storage
         .read_bytes(address)
         .await
         .map_err(|e| NoveltyError::storage(format!("Failed to read commit {}: {}", address, e)))?;
 
-    let mut commit = if data.len() >= 4 && data[0..4] == crate::commit_v2::format::MAGIC {
-        let _span = tracing::debug_span!("load_commit_v2", blob_bytes = data.len()).entered();
-        crate::commit_v2::read_commit(&data)
-            .map_err(|e| NoveltyError::invalid_commit(e.to_string()))?
-    } else {
-        serde_json::from_slice(&data)
-            .map_err(|e| NoveltyError::invalid_commit(e.to_string()))?
-    };
+    let _span = tracing::debug_span!("load_commit_v2", blob_bytes = data.len()).entered();
+    let mut commit = crate::commit_v2::read_commit(&data)
+        .map_err(|e| NoveltyError::invalid_commit(e.to_string()))?;
 
     // Inject derived metadata that may be omitted from on-disk commit blobs.
     //
@@ -357,104 +312,47 @@ fn commit_hash_hex_from_address(address: &str) -> Option<&str> {
 /// This enables memory-bounded batched reindex by allowing a metadata-only
 /// backwards scan before forward flake processing.
 ///
-/// # Memory vs CPU
-///
-/// This deserializes from the same JSON as `Commit` but omits the `flakes` field.
-/// While this avoids allocating memory for flake data, serde still parses all
-/// JSON tokens including the flakes array. For very large commits, consider
-/// whether the CPU cost of parsing is acceptable for your use case.
-///
-/// # Deserialize-only
-///
-/// This struct is designed for reading existing commits, not creating new ones.
-/// Use `Commit` when you need to serialize commit data.
-#[derive(Clone, Debug, Deserialize)]
+/// Decoded from the binary envelope section of a v2 commit blob.
+#[derive(Clone, Debug)]
 pub struct CommitEnvelope {
     /// Transaction time (monotonically increasing)
     pub t: i64,
 
     /// Commit version (default 2)
-    #[serde(default = "default_version")]
     pub v: i32,
 
-    /// Previous commit address (None for genesis)
-    /// Legacy field - check `previous_ref` first
-    #[serde(default)]
-    pub previous: Option<String>,
-
-    /// Previous commit reference with id and address (new format)
-    #[serde(rename = "previousRef", default)]
+    /// Previous commit reference with id and address
     pub previous_ref: Option<CommitRef>,
 
     /// Index reference (if indexed at this commit)
-    /// Includes version and t for validation without extra storage reads
-    #[serde(default)]
     pub index: Option<IndexRef>,
 
-    /// Index address at time of commit (if reindexed at this point)
-    /// Legacy field - check `index` first
-    #[serde(default)]
-    pub indexed_at: Option<String>,
-
     /// New namespace codes introduced by this commit (code → prefix)
-    #[serde(default)]
     pub namespace_delta: HashMap<u16, String>,
 }
 
-/// Sentinel value for unknown index version (legacy `indexed_at` field)
-pub const INDEX_VERSION_UNKNOWN: i32 = 0;
-
 impl CommitEnvelope {
-    /// Get the effective previous commit address
-    ///
-    /// Returns the address from `previous_ref` if present, otherwise falls back to `previous`.
+    /// Get the previous commit address (if any)
     pub fn previous_address(&self) -> Option<&str> {
-        self.previous_ref
-            .as_ref()
-            .map(|r| r.address.as_str())
-            .or(self.previous.as_deref())
+        self.previous_ref.as_ref().map(|r| r.address.as_str())
     }
 
-    /// Get the effective index reference
-    ///
-    /// Prefers `index` (new format with version info) over `indexed_at` (legacy address-only).
-    /// If only `indexed_at` is present, creates an IndexRef with `v=INDEX_VERSION_UNKNOWN` (0)
-    /// to indicate the version is not known from the commit metadata.
-    ///
-    /// Callers should check for `v == INDEX_VERSION_UNKNOWN` and load the db-root
-    /// to determine the actual version when validation is needed.
-    pub fn index_ref(&self) -> Option<IndexRef> {
-        if let Some(ref idx) = self.index {
-            Some(idx.clone())
-        } else if let Some(ref addr) = self.indexed_at {
-            // Legacy: create IndexRef from address-only field
-            // Use sentinel value to indicate unknown version
-            Some(IndexRef {
-                id: None,
-                address: addr.clone(),
-                v: INDEX_VERSION_UNKNOWN,
-                t: None,
-            })
-        } else {
-            None
-        }
+    /// Get the index reference (if indexed at this commit)
+    pub fn index_ref(&self) -> Option<&IndexRef> {
+        self.index.as_ref()
     }
 
-    /// Get the effective index address
-    ///
-    /// Returns the address from `index` if present, otherwise falls back to `indexed_at`.
+    /// Get the index address (if indexed at this commit)
     pub fn index_address(&self) -> Option<&str> {
-        self.index
-            .as_ref()
-            .map(|r| r.address.as_str())
-            .or(self.indexed_at.as_deref())
+        self.index.as_ref().map(|r| r.address.as_str())
     }
 }
 
 /// Load a commit envelope (metadata only, no flakes) from storage
 ///
-/// This is more memory-efficient than `load_commit` when you only need
-/// metadata for scanning commit history.
+/// More memory-efficient than `load_commit` when you only need metadata
+/// for scanning commit history. Only reads the header + envelope section
+/// of the v2 binary blob.
 pub async fn load_commit_envelope<S: Storage>(storage: &S, address: &str) -> Result<CommitEnvelope> {
     let data = storage
         .read_bytes(address)
@@ -572,93 +470,68 @@ mod tests {
         assert_eq!(commit.address, "commit-1");
         assert_eq!(commit.t, 1);
         assert_eq!(commit.flakes.len(), 1);
-        assert!(commit.previous.is_none());
+        assert!(commit.previous_ref.is_none());
     }
 
     #[tokio::test]
     async fn test_commit_chain() {
         let commit1 = Commit::new("commit-1", 1, vec![]);
-        let commit2 = Commit::new("commit-2", 2, vec![]).with_previous("commit-1");
-        let commit3 = Commit::new("commit-3", 3, vec![]).with_previous("commit-2");
+        let commit2 = Commit::new("commit-2", 2, vec![])
+            .with_previous_ref(CommitRef::new("commit-1"));
+        let commit3 = Commit::new("commit-3", 3, vec![])
+            .with_previous_ref(CommitRef::new("commit-2"));
 
-        assert!(commit1.previous.is_none());
-        assert_eq!(commit2.previous, Some("commit-1".to_string()));
-        assert_eq!(commit3.previous, Some("commit-2".to_string()));
+        assert!(commit1.previous_address().is_none());
+        assert_eq!(commit2.previous_address(), Some("commit-1"));
+        assert_eq!(commit3.previous_address(), Some("commit-2"));
     }
 
     // =========================================================================
     // CommitEnvelope tests
     // =========================================================================
 
-    #[tokio::test]
-    async fn test_commit_envelope_deserializes_without_flakes() {
-        // Commit JSON with flakes - envelope should ignore the flakes field
-        let json = r#"{
-            "address": "commit-1",
-            "t": 5,
-            "v": 2,
-            "flakes": [[1, 2, 3, 4, 5, true, null], [6, 7, 8, 9, 10, false, null]],
-            "previous": "commit-0",
-            "namespace_delta": {"100": "ex:"}
-        }"#;
+    #[test]
+    fn test_commit_envelope_fields() {
+        let envelope = CommitEnvelope {
+            t: 5,
+            v: 2,
+            previous_ref: Some(CommitRef::new("commit-0")),
+            index: None,
+            namespace_delta: HashMap::from([(100, "ex:".to_string())]),
+        };
 
-        let envelope: CommitEnvelope = serde_json::from_str(json).unwrap();
         assert_eq!(envelope.t, 5);
         assert_eq!(envelope.v, 2);
         assert_eq!(envelope.previous_address(), Some("commit-0"));
         assert_eq!(envelope.namespace_delta.get(&100), Some(&"ex:".to_string()));
     }
 
-    #[tokio::test]
-    async fn test_commit_envelope_previous_ref_takes_precedence() {
-        let json = r#"{
-            "t": 3,
-            "v": 2,
-            "previous": "old-addr",
-            "previousRef": {"address": "new-addr", "id": "fluree:commit:sha256:abc"}
-        }"#;
+    #[test]
+    fn test_commit_envelope_index_ref() {
+        let envelope = CommitEnvelope {
+            t: 10,
+            v: 2,
+            previous_ref: None,
+            index: Some(IndexRef::new("index-addr").with_t(10)),
+            namespace_delta: HashMap::new(),
+        };
 
-        let envelope: CommitEnvelope = serde_json::from_str(json).unwrap();
-        // previous_ref should take precedence over legacy previous field
-        assert_eq!(envelope.previous_address(), Some("new-addr"));
-    }
-
-    #[tokio::test]
-    async fn test_commit_envelope_index_ref() {
-        // With new index format
-        let json_new = r#"{
-            "t": 10,
-            "v": 2,
-            "index": {"address": "index-addr", "v": 2, "t": 10}
-        }"#;
-
-        let envelope: CommitEnvelope = serde_json::from_str(json_new).unwrap();
         let idx = envelope.index_ref().unwrap();
         assert_eq!(idx.address, "index-addr");
         assert_eq!(idx.v, 2);
         assert_eq!(idx.t, Some(10));
-
-        // With legacy indexed_at format
-        let json_legacy = r#"{
-            "t": 10,
-            "v": 2,
-            "indexed_at": "legacy-index-addr"
-        }"#;
-
-        let envelope: CommitEnvelope = serde_json::from_str(json_legacy).unwrap();
-        let idx = envelope.index_ref().unwrap();
-        assert_eq!(idx.address, "legacy-index-addr");
-        // Legacy format uses INDEX_VERSION_UNKNOWN (0) to indicate unknown version
-        assert_eq!(idx.v, INDEX_VERSION_UNKNOWN);
-        assert_eq!(idx.t, None);
     }
 
-    #[tokio::test]
-    async fn test_commit_envelope_no_index() {
-        let json = r#"{"t": 5, "v": 2}"#;
-        let envelope: CommitEnvelope = serde_json::from_str(json).unwrap();
+    #[test]
+    fn test_commit_envelope_no_index() {
+        let envelope = CommitEnvelope {
+            t: 5,
+            v: 2,
+            previous_ref: None,
+            index: None,
+            namespace_delta: HashMap::new(),
+        };
         assert!(envelope.index_ref().is_none());
         assert!(envelope.index_address().is_none());
     }
-
 }

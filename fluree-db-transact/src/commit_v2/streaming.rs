@@ -264,14 +264,12 @@ mod tests {
         CommitV2Envelope {
             t,
             v: 2,
-            previous: None,
             previous_ref: None,
             namespace_delta: HashMap::new(),
             txn: None,
             time: None,
             data: None,
             index: None,
-            indexed_at: None,
         }
     }
 
@@ -426,7 +424,6 @@ mod tests {
         let envelope = CommitV2Envelope {
             t: 5,
             v: 2,
-            previous: Some("prev-addr".into()),
             previous_ref: Some(CommitRef::new("prev-addr").with_id("fluree:commit:sha256:abc")),
             namespace_delta: HashMap::from([(200, "ex:".to_string())]),
             txn: None,
@@ -439,14 +436,12 @@ mod tests {
                 previous: None,
             }),
             index: None,
-            indexed_at: None,
         };
 
         let result = writer.finish(&envelope).unwrap();
         let decoded = read_commit(&result.bytes).unwrap();
 
         assert_eq!(decoded.t, 5);
-        assert_eq!(decoded.previous.as_deref(), Some("prev-addr"));
         assert_eq!(decoded.previous_ref.as_ref().unwrap().address, "prev-addr");
         assert_eq!(decoded.namespace_delta.get(&200), Some(&"ex:".to_string()));
         assert_eq!(decoded.time.as_deref(), Some("2024-01-01T00:00:00Z"));

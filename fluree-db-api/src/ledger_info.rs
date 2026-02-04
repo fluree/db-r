@@ -222,12 +222,6 @@ async fn build_commit_jsonld<S: Storage>(
             prev_obj["id"] = json!(prev_id);
         }
         obj["previous"] = prev_obj;
-    } else if let Some(prev_addr) = &commit.previous {
-        // Legacy format - just address
-        obj["previous"] = json!({
-            "type": ["Commit"],
-            "address": prev_addr,
-        });
     }
 
     // Data block - embedded DB metadata (t goes HERE, not on commit)
@@ -289,13 +283,6 @@ async fn build_commit_jsonld<S: Storage>(
             });
         }
         obj["index"] = index_obj;
-    } else if let Some(indexed_at) = &commit.indexed_at {
-        // Legacy format
-        obj["index"] = json!({
-            "type": ["Index"],
-            "address": indexed_at,
-            "v": 2,
-        });
     }
 
     Ok((obj, index_id_out))

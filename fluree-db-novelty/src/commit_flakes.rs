@@ -214,7 +214,6 @@ mod tests {
                 ),
                 address: "fluree:file://test/commit/prev123.json".to_string(),
             });
-            commit.previous = Some("fluree:file://test/commit/prev123.json".to_string());
         }
 
         commit

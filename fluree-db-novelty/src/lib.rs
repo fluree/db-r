@@ -32,7 +32,7 @@ mod stats;
 
 pub use commit::{
     load_commit, load_commit_envelope, trace_commit_envelopes, trace_commits,
-    Commit, CommitData, CommitEnvelope, CommitRef, IndexRef, INDEX_VERSION_UNKNOWN,
+    Commit, CommitData, CommitEnvelope, CommitRef, IndexRef,
 };
 pub use commit_flakes::generate_commit_flakes;
 pub use error::{NoveltyError, Result};

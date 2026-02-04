@@ -21,8 +21,6 @@ mod inner {
     pub struct ImportState {
         /// Current transaction number. Starts at 0; first chunk produces t=1.
         pub t: i64,
-        /// Address of the previous commit blob (for commit chain linking).
-        pub previous_address: Option<String>,
         /// Reference to the previous commit (address + id).
         pub previous_ref: Option<CommitRef>,
         /// Namespace registry (accumulates across chunks).
@@ -41,7 +39,6 @@ mod inner {
         pub fn new() -> Self {
             Self {
                 t: 0,
-                previous_address: None,
                 previous_ref: None,
                 ns_registry: NamespaceRegistry::new(),
                 cumulative_flakes: 0,
@@ -129,14 +126,12 @@ mod inner {
             let envelope = CommitV2Envelope {
             t: new_t,
             v: 2,
-            previous: state.previous_address.clone(),
             previous_ref: state.previous_ref.clone(),
             namespace_delta: ns_delta,
             txn: None,
             time: Some(state.import_time.clone()),
             data: None, // DB stats not maintained during import
             index: None,
-            indexed_at: None,
         };
 
             (writer, op_count, envelope)
@@ -173,7 +168,6 @@ mod inner {
 
         // 8. Advance state
         state.t = new_t;
-        state.previous_address = Some(write_res.address.clone());
         state.previous_ref = Some(
             CommitRef::new(&write_res.address)
                 .with_id(format!("fluree:commit:{}", commit_id)),
@@ -282,14 +276,12 @@ mod inner {
         let envelope = CommitV2Envelope {
             t: new_t,
             v: 2,
-            previous: state.previous_address.clone(),
             previous_ref: state.previous_ref.clone(),
             namespace_delta: ns_delta,
             txn: None,
             time: Some(state.import_time.clone()),
             data: None,
             index: None,
-            indexed_at: None,
         };
 
         let result = parsed.writer.finish(&envelope)?;
@@ -314,7 +306,6 @@ mod inner {
         );
 
         state.t = new_t;
-        state.previous_address = Some(write_res.address.clone());
         state.previous_ref = Some(
             CommitRef::new(&write_res.address)
                 .with_id(format!("fluree:commit:{}", commit_id)),

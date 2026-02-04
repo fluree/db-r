@@ -456,14 +456,12 @@ mod tests {
         let envelope = CommitV2Envelope {
             t,
             v: 0,
-            previous: None,
             previous_ref: None,
             namespace_delta: HashMap::new(),
             txn: None,
             time: None,
             data: None,
             index: None,
-            indexed_at: None,
         };
         let mut envelope_bytes = Vec::new();
         encode_envelope_fields(&envelope, &mut envelope_bytes).unwrap();

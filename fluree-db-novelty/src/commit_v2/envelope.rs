@@ -16,14 +16,12 @@ use crate::{Commit, CommitData, CommitRef, IndexRef};
 use std::collections::HashMap;
 
 // --- Presence flag bits ---
-const FLAG_PREVIOUS: u8 = 0x01;
 const FLAG_PREVIOUS_REF: u8 = 0x02;
 const FLAG_NAMESPACE_DELTA: u8 = 0x04;
 const FLAG_TXN: u8 = 0x08;
 const FLAG_TIME: u8 = 0x10;
 const FLAG_DATA: u8 = 0x20;
 const FLAG_INDEX: u8 = 0x40;
-const FLAG_INDEXED_AT: u8 = 0x80;
 
 /// Maximum recursion depth for CommitData.previous chain.
 const MAX_COMMIT_DATA_DEPTH: usize = 16;
@@ -38,14 +36,12 @@ pub struct CommitV2Envelope {
     /// Transaction `t` (stored in header, not in the envelope bytes).
     pub t: i64,
     pub v: i32,
-    pub previous: Option<String>,
     pub previous_ref: Option<CommitRef>,
     pub namespace_delta: HashMap<u16, String>,
     pub txn: Option<String>,
     pub time: Option<String>,
     pub data: Option<CommitData>,
     pub index: Option<IndexRef>,
-    pub indexed_at: Option<String>,
 }
 
 impl CommitV2Envelope {
@@ -55,14 +51,12 @@ impl CommitV2Envelope {
         Self {
             t: commit.t,
             v: commit.v,
-            previous: commit.previous.clone(),
             previous_ref: commit.previous_ref.clone(),
             namespace_delta: commit.namespace_delta.clone(),
             txn: commit.txn.clone(),
             time: commit.time.clone(),
             data: commit.data.clone(),
             index: commit.index.clone(),
-            indexed_at: commit.indexed_at.clone(),
         }
     }
 }
@@ -82,11 +76,8 @@ pub fn encode_envelope_fields(
     // v (always present)
     encode_varint(zigzag_encode(envelope.v as i64), buf);
 
-    // Build presence flags
+    // Build presence flags (no legacy bits)
     let mut flags: u8 = 0;
-    if envelope.previous.is_some() {
-        flags |= FLAG_PREVIOUS;
-    }
     if envelope.previous_ref.is_some() {
         flags |= FLAG_PREVIOUS_REF;
     }
@@ -105,15 +96,9 @@ pub fn encode_envelope_fields(
     if envelope.index.is_some() {
         flags |= FLAG_INDEX;
     }
-    if envelope.indexed_at.is_some() {
-        flags |= FLAG_INDEXED_AT;
-    }
     buf.push(flags);
 
-    // Fields in bit order
-    if let Some(prev) = &envelope.previous {
-        encode_len_str(prev, buf);
-    }
+    // Fields in bit order (skip legacy FLAG_PREVIOUS bit 0)
     if let Some(prev_ref) = &envelope.previous_ref {
         encode_commit_ref(prev_ref, buf);
     }
@@ -132,9 +117,7 @@ pub fn encode_envelope_fields(
     if let Some(index) = &envelope.index {
         encode_index_ref(index, buf);
     }
-    if let Some(indexed_at) = &envelope.indexed_at {
-        encode_len_str(indexed_at, buf);
-    }
+    // No FLAG_INDEXED_AT written
 
     Ok(())
 }
@@ -170,12 +153,6 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
     pos += 1;
 
     // Fields in bit order
-    let previous = if flags & FLAG_PREVIOUS != 0 {
-        Some(decode_len_str(data, &mut pos)?)
-    } else {
-        None
-    };
-
     let previous_ref = if flags & FLAG_PREVIOUS_REF != 0 {
         Some(decode_commit_ref(data, &mut pos)?)
     } else {
@@ -212,12 +189,6 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
         None
     };
 
-    let indexed_at = if flags & FLAG_INDEXED_AT != 0 {
-        Some(decode_len_str(data, &mut pos)?)
-    } else {
-        None
-    };
-
     if pos != data.len() {
         return Err(CommitV2Error::EnvelopeDecode(format!(
             "trailing bytes: consumed {} of {} bytes",
@@ -229,14 +200,12 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
     Ok(CommitV2Envelope {
         t: 0, // populated by caller from header
         v,
-        previous,
         previous_ref,
         namespace_delta,
         txn,
         time,
         data: data_field,
         index,
-        indexed_at,
     })
 }
 
@@ -517,21 +486,18 @@ mod tests {
 
         let decoded = decode_envelope(&buf).unwrap();
         assert_eq!(decoded.v, 2); // default version
-        assert!(decoded.previous.is_none());
         assert!(decoded.previous_ref.is_none());
         assert!(decoded.namespace_delta.is_empty());
         assert!(decoded.txn.is_none());
         assert!(decoded.time.is_none());
         assert!(decoded.data.is_none());
         assert!(decoded.index.is_none());
-        assert!(decoded.indexed_at.is_none());
     }
 
     #[test]
     fn test_round_trip_full() {
         let mut commit = make_minimal_commit();
         commit.v = 3;
-        commit.previous = Some("prev-addr".into());
         commit.previous_ref =
             Some(CommitRef::new("prev-addr").with_id("fluree:commit:sha256:abc"));
         commit.namespace_delta = HashMap::from([(100, "ex:".into()), (200, "schema:".into())]);
@@ -545,14 +511,12 @@ mod tests {
             previous: None,
         });
         commit.index = Some(IndexRef::new("fluree:file://index/root.json").with_id("fluree:index:sha256:ghi").with_t(8));
-        commit.indexed_at = Some("legacy-index-addr".into());
 
         let mut buf = Vec::new();
         encode_envelope(&commit, &mut buf).unwrap();
 
         let d = decode_envelope(&buf).unwrap();
         assert_eq!(d.v, 3);
-        assert_eq!(d.previous.as_deref(), Some("prev-addr"));
         assert_eq!(d.previous_ref.as_ref().unwrap().address, "prev-addr");
         assert_eq!(
             d.previous_ref.as_ref().unwrap().id.as_deref(),
@@ -573,7 +537,6 @@ mod tests {
         assert_eq!(idx.address, "fluree:file://index/root.json");
         assert_eq!(idx.id.as_deref(), Some("fluree:index:sha256:ghi"));
         assert_eq!(idx.t, Some(8));
-        assert_eq!(d.indexed_at.as_deref(), Some("legacy-index-addr"));
     }
 
     #[test]
@@ -645,7 +608,7 @@ mod tests {
     #[test]
     fn test_decode_truncated() {
         let mut commit = make_minimal_commit();
-        commit.previous = Some("some-long-address-value".into());
+        commit.previous_ref = Some(CommitRef::new("some-long-address-value"));
 
         let mut buf = Vec::new();
         encode_envelope(&commit, &mut buf).unwrap();
@@ -661,9 +624,8 @@ mod tests {
 
     #[test]
     fn test_individual_flags() {
-        // Test each flag individually
+        // Test each active flag individually (legacy flags not tested here)
         let test_cases: Vec<Box<dyn Fn(&mut Commit)>> = vec![
-            Box::new(|c: &mut Commit| c.previous = Some("prev".into())),
             Box::new(|c: &mut Commit| c.previous_ref = Some(CommitRef::new("addr"))),
             Box::new(|c: &mut Commit| {
                 c.namespace_delta = HashMap::from([(1, "ns:".into())]);
@@ -674,7 +636,6 @@ mod tests {
                 c.data = Some(CommitData::default());
             }),
             Box::new(|c: &mut Commit| c.index = Some(IndexRef::new("idx-addr"))),
-            Box::new(|c: &mut Commit| c.indexed_at = Some("legacy".into())),
         ];
 
         for (i, setter) in test_cases.iter().enumerate() {
@@ -687,14 +648,12 @@ mod tests {
             let d = decode_envelope(&buf).unwrap();
 
             // Only the i-th field should be set
-            assert_eq!(d.previous.is_some(), i == 0, "flag bit {}", i);
-            assert_eq!(d.previous_ref.is_some(), i == 1, "flag bit {}", i);
-            assert_eq!(!d.namespace_delta.is_empty(), i == 2, "flag bit {}", i);
-            assert_eq!(d.txn.is_some(), i == 3, "flag bit {}", i);
-            assert_eq!(d.time.is_some(), i == 4, "flag bit {}", i);
-            assert_eq!(d.data.is_some(), i == 5, "flag bit {}", i);
-            assert_eq!(d.index.is_some(), i == 6, "flag bit {}", i);
-            assert_eq!(d.indexed_at.is_some(), i == 7, "flag bit {}", i);
+            assert_eq!(d.previous_ref.is_some(), i == 0, "flag bit {}", i);
+            assert_eq!(!d.namespace_delta.is_empty(), i == 1, "flag bit {}", i);
+            assert_eq!(d.txn.is_some(), i == 2, "flag bit {}", i);
+            assert_eq!(d.time.is_some(), i == 3, "flag bit {}", i);
+            assert_eq!(d.data.is_some(), i == 4, "flag bit {}", i);
+            assert_eq!(d.index.is_some(), i == 5, "flag bit {}", i);
         }
     }
 }
