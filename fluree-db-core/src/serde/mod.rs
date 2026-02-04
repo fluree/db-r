@@ -17,9 +17,7 @@
 //!
 //! ## Node Types
 //!
-//! - **DbRoot**: Index metadata with ledger-alias, t, namespace-codes, and index roots
-//! - **BranchNode**: Contains children array
-//! - **LeafNode**: Contains flakes array
+//! - **LeafNode**: Contains flakes array (v2 dictionary format with shared SID dictionary)
 
 pub mod flakes_transport;
 pub mod json;

@@ -44,9 +44,8 @@ pub mod parse;
 pub mod stage;
 mod value_convert;
 
-#[cfg(feature = "commit-v2")]
+#[cfg(feature = "import")]
 pub mod import;
-#[cfg(feature = "commit-v2")]
 pub mod import_sink;
 
 // Re-exports
@@ -65,5 +64,4 @@ pub use stage::{generate_txn_id, stage, stage_flakes, StageOptions};
 #[cfg(feature = "shacl")]
 pub use stage::stage_with_shacl;
 
-#[cfg(feature = "commit-v2")]
 pub mod commit_v2;

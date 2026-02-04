@@ -17,7 +17,7 @@ fn alias_prefix(alias: &str) -> String {
 fn default_run_dir(args: &Args) -> PathBuf {
     args.run_dir
         .clone()
-        .unwrap_or_else(|| args.db_dir.join(alias_prefix(&args.ledger)).join("runs"))
+        .unwrap_or_else(|| args.db_dir.join(alias_prefix(&args.ledger)).join("tmp_import"))
 }
 
 fn default_index_dir(args: &Args) -> PathBuf {
@@ -1014,7 +1014,7 @@ struct Args {
     #[arg(long)]
     generate_runs: bool,
 
-    /// Directory for run files (default: {db_dir}/runs).
+    /// Directory for run files (default: {db_dir}/tmp_import).
     #[arg(long)]
     run_dir: Option<PathBuf>,
 

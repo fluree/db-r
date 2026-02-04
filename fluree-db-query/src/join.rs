@@ -1552,7 +1552,7 @@ mod tests {
             "fluree_test_binary_join_{}",
             uuid::Uuid::new_v4()
         ));
-        let run_dir = base.join("runs");
+        let run_dir = base.join("tmp_import");
         let spot_dir = run_dir.join("spot");
         let psot_dir = run_dir.join("psot");
         let post_dir = run_dir.join("post");

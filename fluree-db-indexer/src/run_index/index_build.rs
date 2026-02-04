@@ -563,7 +563,7 @@ mod tests {
     fn test_end_to_end_small() {
         let dir = std::env::temp_dir().join("fluree_test_index_build_e2e");
         let _ = std::fs::remove_dir_all(&dir);
-        let run_dir = dir.join("runs");
+        let run_dir = dir.join("tmp_import");
         let index_dir = dir.join("index");
         std::fs::create_dir_all(&run_dir).unwrap();
 
@@ -607,7 +607,7 @@ mod tests {
     fn test_multi_graph() {
         let dir = std::env::temp_dir().join("fluree_test_index_build_multi_g");
         let _ = std::fs::remove_dir_all(&dir);
-        let run_dir = dir.join("runs");
+        let run_dir = dir.join("tmp_import");
         let index_dir = dir.join("index");
         std::fs::create_dir_all(&run_dir).unwrap();
 
@@ -650,7 +650,7 @@ mod tests {
     fn test_dedup_in_build() {
         let dir = std::env::temp_dir().join("fluree_test_index_build_dedup");
         let _ = std::fs::remove_dir_all(&dir);
-        let run_dir = dir.join("runs");
+        let run_dir = dir.join("tmp_import");
         let index_dir = dir.join("index");
         std::fs::create_dir_all(&run_dir).unwrap();
 

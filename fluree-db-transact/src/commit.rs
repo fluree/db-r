@@ -12,45 +12,7 @@ use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, Publisher};
 use fluree_db_novelty::{Commit, CommitData, CommitRef};
 use fluree_db_novelty::generate_commit_flakes;
-#[cfg(not(feature = "commit-v2"))]
-use serde::Serialize;
-#[cfg(not(feature = "commit-v2"))]
-use sha2::{Digest, Sha256};
-#[cfg(not(feature = "commit-v2"))]
-use std::collections::HashMap;
 use std::sync::Arc;
-
-/// Hashable commit representation (excludes address/id/time to avoid self-reference and nondeterminism)
-///
-/// Only used in the non-v2 path. When commit-v2 is enabled, the blob's trailing
-/// SHA-256 serves as the content address directly.
-#[cfg(not(feature = "commit-v2"))]
-#[derive(Serialize)]
-struct CommitForHash<'a> {
-    t: i64,
-    flakes: &'a [fluree_db_core::Flake],
-    previous: &'a Option<String>,
-    namespace_delta: &'a HashMap<i32, String>,
-    /// Transaction address - included in hash for content-address integrity
-    txn: &'a Option<String>,
-}
-
-#[cfg(not(feature = "commit-v2"))]
-fn compute_commit_id(commit: &Commit) -> String {
-    let previous = commit.previous_address().map(|s| s.to_string());
-    let for_hash = CommitForHash {
-        t: commit.t,
-        flakes: &commit.flakes,
-        previous: &previous,
-        namespace_delta: &commit.namespace_delta,
-        txn: &commit.txn,
-    };
-
-    // Use postcard for canonical binary encoding
-    let canonical = postcard::to_stdvec(&for_hash).expect("postcard serialization should not fail");
-    let hash = Sha256::digest(&canonical);
-    format!("sha256:{}", hex::encode(hash))
-}
 
 /// Receipt returned after a successful commit
 #[derive(Debug, Clone)]
@@ -275,34 +237,13 @@ where
     // set (to avoid self-reference). We inject them into the in-memory struct
     // after the write for downstream logic (metadata flakes, receipt, etc.).
 
-    // With commit-v2: the blob's trailing SHA-256 IS the content address.
-    // Without: compute a separate content ID via postcard + SHA-256.
-    #[cfg(feature = "commit-v2")]
+    // The blob's trailing SHA-256 IS the content address.
     let (commit_id, commit_hash_hex, bytes) = {
         let span = tracing::info_span!("commit_write_commit_blob");
         let _g = span.enter();
         let result = crate::commit_v2::write_commit(&commit_record, true)?;
         let commit_id = format!("sha256:{}", &result.content_hash_hex);
         (commit_id, result.content_hash_hex, result.bytes)
-    };
-
-    #[cfg(not(feature = "commit-v2"))]
-    let (commit_id, commit_hash_hex, bytes) = {
-        let commit_id = {
-            let span = tracing::info_span!("commit_compute_id");
-            let _g = span.enter();
-            compute_commit_id(&commit_record)
-        };
-        let commit_hash_hex = commit_id
-            .strip_prefix("sha256:")
-            .unwrap_or(commit_id.as_str())
-            .to_string();
-        let bytes = {
-            let span = tracing::info_span!("commit_write_commit_blob");
-            let _g = span.enter();
-            serde_json::to_vec(&commit_record)?
-        };
-        (commit_id, commit_hash_hex, bytes)
     };
 
     let write_res = storage

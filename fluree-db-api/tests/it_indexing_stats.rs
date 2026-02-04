@@ -13,7 +13,6 @@
 mod support;
 
 use fluree_db_api::{FlureeBuilder, IndexConfig, LedgerState, Novelty};
-use fluree_db_core::serde::json::parse_db_root;
 use fluree_db_core::{Db, Storage, StorageRead};
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::{json, Value as JsonValue};
@@ -126,34 +125,6 @@ async fn property_and_class_statistics_persist_in_db_root() {
                 Some(1)
             );
 
-            let root_bytes = fluree
-                .storage()
-                .read_bytes(&root_address)
-                .await
-                .expect("read_bytes(db_root)");
-            let parsed_root = parse_db_root(root_bytes).expect("parse_db_root");
-            let parsed_stats = parsed_root.stats.expect("db-root should include stats");
-
-            assert_eq!(
-                parsed_stats
-                    .properties
-                    .as_ref()
-                    .map(|v| v.len())
-                    .unwrap_or(0),
-                loaded
-                    .stats
-                    .as_ref()
-                    .and_then(|s| s.properties.as_ref().map(|v| v.len()))
-                    .unwrap_or(0)
-            );
-            assert_eq!(
-                parsed_stats.classes.as_ref().map(|v| v.len()).unwrap_or(0),
-                loaded
-                    .stats
-                    .as_ref()
-                    .and_then(|s| s.classes.as_ref().map(|v| v.len()))
-                    .unwrap_or(0)
-            );
         })
         .await;
 }

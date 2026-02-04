@@ -16,12 +16,10 @@
 use super::{load_garbage_record, CleanGarbageConfig, CleanGarbageResult};
 use super::{DEFAULT_MAX_OLD_INDEXES, DEFAULT_MIN_TIME_GARBAGE_MINS};
 use crate::error::Result;
-use fluree_db_core::serde::json::parse_db_root;
 use fluree_db_core::Storage;
+use serde::Deserialize;
 
 /// Entry in the prev-index chain.
-///
-/// Format-agnostic: works with both legacy `DbRoot` and `BinaryIndexRootV2`.
 struct IndexChainEntry {
     /// Transaction time of this index.
     t: i64,
@@ -33,29 +31,30 @@ struct IndexChainEntry {
     garbage_address: Option<String>,
 }
 
-/// Extract the GC-relevant fields from a root blob, regardless of format.
-///
-/// When `commit-v2` is enabled, tries `BinaryIndexRootV2` first (serde_json
-/// on borrowed `&[u8]`). Falls back to legacy `DbRoot` (simd_json on owned
-/// `Vec<u8>`).
+// Lightweight structs for extracting GC-relevant fields from a v2 index root.
+// Only deserializes the three fields needed for chain-walking.
+
+#[derive(Deserialize)]
+struct GcRootFields {
+    index_t: i64,
+    #[serde(default)]
+    prev_index: Option<GcRef>,
+    #[serde(default)]
+    garbage: Option<GcRef>,
+}
+
+#[derive(Deserialize)]
+struct GcRef {
+    address: String,
+}
+
+/// Extract the GC-relevant fields from a v2 index root blob.
 fn parse_chain_fields(bytes: &[u8]) -> Result<(i64, Option<String>, Option<String>)> {
-    // Try v2 first (non-consuming — serde_json works on &[u8])
-    #[cfg(feature = "commit-v2")]
-    {
-        if let Ok(root) = crate::run_index::BinaryIndexRootV2::from_json_bytes(bytes) {
-            return Ok((
-                root.index_t,
-                root.prev_index.map(|p| p.address),
-                root.garbage.map(|g| g.address),
-            ));
-        }
-    }
-    // Fall back to legacy DbRoot (simd_json mutates, needs owned Vec)
-    let root = parse_db_root(bytes.to_vec())?;
+    let fields: GcRootFields = serde_json::from_slice(bytes)?;
     Ok((
-        root.t,
-        root.prev_index.map(|p| p.address),
-        root.garbage.map(|g| g.address),
+        fields.index_t,
+        fields.prev_index.map(|p| p.address),
+        fields.garbage.map(|g| g.address),
     ))
 }
 
@@ -307,19 +306,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_walk_empty_chain() {
-        // Create a simple db-root with no prev_index
+        // Create a simple index root with no prev_index
         let storage = MemoryStorage::new();
 
-        // Create minimal db-root JSON
-        let db_root_json = r#"{
-            "ledger-alias": "test/main",
-            "t": 1,
-            "v": 2,
-            "namespace-codes": {}
-        }"#;
+        let root_json = r#"{"index_t": 1, "ledger_alias": "test/main"}"#;
         let address = "fluree:file://test/main/index/root/abc.json";
         storage
-            .write_bytes(address, db_root_json.as_bytes())
+            .write_bytes(address, root_json.as_bytes())
             .await
             .unwrap();
 
@@ -333,16 +326,10 @@ mod tests {
     async fn test_clean_garbage_not_enough_indexes() {
         let storage = MemoryStorage::new();
 
-        // Create a single db-root (not enough for GC)
-        let db_root_json = r#"{
-            "ledger-alias": "test/main",
-            "t": 1,
-            "v": 2,
-            "namespace-codes": {}
-        }"#;
+        let root_json = r#"{"index_t": 1, "ledger_alias": "test/main"}"#;
         let address = "fluree:file://test/main/index/root/abc.json";
         storage
-            .write_bytes(address, db_root_json.as_bytes())
+            .write_bytes(address, root_json.as_bytes())
             .await
             .unwrap();
 
@@ -365,35 +352,15 @@ mod tests {
         let addr2 = "fluree:file://test/main/index/root/t2.json";
         let addr3 = "fluree:file://test/main/index/root/t3.json";
 
-        // Root at t=1 (oldest, no prev)
-        let root1 = r#"{
-            "ledger-alias": "test/main",
-            "t": 1,
-            "v": 2,
-            "namespace-codes": {}
-        }"#;
+        let root1 = r#"{"index_t": 1, "ledger_alias": "test/main"}"#;
 
-        // Root at t=2 (points to t=1)
         let root2 = format!(
-            r#"{{
-                "ledger-alias": "test/main",
-                "t": 2,
-                "v": 2,
-                "namespace-codes": {{}},
-                "prev-index": {{ "t": 1, "address": "{}" }}
-            }}"#,
+            r#"{{"index_t": 2, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}}}"#,
             addr1
         );
 
-        // Root at t=3 (points to t=2)
         let root3 = format!(
-            r#"{{
-                "ledger-alias": "test/main",
-                "t": 3,
-                "v": 2,
-                "namespace-codes": {{}},
-                "prev-index": {{ "t": 2, "address": "{}" }}
-            }}"#,
+            r#"{{"index_t": 3, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}}}"#,
             addr2
         );
 
@@ -401,13 +368,12 @@ mod tests {
         storage.write_bytes(addr2, root2.as_bytes()).await.unwrap();
         storage.write_bytes(addr3, root3.as_bytes()).await.unwrap();
 
-        // Walk from newest (t=3)
         let chain = walk_prev_index_chain(&storage, addr3).await.unwrap();
 
         assert_eq!(chain.len(), 3);
-        assert_eq!(chain[0].t, 3); // newest first
+        assert_eq!(chain[0].t, 3);
         assert_eq!(chain[1].t, 2);
-        assert_eq!(chain[2].t, 1); // oldest last
+        assert_eq!(chain[2].t, 1);
     }
 
     #[tokio::test]
@@ -420,13 +386,7 @@ mod tests {
 
         // Root at t=2 points to missing t=1
         let root2 = format!(
-            r#"{{
-                "ledger-alias": "test/main",
-                "t": 2,
-                "v": 2,
-                "namespace-codes": {{}},
-                "prev-index": {{ "t": 1, "address": "{}" }}
-            }}"#,
+            r#"{{"index_t": 2, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}}}"#,
             addr_missing
         );
 
@@ -456,23 +416,23 @@ mod tests {
         let old_ts = current_timestamp_ms() - (60 * 60 * 1000);
 
         // t=1: oldest, no prev, no garbage
-        let root1 = r#"{"ledger-alias": "test/main", "t": 1, "v": 2, "namespace-codes": {}}"#;
+        let root1 = r#"{"index_t": 1, "ledger_alias": "test/main"}"#;
 
         // t=2: points to t=1, no garbage
         let root2 = format!(
-            r#"{{"ledger-alias": "test/main", "t": 2, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 1, "address": "{}"}}}}"#,
+            r#"{{"index_t": 2, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}}}"#,
             addr1
         );
 
         // t=3: points to t=2, HAS garbage (lists what was replaced going from t=2 to t=3)
         let root3 = format!(
-            r#"{{"ledger-alias": "test/main", "t": 3, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 2, "address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
+            r#"{{"index_t": 3, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
             addr2, garbage_addr3
         );
 
         // t=4: current, points to t=3, no garbage
         let root4 = format!(
-            r#"{{"ledger-alias": "test/main", "t": 4, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 3, "address": "{}"}}}}"#,
+            r#"{{"index_t": 4, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}}}"#,
             addr3
         );
 
@@ -542,19 +502,19 @@ mod tests {
 
         // t=1: oldest, no prev
         let root1 = format!(
-            r#"{{"ledger-alias": "test/main", "t": 1, "v": 2, "namespace-codes": {{}}, "garbage": {{"address": "{}"}}}}"#,
+            r#"{{"index_t": 1, "ledger_alias": "test/main", "garbage": {{"address": "{}"}}}}"#,
             garbage_addr1
         );
 
         // t=2: points to t=1, has garbage manifest for what was replaced from t=1
         let root2 = format!(
-            r#"{{"ledger-alias": "test/main", "t": 2, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 1, "address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
+            r#"{{"index_t": 2, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
             addr1, garbage_addr2
         );
 
         // t=3: current, points to t=2, no garbage
         let root3 = format!(
-            r#"{{"ledger-alias": "test/main", "t": 3, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 2, "address": "{}"}}}}"#,
+            r#"{{"index_t": 3, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}}}"#,
             addr2
         );
 
@@ -622,15 +582,15 @@ mod tests {
         // Recent timestamp (5 mins ago) - NOT old enough
         let recent_ts = current_timestamp_ms() - (5 * 60 * 1000);
 
-        let root1 = r#"{"ledger-alias": "test/main", "t": 1, "v": 2, "namespace-codes": {}}"#;
+        let root1 = r#"{"index_t": 1, "ledger_alias": "test/main"}"#;
 
         let root2 = format!(
-            r#"{{"ledger-alias": "test/main", "t": 2, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 1, "address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
+            r#"{{"index_t": 2, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
             addr1, garbage_addr2
         );
 
         let root3 = format!(
-            r#"{{"ledger-alias": "test/main", "t": 3, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 2, "address": "{}"}}}}"#,
+            r#"{{"index_t": 3, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}}}"#,
             addr2
         );
 
@@ -676,15 +636,15 @@ mod tests {
 
         let old_ts = current_timestamp_ms() - (60 * 60 * 1000);
 
-        let root1 = r#"{"ledger-alias": "test/main", "t": 1, "v": 2, "namespace-codes": {}}"#;
+        let root1 = r#"{"index_t": 1, "ledger_alias": "test/main"}"#;
 
         let root2 = format!(
-            r#"{{"ledger-alias": "test/main", "t": 2, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 1, "address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
+            r#"{{"index_t": 2, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
             addr1, garbage_addr2
         );
 
         let root3 = format!(
-            r#"{{"ledger-alias": "test/main", "t": 3, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 2, "address": "{}"}}}}"#,
+            r#"{{"index_t": 3, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}}}"#,
             addr2
         );
 
@@ -734,13 +694,13 @@ mod tests {
         let addr3 = "fluree:file://test/main/index/root/t3.json";
 
         // No garbage manifests anywhere
-        let root1 = r#"{"ledger-alias": "test/main", "t": 1, "v": 2, "namespace-codes": {}}"#;
+        let root1 = r#"{"index_t": 1, "ledger_alias": "test/main"}"#;
         let root2 = format!(
-            r#"{{"ledger-alias": "test/main", "t": 2, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 1, "address": "{}"}}}}"#,
+            r#"{{"index_t": 2, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}}}"#,
             addr1
         );
         let root3 = format!(
-            r#"{{"ledger-alias": "test/main", "t": 3, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 2, "address": "{}"}}}}"#,
+            r#"{{"index_t": 3, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}}}"#,
             addr2
         );
 
@@ -769,13 +729,13 @@ mod tests {
         let addr3 = "fluree:file://test/main/index/root/t3.json";
         let garbage_addr2 = "fluree:file://test/main/index/garbage/t2.json";
 
-        let root1 = r#"{"ledger-alias": "test/main", "t": 1, "v": 2, "namespace-codes": {}}"#;
+        let root1 = r#"{"index_t": 1, "ledger_alias": "test/main"}"#;
         let root2 = format!(
-            r#"{{"ledger-alias": "test/main", "t": 2, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 1, "address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
+            r#"{{"index_t": 2, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
             addr1, garbage_addr2
         );
         let root3 = format!(
-            r#"{{"ledger-alias": "test/main", "t": 3, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 2, "address": "{}"}}}}"#,
+            r#"{{"index_t": 3, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}}}"#,
             addr2
         );
 
@@ -824,29 +784,29 @@ mod tests {
         let old_ts = current_timestamp_ms() - (60 * 60 * 1000);
 
         // t=1: oldest, no prev
-        let root1 = r#"{"ledger-alias": "test/main", "t": 1, "v": 2, "namespace-codes": {}}"#;
+        let root1 = r#"{"index_t": 1, "ledger_alias": "test/main"}"#;
 
         // t=2: points to t=1, has garbage (nodes replaced from t=1)
         let root2 = format!(
-            r#"{{"ledger-alias": "test/main", "t": 2, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 1, "address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
+            r#"{{"index_t": 2, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
             addr1, garbage_addr2
         );
 
         // t=3: points to t=2, has garbage (nodes replaced from t=2)
         let root3 = format!(
-            r#"{{"ledger-alias": "test/main", "t": 3, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 2, "address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
+            r#"{{"index_t": 3, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
             addr2, garbage_addr3
         );
 
         // t=4: points to t=3, has garbage (nodes replaced from t=3)
         let root4 = format!(
-            r#"{{"ledger-alias": "test/main", "t": 4, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 3, "address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
+            r#"{{"index_t": 4, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
             addr3, garbage_addr4
         );
 
         // t=5: current, points to t=4
         let root5 = format!(
-            r#"{{"ledger-alias": "test/main", "t": 5, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 4, "address": "{}"}}}}"#,
+            r#"{{"index_t": 5, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}}}"#,
             addr4
         );
 
@@ -934,17 +894,17 @@ mod tests {
         let old_ts = current_timestamp_ms() - (60 * 60 * 1000);
         let recent_ts = current_timestamp_ms() - (5 * 60 * 1000);
 
-        let root1 = r#"{"ledger-alias": "test/main", "t": 1, "v": 2, "namespace-codes": {}}"#;
+        let root1 = r#"{"index_t": 1, "ledger_alias": "test/main"}"#;
         let root2 = format!(
-            r#"{{"ledger-alias": "test/main", "t": 2, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 1, "address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
+            r#"{{"index_t": 2, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
             addr1, garbage_addr2
         );
         let root3 = format!(
-            r#"{{"ledger-alias": "test/main", "t": 3, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 2, "address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
+            r#"{{"index_t": 3, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}, "garbage": {{"address": "{}"}}}}"#,
             addr2, garbage_addr3
         );
         let root4 = format!(
-            r#"{{"ledger-alias": "test/main", "t": 4, "v": 2, "namespace-codes": {{}}, "prev-index": {{"t": 3, "address": "{}"}}}}"#,
+            r#"{{"index_t": 4, "ledger_alias": "test/main", "prev_index": {{"address": "{}"}}}}"#,
             addr3
         );
 
@@ -985,13 +945,11 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_chain_fields_legacy_dbroot() {
+    fn test_parse_chain_fields_v2() {
         let json = r#"{
-            "ledger-alias": "test/main",
-            "t": 5,
-            "v": 2,
-            "namespace-codes": {},
-            "prev-index": {"t": 4, "address": "cas://prev"},
+            "ledger_alias": "test/main",
+            "index_t": 5,
+            "prev_index": {"address": "cas://prev"},
             "garbage": {"address": "cas://garbage"}
         }"#;
         let (t, prev, garbage) = parse_chain_fields(json.as_bytes()).unwrap();
@@ -1001,47 +959,14 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_chain_fields_legacy_no_gc() {
+    fn test_parse_chain_fields_v2_minimal() {
         let json = r#"{
-            "ledger-alias": "test/main",
-            "t": 1,
-            "v": 2,
-            "namespace-codes": {}
+            "ledger_alias": "test/main",
+            "index_t": 1
         }"#;
         let (t, prev, garbage) = parse_chain_fields(json.as_bytes()).unwrap();
         assert_eq!(t, 1);
         assert_eq!(prev, None);
         assert_eq!(garbage, None);
-    }
-
-    #[cfg(feature = "commit-v2")]
-    #[test]
-    fn test_parse_chain_fields_v2_root() {
-        use crate::run_index::{
-            BinaryIndexRootV2, BinaryPrevIndexRef, BinaryGarbageRef,
-            DictAddresses, GraphAddresses, GraphOrderAddresses,
-        };
-        use std::collections::{BTreeMap, HashMap};
-
-        let dicts = DictAddresses {
-            predicates: "a".into(), graphs: "b".into(),
-            datatypes: "c".into(), languages: "d".into(),
-            subject_forward: "e".into(), subject_index: "f".into(),
-            subject_reverse: "g".into(), string_forward: "h".into(),
-            string_index: "i".into(), string_reverse: "j".into(),
-            namespaces: "k".into(), numbig: BTreeMap::new(),
-        };
-        let root = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 10, 1, &HashMap::new(), dicts, vec![],
-            None, None,
-            Some(BinaryPrevIndexRef { t: 8, address: "cas://prev_v2".into() }),
-            Some(BinaryGarbageRef { address: "cas://garbage_v2".into() }),
-        );
-        let bytes = root.to_json_bytes().unwrap();
-
-        let (t, prev, garbage) = parse_chain_fields(&bytes).unwrap();
-        assert_eq!(t, 10);
-        assert_eq!(prev.as_deref(), Some("cas://prev_v2"));
-        assert_eq!(garbage.as_deref(), Some("cas://garbage_v2"));
     }
 }

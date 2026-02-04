@@ -7,7 +7,6 @@
 //!
 //! See the Phase 3 plan for full semantics documentation.
 
-#[cfg(feature = "commit-v2")]
 mod inner {
     use crate::commit_v2::CommitV2Envelope;
     use crate::commit_v2::StreamingCommitWriter;
@@ -332,7 +331,6 @@ mod inner {
     }
 }
 
-#[cfg(feature = "commit-v2")]
 pub use inner::{
     finalize_parsed_chunk, import_commit, parse_chunk, ImportCommitResult, ImportState, ParsedChunk,
 };

@@ -1264,36 +1264,77 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
             index = IndexType::Post;
         }
 
-        let range_match = self.build_range_match(ctx.db);
-        let mut opts = RangeOptions::new().with_to_t(ctx.to_t);
-        if let Some(from_t) = ctx.from_t {
-            opts = opts.with_from_t(from_t);
-        }
-        if ctx.history_mode {
-            opts = opts.with_history_mode();
-        }
-        if let Some(ref bounds) = self.object_bounds {
-            opts = opts.with_object_bounds(bounds.clone());
-        }
+        // Collect matching flakes — iterate over all active default graphs
+        // in dataset mode so multi-ledger union queries return results from
+        // every graph, not just the primary.
+        let flakes = if let Some(graphs) = ctx.default_graphs_slice() {
+            let mut all_flakes = Vec::new();
+            for graph in graphs {
+                let range_match = self.build_range_match(graph.db);
+                let mut opts = RangeOptions::new().with_to_t(graph.to_t);
+                if let Some(from_t) = ctx.from_t {
+                    opts = opts.with_from_t(from_t);
+                }
+                if ctx.history_mode {
+                    opts = opts.with_history_mode();
+                }
+                if let Some(ref bounds) = self.object_bounds {
+                    opts = opts.with_object_bounds(bounds.clone());
+                }
+                let graph_flakes = range_with_overlay(
+                    graph.db,
+                    graph.overlay,
+                    index,
+                    RangeTest::Eq,
+                    range_match,
+                    opts,
+                )
+                .await
+                .map_err(|e| QueryError::execution(e.to_string()))?;
+                // Pre-filter per graph (overlay may return a superset).
+                all_flakes.extend(
+                    graph_flakes.into_iter().filter(|f| self.flake_matches(f, graph.db)),
+                );
+            }
+            all_flakes
+        } else {
+            let range_match = self.build_range_match(ctx.db);
+            let mut opts = RangeOptions::new().with_to_t(ctx.to_t);
+            if let Some(from_t) = ctx.from_t {
+                opts = opts.with_from_t(from_t);
+            }
+            if ctx.history_mode {
+                opts = opts.with_history_mode();
+            }
+            if let Some(ref bounds) = self.object_bounds {
+                opts = opts.with_object_bounds(bounds.clone());
+            }
+            range_with_overlay(
+                ctx.db,
+                ctx.overlay(),
+                index,
+                RangeTest::Eq,
+                range_match,
+                opts,
+            )
+            .await
+            .map_err(|e| QueryError::execution(e.to_string()))?
+        };
 
-        let flakes = range_with_overlay(
-            ctx.db,
-            ctx.overlay(),
-            index,
-            RangeTest::Eq,
-            range_match,
-            opts,
-        )
-        .await
-        .map_err(|e| QueryError::execution(e.to_string()))?;
+        let is_multi_graph = ctx.default_graphs_slice().is_some();
 
-        // Post-filter: overlay-only path may return a superset of matches
+        // Post-filter: overlay-only path may return a superset of matches.
+        // In multi-graph mode, flakes were already pre-filtered per graph above.
         let batch_size = ctx.batch_size;
         let ncols = self.schema.len();
 
         if ncols == 0 {
             // All terms bound (existence check): count matches, emit empty-schema batch
-            let match_count = flakes.iter().filter(|f| self.flake_matches(f, ctx.db)).count();
+            let match_count = if is_multi_graph {
+                flakes.len()
+            } else {
+                flakes.iter().filter(|f| self.flake_matches(f, ctx.db)).count()
+            };
             if match_count > 0 {
                 self.batches.push_back(Batch::empty_schema_with_len(match_count));
             }
@@ -1303,7 +1344,7 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
             let mut row_count = 0;
 
             for f in &flakes {
-                if !self.flake_matches(f, ctx.db) {
+                if !is_multi_graph && !self.flake_matches(f, ctx.db) {
                     continue;
                 }
 
