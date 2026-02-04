@@ -105,9 +105,9 @@ pub async fn build_policy_context_from_opts<S: Storage + Clone + 'static>(
     // Priority follows Clojure semantics: identity > policy_class > policy
     // If identity is present, it triggers f:policyClass lookup AND binds ?$identity.
     // For inline policies with identity binding, use policy_values["?$identity"] instead.
-    let restrictions = if opts.identity.is_some() {
+    let restrictions = if let Some(identity) = &opts.identity {
         // Identity-based: query for policies via f:policyClass (highest priority)
-        load_policies_by_identity(db, overlay, to_t, opts.identity.as_ref().unwrap()).await?
+        load_policies_by_identity(db, overlay, to_t, identity).await?
     } else if let Some(classes) = &opts.policy_class {
         // Class-based: query for policies of given types
         load_policies_by_class(db, overlay, to_t, classes).await?

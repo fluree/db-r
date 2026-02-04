@@ -103,10 +103,10 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         modifiers: &SolutionModifiers,
         select: &SelectClause,
     ) -> Result<QueryOptions> {
-        let mut options = QueryOptions::default();
-
-        // DISTINCT from SelectClause modifier
-        options.distinct = select.modifier == Some(SelectModifier::Distinct);
+        let mut options = QueryOptions {
+            distinct: select.modifier == Some(SelectModifier::Distinct),
+            ..Default::default()
+        };
 
         // LIMIT, OFFSET, ORDER BY
         self.lower_base_modifiers(modifiers, &mut options)?;

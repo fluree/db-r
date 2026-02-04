@@ -887,8 +887,8 @@ where
     // Slow path: has nulls, check def_levels
     // For optional columns (max_def_level = 1), def_levels[i] > 0 means value present
     let mut value_idx = 0;
-    for i in 0..records_read {
-        if def_levels[i] > 0 && value_idx < values_read {
+    for &def_level in def_levels.iter().take(records_read) {
+        if def_level > 0 && value_idx < values_read {
             result.push(Some(convert(&values[value_idx])));
             value_idx += 1;
         } else {
@@ -1110,14 +1110,14 @@ fn decode_byte_array_column(
         // For required columns (values_read == records_read): all values present
 
         let mut value_idx = 0;
-        for i in 0..records_read {
+        for (i, &def_level) in def_levels.iter().enumerate().take(records_read) {
             // Determine if this record position has a value
             let has_value = if values_read == records_read {
                 // All records have values (required column or no nulls)
                 true
             } else {
                 // Optional column with some nulls - check definition level
-                def_levels[i] > 0
+                def_level > 0
             };
 
             if has_value {
@@ -1203,11 +1203,11 @@ fn decode_fixed_len_byte_array_column(
         }
 
         let mut value_idx = 0;
-        for i in 0..records_read {
+        for &def_level in def_levels.iter().take(records_read) {
             let has_value = if values_read == records_read {
                 true
             } else {
-                def_levels[i] > 0
+                def_level > 0
             };
 
             if has_value && value_idx < values_read {

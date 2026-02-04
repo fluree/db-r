@@ -240,3 +240,9 @@ impl OwlSidRegistry {
         }
     }
 }
+
+impl Default for OwlSidRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}

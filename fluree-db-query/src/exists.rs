@@ -139,6 +139,7 @@ impl<S: Storage + 'static> Operator<S> for ExistsOperator<S> {
     async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
         if self.uncorrelated {
             // Evaluate once with an empty seed (fresh scope).
+            #[allow(clippy::box_default)]
             let seed: BoxedOperator<S> = Box::new(EmptyOperator::new());
             let mut exists_op = build_where_operators_seeded(
                 Some(seed),

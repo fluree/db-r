@@ -79,8 +79,10 @@ impl FlureeHeaders {
 
     /// Parse headers from a HeaderMap
     pub fn from_headers(headers: &HeaderMap) -> Result<Self> {
-        let mut fluree_headers = Self::default();
-        fluree_headers.raw = headers.clone();
+        let mut fluree_headers = Self {
+            raw: headers.clone(),
+            ..Default::default()
+        };
 
         // String headers
         if let Some(val) = get_header_str(headers, Self::LEDGER) {
@@ -214,11 +216,10 @@ impl FlureeHeaders {
             );
         }
 
-        if self.max_fuel.is_some() && !opts.contains_key("max-fuel") {
-            opts.insert(
-                "max-fuel".to_string(),
-                JsonValue::Number(self.max_fuel.unwrap().into()),
-            );
+        if let Some(max_fuel) = self.max_fuel {
+            if !opts.contains_key("max-fuel") {
+                opts.insert("max-fuel".to_string(), JsonValue::Number(max_fuel.into()));
+            }
         }
 
         // Inject tracking options into meta if any tracking is enabled via headers

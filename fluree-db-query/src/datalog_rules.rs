@@ -559,8 +559,14 @@ pub async fn execute_rule_matching<S: Storage>(
 
         let mut new_bindings = Vec::new();
         for existing_bindings in &binding_rows {
-            let extended =
-                match_pattern(pattern, db, overlay, to_t, &[existing_bindings.clone()]).await?;
+            let extended = match_pattern(
+                pattern,
+                db,
+                overlay,
+                to_t,
+                std::slice::from_ref(existing_bindings),
+            )
+            .await?;
             new_bindings.extend(extended);
         }
         binding_rows = new_bindings;

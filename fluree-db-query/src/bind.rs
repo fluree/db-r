@@ -162,9 +162,11 @@ impl<S: Storage + 'static> Operator<S> for BindOperator<S> {
                 }
 
                 // Copy child columns
-                for col_idx in 0..child_num_cols {
+                for (col_idx, output_col) in
+                    output_columns.iter_mut().enumerate().take(child_num_cols)
+                {
                     let binding = input_batch.get_by_col(row_idx, col_idx).clone();
-                    output_columns[col_idx].push(binding);
+                    output_col.push(binding);
                 }
 
                 // Add bound value

@@ -380,6 +380,7 @@ impl<S: Storage + 'static> Operator<S> for Bm25SearchOperator<S> {
 
         let limit = self.pattern.limit.unwrap_or(usize::MAX);
 
+        #[allow(clippy::needless_range_loop)]
         for row_idx in 0..input_batch.len() {
             let row_view = input_batch.row_view(row_idx).unwrap();
 

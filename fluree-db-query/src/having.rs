@@ -107,8 +107,8 @@ impl<S: Storage + 'static> Operator<S> for HavingOperator<S> {
 
                 if passes {
                     // Copy this row to output
-                    for col_idx in 0..self.schema.len() {
-                        output_columns[col_idx].push(batch.get_by_col(row_idx, col_idx).clone());
+                    for (col_idx, output_col) in output_columns.iter_mut().enumerate() {
+                        output_col.push(batch.get_by_col(row_idx, col_idx).clone());
                     }
                     rows_added += 1;
                 }

@@ -203,7 +203,6 @@ pub struct HllStatsHook {
 }
 
 #[cfg(feature = "hll-stats")]
-#[cfg(feature = "hll-stats")]
 impl HllStatsHook {
     /// Create a new HLL stats hook
     pub fn new() -> Self {

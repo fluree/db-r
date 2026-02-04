@@ -407,6 +407,12 @@ impl BinaryFilter {
     }
 }
 
+impl Default for BinaryFilter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ============================================================================
 // DecodedBatch: columnar output from cursor
 // ============================================================================

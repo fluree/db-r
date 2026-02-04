@@ -27,7 +27,7 @@ use crate::scan::predicate::{ComparisonOp, Expression, LiteralValue};
 /// * `partition_spec_fields` - Mapping from partition field index to source field ID
 pub fn can_contain_partition(
     expr: &Expression,
-    summaries: &[PartitionFieldSummary],
+    _summaries: &[PartitionFieldSummary],
     _schema: &Schema,
     _partition_spec_fields: &[(i32, i32)], // (partition_field_idx, source_field_id)
 ) -> bool {
@@ -47,13 +47,13 @@ pub fn can_contain_partition(
             // All must be able to contain
             exprs
                 .iter()
-                .all(|e| can_contain_partition(e, summaries, _schema, _partition_spec_fields))
+                .all(|e| can_contain_partition(e, _summaries, _schema, _partition_spec_fields))
         }
         Expression::Or(exprs) => {
             // Any might contain
             exprs
                 .iter()
-                .any(|e| can_contain_partition(e, summaries, _schema, _partition_spec_fields))
+                .any(|e| can_contain_partition(e, _summaries, _schema, _partition_spec_fields))
         }
         // For column predicates, we can't easily map to partition summaries without
         // understanding partition transforms. Be conservative.

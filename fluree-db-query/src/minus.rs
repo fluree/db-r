@@ -134,8 +134,10 @@ impl<S: Storage + 'static> Operator<S> for MinusOperator<S> {
             // For each input row, check if it should be kept
             let mut keep_rows: Vec<bool> = vec![true; input_batch.len()];
 
+            #[allow(clippy::needless_range_loop)]
             for row_idx in 0..input_batch.len() {
                 // Execute MINUS patterns with empty seed (fresh scope)
+                #[allow(clippy::box_default)]
                 let seed: BoxedOperator<S> = Box::new(EmptyOperator::new());
                 let mut minus_op = build_where_operators_seeded(
                     Some(seed),
@@ -183,9 +185,9 @@ impl<S: Storage + 'static> Operator<S> for MinusOperator<S> {
 
             for (row_idx, keep) in keep_rows.iter().enumerate() {
                 if *keep {
-                    for (col_idx, var) in self.schema.iter().enumerate() {
-                        if let Some(col) = input_batch.column(*var) {
-                            columns[col_idx].push(col[row_idx].clone());
+                    for (col, var) in columns.iter_mut().zip(self.schema.iter()) {
+                        if let Some(input_col) = input_batch.column(*var) {
+                            col.push(input_col[row_idx].clone());
                         }
                     }
                 }

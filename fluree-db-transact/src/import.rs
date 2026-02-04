@@ -47,6 +47,12 @@ mod inner {
         }
     }
 
+    impl Default for ImportState {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     /// Result of importing a single TTL chunk.
     pub struct ImportCommitResult {
         /// Storage address of the committed blob.

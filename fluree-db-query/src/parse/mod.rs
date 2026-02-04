@@ -989,13 +989,12 @@ fn parse_filter_value(value: &JsonValue) -> Result<UnresolvedFilterExpr> {
     }
 }
 
-/// Parse an S-expression string like "(> ?age 45)" into a filter expression
-///
-/// # Supported syntax
-/// - Atoms: `?var`, numbers, `true`/`false`, quoted strings `"text"`
-/// - Expressions: `(op arg1 arg2 ...)`
-/// - Nested: `(and (> ?x 10) (< ?y 100))`
-///
+// Parse an S-expression string like "(> ?age 45)" into a filter expression
+//
+// # Supported syntax
+// - Atoms: `?var`, numbers, `true`/`false`, quoted strings `"text"`
+// - Expressions: `(op arg1 arg2 ...)`
+// - Nested: `(and (> ?x 10) (< ?y 100))`
 // Limitations of S-expression filter parsing:
 // - Quoted strings cannot contain whitespace, parentheses, or escape sequences
 //   (e.g., `"Smith Jr"` with a space will not parse correctly)

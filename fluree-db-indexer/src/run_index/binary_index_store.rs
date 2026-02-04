@@ -1769,10 +1769,10 @@ fn cache_bytes_to_file(
         // same content, so if target now exists we can discard our tmp.
         let _ = std::fs::remove_file(&tmp);
         if !target.exists() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("failed to cache {}.{} to {:?}", hash, ext, cache_dir),
-            ));
+            return Err(io::Error::other(format!(
+                "failed to cache {}.{} to {:?}",
+                hash, ext, cache_dir
+            )));
         }
     }
     Ok(target)

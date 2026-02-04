@@ -617,9 +617,9 @@ impl<S: Storage + 'static> Operator<S> for PropertyPathOperator<S> {
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
-        if self.child.is_some() {
+        if let Some(child) = &mut self.child {
             // Correlated mode: open child
-            self.child.as_mut().unwrap().open(ctx).await?;
+            child.open(ctx).await?;
         } else {
             // Unseeded mode: execute traversal now
             self.execute_unseeded(ctx).await?;

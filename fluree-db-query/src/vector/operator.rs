@@ -270,6 +270,7 @@ impl<S: Storage + 'static> Operator<S> for VectorSearchOperator<S> {
 
         let limit = self.pattern.limit.unwrap_or(10);
 
+        #[allow(clippy::needless_range_loop)]
         for row_idx in 0..input_batch.len() {
             let row_view = input_batch.row_view(row_idx).unwrap();
             let Some(query_vector) = self.resolve_vector_from_row(ctx, &row_view)? else {

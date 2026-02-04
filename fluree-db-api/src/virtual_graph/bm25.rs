@@ -147,7 +147,7 @@ where
                 config.effective_branch(),
                 VgType::Bm25,
                 &config_json,
-                &[config.ledger.clone()],
+                std::slice::from_ref(&config.ledger),
             )
             .await?;
 

@@ -5,12 +5,12 @@
 //!
 //! ## Module Structure
 //!
-//! - [`term`]: Terms that can appear in patterns (variables, IRIs, literals, blank nodes)
-//! - [`pattern`]: Graph patterns (BGP, OPTIONAL, UNION, FILTER, etc.)
-//! - [`path`]: Property path expressions (transitive, inverse, sequence, etc.)
-//! - [`expr`]: Expressions (arithmetic, comparison, boolean, function calls)
-//! - [`query`]: Query forms (SELECT, CONSTRUCT, ASK, DESCRIBE) and solution modifiers
-//! - [`update`]: Update operations (INSERT DATA, DELETE DATA, DELETE WHERE, etc.)
+//! - `term`: Terms that can appear in patterns (variables, IRIs, literals, blank nodes)
+//! - `pattern`: Graph patterns (BGP, OPTIONAL, UNION, FILTER, etc.)
+//! - `path`: Property path expressions (transitive, inverse, sequence, etc.)
+//! - `expr`: Expressions (arithmetic, comparison, boolean, function calls)
+//! - `query`: Query forms (SELECT, CONSTRUCT, ASK, DESCRIBE) and solution modifiers
+//! - `update`: Update operations (INSERT DATA, DELETE DATA, DELETE WHERE, etc.)
 //!
 //! ## Example
 //!

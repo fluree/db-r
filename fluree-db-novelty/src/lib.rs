@@ -260,10 +260,10 @@ impl Novelty {
         let mut alive = vec![false; n];
         let mut new_size = 0usize;
 
-        for i in 0..n {
+        for (i, alive_flag) in alive.iter_mut().enumerate() {
             let flake = self.store.get(i as FlakeId);
             if flake.t > cutoff_t {
-                alive[i] = true;
+                *alive_flag = true;
                 new_size += self.store.size(i as FlakeId);
             }
         }

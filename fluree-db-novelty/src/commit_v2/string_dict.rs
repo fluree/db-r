@@ -50,6 +50,11 @@ impl StringDictBuilder {
         self.entries.len()
     }
 
+    /// Returns true if the dictionary contains no strings.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     /// Serialize the dictionary to bytes.
     ///
     /// Format: `[count: varint][len: varint, utf8_bytes...]*`
