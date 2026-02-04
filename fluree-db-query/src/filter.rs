@@ -444,6 +444,35 @@ impl ComparableValue {
             }
         }
     }
+
+    fn from_flake_value(val: &FlakeValue) -> Option<Self> {
+        match val {
+            FlakeValue::Long(n) => Some(ComparableValue::Long(*n)),
+            FlakeValue::Double(d) => Some(ComparableValue::Double(*d)),
+            FlakeValue::String(s) => Some(ComparableValue::String(Arc::from(s.as_str()))),
+            FlakeValue::Json(s) => Some(ComparableValue::String(Arc::from(s.as_str()))),
+            FlakeValue::Boolean(b) => Some(ComparableValue::Bool(*b)),
+            FlakeValue::Ref(sid) => Some(ComparableValue::Sid(sid.clone())),
+            FlakeValue::Null => None,
+            FlakeValue::Vector(v) => Some(ComparableValue::Vector(Arc::from(v.as_slice()))),
+            FlakeValue::BigInt(n) => Some(ComparableValue::BigInt(n.clone())),
+            FlakeValue::Decimal(d) => Some(ComparableValue::Decimal(d.clone())),
+            FlakeValue::DateTime(dt) => Some(ComparableValue::DateTime(dt.clone())),
+            FlakeValue::Date(d) => Some(ComparableValue::Date(d.clone())),
+            FlakeValue::Time(t) => Some(ComparableValue::Time(t.clone())),
+        }
+    }
+}
+
+impl From<&FilterValue> for ComparableValue {
+    fn from(val: &FilterValue) -> Self {
+        match val {
+            FilterValue::Long(n) => ComparableValue::Long(*n),
+            FilterValue::Double(d) => ComparableValue::Double(*d),
+            FilterValue::String(s) => ComparableValue::String(Arc::from(s.as_str())),
+            FilterValue::Bool(b) => ComparableValue::Bool(*b),
+        }
+    }
 }
 
 /// Evaluate expression to a comparable value
@@ -451,7 +480,7 @@ fn eval_to_comparable(expr: &FilterExpr, row: &RowView) -> Result<Option<Compara
     match expr {
         FilterExpr::Var(var) => {
             match row.get(*var) {
-                Some(Binding::Lit { val, .. }) => Ok(flake_value_to_comparable(val)),
+                Some(Binding::Lit { val, .. }) => Ok(ComparableValue::from_flake_value(val)),
                 Some(Binding::Sid(sid)) => Ok(Some(ComparableValue::Sid(sid.clone()))),
                 Some(Binding::IriMatch { iri, .. }) => {
                     // IriMatch: use canonical IRI for comparisons (cross-ledger safe)
@@ -470,7 +499,7 @@ fn eval_to_comparable(expr: &FilterExpr, row: &RowView) -> Result<Option<Compara
             }
         }
 
-        FilterExpr::Const(val) => Ok(Some(filter_value_to_comparable(val))),
+        FilterExpr::Const(val) => Ok(Some(val.into())),
 
         FilterExpr::Compare { .. } => {
             // Comparison result is boolean
@@ -518,35 +547,6 @@ fn eval_to_comparable(expr: &FilterExpr, row: &RowView) -> Result<Option<Compara
             // Evaluate functions to their actual value type
             eval_function_to_value(name, args, row)
         }
-    }
-}
-
-fn flake_value_to_comparable(val: &FlakeValue) -> Option<ComparableValue> {
-    match val {
-        FlakeValue::Long(n) => Some(ComparableValue::Long(*n)),
-        FlakeValue::Double(d) => Some(ComparableValue::Double(*d)),
-        FlakeValue::String(s) => Some(ComparableValue::String(Arc::from(s.as_str()))),
-        FlakeValue::Json(s) => Some(ComparableValue::String(Arc::from(s.as_str()))), // JSON compared as string
-        FlakeValue::Boolean(b) => Some(ComparableValue::Bool(*b)),
-        FlakeValue::Ref(sid) => Some(ComparableValue::Sid(sid.clone())),
-        FlakeValue::Null => None,
-        FlakeValue::Vector(v) => Some(ComparableValue::Vector(Arc::from(v.as_slice()))),
-        // Extended numeric types
-        FlakeValue::BigInt(n) => Some(ComparableValue::BigInt(n.clone())),
-        FlakeValue::Decimal(d) => Some(ComparableValue::Decimal(d.clone())),
-        // Temporal types
-        FlakeValue::DateTime(dt) => Some(ComparableValue::DateTime(dt.clone())),
-        FlakeValue::Date(d) => Some(ComparableValue::Date(d.clone())),
-        FlakeValue::Time(t) => Some(ComparableValue::Time(t.clone())),
-    }
-}
-
-fn filter_value_to_comparable(val: &FilterValue) -> ComparableValue {
-    match val {
-        FilterValue::Long(n) => ComparableValue::Long(*n),
-        FilterValue::Double(d) => ComparableValue::Double(*d),
-        FilterValue::String(s) => ComparableValue::String(Arc::from(s.as_str())),
-        FilterValue::Bool(b) => ComparableValue::Bool(*b),
     }
 }
 
