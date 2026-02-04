@@ -2,8 +2,8 @@ use clap::Parser;
 use mimalloc::MiMalloc;
 use std::path::PathBuf;
 use std::time::Instant;
-use tracing::{error, info};
 use tracing::Instrument;
+use tracing::{error, info};
 
 use fluree_db_api::{FlureeBuilder, IndexConfig};
 
@@ -11,13 +11,16 @@ use fluree_db_api::{FlureeBuilder, IndexConfig};
 static GLOBAL: MiMalloc = MiMalloc;
 
 fn alias_prefix(alias: &str) -> String {
-    fluree_db_core::address_path::alias_to_path_prefix(alias).unwrap_or_else(|_| alias.replace(':', "/"))
+    fluree_db_core::address_path::alias_to_path_prefix(alias)
+        .unwrap_or_else(|_| alias.replace(':', "/"))
 }
 
 fn default_run_dir(args: &Args) -> PathBuf {
-    args.run_dir
-        .clone()
-        .unwrap_or_else(|| args.db_dir.join(alias_prefix(&args.ledger)).join("tmp_import"))
+    args.run_dir.clone().unwrap_or_else(|| {
+        args.db_dir
+            .join(alias_prefix(&args.ledger))
+            .join("tmp_import")
+    })
 }
 
 fn default_index_dir(args: &Args) -> PathBuf {
@@ -67,8 +70,7 @@ static OTEL_PROVIDER: std::sync::OnceLock<opentelemetry_sdk::trace::SdkTracerPro
     std::sync::OnceLock::new();
 
 #[cfg(feature = "otel")]
-fn init_otel_layer(
-) -> impl tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync {
+fn init_otel_layer() -> impl tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync {
     use opentelemetry::{global, KeyValue};
     use opentelemetry_otlp::WithExportConfig;
     use opentelemetry_sdk::runtime;
@@ -164,10 +166,7 @@ fn discover_chunks(dir: &std::path::Path) -> Result<Vec<PathBuf>, std::io::Error
     Ok(chunks)
 }
 
-async fn run_import(
-    args: &Args,
-    chunks: &[PathBuf],
-) -> Result<u64, Box<dyn std::error::Error>> {
+async fn run_import(args: &Args, chunks: &[PathBuf]) -> Result<u64, Box<dyn std::error::Error>> {
     use fluree_db_api::{FlureeBuilder, NameService, Publisher};
     use fluree_db_transact::import::{import_commit, ImportState};
 
@@ -187,7 +186,8 @@ async fn run_import(
                 "Import mode requires a fresh ledger, but '{}' already has commits (t={}). \
                  Use --start to resume from a checkpoint, or delete the ledger first.",
                 args.ledger, record.commit_t
-            ).into());
+            )
+            .into());
         }
     }
 
@@ -210,135 +210,139 @@ async fn run_import(
     );
 
     // ---- Spawn background run resolver (optional) ----
-    let (mut run_tx, mut run_handle) = if args.generate_runs {
-        use fluree_db_indexer::run_index::{
-            CommitResolver, GlobalDicts, RunGenerationResult, RunSortOrder,
-            MultiOrderRunWriter, MultiOrderConfig, persist_namespaces,
-        };
+    let (mut run_tx, mut run_handle) =
+        if args.generate_runs {
+            use fluree_db_indexer::run_index::{
+                persist_namespaces, CommitResolver, GlobalDicts, MultiOrderConfig,
+                MultiOrderRunWriter, RunGenerationResult, RunSortOrder,
+            };
 
-        let run_dir = default_run_dir(args);
-        std::fs::create_dir_all(&run_dir)?;
-        let subject_fwd = run_dir.join("subjects.fwd");
-        let budget = args.run_budget_mb * 1024 * 1024;
-        let config = MultiOrderConfig {
-            total_budget_bytes: budget,
-            orders: RunSortOrder::all_build_orders().to_vec(),
-            base_run_dir: run_dir.clone(),
-        };
+            let run_dir = default_run_dir(args);
+            std::fs::create_dir_all(&run_dir)?;
+            let subject_fwd = run_dir.join("subjects.fwd");
+            let budget = args.run_budget_mb * 1024 * 1024;
+            let config = MultiOrderConfig {
+                total_budget_bytes: budget,
+                orders: RunSortOrder::all_build_orders().to_vec(),
+                base_run_dir: run_dir.clone(),
+            };
 
-        // Bounded channel: backpressures import if resolver falls behind.
-        // Bound=2 allows one blob in-flight + one queued; keeps memory stable
-        // (~120MB max queued vs unbounded risk of multi-GB backlog).
-        // Sends (blob_bytes, commit_address) so the resolver can emit txn-meta.
-        let (tx, rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, String)>(2);
+            // Bounded channel: backpressures import if resolver falls behind.
+            // Bound=2 allows one blob in-flight + one queued; keeps memory stable
+            // (~120MB max queued vs unbounded risk of multi-GB backlog).
+            // Sends (blob_bytes, commit_address) so the resolver can emit txn-meta.
+            let (tx, rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, String)>(2);
 
-        info!(
+            info!(
             "Spawning background multi-order run resolver (run_dir={:?}, budget={}MB, orders={:?})",
             run_dir, args.run_budget_mb,
             RunSortOrder::all_build_orders().iter().map(|o| o.dir_name()).collect::<Vec<_>>(),
         );
 
-        let ledger_alias = args.ledger.clone();
-        let handle: std::thread::JoinHandle<Result<RunGenerationResult, String>> =
-            std::thread::Builder::new()
-                .name("run-resolver".into())
-                .spawn(move || {
-                    let mut dicts = GlobalDicts::new(&subject_fwd)
-                        .map_err(|e| format!("init dicts: {}", e))?;
-                    let mut resolver = CommitResolver::new();
+            let ledger_alias = args.ledger.clone();
+            let handle: std::thread::JoinHandle<Result<RunGenerationResult, String>> =
+                std::thread::Builder::new()
+                    .name("run-resolver".into())
+                    .spawn(move || {
+                        let mut dicts = GlobalDicts::new(&subject_fwd)
+                            .map_err(|e| format!("init dicts: {}", e))?;
+                        let mut resolver = CommitResolver::new();
 
-                    // Enable per-(graph, property) stats collection.
-                    resolver.set_stats_hook(fluree_db_indexer::stats::IdStatsHook::new());
+                        // Enable per-(graph, property) stats collection.
+                        resolver.set_stats_hook(fluree_db_indexer::stats::IdStatsHook::new());
 
-                    let mut writer = MultiOrderRunWriter::new(config)
-                        .map_err(|e| format!("init multi-order writer: {}", e))?;
-                    let mut commit_count = 0usize;
+                        let mut writer = MultiOrderRunWriter::new(config)
+                            .map_err(|e| format!("init multi-order writer: {}", e))?;
+                        let mut commit_count = 0usize;
 
-                    while let Ok((bytes, commit_address)) = rx.recv() {
-                        let (op_count, t) = resolver
-                            .resolve_blob(&bytes, &commit_address, &ledger_alias, &mut dicts, &mut writer)
-                            .map_err(|e| format!("{}", e))?;
-                        commit_count += 1;
-                        tracing::info!(
-                            commit = commit_count,
-                            t,
-                            ops = op_count,
-                            total_records = writer.total_records(),
-                            runs = writer.run_count(),
-                            subjects = dicts.subjects.len(),
-                            predicates = dicts.predicates.len(),
-                            "commit resolved"
-                        );
-                    }
+                        while let Ok((bytes, commit_address)) = rx.recv() {
+                            let (op_count, t) = resolver
+                                .resolve_blob(
+                                    &bytes,
+                                    &commit_address,
+                                    &ledger_alias,
+                                    &mut dicts,
+                                    &mut writer,
+                                )
+                                .map_err(|e| format!("{}", e))?;
+                            commit_count += 1;
+                            tracing::info!(
+                                commit = commit_count,
+                                t,
+                                ops = op_count,
+                                total_records = writer.total_records(),
+                                runs = writer.run_count(),
+                                subjects = dicts.subjects.len(),
+                                predicates = dicts.predicates.len(),
+                                "commit resolved"
+                            );
+                        }
 
-                    let order_results = writer
-                        .finish(&mut dicts.languages)
-                        .map_err(|e| format!("writer finish: {}", e))?;
+                        let order_results = writer
+                            .finish(&mut dicts.languages)
+                            .map_err(|e| format!("writer finish: {}", e))?;
 
-                    // Collect all run files and total records across all orders
-                    let mut all_run_files = Vec::new();
-                    let mut total_records = 0u64;
-                    for (order, result) in &order_results {
-                        tracing::info!(
-                            order = order.dir_name(),
-                            run_files = result.run_files.len(),
-                            records = result.total_records,
-                            "order run generation complete"
-                        );
-                        all_run_files.extend(result.run_files.iter().cloned());
-                        total_records += result.total_records;
-                    }
+                        // Collect all run files and total records across all orders
+                        let mut all_run_files = Vec::new();
+                        let mut total_records = 0u64;
+                        for (order, result) in &order_results {
+                            tracing::info!(
+                                order = order.dir_name(),
+                                run_files = result.run_files.len(),
+                                records = result.total_records,
+                                "order run generation complete"
+                            );
+                            all_run_files.extend(result.run_files.iter().cloned());
+                            total_records += result.total_records;
+                        }
 
-                    // Persist dictionaries for Phase C (index build)
-                    dicts
-                        .persist(&run_dir)
-                        .map_err(|e| format!("dict persist: {}", e))?;
+                        // Persist dictionaries for Phase C (index build)
+                        dicts
+                            .persist(&run_dir)
+                            .map_err(|e| format!("dict persist: {}", e))?;
 
-                    // Persist namespace map for query-time IRI encoding
-                    persist_namespaces(resolver.ns_prefixes(), &run_dir)
-                        .map_err(|e| format!("namespace persist: {}", e))?;
+                        // Persist namespace map for query-time IRI encoding
+                        persist_namespaces(resolver.ns_prefixes(), &run_dir)
+                            .map_err(|e| format!("namespace persist: {}", e))?;
 
-                    // Persist subject reverse hash index for O(log N) IRI → s_id lookup
-                    dicts
-                        .subjects
-                        .write_reverse_index(&run_dir.join("subjects.rev"))
-                        .map_err(|e| format!("subjects.rev: {}", e))?;
+                        // Persist subject reverse hash index for O(log N) IRI → s_id lookup
+                        dicts
+                            .subjects
+                            .write_reverse_index(&run_dir.join("subjects.rev"))
+                            .map_err(|e| format!("subjects.rev: {}", e))?;
 
-                    // Persist string reverse hash index for O(log N) string → str_id lookup
-                    dicts
-                        .strings
-                        .write_reverse_index(&run_dir.join("strings.rev"))
-                        .map_err(|e| format!("strings.rev: {}", e))?;
+                        // Persist string reverse hash index for O(log N) string → str_id lookup
+                        dicts
+                            .strings
+                            .write_reverse_index(&run_dir.join("strings.rev"))
+                            .map_err(|e| format!("strings.rev: {}", e))?;
 
-                    Ok(RunGenerationResult {
-                        run_files: all_run_files,
-                        subject_count: dicts.subjects.len(),
-                        predicate_count: dicts.predicates.len(),
-                        string_count: dicts.strings.len(),
-                        needs_wide: dicts.subjects.needs_wide(),
-                        total_records,
-                        commit_count,
-                        stats_hook: resolver.take_stats_hook(),
+                        Ok(RunGenerationResult {
+                            run_files: all_run_files,
+                            subject_count: dicts.subjects.len(),
+                            predicate_count: dicts.predicates.len(),
+                            string_count: dicts.strings.len(),
+                            needs_wide: dicts.subjects.needs_wide(),
+                            total_records,
+                            commit_count,
+                            stats_hook: resolver.take_stats_hook(),
+                        })
                     })
-                })
-                .map_err(|e| format!("spawn resolver: {}", e))?;
+                    .map_err(|e| format!("spawn resolver: {}", e))?;
 
-        (Some(tx), Some(handle))
-    } else {
-        (None, None)
-    };
+            (Some(tx), Some(handle))
+        } else {
+            (None, None)
+        };
 
     for (i, chunk_path) in chunks.iter().enumerate() {
         if i < args.start {
             continue;
         }
 
-        let _chunk_span = tracing::info_span!(
-            "import_chunk",
-            chunk_index = i + 1,
-            chunk_total = total,
-        )
-        .entered();
+        let _chunk_span =
+            tracing::info_span!("import_chunk", chunk_index = i + 1, chunk_total = total,)
+                .entered();
 
         let read_start = Instant::now();
         let ttl = std::fs::read_to_string(chunk_path)?;
@@ -383,9 +387,7 @@ async fn run_import(
         // Feed commit blob + address to background resolver
         let resolver_send_failed = if let Some(ref tx) = run_tx {
             let addr = result.address.clone();
-            tokio::task::block_in_place(|| {
-                tx.send((result.commit_blob, addr)).is_err()
-            })
+            tokio::task::block_in_place(|| tx.send((result.commit_blob, addr)).is_err())
         } else {
             false
         };
@@ -461,9 +463,14 @@ async fn run_import(
         // Finalize and persist pre-index stats
         let run_dir = default_run_dir(args);
         finalize_pre_index_stats(
-            &mut run_result, &run_dir, state.t, state.cumulative_flakes,
-            storage, &args.ledger,
-        ).await;
+            &mut run_result,
+            &run_dir,
+            state.t,
+            state.cumulative_flakes,
+            storage,
+            &args.ledger,
+        )
+        .await;
     }
 
     Ok(state.cumulative_flakes)
@@ -504,11 +511,7 @@ async fn finalize_pre_index_stats<S: fluree_db_core::StorageWrite>(
     let result = hook.finalize();
 
     // Derive property_count from finalized graphs (excludes txn-meta g_id=1)
-    let property_count: usize = result
-        .graphs
-        .iter()
-        .map(|g| g.properties.len())
-        .sum();
+    let property_count: usize = result.graphs.iter().map(|g| g.properties.len()).sum();
 
     info!(
         "Pre-index stats: {} graphs, {} properties, {} flakes (excl txn-meta)",
@@ -538,14 +541,27 @@ async fn finalize_pre_index_stats<S: fluree_db_core::StorageWrite>(
                 p.p_id, p.count, p.ndv_values, p.ndv_subjects, p.last_modified_t);
             for (di, (dt, count)) in p.datatypes.iter().enumerate() {
                 let _ = write!(json, "[{},{}]", dt, count);
-                if di + 1 < p.datatypes.len() { let _ = write!(json, ","); }
+                if di + 1 < p.datatypes.len() {
+                    let _ = write!(json, ",");
+                }
             }
             let _ = write!(json, "]}}");
-            if pi + 1 < g.properties.len() { let _ = writeln!(json, ","); } else { let _ = writeln!(json); }
+            if pi + 1 < g.properties.len() {
+                let _ = writeln!(json, ",");
+            } else {
+                let _ = writeln!(json);
+            }
         }
         let _ = write!(json, "      ]");
-        let _ = writeln!(json, "\n    }}{}",
-            if gi + 1 < result.graphs.len() { "," } else { "" });
+        let _ = writeln!(
+            json,
+            "\n    }}{}",
+            if gi + 1 < result.graphs.len() {
+                ","
+            } else {
+                ""
+            }
+        );
     }
     let _ = writeln!(json, "  ]");
     let _ = writeln!(json, "}}");
@@ -564,7 +580,10 @@ async fn finalize_pre_index_stats<S: fluree_db_core::StorageWrite>(
         .unwrap_or_else(|_| alias.replace(':', "/"));
     let storage_addr = format!("fluree:file://{}/stats/pre-index-stats.json", alias_prefix);
     match storage.write_bytes(&storage_addr, json.as_bytes()).await {
-        Ok(()) => info!("Pre-index stats manifest written to storage: {}", storage_addr),
+        Ok(()) => info!(
+            "Pre-index stats manifest written to storage: {}",
+            storage_addr
+        ),
         Err(e) => error!("Failed to write pre-index stats to storage: {}", e),
     }
 }
@@ -626,8 +645,8 @@ async fn run_import_parallel(
     // ---- Spawn background run resolver (same as serial path) ----
     let (mut run_tx, mut run_handle) = if args.generate_runs {
         use fluree_db_indexer::run_index::{
-            persist_namespaces, CommitResolver, GlobalDicts, MultiOrderConfig,
-            MultiOrderRunWriter, RunGenerationResult, RunSortOrder,
+            persist_namespaces, CommitResolver, GlobalDicts, MultiOrderConfig, MultiOrderRunWriter,
+            RunGenerationResult, RunSortOrder,
         };
 
         let run_dir = default_run_dir(args);
@@ -745,8 +764,7 @@ async fn run_import_parallel(
             size_mb,
         );
 
-        let result =
-            import_commit(&mut state, &ttl, storage, &args.ledger, compress).await?;
+        let result = import_commit(&mut state, &ttl, storage, &args.ledger, compress).await?;
         let elapsed = read_start.elapsed().as_secs_f64();
 
         info!(
@@ -777,9 +795,7 @@ async fn run_import_parallel(
 
         // Result channel: bounded to limit parse-ahead memory
         let (result_tx, result_rx) =
-            std::sync::mpsc::sync_channel::<Result<(usize, ParsedChunk), String>>(
-                num_threads * 2,
-            );
+            std::sync::mpsc::sync_channel::<Result<(usize, ParsedChunk), String>>(num_threads * 2);
 
         // Spawn parse worker threads
         let mut parse_handles = Vec::with_capacity(num_threads);
@@ -802,10 +818,8 @@ async fn run_import_parallel(
                         let ttl = match std::fs::read_to_string(&chunks[idx]) {
                             Ok(s) => s,
                             Err(e) => {
-                                let _ = result_tx.send(Err(format!(
-                                    "failed to read chunk {}: {}",
-                                    idx, e
-                                )));
+                                let _ = result_tx
+                                    .send(Err(format!("failed to read chunk {}: {}", idx, e)));
                                 break;
                             }
                         };
@@ -818,8 +832,8 @@ async fn run_import_parallel(
                                 }
                             }
                             Err(e) => {
-                                let _ =
-                                    result_tx.send(Err(format!("parse chunk {} failed: {}", idx, e)));
+                                let _ = result_tx
+                                    .send(Err(format!("parse chunk {} failed: {}", idx, e)));
                                 break;
                             }
                         }
@@ -867,9 +881,7 @@ async fn run_import_parallel(
                 // Feed to run resolver
                 let resolver_send_failed = if let Some(ref tx) = run_tx {
                     let addr = result.address.clone();
-                    tokio::task::block_in_place(|| {
-                        tx.send((result.commit_blob, addr)).is_err()
-                    })
+                    tokio::task::block_in_place(|| tx.send((result.commit_blob, addr)).is_err())
                 } else {
                     false
                 };
@@ -953,9 +965,14 @@ async fn run_import_parallel(
         // Finalize and persist pre-index stats
         let run_dir = default_run_dir(args);
         finalize_pre_index_stats(
-            &mut run_result, &run_dir, state.t, state.cumulative_flakes,
-            storage, &args.ledger,
-        ).await;
+            &mut run_result,
+            &run_dir,
+            state.t,
+            state.cumulative_flakes,
+            storage,
+            &args.ledger,
+        )
+        .await;
     }
 
     Ok(state.cumulative_flakes)
@@ -1079,10 +1096,7 @@ async fn run_build_index(args: &Args) -> Result<(), Box<dyn std::error::Error>> 
     );
 
     let results = build_all_indexes(
-        &run_dir,
-        &index_dir,
-        orders,
-        25000, // leaflet_rows
+        &run_dir, &index_dir, orders, 25000, // leaflet_rows
         10,    // leaflets_per_leaf
         1,     // zstd_level
     )?;
@@ -1110,19 +1124,18 @@ async fn run_build_index(args: &Args) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-
 fn run_query(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     use fluree_db_indexer::run_index::BinaryIndexStore;
 
     let run_dir = default_run_dir(args);
     let index_dir = default_index_dir(args);
 
-    info!("Loading BinaryIndexStore from {:?} + {:?}", run_dir, index_dir);
-    let store = BinaryIndexStore::load(&run_dir, &index_dir)?;
     info!(
-        "Index loaded: graph(s) {:?}",
-        store.graph_ids(),
+        "Loading BinaryIndexStore from {:?} + {:?}",
+        run_dir, index_dir
     );
+    let store = BinaryIndexStore::load(&run_dir, &index_dir)?;
+    info!("Index loaded: graph(s) {:?}", store.graph_ids(),);
 
     if let Some(ref iri) = args.query_subject {
         info!("Querying subject by IRI: {}", iri);
@@ -1136,7 +1149,10 @@ fn run_query(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                     // Try txn-meta graph
                     let txn_flakes = store.query_subject_flakes(1, id)?;
                     if !txn_flakes.is_empty() {
-                        info!("{} flakes found in txn-meta graph (g_id=1):", txn_flakes.len());
+                        info!(
+                            "{} flakes found in txn-meta graph (g_id=1):",
+                            txn_flakes.len()
+                        );
                         for f in &txn_flakes {
                             print_flake(f, &store);
                         }
@@ -1218,7 +1234,11 @@ fn print_flake(f: &fluree_db_core::Flake, store: &fluree_db_indexer::run_index::
             if let Some(i) = m.i {
                 parts.push(format!("[{}]", i));
             }
-            if parts.is_empty() { String::new() } else { parts.join(" ") }
+            if parts.is_empty() {
+                String::new()
+            } else {
+                parts.join(" ")
+            }
         }
         None => String::new(),
     };
@@ -1230,7 +1250,10 @@ fn print_flake(f: &fluree_db_core::Flake, store: &fluree_db_indexer::run_index::
 }
 
 fn format_sid(sid: &fluree_db_core::Sid, ns: &std::collections::HashMap<u16, String>) -> String {
-    let prefix = ns.get(&sid.namespace_code).map(|s| s.as_str()).unwrap_or("");
+    let prefix = ns
+        .get(&sid.namespace_code)
+        .map(|s| s.as_str())
+        .unwrap_or("");
     format!("{}{}", prefix, sid.name)
 }
 
@@ -1245,8 +1268,8 @@ fn format_sid(sid: &fluree_db_core::Sid, ns: &std::collections::HashMap<u16, Str
 /// 6. Print results
 async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     use fluree_db_api::FlureeBuilder;
-    use fluree_db_core::{Db, Sid, StatsView, StorageRead};
     use fluree_db_core::IndexStats;
+    use fluree_db_core::{Db, Sid, StatsView, StorageRead};
     use fluree_db_indexer::run_index::BinaryIndexStore;
     use fluree_db_query::context::ExecutionContext;
     use fluree_db_query::parse::encode::MemoryEncoder;
@@ -1259,7 +1282,10 @@ async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let run_dir = default_run_dir(args);
     let index_dir = default_index_dir(args);
 
-    info!("Loading BinaryIndexStore from {:?} + {:?}", run_dir, index_dir);
+    info!(
+        "Loading BinaryIndexStore from {:?} + {:?}",
+        run_dir, index_dir
+    );
     let store = Arc::new(BinaryIndexStore::load(&run_dir, &index_dir)?);
     info!(
         "Index loaded: {} predicates, graph(s) {:?}",
@@ -1334,19 +1360,40 @@ async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         size: 0,
         properties: None,
         classes: None,
-        graphs: if graphs.is_empty() { None } else { Some(graphs) },
+        graphs: if graphs.is_empty() {
+            None
+        } else {
+            Some(graphs)
+        },
     });
 
-    let stats_view: Option<Arc<StatsView>> = db
-        .stats
-        .as_ref()
-        .map(|s| Arc::new(StatsView::from_db_stats_with_namespaces(s, &db.namespace_codes)));
+    let stats_view: Option<Arc<StatsView>> = db.stats.as_ref().map(|s| {
+        Arc::new(StatsView::from_db_stats_with_namespaces(
+            s,
+            &db.namespace_codes,
+        ))
+    });
 
     info!(
         stats_present = db.stats.is_some(),
-        stats_graphs = db.stats.as_ref().and_then(|s| s.graphs.as_ref()).map(|g| g.len()).unwrap_or(0),
-        stats_classes = db.stats.as_ref().and_then(|s| s.classes.as_ref()).map(|c| c.len()).unwrap_or(0),
-        stats_properties = db.stats.as_ref().and_then(|s| s.properties.as_ref()).map(|p| p.len()).unwrap_or(0),
+        stats_graphs = db
+            .stats
+            .as_ref()
+            .and_then(|s| s.graphs.as_ref())
+            .map(|g| g.len())
+            .unwrap_or(0),
+        stats_classes = db
+            .stats
+            .as_ref()
+            .and_then(|s| s.classes.as_ref())
+            .map(|c| c.len())
+            .unwrap_or(0),
+        stats_properties = db
+            .stats
+            .as_ref()
+            .and_then(|s| s.properties.as_ref())
+            .map(|p| p.len())
+            .unwrap_or(0),
         "Loaded db-root stats (binary-only)"
     );
 
@@ -1414,13 +1461,9 @@ async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     // --- Run 1: Cold execution ---
     info!("=== Cold execution (run 1) ===");
     let exec_query = ExecutableQuery::simple(parsed_query.clone());
-    let cold_operator = build_operator_tree::<_>(
-        &parsed_query,
-        &exec_query.options,
-        stats_view.clone(),
-    )?;
-    let mut cold_ctx = ExecutionContext::new(&db, &vars)
-        .with_binary_store(store.clone(), 0);
+    let cold_operator =
+        build_operator_tree::<_>(&parsed_query, &exec_query.options, stats_view.clone())?;
+    let mut cold_ctx = ExecutionContext::new(&db, &vars).with_binary_store(store.clone(), 0);
     cold_ctx.to_t = store.max_t();
 
     let cold_start = Instant::now();
@@ -1436,13 +1479,9 @@ async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     // --- Run 2: Hot execution (same store, fresh operator tree) ---
     info!("=== Hot execution (run 2) ===");
     let exec_query2 = ExecutableQuery::simple(parsed_query.clone());
-    let hot_operator = build_operator_tree::<_>(
-        &parsed_query,
-        &exec_query2.options,
-        stats_view.clone(),
-    )?;
-    let mut hot_ctx = ExecutionContext::new(&db, &vars)
-        .with_binary_store(store.clone(), 0);
+    let hot_operator =
+        build_operator_tree::<_>(&parsed_query, &exec_query2.options, stats_view.clone())?;
+    let mut hot_ctx = ExecutionContext::new(&db, &vars).with_binary_store(store.clone(), 0);
     hot_ctx.to_t = store.max_t();
 
     let hot_start = Instant::now();
@@ -1471,7 +1510,10 @@ async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let cold_strings = batches_to_strings(&cold_batches);
     let hot_strings = batches_to_strings(&hot_batches);
     if cold_strings == hot_strings {
-        info!("Results verified: cold and hot runs are identical ({} rows)", cold_rows);
+        info!(
+            "Results verified: cold and hot runs are identical ({} rows)",
+            cold_rows
+        );
     } else {
         error!(
             "MISMATCH: cold run ({} rows) vs hot run ({} rows) differ!",
@@ -1496,7 +1538,11 @@ async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     // --- Timing summary ---
     let cold_s = cold_elapsed.as_secs_f64();
     let hot_s = hot_elapsed.as_secs_f64();
-    let speedup = if hot_s > 0.0 { cold_s / hot_s } else { f64::INFINITY };
+    let speedup = if hot_s > 0.0 {
+        cold_s / hot_s
+    } else {
+        f64::INFINITY
+    };
     info!("──────────────────────────────────────────");
     info!("Parse + plan:     {:.3}s", parse_plan_elapsed.as_secs_f64());
     info!("Cold execution:   {:.3}s", cold_s);
@@ -1591,7 +1637,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         println!("<pre-index-stats.json is not valid UTF-8>");
                     }
-                } else if let Ok(graphs) = fluree_db_api::ledger_info::parse_pre_index_manifest(&bytes) {
+                } else if let Ok(graphs) =
+                    fluree_db_api::ledger_info::parse_pre_index_manifest(&bytes)
+                {
                     let prop_count: usize = graphs.iter().map(|g| g.properties.len()).sum();
                     info!(
                         manifest_addr = %manifest_addr,
@@ -1641,7 +1689,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let idx = json.find(&needle)? + needle.len();
                             let rest = json[idx..].trim_start();
                             let end = rest
-                                .find(|c: char| !c.is_ascii_digit() && c != '-') 
+                                .find(|c: char| !c.is_ascii_digit() && c != '-')
                                 .unwrap_or(rest.len());
                             rest[..end].trim().parse::<i64>().ok()
                         }
@@ -1747,10 +1795,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ---- Standard staging pipeline ----
-    let chunks_dir = args
-        .chunks_dir
-        .as_ref()
-        .ok_or("--chunks-dir is required")?;
+    let chunks_dir = args.chunks_dir.as_ref().ok_or("--chunks-dir is required")?;
     let chunks = discover_chunks(chunks_dir)?;
 
     if chunks.is_empty() {
@@ -1812,7 +1857,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Index thresholds: soft={} MB, hard={} MB{}",
         index_config.reindex_min_bytes / (1024 * 1024),
         index_config.reindex_max_bytes / (1024 * 1024),
-        if args.enable_indexing { " (indexing enabled)" } else { "" },
+        if args.enable_indexing {
+            " (indexing enabled)"
+        } else {
+            ""
+        },
     );
 
     let mut current_ledger = ledger;

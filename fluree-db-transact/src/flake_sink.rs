@@ -240,13 +240,7 @@ impl<'a> GraphSink for FlakeSink<'a> {
         }
     }
 
-    fn emit_list_item(
-        &mut self,
-        subject: TermId,
-        predicate: TermId,
-        object: TermId,
-        index: i32,
-    ) {
+    fn emit_list_item(&mut self, subject: TermId, predicate: TermId, object: TermId, index: i32) {
         if let Some(flake) = self.build_flake(subject, predicate, object, Some(index)) {
             self.flakes.push(flake);
         }

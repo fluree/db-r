@@ -172,10 +172,7 @@ impl RemoteTrackingStore for FileTrackingStore {
                     NameServiceError::storage(format!("Failed to read directory entry: {}", e))
                 })?;
                 let path = entry.path();
-                if path
-                    .extension()
-                    .map_or(false, |ext| ext == "json")
-                {
+                if path.extension().map_or(false, |ext| ext == "json") {
                     // Skip tmp files
                     if path
                         .file_name()
@@ -298,10 +295,12 @@ mod tests {
             .unwrap();
 
         // Verify file is under ns-sync/, not ns@v2/
-        let expected_path = tmp
-            .path()
-            .join("ns-sync/remotes/origin/mydb%3Amain.json");
-        assert!(expected_path.exists(), "File should exist at {:?}", expected_path);
+        let expected_path = tmp.path().join("ns-sync/remotes/origin/mydb%3Amain.json");
+        assert!(
+            expected_path.exists(),
+            "File should exist at {:?}",
+            expected_path
+        );
 
         // Verify ns@v2 directory does NOT exist
         assert!(!tmp.path().join("ns@v2").exists());
@@ -349,10 +348,7 @@ mod tests {
             .unwrap()
             .is_some());
 
-        store
-            .remove_tracking(&origin(), "mydb:main")
-            .await
-            .unwrap();
+        store.remove_tracking(&origin(), "mydb:main").await.unwrap();
         assert!(store
             .get_tracking(&origin(), "mydb:main")
             .await

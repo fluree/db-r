@@ -10,8 +10,8 @@ use fluree_db_query::binding::Binding;
 use fluree_db_query::context::ExecutionContext;
 use fluree_db_query::execute::execute_query;
 use fluree_db_query::ir::{FilterExpr, FilterValue, Pattern};
-use fluree_db_query::options::QueryOptions;
 use fluree_db_query::operator::Operator;
+use fluree_db_query::options::QueryOptions;
 use fluree_db_query::parse::{ParsedQuery, SelectMode};
 use fluree_db_query::pattern::{Term, TriplePattern};
 use fluree_db_query::seed::EmptyOperator;
@@ -69,10 +69,7 @@ async fn test_values_first_then_join() {
         vec![
             Pattern::Values {
                 vars: vec![VarId(0)], // ?s
-                rows: vec![
-                    vec![Binding::Sid(sid1)],
-                    vec![Binding::Sid(sid2)],
-                ],
+                rows: vec![vec![Binding::Sid(sid1)], vec![Binding::Sid(sid2)]],
             },
             Pattern::Triple(make_triple_pattern(VarId(0), "name", VarId(1))),
         ],
@@ -132,8 +129,16 @@ async fn test_union_first() {
     let query = make_query(
         vec![VarId(0)], // SELECT ?s
         vec![Pattern::Union(vec![
-            vec![Pattern::Triple(make_triple_pattern(VarId(0), "name", VarId(1)))],
-            vec![Pattern::Triple(make_triple_pattern(VarId(0), "email", VarId(2)))],
+            vec![Pattern::Triple(make_triple_pattern(
+                VarId(0),
+                "name",
+                VarId(1),
+            ))],
+            vec![Pattern::Triple(make_triple_pattern(
+                VarId(0),
+                "email",
+                VarId(2),
+            ))],
         ])],
     );
 
@@ -375,7 +380,10 @@ async fn test_bind_error_does_not_clobber_existing_binding() {
     let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
     let columns = vec![vec![Binding::lit(FlakeValue::Long(42), xsd_long())]];
     let seed_batch = Batch::new(schema.clone(), columns).unwrap();
-    let seed = Box::new(fluree_db_query::seed::SeedOperator::from_batch_row(&seed_batch, 0));
+    let seed = Box::new(fluree_db_query::seed::SeedOperator::from_batch_row(
+        &seed_batch,
+        0,
+    ));
 
     // Expression uses an unbound var ?y => evaluation yields Unbound
     let expr = FilterExpr::Arithmetic {

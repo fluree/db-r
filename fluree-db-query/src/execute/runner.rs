@@ -24,7 +24,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use super::operator_tree::build_operator_tree;
-use super::reasoning_prep::{compute_derived_facts, effective_reasoning_modes, schema_hierarchy_with_overlay};
+use super::reasoning_prep::{
+    compute_derived_facts, effective_reasoning_modes, schema_hierarchy_with_overlay,
+};
 use super::rewrite_glue::rewrite_query_patterns;
 
 /// Query with execution options
@@ -123,8 +125,9 @@ pub async fn prepare_execution<S: Storage + 'static>(
 
     // Step 4: Build ontology for OWL2-QL mode (if enabled)
     // Note: We need to use the effective overlay for ontology building
-    let reasoning_overlay_for_ontology: Option<ReasoningOverlay<'_>> =
-        derived_overlay.as_ref().map(|derived| ReasoningOverlay::new(overlay, derived.clone()));
+    let reasoning_overlay_for_ontology: Option<ReasoningOverlay<'_>> = derived_overlay
+        .as_ref()
+        .map(|derived| ReasoningOverlay::new(overlay, derived.clone()));
 
     let effective_overlay_for_ontology: &dyn fluree_db_core::OverlayProvider =
         reasoning_overlay_for_ontology
@@ -134,7 +137,10 @@ pub async fn prepare_execution<S: Storage + 'static>(
 
     let ontology = if reasoning.owl2ql {
         tracing::debug!("building OWL2-QL ontology");
-        Some(Ontology::from_db_with_overlay(db, effective_overlay_for_ontology, to_t as u64, to_t).await?)
+        Some(
+            Ontology::from_db_with_overlay(db, effective_overlay_for_ontology, to_t as u64, to_t)
+                .await?,
+        )
     } else {
         None
     };
@@ -146,7 +152,10 @@ pub async fn prepare_execution<S: Storage + 'static>(
     // we can safely encode IRIs to SIDs here.
     fn encode_term<S: Storage + 'static>(db: &Db<S>, t: &Term) -> Term {
         match t {
-            Term::Iri(iri) => db.encode_iri(iri).map(Term::Sid).unwrap_or_else(|| t.clone()),
+            Term::Iri(iri) => db
+                .encode_iri(iri)
+                .map(Term::Sid)
+                .unwrap_or_else(|| t.clone()),
             _ => t.clone(),
         }
     }
@@ -165,7 +174,9 @@ pub async fn prepare_execution<S: Storage + 'static>(
                     dt: tp.dt.clone(),
                     lang: tp.lang.clone(),
                 }),
-                Pattern::Optional(inner) => Pattern::Optional(encode_patterns_for_reasoning(db, inner)),
+                Pattern::Optional(inner) => {
+                    Pattern::Optional(encode_patterns_for_reasoning(db, inner))
+                }
                 Pattern::Union(branches) => Pattern::Union(
                     branches
                         .iter()
@@ -174,7 +185,9 @@ pub async fn prepare_execution<S: Storage + 'static>(
                 ),
                 Pattern::Minus(inner) => Pattern::Minus(encode_patterns_for_reasoning(db, inner)),
                 Pattern::Exists(inner) => Pattern::Exists(encode_patterns_for_reasoning(db, inner)),
-                Pattern::NotExists(inner) => Pattern::NotExists(encode_patterns_for_reasoning(db, inner)),
+                Pattern::NotExists(inner) => {
+                    Pattern::NotExists(encode_patterns_for_reasoning(db, inner))
+                }
                 Pattern::Graph { name, patterns } => Pattern::Graph {
                     name: name.clone(),
                     patterns: encode_patterns_for_reasoning(db, patterns),
@@ -215,10 +228,12 @@ pub async fn prepare_execution<S: Storage + 'static>(
     // The actual scan operators will still union across all default graphs via the attached
     // `DataSet` in the `ExecutionContext`.
     tracing::debug!("building operator tree");
-    let stats_view = db
-        .stats
-        .as_ref()
-        .map(|s| Arc::new(StatsView::from_db_stats_with_namespaces(s, &db.namespace_codes)));
+    let stats_view = db.stats.as_ref().map(|s| {
+        Arc::new(StatsView::from_db_stats_with_namespaces(
+            s,
+            &db.namespace_codes,
+        ))
+    });
     let operator = build_operator_tree(&rewritten_query, &query.options, stats_view)?;
 
     Ok(PreparedExecution {
@@ -256,7 +271,10 @@ pub async fn run_operator<S: Storage + 'static>(
 
     let open_start = Instant::now();
     operator.open(ctx).await?;
-    span.record("open_ms", &((open_start.elapsed().as_secs_f64() * 1000.0) as u64));
+    span.record(
+        "open_ms",
+        &((open_start.elapsed().as_secs_f64() * 1000.0) as u64),
+    );
 
     let mut results = Vec::new();
     let mut batch_count = 0;
@@ -273,7 +291,12 @@ pub async fn run_operator<S: Storage + 'static>(
         if let Some(batch) = next {
             batch_count += 1;
             total_rows += batch.len();
-            tracing::debug!(batch_num = batch_count, row_count = batch.len(), batch_ms, "received batch");
+            tracing::debug!(
+                batch_num = batch_count,
+                row_count = batch.len(),
+                batch_ms,
+                "received batch"
+            );
             results.push(batch);
             true
         } else {
@@ -290,7 +313,11 @@ pub async fn run_operator<S: Storage + 'static>(
     span.record("total_batches", &(batch_count as u64));
     span.record("total_rows", &(total_rows as u64));
     span.record("max_batch_ms", &max_batch_ms);
-    tracing::info!(total_batches = batch_count, total_rows, "query execution completed");
+    tracing::info!(
+        total_batches = batch_count,
+        total_rows,
+        "query execution completed"
+    );
 
     Ok(results)
 }
@@ -378,7 +405,8 @@ pub async fn execute_prepared<'a, 'b, S: Storage + 'static>(
         .unwrap_or(overlay);
 
     // Build context with all configured options
-    let mut ctx = ExecutionContext::with_time_and_overlay(db, vars, to_t, from_t, effective_overlay);
+    let mut ctx =
+        ExecutionContext::with_time_and_overlay(db, vars, to_t, from_t, effective_overlay);
 
     if let Some(tracker) = config.tracker {
         ctx = ctx.with_tracker(tracker.clone());
@@ -480,9 +508,9 @@ pub async fn execute_prepared_with_policy<'a, S: Storage + 'static>(
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
     // Create policy enforcer for async f:query support
-    let enforcer = Arc::new(crate::policy::QueryPolicyEnforcer::new(
-        Arc::new(policy.clone()),
-    ));
+    let enforcer = Arc::new(crate::policy::QueryPolicyEnforcer::new(Arc::new(
+        policy.clone(),
+    )));
 
     execute_prepared(
         db,
@@ -609,9 +637,9 @@ pub async fn execute_prepared_with_dataset_and_policy_history<'a, S: Storage + '
     history_mode: bool,
 ) -> Result<Vec<Batch>> {
     // Create policy enforcer for async f:query support
-    let enforcer = Arc::new(crate::policy::QueryPolicyEnforcer::new(
-        Arc::new(policy.clone()),
-    ));
+    let enforcer = Arc::new(crate::policy::QueryPolicyEnforcer::new(Arc::new(
+        policy.clone(),
+    )));
 
     execute_prepared(
         db,
@@ -676,9 +704,9 @@ pub async fn execute_prepared_with_dataset_and_policy_and_bm25<'a, 'b, S: Storag
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
     // Create policy enforcer for async f:query support
-    let enforcer = Arc::new(crate::policy::QueryPolicyEnforcer::new(
-        Arc::new(policy.clone()),
-    ));
+    let enforcer = Arc::new(crate::policy::QueryPolicyEnforcer::new(Arc::new(
+        policy.clone(),
+    )));
 
     execute_prepared(
         db,
@@ -732,7 +760,11 @@ pub async fn execute_prepared_with_dataset_and_providers<'a, 'b, S: Storage + 's
 }
 
 /// Execute with dataset, policy, and both BM25 and vector providers
-pub async fn execute_prepared_with_dataset_and_policy_and_providers<'a, 'b, S: Storage + 'static>(
+pub async fn execute_prepared_with_dataset_and_policy_and_providers<
+    'a,
+    'b,
+    S: Storage + 'static,
+>(
     db: &Db<S>,
     vars: &VarRegistry,
     overlay: &'a dyn fluree_db_core::OverlayProvider,
@@ -746,9 +778,9 @@ pub async fn execute_prepared_with_dataset_and_policy_and_providers<'a, 'b, S: S
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
     // Create policy enforcer for async f:query support
-    let enforcer = Arc::new(crate::policy::QueryPolicyEnforcer::new(
-        Arc::new(policy.clone()),
-    ));
+    let enforcer = Arc::new(crate::policy::QueryPolicyEnforcer::new(Arc::new(
+        policy.clone(),
+    )));
 
     execute_prepared(
         db,

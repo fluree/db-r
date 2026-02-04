@@ -96,7 +96,10 @@ pub enum ClaimsError {
 
     /// Issuer claim doesn't match signing key's did:key
     #[error("issuer mismatch: token iss={token_iss}, signing key={signing_did}")]
-    IssuerMismatch { token_iss: String, signing_did: String },
+    IssuerMismatch {
+        token_iss: String,
+        signing_did: String,
+    },
 
     /// Issuer is not a valid did:key format
     #[error("invalid issuer format: must be valid did:key")]
@@ -339,7 +342,9 @@ mod tests {
         let mut payload = valid_payload(&did);
         payload.aud = Some(vec!["expected-audience".to_string()]);
 
-        assert!(payload.validate(Some("expected-audience"), &did, false).is_ok());
+        assert!(payload
+            .validate(Some("expected-audience"), &did, false)
+            .is_ok());
     }
 
     #[test]
@@ -351,7 +356,9 @@ mod tests {
             "expected-audience".to_string(),
         ]);
 
-        assert!(payload.validate(Some("expected-audience"), &did, false).is_ok());
+        assert!(payload
+            .validate(Some("expected-audience"), &did, false)
+            .is_ok());
     }
 
     #[test]

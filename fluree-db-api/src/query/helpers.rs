@@ -3,13 +3,12 @@ use std::sync::Arc;
 use serde_json::Value as JsonValue;
 
 use crate::{
-    ApiError, Batch, DatasetSpec, ExecutableQuery,
-    OverlayProvider, QueryConnectionOptions, Result, SelectMode,
-    Storage, Tracker, TrackingOptions, VarRegistry,
+    ApiError, Batch, DatasetSpec, ExecutableQuery, OverlayProvider, QueryConnectionOptions, Result,
+    SelectMode, Storage, Tracker, TrackingOptions, VarRegistry,
 };
 
 use fluree_db_core::Db;
-use fluree_db_query::parse::{ParsedQuery, parse_query};
+use fluree_db_query::parse::{parse_query, ParsedQuery};
 
 use super::QueryResult;
 
@@ -228,12 +227,16 @@ pub(crate) fn status_for_query_error(err: &fluree_db_query::QueryError) -> u16 {
     }
 }
 
-pub(crate) fn parse_dataset_spec(query_json: &JsonValue) -> Result<(DatasetSpec, QueryConnectionOptions)> {
+pub(crate) fn parse_dataset_spec(
+    query_json: &JsonValue,
+) -> Result<(DatasetSpec, QueryConnectionOptions)> {
     DatasetSpec::from_query_json(query_json).map_err(|e| ApiError::query(e.to_string()))
 }
 
 /// Extract dataset spec from a SPARQL AST's dataset clause (FROM / FROM NAMED).
-pub(crate) fn extract_sparql_dataset_spec(ast: &fluree_db_sparql::SparqlAst) -> Result<DatasetSpec> {
+pub(crate) fn extract_sparql_dataset_spec(
+    ast: &fluree_db_sparql::SparqlAst,
+) -> Result<DatasetSpec> {
     let dataset_clause = match &ast.body {
         fluree_db_sparql::ast::QueryBody::Select(q) => q.dataset.as_ref(),
         fluree_db_sparql::ast::QueryBody::Ask(q) => q.dataset.as_ref(),
@@ -243,9 +246,9 @@ pub(crate) fn extract_sparql_dataset_spec(ast: &fluree_db_sparql::SparqlAst) -> 
     };
 
     match dataset_clause {
-        Some(clause) => DatasetSpec::from_sparql_clause(clause)
-            .map_err(|e| ApiError::query(e.to_string())),
+        Some(clause) => {
+            DatasetSpec::from_sparql_clause(clause).map_err(|e| ApiError::query(e.to_string()))
+        }
         None => Ok(DatasetSpec::default()),
     }
 }
-

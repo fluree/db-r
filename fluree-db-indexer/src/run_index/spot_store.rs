@@ -7,30 +7,29 @@
 //! branch manifests. Dictionaries (subjects, strings, predicates, datatypes) are shared
 //! across all orders.
 
-use super::branch::{find_branch_file, read_branch_manifest, read_branch_manifest_from_bytes, BranchManifest};
-use super::dict_io::{
-    read_forward_index,
-    read_language_dict, read_language_dict_from_bytes,
-    read_predicate_dict,
-    read_predicate_dict_from_bytes,
-    read_subject_sid_map,
+use super::branch::{
+    find_branch_file, read_branch_manifest, read_branch_manifest_from_bytes, BranchManifest,
 };
-use super::index_root::BinaryIndexRootV2;
+use super::dict_io::{
+    read_forward_index, read_language_dict, read_language_dict_from_bytes, read_predicate_dict,
+    read_predicate_dict_from_bytes, read_subject_sid_map,
+};
 use super::global_dict::{LanguageTagDict, PredicateDict};
+use super::index_root::BinaryIndexRootV2;
 use super::leaf::read_leaf_header;
 use super::leaflet::decode_leaflet;
 use super::leaflet_cache::LeafletCache;
 use super::prefix_trie::PrefixTrie;
 use super::run_record::{RunRecord, RunSortOrder};
-use fluree_db_core::ListIndex;
-use crate::dict_tree::{DictTreeReader, DictBranch};
-use crate::dict_tree::reader::LeafSource;
-use crate::dict_tree::forward_leaf::ForwardEntry;
-use crate::dict_tree::reverse_leaf::{ReverseEntry, subject_reverse_key};
 use crate::dict_tree::builder;
-use fluree_db_core::subject_id::SubjectId;
-use fluree_db_core::value_id::{ObjKind, ObjKey};
+use crate::dict_tree::forward_leaf::ForwardEntry;
+use crate::dict_tree::reader::LeafSource;
+use crate::dict_tree::reverse_leaf::{subject_reverse_key, ReverseEntry};
+use crate::dict_tree::{DictBranch, DictTreeReader};
 use fluree_db_core::storage::{extract_hash_from_address, StorageRead};
+use fluree_db_core::subject_id::SubjectId;
+use fluree_db_core::value_id::{ObjKey, ObjKind};
+use fluree_db_core::ListIndex;
 use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
 use std::collections::HashMap;
 use std::io;
@@ -198,16 +197,17 @@ impl BinaryIndexStore {
                         "loaded branch manifest"
                     );
 
-                    let graph_index = graphs
-                        .entry(entry.g_id)
-                        .or_insert_with(|| GraphIndex {
-                            orders: HashMap::new(),
-                        });
-
-                    graph_index.orders.insert(order, OrderIndex {
-                        branch,
-                        leaf_dir: graph_dir,
+                    let graph_index = graphs.entry(entry.g_id).or_insert_with(|| GraphIndex {
+                        orders: HashMap::new(),
                     });
+
+                    graph_index.orders.insert(
+                        order,
+                        OrderIndex {
+                            branch,
+                            leaf_dir: graph_dir,
+                        },
+                    );
                 }
             }
             any_manifest_loaded = true;
@@ -233,7 +233,10 @@ impl BinaryIndexStore {
                 dict.get_or_insert(iri);
                 rev.insert(iri.clone(), id as u32);
             }
-            tracing::info!(predicates = dict.len(), "loaded predicate ids (predicates.json)");
+            tracing::info!(
+                predicates = dict.len(),
+                "loaded predicate ids (predicates.json)"
+            );
             (dict, rev)
         } else {
             return Err(io::Error::new(
@@ -282,7 +285,10 @@ impl BinaryIndexStore {
                     let iri = &fwd_data[off as usize..(off as usize + len as usize)];
                     let iri_str = std::str::from_utf8(iri).unwrap_or("");
                     let ns_code = SubjectId::from_u64(sid).ns_code();
-                    let prefix = namespace_codes.get(&ns_code).map(|s| s.as_str()).unwrap_or("");
+                    let prefix = namespace_codes
+                        .get(&ns_code)
+                        .map(|s| s.as_str())
+                        .unwrap_or("");
                     let suffix = if iri_str.starts_with(prefix) && !prefix.is_empty() {
                         &iri[prefix.len()..]
                     } else {
@@ -301,7 +307,10 @@ impl BinaryIndexStore {
                 rev_entries.sort_by(|a, b| a.key.cmp(&b.key));
                 let fwd_reader = build_dict_reader_forward(fwd_entries)?;
                 let rev_reader = build_dict_reader_reverse(rev_entries)?;
-                tracing::info!(subjects = sids.len(), "built subject trees from flat files (ns-compressed)");
+                tracing::info!(
+                    subjects = sids.len(),
+                    "built subject trees from flat files (ns-compressed)"
+                );
                 (Some(fwd_reader), Some(rev_reader))
             } else {
                 (None, None)
@@ -315,7 +324,8 @@ impl BinaryIndexStore {
             if string_idx_path.exists() && string_fwd_path.exists() {
                 let (offsets, lens) = read_forward_index(&string_idx_path)?;
                 let fwd_data = std::fs::read(&string_fwd_path)?;
-                let fwd_entries: Vec<ForwardEntry> = offsets.iter()
+                let fwd_entries: Vec<ForwardEntry> = offsets
+                    .iter()
                     .zip(lens.iter())
                     .enumerate()
                     .map(|(i, (&off, &len))| ForwardEntry {
@@ -323,13 +333,20 @@ impl BinaryIndexStore {
                         value: fwd_data[off as usize..(off as usize + len as usize)].to_vec(),
                     })
                     .collect();
-                let mut rev_entries: Vec<ReverseEntry> = fwd_entries.iter()
-                    .map(|e| ReverseEntry { key: e.value.clone(), id: e.id })
+                let mut rev_entries: Vec<ReverseEntry> = fwd_entries
+                    .iter()
+                    .map(|e| ReverseEntry {
+                        key: e.value.clone(),
+                        id: e.id,
+                    })
                     .collect();
                 rev_entries.sort_by(|a, b| a.key.cmp(&b.key));
                 let fwd_reader = build_dict_reader_forward(fwd_entries)?;
                 let rev_reader = build_dict_reader_reverse(rev_entries)?;
-                tracing::info!(strings = offsets.len(), "built string trees from flat files");
+                tracing::info!(
+                    strings = offsets.len(),
+                    "built string trees from flat files"
+                );
                 (Some(fwd_reader), Some(rev_reader))
             } else {
                 (None, None)
@@ -347,19 +364,20 @@ impl BinaryIndexStore {
         // ---- Load datatype dict → pre-compute dt_sids ----
         let dt_path = run_dir.join("datatypes.dict");
         let dt_dict = read_predicate_dict(&dt_path)?;
-        let dt_sids: Vec<Sid> = (0..dt_dict.len()).map(|id| {
-            let iri = dt_dict.resolve(id).unwrap_or("");
-            match prefix_trie.longest_match(iri) {
-                Some((code, prefix_len)) => Sid::new(code, &iri[prefix_len..]),
-                None => Sid::new(0, iri),
-            }
-        }).collect();
+        let dt_sids: Vec<Sid> = (0..dt_dict.len())
+            .map(|id| {
+                let iri = dt_dict.resolve(id).unwrap_or("");
+                match prefix_trie.longest_match(iri) {
+                    Some((code, prefix_len)) => Sid::new(code, &iri[prefix_len..]),
+                    None => Sid::new(0, iri),
+                }
+            })
+            .collect();
         tracing::info!(datatypes = dt_dict.len(), "loaded datatype dict → dt_sids");
 
         // ---- Load numbig arenas ----
         let nb_dir = run_dir.join("numbig");
-        let mut numbig_forward: HashMap<u32, super::numbig_dict::NumBigArena> =
-            HashMap::new();
+        let mut numbig_forward: HashMap<u32, super::numbig_dict::NumBigArena> = HashMap::new();
         if nb_dir.exists() && nb_dir.is_dir() {
             for entry in std::fs::read_dir(&nb_dir)? {
                 let entry = entry?;
@@ -383,11 +401,13 @@ impl BinaryIndexStore {
             }
         }
 
-
         // Log summary of loaded orders
         let mut order_summary = Vec::new();
         for &order in &all_orders {
-            let graph_count = graphs.values().filter(|g| g.orders.contains_key(&order)).count();
+            let graph_count = graphs
+                .values()
+                .filter(|g| g.orders.contains_key(&order))
+                .count();
             if graph_count > 0 {
                 order_summary.push(format!("{}({}g)", order.dir_name(), graph_count));
             }
@@ -482,7 +502,10 @@ impl BinaryIndexStore {
                 let prefix = root.namespace_codes.get(ns_code).ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("predicate_sids[{}]: unknown namespace code {}", p_id, ns_code),
+                        format!(
+                            "predicate_sids[{}]: unknown namespace code {}",
+                            p_id, ns_code
+                        ),
                     )
                 })?;
                 let iri = format!("{}{}", prefix, suffix);
@@ -496,10 +519,24 @@ impl BinaryIndexStore {
 
         // ---- Load subject dict trees from CAS ----
         let subject_forward_tree = Some(
-            load_dict_tree_from_cas(storage, &root.dict_addresses.subject_forward, cache_dir, "sdl", leaflet_cache.as_ref()).await?
+            load_dict_tree_from_cas(
+                storage,
+                &root.dict_addresses.subject_forward,
+                cache_dir,
+                "sdl",
+                leaflet_cache.as_ref(),
+            )
+            .await?,
         );
         let subject_reverse_tree = Some(
-            load_dict_tree_from_cas(storage, &root.dict_addresses.subject_reverse, cache_dir, "srl", leaflet_cache.as_ref()).await?
+            load_dict_tree_from_cas(
+                storage,
+                &root.dict_addresses.subject_reverse,
+                cache_dir,
+                "srl",
+                leaflet_cache.as_ref(),
+            )
+            .await?,
         );
         tracing::info!(
             subj_fwd_entries = subject_forward_tree.as_ref().unwrap().total_entries(),
@@ -509,10 +546,24 @@ impl BinaryIndexStore {
 
         // ---- Load string dict trees from CAS ----
         let string_forward_tree = Some(
-            load_dict_tree_from_cas(storage, &root.dict_addresses.string_forward, cache_dir, "tfl", leaflet_cache.as_ref()).await?
+            load_dict_tree_from_cas(
+                storage,
+                &root.dict_addresses.string_forward,
+                cache_dir,
+                "tfl",
+                leaflet_cache.as_ref(),
+            )
+            .await?,
         );
         let string_reverse_tree = Some(
-            load_dict_tree_from_cas(storage, &root.dict_addresses.string_reverse, cache_dir, "trl", leaflet_cache.as_ref()).await?
+            load_dict_tree_from_cas(
+                storage,
+                &root.dict_addresses.string_reverse,
+                cache_dir,
+                "trl",
+                leaflet_cache.as_ref(),
+            )
+            .await?,
         );
         tracing::info!(
             str_fwd_entries = string_forward_tree.as_ref().unwrap().total_entries(),
@@ -521,7 +572,8 @@ impl BinaryIndexStore {
         );
 
         // ---- Namespace codes (from root, not from storage) ----
-        let namespace_codes: HashMap<u16, String> = root.namespace_codes
+        let namespace_codes: HashMap<u16, String> = root
+            .namespace_codes
             .iter()
             .map(|(&k, v)| (k, v.clone()))
             .collect();
@@ -537,7 +589,8 @@ impl BinaryIndexStore {
         );
 
         // ---- Load language tag dict (cache-aware) ----
-        let lang_bytes = fetch_cached_bytes(storage, &root.dict_addresses.languages, cache_dir, "dict").await?;
+        let lang_bytes =
+            fetch_cached_bytes(storage, &root.dict_addresses.languages, cache_dir, "dict").await?;
         let language_tags = if !lang_bytes.is_empty() {
             read_language_dict_from_bytes(&lang_bytes)?
         } else {
@@ -546,15 +599,18 @@ impl BinaryIndexStore {
         tracing::info!(tags = language_tags.len(), "loaded language dict");
 
         // ---- Load datatype dict → pre-compute dt_sids (cache-aware) ----
-        let dt_bytes = fetch_cached_bytes(storage, &root.dict_addresses.datatypes, cache_dir, "dict").await?;
+        let dt_bytes =
+            fetch_cached_bytes(storage, &root.dict_addresses.datatypes, cache_dir, "dict").await?;
         let dt_dict = read_predicate_dict_from_bytes(&dt_bytes)?;
-        let dt_sids: Vec<Sid> = (0..dt_dict.len()).map(|id| {
-            let iri = dt_dict.resolve(id).unwrap_or("");
-            match prefix_trie.longest_match(iri) {
-                Some((code, prefix_len)) => Sid::new(code, &iri[prefix_len..]),
-                None => Sid::new(0, iri),
-            }
-        }).collect();
+        let dt_sids: Vec<Sid> = (0..dt_dict.len())
+            .map(|id| {
+                let iri = dt_dict.resolve(id).unwrap_or("");
+                match prefix_trie.longest_match(iri) {
+                    Some((code, prefix_len)) => Sid::new(code, &iri[prefix_len..]),
+                    None => Sid::new(0, iri),
+                }
+            })
+            .collect();
         tracing::info!(datatypes = dt_dict.len(), "loaded datatype dict → dt_sids");
 
         // ---- Load numbig arenas (cache-aware) ----
@@ -589,7 +645,8 @@ impl BinaryIndexStore {
                 })?;
 
                 // Load branch manifest (cache-aware), resolving leaf paths against cache_dir
-                let branch_bytes = fetch_cached_bytes(storage, &order_addrs.branch, cache_dir, "fbr").await?;
+                let branch_bytes =
+                    fetch_cached_bytes(storage, &order_addrs.branch, cache_dir, "fbr").await?;
                 let branch = read_branch_manifest_from_bytes(&branch_bytes, Some(cache_dir))?;
                 tracing::info!(
                     g_id = graph_entry.g_id,
@@ -604,20 +661,36 @@ impl BinaryIndexStore {
                     ensure_leaf_cached(storage, leaf_addr, cache_dir).await?;
                 }
 
-                order_indexes.insert(order, OrderIndex {
-                    branch,
-                    leaf_dir: cache_dir.to_path_buf(),
-                });
+                order_indexes.insert(
+                    order,
+                    OrderIndex {
+                        branch,
+                        leaf_dir: cache_dir.to_path_buf(),
+                    },
+                );
             }
 
-            graphs.insert(graph_entry.g_id, GraphIndex { orders: order_indexes });
+            graphs.insert(
+                graph_entry.g_id,
+                GraphIndex {
+                    orders: order_indexes,
+                },
+            );
         }
 
         // Log summary of loaded orders
-        let all_orders = [RunSortOrder::Spot, RunSortOrder::Psot, RunSortOrder::Post, RunSortOrder::Opst];
+        let all_orders = [
+            RunSortOrder::Spot,
+            RunSortOrder::Psot,
+            RunSortOrder::Post,
+            RunSortOrder::Opst,
+        ];
         let mut order_summary = Vec::new();
         for &order in &all_orders {
-            let graph_count = graphs.values().filter(|g| g.orders.contains_key(&order)).count();
+            let graph_count = graphs
+                .values()
+                .filter(|g| g.orders.contains_key(&order))
+                .count();
             if graph_count > 0 {
                 order_summary.push(format!("{}({}g)", order.dir_name(), graph_count));
             }
@@ -707,7 +780,8 @@ impl BinaryIndexStore {
     ///
     /// Looks up the namespace prefix by code and concatenates with the name.
     pub fn sid_to_iri(&self, sid: &Sid) -> String {
-        let prefix = self.namespace_codes
+        let prefix = self
+            .namespace_codes
             .get(&sid.namespace_code)
             .map(|s| s.as_str())
             .unwrap_or("");
@@ -729,11 +803,11 @@ impl BinaryIndexStore {
                 format!("s_id {} not found in subject forward tree", s_id),
             )
         })?;
-        let suffix = String::from_utf8(suffix_bytes).map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, e)
-        })?;
+        let suffix = String::from_utf8(suffix_bytes)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let ns_code = SubjectId::from_u64(s_id).ns_code();
-        let prefix = self.namespace_codes
+        let prefix = self
+            .namespace_codes
             .get(&ns_code)
             .map(|s| s.as_str())
             .unwrap_or("");
@@ -794,18 +868,14 @@ impl BinaryIndexStore {
             FlakeValue::Null => Ok(Some((ObjKind::NULL, ObjKey::from_u64(0)))),
             FlakeValue::Boolean(b) => Ok(Some((ObjKind::BOOL, ObjKey::encode_bool(*b)))),
             FlakeValue::Long(n) => Ok(Some((ObjKind::NUM_INT, ObjKey::encode_i64(*n)))),
-            FlakeValue::Ref(sid) => {
-                match self.sid_to_s_id(sid)? {
-                    Some(s_id) => Ok(Some((ObjKind::REF_ID, ObjKey::from_u64(s_id)))),
-                    None => Ok(None),
-                }
-            }
-            FlakeValue::String(s) => {
-                match self.find_string_id(s)? {
-                    Some(str_id) => Ok(Some((ObjKind::LEX_ID, ObjKey::encode_u32_id(str_id)))),
-                    None => Ok(None),
-                }
-            }
+            FlakeValue::Ref(sid) => match self.sid_to_s_id(sid)? {
+                Some(s_id) => Ok(Some((ObjKind::REF_ID, ObjKey::from_u64(s_id)))),
+                None => Ok(None),
+            },
+            FlakeValue::String(s) => match self.find_string_id(s)? {
+                Some(str_id) => Ok(Some((ObjKind::LEX_ID, ObjKey::encode_u32_id(str_id)))),
+                None => Ok(None),
+            },
             FlakeValue::Double(d) => {
                 // Integer-valued doubles that fit i64 → NUM_INT
                 if d.is_finite() && d.fract() == 0.0 {
@@ -930,9 +1000,7 @@ impl BinaryIndexStore {
     pub fn find_subject_id(&self, iri: &str) -> io::Result<Option<u64>> {
         match &self.subject_reverse_tree {
             Some(tree) => {
-                let (ns_code, prefix_len) = self.prefix_trie
-                    .longest_match(iri)
-                    .unwrap_or((0, 0));
+                let (ns_code, prefix_len) = self.prefix_trie.longest_match(iri).unwrap_or((0, 0));
                 let suffix = &iri[prefix_len..];
                 let key = subject_reverse_key(ns_code, suffix.as_bytes());
                 tree.reverse_lookup(&key)
@@ -977,7 +1045,9 @@ impl BinaryIndexStore {
     /// Find str_id for a string value via the reverse dict tree (O(log N) B-tree search).
     pub fn find_string_id(&self, value: &str) -> io::Result<Option<u32>> {
         match &self.string_reverse_tree {
-            Some(tree) => tree.reverse_lookup(value.as_bytes()).map(|opt| opt.map(|id| id as u32)),
+            Some(tree) => tree
+                .reverse_lookup(value.as_bytes())
+                .map(|opt| opt.map(|id| id as u32)),
             None => Ok(None),
         }
     }
@@ -993,7 +1063,8 @@ impl BinaryIndexStore {
 
     /// Get the branch manifest for a graph and sort order.
     pub fn branch_for_order(&self, g_id: u32, order: RunSortOrder) -> Option<&BranchManifest> {
-        self.graphs.get(&g_id)
+        self.graphs
+            .get(&g_id)
             .and_then(|g| g.orders.get(&order))
             .map(|oi| &oi.branch)
     }
@@ -1005,20 +1076,23 @@ impl BinaryIndexStore {
 
     /// Get the leaf directory for a graph and sort order.
     pub fn leaf_dir_for_order(&self, g_id: u32, order: RunSortOrder) -> Option<&Path> {
-        self.graphs.get(&g_id)
+        self.graphs
+            .get(&g_id)
             .and_then(|g| g.orders.get(&order))
             .map(|oi| oi.leaf_dir.as_path())
     }
 
     /// Check if a given sort order is available for a graph.
     pub fn has_order(&self, g_id: u32, order: RunSortOrder) -> bool {
-        self.graphs.get(&g_id)
+        self.graphs
+            .get(&g_id)
             .map_or(false, |g| g.orders.contains_key(&order))
     }
 
     /// Get the available sort orders for a graph.
     pub fn available_orders(&self, g_id: u32) -> Vec<RunSortOrder> {
-        self.graphs.get(&g_id)
+        self.graphs
+            .get(&g_id)
             .map(|g| {
                 let mut orders: Vec<_> = g.orders.keys().copied().collect();
                 orders.sort_by_key(|o| o.dir_name());
@@ -1050,7 +1124,8 @@ impl BinaryIndexStore {
 
     /// Number of subjects in the forward dictionary.
     pub fn subject_count(&self) -> u32 {
-        self.subject_forward_tree.as_ref()
+        self.subject_forward_tree
+            .as_ref()
             .map(|t| t.total_entries() as u32)
             .unwrap_or(0)
     }
@@ -1062,7 +1137,8 @@ impl BinaryIndexStore {
 
     /// Number of strings in the forward dictionary.
     pub fn string_count(&self) -> u32 {
-        self.string_forward_tree.as_ref()
+        self.string_forward_tree
+            .as_ref()
             .map(|t| t.total_entries() as u32)
             .unwrap_or(0)
     }
@@ -1101,7 +1177,10 @@ impl BinaryIndexStore {
     /// Iterates the pre-computed `dt_sids` vec (typically <20 entries).
     /// Returns `None` if the datatype is not in the dictionary.
     pub fn find_dt_id(&self, dt_sid: &Sid) -> Option<u16> {
-        self.dt_sids.iter().position(|s| s == dt_sid).map(|i| i as u16)
+        self.dt_sids
+            .iter()
+            .position(|s| s == dt_sid)
+            .map(|i| i as u16)
     }
 
     /// Find lang_id for a language tag string.
@@ -1297,7 +1376,9 @@ impl BinaryIndexStore {
         let o_val = self.decode_value(o_kind, o_key, p_id)?;
 
         // Datatype: dt_id → Sid via pre-computed dt_sids vec
-        let dt_sid = self.dt_sids.get(dt_raw as usize)
+        let dt_sid = self
+            .dt_sids
+            .get(dt_raw as usize)
             .cloned()
             .unwrap_or_else(|| Sid::new(0, ""));
 
@@ -1350,8 +1431,9 @@ impl BinaryIndexStore {
             let micros = ObjKey::from_u64(o_key).decode_time();
             let secs = (micros / 1_000_000) as u32;
             let frac_micros = (micros % 1_000_000) as u32;
-            let time = chrono::NaiveTime::from_num_seconds_from_midnight_opt(secs, frac_micros * 1000)
-                .unwrap_or(chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+            let time =
+                chrono::NaiveTime::from_num_seconds_from_midnight_opt(secs, frac_micros * 1000)
+                    .unwrap_or(chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
             let iso = time.format("%H:%M:%S%.6f").to_string();
             return match fluree_db_core::temporal::Time::parse(&iso) {
                 Ok(t) => Ok(FlakeValue::Time(Box::new(t))),
@@ -1360,8 +1442,7 @@ impl BinaryIndexStore {
         }
         if o_kind == ObjKind::DATE_TIME.as_u8() {
             let epoch_micros = ObjKey::from_u64(o_key).decode_datetime();
-            let dt = chrono::DateTime::from_timestamp_micros(epoch_micros)
-                .unwrap_or_default();
+            let dt = chrono::DateTime::from_timestamp_micros(epoch_micros).unwrap_or_default();
             let iso = dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string();
             return match fluree_db_core::temporal::DateTime::parse(&iso) {
                 Ok(d) => Ok(FlakeValue::DateTime(Box::new(d))),
@@ -1470,11 +1551,7 @@ impl BinaryIndexStore {
     /// Query all flakes for a subject in a graph (using SPOT index).
     ///
     /// Returns Flakes in SPOT order.
-    pub fn query_subject_flakes(
-        &self,
-        g_id: u32,
-        s_id: u64,
-    ) -> io::Result<Vec<Flake>> {
+    pub fn query_subject_flakes(&self, g_id: u32, s_id: u64) -> io::Result<Vec<Flake>> {
         self.query_subject_predicate_flakes(g_id, s_id, None)
     }
 
@@ -1509,7 +1586,12 @@ impl BinaryIndexStore {
                     break;
                 }
                 let leaflet_bytes = &leaf_data[dir_entry.offset as usize..end];
-                let decoded = decode_leaflet(leaflet_bytes, header.p_width, header.dt_width, RunSortOrder::Spot)?;
+                let decoded = decode_leaflet(
+                    leaflet_bytes,
+                    header.p_width,
+                    header.dt_width,
+                    RunSortOrder::Spot,
+                )?;
 
                 for row in 0..decoded.row_count {
                     let row_s_id = decoded.s_ids[row];
@@ -1703,14 +1785,20 @@ async fn fetch_cached_bytes<S: StorageRead>(
     cache_dir: &Path,
     ext: &str,
 ) -> io::Result<Vec<u8>> {
-    let hash = extract_hash_from_address(address)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData,
-            format!("cannot extract hash from address: {}", address)))?;
+    let hash = extract_hash_from_address(address).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("cannot extract hash from address: {}", address),
+        )
+    })?;
     let cached = cache_dir.join(format!("{}.{}", hash, ext));
     if cached.exists() {
         return std::fs::read(&cached);
     }
-    let bytes = storage.read_bytes(address).await.map_err(storage_to_io_error)?;
+    let bytes = storage
+        .read_bytes(address)
+        .await
+        .map_err(storage_to_io_error)?;
     cache_bytes_to_file(cache_dir, &hash, ext, &bytes)?;
     Ok(bytes)
 }
@@ -1772,7 +1860,8 @@ async fn load_dict_tree_from_cas<S: StorageRead>(
             "dict tree: branch leaf count does not match root leaf list"
         );
     }
-    let root_leaf_set: std::collections::HashSet<&str> = addrs.leaves.iter().map(|s| s.as_str()).collect();
+    let root_leaf_set: std::collections::HashSet<&str> =
+        addrs.leaves.iter().map(|s| s.as_str()).collect();
     for bl in &branch.leaves {
         if !root_leaf_set.contains(bl.address.as_str()) {
             tracing::warn!(
@@ -1786,14 +1875,21 @@ async fn load_dict_tree_from_cas<S: StorageRead>(
     // Iterates branch leaves (the authoritative set for lookups).
     let mut file_map = HashMap::new();
     for leaf in &branch.leaves {
-        let hash = extract_hash_from_address(&leaf.address)
-            .ok_or_else(|| io::Error::new(
+        let hash = extract_hash_from_address(&leaf.address).ok_or_else(|| {
+            io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("cannot extract hash from dict leaf address: {}", leaf.address),
-            ))?;
+                format!(
+                    "cannot extract hash from dict leaf address: {}",
+                    leaf.address
+                ),
+            )
+        })?;
         let cached_path = cache_dir.join(format!("{}.{}", hash, leaf_ext));
         if !cached_path.exists() {
-            let bytes = storage.read_bytes(&leaf.address).await.map_err(storage_to_io_error)?;
+            let bytes = storage
+                .read_bytes(&leaf.address)
+                .await
+                .map_err(storage_to_io_error)?;
             cache_bytes_to_file(cache_dir, &hash, leaf_ext, &bytes)?;
         }
         file_map.insert(leaf.address.clone(), cached_path);
@@ -1801,7 +1897,11 @@ async fn load_dict_tree_from_cas<S: StorageRead>(
 
     let leaf_source = LeafSource::LocalFiles(file_map);
     match leaflet_cache {
-        Some(cache) => Ok(DictTreeReader::with_cache(branch, leaf_source, Arc::clone(cache))),
+        Some(cache) => Ok(DictTreeReader::with_cache(
+            branch,
+            leaf_source,
+            Arc::clone(cache),
+        )),
         None => Ok(DictTreeReader::new(branch, leaf_source)),
     }
 }
@@ -1812,14 +1912,20 @@ async fn ensure_leaf_cached<S: StorageRead>(
     address: &str,
     cache_dir: &Path,
 ) -> io::Result<()> {
-    let hash = extract_hash_from_address(address)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData,
-            format!("cannot extract hash from leaf address: {}", address)))?;
+    let hash = extract_hash_from_address(address).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("cannot extract hash from leaf address: {}", address),
+        )
+    })?;
     let cached = cache_dir.join(format!("{}.fli", hash));
     if cached.exists() {
         return Ok(());
     }
-    let bytes = storage.read_bytes(address).await.map_err(storage_to_io_error)?;
+    let bytes = storage
+        .read_bytes(address)
+        .await
+        .map_err(storage_to_io_error)?;
     cache_bytes_to_file(cache_dir, &hash, "fli", &bytes)?;
     Ok(())
 }

@@ -67,10 +67,7 @@ pub fn split_subject_reverse_key(key: &[u8]) -> (u16, &[u8]) {
 pub fn encode_reverse_leaf(entries: &[ReverseEntry]) -> Vec<u8> {
     let entry_count = entries.len() as u32;
 
-    let data_size: usize = entries
-        .iter()
-        .map(|e| ENTRY_OVERHEAD + e.key.len())
-        .sum();
+    let data_size: usize = entries.iter().map(|e| ENTRY_OVERHEAD + e.key.len()).sum();
     let offset_table_size = entries.len() * 4;
     let total = HEADER_SIZE + offset_table_size + data_size;
 
@@ -149,9 +146,8 @@ impl<'a> ReverseLeaf<'a> {
     #[inline]
     fn entry_offset(&self, index: usize) -> usize {
         let table_pos = self.offset_table_start + index * 4;
-        let relative = u32::from_le_bytes(
-            self.data[table_pos..table_pos + 4].try_into().unwrap(),
-        ) as usize;
+        let relative =
+            u32::from_le_bytes(self.data[table_pos..table_pos + 4].try_into().unwrap()) as usize;
         self.data_section_start + relative
     }
 
@@ -159,9 +155,8 @@ impl<'a> ReverseLeaf<'a> {
     #[inline]
     fn key_at(&self, index: usize) -> &'a [u8] {
         let offset = self.entry_offset(index);
-        let key_len = u32::from_le_bytes(
-            self.data[offset..offset + 4].try_into().unwrap(),
-        ) as usize;
+        let key_len =
+            u32::from_le_bytes(self.data[offset..offset + 4].try_into().unwrap()) as usize;
         &self.data[offset + 4..offset + 4 + key_len]
     }
 
@@ -169,13 +164,10 @@ impl<'a> ReverseLeaf<'a> {
     #[inline]
     fn id_at(&self, index: usize) -> u64 {
         let offset = self.entry_offset(index);
-        let key_len = u32::from_le_bytes(
-            self.data[offset..offset + 4].try_into().unwrap(),
-        ) as usize;
+        let key_len =
+            u32::from_le_bytes(self.data[offset..offset + 4].try_into().unwrap()) as usize;
         let id_offset = offset + 4 + key_len;
-        u64::from_le_bytes(
-            self.data[id_offset..id_offset + 8].try_into().unwrap(),
-        )
+        u64::from_le_bytes(self.data[id_offset..id_offset + 8].try_into().unwrap())
     }
 
     /// Look up an ID by exact key match using binary search.
@@ -220,7 +212,10 @@ impl<'a> ReverseLeaf<'a> {
 
     /// Iterate all entries in order.
     pub fn iter(&'a self) -> ReverseLeafIter<'a> {
-        ReverseLeafIter { leaf: self, index: 0 }
+        ReverseLeafIter {
+            leaf: self,
+            index: 0,
+        }
     }
 }
 
@@ -252,9 +247,18 @@ mod tests {
     #[test]
     fn test_string_reverse_round_trip() {
         let mut entries: Vec<ReverseEntry> = vec![
-            ReverseEntry { key: b"alpha".to_vec(), id: 100 },
-            ReverseEntry { key: b"beta".to_vec(), id: 200 },
-            ReverseEntry { key: b"gamma".to_vec(), id: 300 },
+            ReverseEntry {
+                key: b"alpha".to_vec(),
+                id: 100,
+            },
+            ReverseEntry {
+                key: b"beta".to_vec(),
+                id: 200,
+            },
+            ReverseEntry {
+                key: b"gamma".to_vec(),
+                id: 300,
+            },
         ];
         entries.sort_by(|a, b| a.key.cmp(&b.key));
 
@@ -327,8 +331,14 @@ mod tests {
     #[test]
     fn test_first_last_key() {
         let entries = vec![
-            ReverseEntry { key: b"aaa".to_vec(), id: 1 },
-            ReverseEntry { key: b"zzz".to_vec(), id: 2 },
+            ReverseEntry {
+                key: b"aaa".to_vec(),
+                id: 1,
+            },
+            ReverseEntry {
+                key: b"zzz".to_vec(),
+                id: 2,
+            },
         ];
         let blob = encode_reverse_leaf(&entries);
         let leaf = ReverseLeaf::from_bytes(&blob).unwrap();
@@ -340,9 +350,18 @@ mod tests {
     #[test]
     fn test_iterator() {
         let entries = vec![
-            ReverseEntry { key: b"a".to_vec(), id: 10 },
-            ReverseEntry { key: b"b".to_vec(), id: 20 },
-            ReverseEntry { key: b"c".to_vec(), id: 30 },
+            ReverseEntry {
+                key: b"a".to_vec(),
+                id: 10,
+            },
+            ReverseEntry {
+                key: b"b".to_vec(),
+                id: 20,
+            },
+            ReverseEntry {
+                key: b"c".to_vec(),
+                id: 30,
+            },
         ];
         let blob = encode_reverse_leaf(&entries);
         let leaf = ReverseLeaf::from_bytes(&blob).unwrap();

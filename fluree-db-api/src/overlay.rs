@@ -25,7 +25,6 @@ impl CompositeOverlay {
         }
         Self { epoch, overlays }
     }
-
 }
 
 impl OverlayProvider for CompositeOverlay {
@@ -48,14 +47,9 @@ impl OverlayProvider for CompositeOverlay {
 
         let mut flakes: Vec<Flake> = Vec::new();
         for overlay in &self.overlays {
-            overlay.for_each_overlay_flake(
-                index,
-                first,
-                rhs,
-                leftmost,
-                to_t,
-                &mut |f| flakes.push(f.clone()),
-            );
+            overlay.for_each_overlay_flake(index, first, rhs, leftmost, to_t, &mut |f| {
+                flakes.push(f.clone())
+            });
         }
 
         flakes.sort_by(|a, b| index.compare(a, b));
@@ -64,4 +58,3 @@ impl OverlayProvider for CompositeOverlay {
         }
     }
 }
-

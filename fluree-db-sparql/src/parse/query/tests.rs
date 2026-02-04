@@ -1,10 +1,10 @@
 use super::*;
+use crate::ast::update::UpdateOperation;
 use crate::ast::{
     BlankNodeValue, DescribeTarget, GroupCondition, IriValue, LiteralValue, OrderDirection,
     OrderExpr, PredicateTerm, SelectModifier, SelectVariable, SelectVariables, SubjectTerm, Term,
     VarOrIri,
 };
-use crate::ast::update::UpdateOperation;
 
 fn parse(input: &str) -> ParseOutput<SparqlAst> {
     parse_sparql(input)
@@ -196,7 +196,10 @@ fn test_optional() {
 fn test_union() {
     let ast = assert_parses("SELECT * WHERE { { ?s ?p1 ?o } UNION { ?s ?p2 ?o } }");
     if let QueryBody::Select(q) = &ast.body {
-        assert!(matches!(&q.where_clause.pattern, GraphPattern::Union { .. }));
+        assert!(matches!(
+            &q.where_clause.pattern,
+            GraphPattern::Union { .. }
+        ));
     }
 }
 
@@ -349,7 +352,10 @@ fn test_subquery_simple() {
                 panic!("Expected Explicit variables, got Star");
             }
         } else {
-            panic!("Expected SubSelect pattern, got {:?}", q.where_clause.pattern);
+            panic!(
+                "Expected SubSelect pattern, got {:?}",
+                q.where_clause.pattern
+            );
         }
     }
 }
@@ -425,8 +431,7 @@ fn test_subquery_with_order_by_desc() {
 #[test]
 fn test_subquery_in_group() {
     // Subquery after a triple pattern
-    let ast =
-        assert_parses("SELECT * WHERE { ?s ?p ?o . { SELECT ?x WHERE { ?x a :Thing } } }");
+    let ast = assert_parses("SELECT * WHERE { ?s ?p ?o . { SELECT ?x WHERE { ?x a :Thing } } }");
     if let QueryBody::Select(q) = &ast.body {
         if let GraphPattern::Group { patterns, .. } = &q.where_clause.pattern {
             assert_eq!(patterns.len(), 2);
@@ -1017,15 +1022,13 @@ fn test_path_complex() {
     let ast = assert_parses("SELECT * WHERE { ?s ^ex:parent/ex:child+ ?descendant }");
     if let QueryBody::Select(q) = &ast.body {
         match &q.where_clause.pattern {
-            GraphPattern::Path { path, .. } => {
-                match path {
-                    PropertyPath::Sequence { left, right, .. } => {
-                        assert!(matches!(**left, PropertyPath::Inverse { .. }));
-                        assert!(matches!(**right, PropertyPath::OneOrMore { .. }));
-                    }
-                    _ => panic!("Expected Sequence path"),
+            GraphPattern::Path { path, .. } => match path {
+                PropertyPath::Sequence { left, right, .. } => {
+                    assert!(matches!(**left, PropertyPath::Inverse { .. }));
+                    assert!(matches!(**right, PropertyPath::OneOrMore { .. }));
                 }
-            }
+                _ => panic!("Expected Sequence path"),
+            },
             _ => panic!("Expected Path pattern"),
         }
     }
@@ -1065,9 +1068,7 @@ fn test_mixed_triples_and_paths() {
     use crate::ast::path::PropertyPath;
 
     // Mix of simple triples and path patterns
-    let ast = assert_parses(
-        "SELECT * WHERE { ?s ex:type ex:Person . ?s ex:knows+ ?friend }"
-    );
+    let ast = assert_parses("SELECT * WHERE { ?s ex:type ex:Person . ?s ex:knows+ ?friend }");
     if let QueryBody::Select(q) = &ast.body {
         match &q.where_clause.pattern {
             GraphPattern::Group { patterns, .. } => {
@@ -1141,9 +1142,7 @@ fn test_ask_with_where_keyword() {
 
 #[test]
 fn test_ask_complex_pattern() {
-    let ast = assert_parses(
-        "ASK { ?s ex:name ?name . FILTER(?name = \"Alice\") }"
-    );
+    let ast = assert_parses("ASK { ?s ex:name ?name . FILTER(?name = \"Alice\") }");
     match &ast.body {
         QueryBody::Ask(q) => {
             match &q.where_clause.pattern {
@@ -1177,15 +1176,13 @@ fn test_describe_star() {
 fn test_describe_variable() {
     let ast = assert_parses("DESCRIBE ?person");
     match &ast.body {
-        QueryBody::Describe(q) => {
-            match &q.target {
-                DescribeTarget::Resources(resources) => {
-                    assert_eq!(resources.len(), 1);
-                    assert!(matches!(&resources[0], VarOrIri::Var(v) if v.name.as_ref() == "person"));
-                }
-                _ => panic!("Expected Resources target"),
+        QueryBody::Describe(q) => match &q.target {
+            DescribeTarget::Resources(resources) => {
+                assert_eq!(resources.len(), 1);
+                assert!(matches!(&resources[0], VarOrIri::Var(v) if v.name.as_ref() == "person"));
             }
-        }
+            _ => panic!("Expected Resources target"),
+        },
         _ => panic!("Expected DESCRIBE query"),
     }
 }
@@ -1194,15 +1191,13 @@ fn test_describe_variable() {
 fn test_describe_iri() {
     let ast = assert_parses("DESCRIBE <http://example.org/alice>");
     match &ast.body {
-        QueryBody::Describe(q) => {
-            match &q.target {
-                DescribeTarget::Resources(resources) => {
-                    assert_eq!(resources.len(), 1);
-                    assert!(matches!(&resources[0], VarOrIri::Iri(_)));
-                }
-                _ => panic!("Expected Resources target"),
+        QueryBody::Describe(q) => match &q.target {
+            DescribeTarget::Resources(resources) => {
+                assert_eq!(resources.len(), 1);
+                assert!(matches!(&resources[0], VarOrIri::Iri(_)));
             }
-        }
+            _ => panic!("Expected Resources target"),
+        },
         _ => panic!("Expected DESCRIBE query"),
     }
 }
@@ -1211,14 +1206,12 @@ fn test_describe_iri() {
 fn test_describe_multiple_resources() {
     let ast = assert_parses("DESCRIBE ?x ?y <http://example.org/z>");
     match &ast.body {
-        QueryBody::Describe(q) => {
-            match &q.target {
-                DescribeTarget::Resources(resources) => {
-                    assert_eq!(resources.len(), 3);
-                }
-                _ => panic!("Expected Resources target"),
+        QueryBody::Describe(q) => match &q.target {
+            DescribeTarget::Resources(resources) => {
+                assert_eq!(resources.len(), 3);
             }
-        }
+            _ => panic!("Expected Resources target"),
+        },
         _ => panic!("Expected DESCRIBE query"),
     }
 }
@@ -1258,9 +1251,7 @@ fn test_describe_star_with_where() {
 
 #[test]
 fn test_construct_simple() {
-    let ast = assert_parses(
-        "CONSTRUCT { ?s ex:knows ?o } WHERE { ?s ex:friend ?o }"
-    );
+    let ast = assert_parses("CONSTRUCT { ?s ex:knows ?o } WHERE { ?s ex:friend ?o }");
     match &ast.body {
         QueryBody::Construct(q) => {
             assert!(q.template.is_some());
@@ -1287,9 +1278,8 @@ fn test_construct_shorthand() {
 
 #[test]
 fn test_construct_multiple_triples() {
-    let ast = assert_parses(
-        "CONSTRUCT { ?s ex:knows ?o . ?o ex:knownBy ?s } WHERE { ?s ex:friend ?o }"
-    );
+    let ast =
+        assert_parses("CONSTRUCT { ?s ex:knows ?o . ?o ex:knownBy ?s } WHERE { ?s ex:friend ?o }");
     match &ast.body {
         QueryBody::Construct(q) => {
             let template = q.template.as_ref().unwrap();
@@ -1303,7 +1293,7 @@ fn test_construct_multiple_triples() {
 fn test_construct_with_predicate_object_list() {
     // Using semicolon to share subject
     let ast = assert_parses(
-        "CONSTRUCT { ?s ex:type ex:Person ; ex:name ?name } WHERE { ?s ex:name ?name }"
+        "CONSTRUCT { ?s ex:type ex:Person ; ex:name ?name } WHERE { ?s ex:name ?name }",
     );
     match &ast.body {
         QueryBody::Construct(q) => {
@@ -1317,9 +1307,7 @@ fn test_construct_with_predicate_object_list() {
 #[test]
 fn test_construct_with_object_list() {
     // Using comma to share predicate
-    let ast = assert_parses(
-        "CONSTRUCT { ?s ex:knows ?o1, ?o2 } WHERE { ?s ex:friend ?o1, ?o2 }"
-    );
+    let ast = assert_parses("CONSTRUCT { ?s ex:knows ?o1, ?o2 } WHERE { ?s ex:friend ?o1, ?o2 }");
     match &ast.body {
         QueryBody::Construct(q) => {
             let template = q.template.as_ref().unwrap();
@@ -1344,9 +1332,7 @@ fn test_construct_empty_template() {
 
 #[test]
 fn test_construct_with_limit() {
-    let ast = assert_parses(
-        "CONSTRUCT { ?s ex:knows ?o } WHERE { ?s ex:friend ?o } LIMIT 10"
-    );
+    let ast = assert_parses("CONSTRUCT { ?s ex:knows ?o } WHERE { ?s ex:friend ?o } LIMIT 10");
     match &ast.body {
         QueryBody::Construct(q) => {
             assert!(q.modifiers.limit.is_some());
@@ -1362,9 +1348,7 @@ fn test_construct_with_limit() {
 
 #[test]
 fn test_select_with_from() {
-    let ast = assert_parses(
-        "SELECT * FROM <http://example.org/graph1> WHERE { ?s ?p ?o }"
-    );
+    let ast = assert_parses("SELECT * FROM <http://example.org/graph1> WHERE { ?s ?p ?o }");
     match &ast.body {
         QueryBody::Select(q) => {
             assert!(q.dataset.is_some());
@@ -1378,9 +1362,7 @@ fn test_select_with_from() {
 
 #[test]
 fn test_select_with_from_named() {
-    let ast = assert_parses(
-        "SELECT * FROM NAMED <http://example.org/graph1> WHERE { ?s ?p ?o }"
-    );
+    let ast = assert_parses("SELECT * FROM NAMED <http://example.org/graph1> WHERE { ?s ?p ?o }");
     match &ast.body {
         QueryBody::Select(q) => {
             assert!(q.dataset.is_some());
@@ -1395,7 +1377,7 @@ fn test_select_with_from_named() {
 #[test]
 fn test_select_with_multiple_from() {
     let ast = assert_parses(
-        "SELECT * FROM <http://example.org/g1> FROM <http://example.org/g2> WHERE { ?s ?p ?o }"
+        "SELECT * FROM <http://example.org/g1> FROM <http://example.org/g2> WHERE { ?s ?p ?o }",
     );
     match &ast.body {
         QueryBody::Select(q) => {
@@ -1426,9 +1408,7 @@ fn test_select_with_mixed_from() {
 
 #[test]
 fn test_ask_with_from() {
-    let ast = assert_parses(
-        "ASK FROM <http://example.org/graph> { ?s ?p ?o }"
-    );
+    let ast = assert_parses("ASK FROM <http://example.org/graph> { ?s ?p ?o }");
     match &ast.body {
         QueryBody::Ask(q) => {
             assert!(q.dataset.is_some());
@@ -1441,9 +1421,8 @@ fn test_ask_with_from() {
 
 #[test]
 fn test_describe_with_from() {
-    let ast = assert_parses(
-        "DESCRIBE ?x FROM <http://example.org/graph> WHERE { ?x ex:name ?name }"
-    );
+    let ast =
+        assert_parses("DESCRIBE ?x FROM <http://example.org/graph> WHERE { ?x ex:name ?name }");
     match &ast.body {
         QueryBody::Describe(q) => {
             assert!(q.dataset.is_some());
@@ -1457,7 +1436,7 @@ fn test_describe_with_from() {
 #[test]
 fn test_construct_full_with_from() {
     let ast = assert_parses(
-        "CONSTRUCT { ?s ex:knows ?o } FROM <http://example.org/graph> WHERE { ?s ex:friend ?o }"
+        "CONSTRUCT { ?s ex:knows ?o } FROM <http://example.org/graph> WHERE { ?s ex:friend ?o }",
     );
     match &ast.body {
         QueryBody::Construct(q) => {
@@ -1472,9 +1451,7 @@ fn test_construct_full_with_from() {
 
 #[test]
 fn test_construct_shorthand_with_from() {
-    let ast = assert_parses(
-        "CONSTRUCT FROM <http://example.org/graph> WHERE { ?s ex:name ?name }"
-    );
+    let ast = assert_parses("CONSTRUCT FROM <http://example.org/graph> WHERE { ?s ex:name ?name }");
     match &ast.body {
         QueryBody::Construct(q) => {
             assert!(q.dataset.is_some());
@@ -1503,9 +1480,8 @@ fn test_select_no_dataset() {
 
 #[test]
 fn test_insert_data_simple() {
-    let ast = assert_parses(
-        "INSERT DATA { <http://example.org/s> <http://example.org/p> \"value\" }"
-    );
+    let ast =
+        assert_parses("INSERT DATA { <http://example.org/s> <http://example.org/p> \"value\" }");
     match &ast.body {
         QueryBody::Update(UpdateOperation::InsertData(insert)) => {
             assert_eq!(insert.data.triples.len(), 1);
@@ -1529,9 +1505,7 @@ fn test_insert_data_multiple_triples() {
 
 #[test]
 fn test_insert_data_prefixed() {
-    let ast = assert_parses(
-        "PREFIX ex: <http://example.org/> INSERT DATA { ex:s ex:p \"value\" }"
-    );
+    let ast = assert_parses("PREFIX ex: <http://example.org/> INSERT DATA { ex:s ex:p \"value\" }");
     match &ast.body {
         QueryBody::Update(UpdateOperation::InsertData(insert)) => {
             assert_eq!(insert.data.triples.len(), 1);
@@ -1542,9 +1516,8 @@ fn test_insert_data_prefixed() {
 
 #[test]
 fn test_delete_data_simple() {
-    let ast = assert_parses(
-        "DELETE DATA { <http://example.org/s> <http://example.org/p> \"value\" }"
-    );
+    let ast =
+        assert_parses("DELETE DATA { <http://example.org/s> <http://example.org/p> \"value\" }");
     match &ast.body {
         QueryBody::Update(UpdateOperation::DeleteData(delete)) => {
             assert_eq!(delete.data.triples.len(), 1);
@@ -1577,9 +1550,8 @@ fn test_delete_where_multiple_patterns() {
 
 #[test]
 fn test_modify_delete_insert() {
-    let ast = assert_parses(
-        "DELETE { ?s ex:old ?o } INSERT { ?s ex:new ?o } WHERE { ?s ex:old ?o }"
-    );
+    let ast =
+        assert_parses("DELETE { ?s ex:old ?o } INSERT { ?s ex:new ?o } WHERE { ?s ex:old ?o }");
     match &ast.body {
         QueryBody::Update(UpdateOperation::Modify(modify)) => {
             assert!(modify.delete_clause.is_some());
@@ -1617,7 +1589,7 @@ fn test_modify_insert_only() {
 #[test]
 fn test_modify_with_clause() {
     let ast = assert_parses(
-        "WITH <http://example.org/graph> DELETE { ?s ex:old ?o } WHERE { ?s ex:old ?o }"
+        "WITH <http://example.org/graph> DELETE { ?s ex:old ?o } WHERE { ?s ex:old ?o }",
     );
     match &ast.body {
         QueryBody::Update(UpdateOperation::Modify(modify)) => {
@@ -1631,7 +1603,7 @@ fn test_modify_with_clause() {
 #[test]
 fn test_modify_with_using() {
     let ast = assert_parses(
-        "DELETE { ?s ex:old ?o } USING <http://example.org/graph> WHERE { ?s ex:old ?o }"
+        "DELETE { ?s ex:old ?o } USING <http://example.org/graph> WHERE { ?s ex:old ?o }",
     );
     match &ast.body {
         QueryBody::Update(UpdateOperation::Modify(modify)) => {

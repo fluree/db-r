@@ -387,11 +387,11 @@ pub fn apply_some_values_from_rule(
 
     // Helper to check restriction and derive type
     let check_and_derive = |x_canonical: &Sid,
-                                 y_types: &HashSet<Sid>,
-                                 restriction_ids: &[Sid],
-                                 derived: &DerivedSet,
-                                 new_delta: &mut DeltaSet,
-                                 diagnostics: &mut ReasoningDiagnostics| {
+                            y_types: &HashSet<Sid>,
+                            restriction_ids: &[Sid],
+                            derived: &DerivedSet,
+                            new_delta: &mut DeltaSet,
+                            diagnostics: &mut ReasoningDiagnostics| {
         for restriction_id in restriction_ids {
             if let Some(restriction) = restrictions.get(restriction_id) {
                 if let RestrictionType::SomeValuesFrom { target_class, .. } =
@@ -408,11 +408,7 @@ pub fn apply_some_values_from_rule(
                             None,
                         );
 
-                        if !derived.contains(
-                            &derived_flake.s,
-                            &derived_flake.p,
-                            &derived_flake.o,
-                        ) {
+                        if !derived.contains(&derived_flake.s, &derived_flake.p, &derived_flake.o) {
                             new_delta.push(derived_flake);
                             diagnostics.record_rule_fired("cls-svf1");
                         }
@@ -532,7 +528,8 @@ pub fn apply_some_values_from_rule(
 
             // Part 2b: Also check inverse properties - P(y, x) where y is now typed
             for property in restrictions.restricted_inverse_properties() {
-                let restriction_ids = restrictions.some_values_from_restrictions_for_inverse(property);
+                let restriction_ids =
+                    restrictions.some_values_from_restrictions_for_inverse(property);
                 if restriction_ids.is_empty() {
                     continue;
                 }
@@ -623,12 +620,20 @@ pub fn apply_all_values_from_rule(
 
                     // Collect property values using the helper function
                     // Check both canonical and original subject for delta
-                    let mut all_values = collect_property_values_delta(property, &x_canonical, delta, same_as);
+                    let mut all_values =
+                        collect_property_values_delta(property, &x_canonical, delta, same_as);
                     if x_canonical != flake.s {
-                        all_values.extend(collect_property_values_delta(property, &flake.s, delta, same_as));
+                        all_values.extend(collect_property_values_delta(
+                            property, &flake.s, delta, same_as,
+                        ));
                     }
                     // Also check derived
-                    all_values.extend(collect_property_values_derived(property, &x_canonical, derived, same_as));
+                    all_values.extend(collect_property_values_derived(
+                        property,
+                        &x_canonical,
+                        derived,
+                        same_as,
+                    ));
 
                     for y_canonical in all_values {
                         // Skip if we've already derived this
@@ -646,11 +651,7 @@ pub fn apply_all_values_from_rule(
                             None,
                         );
 
-                        if !derived.contains(
-                            &derived_flake.s,
-                            &derived_flake.p,
-                            &derived_flake.o,
-                        ) {
+                        if !derived.contains(&derived_flake.s, &derived_flake.p, &derived_flake.o) {
                             new_delta.push(derived_flake);
                             diagnostics.record_rule_fired("cls-avf");
                         }
@@ -684,9 +685,8 @@ pub fn apply_all_values_from_rule(
                             &restriction.restriction_type
                         {
                             // Check if x is of type C (the restriction class) in derived ONLY
-                            let x_has_type_in_derived = derived
-                                .get_by_ps(rdf_type_sid, &x_canonical)
-                                .any(|f| {
+                            let x_has_type_in_derived =
+                                derived.get_by_ps(rdf_type_sid, &x_canonical).any(|f| {
                                     if let FlakeValue::Ref(c) = &f.o {
                                         c == restriction_id
                                     } else {
@@ -749,9 +749,8 @@ pub fn apply_all_values_from_rule(
                         &restriction.restriction_type
                     {
                         // Check if x is of type C (the restriction class) in derived ONLY
-                        let x_has_type_in_derived = derived
-                            .get_by_ps(rdf_type_sid, &x_canonical)
-                            .any(|f| {
+                        let x_has_type_in_derived =
+                            derived.get_by_ps(rdf_type_sid, &x_canonical).any(|f| {
                                 if let FlakeValue::Ref(c) = &f.o {
                                     c == restriction_id
                                 } else {
@@ -1094,13 +1093,23 @@ fn entity_satisfies_class_ref(
                     RestrictionType::IntersectionOf { members } => {
                         // Entity must satisfy ALL members
                         members.iter().all(|member| {
-                            entity_satisfies_class_ref(entity_types, member, restrictions, depth + 1)
+                            entity_satisfies_class_ref(
+                                entity_types,
+                                member,
+                                restrictions,
+                                depth + 1,
+                            )
                         })
                     }
                     RestrictionType::UnionOf { members } => {
                         // Entity must satisfy ANY member
                         members.iter().any(|member| {
-                            entity_satisfies_class_ref(entity_types, member, restrictions, depth + 1)
+                            entity_satisfies_class_ref(
+                                entity_types,
+                                member,
+                                restrictions,
+                                depth + 1,
+                            )
                         })
                     }
                     _ => {
@@ -1332,11 +1341,7 @@ pub fn apply_union_rule(
                             None,
                         );
 
-                        if !derived.contains(
-                            &derived_flake.s,
-                            &derived_flake.p,
-                            &derived_flake.o,
-                        ) {
+                        if !derived.contains(&derived_flake.s, &derived_flake.p, &derived_flake.o) {
                             new_delta.push(derived_flake);
                             diagnostics.record_rule_fired("cls-uni");
                         }

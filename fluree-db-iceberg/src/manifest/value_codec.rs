@@ -121,9 +121,8 @@ pub fn decode_bound(bytes: &[u8], field: &SchemaField) -> Result<TypedValue> {
 
 /// Decode bytes by type string.
 pub fn decode_by_type_string(bytes: &[u8], type_str: Option<&str>) -> Result<TypedValue> {
-    let type_str = type_str.ok_or_else(|| {
-        IcebergError::Manifest("Cannot decode bound for nested type".to_string())
-    })?;
+    let type_str = type_str
+        .ok_or_else(|| IcebergError::Manifest("Cannot decode bound for nested type".to_string()))?;
 
     match type_str {
         "boolean" => {
@@ -259,11 +258,7 @@ fn decode_decimal_bytes(bytes: &[u8]) -> Result<i128> {
 
     // Sign-extend to 16 bytes
     let is_negative = (bytes[0] & 0x80) != 0;
-    let mut padded = if is_negative {
-        [0xFF; 16]
-    } else {
-        [0x00; 16]
-    };
+    let mut padded = if is_negative { [0xFF; 16] } else { [0x00; 16] };
 
     // Copy bytes to the end (big-endian)
     let start = 16 - bytes.len();
@@ -454,10 +449,7 @@ mod tests {
         let value = -12345i128;
         let bytes = value.to_be_bytes();
         // Keep sign-extension bytes (0xFF prefix for negative)
-        let trimmed: Vec<u8> = bytes
-            .into_iter()
-            .skip_while(|&b| b == 0xFF)
-            .collect();
+        let trimmed: Vec<u8> = bytes.into_iter().skip_while(|&b| b == 0xFF).collect();
         // Need at least the MSB to preserve sign
         let trimmed = if trimmed.is_empty() || (trimmed[0] & 0x80) == 0 {
             let mut v = vec![0xFF];
@@ -495,8 +487,17 @@ mod tests {
         ];
 
         let types = vec![
-            "boolean", "boolean", "int", "int", "long", "float", "double", "date", "timestamp",
-            "string", "binary",
+            "boolean",
+            "boolean",
+            "int",
+            "int",
+            "long",
+            "float",
+            "double",
+            "date",
+            "timestamp",
+            "string",
+            "binary",
         ];
 
         for (value, type_str) in values.iter().zip(types.iter()) {

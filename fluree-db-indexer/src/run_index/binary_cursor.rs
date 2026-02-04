@@ -13,7 +13,9 @@
 
 use super::branch::LeafEntry;
 use super::leaf::read_leaf_header;
-use super::leaflet::{decode_leaflet_region1, decode_leaflet_region2, decode_leaflet_region3, LeafletHeader};
+use super::leaflet::{
+    decode_leaflet_region1, decode_leaflet_region2, decode_leaflet_region3, LeafletHeader,
+};
 use super::leaflet_cache::{CachedRegion1, CachedRegion2, LeafletCacheKey};
 use super::replay::replay_leaflet;
 use super::run_record::{cmp_for_order, FactKey, RunRecord, RunSortOrder};
@@ -154,7 +156,15 @@ fn same_identity_row_vs_overlay(
     ov: &OverlayOp,
 ) -> bool {
     FactKey::from_decoded_row(s_id, p_id, o_kind, o_key, dt, lang_id, i)
-        == FactKey::from_decoded_row(ov.s_id, ov.p_id, ov.o_kind, ov.o_key, ov.dt as u32, ov.lang_id, ov.i_val)
+        == FactKey::from_decoded_row(
+            ov.s_id,
+            ov.p_id,
+            ov.o_kind,
+            ov.o_key,
+            ov.dt as u32,
+            ov.lang_id,
+            ov.i_val,
+        )
 }
 
 // ============================================================================
@@ -226,7 +236,17 @@ fn merge_overlay(
             Ordering::Greater => {
                 // Overlay comes first (not in existing data)
                 if ov.op {
-                    emit_overlay(ov, &mut out_s, &mut out_p, &mut out_o_kinds, &mut out_o_keys, &mut out_dt, &mut out_t, &mut out_lang, &mut out_i);
+                    emit_overlay(
+                        ov,
+                        &mut out_s,
+                        &mut out_p,
+                        &mut out_o_kinds,
+                        &mut out_o_keys,
+                        &mut out_dt,
+                        &mut out_t,
+                        &mut out_lang,
+                        &mut out_i,
+                    );
                 }
                 // Retract of non-existent → skip
                 oi += 1;
@@ -234,12 +254,29 @@ fn merge_overlay(
             Ordering::Equal => {
                 // Sort-order position match — check full identity
                 if same_identity_row_vs_overlay(
-                    r1_s[ri], r1_p[ri], r1_o_kinds[ri], r1_o_keys[ri], r2_dt[ri], r2_lang[ri], r2_i[ri], ov,
+                    r1_s[ri],
+                    r1_p[ri],
+                    r1_o_kinds[ri],
+                    r1_o_keys[ri],
+                    r2_dt[ri],
+                    r2_lang[ri],
+                    r2_i[ri],
+                    ov,
                 ) {
                     // Same fact identity
                     if ov.op {
                         // Assert (update) — emit overlay with new t
-                        emit_overlay(ov, &mut out_s, &mut out_p, &mut out_o_kinds, &mut out_o_keys, &mut out_dt, &mut out_t, &mut out_lang, &mut out_i);
+                        emit_overlay(
+                            ov,
+                            &mut out_s,
+                            &mut out_p,
+                            &mut out_o_kinds,
+                            &mut out_o_keys,
+                            &mut out_dt,
+                            &mut out_t,
+                            &mut out_lang,
+                            &mut out_i,
+                        );
                     }
                     // else: Retract — omit from output
                     ri += 1;
@@ -277,7 +314,17 @@ fn merge_overlay(
     // Drain remaining overlay asserts
     while oi < overlay.len() {
         if overlay[oi].op {
-            emit_overlay(&overlay[oi], &mut out_s, &mut out_p, &mut out_o_kinds, &mut out_o_keys, &mut out_dt, &mut out_t, &mut out_lang, &mut out_i);
+            emit_overlay(
+                &overlay[oi],
+                &mut out_s,
+                &mut out_p,
+                &mut out_o_kinds,
+                &mut out_o_keys,
+                &mut out_dt,
+                &mut out_t,
+                &mut out_lang,
+                &mut out_i,
+            );
         }
         oi += 1;
     }
@@ -347,9 +394,8 @@ fn find_overlay_for_leaf<'a>(
 
     // End: first overlay op >= next leaf's first_key (or all remaining)
     let end = match next_first_key {
-        Some(next_key) => overlay_ops.partition_point(|ov| {
-            cmp_overlay_vs_record(ov, next_key, order) == Ordering::Less
-        }),
+        Some(next_key) => overlay_ops
+            .partition_point(|ov| cmp_overlay_vs_record(ov, next_key, order) == Ordering::Less),
         None => overlay_ops.len(),
     };
 
@@ -689,10 +735,18 @@ impl BinaryCursor {
                     };
 
                     if let Some(c) = cache {
-                        if c.contains_r1(&cache_key) { r1_hits += 1; } else { r1_misses += 1; }
+                        if c.contains_r1(&cache_key) {
+                            r1_hits += 1;
+                        } else {
+                            r1_misses += 1;
+                        }
                         // Region 2 is only relevant when the cursor needs it (Region 2 requested or time-travel).
                         if self.need_region2 || time_traveling {
-                            if c.contains_r2(&cache_key) { r2_hits += 1; } else { r2_misses += 1; }
+                            if c.contains_r2(&cache_key) {
+                                r2_hits += 1;
+                            } else {
+                                r2_misses += 1;
+                            }
                         }
                     }
 
@@ -789,13 +843,20 @@ impl BinaryCursor {
             };
 
             // Decode R1 (from cache or fresh).
-            let (leaflet_header, r1) = self.decode_r1(leaflet_bytes, header, &raw_cache_key, cache)?;
+            let (leaflet_header, r1) =
+                self.decode_r1(leaflet_bytes, header, &raw_cache_key, cache)?;
             if r1.row_count == 0 {
                 continue;
             }
 
             // Decode R2 (needed for sort-key comparison and merge output).
-            let r2 = self.decode_r2(leaflet_bytes, leaflet_header.as_ref(), header, &raw_cache_key, cache)?;
+            let r2 = self.decode_r2(
+                leaflet_bytes,
+                leaflet_header.as_ref(),
+                header,
+                &raw_cache_key,
+                cache,
+            )?;
 
             // Compute exclusive upper bound for this leaflet's overlay slice.
             let ov_end = if leaflet_idx + 1 < leaflet_count {
@@ -805,9 +866,15 @@ impl BinaryCursor {
                 let mut pos = ov_start;
                 while pos < leaf_overlay.len() {
                     if cmp_row_vs_overlay(
-                        r1.s_ids.get(last).as_u64(), r1.p_ids[last], r1.o_kinds[last], r1.o_keys[last], last_dt,
-                        &leaf_overlay[pos], self.order,
-                    ) != Ordering::Less {
+                        r1.s_ids.get(last).as_u64(),
+                        r1.p_ids[last],
+                        r1.o_kinds[last],
+                        r1.o_keys[last],
+                        last_dt,
+                        &leaf_overlay[pos],
+                        self.order,
+                    ) != Ordering::Less
+                    {
                         pos += 1;
                     } else {
                         break;
@@ -833,10 +900,18 @@ impl BinaryCursor {
                 // positions: ops before first row (inserted), ops matching
                 // existing rows (updated/retracted), ops after last row
                 // (appended for last leaflet).
-                let r1_s_u64: Vec<u64> = (0..r1.row_count).map(|i| r1.s_ids.get(i).as_u64()).collect();
+                let r1_s_u64: Vec<u64> = (0..r1.row_count)
+                    .map(|i| r1.s_ids.get(i).as_u64())
+                    .collect();
                 let (merged_r1, merged_r2) = merge_overlay(
-                    &r1_s_u64, &r1.p_ids, &r1.o_kinds, &r1.o_keys,
-                    &r2.dt_values, &r2.t_values, &r2.lang_ids, &r2.i_values,
+                    &r1_s_u64,
+                    &r1.p_ids,
+                    &r1.o_kinds,
+                    &r1.o_keys,
+                    &r2.dt_values,
+                    &r2.t_values,
+                    &r2.lang_ids,
+                    &r2.i_values,
                     local_overlay,
                     self.order,
                 );
@@ -864,7 +939,8 @@ impl BinaryCursor {
         // The last leaflet was assigned all remaining ops (ov_end = len()),
         // so nothing should remain unconsumed.
         debug_assert_eq!(
-            ov_start, leaf_overlay.len(),
+            ov_start,
+            leaf_overlay.len(),
             "overlay ops remain after processing all leaflets"
         );
 
@@ -981,7 +1057,9 @@ impl BinaryCursor {
                     decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
                 let row_count = lh.row_count as usize;
                 let cached_r1 = CachedRegion1 {
-                    s_ids: SubjectIdColumn::from_wide(s_ids.into_iter().map(SubjectId::from_u64).collect()),
+                    s_ids: SubjectIdColumn::from_wide(
+                        s_ids.into_iter().map(SubjectId::from_u64).collect(),
+                    ),
                     p_ids: p_ids.into(),
                     o_kinds: o_kinds.into(),
                     o_keys: o_keys.into(),
@@ -995,7 +1073,9 @@ impl BinaryCursor {
                 decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
             let row_count = lh.row_count as usize;
             let r1 = CachedRegion1 {
-                s_ids: SubjectIdColumn::from_wide(s_ids.into_iter().map(SubjectId::from_u64).collect()),
+                s_ids: SubjectIdColumn::from_wide(
+                    s_ids.into_iter().map(SubjectId::from_u64).collect(),
+                ),
                 p_ids: p_ids.into(),
                 o_kinds: o_kinds.into(),
                 o_keys: o_keys.into(),
@@ -1033,8 +1113,7 @@ impl BinaryCursor {
                 }
             } else {
                 let lh = leaflet_header.as_ref().unwrap();
-                let (dt, t, lang, i) =
-                    decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)?;
+                let (dt, t, lang, i) = decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)?;
                 CachedRegion2 {
                     dt_values: dt.into(),
                     t_values: t.into(),
@@ -1142,7 +1221,13 @@ impl BinaryCursor {
             Some(replayed) => {
                 // Replay produced new state
                 let r1 = CachedRegion1 {
-                    s_ids: SubjectIdColumn::from_wide(replayed.s_ids.into_iter().map(SubjectId::from_u64).collect()),
+                    s_ids: SubjectIdColumn::from_wide(
+                        replayed
+                            .s_ids
+                            .into_iter()
+                            .map(SubjectId::from_u64)
+                            .collect(),
+                    ),
                     p_ids: replayed.p_ids.into(),
                     o_kinds: replayed.o_kinds.into(),
                     o_keys: replayed.o_keys.into(),
@@ -1176,7 +1261,9 @@ impl BinaryCursor {
                 }
                 let row_count = lh.row_count as usize;
                 let r1 = CachedRegion1 {
-                    s_ids: SubjectIdColumn::from_wide(raw_s_ids.into_iter().map(SubjectId::from_u64).collect()),
+                    s_ids: SubjectIdColumn::from_wide(
+                        raw_s_ids.into_iter().map(SubjectId::from_u64).collect(),
+                    ),
                     p_ids: raw_p_ids.into(),
                     o_kinds: raw_o_kinds.into(),
                     o_keys: raw_o_keys.into(),
@@ -1299,8 +1386,8 @@ impl BinaryCursor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::{DatatypeDictId, ListIndex};
     use fluree_db_core::value_id::{ObjKey, ObjKind};
+    use fluree_db_core::{DatatypeDictId, ListIndex};
 
     /// Collect SubjectIdColumn values as u64 for test assertions.
     fn sid_col_to_u64(col: &SubjectIdColumn) -> Vec<u64> {
@@ -1322,11 +1409,25 @@ mod tests {
     }
 
     /// Helper: make decoded R1+R2 columns from simple (s, p, val, t) tuples.
-    fn make_columns(rows: &[(u64, u32, i64, i64)]) -> (Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>, Vec<u32>, Vec<i64>, Vec<u16>, Vec<i32>) {
+    fn make_columns(
+        rows: &[(u64, u32, i64, i64)],
+    ) -> (
+        Vec<u64>,
+        Vec<u32>,
+        Vec<u8>,
+        Vec<u64>,
+        Vec<u32>,
+        Vec<i64>,
+        Vec<u16>,
+        Vec<i32>,
+    ) {
         let s: Vec<u64> = rows.iter().map(|r| r.0).collect();
         let p: Vec<u32> = rows.iter().map(|r| r.1).collect();
         let o_kinds: Vec<u8> = vec![ObjKind::NUM_INT.as_u8(); rows.len()];
-        let o_keys: Vec<u64> = rows.iter().map(|r| ObjKey::encode_i64(r.2).as_u64()).collect();
+        let o_keys: Vec<u64> = rows
+            .iter()
+            .map(|r| ObjKey::encode_i64(r.2).as_u64())
+            .collect();
         let dt: Vec<u32> = vec![DatatypeDictId::INTEGER.as_u16() as u32; rows.len()];
         let t: Vec<i64> = rows.iter().map(|r| r.3).collect();
         let lang: Vec<u16> = vec![0; rows.len()];
@@ -1336,48 +1437,81 @@ mod tests {
 
     #[test]
     fn test_merge_overlay_empty() {
-        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[
-            (1, 1, 10, 1),
-            (2, 1, 20, 1),
-        ]);
+        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[(1, 1, 10, 1), (2, 1, 20, 1)]);
         let overlay: Vec<OverlayOp> = vec![];
-        let (r1, _r2) = merge_overlay(&s, &p, &ok, &okey, &dt, &t, &lang, &i, &overlay, RunSortOrder::Spot);
+        let (r1, _r2) = merge_overlay(
+            &s,
+            &p,
+            &ok,
+            &okey,
+            &dt,
+            &t,
+            &lang,
+            &i,
+            &overlay,
+            RunSortOrder::Spot,
+        );
         assert_eq!(r1.row_count, 2);
         assert_eq!(sid_col_to_u64(&r1.s_ids), &[1, 2]);
     }
 
     #[test]
     fn test_merge_overlay_assert_new_fact() {
-        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[
-            (1, 1, 10, 1),
-            (3, 1, 30, 1),
-        ]);
+        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[(1, 1, 10, 1), (3, 1, 30, 1)]);
         let overlay = vec![make_overlay_op(2, 1, 20, 5, true)];
-        let (r1, _r2) = merge_overlay(&s, &p, &ok, &okey, &dt, &t, &lang, &i, &overlay, RunSortOrder::Spot);
+        let (r1, _r2) = merge_overlay(
+            &s,
+            &p,
+            &ok,
+            &okey,
+            &dt,
+            &t,
+            &lang,
+            &i,
+            &overlay,
+            RunSortOrder::Spot,
+        );
         assert_eq!(r1.row_count, 3);
         assert_eq!(sid_col_to_u64(&r1.s_ids), &[1, 2, 3]);
     }
 
     #[test]
     fn test_merge_overlay_retract_existing() {
-        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[
-            (1, 1, 10, 1),
-            (2, 1, 20, 1),
-            (3, 1, 30, 1),
-        ]);
+        let (s, p, ok, okey, dt, t, lang, i) =
+            make_columns(&[(1, 1, 10, 1), (2, 1, 20, 1), (3, 1, 30, 1)]);
         let overlay = vec![make_overlay_op(2, 1, 20, 5, false)];
-        let (r1, _r2) = merge_overlay(&s, &p, &ok, &okey, &dt, &t, &lang, &i, &overlay, RunSortOrder::Spot);
+        let (r1, _r2) = merge_overlay(
+            &s,
+            &p,
+            &ok,
+            &okey,
+            &dt,
+            &t,
+            &lang,
+            &i,
+            &overlay,
+            RunSortOrder::Spot,
+        );
         assert_eq!(r1.row_count, 2);
         assert_eq!(sid_col_to_u64(&r1.s_ids), &[1, 3]);
     }
 
     #[test]
     fn test_merge_overlay_update_existing() {
-        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[
-            (1, 1, 10, 1),
-        ]);
+        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[(1, 1, 10, 1)]);
         let overlay = vec![make_overlay_op(1, 1, 10, 5, true)];
-        let (r1, r2) = merge_overlay(&s, &p, &ok, &okey, &dt, &t, &lang, &i, &overlay, RunSortOrder::Spot);
+        let (r1, r2) = merge_overlay(
+            &s,
+            &p,
+            &ok,
+            &okey,
+            &dt,
+            &t,
+            &lang,
+            &i,
+            &overlay,
+            RunSortOrder::Spot,
+        );
         assert_eq!(r1.row_count, 1);
         assert_eq!(sid_col_to_u64(&r1.s_ids), &[1]);
         assert_eq!(r2.t_values[0], 5); // updated t
@@ -1385,57 +1519,91 @@ mod tests {
 
     #[test]
     fn test_merge_overlay_retract_nonexistent() {
-        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[
-            (1, 1, 10, 1),
-        ]);
+        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[(1, 1, 10, 1)]);
         let overlay = vec![make_overlay_op(0, 1, 5, 5, false)]; // retract before s=1
-        let (r1, _r2) = merge_overlay(&s, &p, &ok, &okey, &dt, &t, &lang, &i, &overlay, RunSortOrder::Spot);
+        let (r1, _r2) = merge_overlay(
+            &s,
+            &p,
+            &ok,
+            &okey,
+            &dt,
+            &t,
+            &lang,
+            &i,
+            &overlay,
+            RunSortOrder::Spot,
+        );
         assert_eq!(r1.row_count, 1);
         assert_eq!(sid_col_to_u64(&r1.s_ids), &[1]);
     }
 
     #[test]
     fn test_merge_overlay_append_after() {
-        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[
-            (1, 1, 10, 1),
-        ]);
+        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[(1, 1, 10, 1)]);
         let overlay = vec![
             make_overlay_op(5, 1, 50, 5, true),
             make_overlay_op(6, 1, 60, 5, true),
         ];
-        let (r1, _r2) = merge_overlay(&s, &p, &ok, &okey, &dt, &t, &lang, &i, &overlay, RunSortOrder::Spot);
+        let (r1, _r2) = merge_overlay(
+            &s,
+            &p,
+            &ok,
+            &okey,
+            &dt,
+            &t,
+            &lang,
+            &i,
+            &overlay,
+            RunSortOrder::Spot,
+        );
         assert_eq!(r1.row_count, 3);
         assert_eq!(sid_col_to_u64(&r1.s_ids), &[1, 5, 6]);
     }
 
     #[test]
     fn test_merge_overlay_prepend_before() {
-        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[
-            (5, 1, 50, 1),
-        ]);
+        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[(5, 1, 50, 1)]);
         let overlay = vec![
             make_overlay_op(1, 1, 10, 5, true),
             make_overlay_op(2, 1, 20, 5, true),
         ];
-        let (r1, _r2) = merge_overlay(&s, &p, &ok, &okey, &dt, &t, &lang, &i, &overlay, RunSortOrder::Spot);
+        let (r1, _r2) = merge_overlay(
+            &s,
+            &p,
+            &ok,
+            &okey,
+            &dt,
+            &t,
+            &lang,
+            &i,
+            &overlay,
+            RunSortOrder::Spot,
+        );
         assert_eq!(r1.row_count, 3);
         assert_eq!(sid_col_to_u64(&r1.s_ids), &[1, 2, 5]);
     }
 
     #[test]
     fn test_merge_overlay_mixed_operations() {
-        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[
-            (1, 1, 10, 1),
-            (2, 1, 20, 1),
-            (3, 1, 30, 1),
-            (5, 1, 50, 1),
-        ]);
+        let (s, p, ok, okey, dt, t, lang, i) =
+            make_columns(&[(1, 1, 10, 1), (2, 1, 20, 1), (3, 1, 30, 1), (5, 1, 50, 1)]);
         let overlay = vec![
             make_overlay_op(2, 1, 20, 5, false), // retract s=2
             make_overlay_op(3, 1, 30, 5, true),  // update s=3
             make_overlay_op(4, 1, 40, 5, true),  // insert s=4
         ];
-        let (r1, r2) = merge_overlay(&s, &p, &ok, &okey, &dt, &t, &lang, &i, &overlay, RunSortOrder::Spot);
+        let (r1, r2) = merge_overlay(
+            &s,
+            &p,
+            &ok,
+            &okey,
+            &dt,
+            &t,
+            &lang,
+            &i,
+            &overlay,
+            RunSortOrder::Spot,
+        );
         assert_eq!(r1.row_count, 4);
         assert_eq!(sid_col_to_u64(&r1.s_ids), &[1, 3, 4, 5]);
         assert_eq!(r2.t_values[1], 5); // s=3 updated
@@ -1449,22 +1617,41 @@ mod tests {
             make_overlay_op(1, 1, 10, 1, true),
             make_overlay_op(2, 1, 20, 1, true),
         ];
-        let (r1, _r2) = merge_overlay(&s, &p, &ok, &okey, &dt, &t, &lang, &i, &overlay, RunSortOrder::Spot);
+        let (r1, _r2) = merge_overlay(
+            &s,
+            &p,
+            &ok,
+            &okey,
+            &dt,
+            &t,
+            &lang,
+            &i,
+            &overlay,
+            RunSortOrder::Spot,
+        );
         assert_eq!(r1.row_count, 2);
         assert_eq!(sid_col_to_u64(&r1.s_ids), &[1, 2]);
     }
 
     #[test]
     fn test_merge_overlay_retract_all() {
-        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[
-            (1, 1, 10, 1),
-            (2, 1, 20, 1),
-        ]);
+        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[(1, 1, 10, 1), (2, 1, 20, 1)]);
         let overlay = vec![
             make_overlay_op(1, 1, 10, 5, false),
             make_overlay_op(2, 1, 20, 5, false),
         ];
-        let (r1, _r2) = merge_overlay(&s, &p, &ok, &okey, &dt, &t, &lang, &i, &overlay, RunSortOrder::Spot);
+        let (r1, _r2) = merge_overlay(
+            &s,
+            &p,
+            &ok,
+            &okey,
+            &dt,
+            &t,
+            &lang,
+            &i,
+            &overlay,
+            RunSortOrder::Spot,
+        );
         assert_eq!(r1.row_count, 0);
     }
 
@@ -1478,12 +1665,28 @@ mod tests {
         ]);
         // Insert p=1,s=3 (goes after p=1,s=2 in PSOT order)
         let overlay = vec![OverlayOp {
-            s_id: 3, p_id: 1,
+            s_id: 3,
+            p_id: 1,
             o_kind: ObjKind::NUM_INT.as_u8(),
             o_key: ObjKey::encode_i64(25).as_u64(),
-            t: 5, op: true, dt: DatatypeDictId::INTEGER.as_u16(), lang_id: 0, i_val: ListIndex::none().as_i32(),
+            t: 5,
+            op: true,
+            dt: DatatypeDictId::INTEGER.as_u16(),
+            lang_id: 0,
+            i_val: ListIndex::none().as_i32(),
         }];
-        let (r1, _r2) = merge_overlay(&s, &p, &ok, &okey, &dt, &t, &lang, &i, &overlay, RunSortOrder::Psot);
+        let (r1, _r2) = merge_overlay(
+            &s,
+            &p,
+            &ok,
+            &okey,
+            &dt,
+            &t,
+            &lang,
+            &i,
+            &overlay,
+            RunSortOrder::Psot,
+        );
         assert_eq!(r1.row_count, 4);
         // PSOT order: (p=1,s=1), (p=1,s=2), (p=1,s=3), (p=2,s=1)
         assert_eq!(&*r1.p_ids, &[1, 1, 1, 2]);
@@ -1500,17 +1703,38 @@ mod tests {
         let o_key_val = ObjKey::encode_u32_id(5).as_u64();
         let ok = vec![o_kind_val, o_kind_val];
         let okey = vec![o_key_val, o_key_val];
-        let dt = vec![DatatypeDictId::LANG_STRING.as_u16() as u32, DatatypeDictId::LANG_STRING.as_u16() as u32];
+        let dt = vec![
+            DatatypeDictId::LANG_STRING.as_u16() as u32,
+            DatatypeDictId::LANG_STRING.as_u16() as u32,
+        ];
         let t = vec![1i64, 1];
         let lang = vec![1u16, 2]; // different lang_ids
         let i = vec![ListIndex::none().as_i32(), ListIndex::none().as_i32()];
 
         // Retract lang_id=1 version only
         let overlay = vec![OverlayOp {
-            s_id: 1, p_id: 1, o_kind: o_kind_val, o_key: o_key_val, t: 5, op: false,
-            dt: DatatypeDictId::LANG_STRING.as_u16(), lang_id: 1, i_val: ListIndex::none().as_i32(),
+            s_id: 1,
+            p_id: 1,
+            o_kind: o_kind_val,
+            o_key: o_key_val,
+            t: 5,
+            op: false,
+            dt: DatatypeDictId::LANG_STRING.as_u16(),
+            lang_id: 1,
+            i_val: ListIndex::none().as_i32(),
         }];
-        let (r1, r2) = merge_overlay(&s, &p, &ok, &okey, &dt, &t, &lang, &i, &overlay, RunSortOrder::Spot);
+        let (r1, r2) = merge_overlay(
+            &s,
+            &p,
+            &ok,
+            &okey,
+            &dt,
+            &t,
+            &lang,
+            &i,
+            &overlay,
+            RunSortOrder::Spot,
+        );
         assert_eq!(r1.row_count, 1);
         assert_eq!(r2.lang_ids[0], 2); // lang_id=2 survives
     }
@@ -1518,10 +1742,38 @@ mod tests {
     #[test]
     fn test_cmp_overlay_vs_record_spot() {
         let ov = make_overlay_op(5, 3, 10, 1, true);
-        let rec = RunRecord::new(0, SubjectId::from_u64(5), 3, ObjKind::NUM_INT, ObjKey::encode_i64(10), 1, true, DatatypeDictId::INTEGER.as_u16(), 0, None);
-        assert_eq!(cmp_overlay_vs_record(&ov, &rec, RunSortOrder::Spot), Ordering::Equal);
+        let rec = RunRecord::new(
+            0,
+            SubjectId::from_u64(5),
+            3,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(10),
+            1,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
+        );
+        assert_eq!(
+            cmp_overlay_vs_record(&ov, &rec, RunSortOrder::Spot),
+            Ordering::Equal
+        );
 
-        let rec2 = RunRecord::new(0, SubjectId::from_u64(6), 3, ObjKind::NUM_INT, ObjKey::encode_i64(10), 1, true, DatatypeDictId::INTEGER.as_u16(), 0, None);
-        assert_eq!(cmp_overlay_vs_record(&ov, &rec2, RunSortOrder::Spot), Ordering::Less);
+        let rec2 = RunRecord::new(
+            0,
+            SubjectId::from_u64(6),
+            3,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(10),
+            1,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
+        );
+        assert_eq!(
+            cmp_overlay_vs_record(&ov, &rec2, RunSortOrder::Spot),
+            Ordering::Less
+        );
     }
 }

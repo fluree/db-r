@@ -1,6 +1,4 @@
-use crate::{
-    ApiError, Fluree, HistoricalLedgerView, LedgerState, NameService, Result, Storage,
-};
+use crate::{ApiError, Fluree, HistoricalLedgerView, LedgerState, NameService, Result, Storage};
 use fluree_db_nameservice::{NameServiceError, Publisher};
 
 impl<S, N> Fluree<S, N>
@@ -184,7 +182,11 @@ where
                     "Ambiguous SHA prefix: {}. Multiple commits match: {:?}{}",
                     sha_normalized,
                     commit_ids,
-                    if matching_commits.len() > 5 { " ..." } else { "" }
+                    if matching_commits.len() > 5 {
+                        " ..."
+                    } else {
+                        ""
+                    }
                 )))
             }
         }
@@ -195,12 +197,8 @@ where
     /// This loads the ledger state using the connection-wide cache.
     /// The ledger state combines the indexed database with any uncommitted novelty transactions.
     pub async fn ledger(&self, alias: &str) -> Result<LedgerState<S>> {
-        let state = LedgerState::load(
-            &self.nameservice,
-            alias,
-            self.connection.storage().clone(),
-        )
-        .await?;
+        let state =
+            LedgerState::load(&self.nameservice, alias, self.connection.storage().clone()).await?;
 
         Ok(state)
     }

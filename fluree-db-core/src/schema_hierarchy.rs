@@ -392,14 +392,22 @@ mod tests {
         // From C: children are [A], from A children are [B], from B children are [C]
         // But C started the traversal so it won't be re-added.
         let c_subclasses = hierarchy.subclasses_of(&c);
-        assert_eq!(c_subclasses.len(), 2, "C should have A and B as descendants");
+        assert_eq!(
+            c_subclasses.len(),
+            2,
+            "C should have A and B as descendants"
+        );
         assert!(c_subclasses.contains(&a));
         assert!(c_subclasses.contains(&b));
 
         // From A: children are [B], from B children are [C], from C children are [A]
         // A started, so won't be re-added.
         let a_subclasses = hierarchy.subclasses_of(&a);
-        assert_eq!(a_subclasses.len(), 2, "A should have B and C as descendants");
+        assert_eq!(
+            a_subclasses.len(),
+            2,
+            "A should have B and C as descendants"
+        );
         assert!(a_subclasses.contains(&b));
         assert!(a_subclasses.contains(&c));
     }

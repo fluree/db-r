@@ -195,7 +195,12 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
     }
 
     #[inline]
-    fn sink_term_literal(&mut self, value: &str, datatype: Datatype, language: Option<&str>) -> TermId {
+    fn sink_term_literal(
+        &mut self,
+        value: &str,
+        datatype: Datatype,
+        language: Option<&str>,
+    ) -> TermId {
         self.sink.term_literal(value, datatype, language)
     }
 
@@ -210,7 +215,13 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
     }
 
     #[inline]
-    fn sink_emit_list_item(&mut self, subject: TermId, predicate: TermId, object: TermId, index: i32) {
+    fn sink_emit_list_item(
+        &mut self,
+        subject: TermId,
+        predicate: TermId,
+        object: TermId,
+        index: i32,
+    ) {
         self.sink.emit_list_item(subject, predicate, object, index);
     }
 
@@ -477,12 +488,8 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
                 self.advance();
                 Ok(self.sink_term_blank(None))
             }
-            TokenKind::LBracket => {
-                self.parse_blank_node_property_list()
-            }
-            TokenKind::LParen => {
-                self.parse_collection()
-            }
+            TokenKind::LBracket => self.parse_blank_node_property_list(),
+            TokenKind::LParen => self.parse_collection(),
             TokenKind::Nil => {
                 self.advance();
                 Ok(self.rdf_nil())
@@ -575,11 +582,7 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
     }
 
     /// Parse a collection in object position as indexed list items.
-    fn parse_collection_as_list(
-        &mut self,
-        subject: TermId,
-        predicate: TermId,
-    ) -> Result<()> {
+    fn parse_collection_as_list(&mut self, subject: TermId, predicate: TermId) -> Result<()> {
         self.expect(&TokenKind::LParen)?;
         let mut index: i32 = 0;
         while !matches!(self.current().kind, TokenKind::RParen) {
@@ -620,12 +623,8 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
                 self.advance();
                 Ok(self.sink_term_blank(None))
             }
-            TokenKind::LBracket => {
-                self.parse_blank_node_property_list()
-            }
-            TokenKind::LParen => {
-                self.parse_collection()
-            }
+            TokenKind::LBracket => self.parse_blank_node_property_list(),
+            TokenKind::LParen => self.parse_collection(),
             TokenKind::Nil => {
                 self.advance();
                 Ok(self.rdf_nil())
@@ -636,9 +635,7 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
             TokenKind::Integer(_) | TokenKind::Decimal | TokenKind::Double(_) => {
                 self.parse_literal()
             }
-            TokenKind::KwTrue | TokenKind::KwFalse => {
-                self.parse_literal()
-            }
+            TokenKind::KwTrue | TokenKind::KwFalse => self.parse_literal(),
             _ => Err(TurtleError::parse(
                 self.current().start as usize,
                 format!("expected object, found {:?}", self.current().kind),
@@ -667,10 +664,7 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
             }
             TokenKind::Integer(n) => {
                 self.advance();
-                Ok(self.sink_term_literal_value(
-                    LiteralValue::Integer(n),
-                    Datatype::xsd_integer(),
-                ))
+                Ok(self.sink_term_literal_value(LiteralValue::Integer(n), Datatype::xsd_integer()))
             }
             TokenKind::Decimal => {
                 let s = self.current().start;
@@ -685,17 +679,13 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
             }
             TokenKind::KwTrue => {
                 self.advance();
-                Ok(self.sink_term_literal_value(
-                    LiteralValue::Boolean(true),
-                    Datatype::xsd_boolean(),
-                ))
+                Ok(self
+                    .sink_term_literal_value(LiteralValue::Boolean(true), Datatype::xsd_boolean()))
             }
             TokenKind::KwFalse => {
                 self.advance();
-                Ok(self.sink_term_literal_value(
-                    LiteralValue::Boolean(false),
-                    Datatype::xsd_boolean(),
-                ))
+                Ok(self
+                    .sink_term_literal_value(LiteralValue::Boolean(false), Datatype::xsd_boolean()))
             }
             _ => Err(TurtleError::parse(
                 self.current().start as usize,
@@ -707,25 +697,33 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
     /// Handle the optional `@lang` or `^^datatype` suffix after a span-based string literal.
     ///
     /// `quote_len` is 1 for short strings, 3 for long strings.
-    fn parse_string_suffix(&mut self, str_start: u32, str_end: u32, quote_len: usize) -> Result<TermId> {
+    fn parse_string_suffix(
+        &mut self,
+        str_start: u32,
+        str_end: u32,
+        quote_len: usize,
+    ) -> Result<TermId> {
         match self.current().kind.clone() {
             TokenKind::LangTag => {
                 let ls = self.current().start;
                 let le = self.current().end;
                 self.advance();
-                let value = &self.input[(str_start as usize + quote_len)..(str_end as usize - quote_len)];
+                let value =
+                    &self.input[(str_start as usize + quote_len)..(str_end as usize - quote_len)];
                 let lang = self.lang_content(ls, le);
                 Ok(self.sink_term_literal(value, Datatype::rdf_lang_string(), Some(lang)))
             }
             TokenKind::DoubleCaret => {
                 self.advance();
                 let datatype_iri = self.parse_datatype_iri()?;
-                let value = &self.input[(str_start as usize + quote_len)..(str_end as usize - quote_len)];
+                let value =
+                    &self.input[(str_start as usize + quote_len)..(str_end as usize - quote_len)];
                 let datatype = Datatype::from_iri(&datatype_iri);
                 Ok(self.sink_term_literal(value, datatype, None))
             }
             _ => {
-                let value = &self.input[(str_start as usize + quote_len)..(str_end as usize - quote_len)];
+                let value =
+                    &self.input[(str_start as usize + quote_len)..(str_end as usize - quote_len)];
                 Ok(self.sink_term_literal(value, Datatype::xsd_string(), None))
             }
         }
@@ -747,9 +745,7 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
                 let datatype = Datatype::from_iri(&datatype_iri);
                 Ok(self.sink_term_literal(value, datatype, None))
             }
-            _ => {
-                Ok(self.sink_term_literal(value, Datatype::xsd_string(), None))
-            }
+            _ => Ok(self.sink_term_literal(value, Datatype::xsd_string(), None)),
         }
     }
 
@@ -861,7 +857,11 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
         if let Some(colon_pos) = reference.find(':') {
             let potential_scheme = &reference[..colon_pos];
             if !potential_scheme.is_empty()
-                && potential_scheme.chars().next().unwrap().is_ascii_alphabetic()
+                && potential_scheme
+                    .chars()
+                    .next()
+                    .unwrap()
+                    .is_ascii_alphabetic()
                 && potential_scheme
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
@@ -979,7 +979,11 @@ fn is_absolute_iri(reference: &str) -> bool {
     if let Some(colon_pos) = reference.find(':') {
         let potential_scheme = &reference[..colon_pos];
         !potential_scheme.is_empty()
-            && potential_scheme.chars().next().unwrap().is_ascii_alphabetic()
+            && potential_scheme
+                .chars()
+                .next()
+                .unwrap()
+                .is_ascii_alphabetic()
             && potential_scheme
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
@@ -1003,10 +1007,7 @@ fn parse_iri_components(iri: &str) -> (&str, Option<&str>, &str, Option<&str>) {
         let auth_end = after_slashes
             .find(|c| c == '/' || c == '?' || c == '#')
             .unwrap_or(after_slashes.len());
-        (
-            Some(&after_slashes[..auth_end]),
-            &after_slashes[auth_end..],
-        )
+        (Some(&after_slashes[..auth_end]), &after_slashes[auth_end..])
     } else {
         (None, rest)
     };
@@ -1086,7 +1087,9 @@ mod tests {
         assert_eq!(graph.len(), 1);
         let triple = graph.iter().next().unwrap();
         assert!(matches!(&triple.s, Term::Iri(iri) if iri.as_ref() == "http://example.org/alice"));
-        assert!(matches!(&triple.p, Term::Iri(iri) if iri.as_ref() == "http://xmlns.com/foaf/0.1/name"));
+        assert!(
+            matches!(&triple.p, Term::Iri(iri) if iri.as_ref() == "http://xmlns.com/foaf/0.1/name")
+        );
     }
 
     #[test]
@@ -1101,7 +1104,9 @@ mod tests {
         assert_eq!(graph.len(), 1);
         let triple = graph.iter().next().unwrap();
         assert!(matches!(&triple.s, Term::Iri(iri) if iri.as_ref() == "http://example.org/alice"));
-        assert!(matches!(&triple.p, Term::Iri(iri) if iri.as_ref() == "http://xmlns.com/foaf/0.1/name"));
+        assert!(
+            matches!(&triple.p, Term::Iri(iri) if iri.as_ref() == "http://xmlns.com/foaf/0.1/name")
+        );
     }
 
     #[test]
@@ -1209,7 +1214,11 @@ mod tests {
 
         assert_eq!(graph.len(), 1);
         let triple = graph.iter().next().unwrap();
-        if let Term::Literal { value: LiteralValue::Integer(n), .. } = &triple.o {
+        if let Term::Literal {
+            value: LiteralValue::Integer(n),
+            ..
+        } = &triple.o
+        {
             assert_eq!(*n, 30);
         } else {
             panic!("Expected integer literal");
@@ -1226,7 +1235,11 @@ mod tests {
 
         assert_eq!(graph.len(), 1);
         let triple = graph.iter().next().unwrap();
-        if let Term::Literal { value: LiteralValue::Boolean(b), .. } = &triple.o {
+        if let Term::Literal {
+            value: LiteralValue::Boolean(b),
+            ..
+        } = &triple.o
+        {
             assert!(*b);
         } else {
             panic!("Expected boolean literal");
@@ -1285,13 +1298,19 @@ mod tests {
         let alice_triple = triples.iter().find(|t| {
             matches!(&t.o, Term::Literal { value, .. } if matches!(value, fluree_graph_ir::LiteralValue::String(s) if s.as_ref() == "Alice"))
         }).unwrap();
-        assert!(matches!(&alice_triple.s, Term::Iri(iri) if iri.as_ref() == "http://example.org/path/alice"));
-        assert!(matches!(&alice_triple.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/path/name"));
+        assert!(
+            matches!(&alice_triple.s, Term::Iri(iri) if iri.as_ref() == "http://example.org/path/alice")
+        );
+        assert!(
+            matches!(&alice_triple.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/path/name")
+        );
 
         let bob_triple = triples.iter().find(|t| {
             matches!(&t.o, Term::Literal { value, .. } if matches!(value, fluree_graph_ir::LiteralValue::String(s) if s.as_ref() == "Bob"))
         }).unwrap();
-        assert!(matches!(&bob_triple.s, Term::Iri(iri) if iri.as_ref() == "http://example.org/bob"));
+        assert!(
+            matches!(&bob_triple.s, Term::Iri(iri) if iri.as_ref() == "http://example.org/bob")
+        );
     }
 
     #[test]

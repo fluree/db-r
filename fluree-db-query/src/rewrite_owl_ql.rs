@@ -40,8 +40,8 @@ use crate::pattern::{Term, TriplePattern};
 use crate::rewrite::{Diagnostics, PlanContext, RewriteResult};
 use crate::var_registry::VarId;
 use fluree_db_core::{
-    is_owl_equivalent_property, is_rdf_type, range, Db, FlakeValue, IndexType,
-    OverlayProvider, RangeMatch, RangeOptions, RangeTest, SchemaHierarchy, Sid, Storage,
+    is_owl_equivalent_property, is_rdf_type, range, Db, FlakeValue, IndexType, OverlayProvider,
+    RangeMatch, RangeOptions, RangeTest, SchemaHierarchy, Sid, Storage,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -128,7 +128,11 @@ impl Ontology {
     ///
     /// Returns empty slice if property has no inverses.
     pub fn inverses_of(&self, p: &Sid) -> &[Sid] {
-        self.inner.inverse_of.get(p).map(|v| v.as_slice()).unwrap_or(&[])
+        self.inner
+            .inverse_of
+            .get(p)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Get equivalent properties for a property (does not include the property itself).
@@ -260,10 +264,7 @@ impl Ontology {
                     .or_default()
                     .push(inverse_prop.clone());
                 // owl:inverseOf is symmetric, so also record the reverse
-                inverse_of
-                    .entry(inverse_prop)
-                    .or_default()
-                    .push(flake.s);
+                inverse_of.entry(inverse_prop).or_default().push(flake.s);
             }
         }
 
@@ -325,7 +326,13 @@ impl Ontology {
         }
 
         let equivalent_props = compute_equivalent_closure(eq_edges);
-        Ok(Self::new(inverse_of, equivalent_props, domain_map, range_map, epoch))
+        Ok(Self::new(
+            inverse_of,
+            equivalent_props,
+            domain_map,
+            range_map,
+            epoch,
+        ))
     }
 
     /// Build an Ontology from database assertions + overlay flakes.
@@ -346,24 +353,17 @@ impl Ontology {
         let domain = base.inner.domain.clone();
         let range = base.inner.range.clone();
 
-        overlay.for_each_overlay_flake(
-            IndexType::Psot,
-            None,
-            None,
-            true,
-            to_t,
-            &mut |flake| {
-                if !flake.op {
-                    return;
-                }
-                if !is_owl_equivalent_property(&flake.p) {
-                    return;
-                }
-                if let FlakeValue::Ref(eq_prop) = &flake.o {
-                    eq_edges.push((flake.s.clone(), eq_prop.clone()));
-                }
-            },
-        );
+        overlay.for_each_overlay_flake(IndexType::Psot, None, None, true, to_t, &mut |flake| {
+            if !flake.op {
+                return;
+            }
+            if !is_owl_equivalent_property(&flake.p) {
+                return;
+            }
+            if let FlakeValue::Ref(eq_prop) = &flake.o {
+                eq_edges.push((flake.s.clone(), eq_prop.clone()));
+            }
+        });
 
         // Normalize: sort/dedup for determinism.
         for invs in inverse_of.values_mut() {
@@ -374,7 +374,10 @@ impl Ontology {
         if !eq_edges.is_empty() {
             // Merge by re-closing across base + overlay edges.
             for (a, b) in eq_edges {
-                equivalent_props.entry(a.clone()).or_default().push(b.clone());
+                equivalent_props
+                    .entry(a.clone())
+                    .or_default()
+                    .push(b.clone());
                 equivalent_props.entry(b).or_default().push(a);
             }
             let edges: Vec<(Sid, Sid)> = equivalent_props
@@ -384,7 +387,13 @@ impl Ontology {
             equivalent_props = compute_equivalent_closure(edges);
         }
 
-        Ok(Self::new(inverse_of, equivalent_props, domain, range, epoch))
+        Ok(Self::new(
+            inverse_of,
+            equivalent_props,
+            domain,
+            range,
+            epoch,
+        ))
     }
 }
 
@@ -476,13 +485,8 @@ pub fn rewrite_owl_ql_patterns(
     };
 
     let mut total_expansions = 0;
-    let result = rewrite_owl_ql_patterns_internal(
-        patterns,
-        ontology,
-        ctx,
-        &mut diag,
-        &mut total_expansions,
-    );
+    let result =
+        rewrite_owl_ql_patterns_internal(patterns, ontology, ctx, &mut diag, &mut total_expansions);
 
     (result, diag)
 }
@@ -498,7 +502,8 @@ fn rewrite_owl_ql_patterns_internal(
     let mut result = Vec::with_capacity(patterns.len());
 
     for pattern in patterns {
-        let rewritten = rewrite_owl_ql_single_pattern(pattern, ontology, ctx, diag, total_expansions);
+        let rewritten =
+            rewrite_owl_ql_single_pattern(pattern, ontology, ctx, diag, total_expansions);
         match rewritten {
             RewriteResult::Unchanged => {
                 result.push(pattern.clone());
@@ -507,7 +512,10 @@ fn rewrite_owl_ql_patterns_internal(
                 diag.patterns_expanded += 1;
                 result.extend(expanded);
             }
-            RewriteResult::Capped { patterns: expanded, original_count } => {
+            RewriteResult::Capped {
+                patterns: expanded,
+                original_count,
+            } => {
                 diag.patterns_expanded += 1;
                 diag.was_capped = true;
                 diag.warn(format!(
@@ -537,7 +545,8 @@ fn rewrite_owl_ql_single_pattern(
         // Recursively process nested patterns
         Pattern::Optional(inner) => {
             let before = diag.patterns_expanded;
-            let rewritten = rewrite_owl_ql_patterns_internal(inner, ontology, ctx, diag, total_expansions);
+            let rewritten =
+                rewrite_owl_ql_patterns_internal(inner, ontology, ctx, diag, total_expansions);
             let changed = diag.patterns_expanded > before;
             if changed {
                 RewriteResult::Expanded(vec![Pattern::Optional(rewritten)])
@@ -551,7 +560,8 @@ fn rewrite_owl_ql_single_pattern(
             let before = diag.patterns_expanded;
 
             for branch in branches {
-                let rewritten = rewrite_owl_ql_patterns_internal(branch, ontology, ctx, diag, total_expansions);
+                let rewritten =
+                    rewrite_owl_ql_patterns_internal(branch, ontology, ctx, diag, total_expansions);
                 rewritten_branches.push(rewritten);
             }
 
@@ -565,7 +575,8 @@ fn rewrite_owl_ql_single_pattern(
 
         Pattern::Minus(inner) => {
             let before = diag.patterns_expanded;
-            let rewritten = rewrite_owl_ql_patterns_internal(inner, ontology, ctx, diag, total_expansions);
+            let rewritten =
+                rewrite_owl_ql_patterns_internal(inner, ontology, ctx, diag, total_expansions);
             let changed = diag.patterns_expanded > before;
             if changed {
                 RewriteResult::Expanded(vec![Pattern::Minus(rewritten)])
@@ -576,7 +587,8 @@ fn rewrite_owl_ql_single_pattern(
 
         Pattern::Exists(inner) => {
             let before = diag.patterns_expanded;
-            let rewritten = rewrite_owl_ql_patterns_internal(inner, ontology, ctx, diag, total_expansions);
+            let rewritten =
+                rewrite_owl_ql_patterns_internal(inner, ontology, ctx, diag, total_expansions);
             let changed = diag.patterns_expanded > before;
             if changed {
                 RewriteResult::Expanded(vec![Pattern::Exists(rewritten)])
@@ -587,7 +599,8 @@ fn rewrite_owl_ql_single_pattern(
 
         Pattern::NotExists(inner) => {
             let before = diag.patterns_expanded;
-            let rewritten = rewrite_owl_ql_patterns_internal(inner, ontology, ctx, diag, total_expansions);
+            let rewritten =
+                rewrite_owl_ql_patterns_internal(inner, ontology, ctx, diag, total_expansions);
             let changed = diag.patterns_expanded > before;
             if changed {
                 RewriteResult::Expanded(vec![Pattern::NotExists(rewritten)])
@@ -596,9 +609,13 @@ fn rewrite_owl_ql_single_pattern(
             }
         }
 
-        Pattern::Graph { name, patterns: inner } => {
+        Pattern::Graph {
+            name,
+            patterns: inner,
+        } => {
             let before = diag.patterns_expanded;
-            let rewritten = rewrite_owl_ql_patterns_internal(inner, ontology, ctx, diag, total_expansions);
+            let rewritten =
+                rewrite_owl_ql_patterns_internal(inner, ontology, ctx, diag, total_expansions);
             let changed = diag.patterns_expanded > before;
             if changed {
                 RewriteResult::Expanded(vec![Pattern::Graph {
@@ -685,13 +702,25 @@ fn expand_equivalent_property(
     let mut patterns: Vec<TriplePattern> = Vec::with_capacity(1 + eqs.len());
     patterns.push(tp.clone());
     for eq in eqs {
-        patterns.push(TriplePattern::new(tp.s.clone(), Term::Sid(eq.clone()), tp.o.clone()));
+        patterns.push(TriplePattern::new(
+            tp.s.clone(),
+            Term::Sid(eq.clone()),
+            tp.o.clone(),
+        ));
     }
 
     // Apply limits (same logic as inverseOf).
     let total_count = patterns.len();
-    let available_budget = ctx.base.limits.max_total_expansions.saturating_sub(*total_expansions);
-    let effective_limit = ctx.base.limits.max_expansions_per_pattern.min(available_budget);
+    let available_budget = ctx
+        .base
+        .limits
+        .max_total_expansions
+        .saturating_sub(*total_expansions);
+    let effective_limit = ctx
+        .base
+        .limits
+        .max_expansions_per_pattern
+        .min(available_budget);
 
     if effective_limit == 0 {
         return RewriteResult::Capped {
@@ -766,8 +795,16 @@ fn expand_inverse_of(
 
     // Apply limits
     let total_count = patterns.len();
-    let available_budget = ctx.base.limits.max_total_expansions.saturating_sub(*total_expansions);
-    let effective_limit = ctx.base.limits.max_expansions_per_pattern.min(available_budget);
+    let available_budget = ctx
+        .base
+        .limits
+        .max_total_expansions
+        .saturating_sub(*total_expansions);
+    let effective_limit = ctx
+        .base
+        .limits
+        .max_expansions_per_pattern
+        .min(available_budget);
 
     if effective_limit == 0 {
         return RewriteResult::Capped {
@@ -833,9 +870,8 @@ fn expand_type_query_owl_ql(
     }
 
     // Build patterns: original + domain patterns + range patterns
-    let mut patterns: Vec<TriplePattern> = Vec::with_capacity(
-        1 + domain_props.len() + range_props.len()
-    );
+    let mut patterns: Vec<TriplePattern> =
+        Vec::with_capacity(1 + domain_props.len() + range_props.len());
     patterns.push(tp.clone()); // Original type pattern
 
     // Domain expansion: ?s P ?_fresh (subject has type if it's the subject of P)
@@ -860,8 +896,16 @@ fn expand_type_query_owl_ql(
 
     // Apply limits
     let total_count = patterns.len();
-    let available_budget = ctx.base.limits.max_total_expansions.saturating_sub(*total_expansions);
-    let effective_limit = ctx.base.limits.max_expansions_per_pattern.min(available_budget);
+    let available_budget = ctx
+        .base
+        .limits
+        .max_total_expansions
+        .saturating_sub(*total_expansions);
+    let effective_limit = ctx
+        .base
+        .limits
+        .max_expansions_per_pattern
+        .min(available_budget);
 
     if effective_limit == 0 {
         return RewriteResult::Capped {

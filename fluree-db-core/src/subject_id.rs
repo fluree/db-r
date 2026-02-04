@@ -110,7 +110,12 @@ impl SubjectId {
 
 impl fmt::Debug for SubjectId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "SubjectId(ns={}, local={})", self.ns_code(), self.local_id())
+        write!(
+            f,
+            "SubjectId(ns={}, local={})",
+            self.ns_code(),
+            self.local_id()
+        )
     }
 }
 

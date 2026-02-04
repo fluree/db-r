@@ -38,9 +38,9 @@ mod runner;
 mod where_plan;
 
 // Re-export public types
+pub use runner::execute_prepared;
 pub use runner::ContextConfig;
 pub use runner::ExecutableQuery;
-pub use runner::execute_prepared;
 
 // Re-export internal helpers for use in lib.rs
 pub use where_plan::build_where_operators_seeded;
@@ -73,9 +73,10 @@ pub use runner::prepare_execution;
 use runner::{
     execute_prepared_with_dataset, execute_prepared_with_dataset_and_bm25,
     execute_prepared_with_dataset_and_policy, execute_prepared_with_dataset_and_policy_and_bm25,
-    execute_prepared_with_dataset_and_policy_and_providers, execute_prepared_with_dataset_and_providers,
-    execute_prepared_with_dataset_history, execute_prepared_with_overlay,
-    execute_prepared_with_overlay_tracked, execute_prepared_with_policy, execute_prepared_with_r2rml,
+    execute_prepared_with_dataset_and_policy_and_providers,
+    execute_prepared_with_dataset_and_providers, execute_prepared_with_dataset_history,
+    execute_prepared_with_overlay, execute_prepared_with_overlay_tracked,
+    execute_prepared_with_policy, execute_prepared_with_r2rml,
 };
 
 /// Execute a query with full modifier support
@@ -132,7 +133,10 @@ pub async fn execute<S: Storage + 'static>(
     // Apply pattern rewriting for reasoning (RDFS/OWL expansion)
     fn encode_term<S: Storage + 'static>(db: &Db<S>, t: &Term) -> Term {
         match t {
-            Term::Iri(iri) => db.encode_iri(iri).map(Term::Sid).unwrap_or_else(|| t.clone()),
+            Term::Iri(iri) => db
+                .encode_iri(iri)
+                .map(Term::Sid)
+                .unwrap_or_else(|| t.clone()),
             _ => t.clone(),
         }
     }
@@ -151,7 +155,9 @@ pub async fn execute<S: Storage + 'static>(
                     dt: tp.dt.clone(),
                     lang: tp.lang.clone(),
                 }),
-                Pattern::Optional(inner) => Pattern::Optional(encode_patterns_for_reasoning(db, inner)),
+                Pattern::Optional(inner) => {
+                    Pattern::Optional(encode_patterns_for_reasoning(db, inner))
+                }
                 Pattern::Union(branches) => Pattern::Union(
                     branches
                         .iter()
@@ -160,7 +166,9 @@ pub async fn execute<S: Storage + 'static>(
                 ),
                 Pattern::Minus(inner) => Pattern::Minus(encode_patterns_for_reasoning(db, inner)),
                 Pattern::Exists(inner) => Pattern::Exists(encode_patterns_for_reasoning(db, inner)),
-                Pattern::NotExists(inner) => Pattern::NotExists(encode_patterns_for_reasoning(db, inner)),
+                Pattern::NotExists(inner) => {
+                    Pattern::NotExists(encode_patterns_for_reasoning(db, inner))
+                }
                 Pattern::Graph { name, patterns } => Pattern::Graph {
                     name: name.clone(),
                     patterns: encode_patterns_for_reasoning(db, patterns),
@@ -197,10 +205,12 @@ pub async fn execute<S: Storage + 'static>(
     //
     // Note: lowering may keep IRIs as `Term::Iri` (cross-ledger). Build an IRI-keyed
     // stats view so planning can still consult stats for IRI predicates.
-    let stats_view = db
-        .stats
-        .as_ref()
-        .map(|s| Arc::new(StatsView::from_db_stats_with_namespaces(s, &db.namespace_codes)));
+    let stats_view = db.stats.as_ref().map(|s| {
+        Arc::new(StatsView::from_db_stats_with_namespaces(
+            s,
+            &db.namespace_codes,
+        ))
+    });
 
     // Build the operator tree
     tracing::debug!("building operator tree");
@@ -348,8 +358,17 @@ pub async fn execute_with_policy_tracked<S: Storage + 'static>(
     tracker: &Tracker,
 ) -> Result<Vec<Batch>> {
     let prepared = prepare_execution(db, overlay, query, to_t).await?;
-    execute_prepared_with_policy(db, vars, overlay, prepared, to_t, from_t, policy, Some(tracker))
-        .await
+    execute_prepared_with_policy(
+        db,
+        vars,
+        overlay,
+        prepared,
+        to_t,
+        from_t,
+        policy,
+        Some(tracker),
+    )
+    .await
 }
 
 /// Execute a query with R2RML providers (for virtual graph support).
@@ -440,8 +459,17 @@ pub async fn execute_with_dataset_tracked<'a, S: Storage + 'static>(
     tracker: &Tracker,
 ) -> Result<Vec<Batch>> {
     let prepared = prepare_execution(db, overlay, query, to_t).await?;
-    execute_prepared_with_dataset(db, vars, overlay, prepared, to_t, from_t, dataset, Some(tracker))
-        .await
+    execute_prepared_with_dataset(
+        db,
+        vars,
+        overlay,
+        prepared,
+        to_t,
+        from_t,
+        dataset,
+        Some(tracker),
+    )
+    .await
 }
 
 /// Execute a query against a dataset in history mode
@@ -490,10 +518,7 @@ pub async fn execute_with_dataset_and_policy<'a, S: Storage + 'static>(
 /// Execute a query against a dataset (multi-graph) with policy enforcement, with optional tracking.
 ///
 /// This mirrors `execute_with_dataset_and_policy`, but attaches `tracker` to the execution context.
-pub async fn execute_with_dataset_and_policy_tracked<
-    'a,
-    S: Storage + 'static,
->(
+pub async fn execute_with_dataset_and_policy_tracked<'a, S: Storage + 'static>(
     db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     vars: &VarRegistry,
@@ -580,11 +605,7 @@ pub async fn execute_with_dataset_and_bm25<'a, 'b, S: Storage + 'static>(
 /// * `policy` - Policy context for access control
 /// * `bm25_provider` - Provider for BM25 index lookups
 /// * `tracker` - Optional execution tracker
-pub async fn execute_with_dataset_and_policy_and_bm25<
-    'a,
-    'b,
-    S: Storage + 'static,
->(
+pub async fn execute_with_dataset_and_policy_and_bm25<'a, 'b, S: Storage + 'static>(
     db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     vars: &VarRegistry,
@@ -699,12 +720,12 @@ mod tests {
     use crate::options::QueryOptions;
     use crate::parse::SelectMode;
     use crate::pattern::{Term, TriplePattern};
+    use crate::planner::reorder_patterns;
     use crate::sort::SortSpec;
     use crate::var_registry::VarId;
     use fluree_db_core::{Db, FlakeValue, MemoryStorage, PropertyStatData, Sid, StatsView};
     use fluree_graph_json_ld::ParsedContext;
     use where_plan::collect_inner_join_block;
-    use crate::planner::reorder_patterns;
 
     fn make_test_db() -> Db<MemoryStorage> {
         Db::genesis(MemoryStorage::new(), "test/main")
@@ -779,11 +800,7 @@ mod tests {
             graph_select: None,
         };
 
-        let result = build_operator_tree::<MemoryStorage>(
-            &query,
-            &QueryOptions::default(),
-            None,
-        );
+        let result = build_operator_tree::<MemoryStorage>(&query, &QueryOptions::default(), None);
         match result {
             Err(e) => assert!(e.to_string().contains("not found")),
             Ok(_) => panic!("Expected error for invalid select var"),
@@ -816,8 +833,7 @@ mod tests {
     fn test_build_where_operators_single_triple() {
         let patterns = vec![Pattern::Triple(make_pattern(VarId(0), "name", VarId(1)))];
 
-        let result =
-            where_plan::build_where_operators::<MemoryStorage>(&patterns, None);
+        let result = where_plan::build_where_operators::<MemoryStorage>(&patterns, None);
         assert!(result.is_ok());
 
         let op = result.unwrap();
@@ -835,8 +851,7 @@ mod tests {
             }),
         ];
 
-        let result =
-            where_plan::build_where_operators::<MemoryStorage>(&patterns, None);
+        let result = where_plan::build_where_operators::<MemoryStorage>(&patterns, None);
         assert!(result.is_ok());
     }
 
@@ -922,8 +937,7 @@ mod tests {
             },
         ]))];
 
-        let (bounds, _consumed) =
-            extract_lookahead_bounds_with_consumption(&triples, &remaining);
+        let (bounds, _consumed) = extract_lookahead_bounds_with_consumption(&triples, &remaining);
 
         assert!(bounds.contains_key(&VarId(1)));
         let obj_bounds = bounds.get(&VarId(1)).unwrap();

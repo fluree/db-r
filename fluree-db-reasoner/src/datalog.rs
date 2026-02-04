@@ -283,12 +283,8 @@ impl DatalogRuleSet {
         self.execution_order = self.rules.keys().cloned().collect();
 
         // Sort by number of dependencies (fewer deps first)
-        self.execution_order.sort_by_key(|id| {
-            self.rules
-                .get(id)
-                .map(|r| r.depends_on.len())
-                .unwrap_or(0)
-        });
+        self.execution_order
+            .sort_by_key(|id| self.rules.get(id).map(|r| r.depends_on.len()).unwrap_or(0));
     }
 
     /// Get all predicates that rules depend on (for initial delta seeding)
@@ -401,7 +397,9 @@ pub fn instantiate_pattern(
         _ => Sid::new(XSD, xsd_names::STRING), // Default
     };
 
-    Some(Flake::new(subject, predicate, object, datatype, t, true, None))
+    Some(Flake::new(
+        subject, predicate, object, datatype, t, true, None,
+    ))
 }
 
 /// Execute a single rule and generate new flakes
@@ -483,11 +481,7 @@ mod tests {
         let mut rule_set = DatalogRuleSet::new();
         assert!(rule_set.is_empty());
 
-        let rule = DatalogRule::new(
-            Sid::new(1, "rule1"),
-            vec![],
-            vec![],
-        );
+        let rule = DatalogRule::new(Sid::new(1, "rule1"), vec![], vec![]);
         rule_set.add_rule(rule);
 
         assert_eq!(rule_set.len(), 1);

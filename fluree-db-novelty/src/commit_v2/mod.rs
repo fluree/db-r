@@ -12,8 +12,8 @@
 //!
 //! See [`format`] for constants and layout details.
 
-mod error;
 pub mod envelope;
+mod error;
 pub mod format;
 pub mod op_codec;
 pub mod raw_reader;
@@ -24,5 +24,5 @@ pub mod varint;
 pub use envelope::CommitV2Envelope;
 pub use error::CommitV2Error;
 pub use format::MAGIC;
-pub use raw_reader::{load_commit_ops, CommitOps, RawOp, RawObject};
+pub use raw_reader::{load_commit_ops, CommitOps, RawObject, RawOp};
 pub use reader::{read_commit, read_commit_envelope};

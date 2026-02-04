@@ -171,10 +171,7 @@ where
     N: NameService,
 {
     /// Create a new builder (called by `FlureeView::query()`).
-    pub(crate) fn new(
-        fluree: &'a Fluree<S, N>,
-        view: &'a FlureeView<S>,
-    ) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<S, N>, view: &'a FlureeView<S>) -> Self {
         Self {
             fluree,
             view,
@@ -262,12 +259,18 @@ where
             return Err(ApiError::Builder(BuilderErrors(errs)));
         }
 
-        let format_config = self.core.format.take().unwrap_or_else(|| self.core.default_format());
+        let format_config = self
+            .core
+            .format
+            .take()
+            .unwrap_or_else(|| self.core.default_format());
         let input = self.core.input.unwrap();
         let result = self.fluree.query_view(self.view, input).await?;
         let config = format_config.with_select_mode(result.select_mode);
         match self.view.policy() {
-            Some(policy) => Ok(result.format_async_with_policy(&self.view.db, &config, policy).await?),
+            Some(policy) => Ok(result
+                .format_async_with_policy(&self.view.db, &config, policy)
+                .await?),
             None => Ok(result.format_async(&self.view.db, &config).await?),
         }
     }
@@ -323,10 +326,7 @@ where
     N: NameService,
 {
     /// Create a new builder (called by `FlureeDataSetView::query()`).
-    pub(crate) fn new(
-        fluree: &'a Fluree<S, N>,
-        dataset: &'a FlureeDataSetView<S>,
-    ) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<S, N>, dataset: &'a FlureeDataSetView<S>) -> Self {
         Self {
             fluree,
             dataset,
@@ -411,7 +411,11 @@ where
             return Err(ApiError::Builder(BuilderErrors(errs)));
         }
 
-        let format_config = self.core.format.take().unwrap_or_else(|| self.core.default_format());
+        let format_config = self
+            .core
+            .format
+            .take()
+            .unwrap_or_else(|| self.core.default_format());
         let input = self.core.input.unwrap();
         let result = self.fluree.query_dataset_view(self.dataset, input).await?;
 
@@ -570,11 +574,7 @@ where
         let input = self.core.input.unwrap();
         match input {
             QueryInput::JsonLd(json) => match &self.policy {
-                Some(policy) => {
-                    self.fluree
-                        .query_connection_with_policy(json, policy)
-                        .await
-                }
+                Some(policy) => self.fluree.query_connection_with_policy(json, policy).await,
                 None => self.fluree.query_connection(json).await,
             },
             QueryInput::Sparql(sparql) => match &self.policy {
@@ -598,7 +598,11 @@ where
             return Err(ApiError::Builder(BuilderErrors(errs)));
         }
 
-        let format_config = self.core.format.take().unwrap_or_else(|| self.core.default_format());
+        let format_config = self
+            .core
+            .format
+            .take()
+            .unwrap_or_else(|| self.core.default_format());
         let input = self.core.input.unwrap();
         match input {
             QueryInput::JsonLd(json) => {
@@ -671,7 +675,7 @@ where
                         .await
                 }
                 None => self.fluree.query_connection_sparql_tracked(sparql).await,
-            }
+            },
         }
     }
 }
@@ -770,7 +774,10 @@ mod tests {
         assert!(result.is_err());
         let errs = result.unwrap_err();
         assert_eq!(errs.0.len(), 1);
-        assert!(matches!(&errs.0[0], BuilderError::Missing { field: "input", .. }));
+        assert!(matches!(
+            &errs.0[0],
+            BuilderError::Missing { field: "input", .. }
+        ));
     }
 
     #[test]
@@ -790,11 +797,17 @@ mod tests {
     fn test_from_query_builder_validate_conflict() {
         let fluree = FlureeBuilder::memory().build_memory();
         let query = json!({"from": "test:main", "select": ["?s"]});
-        let builder = fluree.query_from().jsonld(&query).sparql("SELECT ?s WHERE { ?s ?p ?o }");
+        let builder = fluree
+            .query_from()
+            .jsonld(&query)
+            .sparql("SELECT ?s WHERE { ?s ?p ?o }");
         let result = builder.validate();
         assert!(result.is_err());
         let errs = result.unwrap_err();
-        assert!(errs.0.iter().any(|e| matches!(e, BuilderError::Conflict { field: "input", .. })));
+        assert!(errs
+            .0
+            .iter()
+            .any(|e| matches!(e, BuilderError::Conflict { field: "input", .. })));
     }
 
     // ========================================================================
@@ -817,7 +830,11 @@ mod tests {
         });
 
         let result = view.query(&fluree).jsonld(&query).execute().await;
-        assert!(result.is_ok(), "ViewQueryBuilder execute failed: {:?}", result.unwrap_err());
+        assert!(
+            result.is_ok(),
+            "ViewQueryBuilder execute failed: {:?}",
+            result.unwrap_err()
+        );
     }
 
     #[tokio::test]
@@ -863,7 +880,11 @@ mod tests {
         });
 
         let result = fluree.query_from().jsonld(&query).execute().await;
-        assert!(result.is_ok(), "FromQueryBuilder execute failed: {:?}", result.unwrap_err());
+        assert!(
+            result.is_ok(),
+            "FromQueryBuilder execute failed: {:?}",
+            result.unwrap_err()
+        );
     }
 
     #[tokio::test]

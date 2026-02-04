@@ -185,18 +185,12 @@ pub fn is_error_type(s: &str) -> bool {
 
 /// Get the category from an error type (e.g., "db" from "err:db/InvalidQuery")
 pub fn error_category(error_type: &str) -> Option<&str> {
-    error_type
-        .strip_prefix(ERR_PREFIX)?
-        .split('/')
-        .next()
+    error_type.strip_prefix(ERR_PREFIX)?.split('/').next()
 }
 
 /// Get the error name from an error type (e.g., "InvalidQuery" from "err:db/InvalidQuery")
 pub fn error_name(error_type: &str) -> Option<&str> {
-    error_type
-        .strip_prefix(ERR_PREFIX)?
-        .split('/')
-        .nth(1)
+    error_type.strip_prefix(ERR_PREFIX)?.split('/').nth(1)
 }
 
 #[cfg(test)]

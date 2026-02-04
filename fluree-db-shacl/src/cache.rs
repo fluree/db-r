@@ -137,8 +137,8 @@ impl ShaclCache {
 mod tests {
     use super::*;
     use crate::compile::{Severity, TargetType};
-    use fluree_db_core::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};
     use fluree_db_core::SidInterner;
+    use fluree_db_core::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};
 
     fn make_test_shape(id_name: &str, target_class: Sid) -> CompiledShape {
         let interner = SidInterner::new();

@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use fluree_db_api::{NsNotify, NotifyResult};
+use fluree_db_api::{NotifyResult, NsNotify};
 use fluree_db_nameservice::{
     CasResult, NameServiceError, NsRecord, Publisher, RefKind, RefPublisher, RefValue,
 };

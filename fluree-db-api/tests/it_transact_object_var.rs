@@ -23,7 +23,10 @@ fn ctx() -> serde_json::Value {
 #[tokio::test]
 async fn insert_does_not_parse_bare_var_by_default() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger0 = fluree.create_ledger("tx/obj-var-insert-default:main").await.unwrap();
+    let ledger0 = fluree
+        .create_ledger("tx/obj-var-insert-default:main")
+        .await
+        .unwrap();
 
     let txn = json!({
         "@context": ctx(),
@@ -44,7 +47,10 @@ async fn insert_does_not_parse_bare_var_by_default() {
 #[tokio::test]
 async fn object_var_parsing_update_opt() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger0 = fluree.create_ledger("tx/obj-var-update-opt:main").await.unwrap();
+    let ledger0 = fluree
+        .create_ledger("tx/obj-var-update-opt:main")
+        .await
+        .unwrap();
 
     let update = json!({
         "@context": ctx(),
@@ -71,7 +77,12 @@ async fn object_var_parsing_update_opt() {
         "select": ["?val"],
         "where": [{"@id": "ex:s", "schema:text": "?val"}]
     });
-    let jsonld = fluree.query(&ledger1, &query).await.unwrap().to_jsonld(&ledger1.db).unwrap();
+    let jsonld = fluree
+        .query(&ledger1, &query)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger1.db)
+        .unwrap();
     assert_eq!(jsonld, json!(["?age"]));
 
     let ledger2 = fluree
@@ -88,14 +99,22 @@ async fn object_var_parsing_update_opt() {
         .await
         .unwrap()
         .ledger;
-    let jsonld2 = fluree.query(&ledger2, &query).await.unwrap().to_jsonld(&ledger2.db).unwrap();
+    let jsonld2 = fluree
+        .query(&ledger2, &query)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger2.db)
+        .unwrap();
     assert_eq!(jsonld2, json!(["?age"]));
 }
 
 #[tokio::test]
 async fn update_with_object_var_parsing_false_treats_bare_var_as_literal() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger0 = fluree.create_ledger("tx/obj-var-update-false:main").await.unwrap();
+    let ledger0 = fluree
+        .create_ledger("tx/obj-var-update-false:main")
+        .await
+        .unwrap();
 
     let update = json!({
         "@context": ctx(),
@@ -121,14 +140,22 @@ async fn update_with_object_var_parsing_false_treats_bare_var_as_literal() {
         "select": ["?val"],
         "where": [{"@id": "ex:s", "schema:text": "?val"}]
     });
-    let jsonld = fluree.query(&ledger1, &query).await.unwrap().to_jsonld(&ledger1.db).unwrap();
+    let jsonld = fluree
+        .query(&ledger1, &query)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger1.db)
+        .unwrap();
     assert_eq!(jsonld, json!(["?not-a-var"]));
 }
 
 #[tokio::test]
 async fn update_explicit_variable_map_parses_when_flag_false_and_bound() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger0 = fluree.create_ledger("tx/obj-var-explicit:main").await.unwrap();
+    let ledger0 = fluree
+        .create_ledger("tx/obj-var-explicit:main")
+        .await
+        .unwrap();
 
     let insert = json!({
         "@context": ctx(),
@@ -164,7 +191,12 @@ async fn update_explicit_variable_map_parses_when_flag_false_and_bound() {
             "schema:foo": {"@value": "?val"}
         }]
     });
-    let jsonld = fluree.query(&ledger2, &query).await.unwrap().to_jsonld(&ledger2.db).unwrap();
+    let jsonld = fluree
+        .query(&ledger2, &query)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger2.db)
+        .unwrap();
     assert_eq!(jsonld, json!(["2020-01-01"]));
 }
 
@@ -204,7 +236,13 @@ async fn update_id_var_still_parses_when_flag_false() {
         "select": {"ex:s": ["*"]},
         "where": [{"@id": "ex:s"}]
     });
-    let jsonld = fluree.query(&ledger2, &query).await.unwrap().to_jsonld_async(&ledger2.db).await.unwrap();
+    let jsonld = fluree
+        .query(&ledger2, &query)
+        .await
+        .unwrap()
+        .to_jsonld_async(&ledger2.db)
+        .await
+        .unwrap();
     assert_eq!(
         jsonld,
         json!([{"@id":"ex:s","schema:text":"?not-a-var","schema:newProp":"new"}])
@@ -247,7 +285,12 @@ async fn update_predicate_var_still_parses_when_flag_false() {
         "select": ["?p"],
         "where": [{"@id":"ex:s","?p":"?o"}]
     });
-    let jsonld = fluree.query(&ledger2, &query).await.unwrap().to_jsonld(&ledger2.db).unwrap();
+    let jsonld = fluree
+        .query(&ledger2, &query)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger2.db)
+        .unwrap();
     assert!(jsonld.as_array().unwrap().contains(&json!("schema:text")));
 }
 
@@ -256,7 +299,10 @@ async fn insert_literal_qmark_string_has_xsd_string_type() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Create ledger
-    let ledger0 = fluree.create_ledger("tx/obj-var-insert:main").await.unwrap();
+    let ledger0 = fluree
+        .create_ledger("tx/obj-var-insert:main")
+        .await
+        .unwrap();
 
     // Insert data with a literal "?not-a-var" (should be treated as string)
     let txn = json!({
@@ -291,7 +337,10 @@ async fn upsert_literal_qmark_string_has_xsd_string_type() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Create ledger
-    let ledger0 = fluree.create_ledger("tx/obj-var-upsert:main").await.unwrap();
+    let ledger0 = fluree
+        .create_ledger("tx/obj-var-upsert:main")
+        .await
+        .unwrap();
 
     // First insert some initial data
     let initial_txn = json!({
@@ -332,7 +381,10 @@ async fn upsert_literal_qmark_string_has_xsd_string_type() {
 async fn query_literal_qmark_string_with_flag_false_requires_literal_match() {
     let fluree = FlureeBuilder::memory().build_memory();
 
-    let ledger0 = fluree.create_ledger("tx/obj-var-query-literal:main").await.unwrap();
+    let ledger0 = fluree
+        .create_ledger("tx/obj-var-query-literal:main")
+        .await
+        .unwrap();
     let insert = json!({
         "@context": {"ex": "http://example.org/ns/"},
         "@graph": [{"@id": "ex:s", "ex:prop": "?not-a-var"}]
@@ -355,7 +407,10 @@ async fn query_literal_qmark_string_with_flag_false_requires_literal_match() {
 async fn query_explicit_variable_in_where_still_parses_when_flag_false() {
     let fluree = FlureeBuilder::memory().build_memory();
 
-    let ledger0 = fluree.create_ledger("tx/obj-var-query-var:main").await.unwrap();
+    let ledger0 = fluree
+        .create_ledger("tx/obj-var-query-var:main")
+        .await
+        .unwrap();
     let insert = json!({
         "@context": {"ex": "http://example.org/ns/"},
         "@graph": [{"@id": "ex:s", "ex:prop": "?not-a-var"}]
@@ -378,7 +433,10 @@ async fn query_explicit_variable_in_where_still_parses_when_flag_false() {
 async fn update_literal_qmark_string_where_binds_and_updates() {
     let fluree = FlureeBuilder::memory().build_memory();
 
-    let ledger0 = fluree.create_ledger("tx/obj-var-update:main").await.unwrap();
+    let ledger0 = fluree
+        .create_ledger("tx/obj-var-update:main")
+        .await
+        .unwrap();
     let insert = json!({
         "@context": {"ex": "http://example.org/ns/"},
         "@graph": [{"@id": "ex:s", "ex:prop": "?not-a-var"}]
@@ -395,7 +453,13 @@ async fn update_literal_qmark_string_where_binds_and_updates() {
         ..Default::default()
     };
     let ledger2 = fluree
-        .update_with_opts(ledger1, &update, txn_opts, Default::default(), &Default::default())
+        .update_with_opts(
+            ledger1,
+            &update,
+            txn_opts,
+            Default::default(),
+            &Default::default(),
+        )
         .await
         .unwrap()
         .ledger;

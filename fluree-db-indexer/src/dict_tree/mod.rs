@@ -30,12 +30,12 @@
 //! [magic: 4B][leaf_count: u32][offset_table: u32 × leaf_count][leaf_entries...]
 //! ```
 
-pub mod varint;
-pub mod forward_leaf;
-pub mod reverse_leaf;
 pub mod branch;
 pub mod builder;
+pub mod forward_leaf;
 pub mod reader;
+pub mod reverse_leaf;
+pub mod varint;
 
 pub use branch::DictBranch;
 pub use builder::TreeBuildResult;

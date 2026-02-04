@@ -6,7 +6,10 @@
 //! Call `explain_patterns` with a set of patterns and optional stats to get an `ExplainPlan`.
 
 use crate::pattern::{Term, TriplePattern};
-use crate::planner::{calculate_selectivity, classify_pattern, compare_patterns_tiebreaker, shares_variables, PatternType};
+use crate::planner::{
+    calculate_selectivity, classify_pattern, compare_patterns_tiebreaker, shares_variables,
+    PatternType,
+};
 use crate::var_registry::VarId;
 use fluree_db_core::StatsView;
 use std::collections::HashSet;
@@ -106,10 +109,7 @@ pub fn explain_patterns(patterns: &[TriplePattern], stats: Option<&StatsView>) -
     let optimization = if patterns.len() <= 1 {
         OptimizationStatus::Unchanged
     } else {
-        let same_order = patterns
-            .iter()
-            .zip(optimized.iter())
-            .all(|(a, b)| a == b);
+        let same_order = patterns.iter().zip(optimized.iter()).all(|(a, b)| a == b);
         if same_order {
             OptimizationStatus::Unchanged
         } else {
@@ -244,7 +244,10 @@ fn format_term(term: &Term) -> String {
 }
 
 /// Reorder patterns for explain (reuses planner's algorithm via shared helpers)
-fn reorder_for_explain(patterns: Vec<TriplePattern>, stats: Option<&StatsView>) -> Vec<TriplePattern> {
+fn reorder_for_explain(
+    patterns: Vec<TriplePattern>,
+    stats: Option<&StatsView>,
+) -> Vec<TriplePattern> {
     if patterns.len() <= 1 {
         return patterns;
     }

@@ -1,6 +1,6 @@
 mod support;
 
-use fluree_db_api::{FlureeBuilder, Bm25CreateConfig, Bm25DropResult, VirtualGraphPublisher};
+use fluree_db_api::{Bm25CreateConfig, Bm25DropResult, FlureeBuilder, VirtualGraphPublisher};
 use serde_json::json;
 
 /// Test creating BM25 virtual graphs via API
@@ -66,7 +66,6 @@ async fn create_virtual_graph_test() {
     assert!(!drop_result.was_already_retracted);
 }
 
-
 /// Test BM25 virtual graph receives updates when source ledger changes
 #[tokio::test]
 async fn bm25_index_updates_with_ledger() {
@@ -107,5 +106,8 @@ async fn bm25_index_updates_with_ledger() {
     assert_eq!(idx.num_docs(), 2); // Now has 2 documents
 
     // Clean up
-    let _drop_result: Bm25DropResult = fluree.drop_full_text_index("article-search:main").await.unwrap();
+    let _drop_result: Bm25DropResult = fluree
+        .drop_full_text_index("article-search:main")
+        .await
+        .unwrap();
 }

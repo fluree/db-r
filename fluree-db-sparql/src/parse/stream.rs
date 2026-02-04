@@ -374,10 +374,7 @@ impl TokenStream {
     pub fn is_query_form_start(&self) -> bool {
         matches!(
             self.peek().kind,
-            TokenKind::KwSelect
-                | TokenKind::KwConstruct
-                | TokenKind::KwDescribe
-                | TokenKind::KwAsk
+            TokenKind::KwSelect | TokenKind::KwConstruct | TokenKind::KwDescribe | TokenKind::KwAsk
         )
     }
 

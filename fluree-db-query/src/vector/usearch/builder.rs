@@ -77,10 +77,7 @@ impl VectorExtractor {
         };
 
         // Convert to f32 vector
-        let vector: Option<Vec<f32>> = array
-            .iter()
-            .map(|v| v.as_f64().map(|f| f as f32))
-            .collect();
+        let vector: Option<Vec<f32>> = array.iter().map(|v| v.as_f64().map(|f| f as f32)).collect();
 
         let Some(vector) = vector else {
             return ExtractionResult::InvalidElement;
@@ -190,7 +187,8 @@ impl VectorIndexBuilder {
         // Extract embedding vector
         match self.extractor.extract(result) {
             ExtractionResult::Success(vector) => {
-                self.index.add(self.ledger_alias.as_ref(), &subject_iri, &vector)?;
+                self.index
+                    .add(self.ledger_alias.as_ref(), &subject_iri, &vector)?;
                 self.indexed_count += 1;
                 Ok(true)
             }
@@ -404,7 +402,9 @@ impl<'a> IncrementalVectorUpdater<'a> {
         }
 
         // Update watermark
-        self.index.watermark.update(self.ledger_alias.as_ref(), new_t);
+        self.index
+            .watermark
+            .update(self.ledger_alias.as_ref(), new_t);
 
         result
     }
@@ -413,7 +413,11 @@ impl<'a> IncrementalVectorUpdater<'a> {
     ///
     /// Unlike `apply_update`, this replaces ALL documents for this ledger
     /// with the given results.
-    pub fn apply_full_sync(&mut self, results: &[Value], new_t: i64) -> IncrementalVectorUpdateResult {
+    pub fn apply_full_sync(
+        &mut self,
+        results: &[Value],
+        new_t: i64,
+    ) -> IncrementalVectorUpdateResult {
         let mut result = IncrementalVectorUpdateResult {
             new_watermark: new_t,
             ..Default::default()
@@ -462,7 +466,9 @@ impl<'a> IncrementalVectorUpdater<'a> {
         }
 
         // Update watermark
-        self.index.watermark.update(self.ledger_alias.as_ref(), new_t);
+        self.index
+            .watermark
+            .update(self.ledger_alias.as_ref(), new_t);
 
         result
     }
@@ -506,7 +512,8 @@ impl<'a> IncrementalVectorUpdater<'a> {
             ExtractionResult::Success(vector) => {
                 // Remove existing first (if any) to handle updates
                 let _ = self.index.remove(self.ledger_alias.as_ref(), subject_iri);
-                self.index.add(self.ledger_alias.as_ref(), subject_iri, &vector)?;
+                self.index
+                    .add(self.ledger_alias.as_ref(), subject_iri, &vector)?;
                 Ok(true)
             }
             _ => {
@@ -568,7 +575,10 @@ mod tests {
             "title": "No embedding"
         });
 
-        assert!(matches!(extractor.extract(&result), ExtractionResult::MissingProperty));
+        assert!(matches!(
+            extractor.extract(&result),
+            ExtractionResult::MissingProperty
+        ));
     }
 
     #[test]
@@ -580,7 +590,10 @@ mod tests {
             "embedding": "not an array"
         });
 
-        assert!(matches!(extractor.extract(&result), ExtractionResult::NotArray));
+        assert!(matches!(
+            extractor.extract(&result),
+            ExtractionResult::NotArray
+        ));
     }
 
     #[test]
@@ -592,7 +605,10 @@ mod tests {
             "embedding": [0.1, "not a number", 0.3]
         });
 
-        assert!(matches!(extractor.extract(&result), ExtractionResult::InvalidElement));
+        assert!(matches!(
+            extractor.extract(&result),
+            ExtractionResult::InvalidElement
+        ));
     }
 
     #[test]
@@ -606,7 +622,10 @@ mod tests {
 
         assert!(matches!(
             extractor.extract(&result),
-            ExtractionResult::DimensionMismatch { expected: 3, actual: 2 }
+            ExtractionResult::DimensionMismatch {
+                expected: 3,
+                actual: 2
+            }
         ));
     }
 
@@ -700,10 +719,12 @@ mod tests {
             .with_embedding_property("embedding")
             .with_watermark(1);
 
-        builder.add_results(&[
-            json!({"@id": "http://example.org/doc1", "embedding": [1.0, 0.0, 0.0]}),
-            json!({"@id": "http://example.org/doc2", "embedding": [0.0, 1.0, 0.0]}),
-        ]).unwrap();
+        builder
+            .add_results(&[
+                json!({"@id": "http://example.org/doc1", "embedding": [1.0, 0.0, 0.0]}),
+                json!({"@id": "http://example.org/doc2", "embedding": [0.0, 1.0, 0.0]}),
+            ])
+            .unwrap();
 
         let mut index = builder.build();
         index.property_deps = VectorPropertyDeps::new("embedding");
@@ -713,7 +734,9 @@ mod tests {
         let affected_iris: HashSet<Arc<str>> = [
             Arc::from("http://example.org/doc1"),
             Arc::from("http://example.org/doc3"),
-        ].into_iter().collect();
+        ]
+        .into_iter()
+        .collect();
 
         let results = vec![
             json!({"@id": "http://example.org/doc1", "embedding": [0.5, 0.5, 0.0]}),
@@ -742,20 +765,21 @@ mod tests {
             .with_embedding_property("embedding")
             .with_watermark(1);
 
-        builder.add_results(&[
-            json!({"@id": "http://example.org/doc1", "embedding": [1.0, 0.0, 0.0]}),
-            json!({"@id": "http://example.org/doc2", "embedding": [0.0, 1.0, 0.0]}),
-            json!({"@id": "http://example.org/doc3", "embedding": [0.0, 0.0, 1.0]}),
-        ]).unwrap();
+        builder
+            .add_results(&[
+                json!({"@id": "http://example.org/doc1", "embedding": [1.0, 0.0, 0.0]}),
+                json!({"@id": "http://example.org/doc2", "embedding": [0.0, 1.0, 0.0]}),
+                json!({"@id": "http://example.org/doc3", "embedding": [0.0, 0.0, 1.0]}),
+            ])
+            .unwrap();
 
         let mut index = builder.build();
         index.property_deps = VectorPropertyDeps::new("embedding");
         assert_eq!(index.len(), 3);
 
         // Apply incremental update: doc2 was deleted
-        let affected_iris: HashSet<Arc<str>> = [
-            Arc::from("http://example.org/doc2"),
-        ].into_iter().collect();
+        let affected_iris: HashSet<Arc<str>> =
+            [Arc::from("http://example.org/doc2")].into_iter().collect();
 
         let results: Vec<Value> = vec![];
 
@@ -779,11 +803,13 @@ mod tests {
             .with_embedding_property("embedding")
             .with_watermark(1);
 
-        builder.add_results(&[
-            json!({"@id": "http://example.org/doc1", "embedding": [1.0, 0.0, 0.0]}),
-            json!({"@id": "http://example.org/doc2", "embedding": [0.0, 1.0, 0.0]}),
-            json!({"@id": "http://example.org/doc3", "embedding": [0.0, 0.0, 1.0]}),
-        ]).unwrap();
+        builder
+            .add_results(&[
+                json!({"@id": "http://example.org/doc1", "embedding": [1.0, 0.0, 0.0]}),
+                json!({"@id": "http://example.org/doc2", "embedding": [0.0, 1.0, 0.0]}),
+                json!({"@id": "http://example.org/doc3", "embedding": [0.0, 0.0, 1.0]}),
+            ])
+            .unwrap();
 
         let mut index = builder.build();
         index.property_deps = VectorPropertyDeps::new("embedding");

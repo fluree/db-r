@@ -11,11 +11,11 @@
 //! Rust should mirror that behavior: seed genesis `Db.namespace_codes` with this
 //! baseline so query/transaction code can reliably encode standard IRIs even
 //! before any index exists.
-use std::collections::HashMap;
 use fluree_vocab::namespaces::{
     BLANK_NODE, DID_KEY, EMPTY, FLUREE_COMMIT, FLUREE_LEDGER, JSON_LD, OWL, RDF, RDFS, SHACL, XSD,
 };
 use fluree_vocab::predicates::*;
+use std::collections::HashMap;
 
 use crate::sid::Sid;
 
@@ -109,7 +109,10 @@ pub fn default_namespace_codes() -> HashMap<u16, String> {
     map.insert(EMPTY, "".to_string());
     map.insert(JSON_LD, "@".to_string());
     map.insert(XSD, "http://www.w3.org/2001/XMLSchema#".to_string());
-    map.insert(RDF, "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string());
+    map.insert(
+        RDF,
+        "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string(),
+    );
     map.insert(RDFS, "http://www.w3.org/2000/01/rdf-schema#".to_string());
     map.insert(SHACL, "http://www.w3.org/ns/shacl#".to_string());
     map.insert(OWL, "http://www.w3.org/2002/07/owl#".to_string());
@@ -119,4 +122,3 @@ pub fn default_namespace_codes() -> HashMap<u16, String> {
     map.insert(BLANK_NODE, "_:".to_string());
     map
 }
-

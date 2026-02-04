@@ -7,8 +7,8 @@ use crate::error::{Result, TransactError};
 use crate::ir::{TemplateTerm, TripleTemplate};
 use crate::namespace::NamespaceRegistry;
 use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
-use fluree_vocab::namespaces::{FLUREE_LEDGER, JSON_LD, RDF, XSD};
 use fluree_db_query::{Batch, Binding};
+use fluree_vocab::namespaces::{FLUREE_LEDGER, JSON_LD, RDF, XSD};
 use once_cell::sync::Lazy;
 
 // Well-known datatype SIDs, cached to avoid per-call Arc<str> allocation.
@@ -31,7 +31,8 @@ pub(crate) static DT_G_YEAR_MONTH: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "gYear
 pub(crate) static DT_G_MONTH: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "gMonth"));
 pub(crate) static DT_G_DAY: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "gDay"));
 pub(crate) static DT_G_MONTH_DAY: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "gMonthDay"));
-pub(crate) static DT_YEAR_MONTH_DURATION: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "yearMonthDuration"));
+pub(crate) static DT_YEAR_MONTH_DURATION: Lazy<Sid> =
+    Lazy::new(|| Sid::new(XSD, "yearMonthDuration"));
 pub(crate) static DT_DAY_TIME_DURATION: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "dayTimeDuration"));
 pub(crate) static DT_DURATION: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "duration"));
 
@@ -137,7 +138,9 @@ impl<'a> FlakeGenerator<'a> {
 
         let bound_lang = match &template.object {
             TemplateTerm::Var(var_id) => match bindings.get(row_idx, *var_id) {
-                Some(Binding::Lit { lang: Some(lang), .. }) => Some(lang.to_string()),
+                Some(Binding::Lit {
+                    lang: Some(lang), ..
+                }) => Some(lang.to_string()),
                 _ => None,
             },
             _ => None,
@@ -271,9 +274,7 @@ impl<'a> FlakeGenerator<'a> {
                 Ok((Some(FlakeValue::Ref(sid.clone())), Some(DT_ID.clone())))
             }
             TemplateTerm::Value(val) => {
-                let dt = explicit_dt
-                    .clone()
-                    .unwrap_or_else(|| infer_datatype(val));
+                let dt = explicit_dt.clone().unwrap_or_else(|| infer_datatype(val));
                 Ok((Some(val.clone()), Some(dt)))
             }
             TemplateTerm::Var(var_id) => {
@@ -428,12 +429,20 @@ mod tests {
             infer_datatype(&FlakeValue::Long(42)).name.as_ref(),
             "integer"
         );
-        assert_eq!(infer_datatype(&FlakeValue::Double(3.14)).name.as_ref(), "double");
         assert_eq!(
-            infer_datatype(&FlakeValue::String("test".to_string())).name.as_ref(),
+            infer_datatype(&FlakeValue::Double(3.14)).name.as_ref(),
+            "double"
+        );
+        assert_eq!(
+            infer_datatype(&FlakeValue::String("test".to_string()))
+                .name
+                .as_ref(),
             "string"
         );
-        assert_eq!(infer_datatype(&FlakeValue::Boolean(true)).name.as_ref(), "boolean");
+        assert_eq!(
+            infer_datatype(&FlakeValue::Boolean(true)).name.as_ref(),
+            "boolean"
+        );
     }
 
     #[test]

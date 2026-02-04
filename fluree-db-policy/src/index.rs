@@ -57,10 +57,10 @@ pub fn build_policy_set(
     for restriction in restrictions {
         // Filter by action
         match (&restriction.action, &action_filter) {
-            (PolicyAction::Both, _) => {}                              // Matches any filter
-            (PolicyAction::View, PolicyAction::View) => {}              // View matches view
-            (PolicyAction::Modify, PolicyAction::Modify) => {}          // Modify matches modify
-            _ => continue, // Skip non-matching
+            (PolicyAction::Both, _) => {}                      // Matches any filter
+            (PolicyAction::View, PolicyAction::View) => {}     // View matches view
+            (PolicyAction::Modify, PolicyAction::Modify) => {} // Modify matches modify
+            _ => continue,                                     // Skip non-matching
         }
 
         let idx = set.restrictions.len();
@@ -280,9 +280,7 @@ mod tests {
                 count: 10,
                 properties: property_sids
                     .into_iter()
-                    .map(|p| ClassPropertyUsage {
-                        property_sid: p,
-                    })
+                    .map(|p| ClassPropertyUsage { property_sid: p })
                     .collect(),
             }]),
             graphs: None,
@@ -299,7 +297,10 @@ mod tests {
         let set = build_policy_set(restrictions, None, PolicyAction::View);
 
         assert_eq!(set.restrictions.len(), 2);
-        assert_eq!(set.by_property.get(&make_sid(100, "name")).unwrap().len(), 1);
+        assert_eq!(
+            set.by_property.get(&make_sid(100, "name")).unwrap().len(),
+            1
+        );
         assert_eq!(set.by_property.get(&make_sid(100, "age")).unwrap().len(), 1);
     }
 

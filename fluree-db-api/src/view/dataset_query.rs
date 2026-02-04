@@ -4,14 +4,15 @@
 
 use crate::query::helpers::{
     build_query_result, parse_and_validate_sparql, parse_jsonld_query, parse_sparql_to_ir,
-    prepare_for_execution, status_for_query_error, tracker_for_limits, tracker_for_tracked_endpoint,
+    prepare_for_execution, status_for_query_error, tracker_for_limits,
+    tracker_for_tracked_endpoint,
 };
 use crate::view::{FlureeDataSetView, QueryInput};
 use crate::{
-    ApiError, ExecutableQuery, Fluree, NameService, QueryResult, Result, Storage,
-    Tracker, TrackingOptions,
+    ApiError, ExecutableQuery, Fluree, NameService, QueryResult, Result, Storage, Tracker,
+    TrackingOptions,
 };
-use fluree_db_query::execute::{ContextConfig, execute_prepared, prepare_execution};
+use fluree_db_query::execute::{execute_prepared, prepare_execution, ContextConfig};
 
 // ============================================================================
 // Dataset Query Execution
@@ -80,9 +81,9 @@ where
         // Execution still scans *all* default graphs in the dataset (union semantics),
         // but optimization is driven by the primary graph under the assumption that
         // default graphs in a dataset represent similarly-shaped data.
-        let primary = dataset.primary().ok_or_else(|| {
-            ApiError::query("Dataset has no graphs for query execution")
-        })?;
+        let primary = dataset
+            .primary()
+            .ok_or_else(|| ApiError::query("Dataset has no graphs for query execution"))?;
 
         // 1. Parse to common IR (using primary db for namespace resolution).
         let (vars, parsed) = match &input {
@@ -260,9 +261,14 @@ where
 
         let runtime_dataset = dataset.as_runtime_dataset();
 
-        let prepared = prepare_execution(&primary.db, primary.overlay.as_ref(), executable, primary.to_t)
-            .await
-            .map_err(query_error_to_api_error)?;
+        let prepared = prepare_execution(
+            &primary.db,
+            primary.overlay.as_ref(),
+            executable,
+            primary.to_t,
+        )
+        .await
+        .map_err(query_error_to_api_error)?;
 
         let (from_t, to_t, history_mode) = match dataset.history_time_range() {
             Some((hist_from, hist_to)) => (Some(hist_from), hist_to, true),
@@ -270,7 +276,11 @@ where
         };
 
         let config = ContextConfig {
-            tracker: if tracker.is_enabled() { Some(tracker) } else { None },
+            tracker: if tracker.is_enabled() {
+                Some(tracker)
+            } else {
+                None
+            },
             dataset: Some(&runtime_dataset),
             binary_store: primary.binary_store.clone(),
             dict_novelty: primary.dict_novelty.clone(),
@@ -308,8 +318,13 @@ where
 
         let runtime_dataset = dataset.as_runtime_dataset();
 
-        let prepared = prepare_execution(&primary.db, primary.overlay.as_ref(), executable, primary.to_t)
-            .await?;
+        let prepared = prepare_execution(
+            &primary.db,
+            primary.overlay.as_ref(),
+            executable,
+            primary.to_t,
+        )
+        .await?;
 
         let (from_t, to_t, history_mode) = match dataset.history_time_range() {
             Some((hist_from, hist_to)) => (Some(hist_from), hist_to, true),
@@ -345,7 +360,7 @@ fn query_error_to_api_error(err: fluree_db_query::QueryError) -> ApiError {
 
 #[cfg(test)]
 mod tests {
-    
+
     use crate::view::FlureeDataSetView;
     use crate::FlureeBuilder;
     use serde_json::json;

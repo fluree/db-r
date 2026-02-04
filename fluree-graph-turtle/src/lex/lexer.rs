@@ -167,10 +167,7 @@ fn lex_line_col(source: &str, position: usize) -> (usize, usize) {
 }
 
 fn lex_get_line(source: &str, line_num: usize) -> &str {
-    source
-        .lines()
-        .nth(line_num.saturating_sub(1))
-        .unwrap_or("")
+    source.lines().nth(line_num.saturating_sub(1)).unwrap_or("")
 }
 
 /// Skip whitespace and comments.
@@ -303,8 +300,8 @@ fn parse_at_directive(input: &mut Input<'_>) -> ModalResult<TokenKind> {
     '@'.parse_next(input)?;
 
     // Read the word after @
-    let word: &str = take_while(1.., |c: char| c.is_ascii_alphanumeric() || c == '-')
-        .parse_next(input)?;
+    let word: &str =
+        take_while(1.., |c: char| c.is_ascii_alphanumeric() || c == '-').parse_next(input)?;
 
     match word.to_lowercase().as_str() {
         "prefix" => Ok(TokenKind::KwPrefix),
@@ -340,9 +337,10 @@ fn parse_default_prefix(input: &mut Input<'_>) -> ModalResult<TokenKind> {
 fn parse_prefixed_name_or_keyword(input: &mut Input<'_>) -> ModalResult<TokenKind> {
     let start = input.checkpoint();
 
-    let first_char = input.chars().next().ok_or_else(|| {
-        winnow::error::ErrMode::Backtrack(ContextError::new())
-    })?;
+    let first_char = input
+        .chars()
+        .next()
+        .ok_or_else(|| winnow::error::ErrMode::Backtrack(ContextError::new()))?;
 
     let is_valid_prefix_start = is_pn_prefix_start(first_char);
 
@@ -409,16 +407,18 @@ fn parse_prefixed_name_or_keyword(input: &mut Input<'_>) -> ModalResult<TokenKin
 /// Advances past the local name content, validating characters. Does not
 /// build a String — the content is recovered from the token's byte span.
 fn parse_pn_local(input: &mut Input<'_>) -> ModalResult<()> {
-    let first_char = input.chars().next().ok_or_else(|| {
-        winnow::error::ErrMode::Backtrack(ContextError::new())
-    })?;
+    let first_char = input
+        .chars()
+        .next()
+        .ok_or_else(|| winnow::error::ErrMode::Backtrack(ContextError::new()))?;
 
     if !is_pn_local_start(first_char) && first_char != '%' && first_char != '\\' {
         return Err(winnow::error::ErrMode::Backtrack(ContextError::new()));
     }
 
     loop {
-        let _chunk: &str = take_while(0.., |c: char| is_pn_chars(c) || c == ':').parse_next(input)?;
+        let _chunk: &str =
+            take_while(0.., |c: char| is_pn_chars(c) || c == ':').parse_next(input)?;
 
         if input.is_empty() {
             break;
@@ -427,7 +427,11 @@ fn parse_pn_local(input: &mut Input<'_>) -> ModalResult<()> {
         if input.starts_with('.') {
             let rest = &input.as_ref()[1..];
             if let Some(next_char) = rest.chars().next() {
-                if is_pn_chars(next_char) || next_char == ':' || next_char == '%' || next_char == '\\' {
+                if is_pn_chars(next_char)
+                    || next_char == ':'
+                    || next_char == '%'
+                    || next_char == '\\'
+                {
                     '.'.parse_next(input)?;
                     continue;
                 }
@@ -524,8 +528,8 @@ fn parse_string_short_double(input: &mut Input<'_>) -> ModalResult<TokenKind> {
     '"'.parse_next(input)?;
 
     // Fast path: scan for closing quote
-    let first_chunk: &str = take_while(0.., |c| c != '"' && c != '\\' && c != '\n' && c != '\r')
-        .parse_next(input)?;
+    let first_chunk: &str =
+        take_while(0.., |c| c != '"' && c != '\\' && c != '\n' && c != '\r').parse_next(input)?;
 
     // Common case: no escapes
     if input.starts_with('"') {
@@ -541,9 +545,8 @@ fn parse_string_short_double(input: &mut Input<'_>) -> ModalResult<TokenKind> {
             let escaped = parse_escape_char(input)?;
             result.push(escaped);
 
-            let chunk: &str =
-                take_while(0.., |c| c != '"' && c != '\\' && c != '\n' && c != '\r')
-                    .parse_next(input)?;
+            let chunk: &str = take_while(0.., |c| c != '"' && c != '\\' && c != '\n' && c != '\r')
+                .parse_next(input)?;
             result.push_str(chunk);
 
             if input.starts_with('"') || input.is_empty() {
@@ -569,8 +572,8 @@ fn parse_string_short_single(input: &mut Input<'_>) -> ModalResult<TokenKind> {
     '\''.parse_next(input)?;
 
     // Fast path: scan for closing quote
-    let first_chunk: &str = take_while(0.., |c| c != '\'' && c != '\\' && c != '\n' && c != '\r')
-        .parse_next(input)?;
+    let first_chunk: &str =
+        take_while(0.., |c| c != '\'' && c != '\\' && c != '\n' && c != '\r').parse_next(input)?;
 
     // Common case: no escapes
     if input.starts_with('\'') {
@@ -586,9 +589,8 @@ fn parse_string_short_single(input: &mut Input<'_>) -> ModalResult<TokenKind> {
             let escaped = parse_escape_char(input)?;
             result.push(escaped);
 
-            let chunk: &str =
-                take_while(0.., |c| c != '\'' && c != '\\' && c != '\n' && c != '\r')
-                    .parse_next(input)?;
+            let chunk: &str = take_while(0.., |c| c != '\'' && c != '\\' && c != '\n' && c != '\r')
+                .parse_next(input)?;
             result.push_str(chunk);
 
             if input.starts_with('\'') || input.is_empty() {

@@ -9,7 +9,7 @@
 
 use std::io;
 
-use super::branch::{BranchLeafEntry, DictBranch, id_to_branch_key};
+use super::branch::{id_to_branch_key, BranchLeafEntry, DictBranch};
 use super::forward_leaf::{self, ForwardEntry};
 use super::reverse_leaf::{self, ReverseEntry};
 
@@ -85,7 +85,9 @@ pub fn build_forward_tree(
         }
     }
 
-    let branch = DictBranch { leaves: branch_entries };
+    let branch = DictBranch {
+        leaves: branch_entries,
+    };
     let branch_bytes = branch.encode();
     let branch_hash = fluree_db_core::sha256_hex(&branch_bytes);
 
@@ -141,7 +143,9 @@ pub fn build_reverse_tree(
         }
     }
 
-    let branch = DictBranch { leaves: branch_entries };
+    let branch = DictBranch {
+        leaves: branch_entries,
+    };
     let branch_bytes = branch.encode();
     let branch_hash = fluree_db_core::sha256_hex(&branch_bytes);
 

@@ -27,7 +27,9 @@ async fn background_indexing_trigger_wait_then_load_index_root() {
     let path = tmp.path().to_string_lossy().to_string();
 
     // Build file-backed Fluree (so we can load the index root from storage).
-    let mut fluree = FlureeBuilder::file(path).build().expect("build file fluree");
+    let mut fluree = FlureeBuilder::file(path)
+        .build()
+        .expect("build file fluree");
 
     // Start background indexing worker + handle (LocalSet since worker may be !Send).
     let (local, handle) = start_background_indexer_local(
@@ -78,7 +80,10 @@ async fn background_indexing_trigger_wait_then_load_index_root() {
 
             // 3) Wait + assert we can load the persisted root
             match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { index_t, root_address } => {
+                fluree_db_api::IndexOutcome::Completed {
+                    index_t,
+                    root_address,
+                } => {
                     assert!(
                         index_t >= commit_t,
                         "index_t ({index_t}) should be >= commit_t ({commit_t})"
@@ -88,12 +93,9 @@ async fn background_indexing_trigger_wait_then_load_index_root() {
                         "expected a non-empty root_address after indexing"
                     );
 
-                    let loaded = Db::load(
-                        fluree.storage().clone(),
-                        &root_address,
-                    )
-                    .await
-                    .expect("Db::load(root_address)");
+                    let loaded = Db::load(fluree.storage().clone(), &root_address)
+                        .await
+                        .expect("Db::load(root_address)");
                     assert!(
                         loaded.t >= commit_t,
                         "loaded db.t ({}) should be >= commit_t ({})",
@@ -107,4 +109,3 @@ async fn background_indexing_trigger_wait_then_load_index_root() {
         })
         .await;
 }
-

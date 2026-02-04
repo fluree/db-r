@@ -4,7 +4,7 @@
 //! formatting to work correctly.
 
 use fluree_db_core::{
-    is_rdfs_domain, is_rdfs_range, is_rdfs_subclass_of, is_rdfs_subproperty_of, is_rdf_type,
+    is_rdf_type, is_rdfs_domain, is_rdfs_range, is_rdfs_subclass_of, is_rdfs_subproperty_of,
     FlakeValue, Sid,
 };
 use fluree_vocab::namespaces::{OWL, RDF, RDFS};

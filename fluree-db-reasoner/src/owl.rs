@@ -3,12 +3,14 @@
 //! This module provides utility functions and types for working with OWL
 //! vocabulary in reasoning rules, reducing code duplication.
 
-use fluree_vocab::namespaces::OWL;
-use fluree_vocab::owl_names::*;
-use fluree_db_core::{range_with_overlay, Db, IndexType, RangeMatch, RangeOptions, RangeTest, Sid, FlakeValue};
+use fluree_db_core::namespaces::is_rdf_type;
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::storage::Storage;
-use fluree_db_core::namespaces::is_rdf_type;
+use fluree_db_core::{
+    range_with_overlay, Db, FlakeValue, IndexType, RangeMatch, RangeOptions, RangeTest, Sid,
+};
+use fluree_vocab::namespaces::OWL;
+use fluree_vocab::owl_names::*;
 
 /// Get the SID for owl:sameAs
 #[inline]
@@ -164,10 +166,12 @@ pub async fn find_owl_typed_entities<S: Storage>(
             ..Default::default()
         },
         opts,
-    ).await?;
+    )
+    .await?;
 
     // Filter to only rdf:type assertions
-    Ok(flakes.into_iter()
+    Ok(flakes
+        .into_iter()
         .filter(|f| is_rdf_type(&f.p) && f.op)
         .collect())
 }

@@ -56,7 +56,10 @@ pub fn format_data_model_markdown(alias: &str, info: &JsonValue) -> String {
                 .values()
                 .filter_map(|c| c.get("count").and_then(|v| v.as_i64()))
                 .sum();
-            lines.push(format!("- Total instances: {}", format_number(total_instances)));
+            lines.push(format!(
+                "- Total instances: {}",
+                format_number(total_instances)
+            ));
         }
 
         // Count properties
@@ -110,7 +113,12 @@ pub fn format_data_model_markdown(alias: &str, info: &JsonValue) -> String {
 }
 
 /// Format a single class and its properties
-fn format_class(lines: &mut Vec<String>, class_iri: &str, class_data: &JsonValue, max_properties: usize) {
+fn format_class(
+    lines: &mut Vec<String>,
+    class_iri: &str,
+    class_data: &JsonValue,
+    max_properties: usize,
+) {
     let count = class_data
         .get("count")
         .and_then(|v| v.as_i64())
@@ -125,10 +133,7 @@ fn format_class(lines: &mut Vec<String>, class_iri: &str, class_data: &JsonValue
     // Subclass relationships
     if let Some(subclass_of) = class_data.get("subclass-of").and_then(|v| v.as_array()) {
         if !subclass_of.is_empty() {
-            let parents: Vec<_> = subclass_of
-                .iter()
-                .filter_map(|v| v.as_str())
-                .collect();
+            let parents: Vec<_> = subclass_of.iter().filter_map(|v| v.as_str()).collect();
             if !parents.is_empty() {
                 lines.push(format!("Subclass of: {}", parents.join(", ")));
             }

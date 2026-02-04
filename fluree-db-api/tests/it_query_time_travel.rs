@@ -12,7 +12,9 @@ mod support;
 use chrono::{DateTime, Duration, FixedOffset, SecondsFormat, TimeZone, Utc};
 use fluree_db_api::FlureeBuilder;
 use serde_json::{json, Value as JsonValue};
-use support::{assert_index_defaults, genesis_ledger, normalize_rows_array, MemoryFluree, MemoryLedger};
+use support::{
+    assert_index_defaults, genesis_ledger, normalize_rows_array, MemoryFluree, MemoryLedger,
+};
 use tokio::time::sleep;
 
 fn ctx_test() -> JsonValue {
@@ -56,7 +58,11 @@ async fn seed_time_travel_ledger(
         "@context": ctx_test(),
         "@graph": [{"@id":"test:person2","@type":"Person","name":"Bob","age":25}]
     });
-    let ledger2 = fluree.insert(ledger1, &tx2).await.expect("insert t=2").ledger;
+    let ledger2 = fluree
+        .insert(ledger1, &tx2)
+        .await
+        .expect("insert t=2")
+        .ledger;
     let time_t2 = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     iso_by_t.insert(2, time_t2);
 
@@ -67,7 +73,11 @@ async fn seed_time_travel_ledger(
         "@context": ctx_test(),
         "@graph": [{"@id":"test:person3","@type":"Person","name":"Carol","age":28}]
     });
-    let ledger3 = fluree.insert(ledger2, &tx3).await.expect("insert t=3").ledger;
+    let ledger3 = fluree
+        .insert(ledger2, &tx3)
+        .await
+        .expect("insert t=3")
+        .ledger;
     let time_t3 = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     iso_by_t.insert(3, time_t3);
 
@@ -102,7 +112,9 @@ async fn query_names_at(
         .map(|v| vec![v.clone()])
         .collect();
 
-    normalize_rows_array(&JsonValue::Array(names.iter().map(|r| JsonValue::Array(r.clone())).collect()))
+    normalize_rows_array(&JsonValue::Array(
+        names.iter().map(|r| JsonValue::Array(r.clone())).collect(),
+    ))
 }
 
 #[tokio::test]
@@ -300,8 +312,16 @@ async fn time_travel_iso_between_commits_resolves_to_previous_commit() {
         dt2.timestamp_millis() + 1
     };
 
-    let mid_12 = Utc.timestamp_millis_opt(mid_12_ms).single().unwrap().to_rfc3339_opts(SecondsFormat::Millis, true);
-    let mid_23 = Utc.timestamp_millis_opt(mid_23_ms).single().unwrap().to_rfc3339_opts(SecondsFormat::Millis, true);
+    let mid_12 = Utc
+        .timestamp_millis_opt(mid_12_ms)
+        .single()
+        .unwrap()
+        .to_rfc3339_opts(SecondsFormat::Millis, true);
+    let mid_23 = Utc
+        .timestamp_millis_opt(mid_23_ms)
+        .single()
+        .unwrap()
+        .to_rfc3339_opts(SecondsFormat::Millis, true);
 
     // Mid between t1 and t2 should resolve to t1
     assert_eq!(
@@ -374,4 +394,3 @@ async fn time_travel_branch_interaction_main_at_t() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0][1], json!("main-value"));
 }
-

@@ -28,7 +28,9 @@ pub mod sync_task;
 pub use forward::{ForwardingClient, ForwardingError};
 pub use proxy_nameservice::ProxyNameService;
 pub use proxy_storage::ProxyStorage;
-pub use state::{NeedsRefresh, PeerState, RemoteLedgerWatermark, RemoteVgWatermark, VgNeedsRefresh};
+pub use state::{
+    NeedsRefresh, PeerState, RemoteLedgerWatermark, RemoteVgWatermark, VgNeedsRefresh,
+};
 pub use subscription::{PeerSubscriptionError, PeerSubscriptionTask};
 pub use sync_task::PeerSyncTask;
 

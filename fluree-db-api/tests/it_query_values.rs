@@ -62,7 +62,11 @@ async fn values_top_level_no_where_multiple_vars() {
     let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
     assert_eq!(
         normalize_rows(&json_rows),
-        normalize_rows(&json!([["foo1","bar1"],["foo2","bar2"],["foo3","bar3"]]))
+        normalize_rows(&json!([
+            ["foo1", "bar1"],
+            ["foo2", "bar2"],
+            ["foo3", "bar3"]
+        ]))
     );
 }
 
@@ -81,7 +85,7 @@ async fn values_top_level_no_where_single_var() {
     let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
     assert_eq!(
         normalize_rows(&json_rows),
-        normalize_rows(&json!(["foo1","foo2","foo3"]))
+        normalize_rows(&json!(["foo1", "foo2", "foo3"]))
     );
 }
 
@@ -114,8 +118,8 @@ async fn values_top_level_iri_values_constrain_where() {
     assert_eq!(
         normalize_rows(&json_rows),
         normalize_rows(&json!([
-            ["Brian","brian@example.org"],
-            ["Cam","cam@example.org"]
+            ["Brian", "brian@example.org"],
+            ["Cam", "cam@example.org"]
         ]))
     );
 }
@@ -155,13 +159,37 @@ async fn values_equivalent_iri_forms_var_in_id_map() {
         "select": ["?s"]
     });
 
-    let r1 = fluree.query(&ledger, &q1).await.unwrap().to_jsonld(&ledger.db).unwrap();
-    let r2 = fluree.query(&ledger, &q2).await.unwrap().to_jsonld(&ledger.db).unwrap();
-    let r3 = fluree.query(&ledger, &q3).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let r1 = fluree
+        .query(&ledger, &q1)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
+    let r2 = fluree
+        .query(&ledger, &q2)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
+    let r3 = fluree
+        .query(&ledger, &q3)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
 
-    assert_eq!(normalize_rows(&r1), normalize_rows(&json!(["ex:cam","ex:liam"])));
-    assert_eq!(normalize_rows(&r2), normalize_rows(&json!(["ex:cam","ex:liam"])));
-    assert_eq!(normalize_rows(&r3), normalize_rows(&json!(["ex:cam","ex:liam"])));
+    assert_eq!(
+        normalize_rows(&r1),
+        normalize_rows(&json!(["ex:cam", "ex:liam"]))
+    );
+    assert_eq!(
+        normalize_rows(&r2),
+        normalize_rows(&json!(["ex:cam", "ex:liam"]))
+    );
+    assert_eq!(
+        normalize_rows(&r3),
+        normalize_rows(&json!(["ex:cam", "ex:liam"]))
+    );
 }
 
 #[tokio::test]
@@ -194,8 +222,8 @@ async fn values_where_clause_keyword_single_var() {
     assert_eq!(
         normalize_rows(&json_rows),
         normalize_rows(&json!([
-            ["Brian","brian@example.org"],
-            ["Cam","cam@example.org"]
+            ["Brian", "brian@example.org"],
+            ["Cam", "cam@example.org"]
         ]))
     );
 }
@@ -233,12 +261,15 @@ async fn values_nested_under_optional_clause() {
     // Only nikola matches the OPTIONAL (VALUES constrains to nikola, and nikola has ex:cool)
     // Other users have email so they match the required pattern, but don't match the OPTIONAL
     // because VALUES constrains ?s to nikola only
-    assert_eq!(json_rows, json!([
-        ["ex:alice", null, null],
-        ["ex:brian", null, null],
-        ["ex:cam", null, null],
-        ["ex:liam", null, null]
-    ]));
+    assert_eq!(
+        json_rows,
+        json!([
+            ["ex:alice", null, null],
+            ["ex:brian", null, null],
+            ["ex:cam", null, null],
+            ["ex:liam", null, null]
+        ])
+    );
 }
 
 #[tokio::test]
@@ -292,10 +323,7 @@ async fn values_with_empty_solution_seed() {
     let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
     assert_eq!(
         normalize_rows(&json_rows),
-        normalize_rows(&json!([
-            ["ex:cam","Cam"],
-            ["ex:liam","Liam"]
-        ]))
+        normalize_rows(&json!([["ex:cam", "Cam"], ["ex:liam", "Liam"]]))
     );
 }
 
@@ -317,7 +345,10 @@ async fn values_federated_query_connection_from_two_ledgers() {
             {"@id":"ex:khris","schema:name":"Khris"}
         ]
     });
-    let _ = fluree.insert(other_ledger0, &other_insert).await.expect("insert other-ledger");
+    let _ = fluree
+        .insert(other_ledger0, &other_insert)
+        .await
+        .expect("insert other-ledger");
 
     let ctx = json!({
         "schema": "http://schema.org/",
@@ -339,7 +370,10 @@ async fn values_federated_query_connection_from_two_ledgers() {
         "orderBy": "?name"
     });
 
-    let result = fluree.query_connection(&query).await.expect("query_connection");
+    let result = fluree
+        .query_connection(&query)
+        .await
+        .expect("query_connection");
     let ledger = fluree.ledger("values-test:main").await.expect("ledger");
     let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
     assert_eq!(
@@ -347,4 +381,3 @@ async fn values_federated_query_connection_from_two_ledgers() {
         normalize_rows(&json!(["Khris", "Nikola"]))
     );
 }
-

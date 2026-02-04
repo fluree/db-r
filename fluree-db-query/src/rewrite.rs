@@ -213,9 +213,9 @@ impl ReasoningModes {
             serde_json::Value::Array(arr) => {
                 let mut modes = Self::default();
                 for item in arr {
-                    let s = item.as_str().ok_or_else(|| {
-                        "reasoning array must contain strings".to_string()
-                    })?;
+                    let s = item
+                        .as_str()
+                        .ok_or_else(|| "reasoning array must contain strings".to_string())?;
                     modes = modes.merge(&Self::parse_single(s)?);
                 }
                 Ok(modes)
@@ -343,10 +343,7 @@ impl ReasoningModes {
         }
         // Auto-enable RDFS if not already enabled and hierarchy exists
         if !self.rdfs && hierarchy_available {
-            Self {
-                rdfs: true,
-                ..self
-            }
+            Self { rdfs: true, ..self }
         } else {
             self
         }
@@ -500,7 +497,8 @@ pub fn rewrite_patterns(patterns: &[Pattern], ctx: &PlanContext) -> (Vec<Pattern
 
     // Use a shared budget across all recursion
     let mut total_expansions = 0;
-    let result = rewrite_patterns_internal(patterns, hierarchy, ctx, &mut diag, &mut total_expansions);
+    let result =
+        rewrite_patterns_internal(patterns, hierarchy, ctx, &mut diag, &mut total_expansions);
 
     (result, diag)
 }
@@ -528,7 +526,10 @@ fn rewrite_patterns_internal(
                 diag.patterns_expanded += 1;
                 result.extend(expanded);
             }
-            RewriteResult::Capped { patterns: expanded, original_count } => {
+            RewriteResult::Capped {
+                patterns: expanded,
+                original_count,
+            } => {
                 diag.patterns_expanded += 1;
                 diag.was_capped = true;
                 diag.warn(format!(
@@ -558,7 +559,8 @@ fn rewrite_single_pattern(
         // Recursively process nested patterns - sharing the global budget
         Pattern::Optional(inner) => {
             let before = diag.patterns_expanded;
-            let rewritten = rewrite_patterns_internal(inner, hierarchy, ctx, diag, total_expansions);
+            let rewritten =
+                rewrite_patterns_internal(inner, hierarchy, ctx, diag, total_expansions);
             let changed = diag.patterns_expanded > before;
             if changed {
                 RewriteResult::Expanded(vec![Pattern::Optional(rewritten)])
@@ -572,7 +574,8 @@ fn rewrite_single_pattern(
             let before = diag.patterns_expanded;
 
             for branch in branches {
-                let rewritten = rewrite_patterns_internal(branch, hierarchy, ctx, diag, total_expansions);
+                let rewritten =
+                    rewrite_patterns_internal(branch, hierarchy, ctx, diag, total_expansions);
                 rewritten_branches.push(rewritten);
             }
 
@@ -586,7 +589,8 @@ fn rewrite_single_pattern(
 
         Pattern::Minus(inner) => {
             let before = diag.patterns_expanded;
-            let rewritten = rewrite_patterns_internal(inner, hierarchy, ctx, diag, total_expansions);
+            let rewritten =
+                rewrite_patterns_internal(inner, hierarchy, ctx, diag, total_expansions);
             let changed = diag.patterns_expanded > before;
             if changed {
                 RewriteResult::Expanded(vec![Pattern::Minus(rewritten)])
@@ -597,7 +601,8 @@ fn rewrite_single_pattern(
 
         Pattern::Exists(inner) => {
             let before = diag.patterns_expanded;
-            let rewritten = rewrite_patterns_internal(inner, hierarchy, ctx, diag, total_expansions);
+            let rewritten =
+                rewrite_patterns_internal(inner, hierarchy, ctx, diag, total_expansions);
             let changed = diag.patterns_expanded > before;
             if changed {
                 RewriteResult::Expanded(vec![Pattern::Exists(rewritten)])
@@ -608,7 +613,8 @@ fn rewrite_single_pattern(
 
         Pattern::NotExists(inner) => {
             let before = diag.patterns_expanded;
-            let rewritten = rewrite_patterns_internal(inner, hierarchy, ctx, diag, total_expansions);
+            let rewritten =
+                rewrite_patterns_internal(inner, hierarchy, ctx, diag, total_expansions);
             let changed = diag.patterns_expanded > before;
             if changed {
                 RewriteResult::Expanded(vec![Pattern::NotExists(rewritten)])
@@ -617,9 +623,13 @@ fn rewrite_single_pattern(
             }
         }
 
-        Pattern::Graph { name, patterns: inner } => {
+        Pattern::Graph {
+            name,
+            patterns: inner,
+        } => {
             let before = diag.patterns_expanded;
-            let rewritten = rewrite_patterns_internal(inner, hierarchy, ctx, diag, total_expansions);
+            let rewritten =
+                rewrite_patterns_internal(inner, hierarchy, ctx, diag, total_expansions);
             let changed = diag.patterns_expanded > before;
             if changed {
                 RewriteResult::Expanded(vec![Pattern::Graph {
@@ -721,7 +731,10 @@ fn expand_type_pattern(
 
     // Check limits
     let total_count = type_patterns.len();
-    let available_budget = ctx.limits.max_total_expansions.saturating_sub(*total_expansions);
+    let available_budget = ctx
+        .limits
+        .max_total_expansions
+        .saturating_sub(*total_expansions);
     let per_pattern_limit = ctx.limits.max_expansions_per_pattern;
 
     let effective_limit = per_pattern_limit.min(available_budget);
@@ -814,7 +827,10 @@ fn expand_predicate_pattern(
 
     // Check limits
     let total_count = pred_patterns.len();
-    let available_budget = ctx.limits.max_total_expansions.saturating_sub(*total_expansions);
+    let available_budget = ctx
+        .limits
+        .max_total_expansions
+        .saturating_sub(*total_expansions);
     let per_pattern_limit = ctx.limits.max_expansions_per_pattern;
 
     let effective_limit = per_pattern_limit.min(available_budget);
@@ -1202,7 +1218,10 @@ mod tests {
         // First pattern should expand (up to per-pattern limit or remaining budget)
         // Second pattern in OPTIONAL should be capped by remaining global budget
         assert!(diag.was_capped, "Should be capped due to global budget");
-        assert_eq!(diag.type_expansions, 2, "Both patterns should attempt expansion");
+        assert_eq!(
+            diag.type_expansions, 2,
+            "Both patterns should attempt expansion"
+        );
     }
 
     #[test]

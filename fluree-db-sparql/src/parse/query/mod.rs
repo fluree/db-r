@@ -74,7 +74,9 @@ pub fn parse_sparql(input: &str) -> ParseOutput<SparqlAst> {
 ///
 /// This is used by the expression parser for EXISTS/NOT EXISTS patterns.
 /// Expects the stream to be positioned at the opening `{`.
-pub fn parse_group_graph_pattern(stream: &mut super::stream::TokenStream) -> Result<GraphPattern, String> {
+pub fn parse_group_graph_pattern(
+    stream: &mut super::stream::TokenStream,
+) -> Result<GraphPattern, String> {
     // Expect opening brace
     if !stream.check(&TokenKind::LBrace) {
         return Err(format!(
@@ -85,9 +87,9 @@ pub fn parse_group_graph_pattern(stream: &mut super::stream::TokenStream) -> Res
     stream.advance(); // consume {
 
     let mut parser = Parser::new(stream);
-    parser.parse_group_graph_pattern().ok_or_else(|| {
-        "Failed to parse group graph pattern".to_string()
-    })
+    parser
+        .parse_group_graph_pattern()
+        .ok_or_else(|| "Failed to parse group graph pattern".to_string())
 }
 
 /// The SPARQL parser.
@@ -229,10 +231,7 @@ fn flush_current_triples(
 ) {
     if !current_triples.is_empty() {
         let bgp_span = span_of_triples(current_triples);
-        patterns.push(GraphPattern::bgp(
-            std::mem::take(current_triples),
-            bgp_span,
-        ));
+        patterns.push(GraphPattern::bgp(std::mem::take(current_triples), bgp_span));
     }
 }
 
@@ -252,7 +251,10 @@ fn span_of_triples(triples: &[TriplePattern]) -> SourceSpan {
 /// - If empty, returns an empty BGP
 /// - If one pattern, returns it directly
 /// - If multiple patterns, wraps them in a Group
-fn collect_patterns_into_one(patterns: Vec<GraphPattern>, fallback_span: SourceSpan) -> GraphPattern {
+fn collect_patterns_into_one(
+    patterns: Vec<GraphPattern>,
+    fallback_span: SourceSpan,
+) -> GraphPattern {
     match patterns.len() {
         0 => GraphPattern::empty_bgp(fallback_span),
         1 => patterns.into_iter().next().unwrap(),

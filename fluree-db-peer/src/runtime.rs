@@ -140,7 +140,9 @@ impl<C: PeerCallbacks + 'static> PeerRuntime<C> {
                 let changed = self.state.handle_ledger_record(&record).await;
                 if changed {
                     if let Some(state) = self.state.get_ledger(&record.alias).await {
-                        self.callbacks.on_ledger_updated(&record.alias, &state).await;
+                        self.callbacks
+                            .on_ledger_updated(&record.alias, &state)
+                            .await;
                     }
                 }
             }

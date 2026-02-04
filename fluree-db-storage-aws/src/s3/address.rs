@@ -164,10 +164,7 @@ mod tests {
 
     #[test]
     fn test_key_to_address_no_prefix() {
-        assert_eq!(
-            key_to_address("mydb/file.json", None),
-            "mydb/file.json"
-        );
+        assert_eq!(key_to_address("mydb/file.json", None), "mydb/file.json");
     }
 
     #[test]

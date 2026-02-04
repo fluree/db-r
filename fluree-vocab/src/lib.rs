@@ -180,17 +180,8 @@ pub mod xsd {
     #[inline]
     pub fn normalize_integer_family(datatype_iri: &str) -> &str {
         match datatype_iri {
-            LONG
-            | INT
-            | SHORT
-            | BYTE
-            | UNSIGNED_LONG
-            | UNSIGNED_INT
-            | UNSIGNED_SHORT
-            | UNSIGNED_BYTE
-            | NON_NEGATIVE_INTEGER
-            | POSITIVE_INTEGER
-            | NON_POSITIVE_INTEGER
+            LONG | INT | SHORT | BYTE | UNSIGNED_LONG | UNSIGNED_INT | UNSIGNED_SHORT
+            | UNSIGNED_BYTE | NON_NEGATIVE_INTEGER | POSITIVE_INTEGER | NON_POSITIVE_INTEGER
             | NEGATIVE_INTEGER => INTEGER,
             _ => datatype_iri,
         }
@@ -217,17 +208,8 @@ pub mod xsd {
     #[inline]
     pub fn normalize_numeric_datatype(datatype_iri: &str) -> &str {
         match datatype_iri {
-            LONG
-            | INT
-            | SHORT
-            | BYTE
-            | UNSIGNED_LONG
-            | UNSIGNED_INT
-            | UNSIGNED_SHORT
-            | UNSIGNED_BYTE
-            | NON_NEGATIVE_INTEGER
-            | POSITIVE_INTEGER
-            | NON_POSITIVE_INTEGER
+            LONG | INT | SHORT | BYTE | UNSIGNED_LONG | UNSIGNED_INT | UNSIGNED_SHORT
+            | UNSIGNED_BYTE | NON_NEGATIVE_INTEGER | POSITIVE_INTEGER | NON_POSITIVE_INTEGER
             | NEGATIVE_INTEGER => INTEGER,
             FLOAT => DOUBLE,
             _ => datatype_iri,
@@ -412,29 +394,29 @@ pub mod xsd_names {
     /// xsd:byte local name
     pub const BYTE: &str = "byte";
 
-        /// xsd:unsignedLong local name
-        pub const UNSIGNED_LONG: &str = "unsignedLong";
+    /// xsd:unsignedLong local name
+    pub const UNSIGNED_LONG: &str = "unsignedLong";
 
-        /// xsd:unsignedInt local name
-        pub const UNSIGNED_INT: &str = "unsignedInt";
+    /// xsd:unsignedInt local name
+    pub const UNSIGNED_INT: &str = "unsignedInt";
 
-        /// xsd:unsignedShort local name
-        pub const UNSIGNED_SHORT: &str = "unsignedShort";
+    /// xsd:unsignedShort local name
+    pub const UNSIGNED_SHORT: &str = "unsignedShort";
 
-        /// xsd:unsignedByte local name
-        pub const UNSIGNED_BYTE: &str = "unsignedByte";
+    /// xsd:unsignedByte local name
+    pub const UNSIGNED_BYTE: &str = "unsignedByte";
 
-        /// xsd:nonNegativeInteger local name
-        pub const NON_NEGATIVE_INTEGER: &str = "nonNegativeInteger";
+    /// xsd:nonNegativeInteger local name
+    pub const NON_NEGATIVE_INTEGER: &str = "nonNegativeInteger";
 
-        /// xsd:positiveInteger local name
-        pub const POSITIVE_INTEGER: &str = "positiveInteger";
+    /// xsd:positiveInteger local name
+    pub const POSITIVE_INTEGER: &str = "positiveInteger";
 
-        /// xsd:nonPositiveInteger local name
-        pub const NON_POSITIVE_INTEGER: &str = "nonPositiveInteger";
+    /// xsd:nonPositiveInteger local name
+    pub const NON_POSITIVE_INTEGER: &str = "nonPositiveInteger";
 
-        /// xsd:negativeInteger local name
-        pub const NEGATIVE_INTEGER: &str = "negativeInteger";
+    /// xsd:negativeInteger local name
+    pub const NEGATIVE_INTEGER: &str = "negativeInteger";
 
     /// xsd:decimal local name
     pub const DECIMAL: &str = "decimal";
@@ -469,14 +451,14 @@ pub mod xsd_names {
     /// xsd:anyURI local name
     pub const ANY_URI: &str = "anyURI";
 
-        /// xsd:normalizedString local name
-        pub const NORMALIZED_STRING: &str = "normalizedString";
+    /// xsd:normalizedString local name
+    pub const NORMALIZED_STRING: &str = "normalizedString";
 
-        /// xsd:token local name
-        pub const TOKEN: &str = "token";
+    /// xsd:token local name
+    pub const TOKEN: &str = "token";
 
-        /// xsd:language local name
-        pub const LANGUAGE: &str = "language";
+    /// xsd:language local name
+    pub const LANGUAGE: &str = "language";
 
     /// xsd:base64Binary local name
     pub const BASE64_BINARY: &str = "base64Binary";
@@ -530,7 +512,10 @@ pub mod xsd_names {
     /// Check if a local name is a string-like type
     #[inline]
     pub fn is_string_like_name(name: &str) -> bool {
-        matches!(name, STRING | NORMALIZED_STRING | TOKEN | LANGUAGE | ANY_URI)
+        matches!(
+            name,
+            STRING | NORMALIZED_STRING | TOKEN | LANGUAGE | ANY_URI
+        )
     }
 
     /// Check if a local name is a temporal type
@@ -587,7 +572,8 @@ pub mod owl {
     pub const FUNCTIONAL_PROPERTY: &str = "http://www.w3.org/2002/07/owl#FunctionalProperty";
 
     /// owl:InverseFunctionalProperty IRI
-    pub const INVERSE_FUNCTIONAL_PROPERTY: &str = "http://www.w3.org/2002/07/owl#InverseFunctionalProperty";
+    pub const INVERSE_FUNCTIONAL_PROPERTY: &str =
+        "http://www.w3.org/2002/07/owl#InverseFunctionalProperty";
 
     /// owl:propertyChainAxiom IRI
     pub const PROPERTY_CHAIN_AXIOM: &str = "http://www.w3.org/2002/07/owl#propertyChainAxiom";
@@ -614,7 +600,8 @@ pub mod owl {
     pub const MAX_CARDINALITY: &str = "http://www.w3.org/2002/07/owl#maxCardinality";
 
     /// owl:maxQualifiedCardinality IRI
-    pub const MAX_QUALIFIED_CARDINALITY: &str = "http://www.w3.org/2002/07/owl#maxQualifiedCardinality";
+    pub const MAX_QUALIFIED_CARDINALITY: &str =
+        "http://www.w3.org/2002/07/owl#maxQualifiedCardinality";
 
     /// owl:onClass IRI
     pub const ON_CLASS: &str = "http://www.w3.org/2002/07/owl#onClass";
@@ -884,7 +871,8 @@ pub mod shacl {
     pub const QUALIFIED_MAX_COUNT: &str = "http://www.w3.org/ns/shacl#qualifiedMaxCount";
 
     /// sh:qualifiedValueShapesDisjoint IRI
-    pub const QUALIFIED_VALUE_SHAPES_DISJOINT: &str = "http://www.w3.org/ns/shacl#qualifiedValueShapesDisjoint";
+    pub const QUALIFIED_VALUE_SHAPES_DISJOINT: &str =
+        "http://www.w3.org/ns/shacl#qualifiedValueShapesDisjoint";
 
     // ========================================================================
     // Language Constraints
@@ -976,7 +964,8 @@ pub mod shacl {
     pub const SOURCE_SHAPE: &str = "http://www.w3.org/ns/shacl#sourceShape";
 
     /// sh:sourceConstraintComponent IRI
-    pub const SOURCE_CONSTRAINT_COMPONENT: &str = "http://www.w3.org/ns/shacl#sourceConstraintComponent";
+    pub const SOURCE_CONSTRAINT_COMPONENT: &str =
+        "http://www.w3.org/ns/shacl#sourceConstraintComponent";
 
     /// sh:resultSeverity IRI
     pub const RESULT_SEVERITY: &str = "http://www.w3.org/ns/shacl#resultSeverity";

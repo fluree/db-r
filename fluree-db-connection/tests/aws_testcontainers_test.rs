@@ -9,8 +9,8 @@ use fluree_db_connection::{connect_async, ConnectionHandle};
 use fluree_db_core::{Storage, StorageWrite};
 use serde_json::json;
 use std::time::Duration;
-use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
 use testcontainers::core::IntoContainerPort;
+use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
 
 const LOCALSTACK_EDGE_PORT: u16 = 4566;
 const REGION: &str = "us-east-1";
@@ -56,12 +56,20 @@ async fn ensure_bucket(sdk_config: &aws_config::SdkConfig, bucket: &str) {
 }
 
 async fn ensure_dynamodb_table(sdk_config: &aws_config::SdkConfig, table_name: &str) {
-    use aws_sdk_dynamodb::types::{AttributeDefinition, BillingMode, KeySchemaElement, KeyType, ScalarAttributeType};
+    use aws_sdk_dynamodb::types::{
+        AttributeDefinition, BillingMode, KeySchemaElement, KeyType, ScalarAttributeType,
+    };
 
     let ddb = aws_sdk_dynamodb::Client::new(sdk_config);
 
     // If it exists, we're done.
-    if ddb.describe_table().table_name(table_name).send().await.is_ok() {
+    if ddb
+        .describe_table()
+        .table_name(table_name)
+        .send()
+        .await
+        .is_ok()
+    {
         return;
     }
 
@@ -88,7 +96,13 @@ async fn ensure_dynamodb_table(sdk_config: &aws_config::SdkConfig, table_name: &
 
     // Wait until the table is ACTIVE (or at least describable).
     for _ in 0..60 {
-        if ddb.describe_table().table_name(table_name).send().await.is_ok() {
+        if ddb
+            .describe_table()
+            .table_name(table_name)
+            .send()
+            .await
+            .is_ok()
+        {
             return;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -202,4 +216,3 @@ async fn localstack_s3_and_dynamodb_smoke() {
         .expect("S3 read should succeed");
     assert_eq!(bytes, b"hello localstack");
 }
-

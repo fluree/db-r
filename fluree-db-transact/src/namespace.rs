@@ -473,7 +473,10 @@ mod tests {
         // did:key: is a predefined prefix, so did:key:z6Mk... should use it
         let sid = registry.sid_for_iri("did:key:z6MkqtpqKGs4Et8mqBLBBAitDC1DPBiTJEbu26AcBX75B5rR");
         assert_eq!(sid.namespace_code, DID_KEY);
-        assert_eq!(sid.name.as_ref(), "z6MkqtpqKGs4Et8mqBLBBAitDC1DPBiTJEbu26AcBX75B5rR");
+        assert_eq!(
+            sid.name.as_ref(),
+            "z6MkqtpqKGs4Et8mqBLBBAitDC1DPBiTJEbu26AcBX75B5rR"
+        );
 
         // XSD namespace ends with #, should still work
         let sid3 = registry.sid_for_iri("http://www.w3.org/2001/XMLSchema#string");
@@ -543,10 +546,7 @@ mod tests {
             trie.longest_match("http://example.org/foo"),
             Some((101, 19))
         );
-        assert_eq!(
-            trie.longest_match("http://other.org/bar"),
-            Some((102, 17))
-        );
+        assert_eq!(trie.longest_match("http://other.org/bar"), Some((102, 17)));
         assert_eq!(trie.longest_match("http://unknown.org/baz"), None);
     }
 
@@ -559,10 +559,7 @@ mod tests {
         // Short prefix only
         assert_eq!(trie.longest_match("http://ex.org/bar"), Some((101, 14)));
         // Longest match wins
-        assert_eq!(
-            trie.longest_match("http://ex.org/foo/bar"),
-            Some((102, 18))
-        );
+        assert_eq!(trie.longest_match("http://ex.org/foo/bar"), Some((102, 18)));
     }
 
     #[test]
@@ -573,10 +570,7 @@ mod tests {
         trie.insert("http://ex.org/", 101);
 
         // Still finds longest match
-        assert_eq!(
-            trie.longest_match("http://ex.org/foo/bar"),
-            Some((102, 18))
-        );
+        assert_eq!(trie.longest_match("http://ex.org/foo/bar"), Some((102, 18)));
         assert_eq!(trie.longest_match("http://ex.org/bar"), Some((101, 14)));
     }
 

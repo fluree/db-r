@@ -42,4 +42,3 @@ async fn explain_no_stats_reports_none_and_reason() {
     assert!(resp.get("query").is_some());
     assert!(resp["plan"].get("where-clause").is_some());
 }
-

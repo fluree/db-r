@@ -282,8 +282,12 @@ impl BinaryIndexRootV2 {
         addrs.push(d.datatypes.clone());
         addrs.push(d.languages.clone());
         // Subject & string dictionary trees
-        for tree in [&d.subject_forward, &d.subject_reverse,
-                     &d.string_forward, &d.string_reverse] {
+        for tree in [
+            &d.subject_forward,
+            &d.subject_reverse,
+            &d.string_forward,
+            &d.string_reverse,
+        ] {
             addrs.push(tree.branch.clone());
             addrs.extend(tree.leaves.iter().cloned());
         }
@@ -308,7 +312,6 @@ impl BinaryIndexRootV2 {
         addrs
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -408,14 +411,36 @@ mod tests {
         let predicate_sids: Vec<(u16, String)> = vec![(0, "p0".to_string())];
 
         let root1 = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, predicate_sids.clone(), &ns, fluree_db_core::SubjectIdEncoding::Narrow, sample_dict_addresses(), graph_addrs.clone(),
-            None, None, None, None,
-            vec![], 0,
+            "test/main",
+            42,
+            1,
+            predicate_sids.clone(),
+            &ns,
+            fluree_db_core::SubjectIdEncoding::Narrow,
+            sample_dict_addresses(),
+            graph_addrs.clone(),
+            None,
+            None,
+            None,
+            None,
+            vec![],
+            0,
         );
         let root2 = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, predicate_sids, &ns, fluree_db_core::SubjectIdEncoding::Narrow, sample_dict_addresses(), graph_addrs,
-            None, None, None, None,
-            vec![], 0,
+            "test/main",
+            42,
+            1,
+            predicate_sids,
+            &ns,
+            fluree_db_core::SubjectIdEncoding::Narrow,
+            sample_dict_addresses(),
+            graph_addrs,
+            None,
+            None,
+            None,
+            None,
+            vec![],
+            0,
         );
 
         let bytes1 = root1.to_json_bytes().unwrap();
@@ -435,9 +460,20 @@ mod tests {
             "graphs": [{"g_id": 1, "flakes": 10000, "size": 0}]
         });
         let root = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, vec![], &HashMap::new(), fluree_db_core::SubjectIdEncoding::Narrow, sample_dict_addresses(), vec![],
-            Some(stats.clone()), None, None, None,
-            vec![], 0,
+            "test/main",
+            42,
+            1,
+            vec![],
+            &HashMap::new(),
+            fluree_db_core::SubjectIdEncoding::Narrow,
+            sample_dict_addresses(),
+            vec![],
+            Some(stats.clone()),
+            None,
+            None,
+            None,
+            vec![],
+            0,
         );
 
         // Round-trip through JSON
@@ -496,22 +532,39 @@ mod tests {
             g_id: 0,
             orders: {
                 let mut m = BTreeMap::new();
-                m.insert("spot".into(), GraphOrderAddresses {
-                    branch: "cas://g0_spot_br".into(),
-                    leaves: vec!["cas://g0_spot_l0".into(), "cas://g0_spot_l1".into()],
-                });
-                m.insert("psot".into(), GraphOrderAddresses {
-                    branch: "cas://g0_psot_br".into(),
-                    leaves: vec!["cas://g0_psot_l0".into()],
-                });
+                m.insert(
+                    "spot".into(),
+                    GraphOrderAddresses {
+                        branch: "cas://g0_spot_br".into(),
+                        leaves: vec!["cas://g0_spot_l0".into(), "cas://g0_spot_l1".into()],
+                    },
+                );
+                m.insert(
+                    "psot".into(),
+                    GraphOrderAddresses {
+                        branch: "cas://g0_psot_br".into(),
+                        leaves: vec!["cas://g0_psot_l0".into()],
+                    },
+                );
                 m
             },
         }];
 
         let root = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 10, 1, vec![], &HashMap::new(), fluree_db_core::SubjectIdEncoding::Narrow, dicts, graph_addrs,
-            None, None, None, None,
-            vec![], 0,
+            "test/main",
+            10,
+            1,
+            vec![],
+            &HashMap::new(),
+            fluree_db_core::SubjectIdEncoding::Narrow,
+            dicts,
+            graph_addrs,
+            None,
+            None,
+            None,
+            None,
+            vec![],
+            0,
         );
 
         let addrs = root.all_cas_addresses();
@@ -537,33 +590,70 @@ mod tests {
     #[test]
     fn v2_round_trip_with_gc_fields() {
         let root = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, vec![], &HashMap::new(), fluree_db_core::SubjectIdEncoding::Narrow, sample_dict_addresses(), vec![],
-            None, None,
-            Some(BinaryPrevIndexRef { t: 40, address: "cas://prev_root".into() }),
-            Some(BinaryGarbageRef { address: "cas://garbage_record".into() }),
-            vec![], 0,
+            "test/main",
+            42,
+            1,
+            vec![],
+            &HashMap::new(),
+            fluree_db_core::SubjectIdEncoding::Narrow,
+            sample_dict_addresses(),
+            vec![],
+            None,
+            None,
+            Some(BinaryPrevIndexRef {
+                t: 40,
+                address: "cas://prev_root".into(),
+            }),
+            Some(BinaryGarbageRef {
+                address: "cas://garbage_record".into(),
+            }),
+            vec![],
+            0,
         );
 
         let bytes = root.to_json_bytes().unwrap();
         let parsed = BinaryIndexRootV2::from_json_bytes(&bytes).unwrap();
         assert_eq!(parsed.prev_index.as_ref().unwrap().t, 40);
-        assert_eq!(parsed.prev_index.as_ref().unwrap().address, "cas://prev_root");
-        assert_eq!(parsed.garbage.as_ref().unwrap().address, "cas://garbage_record");
+        assert_eq!(
+            parsed.prev_index.as_ref().unwrap().address,
+            "cas://prev_root"
+        );
+        assert_eq!(
+            parsed.garbage.as_ref().unwrap().address,
+            "cas://garbage_record"
+        );
     }
 
     #[test]
     fn v2_round_trip_without_gc_fields() {
         // When prev_index and garbage are None, they should not appear in JSON
         let root = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, vec![], &HashMap::new(), fluree_db_core::SubjectIdEncoding::Narrow, sample_dict_addresses(), vec![],
-            None, None, None, None,
-            vec![], 0,
+            "test/main",
+            42,
+            1,
+            vec![],
+            &HashMap::new(),
+            fluree_db_core::SubjectIdEncoding::Narrow,
+            sample_dict_addresses(),
+            vec![],
+            None,
+            None,
+            None,
+            None,
+            vec![],
+            0,
         );
 
         let bytes = root.to_json_bytes().unwrap();
         let json_str = std::str::from_utf8(&bytes).unwrap();
-        assert!(!json_str.contains("prev_index"), "None prev_index should be skipped");
-        assert!(!json_str.contains("garbage"), "None garbage should be skipped");
+        assert!(
+            !json_str.contains("prev_index"),
+            "None prev_index should be skipped"
+        );
+        assert!(
+            !json_str.contains("garbage"),
+            "None garbage should be skipped"
+        );
 
         let parsed = BinaryIndexRootV2::from_json_bytes(&bytes).unwrap();
         assert_eq!(parsed.prev_index, None);
@@ -573,9 +663,20 @@ mod tests {
     #[test]
     fn watermarks_round_trip() {
         let root = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, vec![], &HashMap::new(), fluree_db_core::SubjectIdEncoding::Narrow, sample_dict_addresses(), vec![],
-            None, None, None, None,
-            vec![100, 200, 300], 500,
+            "test/main",
+            42,
+            1,
+            vec![],
+            &HashMap::new(),
+            fluree_db_core::SubjectIdEncoding::Narrow,
+            sample_dict_addresses(),
+            vec![],
+            None,
+            None,
+            None,
+            None,
+            vec![100, 200, 300],
+            500,
         );
 
         let bytes = root.to_json_bytes().unwrap();
@@ -590,17 +691,30 @@ mod tests {
         // Old roots without watermark fields should deserialize with defaults
         // (empty vec / 0) — equivalent to "everything is novel", safe and conservative.
         let root = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, vec![], &HashMap::new(), fluree_db_core::SubjectIdEncoding::Narrow, sample_dict_addresses(), vec![],
-            None, None, None, None,
-            vec![], 0,
+            "test/main",
+            42,
+            1,
+            vec![],
+            &HashMap::new(),
+            fluree_db_core::SubjectIdEncoding::Narrow,
+            sample_dict_addresses(),
+            vec![],
+            None,
+            None,
+            None,
+            None,
+            vec![],
+            0,
         );
 
         let bytes = root.to_json_bytes().unwrap();
         let json_str = std::str::from_utf8(&bytes).unwrap();
 
         // Empty subject_watermarks should be skipped in JSON
-        assert!(!json_str.contains("subject_watermarks"),
-            "empty subject_watermarks should be skipped");
+        assert!(
+            !json_str.contains("subject_watermarks"),
+            "empty subject_watermarks should be skipped"
+        );
         // string_watermark 0 still appears (no skip_serializing_if for it)
 
         // Re-parse: defaults kick in for missing fields

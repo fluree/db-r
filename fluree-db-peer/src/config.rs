@@ -22,7 +22,11 @@ pub enum ReadMode {
 pub struct PeerConfig {
     // === Events endpoint ===
     /// Transaction server events URL
-    #[arg(long, env = "PEER_EVENTS_URL", default_value = "http://localhost:8090/fluree/events")]
+    #[arg(
+        long,
+        env = "PEER_EVENTS_URL",
+        default_value = "http://localhost:8090/fluree/events"
+    )]
     pub events_url: String,
 
     /// Bearer token for events authentication (or @filepath to read from file)

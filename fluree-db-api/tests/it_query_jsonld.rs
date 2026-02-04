@@ -110,10 +110,7 @@ async fn jsonld_filter_single_filter() {
 
     assert_eq!(
         normalize_rows(&json_rows),
-        normalize_rows(&json!([
-            ["Brian", 50],
-            ["David", 46]
-        ]))
+        normalize_rows(&json!([["Brian", 50], ["David", 46]]))
     );
 }
 
@@ -133,7 +130,13 @@ async fn jsonld_bind_error_invalid_iri_type() {
         "select": "?err"
     });
 
-    assert_query_bind_error(&fluree, &ledger, query, "IRI requires a string or IRI argument").await;
+    assert_query_bind_error(
+        &fluree,
+        &ledger,
+        query,
+        "IRI requires a string or IRI argument",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -171,7 +174,13 @@ async fn jsonld_bind_error_strlang_non_string() {
         "select": "?err"
     });
 
-    assert_query_bind_error(&fluree, &ledger, query, "STRLANG requires a string lexical form").await;
+    assert_query_bind_error(
+        &fluree,
+        &ledger,
+        query,
+        "STRLANG requires a string lexical form",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -209,7 +218,13 @@ async fn jsonld_bind_error_strdt_arity() {
         "select": "?err"
     });
 
-    assert_query_bind_error(&fluree, &ledger, query, "STRDT requires exactly 2 arguments").await;
+    assert_query_bind_error(
+        &fluree,
+        &ledger,
+        query,
+        "STRDT requires exactly 2 arguments",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -228,7 +243,13 @@ async fn jsonld_bind_error_strlang_arity() {
         "select": "?err"
     });
 
-    assert_query_bind_error(&fluree, &ledger, query, "STRLANG requires exactly 2 arguments").await;
+    assert_query_bind_error(
+        &fluree,
+        &ledger,
+        query,
+        "STRLANG requires exactly 2 arguments",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -277,9 +298,7 @@ async fn jsonld_filter_single_filter_different_vars() {
 
     assert_eq!(
         normalize_rows(&json_rows),
-        normalize_rows(&json!([
-            ["Brian", "Smith"]
-        ]))
+        normalize_rows(&json!([["Brian", "Smith"]]))
     );
 }
 
@@ -309,9 +328,7 @@ async fn jsonld_filter_multiple_filters_same_var() {
 
     assert_eq!(
         normalize_rows(&json_rows),
-        normalize_rows(&json!([
-            ["David", 46]
-        ]))
+        normalize_rows(&json!([["David", 46]]))
     );
 }
 
@@ -342,9 +359,7 @@ async fn jsonld_filter_multiple_filters_different_vars() {
 
     assert_eq!(
         normalize_rows(&json_rows),
-        normalize_rows(&json!([
-            ["Brian", "Smith"]
-        ]))
+        normalize_rows(&json!([["Brian", "Smith"]]))
     );
 }
 
@@ -374,9 +389,7 @@ async fn jsonld_filter_nested_filters() {
 
     assert_eq!(
         normalize_rows(&json_rows),
-        normalize_rows(&json!([
-            ["Brian", 50]
-        ]))
+        normalize_rows(&json!([["Brian", 50]]))
     );
 }
 
@@ -406,7 +419,10 @@ async fn jsonld_filter_filtering_for_absence() {
     let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
 
     // Flatten single column results
-    let names: Vec<String> = json_rows.as_array().unwrap().iter()
+    let names: Vec<String> = json_rows
+        .as_array()
+        .unwrap()
+        .iter()
         .map(|row| {
             if let Some(s) = row.as_str() {
                 s.to_string()
@@ -457,11 +473,7 @@ async fn jsonld_optional_basic_left_join() {
 
     assert_eq!(
         normalize_rows(&json_rows),
-        normalize_rows(&json!([
-            ["Alice", "Green"],
-            ["Brian", null],
-            ["Cam", null]
-        ]))
+        normalize_rows(&json!([["Alice", "Green"], ["Brian", null], ["Cam", null]]))
     );
 }
 
@@ -853,11 +865,10 @@ async fn jsonld_optional_with_filter() {
     let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
 
     // Alice's age passes filter (25 >= 18), Brian's doesn't (15 < 18), Cam has no age
-    assert_eq!(json_rows, json!([
-        ["Alice", 25],
-        ["Brian", null],
-        ["Cam", null]
-    ]));
+    assert_eq!(
+        json_rows,
+        json!([["Alice", 25], ["Brian", null], ["Cam", null]])
+    );
 }
 
 #[tokio::test]
@@ -903,11 +914,14 @@ async fn jsonld_optional_with_multiple_triples() {
     let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
 
     // Each optional is independent: Alice has both, Brian has only age, Cam has only city
-    assert_eq!(json_rows, json!([
-        ["Alice", 25, "NYC"],
-        ["Brian", 30, null],
-        ["Cam", null, "LA"]
-    ]));
+    assert_eq!(
+        json_rows,
+        json!([
+            ["Alice", 25, "NYC"],
+            ["Brian", 30, null],
+            ["Cam", null, "LA"]
+        ])
+    );
 }
 
 #[tokio::test]
@@ -951,11 +965,14 @@ async fn jsonld_optional_with_bind() {
     let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
 
     // Alice and Brian have prices, Cam doesn't
-    assert_eq!(json_rows, json!([
-        ["Alice", 100, 90.0],
-        ["Brian", 200, 180.0],
-        ["Cam", null, null]
-    ]));
+    assert_eq!(
+        json_rows,
+        json!([
+            ["Alice", 100, 90.0],
+            ["Brian", 200, 180.0],
+            ["Cam", null, null]
+        ])
+    );
 }
 
 #[tokio::test]
@@ -1007,12 +1024,10 @@ async fn jsonld_optional_with_subquery() {
     let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
 
     // Alice has 2 orders (50, 75), Brian has 1 order (100), Cam has none
-    assert_eq!(json_rows, json!([
-        ["Alice", 50],
-        ["Alice", 75],
-        ["Brian", 100],
-        ["Cam", null]
-    ]));
+    assert_eq!(
+        json_rows,
+        json!([["Alice", 50], ["Alice", 75], ["Brian", 100], ["Cam", null]])
+    );
 }
 
 // =============================================================================
@@ -1052,4 +1067,3 @@ async fn query_format_async_works_for_non_crawl_queries() {
     let v = fluree.query_format(&ledger, &q, &cfg).await.unwrap();
     assert!(v.is_array());
 }
-

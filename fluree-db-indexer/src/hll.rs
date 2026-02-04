@@ -300,7 +300,12 @@ mod tests {
         let est1_after = sketch1.estimate();
 
         // Merged estimate should be >= original (monotone)
-        assert!(est1_after >= est1_before, "merge decreased estimate: {} -> {}", est1_before, est1_after);
+        assert!(
+            est1_after >= est1_before,
+            "merge decreased estimate: {} -> {}",
+            est1_before,
+            est1_after
+        );
     }
 
     #[test]

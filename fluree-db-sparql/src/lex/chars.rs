@@ -86,7 +86,10 @@ pub fn is_ws(c: char) -> bool {
 ///
 /// IRIREF allows most characters except control chars and a few special ones.
 pub fn is_iri_char(c: char) -> bool {
-    !matches!(c, '<' | '>' | '"' | '{' | '}' | '|' | '^' | '`' | '\\' | '\x00'..='\x20')
+    !matches!(
+        c,
+        '<' | '>' | '"' | '{' | '}' | '|' | '^' | '`' | '\\' | '\x00'..='\x20'
+    )
 }
 
 /// Check if a character starts a variable name.

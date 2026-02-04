@@ -64,7 +64,18 @@ mod tests {
 
     #[test]
     fn test_round_trip_various() {
-        for val in [0, 1, 127, 128, 255, 256, 65535, 65536, u32::MAX as u64, u64::MAX] {
+        for val in [
+            0,
+            1,
+            127,
+            128,
+            255,
+            256,
+            65535,
+            65536,
+            u32::MAX as u64,
+            u64::MAX,
+        ] {
             round_trip(val);
         }
     }

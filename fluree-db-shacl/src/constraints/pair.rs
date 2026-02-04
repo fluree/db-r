@@ -42,7 +42,11 @@ pub fn validate_equals(
                 name: other_path.into(),
             }),
             value: None,
-            message: format!("Values do not equal {}: {}", other_path, msg_parts.join("; ")),
+            message: format!(
+                "Values do not equal {}: {}",
+                other_path,
+                msg_parts.join("; ")
+            ),
         });
     }
 

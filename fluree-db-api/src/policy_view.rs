@@ -111,10 +111,7 @@ impl<'a, S: Storage + Clone + 'static> PolicyWrappedView<'a, S> {
     /// Create a policy-wrapped view from a `HistoricalLedgerView`.
     ///
     /// Note: The view itself is used as the overlay provider.
-    pub fn from_historical(
-        view: &'a HistoricalLedgerView<S>,
-        policy: Arc<PolicyContext>,
-    ) -> Self {
+    pub fn from_historical(view: &'a HistoricalLedgerView<S>, policy: Arc<PolicyContext>) -> Self {
         Self::new(&view.db, view, view.to_t(), policy)
     }
 }
@@ -185,7 +182,10 @@ pub async fn wrap_policy_view_historical<'a, S: Storage + Clone + 'static>(
     )
     .await?;
 
-    Ok(PolicyWrappedView::from_historical(view, Arc::new(policy_ctx)))
+    Ok(PolicyWrappedView::from_historical(
+        view,
+        Arc::new(policy_ctx),
+    ))
 }
 
 /// Build a policy context from options without wrapping a view.

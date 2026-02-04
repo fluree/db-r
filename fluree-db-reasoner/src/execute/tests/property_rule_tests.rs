@@ -32,7 +32,14 @@ fn test_symmetric_rule() {
     let mut new_delta = DeltaSet::new();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_symmetric_rule(&ontology, &delta, &derived, &mut new_delta, 1, &mut diagnostics);
+    apply_symmetric_rule(
+        &ontology,
+        &delta,
+        &derived,
+        &mut new_delta,
+        1,
+        &mut diagnostics,
+    );
 
     // Should derive P(2, 1)
     assert_eq!(new_delta.len(), 1);
@@ -64,7 +71,14 @@ fn test_transitive_rule() {
     let mut new_delta = DeltaSet::new();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_transitive_rule(&ontology, &delta, &derived, &mut new_delta, 1, &mut diagnostics);
+    apply_transitive_rule(
+        &ontology,
+        &delta,
+        &derived,
+        &mut new_delta,
+        1,
+        &mut diagnostics,
+    );
 
     // Should derive P(1, 3) from P(1,2) ⋈ P(2,3)
     assert_eq!(new_delta.len(), 1);
@@ -611,7 +625,10 @@ fn test_property_chain_rule_inverse_last_requires_forward_inverse_lookup() {
     // - Putting P20 in derived (so seeding from the inverse element is NOT possible)
     let property_chains = vec![PropertyChain::new(
         sid(30),
-        vec![ChainElement::direct(sid(10)), ChainElement::inverse(sid(20))],
+        vec![
+            ChainElement::direct(sid(10)),
+            ChainElement::inverse(sid(20)),
+        ],
     )];
 
     let ontology = OntologyRL::new_full(
@@ -672,7 +689,10 @@ fn test_property_chain_rule_inverse_first_requires_backward_inverse_lookup() {
     // - Putting P10 in derived (so the inverse-first step must consult derived)
     let property_chains = vec![PropertyChain::new(
         sid(30),
-        vec![ChainElement::inverse(sid(10)), ChainElement::direct(sid(20))],
+        vec![
+            ChainElement::inverse(sid(10)),
+            ChainElement::direct(sid(20)),
+        ],
     )];
 
     let ontology = OntologyRL::new_full(
@@ -1145,7 +1165,10 @@ fn test_inverse_functional_property_triggered_by_sameas() {
     // Verify it's sameAs between subjects 1 and 2
     let involves_1_and_2 = (same_as_flake.s == sid(1) || same_as_flake.s == sid(2))
         && matches!(&same_as_flake.o, FlakeValue::Ref(o) if *o == sid(1) || *o == sid(2));
-    assert!(involves_1_and_2, "sameAs should be between subjects 1 and 2");
+    assert!(
+        involves_1_and_2,
+        "sameAs should be between subjects 1 and 2"
+    );
 }
 
 #[test]
@@ -1452,7 +1475,7 @@ fn test_has_key_rule_missing_key_property() {
 
     // Only instance 1 has the key property
     delta.push(make_ref_flake(1, 20, 50, 1)); // prop(1, 20, 50)
-                                               // Instance 2 is MISSING the key property
+                                              // Instance 2 is MISSING the key property
 
     let derived = DerivedSet::new();
     let mut new_delta = DeltaSet::new();

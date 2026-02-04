@@ -232,9 +232,10 @@ impl NameService for DynamoDbNameService {
                 request = request.set_exclusive_start_key(Some(key));
             }
 
-            let response = request.send().await.map_err(|e| {
-                NameServiceError::storage(format!("DynamoDB Scan failed: {}", e))
-            })?;
+            let response = request
+                .send()
+                .await
+                .map_err(|e| NameServiceError::storage(format!("DynamoDB Scan failed: {}", e)))?;
 
             for item in response.items() {
                 if let Some(record) = Self::item_to_record(item) {
@@ -414,9 +415,7 @@ impl Publisher for DynamoDbNameService {
             .expression_attribute_values(":one", AttributeValue::N("1".to_string()))
             .send()
             .await
-            .map_err(|e| {
-                NameServiceError::storage(format!("DynamoDB UpdateItem failed: {}", e))
-            })?;
+            .map_err(|e| NameServiceError::storage(format!("DynamoDB UpdateItem failed: {}", e)))?;
 
         Ok(())
     }
@@ -432,7 +431,10 @@ impl Publisher for DynamoDbNameService {
 
 #[async_trait]
 impl StatusPublisher for DynamoDbNameService {
-    async fn get_status(&self, alias: &str) -> std::result::Result<Option<StatusValue>, NameServiceError> {
+    async fn get_status(
+        &self,
+        alias: &str,
+    ) -> std::result::Result<Option<StatusValue>, NameServiceError> {
         let pk = core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
 
         let response = self
@@ -470,7 +472,10 @@ impl StatusPublisher for DynamoDbNameService {
             .map(|m| Self::dynamo_map_to_json_map(m))
             .unwrap_or_default();
 
-        Ok(Some(StatusValue::new(v, StatusPayload::with_extra(state, extra))))
+        Ok(Some(StatusValue::new(
+            v,
+            StatusPayload::with_extra(state, extra),
+        )))
     }
 
     async fn push_status(
@@ -517,7 +522,10 @@ impl StatusPublisher for DynamoDbNameService {
             .expression_attribute_names("#sv", ATTR_STATUS_V)
             .expression_attribute_names("#ua", ATTR_UPDATED_AT)
             .expression_attribute_values(":expected_v", AttributeValue::N(exp.v.to_string()))
-            .expression_attribute_values(":expected_state", AttributeValue::S(exp.payload.state.clone()))
+            .expression_attribute_values(
+                ":expected_state",
+                AttributeValue::S(exp.payload.state.clone()),
+            )
             .expression_attribute_values(":new_state", AttributeValue::S(new.payload.state.clone()))
             .expression_attribute_values(":new_v", AttributeValue::N(new.v.to_string()))
             .expression_attribute_values(":now", AttributeValue::N(now.to_string()));
@@ -527,7 +535,10 @@ impl StatusPublisher for DynamoDbNameService {
             update_expr.push_str(", #sm = :new_meta");
             request = request
                 .expression_attribute_names("#sm", ATTR_STATUS_META)
-                .expression_attribute_values(":new_meta", Self::json_map_to_dynamo_map(&new.payload.extra));
+                .expression_attribute_values(
+                    ":new_meta",
+                    Self::json_map_to_dynamo_map(&new.payload.extra),
+                );
         } else {
             // Remove status_meta if empty
             update_expr.push_str(" REMOVE #sm");
@@ -553,7 +564,10 @@ impl StatusPublisher for DynamoDbNameService {
 
 #[async_trait]
 impl ConfigPublisher for DynamoDbNameService {
-    async fn get_config(&self, alias: &str) -> std::result::Result<Option<ConfigValue>, NameServiceError> {
+    async fn get_config(
+        &self,
+        alias: &str,
+    ) -> std::result::Result<Option<ConfigValue>, NameServiceError> {
         let pk = core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
 
         let response = self
@@ -662,9 +676,11 @@ impl ConfigPublisher for DynamoDbNameService {
             .expression_attribute_values(":now", AttributeValue::N(now.to_string()));
 
         if exp.v == 0 {
-            request = request.expression_attribute_values(":zero", AttributeValue::N("0".to_string()));
+            request =
+                request.expression_attribute_values(":zero", AttributeValue::N("0".to_string()));
         } else {
-            request = request.expression_attribute_values(":expected_v", AttributeValue::N(exp.v.to_string()));
+            request = request
+                .expression_attribute_values(":expected_v", AttributeValue::N(exp.v.to_string()));
         }
 
         let mut remove_parts: Vec<&str> = vec![];
@@ -673,7 +689,8 @@ impl ConfigPublisher for DynamoDbNameService {
         if let Some(ref payload) = new.payload {
             if let Some(ref ctx) = payload.default_context {
                 update_parts.push("#dc = :new_dc");
-                request = request.expression_attribute_values(":new_dc", AttributeValue::S(ctx.clone()));
+                request =
+                    request.expression_attribute_values(":new_dc", AttributeValue::S(ctx.clone()));
             } else {
                 remove_parts.push("#dc");
             }
@@ -683,7 +700,10 @@ impl ConfigPublisher for DynamoDbNameService {
                 update_parts.push("#cm = :new_meta");
                 request = request
                     .expression_attribute_names("#cm", ATTR_CONFIG_META)
-                    .expression_attribute_values(":new_meta", Self::json_map_to_dynamo_map(&payload.extra));
+                    .expression_attribute_values(
+                        ":new_meta",
+                        Self::json_map_to_dynamo_map(&payload.extra),
+                    );
             } else {
                 request = request.expression_attribute_names("#cm", ATTR_CONFIG_META);
                 remove_parts.push("#cm");

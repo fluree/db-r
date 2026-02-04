@@ -149,22 +149,30 @@ fn binary_range_eq(
             // Sort overlay ops to match the cursor's sort order.
             let mut sorted = overlay_ops;
             sorted.sort_by(|a, b| match order {
-                RunSortOrder::Spot => a.s_id.cmp(&b.s_id)
+                RunSortOrder::Spot => a
+                    .s_id
+                    .cmp(&b.s_id)
                     .then(a.p_id.cmp(&b.p_id))
                     .then(a.o_kind.cmp(&b.o_kind))
                     .then(a.o_key.cmp(&b.o_key))
                     .then(a.dt.cmp(&b.dt)),
-                RunSortOrder::Psot => a.p_id.cmp(&b.p_id)
+                RunSortOrder::Psot => a
+                    .p_id
+                    .cmp(&b.p_id)
                     .then(a.s_id.cmp(&b.s_id))
                     .then(a.o_kind.cmp(&b.o_kind))
                     .then(a.o_key.cmp(&b.o_key))
                     .then(a.dt.cmp(&b.dt)),
-                RunSortOrder::Post => a.p_id.cmp(&b.p_id)
+                RunSortOrder::Post => a
+                    .p_id
+                    .cmp(&b.p_id)
                     .then(a.o_kind.cmp(&b.o_kind))
                     .then(a.o_key.cmp(&b.o_key))
                     .then(a.dt.cmp(&b.dt))
                     .then(a.s_id.cmp(&b.s_id)),
-                RunSortOrder::Opst => a.o_kind.cmp(&b.o_kind)
+                RunSortOrder::Opst => a
+                    .o_kind
+                    .cmp(&b.o_kind)
                     .then(a.o_key.cmp(&b.o_key))
                     .then(a.dt.cmp(&b.dt))
                     .then(a.p_id.cmp(&b.p_id))
@@ -225,7 +233,10 @@ fn decode_batch_to_flakes(
         let o_val = store.decode_value(o_kind, o_key, p_id)?;
 
         // dt_id → Sid for datatype
-        let dt = dt_sids.get(dt_id as usize).cloned().unwrap_or_else(Sid::min);
+        let dt = dt_sids
+            .get(dt_id as usize)
+            .cloned()
+            .unwrap_or_else(Sid::min);
 
         // Language tag + list index → FlakeMeta
         let meta = store.decode_meta(lang_id, i_val);
@@ -256,7 +267,11 @@ pub struct BinaryRangeProvider {
 impl BinaryRangeProvider {
     /// Create a new provider for the given store, dict novelty, and default graph.
     pub fn new(store: Arc<BinaryIndexStore>, dict_novelty: Arc<DictNovelty>, g_id: u32) -> Self {
-        Self { store, dict_novelty, g_id }
+        Self {
+            store,
+            dict_novelty,
+            g_id,
+        }
     }
 }
 

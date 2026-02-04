@@ -102,9 +102,14 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
         // Build novelty from commits between index_t and target_t
         let overlay = if let Some(commit_addr) = &record.commit_address {
             if target_t > index_t {
-                let (novelty, ns_delta) =
-                    Self::load_novelty_range(storage, commit_addr, index_t, target_t, &record.address)
-                        .await?;
+                let (novelty, ns_delta) = Self::load_novelty_range(
+                    storage,
+                    commit_addr,
+                    index_t,
+                    target_t,
+                    &record.address,
+                )
+                .await?;
 
                 // Apply namespace deltas to db (we need a mutable copy)
                 let mut db = db;
@@ -212,7 +217,9 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
     /// Returns the novelty overlay if present, which can be used with
     /// `execute_pattern_with_overlay` and similar functions.
     pub fn overlay_provider(&self) -> Option<&dyn OverlayProvider> {
-        self.overlay.as_ref().map(|n| n.as_ref() as &dyn OverlayProvider)
+        self.overlay
+            .as_ref()
+            .map(|n| n.as_ref() as &dyn OverlayProvider)
     }
 }
 
@@ -325,8 +332,7 @@ mod tests {
         let ns = MemoryNameService::new();
         let storage = MemoryStorage::new();
 
-        let result =
-            HistoricalLedgerView::load_at(&ns, "nonexistent:main", storage, 10).await;
+        let result = HistoricalLedgerView::load_at(&ns, "nonexistent:main", storage, 10).await;
 
         assert!(matches!(result, Err(LedgerError::NotFound(_))));
     }

@@ -73,7 +73,10 @@ impl SparseVector {
 
     /// Get the term frequency for a given term index, or 0 if not present
     pub fn get(&self, term_idx: u32) -> u32 {
-        match self.entries.binary_search_by_key(&term_idx, |(idx, _)| *idx) {
+        match self
+            .entries
+            .binary_search_by_key(&term_idx, |(idx, _)| *idx)
+        {
             Ok(pos) => self.entries[pos].1,
             Err(_) => 0,
         }
@@ -245,8 +248,7 @@ impl VgWatermark {
 
     /// Update watermark for a specific ledger
     pub fn update(&mut self, ledger_alias: &str, t: i64) {
-        self.ledger_watermarks
-            .insert(ledger_alias.to_string(), t);
+        self.ledger_watermarks.insert(ledger_alias.to_string(), t);
     }
 
     /// Get watermark for a specific ledger
@@ -376,8 +378,11 @@ impl PropertyDeps {
     }
 
     /// Extract properties from WHERE clause patterns (recursive)
-    fn extract_where_properties<F>(value: &serde_json::Value, expand_iri: &F, deps: &mut PropertyDeps)
-    where
+    fn extract_where_properties<F>(
+        value: &serde_json::Value,
+        expand_iri: &F,
+        deps: &mut PropertyDeps,
+    ) where
         F: Fn(&str) -> Option<Arc<str>>,
     {
         match value {
@@ -401,8 +406,11 @@ impl PropertyDeps {
     }
 
     /// Extract properties from SELECT clause
-    fn extract_select_properties<F>(value: &serde_json::Value, expand_iri: &F, deps: &mut PropertyDeps)
-    where
+    fn extract_select_properties<F>(
+        value: &serde_json::Value,
+        expand_iri: &F,
+        deps: &mut PropertyDeps,
+    ) where
         F: Fn(&str) -> Option<Arc<str>>,
     {
         match value {
@@ -602,8 +610,7 @@ impl Bm25Index {
         let idx = self.next_term_idx;
         self.next_term_idx += 1;
 
-        self.terms
-            .insert(Arc::from(term), TermEntry::new(idx));
+        self.terms.insert(Arc::from(term), TermEntry::new(idx));
 
         idx
     }
@@ -841,13 +848,21 @@ mod tests {
 
         // Verify doc_freq updated correctly
         let hello_doc_freq = index.get_term("hello").map(|e| e.doc_freq);
-        assert_eq!(hello_doc_freq, Some(0), "hello should have doc_freq 0 after upsert");
+        assert_eq!(
+            hello_doc_freq,
+            Some(0),
+            "hello should have doc_freq 0 after upsert"
+        );
 
         let goodbye_doc_freq = index.get_term("goodbye").map(|e| e.doc_freq);
         assert_eq!(goodbye_doc_freq, Some(1), "goodbye should have doc_freq 1");
 
         let world_doc_freq = index.get_term("world").map(|e| e.doc_freq);
-        assert_eq!(world_doc_freq, Some(1), "world should still have doc_freq 1");
+        assert_eq!(
+            world_doc_freq,
+            Some(1),
+            "world should still have doc_freq 1"
+        );
     }
 
     #[test]
@@ -1157,7 +1172,7 @@ mod tests {
         assert_eq!(affected.len(), 1);
         assert!(!affected.contains(&subject1)); // t=5 < 10
         assert!(!affected.contains(&subject2)); // t=10 == from_t (exclusive)
-        assert!(affected.contains(&subject3));  // t=15, in range
+        assert!(affected.contains(&subject3)); // t=15, in range
     }
 
     #[test]

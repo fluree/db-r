@@ -1,7 +1,7 @@
 //! Ed25519 signature verification
 
 use crate::error::{CredentialError, Result};
-use ed25519_dalek::{Signature, VerifyingKey, Verifier};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
 /// Verify an Ed25519 signature
 ///
@@ -20,23 +20,25 @@ pub fn verify_ed25519(pubkey: &[u8; 32], message: &[u8], signature: &[u8]) -> Re
 
     // Parse signature (must be 64 bytes)
     if signature.len() != 64 {
-        return Err(CredentialError::InvalidSignature(
-            format!("Ed25519 signature must be 64 bytes, got {}", signature.len())
-        ));
+        return Err(CredentialError::InvalidSignature(format!(
+            "Ed25519 signature must be 64 bytes, got {}",
+            signature.len()
+        )));
     }
 
     let sig = Signature::from_slice(signature)
         .map_err(|e| CredentialError::InvalidSignature(e.to_string()))?;
 
     // Verify
-    verifying_key.verify(message, &sig)
+    verifying_key
+        .verify(message, &sig)
         .map_err(|e| CredentialError::InvalidSignature(e.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{SigningKey, Signer};
+    use ed25519_dalek::{Signer, SigningKey};
 
     #[test]
     fn test_verify_valid_signature() {

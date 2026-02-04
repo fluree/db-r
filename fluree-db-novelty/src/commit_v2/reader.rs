@@ -74,9 +74,8 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
     let ops_bytes = &bytes[ops_start..ops_end];
     let ops_decompressed;
     let ops_data = if header.flags & FLAG_ZSTD != 0 {
-        let _span =
-            tracing::debug_span!("v2_read_decompress", compressed_bytes = ops_bytes.len())
-                .entered();
+        let _span = tracing::debug_span!("v2_read_decompress", compressed_bytes = ops_bytes.len())
+            .entered();
         ops_decompressed =
             zstd::decode_all(ops_bytes).map_err(CommitV2Error::DecompressionFailed)?;
         tracing::debug!(

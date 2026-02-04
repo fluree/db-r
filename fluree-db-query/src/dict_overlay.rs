@@ -21,7 +21,7 @@ use fluree_db_core::flake::FlakeMeta;
 use fluree_db_core::sid::Sid;
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value::FlakeValue;
-use fluree_db_core::value_id::{ObjKind, ObjKey};
+use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::ListIndex;
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::collections::HashMap;
@@ -135,7 +135,11 @@ impl DictOverlay {
         // 2. DictNovelty
         if self.dict_novelty.is_initialized() {
             let sid = self.store.encode_iri(iri);
-            if let Some(id) = self.dict_novelty.subjects.find_subject(sid.namespace_code, &sid.name) {
+            if let Some(id) = self
+                .dict_novelty
+                .subjects
+                .find_subject(sid.namespace_code, &sid.name)
+            {
                 return Ok(id);
             }
         }
@@ -156,12 +160,19 @@ impl DictOverlay {
     /// Falls back to ephemeral allocation when DictNovelty is uninitialized.
     pub fn assign_subject_id_from_sid(&mut self, sid: &Sid) -> io::Result<u64> {
         // 1. Persisted tree
-        if let Some(id) = self.store.find_subject_id_by_parts(sid.namespace_code, &sid.name)? {
+        if let Some(id) = self
+            .store
+            .find_subject_id_by_parts(sid.namespace_code, &sid.name)?
+        {
             return Ok(id);
         }
         // 2. DictNovelty (populated during commit — guaranteed hit for novelty subjects)
         if self.dict_novelty.is_initialized() {
-            if let Some(id) = self.dict_novelty.subjects.find_subject(sid.namespace_code, &sid.name) {
+            if let Some(id) = self
+                .dict_novelty
+                .subjects
+                .find_subject(sid.namespace_code, &sid.name)
+            {
                 return Ok(id);
             }
         }
@@ -195,7 +206,8 @@ impl DictOverlay {
                 }
             }
             return Err(io::Error::new(
-                io::ErrorKind::InvalidData, format!("s_id {} not found", id),
+                io::ErrorKind::InvalidData,
+                format!("s_id {} not found", id),
             ));
         }
         let sid64 = SubjectId::from_u64(id);
@@ -258,7 +270,8 @@ impl DictOverlay {
 
     /// Resolve a predicate ID back to a Sid.
     pub fn resolve_predicate_sid(&self, id: u32) -> Option<Sid> {
-        self.resolve_predicate_iri(id).map(|iri| self.store.encode_iri(iri))
+        self.resolve_predicate_iri(id)
+            .map(|iri| self.store.encode_iri(iri))
     }
 
     // ========================================================================
@@ -308,7 +321,8 @@ impl DictOverlay {
                 }
             }
             return Err(io::Error::new(
-                io::ErrorKind::InvalidData, format!("str_id {} not found", id),
+                io::ErrorKind::InvalidData,
+                format!("str_id {} not found", id),
             ));
         }
         let wm = self.dict_novelty.strings.watermark();
@@ -482,7 +496,6 @@ impl DictOverlay {
             // Note: language strings use FlakeValue::String for the value;
             // the lang tag is in FlakeMeta.lang and handled by assign_lang_id()
             // in the caller (translate_one_flake).
-
             FlakeValue::Date(d) => {
                 let days = d.days_since_epoch();
                 Ok((ObjKind::DATE, ObjKey::encode_date(days)))
@@ -498,33 +511,31 @@ impl DictOverlay {
                 Ok((ObjKind::TIME, ObjKey::encode_time(micros)))
             }
 
-            FlakeValue::GYear(g) => {
-                Ok((ObjKind::G_YEAR, ObjKey::encode_g_year(g.year())))
-            }
+            FlakeValue::GYear(g) => Ok((ObjKind::G_YEAR, ObjKey::encode_g_year(g.year()))),
 
-            FlakeValue::GYearMonth(g) => {
-                Ok((ObjKind::G_YEAR_MONTH, ObjKey::encode_g_year_month(g.year(), g.month())))
-            }
+            FlakeValue::GYearMonth(g) => Ok((
+                ObjKind::G_YEAR_MONTH,
+                ObjKey::encode_g_year_month(g.year(), g.month()),
+            )),
 
-            FlakeValue::GMonth(g) => {
-                Ok((ObjKind::G_MONTH, ObjKey::encode_g_month(g.month())))
-            }
+            FlakeValue::GMonth(g) => Ok((ObjKind::G_MONTH, ObjKey::encode_g_month(g.month()))),
 
-            FlakeValue::GDay(g) => {
-                Ok((ObjKind::G_DAY, ObjKey::encode_g_day(g.day())))
-            }
+            FlakeValue::GDay(g) => Ok((ObjKind::G_DAY, ObjKey::encode_g_day(g.day()))),
 
-            FlakeValue::GMonthDay(g) => {
-                Ok((ObjKind::G_MONTH_DAY, ObjKey::encode_g_month_day(g.month(), g.day())))
-            }
+            FlakeValue::GMonthDay(g) => Ok((
+                ObjKind::G_MONTH_DAY,
+                ObjKey::encode_g_month_day(g.month(), g.day()),
+            )),
 
-            FlakeValue::YearMonthDuration(d) => {
-                Ok((ObjKind::YEAR_MONTH_DUR, ObjKey::encode_year_month_dur(d.months())))
-            }
+            FlakeValue::YearMonthDuration(d) => Ok((
+                ObjKind::YEAR_MONTH_DUR,
+                ObjKey::encode_year_month_dur(d.months()),
+            )),
 
-            FlakeValue::DayTimeDuration(d) => {
-                Ok((ObjKind::DAY_TIME_DUR, ObjKey::encode_day_time_dur(d.micros())))
-            }
+            FlakeValue::DayTimeDuration(d) => Ok((
+                ObjKind::DAY_TIME_DUR,
+                ObjKey::encode_day_time_dur(d.micros()),
+            )),
 
             FlakeValue::Duration(_) => {
                 // xsd:duration is not totally orderable. Store as NumBig
@@ -545,9 +556,7 @@ impl DictOverlay {
                 Ok(self.assign_numbig_handle(val))
             }
 
-            FlakeValue::Decimal(_) => {
-                Ok(self.assign_numbig_handle(val))
-            }
+            FlakeValue::Decimal(_) => Ok(self.assign_numbig_handle(val)),
 
             FlakeValue::Vector(v) => {
                 let repr = format!("{:?}", v);
@@ -654,7 +663,8 @@ impl DictOverlay {
             let ephemeral_start = self.base_lang_count + 1;
             let tag = if lang_id < ephemeral_start {
                 // Persisted lang_id — delegate to store
-                self.store.decode_meta(lang_id, ListIndex::none().as_i32())
+                self.store
+                    .decode_meta(lang_id, ListIndex::none().as_i32())
                     .and_then(|m| m.lang)
             } else {
                 // Ephemeral lang_id

@@ -58,7 +58,6 @@ impl<S: Storage + 'static> HavingOperator<S> {
             state: OperatorState::Created,
         }
     }
-
 }
 
 #[async_trait]
@@ -315,8 +314,7 @@ mod tests {
             vec![Binding::lit(FlakeValue::Long(3), xsd_long())],
         ];
         let batch = Batch::new(schema.clone(), columns).unwrap();
-        let seed: BoxedOperator<MemoryStorage> =
-            Box::new(SeedOperator::from_batch_row(&batch, 0));
+        let seed: BoxedOperator<MemoryStorage> = Box::new(SeedOperator::from_batch_row(&batch, 0));
 
         // Any expression that passes
         let expr = FilterExpr::Const(FilterValue::Bool(true));

@@ -12,14 +12,14 @@
 //! - Stats with decoded IRIs and computed selectivity
 
 use crate::format::iri::IriCompactor;
+use fluree_db_core::alias as core_alias;
+use fluree_db_core::value_id::ValueTypeTag;
 use fluree_db_core::{
-    ClassStatEntry, GraphPropertyStatEntry, IndexSchema, IndexStats, GraphStatsEntry,
+    ClassStatEntry, GraphPropertyStatEntry, GraphStatsEntry, IndexSchema, IndexStats,
     PropertyStatEntry, SchemaPredicateInfo,
 };
-use fluree_db_core::value_id::ValueTypeTag;
 use fluree_db_core::{Sid, Storage};
 use fluree_db_ledger::LedgerState;
-use fluree_db_core::alias as core_alias;
 use fluree_db_nameservice::{parse_alias, NsRecord, VgNsRecord};
 use fluree_db_novelty::load_commit;
 use fluree_graph_json_ld::ParsedContext;
@@ -113,10 +113,7 @@ where
         if let Ok(bytes) = ledger.db.storage.read_bytes(&manifest_addr_primary).await {
             match parse_pre_index_manifest(&bytes) {
                 Ok(graphs) => {
-                    tracing::debug!(
-                        graphs = graphs.len(),
-                        "loaded pre-index stats manifest"
-                    );
+                    tracing::debug!(graphs = graphs.len(), "loaded pre-index stats manifest");
                     stats.graphs = Some(graphs);
                 }
                 Err(e) => {
@@ -139,10 +136,7 @@ where
             }
             Err(e) => {
                 // Include error in response for debugging
-                result.insert(
-                    "commit".to_string(),
-                    json!({ "error": format!("{}", e) }),
-                );
+                result.insert("commit".to_string(), json!({ "error": format!("{}", e) }));
             }
         }
     } else {
@@ -305,7 +299,11 @@ pub fn ns_record_to_jsonld(record: &NsRecord) -> JsonValue {
     let canonical_id = core_alias::format_alias(&ledger_name, &record.branch);
 
     // Reflect retracted state in status
-    let status = if record.retracted { "retracted" } else { "ready" };
+    let status = if record.retracted {
+        "retracted"
+    } else {
+        "ready"
+    };
 
     let mut obj = json!({
         "@context": { "f": "https://ns.flur.ee/ledger#" },
@@ -342,7 +340,11 @@ pub fn vg_record_to_jsonld(record: &VgNsRecord) -> JsonValue {
     let canonical_id = core_alias::format_alias(&record.name, &record.branch);
 
     // Reflect retracted state in status
-    let status = if record.retracted { "retracted" } else { "ready" };
+    let status = if record.retracted {
+        "retracted"
+    } else {
+        "ready"
+    };
 
     let mut obj = json!({
         "@context": {
@@ -482,12 +484,14 @@ fn decode_class_stats(
     };
 
     for entry in classes {
-        let iri = compactor.decode_sid(&entry.class_sid).map_err(|e| match e {
-            crate::format::FormatError::UnknownNamespace(code) => {
-                LedgerInfoError::UnknownNamespace(code)
-            }
-            _ => LedgerInfoError::Storage(e.to_string()),
-        })?;
+        let iri = compactor
+            .decode_sid(&entry.class_sid)
+            .map_err(|e| match e {
+                crate::format::FormatError::UnknownNamespace(code) => {
+                    LedgerInfoError::UnknownNamespace(code)
+                }
+                _ => LedgerInfoError::Storage(e.to_string()),
+            })?;
         let compacted = compactor.compact_vocab_iri(&iri);
 
         let mut class_obj = Map::new();
@@ -831,7 +835,10 @@ mod tests {
         let json = vg_record_to_jsonld(&record);
 
         assert_eq!(json["@id"], "my-search:main");
-        assert_eq!(json["@type"], json!(["f:VirtualGraphDatabase", "fidx:BM25"]));
+        assert_eq!(
+            json["@type"],
+            json!(["f:VirtualGraphDatabase", "fidx:BM25"])
+        );
         assert_eq!(json["f:name"], "my-search");
         assert_eq!(json["f:branch"], "main");
         assert_eq!(json["f:status"], "ready");

@@ -80,7 +80,11 @@ pub enum LiteralValue {
     /// Timestamp: microseconds since epoch
     Timestamp(i64),
     /// Decimal: (unscaled_value, precision, scale)
-    Decimal { unscaled: i128, precision: u8, scale: i8 },
+    Decimal {
+        unscaled: i128,
+        precision: u8,
+        scale: i8,
+    },
 }
 
 impl LiteralValue {
@@ -96,7 +100,11 @@ impl LiteralValue {
             Self::Bytes(v) => TypedValue::Bytes(v.clone()),
             Self::Date(v) => TypedValue::Date(*v),
             Self::Timestamp(v) => TypedValue::Timestamp(*v),
-            Self::Decimal { unscaled, precision, scale } => TypedValue::Decimal {
+            Self::Decimal {
+                unscaled,
+                precision,
+                scale,
+            } => TypedValue::Decimal {
                 unscaled: *unscaled,
                 precision: *precision,
                 scale: *scale,
@@ -117,7 +125,11 @@ impl LiteralValue {
             TypedValue::Date(v) => Self::Date(*v),
             TypedValue::Timestamp(v) | TypedValue::TimestampTz(v) => Self::Timestamp(*v),
             TypedValue::Uuid(v) => Self::Bytes(v.to_vec()),
-            TypedValue::Decimal { unscaled, precision, scale } => Self::Decimal {
+            TypedValue::Decimal {
+                unscaled,
+                precision,
+                scale,
+            } => Self::Decimal {
                 unscaled: *unscaled,
                 precision: *precision,
                 scale: *scale,
@@ -138,7 +150,9 @@ impl std::fmt::Display for LiteralValue {
             Self::Bytes(v) => write!(f, "bytes[{}]", v.len()),
             Self::Date(v) => write!(f, "date({})", v),
             Self::Timestamp(v) => write!(f, "ts({})", v),
-            Self::Decimal { unscaled, scale, .. } => {
+            Self::Decimal {
+                unscaled, scale, ..
+            } => {
                 write!(f, "decimal({}, {})", unscaled, scale)
             }
         }
@@ -296,7 +310,11 @@ impl Expression {
     }
 
     /// Create a NOT IN list check.
-    pub fn not_in_list(field_id: i32, column: impl Into<String>, values: Vec<LiteralValue>) -> Self {
+    pub fn not_in_list(
+        field_id: i32,
+        column: impl Into<String>,
+        values: Vec<LiteralValue>,
+    ) -> Self {
         Self::NotIn {
             field_id,
             column: column.into(),
@@ -409,7 +427,9 @@ impl std::fmt::Display for Expression {
             }
             Expression::IsNull { column, .. } => write!(f, "{} IS NULL", column),
             Expression::IsNotNull { column, .. } => write!(f, "{} IS NOT NULL", column),
-            Expression::Comparison { column, op, value, .. } => {
+            Expression::Comparison {
+                column, op, value, ..
+            } => {
                 write!(f, "{} {} {}", column, op, value)
             }
             Expression::In { column, values, .. } => {

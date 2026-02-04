@@ -10,13 +10,18 @@
 mod support;
 
 use fluree_db_api::policy_builder;
-use fluree_db_api::{CommitOpts, FlureeBuilder, IndexConfig, QueryConnectionOptions, TxnOpts, TxnType};
+use fluree_db_api::{
+    CommitOpts, FlureeBuilder, IndexConfig, QueryConnectionOptions, TxnOpts, TxnType,
+};
 use serde_json::json;
 use std::collections::HashMap;
 use support::{assert_index_defaults, genesis_ledger};
 
 /// Helper to seed test data with users.
-async fn seed_users(fluree: &support::MemoryFluree, alias: &str) -> fluree_db_api::LedgerState<fluree_db_core::MemoryStorage> {
+async fn seed_users(
+    fluree: &support::MemoryFluree,
+    alias: &str,
+) -> fluree_db_api::LedgerState<fluree_db_core::MemoryStorage> {
     let ledger0 = genesis_ledger(fluree, alias);
 
     let txn = json!({
@@ -155,15 +160,16 @@ async fn modify_policy_allows_own_property() {
         }
     });
 
-    let query_result = fluree
-        .query(&tx_result.ledger, &query)
-        .await
-        .unwrap();
+    let query_result = fluree.query(&tx_result.ledger, &query).await.unwrap();
     let rows = query_result.to_jsonld(&tx_result.ledger.db).unwrap();
     let arr = rows.as_array().unwrap();
 
     assert_eq!(arr.len(), 1, "Should have 1 row, got: {:?}", arr);
-    assert_eq!(arr[0], "updated@flur.ee", "Email should be updated, got: {:?}", arr);
+    assert_eq!(
+        arr[0], "updated@flur.ee",
+        "Email should be updated, got: {:?}",
+        arr
+    );
 }
 
 /// Test: User cannot modify another user's email (property policy denies)
@@ -260,8 +266,7 @@ async fn modify_policy_denies_other_property() {
 
     // Should contain the custom error message
     assert_eq!(
-        err.error,
-        "Only users can update their own emails.",
+        err.error, "Only users can update their own emails.",
         "Error should be the custom f:exMessage"
     );
 }
@@ -341,7 +346,9 @@ async fn view_only_policy_blocks_modify() {
     // Clojure parity: "Database policy denies all modifications."
     // Rust uses: "Policy enforcement prevents modification."
     assert!(
-        err.error.contains("denied") || err.error.contains("Policy") || err.error.contains("modification"),
+        err.error.contains("denied")
+            || err.error.contains("Policy")
+            || err.error.contains("modification"),
         "Error should indicate policy denial: {}",
         err.error
     );
@@ -423,16 +430,12 @@ async fn modify_query_always_false_denies() {
         )
         .await;
 
-    assert!(
-        result.is_err(),
-        "Always-false modify query should deny"
-    );
+    assert!(result.is_err(), "Always-false modify query should deny");
 
     let err = result.unwrap_err();
     // The custom message should be in the error
     assert_eq!(
-        err.error,
-        "Sample policy always returns false - denied!",
+        err.error, "Sample policy always returns false - denied!",
         "Error should be the custom f:exMessage"
     );
 }

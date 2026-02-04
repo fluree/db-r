@@ -1,7 +1,7 @@
 //! Error types for the Fluree DB API
 
-use thiserror::Error;
 use crate::format::FormatError;
+use thiserror::Error;
 
 // ============================================================================
 // Builder errors
@@ -75,7 +75,12 @@ pub struct BuilderErrors(pub Vec<BuilderError>);
 impl std::fmt::Display for BuilderErrors {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let count = self.0.len();
-        write!(f, "{} builder error{}: ", count, if count == 1 { "" } else { "s" })?;
+        write!(
+            f,
+            "{} builder error{}: ",
+            count,
+            if count == 1 { "" } else { "s" }
+        )?;
         for (i, err) in self.0.iter().enumerate() {
             if i > 0 {
                 write!(f, "; ")?;
@@ -247,7 +252,10 @@ impl ApiError {
     }
 
     /// Create a SPARQL error with diagnostics
-    pub fn sparql(message: impl Into<String>, diagnostics: Vec<fluree_db_sparql::Diagnostic>) -> Self {
+    pub fn sparql(
+        message: impl Into<String>,
+        diagnostics: Vec<fluree_db_sparql::Diagnostic>,
+    ) -> Self {
         ApiError::Sparql {
             message: message.into(),
             diagnostics,
@@ -311,7 +319,7 @@ impl ApiError {
             ApiError::NotFound(_) => 404,
             ApiError::LedgerExists(_) => 409,
             ApiError::ReindexConflict { .. } => 409,
-            ApiError::IndexTimeout(_) => 504, // Gateway Timeout
+            ApiError::IndexTimeout(_) => 504,  // Gateway Timeout
             ApiError::IndexingDisabled => 400, // Bad Request
             ApiError::Indexer(e) => {
                 use fluree_db_indexer::IndexerError;
@@ -324,9 +332,15 @@ impl ApiError {
             // Builder validation errors
             ApiError::Builder(_) => 400,
             // Most errors are client errors (bad input)
-            ApiError::Parse(_) | ApiError::Query(_) | ApiError::Config(_) |
-            ApiError::Sparql { .. } | ApiError::SparqlLower(_) | ApiError::Turtle(_) |
-            ApiError::Json(_) | ApiError::Batch(_) | ApiError::Format(_) => 400,
+            ApiError::Parse(_)
+            | ApiError::Query(_)
+            | ApiError::Config(_)
+            | ApiError::Sparql { .. }
+            | ApiError::SparqlLower(_)
+            | ApiError::Turtle(_)
+            | ApiError::Json(_)
+            | ApiError::Batch(_)
+            | ApiError::Format(_) => 400,
             // Transaction errors could be validation failures
             ApiError::Transact(_) => 400,
             // Internal/infrastructure errors

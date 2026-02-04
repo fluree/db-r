@@ -20,9 +20,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         pattern: &SparqlGraphPattern,
     ) -> Result<Vec<Pattern>> {
         match pattern {
-            SparqlGraphPattern::Bgp { patterns, .. } => {
-                self.lower_bgp_with_rdf_star(patterns)
-            }
+            SparqlGraphPattern::Bgp { patterns, .. } => self.lower_bgp_with_rdf_star(patterns),
 
             SparqlGraphPattern::Group { patterns, .. } => {
                 let mut result = Vec::new();
@@ -49,9 +47,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
 
             SparqlGraphPattern::Bind { expr, var, .. } => self.lower_bind_pattern(expr, var),
 
-            SparqlGraphPattern::Values { vars, data, .. } => {
-                self.lower_values_pattern(vars, data)
-            }
+            SparqlGraphPattern::Values { vars, data, .. } => self.lower_values_pattern(vars, data),
 
             SparqlGraphPattern::Minus { left, right, .. } => {
                 // Lower left patterns first (the base patterns to match)
@@ -70,9 +66,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 Err(LowerError::not_implemented("SERVICE pattern", *span))
             }
 
-            SparqlGraphPattern::SubSelect { query, span } => {
-                self.lower_subselect(query, *span)
-            }
+            SparqlGraphPattern::SubSelect { query, span } => self.lower_subselect(query, *span),
 
             SparqlGraphPattern::Path {
                 subject,
@@ -184,7 +178,10 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        Ok(vec![Pattern::Values { vars: var_ids, rows }])
+        Ok(vec![Pattern::Values {
+            vars: var_ids,
+            rows,
+        }])
     }
 
     /// Lower GRAPH { name pattern } pattern

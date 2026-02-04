@@ -39,8 +39,8 @@ pub mod vocab;
 pub use error::{R2rmlError, R2rmlResult};
 pub use loader::R2rmlLoader;
 pub use mapping::{
-    CompiledR2rmlMapping, JoinCondition, LogicalTable, ObjectMap, PredicateMap,
-    PredicateObjectMap, RefObjectMap, SubjectMap, TermType, TriplesMap,
+    CompiledR2rmlMapping, JoinCondition, LogicalTable, ObjectMap, PredicateMap, PredicateObjectMap,
+    RefObjectMap, SubjectMap, TermType, TriplesMap,
 };
 pub use materialize::{expand_template, RdfTerm};
 pub use vocab::R2RML;

@@ -10,16 +10,11 @@
 //! available on read-only storage.
 
 use crate::{error::ApiError, tx::IndexingMode, Result};
-use fluree_db_core::{
-    address_path::alias_to_path_prefix,
-    alias as core_alias,
-    Storage,
-};
+use fluree_db_core::{address_path::alias_to_path_prefix, alias as core_alias, Storage};
 use fluree_db_indexer::{
-    BatchedRebuildConfig, CleanGarbageConfig, ReindexCheckpoint,
-    batched_rebuild_from_commits, batched_rebuild_resume, clean_garbage,
-    load_checkpoint, delete_checkpoint,
-    DEFAULT_BATCH_BYTES, DEFAULT_MAX_BATCH_COMMITS, DEFAULT_CHECKPOINT_INTERVAL,
+    batched_rebuild_from_commits, batched_rebuild_resume, clean_garbage, delete_checkpoint,
+    load_checkpoint, BatchedRebuildConfig, CleanGarbageConfig, ReindexCheckpoint,
+    DEFAULT_BATCH_BYTES, DEFAULT_CHECKPOINT_INTERVAL, DEFAULT_MAX_BATCH_COMMITS,
 };
 use fluree_db_nameservice::{AdminPublisher, NameService, Publisher, VirtualGraphPublisher};
 use std::time::Duration;
@@ -163,7 +158,10 @@ impl std::fmt::Debug for ReindexOptions {
             .field("max_batch_commits", &self.max_batch_commits)
             .field("checkpoint", &self.checkpoint)
             .field("checkpoint_interval", &self.checkpoint_interval)
-            .field("progress_callback", &self.progress_callback.as_ref().map(|_| "<callback>"))
+            .field(
+                "progress_callback",
+                &self.progress_callback.as_ref().map(|_| "<callback>"),
+            )
             .finish()
     }
 }
@@ -502,9 +500,10 @@ where
             // TODO: Call vg_artifact_prefix() from VG indexer crate once it exists
             // For now, skip deletion and report a warning
             if record.is_some() {
-                report
-                    .warnings
-                    .push("VG artifact deletion not yet implemented - prefix not standardized".to_string());
+                report.warnings.push(
+                    "VG artifact deletion not yet implemented - prefix not standardized"
+                        .to_string(),
+                );
             }
         }
 
@@ -538,21 +537,23 @@ where
         let alias = normalize_alias(alias);
 
         // Get nameservice record
-        let record = self.nameservice.lookup(&alias).await?
+        let record = self
+            .nameservice
+            .lookup(&alias)
+            .await?
             .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {}", alias)))?;
 
         // Get indexer status if available
-        let (indexing_enabled, phase, pending_min_t, last_error) =
-            match &self.indexing_mode {
-                IndexingMode::Background(handle) => {
-                    if let Some(status) = handle.status(&alias).await {
-                        (true, status.phase, status.pending_min_t, status.last_error)
-                    } else {
-                        (true, IndexPhase::Idle, None, None)
-                    }
+        let (indexing_enabled, phase, pending_min_t, last_error) = match &self.indexing_mode {
+            IndexingMode::Background(handle) => {
+                if let Some(status) = handle.status(&alias).await {
+                    (true, status.phase, status.pending_min_t, status.last_error)
+                } else {
+                    (true, IndexPhase::Idle, None, None)
                 }
-                IndexingMode::Disabled => (false, IndexPhase::Idle, None, None),
-            };
+            }
+            IndexingMode::Disabled => (false, IndexPhase::Idle, None, None),
+        };
 
         Ok(IndexStatusResult {
             alias,
@@ -597,11 +598,17 @@ where
         };
 
         // Look up current state
-        let record = self.nameservice.lookup(&alias).await?
+        let record = self
+            .nameservice
+            .lookup(&alias)
+            .await?
             .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {}", alias)))?;
 
         if record.retracted {
-            return Err(ApiError::NotFound(format!("Ledger is retracted: {}", alias)));
+            return Err(ApiError::NotFound(format!(
+                "Ledger is retracted: {}",
+                alias
+            )));
         }
 
         // Handle no-commit ledgers (nothing to index)
@@ -619,14 +626,17 @@ where
         let completion = handle.trigger(alias.clone(), min_t).await;
 
         // Wait with timeout
-        let timeout_ms = opts.timeout_ms.unwrap_or(TriggerIndexOptions::DEFAULT_TIMEOUT_MS);
-        let result = tokio::time::timeout(
-            Duration::from_millis(timeout_ms),
-            completion.wait()
-        ).await;
+        let timeout_ms = opts
+            .timeout_ms
+            .unwrap_or(TriggerIndexOptions::DEFAULT_TIMEOUT_MS);
+        let result =
+            tokio::time::timeout(Duration::from_millis(timeout_ms), completion.wait()).await;
 
         match result {
-            Ok(IndexOutcome::Completed { index_t, root_address }) => {
+            Ok(IndexOutcome::Completed {
+                index_t,
+                root_address,
+            }) => {
                 info!(alias = %alias, index_t = index_t, "Indexing completed");
                 Ok(TriggerIndexResult {
                     alias,
@@ -637,9 +647,7 @@ where
             Ok(IndexOutcome::Failed(msg)) => {
                 Err(ApiError::internal(format!("Indexing failed: {}", msg)))
             }
-            Ok(IndexOutcome::Cancelled) => {
-                Err(ApiError::internal("Indexing was cancelled"))
-            }
+            Ok(IndexOutcome::Cancelled) => Err(ApiError::internal("Indexing was cancelled")),
             Err(_) => {
                 warn!(alias = %alias, timeout_ms = timeout_ms, "Index trigger timed out");
                 Err(ApiError::IndexTimeout(timeout_ms))
@@ -675,24 +683,27 @@ where
     /// # Errors
     /// - `NotFound` if ledger doesn't exist or has no commits
     /// - `ReindexConflict` (409) if ledger advanced during rebuild
-    pub async fn reindex(
-        &self,
-        alias: &str,
-        opts: ReindexOptions,
-    ) -> Result<ReindexResult> {
+    pub async fn reindex(&self, alias: &str, opts: ReindexOptions) -> Result<ReindexResult> {
         let alias = normalize_alias(alias);
         info!(alias = %alias, "Starting reindex");
 
         // 1. Look up current state and capture commit_t for conflict detection
-        let record = self.nameservice.lookup(&alias).await?
+        let record = self
+            .nameservice
+            .lookup(&alias)
+            .await?
             .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {}", alias)))?;
 
         if record.retracted {
-            return Err(ApiError::NotFound(format!("Ledger is retracted: {}", alias)));
+            return Err(ApiError::NotFound(format!(
+                "Ledger is retracted: {}",
+                alias
+            )));
         }
 
         let initial_commit_t = record.commit_t;
-        let head_address = record.commit_address
+        let head_address = record
+            .commit_address
             .ok_or_else(|| ApiError::NotFound("No commits to reindex".to_string()))?;
 
         // 2. Cancel background indexing if active
@@ -713,16 +724,15 @@ where
             batch_bytes: opts.batch_bytes.unwrap_or(DEFAULT_BATCH_BYTES),
             max_batch_commits: opts.max_batch_commits.unwrap_or(DEFAULT_MAX_BATCH_COMMITS),
             checkpoint: opts.checkpoint,
-            checkpoint_interval: opts.checkpoint_interval.unwrap_or(DEFAULT_CHECKPOINT_INTERVAL),
+            checkpoint_interval: opts
+                .checkpoint_interval
+                .unwrap_or(DEFAULT_CHECKPOINT_INTERVAL),
             progress_callback: opts.progress_callback.clone(),
         };
 
-        let batched_result = batched_rebuild_from_commits(
-            self.storage(),
-            &head_address,
-            &alias,
-            batched_config,
-        ).await?;
+        let batched_result =
+            batched_rebuild_from_commits(self.storage(), &head_address, &alias, batched_config)
+                .await?;
 
         let index_result = batched_result.index_result;
 
@@ -733,10 +743,9 @@ where
         );
 
         // 4. Conflict detection: check if ledger advanced during rebuild
-        let final_record = self.nameservice.lookup(&alias).await?
-            .ok_or_else(|| ApiError::NotFound(
-                format!("Ledger disappeared during reindex: {}", alias)
-            ))?;
+        let final_record = self.nameservice.lookup(&alias).await?.ok_or_else(|| {
+            ApiError::NotFound(format!("Ledger disappeared during reindex: {}", alias))
+        })?;
 
         if final_record.commit_t != initial_commit_t {
             return Err(ApiError::ReindexConflict {
@@ -805,11 +814,12 @@ where
         info!(alias = %alias, "Resuming reindex from checkpoint");
 
         // 1. Load checkpoint
-        let checkpoint = load_checkpoint(self.storage(), &alias).await
+        let checkpoint = load_checkpoint(self.storage(), &alias)
+            .await
             .map_err(|e| ApiError::internal(format!("Failed to load checkpoint: {}", e)))?
-            .ok_or_else(|| ApiError::NotFound(
-                format!("No reindex checkpoint found for ledger: {}", alias)
-            ))?;
+            .ok_or_else(|| {
+                ApiError::NotFound(format!("No reindex checkpoint found for ledger: {}", alias))
+            })?;
 
         info!(
             alias = %alias,
@@ -820,14 +830,21 @@ where
         );
 
         // 2. Look up current state
-        let record = self.nameservice.lookup(&alias).await?
+        let record = self
+            .nameservice
+            .lookup(&alias)
+            .await?
             .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {}", alias)))?;
 
         if record.retracted {
-            return Err(ApiError::NotFound(format!("Ledger is retracted: {}", alias)));
+            return Err(ApiError::NotFound(format!(
+                "Ledger is retracted: {}",
+                alias
+            )));
         }
 
-        let head_address = record.commit_address
+        let head_address = record
+            .commit_address
             .ok_or_else(|| ApiError::NotFound("No commits to reindex".to_string()))?;
 
         // 3. Validate head hasn't changed (batched_rebuild_resume will also check)
@@ -857,12 +874,9 @@ where
         let gc_max_old_indexes = indexer_config.gc_max_old_indexes;
         let gc_min_time_mins = indexer_config.gc_min_time_mins;
 
-        let batched_result = batched_rebuild_resume(
-            self.storage(),
-            &head_address,
-            checkpoint,
-            indexer_config,
-        ).await?;
+        let batched_result =
+            batched_rebuild_resume(self.storage(), &head_address, checkpoint, indexer_config)
+                .await?;
 
         let index_result = batched_result.index_result;
 
@@ -920,7 +934,8 @@ where
     /// * `alias` - Ledger alias (e.g., "mydb" or "mydb:main")
     pub async fn reindex_checkpoint(&self, alias: &str) -> Result<Option<ReindexCheckpoint>> {
         let alias = normalize_alias(alias);
-        load_checkpoint(self.storage(), &alias).await
+        load_checkpoint(self.storage(), &alias)
+            .await
             .map_err(|e| ApiError::internal(format!("Failed to load checkpoint: {}", e)))
     }
 
@@ -934,7 +949,8 @@ where
     /// * `alias` - Ledger alias (e.g., "mydb" or "mydb:main")
     pub async fn delete_reindex_checkpoint(&self, alias: &str) -> Result<()> {
         let alias = normalize_alias(alias);
-        delete_checkpoint(self.storage(), &alias).await
+        delete_checkpoint(self.storage(), &alias)
+            .await
             .map_err(|e| ApiError::internal(format!("Failed to delete checkpoint: {}", e)))
     }
 }

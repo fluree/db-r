@@ -11,8 +11,8 @@ mod virtual_graph;
 use serde_json::Value as JsonValue;
 
 use crate::{
-    format, Batch, FormatterConfig, FuelExceededError, OverlayProvider,
-    PolicyContext, PolicyStats, SelectMode, Storage, Tracker, TrackingTally, VarRegistry,
+    format, Batch, FormatterConfig, FuelExceededError, OverlayProvider, PolicyContext, PolicyStats,
+    SelectMode, Storage, Tracker, TrackingTally, VarRegistry,
 };
 
 use fluree_db_core::Db;
@@ -158,10 +158,7 @@ impl QueryResult {
     ///
     /// Returns simple JSON values with compact IRIs using the @context prefixes.
     /// Rows are arrays aligned to the select order.
-    pub fn to_jsonld<S: Storage>(
-        &self,
-        db: &Db<S>,
-    ) -> format::Result<JsonValue> {
+    pub fn to_jsonld<S: Storage>(&self, db: &Db<S>) -> format::Result<JsonValue> {
         let config = FormatterConfig::jsonld().with_select_mode(self.select_mode);
         format::format_results(self, &self.context, db, &config)
     }
@@ -169,10 +166,7 @@ impl QueryResult {
     /// Format as JSON-LD Query JSON with object rows (API-friendly)
     ///
     /// Rows are maps keyed by variable name (e.g., `{"?s": "ex:alice", ...}`).
-    pub fn to_jsonld_objects<S: Storage>(
-        &self,
-        db: &Db<S>,
-    ) -> format::Result<JsonValue> {
+    pub fn to_jsonld_objects<S: Storage>(&self, db: &Db<S>) -> format::Result<JsonValue> {
         let config = FormatterConfig::jsonld_objects().with_select_mode(self.select_mode);
         format::format_results(self, &self.context, db, &config)
     }
@@ -180,10 +174,7 @@ impl QueryResult {
     /// Format as SPARQL 1.1 Query Results JSON
     ///
     /// Returns W3C standard format with `{"head": {"vars": [...]}, "results": {"bindings": [...]}}`.
-    pub fn to_sparql_json<S: Storage>(
-        &self,
-        db: &Db<S>,
-    ) -> format::Result<JsonValue> {
+    pub fn to_sparql_json<S: Storage>(&self, db: &Db<S>) -> format::Result<JsonValue> {
         let config = FormatterConfig::sparql_json().with_select_mode(self.select_mode);
         format::format_results(self, &self.context, db, &config)
     }
@@ -191,10 +182,7 @@ impl QueryResult {
     /// Format as TypedJson (always include explicit datatype)
     ///
     /// Every value includes `@type` annotation, even for inferable types.
-    pub fn to_typed_json<S: Storage>(
-        &self,
-        db: &Db<S>,
-    ) -> format::Result<JsonValue> {
+    pub fn to_typed_json<S: Storage>(&self, db: &Db<S>) -> format::Result<JsonValue> {
         let config = FormatterConfig::typed_json().with_select_mode(self.select_mode);
         format::format_results(self, &self.context, db, &config)
     }
@@ -207,10 +195,7 @@ impl QueryResult {
     /// # Errors
     ///
     /// Returns error if this is not a CONSTRUCT query result.
-    pub fn to_construct<S: Storage>(
-        &self,
-        db: &Db<S>,
-    ) -> format::Result<JsonValue> {
+    pub fn to_construct<S: Storage>(&self, db: &Db<S>) -> format::Result<JsonValue> {
         if self.select_mode != SelectMode::Construct {
             return Err(format::FormatError::InvalidBinding(
                 "to_construct() only valid for CONSTRUCT queries".to_string(),
@@ -250,10 +235,7 @@ impl QueryResult {
     /// // Graph crawl requires async formatting
     /// let json = result.to_jsonld_async(&ledger.db).await?;
     /// ```
-    pub async fn to_jsonld_async<S: Storage>(
-        &self,
-        db: &Db<S>,
-    ) -> format::Result<JsonValue> {
+    pub async fn to_jsonld_async<S: Storage>(&self, db: &Db<S>) -> format::Result<JsonValue> {
         let config = FormatterConfig::jsonld().with_select_mode(self.select_mode);
         format::format_results_async(self, &self.context, db, &config, None, None).await
     }
@@ -336,7 +318,14 @@ impl QueryResult {
         tracker: &Tracker,
     ) -> format::Result<JsonValue> {
         let config = FormatterConfig::jsonld().with_select_mode(self.select_mode);
-        format::format_results_async(self, &self.context, db, &config, Some(policy), Some(tracker))
-            .await
+        format::format_results_async(
+            self,
+            &self.context,
+            db,
+            &config,
+            Some(policy),
+            Some(tracker),
+        )
+        .await
     }
 }

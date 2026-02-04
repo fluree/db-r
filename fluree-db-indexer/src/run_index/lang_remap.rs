@@ -14,9 +14,7 @@ use std::path::{Path, PathBuf};
 /// Returns `(unified_dict, per_run_remaps)` where `per_run_remaps[i]`
 /// is the remap table for run file `i`. Each remap table has
 /// `remap[0] = 0` (sentinel) and `remap[local_id] = global_id`.
-pub fn build_lang_remap(
-    run_paths: &[PathBuf],
-) -> io::Result<(LanguageTagDict, Vec<Vec<u16>>)> {
+pub fn build_lang_remap(run_paths: &[PathBuf]) -> io::Result<(LanguageTagDict, Vec<Vec<u16>>)> {
     let mut unified = LanguageTagDict::new();
     let mut remaps = Vec::with_capacity(run_paths.len());
 

@@ -1,12 +1,9 @@
 use serde_json::Value as JsonValue;
 
-use crate::query::helpers::{
-    build_query_result, parse_jsonld_query, parse_sparql_to_ir,
-};
+use crate::query::helpers::{build_query_result, parse_jsonld_query, parse_sparql_to_ir};
 use crate::query::nameservice_builder::NameserviceQueryBuilder;
 use crate::{
-    ExecutableQuery, Fluree, LedgerState, QueryResult,
-    Result, Storage, VirtualGraphPublisher,
+    ExecutableQuery, Fluree, LedgerState, QueryResult, Result, Storage, VirtualGraphPublisher,
 };
 
 impl<S, N> Fluree<S, N>
@@ -103,11 +100,7 @@ where
     }
 
     /// Execute a SPARQL query with R2RML virtual graph support.
-    pub async fn sparql_vg(
-        &self,
-        ledger: &LedgerState<S>,
-        sparql: &str,
-    ) -> Result<QueryResult> {
+    pub async fn sparql_vg(&self, ledger: &LedgerState<S>, sparql: &str) -> Result<QueryResult> {
         let (vars, parsed) = parse_sparql_to_ir(sparql, &ledger.db)?;
         let executable = ExecutableQuery::simple(parsed.clone());
 
@@ -134,5 +127,4 @@ where
             Some(ledger.novelty.clone()),
         ))
     }
-
 }

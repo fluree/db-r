@@ -13,25 +13,25 @@
 //! - MinIO running on localhost:9000 with warehouse bucket
 
 use fluree_db_iceberg::auth::NoAuth;
-use fluree_db_iceberg::catalog::{RestCatalogClient, RestCatalogConfig, SendCatalogClient, parse_table_identifier};
-use fluree_db_iceberg::io::{S3IcebergStorage, SendIcebergStorage};
+use fluree_db_iceberg::catalog::{
+    parse_table_identifier, RestCatalogClient, RestCatalogConfig, SendCatalogClient,
+};
 use fluree_db_iceberg::io::send_parquet::SendParquetReader;
+use fluree_db_iceberg::io::{S3IcebergStorage, SendIcebergStorage};
 use fluree_db_iceberg::metadata::TableMetadata;
 use fluree_db_iceberg::scan::{ScanConfig, SendScanPlanner};
 use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-
     // Configuration
     let catalog_uri = std::env::var("ICEBERG_CATALOG_URI")
         .unwrap_or_else(|_| "http://localhost:8181".to_string());
-    let minio_endpoint = std::env::var("MINIO_ENDPOINT")
-        .unwrap_or_else(|_| "http://localhost:9000".to_string());
-    let minio_region = std::env::var("MINIO_REGION")
-        .unwrap_or_else(|_| "us-east-1".to_string());
-    let table_name = std::env::var("ICEBERG_TABLE")
-        .unwrap_or_else(|_| "openflights.airlines".to_string());
+    let minio_endpoint =
+        std::env::var("MINIO_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".to_string());
+    let minio_region = std::env::var("MINIO_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+    let table_name =
+        std::env::var("ICEBERG_TABLE").unwrap_or_else(|_| "openflights.airlines".to_string());
 
     println!("=== Iceberg REST Catalog Reader ===");
     println!("Catalog URI: {}", catalog_uri);
@@ -58,7 +58,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let load_response = catalog.load_table(&table_id, false).await?;
 
     println!("Metadata location: {}", load_response.metadata_location);
-    println!("Has vended credentials: {}", load_response.credentials.is_some());
+    println!(
+        "Has vended credentials: {}",
+        load_response.credentials.is_some()
+    );
 
     // Create S3 storage with MinIO settings (ambient credentials)
     // MinIO uses path-style URLs and we set AWS credentials via environment
@@ -67,7 +70,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(&minio_region),
         Some(&minio_endpoint),
         true, // path_style for MinIO
-    ).await?;
+    )
+    .await?;
 
     // Read and parse table metadata
     println!("\n=== Reading Table Metadata ===");
@@ -80,7 +84,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(schema) = metadata.current_schema() {
         println!("\n=== Schema ===");
         for field in &schema.fields {
-            println!("  {} (id={}): {:?}{}",
+            println!(
+                "  {} (id={}): {:?}{}",
                 field.name,
                 field.id,
                 field.type_string(),
@@ -123,7 +128,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("\n=== Sample Data (first 5 rows) ===");
                 let col_names: Vec<_> = batch.schema.fields.iter().map(|f| &f.name).collect();
                 println!("Columns: {:?}", col_names);
-                println!("Field IDs: {:?}", batch.schema.field_ids().collect::<Vec<_>>());
+                println!(
+                    "Field IDs: {:?}",
+                    batch.schema.field_ids().collect::<Vec<_>>()
+                );
 
                 // Debug: print column types and lengths
                 use fluree_db_iceberg::io::batch::Column;
@@ -150,16 +158,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     for col in &batch.columns {
                         // Vec<Option<T>>[idx] returns Option<T> reference
                         let val = match col {
-                            fluree_db_iceberg::io::batch::Column::Int32(v) =>
-                                format!("{:?}", v[row_idx]),
-                            fluree_db_iceberg::io::batch::Column::Int64(v) =>
-                                format!("{:?}", v[row_idx]),
-                            fluree_db_iceberg::io::batch::Column::String(v) =>
-                                format!("{:?}", v[row_idx]),
-                            fluree_db_iceberg::io::batch::Column::Boolean(v) =>
-                                format!("{:?}", v[row_idx]),
-                            fluree_db_iceberg::io::batch::Column::Float64(v) =>
-                                format!("{:?}", v[row_idx]),
+                            fluree_db_iceberg::io::batch::Column::Int32(v) => {
+                                format!("{:?}", v[row_idx])
+                            }
+                            fluree_db_iceberg::io::batch::Column::Int64(v) => {
+                                format!("{:?}", v[row_idx])
+                            }
+                            fluree_db_iceberg::io::batch::Column::String(v) => {
+                                format!("{:?}", v[row_idx])
+                            }
+                            fluree_db_iceberg::io::batch::Column::Boolean(v) => {
+                                format!("{:?}", v[row_idx])
+                            }
+                            fluree_db_iceberg::io::batch::Column::Float64(v) => {
+                                format!("{:?}", v[row_idx])
+                            }
                             _ => "...".to_string(),
                         };
                         row_values.push(val);

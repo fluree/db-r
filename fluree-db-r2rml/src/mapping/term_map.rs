@@ -262,9 +262,11 @@ impl ObjectMap {
             ObjectMap::Column { column, .. } => vec![column.as_str()],
             ObjectMap::Constant { .. } => vec![],
             ObjectMap::Template { columns, .. } => columns.iter().map(|s| s.as_str()).collect(),
-            ObjectMap::RefObjectMap(ref_map) => {
-                ref_map.join_conditions.iter().map(|jc| jc.child_column.as_str()).collect()
-            }
+            ObjectMap::RefObjectMap(ref_map) => ref_map
+                .join_conditions
+                .iter()
+                .map(|jc| jc.child_column.as_str())
+                .collect(),
         }
     }
 
@@ -321,10 +323,7 @@ mod tests {
 
     #[test]
     fn test_object_map_template() {
-        let om = ObjectMap::template(
-            "http://example.org/{id}",
-            vec!["id".to_string()],
-        );
+        let om = ObjectMap::template("http://example.org/{id}", vec!["id".to_string()]);
         assert!(!om.is_ref());
         assert_eq!(om.referenced_columns(), vec!["id"]);
         assert_eq!(om.term_type(), TermType::Iri);

@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use fluree_db_core::Storage;
 use fluree_db_iceberg::{
     catalog::{RestCatalogClient, RestCatalogConfig, SendCatalogClient},
-    io::{S3IcebergStorage, SendIcebergStorage, SendParquetReader, ColumnBatch},
+    io::{ColumnBatch, S3IcebergStorage, SendIcebergStorage, SendParquetReader},
     metadata::TableMetadata,
     scan::{ScanConfig, SendScanPlanner},
     IcebergVgConfig,
@@ -42,7 +42,10 @@ where
     /// 1. Validates the configuration
     /// 2. Optionally tests the catalog connection
     /// 3. Publishes the VG record to the nameservice
-    pub async fn create_iceberg_vg(&self, config: IcebergCreateConfig) -> Result<IcebergCreateResult> {
+    pub async fn create_iceberg_vg(
+        &self,
+        config: IcebergCreateConfig,
+    ) -> Result<IcebergCreateResult> {
         let vg_alias = config.vg_alias();
         info!(
             vg_alias = %vg_alias,
@@ -65,9 +68,9 @@ where
 
         // 3. Convert config to storage format
         let iceberg_config = config.to_iceberg_vg_config();
-        let config_json = iceberg_config.to_json().map_err(|e| {
-            crate::ApiError::Config(format!("Failed to serialize config: {}", e))
-        })?;
+        let config_json = iceberg_config
+            .to_json()
+            .map_err(|e| crate::ApiError::Config(format!("Failed to serialize config: {}", e)))?;
 
         // 4. Publish VG record to nameservice
         self.nameservice
@@ -139,9 +142,9 @@ where
 
         // 4. Convert config to storage format
         let iceberg_config = config.to_iceberg_vg_config();
-        let config_json = iceberg_config.to_json().map_err(|e| {
-            crate::ApiError::Config(format!("Failed to serialize config: {}", e))
-        })?;
+        let config_json = iceberg_config
+            .to_json()
+            .map_err(|e| crate::ApiError::Config(format!("Failed to serialize config: {}", e)))?;
 
         // 5. Publish VG record to nameservice
         self.nameservice
@@ -181,10 +184,9 @@ where
         use fluree_db_iceberg::catalog::parse_table_identifier;
 
         // Create auth provider
-        let auth = config
-            .auth
-            .create_provider_arc()
-            .map_err(|e| crate::ApiError::Config(format!("Failed to create auth provider: {}", e)))?;
+        let auth = config.auth.create_provider_arc().map_err(|e| {
+            crate::ApiError::Config(format!("Failed to create auth provider: {}", e))
+        })?;
 
         // Create catalog client
         let catalog_config = RestCatalogConfig {
@@ -193,8 +195,9 @@ where
             ..Default::default()
         };
 
-        let catalog = RestCatalogClient::new(catalog_config, auth)
-            .map_err(|e| crate::ApiError::Config(format!("Failed to create catalog client: {}", e)))?;
+        let catalog = RestCatalogClient::new(catalog_config, auth).map_err(|e| {
+            crate::ApiError::Config(format!("Failed to create catalog client: {}", e))
+        })?;
 
         // Parse table identifier
         let table_id = parse_table_identifier(&config.table_identifier)
@@ -204,7 +207,9 @@ where
         catalog
             .load_table(&table_id, config.vended_credentials)
             .await
-            .map_err(|e| crate::ApiError::Config(format!("Failed to load table from catalog: {}", e)))?;
+            .map_err(|e| {
+                crate::ApiError::Config(format!("Failed to load table from catalog: {}", e))
+            })?;
 
         Ok(())
     }
@@ -241,12 +246,17 @@ where
         // Parse and compile the mapping
         let compiled = if is_turtle {
             fluree_db_r2rml::loader::R2rmlLoader::from_turtle(&mapping_content)
-                .map_err(|e| crate::ApiError::Config(format!("Failed to parse R2RML Turtle: {}", e)))?
+                .map_err(|e| {
+                    crate::ApiError::Config(format!("Failed to parse R2RML Turtle: {}", e))
+                })?
                 .compile()
-                .map_err(|e| crate::ApiError::Config(format!("Failed to compile R2RML mapping: {}", e)))?
+                .map_err(|e| {
+                    crate::ApiError::Config(format!("Failed to compile R2RML mapping: {}", e))
+                })?
         } else {
             return Err(crate::ApiError::Config(
-                "R2RML mapping must be in Turtle format (.ttl). JSON-LD is not yet supported.".to_string(),
+                "R2RML mapping must be in Turtle format (.ttl). JSON-LD is not yet supported."
+                    .to_string(),
             ));
         };
 
@@ -286,7 +296,8 @@ impl<'a, S: Storage + 'static, N> FlureeR2rmlProvider<'a, S, N> {
 
 impl<S: Storage + 'static, N> std::fmt::Debug for FlureeR2rmlProvider<'_, S, N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FlureeR2rmlProvider").finish_non_exhaustive()
+        f.debug_struct("FlureeR2rmlProvider")
+            .finish_non_exhaustive()
     }
 }
 
@@ -435,7 +446,9 @@ where
         let compiled = Arc::new(compiled);
 
         // Cache the compiled mapping
-        cache.put_mapping(cache_key.clone(), Arc::clone(&compiled)).await;
+        cache
+            .put_mapping(cache_key.clone(), Arc::clone(&compiled))
+            .await;
 
         info!(
             vg_alias = %vg_alias,
@@ -514,9 +527,8 @@ where
             ..Default::default()
         };
 
-        let catalog = RestCatalogClient::new(catalog_config, auth).map_err(|e| {
-            QueryError::Internal(format!("Failed to create catalog client: {}", e))
-        })?;
+        let catalog = RestCatalogClient::new(catalog_config, auth)
+            .map_err(|e| QueryError::Internal(format!("Failed to create catalog client: {}", e)))?;
 
         // Parse the table identifier
         use fluree_db_iceberg::catalog::parse_table_identifier;
@@ -584,19 +596,18 @@ where
         } else {
             debug!(metadata_location = %metadata_location, "Table metadata cache miss");
 
-            let metadata_bytes = storage
-                .read(metadata_location)
-                .await
-                .map_err(|e| {
-                    QueryError::Internal(format!("Failed to read table metadata: {}", e))
-                })?;
+            let metadata_bytes = storage.read(metadata_location).await.map_err(|e| {
+                QueryError::Internal(format!("Failed to read table metadata: {}", e))
+            })?;
 
             let parsed = TableMetadata::from_json(&metadata_bytes).map_err(|e| {
                 QueryError::Internal(format!("Failed to parse table metadata: {}", e))
             })?;
 
             let metadata = Arc::new(parsed);
-            cache.put_metadata(metadata_location.clone(), Arc::clone(&metadata)).await;
+            cache
+                .put_metadata(metadata_location.clone(), Arc::clone(&metadata))
+                .await;
 
             info!(
                 metadata_location = %metadata_location,
@@ -607,9 +618,9 @@ where
             metadata
         };
 
-        let schema = metadata.current_schema().ok_or_else(|| {
-            QueryError::Internal("Table has no current schema".to_string())
-        })?;
+        let schema = metadata
+            .current_schema()
+            .ok_or_else(|| QueryError::Internal("Table has no current schema".to_string()))?;
 
         info!(
             format_version = metadata.format_version,
@@ -629,9 +640,7 @@ where
         } else {
             projection
                 .iter()
-                .filter_map(|col_name| {
-                    schema.field_by_name(col_name).map(|f| f.id)
-                })
+                .filter_map(|col_name| schema.field_by_name(col_name).map(|f| f.id))
                 .collect()
         };
 
@@ -648,9 +657,10 @@ where
 
         // Create scan planner and generate scan plan
         let planner = SendScanPlanner::new(&storage, &metadata, scan_config);
-        let plan = planner.plan_scan().await.map_err(|e| {
-            QueryError::Internal(format!("Failed to plan scan: {}", e))
-        })?;
+        let plan = planner
+            .plan_scan()
+            .await
+            .map_err(|e| QueryError::Internal(format!("Failed to plan scan: {}", e)))?;
 
         info!(
             files_selected = plan.files_selected,

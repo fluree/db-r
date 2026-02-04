@@ -51,10 +51,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         }
     }
 
-    pub(super) fn collect_aggregate_alias_names(
-        &self,
-        clause: &SelectClause,
-    ) -> HashSet<Arc<str>> {
+    pub(super) fn collect_aggregate_alias_names(&self, clause: &SelectClause) -> HashSet<Arc<str>> {
         let mut names = HashSet::new();
         if let SelectVariables::Explicit(vars) = &clause.variables {
             for var in vars {

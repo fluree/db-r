@@ -83,7 +83,7 @@ mod tests {
             "urn:ietf:rfc:3986",
             "tag:example.com,2023:blog-post",
             // Test edge cases
-            "a:b",  // minimal IRI
+            "a:b", // minimal IRI
             "scheme:path",
             "scheme://host/path?query=value#fragment",
             // Test Unicode characters

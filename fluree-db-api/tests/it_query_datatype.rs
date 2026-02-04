@@ -67,15 +67,25 @@ async fn mixed_datatypes_query_matches_only_requested_type() {
         "select": ["?u","?name"],
         "where": [{"@id":"?u","schema:name":"Halie"},{"@id":"?u","schema:name":"?name"}]
     });
-    let r1 = fluree.query(&ledger, &q1).await.unwrap().to_jsonld(&ledger.db).unwrap();
-    assert_eq!(r1, json!([["ex:halie","Halie"]]));
+    let r1 = fluree
+        .query(&ledger, &q1)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
+    assert_eq!(r1, json!([["ex:halie", "Halie"]]));
 
     let q2 = json!({
         "@context": ctx,
         "select": ["?u"],
         "where": {"@id":"?u","schema:name":"a"}
     });
-    let r2 = fluree.query(&ledger, &q2).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let r2 = fluree
+        .query(&ledger, &q2)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(r2, json!([]));
 
     let q3 = json!({
@@ -83,8 +93,13 @@ async fn mixed_datatypes_query_matches_only_requested_type() {
         "select": ["?u","?name"],
         "where": [{"@id":"?u","schema:name":3},{"@id":"?u","schema:name":"?name"}]
     });
-    let r3 = fluree.query(&ledger, &q3).await.unwrap().to_jsonld(&ledger.db).unwrap();
-    assert_eq!(r3, json!([["ex:john",3]]));
+    let r3 = fluree
+        .query(&ledger, &q3)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
+    assert_eq!(r3, json!([["ex:john", 3]]));
 }
 
 #[tokio::test]
@@ -101,7 +116,12 @@ async fn datatype_query_explicit_typed_value_object_matches() {
         "where": {"ex:name":"?name","ex:age":{"@value":36,"@type":"xsd:integer"}}
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     // NOTE(parity): Rust currently normalizes numeric datatypes so untyped integers and
     // explicitly-typed integer-family values share `xsd:integer`. This means both Homer
     // (untyped 36) and Marge (typed xsd:int → normalized) match here.
@@ -127,7 +147,12 @@ async fn datatype_bind_datatype_function_includes_dt_in_results() {
         ]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     // Marge's age was inserted with xsd:int - preserved for data fidelity
     // Non-default datatypes are wrapped in value objects per JSON-LD spec
     // Homer's age was inserted as untyped integer → stored as xsd:integer (default, no wrapper)
@@ -158,7 +183,12 @@ async fn datatype_filter_with_datatype_function() {
         ]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(rows, json!([["Homer", 36, "xsd:integer"]]));
 }
 
@@ -178,7 +208,10 @@ async fn datatype_query_incompatible_type_returns_no_matches() {
 
     let err = fluree.query(&ledger, &q).await.unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("TypeCoercion") || msg.contains("coerce"), "unexpected error: {msg}");
+    assert!(
+        msg.contains("TypeCoercion") || msg.contains("coerce"),
+        "unexpected error: {msg}"
+    );
 }
 
 #[tokio::test]
@@ -194,8 +227,13 @@ async fn datatype_filter_value_object_by_type_constant() {
         "where": {"ex:name":"?name","ex:age":{"@value":"?age","@type":"xsd:string"}}
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
-    assert_eq!(rows, json!([["Bart","forever 10"]]));
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
+    assert_eq!(rows, json!([["Bart", "forever 10"]]));
 }
 
 #[tokio::test]
@@ -223,7 +261,12 @@ async fn language_binding_lang_function() {
         ]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let set: std::collections::HashSet<Vec<JsonValue>> = rows
         .as_array()
         .unwrap()
@@ -270,7 +313,12 @@ async fn language_binding_value_object_language_variable() {
         "where": [{"@id":"?id","ex:hello":{"@value":"?val","@language":"?lang"}}]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let set: std::collections::HashSet<Vec<JsonValue>> = rows
         .as_array()
         .unwrap()
@@ -332,35 +380,48 @@ async fn json_datatype_insert_query_and_filter() {
         ]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let rows_arr = rows.as_array().unwrap();
     assert_eq!(rows_arr.len(), 2, "should return both documents");
 
     // Check that doc1 has @json datatype and deserialized JSON object
-    let doc1_row = rows_arr.iter().find(|r| {
-        r.as_array().unwrap()[0] == "Document 1"
-    }).expect("Document 1 should be in results");
+    let doc1_row = rows_arr
+        .iter()
+        .find(|r| r.as_array().unwrap()[0] == "Document 1")
+        .expect("Document 1 should be in results");
     let doc1_data = &doc1_row.as_array().unwrap()[1];
     let doc1_dt = &doc1_row.as_array().unwrap()[2];
-    assert_eq!(doc1_data, &json!({"age": 30, "name": "John"}), "should deserialize JSON object");
+    assert_eq!(
+        doc1_data,
+        &json!({"age": 30, "name": "John"}),
+        "should deserialize JSON object"
+    );
     // @json can be represented as "@json" or the full IRI
     let dt_str = doc1_dt.as_str().unwrap();
     assert!(
         dt_str == "@json" || dt_str.contains("JSON") || dt_str.contains("json"),
-        "should have @json datatype, got: {}", dt_str
+        "should have @json datatype, got: {}",
+        dt_str
     );
 
     // Check that doc2 has xsd:string datatype
-    let doc2_row = rows_arr.iter().find(|r| {
-        r.as_array().unwrap()[0] == "Document 2"
-    }).expect("Document 2 should be in results");
+    let doc2_row = rows_arr
+        .iter()
+        .find(|r| r.as_array().unwrap()[0] == "Document 2")
+        .expect("Document 2 should be in results");
     let doc2_data = &doc2_row.as_array().unwrap()[1];
     let doc2_dt = &doc2_row.as_array().unwrap()[2];
     assert_eq!(doc2_data, "plain string data");
     let dt2_str = doc2_dt.as_str().unwrap();
     assert!(
         dt2_str == "xsd:string" || dt2_str.contains("string"),
-        "should have xsd:string datatype, got: {}", dt2_str
+        "should have xsd:string datatype, got: {}",
+        dt2_str
     );
 
     let q2 = json!({
@@ -372,9 +433,17 @@ async fn json_datatype_insert_query_and_filter() {
             ["filter", "(= \"@json\" ?dt)"]
         ]
     });
-    let rows2 = fluree.query(&ledger, &q2).await.unwrap().to_jsonld(&ledger.db).unwrap();
-    assert_eq!(rows2, json!([["Document 1", {"age": 30, "name": "John"}]]),
-        "should return only document with @json datatype");
+    let rows2 = fluree
+        .query(&ledger, &q2)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
+    assert_eq!(
+        rows2,
+        json!([["Document 1", {"age": 30, "name": "John"}]]),
+        "should return only document with @json datatype"
+    );
 }
 
 #[tokio::test]
@@ -391,8 +460,13 @@ async fn value_type_binding_variable_in_value_object() {
         "where": [{"ex:name":"?name","ex:age":{"@value":"?age","@type":"?ageType"}}]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
-    
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
+
     // Convert to set for order-insensitive comparison
     let set: std::collections::HashSet<Vec<JsonValue>> = rows
         .as_array()
@@ -400,7 +474,7 @@ async fn value_type_binding_variable_in_value_object() {
         .iter()
         .map(|r| r.as_array().unwrap().clone())
         .collect();
-    
+
     // Marge's age was inserted with xsd:int - preserved for data fidelity
     // Non-default datatypes are wrapped in value objects per JSON-LD spec
     // Homer's age was inserted as untyped integer → stored as xsd:integer (default, no wrapper)
@@ -409,7 +483,11 @@ async fn value_type_binding_variable_in_value_object() {
         std::collections::HashSet::from([
             vec![json!("Bart"), json!("forever 10"), json!("xsd:string")],
             vec![json!("Homer"), json!(36), json!("xsd:integer")],
-            vec![json!("Marge"), json!({"@value":36,"@type":"xsd:int"}), json!("xsd:int")],
+            vec![
+                json!("Marge"),
+                json!({"@value":36,"@type":"xsd:int"}),
+                json!("xsd:int")
+            ],
         ])
     );
 }
@@ -433,7 +511,7 @@ async fn transaction_binding_at_t_variable() {
         ]
     });
     let ledger1 = fluree.insert(ledger0, &insert1).await.unwrap().ledger;
-    
+
     // Second transaction: add more data at t=2
     let insert2 = json!({
         "@context": ctx,
@@ -454,31 +532,44 @@ async fn transaction_binding_at_t_variable() {
         "orderBy": "?name"
     });
 
-    let rows = fluree.query(&ledger2, &q).await.unwrap().to_jsonld(&ledger2.db).unwrap();
+    let rows = fluree
+        .query(&ledger2, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger2.db)
+        .unwrap();
     let arr = rows.as_array().expect("Should be an array");
-    
+
     assert_eq!(arr.len(), 2, "Should have two results (Alice and Bob)");
-    
+
     // Alice was inserted at t=1, Bob at t=2
     // Note: t values are negative in Fluree's convention (more negative = earlier)
     // t=1 is represented as -1, t=2 as -2, etc.
     let alice_row = &arr[0];
     let bob_row = &arr[1];
-    
+
     assert_eq!(alice_row[0], "Alice", "First row should be Alice");
     assert_eq!(alice_row[1], 30, "Alice's age should be 30");
     let alice_t = alice_row[2].as_i64().expect("Alice's txn should be i64");
-    
+
     assert_eq!(bob_row[0], "Bob", "Second row should be Bob");
     assert_eq!(bob_row[1], 25, "Bob's age should be 25");
     let bob_t = bob_row[2].as_i64().expect("Bob's txn should be i64");
-    
+
     // Verify they have different transaction times, and Alice's is "earlier"
-    assert_ne!(alice_t, bob_t, "Alice and Bob should have different transaction times");
-    
+    assert_ne!(
+        alice_t, bob_t,
+        "Alice and Bob should have different transaction times"
+    );
+
     // In Fluree Rust, t values are positive with t=1 being the genesis transaction.
     // Alice (first insert after genesis) should have a smaller t than Bob (second insert)
-    assert!(alice_t < bob_t, "Alice's t should be less than Bob's t since she was inserted first. alice_t={}, bob_t={}", alice_t, bob_t);
+    assert!(
+        alice_t < bob_t,
+        "Alice's t should be less than Bob's t since she was inserted first. alice_t={}, bob_t={}",
+        alice_t,
+        bob_t
+    );
 }
 
 // =============================================================================
@@ -506,7 +597,7 @@ async fn decimal_string_input_becomes_bigdecimal_preserves_precision() {
                 "ex:price": {"@value": "123.456789012345678901234567890", "@type": "xsd:decimal"}
             },
             {
-                "@id": "ex:item2", 
+                "@id": "ex:item2",
                 "ex:price": {"@value": "0.1", "@type": "xsd:decimal"}
             },
             {
@@ -525,13 +616,18 @@ async fn decimal_string_input_becomes_bigdecimal_preserves_precision() {
         "orderBy": "?id"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let arr = rows.as_array().unwrap();
-    
+
     // String decimals should preserve precision exactly
     // Note: JSON-LD serialization of BigDecimal should use string representation
     assert_eq!(arr.len(), 3);
-    
+
     // Verify item1's high-precision decimal
     let item1 = &arr[0];
     assert_eq!(item1[0], "ex:item1");
@@ -539,10 +635,18 @@ async fn decimal_string_input_becomes_bigdecimal_preserves_precision() {
     let price1 = &item1[1];
     // Could be {"@value": "123.456...", "@type": "xsd:decimal"} or just the string
     if let Some(s) = price1.as_str() {
-        assert!(s.starts_with("123.45678901234567"), "Should preserve precision: {}", s);
+        assert!(
+            s.starts_with("123.45678901234567"),
+            "Should preserve precision: {}",
+            s
+        );
     } else if let Some(obj) = price1.as_object() {
         let val = obj.get("@value").and_then(|v| v.as_str()).unwrap();
-        assert!(val.starts_with("123.45678901234567"), "Should preserve precision: {}", val);
+        assert!(
+            val.starts_with("123.45678901234567"),
+            "Should preserve precision: {}",
+            val
+        );
     }
 }
 
@@ -586,29 +690,36 @@ async fn decimal_json_number_input_becomes_double() {
         "orderBy": "?id"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let arr = rows.as_array().unwrap();
-    
+
     assert_eq!(arr.len(), 2);
     // JSON numbers become Double, which serializes as JSON number
     assert_eq!(arr[0][0], "ex:item1");
     // 3.14 as f64 should round-trip to 3.14
     assert_eq!(arr[0][1].as_f64(), Some(3.14), "item1 value should be 3.14");
-    
+
     assert_eq!(arr[1][0], "ex:item2");
     // Integer 42 as Double - JSON may serialize as 42 or 42.0
     assert_eq!(arr[1][1].as_f64(), Some(42.0), "item2 value should be 42.0");
-    
+
     // Verify explicit datatype xsd:decimal is preserved even when value is Double
     let dt1 = arr[0][2].as_str().unwrap();
     let dt2 = arr[1][2].as_str().unwrap();
     assert!(
         dt1.ends_with("#decimal") || dt1 == "xsd:decimal",
-        "3.14 should preserve xsd:decimal datatype, got: {}", dt1
+        "3.14 should preserve xsd:decimal datatype, got: {}",
+        dt1
     );
     assert!(
         dt2.ends_with("#decimal") || dt2 == "xsd:decimal",
-        "42 should preserve xsd:decimal datatype, got: {}", dt2
+        "42 should preserve xsd:decimal datatype, got: {}",
+        dt2
     );
 }
 
@@ -627,7 +738,7 @@ async fn decimal_sort_order_with_mixed_numeric_types() {
         "@graph": [
             {"@id": "ex:a", "ex:score": 1},  // Long
             {"@id": "ex:b", "ex:score": {"@value": "2.5", "@type": "xsd:decimal"}},  // BigDecimal
-            {"@id": "ex:c", "ex:score": 3.0},  // Double  
+            {"@id": "ex:c", "ex:score": 3.0},  // Double
             {"@id": "ex:d", "ex:score": {"@value": "1.5", "@type": "xsd:decimal"}},  // BigDecimal
             {"@id": "ex:e", "ex:score": 2}   // Long
         ]
@@ -642,20 +753,45 @@ async fn decimal_sort_order_with_mixed_numeric_types() {
         "orderBy": "?score"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let arr = rows.as_array().unwrap();
-    
+
     // Expected order: 1, 1.5, 2, 2.5, 3.0
     assert_eq!(arr.len(), 5);
-    
+
     // Collect actual order for debugging
     let actual_ids: Vec<&str> = arr.iter().map(|r| r[0].as_str().unwrap()).collect();
-    
-    assert_eq!(actual_ids[0], "ex:a", "First should be ex:a (score 1), got {:?}", actual_ids);
-    assert_eq!(actual_ids[1], "ex:d", "Second should be ex:d (score 1.5), got {:?}", actual_ids);
-    assert_eq!(actual_ids[2], "ex:e", "Third should be ex:e (score 2), got {:?}", actual_ids);
-    assert_eq!(actual_ids[3], "ex:b", "Fourth should be ex:b (score 2.5), got {:?}", actual_ids);
-    assert_eq!(actual_ids[4], "ex:c", "Fifth should be ex:c (score 3.0), got {:?}", actual_ids);
+
+    assert_eq!(
+        actual_ids[0], "ex:a",
+        "First should be ex:a (score 1), got {:?}",
+        actual_ids
+    );
+    assert_eq!(
+        actual_ids[1], "ex:d",
+        "Second should be ex:d (score 1.5), got {:?}",
+        actual_ids
+    );
+    assert_eq!(
+        actual_ids[2], "ex:e",
+        "Third should be ex:e (score 2), got {:?}",
+        actual_ids
+    );
+    assert_eq!(
+        actual_ids[3], "ex:b",
+        "Fourth should be ex:b (score 2.5), got {:?}",
+        actual_ids
+    );
+    assert_eq!(
+        actual_ids[4], "ex:c",
+        "Fifth should be ex:c (score 3.0), got {:?}",
+        actual_ids
+    );
 }
 
 #[tokio::test]
@@ -689,25 +825,45 @@ async fn decimal_equality_across_types() {
         "where": {"@id": "?id", "ex:value": 3}
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let arr = rows.as_array().expect("Result should be an array");
-    
+
     // Extract IDs - result format is [["ex:long"], ["ex:double"], ...]
     let ids: std::collections::HashSet<String> = arr
         .iter()
         .filter_map(|r| {
             if let Some(inner) = r.as_array() {
-                inner.first().and_then(|v| v.as_str()).map(|s| s.to_string())
+                inner
+                    .first()
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
             } else {
                 r.as_str().map(|s| s.to_string())
             }
         })
         .collect();
-    
+
     // All three should match since they're mathematically equal
-    assert!(ids.contains("ex:long"), "Long(3) should match, got: {:?}", ids);
-    assert!(ids.contains("ex:double"), "Double(3.0) should match, got: {:?}", ids);
-    assert!(ids.contains("ex:decimal"), "Decimal(3.00) should match, got: {:?}", ids);
+    assert!(
+        ids.contains("ex:long"),
+        "Long(3) should match, got: {:?}",
+        ids
+    );
+    assert!(
+        ids.contains("ex:double"),
+        "Double(3.0) should match, got: {:?}",
+        ids
+    );
+    assert!(
+        ids.contains("ex:decimal"),
+        "Decimal(3.00) should match, got: {:?}",
+        ids
+    );
 }
 
 #[tokio::test]
@@ -742,17 +898,20 @@ async fn decimal_filter_comparison_across_types() {
         "orderBy": "?amount"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let arr = rows.as_array().unwrap();
-    
+
     // Should return: 150.5, 200.00 (not 100 or 75.25)
     assert_eq!(arr.len(), 2, "Should have 2 results, got: {:?}", arr);
-    
+
     // Collect IDs for verification
-    let ids: std::collections::HashSet<&str> = arr.iter()
-        .map(|r| r[0].as_str().unwrap())
-        .collect();
-    
+    let ids: std::collections::HashSet<&str> = arr.iter().map(|r| r[0].as_str().unwrap()).collect();
+
     assert!(ids.contains("ex:b"), "Should contain ex:b (150.5)");
     assert!(ids.contains("ex:c"), "Should contain ex:c (200.00)");
 }
@@ -787,11 +946,12 @@ async fn decimal_invalid_string_should_error() {
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("coerce") || err_msg.contains("Coercion") || err_msg.contains("parse"),
-        "Error should mention coercion or parsing: {}", err_msg
+        "Error should mention coercion or parsing: {}",
+        err_msg
     );
 }
 
-#[tokio::test] 
+#[tokio::test]
 async fn decimal_non_integral_to_integer_should_error() {
     // Non-integral value with xsd:integer should error
     let fluree = FlureeBuilder::memory().build_memory();
@@ -817,11 +977,17 @@ async fn decimal_non_integral_to_integer_should_error() {
     });
 
     let result = fluree.query(&ledger, &q).await;
-    assert!(result.is_err(), "Should error on non-integral double to integer");
+    assert!(
+        result.is_err(),
+        "Should error on non-integral double to integer"
+    );
     let err_msg = result.unwrap_err().to_string();
     assert!(
-        err_msg.contains("non-integer") || err_msg.contains("Coercion") || err_msg.contains("whole number"),
-        "Error should mention non-integer: {}", err_msg
+        err_msg.contains("non-integer")
+            || err_msg.contains("Coercion")
+            || err_msg.contains("whole number"),
+        "Error should mention non-integer: {}",
+        err_msg
     );
 }
 
@@ -855,7 +1021,8 @@ async fn decimal_number_to_boolean_should_error() {
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("coerce") || err_msg.contains("Coercion") || err_msg.contains("boolean"),
-        "Error should mention coercion: {}", err_msg
+        "Error should mention coercion: {}",
+        err_msg
     );
 }
 
@@ -895,7 +1062,7 @@ async fn values_typed_literal_string_to_integer_coercion() {
     let result = fluree.query(&ledger, &q).await;
     let rows = result.unwrap().to_jsonld(&ledger.db).unwrap();
     let arr = rows.as_array().unwrap();
-    
+
     // Should match ex:item1 because "42" coerced to Long(42)
     // Note: single-column results may be flattened to ["ex:item1"] not [["ex:item1"]]
     assert_eq!(arr.len(), 1, "Should find one match, got: {:?}", arr);
@@ -905,7 +1072,12 @@ async fn values_typed_literal_string_to_integer_coercion() {
     } else {
         first.as_str()
     };
-    assert_eq!(id, Some("ex:item1"), "Should match ex:item1, got: {:?}", arr);
+    assert_eq!(
+        id,
+        Some("ex:item1"),
+        "Should match ex:item1, got: {:?}",
+        arr
+    );
 }
 
 #[tokio::test]
@@ -938,7 +1110,10 @@ async fn values_incompatible_type_returns_no_matches() {
 
     let err = fluree.query(&ledger, &q).await.unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("TypeCoercion") || msg.contains("coerce"), "unexpected error: {msg}");
+    assert!(
+        msg.contains("TypeCoercion") || msg.contains("coerce"),
+        "unexpected error: {msg}"
+    );
 }
 
 #[tokio::test]
@@ -970,9 +1145,14 @@ async fn values_decimal_string_becomes_bigdecimal() {
         ]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let arr = rows.as_array().unwrap();
-    
+
     // Should match because both are BigDecimal("19.99")
     assert_eq!(arr.len(), 1, "Should find one match, got: {:?}", arr);
     let first = &arr[0];
@@ -981,6 +1161,10 @@ async fn values_decimal_string_becomes_bigdecimal() {
     } else {
         first.as_str()
     };
-    assert_eq!(id, Some("ex:item1"), "Should match ex:item1, got: {:?}", arr);
+    assert_eq!(
+        id,
+        Some("ex:item1"),
+        "Should match ex:item1, got: {:?}",
+        arr
+    );
 }
-

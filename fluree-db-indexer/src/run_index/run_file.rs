@@ -66,7 +66,11 @@ impl RunFileHeader {
         if buf.len() < RUN_HEADER_LEN {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("run file header too small: {} < {}", buf.len(), RUN_HEADER_LEN),
+                format!(
+                    "run file header too small: {} < {}",
+                    buf.len(),
+                    RUN_HEADER_LEN
+                ),
             ));
         }
         if buf[0..4] != RUN_MAGIC {
@@ -292,9 +296,9 @@ pub struct RunFileInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::DatatypeDictId;
     use fluree_db_core::subject_id::SubjectId;
-    use fluree_db_core::value_id::{ObjKind, ObjKey};
+    use fluree_db_core::value_id::{ObjKey, ObjKind};
+    use fluree_db_core::DatatypeDictId;
 
     #[test]
     fn test_header_round_trip() {
@@ -347,9 +351,42 @@ mod tests {
         lang_dict.get_or_insert(Some("en"));
 
         let records = vec![
-            RunRecord::new(0, SubjectId::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(10), 1, true, DatatypeDictId::INTEGER.as_u16(), 0, None),
-            RunRecord::new(0, SubjectId::from_u64(1), 2, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true, DatatypeDictId::STRING.as_u16(), 1, None),
-            RunRecord::new(0, SubjectId::from_u64(2), 1, ObjKind::NUM_INT, ObjKey::encode_i64(20), 2, true, DatatypeDictId::LONG.as_u16(), 0, Some(0)),
+            RunRecord::new(
+                0,
+                SubjectId::from_u64(1),
+                1,
+                ObjKind::NUM_INT,
+                ObjKey::encode_i64(10),
+                1,
+                true,
+                DatatypeDictId::INTEGER.as_u16(),
+                0,
+                None,
+            ),
+            RunRecord::new(
+                0,
+                SubjectId::from_u64(1),
+                2,
+                ObjKind::LEX_ID,
+                ObjKey::encode_u32_id(5),
+                1,
+                true,
+                DatatypeDictId::STRING.as_u16(),
+                1,
+                None,
+            ),
+            RunRecord::new(
+                0,
+                SubjectId::from_u64(2),
+                1,
+                ObjKind::NUM_INT,
+                ObjKey::encode_i64(20),
+                2,
+                true,
+                DatatypeDictId::LONG.as_u16(),
+                0,
+                Some(0),
+            ),
         ];
 
         let info = write_run_file(&path, &records, &lang_dict, RunSortOrder::Spot, 1, 2).unwrap();

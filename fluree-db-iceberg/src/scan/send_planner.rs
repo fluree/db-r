@@ -35,18 +35,20 @@ impl<'a, S: SendIcebergStorage> SendScanPlanner<'a, S> {
 
     /// Plan a scan for the current snapshot.
     pub async fn plan_scan(&self) -> Result<ScanPlan> {
-        let snapshot = self.metadata.current_snapshot().ok_or_else(|| {
-            IcebergError::SnapshotNotFound("No current snapshot".to_string())
-        })?;
+        let snapshot = self
+            .metadata
+            .current_snapshot()
+            .ok_or_else(|| IcebergError::SnapshotNotFound("No current snapshot".to_string()))?;
 
         self.plan_scan_for_snapshot(snapshot).await
     }
 
     /// Plan a scan for a specific snapshot.
     pub async fn plan_scan_for_snapshot(&self, snapshot: &Snapshot) -> Result<ScanPlan> {
-        let schema = self.metadata.current_schema().ok_or_else(|| {
-            IcebergError::Metadata("No current schema".to_string())
-        })?;
+        let schema = self
+            .metadata
+            .current_schema()
+            .ok_or_else(|| IcebergError::Metadata("No current schema".to_string()))?;
 
         // Clone schema into Arc for sharing with tasks
         let schema_arc = Arc::new(schema.clone());
@@ -56,7 +58,9 @@ impl<'a, S: SendIcebergStorage> SendScanPlanner<'a, S> {
 
         // Load manifest list
         let manifest_list_path = snapshot.manifest_list.as_ref().ok_or_else(|| {
-            IcebergError::Manifest("Snapshot has no manifest list (v1 format not supported)".to_string())
+            IcebergError::Manifest(
+                "Snapshot has no manifest list (v1 format not supported)".to_string(),
+            )
         })?;
 
         let manifest_list_data = self.storage.read(manifest_list_path).await?;

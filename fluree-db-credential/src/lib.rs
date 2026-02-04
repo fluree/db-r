@@ -124,8 +124,8 @@ fn verify_vc_object(credential: &JsonValue) -> Result<VerifiedCredential> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-    use ed25519_dalek::{SigningKey, Signer};
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use ed25519_dalek::{Signer, SigningKey};
 
     fn create_test_jws(payload: &str, signing_key: &SigningKey) -> String {
         let pubkey = signing_key.verifying_key().to_bytes();
@@ -160,7 +160,10 @@ mod tests {
         let result = verify(CredentialInput::Jws(&jws)).unwrap();
 
         assert!(result.did.starts_with("did:key:z"));
-        assert_eq!(result.subject.get("select").unwrap(), &serde_json::json!(["?s"]));
+        assert_eq!(
+            result.subject.get("select").unwrap(),
+            &serde_json::json!(["?s"])
+        );
         assert!(result.parent_context.is_none());
     }
 
@@ -208,10 +211,9 @@ mod tests {
     fn test_did_derivation_matches_test_vector() {
         // Test vectors from fluree.crypto cross_platform_test.cljc
         let test_pubkey: [u8; 32] = [
-            0xa8, 0xde, 0xf1, 0x2a, 0xd7, 0x36, 0xf8, 0x84,
-            0x0f, 0x83, 0x6a, 0x46, 0xc6, 0x6c, 0x9f, 0x3e,
-            0x20, 0x15, 0xd1, 0xea, 0x2c, 0x69, 0xd5, 0x46,
-            0xc0, 0x50, 0xfe, 0xf7, 0x46, 0xbd, 0x63, 0xb3,
+            0xa8, 0xde, 0xf1, 0x2a, 0xd7, 0x36, 0xf8, 0x84, 0x0f, 0x83, 0x6a, 0x46, 0xc6, 0x6c,
+            0x9f, 0x3e, 0x20, 0x15, 0xd1, 0xea, 0x2c, 0x69, 0xd5, 0x46, 0xc0, 0x50, 0xfe, 0xf7,
+            0x46, 0xbd, 0x63, 0xb3,
         ];
         let expected_did = "did:key:z6MkqpTi7zUDy5nnSfpLf7SPGsepMNJAxRiH1jbCZbuaZoEz";
 

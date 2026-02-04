@@ -87,17 +87,25 @@ pub fn compare_bindings(a: &Binding, b: &Binding) -> Ordering {
         (Binding::IriMatch { .. }, _) => Ordering::Less,
 
         // Iri (raw IRI string) sorts after IriMatch but before Lit
-        (Binding::Iri(_), Binding::Unbound | Binding::Poisoned | Binding::Sid(_) | Binding::IriMatch { .. }) => {
-            Ordering::Greater
-        }
+        (
+            Binding::Iri(_),
+            Binding::Unbound | Binding::Poisoned | Binding::Sid(_) | Binding::IriMatch { .. },
+        ) => Ordering::Greater,
         (Binding::Iri(a), Binding::Iri(b)) => a.cmp(b),
         (Binding::Iri(_), _) => Ordering::Less,
 
         // Lit sorts after Iri but before Grouped
-        (Binding::Lit { .. }, Binding::Unbound | Binding::Poisoned | Binding::Sid(_) | Binding::IriMatch { .. } | Binding::Iri(_)) => {
-            Ordering::Greater
+        (
+            Binding::Lit { .. },
+            Binding::Unbound
+            | Binding::Poisoned
+            | Binding::Sid(_)
+            | Binding::IriMatch { .. }
+            | Binding::Iri(_),
+        ) => Ordering::Greater,
+        (Binding::Lit { val: v1, .. }, Binding::Lit { val: v2, .. }) => {
+            compare_flake_values(v1, v2)
         }
-        (Binding::Lit { val: v1, .. }, Binding::Lit { val: v2, .. }) => compare_flake_values(v1, v2),
         (Binding::Lit { .. }, Binding::Grouped(_)) => Ordering::Less,
 
         // Grouped sorts last (should not appear in normal sort contexts)
@@ -272,7 +280,9 @@ impl<S: Storage + 'static> Operator<S> for SortOperator<S> {
                     self.child.next_batch(ctx).await?
                 };
                 child_next_ms += (next_start.elapsed().as_secs_f64() * 1000.0) as u64;
-                let Some(batch) = next else { break; };
+                let Some(batch) = next else {
+                    break;
+                };
 
                 input_batches += 1;
                 let build_span = tracing::info_span!("sort_build_rows_batch", rows = batch.len());
@@ -546,8 +556,14 @@ mod tests {
 
     #[test]
     fn test_compare_bindings_string() {
-        let a = Binding::lit(FlakeValue::String("apple".to_string()), Sid::new(1, "string"));
-        let b = Binding::lit(FlakeValue::String("banana".to_string()), Sid::new(1, "string"));
+        let a = Binding::lit(
+            FlakeValue::String("apple".to_string()),
+            Sid::new(1, "string"),
+        );
+        let b = Binding::lit(
+            FlakeValue::String("banana".to_string()),
+            Sid::new(1, "string"),
+        );
 
         assert_eq!(compare_bindings(&a, &a), Ordering::Equal);
         assert_eq!(compare_bindings(&a, &b), Ordering::Less);

@@ -65,13 +65,8 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                         span,
                     } = expr
                     {
-                        let key = self.aggregate_key(
-                            function,
-                            agg_expr,
-                            *distinct,
-                            separator,
-                            *span,
-                        )?;
+                        let key =
+                            self.aggregate_key(function, agg_expr, *distinct, separator, *span)?;
                         let var_id = self.register_var(alias);
                         aliases.insert(key, var_id);
                     }
@@ -139,12 +134,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                         .vars
                         .get_or_insert(&format!("?__having_agg_{}", aliases.len()));
                     let spec = self.aggregate_spec_from_expr(
-                        function,
-                        agg_expr,
-                        *distinct,
-                        separator,
-                        *span,
-                        output_var,
+                        function, agg_expr, *distinct, separator, *span, output_var,
                     )?;
                     aliases.insert(key, output_var);
                     aggregates.push(spec);
@@ -192,11 +182,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         }
     }
 
-    pub(super) fn expr_references_vars(
-        &self,
-        expr: &Expression,
-        vars: &HashSet<Arc<str>>,
-    ) -> bool {
+    pub(super) fn expr_references_vars(&self, expr: &Expression, vars: &HashSet<Arc<str>>) -> bool {
         match expr.unwrap_bracketed() {
             Expression::Var(var) => vars.contains(&var.name),
             Expression::Literal(_) | Expression::Iri(_) => false,

@@ -115,7 +115,8 @@ impl VectorWorkerState {
         let deps_set: HashSet<String> = dependencies.iter().cloned().collect();
 
         // Update forward map
-        self.vg_to_ledgers.insert(vg_alias.to_string(), deps_set.clone());
+        self.vg_to_ledgers
+            .insert(vg_alias.to_string(), deps_set.clone());
 
         // Update reverse map
         for ledger in &deps_set {
@@ -126,7 +127,11 @@ impl VectorWorkerState {
         }
 
         self.stats.registered_vgs = self.vg_to_ledgers.len();
-        debug!(vg_alias, ?dependencies, "Registered vector VG for maintenance");
+        debug!(
+            vg_alias,
+            ?dependencies,
+            "Registered vector VG for maintenance"
+        );
     }
 
     /// Unregister a VG.
@@ -224,9 +229,7 @@ impl VectorWorkerHandle {
 
     /// Register a VG with explicit dependencies (no nameservice lookup).
     pub fn register_vg_with_deps(&self, vg_alias: &str, dependencies: &[String]) {
-        self.state
-            .borrow_mut()
-            .register_vg(vg_alias, dependencies);
+        self.state.borrow_mut().register_vg(vg_alias, dependencies);
     }
 
     /// Unregister a VG from automatic maintenance.
@@ -310,9 +313,7 @@ where
 
         match event {
             NameServiceEvent::LedgerCommitPublished {
-                alias,
-                commit_t,
-                ..
+                alias, commit_t, ..
             } => {
                 let vgs = self.state.borrow().vgs_for_ledger(alias);
                 if !vgs.is_empty() {
@@ -431,12 +432,14 @@ where
                 if pending.is_empty() {
                     next_flush = None;
                 } else {
-                    next_flush = Some(Instant::now() + Duration::from_millis(self.config.debounce_ms));
+                    next_flush =
+                        Some(Instant::now() + Duration::from_millis(self.config.debounce_ms));
                 }
             }
 
             // Compute a sleep duration: either until next flush or a small tick for stop checks.
-            let sleep_until = next_flush.unwrap_or_else(|| Instant::now() + Duration::from_millis(100));
+            let sleep_until =
+                next_flush.unwrap_or_else(|| Instant::now() + Duration::from_millis(100));
             let sleep_fut = time::sleep_until(sleep_until);
             tokio::pin!(sleep_fut);
 
@@ -492,14 +495,24 @@ mod tests {
     fn test_worker_state_register_vg() {
         let mut state = VectorWorkerState::new();
 
-        state.register_vg("embeddings:main", &["ledger1:main".to_string(), "ledger2:main".to_string()]);
+        state.register_vg(
+            "embeddings:main",
+            &["ledger1:main".to_string(), "ledger2:main".to_string()],
+        );
 
         assert_eq!(state.registered_vgs(), vec!["embeddings:main"]);
-        assert!(state.watched_ledgers().contains(&"ledger1:main".to_string()));
-        assert!(state.watched_ledgers().contains(&"ledger2:main".to_string()));
+        assert!(state
+            .watched_ledgers()
+            .contains(&"ledger1:main".to_string()));
+        assert!(state
+            .watched_ledgers()
+            .contains(&"ledger2:main".to_string()));
 
         // VGs for ledger
-        assert_eq!(state.vgs_for_ledger("ledger1:main"), vec!["embeddings:main"]);
+        assert_eq!(
+            state.vgs_for_ledger("ledger1:main"),
+            vec!["embeddings:main"]
+        );
         assert_eq!(state.vgs_for_ledger("unknown:main"), Vec::<String>::new());
     }
 

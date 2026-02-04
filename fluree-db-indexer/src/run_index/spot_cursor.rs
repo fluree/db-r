@@ -109,7 +109,12 @@ impl SpotCursor {
                     break;
                 }
                 let leaflet_bytes = &leaf_data[dir_entry.offset as usize..end];
-                let decoded = decode_leaflet(leaflet_bytes, header.p_width, header.dt_width, RunSortOrder::Spot)?;
+                let decoded = decode_leaflet(
+                    leaflet_bytes,
+                    header.p_width,
+                    header.dt_width,
+                    RunSortOrder::Spot,
+                )?;
 
                 for row in 0..decoded.row_count {
                     let row_s_id = decoded.s_ids[row];

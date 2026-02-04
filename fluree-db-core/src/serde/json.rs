@@ -3,15 +3,15 @@
 use crate::error::{Error, Result};
 use crate::flake::{Flake, FlakeMeta};
 use crate::sid::Sid;
-use crate::temporal::{DateTime, Date, Time};
+use crate::temporal::{Date, DateTime, Time};
 use crate::value::FlakeValue;
 use bigdecimal::BigDecimal;
 use fluree_vocab::namespaces::{JSON_LD, XSD};
 use fluree_vocab::xsd_names;
 use num_bigint::BigInt;
-use std::str::FromStr;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::str::FromStr;
 
 fn is_id_dt(dt: &Sid) -> bool {
     dt.namespace_code == JSON_LD && dt.name.as_ref() == "id"
@@ -68,7 +68,6 @@ impl RawFlake {
 
         Ok(Flake::new(s, p, o, dt, t, op, m))
     }
-
 }
 
 /// Deserialize a SID from JSON
@@ -259,13 +258,13 @@ impl RawLeafNode {
 
     /// Convert v2 dictionary format to flakes
     fn to_flakes_v2(&self) -> Result<Vec<Flake>> {
-        let dict = self.dict.as_ref().ok_or_else(|| Error::other("v2 leaf missing dict"))?;
+        let dict = self
+            .dict
+            .as_ref()
+            .ok_or_else(|| Error::other("v2 leaf missing dict"))?;
 
         // Build SID dictionary
-        let sid_dict: Vec<Sid> = dict
-            .iter()
-            .map(deserialize_sid)
-            .collect::<Result<_>>()?;
+        let sid_dict: Vec<Sid> = dict.iter().map(deserialize_sid).collect::<Result<_>>()?;
 
         // Deserialize flakes using dictionary indices
         self.flakes
@@ -276,39 +275,66 @@ impl RawLeafNode {
                 }
 
                 // s, p, dt are indices into dictionary
-                let s_idx = rf.0[0].as_i64().ok_or_else(|| Error::other("s_idx must be integer"))? as usize;
-                let p_idx = rf.0[1].as_i64().ok_or_else(|| Error::other("p_idx must be integer"))? as usize;
-                let dt_idx = rf.0[3].as_i64().ok_or_else(|| Error::other("dt_idx must be integer"))? as usize;
+                let s_idx = rf.0[0]
+                    .as_i64()
+                    .ok_or_else(|| Error::other("s_idx must be integer"))?
+                    as usize;
+                let p_idx = rf.0[1]
+                    .as_i64()
+                    .ok_or_else(|| Error::other("p_idx must be integer"))?
+                    as usize;
+                let dt_idx = rf.0[3]
+                    .as_i64()
+                    .ok_or_else(|| Error::other("dt_idx must be integer"))?
+                    as usize;
 
-                let s = sid_dict.get(s_idx).cloned().ok_or_else(|| Error::other(format!("Invalid s_idx: {}", s_idx)))?;
-                let p = sid_dict.get(p_idx).cloned().ok_or_else(|| Error::other(format!("Invalid p_idx: {}", p_idx)))?;
-                let dt = sid_dict.get(dt_idx).cloned().ok_or_else(|| Error::other(format!("Invalid dt_idx: {}", dt_idx)))?;
+                let s = sid_dict
+                    .get(s_idx)
+                    .cloned()
+                    .ok_or_else(|| Error::other(format!("Invalid s_idx: {}", s_idx)))?;
+                let p = sid_dict
+                    .get(p_idx)
+                    .cloned()
+                    .ok_or_else(|| Error::other(format!("Invalid p_idx: {}", p_idx)))?;
+                let dt = sid_dict
+                    .get(dt_idx)
+                    .cloned()
+                    .ok_or_else(|| Error::other(format!("Invalid dt_idx: {}", dt_idx)))?;
 
                 // o: index if reference, otherwise literal
                 let o = if is_id_dt(&dt) {
-                    let o_idx = rf.0[2].as_i64().ok_or_else(|| Error::other("o_idx must be integer"))? as usize;
-                    let o_sid = sid_dict.get(o_idx).cloned().ok_or_else(|| Error::other(format!("Invalid o_idx: {}", o_idx)))?;
+                    let o_idx = rf.0[2]
+                        .as_i64()
+                        .ok_or_else(|| Error::other("o_idx must be integer"))?
+                        as usize;
+                    let o_sid = sid_dict
+                        .get(o_idx)
+                        .cloned()
+                        .ok_or_else(|| Error::other(format!("Invalid o_idx: {}", o_idx)))?;
                     FlakeValue::Ref(o_sid)
                 } else {
                     deserialize_object(&rf.0[2], &dt)?
                 };
 
-                let t = rf.0[4].as_i64().ok_or_else(|| Error::other("t must be integer"))?;
-                let op = rf.0[5].as_bool().ok_or_else(|| Error::other("op must be boolean"))?;
+                let t = rf.0[4]
+                    .as_i64()
+                    .ok_or_else(|| Error::other("t must be integer"))?;
+                let op = rf.0[5]
+                    .as_bool()
+                    .ok_or_else(|| Error::other("op must be boolean"))?;
                 let m = deserialize_meta(&rf.0[6])?;
 
                 Ok(Flake::new(s, p, o, dt, t, op, m))
             })
             .collect()
     }
-
 }
 
 // === Index Stats (JSON parsing) ===
 
 use crate::index_stats::{
-    IndexStats, PropertyStatEntry, ClassStatEntry, ClassPropertyUsage,
-    GraphPropertyStatEntry, GraphStatsEntry,
+    ClassPropertyUsage, ClassStatEntry, GraphPropertyStatEntry, GraphStatsEntry, IndexStats,
+    PropertyStatEntry,
 };
 
 /// Raw property stat entry as it appears in JSON (v2 only).
@@ -399,7 +425,9 @@ impl<'de> serde::Deserialize<'de> for RawClassStatEntry {
             type Value = RawClassStatEntry;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("a class stat entry as [[ns_code, name], [count, [property_usages...]]]")
+                formatter.write_str(
+                    "a class stat entry as [[ns_code, name], [count, [property_usages...]]]",
+                )
             }
 
             fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
@@ -419,7 +447,11 @@ impl<'de> serde::Deserialize<'de> for RawClassStatEntry {
                 Ok(RawClassStatEntry {
                     class_sid,
                     count: stats.0,
-                    properties: if stats.1.is_empty() { None } else { Some(stats.1) },
+                    properties: if stats.1.is_empty() {
+                        None
+                    } else {
+                        Some(stats.1)
+                    },
                 })
             }
         }
@@ -454,7 +486,9 @@ impl<'de> serde::Deserialize<'de> for RawClassPropertyUsage {
             type Value = RawClassPropertyUsage;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("a property usage as [[property_sid], [[types], [ref_classes], [langs]]]")
+                formatter.write_str(
+                    "a property usage as [[property_sid], [[types], [ref_classes], [langs]]]",
+                )
             }
 
             fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
@@ -469,9 +503,7 @@ impl<'de> serde::Deserialize<'de> for RawClassPropertyUsage {
                 // Optional second element: legacy detailed structure. Ignore if present.
                 let _ignored: Option<serde_json::Value> = seq.next_element()?;
 
-                Ok(RawClassPropertyUsage {
-                    property_sid,
-                })
+                Ok(RawClassPropertyUsage { property_sid })
             }
         }
 
@@ -690,11 +722,9 @@ fn serialize_object(value: &FlakeValue, _dt: &Sid) -> serde_json::Value {
         FlakeValue::Null => serde_json::Value::Null,
         FlakeValue::Boolean(b) => serde_json::Value::Bool(*b),
         FlakeValue::Long(n) => serde_json::Value::Number((*n).into()),
-        FlakeValue::Double(f) => {
-            serde_json::Number::from_f64(*f)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null)
-        }
+        FlakeValue::Double(f) => serde_json::Number::from_f64(*f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
         FlakeValue::String(s) => serde_json::Value::String(s.clone()),
         FlakeValue::Json(s) => serde_json::Value::String(s.clone()), // Serialize JSON as string
         FlakeValue::Vector(v) => serde_json::Value::Array(
@@ -742,7 +772,8 @@ fn build_sid_dictionary(flakes: &[Flake]) -> (Vec<Sid>, HashMap<Sid, usize>) {
 
     // Build dictionary and index mapping
     let dict: Vec<Sid> = sids.into_iter().collect();
-    let sid_to_idx: HashMap<Sid, usize> = dict.iter()
+    let sid_to_idx: HashMap<Sid, usize> = dict
+        .iter()
         .enumerate()
         .map(|(i, sid)| (sid.clone(), i))
         .collect();
@@ -754,18 +785,35 @@ fn build_sid_dictionary(flakes: &[Flake]) -> (Vec<Sid>, HashMap<Sid, usize>) {
 ///
 /// Returns an error if any SID is missing from the dictionary, which would
 /// indicate a bug in dictionary building.
-fn serialize_flake_v2(flake: &Flake, sid_to_idx: &HashMap<Sid, usize>) -> Result<serde_json::Value> {
-    let s_idx = sid_to_idx.get(&flake.s).copied()
+fn serialize_flake_v2(
+    flake: &Flake,
+    sid_to_idx: &HashMap<Sid, usize>,
+) -> Result<serde_json::Value> {
+    let s_idx = sid_to_idx
+        .get(&flake.s)
+        .copied()
         .ok_or_else(|| Error::other(format!("Missing subject SID in dictionary: {:?}", flake.s)))?;
-    let p_idx = sid_to_idx.get(&flake.p).copied()
-        .ok_or_else(|| Error::other(format!("Missing predicate SID in dictionary: {:?}", flake.p)))?;
-    let dt_idx = sid_to_idx.get(&flake.dt).copied()
-        .ok_or_else(|| Error::other(format!("Missing datatype SID in dictionary: {:?}", flake.dt)))?;
+    let p_idx = sid_to_idx.get(&flake.p).copied().ok_or_else(|| {
+        Error::other(format!(
+            "Missing predicate SID in dictionary: {:?}",
+            flake.p
+        ))
+    })?;
+    let dt_idx = sid_to_idx.get(&flake.dt).copied().ok_or_else(|| {
+        Error::other(format!(
+            "Missing datatype SID in dictionary: {:?}",
+            flake.dt
+        ))
+    })?;
 
     // Object: if reference, use index; otherwise serialize value
     let o_value = if let FlakeValue::Ref(ref_sid) = &flake.o {
-        let ref_idx = sid_to_idx.get(ref_sid).copied()
-            .ok_or_else(|| Error::other(format!("Missing reference SID in dictionary: {:?}", ref_sid)))?;
+        let ref_idx = sid_to_idx.get(ref_sid).copied().ok_or_else(|| {
+            Error::other(format!(
+                "Missing reference SID in dictionary: {:?}",
+                ref_sid
+            ))
+        })?;
         serde_json::Value::Number(ref_idx.into())
     } else {
         serialize_object(&flake.o, &flake.dt)
@@ -792,7 +840,6 @@ pub fn parse_leaf_node(mut bytes: Vec<u8>) -> Result<Vec<Flake>> {
     raw.to_flakes()
 }
 
-
 /// Serialize a leaf node to JSON bytes (v2 dictionary format)
 ///
 /// Uses the v2 dictionary format where SIDs are stored in a shared dictionary
@@ -811,12 +858,11 @@ pub fn serialize_leaf_node(flakes: &[Flake]) -> Result<Vec<u8>> {
     let (dict, sid_to_idx) = build_sid_dictionary(flakes);
 
     // Serialize dictionary
-    let dict_json: Vec<serde_json::Value> = dict.iter()
-        .map(serialize_sid)
-        .collect();
+    let dict_json: Vec<serde_json::Value> = dict.iter().map(serialize_sid).collect();
 
     // Serialize flakes using indices - propagate any errors
-    let flakes_json: Vec<serde_json::Value> = flakes.iter()
+    let flakes_json: Vec<serde_json::Value> = flakes
+        .iter()
         .map(|f| serialize_flake_v2(f, &sid_to_idx))
         .collect::<Result<Vec<_>>>()?;
 
@@ -828,7 +874,6 @@ pub fn serialize_leaf_node(flakes: &[Flake]) -> Result<Vec<u8>> {
 
     serde_json::to_vec(&leaf).map_err(Into::into)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -845,13 +890,13 @@ mod tests {
     #[test]
     fn test_deserialize_flake() {
         let json = serde_json::json!([
-            [1, "alice"],      // s
-            [2, "name"],       // p
-            "Alice",           // o
-            [3, "string"],     // dt
-            100,               // t
-            true,              // op
-            null               // m
+            [1, "alice"],  // s
+            [2, "name"],   // p
+            "Alice",       // o
+            [3, "string"], // dt
+            100,           // t
+            true,          // op
+            null           // m
         ]);
 
         let raw: RawFlake = serde_json::from_value(json).unwrap();
@@ -869,13 +914,13 @@ mod tests {
     #[test]
     fn test_deserialize_ref_flake() {
         let json = serde_json::json!([
-            [1, "alice"],      // s
-            [2, "knows"],      // p
-            [1, "bob"],        // o (reference)
-            [1, "id"],         // dt = $id
-            100,               // t
-            true,              // op
-            null               // m
+            [1, "alice"], // s
+            [2, "knows"], // p
+            [1, "bob"],   // o (reference)
+            [1, "id"],    // dt = $id
+            100,          // t
+            true,         // op
+            null          // m
         ]);
 
         let raw: RawFlake = serde_json::from_value(json).unwrap();
@@ -1081,7 +1126,7 @@ mod tests {
                 FlakeValue::String("text".to_string()),
                 Sid::new(3, "string"),
                 5,
-                false,  // retraction
+                false, // retraction
                 None,
             ),
         ];
@@ -1096,8 +1141,4 @@ mod tests {
         assert!(matches!(&parsed[3].o, FlakeValue::Boolean(true)));
         assert!(!parsed[4].op); // retraction
     }
-
-
-
-
 }

@@ -54,9 +54,11 @@ pub use datalog::{
 };
 pub use error::{ReasonerError, Result};
 pub use overlay::{DerivedFactsBuilder, DerivedFactsOverlay};
-pub use rdf_list::{collect_chain_elements, collect_list_elements, collect_list_values, resolve_property_expression};
-pub use same_as::{FrozenSameAs, SameAsTracker};
 pub use owl::{find_owl_typed_entities, OwlSidRegistry};
+pub use rdf_list::{
+    collect_chain_elements, collect_list_elements, collect_list_values, resolve_property_expression,
+};
+pub use same_as::{FrozenSameAs, SameAsTracker};
 
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::storage::Storage;

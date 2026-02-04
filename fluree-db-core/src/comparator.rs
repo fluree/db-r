@@ -282,23 +282,50 @@ mod tests {
     #[test]
     fn test_index_type_for_query() {
         // Subject bound -> SPOT
-        assert_eq!(IndexType::for_query(true, false, false, false), IndexType::Spot);
-        assert_eq!(IndexType::for_query(true, true, false, false), IndexType::Spot);
-        assert_eq!(IndexType::for_query(true, true, true, false), IndexType::Spot);
+        assert_eq!(
+            IndexType::for_query(true, false, false, false),
+            IndexType::Spot
+        );
+        assert_eq!(
+            IndexType::for_query(true, true, false, false),
+            IndexType::Spot
+        );
+        assert_eq!(
+            IndexType::for_query(true, true, true, false),
+            IndexType::Spot
+        );
 
         // Predicate bound, object unbound -> PSOT (property-join)
-        assert_eq!(IndexType::for_query(false, true, false, false), IndexType::Psot);
+        assert_eq!(
+            IndexType::for_query(false, true, false, false),
+            IndexType::Psot
+        );
 
         // Predicate and object bound -> POST (value lookup)
-        assert_eq!(IndexType::for_query(false, true, true, false), IndexType::Post);
-        assert_eq!(IndexType::for_query(false, true, true, true), IndexType::Post);
+        assert_eq!(
+            IndexType::for_query(false, true, true, false),
+            IndexType::Post
+        );
+        assert_eq!(
+            IndexType::for_query(false, true, true, true),
+            IndexType::Post
+        );
 
         // Object bound (ref) -> OPST
-        assert_eq!(IndexType::for_query(false, false, true, true), IndexType::Opst);
+        assert_eq!(
+            IndexType::for_query(false, false, true, true),
+            IndexType::Opst
+        );
 
         // Default -> SPOT
-        assert_eq!(IndexType::for_query(false, false, false, false), IndexType::Spot);
-        assert_eq!(IndexType::for_query(false, false, true, false), IndexType::Spot);
+        assert_eq!(
+            IndexType::for_query(false, false, false, false),
+            IndexType::Spot
+        );
+        assert_eq!(
+            IndexType::for_query(false, false, true, false),
+            IndexType::Spot
+        );
     }
 
     #[test]

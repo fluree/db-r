@@ -160,7 +160,10 @@ fn test_separate_index_commit_storage() {
     }
 
     // Check commit storage
-    let commit = parsed.commit_storage.as_ref().expect("Should have commit storage");
+    let commit = parsed
+        .commit_storage
+        .as_ref()
+        .expect("Should have commit storage");
     match &commit.storage_type {
         StorageType::S3(s3_config) => {
             assert_eq!(&*s3_config.bucket, "commit-bucket");
@@ -201,7 +204,10 @@ fn test_dynamodb_publisher_config() {
 
     let parsed = ConnectionConfig::from_json_ld(&config).expect("Should parse");
 
-    let publisher = parsed.primary_publisher.as_ref().expect("Should have publisher");
+    let publisher = parsed
+        .primary_publisher
+        .as_ref()
+        .expect("Should have publisher");
     match &publisher.publisher_type {
         fluree_db_connection::config::PublisherType::DynamoDb { table, region, .. } => {
             assert_eq!(&**table, "fluree-nameservice");
@@ -242,7 +248,10 @@ fn test_storage_backed_publisher_config() {
 
     let parsed = ConnectionConfig::from_json_ld(&config).expect("Should parse");
 
-    let publisher = parsed.primary_publisher.as_ref().expect("Should have publisher");
+    let publisher = parsed
+        .primary_publisher
+        .as_ref()
+        .expect("Should have publisher");
     match &publisher.publisher_type {
         fluree_db_connection::config::PublisherType::Storage { storage } => {
             match &storage.storage_type {
@@ -350,7 +359,10 @@ fn test_full_clojure_compatible_aws_config() {
     }
 
     // Verify commit storage
-    let commit = parsed.commit_storage.as_ref().expect("Should have commit storage");
+    let commit = parsed
+        .commit_storage
+        .as_ref()
+        .expect("Should have commit storage");
     match &commit.storage_type {
         StorageType::S3(s3_config) => {
             assert_eq!(&*s3_config.bucket, "fluree-commits");
@@ -361,7 +373,10 @@ fn test_full_clojure_compatible_aws_config() {
     }
 
     // Verify publisher
-    let publisher = parsed.primary_publisher.as_ref().expect("Should have publisher");
+    let publisher = parsed
+        .primary_publisher
+        .as_ref()
+        .expect("Should have publisher");
     match &publisher.publisher_type {
         fluree_db_connection::config::PublisherType::DynamoDb {
             table,
@@ -407,26 +422,38 @@ fn test_shared_storage_reference() {
         ]
     });
 
-    let parsed = ConnectionConfig::from_json_ld(&config).expect("Should parse shared storage config");
+    let parsed =
+        ConnectionConfig::from_json_ld(&config).expect("Should parse shared storage config");
 
     // All three should reference the same bucket/prefix
-    let check_shared = |st: &StorageType, context: &str| {
-        match st {
-            StorageType::S3(s3) => {
-                assert_eq!(&*s3.bucket, "unified-bucket", "{} bucket mismatch", context);
-                assert_eq!(s3.prefix.as_deref(), Some("all-data"), "{} prefix mismatch", context);
-            }
-            _ => panic!("{}: Expected S3 storage", context),
+    let check_shared = |st: &StorageType, context: &str| match st {
+        StorageType::S3(s3) => {
+            assert_eq!(&*s3.bucket, "unified-bucket", "{} bucket mismatch", context);
+            assert_eq!(
+                s3.prefix.as_deref(),
+                Some("all-data"),
+                "{} prefix mismatch",
+                context
+            );
         }
+        _ => panic!("{}: Expected S3 storage", context),
     };
 
     check_shared(&parsed.index_storage.storage_type, "index_storage");
 
-    let commit = parsed.commit_storage.as_ref().expect("Should have commit storage");
+    let commit = parsed
+        .commit_storage
+        .as_ref()
+        .expect("Should have commit storage");
     check_shared(&commit.storage_type, "commit_storage");
 
-    let publisher = parsed.primary_publisher.as_ref().expect("Should have publisher");
-    if let fluree_db_connection::config::PublisherType::Storage { storage } = &publisher.publisher_type {
+    let publisher = parsed
+        .primary_publisher
+        .as_ref()
+        .expect("Should have publisher");
+    if let fluree_db_connection::config::PublisherType::Storage { storage } =
+        &publisher.publisher_type
+    {
         check_shared(&storage.storage_type, "publisher storage");
     } else {
         panic!("Expected Storage publisher type");
@@ -513,7 +540,10 @@ async fn test_connect_async_s3() {
         }
         Err(e) => {
             // May fail if bucket doesn't exist or credentials aren't set
-            eprintln!("S3 connection failed (expected without bucket setup): {}", e);
+            eprintln!(
+                "S3 connection failed (expected without bucket setup): {}",
+                e
+            );
         }
     }
 }
@@ -575,7 +605,10 @@ async fn test_connect_async_dynamodb() {
             println!("DynamoDB connection created: {:?}", conn.config().id);
         }
         Err(e) => {
-            eprintln!("DynamoDB connection failed (expected without table setup): {}", e);
+            eprintln!(
+                "DynamoDB connection failed (expected without table setup): {}",
+                e
+            );
         }
     }
 }
@@ -627,7 +660,10 @@ async fn test_connect_async_storage_nameservice() {
 
     match result {
         Ok(conn) => {
-            println!("Storage nameservice connection created: {:?}", conn.config().id);
+            println!(
+                "Storage nameservice connection created: {:?}",
+                conn.config().id
+            );
         }
         Err(e) => {
             eprintln!("Storage nameservice connection failed: {}", e);

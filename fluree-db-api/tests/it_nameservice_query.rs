@@ -26,9 +26,14 @@ fn extract_first_string(v: &serde_json::Value) -> Option<String> {
     None
 }
 
-async fn create_and_insert(fluree: &fluree_db_api::Fluree<fluree_db_core::MemoryStorage, fluree_db_nameservice::memory::MemoryNameService>,
-                           ledger: &str,
-                           name: &str) {
+async fn create_and_insert(
+    fluree: &fluree_db_api::Fluree<
+        fluree_db_core::MemoryStorage,
+        fluree_db_nameservice::memory::MemoryNameService,
+    >,
+    ledger: &str,
+    name: &str,
+) {
     let ledger_state = fluree.create_ledger(ledger).await.expect("create_ledger");
     let tx = json!({
         "@context": {"test":"http://example.org/test#"},
@@ -46,7 +51,10 @@ async fn nameservice_query_memory_parity() {
     create_and_insert(&fluree, "ledger-one", "Alice").await;
     create_and_insert(&fluree, "ledger-two", "Bob").await;
 
-    let ledger_three = fluree.create_ledger("ledger-three").await.expect("create ledger-three");
+    let ledger_three = fluree
+        .create_ledger("ledger-three")
+        .await
+        .expect("create ledger-three");
     let tx1 = json!({
         "@context": {"test":"http://example.org/test#"},
         "@graph": [{"@id":"test:person3","@type":"Person","name":"Charlie"}]
@@ -55,8 +63,16 @@ async fn nameservice_query_memory_parity() {
         "@context": {"test":"http://example.org/test#"},
         "@graph": [{"@id":"test:person4","@type":"Person","name":"David"}]
     });
-    let ledger_three = fluree.insert(ledger_three, &tx1).await.expect("insert 1").ledger;
-    let _ledger_three = fluree.insert(ledger_three, &tx2).await.expect("insert 2").ledger;
+    let ledger_three = fluree
+        .insert(ledger_three, &tx1)
+        .await
+        .expect("insert 1")
+        .ledger;
+    let _ledger_three = fluree
+        .insert(ledger_three, &tx2)
+        .await
+        .expect("insert 2")
+        .ledger;
 
     // Query for database records (Clojure: "Query for specific ledger information")
     let db_query = json!({
@@ -64,7 +80,10 @@ async fn nameservice_query_memory_parity() {
         "select": {"?ns": ["f:ledger", "f:branch", "f:t"]},
         "where": [{"@id":"?ns","@type":"f:Database"}]
     });
-    let db_result = fluree.query_nameservice(&db_query).await.expect("query_nameservice");
+    let db_result = fluree
+        .query_nameservice(&db_query)
+        .await
+        .expect("query_nameservice");
     let db_arr = db_result.as_array().expect("array");
     assert!(db_arr.len() >= 3, "expected >= 3 database records");
 
@@ -74,14 +93,15 @@ async fn nameservice_query_memory_parity() {
         "select": ["?ledger"],
         "where": [{"@id":"?ns","@type":"f:PhysicalDatabase","f:ledger":"?ledger","f:branch":"main"}]
     });
-    let branch_result = fluree.query_nameservice(&branch_query).await.expect("query_nameservice");
+    let branch_result = fluree
+        .query_nameservice(&branch_query)
+        .await
+        .expect("query_nameservice");
     let branch_arr = branch_result.as_array().expect("array");
     assert!(branch_arr.len() >= 3, "expected >= 3 ledgers on main");
 
-    let ledger_names: HashSet<String> = branch_arr
-        .iter()
-        .filter_map(extract_first_string)
-        .collect();
+    let ledger_names: HashSet<String> =
+        branch_arr.iter().filter_map(extract_first_string).collect();
     assert_eq!(
         ledger_names,
         HashSet::from([
@@ -97,7 +117,10 @@ async fn nameservice_query_memory_parity() {
         "select": ["?ledger","?t"],
         "where": [{"@id":"?ns","f:ledger":"?ledger","f:t":"?t"}]
     });
-    let t_result = fluree.query_nameservice(&t_query).await.expect("query_nameservice");
+    let t_result = fluree
+        .query_nameservice(&t_query)
+        .await
+        .expect("query_nameservice");
     let t_arr = t_result.as_array().expect("array");
     assert!(t_arr.len() >= 3, "expected >= 3 ledger t rows");
     let ledger_three_t = t_arr
@@ -107,7 +130,10 @@ async fn nameservice_query_memory_parity() {
         .and_then(|row| row.get(1))
         .and_then(|v| v.as_i64())
         .expect("ledger-three t");
-    assert!(ledger_three_t >= 2, "expected ledger-three t >= 2, got {ledger_three_t}");
+    assert!(
+        ledger_three_t >= 2,
+        "expected ledger-three t >= 2, got {ledger_three_t}"
+    );
 
     // Query with no results
     let none_query = json!({
@@ -115,7 +141,10 @@ async fn nameservice_query_memory_parity() {
         "select": ["?ledger"],
         "where": [{"@id":"?ns","f:ledger":"?ledger","f:branch":"nonexistent-branch"}]
     });
-    let none_result = fluree.query_nameservice(&none_query).await.expect("query_nameservice");
+    let none_result = fluree
+        .query_nameservice(&none_query)
+        .await
+        .expect("query_nameservice");
     assert_eq!(none_result, json!([]));
 }
 
@@ -127,7 +156,10 @@ async fn nameservice_query_file_storage_parity() {
         .build()
         .expect("build file fluree");
 
-    let ledger = fluree.create_ledger("file-ledger").await.expect("create_ledger");
+    let ledger = fluree
+        .create_ledger("file-ledger")
+        .await
+        .expect("create_ledger");
     let tx = json!({
         "@context": {"test":"http://example.org/test#"},
         "@graph": [{"@id":"test:file-person","@type":"Person","name":"File User"}]
@@ -139,7 +171,10 @@ async fn nameservice_query_file_storage_parity() {
         "select": ["?ledger","?t"],
         "where": [{"@id":"?ns","f:ledger":"?ledger","f:t":"?t"}]
     });
-    let result = fluree.query_nameservice(&query).await.expect("query_nameservice");
+    let result = fluree
+        .query_nameservice(&query)
+        .await
+        .expect("query_nameservice");
     let arr = result.as_array().expect("array");
     assert!(arr.len() >= 1, "expected at least 1 ledger");
     let file_ledger_rows = arr
@@ -159,9 +194,18 @@ async fn nameservice_slash_ledger_names_parity() {
         .expect("build file fluree");
 
     // Create ledgers with '/' in their names and insert data.
-    let l1 = fluree.create_ledger("tenant1/customers").await.expect("create");
-    let l2 = fluree.create_ledger("tenant1/products").await.expect("create");
-    let l3 = fluree.create_ledger("tenant2/orders").await.expect("create");
+    let l1 = fluree
+        .create_ledger("tenant1/customers")
+        .await
+        .expect("create");
+    let l2 = fluree
+        .create_ledger("tenant1/products")
+        .await
+        .expect("create");
+    let l3 = fluree
+        .create_ledger("tenant2/orders")
+        .await
+        .expect("create");
 
     let _ = fluree
         .insert(
@@ -191,7 +235,10 @@ async fn nameservice_slash_ledger_names_parity() {
         "select": ["?ledger"],
         "where": [{"@id":"?ns","@type":"f:PhysicalDatabase","f:ledger":"?ledger"}]
     });
-    let result = fluree.query_nameservice(&query).await.expect("query_nameservice");
+    let result = fluree
+        .query_nameservice(&query)
+        .await
+        .expect("query_nameservice");
     let arr = result.as_array().expect("array");
     assert!(
         arr.len() >= 3,
@@ -199,10 +246,7 @@ async fn nameservice_slash_ledger_names_parity() {
         arr.len()
     );
 
-    let names: HashSet<String> = arr
-        .iter()
-        .filter_map(extract_first_string)
-        .collect();
+    let names: HashSet<String> = arr.iter().filter_map(extract_first_string).collect();
     assert!(names.contains("tenant1/customers"));
     assert!(names.contains("tenant1/products"));
     assert!(names.contains("tenant2/orders"));
@@ -210,11 +254,16 @@ async fn nameservice_slash_ledger_names_parity() {
     // Verify filesystem layout mirrors Clojure expectation: ns@v2/{ledger-name}/{branch}.json
     let ns_dir = tmp.path().join("ns@v2");
     assert!(ns_dir.exists(), "ns@v2 directory should exist");
-    assert!(ns_dir.join("tenant1").exists(), "tenant1 subdirectory should exist");
-    assert!(ns_dir.join("tenant2").exists(), "tenant2 subdirectory should exist");
+    assert!(
+        ns_dir.join("tenant1").exists(),
+        "tenant1 subdirectory should exist"
+    );
+    assert!(
+        ns_dir.join("tenant2").exists(),
+        "tenant2 subdirectory should exist"
+    );
 
     assert!(ns_dir.join("tenant1/customers/main.json").exists());
     assert!(ns_dir.join("tenant1/products/main.json").exists());
     assert!(ns_dir.join("tenant2/orders/main.json").exists());
 }
-

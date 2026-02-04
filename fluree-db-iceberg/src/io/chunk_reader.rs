@@ -100,7 +100,10 @@ impl<S: SendIcebergStorage + 'static> std::fmt::Debug for RangeBackedChunkReader
         f.debug_struct("RangeBackedChunkReader")
             .field("path", &self.path)
             .field("file_size", &self.file_size)
-            .field("cache_entries", &self.cache.lock().map(|c| c.len()).unwrap_or(0))
+            .field(
+                "cache_entries",
+                &self.cache.lock().map(|c| c.len()).unwrap_or(0),
+            )
             .finish()
     }
 }
@@ -132,7 +135,11 @@ impl<S: SendIcebergStorage + 'static> RangeBackedChunkReader<S> {
     }
 
     /// Fetch bytes from storage, checking cache first.
-    fn fetch_bytes(&self, start: u64, len: usize) -> std::result::Result<Bytes, parquet::errors::ParquetError> {
+    fn fetch_bytes(
+        &self,
+        start: u64,
+        len: usize,
+    ) -> std::result::Result<Bytes, parquet::errors::ParquetError> {
         // Check cache first
         {
             let cache = self.cache.lock().map_err(|e| {
@@ -162,8 +169,7 @@ impl<S: SendIcebergStorage + 'static> RangeBackedChunkReader<S> {
 
         let aligned_start = (start / ALIGNMENT) * ALIGNMENT;
         let end = start + len as u64;
-        let aligned_end = ((end + MIN_FETCH_SIZE - 1) / ALIGNMENT * ALIGNMENT)
-            .min(self.file_size); // Don't read past EOF
+        let aligned_end = ((end + MIN_FETCH_SIZE - 1) / ALIGNMENT * ALIGNMENT).min(self.file_size); // Don't read past EOF
 
         tracing::debug!(
             path = %self.path,
@@ -181,14 +187,15 @@ impl<S: SendIcebergStorage + 'static> RangeBackedChunkReader<S> {
         let storage = Arc::clone(&self.storage);
         let path_for_fetch = self.path.clone();
         let path_for_err = self.path.clone();
-        let data = self.runtime.block_on(async move {
-            storage.read_range(&path_for_fetch, range).await
-        }).map_err(|e| {
-            parquet::errors::ParquetError::General(format!(
-                "Failed to read range [{}, {}) from {}: {}",
-                aligned_start, aligned_end, path_for_err, e
-            ))
-        })?;
+        let data = self
+            .runtime
+            .block_on(async move { storage.read_range(&path_for_fetch, range).await })
+            .map_err(|e| {
+                parquet::errors::ParquetError::General(format!(
+                    "Failed to read range [{}, {}) from {}: {}",
+                    aligned_start, aligned_end, path_for_err, e
+                ))
+            })?;
 
         // Cache the aligned result
         {
@@ -235,7 +242,11 @@ impl<S: SendIcebergStorage + 'static> ChunkReader for RangeBackedChunkReader<S> 
         Ok(Cursor::new(bytes))
     }
 
-    fn get_bytes(&self, start: u64, length: usize) -> std::result::Result<Bytes, parquet::errors::ParquetError> {
+    fn get_bytes(
+        &self,
+        start: u64,
+        length: usize,
+    ) -> std::result::Result<Bytes, parquet::errors::ParquetError> {
         self.fetch_bytes(start, length)
     }
 }
@@ -272,9 +283,9 @@ impl Read for BytesReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Result;
     use async_trait::async_trait;
     use std::ops::Range;
-    use crate::error::Result;
 
     /// Mock storage for testing.
     #[derive(Debug, Clone)]
@@ -311,12 +322,8 @@ mod tests {
 
         // Run sync operations in blocking context (same as read_task_large_file)
         let result = tokio::task::spawn_blocking(move || {
-            let reader = RangeBackedChunkReader::new(
-                storage,
-                "test.parquet".to_string(),
-                1000,
-                handle,
-            );
+            let reader =
+                RangeBackedChunkReader::new(storage, "test.parquet".to_string(), 1000, handle);
 
             // Test get_bytes
             let bytes = reader.get_bytes(100, 200).unwrap();
@@ -341,12 +348,8 @@ mod tests {
         let handle = Handle::current();
 
         let result = tokio::task::spawn_blocking(move || {
-            let reader = RangeBackedChunkReader::new(
-                storage,
-                "test.parquet".to_string(),
-                12345,
-                handle,
-            );
+            let reader =
+                RangeBackedChunkReader::new(storage, "test.parquet".to_string(), 12345, handle);
 
             reader.len()
         })
@@ -363,12 +366,8 @@ mod tests {
         let handle = Handle::current();
 
         let result = tokio::task::spawn_blocking(move || {
-            let reader = RangeBackedChunkReader::new(
-                storage,
-                "test.parquet".to_string(),
-                13,
-                handle,
-            );
+            let reader =
+                RangeBackedChunkReader::new(storage, "test.parquet".to_string(), 13, handle);
 
             let mut cursor = reader.get_read(7).unwrap();
             let mut buf = String::new();

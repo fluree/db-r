@@ -13,13 +13,13 @@ use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::value::FlakeValue;
 use fluree_db_core::{Db, MemoryStorage, Sid};
-use fluree_db_reasoner::{reason_owl2rl, ReasoningCache, ReasoningOptions};
 use fluree_db_query::binding::Binding;
 use fluree_db_query::execute::{execute_with_overlay_at, ExecutableQuery};
 use fluree_db_query::options::QueryOptions;
 use fluree_db_query::parse::{parse_query, MemoryEncoder};
 use fluree_db_query::rewrite::ReasoningModes;
 use fluree_db_query::var_registry::VarRegistry;
+use fluree_db_reasoner::{reason_owl2rl, ReasoningCache, ReasoningOptions};
 use serde_json::json;
 use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
@@ -65,7 +65,13 @@ impl SortedOverlay {
         }
     }
 
-    fn in_bounds(index: IndexType, f: &Flake, first: Option<&Flake>, rhs: Option<&Flake>, leftmost: bool) -> bool {
+    fn in_bounds(
+        index: IndexType,
+        f: &Flake,
+        first: Option<&Flake>,
+        rhs: Option<&Flake>,
+        leftmost: bool,
+    ) -> bool {
         // Left boundary semantics (see fluree-db-core OverlayProvider docs):
         // - If leftmost=false: left boundary is EXCLUSIVE (> first)
         // - If leftmost=true:  no left boundary (start from beginning)
@@ -103,12 +109,8 @@ impl OverlayProvider for SortedOverlay {
         callback: &mut dyn FnMut(&Flake),
     ) {
         if index == IndexType::Psot {
-            *self.psot_last_call.lock().unwrap() = Some((
-                first.cloned(),
-                rhs.cloned(),
-                leftmost,
-                to_t,
-            ));
+            *self.psot_last_call.lock().unwrap() =
+                Some((first.cloned(), rhs.cloned(), leftmost, to_t));
         }
         for f in self.list_for_index(index) {
             if f.t > to_t {
@@ -180,10 +182,14 @@ async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
     // The query parser lowers IRIs as `Term::Iri` and scan time encodes them via `db.encode_iri`.
     // Since this test constructs facts directly as SIDs in an overlay, we must teach the DB
     // the namespace codes used by those SIDs so encoding succeeds.
-    db.namespace_codes.insert(3, "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string());
-    db.namespace_codes.insert(4, "http://www.w3.org/2000/01/rdf-schema#".to_string());
-    db.namespace_codes.insert(6, "http://www.w3.org/2002/07/owl#".to_string());
-    db.namespace_codes.insert(100, "http://example.org/".to_string());
+    db.namespace_codes
+        .insert(3, "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string());
+    db.namespace_codes
+        .insert(4, "http://www.w3.org/2000/01/rdf-schema#".to_string());
+    db.namespace_codes
+        .insert(6, "http://www.w3.org/2002/07/owl#".to_string());
+    db.namespace_codes
+        .insert(100, "http://example.org/".to_string());
 
     // Vocabulary
     let person = sid_ex("Person");
@@ -213,22 +219,18 @@ async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
         // Domain/range axioms: parentOf domain Person; range Person
         flake_ref(parent_of.clone(), rdfs_domain.clone(), person.clone(), 1),
         flake_ref(parent_of.clone(), rdfs_range, person.clone(), 1),
-
         // propertyChainAxiom: grandparentOf chain (parentOf parentOf)
         flake_ref(grandparent_of.clone(), owl_chain, list1.clone(), 1),
         flake_ref(list1.clone(), rdf_first.clone(), parent_of.clone(), 1),
         flake_ref(list1.clone(), rdf_rest.clone(), list2.clone(), 1),
         flake_ref(list2.clone(), rdf_first, parent_of.clone(), 1),
         flake_ref(list2.clone(), rdf_rest, rdf_nil, 1),
-
         // Data: alice parentOf bob; bob parentOf charlie
         flake_ref(alice.clone(), parent_of.clone(), bob.clone(), 1),
         flake_ref(bob.clone(), parent_of.clone(), charlie.clone(), 1),
-
         // A domain-only case with a literal object (still implies alice rdf:type Person)
         flake_ref(sid_ex("age"), rdfs_domain.clone(), person.clone(), 1),
         flake_str(alice.clone(), sid_ex("age"), "30", 1),
-
         // No explicit rdf:type assertions in base data.
     ];
 
@@ -283,12 +285,18 @@ async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
     let parsed_a = parse_query(&q_type, &encoder, &mut vars_a).unwrap();
 
     // Run without owl2rl: should be empty (no explicit rdf:type triples).
-    let exec_no = ExecutableQuery::new(parsed_a.clone(), QueryOptions::new().with_reasoning(ReasoningModes::default()));
+    let exec_no = ExecutableQuery::new(
+        parsed_a.clone(),
+        QueryOptions::new().with_reasoning(ReasoningModes::default()),
+    );
     let res_no = execute_with_overlay_at(&db, &overlay, &vars_a, &exec_no, 10, None)
         .await
         .unwrap();
     let total_rows_no: usize = res_no.iter().map(|b| b.len()).sum();
-    assert_eq!(total_rows_no, 0, "Expected no results without owl2rl materialization");
+    assert_eq!(
+        total_rows_no, 0,
+        "Expected no results without owl2rl materialization"
+    );
 
     // Run with owl2rl: domain/range should materialize rdf:type(x, Person).
     let exec_yes = ExecutableQuery::new(
@@ -362,4 +370,3 @@ async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
     got_o.dedup();
     assert_eq!(got_o, vec![charlie]);
 }
-

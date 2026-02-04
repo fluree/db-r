@@ -165,8 +165,8 @@ fn escape_string(s: &str) -> String {
             '\n' => result.push_str("\\n"),
             '\r' => result.push_str("\\r"),
             '\t' => result.push_str("\\t"),
-            '\u{0008}' => result.push_str("\\b"),  // backspace
-            '\u{000C}' => result.push_str("\\f"),  // form feed
+            '\u{0008}' => result.push_str("\\b"), // backspace
+            '\u{000C}' => result.push_str("\\f"), // form feed
             c if c < '\u{0020}' => {
                 // Other control characters as \uXXXX
                 result.push_str(&format!("\\u{:04x}", c as u32));

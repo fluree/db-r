@@ -96,11 +96,7 @@ impl SyncDriver {
     }
 
     /// Register a client for a remote
-    pub fn add_client(
-        &mut self,
-        remote: &RemoteName,
-        client: Arc<dyn RemoteNameserviceClient>,
-    ) {
+    pub fn add_client(&mut self, remote: &RemoteName, client: Arc<dyn RemoteNameserviceClient>) {
         self.clients.insert(remote.as_str().to_string(), client);
     }
 
@@ -194,7 +190,10 @@ impl SyncDriver {
             });
         };
 
-        let local_ref = self.local.get_ref(local_alias, RefKind::CommitHead).await
+        let local_ref = self
+            .local
+            .get_ref(local_alias, RefKind::CommitHead)
+            .await
             .map_err(|e| SyncError::Nameservice(e))?;
 
         match &local_ref {
@@ -376,12 +375,20 @@ mod tests {
     impl RemoteNameserviceClient for MockRemoteClient {
         async fn lookup(&self, alias: &str) -> Result<Option<NsRecord>> {
             use fluree_db_nameservice::NameService;
-            Ok(self.ns.lookup(alias).await.map_err(SyncError::Nameservice)?)
+            Ok(self
+                .ns
+                .lookup(alias)
+                .await
+                .map_err(SyncError::Nameservice)?)
         }
 
         async fn snapshot(&self) -> Result<RemoteSnapshot> {
             use fluree_db_nameservice::NameService;
-            let records = self.ns.all_records().await.map_err(SyncError::Nameservice)?;
+            let records = self
+                .ns
+                .all_records()
+                .await
+                .map_err(SyncError::Nameservice)?;
             Ok(RemoteSnapshot {
                 ledgers: records,
                 vgs: vec![],
@@ -422,7 +429,10 @@ mod tests {
             tracking as Arc<dyn RemoteTrackingStore>,
             config.clone() as Arc<dyn SyncConfigStore>,
         );
-        driver.add_client(&origin(), remote_client.clone() as Arc<dyn RemoteNameserviceClient>);
+        driver.add_client(
+            &origin(),
+            remote_client.clone() as Arc<dyn RemoteNameserviceClient>,
+        );
 
         (local, remote_client, driver, config)
     }
@@ -575,7 +585,11 @@ mod tests {
         driver.fetch_remote(&origin()).await.unwrap();
 
         match driver.pull_tracked("mydb:main").await.unwrap() {
-            PullResult::Diverged { local: l, remote: r, .. } => {
+            PullResult::Diverged {
+                local: l,
+                remote: r,
+                ..
+            } => {
                 assert_eq!(l.t, 10);
                 assert_eq!(r.t, 5);
             }
@@ -649,7 +663,11 @@ mod tests {
 
         // Push without fetch first — expected=None but remote has data
         match driver.push_tracked("mydb:main").await.unwrap() {
-            PushResult::Rejected { local: l, remote: r, .. } => {
+            PushResult::Rejected {
+                local: l,
+                remote: r,
+                ..
+            } => {
                 assert_eq!(l.t, 5);
                 assert_eq!(r.t, 1);
             }

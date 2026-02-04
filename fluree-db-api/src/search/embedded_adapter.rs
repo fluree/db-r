@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use fluree_db_query::bm25::{
-    Analyzer, Bm25IndexProvider, Bm25SearchProvider, Bm25SearchResult, Bm25Scorer, SearchHit,
+    Analyzer, Bm25IndexProvider, Bm25Scorer, Bm25SearchProvider, Bm25SearchResult, SearchHit,
 };
 use fluree_db_query::error::Result;
 use std::fmt;

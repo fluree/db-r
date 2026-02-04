@@ -206,9 +206,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                     FlakeValue::Double(d) => Ok(FilterValue::Double(d)),
                     FlakeValue::Boolean(b) => Ok(FilterValue::Bool(b)),
                     FlakeValue::String(s) => Ok(FilterValue::String(s)),
-                    fv if fv.is_temporal() || fv.is_duration() => {
-                        Ok(FilterValue::Temporal(fv))
-                    }
+                    fv if fv.is_temporal() || fv.is_duration() => Ok(FilterValue::Temporal(fv)),
                     _ => Ok(FilterValue::String(value.to_string())),
                 }
             }

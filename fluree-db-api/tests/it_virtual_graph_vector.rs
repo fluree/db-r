@@ -57,9 +57,15 @@ async fn vector_create_index_indexes_docs_and_is_loadable() {
 
     let cfg = VectorCreateConfig::new("vector-search", alias, query, "ex:embedding", 3);
     let created = fluree.create_vector_index(cfg).await.unwrap();
-    assert!(created.vector_count > 0, "expected index to include documents");
+    assert!(
+        created.vector_count > 0,
+        "expected index to include documents"
+    );
     assert_eq!(created.vector_count, 2, "expected 2 vectors");
-    assert!(created.index_address.is_some(), "expected persisted index address");
+    assert!(
+        created.index_address.is_some(),
+        "expected persisted index address"
+    );
 
     // Load the index back via nameservice+storage
     let idx = fluree.load_vector_index(&created.vg_alias).await.unwrap();
@@ -204,8 +210,14 @@ async fn vector_sync_indexes_new_documents() {
     let _ledger2 = fluree.insert(ledger1, &tx2).await.unwrap().ledger;
 
     // Check staleness
-    let staleness = fluree.check_vector_staleness(&created.vg_alias).await.unwrap();
-    assert!(staleness.is_stale, "index should be stale after new commits");
+    let staleness = fluree
+        .check_vector_staleness(&created.vg_alias)
+        .await
+        .unwrap();
+    assert!(
+        staleness.is_stale,
+        "index should be stale after new commits"
+    );
     assert!(staleness.lag > 0, "staleness lag should be > 0");
 
     // Sync the index
@@ -557,7 +569,10 @@ async fn vector_collection_exists() {
     assert!(exists, "collection should exist");
 
     // Non-existent should return false
-    let not_exists = provider.collection_exists("nonexistent:main").await.unwrap();
+    let not_exists = provider
+        .collection_exists("nonexistent:main")
+        .await
+        .unwrap();
     assert!(!not_exists, "non-existent collection should not exist");
 
     // Drop and check again
@@ -639,7 +654,10 @@ async fn vector_idx_query_syntax_e2e() {
         "select": ["?doc", "?score"]
     });
 
-    let result = fluree.query_connection_with_bm25(&search_query).await.unwrap();
+    let result = fluree
+        .query_connection_with_bm25(&search_query)
+        .await
+        .unwrap();
     let formatted = result.to_jsonld_async(&ledger.db).await.unwrap();
 
     // Parse and verify results
@@ -661,7 +679,11 @@ async fn vector_idx_query_syntax_e2e() {
         assert!(doc.contains("doc"), "doc should contain 'doc': {}", doc);
         // Cosine similarity can be in [-1, 1] (not [0, 1])
         // -1 = opposite, 0 = orthogonal, 1 = identical
-        assert!(score >= -1.0 && score <= 1.0, "cosine score should be in [-1,1]: {}", score);
+        assert!(
+            score >= -1.0 && score <= 1.0,
+            "cosine score should be in [-1,1]: {}",
+            score
+        );
 
         // Log for debugging
         eprintln!("Result {}: doc={}, score={:.4}", i, doc, score);

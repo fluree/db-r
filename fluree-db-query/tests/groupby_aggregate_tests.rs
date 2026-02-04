@@ -11,10 +11,10 @@ use fluree_db_query::aggregate::{AggregateFn, AggregateSpec};
 use fluree_db_query::binding::Binding;
 use fluree_db_query::context::ExecutionContext;
 use fluree_db_query::execute::{execute, ExecutableQuery};
-use fluree_db_query::options::QueryOptions;
 use fluree_db_query::groupby::GroupByOperator;
 use fluree_db_query::ir::{CompareOp, FilterExpr, FilterValue, Pattern};
 use fluree_db_query::operator::Operator;
+use fluree_db_query::options::QueryOptions;
 use fluree_db_query::parse::{ParsedQuery, SelectMode};
 use fluree_db_query::var_registry::{VarId, VarRegistry};
 use fluree_graph_json_ld::ParsedContext;
@@ -95,8 +95,8 @@ async fn test_group_by_with_count() {
         .with_group_by(vec![VarId(0)]) // GROUP BY ?city
         .with_aggregates(vec![AggregateSpec {
             function: AggregateFn::Count,
-            input_var: Some(VarId(1)),  // COUNT(?person)
-            output_var: VarId(1), // AS ?count (replaces ?person col)
+            input_var: Some(VarId(1)), // COUNT(?person)
+            output_var: VarId(1),      // AS ?count (replaces ?person col)
         }]);
 
     let executable = ExecutableQuery::new(query, options);
@@ -318,7 +318,6 @@ async fn test_aggregates_without_group_by() {
 /// Test GROUP BY operator directly with multiple group keys
 #[tokio::test]
 async fn test_group_by_multiple_keys() {
-
     let db = make_test_db();
     let vars = VarRegistry::new();
     let ctx = ExecutionContext::new(&db, &vars);
@@ -358,8 +357,8 @@ async fn test_group_by_multiple_keys() {
     }
     use async_trait::async_trait;
     #[async_trait]
-    impl<S: fluree_db_core::Storage + 'static>
-        fluree_db_query::operator::Operator<S> for BatchOperator
+    impl<S: fluree_db_core::Storage + 'static> fluree_db_query::operator::Operator<S>
+        for BatchOperator
     {
         fn schema(&self) -> &[VarId] {
             &self.schema
@@ -379,11 +378,10 @@ async fn test_group_by_multiple_keys() {
         fn close(&mut self) {}
     }
 
-    let child: fluree_db_query::operator::BoxedOperator<MemoryStorage> =
-        Box::new(BatchOperator {
-            schema: schema.clone(),
-            batch: Some(batch),
-        });
+    let child: fluree_db_query::operator::BoxedOperator<MemoryStorage> = Box::new(BatchOperator {
+        schema: schema.clone(),
+        batch: Some(batch),
+    });
 
     // GROUP BY ?region, ?city
     let mut op = GroupByOperator::new(child, vec![VarId(0), VarId(1)]);
@@ -590,7 +588,7 @@ async fn test_aggregate_on_group_by_key_errors() {
         .with_group_by(vec![VarId(0)])
         .with_aggregates(vec![AggregateSpec {
             function: AggregateFn::Count,
-            input_var: Some(VarId(0)),  // key var
+            input_var: Some(VarId(0)), // key var
             output_var: VarId(0),
         }]);
 

@@ -8,8 +8,7 @@ use chrono::DateTime;
 
 use crate::view::{FlureeView, ReasoningModePrecedence};
 use crate::{
-    time_resolve, ApiError, Fluree, NameService, QueryConnectionOptions, Result,
-    Storage, TimeSpec,
+    time_resolve, ApiError, Fluree, NameService, QueryConnectionOptions, Result, Storage, TimeSpec,
 };
 use fluree_db_query::rewrite::ReasoningModes;
 
@@ -43,11 +42,7 @@ where
     }
 
     /// Load a historical view at a specific transaction time.
-    pub(crate) async fn load_view_at_t(
-        &self,
-        alias: &str,
-        target_t: i64,
-    ) -> Result<FlureeView<S>> {
+    pub(crate) async fn load_view_at_t(&self, alias: &str, target_t: i64) -> Result<FlureeView<S>> {
         let historical = self.ledger_view_at(alias, target_t).await?;
         Ok(FlureeView::from_historical(&historical))
     }
@@ -55,11 +50,7 @@ where
     /// Load a view at a flexible time specification.
     ///
     /// Resolves `@t:`, `@iso:`, `@sha:`, or `latest` time specifications.
-    pub(crate) async fn load_view_at(
-        &self,
-        alias: &str,
-        spec: TimeSpec,
-    ) -> Result<FlureeView<S>> {
+    pub(crate) async fn load_view_at(&self, alias: &str, spec: TimeSpec) -> Result<FlureeView<S>> {
         match spec {
             TimeSpec::Latest => self.load_view(alias).await,
             TimeSpec::AtT(t) => self.load_view_at_t(alias, t).await,
@@ -111,20 +102,12 @@ where
     }
 
     /// Load a historical snapshot at a specific transaction time.
-    pub async fn view_at_t(
-        &self,
-        alias: &str,
-        target_t: i64,
-    ) -> Result<FlureeView<S>> {
+    pub async fn view_at_t(&self, alias: &str, target_t: i64) -> Result<FlureeView<S>> {
         self.load_view_at_t(alias, target_t).await
     }
 
     /// Load a snapshot at a flexible time specification.
-    pub async fn view_at(
-        &self,
-        alias: &str,
-        spec: TimeSpec,
-    ) -> Result<FlureeView<S>> {
+    pub async fn view_at(&self, alias: &str, spec: TimeSpec) -> Result<FlureeView<S>> {
         self.load_view_at(alias, spec).await
     }
 }
@@ -209,11 +192,7 @@ where
     ///
     /// This is a pure function (no async) since it just attaches metadata.
     /// Uses `DefaultUnlessQueryOverrides` precedence.
-    pub fn wrap_reasoning(
-        &self,
-        view: FlureeView<S>,
-        modes: ReasoningModes,
-    ) -> FlureeView<S> {
+    pub fn wrap_reasoning(&self, view: FlureeView<S>, modes: ReasoningModes) -> FlureeView<S> {
         view.with_reasoning(modes)
     }
 

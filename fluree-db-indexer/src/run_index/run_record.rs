@@ -4,7 +4,7 @@
 //! The format is `#[repr(C)]` for direct binary I/O.
 
 use fluree_db_core::subject_id::SubjectId;
-use fluree_db_core::value_id::{ObjKind, ObjKey};
+use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::{DatatypeDictId, LangId, ListIndex, ObjPair, PredicateId};
 use std::cmp::Ordering;
 
@@ -330,7 +330,15 @@ impl FactKey {
     /// Build a FactKey from decoded Region 1+2 row data.
     ///
     /// `dt_raw` is `u32` (Region 2 decode output); truncated to `u16` here.
-    pub fn from_decoded_row(s_id: u64, p_id: u32, o_kind: u8, o_key: u64, dt_raw: u32, lang_id: u16, i: i32) -> Self {
+    pub fn from_decoded_row(
+        s_id: u64,
+        p_id: u32,
+        o_kind: u8,
+        o_key: u64,
+        dt_raw: u32,
+        lang_id: u16,
+        i: i32,
+    ) -> Self {
         let dt = DatatypeDictId::from_u16(dt_raw as u16);
         let effective_lang_id = if dt == DatatypeDictId::LANG_STRING {
             LangId::from_u16(lang_id)
@@ -449,16 +457,28 @@ mod tests {
     #[test]
     fn test_spot_ordering_by_dt_tiebreak() {
         let a = RunRecord::new(
-            0, SubjectId::from_u64(1), 1,
-            ObjKind::NUM_INT, ObjKey::encode_i64(3),
-            1, true,
-            DatatypeDictId::INTEGER.as_u16(), 0, None,
+            0,
+            SubjectId::from_u64(1),
+            1,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(3),
+            1,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
         );
         let b = RunRecord::new(
-            0, SubjectId::from_u64(1), 1,
-            ObjKind::NUM_INT, ObjKey::encode_i64(3),
-            1, true,
-            DatatypeDictId::LONG.as_u16(), 0, None,
+            0,
+            SubjectId::from_u64(1),
+            1,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(3),
+            1,
+            true,
+            DatatypeDictId::LONG.as_u16(),
+            0,
+            None,
         );
         assert_eq!(cmp_spot(&a, &b), Ordering::Less);
         assert_ne!(a, b);
@@ -473,15 +493,59 @@ mod tests {
 
     #[test]
     fn test_spot_ordering_by_op() {
-        let a = RunRecord::new(0, SubjectId::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(0), 1, false, DatatypeDictId::INTEGER.as_u16(), 0, None);
-        let b = RunRecord::new(0, SubjectId::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(0), 1, true, DatatypeDictId::INTEGER.as_u16(), 0, None);
+        let a = RunRecord::new(
+            0,
+            SubjectId::from_u64(1),
+            1,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(0),
+            1,
+            false,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
+        );
+        let b = RunRecord::new(
+            0,
+            SubjectId::from_u64(1),
+            1,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(0),
+            1,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
+        );
         assert_eq!(cmp_spot(&a, &b), Ordering::Less);
     }
 
     #[test]
     fn test_spot_ordering_by_graph() {
-        let a = RunRecord::new(0, SubjectId::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(0), 1, true, DatatypeDictId::INTEGER.as_u16(), 0, None);
-        let b = RunRecord::new(1, SubjectId::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(0), 1, true, DatatypeDictId::INTEGER.as_u16(), 0, None);
+        let a = RunRecord::new(
+            0,
+            SubjectId::from_u64(1),
+            1,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(0),
+            1,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
+        );
+        let b = RunRecord::new(
+            1,
+            SubjectId::from_u64(1),
+            1,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(0),
+            1,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
+        );
         assert_eq!(cmp_spot(&a, &b), Ordering::Less);
     }
 
@@ -510,10 +574,32 @@ mod tests {
 
     #[test]
     fn test_no_list_index_sentinel() {
-        let rec = RunRecord::new(0, SubjectId::from_u64(1), 1, ObjKind::NULL, ObjKey::ZERO, 1, true, DatatypeDictId::STRING.as_u16(), 0, None);
+        let rec = RunRecord::new(
+            0,
+            SubjectId::from_u64(1),
+            1,
+            ObjKind::NULL,
+            ObjKey::ZERO,
+            1,
+            true,
+            DatatypeDictId::STRING.as_u16(),
+            0,
+            None,
+        );
         assert_eq!(rec.i, ListIndex::none().as_i32());
 
-        let rec2 = RunRecord::new(0, SubjectId::from_u64(1), 1, ObjKind::NULL, ObjKey::ZERO, 1, true, DatatypeDictId::STRING.as_u16(), 0, Some(5));
+        let rec2 = RunRecord::new(
+            0,
+            SubjectId::from_u64(1),
+            1,
+            ObjKind::NULL,
+            ObjKey::ZERO,
+            1,
+            true,
+            DatatypeDictId::STRING.as_u16(),
+            0,
+            Some(5),
+        );
         assert_eq!(rec2.i, 5);
     }
 
@@ -587,16 +673,28 @@ mod tests {
     #[test]
     fn test_post_ordering_dt_before_subject() {
         let a = RunRecord::new(
-            0, SubjectId::from_u64(2), 5,
-            ObjKind::NUM_INT, ObjKey::encode_i64(10),
-            1, true,
-            DatatypeDictId::INTEGER.as_u16(), 0, None,
+            0,
+            SubjectId::from_u64(2),
+            5,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(10),
+            1,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
         );
         let b = RunRecord::new(
-            0, SubjectId::from_u64(1), 5,
-            ObjKind::NUM_INT, ObjKey::encode_i64(10),
-            1, true,
-            DatatypeDictId::LONG.as_u16(), 0, None,
+            0,
+            SubjectId::from_u64(1),
+            5,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(10),
+            1,
+            true,
+            DatatypeDictId::LONG.as_u16(),
+            0,
+            None,
         );
         assert_eq!(cmp_post(&a, &b), Ordering::Less);
     }
@@ -613,16 +711,28 @@ mod tests {
     #[test]
     fn test_opst_ordering_dt_before_predicate() {
         let a = RunRecord::new(
-            0, SubjectId::from_u64(10), 10,
-            ObjKind::NUM_INT, ObjKey::encode_i64(5),
-            1, true,
-            DatatypeDictId::INTEGER.as_u16(), 0, None,
+            0,
+            SubjectId::from_u64(10),
+            10,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(5),
+            1,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
         );
         let b = RunRecord::new(
-            0, SubjectId::from_u64(1), 1,
-            ObjKind::NUM_INT, ObjKey::encode_i64(5),
-            1, true,
-            DatatypeDictId::LONG.as_u16(), 0, None,
+            0,
+            SubjectId::from_u64(1),
+            1,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(5),
+            1,
+            true,
+            DatatypeDictId::LONG.as_u16(),
+            0,
+            None,
         );
         assert_eq!(cmp_opst(&a, &b), Ordering::Less);
     }
@@ -649,10 +759,16 @@ mod tests {
     #[test]
     fn test_is_iri_ref_true_for_iri() {
         let rec = RunRecord::new(
-            0, SubjectId::from_u64(1), 1,
-            ObjKind::REF_ID, ObjKey::encode_u32_id(42),
-            1, true,
-            DatatypeDictId::ID.as_u16(), 0, None,
+            0,
+            SubjectId::from_u64(1),
+            1,
+            ObjKind::REF_ID,
+            ObjKey::encode_u32_id(42),
+            1,
+            true,
+            DatatypeDictId::ID.as_u16(),
+            0,
+            None,
         );
         assert!(rec.is_iri_ref());
     }
@@ -666,10 +782,16 @@ mod tests {
     #[test]
     fn test_is_iri_ref_false_for_null() {
         let rec = RunRecord::new(
-            0, SubjectId::from_u64(1), 1,
-            ObjKind::NULL, ObjKey::ZERO,
-            1, true,
-            DatatypeDictId::STRING.as_u16(), 0, None,
+            0,
+            SubjectId::from_u64(1),
+            1,
+            ObjKind::NULL,
+            ObjKey::ZERO,
+            1,
+            true,
+            DatatypeDictId::STRING.as_u16(),
+            0,
+            None,
         );
         assert!(!rec.is_iri_ref());
     }
@@ -680,14 +802,28 @@ mod tests {
     fn test_spot_ordering_cross_kind() {
         // NumInt should sort before NumF64 (0x03 < 0x04)
         let int_rec = RunRecord::new(
-            0, SubjectId::from_u64(1), 1,
-            ObjKind::NUM_INT, ObjKey::encode_i64(100),
-            1, true, DatatypeDictId::INTEGER.as_u16(), 0, None,
+            0,
+            SubjectId::from_u64(1),
+            1,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(100),
+            1,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
         );
         let f64_rec = RunRecord::new(
-            0, SubjectId::from_u64(1), 1,
-            ObjKind::NUM_F64, ObjKey::encode_f64(0.001).unwrap(),
-            1, true, DatatypeDictId::DOUBLE.as_u16(), 0, None,
+            0,
+            SubjectId::from_u64(1),
+            1,
+            ObjKind::NUM_F64,
+            ObjKey::encode_f64(0.001).unwrap(),
+            1,
+            true,
+            DatatypeDictId::DOUBLE.as_u16(),
+            0,
+            None,
         );
         assert_eq!(cmp_spot(&int_rec, &f64_rec), Ordering::Less);
     }
@@ -697,12 +833,28 @@ mod tests {
     #[test]
     fn test_fact_key_same_identity() {
         let a = FactKey::from_run_record(&RunRecord::new(
-            0, SubjectId::from_u64(10), 5, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
-            DatatypeDictId::INTEGER.as_u16(), 0, None,
+            0,
+            SubjectId::from_u64(10),
+            5,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(42),
+            1,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
         ));
         let b = FactKey::from_run_record(&RunRecord::new(
-            0, SubjectId::from_u64(10), 5, ObjKind::NUM_INT, ObjKey::encode_i64(42), 99, false,
-            DatatypeDictId::INTEGER.as_u16(), 0, None,
+            0,
+            SubjectId::from_u64(10),
+            5,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(42),
+            99,
+            false,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
         ));
         assert_eq!(a, b);
     }
@@ -710,12 +862,28 @@ mod tests {
     #[test]
     fn test_fact_key_different_subject() {
         let a = FactKey::from_run_record(&RunRecord::new(
-            0, SubjectId::from_u64(10), 5, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
-            DatatypeDictId::INTEGER.as_u16(), 0, None,
+            0,
+            SubjectId::from_u64(10),
+            5,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(42),
+            1,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
         ));
         let b = FactKey::from_run_record(&RunRecord::new(
-            0, SubjectId::from_u64(11), 5, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
-            DatatypeDictId::INTEGER.as_u16(), 0, None,
+            0,
+            SubjectId::from_u64(11),
+            5,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(42),
+            1,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
         ));
         assert_ne!(a, b);
     }
@@ -723,12 +891,28 @@ mod tests {
     #[test]
     fn test_fact_key_different_dt() {
         let a = FactKey::from_run_record(&RunRecord::new(
-            0, SubjectId::from_u64(10), 5, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
-            DatatypeDictId::INTEGER.as_u16(), 0, None,
+            0,
+            SubjectId::from_u64(10),
+            5,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(42),
+            1,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
         ));
         let b = FactKey::from_run_record(&RunRecord::new(
-            0, SubjectId::from_u64(10), 5, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
-            DatatypeDictId::LONG.as_u16(), 0, None,
+            0,
+            SubjectId::from_u64(10),
+            5,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(42),
+            1,
+            true,
+            DatatypeDictId::LONG.as_u16(),
+            0,
+            None,
         ));
         assert_ne!(a, b);
     }
@@ -736,22 +920,54 @@ mod tests {
     #[test]
     fn test_fact_key_lang_effective() {
         let a = FactKey::from_run_record(&RunRecord::new(
-            0, SubjectId::from_u64(1), 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true,
-            DatatypeDictId::LANG_STRING.as_u16(), 3, None,
+            0,
+            SubjectId::from_u64(1),
+            1,
+            ObjKind::LEX_ID,
+            ObjKey::encode_u32_id(5),
+            1,
+            true,
+            DatatypeDictId::LANG_STRING.as_u16(),
+            3,
+            None,
         ));
         let b = FactKey::from_run_record(&RunRecord::new(
-            0, SubjectId::from_u64(1), 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true,
-            DatatypeDictId::LANG_STRING.as_u16(), 4, None,
+            0,
+            SubjectId::from_u64(1),
+            1,
+            ObjKind::LEX_ID,
+            ObjKey::encode_u32_id(5),
+            1,
+            true,
+            DatatypeDictId::LANG_STRING.as_u16(),
+            4,
+            None,
         ));
         assert_ne!(a, b);
 
         let c = FactKey::from_run_record(&RunRecord::new(
-            0, SubjectId::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
-            DatatypeDictId::INTEGER.as_u16(), 3, None,
+            0,
+            SubjectId::from_u64(1),
+            1,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(42),
+            1,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            3,
+            None,
         ));
         let d = FactKey::from_run_record(&RunRecord::new(
-            0, SubjectId::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
-            DatatypeDictId::INTEGER.as_u16(), 99, None,
+            0,
+            SubjectId::from_u64(1),
+            1,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(42),
+            1,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            99,
+            None,
         ));
         assert_eq!(c, d);
         assert_eq!(c.lang_id, LangId::none());
@@ -760,22 +976,54 @@ mod tests {
     #[test]
     fn test_fact_key_list_index() {
         let a = FactKey::from_run_record(&RunRecord::new(
-            0, SubjectId::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
-            DatatypeDictId::INTEGER.as_u16(), 0, Some(0),
+            0,
+            SubjectId::from_u64(1),
+            1,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(42),
+            1,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            Some(0),
         ));
         let b = FactKey::from_run_record(&RunRecord::new(
-            0, SubjectId::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
-            DatatypeDictId::INTEGER.as_u16(), 0, Some(1),
+            0,
+            SubjectId::from_u64(1),
+            1,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(42),
+            1,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            Some(1),
         ));
         assert_ne!(a, b);
 
         let c = FactKey::from_run_record(&RunRecord::new(
-            0, SubjectId::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
-            DatatypeDictId::INTEGER.as_u16(), 0, None,
+            0,
+            SubjectId::from_u64(1),
+            1,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(42),
+            1,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
         ));
         let d = FactKey::from_run_record(&RunRecord::new(
-            0, SubjectId::from_u64(1), 1, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
-            DatatypeDictId::INTEGER.as_u16(), 0, Some(0),
+            0,
+            SubjectId::from_u64(1),
+            1,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(42),
+            1,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            Some(0),
         ));
         assert_ne!(c, d);
     }
@@ -783,7 +1031,8 @@ mod tests {
     #[test]
     fn test_fact_key_from_decoded_row() {
         let key = FactKey::from_decoded_row(
-            10, 5,
+            10,
+            5,
             ObjKind::NUM_INT.as_u8(),
             ObjKey::encode_i64(42).as_u64(),
             DatatypeDictId::INTEGER.as_u16() as u32,
@@ -791,8 +1040,16 @@ mod tests {
             ListIndex::none().as_i32(),
         );
         let from_record = FactKey::from_run_record(&RunRecord::new(
-            0, SubjectId::from_u64(10), 5, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
-            DatatypeDictId::INTEGER.as_u16(), 0, None,
+            0,
+            SubjectId::from_u64(10),
+            5,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(42),
+            1,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
         ));
         assert_eq!(key, from_record);
     }

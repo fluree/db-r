@@ -152,7 +152,10 @@ impl ScanPlan {
 
     /// Get the total estimated bytes to read.
     pub fn estimated_bytes(&self) -> i64 {
-        self.tasks.iter().map(|t| t.data_file.file_size_in_bytes).sum()
+        self.tasks
+            .iter()
+            .map(|t| t.data_file.file_size_in_bytes)
+            .sum()
     }
 }
 
@@ -175,18 +178,20 @@ impl<'a, S: IcebergStorage> ScanPlanner<'a, S> {
 
     /// Plan a scan for the current snapshot.
     pub async fn plan_scan(&self) -> Result<ScanPlan> {
-        let snapshot = self.metadata.current_snapshot().ok_or_else(|| {
-            IcebergError::SnapshotNotFound("No current snapshot".to_string())
-        })?;
+        let snapshot = self
+            .metadata
+            .current_snapshot()
+            .ok_or_else(|| IcebergError::SnapshotNotFound("No current snapshot".to_string()))?;
 
         self.plan_scan_for_snapshot(snapshot).await
     }
 
     /// Plan a scan for a specific snapshot.
     pub async fn plan_scan_for_snapshot(&self, snapshot: &Snapshot) -> Result<ScanPlan> {
-        let schema = self.metadata.current_schema().ok_or_else(|| {
-            IcebergError::Metadata("No current schema".to_string())
-        })?;
+        let schema = self
+            .metadata
+            .current_schema()
+            .ok_or_else(|| IcebergError::Metadata("No current schema".to_string()))?;
 
         // Clone schema into Arc for sharing with tasks
         let schema_arc = Arc::new(schema.clone());
@@ -196,7 +201,9 @@ impl<'a, S: IcebergStorage> ScanPlanner<'a, S> {
 
         // Load manifest list
         let manifest_list_path = snapshot.manifest_list.as_ref().ok_or_else(|| {
-            IcebergError::Manifest("Snapshot has no manifest list (v1 format not supported)".to_string())
+            IcebergError::Manifest(
+                "Snapshot has no manifest list (v1 format not supported)".to_string(),
+            )
         })?;
 
         let manifest_list_data = self.storage.read(manifest_list_path).await?;
@@ -307,7 +314,11 @@ mod tests {
     fn test_scan_config_builder() {
         let config = ScanConfig::new()
             .with_projection(vec![1, 2, 3])
-            .with_filter(Expression::gt(1, "id", crate::scan::predicate::LiteralValue::Int64(100)))
+            .with_filter(Expression::gt(
+                1,
+                "id",
+                crate::scan::predicate::LiteralValue::Int64(100),
+            ))
             .with_batch_row_limit(2048)
             .with_batch_byte_budget(1024 * 1024);
 

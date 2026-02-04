@@ -140,7 +140,11 @@ pub fn build_index(config: IndexBuildConfig) -> Result<IndexBuildResult, IndexBu
         return Err(IndexBuildError::NoRunFiles);
     }
     run_paths.sort();
-    tracing::info!(run_files = run_paths.len(), order = order_name, "discovered run files");
+    tracing::info!(
+        run_files = run_paths.len(),
+        order = order_name,
+        "discovered run files"
+    );
 
     // Ensure output directory exists
     std::fs::create_dir_all(&config.index_dir)?;
@@ -188,7 +192,11 @@ pub fn build_index(config: IndexBuildConfig) -> Result<IndexBuildResult, IndexBu
                 ),
             )));
         }
-        tracing::info!(datatypes = dt_dict.len(), dt_width = 1, "datatype width (fixed u8)");
+        tracing::info!(
+            datatypes = dt_dict.len(),
+            dt_width = 1,
+            "datatype width (fixed u8)"
+        );
         1
     } else {
         1
@@ -243,12 +251,8 @@ pub fn build_index(config: IndexBuildConfig) -> Result<IndexBuildResult, IndexBu
             if let Some(writer) = current_writer.take() {
                 let leaf_infos = writer.finish()?;
                 if let Some(prev_g_id) = current_g_id {
-                    let result = finish_graph(
-                        prev_g_id,
-                        leaf_infos,
-                        &config.index_dir,
-                        order_name,
-                    )?;
+                    let result =
+                        finish_graph(prev_g_id, leaf_infos, &config.index_dir, order_name)?;
                     tracing::info!(
                         g_id = prev_g_id,
                         leaves = result.leaf_count,
@@ -261,7 +265,9 @@ pub fn build_index(config: IndexBuildConfig) -> Result<IndexBuildResult, IndexBu
             }
 
             // Start new graph
-            let graph_dir = config.index_dir.join(format!("graph_{}/{}", g_id, order_name));
+            let graph_dir = config
+                .index_dir
+                .join(format!("graph_{}/{}", g_id, order_name));
             std::fs::create_dir_all(&graph_dir)?;
 
             tracing::info!(g_id, path = %graph_dir.display(), "starting graph index");
@@ -311,7 +317,13 @@ pub fn build_index(config: IndexBuildConfig) -> Result<IndexBuildResult, IndexBu
     }
 
     // ---- Step 7: Write per-order manifest ----
-    write_index_manifest(&config.index_dir, &graph_results, total_rows, max_t, order_name)?;
+    write_index_manifest(
+        &config.index_dir,
+        &graph_results,
+        total_rows,
+        max_t,
+        order_name,
+    )?;
 
     let elapsed = start.elapsed();
     tracing::info!(
@@ -532,14 +544,21 @@ mod tests {
     use crate::run_index::global_dict::LanguageTagDict;
     use crate::run_index::run_file::write_run_file;
     use crate::run_index::run_record::{cmp_spot, RunRecord};
+    use fluree_db_core::value_id::{ObjKey, ObjKind};
     use fluree_db_core::DatatypeDictId;
-    use fluree_db_core::value_id::{ObjKind, ObjKey};
 
     fn make_record(g_id: u32, s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
         RunRecord::new(
-            g_id, fluree_db_core::subject_id::SubjectId::from_u64(s_id), p_id,
-            ObjKind::NUM_INT, ObjKey::encode_i64(val),
-            t, true, DatatypeDictId::INTEGER.as_u16(), 0, None,
+            g_id,
+            fluree_db_core::subject_id::SubjectId::from_u64(s_id),
+            p_id,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(val),
+            t,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
         )
     }
 
@@ -550,14 +569,19 @@ mod tests {
         let (min_t, max_t) = if records.is_empty() {
             (0, 0)
         } else {
-            records
-                .iter()
-                .fold((i64::MAX, i64::MIN), |(min, max), r| {
-                    (min.min(r.t), max.max(r.t))
-                })
+            records.iter().fold((i64::MAX, i64::MIN), |(min, max), r| {
+                (min.min(r.t), max.max(r.t))
+            })
         };
-        write_run_file(&path, &records, &lang_dict, RunSortOrder::Spot, min_t, max_t)
-            .unwrap();
+        write_run_file(
+            &path,
+            &records,
+            &lang_dict,
+            RunSortOrder::Spot,
+            min_t,
+            max_t,
+        )
+        .unwrap();
         path
     }
 
@@ -570,15 +594,20 @@ mod tests {
         std::fs::create_dir_all(&run_dir).unwrap();
 
         // Create 2 run files with overlapping data
-        write_sorted_run(&run_dir, "run_00000.frn", vec![
-            make_record(0, 1, 1, 10, 1),
-            make_record(0, 2, 1, 20, 1),
-            make_record(0, 3, 1, 30, 1),
-        ]);
-        write_sorted_run(&run_dir, "run_00001.frn", vec![
-            make_record(0, 4, 1, 40, 1),
-            make_record(0, 5, 1, 50, 1),
-        ]);
+        write_sorted_run(
+            &run_dir,
+            "run_00000.frn",
+            vec![
+                make_record(0, 1, 1, 10, 1),
+                make_record(0, 2, 1, 20, 1),
+                make_record(0, 3, 1, 30, 1),
+            ],
+        );
+        write_sorted_run(
+            &run_dir,
+            "run_00001.frn",
+            vec![make_record(0, 4, 1, 40, 1), make_record(0, 5, 1, 50, 1)],
+        );
 
         let config = IndexBuildConfig {
             run_dir,
@@ -598,7 +627,9 @@ mod tests {
         assert!(result.graphs[0].leaf_count >= 1);
 
         // Verify files exist
-        let branch_path = result.graphs[0].graph_dir.join(format!("{}.fbr", result.graphs[0].branch_hash));
+        let branch_path = result.graphs[0]
+            .graph_dir
+            .join(format!("{}.fbr", result.graphs[0].branch_hash));
         assert!(branch_path.exists());
         assert!(index_dir.join("index_manifest_spot.json").exists());
 
@@ -614,12 +645,16 @@ mod tests {
         std::fs::create_dir_all(&run_dir).unwrap();
 
         // Records in graph 0 and graph 1 (sorted by cmp_spot: g_id first)
-        write_sorted_run(&run_dir, "run_00000.frn", vec![
-            make_record(0, 1, 1, 10, 1),
-            make_record(0, 2, 1, 20, 1),
-            make_record(1, 1, 1, 100, 1),
-            make_record(1, 2, 1, 200, 1),
-        ]);
+        write_sorted_run(
+            &run_dir,
+            "run_00000.frn",
+            vec![
+                make_record(0, 1, 1, 10, 1),
+                make_record(0, 2, 1, 20, 1),
+                make_record(1, 1, 1, 100, 1),
+                make_record(1, 2, 1, 200, 1),
+            ],
+        );
 
         let config = IndexBuildConfig {
             run_dir,
@@ -640,8 +675,12 @@ mod tests {
         assert_eq!(result.graphs[1].total_rows, 2);
 
         // Verify separate graph directories have branch files
-        let g0_branch = result.graphs[0].graph_dir.join(format!("{}.fbr", result.graphs[0].branch_hash));
-        let g1_branch = result.graphs[1].graph_dir.join(format!("{}.fbr", result.graphs[1].branch_hash));
+        let g0_branch = result.graphs[0]
+            .graph_dir
+            .join(format!("{}.fbr", result.graphs[0].branch_hash));
+        let g1_branch = result.graphs[1]
+            .graph_dir
+            .join(format!("{}.fbr", result.graphs[1].branch_hash));
         assert!(g0_branch.exists());
         assert!(g1_branch.exists());
 
@@ -657,12 +696,8 @@ mod tests {
         std::fs::create_dir_all(&run_dir).unwrap();
 
         // Same fact at t=1 in run 0, and t=2 in run 1 → dedup keeps t=2
-        write_sorted_run(&run_dir, "run_00000.frn", vec![
-            make_record(0, 1, 1, 10, 1),
-        ]);
-        write_sorted_run(&run_dir, "run_00001.frn", vec![
-            make_record(0, 1, 1, 10, 2),
-        ]);
+        write_sorted_run(&run_dir, "run_00000.frn", vec![make_record(0, 1, 1, 10, 1)]);
+        write_sorted_run(&run_dir, "run_00001.frn", vec![make_record(0, 1, 1, 10, 2)]);
 
         let config = IndexBuildConfig {
             run_dir,

@@ -74,7 +74,13 @@ async fn ensure_bucket(sdk_config: &aws_config::SdkConfig, bucket: &str) {
 async fn ensure_dynamodb_table(sdk_config: &aws_config::SdkConfig, table_name: &str) {
     let ddb = aws_sdk_dynamodb::Client::new(sdk_config);
 
-    if ddb.describe_table().table_name(table_name).send().await.is_ok() {
+    if ddb
+        .describe_table()
+        .table_name(table_name)
+        .send()
+        .await
+        .is_ok()
+    {
         return;
     }
 
@@ -100,7 +106,13 @@ async fn ensure_dynamodb_table(sdk_config: &aws_config::SdkConfig, table_name: &
         .await;
 
     for _ in 0..60 {
-        if ddb.describe_table().table_name(table_name).send().await.is_ok() {
+        if ddb
+            .describe_table()
+            .table_name(table_name)
+            .send()
+            .await
+            .is_ok()
+        {
             return;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -108,7 +120,10 @@ async fn ensure_dynamodb_table(sdk_config: &aws_config::SdkConfig, table_name: &
     panic!("DynamoDB table was not available: {}", table_name);
 }
 
-fn build_fluree(storage: S3Storage, nameservice: DynamoDbNameService) -> Fluree<S3Storage, DynamoDbNameService> {
+fn build_fluree(
+    storage: S3Storage,
+    nameservice: DynamoDbNameService,
+) -> Fluree<S3Storage, DynamoDbNameService> {
     let cfg = ConnectionConfig::default();
     let conn = Connection::new(cfg, storage);
     Fluree::new(conn, nameservice)
@@ -212,10 +227,7 @@ async fn s3_testcontainers_basic_test() {
         .expect("to_jsonld_async");
 
     assert_eq!(results.as_array().unwrap().len(), 2);
-    assert_eq!(
-        results,
-        json!([["ex:alice", "Alice"], ["ex:bob", "Bob"]])
-    );
+    assert_eq!(results, json!([["ex:alice", "Alice"], ["ex:bob", "Bob"]]));
 
     // Reload from a "fresh connection" (new cache) and re-query
     let fluree2 = build_fluree(storage.clone(), nameservice.clone());
@@ -231,10 +243,7 @@ async fn s3_testcontainers_basic_test() {
 
     // Verify no double slashes in stored S3 keys (Clojure parity)
     let keys = list_object_keys(&sdk_config, bucket).await;
-    assert!(
-        !keys.is_empty(),
-        "expected objects in bucket after commit"
-    );
+    assert!(!keys.is_empty(), "expected objects in bucket after commit");
     assert!(
         keys.iter().all(|k| !k.contains("//")),
         "paths should not contain double slashes: {keys:?}"
@@ -327,14 +336,25 @@ async fn s3_testcontainers_indexing_test() {
             index_cfg.reindex_max_bytes = 1_000_000;
 
             let result = fluree
-                .insert_with_opts(ledger0, &tx, TxnOpts::default(), CommitOpts::default(), &index_cfg)
+                .insert_with_opts(
+                    ledger0,
+                    &tx,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
                 .await
                 .expect("insert_with_opts");
 
             // Trigger indexing and wait
-            let completion = handle.trigger(result.ledger.alias(), result.receipt.t).await;
+            let completion = handle
+                .trigger(result.ledger.alias(), result.receipt.t)
+                .await;
             match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { index_t, root_address } => {
+                fluree_db_api::IndexOutcome::Completed {
+                    index_t,
+                    root_address,
+                } => {
                     assert!(index_t >= result.receipt.t);
                     assert!(!root_address.is_empty());
                 }
@@ -349,7 +369,10 @@ async fn s3_testcontainers_indexing_test() {
                 .await
                 .expect("nameservice lookup")
                 .expect("record exists");
-            assert!(rec.index_address.is_some(), "expected published index address");
+            assert!(
+                rec.index_address.is_some(),
+                "expected published index address"
+            );
 
             // Verify bucket contains index artifacts and no double slashes
             let keys = list_object_keys(&sdk_config, bucket).await;
@@ -365,4 +388,3 @@ async fn s3_testcontainers_indexing_test() {
         })
         .await;
 }
-

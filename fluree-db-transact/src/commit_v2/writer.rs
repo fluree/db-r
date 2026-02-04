@@ -54,8 +54,8 @@ pub fn write_commit(commit: &Commit, compress: bool) -> Result<CommitWriteResult
     // 3. Optionally compress ops
     let (ops_section, is_compressed) = if compress && !ops_raw.is_empty() {
         let _span = tracing::debug_span!("v2_compress_ops", raw_bytes = ops_raw.len()).entered();
-        let compressed = zstd::encode_all(ops_raw.as_slice(), 3)
-            .map_err(CommitV2Error::CompressionFailed)?;
+        let compressed =
+            zstd::encode_all(ops_raw.as_slice(), 3).map_err(CommitV2Error::CompressionFailed)?;
         // Only use compressed if it's actually smaller
         if compressed.len() < ops_raw.len() {
             tracing::debug!(
@@ -181,7 +181,10 @@ mod tests {
         assert_eq!(a.s.name.as_ref(), b.s.name.as_ref(), "s name");
         assert_eq!(a.p.namespace_code, b.p.namespace_code, "p namespace_code");
         assert_eq!(a.p.name.as_ref(), b.p.name.as_ref(), "p name");
-        assert_eq!(a.dt.namespace_code, b.dt.namespace_code, "dt namespace_code");
+        assert_eq!(
+            a.dt.namespace_code, b.dt.namespace_code,
+            "dt namespace_code"
+        );
         assert_eq!(a.dt.name.as_ref(), b.dt.name.as_ref(), "dt name");
         assert_eq!(a.o, b.o, "object value");
         assert_eq!(a.op, b.op, "op flag");
@@ -311,35 +314,45 @@ mod tests {
                 Sid::new(101, "str"),
                 FlakeValue::String("hello".into()),
                 Sid::new(2, "string"),
-                1, true, None,
+                1,
+                true,
+                None,
             ),
             Flake::new(
                 Sid::new(101, "x"),
                 Sid::new(101, "num"),
                 FlakeValue::Long(-42),
                 Sid::new(2, "long"),
-                1, true, None,
+                1,
+                true,
+                None,
             ),
             Flake::new(
                 Sid::new(101, "x"),
                 Sid::new(101, "dbl"),
                 FlakeValue::Double(3.14),
                 Sid::new(2, "double"),
-                1, true, None,
+                1,
+                true,
+                None,
             ),
             Flake::new(
                 Sid::new(101, "x"),
                 Sid::new(101, "flag"),
                 FlakeValue::Boolean(true),
                 Sid::new(2, "boolean"),
-                1, true, None,
+                1,
+                true,
+                None,
             ),
             Flake::new(
                 Sid::new(101, "x"),
                 Sid::new(101, "empty"),
                 FlakeValue::Null,
                 Sid::new(2, "string"),
-                1, false, None,
+                1,
+                false,
+                None,
             ),
         ];
 
@@ -361,7 +374,8 @@ mod tests {
                 Sid::new(101, "name"),
                 FlakeValue::String("Alice".into()),
                 Sid::new(3, "langString"),
-                1, true,
+                1,
+                true,
                 Some(FlakeMeta::with_lang("en")),
             ),
             Flake::new(
@@ -369,7 +383,8 @@ mod tests {
                 Sid::new(101, "items"),
                 FlakeValue::Long(42),
                 Sid::new(2, "integer"),
-                1, true,
+                1,
+                true,
                 Some(FlakeMeta::with_index(0)),
             ),
             Flake::new(
@@ -377,7 +392,8 @@ mod tests {
                 Sid::new(101, "items"),
                 FlakeValue::Long(99),
                 Sid::new(2, "integer"),
-                1, true,
+                1,
+                true,
                 Some(FlakeMeta {
                     lang: Some("de".into()),
                     i: Some(1),
@@ -403,7 +419,9 @@ mod tests {
                 Sid::new(101, "v"),
                 FlakeValue::Long(1),
                 Sid::new(2, "integer"),
-                5, true, None,
+                5,
+                true,
+                None,
             )],
             5,
         );
@@ -414,14 +432,8 @@ mod tests {
         let envelope = read_commit_envelope(&result.bytes).unwrap();
 
         assert_eq!(envelope.t, 5);
-        assert_eq!(
-            envelope.previous_ref.as_ref().unwrap().address,
-            "prev-addr"
-        );
-        assert_eq!(
-            envelope.namespace_delta.get(&200),
-            Some(&"ex:".to_string())
-        );
+        assert_eq!(envelope.previous_ref.as_ref().unwrap().address, "prev-addr");
+        assert_eq!(envelope.namespace_delta.get(&200), Some(&"ex:".to_string()));
     }
 
     #[test]
@@ -431,7 +443,9 @@ mod tests {
             Sid::new(101, "v"),
             FlakeValue::Long(1),
             Sid::new(2, "integer"),
-            1, true, None,
+            1,
+            true,
+            None,
         )];
 
         let commit = make_test_commit(flakes, 1);
@@ -462,7 +476,9 @@ mod tests {
             Sid::new(101, "v"),
             FlakeValue::Long(1),
             Sid::new(2, "integer"),
-            10, true, None,
+            10,
+            true,
+            None,
         ));
 
         let result = write_commit(&commit, false).unwrap();
@@ -471,8 +487,14 @@ mod tests {
         assert_eq!(decoded.t, 10);
         assert_eq!(decoded.v, 2);
         assert_eq!(decoded.time.as_deref(), Some("2024-01-01T00:00:00Z"));
-        assert_eq!(decoded.txn.as_deref(), Some("fluree:file://txn/abc123.json"));
-        assert_eq!(decoded.index.as_ref().unwrap().address, "fluree:file://index/xyz");
+        assert_eq!(
+            decoded.txn.as_deref(),
+            Some("fluree:file://txn/abc123.json")
+        );
+        assert_eq!(
+            decoded.index.as_ref().unwrap().address,
+            "fluree:file://index/xyz"
+        );
         assert_eq!(decoded.index.as_ref().unwrap().t, Some(8));
     }
 

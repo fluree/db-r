@@ -57,15 +57,24 @@ async fn edge_case_validation() {
     // Test empty colon cases
     let result = fluree.create_ledger(":").await;
     assert!(result.is_err(), "Should reject single colon");
-    assert!(result.unwrap_err().to_string().contains("Invalid alias format"));
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("Invalid alias format"));
 
     let result = fluree.create_ledger(":branch").await;
     assert!(result.is_err(), "Should reject name starting with colon");
-    assert!(result.unwrap_err().to_string().contains("Invalid alias format"));
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("Invalid alias format"));
 
     let result = fluree.create_ledger("ledger:").await;
     assert!(result.is_err(), "Should reject name ending with colon");
-    assert!(result.unwrap_err().to_string().contains("Invalid alias format"));
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("Invalid alias format"));
 
     // Test special characters that ARE allowed
     let ledger = fluree.create_ledger("ledger.with.dots").await.unwrap();
@@ -74,10 +83,16 @@ async fn edge_case_validation() {
     let ledger = fluree.create_ledger("ledger-with-dashes").await.unwrap();
     assert_eq!(ledger.alias(), "ledger-with-dashes:main");
 
-    let ledger = fluree.create_ledger("ledger_with_underscores").await.unwrap();
+    let ledger = fluree
+        .create_ledger("ledger_with_underscores")
+        .await
+        .unwrap();
     assert_eq!(ledger.alias(), "ledger_with_underscores:main");
 
-    let ledger = fluree.create_ledger("org/department/project").await.unwrap();
+    let ledger = fluree
+        .create_ledger("org/department/project")
+        .await
+        .unwrap();
     assert_eq!(ledger.alias(), "org/department/project:main");
 }
 
@@ -96,7 +111,10 @@ async fn duplicate_ledger_creation() {
 
     // Trying with explicit :main should also fail (same normalized alias)
     let result = fluree.create_ledger(&format!("{}:main", ledger_name)).await;
-    assert!(result.is_err(), "Duplicate creation should fail for explicit branch too");
+    assert!(
+        result.is_err(),
+        "Duplicate creation should fail for explicit branch too"
+    );
 }
 
 // =============================================================================
@@ -134,7 +152,10 @@ async fn exists_test() {
     let _updated_ledger = fluree.insert(ledger, &txn).await.unwrap();
 
     let result = fluree.ledger(ledger_alias).await;
-    assert!(result.is_ok(), "Ledger should still exist after committing data");
+    assert!(
+        result.is_ok(),
+        "Ledger should still exist after committing data"
+    );
 
     // Test: returns false for non-existent ledger
     let result = fluree.ledger("notaledger").await;
@@ -222,7 +243,11 @@ async fn fuel_integration_test() {
 
     let basic_result = fluree.query(&ledger, &query_basic).await.unwrap();
     let rows = basic_result.to_jsonld(&ledger.db).unwrap();
-    assert_eq!(rows.as_array().unwrap().len(), 4, "Basic query should return 4 users");
+    assert_eq!(
+        rows.as_array().unwrap().len(),
+        4,
+        "Basic query should return 4 users"
+    );
 
     // Query with metadata should report fuel
     let query_with_meta = json!({
@@ -232,11 +257,20 @@ async fn fuel_integration_test() {
         "opts": {"meta": true}
     });
 
-    let tracked_result = fluree.query_tracked(&ledger, &query_with_meta).await.unwrap();
-    let query_fuel = tracked_result.fuel.expect("Query with meta should report fuel");
+    let tracked_result = fluree
+        .query_tracked(&ledger, &query_with_meta)
+        .await
+        .unwrap();
+    let query_fuel = tracked_result
+        .fuel
+        .expect("Query with meta should report fuel");
 
     // Fuel should be a positive number representing computational cost
-    assert!(query_fuel > 0, "Query fuel should be greater than 0, got: {}", query_fuel);
+    assert!(
+        query_fuel > 0,
+        "Query fuel should be greater than 0, got: {}",
+        query_fuel
+    );
 
     // Fuel should roughly correspond to the number of flakes traversed
     // (may not be exact due to query optimization differences)

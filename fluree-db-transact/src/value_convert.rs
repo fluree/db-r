@@ -5,8 +5,8 @@
 //! literal values into `FlakeValue` + datatype `Sid`.
 
 use crate::generate::{
-    DT_BOOLEAN, DT_DATE, DT_DATE_TIME, DT_DECIMAL, DT_DOUBLE,
-    DT_INTEGER, DT_JSON, DT_LANG_STRING, DT_STRING, DT_TIME,
+    DT_BOOLEAN, DT_DATE, DT_DATE_TIME, DT_DECIMAL, DT_DOUBLE, DT_INTEGER, DT_JSON, DT_LANG_STRING,
+    DT_STRING, DT_TIME,
 };
 use crate::namespace::NamespaceRegistry;
 use fluree_db_core::temporal::{Date, DateTime, Time};
@@ -47,24 +47,27 @@ pub(crate) fn convert_string_literal(
         xsd::STRING | xsd::NORMALIZED_STRING | xsd::TOKEN | xsd::LANGUAGE | xsd::ANY_URI => {
             FlakeValue::String(value.to_string())
         }
-        xsd::INTEGER | xsd::LONG | xsd::INT | xsd::SHORT | xsd::BYTE
-        | xsd::UNSIGNED_LONG | xsd::UNSIGNED_INT | xsd::UNSIGNED_SHORT | xsd::UNSIGNED_BYTE
-        | xsd::NON_NEGATIVE_INTEGER | xsd::POSITIVE_INTEGER
-        | xsd::NON_POSITIVE_INTEGER | xsd::NEGATIVE_INTEGER => {
-            parse_integer(value)
-        }
-        xsd::DOUBLE | xsd::FLOAT => {
-            value
-                .parse::<f64>()
-                .map(FlakeValue::Double)
-                .unwrap_or_else(|_| FlakeValue::String(value.to_string()))
-        }
-        xsd::DECIMAL => {
-            value
-                .parse::<bigdecimal::BigDecimal>()
-                .map(|d| FlakeValue::Decimal(Box::new(d)))
-                .unwrap_or_else(|_| FlakeValue::String(value.to_string()))
-        }
+        xsd::INTEGER
+        | xsd::LONG
+        | xsd::INT
+        | xsd::SHORT
+        | xsd::BYTE
+        | xsd::UNSIGNED_LONG
+        | xsd::UNSIGNED_INT
+        | xsd::UNSIGNED_SHORT
+        | xsd::UNSIGNED_BYTE
+        | xsd::NON_NEGATIVE_INTEGER
+        | xsd::POSITIVE_INTEGER
+        | xsd::NON_POSITIVE_INTEGER
+        | xsd::NEGATIVE_INTEGER => parse_integer(value),
+        xsd::DOUBLE | xsd::FLOAT => value
+            .parse::<f64>()
+            .map(FlakeValue::Double)
+            .unwrap_or_else(|_| FlakeValue::String(value.to_string())),
+        xsd::DECIMAL => value
+            .parse::<bigdecimal::BigDecimal>()
+            .map(|d| FlakeValue::Decimal(Box::new(d)))
+            .unwrap_or_else(|_| FlakeValue::String(value.to_string())),
         xsd::BOOLEAN => match value {
             "true" | "1" => FlakeValue::Boolean(true),
             "false" | "0" => FlakeValue::Boolean(false),

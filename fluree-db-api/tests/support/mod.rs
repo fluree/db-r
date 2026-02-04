@@ -20,10 +20,8 @@ use tokio::task::LocalSet;
 // =============================================================================
 
 /// Type alias for memory-backed Fluree instance.
-pub type MemoryFluree = fluree_db_api::Fluree<
-    MemoryStorage,
-    fluree_db_nameservice::memory::MemoryNameService,
->;
+pub type MemoryFluree =
+    fluree_db_api::Fluree<MemoryStorage, fluree_db_nameservice::memory::MemoryNameService>;
 
 /// Type alias for memory-backed ledger state.
 pub type MemoryLedger = LedgerState<MemoryStorage>;
@@ -80,11 +78,8 @@ where
     S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
     N: fluree_db_nameservice::NameService + fluree_db_nameservice::Publisher + Clone + 'static,
 {
-    let (worker, handle) = fluree_db_api::BackgroundIndexerWorker::new(
-        storage,
-        Arc::new(nameservice),
-        config,
-    );
+    let (worker, handle) =
+        fluree_db_api::BackgroundIndexerWorker::new(storage, Arc::new(nameservice), config);
 
     let local = LocalSet::new();
     local.spawn_local(worker.run());

@@ -1,10 +1,7 @@
 use serde_json::Value as JsonValue;
 
 use crate::query::helpers::parse_and_validate_sparql;
-use crate::{
-    ApiError, DatasetSpec, Fluree, QueryConnectionOptions, QueryResult, Result,
-    Storage,
-};
+use crate::{ApiError, DatasetSpec, Fluree, QueryConnectionOptions, QueryResult, Result, Storage};
 
 #[cfg(feature = "credential")]
 use crate::credential;

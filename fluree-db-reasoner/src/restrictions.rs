@@ -19,23 +19,22 @@
 //! ] .
 //! ```
 
+use crate::owl;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::flake::Flake;
-use fluree_db_core::namespaces::{is_rdf_type};
-use fluree_vocab::namespaces::OWL;
-use fluree_vocab::owl_names::*;
-use crate::owl;
+use fluree_db_core::namespaces::is_rdf_type;
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::storage::Storage;
 use fluree_db_core::value::FlakeValue;
 use fluree_db_core::{Db, Sid};
+use fluree_vocab::namespaces::OWL;
+use fluree_vocab::owl_names::*;
 use hashbrown::HashMap;
 
 use crate::error::Result;
 use crate::rdf_list::{collect_list_elements, resolve_property_expression};
 use crate::types::PropertyExpression;
-
 
 /// A value that can appear in a hasValue restriction
 ///
@@ -391,52 +390,48 @@ impl RestrictionIndex {
                     }
                 }
             }
-            RestrictionType::SomeValuesFrom { property, .. } => {
-                match property {
-                    PropertyExpression::Named(sid) => {
-                        self.some_values_from_by_property
+            RestrictionType::SomeValuesFrom { property, .. } => match property {
+                PropertyExpression::Named(sid) => {
+                    self.some_values_from_by_property
+                        .entry(sid.clone())
+                        .or_default()
+                        .push(id.clone());
+                }
+                PropertyExpression::Inverse(inner) => {
+                    if let PropertyExpression::Named(sid) = inner.as_ref() {
+                        self.some_values_from_by_inverse_property
                             .entry(sid.clone())
                             .or_default()
                             .push(id.clone());
-                    }
-                    PropertyExpression::Inverse(inner) => {
-                        if let PropertyExpression::Named(sid) = inner.as_ref() {
-                            self.some_values_from_by_inverse_property
-                                .entry(sid.clone())
-                                .or_default()
-                                .push(id.clone());
-                        } else {
-                            self.chain_property_restrictions.push(id.clone());
-                        }
-                    }
-                    PropertyExpression::Chain(_) => {
+                    } else {
                         self.chain_property_restrictions.push(id.clone());
                     }
                 }
-            }
-            RestrictionType::AllValuesFrom { property, .. } => {
-                match property {
-                    PropertyExpression::Named(sid) => {
-                        self.all_values_from_by_property
+                PropertyExpression::Chain(_) => {
+                    self.chain_property_restrictions.push(id.clone());
+                }
+            },
+            RestrictionType::AllValuesFrom { property, .. } => match property {
+                PropertyExpression::Named(sid) => {
+                    self.all_values_from_by_property
+                        .entry(sid.clone())
+                        .or_default()
+                        .push(id.clone());
+                }
+                PropertyExpression::Inverse(inner) => {
+                    if let PropertyExpression::Named(sid) = inner.as_ref() {
+                        self.all_values_from_by_inverse_property
                             .entry(sid.clone())
                             .or_default()
                             .push(id.clone());
-                    }
-                    PropertyExpression::Inverse(inner) => {
-                        if let PropertyExpression::Named(sid) = inner.as_ref() {
-                            self.all_values_from_by_inverse_property
-                                .entry(sid.clone())
-                                .or_default()
-                                .push(id.clone());
-                        } else {
-                            self.chain_property_restrictions.push(id.clone());
-                        }
-                    }
-                    PropertyExpression::Chain(_) => {
+                    } else {
                         self.chain_property_restrictions.push(id.clone());
                     }
                 }
-            }
+                PropertyExpression::Chain(_) => {
+                    self.chain_property_restrictions.push(id.clone());
+                }
+            },
             RestrictionType::MaxCardinality1 { property } => {
                 match property {
                     PropertyExpression::Named(sid) => {
@@ -451,19 +446,17 @@ impl RestrictionIndex {
                     }
                 }
             }
-            RestrictionType::MaxQualifiedCardinality1 { property, .. } => {
-                match property {
-                    PropertyExpression::Named(sid) => {
-                        self.max_qualified_cardinality_by_property
-                            .entry(sid.clone())
-                            .or_default()
-                            .push(id.clone());
-                    }
-                    PropertyExpression::Inverse(_) | PropertyExpression::Chain(_) => {
-                        self.chain_property_restrictions.push(id.clone());
-                    }
+            RestrictionType::MaxQualifiedCardinality1 { property, .. } => match property {
+                PropertyExpression::Named(sid) => {
+                    self.max_qualified_cardinality_by_property
+                        .entry(sid.clone())
+                        .or_default()
+                        .push(id.clone());
                 }
-            }
+                PropertyExpression::Inverse(_) | PropertyExpression::Chain(_) => {
+                    self.chain_property_restrictions.push(id.clone());
+                }
+            },
             RestrictionType::IntersectionOf { .. } => {
                 self.intersection_restrictions.push(id.clone());
             }
@@ -749,7 +742,9 @@ pub async fn extract_restrictions<S: Storage>(
                         members.into_iter().map(&to_class_ref).collect();
                     index.add_restriction(ParsedRestriction {
                         restriction_id: flake.s.clone(),
-                        restriction_type: RestrictionType::IntersectionOf { members: class_refs },
+                        restriction_type: RestrictionType::IntersectionOf {
+                            members: class_refs,
+                        },
                     });
                 }
             }
@@ -765,7 +760,9 @@ pub async fn extract_restrictions<S: Storage>(
                         members.into_iter().map(&to_class_ref).collect();
                     index.add_restriction(ParsedRestriction {
                         restriction_id: flake.s.clone(),
-                        restriction_type: RestrictionType::UnionOf { members: class_refs },
+                        restriction_type: RestrictionType::UnionOf {
+                            members: class_refs,
+                        },
                     });
                 }
             }

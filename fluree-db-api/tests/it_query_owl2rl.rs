@@ -64,11 +64,20 @@ async fn owl2rl_same_as_symmetry() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     // Should include both carol and carol-lynn (sameAs is reflexive and symmetric)
-    assert!(results.contains(&json!("ex:carol")), "carol-lynn should be sameAs carol, got {:?}", results);
+    assert!(
+        results.contains(&json!("ex:carol")),
+        "carol-lynn should be sameAs carol, got {:?}",
+        results
+    );
 }
 
 #[tokio::test]
@@ -101,13 +110,27 @@ async fn owl2rl_same_as_transitivity() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     // Should include all 4 carols
-    assert!(results.contains(&json!("ex:carol2")), "carol1 sameAs carol2");
-    assert!(results.contains(&json!("ex:carol3")), "carol1 sameAs carol3");
-    assert!(results.contains(&json!("ex:carol4")), "carol1 sameAs carol4");
+    assert!(
+        results.contains(&json!("ex:carol2")),
+        "carol1 sameAs carol2"
+    );
+    assert!(
+        results.contains(&json!("ex:carol3")),
+        "carol1 sameAs carol3"
+    );
+    assert!(
+        results.contains(&json!("ex:carol4")),
+        "carol1 sameAs carol4"
+    );
 }
 
 // =============================================================================
@@ -142,8 +165,17 @@ async fn owl2rl_symmetric_property() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
-    assert_eq!(rows, json!(["ex:person-a"]), "person-b should live with person-a via symmetry");
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
+    assert_eq!(
+        rows,
+        json!(["ex:person-a"]),
+        "person-b should live with person-a via symmetry"
+    );
 }
 
 #[tokio::test]
@@ -174,7 +206,12 @@ async fn owl2rl_transitive_property() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     // Should include b, c, d via transitivity
@@ -209,7 +246,12 @@ async fn owl2rl_inverse_of() {
         "where": {"@id": "ex:mom", "ex:child": "?x"},
         "reasoning": "owl2rl"
     });
-    let rows1 = fluree.query(&ledger, &q1).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows1 = fluree
+        .query(&ledger, &q1)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(rows1, json!(["ex:son"]), "mom's child should be son");
 
     // Query: who is bob's parent?
@@ -219,7 +261,12 @@ async fn owl2rl_inverse_of() {
         "where": {"@id": "ex:bob", "ex:parents": "?x"},
         "reasoning": "owl2rl"
     });
-    let rows2 = fluree.query(&ledger, &q2).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows2 = fluree
+        .query(&ledger, &q2)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(rows2, json!(["ex:alice"]), "bob's parent should be alice");
 }
 
@@ -251,11 +298,22 @@ async fn owl2rl_domain_rule() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
-    assert!(results.contains(&json!("ex:Person")), "brian should be type Person");
-    assert!(results.contains(&json!("ex:Child")), "brian should be type Child");
+    assert!(
+        results.contains(&json!("ex:Person")),
+        "brian should be type Person"
+    );
+    assert!(
+        results.contains(&json!("ex:Child")),
+        "brian should be type Child"
+    );
 }
 
 #[tokio::test]
@@ -286,11 +344,22 @@ async fn owl2rl_range_rule() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
-    assert!(results.contains(&json!("ex:Person")), "carol should be type Person");
-    assert!(results.contains(&json!("ex:Parent")), "carol should be type Parent");
+    assert!(
+        results.contains(&json!("ex:Person")),
+        "carol should be type Person"
+    );
+    assert!(
+        results.contains(&json!("ex:Parent")),
+        "carol should be type Parent"
+    );
 }
 
 #[tokio::test]
@@ -331,11 +400,20 @@ async fn owl2rl_functional_property() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     // carol and carol2 should be sameAs each other
-    assert!(results.contains(&json!("ex:carol2")), "carol should be sameAs carol2, got {:?}", results);
+    assert!(
+        results.contains(&json!("ex:carol2")),
+        "carol should be sameAs carol2, got {:?}",
+        results
+    );
 }
 
 #[tokio::test]
@@ -368,10 +446,18 @@ async fn owl2rl_inverse_functional_property() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
-    assert!(results.contains(&json!("ex:brian2")), "brian1 should be sameAs brian2");
+    assert!(
+        results.contains(&json!("ex:brian2")),
+        "brian1 should be sameAs brian2"
+    );
 }
 
 #[tokio::test]
@@ -402,7 +488,12 @@ async fn owl2rl_sub_property_of() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     assert!(results.contains(&json!("ex:alice-mom")));
@@ -443,7 +534,12 @@ async fn owl2rl_property_chain_axiom() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     assert!(results.contains(&json!("ex:mom-mom")));
@@ -488,11 +584,22 @@ async fn owl2rl_has_key() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
-    assert!(results.contains(&json!("ex:brian2")), "brian and brian2 share same key value");
-    assert!(!results.contains(&json!("ex:bob")), "bob has different key value");
+    assert!(
+        results.contains(&json!("ex:brian2")),
+        "brian and brian2 share same key value"
+    );
+    assert!(
+        !results.contains(&json!("ex:bob")),
+        "bob has different key value"
+    );
 }
 
 // =============================================================================
@@ -529,7 +636,12 @@ async fn owl2rl_subclass_of() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     // All three should be Human (alice directly, brian and laura via subclass chain)
@@ -565,7 +677,12 @@ async fn owl2rl_equivalent_class() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     // Both should be Person (brian directly, laura via equivalentClass)
@@ -615,8 +732,17 @@ async fn owl2rl_has_value_forward() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
-    assert_eq!(rows, json!(["ex:kg"]), "mass1 should have inferred hasUnit ex:kg");
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
+    assert_eq!(
+        rows,
+        json!(["ex:kg"]),
+        "mass1 should have inferred hasUnit ex:kg"
+    );
 }
 
 #[tokio::test]
@@ -659,11 +785,19 @@ async fn owl2rl_has_value_backward() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     assert!(results.contains(&json!("ex:mass1")), "mass1 has kg unit");
-    assert!(!results.contains(&json!("ex:mass2")), "mass2 has different unit");
+    assert!(
+        !results.contains(&json!("ex:mass2")),
+        "mass2 has different unit"
+    );
 }
 
 #[tokio::test]
@@ -708,11 +842,22 @@ async fn owl2rl_some_values_from() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
-    assert!(results.contains(&json!("ex:wine1")), "wine1 has a Winery maker");
-    assert!(!results.contains(&json!("ex:shirt1")), "shirt1 maker is not a Winery");
+    assert!(
+        results.contains(&json!("ex:wine1")),
+        "wine1 has a Winery maker"
+    );
+    assert!(
+        !results.contains(&json!("ex:shirt1")),
+        "shirt1 maker is not a Winery"
+    );
 }
 
 #[tokio::test]
@@ -753,10 +898,18 @@ async fn owl2rl_all_values_from() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
-    assert!(results.contains(&json!("ex:Item")), "thing1 should be inferred as Item");
+    assert!(
+        results.contains(&json!("ex:Item")),
+        "thing1 should be inferred as Item"
+    );
 }
 
 #[tokio::test]
@@ -800,7 +953,12 @@ async fn owl2rl_max_cardinality() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     // All three carols should be sameAs due to maxCardinality=1
@@ -850,12 +1008,26 @@ async fn owl2rl_intersection_of() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
-    assert!(results.contains(&json!("ex:carol")), "carol has both Woman and Parent types");
-    assert!(results.contains(&json!("ex:jen")), "jen is explicitly Mother");
-    assert!(!results.contains(&json!("ex:alice")), "alice is only Woman, not Parent");
+    assert!(
+        results.contains(&json!("ex:carol")),
+        "carol has both Woman and Parent types"
+    );
+    assert!(
+        results.contains(&json!("ex:jen")),
+        "jen is explicitly Mother"
+    );
+    assert!(
+        !results.contains(&json!("ex:alice")),
+        "alice is only Woman, not Parent"
+    );
 }
 
 #[tokio::test]
@@ -898,12 +1070,26 @@ async fn owl2rl_union_of() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
-    assert!(results.contains(&json!("ex:carol")), "carol is Mother (union member)");
-    assert!(results.contains(&json!("ex:bob")), "bob is Father (union member)");
-    assert!(!results.contains(&json!("ex:alice")), "alice is Woman (not in union)");
+    assert!(
+        results.contains(&json!("ex:carol")),
+        "carol is Mother (union member)"
+    );
+    assert!(
+        results.contains(&json!("ex:bob")),
+        "bob is Father (union member)"
+    );
+    assert!(
+        !results.contains(&json!("ex:alice")),
+        "alice is Woman (not in union)"
+    );
 }
 
 #[tokio::test]
@@ -939,7 +1125,12 @@ async fn owl2rl_one_of() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger1, &q).await.unwrap().to_jsonld(&ledger1.db).unwrap();
+    let rows = fluree
+        .query(&ledger1, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger1.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     assert!(results.contains(&json!("ex:Red")));
@@ -977,7 +1168,12 @@ async fn owl2rl_disabled_shows_no_derived_facts() {
         "reasoning": "none"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
 
     // Without reasoning, person-b does NOT live with person-a (symmetric inference not applied)
     assert_eq!(rows, json!([]), "no results without reasoning");

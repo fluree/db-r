@@ -15,7 +15,11 @@ use fluree_vocab::rdf;
 use serde_json::{json, Map, Value as JsonValue};
 
 /// Format query results in JSON-LD Query format
-pub fn format(result: &QueryResult, compactor: &IriCompactor, config: &FormatterConfig) -> Result<JsonValue> {
+pub fn format(
+    result: &QueryResult,
+    compactor: &IriCompactor,
+    config: &FormatterConfig,
+) -> Result<JsonValue> {
     let mut rows = Vec::new();
 
     for batch in &result.batches {
@@ -31,9 +35,13 @@ pub fn format(result: &QueryResult, compactor: &IriCompactor, config: &Formatter
                         JsonLdRowShape::Array => {
                             format_row_array(batch, row_idx, &result.select, compactor)?
                         }
-                        JsonLdRowShape::Object => {
-                            format_row_object(batch, row_idx, &result.select, &result.vars, compactor)?
-                        }
+                        JsonLdRowShape::Object => format_row_object(
+                            batch,
+                            row_idx,
+                            &result.select,
+                            &result.vars,
+                            compactor,
+                        )?,
                     }
                 }
             };
@@ -100,8 +108,12 @@ pub(crate) fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Res
                 return match val {
                     FlakeValue::Json(json_str) => {
                         // Deserialize the JSON string back to a JSON value
-                        serde_json::from_str(json_str)
-                            .map_err(|e| FormatError::InvalidBinding(format!("Invalid JSON in @json value: {}", e)))
+                        serde_json::from_str(json_str).map_err(|e| {
+                            FormatError::InvalidBinding(format!(
+                                "Invalid JSON in @json value: {}",
+                                e
+                            ))
+                        })
                     }
                     _ => Err(FormatError::InvalidBinding(
                         "@json datatype must have FlakeValue::Json".to_string(),
@@ -145,9 +157,9 @@ pub(crate) fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Res
                         }
                     }
                     FlakeValue::Boolean(b) => Ok(json!(b)),
-                    FlakeValue::Vector(v) => Ok(JsonValue::Array(
-                        v.iter().map(|f| json!(f)).collect()
-                    )),
+                    FlakeValue::Vector(v) => {
+                        Ok(JsonValue::Array(v.iter().map(|f| json!(f)).collect()))
+                    }
                     FlakeValue::Json(_) => Err(FormatError::InvalidBinding(
                         "@json should have been handled above".to_string(),
                     )),
@@ -229,7 +241,10 @@ pub(crate) fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Res
 
         // Grouped values (from GROUP BY without aggregation)
         Binding::Grouped(values) => {
-            let arr: Result<Vec<_>> = values.iter().map(|v| format_binding(v, compactor)).collect();
+            let arr: Result<Vec<_>> = values
+                .iter()
+                .map(|v| format_binding(v, compactor))
+                .collect();
             Ok(JsonValue::Array(arr?))
         }
     }
@@ -337,7 +352,10 @@ mod tests {
     #[test]
     fn test_format_binding_string() {
         let compactor = make_test_compactor();
-        let binding = Binding::lit(FlakeValue::String("Alice".to_string()), Sid::new(2, "string"));
+        let binding = Binding::lit(
+            FlakeValue::String("Alice".to_string()),
+            Sid::new(2, "string"),
+        );
         let result = format_binding(&binding, &compactor).unwrap();
         assert_eq!(result, json!("Alice"));
     }

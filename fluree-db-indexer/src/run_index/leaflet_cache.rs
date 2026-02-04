@@ -163,10 +163,9 @@ impl LeafletCache {
     where
         F: FnOnce() -> CachedRegion1,
     {
-        let entry = self.inner.get_with(
-            CacheKey::R1(key),
-            || CachedEntry::R1(decode_fn()),
-        );
+        let entry = self
+            .inner
+            .get_with(CacheKey::R1(key), || CachedEntry::R1(decode_fn()));
         match entry {
             CachedEntry::R1(r1) => r1,
             _ => unreachable!("R1 key always maps to R1 entry"),
@@ -195,10 +194,9 @@ impl LeafletCache {
     where
         F: FnOnce() -> CachedRegion2,
     {
-        let entry = self.inner.get_with(
-            CacheKey::R2(key),
-            || CachedEntry::R2(decode_fn()),
-        );
+        let entry = self
+            .inner
+            .get_with(CacheKey::R2(key), || CachedEntry::R2(decode_fn()));
         match entry {
             CachedEntry::R2(r2) => r2,
             _ => unreachable!("R2 key always maps to R2 entry"),
@@ -237,18 +235,13 @@ impl LeafletCache {
     /// fails, nothing is cached and the error propagates.
     ///
     /// Key should be `xxh3_128(cas_address.as_bytes())`.
-    pub fn try_get_or_load_dict_leaf<F>(
-        &self,
-        key: u128,
-        load_fn: F,
-    ) -> io::Result<Arc<[u8]>>
+    pub fn try_get_or_load_dict_leaf<F>(&self, key: u128, load_fn: F) -> io::Result<Arc<[u8]>>
     where
         F: FnOnce() -> io::Result<Arc<[u8]>>,
     {
-        let result = self.inner.try_get_with(
-            CacheKey::DictLeaf(key),
-            || load_fn().map(CachedEntry::DictLeaf),
-        );
+        let result = self.inner.try_get_with(CacheKey::DictLeaf(key), || {
+            load_fn().map(CachedEntry::DictLeaf)
+        });
         match result {
             Ok(CachedEntry::DictLeaf(bytes)) => Ok(bytes),
             Ok(_) => unreachable!("DictLeaf key always maps to DictLeaf entry"),
@@ -280,7 +273,12 @@ mod tests {
     use super::*;
 
     fn make_key(leaf_id: u128, leaflet_index: u8, to_t: i64, epoch: u64) -> LeafletCacheKey {
-        LeafletCacheKey { leaf_id, leaflet_index, to_t, epoch }
+        LeafletCacheKey {
+            leaf_id,
+            leaflet_index,
+            to_t,
+            epoch,
+        }
     }
 
     fn make_r1(row_count: usize) -> CachedRegion1 {
@@ -423,7 +421,9 @@ mod tests {
         // Insert R1 and a dict leaf into the same pool.
         cache.get_or_decode_r1(key.clone(), || make_r1(50));
         let dict_data: Arc<[u8]> = Arc::from(vec![1u8; 256].into_boxed_slice());
-        cache.try_get_or_load_dict_leaf(999, || Ok(dict_data)).unwrap();
+        cache
+            .try_get_or_load_dict_leaf(999, || Ok(dict_data))
+            .unwrap();
 
         // Both retrievable from the same pool.
         assert!(cache.get_r1(&key).is_some());

@@ -40,7 +40,7 @@ pub use config::{ServerConfig, ServerRole};
 pub use error::{Result, ServerError};
 pub use peer::{ForwardingClient, PeerState, PeerSubscriptionTask};
 pub use state::AppState;
-pub use telemetry::{TelemetryConfig, init_logging, shutdown_tracer};
+pub use telemetry::{init_logging, shutdown_tracer, TelemetryConfig};
 
 use axum::Router;
 use std::sync::Arc;
@@ -92,8 +92,7 @@ impl FlureeServer {
                 // Shared storage: PeerSyncTask persists refs into local FileNameService
                 let events_url = peer::build_peer_events_url(&self.state.config);
                 let auth_token = self.state.config.load_peer_events_token().ok().flatten();
-                let watch =
-                    fluree_db_nameservice_sync::SseRemoteWatch::new(events_url, auth_token);
+                let watch = fluree_db_nameservice_sync::SseRemoteWatch::new(events_url, auth_token);
                 let task = peer::PeerSyncTask::new(
                     self.state.fluree.as_file().clone(),
                     peer_state,
@@ -155,10 +154,16 @@ impl FlureeServer {
         use fluree_db_nameservice::{Publication, SubscriptionScope};
 
         let subscription = match &self.state.fluree {
-            state::FlureeInstance::File(f) => f.nameservice().subscribe(SubscriptionScope::All).await,
-            state::FlureeInstance::Proxy(p) => p.nameservice().subscribe(SubscriptionScope::All).await,
+            state::FlureeInstance::File(f) => {
+                f.nameservice().subscribe(SubscriptionScope::All).await
+            }
+            state::FlureeInstance::Proxy(p) => {
+                p.nameservice().subscribe(SubscriptionScope::All).await
+            }
         }
-        .map_err(|e| fluree_db_api::ApiError::internal(format!("Failed to subscribe for registry: {}", e)))?;
+        .map_err(|e| {
+            fluree_db_api::ApiError::internal(format!("Failed to subscribe for registry: {}", e))
+        })?;
 
         let handle = registry::LedgerRegistry::spawn_maintenance_task(
             self.state.registry.clone(),

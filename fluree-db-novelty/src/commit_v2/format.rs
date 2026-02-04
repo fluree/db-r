@@ -273,11 +273,26 @@ mod tests {
     fn test_footer_round_trip() {
         let footer = CommitV2Footer {
             dicts: [
-                DictLocation { offset: 100, len: 50 },
-                DictLocation { offset: 150, len: 200 },
-                DictLocation { offset: 350, len: 100 },
-                DictLocation { offset: 450, len: 80 },
-                DictLocation { offset: 530, len: 120 },
+                DictLocation {
+                    offset: 100,
+                    len: 50,
+                },
+                DictLocation {
+                    offset: 150,
+                    len: 200,
+                },
+                DictLocation {
+                    offset: 350,
+                    len: 100,
+                },
+                DictLocation {
+                    offset: 450,
+                    len: 80,
+                },
+                DictLocation {
+                    offset: 530,
+                    len: 120,
+                },
             ],
             ops_section_len: 9999,
         };

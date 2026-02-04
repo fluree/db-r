@@ -85,7 +85,12 @@ async fn reverse_predicate_in_where_selects_inverse_edges() {
         ]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&rows),
         normalize_rows(&json!([["Brian", "ex:cam"]]))
@@ -108,7 +113,12 @@ async fn reverse_predicate_in_where_finds_kid() {
         "distinct": true
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(normalize_rows(&rows), normalize_rows(&json!(["ex:kid"])));
 }
 
@@ -128,10 +138,15 @@ async fn reverse_at_type_in_where_finds_classes() {
         "distinct": true
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&rows),
-        normalize_rows(&json!(["ex:Person","ex:Organization"]))
+        normalize_rows(&json!(["ex:Person", "ex:Organization"]))
     );
 }
 
@@ -148,10 +163,15 @@ async fn forward_at_type_in_where_finds_classes() {
         "distinct": true
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&rows),
-        normalize_rows(&json!(["ex:Person","ex:Organization"]))
+        normalize_rows(&json!(["ex:Person", "ex:Organization"]))
     );
 }
 
@@ -237,7 +257,6 @@ async fn context_reverse_select_one_graph_crawl() {
     );
 }
 
-
 #[tokio::test]
 async fn reverse_predicate_in_where_selects_parents() {
     // Same dataset as Clojure reverse-preds-in-where-and-select, but assert the inverse edges directly.
@@ -256,10 +275,15 @@ async fn reverse_predicate_in_where_selects_parents() {
         "where": {"@id":"ex:kid","parent":"?parent"}
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&rows),
-        normalize_rows(&json!(["ex:mom","ex:dad"]))
+        normalize_rows(&json!(["ex:mom", "ex:dad"]))
     );
 }
 
@@ -282,16 +306,25 @@ async fn type_reverse_and_forward_agree_on_classes() {
         "where": {"@id":"?x","@type":"?class"}
     });
 
-    let rows_reverse = fluree.query(&ledger, &q_reverse).await.unwrap().to_jsonld(&ledger.db).unwrap();
-    let rows_forward = fluree.query(&ledger, &q_forward).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows_reverse = fluree
+        .query(&ledger, &q_reverse)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
+    let rows_forward = fluree
+        .query(&ledger, &q_forward)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
 
     assert_eq!(
         normalize_rows(&rows_reverse),
-        normalize_rows(&json!(["ex:Person","ex:Organization"]))
+        normalize_rows(&json!(["ex:Person", "ex:Organization"]))
     );
     assert_eq!(
         normalize_rows(&rows_forward),
-        normalize_rows(&json!(["ex:Person","ex:Organization"]))
+        normalize_rows(&json!(["ex:Person", "ex:Organization"]))
     );
 }
-

@@ -73,7 +73,8 @@ impl<'a> super::Parser<'a> {
 
         // Expect opening brace
         if !self.stream.match_token(&TokenKind::LBrace) {
-            self.stream.error_at_current("expected '{' for CONSTRUCT template");
+            self.stream
+                .error_at_current("expected '{' for CONSTRUCT template");
             return None;
         }
 
@@ -88,7 +89,8 @@ impl<'a> super::Parser<'a> {
                     if self.stream.check(&TokenKind::RBrace) {
                         break; // Empty template is allowed
                     }
-                    self.stream.error_at_current("expected subject in CONSTRUCT template");
+                    self.stream
+                        .error_at_current("expected subject in CONSTRUCT template");
                     return None;
                 }
             };
@@ -102,7 +104,8 @@ impl<'a> super::Parser<'a> {
 
         // Expect closing brace
         if !self.stream.match_token(&TokenKind::RBrace) {
-            self.stream.error_at_current("expected '}' after CONSTRUCT template");
+            self.stream
+                .error_at_current("expected '}' after CONSTRUCT template");
             return None;
         }
 

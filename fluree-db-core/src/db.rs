@@ -4,17 +4,16 @@
 //! It is generic over storage and cache implementations.
 
 use crate::error::{Error, Result};
+use crate::index_schema::IndexSchema;
+use crate::index_stats::IndexStats;
+use crate::namespaces::default_namespace_codes;
 use crate::range_provider::RangeProvider;
 use crate::schema_hierarchy::SchemaHierarchy;
-use crate::index_stats::IndexStats;
-use crate::index_schema::IndexSchema;
 use crate::serde::json::{
-    raw_schema_to_index_schema, raw_stats_to_index_stats,
-    RawDbRootSchema, RawDbRootStats,
+    raw_schema_to_index_schema, raw_stats_to_index_stats, RawDbRootSchema, RawDbRootStats,
 };
 use crate::sid::Sid;
 use crate::storage::Storage;
-use crate::namespaces::default_namespace_codes;
 use once_cell::sync::OnceCell;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -87,7 +86,10 @@ impl<S: std::fmt::Debug> std::fmt::Debug for Db<S> {
             .field("alias", &self.alias)
             .field("t", &self.t)
             .field("version", &self.version)
-            .field("range_provider", &self.range_provider.as_ref().map(|_| "..."))
+            .field(
+                "range_provider",
+                &self.range_provider.as_ref().map(|_| "..."),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -212,7 +214,16 @@ impl<S: Storage> Db<S> {
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as u32;
 
-        Ok(Self::new_meta(alias, t, namespace_codes, stats, schema, subject_watermarks, string_watermark, storage))
+        Ok(Self::new_meta(
+            alias,
+            t,
+            namespace_codes,
+            stats,
+            schema,
+            subject_watermarks,
+            string_watermark,
+            storage,
+        ))
     }
 
     /// Attach a range provider for binary index queries.

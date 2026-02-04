@@ -176,10 +176,10 @@ impl RunWriter {
                     buf.sort_unstable_by(cmp_for_order(sort_order));
                     let sort_elapsed = sort_start.elapsed();
 
-                    let (run_min_t, run_max_t) = buf.iter().fold(
-                        (i64::MAX, i64::MIN),
-                        |(min, max), r| (min.min(r.t), max.max(r.t)),
-                    );
+                    let (run_min_t, run_max_t) =
+                        buf.iter().fold((i64::MAX, i64::MIN), |(min, max), r| {
+                            (min.min(r.t), max.max(r.t))
+                        });
 
                     let write_start = std::time::Instant::now();
                     let info = write_run_file(
@@ -228,8 +228,16 @@ impl RunWriter {
         Ok(RunWriterResult {
             run_files: self.run_files,
             total_records: self.total_records,
-            min_t: if self.min_t == i64::MAX { 0 } else { self.min_t },
-            max_t: if self.max_t == i64::MIN { 0 } else { self.max_t },
+            min_t: if self.min_t == i64::MAX {
+                0
+            } else {
+                self.min_t
+            },
+            max_t: if self.max_t == i64::MIN {
+                0
+            } else {
+                self.max_t
+            },
         })
     }
 
@@ -328,7 +336,10 @@ impl MultiOrderRunWriter {
     }
 
     /// Finish all writers, returning per-order results.
-    pub fn finish(self, lang_dict: &mut LanguageTagDict) -> io::Result<Vec<(RunSortOrder, RunWriterResult)>> {
+    pub fn finish(
+        self,
+        lang_dict: &mut LanguageTagDict,
+    ) -> io::Result<Vec<(RunSortOrder, RunWriterResult)>> {
         let mut results = Vec::with_capacity(self.writers.len());
         for (order, writer) in self.writers {
             let result = writer.finish(lang_dict)?;
@@ -361,16 +372,17 @@ impl RecordSink for MultiOrderRunWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::DatatypeDictId;
     use fluree_db_core::subject_id::SubjectId;
-    use fluree_db_core::value_id::{ObjKind, ObjKey};
+    use fluree_db_core::value_id::{ObjKey, ObjKind};
+    use fluree_db_core::DatatypeDictId;
 
     fn make_test_record(s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
         RunRecord::new(
             0,
             SubjectId::from_u64(s_id),
             p_id,
-            ObjKind::NUM_INT, ObjKey::encode_i64(val),
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(val),
             t,
             true,
             DatatypeDictId::INTEGER.as_u16(),
@@ -499,9 +511,15 @@ mod tests {
         let mut lang_dict = LanguageTagDict::new();
 
         // Push 3 non-IRI records (integers)
-        writer.push(make_test_record(3, 1, 10, 1), &mut lang_dict).unwrap();
-        writer.push(make_test_record(1, 1, 20, 1), &mut lang_dict).unwrap();
-        writer.push(make_test_record(2, 1, 30, 2), &mut lang_dict).unwrap();
+        writer
+            .push(make_test_record(3, 1, 10, 1), &mut lang_dict)
+            .unwrap();
+        writer
+            .push(make_test_record(1, 1, 20, 1), &mut lang_dict)
+            .unwrap();
+        writer
+            .push(make_test_record(2, 1, 30, 2), &mut lang_dict)
+            .unwrap();
 
         let results = writer.finish(&mut lang_dict).unwrap();
         assert_eq!(results.len(), 4);
@@ -535,16 +553,25 @@ mod tests {
         let mut lang_dict = LanguageTagDict::new();
 
         // Push 2 integer records (not IRI)
-        writer.push(make_test_record(1, 1, 10, 1), &mut lang_dict).unwrap();
-        writer.push(make_test_record(2, 1, 20, 1), &mut lang_dict).unwrap();
+        writer
+            .push(make_test_record(1, 1, 10, 1), &mut lang_dict)
+            .unwrap();
+        writer
+            .push(make_test_record(2, 1, 20, 1), &mut lang_dict)
+            .unwrap();
 
         // Push 1 IRI record
         let iri_rec = RunRecord::new(
-            0, SubjectId::from_u64(3), 1,
-            ObjKind::REF_ID, ObjKey::encode_u32_id(42),
-            1, true,
+            0,
+            SubjectId::from_u64(3),
+            1,
+            ObjKind::REF_ID,
+            ObjKey::encode_u32_id(42),
+            1,
+            true,
             DatatypeDictId::ID.as_u16(),
-            0, None,
+            0,
+            None,
         );
         writer.push(iri_rec, &mut lang_dict).unwrap();
 
@@ -553,7 +580,9 @@ mod tests {
         for (order, result) in &results {
             match order {
                 RunSortOrder::Spot => assert_eq!(result.total_records, 3),
-                RunSortOrder::Opst => assert_eq!(result.total_records, 1, "OPST should only have IRI record"),
+                RunSortOrder::Opst => {
+                    assert_eq!(result.total_records, 1, "OPST should only have IRI record")
+                }
                 _ => unreachable!(),
             }
         }

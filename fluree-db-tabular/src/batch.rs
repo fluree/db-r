@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::error::{TabularError, Result};
+use crate::error::{Result, TabularError};
 
 /// Tabular field types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -356,8 +356,14 @@ impl Column {
             Self::Int64(v) | Self::Timestamp(v) | Self::TimestampTz(v) => v.len() * 16,
             Self::Float32(v) => v.len() * 8,
             Self::Float64(v) => v.len() * 16,
-            Self::String(v) => v.iter().map(|s| s.as_ref().map_or(0, |s| s.len() + 24)).sum(),
-            Self::Bytes(v) => v.iter().map(|b| b.as_ref().map_or(0, |b| b.len() + 24)).sum(),
+            Self::String(v) => v
+                .iter()
+                .map(|s| s.as_ref().map_or(0, |s| s.len() + 24))
+                .sum(),
+            Self::Bytes(v) => v
+                .iter()
+                .map(|b| b.as_ref().map_or(0, |b| b.len() + 24))
+                .sum(),
             Self::Decimal { values, .. } => values.len() * 24, // Option<i128>
         }
     }

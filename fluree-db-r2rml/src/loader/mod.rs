@@ -113,6 +113,8 @@ mod tests {
         let mapping = loader.compile().unwrap();
 
         assert_eq!(mapping.len(), 1);
-        assert!(mapping.get("http://example.org/mapping#AirlineMapping").is_some());
+        assert!(mapping
+            .get("http://example.org/mapping#AirlineMapping")
+            .is_some());
     }
 }

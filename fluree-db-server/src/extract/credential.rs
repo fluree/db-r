@@ -11,8 +11,8 @@
 
 use axum::body::Bytes;
 use axum::extract::FromRequest;
-use axum::http::header::CONTENT_TYPE;
 use axum::http::header::HeaderMap;
+use axum::http::header::CONTENT_TYPE;
 use axum::http::Request;
 use serde_json::Value as JsonValue;
 
@@ -143,7 +143,7 @@ fn looks_like_credential_json(json: &JsonValue) -> bool {
 #[cfg(feature = "credential")]
 async fn extract_credential(req: Request<axum::body::Body>) -> Result<MaybeCredential> {
     let headers = req.headers().clone();
-    
+
     let content_type = headers
         .get(CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -162,10 +162,7 @@ async fn extract_credential(req: Request<axum::body::Body>) -> Result<MaybeCrede
     let body_str = std::str::from_utf8(&body).ok();
 
     // Detect if this is a signed credential
-    let is_jws = is_jwt_content_type
-        || body_str
-            .map(|s| looks_like_jws(s))
-            .unwrap_or(false);
+    let is_jws = is_jwt_content_type || body_str.map(|s| looks_like_jws(s)).unwrap_or(false);
 
     // If it's a JWS string
     if is_jws {
@@ -190,8 +187,9 @@ async fn extract_credential(req: Request<axum::body::Body>) -> Result<MaybeCrede
         } else {
             // JSON JWS - payload is JSON query/transaction
             let result = credential::verify_credential(CredentialInput::Jws(jws_str))?;
-            let payload_bytes = serde_json::to_vec(&result.subject)
-                .map_err(|e| ServerError::internal(format!("Failed to serialize payload: {}", e)))?;
+            let payload_bytes = serde_json::to_vec(&result.subject).map_err(|e| {
+                ServerError::internal(format!("Failed to serialize payload: {}", e))
+            })?;
             return Ok(MaybeCredential {
                 headers,
                 credential: Some(ExtractedCredential {
@@ -211,8 +209,9 @@ async fn extract_credential(req: Request<axum::body::Body>) -> Result<MaybeCrede
         if let Ok(json) = serde_json::from_str::<JsonValue>(body_str) {
             if looks_like_credential_json(&json) {
                 let result = credential::verify_credential(CredentialInput::Json(&json))?;
-                let payload_bytes = serde_json::to_vec(&result.subject)
-                    .map_err(|e| ServerError::internal(format!("Failed to serialize payload: {}", e)))?;
+                let payload_bytes = serde_json::to_vec(&result.subject).map_err(|e| {
+                    ServerError::internal(format!("Failed to serialize payload: {}", e))
+                })?;
                 return Ok(MaybeCredential {
                     headers,
                     credential: Some(ExtractedCredential {
@@ -274,7 +273,10 @@ where
 {
     type Rejection = ServerError;
 
-    async fn from_request(req: Request<axum::body::Body>, _state: &S) -> std::result::Result<Self, Self::Rejection> {
+    async fn from_request(
+        req: Request<axum::body::Body>,
+        _state: &S,
+    ) -> std::result::Result<Self, Self::Rejection> {
         extract_credential(req).await
     }
 }
@@ -286,8 +288,12 @@ mod tests {
     #[test]
     fn test_looks_like_jws() {
         // Valid JWS format
-        assert!(looks_like_jws("eyJhbGciOiJFZERTQSJ9.eyJmb28iOiJiYXIifQ.signature"));
-        assert!(looks_like_jws("  eyJhbGciOiJFZERTQSJ9.eyJmb28iOiJiYXIifQ.signature  "));
+        assert!(looks_like_jws(
+            "eyJhbGciOiJFZERTQSJ9.eyJmb28iOiJiYXIifQ.signature"
+        ));
+        assert!(looks_like_jws(
+            "  eyJhbGciOiJFZERTQSJ9.eyJmb28iOiJiYXIifQ.signature  "
+        ));
 
         // Not JWS
         assert!(!looks_like_jws("{\"select\": [\"?s\"]}"));

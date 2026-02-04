@@ -197,7 +197,8 @@ impl<S: Storage + 'static> Bm25SearchOperator<S> {
         }
 
         let schema: Arc<[VarId]> = Arc::from(schema_vars.into_boxed_slice());
-        let out_pos: HashMap<VarId, usize> = schema.iter().enumerate().map(|(i, v)| (*v, i)).collect();
+        let out_pos: HashMap<VarId, usize> =
+            schema.iter().enumerate().map(|(i, v)| (*v, i)).collect();
 
         Self {
             child,
@@ -250,10 +251,7 @@ impl<S: Storage + 'static> Bm25SearchOperator<S> {
         }
     }
 
-    fn bind_or_check(
-        existing: Option<&Binding>,
-        candidate: &Binding,
-    ) -> bool {
+    fn bind_or_check(existing: Option<&Binding>, candidate: &Binding) -> bool {
         match existing {
             None => true,
             Some(Binding::Unbound) => true,
@@ -284,7 +282,11 @@ impl<S: Storage + 'static> Operator<S> for Bm25SearchOperator<S> {
             // IMPORTANT: In dataset mode, there is no meaningful dataset-level `to_t`.
             // Passing `None` avoids inventing a cross-ledger time and lets the provider
             // select the latest snapshot (or apply its own semantics).
-            let as_of_t = if ctx.dataset.is_some() { None } else { Some(ctx.to_t) };
+            let as_of_t = if ctx.dataset.is_some() {
+                None
+            } else {
+                Some(ctx.to_t)
+            };
 
             // If target is constant, we can pre-fetch results in open()
             if let IndexSearchTarget::Const(query_text) = &self.pattern.target {
@@ -307,7 +309,11 @@ impl<S: Storage + 'static> Operator<S> for Bm25SearchOperator<S> {
             self.use_search_provider = false;
 
             // IMPORTANT: In dataset mode, there is no meaningful dataset-level `to_t`.
-            let as_of_t = if ctx.dataset.is_some() { None } else { Some(ctx.to_t) };
+            let as_of_t = if ctx.dataset.is_some() {
+                None
+            } else {
+                Some(ctx.to_t)
+            };
 
             let idx = index_provider
                 .bm25_index(
@@ -365,7 +371,11 @@ impl<S: Storage + 'static> Operator<S> for Bm25SearchOperator<S> {
 
         let child_schema = self.child.schema();
         let child_cols: Vec<&[Binding]> = (0..child_schema.len())
-            .map(|i| input_batch.column_by_idx(i).expect("child batch schema mismatch"))
+            .map(|i| {
+                input_batch
+                    .column_by_idx(i)
+                    .expect("child batch schema mismatch")
+            })
             .collect();
 
         let limit = self.pattern.limit.unwrap_or(usize::MAX);
@@ -381,7 +391,13 @@ impl<S: Storage + 'static> Operator<S> for Bm25SearchOperator<S> {
                     cached
                         .hits
                         .iter()
-                        .map(|h| (Arc::from(h.iri.as_str()), Arc::from(h.ledger_alias.as_str()), h.score))
+                        .map(|h| {
+                            (
+                                Arc::from(h.iri.as_str()),
+                                Arc::from(h.ledger_alias.as_str()),
+                                h.score,
+                            )
+                        })
                         .collect()
                 } else {
                     // Variable target - resolve and call search provider
@@ -397,7 +413,11 @@ impl<S: Storage + 'static> Operator<S> for Bm25SearchOperator<S> {
                     })?;
 
                     // IMPORTANT: In dataset mode, there is no meaningful dataset-level `to_t`.
-                    let as_of_t = if ctx.dataset.is_some() { None } else { Some(ctx.to_t) };
+                    let as_of_t = if ctx.dataset.is_some() {
+                        None
+                    } else {
+                        Some(ctx.to_t)
+                    };
 
                     let result = search_provider
                         .search_bm25(
@@ -413,14 +433,21 @@ impl<S: Storage + 'static> Operator<S> for Bm25SearchOperator<S> {
                     result
                         .hits
                         .into_iter()
-                        .map(|h| (Arc::from(h.iri.as_str()), Arc::from(h.ledger_alias.as_str()), h.score))
+                        .map(|h| {
+                            (
+                                Arc::from(h.iri.as_str()),
+                                Arc::from(h.ledger_alias.as_str()),
+                                h.score,
+                            )
+                        })
                         .collect()
                 }
             } else {
                 // Legacy index provider mode - local scoring
-                let index = self.index.as_ref().ok_or_else(|| {
-                    QueryError::InvalidQuery("BM25 index not loaded".to_string())
-                })?;
+                let index = self
+                    .index
+                    .as_ref()
+                    .ok_or_else(|| QueryError::InvalidQuery("BM25 index not loaded".to_string()))?;
 
                 let Some(target) = self.resolve_target_from_row(ctx, &row_view)? else {
                     continue;
@@ -440,7 +467,13 @@ impl<S: Storage + 'static> Operator<S> for Bm25SearchOperator<S> {
 
                 results
                     .into_iter()
-                    .map(|(doc_key, score)| (doc_key.subject_iri.clone(), doc_key.ledger_alias.clone(), score))
+                    .map(|(doc_key, score)| {
+                        (
+                            doc_key.subject_iri.clone(),
+                            doc_key.ledger_alias.clone(),
+                            score,
+                        )
+                    })
                     .collect()
             };
 
@@ -453,10 +486,9 @@ impl<S: Storage + 'static> Operator<S> for Bm25SearchOperator<S> {
                 // Create IriMatch binding for correct cross-ledger joins.
                 // IMPORTANT: Encode SID using the hit's source ledger (not primary db)
                 // so that primary_sid is consistent with ledger_alias.
-                let id_binding = if let Some(sid) = ctx.encode_iri_in_ledger(
-                    subject_iri.as_ref(),
-                    ledger_alias.as_ref(),
-                ) {
+                let id_binding = if let Some(sid) =
+                    ctx.encode_iri_in_ledger(subject_iri.as_ref(), ledger_alias.as_ref())
+                {
                     // Have a valid SID in the hit's source ledger - use IriMatch with full provenance
                     Binding::iri_match(subject_iri.clone(), sid, ledger_alias.clone())
                 } else {
@@ -468,10 +500,8 @@ impl<S: Storage + 'static> Operator<S> for Bm25SearchOperator<S> {
                     Binding::Iri(subject_iri.clone())
                 };
 
-                let score_binding = Binding::lit(
-                    FlakeValue::Double(score),
-                    self.datatypes.xsd_double.clone(),
-                );
+                let score_binding =
+                    Binding::lit(FlakeValue::Double(score), self.datatypes.xsd_double.clone());
                 let ledger_binding = Binding::lit(
                     FlakeValue::String(ledger_alias.to_string()),
                     self.datatypes.xsd_string.clone(),
@@ -497,7 +527,10 @@ impl<S: Storage + 'static> Operator<S> for Bm25SearchOperator<S> {
 
                 // Emit output row (columnar): start with child columns.
                 for (col_idx, &var) in child_schema.iter().enumerate() {
-                    let out_idx = *self.out_pos.get(&var).expect("output schema missing child var");
+                    let out_idx = *self
+                        .out_pos
+                        .get(&var)
+                        .expect("output schema missing child var");
                     columns[out_idx].push(child_cols[col_idx][row_idx].clone());
                 }
 
@@ -662,4 +695,3 @@ mod tests {
         assert!(batch.is_empty());
     }
 }
-

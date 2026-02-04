@@ -92,7 +92,8 @@ impl<'a> super::Parser<'a> {
 
         // Expect >>
         if !self.stream.match_token(&TokenKind::TripleEnd) {
-            self.stream.error_at_current("expected '>>' to close quoted triple");
+            self.stream
+                .error_at_current("expected '>>' to close quoted triple");
             return None;
         }
 
@@ -108,7 +109,10 @@ impl<'a> super::Parser<'a> {
     pub(super) fn parse_verb(&mut self) -> Option<Verb> {
         // Variable is always a simple predicate (VerbSimple)
         if let Some((name, span)) = self.stream.consume_var() {
-            return Some(Verb::Simple(PredicateTerm::Var(Var::new(name.as_ref(), span))));
+            return Some(Verb::Simple(PredicateTerm::Var(Var::new(
+                name.as_ref(),
+                span,
+            ))));
         }
 
         // Check for path-starting tokens that can't be simple predicates
@@ -155,7 +159,8 @@ impl<'a> super::Parser<'a> {
             }
         }
 
-        self.stream.error_at_current("expected predicate or property path");
+        self.stream
+            .error_at_current("expected predicate or property path");
         None
     }
 
@@ -232,7 +237,11 @@ impl<'a> super::Parser<'a> {
                         let lang_span = self.stream.current_span();
                         self.stream.advance();
                         let full_span = span.union(lang_span);
-                        return Some(Literal::lang_string(value.as_ref(), lang.as_ref(), full_span));
+                        return Some(Literal::lang_string(
+                            value.as_ref(),
+                            lang.as_ref(),
+                            full_span,
+                        ));
                     } else if self.stream.match_token(&TokenKind::DoubleCaret) {
                         // Datatype: "42"^^xsd:integer
                         if let Some(dt) = self.parse_iri_term() {

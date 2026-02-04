@@ -183,7 +183,11 @@ pub struct McpAuthConfig {
 
 impl McpAuthConfig {
     /// Validate configuration at startup
-    pub fn validate(&self, mcp_enabled: bool, events_auth: &EventsAuthConfig) -> Result<(), String> {
+    pub fn validate(
+        &self,
+        mcp_enabled: bool,
+        events_auth: &EventsAuthConfig,
+    ) -> Result<(), String> {
         if mcp_enabled {
             // Must have some trusted issuers (own or from events_auth)
             let has_trusted = !self.trusted_issuers.is_empty()
@@ -191,18 +195,19 @@ impl McpAuthConfig {
                 || self.insecure_accept_any_issuer;
 
             if !has_trusted {
-                return Err(
-                    "mcp_enabled requires --mcp-auth-trusted-issuer, \
+                return Err("mcp_enabled requires --mcp-auth-trusted-issuer, \
                      --events-auth-trusted-issuer, or --mcp-auth-insecure flag"
-                        .to_string(),
-                );
+                    .to_string());
             }
         }
         Ok(())
     }
 
     /// Get effective trusted issuers (own list or fallback to events_auth)
-    pub fn effective_trusted_issuers<'a>(&'a self, events_auth: &'a EventsAuthConfig) -> &'a [String] {
+    pub fn effective_trusted_issuers<'a>(
+        &'a self,
+        events_auth: &'a EventsAuthConfig,
+    ) -> &'a [String] {
         if !self.trusted_issuers.is_empty() {
             &self.trusted_issuers
         } else {
@@ -266,7 +271,10 @@ impl AdminAuthConfig {
     }
 
     /// Get effective trusted issuers (own list or fallback to events_auth)
-    pub fn effective_trusted_issuers<'a>(&'a self, events_auth: &'a EventsAuthConfig) -> &'a [String] {
+    pub fn effective_trusted_issuers<'a>(
+        &'a self,
+        events_auth: &'a EventsAuthConfig,
+    ) -> &'a [String] {
         if !self.trusted_issuers.is_empty() {
             &self.trusted_issuers
         } else {
@@ -326,9 +334,13 @@ pub struct ServerConfig {
     pub log_level: String,
 
     // Events authentication options
-
     /// Authentication mode for /fluree/events endpoint
-    #[arg(long, env = "FLUREE_EVENTS_AUTH_MODE", default_value = "none", value_enum)]
+    #[arg(
+        long,
+        env = "FLUREE_EVENTS_AUTH_MODE",
+        default_value = "none",
+        value_enum
+    )]
     pub events_auth_mode: EventsAuthMode,
 
     /// Expected audience claim for events tokens
@@ -336,7 +348,10 @@ pub struct ServerConfig {
     pub events_auth_audience: Option<String>,
 
     /// Trusted issuer did:key for events tokens (can be specified multiple times)
-    #[arg(long = "events-auth-trusted-issuer", env = "FLUREE_EVENTS_AUTH_TRUSTED_ISSUERS")]
+    #[arg(
+        long = "events-auth-trusted-issuer",
+        env = "FLUREE_EVENTS_AUTH_TRUSTED_ISSUERS"
+    )]
     pub events_auth_trusted_issuers: Vec<String>,
 
     /// DANGEROUS: Accept any valid signature regardless of issuer (dev only)
@@ -344,9 +359,13 @@ pub struct ServerConfig {
     pub events_auth_insecure_accept_any_issuer: bool,
 
     // === Server role (peer mode) ===
-
     /// Server operating mode: transaction (write-enabled) or peer (read-only with forwarding)
-    #[arg(long, env = "FLUREE_SERVER_ROLE", default_value = "transaction", value_enum)]
+    #[arg(
+        long,
+        env = "FLUREE_SERVER_ROLE",
+        default_value = "transaction",
+        value_enum
+    )]
     pub server_role: ServerRole,
 
     /// Transaction server base URL (required in peer mode).
@@ -387,14 +406,16 @@ pub struct ServerConfig {
     pub peer_reconnect_multiplier: f64,
 
     // === Storage proxy options (transaction server) ===
-
     /// Enable storage proxy endpoints on transaction server
     #[arg(long, env = "FLUREE_STORAGE_PROXY_ENABLED")]
     pub storage_proxy_enabled: bool,
 
     /// Trusted issuer did:key for storage proxy tokens (can be specified multiple times).
     /// Falls back to events-auth-trusted-issuer if not specified.
-    #[arg(long = "storage-proxy-trusted-issuer", env = "FLUREE_STORAGE_PROXY_TRUSTED_ISSUERS")]
+    #[arg(
+        long = "storage-proxy-trusted-issuer",
+        env = "FLUREE_STORAGE_PROXY_TRUSTED_ISSUERS"
+    )]
     pub storage_proxy_trusted_issuers: Vec<String>,
 
     /// Default identity IRI for policy evaluation (when token has no fluree.identity claim)
@@ -414,9 +435,13 @@ pub struct ServerConfig {
     pub storage_proxy_insecure_accept_any_issuer: bool,
 
     // === Peer storage access mode options ===
-
     /// Storage access mode for peer: shared (direct) or proxy (through tx server)
-    #[arg(long, env = "FLUREE_STORAGE_ACCESS_MODE", default_value = "shared", value_enum)]
+    #[arg(
+        long,
+        env = "FLUREE_STORAGE_ACCESS_MODE",
+        default_value = "shared",
+        value_enum
+    )]
     pub storage_access_mode: StorageAccessMode,
 
     /// Bearer token for storage proxy requests (peer mode + proxy access only).
@@ -429,14 +454,16 @@ pub struct ServerConfig {
     pub storage_proxy_token_file: Option<PathBuf>,
 
     // === MCP (Model Context Protocol) options ===
-
     /// Enable MCP (Model Context Protocol) endpoint at /mcp
     #[arg(long, env = "FLUREE_MCP_ENABLED")]
     pub mcp_enabled: bool,
 
     /// Trusted issuer did:key for MCP tokens (can be specified multiple times).
     /// Falls back to events-auth-trusted-issuer if not specified.
-    #[arg(long = "mcp-auth-trusted-issuer", env = "FLUREE_MCP_AUTH_TRUSTED_ISSUERS")]
+    #[arg(
+        long = "mcp-auth-trusted-issuer",
+        env = "FLUREE_MCP_AUTH_TRUSTED_ISSUERS"
+    )]
     pub mcp_auth_trusted_issuers: Vec<String>,
 
     /// DANGEROUS: Accept any valid MCP signature regardless of issuer (dev only)
@@ -444,14 +471,21 @@ pub struct ServerConfig {
     pub mcp_auth_insecure_accept_any_issuer: bool,
 
     // === Admin endpoint authentication options ===
-
     /// Authentication mode for admin endpoints (/fluree/create, /fluree/drop)
-    #[arg(long, env = "FLUREE_ADMIN_AUTH_MODE", default_value = "none", value_enum)]
+    #[arg(
+        long,
+        env = "FLUREE_ADMIN_AUTH_MODE",
+        default_value = "none",
+        value_enum
+    )]
     pub admin_auth_mode: AdminAuthMode,
 
     /// Trusted issuer did:key for admin tokens (can be specified multiple times).
     /// Falls back to events-auth-trusted-issuer if not specified.
-    #[arg(long = "admin-auth-trusted-issuer", env = "FLUREE_ADMIN_AUTH_TRUSTED_ISSUERS")]
+    #[arg(
+        long = "admin-auth-trusted-issuer",
+        env = "FLUREE_ADMIN_AUTH_TRUSTED_ISSUERS"
+    )]
     pub admin_auth_trusted_issuers: Vec<String>,
 
     /// DANGEROUS: Accept any valid admin signature regardless of issuer (dev only)
@@ -613,28 +647,21 @@ impl ServerConfig {
                 }
                 StorageAccessMode::Proxy => {
                     // Proxy mode: require token (inline or file)
-                    if self.storage_proxy_token.is_none()
-                        && self.storage_proxy_token_file.is_none()
+                    if self.storage_proxy_token.is_none() && self.storage_proxy_token_file.is_none()
                     {
-                        return Err(
-                            "server_role=peer + storage-access-mode=proxy requires \
+                        return Err("server_role=peer + storage-access-mode=proxy requires \
                              --storage-proxy-token or --storage-proxy-token-file"
-                                .to_string(),
-                        );
+                            .to_string());
                     }
                     // Storage path NOT required in proxy mode (warn if provided)
                     if self.storage_path.is_some() {
-                        tracing::warn!(
-                            "--storage-path is ignored in storage-access-mode=proxy"
-                        );
+                        tracing::warn!("--storage-path is ignored in storage-access-mode=proxy");
                     }
                 }
             }
 
             // Require subscription scope
-            if !self.peer_subscribe_all
-                && self.peer_ledgers.is_empty()
-                && self.peer_vgs.is_empty()
+            if !self.peer_subscribe_all && self.peer_ledgers.is_empty() && self.peer_vgs.is_empty()
             {
                 return Err(
                     "server_role=peer requires --peer-subscribe-all or at least one --peer-ledger/--peer-vg"
@@ -648,7 +675,7 @@ impl ServerConfig {
             }
             if self.peer_reconnect_max_ms < self.peer_reconnect_initial_ms {
                 return Err(
-                    "peer_reconnect_max_ms must be >= peer_reconnect_initial_ms".to_string(),
+                    "peer_reconnect_max_ms must be >= peer_reconnect_initial_ms".to_string()
                 );
             }
             if self.peer_reconnect_multiplier < 1.0 {
@@ -697,8 +724,7 @@ impl ServerConfig {
 
     /// Check if peer is using proxy storage access mode
     pub fn is_proxy_storage_mode(&self) -> bool {
-        self.server_role == ServerRole::Peer
-            && self.storage_access_mode == StorageAccessMode::Proxy
+        self.server_role == ServerRole::Peer && self.storage_access_mode == StorageAccessMode::Proxy
     }
 
     /// Load the storage proxy token for peer proxy mode.
