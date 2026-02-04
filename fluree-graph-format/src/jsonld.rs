@@ -294,7 +294,7 @@ pub fn format_jsonld(graph: &Graph, config: &JsonLdFormatConfig) -> JsonValue {
     let mut nodes: BTreeMap<String, Map<String, JsonValue>> = BTreeMap::new();
 
     for (subj_key, subj_data) in subjects {
-        let node = subj_data.to_jsonld_node(config, &mut bnode_renamer);
+        let node = subj_data.into_jsonld_node(config, &mut bnode_renamer);
         nodes.insert(subj_key, node);
     }
 
@@ -342,7 +342,7 @@ impl SubjectData {
             .push((triple.list_index, triple.clone()));
     }
 
-    fn to_jsonld_node(
+    fn into_jsonld_node(
         self,
         config: &JsonLdFormatConfig,
         bnode_renamer: &mut BlankNodeRenamer,
