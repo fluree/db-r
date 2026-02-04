@@ -945,7 +945,7 @@ fn parse_datetime_from_binding(binding: &Binding) -> Option<DateTime<FixedOffset
 
 /// Check that a function has the expected number of arguments
 #[inline]
-fn check_arity(args: &[FilterExpr], expected: usize, fn_name: &str) -> Result<()> {
+fn check_arity(args: &[FilterExpr], expected: usize, fn_name: &FunctionName) -> Result<()> {
     if args.len() != expected {
         Err(QueryError::InvalidFilter(format!(
             "{} requires exactly {} argument{}",
@@ -964,7 +964,7 @@ fn check_arity(args: &[FilterExpr], expected: usize, fn_name: &str) -> Result<()
 fn eval_unary_numeric<FL, FD>(
     args: &[FilterExpr],
     row: &RowView,
-    fn_name: &str,
+    fn_name: &FunctionName,
     long_op: FL,
     double_op: FD,
 ) -> Result<Option<ComparableValue>>
@@ -992,7 +992,7 @@ where
 fn eval_unary_string_transform<F>(
     args: &[FilterExpr],
     row: &RowView,
-    fn_name: &str,
+    fn_name: &FunctionName,
     transform: F,
 ) -> Result<Option<ComparableValue>>
 where
@@ -1019,7 +1019,7 @@ where
 fn eval_string_to_long<F>(
     args: &[FilterExpr],
     row: &RowView,
-    fn_name: &str,
+    fn_name: &FunctionName,
     transform: F,
 ) -> Result<Option<ComparableValue>>
 where
@@ -1044,7 +1044,7 @@ where
 fn eval_binary_string_pred<F>(
     args: &[FilterExpr],
     row: &RowView,
-    fn_name: &str,
+    fn_name: &FunctionName,
     pred: F,
 ) -> Result<bool>
 where
@@ -1070,7 +1070,7 @@ where
 fn eval_binary_string_fn<F>(
     args: &[FilterExpr],
     row: &RowView,
-    fn_name: &str,
+    fn_name: &FunctionName,
     func: F,
 ) -> Result<Option<ComparableValue>>
 where
@@ -1099,7 +1099,7 @@ where
 fn eval_hash_string<F>(
     args: &[FilterExpr],
     row: &RowView,
-    fn_name: &str,
+    fn_name: &FunctionName,
     hash_fn: F,
 ) -> Result<Option<ComparableValue>>
 where
@@ -1117,7 +1117,7 @@ where
 fn eval_datetime_component<F>(
     args: &[FilterExpr],
     row: &RowView,
-    fn_name: &str,
+    fn_name: &FunctionName,
     extract: F,
 ) -> Result<Option<ComparableValue>>
 where
@@ -1152,7 +1152,7 @@ type VectorPair = (Arc<[f64]>, Arc<[f64]>);
 fn extract_vector_pair(
     args: &[FilterExpr],
     row: &RowView,
-    fn_name: &str,
+    fn_name: &FunctionName,
 ) -> Result<Option<VectorPair>> {
     check_arity(args, 2, fn_name)?;
     let v1 = eval_to_comparable(&args[0], row)?;
@@ -1188,7 +1188,7 @@ fn extract_vector_pair(
 fn eval_binary_vector_fn<F>(
     args: &[FilterExpr],
     row: &RowView,
-    fn_name: &str,
+    fn_name: &FunctionName,
     compute: F,
 ) -> Result<Option<ComparableValue>>
 where
@@ -1206,7 +1206,7 @@ where
 fn eval_var_metadata<F, T>(
     args: &[FilterExpr],
     row: &RowView,
-    fn_name: &str,
+    fn_name: &FunctionName,
     extractor: F,
 ) -> Result<Option<T>>
 where
@@ -1240,7 +1240,12 @@ fn format_datatype_sid(dt: &fluree_db_core::Sid) -> ComparableValue {
 }
 
 /// Evaluate a type-checking function (isIRI, isLiteral, isNumeric)
-fn eval_type_check<F>(args: &[FilterExpr], row: &RowView, fn_name: &str, check: F) -> Result<bool>
+fn eval_type_check<F>(
+    args: &[FilterExpr],
+    row: &RowView,
+    fn_name: &FunctionName,
+    check: F,
+) -> Result<bool>
 where
     F: Fn(&ComparableValue) -> bool,
 {
@@ -1256,21 +1261,21 @@ impl FunctionName {
     fn eval_value(&self, args: &[FilterExpr], row: &RowView) -> Result<Option<ComparableValue>> {
         match self {
         // String functions that return integers
-        FunctionName::Strlen => eval_string_to_long(args, row, "STRLEN", |s| s.len() as i64),
+        FunctionName::Strlen => eval_string_to_long(args, row, self, |s| s.len() as i64),
 
         // Numeric functions that return numbers
-        FunctionName::Abs => eval_unary_numeric(args, row, "ABS", |n| n.abs(), |d| d.abs()),
-        FunctionName::Round => eval_unary_numeric(args, row, "ROUND", |n| n, |d| d.round()),
-        FunctionName::Ceil => eval_unary_numeric(args, row, "CEIL", |n| n, |d| d.ceil()),
-        FunctionName::Floor => eval_unary_numeric(args, row, "FLOOR", |n| n, |d| d.floor()),
+        FunctionName::Abs => eval_unary_numeric(args, row, self, |n| n.abs(), |d| d.abs()),
+        FunctionName::Round => eval_unary_numeric(args, row, self, |n| n, |d| d.round()),
+        FunctionName::Ceil => eval_unary_numeric(args, row, self, |n| n, |d| d.ceil()),
+        FunctionName::Floor => eval_unary_numeric(args, row, self, |n| n, |d| d.floor()),
 
         FunctionName::Rand => {
-            check_arity(args, 0, "RAND")?;
+            check_arity(args, 0, self)?;
             Ok(Some(ComparableValue::Double(random::<f64>())))
         }
 
         FunctionName::Power => {
-            check_arity(args, 2, "POWER")?;
+            check_arity(args, 2, self)?;
             let base = eval_to_comparable(&args[0], row)?;
             let exp = eval_to_comparable(&args[1], row)?;
             Ok(match (base, exp) {
@@ -1296,15 +1301,15 @@ impl FunctionName {
 
         // String functions that return strings
         FunctionName::Ucase => {
-            eval_unary_string_transform(args, row, "UCASE", |s| s.to_uppercase())
+            eval_unary_string_transform(args, row, self, |s| s.to_uppercase())
         }
         FunctionName::Lcase => {
-            eval_unary_string_transform(args, row, "LCASE", |s| s.to_lowercase())
+            eval_unary_string_transform(args, row, self, |s| s.to_lowercase())
         }
 
         // Conditional functions
         FunctionName::If => {
-            check_arity(args, 3, "IF")?;
+            check_arity(args, 3, self)?;
             let cond = evaluate(&args[0], row)?;
             if cond {
                 eval_to_comparable(&args[1], row)
@@ -1348,11 +1353,11 @@ impl FunctionName {
             Ok(Some(ComparableValue::String(Arc::from(result))))
         }
 
-        FunctionName::StrBefore => eval_binary_string_fn(args, row, "STRBEFORE", |s, d| {
+        FunctionName::StrBefore => eval_binary_string_fn(args, row, self, |s, d| {
             Some(s.find(d).map(|pos| &s[..pos]).unwrap_or("").to_string())
         }),
 
-        FunctionName::StrAfter => eval_binary_string_fn(args, row, "STRAFTER", |s, d| {
+        FunctionName::StrAfter => eval_binary_string_fn(args, row, self, |s, d| {
             Some(
                 s.find(d)
                     .map(|pos| &s[pos + d.len()..])
@@ -1365,7 +1370,7 @@ impl FunctionName {
             // Regex replacement with optional flags
             if args.len() < 3 {
                 return Err(QueryError::InvalidFilter(
-                    "REPLACE requires 3-4 arguments".to_string(),
+                    format!("{} requires 3-4 arguments", self),
                 ));
             }
             let input = eval_to_comparable(&args[0], row)?;
@@ -1392,7 +1397,7 @@ impl FunctionName {
                 }
                 (None, _, _) | (_, None, _) | (_, _, None) => Ok(None), // Unbound
                 (Some(a), Some(b), Some(c)) => Err(QueryError::FunctionTypeMismatch {
-                    function: "REPLACE".to_string(),
+                    function: self.to_string(),
                     expected: "String, String, String".to_string(),
                     actual: format!("{}, {}, {}", a.type_name(), b.type_name(), c.type_name()),
                 }),
@@ -1409,18 +1414,18 @@ impl FunctionName {
             Ok(Some(ComparableValue::DateTime(Box::new(parsed))))
         }
 
-        FunctionName::Year => eval_datetime_component(args, row, "YEAR", |dt| dt.year() as i64),
-        FunctionName::Month => eval_datetime_component(args, row, "MONTH", |dt| dt.month() as i64),
-        FunctionName::Day => eval_datetime_component(args, row, "DAY", |dt| dt.day() as i64),
-        FunctionName::Hours => eval_datetime_component(args, row, "HOURS", |dt| dt.hour() as i64),
+        FunctionName::Year => eval_datetime_component(args, row, self, |dt| dt.year() as i64),
+        FunctionName::Month => eval_datetime_component(args, row, self, |dt| dt.month() as i64),
+        FunctionName::Day => eval_datetime_component(args, row, self, |dt| dt.day() as i64),
+        FunctionName::Hours => eval_datetime_component(args, row, self, |dt| dt.hour() as i64),
         FunctionName::Minutes => {
-            eval_datetime_component(args, row, "MINUTES", |dt| dt.minute() as i64)
+            eval_datetime_component(args, row, self, |dt| dt.minute() as i64)
         }
         FunctionName::Seconds => {
-            eval_datetime_component(args, row, "SECONDS", |dt| dt.second() as i64)
+            eval_datetime_component(args, row, self, |dt| dt.second() as i64)
         }
 
-        FunctionName::Tz => eval_var_metadata(args, row, "TZ", |binding| {
+        FunctionName::Tz => eval_var_metadata(args, row, self, |binding| {
             parse_datetime_from_binding(binding).map(|dt| {
                 let offset = dt.offset();
                 let total_secs = offset.local_minus_utc();
@@ -1434,7 +1439,7 @@ impl FunctionName {
 
         // RDF term functions - P9
         FunctionName::Lang => {
-            check_arity(args, 1, "LANG")?;
+            check_arity(args, 1, self)?;
             // Only Var bindings have lang metadata; all else returns ""
             let tag = match &args[0] {
                 FilterExpr::Var(var_id) => match row.get(*var_id) {
@@ -1448,7 +1453,7 @@ impl FunctionName {
             Ok(Some(ComparableValue::String(Arc::from(tag))))
         }
 
-        FunctionName::Datatype => eval_var_metadata(args, row, "DATATYPE", |binding| {
+        FunctionName::Datatype => eval_var_metadata(args, row, self, |binding| {
             match binding {
                 Binding::Lit { dt, .. } => Some(format_datatype_sid(dt)),
                 Binding::Sid(_) | Binding::IriMatch { .. } | Binding::Iri(_) => {
@@ -1460,14 +1465,14 @@ impl FunctionName {
         }),
 
         // T(?var) - Fluree-specific: get transaction time from binding
-        FunctionName::T => eval_var_metadata(args, row, "T", |binding| match binding {
+        FunctionName::T => eval_var_metadata(args, row, self, |binding| match binding {
             Binding::Lit { t: Some(t), .. } => Some(ComparableValue::Long(*t)),
             _ => None,
         }),
 
         // OP(?var) - Fluree-specific: get operation type from binding for history queries
         // Returns "assert" or "retract" as a string based on the flake's op flag.
-        FunctionName::Op => eval_var_metadata(args, row, "OP", |binding| match binding {
+        FunctionName::Op => eval_var_metadata(args, row, self, |binding| match binding {
             Binding::Lit { op: Some(op), .. } => {
                 let op_str = if *op { "assert" } else { "retract" };
                 Some(ComparableValue::String(Arc::from(op_str)))
@@ -1480,7 +1485,7 @@ impl FunctionName {
         FunctionName::Substr => {
             if args.len() < 2 || args.len() > 3 {
                 return Err(QueryError::InvalidFilter(
-                    "SUBSTR requires 2-3 arguments".to_string(),
+                    format!("{} requires 2-3 arguments", self),
                 ));
             }
             let input = eval_to_comparable(&args[0], row)?;
@@ -1516,7 +1521,7 @@ impl FunctionName {
                         None => &s[start_0..],                // No length = rest of string
                         Some(other) => {
                             return Err(QueryError::FunctionTypeMismatch {
-                                function: "SUBSTR".to_string(),
+                                function: self.to_string(),
                                 expected: "Long (length)".to_string(),
                                 actual: other.type_name().to_string(),
                             })
@@ -1526,7 +1531,7 @@ impl FunctionName {
                 }
                 (None, _) | (_, None) => Ok(None), // Unbound
                 (Some(a), Some(b)) => Err(QueryError::FunctionTypeMismatch {
-                    function: "SUBSTR".to_string(),
+                    function: self.to_string(),
                     expected: "String, Long".to_string(),
                     actual: format!("{}, {}", a.type_name(), b.type_name()),
                 }),
@@ -1535,21 +1540,21 @@ impl FunctionName {
 
         // STR(value) - convert to string representation
         FunctionName::Str => {
-            check_arity(args, 1, "STR")?;
+            check_arity(args, 1, self)?;
             let val = eval_to_comparable(&args[0], row)?;
             Ok(val.and_then(ComparableValue::to_str_value))
         }
 
         // ENCODE_FOR_URI(string) - percent-encode for URIs
         FunctionName::EncodeForUri => {
-            eval_unary_string_transform(args, row, "ENCODE_FOR_URI", |s| {
+            eval_unary_string_transform(args, row, self, |s| {
                 utf8_percent_encode(s, NON_ALPHANUMERIC).to_string()
             })
         }
 
         // LANGMATCHES(lang_tag, lang_range) - language tag matching
         FunctionName::LangMatches => {
-            check_arity(args, 2, "LANGMATCHES")?;
+            check_arity(args, 2, self)?;
             let tag = eval_to_comparable(&args[0], row)?;
             let range = eval_to_comparable(&args[1], row)?;
             let result = match (tag, range) {
@@ -1572,7 +1577,7 @@ impl FunctionName {
 
         // SAMETERM(term1, term2) - RDF term equality (stricter than =)
         FunctionName::SameTerm => {
-            check_arity(args, 2, "SAMETERM")?;
+            check_arity(args, 2, self)?;
             let v1 = eval_to_comparable(&args[0], row)?;
             let v2 = eval_to_comparable(&args[1], row)?;
             let same = matches!((v1, v2), (Some(a), Some(b)) if a == b);
@@ -1580,27 +1585,27 @@ impl FunctionName {
         }
 
         // Hash functions
-        FunctionName::Md5 => eval_hash_string(args, row, "MD5", |s| {
+        FunctionName::Md5 => eval_hash_string(args, row, self, |s| {
             let mut hasher = Md5::new();
             hasher.update(s.as_bytes());
             format!("{:x}", hasher.finalize())
         }),
-        FunctionName::Sha1 => eval_hash_string(args, row, "SHA1", |s| {
+        FunctionName::Sha1 => eval_hash_string(args, row, self, |s| {
             let mut hasher = Sha1::new();
             hasher.update(s.as_bytes());
             format!("{:x}", hasher.finalize())
         }),
-        FunctionName::Sha256 => eval_hash_string(args, row, "SHA256", |s| {
+        FunctionName::Sha256 => eval_hash_string(args, row, self, |s| {
             let mut hasher = Sha256::new();
             hasher.update(s.as_bytes());
             format!("{:x}", hasher.finalize())
         }),
-        FunctionName::Sha384 => eval_hash_string(args, row, "SHA384", |s| {
+        FunctionName::Sha384 => eval_hash_string(args, row, self, |s| {
             let mut hasher = Sha384::new();
             hasher.update(s.as_bytes());
             format!("{:x}", hasher.finalize())
         }),
-        FunctionName::Sha512 => eval_hash_string(args, row, "SHA512", |s| {
+        FunctionName::Sha512 => eval_hash_string(args, row, self, |s| {
             let mut hasher = Sha512::new();
             hasher.update(s.as_bytes());
             format!("{:x}", hasher.finalize())
@@ -1623,12 +1628,12 @@ impl FunctionName {
         }
 
         // Vector/embedding similarity functions
-        FunctionName::DotProduct => eval_binary_vector_fn(args, row, "dotProduct", |a, b| {
+        FunctionName::DotProduct => eval_binary_vector_fn(args, row, self, |a, b| {
             Some(a.iter().zip(b.iter()).map(|(x, y)| x * y).sum())
         }),
 
         FunctionName::CosineSimilarity => {
-            eval_binary_vector_fn(args, row, "cosineSimilarity", |a, b| {
+            eval_binary_vector_fn(args, row, self, |a, b| {
                 let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
                 let mag_a: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
                 let mag_b: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt();
@@ -1641,7 +1646,7 @@ impl FunctionName {
         }
 
         FunctionName::EuclideanDistance => {
-            eval_binary_vector_fn(args, row, "euclideanDistance", |a, b| {
+            eval_binary_vector_fn(args, row, self, |a, b| {
                 let sum_sq: f64 = a
                     .iter()
                     .zip(b.iter())
@@ -1656,7 +1661,7 @@ impl FunctionName {
 
         // STRDT(lexical, datatype) - construct typed literal
         FunctionName::StrDt => {
-            check_arity(args, 2, "STRDT")?;
+            check_arity(args, 2, self)?;
             let val = eval_to_comparable(&args[0], row)?;
             let dt = eval_to_comparable(&args[1], row)?;
             match (&val, &dt) {
@@ -1669,7 +1674,7 @@ impl FunctionName {
                 }
                 (None, _) | (_, None) => Ok(None), // Unbound
                 (Some(other), Some(_)) => Err(QueryError::FunctionTypeMismatch {
-                    function: "STRDT".to_string(),
+                    function: self.to_string(),
                     expected: "String (lexical form)".to_string(),
                     actual: other.type_name().to_string(),
                 }),
@@ -1678,7 +1683,7 @@ impl FunctionName {
 
         // STRLANG(lexical, lang) - construct language-tagged literal
         FunctionName::StrLang => {
-            check_arity(args, 2, "STRLANG")?;
+            check_arity(args, 2, self)?;
             let val = eval_to_comparable(&args[0], row)?;
             let lang = eval_to_comparable(&args[1], row)?;
             match (&val, &lang) {
@@ -1691,7 +1696,7 @@ impl FunctionName {
                 }
                 (None, _) | (_, None) => Ok(None), // Unbound
                 (Some(other), Some(_)) => Err(QueryError::FunctionTypeMismatch {
-                    function: "STRLANG".to_string(),
+                    function: self.to_string(),
                     expected: "String (lexical form)".to_string(),
                     actual: other.type_name().to_string(),
                 }),
@@ -1700,13 +1705,13 @@ impl FunctionName {
 
         // IRI(string) / URI(string) - construct IRI from string
         FunctionName::Iri => {
-            check_arity(args, 1, "IRI")?;
+            check_arity(args, 1, self)?;
             match eval_to_comparable(&args[0], row)? {
                 Some(ComparableValue::String(s)) => Ok(Some(ComparableValue::Iri(s))),
                 Some(ComparableValue::Sid(sid)) => Ok(Some(ComparableValue::Sid(sid))),
                 Some(ComparableValue::Iri(iri)) => Ok(Some(ComparableValue::Iri(iri))),
                 Some(other) => Err(QueryError::FunctionTypeMismatch {
-                    function: "IRI".to_string(),
+                    function: self.to_string(),
                     expected: "String or IRI".to_string(),
                     actual: other.type_name().to_string(),
                 }),
@@ -1736,7 +1741,7 @@ impl FunctionName {
     fn eval_bool(&self, args: &[FilterExpr], row: &RowView) -> Result<bool> {
         match self {
         FunctionName::Bound => {
-            check_arity(args, 1, "BOUND")?;
+            check_arity(args, 1, self)?;
             match &args[0] {
                 FilterExpr::Var(var) => Ok(!matches!(
                     row.get(*var),
@@ -1748,11 +1753,11 @@ impl FunctionName {
             }
         }
 
-        FunctionName::IsIri => eval_type_check(args, row, "isIRI", |val| {
+        FunctionName::IsIri => eval_type_check(args, row, self, |val| {
             matches!(val, ComparableValue::Sid(_) | ComparableValue::Iri(_))
         }),
 
-        FunctionName::IsLiteral => eval_type_check(args, row, "isLiteral", |val| {
+        FunctionName::IsLiteral => eval_type_check(args, row, self, |val| {
             matches!(
                 val,
                 ComparableValue::Long(_)
@@ -1762,7 +1767,7 @@ impl FunctionName {
             )
         }),
 
-        FunctionName::IsNumeric => eval_type_check(args, row, "isNumeric", |val| {
+        FunctionName::IsNumeric => eval_type_check(args, row, self, |val| {
             matches!(val, ComparableValue::Long(_) | ComparableValue::Double(_))
         }),
 
@@ -1772,20 +1777,20 @@ impl FunctionName {
         }
 
         FunctionName::Contains => {
-            eval_binary_string_pred(args, row, "CONTAINS", |h, n| h.contains(n))
+            eval_binary_string_pred(args, row, self, |h, n| h.contains(n))
         }
         FunctionName::StrStarts => {
-            eval_binary_string_pred(args, row, "STRSTARTS", |h, p| h.starts_with(p))
+            eval_binary_string_pred(args, row, self, |h, p| h.starts_with(p))
         }
         FunctionName::StrEnds => {
-            eval_binary_string_pred(args, row, "STRENDS", |h, s| h.ends_with(s))
+            eval_binary_string_pred(args, row, self, |h, s| h.ends_with(s))
         }
 
         FunctionName::Regex => {
             // REGEX(text, pattern, [flags]) - regex pattern matching
             if args.len() < 2 {
                 return Err(QueryError::InvalidFilter(
-                    "REGEX requires 2-3 arguments".to_string(),
+                    format!("{} requires 2-3 arguments", self),
                 ));
             }
             let text = eval_to_comparable(&args[0], row)?;
@@ -1812,7 +1817,7 @@ impl FunctionName {
         FunctionName::Strlen => eval_truthy_if_arg_valid(args, row),
 
         FunctionName::If => {
-            check_arity(args, 3, "IF")?;
+            check_arity(args, 3, self)?;
             if evaluate(&args[0], row)? {
                 evaluate(&args[1], row)
             } else {
