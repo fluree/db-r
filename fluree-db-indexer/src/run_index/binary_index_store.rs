@@ -1082,7 +1082,7 @@ impl BinaryIndexStore {
         self.graph_indexes
             .graphs
             .get(&g_id)
-            .map_or(false, |g| g.orders.contains_key(&order))
+            .is_some_and(|g| g.orders.contains_key(&order))
     }
 
     /// Get the available sort orders for a graph.

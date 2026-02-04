@@ -264,7 +264,7 @@ impl BinaryScanOperator {
             && self
                 .p_sids
                 .get(p_id as usize)
-                .map_or(false, |s| s.namespace_code == FLUREE_LEDGER)
+                .is_some_and(|s| s.namespace_code == FLUREE_LEDGER)
     }
 
     /// Decode an object value, routing through DictOverlay when present.
@@ -972,7 +972,7 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
         // falls back to range_with_overlay() which works for multi-ledger,
         // pre-index, history, and time-travel-before-base_t via the
         // RangeProvider trait.
-        let use_binary = ctx.binary_store.as_ref().map_or(false, |s| {
+        let use_binary = ctx.binary_store.as_ref().is_some_and(|s| {
             !ctx.is_multi_ledger()
                 && ctx.to_t >= s.base_t()
                 && !ctx.history_mode
