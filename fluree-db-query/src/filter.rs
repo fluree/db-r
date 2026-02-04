@@ -110,7 +110,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for FilterOper
             }
 
             // Collect row indices where filter evaluates to true
-            let mut keep_indices: Vec<usize> = Vec::new();
+            let mut keep_indices = Vec::new();
             for row_idx in 0..batch.len() {
                 let row = match batch.row_view(row_idx) {
                     Some(r) => r,
@@ -483,6 +483,38 @@ impl ComparableValue {
             } => Some(s.as_str()),
             _ => None,
         }
+    }
+
+    /// Convert to string representation for STR()
+    fn to_str_value(self) -> Option<ComparableValue> {
+        let s: Arc<str> = match self {
+            ComparableValue::String(s) => return Some(ComparableValue::String(s)),
+            ComparableValue::Iri(s) => return Some(ComparableValue::String(s)),
+            ComparableValue::Long(n) => Arc::from(n.to_string()),
+            ComparableValue::Double(d) => Arc::from(d.to_string()),
+            ComparableValue::Bool(b) => Arc::from(b.to_string()),
+            ComparableValue::Sid(sid) => Arc::from(sid.name.as_ref()),
+            ComparableValue::Vector(v) => Arc::from(format!(
+                "[{}]",
+                v.iter()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            ComparableValue::BigInt(n) => Arc::from(n.to_string()),
+            ComparableValue::Decimal(d) => Arc::from(d.to_string()),
+            ComparableValue::DateTime(dt) => Arc::from(dt.to_string()),
+            ComparableValue::Date(d) => Arc::from(d.to_string()),
+            ComparableValue::Time(t) => Arc::from(t.to_string()),
+            ComparableValue::TypedLiteral { val, .. } => match val {
+                FlakeValue::String(s) => Arc::from(s.as_str()),
+                FlakeValue::Long(n) => Arc::from(n.to_string()),
+                FlakeValue::Double(d) => Arc::from(d.to_string()),
+                FlakeValue::Boolean(b) => Arc::from(b.to_string()),
+                _ => return None,
+            },
+        };
+        Some(ComparableValue::String(s))
     }
 }
 
@@ -1177,38 +1209,6 @@ fn format_datatype_sid(dt: &fluree_db_core::Sid) -> ComparableValue {
     }
 }
 
-/// Convert a ComparableValue to its string representation for STR()
-fn comparable_to_str_value(val: ComparableValue) -> Option<ComparableValue> {
-    let s: Arc<str> = match val {
-        ComparableValue::String(s) => return Some(ComparableValue::String(s)),
-        ComparableValue::Iri(s) => return Some(ComparableValue::String(s)),
-        ComparableValue::Long(n) => Arc::from(n.to_string()),
-        ComparableValue::Double(d) => Arc::from(d.to_string()),
-        ComparableValue::Bool(b) => Arc::from(b.to_string()),
-        ComparableValue::Sid(sid) => Arc::from(sid.name.as_ref()),
-        ComparableValue::Vector(v) => Arc::from(format!(
-            "[{}]",
-            v.iter()
-                .map(|x| x.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )),
-        ComparableValue::BigInt(n) => Arc::from(n.to_string()),
-        ComparableValue::Decimal(d) => Arc::from(d.to_string()),
-        ComparableValue::DateTime(dt) => Arc::from(dt.to_string()),
-        ComparableValue::Date(d) => Arc::from(d.to_string()),
-        ComparableValue::Time(t) => Arc::from(t.to_string()),
-        ComparableValue::TypedLiteral { val, .. } => match val {
-            FlakeValue::String(s) => Arc::from(s.as_str()),
-            FlakeValue::Long(n) => Arc::from(n.to_string()),
-            FlakeValue::Double(d) => Arc::from(d.to_string()),
-            FlakeValue::Boolean(b) => Arc::from(b.to_string()),
-            _ => return None,
-        },
-    };
-    Some(ComparableValue::String(s))
-}
-
 /// Evaluate a type-checking function (isIRI, isLiteral, isNumeric)
 fn eval_type_check<F>(args: &[FilterExpr], row: &RowView, fn_name: &str, check: F) -> Result<bool>
 where
@@ -1507,7 +1507,7 @@ impl FunctionName {
         FunctionName::Str => {
             check_arity(args, 1, "STR")?;
             let val = eval_to_comparable(&args[0], row)?;
-            Ok(val.and_then(comparable_to_str_value))
+            Ok(val.and_then(ComparableValue::to_str_value))
         }
 
         // ENCODE_FOR_URI(string) - percent-encode for URIs
