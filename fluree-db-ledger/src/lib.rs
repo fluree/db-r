@@ -505,10 +505,11 @@ mod tests {
         // Create a ledger in nameservice with no index
         ns.publish_commit("test:main", "commit-1", 1).await.unwrap();
 
-        // Store the commit
+        // Store the commit as v2 binary
         let commit = fluree_db_novelty::Commit::new("commit-1", 1, vec![make_flake(1, 1, 100, 1)]);
         let storage = storage;
-        storage.insert("commit-1", serde_json::to_vec(&commit).unwrap());
+        let blob = fluree_db_novelty::commit_v2::write_commit(&commit, false).unwrap();
+        storage.insert("commit-1", blob.bytes);
 
         // Load ledger - should use genesis since no index exists
         let state = LedgerState::load(&ns, "test:main", storage)
