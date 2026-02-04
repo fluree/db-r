@@ -1033,6 +1033,8 @@ fn eval_truthy_if_arg_valid(
     }
 }
 
+type VectorPair = (Arc<[f64]>, Arc<[f64]>);
+
 /// Extract two vectors from binary function arguments
 ///
 /// Returns None if args don't evaluate to two equal-length vectors.
@@ -1040,7 +1042,7 @@ fn extract_vector_pair(
     args: &[FilterExpr],
     row: &RowView,
     fn_name: &str,
-) -> Result<Option<(Arc<[f64]>, Arc<[f64]>)>> {
+) -> Result<Option<VectorPair>> {
     check_arity(args, 2, fn_name)?;
     let v1 = eval_to_comparable(&args[0], row)?;
     let v2 = eval_to_comparable(&args[1], row)?;
@@ -1049,7 +1051,7 @@ fn extract_vector_pair(
             if a.len() != b.len() {
                 Ok(None) // Vectors must have same dimension
             } else {
-                Ok(Some((a, b)))
+                Ok(Some((Arc::clone(a), Arc::clone(b))))
             }
         }
         _ => Ok(None),
