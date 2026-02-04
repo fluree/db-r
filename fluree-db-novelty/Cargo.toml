@@ -22,8 +22,9 @@ rustc-hash = "2"
 bigdecimal = "0.4"
 num-bigint = "0.4"
 
-# Content addressing (hash verification)
+# Content addressing (hash verification + hex encoding)
 sha2 = { workspace = true }
+hex.workspace = true
 
 # Compression (binary commit format)
 zstd = { workspace = true }

@@ -2256,6 +2256,7 @@ dependencies = [
  "fluree-db-core",
  "fluree-vocab",
  "futures",
+ "hex",
  "num-bigint",
  "rayon",
  "rustc-hash",
