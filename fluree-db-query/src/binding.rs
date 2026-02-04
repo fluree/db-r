@@ -361,16 +361,6 @@ impl Binding {
         }
     }
 
-    /// Try to get literal value with full metadata including transaction time
-    pub fn as_lit_full(&self) -> Option<(&FlakeValue, &Sid, Option<&Arc<str>>, Option<i64>)> {
-        match self {
-            Binding::Lit {
-                val, dt, lang, t, ..
-            } => Some((val, dt, lang.as_ref(), *t)),
-            _ => None,
-        }
-    }
-
     /// Get the operation type if this is a Lit binding with op set
     pub fn op(&self) -> Option<bool> {
         match self {
