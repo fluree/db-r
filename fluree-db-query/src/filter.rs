@@ -110,18 +110,14 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for FilterOper
             }
 
             // Collect row indices where filter evaluates to true
-            let mut keep_indices = Vec::new();
-            for row_idx in 0..batch.len() {
-                let row = match batch.row_view(row_idx) {
-                    Some(r) => r,
-                    None => continue,
-                };
-                match evaluate(&self.expr, &row) {
-                    Ok(true) => keep_indices.push(row_idx),
-                    Ok(false) => {}          // Filter out
-                    Err(e) => return Err(e), // Propagate error
-                }
-            }
+            let keep_indices: Vec<usize> = (0..batch.len())
+                .filter_map(|i| batch.row_view(i).map(|row| (i, row)))
+                .try_fold(Vec::new(), |mut acc, (i, row)| -> Result<_> {
+                    if evaluate(&self.expr, &row)? {
+                        acc.push(i);
+                    }
+                    Ok(acc)
+                })?;
 
             if keep_indices.is_empty() {
                 continue;
