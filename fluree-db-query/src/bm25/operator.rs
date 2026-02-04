@@ -3,7 +3,7 @@
 //! This operator executes BM25 full-text search against a loaded BM25 virtual-graph index
 //! and emits bindings for:
 //! - idx:id      -> `Binding::IriMatch` (canonical IRI with ledger provenance for cross-ledger joins)
-//!                  or `Binding::Iri` (if IRI cannot be encoded to SID)
+//!   or `Binding::Iri` (if IRI cannot be encoded to SID)
 //! - idx:score   -> `Binding::Lit` (xsd:double)
 //! - idx:ledger  -> `Binding::Lit` (xsd:string; ledger alias) [optional]
 //!

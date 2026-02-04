@@ -1107,7 +1107,7 @@ where
 {
     check_arity(args, 1, fn_name)?;
     let val = eval_to_comparable(&args[0], row)?;
-    Ok(val.map_or(false, |v| check(&v)))
+    Ok(val.is_some_and(|v| check(&v)))
 }
 
 /// Evaluate a function to its actual value type (for use in expressions)

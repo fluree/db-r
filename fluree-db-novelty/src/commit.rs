@@ -59,6 +59,7 @@ impl CommitRef {
 /// Records the cumulative state of the database at this commit point.
 /// This is NOT the flake count of the commit itself, but the total DB state.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct CommitData {
     /// Content-address IRI (e.g., "fluree:db:sha256:...")
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,17 +82,6 @@ pub struct CommitData {
     pub previous: Option<Box<CommitData>>,
 }
 
-impl Default for CommitData {
-    fn default() -> Self {
-        Self {
-            id: None,
-            address: None,
-            flakes: 0,
-            size: 0,
-            previous: None,
-        }
-    }
-}
 
 /// Index reference embedded in a commit
 ///
@@ -419,18 +409,12 @@ impl CommitEnvelope {
     pub fn index_ref(&self) -> Option<IndexRef> {
         if let Some(ref idx) = self.index {
             Some(idx.clone())
-        } else if let Some(ref addr) = self.indexed_at {
-            // Legacy: create IndexRef from address-only field
-            // Use sentinel value to indicate unknown version
-            Some(IndexRef {
+        } else { self.indexed_at.as_ref().map(|addr| IndexRef {
                 id: None,
                 address: addr.clone(),
                 v: INDEX_VERSION_UNKNOWN,
                 t: None,
-            })
-        } else {
-            None
-        }
+            }) }
     }
 
     /// Get the effective index address

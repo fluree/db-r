@@ -198,7 +198,7 @@ impl TriplesMap {
                     }
                     super::ObjectMap::RefObjectMap(rom) => {
                         // Child join columns are required
-                        columns.extend(rom.child_columns().into_iter());
+                        columns.extend(rom.child_columns());
                     }
                     super::ObjectMap::Constant { .. } => {
                         // Constant objects don't require any columns

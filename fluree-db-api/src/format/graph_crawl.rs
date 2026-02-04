@@ -204,7 +204,7 @@ pub async fn format_async<S: Storage, C: NodeCache>(
         Root::Var(var_id) => {
             // Variable root - iterate through result batches
             let select_vars = &result.select;
-            let mixed_select = select_vars.len() > 1 || select_vars.get(0) != Some(var_id);
+            let mixed_select = select_vars.len() > 1 || select_vars.first() != Some(var_id);
 
             for batch in &result.batches {
                 for row_idx in 0..batch.len() {

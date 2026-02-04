@@ -54,20 +54,17 @@ pub enum DropMode {
 /// Deletion success is reported via `index_files_deleted`, `commit_files_deleted`,
 /// and `warnings` fields in `DropReport`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum DropStatus {
     /// Record existed and was not retracted at lookup time
     Dropped,
     /// Record was already marked as retracted
     AlreadyRetracted,
     /// No record found for this alias
+    #[default]
     NotFound,
 }
 
-impl Default for DropStatus {
-    fn default() -> Self {
-        DropStatus::NotFound
-    }
-}
 
 // =============================================================================
 // Drop Report Types
@@ -127,6 +124,7 @@ impl TriggerIndexOptions {
 
 /// Options for reindex operation
 #[derive(Clone)]
+#[derive(Default)]
 pub struct ReindexOptions {
     /// Indexer configuration (leaf/branch sizes)
     /// If not specified, uses IndexerConfig::default()
@@ -169,18 +167,6 @@ impl std::fmt::Debug for ReindexOptions {
     }
 }
 
-impl Default for ReindexOptions {
-    fn default() -> Self {
-        Self {
-            indexer_config: None,
-            batch_bytes: None,
-            max_batch_commits: None,
-            checkpoint: false,
-            checkpoint_interval: None,
-            progress_callback: None,
-        }
-    }
-}
 
 impl ReindexOptions {
     /// Set the indexer configuration for controlling output index structure

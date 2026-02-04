@@ -882,7 +882,7 @@ where
     // =========================================================================
     // Process any remaining novelty
 
-    if novelty.len() > 0 || commits_in_batch > 0 {
+    if !novelty.is_empty() || commits_in_batch > 0 {
         let final_t = novelty.t;
         let batch_novelty_bytes = novelty.size;
 
@@ -1219,7 +1219,7 @@ where
     }
 
     // Final flush
-    if novelty.len() > 0 || commits_in_batch > 0 {
+    if !novelty.is_empty() || commits_in_batch > 0 {
         let final_t = novelty.t;
         tracing::info!(
             commits_in_batch = commits_in_batch,
@@ -1322,7 +1322,7 @@ where
     let index_addr = record
         .index_address
         .as_ref()
-        .ok_or_else(|| IndexerError::NoIndex)?;
+        .ok_or(IndexerError::NoIndex)?;
 
     // If index is already current, return it directly (no work needed)
     if record.index_t >= record.commit_t {
@@ -1343,7 +1343,7 @@ where
     let head_address = record
         .commit_address
         .as_ref()
-        .ok_or_else(|| IndexerError::NoCommits)?;
+        .ok_or(IndexerError::NoCommits)?;
 
     // Perform incremental refresh
     tracing::info!(
@@ -1412,7 +1412,7 @@ where
     let head_address = record
         .commit_address
         .as_ref()
-        .ok_or_else(|| IndexerError::NoCommits)?;
+        .ok_or(IndexerError::NoCommits)?;
 
     // Try refresh-first if there's an existing index
     if let Some(ref index_addr) = record.index_address {

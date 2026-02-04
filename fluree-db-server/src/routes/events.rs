@@ -222,7 +222,7 @@ where
         }
         // All VG records (sorted by alias)
         if let Ok(mut records) = ns.all_vg_records().await {
-            records.sort_by(|a, b| a.alias().cmp(&b.alias()));
+            records.sort_by_key(|a| a.alias());
             for r in records {
                 if !r.retracted {
                     events.push(vg_to_sse_event(&r));

@@ -1457,7 +1457,7 @@ pub mod index {
     /// idx:timeout - query timeout in milliseconds
     pub const TIMEOUT: &str = "timeout";
 
-    /// BM25-specific configuration properties
+    // BM25-specific configuration properties
 
     /// fidx:BM25 - BM25 index type identifier
     pub const BM25: &str = "BM25";
@@ -1474,7 +1474,7 @@ pub mod index {
     /// fidx:vector - vector property for similarity search
     pub const VECTOR: &str = "vector";
 
-    /// Virtual graph configuration properties
+    // Virtual graph configuration properties
 
     /// fidx:config - VG configuration JSON (stored in nameservice)
     pub const CONFIG: &str = "config";

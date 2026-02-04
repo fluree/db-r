@@ -154,7 +154,7 @@ async fn transact_local(
 
     let alias = match get_ledger_alias(None, &headers, &body_json) {
         Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
+            span.record("ledger_alias", alias.as_str());
             alias
         }
         Err(e) => {
@@ -235,7 +235,7 @@ async fn transact_ledger_local(
 
     let alias = match get_ledger_alias(Some(&ledger), &headers, &body_json) {
         Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
+            span.record("ledger_alias", alias.as_str());
             alias
         }
         Err(e) => {
@@ -303,7 +303,7 @@ async fn insert_local(state: Arc<AppState>, request: Request) -> Result<Json<Tra
 
     let alias = match get_ledger_alias(None, &headers, &body_json) {
         Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
+            span.record("ledger_alias", alias.as_str());
             alias
         }
         Err(e) => {
@@ -371,7 +371,7 @@ async fn upsert_local(state: Arc<AppState>, request: Request) -> Result<Json<Tra
 
     let alias = match get_ledger_alias(None, &headers, &body_json) {
         Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
+            span.record("ledger_alias", alias.as_str());
             alias
         }
         Err(e) => {
@@ -444,7 +444,7 @@ async fn insert_ledger_local(
 
     let alias = match get_ledger_alias(Some(&ledger), &headers, &body_json) {
         Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
+            span.record("ledger_alias", alias.as_str());
             alias
         }
         Err(e) => {
@@ -517,7 +517,7 @@ async fn upsert_ledger_local(
 
     let alias = match get_ledger_alias(Some(&ledger), &headers, &body_json) {
         Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
+            span.record("ledger_alias", alias.as_str());
             alias
         }
         Err(e) => {
@@ -651,7 +651,7 @@ async fn execute_sparql_update_request(
         },
     };
 
-    parent_span.record("ledger_alias", &alias.as_str());
+    parent_span.record("ledger_alias", alias.as_str());
 
     // Parse SPARQL
     let parse_output = parse_sparql(&sparql);

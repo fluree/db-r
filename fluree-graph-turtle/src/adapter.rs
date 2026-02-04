@@ -78,7 +78,7 @@ fn term_to_subject_key(term: &Term) -> String {
         Term::BlankNode(id) => format!("_:{}", id.as_str()),
         Term::Literal { .. } => {
             // Literals shouldn't be subjects in RDF, but handle gracefully
-            format!("_:literal")
+            "_:literal".to_string()
         }
     }
 }

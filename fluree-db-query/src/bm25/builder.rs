@@ -395,7 +395,7 @@ impl<'a> IncrementalUpdater<'a> {
     ///
     /// * `results` - Query results for affected subjects (re-run of indexing query)
     /// * `affected_iris` - Set of subject IRIs that were affected by the commit.
-    ///                     Any IRI in this set that is NOT in results will be removed.
+    ///   Any IRI in this set that is NOT in results will be removed.
     /// * `new_t` - The new watermark (commit t) after this update
     ///
     /// # Returns

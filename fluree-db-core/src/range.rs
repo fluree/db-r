@@ -955,7 +955,7 @@ fn trim_to_range<'a>(
 ///
 /// Returns `true` when `f.t <= to_t` and (if `from_t` is set) `f.t >= from_t`.
 fn in_time_window(f: &Flake, from_t: Option<i64>, to_t: i64) -> bool {
-    f.t <= to_t && from_t.map_or(true, |ft| f.t >= ft)
+    f.t <= to_t && from_t.is_none_or(|ft| f.t >= ft)
 }
 
 // =========================================================================
@@ -1175,7 +1175,7 @@ where
         );
 
         // Sort overlay flakes by index comparator
-        overlay_flakes.sort_by(|a, b| cmp(a, b));
+        overlay_flakes.sort_by(cmp);
 
         // Remove stale flakes unless in history mode
         let materialized = if history_mode {
@@ -1331,7 +1331,7 @@ where
                     .collect();
 
                 // Overlay flakes are yielded sorted by overlay implementation; defensively sort.
-                overlay_flakes.sort_by(|a, b| cmp(a, b));
+                overlay_flakes.sort_by(&cmp);
 
                 let merged = merge_sorted(leaf_flakes, overlay_flakes, cmp);
                 if history_mode {

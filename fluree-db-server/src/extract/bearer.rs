@@ -62,9 +62,9 @@ impl EventsPrincipal {
 /// # Behavior by Auth Mode
 /// - `None`: Always returns `MaybeBearer(None)`, token ignored
 /// - `Optional`: Returns `MaybeBearer(Some(principal))` if token valid,
-///               `MaybeBearer(None)` if no token, 401 if invalid token
+///   `MaybeBearer(None)` if no token, 401 if invalid token
 /// - `Required`: Returns `MaybeBearer(Some(principal))` if token valid,
-///               401 if no token or invalid token
+///   401 if no token or invalid token
 #[derive(Debug)]
 pub struct MaybeBearer(pub Option<EventsPrincipal>);
 

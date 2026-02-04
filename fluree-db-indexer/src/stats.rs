@@ -188,6 +188,7 @@ impl Default for PropertyHll {
 /// Uses `HllSketch256` (p=8) for direct serialization and incremental merging.
 /// This is feature-gated behind `hll-stats` (default enabled).
 #[cfg(feature = "hll-stats")]
+#[derive(Default)]
 pub struct HllStatsHook {
     flake_count: usize,
     /// Per-property HLL sketches, keyed by predicate SID
@@ -195,14 +196,6 @@ pub struct HllStatsHook {
 }
 
 #[cfg(feature = "hll-stats")]
-impl Default for HllStatsHook {
-    fn default() -> Self {
-        Self {
-            flake_count: 0,
-            properties: HashMap::new(),
-        }
-    }
-}
 
 #[cfg(feature = "hll-stats")]
 impl HllStatsHook {
@@ -245,7 +238,7 @@ impl IndexStatsHook for HllStatsHook {
         // Get or create property entry
         let entry = self.properties
             .entry(flake.p.clone())
-            .or_insert_with(PropertyHll::new);
+            .or_default();
 
         // Update count
         if flake.op {

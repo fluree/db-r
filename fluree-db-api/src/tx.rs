@@ -54,11 +54,13 @@ fn tracker_for_limits(txn_json: &JsonValue) -> Tracker {
 /// Controls whether transactions trigger background indexing or return hints
 /// for an external indexer (e.g., Lambda).
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub enum IndexingMode {
     /// Disabled mode (Lambda/external indexer)
     ///
     /// Transactions complete without triggering indexing. The `IndexingStatus`
     /// in the result provides hints for external indexers.
+    #[default]
     Disabled,
     /// Background mode with coalescing handle
     ///
@@ -67,11 +69,6 @@ pub enum IndexingMode {
     Background(IndexerHandle),
 }
 
-impl Default for IndexingMode {
-    fn default() -> Self {
-        IndexingMode::Disabled
-    }
-}
 
 impl IndexingMode {
     /// Returns true if background indexing is enabled

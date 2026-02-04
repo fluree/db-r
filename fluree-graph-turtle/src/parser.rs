@@ -532,9 +532,9 @@ impl<'a, S: GraphSink> Parser<'a, S> {
         let (base_scheme, base_authority, base_path, _base_query) = parse_iri_components(base);
 
         // RFC3986 Section 5.2.2 - Transform References
-        let (scheme, authority, path, query) = if reference.starts_with("//") {
+        let (scheme, authority, path, query) = if let Some(stripped) = reference.strip_prefix("//") {
             // Reference has authority - use base scheme only
-            let (ref_authority, ref_path, ref_query) = parse_hier_part(&reference[2..]);
+            let (ref_authority, ref_path, ref_query) = parse_hier_part(stripped);
             (
                 base_scheme.to_string(),
                 Some(ref_authority),
@@ -550,13 +550,13 @@ impl<'a, S: GraphSink> Parser<'a, S> {
                 remove_dot_segments(ref_path),
                 ref_query.map(|s| s.to_string()),
             )
-        } else if reference.starts_with('?') {
+        } else if let Some(stripped) = reference.strip_prefix('?') {
             // Query-only reference
             (
                 base_scheme.to_string(),
                 base_authority.map(|s| s.to_string()),
                 base_path.to_string(),
-                Some(reference[1..].to_string()),
+                Some(stripped.to_string()),
             )
         } else if reference.starts_with('#') {
             // Fragment-only reference (fragment not typically in IRI, but handle gracefully)
@@ -626,11 +626,10 @@ fn parse_iri_components(iri: &str) -> (&str, Option<&str>, &str, Option<&str>) {
     };
 
     // Check for authority (starts with //)
-    let (authority, path_query) = if rest.starts_with("//") {
-        let after_slashes = &rest[2..];
+    let (authority, path_query) = if let Some(after_slashes) = rest.strip_prefix("//") {
         // Authority ends at /, ?, or #
         let auth_end = after_slashes
-            .find(|c| c == '/' || c == '?' || c == '#')
+            .find(['/', '?', '#'])
             .unwrap_or(after_slashes.len());
         (
             Some(&after_slashes[..auth_end]),
@@ -650,7 +649,7 @@ fn parse_iri_components(iri: &str) -> (&str, Option<&str>, &str, Option<&str>) {
 fn parse_hier_part(s: &str) -> (String, String, Option<String>) {
     // Authority ends at /, ?, or #
     let auth_end = s
-        .find(|c| c == '/' || c == '?' || c == '#')
+        .find(['/', '?', '#'])
         .unwrap_or(s.len());
     let authority = s[..auth_end].to_string();
     let rest = &s[auth_end..];

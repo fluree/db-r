@@ -120,7 +120,7 @@ impl Default for PrefetchConfig {
             .map(|p| p.get())
             .unwrap_or(4);
 
-        let num_workers = (parallelism.saturating_sub(1)).max(1).min(DEFAULT_PREFETCH_WORKERS);
+        let num_workers = (parallelism.saturating_sub(1)).clamp(1, DEFAULT_PREFETCH_WORKERS);
         let queue_depth = num_workers * 8;
 
         Self {

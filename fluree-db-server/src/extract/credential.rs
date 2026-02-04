@@ -164,7 +164,7 @@ async fn extract_credential(req: Request<axum::body::Body>) -> Result<MaybeCrede
     // Detect if this is a signed credential
     let is_jws = is_jwt_content_type
         || body_str
-            .map(|s| looks_like_jws(s))
+            .map(looks_like_jws)
             .unwrap_or(false);
 
     // If it's a JWS string

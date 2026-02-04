@@ -74,7 +74,7 @@ impl FileConnection {
         &self,
         root_address: &str,
     ) -> Result<Db<FileStorage, SimpleCache>> {
-        let storage = FileStorage::new(&self.storage.base_path());
+        let storage = FileStorage::new(self.storage.base_path());
         let cache = SimpleCache::new(self.config.cache.max_entries);
         Ok(Db::load(storage, cache, root_address).await?)
     }

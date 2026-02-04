@@ -774,8 +774,8 @@ fn parse_single_graph_source(val: &JsonValue, field_name: &str) -> Result<GraphS
             } else if let Some(at_val) = obj.get("at") {
                 if let Some(at_str) = at_val.as_str() {
                     // Determine if it's a commit hash or timestamp
-                    if at_str.starts_with("commit:") {
-                        source.time_spec = Some(TimeSpec::AtCommit(at_str[7..].to_string()));
+                    if let Some(commit_hash) = at_str.strip_prefix("commit:") {
+                        source.time_spec = Some(TimeSpec::AtCommit(commit_hash.to_string()));
                     } else {
                         // Assume ISO timestamp
                         source.time_spec = Some(TimeSpec::AtTime(at_str.to_string()));

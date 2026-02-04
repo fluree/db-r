@@ -92,7 +92,7 @@ impl<'a> FlakeGenerator<'a> {
         // - UPDATE/UPSERT where WHERE matches nothing produces an empty batch with a non-empty
         //   schema (vars present but 0 rows). In that case, there are **zero solution rows** and
         //   templates must produce **zero flakes** (no-op).
-        let row_count = if bindings.len() == 0 {
+        let row_count = if bindings.is_empty() {
             if bindings.schema().is_empty() {
                 1
             } else {

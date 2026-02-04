@@ -10,8 +10,10 @@ use super::RefObjectMap;
 ///
 /// Specifies whether a term map generates IRIs, blank nodes, or literals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum TermType {
     /// Generate an IRI (default for subject and predicate maps)
+    #[default]
     Iri,
     /// Generate a blank node
     BlankNode,
@@ -19,11 +21,6 @@ pub enum TermType {
     Literal,
 }
 
-impl Default for TermType {
-    fn default() -> Self {
-        TermType::Iri
-    }
-}
 
 impl TermType {
     /// Parse term type from R2RML IRI

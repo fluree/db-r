@@ -166,21 +166,21 @@ pub fn deserialize_object(value: &serde_json::Value, dt: &Sid) -> Result<FlakeVa
         if let serde_json::Value::String(s) = value {
             return DateTime::parse(s)
                 .map(|dt| FlakeValue::DateTime(Box::new(dt)))
-                .map_err(|e| Error::other(e));
+                .map_err(Error::other);
         }
     }
     if is_date_dt(dt) {
         if let serde_json::Value::String(s) = value {
             return Date::parse(s)
                 .map(|d| FlakeValue::Date(Box::new(d)))
-                .map_err(|e| Error::other(e));
+                .map_err(Error::other);
         }
     }
     if is_time_dt(dt) {
         if let serde_json::Value::String(s) = value {
             return Time::parse(s)
                 .map(|t| FlakeValue::Time(Box::new(t)))
-                .map_err(|e| Error::other(e));
+                .map_err(Error::other);
         }
     }
 
@@ -371,21 +371,21 @@ fn borrowed_object_interned(
         if let simd_json::BorrowedValue::String(s) = value {
             return DateTime::parse(s)
                 .map(|dt| FlakeValue::DateTime(Box::new(dt)))
-                .map_err(|e| Error::other(e));
+                .map_err(Error::other);
         }
     }
     if is_date_dt(dt) {
         if let simd_json::BorrowedValue::String(s) = value {
             return Date::parse(s)
                 .map(|d| FlakeValue::Date(Box::new(d)))
-                .map_err(|e| Error::other(e));
+                .map_err(Error::other);
         }
     }
     if is_time_dt(dt) {
         if let simd_json::BorrowedValue::String(s) = value {
             return Time::parse(s)
                 .map(|t| FlakeValue::Time(Box::new(t)))
-                .map_err(|e| Error::other(e));
+                .map_err(Error::other);
         }
     }
 
@@ -1657,7 +1657,7 @@ fn parse_sid_inline<'de>(
     first: Node<'de>,
 ) -> Result<Sid> {
     match first {
-        Node::Array { len, .. } if len == 2 => {
+        Node::Array { len: 2, .. } => {
             let ns = node_i64(unsafe { de.next_() })? as i32;
             match unsafe { de.next_() } {
                 Node::String(name) => Ok(interner.intern(ns, name)),
@@ -1689,7 +1689,7 @@ fn parse_raw_o<'de>(
         Node::Static(StaticNode::U64(n)) => Ok(RawO::Long(n as i64)),
         Node::Static(StaticNode::F64(f)) => Ok(RawO::Double(f)),
         Node::String(s) => Ok(RawO::String(s.to_string())),
-        Node::Array { len, .. } if len == 2 => {
+        Node::Array { len: 2, .. } => {
             // Backwards-compat: treat 2-tuple [ns, name] as a SID reference.
             let ns = node_i64(unsafe { de.next_() })? as i32;
             match unsafe { de.next_() } {
@@ -1926,7 +1926,7 @@ pub fn parse_leaf_node_interned(mut bytes: Vec<u8>, interner: &crate::SidInterne
     // which is especially beneficial when leaf flakes arrays are very large.
     let streaming = SIMDJSON_BUFFERS.with(|b| {
         let mut b = b.borrow_mut();
-        parse_leaf_node_interned_streaming(bytes.as_mut_slice(), &mut *b, interner)
+        parse_leaf_node_interned_streaming(bytes.as_mut_slice(), &mut b, interner)
     });
 
     match streaming {
@@ -1936,7 +1936,7 @@ pub fn parse_leaf_node_interned(mut bytes: Vec<u8>, interner: &crate::SidInterne
             // (complex object values, unexpected orderings, etc).
             let root: simd_json::BorrowedValue<'_> = SIMDJSON_BUFFERS.with(|b| {
                 let mut b = b.borrow_mut();
-                simd_json::to_borrowed_value_with_buffers(bytes.as_mut_slice(), &mut *b)
+                simd_json::to_borrowed_value_with_buffers(bytes.as_mut_slice(), &mut b)
             })?;
             parse_leaf_node_interned_borrowed(&root, interner)
         }

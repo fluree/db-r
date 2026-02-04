@@ -444,7 +444,7 @@ impl IndexerHandle {
         let states = self.states.lock().await;
         states
             .get(alias)
-            .map_or(false, |s| s.phase != IndexPhase::Idle)
+            .is_some_and(|s| s.phase != IndexPhase::Idle)
     }
 
     /// List all ledgers with pending/in-progress work
@@ -591,7 +591,7 @@ where
                     .filter(|(_, state)| {
                         state.pending_min_t.is_some()
                             && !state.cancelled
-                            && state.next_retry_at.map_or(true, |t| t <= now)
+                            && state.next_retry_at.is_none_or(|t| t <= now)
                     })
                     .map(|(alias, _)| alias.clone())
                     .collect()

@@ -172,7 +172,7 @@ where
     /// let preview = staged.query().jsonld(&q).execute().await?;
     /// ```
     pub async fn stage(self) -> Result<StagedGraph<'a, S, N>> {
-        self.core.validate().map_err(|e| ApiError::Builder(e))?;
+        self.core.validate().map_err(ApiError::Builder)?;
 
         let op = self.core.operation.unwrap();
         let txn_type = op.txn_type();
@@ -185,7 +185,7 @@ where
         // Stage
         let stage_result = if let Some(policy) = &self.core.policy {
             let tracker = Tracker::new(
-                self.core.tracking.unwrap_or_else(|| TrackingOptions {
+                self.core.tracking.unwrap_or(TrackingOptions {
                     track_time: true,
                     track_fuel: true,
                     track_policy: true,

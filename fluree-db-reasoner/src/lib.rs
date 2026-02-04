@@ -67,6 +67,7 @@ pub use types::{ChainElement, PropertyChain, PropertyExpression, ReasoningModes}
 
 /// Options for OWL2-RL reasoning
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ReasoningOptions {
     /// Budget constraints for materialization
     pub budget: ReasoningBudget,
@@ -74,14 +75,6 @@ pub struct ReasoningOptions {
     pub enabled_rules: Vec<String>,
 }
 
-impl Default for ReasoningOptions {
-    fn default() -> Self {
-        Self {
-            budget: ReasoningBudget::default(),
-            enabled_rules: Vec::new(), // Empty means all rules enabled
-        }
-    }
-}
 
 impl ReasoningOptions {
     /// Create options with default budget and all rules enabled

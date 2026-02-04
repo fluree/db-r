@@ -286,6 +286,7 @@ impl FlockGuard {
 
         let file = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(path)
@@ -1413,7 +1414,7 @@ impl VirtualGraphPublisher for FileNameService {
         #[cfg(all(feature = "native", unix))]
         {
             let path = main_path.clone();
-            let alias_for_event = core_alias::format_alias(&name, &branch);
+            let alias_for_event = core_alias::format_alias(name, branch);
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
 

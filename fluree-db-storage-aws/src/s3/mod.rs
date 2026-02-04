@@ -47,6 +47,7 @@ use std::time::Duration;
 
 /// S3 storage configuration
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct S3Config {
     /// S3 bucket name (supports both standard S3 and S3 Express directory buckets)
     pub bucket: String,
@@ -64,19 +65,6 @@ pub struct S3Config {
     pub retry_max_delay_ms: Option<u64>,
 }
 
-impl Default for S3Config {
-    fn default() -> Self {
-        Self {
-            bucket: String::new(),
-            prefix: None,
-            endpoint: None,
-            timeout_ms: None,
-            max_retries: None,
-            retry_base_delay_ms: None,
-            retry_max_delay_ms: None,
-        }
-    }
-}
 
 /// S3-based storage backend
 ///

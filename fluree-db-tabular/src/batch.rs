@@ -206,17 +206,17 @@ impl Column {
     #[inline]
     pub fn is_null(&self, idx: usize) -> bool {
         match self {
-            Self::Boolean(v) => v.get(idx).map_or(true, |v| v.is_none()),
-            Self::Int32(v) => v.get(idx).map_or(true, |v| v.is_none()),
-            Self::Int64(v) => v.get(idx).map_or(true, |v| v.is_none()),
-            Self::Float32(v) => v.get(idx).map_or(true, |v| v.is_none()),
-            Self::Float64(v) => v.get(idx).map_or(true, |v| v.is_none()),
-            Self::String(v) => v.get(idx).map_or(true, |v| v.is_none()),
-            Self::Bytes(v) => v.get(idx).map_or(true, |v| v.is_none()),
-            Self::Date(v) => v.get(idx).map_or(true, |v| v.is_none()),
-            Self::Timestamp(v) => v.get(idx).map_or(true, |v| v.is_none()),
-            Self::TimestampTz(v) => v.get(idx).map_or(true, |v| v.is_none()),
-            Self::Decimal { values, .. } => values.get(idx).map_or(true, |v| v.is_none()),
+            Self::Boolean(v) => v.get(idx).is_none_or(|v| v.is_none()),
+            Self::Int32(v) => v.get(idx).is_none_or(|v| v.is_none()),
+            Self::Int64(v) => v.get(idx).is_none_or(|v| v.is_none()),
+            Self::Float32(v) => v.get(idx).is_none_or(|v| v.is_none()),
+            Self::Float64(v) => v.get(idx).is_none_or(|v| v.is_none()),
+            Self::String(v) => v.get(idx).is_none_or(|v| v.is_none()),
+            Self::Bytes(v) => v.get(idx).is_none_or(|v| v.is_none()),
+            Self::Date(v) => v.get(idx).is_none_or(|v| v.is_none()),
+            Self::Timestamp(v) => v.get(idx).is_none_or(|v| v.is_none()),
+            Self::TimestampTz(v) => v.get(idx).is_none_or(|v| v.is_none()),
+            Self::Decimal { values, .. } => values.get(idx).is_none_or(|v| v.is_none()),
         }
     }
 

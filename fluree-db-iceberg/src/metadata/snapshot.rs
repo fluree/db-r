@@ -88,8 +88,10 @@ impl Snapshot {
 
 /// Snapshot selection criteria for time travel queries.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub enum SnapshotSelection {
     /// Use the current snapshot (default)
+    #[default]
     Current,
     /// Use a specific snapshot by ID
     SnapshotId(i64),
@@ -97,11 +99,6 @@ pub enum SnapshotSelection {
     AsOfTime(i64),
 }
 
-impl Default for SnapshotSelection {
-    fn default() -> Self {
-        Self::Current
-    }
-}
 
 /// Select a snapshot from table metadata based on selection criteria.
 ///

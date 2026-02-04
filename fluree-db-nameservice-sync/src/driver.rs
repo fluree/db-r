@@ -195,7 +195,7 @@ impl SyncDriver {
         };
 
         let local_ref = self.local.get_ref(local_alias, RefKind::CommitHead).await
-            .map_err(|e| SyncError::Nameservice(e))?;
+            .map_err(SyncError::Nameservice)?;
 
         match &local_ref {
             None => {
@@ -204,7 +204,7 @@ impl SyncDriver {
                     .local
                     .compare_and_set_ref(local_alias, RefKind::CommitHead, None, remote_commit)
                     .await
-                    .map_err(|e| SyncError::Nameservice(e))?;
+                    .map_err(SyncError::Nameservice)?;
                 match result {
                     CasResult::Updated => Ok(PullResult::FastForwarded {
                         alias: local_alias.to_string(),
@@ -234,7 +234,7 @@ impl SyncDriver {
                         .local
                         .fast_forward_commit(local_alias, remote_commit, 3)
                         .await
-                        .map_err(|e| SyncError::Nameservice(e))?;
+                        .map_err(SyncError::Nameservice)?;
                     match result {
                         CasResult::Updated => Ok(PullResult::FastForwarded {
                             alias: local_alias.to_string(),
@@ -282,7 +282,7 @@ impl SyncDriver {
             .local
             .get_ref(local_alias, RefKind::CommitHead)
             .await
-            .map_err(|e| SyncError::Nameservice(e))?;
+            .map_err(SyncError::Nameservice)?;
         let Some(local_commit) = local_ref else {
             return Err(SyncError::Config(format!(
                 "Local alias '{}' has no commit ref",

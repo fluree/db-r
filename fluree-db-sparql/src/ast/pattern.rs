@@ -42,18 +42,9 @@ impl TriplePattern {
     /// Get all variables referenced in this pattern.
     pub fn variables(&self) -> Vec<&Var> {
         let mut vars = Vec::with_capacity(3);
-        match &self.subject {
-            SubjectTerm::Var(v) => vars.push(v),
-            _ => {}
-        }
-        match &self.predicate {
-            PredicateTerm::Var(v) => vars.push(v),
-            _ => {}
-        }
-        match &self.object {
-            Term::Var(v) => vars.push(v),
-            _ => {}
-        }
+        if let SubjectTerm::Var(v) = &self.subject { vars.push(v) }
+        if let PredicateTerm::Var(v) = &self.predicate { vars.push(v) }
+        if let Term::Var(v) = &self.object { vars.push(v) }
         vars
     }
 }

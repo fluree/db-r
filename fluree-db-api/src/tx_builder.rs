@@ -313,7 +313,7 @@ where
     pub async fn execute(self) -> Result<TransactResult<S>> {
         self.core
             .validate()
-            .map_err(|e| ApiError::Builder(e))?;
+            .map_err(ApiError::Builder)?;
 
         let op = self.core.operation.unwrap(); // safe: validate checks
         let txn_type = op.txn_type();
@@ -364,7 +364,7 @@ where
     pub async fn stage(self) -> Result<Staged<S>> {
         self.core
             .validate()
-            .map_err(|e| ApiError::Builder(e))?;
+            .map_err(ApiError::Builder)?;
 
         let op = self.core.operation.unwrap();
         let txn_type = op.txn_type();
@@ -374,7 +374,7 @@ where
         // If policy is set, use the tracked+policy staging path
         if let Some(policy) = &self.core.policy {
             let tracker = Tracker::new(
-                self.core.tracking.unwrap_or_else(|| TrackingOptions {
+                self.core.tracking.unwrap_or(TrackingOptions {
                     track_time: true,
                     track_fuel: true,
                     track_policy: true,
@@ -566,7 +566,7 @@ where
     S: Storage + ContentAddressedWrite + Clone + Send + Sync + 'static,
     N: NameService + Publisher + Clone + Send + Sync + 'static,
 {
-    core.validate().map_err(|e| ApiError::Builder(e))?;
+    core.validate().map_err(ApiError::Builder)?;
 
     let index_config = core.index_config.unwrap_or_default();
 
@@ -597,7 +597,7 @@ where
         // Stage
         let stage_result = if let Some(policy) = &core.policy {
             let tracker = Tracker::new(
-                core.tracking.unwrap_or_else(|| TrackingOptions {
+                core.tracking.unwrap_or(TrackingOptions {
                     track_time: true,
                     track_fuel: true,
                     track_policy: true,
