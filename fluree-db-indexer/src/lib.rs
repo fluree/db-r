@@ -769,7 +769,7 @@ where
                 &storage, &alias, &build_results,
             ).await?;
 
-            // D.4: Build stats JSON for the planner (IndexStats / RawDbRootStats shape).
+            // D.4: Build stats JSON for the planner (RawDbRootStats shape).
             //
             // Preferred: ID-based stats collected during commit resolution (per-graph property
             // stats with datatype counts + HLL NDV). Fallback: SPOT build result for per-graph

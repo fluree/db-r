@@ -61,9 +61,8 @@ use std::sync::{Arc, RwLock};
 
 /// Hint to storage implementation about expected content type
 ///
-/// This enum allows callers to signal format preferences to storage implementations
-/// that support content negotiation (e.g., ProxyStorage). The default implementation
-/// ignores the hint and returns raw bytes.
+/// This enum allows callers to signal format preferences to storage implementations.
+/// The default implementation ignores the hint and returns raw bytes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ReadHint {
@@ -74,13 +73,12 @@ pub enum ReadHint {
     #[default]
     AnyBytes,
 
-    /// Prefer policy-filtered flakes format for leaf nodes
+    /// Prefer pre-parsed leaf flakes (FLKB format) if the address points to a leaf
     ///
-    /// For storage implementations that support content negotiation (e.g., ProxyStorage),
-    /// this hint signals a preference for `application/x-fluree-flakes` format.
-    ///
-    /// If the storage can provide filtered flakes, it returns FLKB-encoded bytes.
-    /// If not available (e.g., for branch nodes), it falls back to raw bytes.
+    /// Storage implementations that support content negotiation (e.g., ProxyStorage)
+    /// can use this hint to request policy-filtered flakes instead of raw bytes.
+    /// If the address is not a leaf or the server doesn't support FLKB, falls back
+    /// to raw bytes.
     PreferLeafFlakes,
 }
 

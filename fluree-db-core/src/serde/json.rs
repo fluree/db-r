@@ -321,18 +321,12 @@ impl RawLeafNode {
 
 }
 
-// === DB Root Stats ===
-//
-// Canonical types moved to `crate::index_stats`. Re-exported here for
-// backward compatibility with existing `serde::json::DbRootStats` imports.
+// === Index Stats (JSON parsing) ===
 
 use crate::index_stats::{
     IndexStats, PropertyStatEntry, ClassStatEntry, ClassPropertyUsage,
     GraphPropertyStatEntry, GraphStatsEntry,
 };
-
-/// Backward-compatible alias for [`IndexStats`].
-pub type DbRootStats = IndexStats;
 
 /// Raw property stat entry as it appears in JSON (v2 only).
 ///
@@ -502,59 +496,11 @@ impl<'de> serde::Deserialize<'de> for RawClassPropertyUsage {
     }
 }
 
-// === DB Root Config ===
-
-/// Index configuration persisted in db-root
-#[derive(Debug, Clone, Default)]
-pub struct DbRootConfig {
-    /// Soft threshold for reindexing (bytes)
-    pub reindex_min_bytes: Option<u64>,
-    /// Hard threshold for reindexing (bytes)
-    pub reindex_max_bytes: Option<u64>,
-    /// Maximum number of old indexes to keep (default: 5)
-    pub max_old_indexes: Option<u32>,
-    /// Minimum age in minutes before an index can be garbage collected (default: 30)
-    /// This prevents GC of indexes still in use by query servers during rapid transactions
-    pub min_time_garbage_mins: Option<u32>,
-}
-
-/// Raw config as it appears in JSON
-#[derive(Debug, Deserialize, Default)]
-#[serde(rename_all = "kebab-case")]
-pub struct RawDbRootConfig {
-    #[serde(default)]
-    pub reindex_min_bytes: Option<u64>,
-    #[serde(default)]
-    pub reindex_max_bytes: Option<u64>,
-    #[serde(default)]
-    pub max_old_indexes: Option<u32>,
-    #[serde(default)]
-    pub min_time_garbage_mins: Option<u32>,
-}
-
-// === Previous Index Reference ===
-
-/// Reference to previous index for GC chain
-#[derive(Debug, Clone)]
-pub struct PrevIndexRef {
-    /// Transaction ID of the previous index
-    pub t: i64,
-    /// Content address of the previous index db-root
-    pub address: String,
-}
-
-/// Raw prev-index as it appears in JSON
-#[derive(Debug, Deserialize)]
-pub struct RawPrevIndex {
-    pub t: i64,
-    pub address: String,
-}
-
 // === Garbage Reference ===
 
 /// Reference to garbage record for GC chain
 ///
-/// Links the db-root to its garbage manifest file.
+/// Links a db-root / index-root to its garbage manifest file.
 /// The garbage record contains addresses of obsolete nodes replaced during
 /// this refresh operation.
 #[derive(Debug, Clone, PartialEq)]
@@ -563,21 +509,9 @@ pub struct GarbageRef {
     pub address: String,
 }
 
-/// Raw garbage reference as it appears in JSON
-#[derive(Debug, Deserialize)]
-pub struct RawGarbageRef {
-    pub address: String,
-}
-
-// === Schema ===
-//
-// Canonical types moved to `crate::index_schema`. Re-exported here for
-// backward compatibility with existing `serde::json::DbRootSchema` imports.
+// === Index Schema (JSON parsing) ===
 
 use crate::index_schema::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};
-
-/// Backward-compatible alias for [`IndexSchema`].
-pub type DbRootSchema = IndexSchema;
 
 /// Raw schema predicates as it appears in JSON
 #[derive(Debug, Deserialize)]

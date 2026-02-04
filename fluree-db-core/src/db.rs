@@ -9,7 +9,7 @@ use crate::schema_hierarchy::SchemaHierarchy;
 use crate::index_stats::IndexStats;
 use crate::index_schema::IndexSchema;
 use crate::serde::json::{
-    raw_schema_to_index_schema, raw_stats_to_index_stats, DbRootConfig,
+    raw_schema_to_index_schema, raw_stats_to_index_stats,
     RawDbRootSchema, RawDbRootStats,
 };
 use crate::sid::Sid;
@@ -36,8 +36,6 @@ pub struct Db<S> {
 
     /// Index statistics (flakes count, total size)
     pub stats: Option<IndexStats>,
-    /// Index configuration (reindex thresholds)
-    pub config: Option<DbRootConfig>,
     /// Schema (class/property hierarchy)
     pub schema: Option<IndexSchema>,
 
@@ -63,7 +61,6 @@ impl<S: Clone> Clone for Db<S> {
             version: self.version,
             namespace_codes: self.namespace_codes.clone(),
             stats: self.stats.clone(),
-            config: self.config.clone(),
             schema: self.schema.clone(),
             schema_hierarchy_cache: self.schema_hierarchy_cache.clone(),
             range_provider: self.range_provider.clone(),
@@ -97,7 +94,6 @@ impl<S: Storage> Db<S> {
             // Seed with baseline Fluree namespace codes (matches Clojure genesis-root-map).
             namespace_codes: default_namespace_codes(),
             stats: None,
-            config: None,
             schema: None,
             schema_hierarchy_cache: OnceCell::new(),
             range_provider: None,
@@ -125,7 +121,6 @@ impl<S: Storage> Db<S> {
             version: 2,
             namespace_codes,
             stats,
-            config: None,
             schema,
             schema_hierarchy_cache: OnceCell::new(),
             range_provider: None,
