@@ -282,6 +282,7 @@ where
                 None
             },
             dataset: Some(&runtime_dataset),
+            policy_enforcer: primary.policy_enforcer().cloned(),
             binary_store: primary.binary_store.clone(),
             dict_novelty: primary.dict_novelty.clone(),
             history_mode,
@@ -334,6 +335,7 @@ where
         let config = ContextConfig {
             tracker: Some(tracker),
             dataset: Some(&runtime_dataset),
+            policy_enforcer: primary.policy_enforcer().cloned(),
             binary_store: primary.binary_store.clone(),
             dict_novelty: primary.dict_novelty.clone(),
             history_mode,

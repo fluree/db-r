@@ -2,11 +2,11 @@
 //!
 //! Provides a hook interface for collecting statistics during index building.
 //! - `NoOpStatsHook`: Minimal implementation that only counts flakes
-//! - `HllStatsHook`: Full HLL-based per-property NDV tracking (requires `hll-stats` feature)
+//! - `HllStatsHook`: Full HLL-based per-property NDV tracking
 //!
-//! ## HLL Sketch Persistence (hll-stats feature)
+//! ## HLL Sketch Persistence
 //!
-//! When the `hll-stats` feature is enabled, HLL sketches are persisted to storage
+//! HLL sketches are persisted to storage
 //! using T-based filenames. This enables true incremental stats updates during refresh:
 //!
 //! - Path: `<alias>/index/stats-sketches/{values|subjects}/<ns>_<name>_<t>.hll`
@@ -29,22 +29,14 @@ use fluree_db_core::Storage;
 use fluree_vocab::namespaces::RDF;
 use std::collections::HashSet;
 
-#[cfg(feature = "hll-stats")]
 use crate::error::{IndexerError, Result};
-#[cfg(feature = "hll-stats")]
 use crate::hll::HllSketch256;
-#[cfg(feature = "hll-stats")]
 use fluree_db_core::PropertyStatEntry;
-#[cfg(feature = "hll-stats")]
 use fluree_db_core::StorageWrite;
-#[cfg(feature = "hll-stats")]
 use std::collections::HashMap;
 
-#[cfg(feature = "hll-stats")]
 use fluree_db_core::value_id::ValueTypeTag;
-#[cfg(feature = "hll-stats")]
 use fluree_db_core::{GraphPropertyStatEntry, GraphStatsEntry};
-#[cfg(feature = "hll-stats")]
 use xxhash_rust::xxh64::xxh64;
 
 // Schema extraction imports (always available, not feature-gated)
@@ -79,7 +71,6 @@ pub struct StatsSummary {
     pub flake_count: usize,
     /// Per-property statistics (sorted by SID for determinism)
     /// Only populated when using HllStatsHook.
-    #[cfg(feature = "hll-stats")]
     pub properties: Option<Vec<PropertyStatEntry>>,
 }
 
@@ -108,7 +99,6 @@ impl IndexStatsHook for NoOpStatsHook {
             artifact_addresses: vec![],
             summary: StatsSummary {
                 flake_count: self.flake_count,
-                #[cfg(feature = "hll-stats")]
                 properties: None,
             },
         }
@@ -123,7 +113,6 @@ impl IndexStatsHook for NoOpStatsHook {
 /// - Direct serialization as raw bytes
 /// - Register-wise merge for incremental updates
 /// - Monotone NDV estimation
-#[cfg(feature = "hll-stats")]
 #[derive(Clone)]
 pub struct PropertyHll {
     /// Total flake count for this property
@@ -136,7 +125,6 @@ pub struct PropertyHll {
     pub last_modified_t: i64,
 }
 
-#[cfg(feature = "hll-stats")]
 impl PropertyHll {
     /// Create a new empty PropertyHll
     pub fn new() -> Self {
@@ -179,7 +167,6 @@ impl PropertyHll {
     }
 }
 
-#[cfg(feature = "hll-stats")]
 impl Default for PropertyHll {
     fn default() -> Self {
         Self::new()
@@ -193,16 +180,22 @@ impl Default for PropertyHll {
 /// - Number of distinct subjects using the property (NDV subjects)
 ///
 /// Uses `HllSketch256` (p=8) for direct serialization and incremental merging.
-/// This is feature-gated behind `hll-stats` (default enabled).
-#[cfg(feature = "hll-stats")]
-#[derive(Default)]
+/// Full HLL-based per-property NDV tracking.
 pub struct HllStatsHook {
     flake_count: usize,
     /// Per-property HLL sketches, keyed by predicate SID
     properties: HashMap<Sid, PropertyHll>,
 }
 
-#[cfg(feature = "hll-stats")]
+impl Default for HllStatsHook {
+    fn default() -> Self {
+        Self {
+            flake_count: 0,
+            properties: HashMap::new(),
+        }
+    }
+}
+
 impl HllStatsHook {
     /// Create a new HLL stats hook
     pub fn new() -> Self {
@@ -235,13 +228,15 @@ impl HllStatsHook {
     }
 }
 
-#[cfg(feature = "hll-stats")]
 impl IndexStatsHook for HllStatsHook {
     fn on_flake(&mut self, flake: &Flake) {
         self.flake_count += 1;
 
         // Get or create property entry
-        let entry = self.properties.entry(flake.p.clone()).or_default();
+        let entry = self
+            .properties
+            .entry(flake.p.clone())
+            .or_insert_with(PropertyHll::new);
 
         // Update count
         if flake.op {
@@ -297,11 +292,10 @@ impl IndexStatsHook for HllStatsHook {
 }
 
 // =============================================================================
-// ID-Based Stats Hook (hll-stats)
+// ID-Based Stats Hook
 // =============================================================================
 
 /// Key for graph-scoped property stats (numeric IDs only)
-#[cfg(feature = "hll-stats")]
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct GraphPropertyKey {
     pub g_id: u32,
@@ -311,7 +305,6 @@ pub struct GraphPropertyKey {
 /// Per-(graph, property) HLL state with datatype tracking.
 ///
 /// Uses signed deltas internally; clamped to 0 at finalize.
-#[cfg(feature = "hll-stats")]
 #[derive(Debug)]
 pub struct IdPropertyHll {
     /// Flake count delta (signed: retractions decrement)
@@ -326,7 +319,6 @@ pub struct IdPropertyHll {
     pub datatypes: HashMap<u8, i64>,
 }
 
-#[cfg(feature = "hll-stats")]
 impl IdPropertyHll {
     fn new() -> Self {
         Self {
@@ -371,18 +363,15 @@ impl IdPropertyHll {
 // --- Domain-separated hashing for HLL ---
 
 /// Domain separator for object value hashing.
-#[cfg(feature = "hll-stats")]
 const OBJ_HASH_DOMAIN: &[u8] = b"fluree:obj:";
 
 /// Domain separator for subject HLL hashing.
-#[cfg(feature = "hll-stats")]
 const SUBJ_HASH_DOMAIN: &[u8] = b"fluree:subj:";
 
 /// Compute a stable, endian-invariant hash of an object value.
 ///
 /// Domain-separated by `o_kind` to prevent cross-kind collisions
 /// (e.g., `NumInt(3)` vs `RefId(3)` both have `o_key=3`).
-#[cfg(feature = "hll-stats")]
 pub fn value_hash(o_kind: u8, o_key: u64) -> u64 {
     // domain(11) + kind(1) + key(8) = 20 bytes
     let mut buf = [0u8; 20];
@@ -396,7 +385,6 @@ pub fn value_hash(o_kind: u8, o_key: u64) -> u64 {
 ///
 /// Hashes `s_id` rather than using it directly to ensure uniform bit
 /// distribution across HLL registers.
-#[cfg(feature = "hll-stats")]
 pub fn subject_hash(s_id: u64) -> u64 {
     // domain(12) + s_id(8) = 20 bytes
     let mut buf = [0u8; 20];
@@ -406,7 +394,6 @@ pub fn subject_hash(s_id: u64) -> u64 {
 }
 
 /// Result from `IdStatsHook::finalize()`.
-#[cfg(feature = "hll-stats")]
 pub struct IdStatsResult {
     /// Per-graph stats entries (authoritative, ID-keyed).
     /// Excludes txn-meta graph (g_id=1).
@@ -429,20 +416,12 @@ pub struct IdStatsResult {
 /// // After all ops:
 /// let result = hook.finalize();
 /// ```
-#[cfg(feature = "hll-stats")]
 #[derive(Debug)]
 pub struct IdStatsHook {
     flake_count: usize,
     properties: HashMap<GraphPropertyKey, IdPropertyHll>,
     /// Per-graph flake count (signed delta)
     graph_flakes: HashMap<u32, i64>,
-}
-
-#[cfg(feature = "hll-stats")]
-impl Default for IdStatsHook {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl IdStatsHook {
@@ -566,8 +545,8 @@ impl IdStatsHook {
                 props.push(GraphPropertyStatEntry {
                     p_id: key.p_id,
                     count,
-                    ndv_values: hll.values_hll.estimate(),
-                    ndv_subjects: hll.subjects_hll.estimate(),
+                    ndv_values: hll.values_hll.estimate() as u64,
+                    ndv_subjects: hll.subjects_hll.estimate() as u64,
                     last_modified_t: hll.last_modified_t,
                     datatypes,
                 });
@@ -639,8 +618,8 @@ impl IdStatsHook {
                 GraphPropertyStatEntry {
                     p_id,
                     count,
-                    ndv_values: hll.values_hll.estimate(),
-                    ndv_subjects: hll.subjects_hll.estimate(),
+                    ndv_values: hll.values_hll.estimate() as u64,
+                    ndv_subjects: hll.subjects_hll.estimate() as u64,
                     last_modified_t: hll.last_modified_t,
                     datatypes,
                 }
@@ -658,7 +637,6 @@ impl IdStatsHook {
 // === HLL Sketch Persistence (Sid-based, legacy) ===
 
 /// Number of registers in HLL sketch (2^8 = 256)
-#[cfg(feature = "hll-stats")]
 const HLL_REGISTER_COUNT: usize = 256;
 
 /// Generate storage address for HLL sketch
@@ -669,7 +647,6 @@ const HLL_REGISTER_COUNT: usize = 256;
 /// - `ns`: namespace code (u16)
 /// - `name`: predicate local name (URL-encoded if needed)
 /// - `t`: transaction time
-#[cfg(feature = "hll-stats")]
 fn hll_sketch_address(alias: &str, ns_code: u16, name: &str, t: i64, kind: &str) -> String {
     // Sanitize name for use in path (replace problematic characters)
     let safe_name: String = name
@@ -703,7 +680,6 @@ fn hll_sketch_address(alias: &str, ns_code: u16, name: &str, t: i64, kind: &str)
 /// * `storage` - Storage backend to write to
 /// * `alias` - Ledger alias (e.g., "mydb:main")
 /// * `properties` - Map of property SIDs to their HLL data (includes last_modified_t)
-#[cfg(feature = "hll-stats")]
 pub async fn persist_hll_sketches<S: StorageWrite>(
     storage: &S,
     alias: &str,
@@ -716,7 +692,6 @@ pub async fn persist_hll_sketches<S: StorageWrite>(
 ///
 /// Like `persist_hll_sketches` but accepts an iterator of (&Sid, &PropertyHll) references.
 /// This avoids cloning when persisting a filtered subset of properties.
-#[cfg(feature = "hll-stats")]
 pub async fn persist_hll_sketches_iter<'a, S, I>(
     storage: &S,
     alias: &str,
@@ -773,7 +748,6 @@ where
 /// Map of property SIDs to their PropertyHll data with loaded sketches.
 /// Properties whose sketches cannot be loaded are still included with empty sketches
 /// but their prior count and last_modified_t are preserved (for monotonicity).
-#[cfg(feature = "hll-stats")]
 pub async fn load_hll_sketches<S: Storage>(
     storage: &S,
     alias: &str,
@@ -851,7 +825,6 @@ pub async fn load_hll_sketches<S: Storage>(
 ///
 /// Each property's sketch address uses its own `last_modified_t`.
 /// Useful for cleanup/garbage collection.
-#[cfg(feature = "hll-stats")]
 pub fn list_hll_sketch_addresses(
     alias: &str,
     properties: &HashMap<Sid, PropertyHll>,
@@ -896,7 +869,6 @@ pub fn list_hll_sketch_addresses(
 ///
 /// # Returns
 /// Vector of obsolete sketch addresses (values + subjects for each obsolete property)
-#[cfg(feature = "hll-stats")]
 pub fn compute_obsolete_sketch_addresses(
     alias: &str,
     prior_properties: &[PropertyStatEntry],
@@ -944,7 +916,7 @@ pub fn compute_obsolete_sketch_addresses(
 }
 
 // =============================================================================
-// ID-Based HLL Sketch Persistence (hll-stats)
+// ID-Based HLL Sketch Persistence
 // =============================================================================
 
 /// Generate storage address for ID-based HLL sketch.
@@ -952,7 +924,6 @@ pub fn compute_obsolete_sketch_addresses(
 /// Uses pattern: `fluree:file://{alias}/index/stats-sketches/{kind}/g{g_id}/p{p_id}_t{t}.hll`
 ///
 /// Pure numeric IDs — no IRI encoding, no escaping.
-#[cfg(feature = "hll-stats")]
 fn hll_sketch_address_id(alias: &str, g_id: u32, p_id: u32, t: i64, kind: &str) -> String {
     format!(
         "fluree:file://{}/index/stats-sketches/{}/g{}/p{}_t{}.hll",
@@ -968,7 +939,6 @@ fn hll_sketch_address_id(alias: &str, g_id: u32, p_id: u32, t: i64, kind: &str) 
 ///
 /// Writes all (graph, property) HLL sketches to storage with T-based filenames.
 /// Returns the list of addresses written.
-#[cfg(feature = "hll-stats")]
 pub async fn persist_hll_sketches_id<S: StorageWrite>(
     storage: &S,
     alias: &str,
@@ -1019,7 +989,6 @@ pub async fn persist_hll_sketches_id<S: StorageWrite>(
 ///
 /// Properties whose sketches cannot be loaded are still included with empty
 /// sketches but their prior count and last_modified_t are preserved (monotonicity).
-#[cfg(feature = "hll-stats")]
 pub async fn load_hll_sketches_id<S: Storage>(
     storage: &S,
     alias: &str,
@@ -1104,7 +1073,6 @@ pub async fn load_hll_sketches_id<S: Storage>(
 /// Compares prior graph stats with updated properties to identify sketches
 /// that have been superseded. A sketch is obsolete when the `last_modified_t`
 /// has changed for a given `(g_id, p_id)`.
-#[cfg(feature = "hll-stats")]
 pub fn compute_obsolete_sketch_addresses_id(
     alias: &str,
     prior_graphs: &[GraphStatsEntry],
@@ -1143,7 +1111,6 @@ pub fn compute_obsolete_sketch_addresses_id(
 ///
 /// Each property's sketch address uses its own `last_modified_t`.
 /// Useful for cleanup/garbage collection.
-#[cfg(feature = "hll-stats")]
 pub fn list_hll_sketch_addresses_id(
     alias: &str,
     properties: &HashMap<GraphPropertyKey, IdPropertyHll>,
@@ -1204,7 +1171,6 @@ mod tests {
 
     // === HLL Stats Hook Tests ===
 
-    #[cfg(feature = "hll-stats")]
     mod hll_tests {
         use super::*;
 
@@ -2307,10 +2273,10 @@ where
 #[cfg(test)]
 mod class_property_stats_tests {
     use super::*;
-    use fluree_db_core::{FlakeValue, Sid};
+    use fluree_db_core::IndexStats;
+    use fluree_db_core::{Db, FlakeValue, MemoryStorage, Sid};
+    use fluree_vocab::namespaces::{EMPTY, JSON_LD, XSD};
 
-    // These helpers are kept for future test rewrites (see comment below).
-    #[allow(dead_code)]
     fn make_type_flake(subject: &str, class: &str, t: i64, op: bool) -> Flake {
         Flake::new(
             Sid::new(100, subject),
@@ -2324,7 +2290,6 @@ mod class_property_stats_tests {
         )
     }
 
-    #[allow(dead_code)]
     fn make_prop_flake(subject: &str, prop: &str, t: i64) -> Flake {
         Flake::new(
             Sid::new(100, subject),

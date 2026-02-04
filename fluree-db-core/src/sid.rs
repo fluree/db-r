@@ -100,7 +100,6 @@ impl Sid {
     ///
     /// Hashes the namespace code and name together for a unique identifier.
     /// Uses xxHash64 for fast, high-quality hashing.
-    #[cfg(feature = "hll-stats")]
     pub fn canonical_hash(&self) -> u64 {
         use xxhash_rust::xxh64::Xxh64;
         let mut hasher = Xxh64::new(0);
@@ -447,7 +446,6 @@ mod tests {
 
     // === HLL Canonical Hash Tests ===
 
-    #[cfg(feature = "hll-stats")]
     mod hll_hash_tests {
         use super::*;
 

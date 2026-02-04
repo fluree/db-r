@@ -456,7 +456,6 @@ impl FlakeValue {
     ///
     /// - All NaN values → fixed canonical bit pattern
     /// - -0.0 → +0.0 (both compare equal, use +0.0 bits)
-    #[cfg(feature = "hll-stats")]
     pub fn canonical_hash(&self) -> u64 {
         use xxhash_rust::xxh64::xxh64;
 
@@ -1318,7 +1317,6 @@ mod tests {
 
     // === HLL Canonical Hash Tests ===
 
-    #[cfg(feature = "hll-stats")]
     mod hll_hash_tests {
         use super::*;
 

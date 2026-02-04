@@ -43,6 +43,7 @@ pub mod graph;
 pub mod graph_query_builder;
 pub mod graph_snapshot;
 pub mod graph_transact_builder;
+pub mod import;
 mod ledger;
 pub mod ledger_info;
 pub mod nameservice_query;
@@ -87,6 +88,7 @@ pub use graph::Graph;
 pub use graph_query_builder::{GraphQueryBuilder, GraphSnapshotQueryBuilder};
 pub use graph_snapshot::GraphSnapshot;
 pub use graph_transact_builder::{GraphTransactBuilder, StagedGraph};
+pub use import::{CreateBuilder, ImportBuilder, ImportConfig, ImportError, ImportResult};
 pub use ledger_info::LedgerInfoBuilder;
 pub use ledger_manager::{
     FreshnessCheck, FreshnessSource, LedgerHandle, LedgerManager, LedgerManagerConfig,
@@ -1318,7 +1320,7 @@ pub async fn connect_s3(
 /// Builder for creating Fluree instances
 ///
 /// Provides a fluent API for configuring storage, cache, and nameservice options.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct FlureeBuilder {
     config: ConnectionConfig,
     #[cfg(feature = "native")]
@@ -1327,6 +1329,18 @@ pub struct FlureeBuilder {
     encryption_key: Option<[u8; 32]>,
     /// Optional ledger cache configuration (enables LedgerManager)
     ledger_cache_config: Option<LedgerManagerConfig>,
+}
+
+impl Default for FlureeBuilder {
+    fn default() -> Self {
+        Self {
+            config: ConnectionConfig::default(),
+            #[cfg(feature = "native")]
+            storage_path: None,
+            encryption_key: None,
+            ledger_cache_config: None,
+        }
+    }
 }
 
 impl FlureeBuilder {
@@ -2083,6 +2097,30 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
 {
+    /// Create a builder for a new ledger.
+    ///
+    /// Returns a [`CreateBuilder`] that supports `.import(path)` for bulk import
+    /// or can be extended for other creation patterns.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Bulk import from TTL chunks
+    /// let result = fluree.create("mydb")
+    ///     .import("/data/chunks/")
+    ///     .threads(8)
+    ///     .run_budget_mb(4096)
+    ///     .execute()
+    ///     .await?;
+    ///
+    /// // Query normally after import
+    /// let view = fluree.view("mydb").await?;
+    /// let qr = fluree.query_view(&view, "SELECT * WHERE { ?s ?p ?o } LIMIT 10").await?;
+    /// ```
+    pub fn create(&self, alias: &str) -> import::CreateBuilder<'_, S, N> {
+        import::CreateBuilder::new(self, alias.to_string())
+    }
+
     /// Create a lazy graph handle for a ledger at the latest head.
     ///
     /// No I/O occurs until a terminal method is called (`.load()`,
@@ -2447,7 +2485,7 @@ where
 }
 
 /// Convenience functions for common configurations
-///
+
 /// Create a file-backed Fluree instance
 ///
 /// This is the most common configuration for production use.

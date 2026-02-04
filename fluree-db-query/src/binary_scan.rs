@@ -1294,6 +1294,25 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
                 )
                 .await
                 .map_err(|e| QueryError::execution(e.to_string()))?;
+                // Policy filter per graph (before pattern matching).
+                let graph_flakes = match graph
+                    .policy_enforcer
+                    .as_ref()
+                    .or(ctx.policy_enforcer.as_ref())
+                {
+                    Some(enforcer) if !enforcer.is_root() => {
+                        enforcer
+                            .filter_flakes_for_graph(
+                                graph.db,
+                                graph.overlay,
+                                graph.to_t,
+                                &ctx.tracker,
+                                graph_flakes,
+                            )
+                            .await?
+                    }
+                    _ => graph_flakes,
+                };
                 // Pre-filter per graph (overlay may return a superset).
                 all_flakes.extend(
                     graph_flakes
@@ -1314,7 +1333,7 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
             if let Some(ref bounds) = self.object_bounds {
                 opts = opts.with_object_bounds(bounds.clone());
             }
-            range_with_overlay(
+            let flakes = range_with_overlay(
                 ctx.db,
                 ctx.overlay(),
                 index,
@@ -1323,7 +1342,22 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
                 opts,
             )
             .await
-            .map_err(|e| QueryError::execution(e.to_string()))?
+            .map_err(|e| QueryError::execution(e.to_string()))?;
+            // Policy filter (single-graph mode).
+            match ctx.policy_enforcer.as_ref() {
+                Some(enforcer) if !enforcer.is_root() => {
+                    enforcer
+                        .filter_flakes_for_graph(
+                            ctx.db,
+                            ctx.overlay(),
+                            ctx.to_t,
+                            &ctx.tracker,
+                            flakes,
+                        )
+                        .await?
+                }
+                _ => flakes,
+            }
         };
 
         let is_multi_graph = ctx.default_graphs_slice().is_some();

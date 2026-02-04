@@ -7,12 +7,9 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["hll-stats"]
+default = []
 # Enable the embedded orchestrator (post-commit indexing helpers)
 embedded-orchestrator = ["dep:fluree-db-ledger"]
-# Enable HLL-based property statistics (NDV estimation)
-# Uses our own minimal HllSketch256 implementation (no external HLL crate needed)
-hll-stats = ["fluree-db-core/hll-stats"]
 
 [dependencies]
 fluree-db-core = { path = "../fluree-db-core", features = ["native"] }
