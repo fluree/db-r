@@ -150,7 +150,7 @@ impl<'a> super::Parser<'a> {
             modify = modify.with_using(u);
         }
 
-        Some(UpdateOperation::Modify(modify))
+        Some(UpdateOperation::Modify(Box::new(modify)))
     }
 
     /// Parse DELETE { ... } [INSERT { ... }] [USING ...] WHERE { ... }
@@ -185,7 +185,7 @@ impl<'a> super::Parser<'a> {
             modify = modify.with_using(u);
         }
 
-        Some(UpdateOperation::Modify(modify))
+        Some(UpdateOperation::Modify(Box::new(modify)))
     }
 
     /// Parse quad data (ground triples for INSERT DATA / DELETE DATA).
