@@ -38,7 +38,7 @@ use fluree_db_core::{
     RangeMatch, RangeOptions, RangeTest, Sid, Storage,
 };
 use fluree_db_indexer::run_index::{
-    BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, OverlayOp,
+    BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, OverlayOp, sort_overlay_ops,
 };
 use fluree_db_indexer::run_index::run_record::RunSortOrder;
 use fluree_db_core::ListIndex;
@@ -716,30 +716,7 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
 
                 // Sort and pass pre-translated overlay ops for query-time merge.
                 if !self.overlay_ops.is_empty() {
-                    self.overlay_ops.sort_by(|a, b| {
-                        match order {
-                            RunSortOrder::Spot => a.s_id.cmp(&b.s_id)
-                                .then(a.p_id.cmp(&b.p_id))
-                                .then(a.o_kind.cmp(&b.o_kind))
-                                .then(a.o_key.cmp(&b.o_key))
-                                .then(a.dt.cmp(&b.dt)),
-                            RunSortOrder::Psot => a.p_id.cmp(&b.p_id)
-                                .then(a.s_id.cmp(&b.s_id))
-                                .then(a.o_kind.cmp(&b.o_kind))
-                                .then(a.o_key.cmp(&b.o_key))
-                                .then(a.dt.cmp(&b.dt)),
-                            RunSortOrder::Post => a.p_id.cmp(&b.p_id)
-                                .then(a.o_kind.cmp(&b.o_kind))
-                                .then(a.o_key.cmp(&b.o_key))
-                                .then(a.dt.cmp(&b.dt))
-                                .then(a.s_id.cmp(&b.s_id)),
-                            RunSortOrder::Opst => a.o_kind.cmp(&b.o_kind)
-                                .then(a.o_key.cmp(&b.o_key))
-                                .then(a.dt.cmp(&b.dt))
-                                .then(a.p_id.cmp(&b.p_id))
-                                .then(a.s_id.cmp(&b.s_id)),
-                        }
-                    });
+                    sort_overlay_ops(&mut self.overlay_ops, order);
                     cursor.set_overlay_ops(std::mem::take(&mut self.overlay_ops));
                 }
 

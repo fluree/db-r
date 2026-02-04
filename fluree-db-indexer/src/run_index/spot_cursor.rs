@@ -11,7 +11,7 @@
 use super::leaf::read_leaf_header;
 use super::leaflet::decode_leaflet;
 use super::run_record::RunSortOrder;
-use super::spot_store::BinaryIndexStore;
+use super::binary_index_store::BinaryIndexStore;
 use fluree_db_core::Flake;
 use std::io;
 use std::ops::Range;

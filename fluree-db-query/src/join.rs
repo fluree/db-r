@@ -1543,7 +1543,7 @@ mod tests {
         use fluree_db_indexer::run_index::index_build::build_all_indexes;
         use fluree_db_indexer::run_index::run_file::write_run_file;
         use fluree_db_indexer::run_index::run_record::{cmp_for_order, RunRecord, RunSortOrder};
-        use fluree_db_indexer::run_index::spot_store::BinaryIndexStore;
+        use fluree_db_indexer::run_index::BinaryIndexStore;
         use fluree_db_core::DatatypeDictId;
         use fluree_db_core::value_id::{ObjKind, ObjKey};
         use fluree_graph_json_ld::ParsedContext;

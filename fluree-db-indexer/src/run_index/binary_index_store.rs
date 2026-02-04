@@ -92,6 +92,29 @@ struct GraphIndex {
 // BinaryIndexStore
 // ============================================================================
 
+/// All dictionary and encoding state needed to translate between
+/// human-readable IRIs/strings and compact integer IDs.
+struct DictionarySet {
+    predicates: PredicateDict,
+    predicate_reverse: HashMap<String, u32>,
+    subject_forward_tree: Option<DictTreeReader>,
+    subject_reverse_tree: Option<DictTreeReader>,
+    string_forward_tree: Option<DictTreeReader>,
+    string_reverse_tree: Option<DictTreeReader>,
+    namespace_codes: HashMap<u16, String>,
+    #[allow(dead_code)]
+    namespace_reverse: HashMap<String, u16>,
+    prefix_trie: PrefixTrie,
+    language_tags: LanguageTagDict,
+    dt_sids: Vec<Sid>,
+    numbig_forward: HashMap<u32, super::numbig_dict::NumBigArena>,
+}
+
+/// Per-graph, per-order branch manifests and leaf directories.
+struct GraphIndexes {
+    graphs: HashMap<u32, GraphIndex>,
+}
+
 /// Read-only store for querying Phase C binary columnar indexes.
 ///
 /// Loads branch manifests for all available sort orders (SPOT, PSOT, POST, OPST),
@@ -99,53 +122,15 @@ struct GraphIndex {
 /// find subjects by IRI, decode leaflet rows into `Flake` values, and translate
 /// between Sid/FlakeValue and binary integer IDs.
 pub struct BinaryIndexStore {
-    /// Per-graph indexes, each containing per-order branch manifests.
-    graphs: HashMap<u32, GraphIndex>,
-    /// Predicate dict (p_id → IRI).
-    predicates: PredicateDict,
-    /// Reverse predicate lookup (IRI → p_id).
-    predicate_reverse: HashMap<String, u32>,
-    /// Subject forward tree reader (sid64 → suffix bytes, ns-compressed).
-    subject_forward_tree: Option<DictTreeReader>,
-    /// Subject reverse tree reader ([ns_code BE][suffix] → sid64, ns-compressed).
-    subject_reverse_tree: Option<DictTreeReader>,
-    /// String forward tree reader (string_id → value).
-    string_forward_tree: Option<DictTreeReader>,
-    /// String reverse tree reader (value → string_id).
-    string_reverse_tree: Option<DictTreeReader>,
-    /// Namespace codes (code → prefix).
-    namespace_codes: HashMap<u16, String>,
-    /// Reverse namespace lookup (prefix → code) for Sid → IRI reconstruction.
-    #[allow(dead_code)]
-    namespace_reverse: HashMap<String, u16>,
-    /// PrefixTrie for O(len(iri)) longest-prefix matching.
-    prefix_trie: PrefixTrie,
-    /// Language tag dict (id → tag string, 1-based).
-    language_tags: LanguageTagDict,
-    /// Datatype IRI → Sid, pre-computed from run_dir/datatypes.dict (FRD1).
-    /// Index = dt_id (from leaflet Region 2; per-leaf variable width).
-    /// `dt_sids[dt_id]` gives the Sid for that datatype IRI.
-    dt_sids: Vec<Sid>,
+    dicts: DictionarySet,
+    graph_indexes: GraphIndexes,
     /// Maximum t seen (from manifest or branch).
     max_t: i64,
-    /// Base t from the initial full index build. Time-travel via the binary
-    /// path is only valid for `t_target >= base_t` (Region 3 history only
-    /// covers changes after the initial build). Set to `max_t` at load time;
-    /// stays fixed through novelty merges that update `max_t`.
+    /// Base t from the initial full index build.
     base_t: i64,
-    /// Per-predicate numbig arenas: p_id → equality-only arena for overflow BigInt/BigDecimal.
-    numbig_forward: HashMap<u32, super::numbig_dict::NumBigArena>,
-    /// LRU cache for decoded leaflet regions (Region 1 and Region 2).
-    ///
-    /// Wrapped in `Arc` so a single cache can be shared across multiple
-    /// `BinaryIndexStore` instances (e.g., multiple ledgers in the same
-    /// connection). This gives one global budget ("give Fluree 8 GB")
-    /// instead of per-store budgets that can't be controlled together.
+    /// LRU cache for decoded leaflet regions.
     leaflet_cache: Option<Arc<LeafletCache>>,
 }
-
-/// Backward-compatible type alias.
-pub type SpotIndexStore = BinaryIndexStore;
 
 impl BinaryIndexStore {
     /// Load a BinaryIndexStore from run_dir (dictionaries) and index_dir (index files).
@@ -413,21 +398,23 @@ impl BinaryIndexStore {
         let leaflet_cache = Some(Arc::new(LeafletCache::with_max_bytes(leaflet_cache_bytes)));
 
         Ok(Self {
-            graphs,
-            predicates,
-            predicate_reverse,
-            subject_forward_tree,
-            subject_reverse_tree,
-            string_forward_tree,
-            string_reverse_tree,
-            namespace_codes,
-            namespace_reverse,
-            prefix_trie,
-            language_tags,
-            dt_sids,
+            dicts: DictionarySet {
+                predicates,
+                predicate_reverse,
+                subject_forward_tree,
+                subject_reverse_tree,
+                string_forward_tree,
+                string_reverse_tree,
+                namespace_codes,
+                namespace_reverse,
+                prefix_trie,
+                language_tags,
+                dt_sids,
+                numbig_forward,
+            },
+            graph_indexes: GraphIndexes { graphs },
             max_t,
             base_t: max_t,
-            numbig_forward,
             leaflet_cache,
         })
     }
@@ -631,21 +618,23 @@ impl BinaryIndexStore {
         );
 
         Ok(Self {
-            graphs,
-            predicates,
-            predicate_reverse,
-            subject_forward_tree,
-            subject_reverse_tree,
-            string_forward_tree,
-            string_reverse_tree,
-            namespace_codes,
-            namespace_reverse,
-            prefix_trie,
-            language_tags,
-            dt_sids,
+            dicts: DictionarySet {
+                predicates,
+                predicate_reverse,
+                subject_forward_tree,
+                subject_reverse_tree,
+                string_forward_tree,
+                string_reverse_tree,
+                namespace_codes,
+                namespace_reverse,
+                prefix_trie,
+                language_tags,
+                dt_sids,
+                numbig_forward,
+            },
+            graph_indexes: GraphIndexes { graphs },
             max_t: root.index_t,
             base_t: root.base_t,
-            numbig_forward,
             leaflet_cache,
         })
     }
@@ -673,16 +662,16 @@ impl BinaryIndexStore {
     /// so they share the same global budget.
     pub fn set_leaflet_cache(&mut self, cache: Option<Arc<LeafletCache>>) {
         // Propagate to dict tree readers
-        if let Some(tree) = &mut self.subject_forward_tree {
+        if let Some(tree) = &mut self.dicts.subject_forward_tree {
             tree.set_cache(cache.clone());
         }
-        if let Some(tree) = &mut self.subject_reverse_tree {
+        if let Some(tree) = &mut self.dicts.subject_reverse_tree {
             tree.set_cache(cache.clone());
         }
-        if let Some(tree) = &mut self.string_forward_tree {
+        if let Some(tree) = &mut self.dicts.string_forward_tree {
             tree.set_cache(cache.clone());
         }
-        if let Some(tree) = &mut self.string_reverse_tree {
+        if let Some(tree) = &mut self.dicts.string_reverse_tree {
             tree.set_cache(cache.clone());
         }
         self.leaflet_cache = cache;
@@ -697,7 +686,7 @@ impl BinaryIndexStore {
     /// Uses the PrefixTrie for O(len(iri)) longest-prefix matching.
     /// Returns `Sid::new(0, iri)` if no prefix matches (default namespace).
     pub fn encode_iri(&self, iri: &str) -> Sid {
-        match self.prefix_trie.longest_match(iri) {
+        match self.dicts.prefix_trie.longest_match(iri) {
             Some((code, prefix_len)) => Sid::new(code, &iri[prefix_len..]),
             None => Sid::new(0, iri),
         }
@@ -707,7 +696,7 @@ impl BinaryIndexStore {
     ///
     /// Looks up the namespace prefix by code and concatenates with the name.
     pub fn sid_to_iri(&self, sid: &Sid) -> String {
-        let prefix = self.namespace_codes
+        let prefix = self.dicts.namespace_codes
             .get(&sid.namespace_code)
             .map(|s| s.as_str())
             .unwrap_or("");
@@ -720,7 +709,7 @@ impl BinaryIndexStore {
     /// Reconstructs the full IRI by prepending the namespace prefix looked
     /// up from `namespace_codes` using the ns_code embedded in the sid64.
     pub fn resolve_subject_iri(&self, s_id: u64) -> io::Result<String> {
-        let tree = self.subject_forward_tree.as_ref().ok_or_else(|| {
+        let tree = self.dicts.subject_forward_tree.as_ref().ok_or_else(|| {
             io::Error::new(io::ErrorKind::NotFound, "subject forward tree not loaded")
         })?;
         let suffix_bytes = tree.forward_lookup(s_id)?.ok_or_else(|| {
@@ -733,7 +722,7 @@ impl BinaryIndexStore {
             io::Error::new(io::ErrorKind::InvalidData, e)
         })?;
         let ns_code = SubjectId::from_u64(s_id).ns_code();
-        let prefix = self.namespace_codes
+        let prefix = self.dicts.namespace_codes
             .get(&ns_code)
             .map(|s| s.as_str())
             .unwrap_or("");
@@ -742,17 +731,17 @@ impl BinaryIndexStore {
 
     /// Resolve p_id → full IRI string.
     pub fn resolve_predicate_iri(&self, p_id: u32) -> Option<&str> {
-        self.predicates.resolve(p_id)
+        self.dicts.predicates.resolve(p_id)
     }
 
     /// Find p_id from full IRI.
     pub fn find_predicate_id(&self, iri: &str) -> Option<u32> {
-        self.predicate_reverse.get(iri).copied()
+        self.dicts.predicate_reverse.get(iri).copied()
     }
 
     /// Resolve a string dict entry by ID via the forward dict tree.
     pub fn resolve_string_value(&self, str_id: u32) -> io::Result<String> {
-        let tree = self.string_forward_tree.as_ref().ok_or_else(|| {
+        let tree = self.dicts.string_forward_tree.as_ref().ok_or_else(|| {
             io::Error::new(io::ErrorKind::NotFound, "string forward tree not loaded")
         })?;
         tree.forward_lookup_str(str_id as u64)?.ok_or_else(|| {
@@ -928,9 +917,9 @@ impl BinaryIndexStore {
     /// Parses the IRI into `(ns_code, suffix)` via the prefix trie, builds a
     /// compressed reverse key `[ns_code BE][suffix]`, and looks it up.
     pub fn find_subject_id(&self, iri: &str) -> io::Result<Option<u64>> {
-        match &self.subject_reverse_tree {
+        match &self.dicts.subject_reverse_tree {
             Some(tree) => {
-                let (ns_code, prefix_len) = self.prefix_trie
+                let (ns_code, prefix_len) = self.dicts.prefix_trie
                     .longest_match(iri)
                     .unwrap_or((0, 0));
                 let suffix = &iri[prefix_len..];
@@ -946,7 +935,7 @@ impl BinaryIndexStore {
     /// Same as `find_subject_id(iri)` but skips prefix_trie decomposition
     /// when the caller already has `(ns_code, suffix)` from a `Sid`.
     pub fn find_subject_id_by_parts(&self, ns_code: u16, suffix: &str) -> io::Result<Option<u64>> {
-        match &self.subject_reverse_tree {
+        match &self.dicts.subject_reverse_tree {
             Some(tree) => {
                 let key = subject_reverse_key(ns_code, suffix.as_bytes());
                 tree.reverse_lookup(&key)
@@ -959,7 +948,7 @@ impl BinaryIndexStore {
     ///
     /// Returns `Err` if the code is not in `namespace_codes` (corrupt root).
     pub fn namespace_prefix(&self, ns_code: u16) -> io::Result<&str> {
-        self.namespace_codes
+        self.dicts.namespace_codes
             .get(&ns_code)
             .map(|s| s.as_str())
             .ok_or_else(|| {
@@ -976,7 +965,7 @@ impl BinaryIndexStore {
 
     /// Find str_id for a string value via the reverse dict tree (O(log N) B-tree search).
     pub fn find_string_id(&self, value: &str) -> io::Result<Option<u32>> {
-        match &self.string_reverse_tree {
+        match &self.dicts.string_reverse_tree {
             Some(tree) => tree.reverse_lookup(value.as_bytes()).map(|opt| opt.map(|id| id as u32)),
             None => Ok(None),
         }
@@ -993,7 +982,7 @@ impl BinaryIndexStore {
 
     /// Get the branch manifest for a graph and sort order.
     pub fn branch_for_order(&self, g_id: u32, order: RunSortOrder) -> Option<&BranchManifest> {
-        self.graphs.get(&g_id)
+        self.graph_indexes.graphs.get(&g_id)
             .and_then(|g| g.orders.get(&order))
             .map(|oi| &oi.branch)
     }
@@ -1005,20 +994,20 @@ impl BinaryIndexStore {
 
     /// Get the leaf directory for a graph and sort order.
     pub fn leaf_dir_for_order(&self, g_id: u32, order: RunSortOrder) -> Option<&Path> {
-        self.graphs.get(&g_id)
+        self.graph_indexes.graphs.get(&g_id)
             .and_then(|g| g.orders.get(&order))
             .map(|oi| oi.leaf_dir.as_path())
     }
 
     /// Check if a given sort order is available for a graph.
     pub fn has_order(&self, g_id: u32, order: RunSortOrder) -> bool {
-        self.graphs.get(&g_id)
+        self.graph_indexes.graphs.get(&g_id)
             .map_or(false, |g| g.orders.contains_key(&order))
     }
 
     /// Get the available sort orders for a graph.
     pub fn available_orders(&self, g_id: u32) -> Vec<RunSortOrder> {
-        self.graphs.get(&g_id)
+        self.graph_indexes.graphs.get(&g_id)
             .map(|g| {
                 let mut orders: Vec<_> = g.orders.keys().copied().collect();
                 orders.sort_by_key(|o| o.dir_name());
@@ -1029,7 +1018,7 @@ impl BinaryIndexStore {
 
     /// Get the set of graph IDs available.
     pub fn graph_ids(&self) -> Vec<u32> {
-        let mut ids: Vec<_> = self.graphs.keys().copied().collect();
+        let mut ids: Vec<_> = self.graph_indexes.graphs.keys().copied().collect();
         ids.sort();
         ids
     }
@@ -1040,41 +1029,41 @@ impl BinaryIndexStore {
 
     /// Get the namespace code → prefix mapping.
     pub fn namespace_codes(&self) -> &HashMap<u16, String> {
-        &self.namespace_codes
+        &self.dicts.namespace_codes
     }
 
     /// Get the prefix trie for IRI encoding.
     pub fn prefix_trie(&self) -> &PrefixTrie {
-        &self.prefix_trie
+        &self.dicts.prefix_trie
     }
 
     /// Number of subjects in the forward dictionary.
     pub fn subject_count(&self) -> u32 {
-        self.subject_forward_tree.as_ref()
+        self.dicts.subject_forward_tree.as_ref()
             .map(|t| t.total_entries() as u32)
             .unwrap_or(0)
     }
 
     /// Number of predicates in the dictionary.
     pub fn predicate_count(&self) -> u32 {
-        self.predicates.len()
+        self.dicts.predicates.len()
     }
 
     /// Number of strings in the forward dictionary.
     pub fn string_count(&self) -> u32 {
-        self.string_forward_tree.as_ref()
+        self.dicts.string_forward_tree.as_ref()
             .map(|t| t.total_entries() as u32)
             .unwrap_or(0)
     }
 
     /// Number of language tags in the dictionary.
     pub fn language_tag_count(&self) -> u16 {
-        self.language_tags.len()
+        self.dicts.language_tags.len()
     }
 
     /// Get pre-computed dt_sids (dt_id → Sid).
     pub fn dt_sids(&self) -> &[Sid] {
-        &self.dt_sids
+        &self.dicts.dt_sids
     }
 
     /// Maximum t value (transaction time) in the index.
@@ -1101,7 +1090,7 @@ impl BinaryIndexStore {
     /// Iterates the pre-computed `dt_sids` vec (typically <20 entries).
     /// Returns `None` if the datatype is not in the dictionary.
     pub fn find_dt_id(&self, dt_sid: &Sid) -> Option<u16> {
-        self.dt_sids.iter().position(|s| s == dt_sid).map(|i| i as u16)
+        self.dicts.dt_sids.iter().position(|s| s == dt_sid).map(|i| i as u16)
     }
 
     /// Find lang_id for a language tag string.
@@ -1109,7 +1098,7 @@ impl BinaryIndexStore {
     /// Uses the language dict's reverse lookup.
     /// Returns `None` if the tag is not found.
     pub fn find_lang_id(&self, tag: &str) -> Option<u16> {
-        self.language_tags.find_id(tag)
+        self.dicts.language_tags.find_id(tag)
     }
 
     // ========================================================================
@@ -1151,7 +1140,7 @@ impl BinaryIndexStore {
                     return Ok(Some((ObjKind::NUM_INT, ObjKey::encode_i64(v))));
                 }
                 // Overflow → numbig arena lookup (read-only)
-                if let Some(arena) = self.numbig_forward.get(&p_id) {
+                if let Some(arena) = self.dicts.numbig_forward.get(&p_id) {
                     if let Some(handle) = arena.find_bigint(bi) {
                         return Ok(Some((ObjKind::NUM_BIG, ObjKey::encode_u32_id(handle))));
                     }
@@ -1160,7 +1149,7 @@ impl BinaryIndexStore {
             }
             FlakeValue::Decimal(bd) => {
                 // Decimal → numbig arena lookup (read-only)
-                if let Some(arena) = self.numbig_forward.get(&p_id) {
+                if let Some(arena) = self.dicts.numbig_forward.get(&p_id) {
                     if let Some(handle) = arena.find_bigdec(bd) {
                         return Ok(Some((ObjKind::NUM_BIG, ObjKey::encode_u32_id(handle))));
                     }
@@ -1258,7 +1247,7 @@ impl BinaryIndexStore {
 
     /// Get the numbig arena for a predicate (for decode-time lookup).
     pub fn numbig_arena(&self, p_id: u32) -> Option<&super::numbig_dict::NumBigArena> {
-        self.numbig_forward.get(&p_id)
+        self.dicts.numbig_forward.get(&p_id)
     }
 
     // ========================================================================
@@ -1297,7 +1286,7 @@ impl BinaryIndexStore {
         let o_val = self.decode_value(o_kind, o_key, p_id)?;
 
         // Datatype: dt_id → Sid via pre-computed dt_sids vec
-        let dt_sid = self.dt_sids.get(dt_raw as usize)
+        let dt_sid = self.dicts.dt_sids.get(dt_raw as usize)
             .cloned()
             .unwrap_or_else(|| Sid::new(0, ""));
 
@@ -1375,7 +1364,7 @@ impl BinaryIndexStore {
         }
         if o_kind == ObjKind::NUM_BIG.as_u8() {
             let handle = o_key as u32;
-            if let Some(arena) = self.numbig_forward.get(&p_id) {
+            if let Some(arena) = self.dicts.numbig_forward.get(&p_id) {
                 if let Some(stored) = arena.get_by_handle(handle) {
                     return Ok(stored.to_flake_value());
                 }
@@ -1445,7 +1434,7 @@ impl BinaryIndexStore {
 
         let mut meta = FlakeMeta::new();
         if has_lang {
-            if let Some(tag) = self.language_tags.resolve(lang_id) {
+            if let Some(tag) = self.dicts.language_tags.resolve(lang_id) {
                 meta = FlakeMeta::with_lang(tag);
             }
         }

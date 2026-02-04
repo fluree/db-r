@@ -17,7 +17,8 @@ use super::leaflet::{decode_leaflet_region1, decode_leaflet_region2, decode_leaf
 use super::leaflet_cache::{CachedRegion1, CachedRegion2, LeafletCacheKey};
 use super::replay::replay_leaflet;
 use super::run_record::{cmp_for_order, FactKey, RunRecord, RunSortOrder};
-use super::spot_store::BinaryIndexStore;
+use super::types::OverlayOp;
+use super::binary_index_store::BinaryIndexStore;
 use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
 use memmap2::Mmap;
 use std::cmp::Ordering;
@@ -25,34 +26,6 @@ use std::io;
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::Instant;
-
-// ============================================================================
-// OverlayOp: overlay operation in integer-ID space
-// ============================================================================
-
-/// An overlay operation translated to integer-ID space.
-///
-/// Produced by translating `Flake` overlay ops via `BinaryIndexStore` reverse
-/// lookups (`sid_to_s_id`, `sid_to_p_id`, `value_to_value_id`). Sorted by the
-/// cursor's sort order for streaming merge with decoded leaflet rows.
-///
-/// Unlike `RunRecord`, this type is for ephemeral query-time merge only —
-/// overlay ops are never persisted to disk.
-#[derive(Debug, Clone, Copy)]
-pub struct OverlayOp {
-    pub s_id: u64,
-    pub p_id: u32,
-    /// Object kind discriminant (see `ObjKind`).
-    pub o_kind: u8,
-    /// Object key payload (interpretation depends on `o_kind`).
-    pub o_key: u64,
-    pub t: i64,
-    /// true = assert, false = retract.
-    pub op: bool,
-    pub dt: u16,
-    pub lang_id: u16,
-    pub i_val: i32,
-}
 
 // ============================================================================
 // Sort-order comparison helpers for overlay merge
