@@ -141,13 +141,10 @@ impl SubjectDict {
         }
         let local_id = self.next_local_ids[ns_idx];
         if local_id > Self::MAX_LOCAL_ID {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "SubjectDict: local_id overflow for ns_code {} (exceeded 2^48)",
-                    ns_code
-                ),
-            ));
+            return Err(io::Error::other(format!(
+                "SubjectDict: local_id overflow for ns_code {} (exceeded 2^48)",
+                ns_code
+            )));
         }
         self.next_local_ids[ns_idx] = local_id + 1;
 
@@ -710,7 +707,7 @@ impl Default for LanguageTagDict {
 /// Type is `u16` to match `RunRecord.dt` — most datasets use ≤255 types
 /// (encoded as u8 in leaf Region 2), but u16 supports up to 65535 distinct
 /// datatype IRIs in a single import.
-
+///
 /// Create a new datatype dict with reserved entries pre-inserted.
 ///
 /// Order matters: `get_or_insert` returns sequential IDs starting at 0.
