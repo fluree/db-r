@@ -128,7 +128,7 @@ fn resolve_subject_term(
                 if let Some(bnode_id) = iri.strip_prefix("_:") {
                     Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
                 } else {
-                    Ok(Some(IrTerm::iri(iri.to_string())))
+                    Ok(Some(IrTerm::iri(iri)))
                 }
             }
             Some(Binding::Iri(iri)) => {
@@ -136,7 +136,7 @@ fn resolve_subject_term(
                 if let Some(bnode_id) = iri.strip_prefix("_:") {
                     Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
                 } else {
-                    Ok(Some(IrTerm::iri(iri.to_string())))
+                    Ok(Some(IrTerm::iri(iri)))
                 }
             }
             Some(Binding::Unbound) | Some(Binding::Poisoned) | None => Ok(None),
@@ -154,7 +154,7 @@ fn resolve_subject_term(
             if let Some(bnode_id) = iri.strip_prefix("_:") {
                 Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
             } else {
-                Ok(Some(IrTerm::iri(iri.to_string())))
+                Ok(Some(IrTerm::iri(iri)))
             }
         }
         Term::Value(_) => Ok(None), // Literal constants can't be subjects
@@ -182,7 +182,7 @@ fn resolve_predicate_term(
                 if iri.starts_with("_:") {
                     Ok(None)
                 } else {
-                    Ok(Some(IrTerm::iri(iri.to_string())))
+                    Ok(Some(IrTerm::iri(iri)))
                 }
             }
             Some(Binding::Iri(iri)) => {
@@ -190,7 +190,7 @@ fn resolve_predicate_term(
                 if iri.starts_with("_:") {
                     Ok(None)
                 } else {
-                    Ok(Some(IrTerm::iri(iri.to_string())))
+                    Ok(Some(IrTerm::iri(iri)))
                 }
             }
             Some(Binding::Unbound) | Some(Binding::Poisoned) | None => Ok(None),
@@ -208,7 +208,7 @@ fn resolve_predicate_term(
             if iri.starts_with("_:") {
                 Ok(None)
             } else {
-                Ok(Some(IrTerm::iri(iri.to_string())))
+                Ok(Some(IrTerm::iri(iri)))
             }
         }
         Term::Value(_) => Ok(None), // Literal constants can't be predicates
@@ -239,7 +239,7 @@ fn resolve_object_term(
             if let Some(bnode_id) = iri.strip_prefix("_:") {
                 Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
             } else {
-                Ok(Some(IrTerm::iri(iri.to_string())))
+                Ok(Some(IrTerm::iri(iri)))
             }
         }
         Term::Value(fv) => flake_value_to_ir_term(fv),
@@ -262,7 +262,7 @@ fn binding_to_ir_term(binding: &Binding, compactor: &IriCompactor) -> Result<Opt
             if let Some(bnode_id) = iri.strip_prefix("_:") {
                 Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
             } else {
-                Ok(Some(IrTerm::iri(iri.to_string())))
+                Ok(Some(IrTerm::iri(iri)))
             }
         }
 
@@ -271,7 +271,7 @@ fn binding_to_ir_term(binding: &Binding, compactor: &IriCompactor) -> Result<Opt
             if let Some(bnode_id) = iri.strip_prefix("_:") {
                 Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
             } else {
-                Ok(Some(IrTerm::iri(iri.to_string())))
+                Ok(Some(IrTerm::iri(iri)))
             }
         }
 
@@ -492,7 +492,9 @@ mod tests {
                 datatype,
                 language,
             } => {
-                assert!(matches!(value, LiteralValue::Double(d) if (d - 3.14).abs() < f64::EPSILON));
+                assert!(
+                    matches!(value, LiteralValue::Double(d) if (d - 3.14).abs() < f64::EPSILON)
+                );
                 assert_eq!(datatype.as_iri(), dt_iri::XSD_DOUBLE);
                 assert!(language.is_none());
             }

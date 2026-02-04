@@ -64,7 +64,12 @@ impl ChildRef {
     }
 
     /// Check if this child's range could intersect with the given bounds
-    pub fn intersects_range(&self, start: &Flake, end: &Flake, cmp: fn(&Flake, &Flake) -> std::cmp::Ordering) -> bool {
+    pub fn intersects_range(
+        &self,
+        start: &Flake,
+        end: &Flake,
+        cmp: fn(&Flake, &Flake) -> std::cmp::Ordering,
+    ) -> bool {
         // Check if child is entirely above the range
         if let Some(ref first) = self.first {
             if !self.leftmost && cmp(first, end) == std::cmp::Ordering::Greater {

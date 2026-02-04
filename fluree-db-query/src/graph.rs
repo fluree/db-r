@@ -305,8 +305,14 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for GraphOpera
                         // If graph doesn't exist in dataset → empty result (Clojure parity)
                         if let Some(ref ds) = ctx.dataset {
                             if ds.has_named_graph(iri) {
-                                self.execute_in_graph(ctx, &parent_batch, row_idx, iri.clone(), None)
-                                    .await?;
+                                self.execute_in_graph(
+                                    ctx,
+                                    &parent_batch,
+                                    row_idx,
+                                    iri.clone(),
+                                    None,
+                                )
+                                .await?;
                             }
                             // else: graph not found → no output for this row
                         } else {
@@ -319,8 +325,14 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for GraphOpera
 
                             // Execute if R2RML VG or if graph name matches db's alias (Clojure parity)
                             if is_r2rml_vg || iri.as_ref() == ctx.db.alias {
-                                self.execute_in_graph(ctx, &parent_batch, row_idx, iri.clone(), None)
-                                    .await?;
+                                self.execute_in_graph(
+                                    ctx,
+                                    &parent_batch,
+                                    row_idx,
+                                    iri.clone(),
+                                    None,
+                                )
+                                .await?;
                             }
                             // else: graph name doesn't match alias and not R2RML VG → no output
                         }

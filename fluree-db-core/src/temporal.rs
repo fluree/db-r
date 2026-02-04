@@ -83,10 +83,7 @@ impl DateTime {
 
         // Try with explicit timezone offset formats not covered by RFC3339
         // e.g., "2024-01-15T10:30:00+0500" (no colon in offset)
-        for fmt in &[
-            "%Y-%m-%dT%H:%M:%S%.f%z",
-            "%Y-%m-%dT%H:%M:%S%z",
-        ] {
+        for fmt in &["%Y-%m-%dT%H:%M:%S%.f%z", "%Y-%m-%dT%H:%M:%S%z"] {
             if let Ok(dt) = ChronoDateTime::parse_from_str(s, fmt) {
                 return Ok(Self {
                     instant: dt.with_timezone(&Utc),
@@ -244,8 +241,7 @@ impl Date {
         }
 
         // Try parsing with timezone suffix
-        if s.ends_with('Z') {
-            let date_part = &s[..s.len() - 1];
+        if let Some(date_part) = s.strip_suffix('Z') {
             if let Ok(date) = NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
                 return Ok(Self {
                     date,
@@ -256,18 +252,20 @@ impl Date {
         }
 
         // Try parsing with explicit offset (e.g., +05:00 or -05:00)
-        if let Some(offset_start) = s.rfind(|c| c == '+' || c == '-') {
+        if let Some(offset_start) = s.rfind(['+', '-']) {
             // Make sure this is actually a timezone, not just a negative year
             if offset_start > 0 && s[offset_start..].contains(':') {
                 let date_part = &s[..offset_start];
                 let offset_part = &s[offset_start..];
-                
+
                 if let Ok(date) = NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
                     // Parse the offset
                     let sign = if offset_part.starts_with('-') { -1 } else { 1 };
                     let offset_str = &offset_part[1..];
                     if let Some((hours_str, mins_str)) = offset_str.split_once(':') {
-                        if let (Ok(hours), Ok(mins)) = (hours_str.parse::<i32>(), mins_str.parse::<i32>()) {
+                        if let (Ok(hours), Ok(mins)) =
+                            (hours_str.parse::<i32>(), mins_str.parse::<i32>())
+                        {
                             let total_secs = sign * (hours * 3600 + mins * 60);
                             if let Some(offset) = FixedOffset::east_opt(total_secs) {
                                 return Ok(Self {
@@ -421,8 +419,7 @@ impl Time {
         }
 
         // Try parsing with Z suffix
-        if s.ends_with('Z') {
-            let time_part = &s[..s.len() - 1];
+        if let Some(time_part) = s.strip_suffix('Z') {
             for fmt in &["%H:%M:%S%.f", "%H:%M:%S"] {
                 if let Ok(time) = NaiveTime::parse_from_str(time_part, fmt) {
                     return Ok(Self {
@@ -435,7 +432,7 @@ impl Time {
         }
 
         // Try parsing with explicit offset
-        if let Some(offset_start) = s.rfind(|c| c == '+' || c == '-') {
+        if let Some(offset_start) = s.rfind(['+', '-']) {
             if s[offset_start..].contains(':') {
                 let time_part = &s[..offset_start];
                 let offset_part = &s[offset_start..];
@@ -445,7 +442,9 @@ impl Time {
                         let sign = if offset_part.starts_with('-') { -1 } else { 1 };
                         let offset_str = &offset_part[1..];
                         if let Some((hours_str, mins_str)) = offset_str.split_once(':') {
-                            if let (Ok(hours), Ok(mins)) = (hours_str.parse::<i32>(), mins_str.parse::<i32>()) {
+                            if let (Ok(hours), Ok(mins)) =
+                                (hours_str.parse::<i32>(), mins_str.parse::<i32>())
+                            {
                                 let total_secs = sign * (hours * 3600 + mins * 60);
                                 if let Some(offset) = FixedOffset::east_opt(total_secs) {
                                     return Ok(Self {
@@ -496,8 +495,11 @@ impl Time {
             Some(offset) => {
                 let secs = self.time.num_seconds_from_midnight() as i32 - offset.local_minus_utc();
                 let normalized_secs = secs.rem_euclid(86400) as u32;
-                NaiveTime::from_num_seconds_from_midnight_opt(normalized_secs, self.time.nanosecond())
-                    .unwrap_or(self.time)
+                NaiveTime::from_num_seconds_from_midnight_opt(
+                    normalized_secs,
+                    self.time.nanosecond(),
+                )
+                .unwrap_or(self.time)
             }
             None => self.time,
         }
@@ -540,9 +542,9 @@ impl Time {
 }
 
 fn is_strict_date_lexical(s: &str) -> bool {
-    let (date_part, tz_part) = if s.ends_with('Z') {
-        (&s[..s.len() - 1], Some("Z"))
-    } else if let Some(idx) = s.rfind(|c| c == '+' || c == '-') {
+    let (date_part, tz_part) = if let Some(stripped) = s.strip_suffix('Z') {
+        (stripped, Some("Z"))
+    } else if let Some(idx) = s.rfind(['+', '-']) {
         if idx == 10 {
             (&s[..idx], Some(&s[idx..]))
         } else {
@@ -585,8 +587,8 @@ fn is_strict_date_lexical(s: &str) -> bool {
 }
 
 fn is_strict_time_lexical(s: &str) -> bool {
-    let (time_part, tz_part) = if s.ends_with('Z') {
-        (&s[..s.len() - 1], Some("Z"))
+    let (time_part, tz_part) = if let Some(stripped) = s.strip_suffix('Z') {
+        (stripped, Some("Z"))
     } else if s.len() >= 6 {
         let tail = &s[s.len() - 6..];
         if (tail.starts_with('+') || tail.starts_with('-')) && tail.as_bytes()[3] == b':' {

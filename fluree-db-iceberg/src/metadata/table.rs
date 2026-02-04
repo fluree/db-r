@@ -62,14 +62,16 @@ pub struct TableMetadata {
 impl TableMetadata {
     /// Parse metadata from JSON bytes.
     pub fn from_json(json: &[u8]) -> crate::error::Result<Self> {
-        serde_json::from_slice(json)
-            .map_err(|e| crate::error::IcebergError::Metadata(format!("Failed to parse metadata: {}", e)))
+        serde_json::from_slice(json).map_err(|e| {
+            crate::error::IcebergError::Metadata(format!("Failed to parse metadata: {}", e))
+        })
     }
 
     /// Parse metadata from JSON string.
     pub fn from_json_str(json: &str) -> crate::error::Result<Self> {
-        serde_json::from_str(json)
-            .map_err(|e| crate::error::IcebergError::Metadata(format!("Failed to parse metadata: {}", e)))
+        serde_json::from_str(json).map_err(|e| {
+            crate::error::IcebergError::Metadata(format!("Failed to parse metadata: {}", e))
+        })
     }
 
     /// Get the current schema.

@@ -68,12 +68,7 @@ pub fn render_diagnostic(diag: &Diagnostic, source: &str, filename: Option<&str>
     output
 }
 
-fn render_source_snippet(
-    output: &mut String,
-    source: &str,
-    index: &LineIndex,
-    diag: &Diagnostic,
-) {
+fn render_source_snippet(output: &mut String, source: &str, index: &LineIndex, diag: &Diagnostic) {
     let start_loc = index.line_col(diag.span.start);
     let end_loc = index.line_col(diag.span.end);
 

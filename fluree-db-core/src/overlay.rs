@@ -161,14 +161,7 @@ mod tests {
         assert_eq!(overlay.epoch(), 0);
 
         let mut count = 0;
-        overlay.for_each_overlay_flake(
-            IndexType::Spot,
-            None,
-            None,
-            true,
-            100,
-            &mut |_| count += 1,
-        );
+        overlay.for_each_overlay_flake(IndexType::Spot, None, None, true, 100, &mut |_| count += 1);
         assert_eq!(count, 0);
     }
 
@@ -182,14 +175,9 @@ mod tests {
         assert_eq!(overlay.epoch(), 42);
 
         let mut collected = Vec::new();
-        overlay.for_each_overlay_flake(
-            IndexType::Spot,
-            None,
-            None,
-            true,
-            100,
-            &mut |f| collected.push(f.s.namespace_code),
-        );
+        overlay.for_each_overlay_flake(IndexType::Spot, None, None, true, 100, &mut |f| {
+            collected.push(f.s.namespace_code)
+        });
         assert_eq!(collected, vec![1, 2, 3]);
     }
 

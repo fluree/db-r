@@ -597,7 +597,11 @@ mod tests {
         let prologue = Prologue::new()
             .with_base(BaseDecl::new("http://example.org/", test_span()))
             .with_prefix(PrefixDecl::new("ex", "http://example.org/", test_span()))
-            .with_prefix(PrefixDecl::new("foaf", "http://xmlns.com/foaf/0.1/", test_span()));
+            .with_prefix(PrefixDecl::new(
+                "foaf",
+                "http://xmlns.com/foaf/0.1/",
+                test_span(),
+            ));
 
         assert!(prologue.base.is_some());
         assert_eq!(prologue.prefixes.len(), 2);
@@ -661,7 +665,8 @@ mod tests {
     #[test]
     fn test_select_query() {
         let select = SelectClause::star(test_span());
-        let where_clause = WhereClause::new(GraphPattern::empty_bgp(test_span()), true, test_span());
+        let where_clause =
+            WhereClause::new(GraphPattern::empty_bgp(test_span()), true, test_span());
         let modifiers = SolutionModifiers::new();
 
         let query = SelectQuery::new(select, where_clause, modifiers, test_span());
@@ -674,7 +679,8 @@ mod tests {
     fn test_sparql_ast() {
         let prologue = Prologue::new();
         let select = SelectClause::star(test_span());
-        let where_clause = WhereClause::new(GraphPattern::empty_bgp(test_span()), true, test_span());
+        let where_clause =
+            WhereClause::new(GraphPattern::empty_bgp(test_span()), true, test_span());
         let modifiers = SolutionModifiers::new();
         let query = SelectQuery::new(select, where_clause, modifiers, test_span());
 

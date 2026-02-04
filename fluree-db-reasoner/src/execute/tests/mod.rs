@@ -6,9 +6,9 @@
 //! - `class_rule_tests` - Class hierarchy rules (cax-*)
 //! - `restriction_rule_tests` - OWL restriction rules (cls-*)
 
+mod class_rule_tests;
 mod data_structure_tests;
 mod property_rule_tests;
-mod class_rule_tests;
 mod restriction_rule_tests;
 
 use super::*;

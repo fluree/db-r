@@ -76,7 +76,12 @@ async fn property_path_one_or_more_no_vars_matches_transitively() {
         "select": ["?o"],
         "where": {"@id":"ex:e","ex:y":"?o"}
     });
-    let sanity_rows = fluree.query(&ledger, &sanity).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let sanity_rows = fluree
+        .query(&ledger, &sanity)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(sanity_rows, json!(["ex:f"]));
 
     // Property path traversal from ex:a should reach ex:f.
@@ -88,7 +93,12 @@ async fn property_path_one_or_more_no_vars_matches_transitively() {
         "select": ["?o"],
         "where": [{"@id":"ex:a","yPlus":"?o"}]
     });
-    let sanity_path_rows = fluree.query(&ledger, &sanity_path).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let sanity_path_rows = fluree
+        .query(&ledger, &sanity_path)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert!(normalize_rows(&sanity_path_rows).contains(&json!("ex:f")));
 
     // Use VALUES to seed a single solution row and treat the (non-)transitive pattern
@@ -99,7 +109,12 @@ async fn property_path_one_or_more_no_vars_matches_transitively() {
         "where": [{"@id":"ex:a","ex:y":{"@id":"ex:f"}}],
         "select": ["?dummy"]
     });
-    let r_non = fluree.query(&ledger, &q_non).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let r_non = fluree
+        .query(&ledger, &q_non)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(r_non, json!([]));
 
     let q_plus = json!({
@@ -111,7 +126,12 @@ async fn property_path_one_or_more_no_vars_matches_transitively() {
         "where": [{"@id":"ex:a","yPlus":{"@id":"ex:f"}}],
         "select": ["?dummy"]
     });
-    let r_plus = fluree.query(&ledger, &q_plus).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let r_plus = fluree
+        .query(&ledger, &q_plus)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(r_plus, json!([1]));
 }
 
@@ -125,7 +145,12 @@ async fn property_path_one_or_more_object_var_with_and_without_cycle() {
         "where": [{"@id":"ex:a","ex:knows":"?who"}],
         "select": ["?who"]
     });
-    let non = fluree.query(&ledger1, &q_non).await.unwrap().to_jsonld(&ledger1.db).unwrap();
+    let non = fluree
+        .query(&ledger1, &q_non)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger1.db)
+        .unwrap();
     assert_eq!(non, json!(["ex:b"]));
 
     // Use @path with string form
@@ -137,10 +162,15 @@ async fn property_path_one_or_more_object_var_with_and_without_cycle() {
         "where": [{"@id":"ex:a","knowsPlus":"?who"}],
         "select": ["?who"]
     });
-    let plus = fluree.query(&ledger1, &q_plus).await.unwrap().to_jsonld(&ledger1.db).unwrap();
+    let plus = fluree
+        .query(&ledger1, &q_plus)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger1.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&plus),
-        normalize_rows(&json!(["ex:b","ex:c","ex:d","ex:e"]))
+        normalize_rows(&json!(["ex:b", "ex:c", "ex:d", "ex:e"]))
     );
 
     // Add cycle: e knows a. One-or-more from a should now include a as reachable.
@@ -155,10 +185,15 @@ async fn property_path_one_or_more_object_var_with_and_without_cycle() {
         "where": [{"@id":"ex:a","knowsPlus":"?who"}],
         "select": ["?who"]
     });
-    let plus2 = fluree.query(&ledger2, &q_plus2).await.unwrap().to_jsonld(&ledger2.db).unwrap();
+    let plus2 = fluree
+        .query(&ledger2, &q_plus2)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger2.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&plus2),
-        normalize_rows(&json!(["ex:a","ex:b","ex:c","ex:d","ex:e"]))
+        normalize_rows(&json!(["ex:a", "ex:b", "ex:c", "ex:d", "ex:e"]))
     );
 }
 
@@ -172,7 +207,12 @@ async fn property_path_one_or_more_subject_var_with_and_without_cycle() {
         "where": [{"@id":"?who","ex:knows":{"@id":"ex:e"}}],
         "select": ["?who"]
     });
-    let non = fluree.query(&ledger1, &q_non).await.unwrap().to_jsonld(&ledger1.db).unwrap();
+    let non = fluree
+        .query(&ledger1, &q_non)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger1.db)
+        .unwrap();
     assert_eq!(non, json!(["ex:d"]));
 
     let q_plus = json!({
@@ -183,20 +223,30 @@ async fn property_path_one_or_more_subject_var_with_and_without_cycle() {
         "where": [{"@id":"?who","knowsPlus":{"@id":"ex:e"}}],
         "select": ["?who"]
     });
-    let plus = fluree.query(&ledger1, &q_plus).await.unwrap().to_jsonld(&ledger1.db).unwrap();
+    let plus = fluree
+        .query(&ledger1, &q_plus)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger1.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&plus),
-        normalize_rows(&json!(["ex:d","ex:b","ex:a"]))
+        normalize_rows(&json!(["ex:d", "ex:b", "ex:a"]))
     );
 
     // Add cycle: e knows a. Now e is also in the reverse transitive set.
     let tx_cycle = json!({"@context":{"ex":"http://example.org/"},"insert":{"@id":"ex:e","ex:knows":{"@id":"ex:a"}}});
     let ledger2 = fluree.update(ledger1, &tx_cycle).await.unwrap().ledger;
 
-    let plus2 = fluree.query(&ledger2, &q_plus).await.unwrap().to_jsonld(&ledger2.db).unwrap();
+    let plus2 = fluree
+        .query(&ledger2, &q_plus)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger2.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&plus2),
-        normalize_rows(&json!(["ex:d","ex:b","ex:a","ex:e"]))
+        normalize_rows(&json!(["ex:d", "ex:b", "ex:a", "ex:e"]))
     );
 }
 
@@ -219,10 +269,15 @@ async fn property_path_one_or_more_subject_and_object_vars_transitive_closure() 
         "where": [{"@id":"?s","ex:knows":"?o"}],
         "select": ["?s","?o"]
     });
-    let non = fluree.query(&ledger1, &q_non).await.unwrap().to_jsonld(&ledger1.db).unwrap();
+    let non = fluree
+        .query(&ledger1, &q_non)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger1.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&non),
-        normalize_rows(&json!([["ex:1","ex:2"],["ex:2","ex:3"]]))
+        normalize_rows(&json!([["ex:1", "ex:2"], ["ex:2", "ex:3"]]))
     );
 
     let q_plus = json!({
@@ -233,23 +288,43 @@ async fn property_path_one_or_more_subject_and_object_vars_transitive_closure() 
         "where": [{"@id":"?x","knowsPlus":"?y"}],
         "select": ["?x","?y"]
     });
-    let plus = fluree.query(&ledger1, &q_plus).await.unwrap().to_jsonld(&ledger1.db).unwrap();
+    let plus = fluree
+        .query(&ledger1, &q_plus)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger1.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&plus),
-        normalize_rows(&json!([["ex:1","ex:2"],["ex:2","ex:3"],["ex:1","ex:3"]]))
+        normalize_rows(&json!([
+            ["ex:1", "ex:2"],
+            ["ex:2", "ex:3"],
+            ["ex:1", "ex:3"]
+        ]))
     );
 
     // Add cycle 3 -> 1, producing reachability including self via non-zero paths.
     let tx_cycle = json!({"@context":{"ex":"http://example.org/"},"insert":{"@id":"ex:3","ex:knows":{"@id":"ex:1"}}});
     let ledger2 = fluree.update(ledger1, &tx_cycle).await.unwrap().ledger;
 
-    let plus2 = fluree.query(&ledger2, &q_plus).await.unwrap().to_jsonld(&ledger2.db).unwrap();
+    let plus2 = fluree
+        .query(&ledger2, &q_plus)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger2.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&plus2),
         normalize_rows(&json!([
-            ["ex:1","ex:1"],["ex:1","ex:2"],["ex:1","ex:3"],
-            ["ex:2","ex:1"],["ex:2","ex:2"],["ex:2","ex:3"],
-            ["ex:3","ex:1"],["ex:3","ex:2"],["ex:3","ex:3"]
+            ["ex:1", "ex:1"],
+            ["ex:1", "ex:2"],
+            ["ex:1", "ex:3"],
+            ["ex:2", "ex:1"],
+            ["ex:2", "ex:2"],
+            ["ex:2", "ex:3"],
+            ["ex:3", "ex:1"],
+            ["ex:3", "ex:2"],
+            ["ex:3", "ex:3"]
         ]))
     );
 }
@@ -267,10 +342,15 @@ async fn property_path_zero_or_more_object_var_and_subject_object_vars() {
         "where": [{"@id":"ex:a","knowsStar":"?who"}],
         "select": ["?who"]
     });
-    let star = fluree.query(&ledger1, &q_star).await.unwrap().to_jsonld(&ledger1.db).unwrap();
+    let star = fluree
+        .query(&ledger1, &q_star)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger1.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&star),
-        normalize_rows(&json!(["ex:a","ex:b","ex:c","ex:d","ex:e"]))
+        normalize_rows(&json!(["ex:a", "ex:b", "ex:c", "ex:d", "ex:e"]))
     );
 
     // Subject+object vars, disjoint graphs
@@ -294,16 +374,27 @@ async fn property_path_zero_or_more_object_var_and_subject_object_vars() {
         "where": [{"@id":"?x","knowsStar":"?y"}],
         "select": ["?x","?y"]
     });
-    let xy = fluree.query(&ledger2, &q_xy).await.unwrap().to_jsonld(&ledger2.db).unwrap();
+    let xy = fluree
+        .query(&ledger2, &q_xy)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger2.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&xy),
         normalize_rows(&json!([
-            ["ex:1","ex:1"],["ex:1","ex:2"],["ex:1","ex:3"],
-            ["ex:2","ex:2"],["ex:2","ex:3"],
-            ["ex:3","ex:3"],
-            ["ex:4","ex:4"],["ex:4","ex:5"],["ex:4","ex:6"],
-            ["ex:5","ex:5"],["ex:5","ex:6"],
-            ["ex:6","ex:6"]
+            ["ex:1", "ex:1"],
+            ["ex:1", "ex:2"],
+            ["ex:1", "ex:3"],
+            ["ex:2", "ex:2"],
+            ["ex:2", "ex:3"],
+            ["ex:3", "ex:3"],
+            ["ex:4", "ex:4"],
+            ["ex:4", "ex:5"],
+            ["ex:4", "ex:6"],
+            ["ex:5", "ex:5"],
+            ["ex:5", "ex:6"],
+            ["ex:6", "ex:6"]
         ]))
     );
 }
@@ -324,10 +415,15 @@ async fn property_path_array_form() {
         "where": [{"@id":"ex:a","knowsPlus":"?who"}],
         "select": ["?who"]
     });
-    let result = fluree.query(&ledger1, &q).await.unwrap().to_jsonld(&ledger1.db).unwrap();
+    let result = fluree
+        .query(&ledger1, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger1.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&result),
-        normalize_rows(&json!(["ex:b","ex:c","ex:d","ex:e"]))
+        normalize_rows(&json!(["ex:b", "ex:c", "ex:d", "ex:e"]))
     );
 }
 
@@ -395,7 +491,12 @@ async fn property_path_inverse_object_var() {
         "where": [{"@id":"ex:b","knownBy":"?who"}],
         "select": ["?who"]
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(normalize_rows(&result), normalize_rows(&json!(["ex:a"])));
 }
 
@@ -413,7 +514,12 @@ async fn property_path_inverse_subject_var() {
         "where": [{"@id":"?who","knownBy":{"@id":"ex:a"}}],
         "select": ["?who"]
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(normalize_rows(&result), normalize_rows(&json!(["ex:b"])));
 }
 
@@ -441,10 +547,15 @@ async fn property_path_alternative_object_var() {
         "where": [{"@id":"ex:a","knowsOrLikes":"?o"}],
         "select": ["?o"]
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&result),
-        normalize_rows(&json!(["ex:b","ex:x"]))
+        normalize_rows(&json!(["ex:b", "ex:x"]))
     );
 }
 
@@ -462,10 +573,15 @@ async fn property_path_alternative_with_inverse() {
         "where": [{"@id":"ex:b","knowsBoth":"?who"}],
         "select": ["?who"]
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&result),
-        normalize_rows(&json!(["ex:a","ex:c","ex:d"]))
+        normalize_rows(&json!(["ex:a", "ex:c", "ex:d"]))
     );
 }
 
@@ -491,10 +607,15 @@ async fn property_path_alternative_array_form() {
         "where": [{"@id":"ex:a","knowsOrLikes":"?o"}],
         "select": ["?o"]
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&result),
-        normalize_rows(&json!(["ex:b","ex:x"]))
+        normalize_rows(&json!(["ex:b", "ex:x"]))
     );
 }
 
@@ -521,11 +642,16 @@ async fn property_path_alternative_duplicate_semantics() {
         "where": [{"@id":"ex:a","knowsOrLikes":"?o"}],
         "select": ["?o"]
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     // Bag semantics: ex:b appears once per matching branch
     assert_eq!(
         normalize_rows(&result),
-        normalize_rows(&json!(["ex:b","ex:b"]))
+        normalize_rows(&json!(["ex:b", "ex:b"]))
     );
 }
 
@@ -572,12 +698,14 @@ async fn property_path_sequence_two_step_string_form() {
         "where": [{"@id":"ex:alice","friendName":"?name"}],
         "select": ["?name"]
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     // alice's friend is bob, bob's name is "Bob"
-    assert_eq!(
-        normalize_rows(&result),
-        normalize_rows(&json!(["Bob"]))
-    );
+    assert_eq!(normalize_rows(&result), normalize_rows(&json!(["Bob"])));
 }
 
 #[tokio::test]
@@ -594,11 +722,13 @@ async fn property_path_sequence_two_step_array_form() {
         "where": [{"@id":"ex:alice","friendName":"?name"}],
         "select": ["?name"]
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
-    assert_eq!(
-        normalize_rows(&result),
-        normalize_rows(&json!(["Bob"]))
-    );
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
+    assert_eq!(normalize_rows(&result), normalize_rows(&json!(["Bob"])));
 }
 
 #[tokio::test]
@@ -617,7 +747,12 @@ async fn property_path_sequence_three_step() {
         "where": [{"@id":"ex:alice","friendFriendCity":"?city"}],
         "select": ["?city"]
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     // alice -> friend bob -> friend carol -> address addr1 -> city "Springfield"
     assert_eq!(
         normalize_rows(&result),
@@ -640,12 +775,14 @@ async fn property_path_sequence_with_inverse_step() {
         "where": [{"@id":"ex:alice","childName":"?name"}],
         "select": ["?name"]
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     // alice <--parent-- bob, bob's name is "Bob"
-    assert_eq!(
-        normalize_rows(&result),
-        normalize_rows(&json!(["Bob"]))
-    );
+    assert_eq!(normalize_rows(&result), normalize_rows(&json!(["Bob"])));
 }
 
 #[tokio::test]
@@ -662,7 +799,12 @@ async fn property_path_sequence_wildcard_hides_internal_vars() {
         "where": [{"@id":"ex:alice","friendName":"?name"}],
         "select": "*"
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let arr = result.as_array().expect("Wildcard result should be array");
     assert!(!arr.is_empty(), "Should have at least one result");
 
@@ -742,7 +884,12 @@ async fn property_path_alternative_of_sequences() {
         "where": [{"@id":"ex:alice","contactName":"?name"}],
         "select": ["?name"]
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&result),
         normalize_rows(&json!(["Bob", "Carol"]))
@@ -770,7 +917,12 @@ async fn property_path_alternative_mixed_simple_and_sequence() {
         "where": [{"@id":"ex:alice","nameOrFriendName":"?val"}],
         "select": ["?val"]
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&result),
         normalize_rows(&json!(["Alice", "Bob"]))
@@ -791,7 +943,12 @@ async fn property_path_alternative_of_sequences_wildcard_hides_vars() {
         "where": [{"@id":"ex:alice","contactName":"?name"}],
         "select": "*"
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let arr = result.as_array().expect("Wildcard result should be array");
     assert!(!arr.is_empty(), "Should have at least one result");
 
@@ -832,7 +989,12 @@ async fn property_path_alternative_of_sequences_duplicate_semantics() {
         "where": [{"@id":"ex:alice","contactName":"?name"}],
         "select": ["?name"]
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     // Bag semantics: "Bob" appears once per matching branch
     assert_eq!(
         normalize_rows(&result),
@@ -858,7 +1020,12 @@ async fn property_path_inverse_one_or_more() {
         "where": [{"@id":"ex:c","invKnowsPlus":"?x"}],
         "select": ["?x"]
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&result),
         normalize_rows(&json!(["ex:a", "ex:b"]))
@@ -880,7 +1047,12 @@ async fn property_path_inverse_zero_or_more() {
         "where": [{"@id":"ex:b","invKnowsStar":"?x"}],
         "select": ["?x"]
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&result),
         normalize_rows(&json!(["ex:a", "ex:b"]))
@@ -926,7 +1098,12 @@ async fn property_path_sequence_with_alternative_step() {
         "where": [{"@id":"ex:alice","friendLabel":"?val"}],
         "select": ["?val"]
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&result),
         normalize_rows(&json!(["Bob", "Bobby"]))
@@ -947,7 +1124,12 @@ async fn property_path_sequence_with_alternative_step_array_form() {
         "where": [{"@id":"ex:alice","friendLabel":"?val"}],
         "select": ["?val"]
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&result),
         normalize_rows(&json!(["Bob", "Bobby"]))
@@ -968,7 +1150,12 @@ async fn property_path_sequence_with_alternative_step_wildcard() {
         "where": [{"@id":"ex:alice","friendLabel":"?val"}],
         "select": "*"
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let arr = result.as_array().expect("Expected array result");
     for row in arr {
         if let Some(obj) = row.as_object() {
@@ -1004,7 +1191,12 @@ async fn property_path_inverse_of_sequence() {
         "where": [{"@id":"ex:carol","invFF":"?who"}],
         "select": ["?who"]
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&result),
         normalize_rows(&json!(["ex:alice"])),
@@ -1028,7 +1220,12 @@ async fn property_path_inverse_of_alternative() {
         "where": [{"@id":"ex:bob","invRel":"?who"}],
         "select": ["?who"]
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&result),
         normalize_rows(&json!(["ex:alice"])),
@@ -1052,7 +1249,12 @@ async fn property_path_inverse_of_three_step_sequence() {
         "where": [{"@id":"ex:addr1","invChain":"?who"}],
         "select": ["?who"]
     });
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&result),
         normalize_rows(&json!(["ex:alice"])),

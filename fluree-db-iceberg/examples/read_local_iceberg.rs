@@ -8,8 +8,8 @@
 //! cargo run --example read_local_iceberg -p fluree-db-iceberg
 //! ```
 
-use fluree_db_iceberg::io::storage::MemoryStorage;
 use fluree_db_iceberg::io::parquet::ParquetReader;
+use fluree_db_iceberg::io::storage::MemoryStorage;
 use fluree_db_iceberg::io::IcebergStorage;
 use fluree_db_iceberg::metadata::TableMetadata;
 use fluree_db_iceberg::scan::{ScanConfig, ScanPlanner};
@@ -35,17 +35,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n=== Table Metadata ===");
     println!("Format version: {}", metadata.format_version);
-    println!("Table UUID: {}", metadata.table_uuid.as_deref().unwrap_or("N/A"));
+    println!(
+        "Table UUID: {}",
+        metadata.table_uuid.as_deref().unwrap_or("N/A")
+    );
     println!("Location: {}", metadata.location);
 
     if let Some(schema) = metadata.current_schema() {
         println!("\n=== Schema (ID: {}) ===", schema.schema_id);
         for field in &schema.fields {
-            println!("  {} (id={}): {:?} {}",
+            println!(
+                "  {} (id={}): {:?} {}",
                 field.name,
                 field.id,
                 field.type_string().unwrap_or("complex"),
-                if field.required { "NOT NULL" } else { "NULLABLE" }
+                if field.required {
+                    "NOT NULL"
+                } else {
+                    "NULLABLE"
+                }
             );
         }
     }
@@ -55,7 +63,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Snapshot ID: {}", snapshot.snapshot_id);
         println!("Timestamp: {}", snapshot.timestamp_ms);
 
-        let manifest_list_uri = snapshot.manifest_list.as_ref()
+        let manifest_list_uri = snapshot
+            .manifest_list
+            .as_ref()
             .ok_or("Snapshot has no manifest list (v1 format not supported)")?;
         println!("Manifest list: {}", manifest_list_uri);
 
@@ -80,7 +90,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Load each manifest and its data files
         for entry in &manifest_list {
-            let manifest_path = entry.manifest_path
+            let manifest_path = entry
+                .manifest_path
                 .strip_prefix(&metadata.location)
                 .unwrap_or(&entry.manifest_path)
                 .trim_start_matches('/');
@@ -94,13 +105,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let manifest = fluree_db_iceberg::manifest::parse_manifest(&manifest_data)?;
 
             for data_entry in &manifest {
-                let data_path = data_entry.data_file.file_path
+                let data_path = data_entry
+                    .data_file
+                    .file_path
                     .strip_prefix(&metadata.location)
                     .unwrap_or(&data_entry.data_file.file_path)
                     .trim_start_matches('/');
                 let data_file = table_path.join(data_path);
-                println!("    Loading data file: {:?} ({} rows)",
-                    data_file, data_entry.data_file.record_count);
+                println!(
+                    "    Loading data file: {:?} ({} rows)",
+                    data_file, data_entry.data_file.record_count
+                );
                 let data_bytes = fs::read(&data_file)?;
                 storage.add_file(data_entry.data_file.file_path.clone(), data_bytes);
             }
@@ -138,14 +153,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let mut row_values = Vec::new();
                         for col in &batch.columns {
                             let val = match col {
-                                fluree_db_iceberg::io::batch::Column::Int32(v) =>
-                                    v.get(row_idx).map(|x| format!("{:?}", x)).unwrap_or_default(),
-                                fluree_db_iceberg::io::batch::Column::Int64(v) =>
-                                    v.get(row_idx).map(|x| format!("{:?}", x)).unwrap_or_default(),
-                                fluree_db_iceberg::io::batch::Column::String(v) =>
-                                    v.get(row_idx).map(|x| format!("{:?}", x)).unwrap_or_default(),
-                                fluree_db_iceberg::io::batch::Column::Boolean(v) =>
-                                    v.get(row_idx).map(|x| format!("{:?}", x)).unwrap_or_default(),
+                                fluree_db_iceberg::io::batch::Column::Int32(v) => v
+                                    .get(row_idx)
+                                    .map(|x| format!("{:?}", x))
+                                    .unwrap_or_default(),
+                                fluree_db_iceberg::io::batch::Column::Int64(v) => v
+                                    .get(row_idx)
+                                    .map(|x| format!("{:?}", x))
+                                    .unwrap_or_default(),
+                                fluree_db_iceberg::io::batch::Column::String(v) => v
+                                    .get(row_idx)
+                                    .map(|x| format!("{:?}", x))
+                                    .unwrap_or_default(),
+                                fluree_db_iceberg::io::batch::Column::Boolean(v) => v
+                                    .get(row_idx)
+                                    .map(|x| format!("{:?}", x))
+                                    .unwrap_or_default(),
                                 _ => "...".to_string(),
                             };
                             row_values.push(val);

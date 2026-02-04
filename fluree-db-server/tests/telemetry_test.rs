@@ -1,6 +1,6 @@
 //! Integration tests for telemetry functionality
 
-use fluree_db_server::telemetry::{TelemetryConfig, init_logging, shutdown_tracer};
+use fluree_db_server::telemetry::{init_logging, shutdown_tracer, TelemetryConfig};
 use std::env;
 
 #[tokio::test]

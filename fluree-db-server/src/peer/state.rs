@@ -60,11 +60,7 @@ impl PeerState {
     /// IMPORTANT: `NeedsRefresh::Unknown` means the peer hasn't received SSE state
     /// for this ledger yet. The caller should decide policy: either proceed with
     /// local state (if available) or reject the query.
-    pub async fn check_ledger_freshness(
-        &self,
-        alias: &str,
-        local_index_t: i64,
-    ) -> NeedsRefresh {
+    pub async fn check_ledger_freshness(&self, alias: &str, local_index_t: i64) -> NeedsRefresh {
         match self.ledgers.read().await.get(alias) {
             Some(remote) => {
                 if remote.index_t > local_index_t {
@@ -287,7 +283,13 @@ mod tests {
         let state = PeerState::new();
 
         let changed = state
-            .update_ledger("books:main", 5, 3, Some("commit:5".to_string()), Some("index:3".to_string()))
+            .update_ledger(
+                "books:main",
+                5,
+                3,
+                Some("commit:5".to_string()),
+                Some("index:3".to_string()),
+            )
             .await;
 
         assert!(changed);

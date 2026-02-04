@@ -290,11 +290,11 @@ where
                     let query_result = temp_fluree
                         .query(&result.ledger, query_json)
                         .await
-                        .map_err(|e| {
-                            ApiError::query(format!("Nameservice query failed: {}", e))
-                        })?;
+                        .map_err(|e| ApiError::query(format!("Nameservice query failed: {}", e)))?;
                     let config = config.with_select_mode(query_result.select_mode);
-                    Ok(query_result.format_async(&result.ledger.db, &config).await?)
+                    Ok(query_result
+                        .format_async(&result.ledger.db, &config)
+                        .await?)
                 } else {
                     // Use default JSON-LD formatting
                     temp_fluree
@@ -307,12 +307,16 @@ where
                 let query_result = temp_fluree
                     .query_sparql(&result.ledger, sparql)
                     .await
-                    .map_err(|e| ApiError::query(format!("Nameservice SPARQL query failed: {}", e)))?;
+                    .map_err(|e| {
+                        ApiError::query(format!("Nameservice SPARQL query failed: {}", e))
+                    })?;
 
                 let config = format_config
                     .unwrap_or_else(FormatterConfig::sparql_json)
                     .with_select_mode(query_result.select_mode);
-                Ok(query_result.format_async(&result.ledger.db, &config).await?)
+                Ok(query_result
+                    .format_async(&result.ledger.db, &config)
+                    .await?)
             }
         }
 
@@ -326,16 +330,30 @@ mod tests {
     use crate::FlureeBuilder;
     use fluree_db_nameservice::{memory::MemoryNameService, Publisher, VgType};
 
-    async fn setup_ns_with_records() -> Fluree<fluree_db_core::MemoryStorage, SimpleCache, MemoryNameService> {
+    async fn setup_ns_with_records(
+    ) -> Fluree<fluree_db_core::MemoryStorage, SimpleCache, MemoryNameService> {
         let fluree = FlureeBuilder::memory().build_memory();
 
         // Create some ledger records
-        fluree.nameservice.publish_commit("db1:main", "commit-1", 10).await.unwrap();
-        fluree.nameservice.publish_commit("db1:dev", "commit-2", 5).await.unwrap();
-        fluree.nameservice.publish_commit("db2:main", "commit-3", 20).await.unwrap();
+        fluree
+            .nameservice
+            .publish_commit("db1:main", "commit-1", 10)
+            .await
+            .unwrap();
+        fluree
+            .nameservice
+            .publish_commit("db1:dev", "commit-2", 5)
+            .await
+            .unwrap();
+        fluree
+            .nameservice
+            .publish_commit("db2:main", "commit-3", 20)
+            .await
+            .unwrap();
 
         // Create a VG record
-        fluree.nameservice
+        fluree
+            .nameservice
             .publish_vg(
                 "my-search",
                 "main",
@@ -509,8 +527,14 @@ mod tests {
             .unwrap();
 
         // SPARQL returns { head: { vars: [...] }, results: { bindings: [...] } }
-        assert!(result.get("head").is_some(), "SPARQL result should have 'head'");
-        assert!(result.get("results").is_some(), "SPARQL result should have 'results'");
+        assert!(
+            result.get("head").is_some(),
+            "SPARQL result should have 'head'"
+        );
+        assert!(
+            result.get("results").is_some(),
+            "SPARQL result should have 'results'"
+        );
 
         let bindings = result["results"]["bindings"].as_array().unwrap();
         assert_eq!(bindings.len(), 3, "Should have 3 ledger results");

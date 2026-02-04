@@ -3,12 +3,11 @@
 //! These tests verify the Phase 2 implementation without requiring external
 //! S3 or Iceberg services.
 
-use fluree_db_iceberg::{
-    BatchSchema, Column, ColumnBatch, FieldInfo, FieldType,
-    ComparisonOp, Expression, LiteralValue, ScanConfig,
-    TypedValue,
-};
 use fluree_db_iceberg::io::{MemoryStorage, RangeOnlyStorage};
+use fluree_db_iceberg::{
+    BatchSchema, Column, ColumnBatch, ComparisonOp, Expression, FieldInfo, FieldType, LiteralValue,
+    ScanConfig, TypedValue,
+};
 
 /// Test that columnar batches can be created, filtered, and projected correctly.
 #[test]
@@ -46,11 +45,8 @@ fn test_column_batch_filter_and_project() {
     ]);
     let age_col = Column::Int32(vec![Some(25), Some(30), Some(35), Some(40), Some(28)]);
 
-    let batch = ColumnBatch::new(
-        std::sync::Arc::new(schema),
-        vec![id_col, name_col, age_col],
-    )
-    .expect("batch creation");
+    let batch = ColumnBatch::new(std::sync::Arc::new(schema), vec![id_col, name_col, age_col])
+        .expect("batch creation");
 
     assert_eq!(batch.num_rows, 5);
     assert!(!batch.is_empty());
@@ -182,7 +178,13 @@ fn test_field_type_variants() {
         (FieldType::Bytes, "binary"),
         (FieldType::Date, "date"),
         (FieldType::Timestamp, "timestamp"),
-        (FieldType::Decimal { precision: 10, scale: 2 }, "decimal(10,2)"),
+        (
+            FieldType::Decimal {
+                precision: 10,
+                scale: 2,
+            },
+            "decimal(10,2)",
+        ),
     ];
 
     for (field_type, expected_name) in types {
@@ -205,7 +207,11 @@ fn test_field_type_variants() {
                 }
             }
         };
-        assert_eq!(type_str, expected_name, "Field type mismatch for {:?}", field_type);
+        assert_eq!(
+            type_str, expected_name,
+            "Field type mismatch for {:?}",
+            field_type
+        );
     }
 }
 

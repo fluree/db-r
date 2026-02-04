@@ -306,26 +306,16 @@ mod tests {
 
         // Collect all flakes with to_t = 3
         let mut collected = Vec::new();
-        overlay.for_each_overlay_flake(
-            IndexType::Spot,
-            None,
-            None,
-            true,
-            3,
-            &mut |f| collected.push(f.clone()),
-        );
+        overlay.for_each_overlay_flake(IndexType::Spot, None, None, true, 3, &mut |f| {
+            collected.push(f.clone())
+        });
         assert_eq!(collected.len(), 3);
 
         // Collect with to_t = 2 (should exclude t=3 flake)
         collected.clear();
-        overlay.for_each_overlay_flake(
-            IndexType::Spot,
-            None,
-            None,
-            true,
-            2,
-            &mut |f| collected.push(f.clone()),
-        );
+        overlay.for_each_overlay_flake(IndexType::Spot, None, None, true, 2, &mut |f| {
+            collected.push(f.clone())
+        });
         assert_eq!(collected.len(), 2);
     }
 }

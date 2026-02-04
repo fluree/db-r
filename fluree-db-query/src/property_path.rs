@@ -431,9 +431,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> PropertyPathOperator<S, C> {
                     .map(|subj| (subj, obj.clone()))
                     .collect()
             }
-            (Term::Var(_), Term::Var(_)) => {
-                self.compute_closure(ctx).await?
-            }
+            (Term::Var(_), Term::Var(_)) => self.compute_closure(ctx).await?,
             (Term::Sid(_), Term::Sid(_)) => {
                 // Both constants: reachability check (0/1 rows). We use a dummy pair to indicate 1 row.
                 let subj = match &self.pattern.subject {
@@ -614,9 +612,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> PropertyPathOperator<S, C> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C>
-    for PropertyPathOperator<S, C>
-{
+impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for PropertyPathOperator<S, C> {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
@@ -640,9 +636,10 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C>
 
         if self.child.is_none() {
             // Unseeded mode: return buffered results
-            let results = self.results_buffer.as_ref().ok_or_else(|| {
-                QueryError::OperatorNotOpened
-            })?;
+            let results = self
+                .results_buffer
+                .as_ref()
+                .ok_or_else(|| QueryError::OperatorNotOpened)?;
 
             if self.results_idx >= results.len() {
                 self.state = OperatorState::Exhausted;
@@ -774,7 +771,12 @@ mod tests {
     use crate::pattern::Term;
     use fluree_db_core::Sid;
 
-    fn make_pattern(subj: Term, pred: Sid, modifier: PathModifier, obj: Term) -> PropertyPathPattern {
+    fn make_pattern(
+        subj: Term,
+        pred: Sid,
+        modifier: PathModifier,
+        obj: Term,
+    ) -> PropertyPathPattern {
         PropertyPathPattern::new(subj, pred, modifier, obj)
     }
 

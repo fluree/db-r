@@ -6,7 +6,7 @@
 use crate::did::did_from_pubkey;
 use crate::ed25519::verify_ed25519;
 use crate::error::{CredentialError, Result};
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::Deserialize;
 
 /// Result of JWS verification
@@ -69,15 +69,17 @@ pub fn verify_jws(jws: &str) -> Result<JwsVerified> {
     // 1. Split by '.' into [header_b64, payload_b64, sig_b64]
     let parts: Vec<&str> = jws.split('.').collect();
     if parts.len() != 3 {
-        return Err(CredentialError::InvalidJwsFormat(
-            format!("Expected 3 parts (header.payload.signature), got {}", parts.len())
-        ));
+        return Err(CredentialError::InvalidJwsFormat(format!(
+            "Expected 3 parts (header.payload.signature), got {}",
+            parts.len()
+        )));
     }
 
     let (header_b64, payload_b64, sig_b64) = (parts[0], parts[1], parts[2]);
 
     // 2. Decode header (base64url -> JSON)
-    let header_bytes = URL_SAFE_NO_PAD.decode(header_b64)
+    let header_bytes = URL_SAFE_NO_PAD
+        .decode(header_b64)
         .map_err(|e| CredentialError::Base64Decode(format!("header: {}", e)))?;
 
     let header: JwsHeader = serde_json::from_slice(&header_bytes)
@@ -92,7 +94,8 @@ pub fn verify_jws(jws: &str) -> Result<JwsVerified> {
     let pubkey = extract_pubkey_from_jwk(&header)?;
 
     // 5. Decode signature (base64url -> 64 bytes)
-    let signature_bytes = URL_SAFE_NO_PAD.decode(sig_b64)
+    let signature_bytes = URL_SAFE_NO_PAD
+        .decode(sig_b64)
         .map_err(|e| CredentialError::Base64Decode(format!("signature: {}", e)))?;
 
     // 6. signing_input = "{header_b64}.{payload_b64}"
@@ -102,7 +105,8 @@ pub fn verify_jws(jws: &str) -> Result<JwsVerified> {
     verify_ed25519(&pubkey, signing_input.as_bytes(), &signature_bytes)?;
 
     // 8. Decode payload (base64url -> string)
-    let payload_bytes = URL_SAFE_NO_PAD.decode(payload_b64)
+    let payload_bytes = URL_SAFE_NO_PAD
+        .decode(payload_b64)
         .map_err(|e| CredentialError::Base64Decode(format!("payload: {}", e)))?;
 
     let payload = String::from_utf8(payload_bytes)
@@ -112,37 +116,46 @@ pub fn verify_jws(jws: &str) -> Result<JwsVerified> {
     let did = did_from_pubkey(&pubkey);
 
     // 10. Return JwsVerified { payload, pubkey, did }
-    Ok(JwsVerified { payload, pubkey, did })
+    Ok(JwsVerified {
+        payload,
+        pubkey,
+        did,
+    })
 }
 
 /// Extract Ed25519 public key from JWK in header
 fn extract_pubkey_from_jwk(header: &JwsHeader) -> Result<[u8; 32]> {
-    let jwk = header.jwk.as_ref()
-        .ok_or_else(|| CredentialError::MissingField(
-            "header.jwk (embedded public key required for V1)".to_string()
-        ))?;
+    let jwk = header.jwk.as_ref().ok_or_else(|| {
+        CredentialError::MissingField(
+            "header.jwk (embedded public key required for V1)".to_string(),
+        )
+    })?;
 
     // Validate JWK type
     if jwk.kty != "OKP" {
-        return Err(CredentialError::InvalidJwsHeader(
-            format!("JWK kty must be 'OKP', got '{}'", jwk.kty)
-        ));
+        return Err(CredentialError::InvalidJwsHeader(format!(
+            "JWK kty must be 'OKP', got '{}'",
+            jwk.kty
+        )));
     }
 
     if jwk.crv != "Ed25519" {
-        return Err(CredentialError::InvalidJwsHeader(
-            format!("JWK crv must be 'Ed25519', got '{}'", jwk.crv)
-        ));
+        return Err(CredentialError::InvalidJwsHeader(format!(
+            "JWK crv must be 'Ed25519', got '{}'",
+            jwk.crv
+        )));
     }
 
     // Decode the public key from base64url
-    let key_bytes = URL_SAFE_NO_PAD.decode(&jwk.x)
+    let key_bytes = URL_SAFE_NO_PAD
+        .decode(&jwk.x)
         .map_err(|e| CredentialError::Base64Decode(format!("jwk.x: {}", e)))?;
 
     if key_bytes.len() != 32 {
-        return Err(CredentialError::InvalidPublicKey(
-            format!("Ed25519 public key must be 32 bytes, got {}", key_bytes.len())
-        ));
+        return Err(CredentialError::InvalidPublicKey(format!(
+            "Ed25519 public key must be 32 bytes, got {}",
+            key_bytes.len()
+        )));
     }
 
     let mut pubkey = [0u8; 32];
@@ -153,7 +166,7 @@ fn extract_pubkey_from_jwk(header: &JwsHeader) -> Result<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{SigningKey, Signer};
+    use ed25519_dalek::{Signer, SigningKey};
 
     /// Create a test JWS with embedded JWK
     fn create_test_jws(payload: &str, signing_key: &SigningKey) -> String {
@@ -211,7 +224,10 @@ mod tests {
         let jws = format!("{}.cGF5bG9hZA.c2ln", header_b64);
 
         let result = verify_jws(&jws);
-        assert!(matches!(result, Err(CredentialError::UnsupportedAlgorithm(_))));
+        assert!(matches!(
+            result,
+            Err(CredentialError::UnsupportedAlgorithm(_))
+        ));
     }
 
     #[test]

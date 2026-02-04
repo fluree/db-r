@@ -75,7 +75,8 @@ impl<'a> super::Parser<'a> {
         }
 
         if conditions.is_empty() {
-            self.stream.error_at_current("expected at least one GROUP BY condition");
+            self.stream
+                .error_at_current("expected at least one GROUP BY condition");
             return None;
         }
 
@@ -167,7 +168,8 @@ impl<'a> super::Parser<'a> {
         }
 
         if conditions.is_empty() {
-            self.stream.error_at_current("expected at least one HAVING constraint");
+            self.stream
+                .error_at_current("expected at least one HAVING constraint");
             return None;
         }
 
@@ -297,9 +299,9 @@ impl<'a> super::Parser<'a> {
             let span = start.union(int_span);
             Some(OffsetClause::new(n as u64, span))
         } else {
-            self.stream.error_at_current("expected integer after OFFSET");
+            self.stream
+                .error_at_current("expected integer after OFFSET");
             None
         }
     }
-
 }

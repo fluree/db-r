@@ -9,7 +9,9 @@ use crate::ast::TriplePattern as SparqlTriplePattern;
 use fluree_db_query::ir::Pattern;
 use fluree_db_query::options::QueryOptions;
 use fluree_db_query::parse::encode::IriEncoder;
-use fluree_db_query::parse::{ConstructTemplate as QueryConstructTemplate, ParsedQuery, SelectMode};
+use fluree_db_query::parse::{
+    ConstructTemplate as QueryConstructTemplate, ParsedQuery, SelectMode,
+};
 use fluree_db_query::pattern::TriplePattern;
 
 use super::{LoweringContext, Result};
@@ -108,10 +110,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
     }
 
     /// Lower solution modifiers for CONSTRUCT (no GROUP BY/HAVING/aggregates).
-    fn lower_construct_modifiers(
-        &mut self,
-        modifiers: &SolutionModifiers,
-    ) -> Result<QueryOptions> {
+    fn lower_construct_modifiers(&mut self, modifiers: &SolutionModifiers) -> Result<QueryOptions> {
         let mut options = QueryOptions::default();
         self.lower_base_modifiers(modifiers, &mut options)?;
         Ok(options)

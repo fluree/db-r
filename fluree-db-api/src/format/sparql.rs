@@ -196,13 +196,11 @@ fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Result<Option<
                         })))
                     }
                 }
-                FlakeValue::Long(n) => {
-                    Ok(Some(json!({
-                        "type": "literal",
-                        "value": n.to_string(),
-                        "datatype": dt_iri
-                    })))
-                }
+                FlakeValue::Long(n) => Ok(Some(json!({
+                    "type": "literal",
+                    "value": n.to_string(),
+                    "datatype": dt_iri
+                }))),
                 FlakeValue::Double(d) => {
                     // Handle special float values
                     let value_str = if d.is_nan() {
@@ -257,42 +255,32 @@ fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Result<Option<
                     ))
                 }
                 // Extended numeric types
-                FlakeValue::BigInt(n) => {
-                    Ok(Some(json!({
-                        "type": "literal",
-                        "value": n.to_string(),
-                        "datatype": dt_iri
-                    })))
-                }
-                FlakeValue::Decimal(d) => {
-                    Ok(Some(json!({
-                        "type": "literal",
-                        "value": d.to_string(),
-                        "datatype": dt_iri
-                    })))
-                }
+                FlakeValue::BigInt(n) => Ok(Some(json!({
+                    "type": "literal",
+                    "value": n.to_string(),
+                    "datatype": dt_iri
+                }))),
+                FlakeValue::Decimal(d) => Ok(Some(json!({
+                    "type": "literal",
+                    "value": d.to_string(),
+                    "datatype": dt_iri
+                }))),
                 // Temporal types
-                FlakeValue::DateTime(dt) => {
-                    Ok(Some(json!({
-                        "type": "literal",
-                        "value": dt.to_string(),
-                        "datatype": dt_iri
-                    })))
-                }
-                FlakeValue::Date(d) => {
-                    Ok(Some(json!({
-                        "type": "literal",
-                        "value": d.to_string(),
-                        "datatype": dt_iri
-                    })))
-                }
-                FlakeValue::Time(t) => {
-                    Ok(Some(json!({
-                        "type": "literal",
-                        "value": t.to_string(),
-                        "datatype": dt_iri
-                    })))
-                }
+                FlakeValue::DateTime(dt) => Ok(Some(json!({
+                    "type": "literal",
+                    "value": dt.to_string(),
+                    "datatype": dt_iri
+                }))),
+                FlakeValue::Date(d) => Ok(Some(json!({
+                    "type": "literal",
+                    "value": d.to_string(),
+                    "datatype": dt_iri
+                }))),
+                FlakeValue::Time(t) => Ok(Some(json!({
+                    "type": "literal",
+                    "value": t.to_string(),
+                    "datatype": dt_iri
+                }))),
             }
         }
 

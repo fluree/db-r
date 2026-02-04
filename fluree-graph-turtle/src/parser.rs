@@ -323,12 +323,8 @@ impl<'a, S: GraphSink> Parser<'a, S> {
                 self.advance();
                 Ok(self.sink.term_blank(None))
             }
-            TokenKind::LBracket => {
-                self.parse_blank_node_property_list()
-            }
-            TokenKind::LParen => {
-                self.parse_collection()
-            }
+            TokenKind::LBracket => self.parse_blank_node_property_list(),
+            TokenKind::LParen => self.parse_collection(),
             TokenKind::Nil => {
                 // Empty collection () is tokenized as Nil
                 self.advance();
@@ -358,7 +354,9 @@ impl<'a, S: GraphSink> Parser<'a, S> {
                     TokenKind::LangTag(lang) => {
                         let lang = lang.clone();
                         self.advance();
-                        Ok(self.sink.term_literal(&value, Datatype::rdf_lang_string(), Some(&lang)))
+                        Ok(self
+                            .sink
+                            .term_literal(&value, Datatype::rdf_lang_string(), Some(&lang)))
                     }
                     TokenKind::DoubleCaret => {
                         self.advance();
@@ -375,7 +373,9 @@ impl<'a, S: GraphSink> Parser<'a, S> {
             TokenKind::Integer(n) => {
                 let n = *n;
                 self.advance();
-                Ok(self.sink.term_literal_value(LiteralValue::Integer(n), Datatype::xsd_integer()))
+                Ok(self
+                    .sink
+                    .term_literal_value(LiteralValue::Integer(n), Datatype::xsd_integer()))
             }
             TokenKind::Decimal(s) => {
                 let s = s.clone();
@@ -385,15 +385,21 @@ impl<'a, S: GraphSink> Parser<'a, S> {
             TokenKind::Double(n) => {
                 let n = *n;
                 self.advance();
-                Ok(self.sink.term_literal_value(LiteralValue::Double(n), Datatype::xsd_double()))
+                Ok(self
+                    .sink
+                    .term_literal_value(LiteralValue::Double(n), Datatype::xsd_double()))
             }
             TokenKind::KwTrue => {
                 self.advance();
-                Ok(self.sink.term_literal_value(LiteralValue::Boolean(true), Datatype::xsd_boolean()))
+                Ok(self
+                    .sink
+                    .term_literal_value(LiteralValue::Boolean(true), Datatype::xsd_boolean()))
             }
             TokenKind::KwFalse => {
                 self.advance();
-                Ok(self.sink.term_literal_value(LiteralValue::Boolean(false), Datatype::xsd_boolean()))
+                Ok(self
+                    .sink
+                    .term_literal_value(LiteralValue::Boolean(false), Datatype::xsd_boolean()))
             }
             _ => Err(TurtleError::parse(
                 self.current().start,
@@ -507,7 +513,11 @@ impl<'a, S: GraphSink> Parser<'a, S> {
             // (letters followed by letters/digits/+/-/.)
             let potential_scheme = &reference[..colon_pos];
             if !potential_scheme.is_empty()
-                && potential_scheme.chars().next().unwrap().is_ascii_alphabetic()
+                && potential_scheme
+                    .chars()
+                    .next()
+                    .unwrap()
+                    .is_ascii_alphabetic()
                 && potential_scheme
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
@@ -532,9 +542,10 @@ impl<'a, S: GraphSink> Parser<'a, S> {
         let (base_scheme, base_authority, base_path, _base_query) = parse_iri_components(base);
 
         // RFC3986 Section 5.2.2 - Transform References
-        let (scheme, authority, path, query) = if reference.starts_with("//") {
+        let (scheme, authority, path, query) = if let Some(stripped) = reference.strip_prefix("//")
+        {
             // Reference has authority - use base scheme only
-            let (ref_authority, ref_path, ref_query) = parse_hier_part(&reference[2..]);
+            let (ref_authority, ref_path, ref_query) = parse_hier_part(stripped);
             (
                 base_scheme.to_string(),
                 Some(ref_authority),
@@ -550,13 +561,13 @@ impl<'a, S: GraphSink> Parser<'a, S> {
                 remove_dot_segments(ref_path),
                 ref_query.map(|s| s.to_string()),
             )
-        } else if reference.starts_with('?') {
+        } else if let Some(stripped) = reference.strip_prefix('?') {
             // Query-only reference
             (
                 base_scheme.to_string(),
                 base_authority.map(|s| s.to_string()),
                 base_path.to_string(),
-                Some(reference[1..].to_string()),
+                Some(stripped.to_string()),
             )
         } else if reference.starts_with('#') {
             // Fragment-only reference (fragment not typically in IRI, but handle gracefully)
@@ -626,16 +637,12 @@ fn parse_iri_components(iri: &str) -> (&str, Option<&str>, &str, Option<&str>) {
     };
 
     // Check for authority (starts with //)
-    let (authority, path_query) = if rest.starts_with("//") {
-        let after_slashes = &rest[2..];
+    let (authority, path_query) = if let Some(after_slashes) = rest.strip_prefix("//") {
         // Authority ends at /, ?, or #
         let auth_end = after_slashes
-            .find(|c| c == '/' || c == '?' || c == '#')
+            .find(['/', '?', '#'])
             .unwrap_or(after_slashes.len());
-        (
-            Some(&after_slashes[..auth_end]),
-            &after_slashes[auth_end..],
-        )
+        (Some(&after_slashes[..auth_end]), &after_slashes[auth_end..])
     } else {
         (None, rest)
     };
@@ -649,9 +656,7 @@ fn parse_iri_components(iri: &str) -> (&str, Option<&str>, &str, Option<&str>) {
 /// Parse hierarchical part after "//" - returns (authority, path, query).
 fn parse_hier_part(s: &str) -> (String, String, Option<String>) {
     // Authority ends at /, ?, or #
-    let auth_end = s
-        .find(|c| c == '/' || c == '?' || c == '#')
-        .unwrap_or(s.len());
+    let auth_end = s.find(['/', '?', '#']).unwrap_or(s.len());
     let authority = s[..auth_end].to_string();
     let rest = &s[auth_end..];
 
@@ -725,7 +730,9 @@ mod tests {
         assert_eq!(graph.len(), 1);
         let triple = graph.iter().next().unwrap();
         assert!(matches!(&triple.s, Term::Iri(iri) if iri.as_ref() == "http://example.org/alice"));
-        assert!(matches!(&triple.p, Term::Iri(iri) if iri.as_ref() == "http://xmlns.com/foaf/0.1/name"));
+        assert!(
+            matches!(&triple.p, Term::Iri(iri) if iri.as_ref() == "http://xmlns.com/foaf/0.1/name")
+        );
     }
 
     #[test]
@@ -740,7 +747,9 @@ mod tests {
         assert_eq!(graph.len(), 1);
         let triple = graph.iter().next().unwrap();
         assert!(matches!(&triple.s, Term::Iri(iri) if iri.as_ref() == "http://example.org/alice"));
-        assert!(matches!(&triple.p, Term::Iri(iri) if iri.as_ref() == "http://xmlns.com/foaf/0.1/name"));
+        assert!(
+            matches!(&triple.p, Term::Iri(iri) if iri.as_ref() == "http://xmlns.com/foaf/0.1/name")
+        );
     }
 
     #[test]
@@ -849,7 +858,11 @@ mod tests {
 
         assert_eq!(graph.len(), 1);
         let triple = graph.iter().next().unwrap();
-        if let Term::Literal { value: LiteralValue::Integer(n), .. } = &triple.o {
+        if let Term::Literal {
+            value: LiteralValue::Integer(n),
+            ..
+        } = &triple.o
+        {
             assert_eq!(*n, 30);
         } else {
             panic!("Expected integer literal");
@@ -866,7 +879,11 @@ mod tests {
 
         assert_eq!(graph.len(), 1);
         let triple = graph.iter().next().unwrap();
-        if let Term::Literal { value: LiteralValue::Boolean(b), .. } = &triple.o {
+        if let Term::Literal {
+            value: LiteralValue::Boolean(b),
+            ..
+        } = &triple.o
+        {
             assert!(*b);
         } else {
             panic!("Expected boolean literal");
@@ -932,14 +949,20 @@ mod tests {
         let alice_triple = triples.iter().find(|t| {
             matches!(&t.o, Term::Literal { value, .. } if matches!(value, fluree_graph_ir::LiteralValue::String(s) if s.as_ref() == "Alice"))
         }).unwrap();
-        assert!(matches!(&alice_triple.s, Term::Iri(iri) if iri.as_ref() == "http://example.org/path/alice"));
-        assert!(matches!(&alice_triple.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/path/name"));
+        assert!(
+            matches!(&alice_triple.s, Term::Iri(iri) if iri.as_ref() == "http://example.org/path/alice")
+        );
+        assert!(
+            matches!(&alice_triple.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/path/name")
+        );
 
         let bob_triple = triples.iter().find(|t| {
             matches!(&t.o, Term::Literal { value, .. } if matches!(value, fluree_graph_ir::LiteralValue::String(s) if s.as_ref() == "Bob"))
         }).unwrap();
         // ../bob from http://example.org/path/ should resolve to http://example.org/bob
-        assert!(matches!(&bob_triple.s, Term::Iri(iri) if iri.as_ref() == "http://example.org/bob"));
+        assert!(
+            matches!(&bob_triple.s, Term::Iri(iri) if iri.as_ref() == "http://example.org/bob")
+        );
     }
 
     #[test]

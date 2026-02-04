@@ -24,11 +24,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+use fluree_db_core::db::Db;
 use fluree_db_core::{alias as core_alias, NodeCache, Storage};
 use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{NameService, NsRecord};
 use fluree_db_novelty::Novelty;
-use fluree_db_core::db::Db;
 use tokio::sync::{oneshot, Mutex, RwLock};
 
 use crate::error::{ApiError, Result};
@@ -272,7 +272,10 @@ impl<S: Storage + Clone + 'static, C: NodeCache> LedgerHandle<S, C> {
         (
             state.t(),
             state.index_t(),
-            state.ns_record.as_ref().and_then(|r| r.index_address.clone()),
+            state
+                .ns_record
+                .as_ref()
+                .and_then(|r| r.index_address.clone()),
         )
     }
 
@@ -422,8 +425,8 @@ where
     pub async fn get_or_load(&self, alias: &str) -> Result<LedgerHandle<S, C>> {
         // Normalize alias to canonical form for consistent cache keys
         // This ensures "mydb" and "mydb:main" use the same cache entry
-        let canonical_alias = core_alias::normalize_alias(alias)
-            .unwrap_or_else(|_| alias.to_string());
+        let canonical_alias =
+            core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
 
         // Fast path: already loaded
         {
@@ -519,8 +522,7 @@ where
                 // Capture error with status code for waiters before consuming the error
                 // Note: Waiters receive an Http error (preserving status code);
                 // the leader (first caller) gets the original error type preserved.
-                let error_for_waiters =
-                    Arc::new(ApiError::http(e.status_code(), e.to_string()));
+                let error_for_waiters = Arc::new(ApiError::http(e.status_code(), e.to_string()));
 
                 // Notify waiters of failure
                 if let Some(LoadState::Loading(waiters)) = entries.remove(&canonical_alias) {
@@ -541,8 +543,8 @@ where
     /// cancellation errors. This is acceptable - disconnect is a "force evict."
     pub async fn disconnect(&self, alias: &str) {
         // Normalize alias to match cache key format
-        let canonical_alias = core_alias::normalize_alias(alias)
-            .unwrap_or_else(|_| alias.to_string());
+        let canonical_alias =
+            core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
 
         let mut entries = self.entries.write().await;
         // Removal will drop any pending oneshot senders, causing waiters to get RecvError
@@ -580,8 +582,8 @@ where
     /// - None → Ok(()) (not loaded, nothing to reload)
     pub async fn reload(&self, alias: &str) -> Result<()> {
         // Normalize alias to match cache key format
-        let canonical_alias = core_alias::normalize_alias(alias)
-            .unwrap_or_else(|_| alias.to_string());
+        let canonical_alias =
+            core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
 
         enum ReloadAction<S, C> {
             BecomeLeader(LedgerHandle<S, C>),
@@ -854,7 +856,9 @@ impl UpdatePlan {
         if ns.commit_t == local_t {
             // Commits are in sync - check if index advanced
             match (&ns.index_address, local_index_address) {
-                (Some(ns_idx), Some(local_idx)) if ns_idx != local_idx && ns.index_t > local_index_t => {
+                (Some(ns_idx), Some(local_idx))
+                    if ns_idx != local_idx && ns.index_t > local_index_t =>
+                {
                     // Index advanced, same commit_t
                     UpdatePlan::IndexOnly {
                         index_address: ns_idx.clone(),
@@ -985,7 +989,10 @@ where
         match plan {
             UpdatePlan::Noop => Ok(NotifyResult::Current),
 
-            UpdatePlan::IndexOnly { index_address, index_t } => {
+            UpdatePlan::IndexOnly {
+                index_address,
+                index_t,
+            } => {
                 // v1: Fall back to full reload
                 // Future: reload index root at index_address, rebuild novelty for commits > index_t
                 tracing::debug!(
@@ -998,7 +1005,10 @@ where
                 Ok(NotifyResult::IndexUpdated)
             }
 
-            UpdatePlan::CommitNext { commit_address, commit_t } => {
+            UpdatePlan::CommitNext {
+                commit_address,
+                commit_t,
+            } => {
                 // v1: Fall back to full reload
                 // Future: load single commit at commit_address, apply to novelty
                 tracing::debug!(
@@ -1079,7 +1089,12 @@ mod tests {
     // UpdatePlan::plan() tests - Clojure parity scenarios
     // ========================================================================
 
-    fn make_ns_record(commit_t: i64, index_t: i64, commit_addr: Option<&str>, index_addr: Option<&str>) -> NsRecord {
+    fn make_ns_record(
+        commit_t: i64,
+        index_t: i64,
+        commit_addr: Option<&str>,
+        index_addr: Option<&str>,
+    ) -> NsRecord {
         NsRecord {
             address: "test:main".to_string(),
             alias: "test:main".to_string(),
@@ -1213,8 +1228,8 @@ mod tests {
     #[tokio::test]
     async fn test_disconnect_all_clears_entries() {
         use fluree_db_core::MemoryStorage;
-        use fluree_db_nameservice::memory::MemoryNameService;
         use fluree_db_core::SimpleCache;
+        use fluree_db_nameservice::memory::MemoryNameService;
 
         let storage = MemoryStorage::new();
         let cache = Arc::new(SimpleCache::new(100));
@@ -1247,8 +1262,8 @@ mod tests {
     #[tokio::test]
     async fn test_shutdown_flag_prevents_reinsertion() {
         use fluree_db_core::MemoryStorage;
-        use fluree_db_nameservice::memory::MemoryNameService;
         use fluree_db_core::SimpleCache;
+        use fluree_db_nameservice::memory::MemoryNameService;
 
         let storage = MemoryStorage::new();
         let cache = Arc::new(SimpleCache::new(100));
@@ -1267,7 +1282,10 @@ mod tests {
             // The shutdown guard in get_or_load checks is_shutdown() before inserting.
             // Verify the flag is set so the guard would skip insertion.
             if !mgr.shutdown.load(Ordering::Acquire) {
-                entries.insert("should_not_appear:main".to_string(), LoadState::Loading(Vec::new()));
+                entries.insert(
+                    "should_not_appear:main".to_string(),
+                    LoadState::Loading(Vec::new()),
+                );
             }
         }
 

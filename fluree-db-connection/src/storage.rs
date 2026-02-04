@@ -2,9 +2,9 @@
 
 use crate::config::{CacheConfig, StorageConfig, StorageType};
 use crate::error::{ConnectionError, Result};
-use fluree_db_core::{MemoryStorage, SimpleCache};
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 use fluree_db_core::FileStorage;
+use fluree_db_core::{MemoryStorage, SimpleCache};
 
 /// Create a memory storage instance
 pub fn create_memory_storage() -> MemoryStorage {

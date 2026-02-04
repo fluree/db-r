@@ -208,9 +208,9 @@ impl Ord for LiteralValue {
             (LiteralValue::String(a), LiteralValue::String(b)) => a.cmp(b),
             (LiteralValue::Boolean(a), LiteralValue::Boolean(b)) => a.cmp(b),
             (LiteralValue::Integer(a), LiteralValue::Integer(b)) => a.cmp(b),
-            (LiteralValue::Double(a), LiteralValue::Double(b)) => {
-                a.partial_cmp(b).unwrap_or_else(|| a.to_bits().cmp(&b.to_bits()))
-            }
+            (LiteralValue::Double(a), LiteralValue::Double(b)) => a
+                .partial_cmp(b)
+                .unwrap_or_else(|| a.to_bits().cmp(&b.to_bits())),
             (LiteralValue::Json(a), LiteralValue::Json(b)) => a.cmp(b),
             _ => Ordering::Equal, // Should not happen
         }

@@ -8,17 +8,13 @@ use serde::{Deserialize, Serialize};
 /// Deployment mode for a search provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum DeploymentMode {
     /// Embedded mode: index loaded locally, scoring happens in-process.
+    #[default]
     Embedded,
     /// Remote mode: search delegated to a remote search service.
     Remote,
-}
-
-impl Default for DeploymentMode {
-    fn default() -> Self {
-        DeploymentMode::Embedded
-    }
 }
 
 /// Search deployment configuration.

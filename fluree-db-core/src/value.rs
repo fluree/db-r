@@ -254,7 +254,8 @@ impl FlakeValue {
             (FlakeValue::Long(a), FlakeValue::Long(b)) => Some(a.cmp(b)),
             (FlakeValue::Double(a), FlakeValue::Double(b)) => {
                 // Handle NaN: use bit comparison as fallback for total ordering
-                a.partial_cmp(b).or_else(|| Some(a.to_bits().cmp(&b.to_bits())))
+                a.partial_cmp(b)
+                    .or_else(|| Some(a.to_bits().cmp(&b.to_bits())))
             }
             (FlakeValue::BigInt(a), FlakeValue::BigInt(b)) => Some((**a).cmp(&**b)),
             (FlakeValue::Decimal(a), FlakeValue::Decimal(b)) => {
@@ -278,17 +279,11 @@ impl FlakeValue {
             }
 
             // === Long vs BigInt ===
-            (FlakeValue::Long(a), FlakeValue::BigInt(b)) => {
-                Some(BigInt::from(*a).cmp(&**b))
-            }
-            (FlakeValue::BigInt(a), FlakeValue::Long(b)) => {
-                Some((**a).cmp(&BigInt::from(*b)))
-            }
+            (FlakeValue::Long(a), FlakeValue::BigInt(b)) => Some(BigInt::from(*a).cmp(&**b)),
+            (FlakeValue::BigInt(a), FlakeValue::Long(b)) => Some((**a).cmp(&BigInt::from(*b))),
 
             // === Long vs Decimal ===
-            (FlakeValue::Long(a), FlakeValue::Decimal(b)) => {
-                BigDecimal::from(*a).partial_cmp(&**b)
-            }
+            (FlakeValue::Long(a), FlakeValue::Decimal(b)) => BigDecimal::from(*a).partial_cmp(&**b),
             (FlakeValue::Decimal(a), FlakeValue::Long(b)) => {
                 (**a).partial_cmp(&BigDecimal::from(*b))
             }
@@ -304,11 +299,9 @@ impl FlakeValue {
             }
 
             // === Double vs Decimal ===
-            (FlakeValue::Double(a), FlakeValue::Decimal(b)) => {
-                BigDecimal::try_from(*a)
-                    .ok()
-                    .and_then(|a_dec| a_dec.partial_cmp(&**b))
-            }
+            (FlakeValue::Double(a), FlakeValue::Decimal(b)) => BigDecimal::try_from(*a)
+                .ok()
+                .and_then(|a_dec| a_dec.partial_cmp(&**b)),
             (FlakeValue::Decimal(_), FlakeValue::Double(_)) => {
                 other.numeric_cmp(self).map(Ordering::reverse)
             }
@@ -352,9 +345,9 @@ impl FlakeValue {
             (FlakeValue::Ref(a), FlakeValue::Ref(b)) => a.cmp(b),
             (FlakeValue::Boolean(a), FlakeValue::Boolean(b)) => a.cmp(b),
             (FlakeValue::Long(a), FlakeValue::Long(b)) => a.cmp(b),
-            (FlakeValue::Double(a), FlakeValue::Double(b)) => {
-                a.partial_cmp(b).unwrap_or_else(|| a.to_bits().cmp(&b.to_bits()))
-            }
+            (FlakeValue::Double(a), FlakeValue::Double(b)) => a
+                .partial_cmp(b)
+                .unwrap_or_else(|| a.to_bits().cmp(&b.to_bits())),
             (FlakeValue::BigInt(a), FlakeValue::BigInt(b)) => a.cmp(b),
             (FlakeValue::Decimal(a), FlakeValue::Decimal(b)) => {
                 a.partial_cmp(b).unwrap_or(Ordering::Equal)
@@ -377,7 +370,9 @@ impl FlakeValue {
                 }
                 // Lexicographic with NaN handling
                 for (x, y) in a.iter().zip(b.iter()) {
-                    let cmp = x.partial_cmp(y).unwrap_or_else(|| x.to_bits().cmp(&y.to_bits()));
+                    let cmp = x
+                        .partial_cmp(y)
+                        .unwrap_or_else(|| x.to_bits().cmp(&y.to_bits()));
                     if cmp != Ordering::Equal {
                         return cmp;
                     }
@@ -647,7 +642,7 @@ impl std::hash::Hash for FlakeValue {
                 if normalized.is_integer() {
                     // Integer decimal: hash as BigInt
                     0u8.hash(state); // integer tag
-                    // Extract integer part via with_scale(0)
+                                     // Extract integer part via with_scale(0)
                     let int_part = normalized.with_scale(0);
                     // Get digits and sign
                     let (digits, _scale) = int_part.as_bigint_and_exponent();
@@ -1018,10 +1013,19 @@ mod tests {
         let h_decimal = compute_hash(&decimal_3);
         let h_decimal_00 = compute_hash(&decimal_3_00);
 
-        assert_eq!(h_long, h_double, "Long(3) and Double(3.0) must hash equally");
+        assert_eq!(
+            h_long, h_double,
+            "Long(3) and Double(3.0) must hash equally"
+        );
         assert_eq!(h_long, h_bigint, "Long(3) and BigInt(3) must hash equally");
-        assert_eq!(h_long, h_decimal, "Long(3) and Decimal(3) must hash equally");
-        assert_eq!(h_decimal, h_decimal_00, "Decimal(3) and Decimal(3.00) must hash equally");
+        assert_eq!(
+            h_long, h_decimal,
+            "Long(3) and Decimal(3) must hash equally"
+        );
+        assert_eq!(
+            h_decimal, h_decimal_00,
+            "Decimal(3) and Decimal(3.00) must hash equally"
+        );
     }
 
     #[test]
@@ -1089,7 +1093,9 @@ mod tests {
 
     #[test]
     fn test_bigint_comparison() {
-        let big = FlakeValue::BigInt(Box::new(BigInt::parse_bytes(b"99999999999999999999", 10).unwrap()));
+        let big = FlakeValue::BigInt(Box::new(
+            BigInt::parse_bytes(b"99999999999999999999", 10).unwrap(),
+        ));
         let small = FlakeValue::Long(100);
         let double = FlakeValue::Double(1e18);
 
@@ -1210,7 +1216,11 @@ mod tests {
                 }
                 set.len()
             };
-            assert_eq!(unique_count, hashes.len(), "Hash collision detected in test values");
+            assert_eq!(
+                unique_count,
+                hashes.len(),
+                "Hash collision detected in test values"
+            );
         }
     }
 }

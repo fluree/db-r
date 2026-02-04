@@ -211,7 +211,6 @@ impl<S: Storage + Clone + 'static, C: NodeCache + 'static> FlureeView<S, C> {
             view.db.alias.as_str(),
         )
     }
-
 }
 
 impl<S: Storage + Clone + 'static> FlureeView<S, fluree_db_core::SimpleCache> {
@@ -239,12 +238,14 @@ impl<S: Storage + Clone + 'static> FlureeView<S, fluree_db_core::SimpleCache> {
         let mut combined = (*base.novelty).clone();
         let staged_flakes = staged.view.staged_flakes().to_vec();
         if !staged_flakes.is_empty() {
-            combined.apply_commit(staged_flakes, staged_t).map_err(|e| {
-                crate::ApiError::internal(format!(
-                    "Failed to merge staged flakes into novelty: {}",
-                    e
-                ))
-            })?;
+            combined
+                .apply_commit(staged_flakes, staged_t)
+                .map_err(|e| {
+                    crate::ApiError::internal(format!(
+                        "Failed to merge staged flakes into novelty: {}",
+                        e
+                    ))
+                })?;
         }
 
         let combined = Arc::new(combined);
@@ -542,13 +543,7 @@ mod tests {
         let novelty = Arc::new(Novelty::new(0));
         let overlay = novelty.clone() as Arc<dyn OverlayProvider>;
 
-        let view = FlureeView::new(
-            Arc::new(db),
-            overlay,
-            Some(novelty),
-            5,
-            "test:main",
-        );
+        let view = FlureeView::new(Arc::new(db), overlay, Some(novelty), 5, "test:main");
 
         assert_eq!(view.to_t, 5);
         assert_eq!(&*view.ledger_alias, "test:main");

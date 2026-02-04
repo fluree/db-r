@@ -43,7 +43,10 @@ async fn seed_user_data(fluree: &support::MemoryFluree, alias: &str) {
         ]
     });
 
-    let _ = fluree.insert(ledger0, &txn).await.expect("seed should succeed");
+    let _ = fluree
+        .insert(ledger0, &txn)
+        .await
+        .expect("seed should succeed");
 }
 
 /// Test f:allow false for property-level deny.
@@ -94,8 +97,14 @@ async fn policy_allow_false_denies_property() {
         }
     });
 
-    let result = fluree.query_connection(&query_ssn).await.expect("query_connection");
-    let ledger = fluree.ledger("policy/allow-false:main").await.expect("ledger");
+    let result = fluree
+        .query_connection(&query_ssn)
+        .await
+        .expect("query_connection");
+    let ledger = fluree
+        .ledger("policy/allow-false:main")
+        .await
+        .expect("ledger");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
 
     // SSN should be denied, so WHERE can't match
@@ -124,7 +133,10 @@ async fn policy_allow_false_denies_property() {
         }
     });
 
-    let result_name = fluree.query_connection(&query_name).await.expect("query_connection");
+    let result_name = fluree
+        .query_connection(&query_name)
+        .await
+        .expect("query_connection");
     let jsonld_name = result_name.to_jsonld(&ledger.db).expect("to_jsonld");
 
     assert_eq!(
@@ -189,8 +201,14 @@ async fn policy_allow_precedence_over_fquery() {
         }
     });
 
-    let result = fluree.query_connection(&query).await.expect("query_connection");
-    let ledger = fluree.ledger("policy/allow-precedence:main").await.expect("ledger");
+    let result = fluree
+        .query_connection(&query)
+        .await
+        .expect("query_connection");
+    let ledger = fluree
+        .ledger("policy/allow-precedence:main")
+        .await
+        .expect("ledger");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
 
     // f:allow: false should override f:query
@@ -241,7 +259,10 @@ async fn policy_onclass_with_fquery() {
         }
     });
 
-    let result = fluree.query_connection(&query).await.expect("query_connection");
+    let result = fluree
+        .query_connection(&query)
+        .await
+        .expect("query_connection");
     let ledger = fluree.ledger("policy/onclass:main").await.expect("ledger");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
 
@@ -308,8 +329,14 @@ async fn policy_onclass_with_fquery_this_check() {
         }
     });
 
-    let result = fluree.query_connection(&query).await.expect("query_connection");
-    let ledger = fluree.ledger("policy/onclass-fquery:main").await.expect("ledger");
+    let result = fluree
+        .query_connection(&query)
+        .await
+        .expect("query_connection");
+    let ledger = fluree
+        .ledger("policy/onclass-fquery:main")
+        .await
+        .expect("ledger");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
 
     // Alice (User, age 30) and Carol (Admin) should be visible
@@ -377,18 +404,21 @@ async fn policy_onproperty_with_fquery() {
         }
     });
 
-    let result = fluree.query_connection(&query).await.expect("query_connection");
-    let ledger = fluree.ledger("policy/onprop-fquery:main").await.expect("ledger");
+    let result = fluree
+        .query_connection(&query)
+        .await
+        .expect("query_connection");
+    let ledger = fluree
+        .ledger("policy/onprop-fquery:main")
+        .await
+        .expect("ledger");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
 
     // Only Alice (age 30) and Carol (age 35) have SSN visible
     // Bob (age 25) SSN is denied by f:query
     assert_eq!(
         normalize_rows(&jsonld),
-        normalize_rows(&json!([
-            ["Alice", "111-11-1111"],
-            ["Carol", "333-33-3333"]
-        ])),
+        normalize_rows(&json!([["Alice", "111-11-1111"], ["Carol", "333-33-3333"]])),
         "f:onProperty with f:query should conditionally allow SSN based on age"
     );
 }
@@ -445,8 +475,14 @@ async fn policy_onproperty_multiple_values() {
         }
     });
 
-    let result = fluree.query_connection(&query).await.expect("query_connection");
-    let ledger = fluree.ledger("policy/onprop-multi:main").await.expect("ledger");
+    let result = fluree
+        .query_connection(&query)
+        .await
+        .expect("query_connection");
+    let ledger = fluree
+        .ledger("policy/onprop-multi:main")
+        .await
+        .expect("ledger");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
 
     // Age is denied, so WHERE clause fails to match
@@ -475,7 +511,10 @@ async fn policy_onproperty_multiple_values() {
         }
     });
 
-    let result_name = fluree.query_connection(&query_name).await.expect("query_connection");
+    let result_name = fluree
+        .query_connection(&query_name)
+        .await
+        .expect("query_connection");
     let jsonld_name = result_name.to_jsonld(&ledger.db).expect("to_jsonld");
 
     assert_eq!(
@@ -540,7 +579,10 @@ async fn policy_required_flag() {
         }
     });
 
-    let result = fluree.query_connection(&query).await.expect("query_connection");
+    let result = fluree
+        .query_connection(&query)
+        .await
+        .expect("query_connection");
     let ledger = fluree.ledger("policy/required:main").await.expect("ledger");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
 
@@ -601,8 +643,14 @@ async fn policy_onclass_and_onproperty_combined() {
         }
     });
 
-    let result = fluree.query_connection(&query).await.expect("query_connection");
-    let ledger = fluree.ledger("policy/combined-targeting:main").await.expect("ledger");
+    let result = fluree
+        .query_connection(&query)
+        .await
+        .expect("query_connection");
+    let ledger = fluree
+        .ledger("policy/combined-targeting:main")
+        .await
+        .expect("ledger");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
 
     // Only Carol (Admin) SSN should be visible

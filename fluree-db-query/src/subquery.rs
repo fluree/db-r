@@ -20,10 +20,10 @@
 //! - If `?s` is bound in the parent, the subquery filters to only those `?s` values
 //! - Results are merged back to the parent solution
 
+use crate::aggregate::AggregateOperator;
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::distinct::DistinctOperator;
-use crate::aggregate::AggregateOperator;
 use crate::error::{QueryError, Result};
 use crate::execute::build_where_operators_seeded;
 use crate::groupby::GroupByOperator;
@@ -288,10 +288,16 @@ impl<S: Storage + 'static, C: NodeCache + 'static> SubqueryOperator<S, C> {
         let needs_grouping =
             !self.subquery.group_by.is_empty() || !self.subquery.aggregates.is_empty();
         if needs_grouping {
-            operator = Box::new(GroupByOperator::new(operator, self.subquery.group_by.clone()));
+            operator = Box::new(GroupByOperator::new(
+                operator,
+                self.subquery.group_by.clone(),
+            ));
         }
         if !self.subquery.aggregates.is_empty() {
-            operator = Box::new(AggregateOperator::new(operator, self.subquery.aggregates.clone()));
+            operator = Box::new(AggregateOperator::new(
+                operator,
+                self.subquery.aggregates.clone(),
+            ));
         }
         if let Some(ref having) = self.subquery.having {
             operator = Box::new(HavingOperator::new(operator, having.clone()));

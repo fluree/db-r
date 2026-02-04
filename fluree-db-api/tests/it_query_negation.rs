@@ -97,7 +97,12 @@ async fn exists_when_pattern_present_returns_subjects() {
         ]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(rows, json!(["ex:alice"]));
 }
 
@@ -116,7 +121,12 @@ async fn exists_when_pattern_absent_returns_no_subjects() {
         ]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(rows, json!([]));
 }
 
@@ -135,10 +145,15 @@ async fn not_exists_filters_subjects_without_nickname() {
         ]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&rows),
-        normalize_rows(&json!(["ex:bob","ex:carol"]))
+        normalize_rows(&json!(["ex:bob", "ex:carol"]))
     );
 }
 
@@ -157,7 +172,12 @@ async fn not_exists_when_everyone_has_family_name_returns_none() {
         ]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(rows, json!([]));
 }
 
@@ -176,7 +196,12 @@ async fn not_exists_all_variables_filters_everything() {
         ]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(rows, json!([]));
 }
 
@@ -197,7 +222,12 @@ async fn not_exists_all_literals_filters_everything_when_match_exists() {
         ]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(rows, json!([]));
 }
 
@@ -217,12 +247,17 @@ async fn minus_removes_bound_solutions() {
         ]
     });
 
-    let result = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
 
     // Rust selectDistinct returns an array of scalar rows (one column).
     assert_eq!(
         normalize_rows(&filter_rows_subject_ex(&result)),
-        normalize_rows(&json!(["ex:alice","ex:carol"]))
+        normalize_rows(&json!(["ex:alice", "ex:carol"]))
     );
 }
 
@@ -241,19 +276,28 @@ async fn minus_all_variables_has_no_common_bindings_removes_nothing() {
         ]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     // Compare as sets: order isn't stable.
     assert_eq!(
         normalize_rows(&filter_rows_subject_ex(&rows)),
         normalize_rows(&json!([
-            ["ex:alice","http://www.w3.org/1999/02/22-rdf-syntax-ns#type","ex:Person"],
-            ["ex:alice","ex:familyName","Smith"],
-            ["ex:alice","ex:givenName","Alice"],
-            ["ex:alice","ex:nickname","Ali"],
-            ["ex:bob","ex:familyName","Jones"],
-            ["ex:bob","ex:givenName","Bob"],
-            ["ex:carol","ex:familyName","Smith"],
-            ["ex:carol","ex:givenName","Carol"]
+            [
+                "ex:alice",
+                "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+                "ex:Person"
+            ],
+            ["ex:alice", "ex:familyName", "Smith"],
+            ["ex:alice", "ex:givenName", "Alice"],
+            ["ex:alice", "ex:nickname", "Ali"],
+            ["ex:bob", "ex:familyName", "Jones"],
+            ["ex:bob", "ex:givenName", "Bob"],
+            ["ex:carol", "ex:familyName", "Smith"],
+            ["ex:carol", "ex:givenName", "Carol"]
         ]))
     );
 }
@@ -273,18 +317,27 @@ async fn minus_all_literals_no_common_bindings_removes_nothing() {
         ]
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&filter_rows_subject_ex(&rows)),
         normalize_rows(&json!([
-            ["ex:alice","http://www.w3.org/1999/02/22-rdf-syntax-ns#type","ex:Person"],
-            ["ex:alice","ex:familyName","Smith"],
-            ["ex:alice","ex:givenName","Alice"],
-            ["ex:alice","ex:nickname","Ali"],
-            ["ex:bob","ex:familyName","Jones"],
-            ["ex:bob","ex:givenName","Bob"],
-            ["ex:carol","ex:familyName","Smith"],
-            ["ex:carol","ex:givenName","Carol"]
+            [
+                "ex:alice",
+                "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+                "ex:Person"
+            ],
+            ["ex:alice", "ex:familyName", "Smith"],
+            ["ex:alice", "ex:givenName", "Alice"],
+            ["ex:alice", "ex:nickname", "Ali"],
+            ["ex:bob", "ex:familyName", "Jones"],
+            ["ex:bob", "ex:givenName", "Bob"],
+            ["ex:carol", "ex:familyName", "Smith"],
+            ["ex:carol", "ex:givenName", "Carol"]
         ]))
     );
 }
@@ -317,7 +370,12 @@ async fn inner_filter_not_exists_vs_minus_behavior_matches_clojure() {
             ]
         ]
     });
-    let r1 = fluree.query(&ledger, &q_not_exists).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let r1 = fluree
+        .query(&ledger, &q_not_exists)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(r1, json!([["ex:b", 3.0]]));
 
     let q_minus = json!({
@@ -331,10 +389,14 @@ async fn inner_filter_not_exists_vs_minus_behavior_matches_clojure() {
             ]
         ]
     });
-    let r2 = fluree.query(&ledger, &q_minus).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let r2 = fluree
+        .query(&ledger, &q_minus)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&r2),
         normalize_rows(&json!([["ex:a", 1], ["ex:b", 3.0]]))
     );
 }
-

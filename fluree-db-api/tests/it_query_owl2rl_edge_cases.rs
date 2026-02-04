@@ -78,7 +78,12 @@ async fn owl2rl_allvaluesfrom_with_inverse_property() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     assert!(
@@ -95,7 +100,12 @@ async fn owl2rl_allvaluesfrom_with_inverse_property() {
         "reasoning": "owl2rl"
     });
 
-    let rows2 = fluree.query(&ledger, &q2).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows2 = fluree
+        .query(&ledger, &q2)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results2 = normalize_rows(&rows2);
 
     assert!(
@@ -170,7 +180,12 @@ async fn owl2rl_multi_same_property_restrictions() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     assert!(
@@ -242,15 +257,35 @@ async fn owl2rl_union_3_plus_branches() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     // All 4 union members should be MultiTarget
-    assert!(results.contains(&json!("ex:prot1")), "Protein should be MultiTarget");
-    assert!(results.contains(&json!("ex:rec1")), "Receptor should be MultiTarget");
-    assert!(results.contains(&json!("ex:enz1")), "Enzyme should be MultiTarget");
-    assert!(results.contains(&json!("ex:ab1")), "Antibody should be MultiTarget");
-    assert!(!results.contains(&json!("ex:other1")), "Unrelated should NOT be MultiTarget");
+    assert!(
+        results.contains(&json!("ex:prot1")),
+        "Protein should be MultiTarget"
+    );
+    assert!(
+        results.contains(&json!("ex:rec1")),
+        "Receptor should be MultiTarget"
+    );
+    assert!(
+        results.contains(&json!("ex:enz1")),
+        "Enzyme should be MultiTarget"
+    );
+    assert!(
+        results.contains(&json!("ex:ab1")),
+        "Antibody should be MultiTarget"
+    );
+    assert!(
+        !results.contains(&json!("ex:other1")),
+        "Unrelated should NOT be MultiTarget"
+    );
 }
 
 #[tokio::test]
@@ -306,12 +341,26 @@ async fn owl2rl_nested_unions() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
-    assert!(results.contains(&json!("ex:simple1")), "SimpleTarget should be NestedTarget");
-    assert!(results.contains(&json!("ex:complexA1")), "ComplexA should be NestedTarget (via inner union)");
-    assert!(results.contains(&json!("ex:complexB1")), "ComplexB should be NestedTarget (via inner union)");
+    assert!(
+        results.contains(&json!("ex:simple1")),
+        "SimpleTarget should be NestedTarget"
+    );
+    assert!(
+        results.contains(&json!("ex:complexA1")),
+        "ComplexA should be NestedTarget (via inner union)"
+    );
+    assert!(
+        results.contains(&json!("ex:complexB1")),
+        "ComplexB should be NestedTarget (via inner union)"
+    );
 }
 
 #[tokio::test]
@@ -377,7 +426,12 @@ async fn owl2rl_union_with_intersection() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     assert!(
@@ -442,7 +496,12 @@ async fn owl2rl_inverse_in_deeper_chain() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     assert!(
@@ -459,7 +518,12 @@ async fn owl2rl_inverse_in_deeper_chain() {
         "reasoning": "owl2rl"
     });
 
-    let rows2 = fluree.query(&ledger, &q2).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows2 = fluree
+        .query(&ledger, &q2)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results2 = normalize_rows(&rows2);
 
     assert!(
@@ -509,7 +573,12 @@ async fn owl2rl_double_inverse_normalization() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     assert!(
@@ -526,7 +595,12 @@ async fn owl2rl_double_inverse_normalization() {
         "reasoning": "owl2rl"
     });
 
-    let rows2 = fluree.query(&ledger, &q2).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows2 = fluree
+        .query(&ledger, &q2)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results2 = normalize_rows(&rows2);
 
     assert!(
@@ -603,7 +677,12 @@ async fn owl2rl_partial_conditions_no_inference() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     assert!(
@@ -672,7 +751,12 @@ async fn owl2rl_hasvalue_class_to_property_entailment() {
         "reasoning": "owl2rl"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     let results = normalize_rows(&rows);
 
     assert!(

@@ -10,8 +10,8 @@ use super::split::{finalize_root, split_branch_if_needed, split_leaf_if_needed};
 use crate::config::IndexerConfig;
 use crate::error::Result;
 use crate::writer::IndexWriter;
-use fluree_db_core::index::ChildRef;
 use fluree_db_core::flake::size_flakes_estimate;
+use fluree_db_core::index::ChildRef;
 use fluree_db_core::{ContentAddressedWrite, IndexType, Storage};
 use fluree_db_novelty::Novelty;
 use std::collections::HashMap;
@@ -81,7 +81,8 @@ impl RefreshStats {
         self.nodes_written += other.nodes_written;
         self.nodes_reused += other.nodes_reused;
         self.flake_bytes_delta += other.flake_bytes_delta;
-        self.replaced_nodes.extend(other.replaced_nodes.iter().cloned());
+        self.replaced_nodes
+            .extend(other.replaced_nodes.iter().cloned());
     }
 }
 
@@ -167,22 +168,14 @@ pub async fn integrate_novelty<S: Storage + ContentAddressedWrite>(
                 match &node.content {
                     ResolvedContent::Leaf(flakes) => {
                         // Process leaf: merge novelty, dedup, split if needed
-                        let new_children = process_leaf(
-                            &node.child_ref,
-                            flakes,
-                            &input,
-                            writer,
-                            &mut stats,
-                        )
-                        .await?;
+                        let new_children =
+                            process_leaf(&node.child_ref, flakes, &input, writer, &mut stats)
+                                .await?;
                         result_stack.push(new_children);
                     }
                     ResolvedContent::Branch(children) => {
                         // Find which children are affected by novelty
-                        let affected = find_affected_children_for_novelty(
-                            children,
-                            &input,
-                        );
+                        let affected = find_affected_children_for_novelty(children, &input);
 
                         if affected.is_empty() {
                             // No children affected - reuse this branch
@@ -282,10 +275,7 @@ pub async fn integrate_novelty<S: Storage + ContentAddressedWrite>(
     // Finalize root with invariant checks
     let new_root = finalize_root(final_children, input.config, writer).await?;
 
-    Ok(RefreshResult {
-        new_root,
-        stats,
-    })
+    Ok(RefreshResult { new_root, stats })
 }
 
 /// Process a leaf node: merge novelty, dedup, split if needed
@@ -315,11 +305,7 @@ async fn process_leaf<S: ContentAddressedWrite>(
     );
 
     // Merge and dedup
-    let merged = merge_and_dedup(
-        existing_flakes,
-        novelty_iter.cloned(),
-        input.index_type,
-    );
+    let merged = merge_and_dedup(existing_flakes, novelty_iter.cloned(), input.index_type);
 
     let new_bytes: u64 = if input.index_type == IndexType::Spot {
         size_flakes_estimate(&merged)
@@ -469,7 +455,10 @@ mod tests {
         let mut replacements = HashMap::new();
         replacements.insert(
             1,
-            vec![make_child_ref("new1a", false), make_child_ref("new1b", false)],
+            vec![
+                make_child_ref("new1a", false),
+                make_child_ref("new1b", false),
+            ],
         );
 
         let result = reconstruct_children(&original, replacements);
@@ -491,7 +480,13 @@ mod tests {
 
         let mut replacements = HashMap::new();
         replacements.insert(0, vec![make_child_ref("new0", true)]);
-        replacements.insert(2, vec![make_child_ref("new2a", false), make_child_ref("new2b", false)]);
+        replacements.insert(
+            2,
+            vec![
+                make_child_ref("new2a", false),
+                make_child_ref("new2b", false),
+            ],
+        );
 
         let result = reconstruct_children(&original, replacements);
 

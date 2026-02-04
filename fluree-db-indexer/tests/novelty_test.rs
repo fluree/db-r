@@ -2,7 +2,9 @@ use fluree_db_core::cache::SimpleCache;
 use fluree_db_core::range::{range, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::storage::MemoryStorage;
 use fluree_db_core::{Db, Flake, FlakeValue, IndexType, Sid};
-use fluree_db_indexer::{batched_rebuild_from_commits, refresh_index, BatchedRebuildConfig, IndexerConfig};
+use fluree_db_indexer::{
+    batched_rebuild_from_commits, refresh_index, BatchedRebuildConfig, IndexerConfig,
+};
 use fluree_db_novelty::{Commit, Novelty};
 use std::collections::HashMap;
 
@@ -14,10 +16,7 @@ fn flake(sid_s: Sid, sid_p: Sid, o: FlakeValue, dt: Sid, t: i64, op: bool) -> Fl
     Flake::new(sid_s, sid_p, o, dt, t, op, None)
 }
 
-async fn query_subject(
-    db: &Db<MemoryStorage, SimpleCache>,
-    subject: &Sid,
-) -> Vec<Flake> {
+async fn query_subject(db: &Db<MemoryStorage, SimpleCache>, subject: &Sid) -> Vec<Flake> {
     range(
         db,
         IndexType::Spot,
@@ -67,9 +66,13 @@ async fn refresh_respects_time_range_for_novelty() {
         .expect("base rebuild should succeed")
         .index_result;
 
-    let base_db = Db::load(storage.clone(), SimpleCache::new(10_000), &base.root_address)
-        .await
-        .expect("base Db load should succeed");
+    let base_db = Db::load(
+        storage.clone(),
+        SimpleCache::new(10_000),
+        &base.root_address,
+    )
+    .await
+    .expect("base Db load should succeed");
 
     // Novelty: t=2 and t=3 updates
     let mut novelty = Novelty::new(base_db.t);
@@ -104,17 +107,25 @@ async fn refresh_respects_time_range_for_novelty() {
     let refreshed = refresh_index(&storage, &base_db, &novelty, 2, config.clone())
         .await
         .expect("refresh should succeed");
-    let refreshed_db = Db::load(storage.clone(), SimpleCache::new(10_000), &refreshed.root_address)
-        .await
-        .expect("refreshed db should load");
+    let refreshed_db = Db::load(
+        storage.clone(),
+        SimpleCache::new(10_000),
+        &refreshed.root_address,
+    )
+    .await
+    .expect("refreshed db should load");
 
     let flakes = query_subject(&refreshed_db, &alice).await;
     assert!(
-        flakes.iter().any(|f| matches!(f.o, FlakeValue::String(ref s) if s == "Alice-2")),
+        flakes
+            .iter()
+            .any(|f| matches!(f.o, FlakeValue::String(ref s) if s == "Alice-2")),
         "t=2 value should be visible"
     );
     assert!(
-        !flakes.iter().any(|f| matches!(f.o, FlakeValue::String(ref s) if s == "Alice-3")),
+        !flakes
+            .iter()
+            .any(|f| matches!(f.o, FlakeValue::String(ref s) if s == "Alice-3")),
         "t=3 value should be excluded when target_t=2"
     );
 }

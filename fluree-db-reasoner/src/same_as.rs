@@ -144,7 +144,10 @@ impl SameAsTracker {
         // 2. Bucket elements by root
         let mut root_to_members: HashMap<Sid, Vec<Sid>> = HashMap::new();
         for (elem, root) in &element_to_root {
-            root_to_members.entry(root.clone()).or_default().push(elem.clone());
+            root_to_members
+                .entry(root.clone())
+                .or_default()
+                .push(elem.clone());
         }
 
         // 3. Convert to Arc<[Sid]> for cheap sharing
@@ -209,7 +212,10 @@ impl FrozenSameAs {
     pub fn expand(&self, x: Sid) -> &[Sid] {
         // First get canonical, then look up members
         if let Some(root) = self.canonical.get(&x) {
-            self.members.get(root).map(|arc| arc.as_ref()).unwrap_or(EMPTY_SIDS)
+            self.members
+                .get(root)
+                .map(|arc| arc.as_ref())
+                .unwrap_or(EMPTY_SIDS)
         } else {
             EMPTY_SIDS
         }
@@ -239,7 +245,9 @@ impl FrozenSameAs {
     ///
     /// Returns an iterator over (root, members) pairs.
     pub fn members_iter(&self) -> impl Iterator<Item = (&Sid, &[Sid])> {
-        self.members.iter().map(|(root, members)| (root, members.as_ref()))
+        self.members
+            .iter()
+            .map(|(root, members)| (root, members.as_ref()))
     }
 }
 

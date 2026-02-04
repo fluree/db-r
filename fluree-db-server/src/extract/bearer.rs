@@ -62,9 +62,9 @@ impl EventsPrincipal {
 /// # Behavior by Auth Mode
 /// - `None`: Always returns `MaybeBearer(None)`, token ignored
 /// - `Optional`: Returns `MaybeBearer(Some(principal))` if token valid,
-///               `MaybeBearer(None)` if no token, 401 if invalid token
+///   `MaybeBearer(None)` if no token, 401 if invalid token
 /// - `Required`: Returns `MaybeBearer(Some(principal))` if token valid,
-///               401 if no token or invalid token
+///   401 if no token or invalid token
 #[derive(Debug)]
 pub struct MaybeBearer(pub Option<EventsPrincipal>);
 
@@ -158,11 +158,7 @@ fn verify_token(token: &str, config: &EventsAuthConfig) -> Result<MaybeBearer, S
             .unwrap_or_default()
             .into_iter()
             .collect(),
-        allowed_vgs: payload
-            .events_vgs
-            .unwrap_or_default()
-            .into_iter()
-            .collect(),
+        allowed_vgs: payload.events_vgs.unwrap_or_default().into_iter().collect(),
         // Storage proxy permissions
         storage_all: payload.storage_all.unwrap_or(false),
         storage_ledgers: payload
@@ -179,8 +175,8 @@ fn verify_token(token: &str, config: &EventsAuthConfig) -> Result<MaybeBearer, S
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-    use ed25519_dalek::{SigningKey, Signer};
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use ed25519_dalek::{Signer, SigningKey};
     use fluree_db_credential::did_from_pubkey;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -279,7 +275,10 @@ mod tests {
     #[test]
     fn test_extract_bearer_token_wrong_scheme() {
         let mut headers = HeaderMap::new();
-        headers.insert(AUTHORIZATION, HeaderValue::from_static("Basic dXNlcjpwYXNz"));
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Basic dXNlcjpwYXNz"),
+        );
         assert_eq!(extract_bearer_token(&headers), None);
     }
 

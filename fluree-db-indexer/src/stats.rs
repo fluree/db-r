@@ -188,6 +188,7 @@ impl Default for PropertyHll {
 /// Uses `HllSketch256` (p=8) for direct serialization and incremental merging.
 /// This is feature-gated behind `hll-stats` (default enabled).
 #[cfg(feature = "hll-stats")]
+#[derive(Default)]
 pub struct HllStatsHook {
     flake_count: usize,
     /// Per-property HLL sketches, keyed by predicate SID
@@ -195,15 +196,6 @@ pub struct HllStatsHook {
 }
 
 #[cfg(feature = "hll-stats")]
-impl Default for HllStatsHook {
-    fn default() -> Self {
-        Self {
-            flake_count: 0,
-            properties: HashMap::new(),
-        }
-    }
-}
-
 #[cfg(feature = "hll-stats")]
 impl HllStatsHook {
     /// Create a new HLL stats hook
@@ -243,9 +235,7 @@ impl IndexStatsHook for HllStatsHook {
         self.flake_count += 1;
 
         // Get or create property entry
-        let entry = self.properties
-            .entry(flake.p.clone())
-            .or_insert_with(PropertyHll::new);
+        let entry = self.properties.entry(flake.p.clone()).or_default();
 
         // Update count
         if flake.op {
@@ -270,7 +260,8 @@ impl IndexStatsHook for HllStatsHook {
 
     fn finalize(self: Box<Self>) -> StatsArtifacts {
         // Convert property HLLs to PropertyStatEntry, sorted by SID for determinism
-        let mut entries: Vec<PropertyStatEntry> = self.properties
+        let mut entries: Vec<PropertyStatEntry> = self
+            .properties
             .into_iter()
             .map(|(sid, hll)| PropertyStatEntry {
                 sid: (sid.namespace_code, sid.name.to_string()),
@@ -282,16 +273,17 @@ impl IndexStatsHook for HllStatsHook {
             .collect();
 
         // Sort by SID for deterministic output: namespace_code first, then name
-        entries.sort_by(|a, b| {
-            a.sid.0.cmp(&b.sid.0)
-                .then_with(|| a.sid.1.cmp(&b.sid.1))
-        });
+        entries.sort_by(|a, b| a.sid.0.cmp(&b.sid.0).then_with(|| a.sid.1.cmp(&b.sid.1)));
 
         StatsArtifacts {
             artifact_addresses: vec![], // Sketch addresses added by caller if persisted
             summary: StatsSummary {
                 flake_count: self.flake_count,
-                properties: if entries.is_empty() { None } else { Some(entries) },
+                properties: if entries.is_empty() {
+                    None
+                } else {
+                    Some(entries)
+                },
             },
         }
     }
@@ -316,7 +308,13 @@ fn hll_sketch_address(alias: &str, ns_code: i32, name: &str, t: i64, kind: &str)
     // Sanitize name for use in path (replace problematic characters)
     let safe_name: String = name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
 
     format!(
@@ -374,7 +372,9 @@ where
         storage
             .write_bytes(&values_addr, &values_bytes)
             .await
-            .map_err(|e| IndexerError::StorageWrite(format!("Failed to write values HLL: {}", e)))?;
+            .map_err(|e| {
+                IndexerError::StorageWrite(format!("Failed to write values HLL: {}", e))
+            })?;
         addresses.push(values_addr);
 
         // Write subjects sketch
@@ -383,7 +383,9 @@ where
         storage
             .write_bytes(&subjects_addr, &subjects_bytes)
             .await
-            .map_err(|e| IndexerError::StorageWrite(format!("Failed to write subjects HLL: {}", e)))?;
+            .map_err(|e| {
+                IndexerError::StorageWrite(format!("Failed to write subjects HLL: {}", e))
+            })?;
         addresses.push(subjects_addr);
     }
 
@@ -461,9 +463,7 @@ pub async fn load_hll_sketches<S: Storage>(
                 );
                 HllSketch256::new()
             }
-            Err(_) => {
-                HllSketch256::new()
-            }
+            Err(_) => HllSketch256::new(),
         };
 
         // Create PropertyHll with loaded sketches (or empty sketches with prior stats)
@@ -494,8 +494,20 @@ pub fn list_hll_sketch_addresses(
 
     for (sid, hll) in properties {
         let t = hll.last_modified_t;
-        addresses.push(hll_sketch_address(alias, sid.namespace_code, &sid.name, t, "values"));
-        addresses.push(hll_sketch_address(alias, sid.namespace_code, &sid.name, t, "subjects"));
+        addresses.push(hll_sketch_address(
+            alias,
+            sid.namespace_code,
+            &sid.name,
+            t,
+            "values",
+        ));
+        addresses.push(hll_sketch_address(
+            alias,
+            sid.namespace_code,
+            &sid.name,
+            t,
+            "subjects",
+        ));
     }
 
     addresses
@@ -852,14 +864,14 @@ mod tests {
             hll1.values_hll.insert_hash(0xfedcba0987654321);
             hll1.subjects_hll.insert_hash(0xaaaaaaaaaaaaaaaa);
             hll1.count = 10;
-            hll1.last_modified_t = 5;  // prop_a was modified at t=5
+            hll1.last_modified_t = 5; // prop_a was modified at t=5
             properties.insert(Sid::new(100, "prop_a"), hll1);
 
             let mut hll2 = PropertyHll::new();
             hll2.values_hll.insert_hash(0x1111111111111111);
             hll2.subjects_hll.insert_hash(0x2222222222222222);
             hll2.count = 5;
-            hll2.last_modified_t = 3;  // prop_b was modified at t=3
+            hll2.last_modified_t = 3; // prop_b was modified at t=3
             properties.insert(Sid::new(100, "prop_b"), hll2);
 
             // Persist sketches (each stored at its own last_modified_t)
@@ -877,14 +889,14 @@ mod tests {
                     count: 10,
                     ndv_values: 2,
                     ndv_subjects: 1,
-                    last_modified_t: 5,  // Must match the t used during persist
+                    last_modified_t: 5, // Must match the t used during persist
                 },
                 PropertyStatEntry {
                     sid: (100, "prop_b".to_string()),
                     count: 5,
                     ndv_values: 1,
                     ndv_subjects: 1,
-                    last_modified_t: 3,  // Must match the t used during persist
+                    last_modified_t: 3, // Must match the t used during persist
                 },
             ];
 
@@ -895,14 +907,25 @@ mod tests {
             assert_eq!(loaded.len(), 2);
 
             // Verify prop_a was loaded correctly
-            let loaded_a = loaded.get(&Sid::new(100, "prop_a")).expect("prop_a should exist");
+            let loaded_a = loaded
+                .get(&Sid::new(100, "prop_a"))
+                .expect("prop_a should exist");
             assert_eq!(loaded_a.count, 10);
             assert_eq!(loaded_a.last_modified_t, 5);
             // Verify sketch data was preserved (estimates should match)
-            assert_eq!(loaded_a.values_hll.estimate(), properties.get(&Sid::new(100, "prop_a")).unwrap().values_hll.estimate());
+            assert_eq!(
+                loaded_a.values_hll.estimate(),
+                properties
+                    .get(&Sid::new(100, "prop_a"))
+                    .unwrap()
+                    .values_hll
+                    .estimate()
+            );
 
             // Verify prop_b was loaded correctly
-            let loaded_b = loaded.get(&Sid::new(100, "prop_b")).expect("prop_b should exist");
+            let loaded_b = loaded
+                .get(&Sid::new(100, "prop_b"))
+                .expect("prop_b should exist");
             assert_eq!(loaded_b.count, 5);
             assert_eq!(loaded_b.last_modified_t, 3);
         }
@@ -949,10 +972,16 @@ mod tests {
             hll.last_modified_t = 5; // Same t - no change
             updated_properties.insert(Sid::new(100, "name"), hll);
 
-            let obsolete =
-                super::compute_obsolete_sketch_addresses("test/db", &prior_properties, &updated_properties);
+            let obsolete = super::compute_obsolete_sketch_addresses(
+                "test/db",
+                &prior_properties,
+                &updated_properties,
+            );
 
-            assert!(obsolete.is_empty(), "No obsolete addresses when t unchanged");
+            assert!(
+                obsolete.is_empty(),
+                "No obsolete addresses when t unchanged"
+            );
         }
 
         #[test]
@@ -971,13 +1000,20 @@ mod tests {
             hll.last_modified_t = 10; // New t - prior is obsolete
             updated_properties.insert(Sid::new(100, "name"), hll);
 
-            let obsolete =
-                super::compute_obsolete_sketch_addresses("test/db", &prior_properties, &updated_properties);
+            let obsolete = super::compute_obsolete_sketch_addresses(
+                "test/db",
+                &prior_properties,
+                &updated_properties,
+            );
 
             // Should have 2 obsolete addresses (values + subjects for prior t=5)
             assert_eq!(obsolete.len(), 2);
-            assert!(obsolete.iter().any(|a| a.contains("values") && a.contains("t5.hll")));
-            assert!(obsolete.iter().any(|a| a.contains("subjects") && a.contains("t5.hll")));
+            assert!(obsolete
+                .iter()
+                .any(|a| a.contains("values") && a.contains("t5.hll")));
+            assert!(obsolete
+                .iter()
+                .any(|a| a.contains("subjects") && a.contains("t5.hll")));
         }
 
         #[test]
@@ -993,13 +1029,20 @@ mod tests {
 
             let updated_properties: HashMap<Sid, PropertyHll> = HashMap::new();
 
-            let obsolete =
-                super::compute_obsolete_sketch_addresses("test/db", &prior_properties, &updated_properties);
+            let obsolete = super::compute_obsolete_sketch_addresses(
+                "test/db",
+                &prior_properties,
+                &updated_properties,
+            );
 
             // Property removed, so prior sketches are obsolete
             assert_eq!(obsolete.len(), 2);
-            assert!(obsolete.iter().any(|a| a.contains("values") && a.contains("t5.hll")));
-            assert!(obsolete.iter().any(|a| a.contains("subjects") && a.contains("t5.hll")));
+            assert!(obsolete
+                .iter()
+                .any(|a| a.contains("values") && a.contains("t5.hll")));
+            assert!(obsolete
+                .iter()
+                .any(|a| a.contains("subjects") && a.contains("t5.hll")));
         }
 
         #[test]
@@ -1034,8 +1077,11 @@ mod tests {
             hll_age.last_modified_t = 3;
             updated_properties.insert(Sid::new(100, "age"), hll_age);
 
-            let obsolete =
-                super::compute_obsolete_sketch_addresses("test/db", &prior_properties, &updated_properties);
+            let obsolete = super::compute_obsolete_sketch_addresses(
+                "test/db",
+                &prior_properties,
+                &updated_properties,
+            );
 
             // Only "name" at t=5 should be obsolete (2 addresses)
             // "age" at t=3 is unchanged
@@ -1056,10 +1102,16 @@ mod tests {
             hll.last_modified_t = 10;
             updated_properties.insert(Sid::new(100, "name"), hll);
 
-            let obsolete =
-                super::compute_obsolete_sketch_addresses("test/db", &prior_properties, &updated_properties);
+            let obsolete = super::compute_obsolete_sketch_addresses(
+                "test/db",
+                &prior_properties,
+                &updated_properties,
+            );
 
-            assert!(obsolete.is_empty(), "No prior properties means nothing obsolete");
+            assert!(
+                obsolete.is_empty(),
+                "No prior properties means nothing obsolete"
+            );
         }
 
         #[test]
@@ -1077,16 +1129,21 @@ mod tests {
             hll.last_modified_t = 100;
             updated_properties.insert(Sid::new(200, "email"), hll);
 
-            let obsolete =
-                super::compute_obsolete_sketch_addresses("mydb:main", &prior_properties, &updated_properties);
+            let obsolete = super::compute_obsolete_sketch_addresses(
+                "mydb:main",
+                &prior_properties,
+                &updated_properties,
+            );
 
             assert_eq!(obsolete.len(), 2);
             // Verify correct path format with alias normalization
             assert!(obsolete.contains(
-                &"fluree:file://mydb/main/index/stats-sketches/values/200_email_t42.hll".to_string()
+                &"fluree:file://mydb/main/index/stats-sketches/values/200_email_t42.hll"
+                    .to_string()
             ));
             assert!(obsolete.contains(
-                &"fluree:file://mydb/main/index/stats-sketches/subjects/200_email_t42.hll".to_string()
+                &"fluree:file://mydb/main/index/stats-sketches/subjects/200_email_t42.hll"
+                    .to_string()
             ));
         }
     }
@@ -1173,9 +1230,7 @@ impl SchemaExtractor {
         // rdfs:subClassOf - track class hierarchy
         if is_rdfs_subclass_of(&flake.p) {
             if let FlakeValue::Ref(parent_sid) = &flake.o {
-                let class_entry = self.entries
-                    .entry(flake.s.clone())
-                    .or_default();
+                let class_entry = self.entries.entry(flake.s.clone()).or_default();
 
                 if flake.op {
                     // Assertion: add parent class
@@ -1197,14 +1252,10 @@ impl SchemaExtractor {
             if let FlakeValue::Ref(parent_sid) = &flake.o {
                 if flake.op {
                     // Assertion: add parent property to subject, add child to parent
-                    let prop_entry = self.entries
-                        .entry(flake.s.clone())
-                        .or_default();
+                    let prop_entry = self.entries.entry(flake.s.clone()).or_default();
                     prop_entry.parent_props.insert(parent_sid.clone());
 
-                    let parent_entry = self.entries
-                        .entry(parent_sid.clone())
-                        .or_default();
+                    let parent_entry = self.entries.entry(parent_sid.clone()).or_default();
                     parent_entry.child_props.insert(flake.s.clone());
                 } else {
                     // Retraction: remove relationships
@@ -1231,7 +1282,8 @@ impl SchemaExtractor {
     /// or falls back to `fallback_t` if no schema flakes were processed.
     pub fn finalize(self, fallback_t: i64) -> Option<DbRootSchema> {
         // Filter out empty entries (all relationships removed)
-        let vals: Vec<SchemaPredicateInfo> = self.entries
+        let vals: Vec<SchemaPredicateInfo> = self
+            .entries
             .into_iter()
             .filter(|(_, entry)| {
                 // Keep entries that have at least one relationship
@@ -1251,7 +1303,11 @@ impl SchemaExtractor {
             None
         } else {
             Some(DbRootSchema {
-                t: if self.schema_t > 0 { self.schema_t } else { fallback_t },
+                t: if self.schema_t > 0 {
+                    self.schema_t
+                } else {
+                    fallback_t
+                },
                 pred: SchemaPredicates {
                     keys: vec![
                         "id".to_string(),
@@ -1350,13 +1406,19 @@ impl ClassPropertyExtractor {
                     let mut props = std::collections::HashMap::new();
                     for prop_usage in &class_entry.properties {
                         let prop_data = PropertyData {
-                            types: prop_usage.types.iter()
+                            types: prop_usage
+                                .types
+                                .iter()
                                 .map(|(sid, count)| (sid.clone(), *count as i64))
                                 .collect(),
-                            ref_classes: prop_usage.ref_classes.iter()
+                            ref_classes: prop_usage
+                                .ref_classes
+                                .iter()
                                 .map(|(sid, count)| (sid.clone(), *count as i64))
                                 .collect(),
-                            langs: prop_usage.langs.iter()
+                            langs: prop_usage
+                                .langs
+                                .iter()
                                 .map(|(lang, count)| (lang.clone(), *count as i64))
                                 .collect(),
                         };
@@ -1387,17 +1449,13 @@ impl ClassPropertyExtractor {
         }
 
         if let FlakeValue::Ref(class_sid) = &flake.o {
-            let classes = self.subject_classes
-                .entry(flake.s.clone())
-                .or_default();
+            let classes = self.subject_classes.entry(flake.s.clone()).or_default();
 
             if flake.op {
                 // Assertion: subject is instance of class
                 classes.insert(class_sid.clone());
                 // Update class count
-                let class_data = self.class_data
-                    .entry(class_sid.clone())
-                    .or_default();
+                let class_data = self.class_data.entry(class_sid.clone()).or_default();
                 class_data.count_delta += 1;
             } else {
                 // Retraction: subject is no longer instance of class
@@ -1431,18 +1489,12 @@ impl ClassPropertyExtractor {
 
         // For each class the subject belongs to, track property usage
         for class_sid in classes {
-            let class_data = self.class_data
-                .entry(class_sid)
-                .or_default();
+            let class_data = self.class_data.entry(class_sid).or_default();
 
-            let prop_data = class_data.properties
-                .entry(flake.p.clone())
-                .or_default();
+            let prop_data = class_data.properties.entry(flake.p.clone()).or_default();
 
             // Track datatype
-            let dt_count = prop_data.types
-                .entry(flake.dt.clone())
-                .or_insert(0);
+            let dt_count = prop_data.types.entry(flake.dt.clone()).or_insert(0);
             *dt_count += delta;
 
             // Track ref-class for @id refs
@@ -1452,9 +1504,8 @@ impl ClassPropertyExtractor {
                     // Look up class of referenced entity
                     if let Some(ref_classes) = self.subject_classes.get(ref_sid) {
                         for ref_class in ref_classes {
-                            let ref_count = prop_data.ref_classes
-                                .entry(ref_class.clone())
-                                .or_insert(0);
+                            let ref_count =
+                                prop_data.ref_classes.entry(ref_class.clone()).or_insert(0);
                             *ref_count += delta;
                         }
                     }
@@ -1466,9 +1517,7 @@ impl ClassPropertyExtractor {
             if flake.dt.namespace_code == RDF && flake.dt.name.as_ref() == "langString" {
                 if let Some(ref meta) = flake.m {
                     if let Some(ref lang) = meta.lang {
-                        let lang_count = prop_data.langs
-                            .entry(lang.clone())
-                            .or_insert(0);
+                        let lang_count = prop_data.langs.entry(lang.clone()).or_insert(0);
                         *lang_count += delta;
                     }
                 }
@@ -1485,22 +1534,25 @@ impl ClassPropertyExtractor {
         }
 
         // Convert to sorted output (determinism)
-        let mut entries: Vec<ClassStatEntry> = self.class_data
+        let mut entries: Vec<ClassStatEntry> = self
+            .class_data
             .into_iter()
             .filter(|(_, data)| data.count_delta > 0 || !data.properties.is_empty())
             .map(|(class_sid, data)| {
                 // Convert properties (sorted by property SID)
-                let mut properties: Vec<ClassPropertyUsage> = data.properties
+                let mut properties: Vec<ClassPropertyUsage> = data
+                    .properties
                     .into_iter()
                     .filter(|(_, prop_data)| {
                         // Keep if any count is positive
-                        prop_data.types.values().any(|&c| c > 0) ||
-                        prop_data.ref_classes.values().any(|&c| c > 0) ||
-                        prop_data.langs.values().any(|&c| c > 0)
+                        prop_data.types.values().any(|&c| c > 0)
+                            || prop_data.ref_classes.values().any(|&c| c > 0)
+                            || prop_data.langs.values().any(|&c| c > 0)
                     })
                     .map(|(property_sid, prop_data)| {
                         // Convert types (sorted by SID)
-                        let mut types: Vec<(Sid, u64)> = prop_data.types
+                        let mut types: Vec<(Sid, u64)> = prop_data
+                            .types
                             .into_iter()
                             .filter(|(_, count)| *count > 0)
                             .map(|(sid, count)| (sid, count.max(0) as u64))
@@ -1508,7 +1560,8 @@ impl ClassPropertyExtractor {
                         types.sort_by(|a, b| a.0.cmp(&b.0));
 
                         // Convert ref_classes (sorted by SID)
-                        let mut ref_classes: Vec<(Sid, u64)> = prop_data.ref_classes
+                        let mut ref_classes: Vec<(Sid, u64)> = prop_data
+                            .ref_classes
                             .into_iter()
                             .filter(|(_, count)| *count > 0)
                             .map(|(sid, count)| (sid, count.max(0) as u64))
@@ -1516,7 +1569,8 @@ impl ClassPropertyExtractor {
                         ref_classes.sort_by(|a, b| a.0.cmp(&b.0));
 
                         // Convert langs (sorted alphabetically)
-                        let mut langs: Vec<(String, u64)> = prop_data.langs
+                        let mut langs: Vec<(String, u64)> = prop_data
+                            .langs
                             .into_iter()
                             .filter(|(_, count)| *count > 0)
                             .map(|(lang, count)| (lang, count.max(0) as u64))
@@ -1562,7 +1616,10 @@ impl ClassPropertyExtractor {
     ///
     /// Used to incorporate class mappings retrieved from the index
     /// (subjects whose rdf:type was asserted in prior transactions).
-    pub fn merge_subject_classes(&mut self, index_classes: std::collections::HashMap<Sid, HashSet<Sid>>) {
+    pub fn merge_subject_classes(
+        &mut self,
+        index_classes: std::collections::HashMap<Sid, HashSet<Sid>>,
+    ) {
         for (subject, classes) in index_classes {
             // Only add if not already in novelty (novelty takes precedence)
             self.subject_classes.entry(subject).or_insert(classes);
@@ -1611,8 +1668,11 @@ where
     let match_val = RangeMatch::predicate(rdf_type_sid);
     let opts = RangeOptions::default();
 
-    let flakes = range(db, IndexType::Psot, RangeTest::Eq, match_val, opts).await
-        .map_err(|e| crate::error::IndexerError::InvalidConfig(format!("PSOT range query failed: {}", e)))?;
+    let flakes = range(db, IndexType::Psot, RangeTest::Eq, match_val, opts)
+        .await
+        .map_err(|e| {
+            crate::error::IndexerError::InvalidConfig(format!("PSOT range query failed: {}", e))
+        })?;
 
     // Filter to subjects we care about and build mapping
     let mut result: std::collections::HashMap<Sid, HashSet<Sid>> = std::collections::HashMap::new();
@@ -1620,7 +1680,8 @@ where
         if subjects.contains(&flake.s) && flake.op {
             // Only assertions (op=true) count
             if let FlakeValue::Ref(class_sid) = &flake.o {
-                result.entry(flake.s.clone())
+                result
+                    .entry(flake.s.clone())
                     .or_default()
                     .insert(class_sid.clone());
             }
@@ -1675,13 +1736,11 @@ where
     // Phase 2: Collect subjects we may need class membership for.
     // - subjects present in novelty
     // - referenced subjects from @id refs (so we can attribute ref-classes)
-    let novelty_subjects: HashSet<Sid> = novelty_flakes
-        .iter()
-        .map(|f| f.s.clone())
-        .collect();
+    let novelty_subjects: HashSet<Sid> = novelty_flakes.iter().map(|f| f.s.clone()).collect();
 
     // Also collect referenced subjects (@id refs) that might need class lookup
-    let referenced_subjects: HashSet<Sid> = novelty_flakes.iter()
+    let referenced_subjects: HashSet<Sid> = novelty_flakes
+        .iter()
         .filter(|f| f.dt.namespace_code == JSON_LD && f.dt.name.as_ref() == "id")
         .filter_map(|f| match &f.o {
             FlakeValue::Ref(ref_sid) => Some(ref_sid.clone()),
@@ -1799,12 +1858,13 @@ mod class_property_stats_tests {
             (EMPTY, "fluree:".to_string()),
             (JSON_LD, "ex:".to_string()),
             (XSD, "http://www.w3.org/2001/XMLSchema#".to_string()),
-            (RDF, "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string()),
+            (
+                RDF,
+                "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string(),
+            ),
         ]);
 
-        let base_flakes = vec![
-            make_type_flake("alice", "Person", 1, true),
-        ];
+        let base_flakes = vec![make_type_flake("alice", "Person", 1, true)];
 
         let indexer_config = IndexerConfig::small();
         let built = builder::build_index(
@@ -1847,14 +1907,23 @@ mod class_property_stats_tests {
         let classes = result.classes.expect("should have classes");
 
         // Expect both Person (base) and Employee (novelty) to exist.
-        assert!(classes.iter().any(|c| c.class_sid.name.as_ref() == "Person"));
-        assert!(classes.iter().any(|c| c.class_sid.name.as_ref() == "Employee"));
+        assert!(classes
+            .iter()
+            .any(|c| c.class_sid.name.as_ref() == "Person"));
+        assert!(classes
+            .iter()
+            .any(|c| c.class_sid.name.as_ref() == "Employee"));
 
         // The "name" property usage should be attributed to BOTH classes, since alice is in both.
         for class_name in ["Person", "Employee"] {
-            let c = classes.iter().find(|c| c.class_sid.name.as_ref() == class_name).unwrap();
+            let c = classes
+                .iter()
+                .find(|c| c.class_sid.name.as_ref() == class_name)
+                .unwrap();
             assert!(
-                c.properties.iter().any(|p| p.property_sid.name.as_ref() == "name"),
+                c.properties
+                    .iter()
+                    .any(|p| p.property_sid.name.as_ref() == "name"),
                 "expected name usage under class {class_name}"
             );
         }
@@ -1865,12 +1934,19 @@ mod class_property_stats_tests {
 mod schema_tests {
     use super::*;
 
-    fn make_schema_flake(subject: &str, predicate_ns: i32, predicate_name: &str, object: &str, t: i64, op: bool) -> Flake {
+    fn make_schema_flake(
+        subject: &str,
+        predicate_ns: i32,
+        predicate_name: &str,
+        object: &str,
+        t: i64,
+        op: bool,
+    ) -> Flake {
         Flake::new(
             Sid::new(100, subject),
             Sid::new(predicate_ns, predicate_name),
             FlakeValue::Ref(Sid::new(100, object)),
-            Sid::new(0, ""),  // dt not relevant for schema
+            Sid::new(0, ""), // dt not relevant for schema
             t,
             op,
             None,
@@ -1906,14 +1982,20 @@ mod schema_tests {
         assert_eq!(schema.pred.vals.len(), 2);
 
         // Find Person entry
-        let person = schema.pred.vals.iter()
+        let person = schema
+            .pred
+            .vals
+            .iter()
             .find(|v| v.id.name.as_ref() == "Person")
             .expect("Person should exist");
         assert_eq!(person.subclass_of.len(), 1);
         assert_eq!(person.subclass_of[0].name.as_ref(), "Thing");
 
         // Find Student entry
-        let student = schema.pred.vals.iter()
+        let student = schema
+            .pred
+            .vals
+            .iter()
             .find(|v| v.id.name.as_ref() == "Student")
             .expect("Student should exist");
         assert_eq!(student.subclass_of.len(), 1);
@@ -1938,14 +2020,20 @@ mod schema_tests {
         assert_eq!(schema.pred.vals.len(), 2); // givenName and name
 
         // givenName should have name as parent
-        let given_name = schema.pred.vals.iter()
+        let given_name = schema
+            .pred
+            .vals
+            .iter()
             .find(|v| v.id.name.as_ref() == "givenName")
             .expect("givenName should exist");
         assert_eq!(given_name.parent_props.len(), 1);
         assert_eq!(given_name.parent_props[0].name.as_ref(), "name");
 
         // name should have givenName as child
-        let name = schema.pred.vals.iter()
+        let name = schema
+            .pred
+            .vals
+            .iter()
             .find(|v| v.id.name.as_ref() == "name")
             .expect("name should exist");
         assert_eq!(name.child_props.len(), 1);
@@ -1987,15 +2075,18 @@ mod schema_tests {
         let prior = DbRootSchema {
             t: 1,
             pred: SchemaPredicates {
-                keys: vec!["id".to_string(), "subclassOf".to_string(), "parentProps".to_string(), "childProps".to_string()],
-                vals: vec![
-                    SchemaPredicateInfo {
-                        id: Sid::new(100, "Person"),
-                        subclass_of: vec![Sid::new(100, "Thing")],
-                        parent_props: vec![],
-                        child_props: vec![],
-                    },
+                keys: vec![
+                    "id".to_string(),
+                    "subclassOf".to_string(),
+                    "parentProps".to_string(),
+                    "childProps".to_string(),
                 ],
+                vals: vec![SchemaPredicateInfo {
+                    id: Sid::new(100, "Person"),
+                    subclass_of: vec![Sid::new(100, "Thing")],
+                    parent_props: vec![],
+                    child_props: vec![],
+                }],
             },
         };
 
@@ -2016,7 +2107,10 @@ mod schema_tests {
         assert_eq!(schema.pred.vals.len(), 2); // Person and Student
 
         // Person should still have Thing as parent
-        let person = schema.pred.vals.iter()
+        let person = schema
+            .pred
+            .vals
+            .iter()
             .find(|v| v.id.name.as_ref() == "Person")
             .expect("Person should exist");
         assert_eq!(person.subclass_of.len(), 1);

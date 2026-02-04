@@ -61,9 +61,9 @@ use crate::storage::Storage;
 #[cfg(feature = "native")]
 use crate::Db;
 #[cfg(feature = "native")]
-use std::sync::Arc;
-#[cfg(feature = "native")]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "native")]
+use std::sync::Arc;
 #[cfg(feature = "native")]
 use tokio::sync::{mpsc, Semaphore};
 
@@ -120,7 +120,7 @@ impl Default for PrefetchConfig {
             .map(|p| p.get())
             .unwrap_or(4);
 
-        let num_workers = (parallelism.saturating_sub(1)).max(1).min(DEFAULT_PREFETCH_WORKERS);
+        let num_workers = (parallelism.saturating_sub(1)).clamp(1, DEFAULT_PREFETCH_WORKERS);
         let queue_depth = num_workers * 8;
 
         Self {
@@ -260,7 +260,7 @@ where
                         req.history_mode,
                     )
                     .await;
-                    
+
                     PREFETCH_COMPLETED.fetch_add(1, Ordering::Relaxed);
                 });
             }

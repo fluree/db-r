@@ -22,7 +22,7 @@ use fluree_db_nameservice::{NameService, Publisher, VirtualGraphPublisher};
 use fluree_db_query::bm25::{Bm25Index, Bm25IndexProvider, Bm25SearchProvider, Bm25SearchResult};
 use fluree_db_query::error::{QueryError, Result as QueryResult};
 use std::sync::Arc;
-use tracing::{info, debug};
+use tracing::{debug, info};
 
 use crate::search::{DeploymentMode, EmbeddedBm25SearchProvider, SearchDeploymentConfig};
 
@@ -69,7 +69,8 @@ impl<'a, S: Storage + 'static, N> FlureeIndexProvider<'a, S, N> {
 
 impl<S: Storage + 'static, N> std::fmt::Debug for FlureeIndexProvider<'_, S, N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FlureeIndexProvider").finish_non_exhaustive()
+        f.debug_struct("FlureeIndexProvider")
+            .finish_non_exhaustive()
     }
 }
 
@@ -320,17 +321,16 @@ fn parse_deployment_from_vg_config(config_json: &str) -> QueryResult<SearchDeplo
     }
 
     // Parse the full config JSON
-    let config: serde_json::Value = serde_json::from_str(config_json).map_err(|e| {
-        QueryError::Internal(format!("Failed to parse VG config JSON: {}", e))
-    })?;
+    let config: serde_json::Value = serde_json::from_str(config_json)
+        .map_err(|e| QueryError::Internal(format!("Failed to parse VG config JSON: {}", e)))?;
 
     // Look for "deployment" field
     if let Some(deployment_value) = config.get("deployment") {
         // Parse deployment config
-        let deployment: SearchDeploymentConfig =
-            serde_json::from_value(deployment_value.clone()).map_err(|e| {
-                QueryError::Internal(format!("Failed to parse deployment config: {}", e))
-            })?;
+        let deployment: SearchDeploymentConfig = serde_json::from_value(deployment_value.clone())
+            .map_err(|e| {
+            QueryError::Internal(format!("Failed to parse deployment config: {}", e))
+        })?;
         return Ok(deployment);
     }
 

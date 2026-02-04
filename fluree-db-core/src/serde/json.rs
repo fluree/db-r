@@ -4,17 +4,17 @@ use crate::error::{Error, Result};
 use crate::flake::{Flake, FlakeMeta};
 use crate::index::ChildRef;
 use crate::sid::Sid;
-use crate::temporal::{DateTime, Date, Time};
+use crate::temporal::{Date, DateTime, Time};
 use crate::value::FlakeValue;
 use bigdecimal::BigDecimal;
 use fluree_vocab::xsd_names;
 use num_bigint::BigInt;
-use std::str::FromStr;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use simd_json::prelude::*;
-use std::cell::RefCell;
 use simd_json::{Deserializer, Node, StaticNode};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::str::FromStr;
 
 // Reuse simd-json parser buffers across many leaf parses (big win on cold scans).
 // Using thread-local avoids cross-thread mutability issues on native runtimes.
@@ -166,21 +166,21 @@ pub fn deserialize_object(value: &serde_json::Value, dt: &Sid) -> Result<FlakeVa
         if let serde_json::Value::String(s) = value {
             return DateTime::parse(s)
                 .map(|dt| FlakeValue::DateTime(Box::new(dt)))
-                .map_err(|e| Error::other(e));
+                .map_err(Error::other);
         }
     }
     if is_date_dt(dt) {
         if let serde_json::Value::String(s) = value {
             return Date::parse(s)
                 .map(|d| FlakeValue::Date(Box::new(d)))
-                .map_err(|e| Error::other(e));
+                .map_err(Error::other);
         }
     }
     if is_time_dt(dt) {
         if let serde_json::Value::String(s) = value {
             return Time::parse(s)
                 .map(|t| FlakeValue::Time(Box::new(t)))
-                .map_err(|e| Error::other(e));
+                .map_err(Error::other);
         }
     }
 
@@ -323,7 +323,8 @@ fn borrowed_sid_interned(
     }
     let ns_code = arr[0]
         .as_i64()
-        .ok_or_else(|| Error::other("SID namespace_code must be integer"))? as i32;
+        .ok_or_else(|| Error::other("SID namespace_code must be integer"))?
+        as i32;
     let name = arr[1]
         .as_str()
         .ok_or_else(|| Error::other("SID name must be string"))?;
@@ -345,12 +346,14 @@ fn borrowed_meta(value: &simd_json::BorrowedValue<'_>) -> Result<Option<FlakeMet
             }
         }
         // Integer metadata (hash for comparison)
-        simd_json::BorrowedValue::Static(simd_json::StaticNode::I64(n)) => {
-            Ok(Some(FlakeMeta { lang: None, i: Some(*n as i32) }))
-        }
-        simd_json::BorrowedValue::Static(simd_json::StaticNode::U64(n)) => {
-            Ok(Some(FlakeMeta { lang: None, i: Some(*n as i32) }))
-        }
+        simd_json::BorrowedValue::Static(simd_json::StaticNode::I64(n)) => Ok(Some(FlakeMeta {
+            lang: None,
+            i: Some(*n as i32),
+        })),
+        simd_json::BorrowedValue::Static(simd_json::StaticNode::U64(n)) => Ok(Some(FlakeMeta {
+            lang: None,
+            i: Some(*n as i32),
+        })),
         _ => Ok(None),
     }
 }
@@ -371,21 +374,21 @@ fn borrowed_object_interned(
         if let simd_json::BorrowedValue::String(s) = value {
             return DateTime::parse(s)
                 .map(|dt| FlakeValue::DateTime(Box::new(dt)))
-                .map_err(|e| Error::other(e));
+                .map_err(Error::other);
         }
     }
     if is_date_dt(dt) {
         if let simd_json::BorrowedValue::String(s) = value {
             return Date::parse(s)
                 .map(|d| FlakeValue::Date(Box::new(d)))
-                .map_err(|e| Error::other(e));
+                .map_err(Error::other);
         }
     }
     if is_time_dt(dt) {
         if let simd_json::BorrowedValue::String(s) = value {
             return Time::parse(s)
                 .map(|t| FlakeValue::Time(Box::new(t)))
-                .map_err(|e| Error::other(e));
+                .map_err(Error::other);
         }
     }
 
@@ -440,10 +443,16 @@ fn borrowed_object_interned(
     // Default deserialization based on JSON type
     match value {
         simd_json::BorrowedValue::Static(simd_json::StaticNode::Null) => Ok(FlakeValue::Null),
-        simd_json::BorrowedValue::Static(simd_json::StaticNode::Bool(b)) => Ok(FlakeValue::Boolean(*b)),
+        simd_json::BorrowedValue::Static(simd_json::StaticNode::Bool(b)) => {
+            Ok(FlakeValue::Boolean(*b))
+        }
         simd_json::BorrowedValue::Static(simd_json::StaticNode::I64(n)) => Ok(FlakeValue::Long(*n)),
-        simd_json::BorrowedValue::Static(simd_json::StaticNode::U64(n)) => Ok(FlakeValue::Long(*n as i64)),
-        simd_json::BorrowedValue::Static(simd_json::StaticNode::F64(f)) => Ok(FlakeValue::Double(*f)),
+        simd_json::BorrowedValue::Static(simd_json::StaticNode::U64(n)) => {
+            Ok(FlakeValue::Long(*n as i64))
+        }
+        simd_json::BorrowedValue::Static(simd_json::StaticNode::F64(f)) => {
+            Ok(FlakeValue::Double(*f))
+        }
         simd_json::BorrowedValue::String(s) => Ok(FlakeValue::String(s.to_string())),
 
         // Arrays: could be a SID even if dt isn't $id (backwards-compat with old encoding)
@@ -489,8 +498,12 @@ fn parse_leaf_node_interned_borrowed(
         && obj.get("dict").is_some();
 
     if is_v2 {
-        let dict_val = obj.get("dict").ok_or_else(|| Error::other("v2 leaf missing dict"))?;
-        let dict_arr = dict_val.as_array().ok_or_else(|| Error::other("v2 dict must be an array"))?;
+        let dict_val = obj
+            .get("dict")
+            .ok_or_else(|| Error::other("v2 leaf missing dict"))?;
+        let dict_arr = dict_val
+            .as_array()
+            .ok_or_else(|| Error::other("v2 dict must be an array"))?;
 
         // Intern dict SIDs once; flakes will clone cheap Arcs.
         let mut sid_dict: Vec<Sid> = Vec::with_capacity(dict_arr.len());
@@ -507,24 +520,52 @@ fn parse_leaf_node_interned_borrowed(
                 return Err(Error::other("Dict flake must have 7 elements"));
             }
 
-            let s_idx = flake[0].as_i64().ok_or_else(|| Error::other("s_idx must be integer"))? as usize;
-            let p_idx = flake[1].as_i64().ok_or_else(|| Error::other("p_idx must be integer"))? as usize;
-            let dt_idx = flake[3].as_i64().ok_or_else(|| Error::other("dt_idx must be integer"))? as usize;
+            let s_idx = flake[0]
+                .as_i64()
+                .ok_or_else(|| Error::other("s_idx must be integer"))?
+                as usize;
+            let p_idx = flake[1]
+                .as_i64()
+                .ok_or_else(|| Error::other("p_idx must be integer"))?
+                as usize;
+            let dt_idx = flake[3]
+                .as_i64()
+                .ok_or_else(|| Error::other("dt_idx must be integer"))?
+                as usize;
 
-            let s = sid_dict.get(s_idx).cloned().ok_or_else(|| Error::other(format!("Invalid s_idx: {}", s_idx)))?;
-            let p = sid_dict.get(p_idx).cloned().ok_or_else(|| Error::other(format!("Invalid p_idx: {}", p_idx)))?;
-            let dt = sid_dict.get(dt_idx).cloned().ok_or_else(|| Error::other(format!("Invalid dt_idx: {}", dt_idx)))?;
+            let s = sid_dict
+                .get(s_idx)
+                .cloned()
+                .ok_or_else(|| Error::other(format!("Invalid s_idx: {}", s_idx)))?;
+            let p = sid_dict
+                .get(p_idx)
+                .cloned()
+                .ok_or_else(|| Error::other(format!("Invalid p_idx: {}", p_idx)))?;
+            let dt = sid_dict
+                .get(dt_idx)
+                .cloned()
+                .ok_or_else(|| Error::other(format!("Invalid dt_idx: {}", dt_idx)))?;
 
             let o = if is_id_dt(&dt) {
-                let o_idx = flake[2].as_i64().ok_or_else(|| Error::other("o_idx must be integer"))? as usize;
-                let o_sid = sid_dict.get(o_idx).cloned().ok_or_else(|| Error::other(format!("Invalid o_idx: {}", o_idx)))?;
+                let o_idx = flake[2]
+                    .as_i64()
+                    .ok_or_else(|| Error::other("o_idx must be integer"))?
+                    as usize;
+                let o_sid = sid_dict
+                    .get(o_idx)
+                    .cloned()
+                    .ok_or_else(|| Error::other(format!("Invalid o_idx: {}", o_idx)))?;
                 FlakeValue::Ref(o_sid)
             } else {
                 borrowed_object_interned(&flake[2], &dt, interner)?
             };
 
-            let t = flake[4].as_i64().ok_or_else(|| Error::other("t must be integer"))?;
-            let op = flake[5].as_bool().ok_or_else(|| Error::other("op must be boolean"))?;
+            let t = flake[4]
+                .as_i64()
+                .ok_or_else(|| Error::other("t must be integer"))?;
+            let op = flake[5]
+                .as_bool()
+                .ok_or_else(|| Error::other("op must be boolean"))?;
             let m = borrowed_meta(&flake[6])?;
 
             out.push(Flake::new(s, p, o, dt, t, op, m));
@@ -549,8 +590,12 @@ fn parse_leaf_node_interned_borrowed(
         let p = borrowed_sid_interned(&flake[1], interner)?;
         let dt = borrowed_sid_interned(&flake[3], interner)?;
         let o = borrowed_object_interned(&flake[2], &dt, interner)?;
-        let t = flake[4].as_i64().ok_or_else(|| Error::other("t must be integer"))?;
-        let op = flake[5].as_bool().ok_or_else(|| Error::other("op must be boolean"))?;
+        let t = flake[4]
+            .as_i64()
+            .ok_or_else(|| Error::other("t must be integer"))?;
+        let op = flake[5]
+            .as_bool()
+            .ok_or_else(|| Error::other("op must be boolean"))?;
         let m = borrowed_meta(&flake[6])?;
 
         out.push(Flake::new(s, p, o, dt, t, op, m));
@@ -603,13 +648,13 @@ impl RawLeafNode {
 
     /// Convert v2 dictionary format to flakes
     fn to_flakes_v2(&self) -> Result<Vec<Flake>> {
-        let dict = self.dict.as_ref().ok_or_else(|| Error::other("v2 leaf missing dict"))?;
+        let dict = self
+            .dict
+            .as_ref()
+            .ok_or_else(|| Error::other("v2 leaf missing dict"))?;
 
         // Build SID dictionary
-        let sid_dict: Vec<Sid> = dict
-            .iter()
-            .map(deserialize_sid)
-            .collect::<Result<_>>()?;
+        let sid_dict: Vec<Sid> = dict.iter().map(deserialize_sid).collect::<Result<_>>()?;
 
         // Deserialize flakes using dictionary indices
         self.flakes
@@ -620,25 +665,53 @@ impl RawLeafNode {
                 }
 
                 // s, p, dt are indices into dictionary
-                let s_idx = rf.0[0].as_i64().ok_or_else(|| Error::other("s_idx must be integer"))? as usize;
-                let p_idx = rf.0[1].as_i64().ok_or_else(|| Error::other("p_idx must be integer"))? as usize;
-                let dt_idx = rf.0[3].as_i64().ok_or_else(|| Error::other("dt_idx must be integer"))? as usize;
+                let s_idx = rf.0[0]
+                    .as_i64()
+                    .ok_or_else(|| Error::other("s_idx must be integer"))?
+                    as usize;
+                let p_idx = rf.0[1]
+                    .as_i64()
+                    .ok_or_else(|| Error::other("p_idx must be integer"))?
+                    as usize;
+                let dt_idx = rf.0[3]
+                    .as_i64()
+                    .ok_or_else(|| Error::other("dt_idx must be integer"))?
+                    as usize;
 
-                let s = sid_dict.get(s_idx).cloned().ok_or_else(|| Error::other(format!("Invalid s_idx: {}", s_idx)))?;
-                let p = sid_dict.get(p_idx).cloned().ok_or_else(|| Error::other(format!("Invalid p_idx: {}", p_idx)))?;
-                let dt = sid_dict.get(dt_idx).cloned().ok_or_else(|| Error::other(format!("Invalid dt_idx: {}", dt_idx)))?;
+                let s = sid_dict
+                    .get(s_idx)
+                    .cloned()
+                    .ok_or_else(|| Error::other(format!("Invalid s_idx: {}", s_idx)))?;
+                let p = sid_dict
+                    .get(p_idx)
+                    .cloned()
+                    .ok_or_else(|| Error::other(format!("Invalid p_idx: {}", p_idx)))?;
+                let dt = sid_dict
+                    .get(dt_idx)
+                    .cloned()
+                    .ok_or_else(|| Error::other(format!("Invalid dt_idx: {}", dt_idx)))?;
 
                 // o: index if reference, otherwise literal
                 let o = if dt.namespace_code == ID_NAMESPACE_CODE && dt.name.as_ref() == ID_NAME {
-                    let o_idx = rf.0[2].as_i64().ok_or_else(|| Error::other("o_idx must be integer"))? as usize;
-                    let o_sid = sid_dict.get(o_idx).cloned().ok_or_else(|| Error::other(format!("Invalid o_idx: {}", o_idx)))?;
+                    let o_idx = rf.0[2]
+                        .as_i64()
+                        .ok_or_else(|| Error::other("o_idx must be integer"))?
+                        as usize;
+                    let o_sid = sid_dict
+                        .get(o_idx)
+                        .cloned()
+                        .ok_or_else(|| Error::other(format!("Invalid o_idx: {}", o_idx)))?;
                     FlakeValue::Ref(o_sid)
                 } else {
                     deserialize_object(&rf.0[2], &dt)?
                 };
 
-                let t = rf.0[4].as_i64().ok_or_else(|| Error::other("t must be integer"))?;
-                let op = rf.0[5].as_bool().ok_or_else(|| Error::other("op must be boolean"))?;
+                let t = rf.0[4]
+                    .as_i64()
+                    .ok_or_else(|| Error::other("t must be integer"))?;
+                let op = rf.0[5]
+                    .as_bool()
+                    .ok_or_else(|| Error::other("op must be boolean"))?;
                 let m = deserialize_meta(&rf.0[6])?;
 
                 Ok(Flake::new(s, p, o, dt, t, op, m))
@@ -652,7 +725,10 @@ impl RawLeafNode {
     /// then all flakes reference the same interned SIDs via indices.
     /// No per-flake string allocation or hash map lookup needed.
     fn to_flakes_v2_interned(&self, interner: &crate::SidInterner) -> Result<Vec<Flake>> {
-        let dict = self.dict.as_ref().ok_or_else(|| Error::other("v2 leaf missing dict"))?;
+        let dict = self
+            .dict
+            .as_ref()
+            .ok_or_else(|| Error::other("v2 leaf missing dict"))?;
 
         // Build interned SID dictionary - this is the key optimization.
         // We intern each unique SID exactly once, then all flakes share them.
@@ -674,26 +750,54 @@ impl RawLeafNode {
                 }
 
                 // s, p, dt are indices into dictionary
-                let s_idx = rf.0[0].as_i64().ok_or_else(|| Error::other("s_idx must be integer"))? as usize;
-                let p_idx = rf.0[1].as_i64().ok_or_else(|| Error::other("p_idx must be integer"))? as usize;
-                let dt_idx = rf.0[3].as_i64().ok_or_else(|| Error::other("dt_idx must be integer"))? as usize;
+                let s_idx = rf.0[0]
+                    .as_i64()
+                    .ok_or_else(|| Error::other("s_idx must be integer"))?
+                    as usize;
+                let p_idx = rf.0[1]
+                    .as_i64()
+                    .ok_or_else(|| Error::other("p_idx must be integer"))?
+                    as usize;
+                let dt_idx = rf.0[3]
+                    .as_i64()
+                    .ok_or_else(|| Error::other("dt_idx must be integer"))?
+                    as usize;
 
                 // Clone from dictionary - these are cheap Arc clones of interned SIDs
-                let s = sid_dict.get(s_idx).cloned().ok_or_else(|| Error::other(format!("Invalid s_idx: {}", s_idx)))?;
-                let p = sid_dict.get(p_idx).cloned().ok_or_else(|| Error::other(format!("Invalid p_idx: {}", p_idx)))?;
-                let dt = sid_dict.get(dt_idx).cloned().ok_or_else(|| Error::other(format!("Invalid dt_idx: {}", dt_idx)))?;
+                let s = sid_dict
+                    .get(s_idx)
+                    .cloned()
+                    .ok_or_else(|| Error::other(format!("Invalid s_idx: {}", s_idx)))?;
+                let p = sid_dict
+                    .get(p_idx)
+                    .cloned()
+                    .ok_or_else(|| Error::other(format!("Invalid p_idx: {}", p_idx)))?;
+                let dt = sid_dict
+                    .get(dt_idx)
+                    .cloned()
+                    .ok_or_else(|| Error::other(format!("Invalid dt_idx: {}", dt_idx)))?;
 
                 // o: index if reference, otherwise literal
                 let o = if dt.namespace_code == ID_NAMESPACE_CODE && dt.name.as_ref() == ID_NAME {
-                    let o_idx = rf.0[2].as_i64().ok_or_else(|| Error::other("o_idx must be integer"))? as usize;
-                    let o_sid = sid_dict.get(o_idx).cloned().ok_or_else(|| Error::other(format!("Invalid o_idx: {}", o_idx)))?;
+                    let o_idx = rf.0[2]
+                        .as_i64()
+                        .ok_or_else(|| Error::other("o_idx must be integer"))?
+                        as usize;
+                    let o_sid = sid_dict
+                        .get(o_idx)
+                        .cloned()
+                        .ok_or_else(|| Error::other(format!("Invalid o_idx: {}", o_idx)))?;
                     FlakeValue::Ref(o_sid)
                 } else {
                     deserialize_object(&rf.0[2], &dt)?
                 };
 
-                let t = rf.0[4].as_i64().ok_or_else(|| Error::other("t must be integer"))?;
-                let op = rf.0[5].as_bool().ok_or_else(|| Error::other("op must be boolean"))?;
+                let t = rf.0[4]
+                    .as_i64()
+                    .ok_or_else(|| Error::other("t must be integer"))?;
+                let op = rf.0[5]
+                    .as_bool()
+                    .ok_or_else(|| Error::other("op must be boolean"))?;
                 let m = deserialize_meta(&rf.0[6])?;
 
                 Ok(Flake::new(s, p, o, dt, t, op, m))
@@ -876,7 +980,10 @@ impl<'de> serde::Deserialize<'de> for RawPropertyStatEntry {
                     .ok_or_else(|| de::Error::invalid_length(1, &self))?;
 
                 if stats.len() < 6 {
-                    return Err(de::Error::invalid_length(stats.len(), &"stats array with at least 6 elements"));
+                    return Err(de::Error::invalid_length(
+                        stats.len(),
+                        &"stats array with at least 6 elements",
+                    ));
                 }
 
                 Ok(RawPropertyStatEntry {
@@ -931,7 +1038,9 @@ impl<'de> serde::Deserialize<'de> for RawClassStatEntry {
             type Value = RawClassStatEntry;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("a class stat entry as [[ns_code, name], [count, [property_usages...]]]")
+                formatter.write_str(
+                    "a class stat entry as [[ns_code, name], [count, [property_usages...]]]",
+                )
             }
 
             fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
@@ -951,7 +1060,11 @@ impl<'de> serde::Deserialize<'de> for RawClassStatEntry {
                 Ok(RawClassStatEntry {
                     class_sid,
                     count: stats.0,
-                    properties: if stats.1.is_empty() { None } else { Some(stats.1) },
+                    properties: if stats.1.is_empty() {
+                        None
+                    } else {
+                        Some(stats.1)
+                    },
                 })
             }
         }
@@ -989,7 +1102,9 @@ impl<'de> serde::Deserialize<'de> for RawClassPropertyUsage {
             type Value = RawClassPropertyUsage;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("a property usage as [[property_sid], [[types], [ref_classes], [langs]]]")
+                formatter.write_str(
+                    "a property usage as [[property_sid], [[types], [ref_classes], [langs]]]",
+                )
             }
 
             fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
@@ -1004,18 +1119,30 @@ impl<'de> serde::Deserialize<'de> for RawClassPropertyUsage {
                 // Second element: [[types], [ref_classes], [langs]]
                 // Each is a list of [sid/string, count] pairs
                 let usage_data: (
-                    Vec<((i32, String), u64)>,  // types: [[datatype_sid, count], ...]
-                    Vec<((i32, String), u64)>,  // ref_classes: [[class_sid, count], ...]
-                    Vec<(String, u64)>,         // langs: [[lang_string, count], ...]
+                    Vec<((i32, String), u64)>, // types: [[datatype_sid, count], ...]
+                    Vec<((i32, String), u64)>, // ref_classes: [[class_sid, count], ...]
+                    Vec<(String, u64)>,        // langs: [[lang_string, count], ...]
                 ) = seq
                     .next_element()?
                     .ok_or_else(|| de::Error::invalid_length(1, &self))?;
 
                 Ok(RawClassPropertyUsage {
                     property_sid,
-                    types: if usage_data.0.is_empty() { None } else { Some(usage_data.0) },
-                    ref_classes: if usage_data.1.is_empty() { None } else { Some(usage_data.1) },
-                    langs: if usage_data.2.is_empty() { None } else { Some(usage_data.2) },
+                    types: if usage_data.0.is_empty() {
+                        None
+                    } else {
+                        Some(usage_data.0)
+                    },
+                    ref_classes: if usage_data.1.is_empty() {
+                        None
+                    } else {
+                        Some(usage_data.1)
+                    },
+                    langs: if usage_data.2.is_empty() {
+                        None
+                    } else {
+                        Some(usage_data.2)
+                    },
                 })
             }
         }
@@ -1283,50 +1410,80 @@ impl RawDbRoot {
         // Convert stats if present
         let stats = self.stats.as_ref().and_then(|s| {
             // Only create DbRootStats if at least one field is present
-            if s.flakes.is_some() || s.size.is_some() || s.properties.is_some() || s.classes.is_some() {
+            if s.flakes.is_some()
+                || s.size.is_some()
+                || s.properties.is_some()
+                || s.classes.is_some()
+            {
                 // Convert properties if present
                 let properties = s.properties.as_ref().map(|props| {
-                    props.iter().map(|p| PropertyStatEntry {
-                        sid: p.sid.clone(),
-                        count: p.count,
-                        ndv_values: p.ndv_values,
-                        ndv_subjects: p.ndv_subjects,
-                        last_modified_t: p.last_modified_t,
-                    }).collect()
+                    props
+                        .iter()
+                        .map(|p| PropertyStatEntry {
+                            sid: p.sid.clone(),
+                            count: p.count,
+                            ndv_values: p.ndv_values,
+                            ndv_subjects: p.ndv_subjects,
+                            last_modified_t: p.last_modified_t,
+                        })
+                        .collect()
                 });
 
                 // Convert classes if present
                 let classes = s.classes.as_ref().map(|class_list| {
-                    class_list.iter().map(|c| {
-                        let class_sid = Sid::new(c.class_sid.0, &c.class_sid.1);
-                        let properties = c.properties.as_ref().map(|props| {
-                            props.iter().map(|p| {
-                                let property_sid = Sid::new(p.property_sid.0, &p.property_sid.1);
-                                let types = p.types.as_ref()
-                                    .map(|t| t.iter().map(|((ns, name), count)| {
-                                        (Sid::new(*ns, name), *count)
-                                    }).collect())
-                                    .unwrap_or_default();
-                                let ref_classes = p.ref_classes.as_ref()
-                                    .map(|r| r.iter().map(|((ns, name), count)| {
-                                        (Sid::new(*ns, name), *count)
-                                    }).collect())
-                                    .unwrap_or_default();
-                                let langs = p.langs.clone().unwrap_or_default();
-                                ClassPropertyUsage {
-                                    property_sid,
-                                    types,
-                                    ref_classes,
-                                    langs,
-                                }
-                            }).collect()
-                        }).unwrap_or_default();
-                        ClassStatEntry {
-                            class_sid,
-                            count: c.count,
-                            properties,
-                        }
-                    }).collect()
+                    class_list
+                        .iter()
+                        .map(|c| {
+                            let class_sid = Sid::new(c.class_sid.0, &c.class_sid.1);
+                            let properties = c
+                                .properties
+                                .as_ref()
+                                .map(|props| {
+                                    props
+                                        .iter()
+                                        .map(|p| {
+                                            let property_sid =
+                                                Sid::new(p.property_sid.0, &p.property_sid.1);
+                                            let types = p
+                                                .types
+                                                .as_ref()
+                                                .map(|t| {
+                                                    t.iter()
+                                                        .map(|((ns, name), count)| {
+                                                            (Sid::new(*ns, name), *count)
+                                                        })
+                                                        .collect()
+                                                })
+                                                .unwrap_or_default();
+                                            let ref_classes = p
+                                                .ref_classes
+                                                .as_ref()
+                                                .map(|r| {
+                                                    r.iter()
+                                                        .map(|((ns, name), count)| {
+                                                            (Sid::new(*ns, name), *count)
+                                                        })
+                                                        .collect()
+                                                })
+                                                .unwrap_or_default();
+                                            let langs = p.langs.clone().unwrap_or_default();
+                                            ClassPropertyUsage {
+                                                property_sid,
+                                                types,
+                                                ref_classes,
+                                                langs,
+                                            }
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            ClassStatEntry {
+                                class_sid,
+                                count: c.count,
+                                properties,
+                            }
+                        })
+                        .collect()
                 });
 
                 Some(DbRootStats {
@@ -1367,42 +1524,56 @@ impl RawDbRoot {
 
         // Convert schema if present
         let schema = self.schema.as_ref().map(|s| {
-            let pred = s.pred.as_ref().map(|p| {
-                // Parse vals: each entry is [sid, [subclass_of], [parent_props], [child_props]]
-                let vals = p.vals.iter().filter_map(|entry| {
-                    if entry.len() < 4 {
-                        return None;
+            let pred = s
+                .pred
+                .as_ref()
+                .map(|p| {
+                    // Parse vals: each entry is [sid, [subclass_of], [parent_props], [child_props]]
+                    let vals = p
+                        .vals
+                        .iter()
+                        .filter_map(|entry| {
+                            if entry.len() < 4 {
+                                return None;
+                            }
+                            // Parse SID from first element
+                            let id = deserialize_sid(&entry[0]).ok()?;
+                            // Parse subclass_of from second element (array of SIDs)
+                            let subclass_of = entry[1]
+                                .as_array()
+                                .map(|arr| {
+                                    arr.iter().filter_map(|v| deserialize_sid(v).ok()).collect()
+                                })
+                                .unwrap_or_default();
+                            // Parse parent_props from third element
+                            let parent_props = entry[2]
+                                .as_array()
+                                .map(|arr| {
+                                    arr.iter().filter_map(|v| deserialize_sid(v).ok()).collect()
+                                })
+                                .unwrap_or_default();
+                            // Parse child_props from fourth element
+                            let child_props = entry[3]
+                                .as_array()
+                                .map(|arr| {
+                                    arr.iter().filter_map(|v| deserialize_sid(v).ok()).collect()
+                                })
+                                .unwrap_or_default();
+                            Some(SchemaPredicateInfo {
+                                id,
+                                subclass_of,
+                                parent_props,
+                                child_props,
+                            })
+                        })
+                        .collect();
+                    SchemaPredicates {
+                        keys: p.keys.clone(),
+                        vals,
                     }
-                    // Parse SID from first element
-                    let id = deserialize_sid(&entry[0]).ok()?;
-                    // Parse subclass_of from second element (array of SIDs)
-                    let subclass_of = entry[1].as_array()
-                        .map(|arr| arr.iter().filter_map(|v| deserialize_sid(v).ok()).collect())
-                        .unwrap_or_default();
-                    // Parse parent_props from third element
-                    let parent_props = entry[2].as_array()
-                        .map(|arr| arr.iter().filter_map(|v| deserialize_sid(v).ok()).collect())
-                        .unwrap_or_default();
-                    // Parse child_props from fourth element
-                    let child_props = entry[3].as_array()
-                        .map(|arr| arr.iter().filter_map(|v| deserialize_sid(v).ok()).collect())
-                        .unwrap_or_default();
-                    Some(SchemaPredicateInfo {
-                        id,
-                        subclass_of,
-                        parent_props,
-                        child_props,
-                    })
-                }).collect();
-                SchemaPredicates {
-                    keys: p.keys.clone(),
-                    vals,
-                }
-            }).unwrap_or_default();
-            DbRootSchema {
-                t: s.t,
-                pred,
-            }
+                })
+                .unwrap_or_default();
+            DbRootSchema { t: s.t, pred }
         });
 
         // Convert garbage if present
@@ -1466,11 +1637,9 @@ fn serialize_object(value: &FlakeValue, _dt: &Sid) -> serde_json::Value {
         FlakeValue::Null => serde_json::Value::Null,
         FlakeValue::Boolean(b) => serde_json::Value::Bool(*b),
         FlakeValue::Long(n) => serde_json::Value::Number((*n).into()),
-        FlakeValue::Double(f) => {
-            serde_json::Number::from_f64(*f)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null)
-        }
+        FlakeValue::Double(f) => serde_json::Number::from_f64(*f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
         FlakeValue::String(s) => serde_json::Value::String(s.clone()),
         FlakeValue::Json(s) => serde_json::Value::String(s.clone()), // Serialize JSON as string
         FlakeValue::Vector(v) => serde_json::Value::Array(
@@ -1510,7 +1679,8 @@ fn build_sid_dictionary(flakes: &[Flake]) -> (Vec<Sid>, HashMap<Sid, usize>) {
 
     // Build dictionary and index mapping
     let dict: Vec<Sid> = sids.into_iter().collect();
-    let sid_to_idx: HashMap<Sid, usize> = dict.iter()
+    let sid_to_idx: HashMap<Sid, usize> = dict
+        .iter()
         .enumerate()
         .map(|(i, sid)| (sid.clone(), i))
         .collect();
@@ -1566,18 +1736,35 @@ fn serialize_flake_v1(flake: &Flake) -> serde_json::Value {
 ///
 /// Returns an error if any SID is missing from the dictionary, which would
 /// indicate a bug in dictionary building.
-fn serialize_flake_v2(flake: &Flake, sid_to_idx: &HashMap<Sid, usize>) -> Result<serde_json::Value> {
-    let s_idx = sid_to_idx.get(&flake.s).copied()
+fn serialize_flake_v2(
+    flake: &Flake,
+    sid_to_idx: &HashMap<Sid, usize>,
+) -> Result<serde_json::Value> {
+    let s_idx = sid_to_idx
+        .get(&flake.s)
+        .copied()
         .ok_or_else(|| Error::other(format!("Missing subject SID in dictionary: {:?}", flake.s)))?;
-    let p_idx = sid_to_idx.get(&flake.p).copied()
-        .ok_or_else(|| Error::other(format!("Missing predicate SID in dictionary: {:?}", flake.p)))?;
-    let dt_idx = sid_to_idx.get(&flake.dt).copied()
-        .ok_or_else(|| Error::other(format!("Missing datatype SID in dictionary: {:?}", flake.dt)))?;
+    let p_idx = sid_to_idx.get(&flake.p).copied().ok_or_else(|| {
+        Error::other(format!(
+            "Missing predicate SID in dictionary: {:?}",
+            flake.p
+        ))
+    })?;
+    let dt_idx = sid_to_idx.get(&flake.dt).copied().ok_or_else(|| {
+        Error::other(format!(
+            "Missing datatype SID in dictionary: {:?}",
+            flake.dt
+        ))
+    })?;
 
     // Object: if reference, use index; otherwise serialize value
     let o_value = if let FlakeValue::Ref(ref_sid) = &flake.o {
-        let ref_idx = sid_to_idx.get(ref_sid).copied()
-            .ok_or_else(|| Error::other(format!("Missing reference SID in dictionary: {:?}", ref_sid)))?;
+        let ref_idx = sid_to_idx.get(ref_sid).copied().ok_or_else(|| {
+            Error::other(format!(
+                "Missing reference SID in dictionary: {:?}",
+                ref_sid
+            ))
+        })?;
         serde_json::Value::Number(ref_idx.into())
     } else {
         serialize_object(&flake.o, &flake.dt)
@@ -1657,11 +1844,14 @@ fn parse_sid_inline<'de>(
     first: Node<'de>,
 ) -> Result<Sid> {
     match first {
-        Node::Array { len, .. } if len == 2 => {
+        Node::Array { len: 2, .. } => {
             let ns = node_i64(unsafe { de.next_() })? as i32;
             match unsafe { de.next_() } {
                 Node::String(name) => Ok(interner.intern(ns, name)),
-                other => Err(Error::other(format!("SID name must be string, got {:?}", other))),
+                other => Err(Error::other(format!(
+                    "SID name must be string, got {:?}",
+                    other
+                ))),
             }
         }
         _ => Err(Error::other("SID must be [namespace_code, name] array")),
@@ -1689,12 +1879,15 @@ fn parse_raw_o<'de>(
         Node::Static(StaticNode::U64(n)) => Ok(RawO::Long(n as i64)),
         Node::Static(StaticNode::F64(f)) => Ok(RawO::Double(f)),
         Node::String(s) => Ok(RawO::String(s.to_string())),
-        Node::Array { len, .. } if len == 2 => {
+        Node::Array { len: 2, .. } => {
             // Backwards-compat: treat 2-tuple [ns, name] as a SID reference.
             let ns = node_i64(unsafe { de.next_() })? as i32;
             match unsafe { de.next_() } {
                 Node::String(name) => Ok(RawO::Sid(interner.intern(ns, name))),
-                other => Err(Error::other(format!("SID name must be string, got {:?}", other))),
+                other => Err(Error::other(format!(
+                    "SID name must be string, got {:?}",
+                    other
+                ))),
             }
         }
         // Complex objects/arrays are rare in our leaf encoding; fall back to the DOM parser.
@@ -1705,11 +1898,20 @@ fn parse_raw_o<'de>(
     }
 }
 
-fn parse_meta_inline<'de>(de: &mut Deserializer<'de>, first: Node<'de>) -> Result<Option<FlakeMeta>> {
+fn parse_meta_inline<'de>(
+    de: &mut Deserializer<'de>,
+    first: Node<'de>,
+) -> Result<Option<FlakeMeta>> {
     match first {
         Node::Static(StaticNode::Null) => Ok(None),
-        Node::Static(StaticNode::I64(n)) => Ok(Some(FlakeMeta { lang: None, i: Some(n as i32) })),
-        Node::Static(StaticNode::U64(n)) => Ok(Some(FlakeMeta { lang: None, i: Some(n as i32) })),
+        Node::Static(StaticNode::I64(n)) => Ok(Some(FlakeMeta {
+            lang: None,
+            i: Some(n as i32),
+        })),
+        Node::Static(StaticNode::U64(n)) => Ok(Some(FlakeMeta {
+            lang: None,
+            i: Some(n as i32),
+        })),
         Node::Object { len, .. } => {
             let mut lang: Option<String> = None;
             let mut i: Option<i32> = None;
@@ -1814,14 +2016,18 @@ fn parse_leaf_node_interned_streaming<'de>(
     }
 
     let flakes_node = flakes_node.ok_or_else(|| Error::other("leaf node missing flakes"))?;
-    let Node::Array { len: flakes_len, .. } = flakes_node else {
+    let Node::Array {
+        len: flakes_len, ..
+    } = flakes_node
+    else {
         return Err(Error::other("leaf flakes must be an array"));
     };
 
     let mut out: Vec<Flake> = Vec::with_capacity(flakes_len);
 
     if version == 2 {
-        let sid_dict = dict.ok_or_else(|| Error::other("v2 leaf missing dict (flakes came before dict?)"))?;
+        let sid_dict =
+            dict.ok_or_else(|| Error::other("v2 leaf missing dict (flakes came before dict?)"))?;
         for _ in 0..flakes_len {
             let row_node = unsafe { de.next_() };
             let Node::Array { len, .. } = row_node else {
@@ -1836,13 +2042,25 @@ fn parse_leaf_node_interned_streaming<'de>(
             let o_node = unsafe { de.next_() };
             let dt_idx = node_u64(unsafe { de.next_() })? as usize;
 
-            let s = sid_dict.get(s_idx).cloned().ok_or_else(|| Error::other("Invalid s_idx"))?;
-            let p = sid_dict.get(p_idx).cloned().ok_or_else(|| Error::other("Invalid p_idx"))?;
-            let dt = sid_dict.get(dt_idx).cloned().ok_or_else(|| Error::other("Invalid dt_idx"))?;
+            let s = sid_dict
+                .get(s_idx)
+                .cloned()
+                .ok_or_else(|| Error::other("Invalid s_idx"))?;
+            let p = sid_dict
+                .get(p_idx)
+                .cloned()
+                .ok_or_else(|| Error::other("Invalid p_idx"))?;
+            let dt = sid_dict
+                .get(dt_idx)
+                .cloned()
+                .ok_or_else(|| Error::other("Invalid dt_idx"))?;
 
             let o = if is_id_dt(&dt) {
                 let o_idx = node_u64(o_node)? as usize;
-                let o_sid = sid_dict.get(o_idx).cloned().ok_or_else(|| Error::other("Invalid o_idx"))?;
+                let o_sid = sid_dict
+                    .get(o_idx)
+                    .cloned()
+                    .ok_or_else(|| Error::other("Invalid o_idx"))?;
                 FlakeValue::Ref(o_sid)
             } else {
                 // Only literals here; use the existing borrowed fallback via RawO parsing.
@@ -1921,12 +2139,15 @@ fn parse_leaf_node_interned_streaming<'de>(
 ///
 /// Takes ownership of bytes to avoid copying - simd-json mutates in place.
 /// Uses SIMD-accelerated JSON parsing for fast cold query performance.
-pub fn parse_leaf_node_interned(mut bytes: Vec<u8>, interner: &crate::SidInterner) -> Result<Vec<Flake>> {
+pub fn parse_leaf_node_interned(
+    mut bytes: Vec<u8>,
+    interner: &crate::SidInterner,
+) -> Result<Vec<Flake>> {
     // Fast path: streaming parse using simd-json's `Deserializer` (avoids building a DOM),
     // which is especially beneficial when leaf flakes arrays are very large.
     let streaming = SIMDJSON_BUFFERS.with(|b| {
         let mut b = b.borrow_mut();
-        parse_leaf_node_interned_streaming(bytes.as_mut_slice(), &mut *b, interner)
+        parse_leaf_node_interned_streaming(bytes.as_mut_slice(), &mut b, interner)
     });
 
     match streaming {
@@ -1936,7 +2157,7 @@ pub fn parse_leaf_node_interned(mut bytes: Vec<u8>, interner: &crate::SidInterne
             // (complex object values, unexpected orderings, etc).
             let root: simd_json::BorrowedValue<'_> = SIMDJSON_BUFFERS.with(|b| {
                 let mut b = b.borrow_mut();
-                simd_json::to_borrowed_value_with_buffers(bytes.as_mut_slice(), &mut *b)
+                simd_json::to_borrowed_value_with_buffers(bytes.as_mut_slice(), &mut b)
             })?;
             parse_leaf_node_interned_borrowed(&root, interner)
         }
@@ -1977,12 +2198,11 @@ pub fn serialize_leaf_node(flakes: &[Flake]) -> Result<Vec<u8>> {
     let (dict, sid_to_idx) = build_sid_dictionary(flakes);
 
     // Serialize dictionary
-    let dict_json: Vec<serde_json::Value> = dict.iter()
-        .map(serialize_sid)
-        .collect();
+    let dict_json: Vec<serde_json::Value> = dict.iter().map(serialize_sid).collect();
 
     // Serialize flakes using indices - propagate any errors
-    let flakes_json: Vec<serde_json::Value> = flakes.iter()
+    let flakes_json: Vec<serde_json::Value> = flakes
+        .iter()
         .map(|f| serialize_flake_v2(f, &sid_to_idx))
         .collect::<Result<Vec<_>>>()?;
 
@@ -1999,10 +2219,12 @@ pub fn serialize_leaf_node(flakes: &[Flake]) -> Result<Vec<u8>> {
 ///
 /// Branch nodes contain child references with boundary flakes.
 pub fn serialize_branch_node(children: &[ChildRef]) -> Result<Vec<u8>> {
-    let children_json: Vec<serde_json::Value> = children.iter()
+    let children_json: Vec<serde_json::Value> = children
+        .iter()
         .map(|c| {
             let root = SerializableIndexRoot::from_child_ref(c);
-            serde_json::to_value(&root).map_err(|e| Error::other(format!("Failed to serialize child ref: {}", e)))
+            serde_json::to_value(&root)
+                .map_err(|e| Error::other(format!("Failed to serialize child ref: {}", e)))
         })
         .collect::<Result<Vec<_>>>()?;
 
@@ -2026,9 +2248,15 @@ pub fn serialize_db_root(root: &DbRoot) -> Result<Vec<u8>> {
     // Build the root object with sorted keys
     let mut root_obj = serde_json::Map::new();
 
-    root_obj.insert("ledger-alias".to_string(), serde_json::Value::String(root.alias.clone()));
+    root_obj.insert(
+        "ledger-alias".to_string(),
+        serde_json::Value::String(root.alias.clone()),
+    );
     root_obj.insert("t".to_string(), serde_json::Value::Number(root.t.into()));
-    root_obj.insert("v".to_string(), serde_json::Value::Number(root.version.into()));
+    root_obj.insert(
+        "v".to_string(),
+        serde_json::Value::Number(root.version.into()),
+    );
 
     // Namespace codes with numeric-sorted string keys
     // serde_json::Map preserves insertion order, so we insert in sorted order
@@ -2036,7 +2264,10 @@ pub fn serialize_db_root(root: &DbRoot) -> Result<Vec<u8>> {
     for (k, v) in sorted_ns {
         ns_obj.insert(k.to_string(), serde_json::Value::String(v.clone()));
     }
-    root_obj.insert("namespace-codes".to_string(), serde_json::Value::Object(ns_obj));
+    root_obj.insert(
+        "namespace-codes".to_string(),
+        serde_json::Value::Object(ns_obj),
+    );
 
     // Index roots
     if let Some(ref spot) = root.spot {
@@ -2062,55 +2293,97 @@ pub fn serialize_db_root(root: &DbRoot) -> Result<Vec<u8>> {
 
     // Optional timestamp
     if let Some(ts) = root.timestamp {
-        root_obj.insert("timestamp".to_string(), serde_json::Value::Number(ts.into()));
+        root_obj.insert(
+            "timestamp".to_string(),
+            serde_json::Value::Number(ts.into()),
+        );
     }
 
     // Stats (flakes, size, properties) - sorted keys for determinism
     if let Some(ref stats) = root.stats {
         let mut stats_obj = serde_json::Map::new();
-        stats_obj.insert("flakes".to_string(), serde_json::Value::Number(stats.flakes.into()));
+        stats_obj.insert(
+            "flakes".to_string(),
+            serde_json::Value::Number(stats.flakes.into()),
+        );
 
         // Properties - compact array format for Clojure compatibility
         // Format: [[sid], [count, ndv_values, ndv_subjects, 0, 0, last_modified_t]]
         if let Some(ref properties) = stats.properties {
-            let props_array: Vec<serde_json::Value> = properties.iter().map(|p| {
-                serde_json::json!([
-                    [p.sid.0, p.sid.1],
-                    [p.count, p.ndv_values, p.ndv_subjects, 0, 0, p.last_modified_t]
-                ])
-            }).collect();
-            stats_obj.insert("properties".to_string(), serde_json::Value::Array(props_array));
+            let props_array: Vec<serde_json::Value> = properties
+                .iter()
+                .map(|p| {
+                    serde_json::json!([
+                        [p.sid.0, p.sid.1],
+                        [
+                            p.count,
+                            p.ndv_values,
+                            p.ndv_subjects,
+                            0,
+                            0,
+                            p.last_modified_t
+                        ]
+                    ])
+                })
+                .collect();
+            stats_obj.insert(
+                "properties".to_string(),
+                serde_json::Value::Array(props_array),
+            );
         }
 
         // Classes - compact array format for Clojure compatibility
         // Format: [[class_sid], [count, [property_usages...]]]
         // Property usage format: [[property_sid], [[types], [ref_classes], [langs]]]
         if let Some(ref classes) = stats.classes {
-            let classes_array: Vec<serde_json::Value> = classes.iter().map(|c| {
-                let props_array: Vec<serde_json::Value> = c.properties.iter().map(|p| {
-                    let types: Vec<serde_json::Value> = p.types.iter()
-                        .map(|(sid, count)| serde_json::json!([[sid.namespace_code, &*sid.name], count]))
-                        .collect();
-                    let refs: Vec<serde_json::Value> = p.ref_classes.iter()
-                        .map(|(sid, count)| serde_json::json!([[sid.namespace_code, &*sid.name], count]))
-                        .collect();
-                    let langs: Vec<serde_json::Value> = p.langs.iter()
-                        .map(|(lang, count)| serde_json::json!([lang, count]))
+            let classes_array: Vec<serde_json::Value> = classes
+                .iter()
+                .map(|c| {
+                    let props_array: Vec<serde_json::Value> = c
+                        .properties
+                        .iter()
+                        .map(|p| {
+                            let types: Vec<serde_json::Value> = p
+                                .types
+                                .iter()
+                                .map(|(sid, count)| {
+                                    serde_json::json!([[sid.namespace_code, &*sid.name], count])
+                                })
+                                .collect();
+                            let refs: Vec<serde_json::Value> = p
+                                .ref_classes
+                                .iter()
+                                .map(|(sid, count)| {
+                                    serde_json::json!([[sid.namespace_code, &*sid.name], count])
+                                })
+                                .collect();
+                            let langs: Vec<serde_json::Value> = p
+                                .langs
+                                .iter()
+                                .map(|(lang, count)| serde_json::json!([lang, count]))
+                                .collect();
+                            serde_json::json!([
+                                [p.property_sid.namespace_code, &*p.property_sid.name],
+                                [types, refs, langs]
+                            ])
+                        })
                         .collect();
                     serde_json::json!([
-                        [p.property_sid.namespace_code, &*p.property_sid.name],
-                        [types, refs, langs]
+                        [c.class_sid.namespace_code, &*c.class_sid.name],
+                        [c.count, props_array]
                     ])
-                }).collect();
-                serde_json::json!([
-                    [c.class_sid.namespace_code, &*c.class_sid.name],
-                    [c.count, props_array]
-                ])
-            }).collect();
-            stats_obj.insert("classes".to_string(), serde_json::Value::Array(classes_array));
+                })
+                .collect();
+            stats_obj.insert(
+                "classes".to_string(),
+                serde_json::Value::Array(classes_array),
+            );
         }
 
-        stats_obj.insert("size".to_string(), serde_json::Value::Number(stats.size.into()));
+        stats_obj.insert(
+            "size".to_string(),
+            serde_json::Value::Number(stats.size.into()),
+        );
         root_obj.insert("stats".to_string(), serde_json::Value::Object(stats_obj));
     }
 
@@ -2155,7 +2428,10 @@ pub fn serialize_db_root(root: &DbRoot) -> Result<Vec<u8>> {
             "address".to_string(),
             serde_json::Value::String(prev.address.clone()),
         );
-        root_obj.insert("prev-index".to_string(), serde_json::Value::Object(prev_obj));
+        root_obj.insert(
+            "prev-index".to_string(),
+            serde_json::Value::Object(prev_obj),
+        );
     }
 
     // Schema - class/property hierarchy for query optimization
@@ -2176,33 +2452,35 @@ pub fn serialize_db_root(root: &DbRoot) -> Result<Vec<u8>> {
         let mut sorted_vals: Vec<_> = schema.pred.vals.iter().collect();
         sorted_vals.sort_by(|a, b| a.id.cmp(&b.id));
 
-        let vals_array: Vec<serde_json::Value> = sorted_vals.iter().map(|entry| {
-            // Sort inner SID vectors for determinism
-            let mut subclass_sorted: Vec<_> = entry.subclass_of.iter().collect();
-            subclass_sorted.sort();
-            let subclass_of: Vec<serde_json::Value> = subclass_sorted.iter()
-                .map(|sid| serialize_sid(sid))
-                .collect();
+        let vals_array: Vec<serde_json::Value> = sorted_vals
+            .iter()
+            .map(|entry| {
+                // Sort inner SID vectors for determinism
+                let mut subclass_sorted: Vec<_> = entry.subclass_of.iter().collect();
+                subclass_sorted.sort();
+                let subclass_of: Vec<serde_json::Value> = subclass_sorted
+                    .iter()
+                    .map(|sid| serialize_sid(sid))
+                    .collect();
 
-            let mut parent_sorted: Vec<_> = entry.parent_props.iter().collect();
-            parent_sorted.sort();
-            let parent_props: Vec<serde_json::Value> = parent_sorted.iter()
-                .map(|sid| serialize_sid(sid))
-                .collect();
+                let mut parent_sorted: Vec<_> = entry.parent_props.iter().collect();
+                parent_sorted.sort();
+                let parent_props: Vec<serde_json::Value> =
+                    parent_sorted.iter().map(|sid| serialize_sid(sid)).collect();
 
-            let mut child_sorted: Vec<_> = entry.child_props.iter().collect();
-            child_sorted.sort();
-            let child_props: Vec<serde_json::Value> = child_sorted.iter()
-                .map(|sid| serialize_sid(sid))
-                .collect();
+                let mut child_sorted: Vec<_> = entry.child_props.iter().collect();
+                child_sorted.sort();
+                let child_props: Vec<serde_json::Value> =
+                    child_sorted.iter().map(|sid| serialize_sid(sid)).collect();
 
-            serde_json::json!([
-                serialize_sid(&entry.id),
-                subclass_of,
-                parent_props,
-                child_props
-            ])
-        }).collect();
+                serde_json::json!([
+                    serialize_sid(&entry.id),
+                    subclass_of,
+                    parent_props,
+                    child_props
+                ])
+            })
+            .collect();
         pred_obj.insert("vals".to_string(), serde_json::Value::Array(vals_array));
 
         schema_obj.insert("pred".to_string(), serde_json::Value::Object(pred_obj));
@@ -2216,7 +2494,10 @@ pub fn serialize_db_root(root: &DbRoot) -> Result<Vec<u8>> {
             "address".to_string(),
             serde_json::Value::String(garbage.address.clone()),
         );
-        root_obj.insert("garbage".to_string(), serde_json::Value::Object(garbage_obj));
+        root_obj.insert(
+            "garbage".to_string(),
+            serde_json::Value::Object(garbage_obj),
+        );
     }
 
     serde_json::to_vec(&serde_json::Value::Object(root_obj)).map_err(Into::into)
@@ -2237,13 +2518,13 @@ mod tests {
     #[test]
     fn test_deserialize_flake() {
         let json = serde_json::json!([
-            [1, "alice"],      // s
-            [2, "name"],       // p
-            "Alice",           // o
-            [3, "string"],     // dt
-            100,               // t
-            true,              // op
-            null               // m
+            [1, "alice"],  // s
+            [2, "name"],   // p
+            "Alice",       // o
+            [3, "string"], // dt
+            100,           // t
+            true,          // op
+            null           // m
         ]);
 
         let raw: RawFlake = serde_json::from_value(json).unwrap();
@@ -2261,13 +2542,13 @@ mod tests {
     #[test]
     fn test_deserialize_ref_flake() {
         let json = serde_json::json!([
-            [1, "alice"],      // s
-            [2, "knows"],      // p
-            [1, "bob"],        // o (reference)
-            [1, "id"],         // dt = $id
-            100,               // t
-            true,              // op
-            null               // m
+            [1, "alice"], // s
+            [2, "knows"], // p
+            [1, "bob"],   // o (reference)
+            [1, "id"],    // dt = $id
+            100,          // t
+            true,         // op
+            null          // m
         ]);
 
         let raw: RawFlake = serde_json::from_value(json).unwrap();
@@ -2400,7 +2681,10 @@ mod tests {
         assert_eq!(root.alias, "test/main");
         assert_eq!(root.t, 100);
         assert_eq!(root.version, 2);
-        assert_eq!(root.namespace_codes.get(&2), Some(&"http://www.w3.org/2001/XMLSchema#".to_string()));
+        assert_eq!(
+            root.namespace_codes.get(&2),
+            Some(&"http://www.w3.org/2001/XMLSchema#".to_string())
+        );
         assert!(root.spot.is_some());
         assert_eq!(root.spot.as_ref().unwrap().id, "spot-root-id");
     }
@@ -2528,7 +2812,7 @@ mod tests {
                 FlakeValue::String("text".to_string()),
                 Sid::new(3, "string"),
                 5,
-                false,  // retraction
+                false, // retraction
                 None,
             ),
         ];
@@ -2686,7 +2970,10 @@ mod tests {
         assert_eq!(parsed.t, 42);
         assert_eq!(parsed.version, 2);
         assert_eq!(parsed.namespace_codes.len(), 4);
-        assert_eq!(parsed.namespace_codes.get(&100), Some(&"http://example.org/".to_string()));
+        assert_eq!(
+            parsed.namespace_codes.get(&100),
+            Some(&"http://example.org/".to_string())
+        );
         assert!(parsed.spot.is_some());
         assert_eq!(parsed.spot.as_ref().unwrap().id, "spot-root");
         assert!(parsed.psot.is_some());
@@ -2728,7 +3015,10 @@ mod tests {
         // Verify garbage
         assert!(parsed.garbage.is_some());
         let garbage = parsed.garbage.unwrap();
-        assert_eq!(garbage.address, "fluree:file://test/main/index/garbage/t42.json");
+        assert_eq!(
+            garbage.address,
+            "fluree:file://test/main/index/garbage/t42.json"
+        );
     }
 
     #[test]

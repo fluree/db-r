@@ -46,7 +46,7 @@ use std::fmt::Debug;
 use std::time::Duration;
 
 /// S3 storage configuration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct S3Config {
     /// S3 bucket name (supports both standard S3 and S3 Express directory buckets)
     pub bucket: String,
@@ -62,20 +62,6 @@ pub struct S3Config {
     pub retry_base_delay_ms: Option<u64>,
     /// Max backoff for retries in milliseconds
     pub retry_max_delay_ms: Option<u64>,
-}
-
-impl Default for S3Config {
-    fn default() -> Self {
-        Self {
-            bucket: String::new(),
-            prefix: None,
-            endpoint: None,
-            timeout_ms: None,
-            max_retries: None,
-            retry_base_delay_ms: None,
-            retry_max_delay_ms: None,
-        }
-    }
 }
 
 /// S3-based storage backend
@@ -148,11 +134,7 @@ impl S3Storage {
             || config.retry_max_delay_ms.is_some()
         {
             // AWS SDK uses "max attempts" = initial attempt + retries
-            let max_attempts = config
-                .max_retries
-                .unwrap_or(0)
-                .saturating_add(1)
-                .max(1);
+            let max_attempts = config.max_retries.unwrap_or(0).saturating_add(1).max(1);
 
             let mut retry_config = RetryConfig::standard().with_max_attempts(max_attempts);
 
@@ -520,10 +502,7 @@ impl StorageCas for S3Storage {
 
         match result {
             Ok(output) => {
-                let new_etag = output
-                    .e_tag()
-                    .map(normalize_etag)
-                    .unwrap_or_default();
+                let new_etag = output.e_tag().map(normalize_etag).unwrap_or_default();
                 Ok(new_etag)
             }
             Err(e) if is_precondition_failed_sdk(&e) => Err(StorageExtError::PreconditionFailed),
@@ -544,10 +523,7 @@ impl StorageCas for S3Storage {
             .await
             .map_err(|e| map_s3_error_ext(e, &key))?;
 
-        let etag = response
-            .e_tag()
-            .map(normalize_etag)
-            .unwrap_or_default();
+        let etag = response.e_tag().map(normalize_etag).unwrap_or_default();
 
         let bytes = response
             .body
@@ -579,7 +555,10 @@ fn map_s3_error_core<E: std::fmt::Debug>(
             match status {
                 404 => CoreError::not_found(format!("Key not found: {}", key)),
                 403 => CoreError::storage(format!("Access denied for key '{}': {:?}", key, err)),
-                _ => CoreError::storage(format!("S3 error for key '{}' (HTTP {}): {:?}", key, status, err)),
+                _ => CoreError::storage(format!(
+                    "S3 error for key '{}' (HTTP {}): {:?}",
+                    key, status, err
+                )),
             }
         }
         SdkError::TimeoutError(_) => {
@@ -608,9 +587,10 @@ fn map_s3_error_ext<E: std::fmt::Debug>(
                 403 => StorageExtError::forbidden(format!("Access denied for key: {}", key)),
                 412 => StorageExtError::PreconditionFailed,
                 // Retryable server errors: throttling (429), server errors (500/502/503/504)
-                429 | 500 | 502 | 503 | 504 => {
-                    StorageExtError::throttled(format!("Retryable error for key '{}' (HTTP {})", key, status))
-                }
+                429 | 500 | 502 | 503 | 504 => StorageExtError::throttled(format!(
+                    "Retryable error for key '{}' (HTTP {})",
+                    key, status
+                )),
                 _ => StorageExtError::io(format!(
                     "S3 error for key '{}' (HTTP {}): {:?}",
                     key, status, err
@@ -632,9 +612,7 @@ fn is_precondition_failed_sdk<E: std::fmt::Debug>(err: &aws_sdk_s3::error::SdkEr
     use aws_sdk_s3::error::SdkError;
 
     match err {
-        SdkError::ServiceError(service_err) => {
-            service_err.raw().status().as_u16() == 412
-        }
+        SdkError::ServiceError(service_err) => service_err.raw().status().as_u16() == 412,
         _ => false,
     }
 }

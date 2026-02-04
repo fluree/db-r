@@ -54,26 +54,23 @@ pub fn validate_pattern(
         Ok(Some(ConstraintViolation {
             constraint: Constraint::Pattern(pattern.to_string(), flags.map(String::from)),
             value: Some(value.clone()),
-            message: format!("Value '{}' does not match pattern '{}'", string_value, pattern),
+            message: format!(
+                "Value '{}' does not match pattern '{}'",
+                string_value, pattern
+            ),
         }))
     }
 }
 
 /// Validate sh:minLength constraint
-pub fn validate_min_length(
-    value: &FlakeValue,
-    min: usize,
-) -> Option<ConstraintViolation> {
+pub fn validate_min_length(value: &FlakeValue, min: usize) -> Option<ConstraintViolation> {
     let len = string_length(value);
 
     if len < min {
         Some(ConstraintViolation {
             constraint: Constraint::MinLength(min),
             value: Some(value.clone()),
-            message: format!(
-                "String length {} is less than minimum {}",
-                len, min
-            ),
+            message: format!("String length {} is less than minimum {}", len, min),
         })
     } else {
         None
@@ -81,20 +78,14 @@ pub fn validate_min_length(
 }
 
 /// Validate sh:maxLength constraint
-pub fn validate_max_length(
-    value: &FlakeValue,
-    max: usize,
-) -> Option<ConstraintViolation> {
+pub fn validate_max_length(value: &FlakeValue, max: usize) -> Option<ConstraintViolation> {
     let len = string_length(value);
 
     if len > max {
         Some(ConstraintViolation {
             constraint: Constraint::MaxLength(max),
             value: Some(value.clone()),
-            message: format!(
-                "String length {} exceeds maximum {}",
-                len, max
-            ),
+            message: format!("String length {} exceeds maximum {}", len, max),
         })
     } else {
         None
@@ -107,7 +98,13 @@ fn string_length(value: &FlakeValue) -> usize {
         FlakeValue::String(s) => s.chars().count(),
         FlakeValue::Long(n) => n.to_string().len(),
         FlakeValue::Double(n) => n.to_string().len(),
-        FlakeValue::Boolean(b) => if *b { 4 } else { 5 }, // "true" or "false"
+        FlakeValue::Boolean(b) => {
+            if *b {
+                4
+            } else {
+                5
+            }
+        } // "true" or "false"
         FlakeValue::Ref(sid) => sid.name.len(),
         FlakeValue::Vector(v) => v.len(), // Length of vector
         FlakeValue::Null => 0,

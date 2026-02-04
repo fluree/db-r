@@ -6,10 +6,10 @@
 //! - Creating ledgers on tx server, querying through peer
 
 use axum::body::Body;
-use fluree_db_core::StorageRead;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use ed25519_dalek::{SigningKey, Signer};
+use ed25519_dalek::{Signer, SigningKey};
 use fluree_db_core::serde::flakes_transport::{decode_flakes, MAGIC as FLKB_MAGIC};
+use fluree_db_core::StorageRead;
 use fluree_db_server::{
     config::{ServerRole, StorageAccessMode},
     routes::build_router,
@@ -467,7 +467,10 @@ async fn test_peer_proxy_state_creation() {
 
     // Create peer state pointing to a hypothetical tx server
     let result = proxy_peer_state("http://localhost:8090", &token);
-    assert!(result.is_ok(), "Peer proxy state should be created successfully");
+    assert!(
+        result.is_ok(),
+        "Peer proxy state should be created successfully"
+    );
 
     let (_tmp, state) = result.unwrap();
     assert!(state.config.is_proxy_storage_mode());
@@ -1301,11 +1304,7 @@ async fn test_block_content_negotiation_returns_flkb_for_leaf() {
 
     // Verify we can decode the flakes
     let flakes = decode_flakes(&bytes).expect("decode_flakes should succeed");
-    assert_eq!(
-        flakes.len(),
-        2,
-        "Should decode 2 flakes (Alice and Bob)"
-    );
+    assert_eq!(flakes.len(), 2, "Should decode 2 flakes (Alice and Bob)");
 
     // Verify flake content
     assert_eq!(flakes[0].s.name, "alice");
@@ -1414,11 +1413,7 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
 
     // Verify we can decode the flakes
     let flakes = decode_flakes(&bytes).expect("decode_flakes should succeed");
-    assert_eq!(
-        flakes.len(),
-        2,
-        "Should decode 2 flakes (carol and dave)"
-    );
+    assert_eq!(flakes.len(), 2, "Should decode 2 flakes (carol and dave)");
 
     // Verify flake content
     assert_eq!(flakes[0].s.name, "carol");
@@ -1671,12 +1666,7 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
         .unwrap();
 
     let (status, body) = json_body(resp).await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "Transaction failed: {:?}",
-        body
-    );
+    assert_eq!(status, StatusCode::OK, "Transaction failed: {:?}", body);
 
     // Step 3: Reindex to build the index
     // This creates real leaf nodes in storage
@@ -1698,10 +1688,7 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
     // CRITICAL: Refresh the cached ledger so it picks up the new indexed state.
     // Without this, the cached db's dictionary won't have the policy class IRI
     // and policy lookup will fail (returning root policy = no filtering).
-    let refresh_result = fluree
-        .refresh(alias)
-        .await
-        .expect("refresh should succeed");
+    let refresh_result = fluree.refresh(alias).await.expect("refresh should succeed");
 
     // Should have reloaded or updated index
     println!("Refresh result after reindex: {:?}", refresh_result);
@@ -1737,7 +1724,9 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
         serde_json::from_slice(&db_root_bytes).expect("db root should be valid JSON");
 
     // Extract the SPOT index root address and check if it's a leaf
-    let spot_index = db_root_json.get("spot").expect("db root should have spot index");
+    let spot_index = db_root_json
+        .get("spot")
+        .expect("db root should have spot index");
     let spot_address = spot_index
         .get("id")
         .and_then(|v| v.as_str())
@@ -1783,12 +1772,7 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
         // Find first leaf child (children are objects with "id" and "leaf" keys)
         let leaf_child = children
             .iter()
-            .find(|child| {
-                child
-                    .get("leaf")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-            });
+            .find(|child| child.get("leaf").and_then(|v| v.as_bool()).unwrap_or(false));
 
         if let Some(leaf) = leaf_child {
             leaf.get("id")
@@ -1893,7 +1877,10 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
     // Debug: print error if not 200
     if status != StatusCode::OK {
         let error_msg = String::from_utf8_lossy(&filtered_bytes);
-        eprintln!("Filtered fetch failed with status {}: {}", status, error_msg);
+        eprintln!(
+            "Filtered fetch failed with status {}: {}",
+            status, error_msg
+        );
     }
 
     assert_eq!(status, StatusCode::OK, "Filtered leaf fetch failed");
@@ -2019,9 +2006,17 @@ async fn test_no_policy_flkb_returns_all_flakes() {
         serde_json::from_slice(&db_root_bytes).expect("db root should be valid JSON");
 
     // Extract the SPOT index root
-    let spot_index = db_root_json.get("spot").expect("db root should have spot index");
-    let spot_address = spot_index.get("id").and_then(|v| v.as_str()).expect("spot should have id");
-    let spot_is_leaf = spot_index.get("leaf").and_then(|v| v.as_bool()).unwrap_or(false);
+    let spot_index = db_root_json
+        .get("spot")
+        .expect("db root should have spot index");
+    let spot_address = spot_index
+        .get("id")
+        .and_then(|v| v.as_str())
+        .expect("spot should have id");
+    let spot_is_leaf = spot_index
+        .get("leaf")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     // Get leaf address
     let leaf_address = if spot_is_leaf {
@@ -2062,7 +2057,11 @@ async fn test_no_policy_flkb_returns_all_flakes() {
             .or_else(|| children.first())
             .expect("branch should have children");
 
-        leaf_child.get("id").and_then(|v| v.as_str()).expect("child should have id").to_string()
+        leaf_child
+            .get("id")
+            .and_then(|v| v.as_str())
+            .expect("child should have id")
+            .to_string()
     };
 
     // Fetch raw

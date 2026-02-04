@@ -151,7 +151,12 @@ pub struct ReasoningDiagnostics {
 
 impl ReasoningDiagnostics {
     /// Create diagnostics for a capped result
-    pub fn capped(reason: impl Into<String>, iterations: usize, facts: usize, duration: Duration) -> Self {
+    pub fn capped(
+        reason: impl Into<String>,
+        iterations: usize,
+        facts: usize,
+        duration: Duration,
+    ) -> Self {
         Self {
             iterations,
             facts_derived: facts,
@@ -194,7 +199,10 @@ pub struct ReasoningResult {
 impl ReasoningResult {
     /// Create a new result
     pub fn new(overlay: DerivedFactsOverlay, diagnostics: ReasoningDiagnostics) -> Self {
-        Self { overlay, diagnostics }
+        Self {
+            overlay,
+            diagnostics,
+        }
     }
 }
 

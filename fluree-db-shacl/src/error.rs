@@ -11,24 +11,15 @@ pub type Result<T> = std::result::Result<T, ShaclError>;
 pub enum ShaclError {
     /// Shape compilation error
     #[error("Failed to compile shape {shape_id}: {message}")]
-    CompilationError {
-        shape_id: Sid,
-        message: String,
-    },
+    CompilationError { shape_id: Sid, message: String },
 
     /// Invalid constraint specification
     #[error("Invalid constraint on shape {shape_id}: {message}")]
-    InvalidConstraint {
-        shape_id: Sid,
-        message: String,
-    },
+    InvalidConstraint { shape_id: Sid, message: String },
 
     /// Invalid regex pattern in sh:pattern
     #[error("Invalid regex pattern '{pattern}': {message}")]
-    InvalidPattern {
-        pattern: String,
-        message: String,
-    },
+    InvalidPattern { pattern: String, message: String },
 
     /// Query execution error during validation
     #[error("Query error during validation: {0}")]
@@ -40,10 +31,7 @@ pub enum ShaclError {
 
     /// Shape references unknown shape
     #[error("Shape {referrer} references unknown shape {referenced}")]
-    UnknownShapeReference {
-        referrer: Sid,
-        referenced: Sid,
-    },
+    UnknownShapeReference { referrer: Sid, referenced: Sid },
 
     /// Circular shape reference detected
     #[error("Circular shape reference detected involving {shape_id}")]

@@ -28,9 +28,9 @@
 //! as a known limitation until real DB snapshot addressing is implemented.
 
 use chrono::DateTime;
+use fluree_db_core::{Flake, FlakeValue, Sid};
 use fluree_vocab::namespaces::{FLUREE_COMMIT, FLUREE_DB, FLUREE_LEDGER, JSON_LD, XSD};
 use fluree_vocab::{ledger, xsd_names};
-use fluree_db_core::{Flake, FlakeValue, Sid};
 
 use crate::Commit;
 
@@ -274,9 +274,9 @@ mod tests {
         assert_eq!(flakes.len(), 9);
 
         // Find the previous flake
-        let prev_flake = flakes.iter().find(|f| {
-            f.p.namespace_code == FLUREE_LEDGER && f.p.name.as_ref() == ledger::PREVIOUS
-        });
+        let prev_flake = flakes
+            .iter()
+            .find(|f| f.p.namespace_code == FLUREE_LEDGER && f.p.name.as_ref() == ledger::PREVIOUS);
         assert!(prev_flake.is_some(), "Should have ledger#previous flake");
 
         let prev_flake = prev_flake.unwrap();
@@ -295,9 +295,9 @@ mod tests {
         let flakes = generate_commit_flakes(&commit, "test:main", 5);
 
         // Find the ledger#data flake
-        let data_flake = flakes.iter().find(|f| {
-            f.p.namespace_code == FLUREE_LEDGER && f.p.name.as_ref() == ledger::DATA
-        });
+        let data_flake = flakes
+            .iter()
+            .find(|f| f.p.namespace_code == FLUREE_LEDGER && f.p.name.as_ref() == ledger::DATA);
         assert!(data_flake.is_some(), "Should have ledger#data flake");
 
         let data_flake = data_flake.unwrap();
@@ -348,26 +348,26 @@ mod tests {
         let flakes = generate_commit_flakes(&commit, "test:main", 5);
 
         // Find ledger#t flake
-        let t_flake = flakes.iter().find(|f| {
-            f.p.namespace_code == FLUREE_LEDGER && f.p.name.as_ref() == ledger::T
-        });
+        let t_flake = flakes
+            .iter()
+            .find(|f| f.p.namespace_code == FLUREE_LEDGER && f.p.name.as_ref() == ledger::T);
         assert!(t_flake.is_some());
         let t_flake = t_flake.unwrap();
         assert_eq!(t_flake.s.namespace_code, FLUREE_DB);
         assert!(matches!(&t_flake.o, FlakeValue::Long(5)));
 
         // Find ledger#size flake
-        let size_flake = flakes.iter().find(|f| {
-            f.p.namespace_code == FLUREE_LEDGER && f.p.name.as_ref() == ledger::SIZE
-        });
+        let size_flake = flakes
+            .iter()
+            .find(|f| f.p.namespace_code == FLUREE_LEDGER && f.p.name.as_ref() == ledger::SIZE);
         assert!(size_flake.is_some());
         let size_flake = size_flake.unwrap();
         assert!(matches!(&size_flake.o, FlakeValue::Long(5000)));
 
         // Find ledger#flakes flake
-        let flakes_flake = flakes.iter().find(|f| {
-            f.p.namespace_code == FLUREE_LEDGER && f.p.name.as_ref() == ledger::FLAKES
-        });
+        let flakes_flake = flakes
+            .iter()
+            .find(|f| f.p.namespace_code == FLUREE_LEDGER && f.p.name.as_ref() == ledger::FLAKES);
         assert!(flakes_flake.is_some());
         let flakes_flake = flakes_flake.unwrap();
         assert!(matches!(&flakes_flake.o, FlakeValue::Long(100)));
@@ -377,7 +377,9 @@ mod tests {
     fn test_missing_id_is_safe() {
         let commit = Commit::new("addr", 1, vec![]);
         let flakes = generate_commit_flakes(&commit, "test:main", 1);
-        assert!(flakes.is_empty(), "missing commit.id should yield no metadata flakes");
+        assert!(
+            flakes.is_empty(),
+            "missing commit.id should yield no metadata flakes"
+        );
     }
 }
-

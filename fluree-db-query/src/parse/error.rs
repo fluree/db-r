@@ -40,7 +40,6 @@ pub enum ParseError {
     // ========================================================================
     // Query modifier validation errors
     // ========================================================================
-
     /// Unknown aggregate function
     #[error("Unknown aggregate function: {0}")]
     UnknownAggregate(String),

@@ -154,9 +154,7 @@ pub fn parse_distinct(obj: &serde_json::Map<String, JsonValue>) -> bool {
 /// ```json
 /// { "orderBy": [{"var": "?x", "direction": "asc"}] }
 /// ```
-pub fn parse_order_by(
-    obj: &serde_json::Map<String, JsonValue>,
-) -> Result<Vec<UnresolvedSortSpec>> {
+pub fn parse_order_by(obj: &serde_json::Map<String, JsonValue>) -> Result<Vec<UnresolvedSortSpec>> {
     // Accept both camelCase and kebab-case for Clojure parity.
     let Some(val) = obj.get("orderBy").or_else(|| obj.get("order-by")) else {
         return Ok(Vec::new());
@@ -213,13 +211,10 @@ fn parse_order_term_object(map: &serde_json::Map<String, JsonValue>) -> Result<U
 /// Parse string form: `"?x"` (plain var) or `"(desc ?x)"` (EDN-ish)
 fn parse_order_term_string(s: &str) -> Result<UnresolvedSortSpec> {
     let trimmed = s.trim();
-    
+
     // EDN-ish string form: "(asc ?x)" / "(desc ?x)"
     if trimmed.starts_with('(') && trimmed.ends_with(')') {
-        let inner = trimmed
-            .trim_start_matches('(')
-            .trim_end_matches(')')
-            .trim();
+        let inner = trimmed.trim_start_matches('(').trim_end_matches(')').trim();
         let parts: Vec<&str> = inner.split_whitespace().collect();
         if parts.len() != 2 {
             return Err(ParseError::InvalidOrderBy);
@@ -353,7 +348,9 @@ fn rewrite_having_aggregates(
     let rewrite_child = |e: UnresolvedFilterExpr,
                          aggregates: &mut Vec<UnresolvedAggregateSpec>,
                          counter: &mut usize|
-     -> Result<UnresolvedFilterExpr> { rewrite_having_aggregates(e, aggregates, counter) };
+     -> Result<UnresolvedFilterExpr> {
+        rewrite_having_aggregates(e, aggregates, counter)
+    };
 
     match expr {
         E::Var(_) | E::Const(_) => Ok(expr),
@@ -370,7 +367,9 @@ fn rewrite_having_aggregates(
             right: Box::new(rewrite_child(*right, aggregates, counter)?),
         }),
 
-        E::Negate(inner) => Ok(E::Negate(Box::new(rewrite_child(*inner, aggregates, counter)?))),
+        E::Negate(inner) => Ok(E::Negate(Box::new(rewrite_child(
+            *inner, aggregates, counter,
+        )?))),
 
         E::And(exprs) => Ok(E::And(
             exprs
@@ -386,9 +385,15 @@ fn rewrite_having_aggregates(
                 .collect::<Result<Vec<_>>>()?,
         )),
 
-        E::Not(inner) => Ok(E::Not(Box::new(rewrite_child(*inner, aggregates, counter)?))),
+        E::Not(inner) => Ok(E::Not(Box::new(rewrite_child(
+            *inner, aggregates, counter,
+        )?))),
 
-        E::In { expr, values, negated } => Ok(E::In {
+        E::In {
+            expr,
+            values,
+            negated,
+        } => Ok(E::In {
             expr: Box::new(rewrite_child(*expr, aggregates, counter)?),
             values: values
                 .into_iter()
@@ -429,7 +434,8 @@ fn rewrite_having_aggregates(
                     }
                     // Allow COUNT(*) in s-expression form: (count "*")
                     E::Const(UnresolvedFilterValue::String(s))
-                        if s.as_ref() == "*" && matches!(function, UnresolvedAggregateFn::Count) =>
+                        if s.as_ref() == "*"
+                            && matches!(function, UnresolvedAggregateFn::Count) =>
                     {
                         let out = Arc::from(format!("?__having_agg{}", *counter));
                         *counter += 1;

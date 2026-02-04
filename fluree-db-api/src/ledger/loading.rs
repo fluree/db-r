@@ -184,7 +184,11 @@ where
                     "Ambiguous SHA prefix: {}. Multiple commits match: {:?}{}",
                     sha_normalized,
                     commit_ids,
-                    if matching_commits.len() > 5 { " ..." } else { "" }
+                    if matching_commits.len() > 5 {
+                        " ..."
+                    } else {
+                        ""
+                    }
                 )))
             }
         }

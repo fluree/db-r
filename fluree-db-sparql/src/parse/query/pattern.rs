@@ -59,7 +59,8 @@ impl<'a> super::Parser<'a> {
 
                 // MINUS needs a left operand - collect all accumulated patterns
                 if patterns.is_empty() {
-                    self.stream.error_at_current("MINUS requires a preceding pattern");
+                    self.stream
+                        .error_at_current("MINUS requires a preceding pattern");
                     self.stream.advance();
                     continue;
                 }
@@ -127,7 +128,10 @@ impl<'a> super::Parser<'a> {
                 if let Some(block_patterns) = self.parse_triples_block() {
                     for pattern in block_patterns {
                         match pattern {
-                            GraphPattern::Bgp { patterns: bgp_triples, .. } => {
+                            GraphPattern::Bgp {
+                                patterns: bgp_triples,
+                                ..
+                            } => {
                                 // Merge BGP triples into current accumulator
                                 current_triples.extend(bgp_triples);
                             }
@@ -144,7 +148,8 @@ impl<'a> super::Parser<'a> {
                 self.stream.advance();
             } else {
                 // Unknown token
-                self.stream.error_at_current("unexpected token in graph pattern");
+                self.stream
+                    .error_at_current("unexpected token in graph pattern");
                 self.stream.advance();
             }
         }
@@ -198,13 +203,15 @@ impl<'a> super::Parser<'a> {
         } else if let Some(iri) = self.parse_iri_term() {
             GraphName::Iri(iri)
         } else {
-            self.stream.error_at_current("expected IRI or variable after GRAPH");
+            self.stream
+                .error_at_current("expected IRI or variable after GRAPH");
             return None;
         };
 
         // Expect opening brace
         if !self.stream.match_token(&TokenKind::LBrace) {
-            self.stream.error_at_current("expected '{' after GRAPH name");
+            self.stream
+                .error_at_current("expected '{' after GRAPH name");
             return None;
         }
 
@@ -321,8 +328,12 @@ impl<'a> super::Parser<'a> {
         if !self.stream.check_keyword(TokenKind::KwAs) {
             let span = start.union(self.stream.previous_span());
             self.stream.add_diagnostic(
-                Diagnostic::new(DiagCode::ExpectedToken, "BIND requires 'AS ?variable'", span)
-                    .with_help("Use BIND(expression AS ?variable) syntax"),
+                Diagnostic::new(
+                    DiagCode::ExpectedToken,
+                    "BIND requires 'AS ?variable'",
+                    span,
+                )
+                .with_help("Use BIND(expression AS ?variable) syntax"),
             );
             return None;
         }
@@ -338,7 +349,8 @@ impl<'a> super::Parser<'a> {
 
         // Expect closing paren
         if !self.stream.match_token(&TokenKind::RParen) {
-            self.stream.error_at_current("expected ')' after BIND expression");
+            self.stream
+                .error_at_current("expected ')' after BIND expression");
             return None;
         }
 
@@ -361,7 +373,8 @@ impl<'a> super::Parser<'a> {
 
         // Expect opening brace for data block
         if !self.stream.match_token(&TokenKind::LBrace) {
-            self.stream.error_at_current("expected '{' after VALUES variables");
+            self.stream
+                .error_at_current("expected '{' after VALUES variables");
             return None;
         }
 
@@ -384,7 +397,8 @@ impl<'a> super::Parser<'a> {
                 } else if self.stream.check(&TokenKind::RBrace) {
                     break;
                 } else {
-                    self.stream.error_at_current("expected value in VALUES clause");
+                    self.stream
+                        .error_at_current("expected value in VALUES clause");
                     self.stream.advance();
                 }
             }
@@ -392,7 +406,8 @@ impl<'a> super::Parser<'a> {
 
         // Expect closing brace
         if !self.stream.match_token(&TokenKind::RBrace) {
-            self.stream.error_at_current("expected '}' to close VALUES data block");
+            self.stream
+                .error_at_current("expected '}' to close VALUES data block");
         }
 
         let span = start.union(self.stream.previous_span());
@@ -413,24 +428,28 @@ impl<'a> super::Parser<'a> {
                 if let Some((name, span)) = self.stream.consume_var() {
                     vars.push(Var::new(name.as_ref(), span));
                 } else {
-                    self.stream.error_at_current("expected variable in VALUES variable list");
+                    self.stream
+                        .error_at_current("expected variable in VALUES variable list");
                     break;
                 }
             }
 
             if !self.stream.match_token(&TokenKind::RParen) {
-                self.stream.error_at_current("expected ')' after VALUES variable list");
+                self.stream
+                    .error_at_current("expected ')' after VALUES variable list");
             }
 
             if vars.is_empty() {
-                self.stream.error_at_current("VALUES requires at least one variable");
+                self.stream
+                    .error_at_current("VALUES requires at least one variable");
                 return None;
             }
         } else if let Some((name, span)) = self.stream.consume_var() {
             // Single variable
             vars.push(Var::new(name.as_ref(), span));
         } else {
-            self.stream.error_at_current("expected variable or '(' after VALUES");
+            self.stream
+                .error_at_current("expected variable or '(' after VALUES");
             return None;
         }
 
@@ -442,7 +461,8 @@ impl<'a> super::Parser<'a> {
     /// Expects `(val1 val2 ...)` where each value is a term or UNDEF.
     fn parse_values_row(&mut self, expected_count: usize) -> Option<Vec<Option<Term>>> {
         if !self.stream.match_token(&TokenKind::LParen) {
-            self.stream.error_at_current("expected '(' to start VALUES row");
+            self.stream
+                .error_at_current("expected '(' to start VALUES row");
             return None;
         }
 
@@ -452,13 +472,15 @@ impl<'a> super::Parser<'a> {
             if let Some(value) = self.parse_values_term() {
                 row.push(value);
             } else {
-                self.stream.error_at_current("expected value or UNDEF in VALUES row");
+                self.stream
+                    .error_at_current("expected value or UNDEF in VALUES row");
                 break;
             }
         }
 
         if !self.stream.match_token(&TokenKind::RParen) {
-            self.stream.error_at_current("expected ')' to close VALUES row");
+            self.stream
+                .error_at_current("expected ')' to close VALUES row");
         }
 
         // Check row has correct number of values
@@ -535,7 +557,8 @@ impl<'a> super::Parser<'a> {
                 vars.push(Var::new(name.as_ref(), span));
             }
             if vars.is_empty() {
-                self.stream.error_at_current("expected variable or '*' after SELECT");
+                self.stream
+                    .error_at_current("expected variable or '*' after SELECT");
                 return None;
             }
             Some(vars)
@@ -546,7 +569,8 @@ impl<'a> super::Parser<'a> {
 
         // Parse WHERE clause pattern
         if !self.stream.match_token(&TokenKind::LBrace) {
-            self.stream.error_at_current("expected '{' for subquery WHERE clause");
+            self.stream
+                .error_at_current("expected '{' for subquery WHERE clause");
             return None;
         }
 
@@ -557,7 +581,8 @@ impl<'a> super::Parser<'a> {
 
         // Expect closing brace for the subquery
         if !self.stream.match_token(&TokenKind::RBrace) {
-            self.stream.error_at_current("expected '}' to close subquery");
+            self.stream
+                .error_at_current("expected '}' to close subquery");
         }
 
         let span = start.union(self.stream.previous_span());
@@ -584,7 +609,15 @@ impl<'a> super::Parser<'a> {
     /// Parse solution modifiers for a subquery (GROUP BY, HAVING, ORDER BY, LIMIT, OFFSET).
     ///
     /// Returns (group_by, having, order_by, limit, offset).
-    pub(super) fn parse_subquery_modifiers(&mut self) -> (Option<GroupByClause>, Option<HavingClause>, Vec<SubSelectOrderBy>, Option<u64>, Option<u64>) {
+    pub(super) fn parse_subquery_modifiers(
+        &mut self,
+    ) -> (
+        Option<GroupByClause>,
+        Option<HavingClause>,
+        Vec<SubSelectOrderBy>,
+        Option<u64>,
+        Option<u64>,
+    ) {
         let mut order_by = Vec::new();
         let mut limit = None;
         let mut offset = None;

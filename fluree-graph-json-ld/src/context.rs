@@ -15,10 +15,10 @@ pub enum Container {
 /// Type values can be keywords or IRIs
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeValue {
-    Id,              // @id - value is an IRI reference
-    Vocab,           // @vocab
-    Json,            // @json - JSON literal
-    Iri(String),     // Specific datatype IRI
+    Id,          // @id - value is an IRI reference
+    Vocab,       // @vocab
+    Json,        // @json - JSON literal
+    Iri(String), // Specific datatype IRI
 }
 
 /// A single context entry (term definition)
@@ -96,7 +96,11 @@ impl ContextEntry {
             } else {
                 obj.insert(
                     "@container".to_string(),
-                    JsonValue::Array(vals.iter().map(|v| JsonValue::String(v.to_string())).collect()),
+                    JsonValue::Array(
+                        vals.iter()
+                            .map(|v| JsonValue::String(v.to_string()))
+                            .collect(),
+                    ),
                 );
             }
         }
@@ -166,7 +170,11 @@ impl ParsedContext {
     ///
     /// Returns `JsonValue::Null` for empty contexts.
     pub fn to_json(&self) -> JsonValue {
-        if self.terms.is_empty() && self.vocab.is_none() && self.base.is_none() && self.language.is_none() {
+        if self.terms.is_empty()
+            && self.vocab.is_none()
+            && self.base.is_none()
+            && self.language.is_none()
+        {
             return JsonValue::Null;
         }
 
@@ -199,7 +207,10 @@ impl ParsedContext {
     }
 
     /// Parse a JSON-LD context value (string, map, array, or null)
-    pub fn parse(base_context: Option<&ParsedContext>, context: &JsonValue) -> Result<ParsedContext> {
+    pub fn parse(
+        base_context: Option<&ParsedContext>,
+        context: &JsonValue,
+    ) -> Result<ParsedContext> {
         let mut active = base_context.cloned().unwrap_or_else(|| ParsedContext {
             id_key: "@id".to_string(),
             type_key: "@type".to_string(),
@@ -815,11 +826,7 @@ mod tests {
 
     #[test]
     fn test_to_json_simple_prefix() {
-        let ctx = ParsedContext::parse(
-            None,
-            &json!({"ex": "http://example.org/"}),
-        )
-        .unwrap();
+        let ctx = ParsedContext::parse(None, &json!({"ex": "http://example.org/"})).unwrap();
 
         let json = ctx.to_json();
         let obj = json.as_object().unwrap();

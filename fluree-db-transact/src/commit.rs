@@ -10,8 +10,8 @@ use chrono::Utc;
 use fluree_db_core::{ContentAddressedWrite, ContentKind, NodeCache, Storage};
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, Publisher};
-use fluree_db_novelty::{Commit, CommitData, CommitRef};
 use fluree_db_novelty::generate_commit_flakes;
+use fluree_db_novelty::{Commit, CommitData, CommitRef};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -209,15 +209,21 @@ where
     // Build cumulative DB metadata
     // Get current stats if available, otherwise use defaults
     let (cumulative_flakes, cumulative_size) = if let Some(stats) = &base.db.stats {
-        (stats.flakes + flake_count as u64, stats.size + delta_bytes as u64)
+        (
+            stats.flakes + flake_count as u64,
+            stats.size + delta_bytes as u64,
+        )
     } else {
         // No indexed stats yet - use novelty as baseline
         let novelty_flakes = base.novelty.len() as u64;
-        (novelty_flakes + flake_count as u64, (base.novelty_size() + delta_bytes) as u64)
+        (
+            novelty_flakes + flake_count as u64,
+            (base.novelty_size() + delta_bytes) as u64,
+        )
     };
 
     let commit_data = CommitData {
-        id: None, // Will be set after content-addressing
+        id: None,      // Will be set after content-addressing
         address: None, // DB address not tracked separately in Rust yet
         flakes: cumulative_flakes,
         size: cumulative_size,
@@ -232,7 +238,9 @@ where
     // after the write for downstream logic (metadata flakes, receipt, etc.).
     // Compute stable commit ID (intentionally excludes wall-clock timestamp).
     let commit_id = compute_commit_id(&commit_record);
-    let commit_hash_hex = commit_id.strip_prefix("sha256:").unwrap_or(commit_id.as_str());
+    let commit_hash_hex = commit_id
+        .strip_prefix("sha256:")
+        .unwrap_or(commit_id.as_str());
 
     let bytes = serde_json::to_vec(&commit_record)?;
     let write_res = storage
@@ -369,7 +377,9 @@ mod tests {
         ));
 
         let ns_registry = NamespaceRegistry::from_db(&ledger.db);
-        let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default()).await.unwrap();
+        let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default())
+            .await
+            .unwrap();
 
         // Commit
         let config = IndexConfig::default();
@@ -404,7 +414,9 @@ mod tests {
         // Stage an empty transaction (no inserts)
         let txn = Txn::insert();
         let ns_registry = NamespaceRegistry::from_db(&ledger.db);
-        let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default()).await.unwrap();
+        let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default())
+            .await
+            .unwrap();
 
         // Commit should fail
         let config = IndexConfig::default();
@@ -440,7 +452,9 @@ mod tests {
         ));
 
         let ns_registry = NamespaceRegistry::from_db(&ledger.db);
-        let (view1, ns_registry1) = stage(ledger, txn1, ns_registry, StageOptions::default()).await.unwrap();
+        let (view1, ns_registry1) = stage(ledger, txn1, ns_registry, StageOptions::default())
+            .await
+            .unwrap();
         let (receipt1, state1) = commit(
             view1,
             ns_registry1,
@@ -462,7 +476,9 @@ mod tests {
         ));
 
         let ns_registry2 = NamespaceRegistry::from_db(&state1.db);
-        let (view2, ns_registry2) = stage(state1, txn2, ns_registry2, StageOptions::default()).await.unwrap();
+        let (view2, ns_registry2) = stage(state1, txn2, ns_registry2, StageOptions::default())
+            .await
+            .unwrap();
         let (receipt2, state2) = commit(
             view2,
             ns_registry2,
@@ -478,7 +494,10 @@ mod tests {
         assert_eq!(state2.t(), 2);
         // Novelty includes transaction flakes + commit metadata flakes
         // 2 txn flakes + 8 metadata (commit 1, no previous) + 9 metadata (commit 2, has previous) = 19
-        assert!(state2.novelty.len() >= 2, "novelty should include at least 2 transaction flakes");
+        assert!(
+            state2.novelty.len() >= 2,
+            "novelty should include at least 2 transaction flakes"
+        );
     }
 
     #[tokio::test]
@@ -500,7 +519,9 @@ mod tests {
         ));
 
         let ns_registry = NamespaceRegistry::from_db(&ledger.db);
-        let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default()).await.unwrap();
+        let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default())
+            .await
+            .unwrap();
 
         // Use a very small max to trigger predictive sizing error
         let config = IndexConfig {

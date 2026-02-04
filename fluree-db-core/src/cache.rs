@@ -434,7 +434,9 @@ impl NodeCache for SimpleCache {
                         stats.ready_hits += 1;
                         match key.kind {
                             CacheKind::Raw => stats.raw_hits += 1,
-                            CacheKind::LeafTRange | CacheKind::LeafHistoryRange => stats.leaf_hits += 1,
+                            CacheKind::LeafTRange | CacheKind::LeafHistoryRange => {
+                                stats.leaf_hits += 1
+                            }
                         }
                         Action::Hit(node.clone())
                     }
@@ -445,7 +447,9 @@ impl NodeCache for SimpleCache {
                         stats.inflight_hits += 1;
                         match key.kind {
                             CacheKind::Raw => stats.raw_hits += 1,
-                            CacheKind::LeafTRange | CacheKind::LeafHistoryRange => stats.leaf_hits += 1,
+                            CacheKind::LeafTRange | CacheKind::LeafHistoryRange => {
+                                stats.leaf_hits += 1
+                            }
                         }
                         Action::WaitOnInFlight(mutex.clone())
                     }
@@ -455,7 +459,9 @@ impl NodeCache for SimpleCache {
                         stats.misses += 1;
                         match key.kind {
                             CacheKind::Raw => stats.raw_misses += 1,
-                            CacheKind::LeafTRange | CacheKind::LeafHistoryRange => stats.leaf_misses += 1,
+                            CacheKind::LeafTRange | CacheKind::LeafHistoryRange => {
+                                stats.leaf_misses += 1
+                            }
                         }
 
                         // Evict if needed (only evict Ready entries, not InFlight)
@@ -488,7 +494,7 @@ impl NodeCache for SimpleCache {
                     let guard = mutex.lock().await;
                     let wait_us = wait_start.elapsed().as_micros() as u64;
                     self.stats.write().unwrap().inflight_wait_us += wait_us;
-                    
+
                     match guard.as_ref() {
                         Some(Ok(node)) => return Ok(node.clone()),
                         Some(Err(e)) => return Err(crate::error::Error::Storage(e.to_string())),
@@ -580,7 +586,12 @@ impl NodeCache for SimpleCache {
 // =============================================================================
 
 /// Atomic cache statistics for lock-free hot path tracking
-#[cfg(all(feature = "native", feature = "moka", feature = "dashmap", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "native",
+    feature = "moka",
+    feature = "dashmap",
+    not(target_arch = "wasm32")
+))]
 #[derive(Debug)]
 pub struct AtomicCacheStats {
     pub hits: std::sync::atomic::AtomicU64,
@@ -596,7 +607,12 @@ pub struct AtomicCacheStats {
     pub fetch_time_us: std::sync::atomic::AtomicU64,
 }
 
-#[cfg(all(feature = "native", feature = "moka", feature = "dashmap", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "native",
+    feature = "moka",
+    feature = "dashmap",
+    not(target_arch = "wasm32")
+))]
 impl Default for AtomicCacheStats {
     fn default() -> Self {
         Self {
@@ -615,7 +631,12 @@ impl Default for AtomicCacheStats {
     }
 }
 
-#[cfg(all(feature = "native", feature = "moka", feature = "dashmap", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "native",
+    feature = "moka",
+    feature = "dashmap",
+    not(target_arch = "wasm32")
+))]
 impl AtomicCacheStats {
     /// Get a snapshot of stats as CacheStats
     pub fn snapshot(&self) -> CacheStats {
@@ -653,13 +674,28 @@ impl AtomicCacheStats {
 }
 
 /// In-flight fetch state for single-flight deduplication
-#[cfg(all(feature = "native", feature = "moka", feature = "dashmap", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "native",
+    feature = "moka",
+    feature = "dashmap",
+    not(target_arch = "wasm32")
+))]
 type InFlightResult = std::result::Result<ResolvedNode, std::sync::Arc<str>>;
 
-#[cfg(all(feature = "native", feature = "moka", feature = "dashmap", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "native",
+    feature = "moka",
+    feature = "dashmap",
+    not(target_arch = "wasm32")
+))]
 type InFlightSender = std::sync::Arc<tokio::sync::watch::Sender<Option<InFlightResult>>>;
 
-#[cfg(all(feature = "native", feature = "moka", feature = "dashmap", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "native",
+    feature = "moka",
+    feature = "dashmap",
+    not(target_arch = "wasm32")
+))]
 type InFlightMap = dashmap::DashMap<CacheKey, InFlightSender>;
 
 /// RAII guard to prevent orphaned in-flight entries.
@@ -667,7 +703,12 @@ type InFlightMap = dashmap::DashMap<CacheKey, InFlightSender>;
 /// If the fetcher task is dropped/cancelled mid-fetch, the guard will remove the
 /// in-flight entry, dropping the last sender. This causes waiters to observe
 /// channel closure and retry, rather than hanging forever.
-#[cfg(all(feature = "native", feature = "moka", feature = "dashmap", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "native",
+    feature = "moka",
+    feature = "dashmap",
+    not(target_arch = "wasm32")
+))]
 struct InFlightFetchGuard<'a> {
     key: CacheKey,
     map: &'a InFlightMap,
@@ -675,7 +716,12 @@ struct InFlightFetchGuard<'a> {
     finished: bool,
 }
 
-#[cfg(all(feature = "native", feature = "moka", feature = "dashmap", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "native",
+    feature = "moka",
+    feature = "dashmap",
+    not(target_arch = "wasm32")
+))]
 impl<'a> InFlightFetchGuard<'a> {
     fn new(key: CacheKey, map: &'a InFlightMap, tx: InFlightSender) -> Self {
         Self {
@@ -694,7 +740,12 @@ impl<'a> InFlightFetchGuard<'a> {
     }
 }
 
-#[cfg(all(feature = "native", feature = "moka", feature = "dashmap", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "native",
+    feature = "moka",
+    feature = "dashmap",
+    not(target_arch = "wasm32")
+))]
 impl Drop for InFlightFetchGuard<'_> {
     fn drop(&mut self) {
         if !self.finished {
@@ -720,14 +771,24 @@ impl Drop for InFlightFetchGuard<'_> {
 /// **Note**: This type is intentionally not `Clone`. Caches should be shared
 /// via `Arc<MokaNodeCache>` rather than cloned (which would be expensive and
 /// semantically confusing).
-#[cfg(all(feature = "native", feature = "moka", feature = "dashmap", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "native",
+    feature = "moka",
+    feature = "dashmap",
+    not(target_arch = "wasm32")
+))]
 pub struct MokaNodeCache {
     cache: moka::sync::Cache<CacheKey, ResolvedNode>,
     in_flight: InFlightMap,
     stats: std::sync::Arc<AtomicCacheStats>,
 }
 
-#[cfg(all(feature = "native", feature = "moka", feature = "dashmap", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "native",
+    feature = "moka",
+    feature = "dashmap",
+    not(target_arch = "wasm32")
+))]
 impl std::fmt::Debug for MokaNodeCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MokaNodeCache")
@@ -738,7 +799,12 @@ impl std::fmt::Debug for MokaNodeCache {
     }
 }
 
-#[cfg(all(feature = "native", feature = "moka", feature = "dashmap", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "native",
+    feature = "moka",
+    feature = "dashmap",
+    not(target_arch = "wasm32")
+))]
 impl MokaNodeCache {
     /// Create a new moka cache with the given maximum capacity in bytes
     ///
@@ -759,7 +825,9 @@ impl MokaNodeCache {
             })
             .max_capacity(max_bytes)
             .eviction_listener(move |_key, _value, _cause| {
-                eviction_stats.evictions.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                eviction_stats
+                    .evictions
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             })
             .build();
 
@@ -781,7 +849,9 @@ impl MokaNodeCache {
         let cache = moka::sync::Cache::builder()
             .max_capacity(max_entries)
             .eviction_listener(move |_key, _value, _cause| {
-                eviction_stats.evictions.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                eviction_stats
+                    .evictions
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             })
             .build();
 
@@ -850,7 +920,12 @@ impl MokaNodeCache {
     }
 }
 
-#[cfg(all(feature = "native", feature = "moka", feature = "dashmap", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "native",
+    feature = "moka",
+    feature = "dashmap",
+    not(target_arch = "wasm32")
+))]
 #[async_trait]
 impl NodeCache for MokaNodeCache {
     async fn get_or_fetch<F, Fut>(&self, key: &CacheKey, fetch: F) -> Result<ResolvedNode>
@@ -1058,7 +1133,12 @@ mod tests {
         assert!(cache.len() <= 2);
     }
 
-    #[cfg(all(feature = "native", feature = "moka", feature = "dashmap", not(target_arch = "wasm32")))]
+    #[cfg(all(
+        feature = "native",
+        feature = "moka",
+        feature = "dashmap",
+        not(target_arch = "wasm32")
+    ))]
     #[tokio::test]
     async fn test_moka_cache() {
         let cache = MokaNodeCache::with_max_entries(10);
@@ -1109,11 +1189,16 @@ mod tests {
         assert_eq!(cache.len(), 1);
     }
 
-    #[cfg(all(feature = "native", feature = "moka", feature = "dashmap", not(target_arch = "wasm32")))]
+    #[cfg(all(
+        feature = "native",
+        feature = "moka",
+        feature = "dashmap",
+        not(target_arch = "wasm32")
+    ))]
     #[tokio::test]
     async fn test_moka_cache_stats() {
         let cache = MokaNodeCache::with_max_entries(10);
-        
+
         // First fetch - miss
         let key1 = CacheKey::raw("node1");
         let _ = cache
@@ -1138,7 +1223,12 @@ mod tests {
         assert_eq!(stats.raw_hits, 1);
     }
 
-    #[cfg(all(feature = "native", feature = "moka", feature = "dashmap", not(target_arch = "wasm32")))]
+    #[cfg(all(
+        feature = "native",
+        feature = "moka",
+        feature = "dashmap",
+        not(target_arch = "wasm32")
+    ))]
     #[tokio::test]
     async fn test_moka_cache_weighted_eviction() {
         // Create cache with small max bytes (force eviction)
@@ -1148,7 +1238,9 @@ mod tests {
         for i in 0..10 {
             let key = CacheKey::raw(format!("node{}", i));
             let _ = cache
-                .get_or_fetch(&key, || async move { Ok(make_resolved_leaf(&format!("node{}", i))) })
+                .get_or_fetch(&key, || async move {
+                    Ok(make_resolved_leaf(&format!("node{}", i)))
+                })
                 .await
                 .unwrap();
         }

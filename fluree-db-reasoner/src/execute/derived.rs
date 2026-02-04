@@ -94,7 +94,11 @@ impl DerivedSet {
 
     /// Try to add a flake, returns true if it was new
     pub fn try_add(&mut self, flake: Flake) -> bool {
-        let key = (flake.s.clone(), flake.p.clone(), Self::object_hash(&flake.o));
+        let key = (
+            flake.s.clone(),
+            flake.p.clone(),
+            Self::object_hash(&flake.o),
+        );
 
         if self.seen.contains(&key) {
             return false;

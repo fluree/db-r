@@ -10,7 +10,9 @@
 //! - OneOf rule (cls-oo)
 
 use super::*;
-use crate::restrictions::{ClassRef, ParsedRestriction, RestrictionIndex, RestrictionType, RestrictionValue};
+use crate::restrictions::{
+    ClassRef, ParsedRestriction, RestrictionIndex, RestrictionType, RestrictionValue,
+};
 use crate::same_as::SameAsTracker;
 use crate::types::PropertyExpression;
 use fluree_vocab::namespaces::{OWL, RDF};

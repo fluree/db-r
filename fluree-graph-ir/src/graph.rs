@@ -284,10 +284,7 @@ mod tests {
 
         // Alice should come before Bob
         let first = graph.iter().next().unwrap();
-        assert_eq!(
-            first.s.as_iri(),
-            Some("http://example.org/alice")
-        );
+        assert_eq!(first.s.as_iri(), Some("http://example.org/alice"));
     }
 
     #[test]
@@ -345,13 +342,11 @@ mod tests {
 
     #[test]
     fn test_from_iterator() {
-        let triples = vec![
-            Triple::new(
-                Term::iri("http://example.org/s"),
-                Term::iri("http://example.org/p"),
-                Term::string("o"),
-            ),
-        ];
+        let triples = vec![Triple::new(
+            Term::iri("http://example.org/s"),
+            Term::iri("http://example.org/p"),
+            Term::string("o"),
+        )];
 
         let graph: Graph = triples.into_iter().collect();
         assert_eq!(graph.len(), 1);

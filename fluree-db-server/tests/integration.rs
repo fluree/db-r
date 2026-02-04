@@ -4,8 +4,8 @@ use http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
-use tower::ServiceExt;
 use tempfile::TempDir;
+use tower::ServiceExt;
 
 fn test_state() -> (TempDir, Arc<AppState>) {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -47,7 +47,13 @@ async fn health_check_ok() {
     let app = build_router(state);
 
     let resp = app
-        .oneshot(Request::builder().method("GET").uri("/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
@@ -102,7 +108,11 @@ async fn create_ledger_then_ledger_info() {
         .await
         .unwrap();
     let (status, json) = json_body(resp).await;
-    assert_eq!(status, StatusCode::CREATED, "Create should return 201 Created");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "Create should return 201 Created"
+    );
     assert_eq!(
         json.get("ledger").and_then(|v| v.as_str()),
         Some("test:main")
@@ -110,8 +120,14 @@ async fn create_ledger_then_ledger_info() {
     // Empty ledger has t=0
     assert_eq!(json.get("t").and_then(|v| v.as_i64()), Some(0));
     // Should have tx-id and commit fields (Clojure parity)
-    assert!(json.get("tx-id").is_some(), "Response should have tx-id field");
-    assert!(json.get("commit").is_some(), "Response should have commit field");
+    assert!(
+        json.get("tx-id").is_some(),
+        "Response should have tx-id field"
+    );
+    assert!(
+        json.get("commit").is_some(),
+        "Response should have commit field"
+    );
 
     // Ledger info
     let resp = app
@@ -177,11 +193,22 @@ async fn insert_then_query_finds_value() {
     let (status, json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
     // Verify Clojure-compatible response format
-    assert_eq!(json.get("ledger").and_then(|v| v.as_str()), Some("test:main"));
+    assert_eq!(
+        json.get("ledger").and_then(|v| v.as_str()),
+        Some("test:main")
+    );
     assert!(json.get("t").and_then(|v| v.as_i64()).unwrap_or(0) >= 1);
-    assert!(json.get("tx-id").is_some(), "Response should have tx-id field");
-    let commit = json.get("commit").expect("Response should have commit field");
-    assert!(commit.get("address").is_some(), "Commit should have address");
+    assert!(
+        json.get("tx-id").is_some(),
+        "Response should have tx-id field"
+    );
+    let commit = json
+        .get("commit")
+        .expect("Response should have commit field");
+    assert!(
+        commit.get("address").is_some(),
+        "Commit should have address"
+    );
     assert!(commit.get("hash").is_some(), "Commit should have hash");
 
     // Query
@@ -255,7 +282,10 @@ async fn update_endpoint_works_same_as_transact() {
         .unwrap();
     let (status, json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(json.get("ledger").and_then(|v| v.as_str()), Some("test:update"));
+    assert_eq!(
+        json.get("ledger").and_then(|v| v.as_str()),
+        Some("test:update")
+    );
     assert!(json.get("t").and_then(|v| v.as_i64()).unwrap_or(0) >= 1);
 
     // Query to verify
@@ -322,7 +352,10 @@ async fn ledger_scoped_insert_upsert_history() {
         .unwrap();
     let (status, json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(json.get("ledger").and_then(|v| v.as_str()), Some("scoped:test"));
+    assert_eq!(
+        json.get("ledger").and_then(|v| v.as_str()),
+        Some("scoped:test")
+    );
     assert_eq!(json.get("t").and_then(|v| v.as_i64()), Some(1));
 
     // Ledger-scoped upsert via /:ledger/upsert
@@ -373,9 +406,16 @@ async fn ledger_scoped_insert_upsert_history() {
     let (status, json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK, "History query failed: {}", json);
     // History should return array of changes (assertions for name at t=1 and email at t=2)
-    assert!(json.is_array(), "History should return an array, got: {}", json);
+    assert!(
+        json.is_array(),
+        "History should return an array, got: {}",
+        json
+    );
     let history = json.as_array().unwrap();
-    assert!(history.len() >= 2, "Should have at least 2 history entries (name at t=1, email at t=2)");
+    assert!(
+        history.len() >= 2,
+        "Should have at least 2 history entries (name at t=1, email at t=2)"
+    );
 }
 
 #[tokio::test]
@@ -578,7 +618,10 @@ async fn sparql_query_generic_requires_from_clause_even_with_no_header() {
 
     // The API reports this as a query error; server maps it as 500 today.
     // If/when ApiError::query() is changed to a client error variant, this should become 400.
-    assert!(resp.status() == StatusCode::INTERNAL_SERVER_ERROR || resp.status() == StatusCode::BAD_REQUEST);
+    assert!(
+        resp.status() == StatusCode::INTERNAL_SERVER_ERROR
+            || resp.status() == StatusCode::BAD_REQUEST
+    );
 }
 
 #[tokio::test]
@@ -730,9 +773,18 @@ async fn query_with_tracking_returns_headers() {
     assert_eq!(status, StatusCode::OK);
 
     // Response body should also contain tracking info
-    assert!(json.get("status").is_some(), "Response should have status field");
-    assert!(json.get("result").is_some(), "Response should have result field");
-    assert!(json.get("time").is_some(), "Response should have time field in body");
+    assert!(
+        json.get("status").is_some(),
+        "Response should have status field"
+    );
+    assert!(
+        json.get("result").is_some(),
+        "Response should have result field"
+    );
+    assert!(
+        json.get("time").is_some(),
+        "Response should have time field in body"
+    );
     assert!(json_contains_string(&json, "Alice"));
 }
 
@@ -813,7 +865,9 @@ async fn query_with_max_fuel_returns_fuel_header() {
     assert_eq!(status, StatusCode::OK);
 
     // Response body should also contain fuel info
-    assert!(json.get("fuel").is_some(), "Response should have fuel field in body");
+    assert!(
+        json.get("fuel").is_some(),
+        "Response should have fuel field in body"
+    );
     assert!(json_contains_string(&json, "Bob"));
 }
-

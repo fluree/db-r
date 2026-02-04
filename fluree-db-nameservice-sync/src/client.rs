@@ -167,10 +167,7 @@ impl RemoteNameserviceClient for HttpRemoteClient {
     }
 
     async fn init_ledger(&self, alias: &str) -> Result<bool> {
-        let url = format!(
-            "{}/fluree/nameservice/refs/{}/init",
-            self.base_url, alias
-        );
+        let url = format!("{}/fluree/nameservice/refs/{}/init", self.base_url, alias);
 
         let resp = self.add_auth(self.http.post(&url)).send().await?;
 

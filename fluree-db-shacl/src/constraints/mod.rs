@@ -149,8 +149,15 @@ impl Constraint {
             Constraint::LessThanOrEquals(prop) => format!("sh:lessThanOrEquals {}", prop.name),
             Constraint::UniqueLang(v) => format!("sh:uniqueLang {}", v),
             Constraint::LanguageIn(langs) => format!("sh:languageIn {:?}", langs),
-            Constraint::QualifiedValueShape { min_count, max_count, .. } => {
-                format!("sh:qualifiedValueShape (min: {:?}, max: {:?})", min_count, max_count)
+            Constraint::QualifiedValueShape {
+                min_count,
+                max_count,
+                ..
+            } => {
+                format!(
+                    "sh:qualifiedValueShape (min: {:?}, max: {:?})",
+                    min_count, max_count
+                )
             }
         }
     }
@@ -160,8 +167,15 @@ impl NodeConstraint {
     /// Get a human-readable description of this constraint
     pub fn description(&self) -> String {
         match self {
-            NodeConstraint::Closed { is_closed, ignored_properties } => {
-                format!("sh:closed {} (ignored: {} properties)", is_closed, ignored_properties.len())
+            NodeConstraint::Closed {
+                is_closed,
+                ignored_properties,
+            } => {
+                format!(
+                    "sh:closed {} (ignored: {} properties)",
+                    is_closed,
+                    ignored_properties.len()
+                )
             }
             NodeConstraint::Not(_) => "sh:not".to_string(),
             NodeConstraint::And(shapes) => format!("sh:and ({} shapes)", shapes.len()),

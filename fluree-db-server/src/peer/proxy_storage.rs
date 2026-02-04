@@ -17,7 +17,9 @@
 use async_trait::async_trait;
 use fluree_db_core::error::{Error as CoreError, Result};
 use fluree_db_core::storage::ReadHint;
-use fluree_db_core::{ContentAddressedWrite, ContentKind, ContentWriteResult, StorageRead, StorageWrite};
+use fluree_db_core::{
+    ContentAddressedWrite, ContentKind, ContentWriteResult, StorageRead, StorageWrite,
+};
 use reqwest::{Client, StatusCode};
 use serde::Serialize;
 use std::fmt::Debug;
@@ -150,7 +152,10 @@ impl ProxyStorage {
                         address, e
                     ))
                 } else {
-                    CoreError::io(format!("Storage proxy request failed for {}: {}", address, e))
+                    CoreError::io(format!(
+                        "Storage proxy request failed for {}: {}",
+                        address, e
+                    ))
                 };
                 return FetchOutcome::Error(err);
             }
@@ -159,26 +164,22 @@ impl ProxyStorage {
         let status = response.status();
 
         match status {
-            StatusCode::OK => {
-                match response.bytes().await {
-                    Ok(bytes) => FetchOutcome::Success(bytes.to_vec()),
-                    Err(e) => FetchOutcome::Error(CoreError::io(format!(
-                        "Failed to read response body for {}: {}",
-                        address, e
-                    ))),
-                }
-            }
+            StatusCode::OK => match response.bytes().await {
+                Ok(bytes) => FetchOutcome::Success(bytes.to_vec()),
+                Err(e) => FetchOutcome::Error(CoreError::io(format!(
+                    "Failed to read response body for {}: {}",
+                    address, e
+                ))),
+            },
             StatusCode::NOT_FOUND => FetchOutcome::Error(CoreError::not_found(address)),
             StatusCode::NOT_ACCEPTABLE => {
                 // 406 - format not available, signal for retry with different Accept
                 FetchOutcome::NotAcceptable
             }
-            StatusCode::UNAUTHORIZED => {
-                FetchOutcome::Error(CoreError::storage(format!(
-                    "Storage proxy authentication failed for {}: check token validity",
-                    address
-                )))
-            }
+            StatusCode::UNAUTHORIZED => FetchOutcome::Error(CoreError::storage(format!(
+                "Storage proxy authentication failed for {}: check token validity",
+                address
+            ))),
             StatusCode::FORBIDDEN => {
                 // Address not in token scope - treat as not found (no existence leak)
                 FetchOutcome::Error(CoreError::not_found(address))

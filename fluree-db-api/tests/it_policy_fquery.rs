@@ -18,7 +18,7 @@ use support::{assert_index_defaults, genesis_ledger, normalize_rows, MemoryFlure
 async fn policy_baseline_allow_true() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    
+
     let ledger0 = genesis_ledger(&fluree, "policy/baseline:main");
     let txn = json!({
         "@context": { "ex": "http://example.org/ns/" },
@@ -27,7 +27,7 @@ async fn policy_baseline_allow_true() {
         ]
     });
     let _ = fluree.insert(ledger0, &txn).await.expect("insert");
-    
+
     // Policy with f:allow: true - should allow everything
     let policy = json!([{
         "@id": "ex:allowPolicy",
@@ -35,7 +35,7 @@ async fn policy_baseline_allow_true() {
         "f:action": "f:view",
         "f:allow": true
     }]);
-    
+
     let query = json!({
         "@context": { "ex": "http://example.org/ns/" },
         "from": "policy/baseline:main",
@@ -46,11 +46,14 @@ async fn policy_baseline_allow_true() {
         "select": "?name",
         "where": [{ "@id": "?item", "@type": "ex:Item", "ex:name": "?name" }]
     });
-    
-    let result = fluree.query_connection(&query).await.expect("query_connection");
+
+    let result = fluree
+        .query_connection(&query)
+        .await
+        .expect("query_connection");
     let ledger = fluree.ledger("policy/baseline:main").await.expect("ledger");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
-    
+
     assert_eq!(
         normalize_rows(&jsonld),
         normalize_rows(&json!(["Item One"])),
@@ -89,7 +92,10 @@ async fn seed_classified_data(fluree: &MemoryFluree, alias: &str) {
         ]
     });
 
-    let _ = fluree.insert(ledger0, &txn).await.expect("seed should succeed");
+    let _ = fluree
+        .insert(ledger0, &txn)
+        .await
+        .expect("seed should succeed");
 }
 
 /// Tests that f:query with a simple WHERE pattern works.
@@ -131,8 +137,14 @@ async fn policy_fquery_simple_where_pattern() {
         "where": [{ "@id": "?item", "@type": "ex:Item", "ex:name": "?name" }]
     });
 
-    let result = fluree.query_connection(&query).await.expect("query_connection");
-    let ledger = fluree.ledger("policy/fquery-simple:main").await.expect("ledger");
+    let result = fluree
+        .query_connection(&query)
+        .await
+        .expect("query_connection");
+    let ledger = fluree
+        .ledger("policy/fquery-simple:main")
+        .await
+        .expect("ledger");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
 
     // Only "Public Item" (level=0) should be visible
@@ -185,8 +197,14 @@ async fn policy_fquery_with_filter_expression() {
         "where": [{ "@id": "?item", "@type": "ex:Item", "ex:name": "?name" }]
     });
 
-    let result = fluree.query_connection(&query).await.expect("query_connection");
-    let ledger = fluree.ledger("policy/fquery-filter:main").await.expect("ledger");
+    let result = fluree
+        .query_connection(&query)
+        .await
+        .expect("query_connection");
+    let ledger = fluree
+        .ledger("policy/fquery-filter:main")
+        .await
+        .expect("ledger");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
 
     // Only "Public Item" (level=0) should be visible; level < 3
@@ -240,8 +258,14 @@ async fn policy_fquery_default_allow_fallback() {
         "where": [{ "@id": "?item", "@type": "ex:Item", "ex:name": "?name" }]
     });
 
-    let result = fluree.query_connection(&query_with_applicable_policy).await.expect("query_connection");
-    let ledger = fluree.ledger("policy/fquery-default:main").await.expect("ledger");
+    let result = fluree
+        .query_connection(&query_with_applicable_policy)
+        .await
+        .expect("query_connection");
+    let ledger = fluree
+        .ledger("policy/fquery-default:main")
+        .await
+        .expect("ledger");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
 
     // The policy APPLIED (it ran its f:query), but the query returned false.
@@ -286,7 +310,10 @@ async fn policy_fquery_default_allow_fallback() {
         "where": [{ "@id": "?item", "@type": "ex:Item", "ex:name": "?name" }]
     });
 
-    let result_allow = fluree.query_connection(&query_no_applicable_policy).await.expect("query_connection");
+    let result_allow = fluree
+        .query_connection(&query_no_applicable_policy)
+        .await
+        .expect("query_connection");
     let jsonld_allow = result_allow.to_jsonld(&ledger.db).expect("to_jsonld");
 
     // The policy doesn't apply (targets ex:nonexistent, not ex:name), so default-allow kicks in
@@ -310,7 +337,10 @@ async fn policy_fquery_default_allow_fallback() {
         "where": [{ "@id": "?item", "@type": "ex:Item", "ex:name": "?name" }]
     });
 
-    let result_deny = fluree.query_connection(&query_deny).await.expect("query_connection");
+    let result_deny = fluree
+        .query_connection(&query_deny)
+        .await
+        .expect("query_connection");
     let jsonld_deny = result_deny.to_jsonld(&ledger.db).expect("to_jsonld");
 
     // The policy doesn't apply, and default-allow is false
@@ -357,8 +387,14 @@ async fn policy_fquery_empty_where_allows() {
         "where": [{ "@id": "?item", "@type": "ex:Item", "ex:name": "?name" }]
     });
 
-    let result = fluree.query_connection(&query).await.expect("query_connection");
-    let ledger = fluree.ledger("policy/fquery-empty:main").await.expect("ledger");
+    let result = fluree
+        .query_connection(&query)
+        .await
+        .expect("query_connection");
+    let ledger = fluree
+        .ledger("policy/fquery-empty:main")
+        .await
+        .expect("ledger");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
 
     // Empty f:query should allow all items

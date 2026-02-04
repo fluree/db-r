@@ -51,7 +51,10 @@ async fn shacl_cardinality_constraints() {
         }]
     });
 
-    let ledger_ok = fluree.create_ledger("shacl/cardinality-ok:main").await.unwrap();
+    let ledger_ok = fluree
+        .create_ledger("shacl/cardinality-ok:main")
+        .await
+        .unwrap();
     let ledger_ok = fluree.upsert(ledger_ok, &shape_txn).await.unwrap().ledger;
     let ledger_ok = fluree
         .upsert(
@@ -75,7 +78,10 @@ async fn shacl_cardinality_constraints() {
     let jsonld = result.to_jsonld(&ledger_ok.db).unwrap();
     assert_eq!(jsonld, json!(["John"]));
 
-    let ledger_min = fluree.create_ledger("shacl/cardinality-min:main").await.unwrap();
+    let ledger_min = fluree
+        .create_ledger("shacl/cardinality-min:main")
+        .await
+        .unwrap();
     let ledger_min = fluree.upsert(ledger_min, &shape_txn).await.unwrap().ledger;
     let err = fluree
         .upsert(
@@ -90,7 +96,10 @@ async fn shacl_cardinality_constraints() {
         .unwrap_err();
     assert_shacl_violation(err, "Expected at least 1 value(s) but found 0");
 
-    let ledger_max = fluree.create_ledger("shacl/cardinality-max:main").await.unwrap();
+    let ledger_max = fluree
+        .create_ledger("shacl/cardinality-max:main")
+        .await
+        .unwrap();
     let ledger_max = fluree.upsert(ledger_max, &shape_txn).await.unwrap().ledger;
     let err = fluree
         .upsert(
@@ -123,7 +132,10 @@ async fn shacl_datatype_constraints() {
         }]
     });
 
-    let ledger_ok = fluree.create_ledger("shacl/datatype-ok:main").await.unwrap();
+    let ledger_ok = fluree
+        .create_ledger("shacl/datatype-ok:main")
+        .await
+        .unwrap();
     let ledger_ok = fluree.upsert(ledger_ok, &shape_txn).await.unwrap().ledger;
     let ledger_ok = fluree
         .upsert(
@@ -147,7 +159,10 @@ async fn shacl_datatype_constraints() {
     let jsonld = result.to_jsonld(&ledger_ok.db).unwrap();
     assert_eq!(jsonld, json!(["John"]));
 
-    let ledger_bad = fluree.create_ledger("shacl/datatype-bad:main").await.unwrap();
+    let ledger_bad = fluree
+        .create_ledger("shacl/datatype-bad:main")
+        .await
+        .unwrap();
     let ledger_bad = fluree.upsert(ledger_bad, &shape_txn).await.unwrap().ledger;
     let err = fluree
         .upsert(
@@ -304,7 +319,10 @@ async fn shacl_pattern_constraints() {
     let jsonld = result.to_jsonld(&ledger_ok.db).unwrap();
     assert_eq!(jsonld, json!(["hello big world"]));
 
-    let ledger_bad = fluree.create_ledger("shacl/pattern-bad:main").await.unwrap();
+    let ledger_bad = fluree
+        .create_ledger("shacl/pattern-bad:main")
+        .await
+        .unwrap();
     let ledger_bad = fluree.upsert(ledger_bad, &shape_txn).await.unwrap().ledger;
     let err = fluree
         .upsert(
@@ -337,7 +355,10 @@ async fn shacl_has_value_constraint() {
         }]
     });
 
-    let ledger_ok = fluree.create_ledger("shacl/has-value-ok:main").await.unwrap();
+    let ledger_ok = fluree
+        .create_ledger("shacl/has-value-ok:main")
+        .await
+        .unwrap();
     let ledger_ok = fluree.upsert(ledger_ok, &shape_txn).await.unwrap().ledger;
     let ledger_ok = fluree
         .upsert(
@@ -361,7 +382,10 @@ async fn shacl_has_value_constraint() {
     let jsonld = result.to_jsonld(&ledger_ok.db).unwrap();
     assert_eq!(jsonld, json!(["admin"]));
 
-    let ledger_bad = fluree.create_ledger("shacl/has-value-bad:main").await.unwrap();
+    let ledger_bad = fluree
+        .create_ledger("shacl/has-value-bad:main")
+        .await
+        .unwrap();
     let ledger_bad = fluree.upsert(ledger_bad, &shape_txn).await.unwrap().ledger;
     let err = fluree
         .upsert(
@@ -394,7 +418,10 @@ async fn shacl_node_kind_constraint() {
         }]
     });
 
-    let ledger_ok = fluree.create_ledger("shacl/node-kind-ok:main").await.unwrap();
+    let ledger_ok = fluree
+        .create_ledger("shacl/node-kind-ok:main")
+        .await
+        .unwrap();
     let ledger_ok = fluree.upsert(ledger_ok, &shape_txn).await.unwrap().ledger;
     let ledger_ok = fluree
         .upsert(
@@ -418,7 +445,10 @@ async fn shacl_node_kind_constraint() {
     let jsonld = result.to_jsonld(&ledger_ok.db).unwrap();
     assert_eq!(jsonld, json!(["ex:homepage"]));
 
-    let ledger_bad = fluree.create_ledger("shacl/node-kind-bad:main").await.unwrap();
+    let ledger_bad = fluree
+        .create_ledger("shacl/node-kind-bad:main")
+        .await
+        .unwrap();
     let ledger_bad = fluree.upsert(ledger_bad, &shape_txn).await.unwrap().ledger;
     let err = fluree
         .upsert(
@@ -528,7 +558,10 @@ async fn shacl_closed_with_ignored_properties() {
     });
 
     // Valid: rdf:type is ignored even though not declared
-    let ledger_ok = fluree.create_ledger("shacl/closed-ignored-ok:main").await.unwrap();
+    let ledger_ok = fluree
+        .create_ledger("shacl/closed-ignored-ok:main")
+        .await
+        .unwrap();
     let ledger_ok = fluree.upsert(ledger_ok, &shape_txn).await.unwrap().ledger;
     let _ledger_ok = fluree
         .upsert(
@@ -569,7 +602,10 @@ async fn shacl_pattern_with_flags() {
     });
 
     // Valid: "HELLO" matches "hello" with case-insensitive flag
-    let ledger_ok = fluree.create_ledger("shacl/pattern-flags-ok:main").await.unwrap();
+    let ledger_ok = fluree
+        .create_ledger("shacl/pattern-flags-ok:main")
+        .await
+        .unwrap();
     let ledger_ok = fluree.upsert(ledger_ok, &shape_txn).await.unwrap().ledger;
     let ledger_ok = fluree
         .upsert(
@@ -594,7 +630,10 @@ async fn shacl_pattern_with_flags() {
     assert_eq!(jsonld, json!(["HELLO WORLD"]));
 
     // Invalid: "goodbye" doesn't match pattern
-    let ledger_bad = fluree.create_ledger("shacl/pattern-flags-bad:main").await.unwrap();
+    let ledger_bad = fluree
+        .create_ledger("shacl/pattern-flags-bad:main")
+        .await
+        .unwrap();
     let ledger_bad = fluree.upsert(ledger_bad, &shape_txn).await.unwrap().ledger;
     let err = fluree
         .upsert(
@@ -1047,7 +1086,11 @@ async fn shacl_xone_constraint() {
 
     // Invalid: has both personalId AND businessId (both shapes match)
     let ledger_both = fluree.create_ledger("shacl/xone-both:main").await.unwrap();
-    let ledger_both = fluree.upsert(ledger_both, &shapes_txn).await.unwrap().ledger;
+    let ledger_both = fluree
+        .upsert(ledger_both, &shapes_txn)
+        .await
+        .unwrap()
+        .ledger;
     let err = fluree
         .upsert(
             ledger_both,
@@ -1065,7 +1108,11 @@ async fn shacl_xone_constraint() {
 
     // Invalid: has neither (no shapes match)
     let ledger_none = fluree.create_ledger("shacl/xone-none:main").await.unwrap();
-    let ledger_none = fluree.upsert(ledger_none, &shapes_txn).await.unwrap().ledger;
+    let ledger_none = fluree
+        .upsert(ledger_none, &shapes_txn)
+        .await
+        .unwrap()
+        .ledger;
     let err = fluree
         .upsert(
             ledger_none,

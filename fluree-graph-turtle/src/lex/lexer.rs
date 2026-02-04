@@ -252,8 +252,8 @@ fn parse_at_directive(input: &mut Input<'_>) -> ModalResult<TokenKind> {
     '@'.parse_next(input)?;
 
     // Read the word after @
-    let word: &str = take_while(1.., |c: char| c.is_ascii_alphanumeric() || c == '-')
-        .parse_next(input)?;
+    let word: &str =
+        take_while(1.., |c: char| c.is_ascii_alphanumeric() || c == '-').parse_next(input)?;
 
     match word.to_lowercase().as_str() {
         "prefix" => Ok(TokenKind::KwPrefix),
@@ -285,9 +285,10 @@ fn parse_default_prefix(input: &mut Input<'_>) -> ModalResult<TokenKind> {
 fn parse_prefixed_name_or_keyword(input: &mut Input<'_>) -> ModalResult<TokenKind> {
     let start = input.checkpoint();
 
-    let first_char = input.chars().next().ok_or_else(|| {
-        winnow::error::ErrMode::Backtrack(ContextError::new())
-    })?;
+    let first_char = input
+        .chars()
+        .next()
+        .ok_or_else(|| winnow::error::ErrMode::Backtrack(ContextError::new()))?;
 
     let is_valid_prefix_start = is_pn_prefix_start(first_char);
 
@@ -354,9 +355,10 @@ fn parse_prefixed_name_or_keyword(input: &mut Input<'_>) -> ModalResult<TokenKin
 
 /// Parse a local name (after the colon in a prefixed name).
 fn parse_pn_local(input: &mut Input<'_>) -> ModalResult<String> {
-    let first_char = input.chars().next().ok_or_else(|| {
-        winnow::error::ErrMode::Backtrack(ContextError::new())
-    })?;
+    let first_char = input
+        .chars()
+        .next()
+        .ok_or_else(|| winnow::error::ErrMode::Backtrack(ContextError::new()))?;
 
     if !is_pn_local_start(first_char) && first_char != '%' && first_char != '\\' {
         return Err(winnow::error::ErrMode::Backtrack(ContextError::new()));
@@ -365,7 +367,8 @@ fn parse_pn_local(input: &mut Input<'_>) -> ModalResult<String> {
     let mut result = String::new();
 
     loop {
-        let chunk: &str = take_while(0.., |c: char| is_pn_chars(c) || c == ':').parse_next(input)?;
+        let chunk: &str =
+            take_while(0.., |c: char| is_pn_chars(c) || c == ':').parse_next(input)?;
         result.push_str(chunk);
 
         if input.is_empty() {
@@ -375,7 +378,11 @@ fn parse_pn_local(input: &mut Input<'_>) -> ModalResult<String> {
         if input.starts_with('.') {
             let rest = &input.as_ref()[1..];
             if let Some(next_char) = rest.chars().next() {
-                if is_pn_chars(next_char) || next_char == ':' || next_char == '%' || next_char == '\\' {
+                if is_pn_chars(next_char)
+                    || next_char == ':'
+                    || next_char == '%'
+                    || next_char == '\\'
+                {
                     '.'.parse_next(input)?;
                     result.push('.');
                     continue;
@@ -790,10 +797,7 @@ mod tests {
             }]
         );
 
-        assert_eq!(
-            tok("ex:"),
-            vec![TokenKind::PrefixedNameNs(Arc::from("ex"))]
-        );
+        assert_eq!(tok("ex:"), vec![TokenKind::PrefixedNameNs(Arc::from("ex"))]);
     }
 
     #[test]
@@ -847,10 +851,7 @@ mod tests {
             tok("\"hello\""),
             vec![TokenKind::String(Arc::from("hello"))]
         );
-        assert_eq!(
-            tok("'hello'"),
-            vec![TokenKind::String(Arc::from("hello"))]
-        );
+        assert_eq!(tok("'hello'"), vec![TokenKind::String(Arc::from("hello"))]);
         assert_eq!(
             tok("\"hello\\nworld\""),
             vec![TokenKind::String(Arc::from("hello\nworld"))]

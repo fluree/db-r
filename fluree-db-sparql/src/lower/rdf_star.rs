@@ -48,8 +48,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             match &tp.subject {
                 SubjectTerm::QuotedTriple(qt) => {
                     // Check if this quoted triple was already processed
-                    let object_var = if let Some(&var_id) = processed_quoted_triples.get(&qt.span)
-                    {
+                    let object_var = if let Some(&var_id) = processed_quoted_triples.get(&qt.span) {
                         var_id
                     } else {
                         // First time seeing this quoted triple - lower the inner pattern
@@ -102,7 +101,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                     } else {
                         // Other predicates on quoted triples are not supported
                         return Err(LowerError::not_implemented(
-                            &format!(
+                            format!(
                                 "RDF-star quoted triple with predicate '{}' (only f:t and f:op are supported)",
                                 predicate_iri
                             ),

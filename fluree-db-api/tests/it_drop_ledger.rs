@@ -9,9 +9,7 @@
 
 mod support;
 
-use fluree_db_api::{
-    DropMode, DropStatus, FlureeBuilder, IndexConfig, LedgerState, Novelty,
-};
+use fluree_db_api::{DropMode, DropStatus, FlureeBuilder, IndexConfig, LedgerState, Novelty};
 use fluree_db_core::address_path::alias_to_path_prefix;
 use fluree_db_core::{Db, SimpleCache, StorageRead};
 use fluree_db_nameservice::NameService;
@@ -47,8 +45,14 @@ async fn drop_ledger_soft_mode_retracts_only() {
         .await
         .expect("drop");
     assert_eq!(report.status, DropStatus::Dropped);
-    assert_eq!(report.index_files_deleted, 0, "Soft mode should not delete index files");
-    assert_eq!(report.commit_files_deleted, 0, "Soft mode should not delete commit files");
+    assert_eq!(
+        report.index_files_deleted, 0,
+        "Soft mode should not delete index files"
+    );
+    assert_eq!(
+        report.commit_files_deleted, 0,
+        "Soft mode should not delete commit files"
+    );
 
     // Verify retracted in nameservice
     let record = fluree.nameservice().lookup(alias).await.expect("lookup");
@@ -99,7 +103,10 @@ async fn drop_ledger_hard_mode_deletes_files() {
         .list_prefix(&commit_prefix)
         .await
         .expect("list");
-    assert!(!files_before.is_empty(), "Should have commit files before drop");
+    assert!(
+        !files_before.is_empty(),
+        "Should have commit files before drop"
+    );
 
     // Hard drop - should delete files and retract
     let report = fluree
@@ -336,7 +343,10 @@ async fn drop_ledger_hard_mode_deletes_even_when_retracted() {
         .list_prefix(&commit_prefix)
         .await
         .expect("list");
-    assert!(!files_before.is_empty(), "Files should exist after soft drop");
+    assert!(
+        !files_before.is_empty(),
+        "Files should exist after soft drop"
+    );
 
     // Second hard drop (should still delete files)
     let r2 = fluree

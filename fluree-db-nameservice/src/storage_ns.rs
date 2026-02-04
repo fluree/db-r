@@ -82,7 +82,6 @@ struct NsFileV2 {
     default_context: Option<AddressRef>,
 
     // V2 extension fields (optional for backward compatibility)
-
     /// Status watermark (v2 extension) - defaults to 1 if missing
     #[serde(rename = "f:statusV", skip_serializing_if = "Option::is_none")]
     status_v: Option<i64>,
@@ -613,8 +612,7 @@ where
                 Err(StorageExtError::PreconditionFailed) => {
                     if attempt + 1 < MAX_CAS_RETRIES {
                         let jitter = rand::random::<u64>() % 50;
-                        let delay =
-                            std::time::Duration::from_millis(50 * (1 << attempt) + jitter);
+                        let delay = std::time::Duration::from_millis(50 * (1 << attempt) + jitter);
                         tokio::time::sleep(delay).await;
                     }
                 }
@@ -1042,8 +1040,7 @@ where
                         match (expect_exists, &current_ref) {
                             (false, None) => {
                                 // Create new index record
-                                let addr =
-                                    new_address.as_deref().unwrap_or("").to_string();
+                                let addr = new_address.as_deref().unwrap_or("").to_string();
                                 return CasUpdateDecision::Apply(NsIndexFileV2 {
                                     context: ns_context(),
                                     index: IndexRef { id: addr, t: new_t },
@@ -1245,7 +1242,9 @@ where
                     snapshots,
                 })
             }
-            None => Ok(VgSnapshotHistory::new(core_alias::format_alias(&name, &branch))),
+            None => Ok(VgSnapshotHistory::new(core_alias::format_alias(
+                &name, &branch,
+            ))),
         }
     }
 
@@ -1507,8 +1506,7 @@ where
                     // ETag mismatch - retry with backoff
                     if attempt + 1 < MAX_CAS_RETRIES {
                         let jitter = rand::random::<u64>() % 50;
-                        let delay =
-                            std::time::Duration::from_millis(50 * (1 << attempt) + jitter);
+                        let delay = std::time::Duration::from_millis(50 * (1 << attempt) + jitter);
                         tokio::time::sleep(delay).await;
                         continue;
                     }
@@ -1614,16 +1612,16 @@ where
                         0 // Unborn
                     }
                 });
-                let payload = if v == 0 && file.default_context.is_none() && file.config_meta.is_none()
-                {
-                    None
-                } else {
-                    let extra = file.config_meta.clone().unwrap_or_default();
-                    Some(ConfigPayload {
-                        default_context: file.default_context.as_ref().map(|c| c.id.clone()),
-                        extra,
-                    })
-                };
+                let payload =
+                    if v == 0 && file.default_context.is_none() && file.config_meta.is_none() {
+                        None
+                    } else {
+                        let extra = file.config_meta.clone().unwrap_or_default();
+                        Some(ConfigPayload {
+                            default_context: file.default_context.as_ref().map(|c| c.id.clone()),
+                            extra,
+                        })
+                    };
                 ConfigValue { v, payload }
             };
 
@@ -1677,8 +1675,7 @@ where
                     // ETag mismatch - retry with backoff
                     if attempt + 1 < MAX_CAS_RETRIES {
                         let jitter = rand::random::<u64>() % 50;
-                        let delay =
-                            std::time::Duration::from_millis(50 * (1 << attempt) + jitter);
+                        let delay = std::time::Duration::from_millis(50 * (1 << attempt) + jitter);
                         tokio::time::sleep(delay).await;
                         continue;
                     }
@@ -1775,7 +1772,11 @@ mod tests {
 
         async fn list_prefix(&self, prefix: &str) -> fluree_db_core::Result<Vec<String>> {
             let data = self.data.read().unwrap();
-            Ok(data.keys().filter(|k| k.starts_with(prefix)).cloned().collect())
+            Ok(data
+                .keys()
+                .filter(|k| k.starts_with(prefix))
+                .cloned()
+                .collect())
         }
     }
 
@@ -1816,7 +1817,11 @@ mod tests {
     impl StorageList for MemoryCasStorage {
         async fn list_prefix(&self, prefix: &str) -> StorageExtResult<Vec<String>> {
             let data = self.data.read().unwrap();
-            Ok(data.keys().filter(|k| k.starts_with(prefix)).cloned().collect())
+            Ok(data
+                .keys()
+                .filter(|k| k.starts_with(prefix))
+                .cloned()
+                .collect())
         }
 
         async fn list_prefix_paginated(
@@ -1939,8 +1944,13 @@ mod tests {
             bytes: &[u8],
         ) -> fluree_db_core::Result<fluree_db_core::ContentWriteResult> {
             fluree_db_core::ContentAddressedWrite::content_write_bytes_with_hash(
-                &self.inner, kind, ledger_alias, content_hash_hex, bytes
-            ).await
+                &self.inner,
+                kind,
+                ledger_alias,
+                content_hash_hex,
+                bytes,
+            )
+            .await
         }
     }
 
@@ -1980,7 +1990,9 @@ mod tests {
             {
                 return Err(StorageExtError::PreconditionFailed);
             }
-            self.inner.write_if_match(address, bytes, expected_etag).await
+            self.inner
+                .write_if_match(address, bytes, expected_etag)
+                .await
         }
 
         async fn read_with_etag(&self, address: &str) -> StorageExtResult<(Vec<u8>, String)> {
@@ -1999,7 +2011,10 @@ mod tests {
     #[tokio::test]
     async fn test_storage_ref_get_ref_unknown_alias() {
         let ns = make_storage_ns();
-        let result = ns.get_ref("nonexistent:main", RefKind::CommitHead).await.unwrap();
+        let result = ns
+            .get_ref("nonexistent:main", RefKind::CommitHead)
+            .await
+            .unwrap();
         assert_eq!(result, None);
     }
 
@@ -2059,7 +2074,11 @@ mod tests {
         let ns = make_storage_ns();
         ns.publish_commit("mydb:main", "commit-1", 5).await.unwrap();
 
-        let commit = ns.get_ref("mydb:main", RefKind::CommitHead).await.unwrap().unwrap();
+        let commit = ns
+            .get_ref("mydb:main", RefKind::CommitHead)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(commit.address, Some("commit-1".to_string()));
         assert_eq!(commit.t, 5);
     }
@@ -2078,7 +2097,11 @@ mod tests {
             .unwrap();
         assert_eq!(result, CasResult::Updated);
 
-        let current = ns.get_ref("mydb:main", RefKind::CommitHead).await.unwrap().unwrap();
+        let current = ns
+            .get_ref("mydb:main", RefKind::CommitHead)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(current.address, Some("commit-1".to_string()));
         assert_eq!(current.t, 1);
     }
@@ -2147,7 +2170,11 @@ mod tests {
             .unwrap();
         assert_eq!(result, CasResult::Updated);
 
-        let current = ns.get_ref("mydb:main", RefKind::CommitHead).await.unwrap().unwrap();
+        let current = ns
+            .get_ref("mydb:main", RefKind::CommitHead)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(current.address, Some("commit-2".to_string()));
         assert_eq!(current.t, 2);
     }
@@ -2205,23 +2232,35 @@ mod tests {
             address: Some("commit-5".to_string()),
             t: 5,
         };
-        let result = ns.fast_forward_commit("mydb:main", &new_ref, 3).await.unwrap();
+        let result = ns
+            .fast_forward_commit("mydb:main", &new_ref, 3)
+            .await
+            .unwrap();
         assert_eq!(result, CasResult::Updated);
 
-        let current = ns.get_ref("mydb:main", RefKind::CommitHead).await.unwrap().unwrap();
+        let current = ns
+            .get_ref("mydb:main", RefKind::CommitHead)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(current.t, 5);
     }
 
     #[tokio::test]
     async fn test_storage_ref_fast_forward_rejected_stale() {
         let ns = make_storage_ns();
-        ns.publish_commit("mydb:main", "commit-1", 10).await.unwrap();
+        ns.publish_commit("mydb:main", "commit-1", 10)
+            .await
+            .unwrap();
 
         let new_ref = RefValue {
             address: Some("old".to_string()),
             t: 5,
         };
-        let result = ns.fast_forward_commit("mydb:main", &new_ref, 3).await.unwrap();
+        let result = ns
+            .fast_forward_commit("mydb:main", &new_ref, 3)
+            .await
+            .unwrap();
         match result {
             CasResult::Conflict { actual } => {
                 assert_eq!(actual.unwrap().t, 10);
@@ -2236,7 +2275,11 @@ mod tests {
         ns.publish_commit("mydb:main", "commit-1", 5).await.unwrap();
         ns.publish_index("mydb:main", "index-1", 3).await.unwrap();
 
-        let index = ns.get_ref("mydb:main", RefKind::IndexHead).await.unwrap().unwrap();
+        let index = ns
+            .get_ref("mydb:main", RefKind::IndexHead)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(index.address, Some("index-1".to_string()));
         assert_eq!(index.t, 3);
     }
@@ -2285,7 +2328,10 @@ mod tests {
 
         // Verify status_v was incremented and state changed to "retracted"
         let after_retract = ns.get_status("mydb:main").await.unwrap().unwrap();
-        assert_eq!(after_retract.v, 2, "status_v should be incremented on retract");
+        assert_eq!(
+            after_retract.v, 2,
+            "status_v should be incremented on retract"
+        );
         assert_eq!(after_retract.payload.state, "retracted");
     }
 }

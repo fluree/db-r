@@ -50,8 +50,7 @@ mod tests {
 
     #[test]
     fn test_parse_commit_id_roundtrip() {
-        let original_id =
-            "sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
+        let original_id = "sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
         let address = "fluree:file://ledger/commit/abc123def456abc123def456abc123def456abc123def456abc123def456abcd.json".to_string();
         let parsed = parse_commit_id(&address);
 

@@ -195,9 +195,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             }
             QueryBody::Construct(construct_query) => self.lower_construct(construct_query),
             QueryBody::Ask(_) => Err(LowerError::unsupported_form("ASK", self.ast.span)),
-            QueryBody::Describe(_) => {
-                Err(LowerError::unsupported_form("DESCRIBE", self.ast.span))
-            }
+            QueryBody::Describe(_) => Err(LowerError::unsupported_form("DESCRIBE", self.ast.span)),
             QueryBody::Update(_) => Err(LowerError::unsupported_form("UPDATE", self.ast.span)),
         }
     }
@@ -354,7 +352,10 @@ mod tests {
 
         // Should have a Union pattern
         assert!(!query.patterns.is_empty());
-        let has_union = query.patterns.iter().any(|p| matches!(p, Pattern::Union(_)));
+        let has_union = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Union(_)));
         assert!(has_union, "Expected Union pattern");
     }
 
@@ -370,7 +371,10 @@ mod tests {
         .unwrap();
 
         // Should have: Triple, Filter
-        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        let has_filter = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Filter(_)));
         assert!(has_filter, "Expected Filter pattern");
     }
 
@@ -426,7 +430,10 @@ mod tests {
         .unwrap();
 
         // Should parse and lower the AND of comparisons
-        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        let has_filter = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Filter(_)));
         assert!(has_filter);
     }
 
@@ -441,7 +448,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        let has_filter = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Filter(_)));
         assert!(has_filter);
     }
 
@@ -590,7 +600,10 @@ mod tests {
         .unwrap();
 
         // Should have Triple, Exists patterns
-        let has_exists = query.patterns.iter().any(|p| matches!(p, Pattern::Exists(_)));
+        let has_exists = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Exists(_)));
         assert!(has_exists, "Expected Exists pattern");
     }
 
@@ -603,7 +616,10 @@ mod tests {
         .unwrap();
 
         // Should have Triple, NotExists patterns
-        let has_not_exists = query.patterns.iter().any(|p| matches!(p, Pattern::NotExists(_)));
+        let has_not_exists = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::NotExists(_)));
         assert!(has_not_exists, "Expected NotExists pattern");
     }
 
@@ -619,7 +635,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        let has_filter = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Filter(_)));
         assert!(has_filter, "Expected Filter pattern with REGEX");
     }
 
@@ -635,7 +654,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        let has_bind = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Bind { .. }));
         assert!(has_bind, "Expected Bind pattern with CONCAT");
     }
 
@@ -647,7 +669,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        let has_filter = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Filter(_)));
         assert!(has_filter);
 
         let query2 = lower_query(
@@ -656,7 +681,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_filter2 = query2.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        let has_filter2 = query2
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Filter(_)));
         assert!(has_filter2);
     }
 
@@ -671,7 +699,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        let has_bind = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Bind { .. }));
         assert!(has_bind, "Expected Bind pattern with REPLACE");
     }
 
@@ -686,7 +717,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        let has_filter = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Filter(_)));
         assert!(has_filter, "Expected Filter with YEAR function");
     }
 
@@ -701,7 +735,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        let has_filter = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Filter(_)));
         assert!(has_filter, "Expected Filter with NOW function");
     }
 
@@ -716,7 +753,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        let has_filter = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Filter(_)));
         assert!(has_filter, "Expected Filter with LANG function");
     }
 
@@ -732,7 +772,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        let has_filter = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Filter(_)));
         assert!(has_filter, "Expected Filter with DATATYPE function");
     }
 
@@ -852,7 +895,10 @@ mod tests {
         .unwrap();
 
         // Should have Triple, Triple, Filter patterns
-        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        let has_filter = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Filter(_)));
         assert!(has_filter, "Expected Filter pattern with arithmetic");
     }
 
@@ -867,7 +913,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        let has_filter = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Filter(_)));
         assert!(has_filter, "Expected Filter pattern with unary negation");
     }
 
@@ -882,7 +931,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        let has_filter = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Filter(_)));
         assert!(has_filter, "Expected Filter pattern with IN expression");
     }
 
@@ -897,7 +949,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        let has_filter = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Filter(_)));
         assert!(has_filter, "Expected Filter pattern with NOT IN expression");
     }
 
@@ -934,7 +989,10 @@ mod tests {
 
         // Should parse complex arithmetic without error
         assert_eq!(query.select.len(), 1);
-        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        let has_filter = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Filter(_)));
         assert!(has_filter);
     }
 
@@ -998,7 +1056,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(query.options.order_by.len(), 1);
-        assert_eq!(query.options.order_by[0].direction, SortDirection::Ascending);
+        assert_eq!(
+            query.options.order_by[0].direction,
+            SortDirection::Ascending
+        );
     }
 
     #[test]
@@ -1010,7 +1071,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(query.options.order_by.len(), 1);
-        assert_eq!(query.options.order_by[0].direction, SortDirection::Descending);
+        assert_eq!(
+            query.options.order_by[0].direction,
+            SortDirection::Descending
+        );
     }
 
     #[test]
@@ -1023,7 +1087,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(query.options.order_by.len(), 1);
-        assert_eq!(query.options.order_by[0].direction, SortDirection::Ascending);
+        assert_eq!(
+            query.options.order_by[0].direction,
+            SortDirection::Ascending
+        );
     }
 
     #[test]
@@ -1179,7 +1246,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(query.options.aggregates.len(), 1);
-        assert!(matches!(query.options.aggregates[0].function, AggregateFn::Sum));
+        assert!(matches!(
+            query.options.aggregates[0].function,
+            AggregateFn::Sum
+        ));
         assert!(query.options.aggregates[0].input_var.is_some());
     }
 
@@ -1192,7 +1262,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(query.options.aggregates.len(), 1);
-        assert!(matches!(query.options.aggregates[0].function, AggregateFn::Sum));
+        assert!(matches!(
+            query.options.aggregates[0].function,
+            AggregateFn::Sum
+        ));
     }
 
     #[test]
@@ -1204,7 +1277,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(query.options.aggregates.len(), 1);
-        assert!(matches!(query.options.aggregates[0].function, AggregateFn::Avg));
+        assert!(matches!(
+            query.options.aggregates[0].function,
+            AggregateFn::Avg
+        ));
     }
 
     #[test]
@@ -1216,8 +1292,14 @@ mod tests {
         .unwrap();
 
         assert_eq!(query.options.aggregates.len(), 2);
-        assert!(matches!(query.options.aggregates[0].function, AggregateFn::Min));
-        assert!(matches!(query.options.aggregates[1].function, AggregateFn::Max));
+        assert!(matches!(
+            query.options.aggregates[0].function,
+            AggregateFn::Min
+        ));
+        assert!(matches!(
+            query.options.aggregates[1].function,
+            AggregateFn::Max
+        ));
     }
 
     #[test]
@@ -1246,7 +1328,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(query.options.aggregates.len(), 1);
-        assert!(matches!(query.options.aggregates[0].function, AggregateFn::Sample));
+        assert!(matches!(
+            query.options.aggregates[0].function,
+            AggregateFn::Sample
+        ));
     }
 
     #[test]
@@ -1416,7 +1501,10 @@ mod tests {
             assert!(tp.s.is_var()); // ?parent in subject position
             assert!(matches!(tp.p, Term::Iri(_)));
         } else {
-            panic!("Expected Triple pattern for inverse path, got {:?}", query.patterns[0]);
+            panic!(
+                "Expected Triple pattern for inverse path, got {:?}",
+                query.patterns[0]
+            );
         }
     }
 
@@ -1521,7 +1609,10 @@ mod tests {
             assert!(matches!(branches[0][0], Pattern::Triple(_)));
             assert!(matches!(branches[1][0], Pattern::Triple(_)));
         } else {
-            panic!("Expected Union pattern for alternative path, got {:?}", query.patterns[0]);
+            panic!(
+                "Expected Union pattern for alternative path, got {:?}",
+                query.patterns[0]
+            );
         }
     }
 
@@ -1903,7 +1994,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        let has_bind = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Bind { .. }));
         assert!(has_bind, "Expected Bind pattern with STR function");
     }
 
@@ -1918,7 +2012,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        let has_bind = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Bind { .. }));
         assert!(has_bind, "Expected Bind pattern with SUBSTR function");
     }
 
@@ -1933,8 +2030,14 @@ mod tests {
         )
         .unwrap();
 
-        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
-        assert!(has_bind, "Expected Bind pattern with ENCODE_FOR_URI function");
+        let has_bind = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Bind { .. }));
+        assert!(
+            has_bind,
+            "Expected Bind pattern with ENCODE_FOR_URI function"
+        );
     }
 
     #[test]
@@ -1948,7 +2051,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        let has_filter = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Filter(_)));
         assert!(has_filter, "Expected Filter with LANGMATCHES function");
     }
 
@@ -1964,7 +2070,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_filter = query.patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+        let has_filter = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Filter(_)));
         assert!(has_filter, "Expected Filter with SAMETERM function");
     }
 
@@ -1979,7 +2088,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        let has_bind = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Bind { .. }));
         assert!(has_bind, "Expected Bind pattern with MD5 function");
     }
 
@@ -1994,7 +2106,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        let has_bind = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Bind { .. }));
         assert!(has_bind, "Expected Bind pattern with SHA1 function");
     }
 
@@ -2009,7 +2124,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        let has_bind = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Bind { .. }));
         assert!(has_bind, "Expected Bind pattern with SHA256 function");
     }
 
@@ -2024,7 +2142,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        let has_bind = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Bind { .. }));
         assert!(has_bind, "Expected Bind pattern with SHA384 function");
     }
 
@@ -2039,7 +2160,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        let has_bind = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Bind { .. }));
         assert!(has_bind, "Expected Bind pattern with SHA512 function");
     }
 
@@ -2054,7 +2178,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        let has_bind = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Bind { .. }));
         assert!(has_bind, "Expected Bind pattern with UUID function");
     }
 
@@ -2069,7 +2196,10 @@ mod tests {
         )
         .unwrap();
 
-        let has_bind = query.patterns.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+        let has_bind = query
+            .patterns
+            .iter()
+            .any(|p| matches!(p, Pattern::Bind { .. }));
         assert!(has_bind, "Expected Bind pattern with STRUUID function");
     }
 
@@ -2242,10 +2372,7 @@ mod tests {
                 );
             }
         } else {
-            panic!(
-                "Expected Union pattern, got {:?}",
-                query.patterns[0]
-            );
+            panic!("Expected Union pattern, got {:?}", query.patterns[0]);
         }
     }
 
@@ -2269,10 +2396,7 @@ mod tests {
             assert!(matches!(branches[1][0], Pattern::Triple(_)));
             assert!(matches!(branches[1][1], Pattern::Triple(_)));
         } else {
-            panic!(
-                "Expected Union pattern, got {:?}",
-                query.patterns[0]
-            );
+            panic!("Expected Union pattern, got {:?}", query.patterns[0]);
         }
     }
 
@@ -2295,10 +2419,7 @@ mod tests {
             // Branch 2: inverse → 1 triple
             assert_eq!(branches[2].len(), 1);
         } else {
-            panic!(
-                "Expected Union pattern, got {:?}",
-                query.patterns[0]
-            );
+            panic!("Expected Union pattern, got {:?}", query.patterns[0]);
         }
     }
 
@@ -2394,14 +2515,20 @@ mod tests {
 
             // Branch 0 first triple: forward — subject is a var (the ?s)
             if let Pattern::Triple(t0) = &branches[0][0] {
-                assert!(matches!(&t0.s, Term::Var(_)), "Branch 0 first triple subject should be a var");
+                assert!(
+                    matches!(&t0.s, Term::Var(_)),
+                    "Branch 0 first triple subject should be a var"
+                );
                 // Predicate should be ex:a
                 assert!(matches!(&t0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/a"));
             }
 
             // Branch 1 first triple: inverse — object is the ?s var (swapped)
             if let Pattern::Triple(t1) = &branches[1][0] {
-                assert!(matches!(&t1.o, Term::Var(_)), "Branch 1 first triple object should be a var (inverse)");
+                assert!(
+                    matches!(&t1.o, Term::Var(_)),
+                    "Branch 1 first triple object should be a var (inverse)"
+                );
                 // Predicate should be ex:b
                 assert!(matches!(&t1.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/b"));
             }
@@ -2541,12 +2668,7 @@ mod tests {
         if let Pattern::Union(branches) = &query.patterns[0] {
             assert_eq!(branches.len(), 2);
             for (i, branch) in branches.iter().enumerate() {
-                assert_eq!(
-                    branch.len(),
-                    2,
-                    "Branch {} should have 2 triples",
-                    i
-                );
+                assert_eq!(branch.len(), 2, "Branch {} should have 2 triples", i);
             }
         } else {
             panic!("Expected Union, got {:?}", query.patterns[0]);

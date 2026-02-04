@@ -128,7 +128,15 @@ fn parse_query_ast_internal(
 
     // Check for CONSTRUCT query first
     if let Some(construct_val) = obj.get("construct") {
-        return parse_construct_query(obj, construct_val, &context, &path_aliases, query, subject_counter, nested_counter);
+        return parse_construct_query(
+            obj,
+            construct_val,
+            &context,
+            &path_aliases,
+            query,
+            subject_counter,
+            nested_counter,
+        );
     }
 
     // Determine select mode based on which key is present.
@@ -138,29 +146,27 @@ fn parse_query_ast_internal(
     //   - `selectOne` / `select-one`
     //   - `selectDistinct` / `select-distinct`
     let mut implied_distinct = false;
-    let (select, select_mode) = if let Some(select_one) = obj
-        .get("selectOne")
-        .or_else(|| obj.get("select-one"))
-    {
-        (select_one, SelectMode::One)
-    } else if let Some(select_distinct) = obj
-        .get("selectDistinct")
-        .or_else(|| obj.get("select-distinct"))
-    {
-        implied_distinct = true;
-        (select_distinct, SelectMode::Many)
-    } else if let Some(select) = obj.get("select") {
-        // Check for wildcard select
-        if select.as_str() == Some("*") {
-            (select, SelectMode::Wildcard)
+    let (select, select_mode) =
+        if let Some(select_one) = obj.get("selectOne").or_else(|| obj.get("select-one")) {
+            (select_one, SelectMode::One)
+        } else if let Some(select_distinct) = obj
+            .get("selectDistinct")
+            .or_else(|| obj.get("select-distinct"))
+        {
+            implied_distinct = true;
+            (select_distinct, SelectMode::Many)
+        } else if let Some(select) = obj.get("select") {
+            // Check for wildcard select
+            if select.as_str() == Some("*") {
+                (select, SelectMode::Wildcard)
+            } else {
+                (select, SelectMode::Many)
+            }
         } else {
-            (select, SelectMode::Many)
-        }
-    } else {
-        return Err(ParseError::MissingField(
-            "select, selectOne, select-one, selectDistinct, select-distinct, or construct",
-        ));
-    };
+            return Err(ParseError::MissingField(
+                "select, selectOne, select-one, selectDistinct, select-distinct, or construct",
+            ));
+        };
 
     // Parse select clause (skip for wildcard)
     if select_mode != SelectMode::Wildcard {
@@ -391,9 +397,7 @@ fn parse_construct_query(
     nested_counter: &mut u32,
 ) -> Result<(UnresolvedQuery, SelectMode)> {
     // Require WHERE clause
-    let where_clause = obj
-        .get("where")
-        .ok_or(ParseError::MissingField("where"))?;
+    let where_clause = obj.get("where").ok_or(ParseError::MissingField("where"))?;
 
     // Parse WHERE clause first (needed for both explicit and shorthand templates)
     let object_var_parsing = options::parse_object_var_parsing(obj);
@@ -638,7 +642,9 @@ fn parse_aggregate_sexpr(s: &str) -> Result<ast::UnresolvedAggregateSpec> {
     }
 
     // Get the function name (first element)
-    let fn_name = list[0].expect_atom("aggregate function name")?.to_lowercase();
+    let fn_name = list[0]
+        .expect_atom("aggregate function name")?
+        .to_lowercase();
 
     // Check if this is an `as` wrapper: (as (agg-fn ?var) ?alias)
     if fn_name == "as" {
@@ -678,7 +684,9 @@ fn parse_as_aggregate(list: &[sexpr_tokenize::SexprToken]) -> Result<ast::Unreso
         ));
     }
 
-    let inner_fn_name = inner_agg[0].expect_atom("aggregate function name")?.to_lowercase();
+    let inner_fn_name = inner_agg[0]
+        .expect_atom("aggregate function name")?
+        .to_lowercase();
 
     // Parse the inner aggregate with explicit output var
     let (function, input_var) = parse_aggregate_fn_and_input(&inner_fn_name, &inner_agg[1..])?;
@@ -866,7 +874,8 @@ fn parse_selection_specs(
     bool,
 )> {
     let mut forward = Vec::new();
-    let mut reverse: std::collections::HashMap<String, Option<Box<UnresolvedNestedSelectSpec>>> = std::collections::HashMap::new();
+    let mut reverse: std::collections::HashMap<String, Option<Box<UnresolvedNestedSelectSpec>>> =
+        std::collections::HashMap::new();
     let mut has_wildcard = false;
 
     for item in arr {
@@ -944,9 +953,6 @@ fn parse_selection_specs(
     Ok((forward, reverse, has_wildcard))
 }
 
-/// Parse depth parameter from query
-///
-/// Returns the depth value (default 0) or error if invalid.
 // parse_depth moved to options module
 
 // WHERE clause parsing functions moved to where_clause module
@@ -961,7 +967,9 @@ fn parse_filter_value(value: &JsonValue) -> Result<UnresolvedFilterExpr> {
         // Array: could be ["expr", [...]] or direct data expression
         JsonValue::Array(arr) => {
             if arr.is_empty() {
-                return Err(ParseError::InvalidFilter("empty filter expression".to_string()));
+                return Err(ParseError::InvalidFilter(
+                    "empty filter expression".to_string(),
+                ));
             }
             // Check if it's ["expr", [...]] format
             if let Some(first) = arr[0].as_str() {
@@ -983,18 +991,6 @@ fn parse_filter_value(value: &JsonValue) -> Result<UnresolvedFilterExpr> {
     }
 }
 
-/// Parse an S-expression string like "(> ?age 45)" into a filter expression
-///
-/// # Supported syntax
-/// - Atoms: `?var`, numbers, `true`/`false`, quoted strings `"text"`
-/// - Expressions: `(op arg1 arg2 ...)`
-/// - Nested: `(and (> ?x 10) (< ?y 100))`
-///
-/// # Limitations
-/// - Quoted strings cannot contain whitespace, parentheses, or escape sequences
-///   (e.g., `"Smith Jr"` with a space will not parse correctly)
-/// - For complex string comparisons, use the data expression format instead:
-///   `["filter", ["=", "?name", "Smith Jr"]]`
 // Filter parsing functions moved to filter_sexpr and filter_data modules
 
 // ============================================================================
@@ -1083,11 +1079,20 @@ mod tests {
         let (ast, _) = parse_query_ast(&json).unwrap();
         assert_eq!(ast.options.order_by.len(), 3);
         assert_eq!(ast.options.order_by[0].var.as_ref(), "?x");
-        assert_eq!(ast.options.order_by[0].direction, ast::UnresolvedSortDirection::Asc);
+        assert_eq!(
+            ast.options.order_by[0].direction,
+            ast::UnresolvedSortDirection::Asc
+        );
         assert_eq!(ast.options.order_by[1].var.as_ref(), "?y");
-        assert_eq!(ast.options.order_by[1].direction, ast::UnresolvedSortDirection::Desc);
+        assert_eq!(
+            ast.options.order_by[1].direction,
+            ast::UnresolvedSortDirection::Desc
+        );
         assert_eq!(ast.options.order_by[2].var.as_ref(), "?z");
-        assert_eq!(ast.options.order_by[2].direction, ast::UnresolvedSortDirection::Asc);
+        assert_eq!(
+            ast.options.order_by[2].direction,
+            ast::UnresolvedSortDirection::Asc
+        );
     }
 
     #[test]
@@ -1102,7 +1107,10 @@ mod tests {
         let (ast, _) = parse_query_ast(&json).unwrap();
         assert_eq!(ast.options.order_by.len(), 1);
         assert_eq!(ast.options.order_by[0].var.as_ref(), "?x");
-        assert_eq!(ast.options.order_by[0].direction, ast::UnresolvedSortDirection::Asc);
+        assert_eq!(
+            ast.options.order_by[0].direction,
+            ast::UnresolvedSortDirection::Asc
+        );
     }
 
     #[test]
@@ -1170,8 +1178,9 @@ mod tests {
 
         // Find the age pattern
         let age_pattern = ast.patterns.iter().find(|p| {
-            p.as_triple()
-                .is_some_and(|tp| matches!(&tp.p, UnresolvedTerm::Iri(iri) if iri.as_ref().ends_with("age")))
+            p.as_triple().is_some_and(
+                |tp| matches!(&tp.p, UnresolvedTerm::Iri(iri) if iri.as_ref().ends_with("age")),
+            )
         });
         assert!(age_pattern.is_some());
         assert!(matches!(
@@ -1223,7 +1232,10 @@ mod tests {
         });
 
         let result = parse_query_ast(&json);
-        assert!(matches!(result.unwrap_err(), ParseError::MissingField("where")));
+        assert!(matches!(
+            result.unwrap_err(),
+            ParseError::MissingField("where")
+        ));
     }
 
     #[test]
@@ -1251,7 +1263,10 @@ mod tests {
         });
 
         let (ast, _mode) = parse_query_ast(&json).unwrap();
-        assert!(ast.patterns.iter().any(|p| matches!(p, UnresolvedPattern::Values { .. })));
+        assert!(ast
+            .patterns
+            .iter()
+            .any(|p| matches!(p, UnresolvedPattern::Values { .. })));
     }
 
     #[test]
@@ -1271,9 +1286,15 @@ mod tests {
         assert_eq!(vars.len(), 1);
         assert_eq!(rows.len(), 1);
         match &rows[0][0] {
-            UnresolvedValue::Literal { value: LiteralValue::Vector(v), dt_iri, .. } => {
+            UnresolvedValue::Literal {
+                value: LiteralValue::Vector(v),
+                dt_iri,
+                ..
+            } => {
                 assert_eq!(v.as_slice(), &[0.7, 0.6]);
-                assert!(dt_iri.as_ref().is_some_and(|dt| dt.as_ref() == "https://ns.flur.ee/ledger#vector"));
+                assert!(dt_iri
+                    .as_ref()
+                    .is_some_and(|dt| dt.as_ref() == "https://ns.flur.ee/ledger#vector"));
             }
             other => panic!("unexpected cell: {:?}", other),
         }
@@ -1288,7 +1309,10 @@ mod tests {
         });
 
         let result = parse_query_ast(&json);
-        assert!(matches!(result.unwrap_err(), ParseError::InvalidVariable(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            ParseError::InvalidVariable(_)
+        ));
     }
 
     #[test]
@@ -1326,7 +1350,11 @@ mod tests {
         let type_patterns: Vec<_> = ast
             .patterns
             .iter()
-            .filter(|p| p.as_triple().is_some_and(|tp| matches!(&tp.p, UnresolvedTerm::Iri(iri) if iri.as_ref() == RDF_TYPE)))
+            .filter(|p| {
+                p.as_triple().is_some_and(
+                    |tp| matches!(&tp.p, UnresolvedTerm::Iri(iri) if iri.as_ref() == RDF_TYPE),
+                )
+            })
             .collect();
         assert_eq!(type_patterns.len(), 2);
     }
@@ -1351,7 +1379,9 @@ mod tests {
         // query.patterns now contains Pattern, not TriplePattern
         if let crate::ir::Pattern::Triple(tp) = &query.patterns[0] {
             // Predicate IRI is lowered to Term::Iri for deferred encoding
-            assert!(matches!(tp.p, crate::pattern::Term::Iri(ref iri) if iri.as_ref() == "http://example.org/name"));
+            assert!(
+                matches!(tp.p, crate::pattern::Term::Iri(ref iri) if iri.as_ref() == "http://example.org/name")
+            );
         } else {
             panic!("Expected Pattern::Triple");
         }
@@ -1475,11 +1505,17 @@ mod tests {
         assert_eq!(ast.patterns.len(), 3);
 
         // First: implicit ?__s0
-        assert!(matches!(&triple(&ast.patterns[0]).s, UnresolvedTerm::Var(v) if v.as_ref() == "?__s0"));
+        assert!(
+            matches!(&triple(&ast.patterns[0]).s, UnresolvedTerm::Var(v) if v.as_ref() == "?__s0")
+        );
         // Second: explicit ?person
-        assert!(matches!(&triple(&ast.patterns[1]).s, UnresolvedTerm::Var(v) if v.as_ref() == "?person"));
+        assert!(
+            matches!(&triple(&ast.patterns[1]).s, UnresolvedTerm::Var(v) if v.as_ref() == "?person")
+        );
         // Third: implicit ?__s1
-        assert!(matches!(&triple(&ast.patterns[2]).s, UnresolvedTerm::Var(v) if v.as_ref() == "?__s1"));
+        assert!(
+            matches!(&triple(&ast.patterns[2]).s, UnresolvedTerm::Var(v) if v.as_ref() == "?__s1")
+        );
     }
 
     #[test]
@@ -1493,7 +1529,9 @@ mod tests {
         let result = parse_query_ast(&json);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, ParseError::InvalidWhere(msg) if msg.contains("@type array items must be strings")));
+        assert!(
+            matches!(err, ParseError::InvalidWhere(msg) if msg.contains("@type array items must be strings"))
+        );
     }
 
     #[test]
@@ -1555,16 +1593,30 @@ mod tests {
         assert_eq!(ast.patterns.len(), 2);
 
         // Find the pattern with variable predicate
-        let var_pred_pattern = ast.patterns.iter()
-            .find(|p| p.as_triple().is_some_and(|tp| matches!(&tp.p, UnresolvedTerm::Var(_))))
+        let var_pred_pattern = ast
+            .patterns
+            .iter()
+            .find(|p| {
+                p.as_triple()
+                    .is_some_and(|tp| matches!(&tp.p, UnresolvedTerm::Var(_)))
+            })
             .expect("Should have a pattern with variable predicate");
-        assert!(matches!(&triple(var_pred_pattern).p, UnresolvedTerm::Var(v) if v.as_ref() == "?p"));
+        assert!(
+            matches!(&triple(var_pred_pattern).p, UnresolvedTerm::Var(v) if v.as_ref() == "?p")
+        );
 
         // Find the pattern with IRI predicate
-        let iri_pred_pattern = ast.patterns.iter()
-            .find(|p| p.as_triple().is_some_and(|tp| matches!(&tp.p, UnresolvedTerm::Iri(_))))
+        let iri_pred_pattern = ast
+            .patterns
+            .iter()
+            .find(|p| {
+                p.as_triple()
+                    .is_some_and(|tp| matches!(&tp.p, UnresolvedTerm::Iri(_)))
+            })
             .expect("Should have a pattern with IRI predicate");
-        assert!(matches!(&triple(iri_pred_pattern).p, UnresolvedTerm::Iri(iri) if iri.as_ref() == "http://example.org/name"));
+        assert!(
+            matches!(&triple(iri_pred_pattern).p, UnresolvedTerm::Iri(iri) if iri.as_ref() == "http://example.org/name")
+        );
     }
 
     #[test]
@@ -1591,13 +1643,17 @@ mod tests {
         // First pattern: connecting triple
         let p0 = triple(&ast.patterns[0]);
         assert!(matches!(&p0.s, UnresolvedTerm::Var(v) if v.as_ref() == "?person"));
-        assert!(matches!(&p0.p, UnresolvedTerm::Iri(iri) if iri.as_ref() == "http://example.org/friend"));
+        assert!(
+            matches!(&p0.p, UnresolvedTerm::Iri(iri) if iri.as_ref() == "http://example.org/friend")
+        );
         assert!(matches!(&p0.o, UnresolvedTerm::Var(v) if v.as_ref() == "?__n0"));
 
         // Second pattern: nested property
         let p1 = triple(&ast.patterns[1]);
         assert!(matches!(&p1.s, UnresolvedTerm::Var(v) if v.as_ref() == "?__n0"));
-        assert!(matches!(&p1.p, UnresolvedTerm::Iri(iri) if iri.as_ref() == "http://example.org/name"));
+        assert!(
+            matches!(&p1.p, UnresolvedTerm::Iri(iri) if iri.as_ref() == "http://example.org/name")
+        );
         assert!(matches!(&p1.o, UnresolvedTerm::Var(v) if v.as_ref() == "?friendName"));
     }
 
@@ -1661,19 +1717,25 @@ mod tests {
         // First: person -> address -> nested0
         let p0 = triple(&ast.patterns[0]);
         assert!(matches!(&p0.s, UnresolvedTerm::Var(v) if v.as_ref() == "?person"));
-        assert!(matches!(&p0.p, UnresolvedTerm::Iri(iri) if iri.as_ref() == "http://example.org/address"));
+        assert!(
+            matches!(&p0.p, UnresolvedTerm::Iri(iri) if iri.as_ref() == "http://example.org/address")
+        );
         assert!(matches!(&p0.o, UnresolvedTerm::Var(v) if v.as_ref() == "?__n0"));
 
         // Second: nested0 -> city -> nested1
         let p1 = triple(&ast.patterns[1]);
         assert!(matches!(&p1.s, UnresolvedTerm::Var(v) if v.as_ref() == "?__n0"));
-        assert!(matches!(&p1.p, UnresolvedTerm::Iri(iri) if iri.as_ref() == "http://example.org/city"));
+        assert!(
+            matches!(&p1.p, UnresolvedTerm::Iri(iri) if iri.as_ref() == "http://example.org/city")
+        );
         assert!(matches!(&p1.o, UnresolvedTerm::Var(v) if v.as_ref() == "?__n1"));
 
         // Third: nested1 -> name -> city
         let p2 = triple(&ast.patterns[2]);
         assert!(matches!(&p2.s, UnresolvedTerm::Var(v) if v.as_ref() == "?__n1"));
-        assert!(matches!(&p2.p, UnresolvedTerm::Iri(iri) if iri.as_ref() == "http://example.org/name"));
+        assert!(
+            matches!(&p2.p, UnresolvedTerm::Iri(iri) if iri.as_ref() == "http://example.org/name")
+        );
         assert!(matches!(&p2.o, UnresolvedTerm::Var(v) if v.as_ref() == "?city"));
     }
 
@@ -1896,8 +1958,12 @@ mod tests {
         assert_eq!(ast.patterns.len(), 2);
 
         // Both patterns should share the same subject variable
-        assert!(matches!(&triple(&ast.patterns[0]).s, UnresolvedTerm::Var(v) if v.as_ref() == "?s"));
-        assert!(matches!(&triple(&ast.patterns[1]).s, UnresolvedTerm::Var(v) if v.as_ref() == "?s"));
+        assert!(
+            matches!(&triple(&ast.patterns[0]).s, UnresolvedTerm::Var(v) if v.as_ref() == "?s")
+        );
+        assert!(
+            matches!(&triple(&ast.patterns[1]).s, UnresolvedTerm::Var(v) if v.as_ref() == "?s")
+        );
     }
 
     #[test]
@@ -2106,7 +2172,10 @@ mod tests {
 
     /// Helper to count filter patterns
     fn count_filters(patterns: &[UnresolvedPattern]) -> usize {
-        patterns.iter().filter(|p| matches!(p, UnresolvedPattern::Filter(_))).count()
+        patterns
+            .iter()
+            .filter(|p| matches!(p, UnresolvedPattern::Filter(_)))
+            .count()
     }
 
     #[test]
@@ -2133,8 +2202,13 @@ mod tests {
         match filter {
             UnresolvedFilterExpr::Compare { op, left, right } => {
                 assert!(matches!(op, UnresolvedCompareOp::Gt));
-                assert!(matches!(left.as_ref(), UnresolvedFilterExpr::Var(v) if v.as_ref() == "?age"));
-                assert!(matches!(right.as_ref(), UnresolvedFilterExpr::Const(UnresolvedFilterValue::Long(18))));
+                assert!(
+                    matches!(left.as_ref(), UnresolvedFilterExpr::Var(v) if v.as_ref() == "?age")
+                );
+                assert!(matches!(
+                    right.as_ref(),
+                    UnresolvedFilterExpr::Const(UnresolvedFilterValue::Long(18))
+                ));
             }
             _ => panic!("Expected Compare expression"),
         }
@@ -2161,8 +2235,13 @@ mod tests {
         match filter {
             UnresolvedFilterExpr::Compare { op, left, right } => {
                 assert!(matches!(op, UnresolvedCompareOp::Gt));
-                assert!(matches!(left.as_ref(), UnresolvedFilterExpr::Var(v) if v.as_ref() == "?age"));
-                assert!(matches!(right.as_ref(), UnresolvedFilterExpr::Const(UnresolvedFilterValue::Long(18))));
+                assert!(
+                    matches!(left.as_ref(), UnresolvedFilterExpr::Var(v) if v.as_ref() == "?age")
+                );
+                assert!(matches!(
+                    right.as_ref(),
+                    UnresolvedFilterExpr::Const(UnresolvedFilterValue::Long(18))
+                ));
             }
             _ => panic!("Expected Compare expression"),
         }
@@ -2269,7 +2348,10 @@ mod tests {
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
             UnresolvedFilterExpr::Not(inner) => {
-                assert!(matches!(inner.as_ref(), UnresolvedFilterExpr::Compare { .. }));
+                assert!(matches!(
+                    inner.as_ref(),
+                    UnresolvedFilterExpr::Compare { .. }
+                ));
             }
             _ => panic!("Expected Not expression"),
         }
@@ -2294,14 +2376,12 @@ mod tests {
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedFilterExpr::Compare { left, .. } => {
-                match left.as_ref() {
-                    UnresolvedFilterExpr::Arithmetic { op, .. } => {
-                        assert!(matches!(op, UnresolvedArithmeticOp::Add));
-                    }
-                    _ => panic!("Expected Arithmetic expression on left"),
+            UnresolvedFilterExpr::Compare { left, .. } => match left.as_ref() {
+                UnresolvedFilterExpr::Arithmetic { op, .. } => {
+                    assert!(matches!(op, UnresolvedArithmeticOp::Add));
                 }
-            }
+                _ => panic!("Expected Arithmetic expression on left"),
+            },
             _ => panic!("Expected Compare"),
         }
     }
@@ -2325,7 +2405,9 @@ mod tests {
                 assert_eq!(name.as_ref(), "contains");
                 assert_eq!(args.len(), 2);
                 assert!(matches!(&args[0], UnresolvedFilterExpr::Var(v) if v.as_ref() == "?name"));
-                assert!(matches!(&args[1], UnresolvedFilterExpr::Const(UnresolvedFilterValue::String(s)) if s.as_ref() == "Smith"));
+                assert!(
+                    matches!(&args[1], UnresolvedFilterExpr::Const(UnresolvedFilterValue::String(s)) if s.as_ref() == "Smith")
+                );
             }
             _ => panic!("Expected Function"),
         }
@@ -2350,7 +2432,10 @@ mod tests {
                 // Left should be Negate(-?val)
                 assert!(matches!(left.as_ref(), UnresolvedFilterExpr::Negate(_)));
                 // Right should be -10
-                assert!(matches!(right.as_ref(), UnresolvedFilterExpr::Const(UnresolvedFilterValue::Long(-10))));
+                assert!(matches!(
+                    right.as_ref(),
+                    UnresolvedFilterExpr::Const(UnresolvedFilterValue::Long(-10))
+                ));
             }
             _ => panic!("Expected Compare"),
         }
@@ -2423,14 +2508,12 @@ mod tests {
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedFilterExpr::Compare { right, .. } => {
-                match right.as_ref() {
-                    UnresolvedFilterExpr::Const(UnresolvedFilterValue::Double(d)) => {
-                        assert!((d - 99.99).abs() < f64::EPSILON);
-                    }
-                    _ => panic!("Expected Double constant"),
+            UnresolvedFilterExpr::Compare { right, .. } => match right.as_ref() {
+                UnresolvedFilterExpr::Const(UnresolvedFilterValue::Double(d)) => {
+                    assert!((d - 99.99).abs() < f64::EPSILON);
                 }
-            }
+                _ => panic!("Expected Double constant"),
+            },
             _ => panic!("Expected Compare"),
         }
     }
@@ -2501,7 +2584,10 @@ mod tests {
 
     /// Helper to count optional patterns
     fn count_optionals(patterns: &[UnresolvedPattern]) -> usize {
-        patterns.iter().filter(|p| matches!(p, UnresolvedPattern::Optional(_))).count()
+        patterns
+            .iter()
+            .filter(|p| matches!(p, UnresolvedPattern::Optional(_)))
+            .count()
     }
 
     #[test]
@@ -2579,7 +2665,10 @@ mod tests {
 
         // Count types inside optional
         let optional_triples = optional.iter().filter(|p| p.is_triple()).count();
-        let optional_filters = optional.iter().filter(|p| matches!(p, UnresolvedPattern::Filter(_))).count();
+        let optional_filters = optional
+            .iter()
+            .filter(|p| matches!(p, UnresolvedPattern::Filter(_)))
+            .count();
         assert_eq!(optional_triples, 1);
         assert_eq!(optional_filters, 1);
     }
@@ -2640,7 +2729,7 @@ mod tests {
 
         let (ast, _) = parse_query_ast(&json).unwrap();
 
-        assert_eq!(count_triples(&ast.patterns), 2);  // name + age
+        assert_eq!(count_triples(&ast.patterns), 2); // name + age
         assert_eq!(count_filters(&ast.patterns), 1);
         assert_eq!(count_optionals(&ast.patterns), 1);
     }
@@ -2687,18 +2776,30 @@ mod tests {
 
         // Outer optional should contain: 1 triple (email) + 1 nested optional (phone)
         let outer_triples = outer_optional.iter().filter(|p| p.is_triple()).count();
-        let outer_optionals = outer_optional.iter().filter(|p| matches!(p, UnresolvedPattern::Optional(_))).count();
-        assert_eq!(outer_triples, 1, "Outer optional should have 1 triple pattern");
-        assert_eq!(outer_optionals, 1, "Outer optional should have 1 nested optional (not flattened)");
+        let outer_optionals = outer_optional
+            .iter()
+            .filter(|p| matches!(p, UnresolvedPattern::Optional(_)))
+            .count();
+        assert_eq!(
+            outer_triples, 1,
+            "Outer optional should have 1 triple pattern"
+        );
+        assert_eq!(
+            outer_optionals, 1,
+            "Outer optional should have 1 nested optional (not flattened)"
+        );
 
         // Get the nested optional
-        let nested_optional = outer_optional.iter().find_map(|p| {
-            if let UnresolvedPattern::Optional(inner) = p {
-                Some(inner)
-            } else {
-                None
-            }
-        }).expect("Should have nested optional");
+        let nested_optional = outer_optional
+            .iter()
+            .find_map(|p| {
+                if let UnresolvedPattern::Optional(inner) = p {
+                    Some(inner)
+                } else {
+                    None
+                }
+            })
+            .expect("Should have nested optional");
 
         // Nested optional should contain 1 triple (phone)
         assert_eq!(nested_optional.len(), 1);
@@ -2828,7 +2929,10 @@ mod tests {
 
         let err = parse_query_ast(&json).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("requires exactly 1 argument"), "unexpected error: {msg}");
+        assert!(
+            msg.contains("requires exactly 1 argument"),
+            "unexpected error: {msg}"
+        );
         assert!(msg.contains("expected:"), "unexpected error: {msg}");
     }
 
@@ -2842,7 +2946,10 @@ mod tests {
 
         let err = parse_query_ast(&json).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("accepts at most 2 arguments"), "unexpected error: {msg}");
+        assert!(
+            msg.contains("accepts at most 2 arguments"),
+            "unexpected error: {msg}"
+        );
         assert!(msg.contains("expected:"), "unexpected error: {msg}");
     }
 
@@ -2858,7 +2965,10 @@ mod tests {
 
         let err = parse_query_ast(&json).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("unclosed string literal"), "unexpected error: {msg}");
+        assert!(
+            msg.contains("unclosed string literal"),
+            "unexpected error: {msg}"
+        );
         assert!(msg.contains("missing closing"), "unexpected error: {msg}");
     }
 
@@ -3006,7 +3116,10 @@ mod tests {
 
         let err = parse_query_ast(&json).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("idx:vector") && msg.contains("required"), "unexpected error: {msg}");
+        assert!(
+            msg.contains("idx:vector") && msg.contains("required"),
+            "unexpected error: {msg}"
+        );
     }
 
     #[test]
@@ -3023,7 +3136,10 @@ mod tests {
 
         let err = parse_query_ast(&json).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("idx:result") && msg.contains("required"), "unexpected error: {msg}");
+        assert!(
+            msg.contains("idx:result") && msg.contains("required"),
+            "unexpected error: {msg}"
+        );
     }
 
     #[test]
@@ -3041,7 +3157,10 @@ mod tests {
 
         let err = parse_query_ast(&json).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("idx:vector") && msg.contains("variable or array"), "unexpected error: {msg}");
+        assert!(
+            msg.contains("idx:vector") && msg.contains("variable or array"),
+            "unexpected error: {msg}"
+        );
     }
 
     #[test]

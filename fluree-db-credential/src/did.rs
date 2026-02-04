@@ -46,11 +46,9 @@ pub fn did_from_pubkey(pubkey: &[u8; 32]) -> String {
 /// - `InvalidPublicKey` if the multicodec prefix is wrong or key length is not 32
 pub fn pubkey_from_did(did: &str) -> Result<[u8; 32]> {
     // Strip did:key:z prefix
-    let key_part = did
-        .strip_prefix("did:key:z")
-        .ok_or_else(|| CredentialError::InvalidDid(
-            format!("DID must start with 'did:key:z', got: {}", did)
-        ))?;
+    let key_part = did.strip_prefix("did:key:z").ok_or_else(|| {
+        CredentialError::InvalidDid(format!("DID must start with 'did:key:z', got: {}", did))
+    })?;
 
     // Base58btc decode
     let bytes = bs58::decode(key_part)
@@ -60,16 +58,17 @@ pub fn pubkey_from_did(did: &str) -> Result<[u8; 32]> {
     // Verify multicodec prefix (0xed01)
     if bytes.len() < 2 || bytes[0] != 0xed || bytes[1] != 0x01 {
         return Err(CredentialError::InvalidPublicKey(
-            "Missing or invalid Ed25519 multicodec prefix (0xed01)".to_string()
+            "Missing or invalid Ed25519 multicodec prefix (0xed01)".to_string(),
         ));
     }
 
     // Extract the 32-byte public key
     let key_bytes = &bytes[2..];
     if key_bytes.len() != 32 {
-        return Err(CredentialError::InvalidPublicKey(
-            format!("Ed25519 public key must be 32 bytes, got {}", key_bytes.len())
-        ));
+        return Err(CredentialError::InvalidPublicKey(format!(
+            "Ed25519 public key must be 32 bytes, got {}",
+            key_bytes.len()
+        )));
     }
 
     let mut pubkey = [0u8; 32];
@@ -82,7 +81,8 @@ mod tests {
     use super::*;
 
     // Test vectors from fluree.crypto cross_platform_test.cljc
-    const TEST_PUBKEY_HEX: &str = "a8def12ad736f8840f836a46c66c9f3e2015d1ea2c69d546c050fef746bd63b3";
+    const TEST_PUBKEY_HEX: &str =
+        "a8def12ad736f8840f836a46c66c9f3e2015d1ea2c69d546c050fef746bd63b3";
     const TEST_DID: &str = "did:key:z6MkqpTi7zUDy5nnSfpLf7SPGsepMNJAxRiH1jbCZbuaZoEz";
 
     fn hex_to_bytes(hex: &str) -> [u8; 32] {

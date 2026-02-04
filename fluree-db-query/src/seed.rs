@@ -43,7 +43,8 @@ impl SeedOperator {
     /// Panics if `row_idx` is out of bounds for the batch.
     pub fn from_batch_row(batch: &Batch, row_idx: usize) -> Self {
         let schema = Arc::from(batch.schema().to_vec().into_boxed_slice());
-        let row = batch.row_view(row_idx)
+        let row = batch
+            .row_view(row_idx)
             .expect("row_idx must be valid for batch")
             .to_vec();
 

@@ -78,7 +78,7 @@ fn term_to_subject_key(term: &Term) -> String {
         Term::BlankNode(id) => format!("_:{}", id.as_str()),
         Term::Literal { .. } => {
             // Literals shouldn't be subjects in RDF, but handle gracefully
-            format!("_:literal")
+            "_:literal".to_string()
         }
     }
 }
@@ -142,7 +142,10 @@ fn term_to_object_value(term: &Term) -> JsonValue {
 
             // Add @type for non-string datatypes (skip xsd:string as it's the default)
             if !datatype.is_xsd_string() && !datatype.is_lang_string() {
-                obj.insert("@type".to_string(), JsonValue::String(datatype.as_iri().to_string()));
+                obj.insert(
+                    "@type".to_string(),
+                    JsonValue::String(datatype.as_iri().to_string()),
+                );
             }
 
             JsonValue::Object(obj)

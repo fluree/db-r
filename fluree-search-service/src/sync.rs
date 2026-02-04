@@ -91,9 +91,8 @@ where
         tokio::time::sleep(backoff).await;
 
         // Increase backoff for next iteration
-        let next_backoff = Duration::from_secs_f64(
-            backoff.as_secs_f64() * config.backoff_multiplier
-        );
+        let next_backoff =
+            Duration::from_secs_f64(backoff.as_secs_f64() * config.backoff_multiplier);
         backoff = next_backoff.min(config.max_backoff);
     }
 }

@@ -4,7 +4,8 @@
 
 use crate::query::helpers::{
     build_query_result, parse_and_validate_sparql, parse_jsonld_query, parse_sparql_to_ir,
-    prepare_for_execution, status_for_query_error, tracker_for_limits, tracker_for_tracked_endpoint,
+    prepare_for_execution, status_for_query_error, tracker_for_limits,
+    tracker_for_tracked_endpoint,
 };
 use crate::view::{FlureeDataSetView, QueryInput};
 use crate::{
@@ -79,9 +80,9 @@ where
         // Execution still scans *all* default graphs in the dataset (union semantics),
         // but optimization is driven by the primary graph under the assumption that
         // default graphs in a dataset represent similarly-shaped data.
-        let primary = dataset.primary().ok_or_else(|| {
-            ApiError::query("Dataset has no graphs for query execution")
-        })?;
+        let primary = dataset
+            .primary()
+            .ok_or_else(|| ApiError::query("Dataset has no graphs for query execution"))?;
 
         // 1. Parse to common IR (using primary db for namespace resolution).
         let (vars, parsed) = match &input {
@@ -264,7 +265,11 @@ where
                 to_t,
                 Some(from_t),
                 &runtime_dataset,
-                if tracker.is_enabled() { Some(tracker) } else { None },
+                if tracker.is_enabled() {
+                    Some(tracker)
+                } else {
+                    None
+                },
             )
             .await
             .map_err(query_error_to_api_error)?
@@ -346,7 +351,7 @@ fn query_error_to_api_error(err: fluree_db_query::QueryError) -> ApiError {
 
 #[cfg(test)]
 mod tests {
-    
+
     use crate::view::FlureeDataSetView;
     use crate::FlureeBuilder;
     use serde_json::json;

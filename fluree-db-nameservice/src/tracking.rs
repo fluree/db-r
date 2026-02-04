@@ -266,10 +266,7 @@ mod tests {
             .unwrap()
             .is_some());
 
-        store
-            .remove_tracking(&origin(), "mydb:main")
-            .await
-            .unwrap();
+        store.remove_tracking(&origin(), "mydb:main").await.unwrap();
         assert!(store
             .get_tracking(&origin(), "mydb:main")
             .await

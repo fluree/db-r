@@ -74,9 +74,9 @@ pub mod aws;
 // Re-export main types
 pub use cache::{default_cache_entries, default_cache_max_mb, memory_to_cache_size};
 pub use config::{CacheConfig, ConnectionConfig, StorageConfig, StorageType};
-pub use connection::{Connection, MemoryConnection};
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use connection::FileConnection;
+pub use connection::{Connection, MemoryConnection};
 pub use error::{ConnectionError, Result};
 pub use graph::ConfigGraph;
 
@@ -88,9 +88,9 @@ pub use aws::{
 };
 
 // Re-export core types commonly used with connections
-pub use fluree_db_core::{Db, MemoryStorage, SimpleCache};
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use fluree_db_core::FileStorage;
+pub use fluree_db_core::{Db, MemoryStorage, SimpleCache};
 
 /// Create a memory-backed connection
 ///
@@ -284,11 +284,10 @@ fn create_sync_connection(config: ConnectionConfig) -> Result<ConnectionHandle> 
             }
             #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
             {
-                let path = config
-                    .index_storage
-                    .path
-                    .as_ref()
-                    .ok_or_else(|| ConnectionError::invalid_config("File storage requires path"))?;
+                let path =
+                    config.index_storage.path.as_ref().ok_or_else(|| {
+                        ConnectionError::invalid_config("File storage requires path")
+                    })?;
                 let storage = FileStorage::new(path.as_ref());
                 let cache = SimpleCache::new(config.cache.max_entries);
                 Ok(ConnectionHandle::File(Connection::new(
@@ -316,9 +315,7 @@ fn create_sync_connection(config: ConnectionConfig) -> Result<ConnectionHandle> 
 #[cfg(feature = "aws")]
 async fn create_async_connection(config: ConnectionConfig) -> Result<ConnectionHandle> {
     match &config.index_storage.storage_type {
-        StorageType::S3(s3_config) => {
-            create_aws_connection(config.clone(), s3_config).await
-        }
+        StorageType::S3(s3_config) => create_aws_connection(config.clone(), s3_config).await,
         StorageType::File => {
             #[cfg(not(all(feature = "native", not(target_arch = "wasm32"))))]
             {
@@ -328,11 +325,10 @@ async fn create_async_connection(config: ConnectionConfig) -> Result<ConnectionH
             }
             #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
             {
-                let path = config
-                    .index_storage
-                    .path
-                    .as_ref()
-                    .ok_or_else(|| ConnectionError::invalid_config("File storage requires path"))?;
+                let path =
+                    config.index_storage.path.as_ref().ok_or_else(|| {
+                        ConnectionError::invalid_config("File storage requires path")
+                    })?;
                 let storage = FileStorage::new(path.as_ref());
                 let cache = SimpleCache::new(config.cache.max_entries);
                 Ok(ConnectionHandle::File(Connection::new(

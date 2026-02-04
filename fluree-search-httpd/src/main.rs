@@ -84,7 +84,11 @@ struct Args {
     max_limit: usize,
 
     /// Default request timeout in milliseconds
-    #[arg(long, default_value = "30000", env = "FLUREE_SEARCH_DEFAULT_TIMEOUT_MS")]
+    #[arg(
+        long,
+        default_value = "30000",
+        env = "FLUREE_SEARCH_DEFAULT_TIMEOUT_MS"
+    )]
     default_timeout_ms: u64,
 
     /// Maximum request timeout in milliseconds

@@ -222,7 +222,7 @@ where
         }
         // All VG records (sorted by alias)
         if let Ok(mut records) = ns.all_vg_records().await {
-            records.sort_by(|a, b| a.alias().cmp(&b.alias()));
+            records.sort_by_key(|a| a.alias());
             for r in records {
                 if !r.retracted {
                     events.push(vg_to_sse_event(&r));
@@ -409,11 +409,8 @@ pub async fn events(
     }
 
     // Authorize and compute effective scope
-    let effective_params = authorize_request(
-        &state.config.events_auth(),
-        principal.as_ref(),
-        &params,
-    )?;
+    let effective_params =
+        authorize_request(&state.config.events_auth(), principal.as_ref(), &params)?;
 
     // Log connection (issuer only, never token)
     if let Some(p) = &principal {
@@ -474,7 +471,10 @@ pub async fn events(
                         continue;
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!(lagged = n, "SSE broadcast lagged, some events may have been missed");
+                        tracing::warn!(
+                            lagged = n,
+                            "SSE broadcast lagged, some events may have been missed"
+                        );
                         // Continue listening after lag
                         continue;
                     }
@@ -490,7 +490,10 @@ pub async fn events(
     // 4. Chain: snapshot first, then live events
     let combined_stream = initial_stream.chain(live_stream);
 
-    Ok(Sse::new(combined_stream).keep_alive(KeepAlive::default().interval(Duration::from_secs(30))))
+    Ok(
+        Sse::new(combined_stream)
+            .keep_alive(KeepAlive::default().interval(Duration::from_secs(30))),
+    )
 }
 
 #[cfg(test)]

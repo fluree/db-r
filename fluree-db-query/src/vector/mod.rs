@@ -42,7 +42,7 @@ pub mod operator;
 pub mod usearch;
 
 // Re-export commonly used types
-pub use operator::{VectorIndexProvider, VectorSearchOperator, VectorSearchHit};
+pub use operator::{VectorIndexProvider, VectorSearchHit, VectorSearchOperator};
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -228,12 +228,27 @@ mod tests {
 
     #[test]
     fn test_distance_metric_from_str() {
-        assert_eq!(DistanceMetric::from_str("cosine"), Some(DistanceMetric::Cosine));
-        assert_eq!(DistanceMetric::from_str("COSINE"), Some(DistanceMetric::Cosine));
+        assert_eq!(
+            DistanceMetric::from_str("cosine"),
+            Some(DistanceMetric::Cosine)
+        );
+        assert_eq!(
+            DistanceMetric::from_str("COSINE"),
+            Some(DistanceMetric::Cosine)
+        );
         assert_eq!(DistanceMetric::from_str("dot"), Some(DistanceMetric::Dot));
-        assert_eq!(DistanceMetric::from_str("dotproduct"), Some(DistanceMetric::Dot));
-        assert_eq!(DistanceMetric::from_str("l2"), Some(DistanceMetric::Euclidean));
-        assert_eq!(DistanceMetric::from_str("euclidean"), Some(DistanceMetric::Euclidean));
+        assert_eq!(
+            DistanceMetric::from_str("dotproduct"),
+            Some(DistanceMetric::Dot)
+        );
+        assert_eq!(
+            DistanceMetric::from_str("l2"),
+            Some(DistanceMetric::Euclidean)
+        );
+        assert_eq!(
+            DistanceMetric::from_str("euclidean"),
+            Some(DistanceMetric::Euclidean)
+        );
         assert_eq!(DistanceMetric::from_str("invalid"), None);
     }
 

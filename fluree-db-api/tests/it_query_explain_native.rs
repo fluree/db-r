@@ -6,7 +6,9 @@
 
 mod support;
 
-use fluree_db_api::{tx::IndexingMode, CommitOpts, FlureeBuilder, IndexConfig, LedgerState, Novelty, SimpleCache};
+use fluree_db_api::{
+    tx::IndexingMode, CommitOpts, FlureeBuilder, IndexConfig, LedgerState, Novelty, SimpleCache,
+};
 use fluree_db_core::Db;
 use fluree_db_transact::TxnOpts;
 use serde_json::json;
@@ -64,7 +66,13 @@ async fn explain_no_optimization_when_equal_selectivity() {
                 ]
             });
             let r = fluree
-                .insert_with_opts(ledger0, &txn, TxnOpts::default(), CommitOpts::default(), &index_cfg)
+                .insert_with_opts(
+                    ledger0,
+                    &txn,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
                 .await
                 .expect("insert");
 
@@ -250,4 +258,3 @@ async fn explain_includes_inputs_fields_and_flags() {
         })
         .await;
 }
-

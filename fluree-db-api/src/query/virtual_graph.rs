@@ -1,12 +1,10 @@
 use serde_json::Value as JsonValue;
 
-use crate::query::helpers::{
-    build_query_result, parse_jsonld_query, parse_sparql_to_ir,
-};
+use crate::query::helpers::{build_query_result, parse_jsonld_query, parse_sparql_to_ir};
 use crate::query::nameservice_builder::NameserviceQueryBuilder;
 use crate::{
-    ExecutableQuery, Fluree, LedgerState, QueryResult,
-    Result, SimpleCache, Storage, VirtualGraphPublisher,
+    ExecutableQuery, Fluree, LedgerState, QueryResult, Result, SimpleCache, Storage,
+    VirtualGraphPublisher,
 };
 
 impl<S, N> Fluree<S, SimpleCache, N>
@@ -134,5 +132,4 @@ where
             Some(ledger.novelty.clone()),
         ))
     }
-
 }

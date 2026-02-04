@@ -131,7 +131,9 @@ where
     S: Storage,
 {
     let max_old_indexes = config.max_old_indexes.unwrap_or(DEFAULT_MAX_OLD_INDEXES) as usize;
-    let min_age_mins = config.min_time_garbage_mins.unwrap_or(DEFAULT_MIN_TIME_GARBAGE_MINS);
+    let min_age_mins = config
+        .min_time_garbage_mins
+        .unwrap_or(DEFAULT_MIN_TIME_GARBAGE_MINS);
     let min_age_ms = min_age_mins as i64 * 60 * 1000;
     let now_ms = current_timestamp_ms();
 
@@ -677,7 +679,9 @@ mod tests {
         };
 
         // First GC run
-        let result1 = clean_garbage(&storage, addr3, config.clone()).await.unwrap();
+        let result1 = clean_garbage(&storage, addr3, config.clone())
+            .await
+            .unwrap();
         assert_eq!(result1.indexes_cleaned, 1);
 
         // t=1 should be deleted now
@@ -842,9 +846,18 @@ mod tests {
         storage.write_bytes(addr3, root3.as_bytes()).await.unwrap();
         storage.write_bytes(addr4, root4.as_bytes()).await.unwrap();
         storage.write_bytes(addr5, root5.as_bytes()).await.unwrap();
-        storage.write_bytes(garbage_addr2, garbage2.as_bytes()).await.unwrap();
-        storage.write_bytes(garbage_addr3, garbage3.as_bytes()).await.unwrap();
-        storage.write_bytes(garbage_addr4, garbage4.as_bytes()).await.unwrap();
+        storage
+            .write_bytes(garbage_addr2, garbage2.as_bytes())
+            .await
+            .unwrap();
+        storage
+            .write_bytes(garbage_addr3, garbage3.as_bytes())
+            .await
+            .unwrap();
+        storage
+            .write_bytes(garbage_addr4, garbage4.as_bytes())
+            .await
+            .unwrap();
         storage.write_bytes(node_from_t1, b"t1 data").await.unwrap();
         storage.write_bytes(node_from_t2, b"t2 data").await.unwrap();
         storage.write_bytes(node_from_t3, b"t3 data").await.unwrap();
@@ -932,8 +945,14 @@ mod tests {
         storage.write_bytes(addr2, root2.as_bytes()).await.unwrap();
         storage.write_bytes(addr3, root3.as_bytes()).await.unwrap();
         storage.write_bytes(addr4, root4.as_bytes()).await.unwrap();
-        storage.write_bytes(garbage_addr2, garbage2.as_bytes()).await.unwrap();
-        storage.write_bytes(garbage_addr3, garbage3.as_bytes()).await.unwrap();
+        storage
+            .write_bytes(garbage_addr2, garbage2.as_bytes())
+            .await
+            .unwrap();
+        storage
+            .write_bytes(garbage_addr3, garbage3.as_bytes())
+            .await
+            .unwrap();
 
         let config = CleanGarbageConfig {
             max_old_indexes: Some(1),

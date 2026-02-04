@@ -104,9 +104,9 @@ impl TriplesMap {
 
     /// Find a predicate-object map by predicate IRI
     pub fn find_predicate_object_map(&self, predicate_iri: &str) -> Option<&PredicateObjectMap> {
-        self.predicate_object_maps.iter().find(|pom| {
-            pom.predicate_map.as_constant() == Some(predicate_iri)
-        })
+        self.predicate_object_maps
+            .iter()
+            .find(|pom| pom.predicate_map.as_constant() == Some(predicate_iri))
     }
 
     /// Get columns referenced for a specific predicate filter.
@@ -193,12 +193,14 @@ impl TriplesMap {
                     super::ObjectMap::Column { column, .. } => {
                         columns.push(column.as_str());
                     }
-                    super::ObjectMap::Template { columns: tmpl_cols, .. } => {
+                    super::ObjectMap::Template {
+                        columns: tmpl_cols, ..
+                    } => {
                         columns.extend(tmpl_cols.iter().map(|s| s.as_str()));
                     }
                     super::ObjectMap::RefObjectMap(rom) => {
                         // Child join columns are required
-                        columns.extend(rom.child_columns().into_iter());
+                        columns.extend(rom.child_columns());
                     }
                     super::ObjectMap::Constant { .. } => {
                         // Constant objects don't require any columns
@@ -344,9 +346,8 @@ pub fn extract_template_columns(template: &str) -> Vec<String> {
     use once_cell::sync::Lazy;
     use regex::Regex;
 
-    static PLACEHOLDER_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"\{([^}]+)\}").expect("valid regex")
-    });
+    static PLACEHOLDER_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"\{([^}]+)\}").expect("valid regex"));
 
     PLACEHOLDER_RE
         .captures_iter(template)
@@ -381,7 +382,10 @@ mod tests {
 
         assert_eq!(tm.iri, "<#AirlineMapping>");
         assert_eq!(tm.table_name(), Some("openflights.airlines"));
-        assert_eq!(tm.subject_map.template, Some("http://example.org/airline/{id}".to_string()));
+        assert_eq!(
+            tm.subject_map.template,
+            Some("http://example.org/airline/{id}".to_string())
+        );
         assert_eq!(tm.subject_map.classes, vec!["http://example.org/Airline"]);
     }
 
@@ -400,7 +404,10 @@ mod tests {
     #[test]
     fn test_subject_map_template() {
         let sm = SubjectMap::template("http://example.org/{namespace}/{id}");
-        assert_eq!(sm.template, Some("http://example.org/{namespace}/{id}".to_string()));
+        assert_eq!(
+            sm.template,
+            Some("http://example.org/{namespace}/{id}".to_string())
+        );
         assert_eq!(sm.template_columns, vec!["namespace", "id"]);
     }
 
@@ -464,7 +471,9 @@ mod tests {
 
     #[test]
     fn test_required_not_null_columns() {
-        use super::super::{ObjectMap, PredicateMap, PredicateObjectMap, RefObjectMap, JoinCondition};
+        use super::super::{
+            JoinCondition, ObjectMap, PredicateMap, PredicateObjectMap, RefObjectMap,
+        };
 
         let mut tm = TriplesMap::new("<#Test>", "test.table");
         tm.subject_map = SubjectMap::template("http://example.org/{ns}/{id}");
@@ -481,12 +490,10 @@ mod tests {
                 predicate_map: PredicateMap::constant("http://example.org/parent"),
                 object_map: ObjectMap::RefObjectMap(RefObjectMap {
                     parent_triples_map: "<#Parent>".to_string(),
-                    join_conditions: vec![
-                        JoinCondition {
-                            child_column: "parent_id".to_string(),
-                            parent_column: "id".to_string(),
-                        },
-                    ],
+                    join_conditions: vec![JoinCondition {
+                        child_column: "parent_id".to_string(),
+                        parent_column: "id".to_string(),
+                    }],
                 }),
             },
             PredicateObjectMap {

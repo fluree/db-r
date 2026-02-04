@@ -7,8 +7,8 @@ use fluree_db_core::{Db, MemoryStorage, NoCache, Sid};
 use fluree_db_query::binding::{Batch, Binding};
 use fluree_db_query::context::ExecutionContext;
 use fluree_db_query::join::NestedLoopJoinOperator;
-use fluree_db_query::optional::{OptionalOperator, OptionalBuilder};
 use fluree_db_query::operator::Operator;
+use fluree_db_query::optional::{OptionalBuilder, OptionalOperator};
 use fluree_db_query::pattern::{Term, TriplePattern};
 use fluree_db_query::var_registry::{VarId, VarRegistry};
 use std::sync::Arc;
@@ -23,10 +23,7 @@ impl<S: fluree_db_core::Storage + 'static, C: fluree_db_core::NodeCache + 'stati
     for SingleBatchOp
 {
     fn schema(&self) -> &[VarId] {
-        self.batch
-            .as_ref()
-            .map(|b| b.schema())
-            .unwrap_or(&[])
+        self.batch.as_ref().map(|b| b.schema()).unwrap_or(&[])
     }
 
     async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> fluree_db_query::Result<()> {
@@ -59,10 +56,13 @@ impl NoMatchOptionalBuilder {
 }
 
 impl<S: fluree_db_core::Storage + 'static, C: fluree_db_core::NodeCache + 'static>
-    OptionalBuilder<S, C>
-    for NoMatchOptionalBuilder
+    OptionalBuilder<S, C> for NoMatchOptionalBuilder
 {
-    fn build(&self, _: &Batch, _: usize) -> fluree_db_query::Result<Option<fluree_db_query::BoxedOperator<S, C>>> {
+    fn build(
+        &self,
+        _: &Batch,
+        _: usize,
+    ) -> fluree_db_query::Result<Option<fluree_db_query::BoxedOperator<S, C>>> {
         Ok(None)
     }
 
@@ -107,11 +107,8 @@ async fn test_optional_poison_blocks_subsequent() {
     let builder: Box<dyn OptionalBuilder<MemoryStorage, NoCache>> =
         Box::new(NoMatchOptionalBuilder::new(opt));
 
-    let mut left_join = OptionalOperator::with_builder(
-        Box::new(required_op),
-        required_schema.clone(),
-        builder,
-    );
+    let mut left_join =
+        OptionalOperator::with_builder(Box::new(required_op), required_schema.clone(), builder);
     left_join.open(&ctx).await.unwrap();
     let out_batch = left_join
         .next_batch(&ctx)
@@ -132,7 +129,7 @@ async fn test_optional_poison_blocks_subsequent() {
     let left_schema: Arc<[VarId]> = Arc::from(vec![s, opt].into_boxed_slice());
 
     let right_pattern = TriplePattern::new(
-        Term::Var(opt),               // correlation var (poisoned) used for binding
+        Term::Var(opt), // correlation var (poisoned) used for binding
         Term::Sid(Sid::new(100, "p")),
         Term::Var(o),
     );
@@ -151,4 +148,3 @@ async fn test_optional_poison_blocks_subsequent() {
         "Expected no results when a poisoned var is required for binding"
     );
 }
-

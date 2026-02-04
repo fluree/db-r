@@ -120,11 +120,19 @@ mod tests {
         // With default overflow (375KB), avg segment is ~183KB
         // 1GB = 1024MB should give ~5592 entries
         let size_1gb = memory_to_cache_size(1024, None);
-        assert!(size_1gb > 5000 && size_1gb < 6000, "1GB should give ~5592 entries, got {}", size_1gb);
+        assert!(
+            size_1gb > 5000 && size_1gb < 6000,
+            "1GB should give ~5592 entries, got {}",
+            size_1gb
+        );
 
         // 10GB should give ~55924 entries
         let size_10gb = memory_to_cache_size(10 * 1024, None);
-        assert!(size_10gb > 50000 && size_10gb < 60000, "10GB should give ~55924 entries, got {}", size_10gb);
+        assert!(
+            size_10gb > 50000 && size_10gb < 60000,
+            "10GB should give ~55924 entries, got {}",
+            size_10gb
+        );
     }
 
     #[test]
@@ -140,6 +148,10 @@ mod tests {
         let small_overflow = 100 * 1024; // 100KB
         let size = memory_to_cache_size(1024, Some(small_overflow));
         // With 100KB overflow, avg is 50KB, so 1GB = 1024MB / 0.05MB = ~20480 entries
-        assert!(size > 15000, "Smaller overflow should give more entries, got {}", size);
+        assert!(
+            size > 15000,
+            "Smaller overflow should give more entries, got {}",
+            size
+        );
     }
 }

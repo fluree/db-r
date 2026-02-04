@@ -11,14 +11,14 @@
 //! Rust should mirror that behavior: seed genesis `Db.namespace_codes` with this
 //! baseline so query/transaction code can reliably encode standard IRIs even
 //! before any index exists.
-use std::collections::HashMap;
+use fluree_vocab::index::*;
 use fluree_vocab::namespaces::{
-    BLANK_NODE, CREDENTIALS, DID_KEY, EMPTY, FLUREE_COMMIT, FLUREE_DB, FLUREE_FILE,
-    FLUREE_INDEX, FLUREE_IPFS, FLUREE_LEDGER, FLUREE_MEMORY, FLUREE_S3, FOAF, ISBN,
-    ISSN, JSON_LD, OWL, RDF, RDFS, SCHEMA_ORG, SHACL, SKOS, UUID, WIKIDATA, XSD
+    BLANK_NODE, CREDENTIALS, DID_KEY, EMPTY, FLUREE_COMMIT, FLUREE_DB, FLUREE_FILE, FLUREE_INDEX,
+    FLUREE_IPFS, FLUREE_LEDGER, FLUREE_MEMORY, FLUREE_S3, FOAF, ISBN, ISSN, JSON_LD, OWL, RDF,
+    RDFS, SCHEMA_ORG, SHACL, SKOS, UUID, WIKIDATA, XSD,
 };
 use fluree_vocab::predicates::*;
-use fluree_vocab::index::*;
+use std::collections::HashMap;
 
 use crate::sid::Sid;
 
@@ -170,7 +170,10 @@ pub fn default_namespace_codes() -> HashMap<i32, String> {
     map.insert(EMPTY, "".to_string());
     map.insert(JSON_LD, "@".to_string());
     map.insert(XSD, "http://www.w3.org/2001/XMLSchema#".to_string());
-    map.insert(RDF, "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string());
+    map.insert(
+        RDF,
+        "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string(),
+    );
     map.insert(RDFS, "http://www.w3.org/2000/01/rdf-schema#".to_string());
     map.insert(SHACL, "http://www.w3.org/ns/shacl#".to_string());
     map.insert(OWL, "http://www.w3.org/2002/07/owl#".to_string());
@@ -197,4 +200,3 @@ pub fn default_namespace_codes() -> HashMap<i32, String> {
     map.insert(FLUREE_INDEX, "https://ns.flur.ee/index#".to_string());
     map
 }
-

@@ -88,8 +88,8 @@ impl<'a, S: ContentAddressedWrite> IndexWriter<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::MemoryStorage;
     use fluree_db_core::IndexType;
+    use fluree_db_core::MemoryStorage;
 
     #[tokio::test]
     async fn test_writer_write_leaf() {

@@ -21,7 +21,11 @@ use tokio::runtime::Handle;
 use crate::error::{IcebergError, Result};
 use crate::io::batch::ColumnBatch;
 use crate::io::chunk_reader::RangeBackedChunkReader;
-use crate::io::parquet::{ParquetFooterCache, parse_parquet_metadata_from_bytes, build_batch_schema, build_batch_schema_with_iceberg, build_projected_schema, ColumnValue, convert_field_to_column_value, build_columns_from_values, NULL_COLUMN_SENTINEL};
+use crate::io::parquet::{
+    build_batch_schema, build_batch_schema_with_iceberg, build_columns_from_values,
+    build_projected_schema, convert_field_to_column_value, parse_parquet_metadata_from_bytes,
+    ColumnValue, ParquetFooterCache, NULL_COLUMN_SENTINEL,
+};
 use crate::io::SendIcebergStorage;
 use crate::scan::FileScanTask;
 
@@ -115,7 +119,9 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
 
         // Cache the footer
         if let Some(cache) = self.footer_cache {
-            cache.put(path.to_string(), file_size, Arc::clone(&metadata)).await;
+            cache
+                .put(path.to_string(), file_size, Arc::clone(&metadata))
+                .await;
         }
 
         Ok(metadata)
@@ -192,10 +198,8 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
             .collect();
 
         // Build a projected schema for parquet-rs to only decode needed columns
-        let projected_schema = build_projected_schema(
-            metadata.file_metadata().schema(),
-            &real_column_indices,
-        )?;
+        let projected_schema =
+            build_projected_schema(metadata.file_metadata().schema(), &real_column_indices)?;
 
         let mut batches = Vec::new();
 
@@ -206,23 +210,25 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
             })?;
 
             // Create row iterator for this row group with projection
-            let row_iter = RowIter::from_row_group(
-                Some(projected_schema.clone()),
-                row_group_reader.as_ref(),
-            ).map_err(|e| {
-                IcebergError::Storage(format!("Failed to create row iterator for row group {}: {}", rg_idx, e))
-            })?;
+            let row_iter =
+                RowIter::from_row_group(Some(projected_schema.clone()), row_group_reader.as_ref())
+                    .map_err(|e| {
+                        IcebergError::Storage(format!(
+                            "Failed to create row iterator for row group {}: {}",
+                            rg_idx, e
+                        ))
+                    })?;
 
             // Collect rows into columnar format
             let num_fields = batch_schema.fields.len();
             let estimated_rows = metadata.row_group(rg_idx).num_rows() as usize;
-            let mut column_data: Vec<Vec<Option<ColumnValue>>> =
-                (0..num_fields).map(|_| Vec::with_capacity(estimated_rows)).collect();
+            let mut column_data: Vec<Vec<Option<ColumnValue>>> = (0..num_fields)
+                .map(|_| Vec::with_capacity(estimated_rows))
+                .collect();
 
             for row_result in row_iter {
-                let row = row_result.map_err(|e| {
-                    IcebergError::Storage(format!("Failed to read row: {}", e))
-                })?;
+                let row = row_result
+                    .map_err(|e| IcebergError::Storage(format!("Failed to read row: {}", e)))?;
 
                 // With projection, row columns come in the same order as projected schema.
                 let row_fields: Vec<_> = row.get_column_iter().map(|(_, f)| f).collect();
@@ -232,8 +238,11 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
                     let value = match batch_to_row_mapping[batch_idx] {
                         Some(row_idx) => {
                             // Real column - get value from row
-                            row_fields.get(row_idx)
-                                .map(|field| convert_field_to_column_value(field, &field_info.field_type))
+                            row_fields
+                                .get(row_idx)
+                                .map(|field| {
+                                    convert_field_to_column_value(field, &field_info.field_type)
+                                })
                                 .flatten()
                         }
                         None => {
@@ -286,16 +295,13 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
         // Run the sync parquet decoding in a blocking context
         let result = tokio::task::spawn_blocking(move || {
             // Create range-backed chunk reader
-            let chunk_reader = RangeBackedChunkReader::new(
-                storage,
-                path.clone(),
-                file_size,
-                runtime,
-            );
+            let chunk_reader =
+                RangeBackedChunkReader::new(storage, path.clone(), file_size, runtime);
 
             // Parse using parquet-rs with our chunk reader
-            let reader = SerializedFileReader::new(chunk_reader)
-                .map_err(|e| IcebergError::Storage(format!("Failed to read Parquet file: {}", e)))?;
+            let reader = SerializedFileReader::new(chunk_reader).map_err(|e| {
+                IcebergError::Storage(format!("Failed to read Parquet file: {}", e))
+            })?;
 
             let metadata = reader.metadata();
 
@@ -329,10 +335,8 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
                 .collect();
 
             // Build a projected schema for parquet-rs
-            let projected_schema = build_projected_schema(
-                metadata.file_metadata().schema(),
-                &real_column_indices,
-            )?;
+            let projected_schema =
+                build_projected_schema(metadata.file_metadata().schema(), &real_column_indices)?;
 
             let mut batches = Vec::new();
 
@@ -345,29 +349,31 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
                 let row_iter = RowIter::from_row_group(
                     Some(projected_schema.clone()),
                     row_group_reader.as_ref(),
-                ).map_err(|e| {
+                )
+                .map_err(|e| {
                     IcebergError::Storage(format!("Failed to create row iterator: {}", e))
                 })?;
 
                 let num_fields = batch_schema.fields.len();
                 let estimated_rows = metadata.row_group(rg_idx).num_rows() as usize;
-                let mut column_data: Vec<Vec<Option<ColumnValue>>> =
-                    (0..num_fields).map(|_| Vec::with_capacity(estimated_rows)).collect();
+                let mut column_data: Vec<Vec<Option<ColumnValue>>> = (0..num_fields)
+                    .map(|_| Vec::with_capacity(estimated_rows))
+                    .collect();
 
                 for row_result in row_iter {
-                    let row = row_result.map_err(|e| {
-                        IcebergError::Storage(format!("Failed to read row: {}", e))
-                    })?;
+                    let row = row_result
+                        .map_err(|e| IcebergError::Storage(format!("Failed to read row: {}", e)))?;
 
                     let row_fields: Vec<_> = row.get_column_iter().map(|(_, f)| f).collect();
 
                     for (batch_idx, field_info) in batch_schema.fields.iter().enumerate() {
                         let value = match batch_to_row_mapping[batch_idx] {
-                            Some(row_idx) => {
-                                row_fields.get(row_idx)
-                                    .map(|field| convert_field_to_column_value(field, &field_info.field_type))
-                                    .flatten()
-                            }
+                            Some(row_idx) => row_fields
+                                .get(row_idx)
+                                .map(|field| {
+                                    convert_field_to_column_value(field, &field_info.field_type)
+                                })
+                                .flatten(),
                             None => None,
                         };
                         column_data[batch_idx].push(value);
@@ -401,7 +407,10 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
         let column_ranges = calculate_column_chunk_ranges(&metadata, &task.projected_field_ids);
 
         // Calculate footer range
-        let footer_and_size = self.storage.read_range(path, (file_size - 8)..file_size).await?;
+        let footer_and_size = self
+            .storage
+            .read_range(path, (file_size - 8)..file_size)
+            .await?;
         let footer_len = u32::from_le_bytes([
             footer_and_size[0],
             footer_and_size[1],

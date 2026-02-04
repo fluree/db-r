@@ -10,8 +10,8 @@ use fluree_db_core::value::FlakeValue;
 use fluree_db_core::Sid;
 use hashbrown::HashMap;
 
-use crate::same_as::SameAsTracker;
 use super::util::canonicalize_flake;
+use crate::same_as::SameAsTracker;
 
 /// Predicate-indexed delta set for efficient rule joins
 ///

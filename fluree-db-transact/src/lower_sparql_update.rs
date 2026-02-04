@@ -39,7 +39,9 @@ use std::mem;
 use std::sync::Arc;
 
 use fluree_db_core::{FlakeValue, Sid};
-use fluree_db_query::parse::{LiteralValue, UnresolvedPattern, UnresolvedTerm, UnresolvedTriplePattern};
+use fluree_db_query::parse::{
+    LiteralValue, UnresolvedPattern, UnresolvedTerm, UnresolvedTriplePattern,
+};
 use fluree_db_query::VarRegistry;
 use fluree_db_sparql::ast::{
     BlankNodeValue, Iri, IriValue, Literal, LiteralValue as SparqlLiteralValue, Modify,
@@ -71,7 +73,10 @@ pub enum LowerError {
 
     /// Unsupported feature encountered
     #[error("{feature} is not yet supported in SPARQL UPDATE lowering")]
-    UnsupportedFeature { feature: &'static str, span: SourceSpan },
+    UnsupportedFeature {
+        feature: &'static str,
+        span: SourceSpan,
+    },
 
     /// Undefined prefix in IRI
     #[error("Undefined prefix '{prefix}:'")]
@@ -816,7 +821,10 @@ mod tests {
     #[test]
     fn test_coerce_typed_integer() {
         let result = coerce_typed_value("42", XSD_INTEGER);
-        assert!(matches!(result, UnresolvedTerm::Literal(LiteralValue::Long(42))));
+        assert!(matches!(
+            result,
+            UnresolvedTerm::Literal(LiteralValue::Long(42))
+        ));
     }
 
     #[test]

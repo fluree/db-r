@@ -38,8 +38,7 @@ impl IndexCache {
     /// * `max_entries` - Maximum number of entries before LRU eviction
     /// * `ttl` - Time-to-live for cache entries
     pub fn new(max_entries: usize, ttl: Duration) -> Self {
-        let capacity = NonZeroUsize::new(max_entries.max(1))
-            .expect("max_entries must be positive");
+        let capacity = NonZeroUsize::new(max_entries.max(1)).expect("max_entries must be positive");
         Self {
             inner: RwLock::new(LruCache::new(capacity)),
             ttl,
@@ -84,11 +83,7 @@ impl IndexCache {
 
     /// Remove an entry from the cache.
     pub fn remove(&self, key: &CacheKey) -> Option<Arc<Bm25Index>> {
-        self.inner
-            .write()
-            .ok()?
-            .pop(key)
-            .map(|entry| entry.index)
+        self.inner.write().ok()?.pop(key).map(|entry| entry.index)
     }
 
     /// Clear all entries from the cache.

@@ -15,11 +15,11 @@ use crate::comparator::IndexType;
 use crate::error::{Error, Result};
 use crate::flake::Flake;
 use crate::index::{ChildRef, IndexNode};
+use crate::namespaces::default_namespace_codes;
 use crate::schema_hierarchy::SchemaHierarchy;
 use crate::serde::json::{parse_db_root, DbRoot, DbRootConfig, DbRootSchema, DbRootStats};
 use crate::sid::{Sid, SidInterner};
 use crate::storage::Storage;
-use crate::namespaces::default_namespace_codes;
 use once_cell::sync::OnceCell;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -306,7 +306,8 @@ mod tests {
                 "leaf": false,
                 "size": 1000
             }
-        }"#.to_string()
+        }"#
+        .to_string()
     }
 
     #[tokio::test]
@@ -342,7 +343,9 @@ mod tests {
         assert_eq!(iri, "http://example.org/Alice");
 
         // XSD namespace
-        let xsd_sid = db.encode_iri("http://www.w3.org/2001/XMLSchema#string").unwrap();
+        let xsd_sid = db
+            .encode_iri("http://www.w3.org/2001/XMLSchema#string")
+            .unwrap();
         assert_eq!(xsd_sid.namespace_code, 2);
         assert_eq!(xsd_sid.name.as_ref(), "string");
     }
@@ -423,7 +426,9 @@ mod tests {
         assert!(db.tspo.is_some());
 
         // Check namespace codes include example.org
-        let example_ns = db.namespace_codes.values()
+        let example_ns = db
+            .namespace_codes
+            .values()
             .any(|v| v.contains("example.org"));
         assert!(example_ns, "Should have example.org namespace");
 

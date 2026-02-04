@@ -96,8 +96,7 @@ struct VectorIndexCache {
 
 impl VectorIndexCache {
     fn new(max_entries: usize, ttl: Duration) -> Self {
-        let capacity =
-            NonZeroUsize::new(max_entries.max(1)).expect("max_entries must be positive");
+        let capacity = NonZeroUsize::new(max_entries.max(1)).expect("max_entries must be positive");
         Self {
             inner: RwLock::new(LruCache::new(capacity)),
             ttl,
@@ -175,11 +174,7 @@ impl<L: VectorIndexLoader> VectorBackend<L> {
     }
 
     /// Get or load an index for the given virtual graph and transaction.
-    async fn get_or_load_index(
-        &self,
-        vg_alias: &str,
-        index_t: i64,
-    ) -> Result<Arc<VectorIndex>> {
+    async fn get_or_load_index(&self, vg_alias: &str, index_t: i64) -> Result<Arc<VectorIndex>> {
         let cache_key = (vg_alias.to_string(), index_t);
 
         // Check cache first
@@ -189,11 +184,13 @@ impl<L: VectorIndexLoader> VectorBackend<L> {
         }
 
         // Acquire semaphore to limit concurrent loads
-        let _permit = self.load_semaphore.acquire().await.map_err(|_| {
-            ServiceError::Internal {
+        let _permit = self
+            .load_semaphore
+            .acquire()
+            .await
+            .map_err(|_| ServiceError::Internal {
                 message: "failed to acquire load semaphore".to_string(),
-            }
-        })?;
+            })?;
 
         // Double-check cache after acquiring semaphore
         if let Some(index) = self.cache.get(&cache_key) {
@@ -241,7 +238,7 @@ impl<L: VectorIndexLoader> VectorBackend<L> {
                 self.loader
                     .find_snapshot_for_t(vg_alias, target_t)
                     .await?
-                    .ok_or_else(|| ServiceError::NoSnapshotForAsOfT { as_of_t: target_t })
+                    .ok_or(ServiceError::NoSnapshotForAsOfT { as_of_t: target_t })
             }
             None => {
                 // Use latest available
@@ -290,9 +287,7 @@ impl<L: VectorIndexLoader> SearchBackend for VectorBackend<L> {
             }
         };
 
-        let timeout = Duration::from_millis(
-            timeout_ms.unwrap_or(self.config.default_timeout_ms)
-        );
+        let timeout = Duration::from_millis(timeout_ms.unwrap_or(self.config.default_timeout_ms));
 
         // Resolve which index snapshot to use
         let index_t = self
@@ -378,10 +373,7 @@ mod tests {
         }
 
         fn set_head(&self, vg_alias: &str, t: i64) {
-            self.head_t
-                .write()
-                .unwrap()
-                .insert(vg_alias.to_string(), t);
+            self.head_t.write().unwrap().insert(vg_alias.to_string(), t);
         }
     }
 
@@ -496,7 +488,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(index_t, 100);
-        assert!(!hits.is_empty(), "Should return results from the resolved snapshot");
+        assert!(
+            !hits.is_empty(),
+            "Should return results from the resolved snapshot"
+        );
 
         // Query with as_of_t=250 should select the snapshot at t=200
         let (index_t_2, _) = backend
@@ -627,9 +622,6 @@ mod tests {
             )
             .await;
 
-        assert!(matches!(
-            result,
-            Err(ServiceError::InvalidRequest { .. })
-        ));
+        assert!(matches!(result, Err(ServiceError::InvalidRequest { .. })));
     }
 }

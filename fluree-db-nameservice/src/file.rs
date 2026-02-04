@@ -39,13 +39,13 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::fs::OpenOptions;
 use std::io::Write;
+#[cfg(all(feature = "native", unix))]
+use std::os::unix::io::AsRawFd;
+use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-#[cfg(all(feature = "native", unix))]
-use std::os::unix::io::AsRawFd;
-use std::path::{Path, PathBuf};
 use tokio::sync::broadcast;
 
 /// File-based nameservice using ns@v2 format
@@ -100,7 +100,6 @@ struct NsFileV2 {
     default_context: Option<AddressRef>,
 
     // V2 extension fields (optional for backward compatibility)
-
     /// Status watermark (v2 extension) - defaults to 1 if missing
     #[serde(rename = "f:statusV", skip_serializing_if = "Option::is_none")]
     status_v: Option<i64>,
@@ -286,6 +285,7 @@ impl FlockGuard {
 
         let file = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(path)
@@ -385,7 +385,10 @@ impl FileNameService {
 
         // Rename to final path (atomic on most filesystems)
         tokio::fs::rename(&tmp_path, path).await.map_err(|e| {
-            NameServiceError::storage(format!("Failed to rename {:?} to {:?}: {}", tmp_path, path, e))
+            NameServiceError::storage(format!(
+                "Failed to rename {:?} to {:?}: {}",
+                tmp_path, path, e
+            ))
         })?;
 
         Ok(())
@@ -453,7 +456,8 @@ impl FileNameService {
             let content = serde_json::to_string_pretty(&new_value)?;
             {
                 let mut f = std::fs::File::create(&tmp_path).map_err(NameServiceError::Io)?;
-                f.write_all(content.as_bytes()).map_err(NameServiceError::Io)?;
+                f.write_all(content.as_bytes())
+                    .map_err(NameServiceError::Io)?;
                 // Optional: f.sync_all() for stronger durability; skipped for perf.
             }
 
@@ -511,9 +515,9 @@ impl FileNameService {
             return Ok(false);
         }
 
-        let content = tokio::fs::read_to_string(&main_path)
-            .await
-            .map_err(|e| NameServiceError::storage(format!("Failed to read {:?}: {}", main_path, e)))?;
+        let content = tokio::fs::read_to_string(&main_path).await.map_err(|e| {
+            NameServiceError::storage(format!("Failed to read {:?}: {}", main_path, e))
+        })?;
 
         // Parse just enough to check @type
         let parsed: serde_json::Value = serde_json::from_str(&content)?;
@@ -598,7 +602,10 @@ impl FileNameService {
                 id: record.alias.clone(),
             },
             branch: record.branch.clone(),
-            commit: record.commit_address.as_ref().map(|a| AddressRef { id: a.clone() }),
+            commit: record
+                .commit_address
+                .as_ref()
+                .map(|a| AddressRef { id: a.clone() }),
             t: record.commit_t,
             index: record.index_address.as_ref().map(|a| IndexRef {
                 id: a.clone(),
@@ -824,7 +831,10 @@ impl Publisher for FileNameService {
                             // Create new record (always write)
                             let file = NsFileV2 {
                                 context: ns_context(),
-                                id: core_alias::format_alias(&ledger_name_for_file, &branch_for_file),
+                                id: core_alias::format_alias(
+                                    &ledger_name_for_file,
+                                    &branch_for_file,
+                                ),
                                 record_type: vec![
                                     "f:Database".to_string(),
                                     "f:PhysicalDatabase".to_string(),
@@ -1006,9 +1016,9 @@ impl Publisher for FileNameService {
                 .await;
 
             if res.is_ok() && did_update.load(Ordering::SeqCst) {
-                let _ = self
-                    .event_tx
-                    .send(NameServiceEvent::LedgerRetracted { alias: alias_for_event });
+                let _ = self.event_tx.send(NameServiceEvent::LedgerRetracted {
+                    alias: alias_for_event,
+                });
             }
 
             return res;
@@ -1153,7 +1163,8 @@ impl VirtualGraphPublisher for FileNameService {
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
 
-            let res = self.swap_json_locked::<VgNsFileV2, _>(path, move |existing| {
+            let res = self
+                .swap_json_locked::<VgNsFileV2, _>(path, move |existing| {
                     // For VG config, we always update (config changes are allowed)
                     // Only preserve retracted status if already set
                     let status = existing
@@ -1165,10 +1176,7 @@ impl VirtualGraphPublisher for FileNameService {
                     let file = VgNsFileV2 {
                         context: vg_context(),
                         id: core_alias::format_alias(&name_for_file, &branch_for_file),
-                        record_type: vec![
-                            "f:VirtualGraphDatabase".to_string(),
-                            vg_type_str,
-                        ],
+                        record_type: vec!["f:VirtualGraphDatabase".to_string(), vg_type_str],
                         name: name_for_file,
                         branch: branch_for_file,
                         config: ConfigRef { value: config },
@@ -1403,7 +1411,9 @@ impl VirtualGraphPublisher for FileNameService {
                     snapshots,
                 })
             }
-            None => Ok(VgSnapshotHistory::new(core_alias::format_alias(&name, &branch))),
+            None => Ok(VgSnapshotHistory::new(core_alias::format_alias(
+                &name, &branch,
+            ))),
         }
     }
 
@@ -1413,7 +1423,7 @@ impl VirtualGraphPublisher for FileNameService {
         #[cfg(all(feature = "native", unix))]
         {
             let path = main_path.clone();
-            let alias_for_event = core_alias::format_alias(&name, &branch);
+            let alias_for_event = core_alias::format_alias(name, branch);
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
 
@@ -1433,9 +1443,9 @@ impl VirtualGraphPublisher for FileNameService {
                 .await;
 
             if res.is_ok() && did_update.load(Ordering::SeqCst) {
-                let _ = self
-                    .event_tx
-                    .send(NameServiceEvent::VgRetracted { alias: alias_for_event });
+                let _ = self.event_tx.send(NameServiceEvent::VgRetracted {
+                    alias: alias_for_event,
+                });
             }
 
             return res;
@@ -1503,7 +1513,10 @@ impl VirtualGraphPublisher for FileNameService {
 
         while let Some(current_dir) = stack.pop() {
             let mut dir_entries = tokio::fs::read_dir(&current_dir).await.map_err(|e| {
-                NameServiceError::storage(format!("Failed to read directory {:?}: {}", current_dir, e))
+                NameServiceError::storage(format!(
+                    "Failed to read directory {:?}: {}",
+                    current_dir, e
+                ))
             })?;
 
             while let Some(entry) = dir_entries.next_entry().await.map_err(|e| {
@@ -1518,7 +1531,8 @@ impl VirtualGraphPublisher for FileNameService {
                     let file_name = entry.file_name().to_string_lossy().to_string();
 
                     // Skip index files and snapshot files, only process main .json files
-                    if file_name.ends_with(".index.json") || file_name.ends_with(".snapshots.json") {
+                    if file_name.ends_with(".index.json") || file_name.ends_with(".snapshots.json")
+                    {
                         continue;
                     }
 
@@ -1528,12 +1542,16 @@ impl VirtualGraphPublisher for FileNameService {
                         let ns_dir_base = self.base_path.join(NS_VERSION);
                         if let Ok(relative_path) = path.strip_prefix(&ns_dir_base) {
                             // relative_path is like "vg-name/main.json" or "tenant/vg/main.json"
-                            let parent = relative_path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+                            let parent = relative_path
+                                .parent()
+                                .map(|p| p.to_string_lossy().to_string())
+                                .unwrap_or_default();
                             let branch = file_name.trim_end_matches(".json");
 
                             // Check if this is a VG record
                             if self.is_vg_record(&parent, branch).await? {
-                                if let Ok(Some(record)) = self.load_vg_record(&parent, branch).await {
+                                if let Ok(Some(record)) = self.load_vg_record(&parent, branch).await
+                                {
                                     records.push(record);
                                 }
                             }
@@ -1629,8 +1647,7 @@ impl RefPublisher for FileNameService {
                             return Ok(None); // no-op write
                         }
                         (Some(_), None) => {
-                            *result_cell2.lock().unwrap() =
-                                CasResult::Conflict { actual: None };
+                            *result_cell2.lock().unwrap() = CasResult::Conflict { actual: None };
                             return Ok(None);
                         }
                         (Some(exp), Some(actual)) => {
@@ -1723,8 +1740,7 @@ impl RefPublisher for FileNameService {
                             return Ok(None);
                         }
                         (Some(_), None) => {
-                            *result_cell2.lock().unwrap() =
-                                CasResult::Conflict { actual: None };
+                            *result_cell2.lock().unwrap() = CasResult::Conflict { actual: None };
                             return Ok(None);
                         }
                         (Some(exp), Some(actual)) => {
@@ -1993,16 +2009,16 @@ impl ConfigPublisher for FileNameService {
                             0 // Unborn
                         }
                     });
-                    let payload = if v == 0 && f.default_context.is_none() && f.config_meta.is_none()
-                    {
-                        None
-                    } else {
-                        let extra = f.config_meta.clone().unwrap_or_default();
-                        Some(ConfigPayload {
-                            default_context: f.default_context.as_ref().map(|c| c.id.clone()),
-                            extra,
-                        })
-                    };
+                    let payload =
+                        if v == 0 && f.default_context.is_none() && f.config_meta.is_none() {
+                            None
+                        } else {
+                            let extra = f.config_meta.clone().unwrap_or_default();
+                            Some(ConfigPayload {
+                                default_context: f.default_context.as_ref().map(|c| c.id.clone()),
+                                extra,
+                            })
+                        };
                     Some(ConfigValue { v, payload })
                 }
             };
@@ -2169,7 +2185,10 @@ mod tests {
     #[tokio::test]
     async fn test_file_ns_emits_events_on_publish_commit_monotonic() {
         let (_temp, ns) = setup().await;
-        let mut sub = ns.subscribe(crate::SubscriptionScope::alias("mydb:main")).await.unwrap();
+        let mut sub = ns
+            .subscribe(crate::SubscriptionScope::alias("mydb:main"))
+            .await
+            .unwrap();
 
         ns.publish_commit("mydb:main", "commit-1", 1).await.unwrap();
         let evt = sub.receiver.recv().await.unwrap();
@@ -2183,7 +2202,9 @@ mod tests {
         );
 
         // Lower t should not emit a new event.
-        ns.publish_commit("mydb:main", "commit-old", 0).await.unwrap();
+        ns.publish_commit("mydb:main", "commit-old", 0)
+            .await
+            .unwrap();
         assert!(matches!(sub.receiver.try_recv(), Err(TryRecvError::Empty)));
     }
 
@@ -2206,7 +2227,9 @@ mod tests {
         assert_eq!(record.commit_t, 5);
 
         // Lower t should be ignored
-        ns.publish_commit("mydb:main", "commit-old", 3).await.unwrap();
+        ns.publish_commit("mydb:main", "commit-old", 3)
+            .await
+            .unwrap();
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
         assert_eq!(record.commit_address, Some("commit-2".to_string()));
@@ -2497,7 +2520,11 @@ mod tests {
             VgType::Bm25
         );
         assert_eq!(
-            ns.lookup_vg("r2rml-vg:main").await.unwrap().unwrap().vg_type,
+            ns.lookup_vg("r2rml-vg:main")
+                .await
+                .unwrap()
+                .unwrap()
+                .vg_type,
             VgType::R2rml
         );
         assert_eq!(
@@ -2661,7 +2688,10 @@ mod tests {
     #[tokio::test]
     async fn test_file_ref_get_ref_unknown_alias() {
         let (_dir, ns) = setup().await;
-        let result = ns.get_ref("nonexistent:main", RefKind::CommitHead).await.unwrap();
+        let result = ns
+            .get_ref("nonexistent:main", RefKind::CommitHead)
+            .await
+            .unwrap();
         assert_eq!(result, None);
     }
 
@@ -2670,7 +2700,11 @@ mod tests {
         let (_dir, ns) = setup().await;
         ns.publish_commit("mydb:main", "commit-1", 5).await.unwrap();
 
-        let commit = ns.get_ref("mydb:main", RefKind::CommitHead).await.unwrap().unwrap();
+        let commit = ns
+            .get_ref("mydb:main", RefKind::CommitHead)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(commit.address, Some("commit-1".to_string()));
         assert_eq!(commit.t, 5);
     }
@@ -2689,7 +2723,11 @@ mod tests {
             .unwrap();
         assert_eq!(result, CasResult::Updated);
 
-        let current = ns.get_ref("mydb:main", RefKind::CommitHead).await.unwrap().unwrap();
+        let current = ns
+            .get_ref("mydb:main", RefKind::CommitHead)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(current.address, Some("commit-1".to_string()));
         assert_eq!(current.t, 1);
     }
@@ -2758,7 +2796,11 @@ mod tests {
             .unwrap();
         assert_eq!(result, CasResult::Updated);
 
-        let current = ns.get_ref("mydb:main", RefKind::CommitHead).await.unwrap().unwrap();
+        let current = ns
+            .get_ref("mydb:main", RefKind::CommitHead)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(current.address, Some("commit-2".to_string()));
         assert_eq!(current.t, 2);
     }
@@ -2816,23 +2858,35 @@ mod tests {
             address: Some("commit-5".to_string()),
             t: 5,
         };
-        let result = ns.fast_forward_commit("mydb:main", &new_ref, 3).await.unwrap();
+        let result = ns
+            .fast_forward_commit("mydb:main", &new_ref, 3)
+            .await
+            .unwrap();
         assert_eq!(result, CasResult::Updated);
 
-        let current = ns.get_ref("mydb:main", RefKind::CommitHead).await.unwrap().unwrap();
+        let current = ns
+            .get_ref("mydb:main", RefKind::CommitHead)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(current.t, 5);
     }
 
     #[tokio::test]
     async fn test_file_ref_fast_forward_rejected_stale() {
         let (_dir, ns) = setup().await;
-        ns.publish_commit("mydb:main", "commit-1", 10).await.unwrap();
+        ns.publish_commit("mydb:main", "commit-1", 10)
+            .await
+            .unwrap();
 
         let new_ref = RefValue {
             address: Some("old".to_string()),
             t: 5,
         };
-        let result = ns.fast_forward_commit("mydb:main", &new_ref, 3).await.unwrap();
+        let result = ns
+            .fast_forward_commit("mydb:main", &new_ref, 3)
+            .await
+            .unwrap();
         match result {
             CasResult::Conflict { actual } => {
                 assert_eq!(actual.unwrap().t, 10);
@@ -2847,7 +2901,11 @@ mod tests {
         ns.publish_commit("mydb:main", "commit-1", 5).await.unwrap();
         ns.publish_index("mydb:main", "index-1", 3).await.unwrap();
 
-        let index = ns.get_ref("mydb:main", RefKind::IndexHead).await.unwrap().unwrap();
+        let index = ns
+            .get_ref("mydb:main", RefKind::IndexHead)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(index.address, Some("index-1".to_string()));
         assert_eq!(index.t, 3);
     }
@@ -2932,7 +2990,10 @@ mod tests {
 
         // Verify status_v was incremented and state changed to "retracted"
         let after_retract = ns.get_status("mydb:main").await.unwrap().unwrap();
-        assert_eq!(after_retract.v, 2, "status_v should be incremented on retract");
+        assert_eq!(
+            after_retract.v, 2,
+            "status_v should be incremented on retract"
+        );
         assert_eq!(after_retract.payload.state, "retracted");
     }
 

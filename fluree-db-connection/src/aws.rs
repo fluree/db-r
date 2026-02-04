@@ -217,14 +217,20 @@ impl std::fmt::Debug for AwsNameService {
 
 #[async_trait]
 impl NameService for AwsNameService {
-    async fn lookup(&self, ledger_address: &str) -> std::result::Result<Option<NsRecord>, NameServiceError> {
+    async fn lookup(
+        &self,
+        ledger_address: &str,
+    ) -> std::result::Result<Option<NsRecord>, NameServiceError> {
         match self {
             Self::DynamoDb(ns) => ns.lookup(ledger_address).await,
             Self::Storage(ns) => ns.lookup(ledger_address).await,
         }
     }
 
-    async fn alias(&self, ledger_address: &str) -> std::result::Result<Option<String>, NameServiceError> {
+    async fn alias(
+        &self,
+        ledger_address: &str,
+    ) -> std::result::Result<Option<String>, NameServiceError> {
         match self {
             Self::DynamoDb(ns) => ns.alias(ledger_address).await,
             Self::Storage(ns) => ns.alias(ledger_address).await,
@@ -248,14 +254,24 @@ impl Publisher for AwsNameService {
         }
     }
 
-    async fn publish_commit(&self, alias: &str, commit_addr: &str, commit_t: i64) -> std::result::Result<(), NameServiceError> {
+    async fn publish_commit(
+        &self,
+        alias: &str,
+        commit_addr: &str,
+        commit_t: i64,
+    ) -> std::result::Result<(), NameServiceError> {
         match self {
             Self::DynamoDb(ns) => ns.publish_commit(alias, commit_addr, commit_t).await,
             Self::Storage(ns) => ns.publish_commit(alias, commit_addr, commit_t).await,
         }
     }
 
-    async fn publish_index(&self, alias: &str, index_addr: &str, index_t: i64) -> std::result::Result<(), NameServiceError> {
+    async fn publish_index(
+        &self,
+        alias: &str,
+        index_addr: &str,
+        index_t: i64,
+    ) -> std::result::Result<(), NameServiceError> {
         match self {
             Self::DynamoDb(ns) => ns.publish_index(alias, index_addr, index_t).await,
             Self::Storage(ns) => ns.publish_index(alias, index_addr, index_t).await,
@@ -437,12 +453,7 @@ impl AwsConnectionHandle {
     /// Publish a new index to the nameservice
     ///
     /// This is typically called by the indexer after successfully writing new index roots.
-    pub async fn publish_index(
-        &self,
-        alias: &str,
-        index_addr: &str,
-        index_t: i64,
-    ) -> Result<()> {
+    pub async fn publish_index(&self, alias: &str, index_addr: &str, index_t: i64) -> Result<()> {
         self.nameservice
             .publish_index(alias, index_addr, index_t)
             .await
@@ -521,7 +532,10 @@ pub async fn connect_aws(config: AwsConfig) -> Result<AwsConnectionHandle> {
             let ns = DynamoDbNameService::new(sdk_config, dynamo_config.into())
                 .await
                 .map_err(|e| {
-                    ConnectionError::storage(format!("Failed to create DynamoDB nameservice: {}", e))
+                    ConnectionError::storage(format!(
+                        "Failed to create DynamoDB nameservice: {}",
+                        e
+                    ))
                 })?;
             AwsNameService::DynamoDb(Arc::new(ns))
         }

@@ -238,12 +238,10 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
         // positions when the var is in left schema (they have bind_instructions)
         let bound_vars: std::collections::HashSet<VarId> = bind_instructions
             .iter()
-            .filter_map(|instr| {
-                match instr.position {
-                    PatternPosition::Subject => right_pattern.s.as_var(),
-                    PatternPosition::Predicate => right_pattern.p.as_var(),
-                    PatternPosition::Object => right_pattern.o.as_var(),
-                }
+            .filter_map(|instr| match instr.position {
+                PatternPosition::Subject => right_pattern.s.as_var(),
+                PatternPosition::Predicate => right_pattern.p.as_var(),
+                PatternPosition::Object => right_pattern.o.as_var(),
             })
             .collect();
 
@@ -268,7 +266,8 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
             }
         }
 
-        let batched_eligible = is_batched_eligible(&bind_instructions, &right_pattern, &object_bounds);
+        let batched_eligible =
+            is_batched_eligible(&bind_instructions, &right_pattern, &object_bounds);
         let subject_left_col = if batched_eligible {
             bind_instructions
                 .iter()
@@ -314,9 +313,9 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
     /// If a left binding is Poisoned, the right pattern cannot match,
     /// so we should skip this left row entirely (produces no results).
     fn has_poisoned_binding(&self, left_batch: &Batch, row: usize) -> bool {
-        self.bind_instructions.iter().any(|instr| {
-            left_batch.get_by_col(row, instr.left_col).is_poisoned()
-        })
+        self.bind_instructions
+            .iter()
+            .any(|instr| left_batch.get_by_col(row, instr.left_col).is_poisoned())
     }
 
     /// Check for invalid binding types on subject/predicate positions.
@@ -424,7 +423,13 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
     ///
     /// Uses `eq_for_join()` for same-ledger SID optimization when comparing
     /// `IriMatch` bindings from the same ledger.
-    fn unify_check(&self, left_batch: &Batch, left_row: usize, right_batch: &Batch, right_row: usize) -> bool {
+    fn unify_check(
+        &self,
+        left_batch: &Batch,
+        left_row: usize,
+        right_batch: &Batch,
+        right_row: usize,
+    ) -> bool {
         self.unify_instructions.iter().all(|instr| {
             let left_val = left_batch.get_by_col(left_row, instr.left_col);
             let right_val = right_batch.get_by_col(right_row, instr.right_col);
@@ -433,7 +438,13 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
     }
 
     /// Combine left row with right row into output row
-    fn combine_rows(&self, left_batch: &Batch, left_row: usize, right_batch: &Batch, right_row: usize) -> Vec<Binding> {
+    fn combine_rows(
+        &self,
+        left_batch: &Batch,
+        left_row: usize,
+        right_batch: &Batch,
+        right_row: usize,
+    ) -> Vec<Binding> {
         let right_schema = right_batch.schema();
 
         // Chain left columns with new right columns (skip shared vars already in left)
@@ -569,13 +580,19 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for NestedLoop
                     let left_batch = self.stored_left_batches.last().unwrap();
                     let bound_pattern = self.substitute_pattern(left_batch, left_row);
                     let mut right_scan = match &self.object_bounds {
-                        Some(bounds) => ScanOperator::new(bound_pattern).with_object_bounds(bounds.clone()),
+                        Some(bounds) => {
+                            ScanOperator::new(bound_pattern).with_object_bounds(bounds.clone())
+                        }
                         None => ScanOperator::new(bound_pattern),
                     };
                     right_scan.open(ctx).await?;
                     while let Some(right_batch) = right_scan.next_batch(ctx).await? {
                         if !right_batch.is_empty() {
-                            self.pending_output.push_back((batch_ref.clone(), left_row, right_batch));
+                            self.pending_output.push_back((
+                                batch_ref.clone(),
+                                left_row,
+                                right_batch,
+                            ));
                         }
                     }
                     <ScanOperator as Operator<S, C>>::close(&mut right_scan);
@@ -585,13 +602,16 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for NestedLoop
                 let left_batch = self.current_left_batch.as_ref().unwrap();
                 let bound_pattern = self.substitute_pattern(left_batch, left_row);
                 let mut right_scan = match &self.object_bounds {
-                    Some(bounds) => ScanOperator::new(bound_pattern).with_object_bounds(bounds.clone()),
+                    Some(bounds) => {
+                        ScanOperator::new(bound_pattern).with_object_bounds(bounds.clone())
+                    }
                     None => ScanOperator::new(bound_pattern),
                 };
                 right_scan.open(ctx).await?;
                 while let Some(right_batch) = right_scan.next_batch(ctx).await? {
                     if !right_batch.is_empty() {
-                        self.pending_output.push_back((BatchRef::Current, left_row, right_batch));
+                        self.pending_output
+                            .push_back((BatchRef::Current, left_row, right_batch));
                     }
                 }
                 <ScanOperator as Operator<S, C>>::close(&mut right_scan);
@@ -626,7 +646,10 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
     }
 
     /// Build output batch from pending results
-    async fn build_output_batch(&mut self, ctx: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+    async fn build_output_batch(
+        &mut self,
+        ctx: &ExecutionContext<'_, S, C>,
+    ) -> Result<Option<Batch>> {
         let batch_size = ctx.batch_size;
         let mut output_columns: Vec<Vec<Binding>> = (0..self.combined_schema.len())
             .map(|_| Vec::with_capacity(batch_size))
@@ -706,9 +729,16 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
         ctx: &ExecutionContext<'_, S, C>,
     ) -> Result<()> {
         match ctx.active_graphs() {
-            ActiveGraphs::Single => self
-                .flush_batched_accumulator(ctx, ctx.db, ctx.overlay(), ctx.to_t, ctx.policy_enforcer.as_deref())
-                .await,
+            ActiveGraphs::Single => {
+                self.flush_batched_accumulator(
+                    ctx,
+                    ctx.db,
+                    ctx.overlay(),
+                    ctx.to_t,
+                    ctx.policy_enforcer.as_deref(),
+                )
+                .await
+            }
             ActiveGraphs::Many(graphs) if graphs.len() == 1 => {
                 let graph = graphs[0];
                 // Prefer graph-level policy enforcer over ctx-level
@@ -814,8 +844,12 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
 
             for flake in &flakes {
                 // Convert flake object to binding
-                let obj_binding =
-                    Binding::from_object_with_t(flake.o.clone(), flake.dt.clone(), flake.m.clone(), flake.t);
+                let obj_binding = Binding::from_object_with_t(
+                    flake.o.clone(),
+                    flake.dt.clone(),
+                    flake.m.clone(),
+                    flake.t,
+                );
 
                 // For each left row mapped to this SID
                 for &accum_idx in accum_indices {
@@ -861,8 +895,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> NestedLoopJoinOperator<S, C> 
                         self.batched_output
                             .push_back(Batch::empty_schema_with_len(rows_added));
                     } else {
-                        let batch =
-                            Batch::new(self.combined_schema.clone(), output_columns)?;
+                        let batch = Batch::new(self.combined_schema.clone(), output_columns)?;
                         self.batched_output.push_back(batch);
                     }
                     output_columns = (0..num_cols)
@@ -905,9 +938,9 @@ mod tests {
 
         // Right pattern: ?s :age ?age (shares ?s with left)
         let _right_pattern = TriplePattern::new(
-            Term::Var(VarId(0)),          // ?s - shared
+            Term::Var(VarId(0)), // ?s - shared
             Term::Sid(Sid::new(100, "age")),
-            Term::Var(VarId(2)),          // ?age - new
+            Term::Var(VarId(2)), // ?age - new
         );
 
         // Create a mock left operator - we'll use this pattern to test bind instructions
@@ -931,9 +964,9 @@ mod tests {
 
         let left_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let right_pattern = TriplePattern::new(
-            Term::Var(VarId(0)),          // ?s - shared
+            Term::Var(VarId(0)), // ?s - shared
             Term::Sid(Sid::new(100, "name")),
-            Term::Var(VarId(1)),          // ?name - new
+            Term::Var(VarId(1)), // ?name - new
         );
 
         let left_var_positions: std::collections::HashMap<VarId, usize> = left_schema
@@ -967,9 +1000,9 @@ mod tests {
 
         let left_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
         let right_pattern = TriplePattern::new(
-            Term::Var(VarId(0)),          // ?s at right position 0
+            Term::Var(VarId(0)), // ?s at right position 0
             Term::Sid(Sid::new(100, "age")),
-            Term::Var(VarId(2)),          // ?age at right position 1
+            Term::Var(VarId(2)), // ?age at right position 1
         );
 
         let left_var_positions: std::collections::HashMap<VarId, usize> = left_schema
@@ -994,7 +1027,7 @@ mod tests {
 
         // Should have one unify instruction for ?s
         assert_eq!(unify_instructions.len(), 1);
-        assert_eq!(unify_instructions[0].left_col, 0);  // ?s is col 0 in left
+        assert_eq!(unify_instructions[0].left_col, 0); // ?s is col 0 in left
         assert_eq!(unify_instructions[0].right_col, 0); // ?s is col 0 in right pattern output
     }
 
@@ -1022,7 +1055,10 @@ mod tests {
             async fn open(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(&mut self, _: &ExecutionContext<'_, S, C>) -> Result<Option<Batch>> {
+            async fn next_batch(
+                &mut self,
+                _: &ExecutionContext<'_, S, C>,
+            ) -> Result<Option<Batch>> {
                 Ok(None)
             }
             fn close(&mut self) {}
@@ -1038,7 +1074,10 @@ mod tests {
         // Create a batch with one row that has Poisoned in position 0 (used for binding)
         let columns_poisoned = vec![
             vec![Binding::Poisoned],
-            vec![Binding::lit(FlakeValue::String("Alice".to_string()), Sid::new(2, "string"))],
+            vec![Binding::lit(
+                FlakeValue::String("Alice".to_string()),
+                Sid::new(2, "string"),
+            )],
         ];
         let batch_poisoned = Batch::new(left_schema.clone(), columns_poisoned).unwrap();
 
@@ -1048,7 +1087,10 @@ mod tests {
         // Create a batch with one row that has NO Poisoned bindings
         let columns_normal = vec![
             vec![Binding::Sid(Sid::new(1, "alice"))],
-            vec![Binding::lit(FlakeValue::String("Alice".to_string()), Sid::new(2, "string"))],
+            vec![Binding::lit(
+                FlakeValue::String("Alice".to_string()),
+                Sid::new(2, "string"),
+            )],
         ];
         let batch_normal = Batch::new(left_schema.clone(), columns_normal).unwrap();
 
@@ -1090,11 +1132,8 @@ mod tests {
         // Left schema: [?v]
         let left_schema: Arc<[VarId]> = Arc::from(vec![v].into_boxed_slice());
         // Right pattern: ?x p ?v (shared ?v at Object position)
-        let right_pattern = TriplePattern::new(
-            Term::Var(x),
-            Term::Sid(Sid::new(100, "p")),
-            Term::Var(v),
-        );
+        let right_pattern =
+            TriplePattern::new(Term::Var(x), Term::Sid(Sid::new(100, "p")), Term::Var(v));
 
         // Mock left operator (unused; we inject batches directly into join state).
         struct MockOp;
@@ -1142,16 +1181,23 @@ mod tests {
         let right_schema: Arc<[VarId]> = Arc::from(vec![x].into_boxed_slice());
         let right_batch = Batch::new(
             right_schema,
-            vec![vec![Binding::lit(FlakeValue::Long(10), Sid::new(2, "long"))]],
+            vec![vec![Binding::lit(
+                FlakeValue::Long(10),
+                Sid::new(2, "long"),
+            )]],
         )
         .unwrap();
 
         join.current_left_batch = Some(left_batch);
-        join.pending_output.push_back((BatchRef::Current, 0, right_batch));
+        join.pending_output
+            .push_back((BatchRef::Current, 0, right_batch));
 
         // Should produce output since no unification check is needed
         let out = join.build_output_batch(&ctx).await.unwrap();
-        assert!(out.is_some(), "Expected output when var is substituted (no unification)");
+        assert!(
+            out.is_some(),
+            "Expected output when var is substituted (no unification)"
+        );
         let batch = out.unwrap();
         assert_eq!(batch.len(), 1);
         // Output schema is [?v, ?x] (left vars + new right vars)
@@ -1193,11 +1239,8 @@ mod tests {
         let left_schema: Arc<[VarId]> = Arc::from(vec![s].into_boxed_slice());
         // Right pattern: ?s p ?x with separate object ?y
         // Actually let's test: ?x p ?y where neither is in left schema
-        let right_pattern = TriplePattern::new(
-            Term::Var(x),
-            Term::Sid(Sid::new(100, "p")),
-            Term::Var(y),
-        );
+        let right_pattern =
+            TriplePattern::new(Term::Var(x), Term::Sid(Sid::new(100, "p")), Term::Var(y));
 
         struct MockOp;
         #[async_trait]
@@ -1248,7 +1291,8 @@ mod tests {
         .unwrap();
 
         join.current_left_batch = Some(left_batch);
-        join.pending_output.push_back((BatchRef::Current, 0, right_batch));
+        join.pending_output
+            .push_back((BatchRef::Current, 0, right_batch));
 
         let out = join
             .build_output_batch(&ctx)

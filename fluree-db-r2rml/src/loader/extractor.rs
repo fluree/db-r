@@ -31,10 +31,7 @@ impl<'a> MappingExtractor<'a> {
                 by_subject.entry(subj).or_default().push(triple);
             } else if let Some(blank) = triple.s.as_blank() {
                 // Use blank node's ntriples form as key
-                by_subject
-                    .entry(blank.as_str())
-                    .or_default()
-                    .push(triple);
+                by_subject.entry(blank.as_str()).or_default().push(triple);
             }
         }
 
@@ -116,12 +113,12 @@ impl<'a> MappingExtractor<'a> {
     fn extract_subject_map(&self, triples: &[&Triple]) -> R2rmlResult<SubjectMap> {
         // Check for shorthand rr:subject first
         if let Some(subject_obj) = self.find_object_optional(triples, R2RML::SUBJECT) {
-            let iri = self.term_to_iri(&subject_obj).ok_or_else(|| {
-                R2rmlError::InvalidValue {
+            let iri = self
+                .term_to_iri(&subject_obj)
+                .ok_or_else(|| R2rmlError::InvalidValue {
                     property: "rr:subject".to_string(),
                     message: "expected IRI".to_string(),
-                }
-            })?;
+                })?;
             return Ok(SubjectMap::constant(iri));
         }
 
@@ -134,8 +131,7 @@ impl<'a> MappingExtractor<'a> {
         // Extract rr:template
         if let Some(template_obj) = self.find_object_optional(&sm_triples, R2RML::TEMPLATE) {
             if let Some(template) = self.term_to_string(&template_obj) {
-                subject_map.template_columns =
-                    crate::mapping::extract_template_columns(&template);
+                subject_map.template_columns = crate::mapping::extract_template_columns(&template);
                 subject_map.template = Some(template);
             }
         }
@@ -174,7 +170,10 @@ impl<'a> MappingExtractor<'a> {
     }
 
     /// Extract all predicate-object maps from a TriplesMap
-    fn extract_predicate_object_maps(&self, triples: &[&Triple]) -> R2rmlResult<Vec<PredicateObjectMap>> {
+    fn extract_predicate_object_maps(
+        &self,
+        triples: &[&Triple],
+    ) -> R2rmlResult<Vec<PredicateObjectMap>> {
         let mut poms = Vec::new();
 
         for pom_obj in self.find_objects(triples, R2RML::PREDICATE_OBJECT_MAP) {
@@ -205,12 +204,12 @@ impl<'a> MappingExtractor<'a> {
     fn extract_predicate_map(&self, triples: &[&Triple]) -> R2rmlResult<PredicateMap> {
         // Check for shorthand rr:predicate first
         if let Some(pred_obj) = self.find_object_optional(triples, R2RML::PREDICATE) {
-            let iri = self.term_to_iri(&pred_obj).ok_or_else(|| {
-                R2rmlError::InvalidValue {
+            let iri = self
+                .term_to_iri(&pred_obj)
+                .ok_or_else(|| R2rmlError::InvalidValue {
                     property: "rr:predicate".to_string(),
                     message: "expected IRI".to_string(),
-                }
-            })?;
+                })?;
             return Ok(PredicateMap::Constant(iri));
         }
 
@@ -228,8 +227,7 @@ impl<'a> MappingExtractor<'a> {
             // Check for rr:template
             if let Some(template_obj) = self.find_object_optional(&pm_triples, R2RML::TEMPLATE) {
                 if let Some(template) = self.term_to_string(&template_obj) {
-                    let columns =
-                        crate::mapping::extract_template_columns(&template);
+                    let columns = crate::mapping::extract_template_columns(&template);
                     return Ok(PredicateMap::Template { template, columns });
                 }
             }
@@ -261,12 +259,12 @@ impl<'a> MappingExtractor<'a> {
         // Check for rr:parentTriplesMap (RefObjectMap)
         if let Some(parent_obj) = self.find_object_optional(&om_triples, R2RML::PARENT_TRIPLES_MAP)
         {
-            let parent_iri = self.term_to_iri(&parent_obj).ok_or_else(|| {
-                R2rmlError::InvalidValue {
-                    property: "rr:parentTriplesMap".to_string(),
-                    message: "expected IRI".to_string(),
-                }
-            })?;
+            let parent_iri =
+                self.term_to_iri(&parent_obj)
+                    .ok_or_else(|| R2rmlError::InvalidValue {
+                        property: "rr:parentTriplesMap".to_string(),
+                        message: "expected IRI".to_string(),
+                    })?;
 
             let mut join_conditions = self.extract_join_conditions(&om_triples)?;
 
@@ -280,7 +278,9 @@ impl<'a> MappingExtractor<'a> {
             }
 
             // Sort for stable ordering (graph iteration order is not guaranteed)
-            join_conditions.sort_by(|a, b| (&a.child_column, &a.parent_column).cmp(&(&b.child_column, &b.parent_column)));
+            join_conditions.sort_by(|a, b| {
+                (&a.child_column, &a.parent_column).cmp(&(&b.child_column, &b.parent_column))
+            });
 
             return Ok(ObjectMap::RefObjectMap(RefObjectMap::with_conditions(
                 parent_iri,
@@ -347,12 +347,16 @@ impl<'a> MappingExtractor<'a> {
             let child = self
                 .find_object_optional(&jc_triples, R2RML::CHILD)
                 .and_then(|t| self.term_to_string(&t))
-                .ok_or_else(|| R2rmlError::MissingProperty("rr:child in join condition".to_string()))?;
+                .ok_or_else(|| {
+                    R2rmlError::MissingProperty("rr:child in join condition".to_string())
+                })?;
 
             let parent = self
                 .find_object_optional(&jc_triples, R2RML::PARENT)
                 .and_then(|t| self.term_to_string(&t))
-                .ok_or_else(|| R2rmlError::MissingProperty("rr:parent in join condition".to_string()))?;
+                .ok_or_else(|| {
+                    R2rmlError::MissingProperty("rr:parent in join condition".to_string())
+                })?;
 
             conditions.push(JoinCondition::new(child, parent));
         }
@@ -532,7 +536,10 @@ mod tests {
         let pom = &tm.predicate_object_maps[0];
 
         if let ObjectMap::RefObjectMap(ref_map) = &pom.object_map {
-            assert_eq!(ref_map.parent_triples_map, "http://example.org/mapping#AirlineMapping");
+            assert_eq!(
+                ref_map.parent_triples_map,
+                "http://example.org/mapping#AirlineMapping"
+            );
             assert_eq!(ref_map.join_conditions.len(), 1);
             assert_eq!(ref_map.join_conditions[0].child_column, "airline_id");
             assert_eq!(ref_map.join_conditions[0].parent_column, "id");
@@ -566,7 +573,8 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            err.to_string().contains("requires at least one rr:joinCondition"),
+            err.to_string()
+                .contains("requires at least one rr:joinCondition"),
             "Expected error about missing join condition, got: {}",
             err
         );
@@ -639,8 +647,14 @@ mod tests {
 
         let tm = &triples_maps[0];
         assert_eq!(tm.subject_map.classes.len(), 2);
-        assert!(tm.subject_map.classes.contains(&"http://example.org/Person".to_string()));
-        assert!(tm.subject_map.classes.contains(&"http://example.org/Agent".to_string()));
+        assert!(tm
+            .subject_map
+            .classes
+            .contains(&"http://example.org/Person".to_string()));
+        assert!(tm
+            .subject_map
+            .classes
+            .contains(&"http://example.org/Agent".to_string()));
     }
 
     #[test]

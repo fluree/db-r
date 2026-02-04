@@ -26,17 +26,19 @@ use crate::ir::{ArithmeticOp, CompareOp, FilterExpr, FilterValue, FunctionName};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
+use bigdecimal::BigDecimal;
 use chrono::{
     DateTime, Datelike, FixedOffset, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone, Timelike,
     Utc,
 };
-use rand::random;
+use fluree_db_core::temporal::{
+    Date as FlureeDate, DateTime as FlureeDateTime, Time as FlureeTime,
+};
 use fluree_db_core::{FlakeValue, NodeCache, Storage};
-use fluree_db_core::temporal::{DateTime as FlureeDateTime, Date as FlureeDate, Time as FlureeTime};
-use num_bigint::BigInt;
-use bigdecimal::BigDecimal;
 use md5::{Digest as Md5Digest, Md5};
+use num_bigint::BigInt;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use rand::random;
 use regex::RegexBuilder;
 use sha1::Sha1;
 use sha2::{Sha256, Sha384, Sha512};
@@ -116,7 +118,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for FilterOper
                 };
                 match evaluate(&self.expr, &row) {
                     Ok(true) => keep_indices.push(row_idx),
-                    Ok(false) => {} // Filter out
+                    Ok(false) => {}          // Filter out
                     Err(e) => return Err(e), // Propagate error
                 }
             }
@@ -164,7 +166,9 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for FilterOper
 pub fn evaluate_to_binding(expr: &FilterExpr, row: &RowView) -> Binding {
     // Use MemoryStorage as a placeholder type since ctx is None
     // The generic types don't matter when ctx is None - they're only used for IRI encoding
-    evaluate_to_binding_with_context::<fluree_db_core::MemoryStorage, fluree_db_core::NoCache>(expr, row, None)
+    evaluate_to_binding_with_context::<fluree_db_core::MemoryStorage, fluree_db_core::NoCache>(
+        expr, row, None,
+    )
 }
 
 pub fn evaluate_to_binding_with_context<S: Storage, C: NodeCache>(
@@ -203,7 +207,10 @@ pub fn evaluate_to_binding_with_context_strict<S: Storage, C: NodeCache>(
 
 fn has_unbound_vars(expr: &FilterExpr, row: &RowView) -> bool {
     expr.variables().into_iter().any(|var| {
-        matches!(row.get(var), None | Some(Binding::Unbound) | Some(Binding::Poisoned))
+        matches!(
+            row.get(var),
+            None | Some(Binding::Unbound) | Some(Binding::Poisoned)
+        )
     })
 }
 
@@ -402,15 +409,12 @@ impl ComparableValue {
             ComparableValue::Decimal(d) => {
                 Ok(Binding::lit(FlakeValue::Decimal(d), datatypes.xsd_decimal))
             }
-            ComparableValue::DateTime(dt) => {
-                Ok(Binding::lit(FlakeValue::DateTime(dt), datatypes.xsd_datetime))
-            }
-            ComparableValue::Date(d) => {
-                Ok(Binding::lit(FlakeValue::Date(d), datatypes.xsd_date))
-            }
-            ComparableValue::Time(t) => {
-                Ok(Binding::lit(FlakeValue::Time(t), datatypes.xsd_time))
-            }
+            ComparableValue::DateTime(dt) => Ok(Binding::lit(
+                FlakeValue::DateTime(dt),
+                datatypes.xsd_datetime,
+            )),
+            ComparableValue::Date(d) => Ok(Binding::lit(FlakeValue::Date(d), datatypes.xsd_date)),
+            ComparableValue::Time(t) => Ok(Binding::lit(FlakeValue::Time(t), datatypes.xsd_time)),
             ComparableValue::Iri(iri) => {
                 let Some(ctx) = ctx else {
                     return Err(QueryError::InvalidFilter(
@@ -533,21 +537,25 @@ fn eval_to_comparable(expr: &FilterExpr, row: &RowView) -> Result<Option<Compara
             }
         }
 
-        FilterExpr::Negate(inner) => {
-            match eval_to_comparable(inner, row)? {
-                Some(ComparableValue::Long(n)) => Ok(Some(ComparableValue::Long(-n))),
-                Some(ComparableValue::Double(d)) => Ok(Some(ComparableValue::Double(-d))),
-                Some(ComparableValue::BigInt(n)) => Ok(Some(ComparableValue::BigInt(Box::new(-(*n))))),
-                Some(ComparableValue::Decimal(d)) => Ok(Some(ComparableValue::Decimal(Box::new(-(*d))))),
-                _ => Ok(None),
+        FilterExpr::Negate(inner) => match eval_to_comparable(inner, row)? {
+            Some(ComparableValue::Long(n)) => Ok(Some(ComparableValue::Long(-n))),
+            Some(ComparableValue::Double(d)) => Ok(Some(ComparableValue::Double(-d))),
+            Some(ComparableValue::BigInt(n)) => Ok(Some(ComparableValue::BigInt(Box::new(-(*n))))),
+            Some(ComparableValue::Decimal(d)) => {
+                Ok(Some(ComparableValue::Decimal(Box::new(-(*d)))))
             }
-        }
+            _ => Ok(None),
+        },
 
         FilterExpr::And(_) | FilterExpr::Or(_) | FilterExpr::Not(_) => {
             Ok(Some(ComparableValue::Bool(evaluate(expr, row)?)))
         }
 
-        FilterExpr::If { condition, then_expr, else_expr } => {
+        FilterExpr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
             let cond = evaluate(condition, row)?;
             if cond {
                 eval_to_comparable(then_expr, row)
@@ -569,7 +577,11 @@ fn eval_to_comparable(expr: &FilterExpr, row: &RowView) -> Result<Option<Compara
 }
 
 /// Evaluate arithmetic operation on two comparable values
-fn eval_arithmetic(op: ArithmeticOp, left: ComparableValue, right: ComparableValue) -> Option<ComparableValue> {
+fn eval_arithmetic(
+    op: ArithmeticOp,
+    left: ComparableValue,
+    right: ComparableValue,
+) -> Option<ComparableValue> {
     use num_traits::Zero;
 
     match (left, right) {
@@ -635,51 +647,79 @@ fn eval_arithmetic(op: ArithmeticOp, left: ComparableValue, right: ComparableVal
         }
         // Mixed numeric types -> promote to higher precision
         // Long <-> Double -> Double
-        (ComparableValue::Long(a), ComparableValue::Double(b)) => {
-            eval_arithmetic(op, ComparableValue::Double(a as f64), ComparableValue::Double(b))
-        }
-        (ComparableValue::Double(a), ComparableValue::Long(b)) => {
-            eval_arithmetic(op, ComparableValue::Double(a), ComparableValue::Double(b as f64))
-        }
+        (ComparableValue::Long(a), ComparableValue::Double(b)) => eval_arithmetic(
+            op,
+            ComparableValue::Double(a as f64),
+            ComparableValue::Double(b),
+        ),
+        (ComparableValue::Double(a), ComparableValue::Long(b)) => eval_arithmetic(
+            op,
+            ComparableValue::Double(a),
+            ComparableValue::Double(b as f64),
+        ),
         // Long <-> BigInt -> BigInt
-        (ComparableValue::Long(a), ComparableValue::BigInt(b)) => {
-            eval_arithmetic(op, ComparableValue::BigInt(Box::new(BigInt::from(a))), ComparableValue::BigInt(b))
-        }
-        (ComparableValue::BigInt(a), ComparableValue::Long(b)) => {
-            eval_arithmetic(op, ComparableValue::BigInt(a), ComparableValue::BigInt(Box::new(BigInt::from(b))))
-        }
+        (ComparableValue::Long(a), ComparableValue::BigInt(b)) => eval_arithmetic(
+            op,
+            ComparableValue::BigInt(Box::new(BigInt::from(a))),
+            ComparableValue::BigInt(b),
+        ),
+        (ComparableValue::BigInt(a), ComparableValue::Long(b)) => eval_arithmetic(
+            op,
+            ComparableValue::BigInt(a),
+            ComparableValue::BigInt(Box::new(BigInt::from(b))),
+        ),
         // Long <-> Decimal -> Decimal
-        (ComparableValue::Long(a), ComparableValue::Decimal(b)) => {
-            eval_arithmetic(op, ComparableValue::Decimal(Box::new(BigDecimal::from(a))), ComparableValue::Decimal(b))
-        }
-        (ComparableValue::Decimal(a), ComparableValue::Long(b)) => {
-            eval_arithmetic(op, ComparableValue::Decimal(a), ComparableValue::Decimal(Box::new(BigDecimal::from(b))))
-        }
+        (ComparableValue::Long(a), ComparableValue::Decimal(b)) => eval_arithmetic(
+            op,
+            ComparableValue::Decimal(Box::new(BigDecimal::from(a))),
+            ComparableValue::Decimal(b),
+        ),
+        (ComparableValue::Decimal(a), ComparableValue::Long(b)) => eval_arithmetic(
+            op,
+            ComparableValue::Decimal(a),
+            ComparableValue::Decimal(Box::new(BigDecimal::from(b))),
+        ),
         // BigInt <-> Decimal -> Decimal
-        (ComparableValue::BigInt(a), ComparableValue::Decimal(b)) => {
-            eval_arithmetic(op, ComparableValue::Decimal(Box::new(BigDecimal::from((*a).clone()))), ComparableValue::Decimal(b))
-        }
-        (ComparableValue::Decimal(a), ComparableValue::BigInt(b)) => {
-            eval_arithmetic(op, ComparableValue::Decimal(a), ComparableValue::Decimal(Box::new(BigDecimal::from((*b).clone()))))
-        }
+        (ComparableValue::BigInt(a), ComparableValue::Decimal(b)) => eval_arithmetic(
+            op,
+            ComparableValue::Decimal(Box::new(BigDecimal::from((*a).clone()))),
+            ComparableValue::Decimal(b),
+        ),
+        (ComparableValue::Decimal(a), ComparableValue::BigInt(b)) => eval_arithmetic(
+            op,
+            ComparableValue::Decimal(a),
+            ComparableValue::Decimal(Box::new(BigDecimal::from((*b).clone()))),
+        ),
         // Double <-> BigInt -> Double (lossy)
         (ComparableValue::Double(a), ComparableValue::BigInt(b)) => {
             use num_traits::ToPrimitive;
-            b.to_f64().and_then(|bf| eval_arithmetic(op, ComparableValue::Double(a), ComparableValue::Double(bf)))
+            b.to_f64().and_then(|bf| {
+                eval_arithmetic(op, ComparableValue::Double(a), ComparableValue::Double(bf))
+            })
         }
         (ComparableValue::BigInt(a), ComparableValue::Double(b)) => {
             use num_traits::ToPrimitive;
-            a.to_f64().and_then(|af| eval_arithmetic(op, ComparableValue::Double(af), ComparableValue::Double(b)))
+            a.to_f64().and_then(|af| {
+                eval_arithmetic(op, ComparableValue::Double(af), ComparableValue::Double(b))
+            })
         }
         // Double <-> Decimal -> Decimal (if possible)
         (ComparableValue::Double(a), ComparableValue::Decimal(b)) => {
             BigDecimal::try_from(a).ok().and_then(|ad| {
-                eval_arithmetic(op, ComparableValue::Decimal(Box::new(ad)), ComparableValue::Decimal(b))
+                eval_arithmetic(
+                    op,
+                    ComparableValue::Decimal(Box::new(ad)),
+                    ComparableValue::Decimal(b),
+                )
             })
         }
         (ComparableValue::Decimal(a), ComparableValue::Double(b)) => {
             BigDecimal::try_from(b).ok().and_then(|bd| {
-                eval_arithmetic(op, ComparableValue::Decimal(a), ComparableValue::Decimal(Box::new(bd)))
+                eval_arithmetic(
+                    op,
+                    ComparableValue::Decimal(a),
+                    ComparableValue::Decimal(Box::new(bd)),
+                )
             })
         }
         // Non-numeric types can't do arithmetic
@@ -803,8 +843,9 @@ fn parse_datetime_from_binding(binding: &Binding) -> Option<DateTime<FixedOffset
     match binding {
         Binding::Lit { val, dt, .. } => {
             // Check datatype is datetime/date/time using known Sids (no IRI decoding)
-            let is_datetime_type =
-                *dt == datatypes.xsd_datetime || *dt == datatypes.xsd_date || *dt == datatypes.xsd_time;
+            let is_datetime_type = *dt == datatypes.xsd_datetime
+                || *dt == datatypes.xsd_date
+                || *dt == datatypes.xsd_time;
 
             if !is_datetime_type {
                 return None;
@@ -919,7 +960,9 @@ where
     check_arity(args, 1, fn_name)?;
     let val = eval_to_comparable(&args[0], row)?;
     match val {
-        Some(ComparableValue::String(s)) => Ok(Some(ComparableValue::String(Arc::from(transform(&s))))),
+        Some(ComparableValue::String(s)) => {
+            Ok(Some(ComparableValue::String(Arc::from(transform(&s)))))
+        }
         Some(other) => Err(QueryError::FunctionTypeMismatch {
             function: fn_name.to_string(),
             expected: "String".to_string(),
@@ -1051,10 +1094,7 @@ where
 }
 
 /// Evaluate a function that checks if the first argument is valid (truthy check)
-fn eval_truthy_if_arg_valid(
-    args: &[FilterExpr],
-    row: &RowView,
-) -> Result<bool> {
+fn eval_truthy_if_arg_valid(args: &[FilterExpr], row: &RowView) -> Result<bool> {
     if args.is_empty() {
         Ok(false)
     } else {
@@ -1081,7 +1121,11 @@ fn extract_vector_pair(
             if a.len() != b.len() {
                 Err(QueryError::FunctionTypeMismatch {
                     function: fn_name.to_string(),
-                    expected: format!("vectors of same dimension (got {} and {})", a.len(), b.len()),
+                    expected: format!(
+                        "vectors of same dimension (got {} and {})",
+                        a.len(),
+                        b.len()
+                    ),
                     actual: "vectors of different dimensions".to_string(),
                 })
             } else {
@@ -1163,9 +1207,13 @@ fn comparable_to_str_value(val: ComparableValue) -> Option<ComparableValue> {
         ComparableValue::Double(d) => Arc::from(d.to_string()),
         ComparableValue::Bool(b) => Arc::from(b.to_string()),
         ComparableValue::Sid(sid) => Arc::from(sid.name.as_ref()),
-        ComparableValue::Vector(v) => {
-            Arc::from(format!("[{}]", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ")))
-        }
+        ComparableValue::Vector(v) => Arc::from(format!(
+            "[{}]",
+            v.iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
         ComparableValue::BigInt(n) => Arc::from(n.to_string()),
         ComparableValue::Decimal(d) => Arc::from(d.to_string()),
         ComparableValue::DateTime(dt) => Arc::from(dt.to_string()),
@@ -1183,12 +1231,7 @@ fn comparable_to_str_value(val: ComparableValue) -> Option<ComparableValue> {
 }
 
 /// Evaluate a type-checking function (isIRI, isLiteral, isNumeric)
-fn eval_type_check<F>(
-    args: &[FilterExpr],
-    row: &RowView,
-    fn_name: &str,
-    check: F,
-) -> Result<bool>
+fn eval_type_check<F>(args: &[FilterExpr], row: &RowView, fn_name: &str, check: F) -> Result<bool>
 where
     F: Fn(&ComparableValue) -> bool,
 {
@@ -1246,8 +1289,12 @@ fn eval_function_to_value(
         }
 
         // String functions that return strings
-        FunctionName::Ucase => eval_unary_string_transform(args, row, "UCASE", |s| s.to_uppercase()),
-        FunctionName::Lcase => eval_unary_string_transform(args, row, "LCASE", |s| s.to_lowercase()),
+        FunctionName::Ucase => {
+            eval_unary_string_transform(args, row, "UCASE", |s| s.to_uppercase())
+        }
+        FunctionName::Lcase => {
+            eval_unary_string_transform(args, row, "LCASE", |s| s.to_lowercase())
+        }
 
         // Conditional functions
         FunctionName::If => {
@@ -1279,9 +1326,9 @@ fn eval_function_to_value(
         | FunctionName::Contains
         | FunctionName::StrStarts
         | FunctionName::StrEnds
-        | FunctionName::Regex => {
-            Ok(Some(ComparableValue::Bool(evaluate_function(name, args, row)?)))
-        }
+        | FunctionName::Regex => Ok(Some(ComparableValue::Bool(evaluate_function(
+            name, args, row,
+        )?))),
 
         // String functions - P7
         FunctionName::Concat => {
@@ -1302,7 +1349,12 @@ fn eval_function_to_value(
         }),
 
         FunctionName::StrAfter => eval_binary_string_fn(args, row, "STRAFTER", |s, d| {
-            Some(s.find(d).map(|pos| &s[pos + d.len()..]).unwrap_or("").to_string())
+            Some(
+                s.find(d)
+                    .map(|pos| &s[pos + d.len()..])
+                    .unwrap_or("")
+                    .to_string(),
+            )
         }),
 
         FunctionName::Replace => {
@@ -1348,9 +1400,8 @@ fn eval_function_to_value(
             // Return current timestamp with fractional seconds
             let now = Utc::now();
             let formatted = now.to_rfc3339_opts(SecondsFormat::Millis, true);
-            let parsed = FlureeDateTime::parse(&formatted).map_err(|e| {
-                QueryError::InvalidFilter(format!("now parse error: {}", e))
-            })?;
+            let parsed = FlureeDateTime::parse(&formatted)
+                .map_err(|e| QueryError::InvalidFilter(format!("now parse error: {}", e)))?;
             Ok(Some(ComparableValue::DateTime(Box::new(parsed))))
         }
 
@@ -1358,8 +1409,12 @@ fn eval_function_to_value(
         FunctionName::Month => eval_datetime_component(args, row, "MONTH", |dt| dt.month() as i64),
         FunctionName::Day => eval_datetime_component(args, row, "DAY", |dt| dt.day() as i64),
         FunctionName::Hours => eval_datetime_component(args, row, "HOURS", |dt| dt.hour() as i64),
-        FunctionName::Minutes => eval_datetime_component(args, row, "MINUTES", |dt| dt.minute() as i64),
-        FunctionName::Seconds => eval_datetime_component(args, row, "SECONDS", |dt| dt.second() as i64),
+        FunctionName::Minutes => {
+            eval_datetime_component(args, row, "MINUTES", |dt| dt.minute() as i64)
+        }
+        FunctionName::Seconds => {
+            eval_datetime_component(args, row, "SECONDS", |dt| dt.second() as i64)
+        }
 
         FunctionName::Tz => eval_var_metadata(args, row, "TZ", |binding| {
             parse_datetime_from_binding(binding).map(|dt| {
@@ -1436,7 +1491,11 @@ fn eval_function_to_value(
                 (Some(ComparableValue::String(s)), Some(ComparableValue::Long(start_1))) => {
                     // SPARQL uses 1-based indexing, convert to 0-based
                     // Handle negative/zero start: clamp to 1
-                    let start_0 = if *start_1 < 1 { 0 } else { (*start_1 - 1) as usize };
+                    let start_0 = if *start_1 < 1 {
+                        0
+                    } else {
+                        (*start_1 - 1) as usize
+                    };
 
                     // Handle start beyond string length
                     if start_0 >= s.len() {
@@ -1450,12 +1509,14 @@ fn eval_function_to_value(
                             &s[start_0..end]
                         }
                         Some(ComparableValue::Long(_)) => "", // Non-positive length
-                        None => &s[start_0..], // No length = rest of string
-                        Some(other) => return Err(QueryError::FunctionTypeMismatch {
-                            function: "SUBSTR".to_string(),
-                            expected: "Long (length)".to_string(),
-                            actual: other.type_name().to_string(),
-                        }),
+                        None => &s[start_0..],                // No length = rest of string
+                        Some(other) => {
+                            return Err(QueryError::FunctionTypeMismatch {
+                                function: "SUBSTR".to_string(),
+                                expected: "Long (length)".to_string(),
+                                actual: other.type_name().to_string(),
+                            })
+                        }
                     };
                     Ok(Some(ComparableValue::String(Arc::from(result))))
                 }
@@ -1706,9 +1767,15 @@ fn evaluate_function(name: &FunctionName, args: &[FilterExpr], row: &RowView) ->
             Ok(false)
         }
 
-        FunctionName::Contains => eval_binary_string_pred(args, row, "CONTAINS", |h, n| h.contains(n)),
-        FunctionName::StrStarts => eval_binary_string_pred(args, row, "STRSTARTS", |h, p| h.starts_with(p)),
-        FunctionName::StrEnds => eval_binary_string_pred(args, row, "STRENDS", |h, s| h.ends_with(s)),
+        FunctionName::Contains => {
+            eval_binary_string_pred(args, row, "CONTAINS", |h, n| h.contains(n))
+        }
+        FunctionName::StrStarts => {
+            eval_binary_string_pred(args, row, "STRSTARTS", |h, p| h.starts_with(p))
+        }
+        FunctionName::StrEnds => {
+            eval_binary_string_pred(args, row, "STRENDS", |h, s| h.ends_with(s))
+        }
 
         FunctionName::Regex => {
             // REGEX(text, pattern, [flags]) - regex pattern matching
@@ -1787,7 +1854,11 @@ fn evaluate_function(name: &FunctionName, args: &[FilterExpr], row: &RowView) ->
         | FunctionName::Substr => eval_truthy_if_arg_valid(args, row),
 
         // No-arg functions always truthy (always produce a value)
-        FunctionName::Now | FunctionName::Rand | FunctionName::Uuid | FunctionName::StrUuid | FunctionName::Bnode => Ok(true),
+        FunctionName::Now
+        | FunctionName::Rand
+        | FunctionName::Uuid
+        | FunctionName::StrUuid
+        | FunctionName::Bnode => Ok(true),
 
         // Hash functions - truthy if input is a valid string
         FunctionName::Md5
@@ -1795,9 +1866,12 @@ fn evaluate_function(name: &FunctionName, args: &[FilterExpr], row: &RowView) ->
         | FunctionName::Sha256
         | FunctionName::Sha384
         | FunctionName::Sha512 => {
-            let val = eval_to_comparable(args.first().ok_or_else(|| {
-                QueryError::InvalidFilter("Hash function requires 1 argument".to_string())
-            })?, row)?;
+            let val = eval_to_comparable(
+                args.first().ok_or_else(|| {
+                    QueryError::InvalidFilter("Hash function requires 1 argument".to_string())
+                })?,
+                row,
+            )?;
             Ok(matches!(val, Some(ComparableValue::String(_))))
         }
 
@@ -1810,13 +1884,11 @@ fn evaluate_function(name: &FunctionName, args: &[FilterExpr], row: &RowView) ->
         }
 
         // Power - numeric truthiness
-        FunctionName::Power => {
-            match eval_function_to_value(name, args, row)? {
-                Some(ComparableValue::Long(n)) => Ok(n != 0),
-                Some(ComparableValue::Double(d)) => Ok(!d.is_nan() && d != 0.0),
-                _ => Ok(false),
-            }
-        }
+        FunctionName::Power => match eval_function_to_value(name, args, row)? {
+            Some(ComparableValue::Long(n)) => Ok(n != 0),
+            Some(ComparableValue::Double(d)) => Ok(!d.is_nan() && d != 0.0),
+            _ => Ok(false),
+        },
 
         // Vector functions - truthy if they produce a value
         FunctionName::DotProduct
@@ -1834,21 +1906,17 @@ fn evaluate_function(name: &FunctionName, args: &[FilterExpr], row: &RowView) ->
 
         // T(?var) - Fluree-specific transaction time
         // In boolean context: t=0 is falsy, non-zero is truthy (follows numeric EBV)
-        FunctionName::T => {
-            match eval_function_to_value(name, args, row)? {
-                Some(ComparableValue::Long(t)) => Ok(t != 0),
-                _ => Ok(false),
-            }
-        }
+        FunctionName::T => match eval_function_to_value(name, args, row)? {
+            Some(ComparableValue::Long(t)) => Ok(t != 0),
+            _ => Ok(false),
+        },
 
         // OP(?var) - Fluree-specific operation type for history queries
         // In boolean context: always truthy if op metadata exists (assert or retract)
-        FunctionName::Op => {
-            match eval_function_to_value(name, args, row)? {
-                Some(ComparableValue::String(_)) => Ok(true),
-                _ => Ok(false),
-            }
-        }
+        FunctionName::Op => match eval_function_to_value(name, args, row)? {
+            Some(ComparableValue::String(_)) => Ok(true),
+            _ => Ok(false),
+        },
 
         FunctionName::Custom(name) => Err(QueryError::InvalidFilter(format!(
             "Unknown function: {}",
@@ -2131,7 +2199,7 @@ mod tests {
         let batch = make_test_batch();
 
         // Just return the variable's value
-        let expr = FilterExpr::Var(VarId(0));  // ?age
+        let expr = FilterExpr::Var(VarId(0)); // ?age
 
         // Row 0: age=25
         let result = evaluate_to_binding(&expr, &batch.row_view(0).unwrap());

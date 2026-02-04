@@ -14,7 +14,10 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::{Signer, SigningKey};
 use fluree_db_api::{credential, FlureeBuilder};
 use serde_json::{json, Value as JsonValue};
-use support::{assert_index_defaults, genesis_ledger, normalize_rows, normalize_rows_array, MemoryFluree, MemoryLedger};
+use support::{
+    assert_index_defaults, genesis_ledger, normalize_rows, normalize_rows_array, MemoryFluree,
+    MemoryLedger,
+};
 
 fn decode_hex_32(s: &str) -> [u8; 32] {
     assert_eq!(s.len(), 64, "expected 32-byte hex");
@@ -49,7 +52,13 @@ fn ctx_ct(ledger_id: &str) -> JsonValue {
     })
 }
 
-async fn seed_credential_ledger(fluree: &MemoryFluree, alias: &str, ledger_id: &str, did_root: &str, did_pleb: &str) -> MemoryLedger {
+async fn seed_credential_ledger(
+    fluree: &MemoryFluree,
+    alias: &str,
+    ledger_id: &str,
+    did_root: &str,
+    did_pleb: &str,
+) -> MemoryLedger {
     let ledger0 = genesis_ledger(fluree, alias);
 
     // Seed an open record.
@@ -119,7 +128,11 @@ async fn seed_credential_ledger(fluree: &MemoryFluree, alias: &str, ledger_id: &
         ]
     });
 
-    fluree.update(seeded, &tx).await.expect("seed identities + policy").ledger
+    fluree
+        .update(seeded, &tx)
+        .await
+        .expect("seed identities + policy")
+        .ledger
 }
 
 /// Test: Credentialed transact and query with f:query policy enforcement
@@ -290,7 +303,10 @@ ORDER BY ?name
         .await
         .expect("credential_query_sparql root");
     let jsonld_root = result_root.to_jsonld(&ledger.db).expect("to_jsonld");
-    assert_eq!(normalize_rows_array(&jsonld_root), normalize_rows_array(&json!([["Daniel"]])));
+    assert_eq!(
+        normalize_rows_array(&jsonld_root),
+        normalize_rows_array(&json!([["Daniel"]]))
+    );
 
     // Pleb cannot see root.
     let jws_pleb = create_jws(&sparql, &pleb_sk);
@@ -301,4 +317,3 @@ ORDER BY ?name
     let jsonld_pleb = result_pleb.to_jsonld(&ledger.db).expect("to_jsonld");
     assert_eq!(jsonld_pleb, json!([]));
 }
-

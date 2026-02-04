@@ -4,13 +4,12 @@ use serde_json::Value as JsonValue;
 
 use crate::query::helpers::{
     build_query_result, build_sparql_result, parse_jsonld_query, parse_sparql_to_ir,
-    prepare_for_execution, status_for_query_error, tracker_for_limits,
-    tracker_from_query_json,
+    prepare_for_execution, status_for_query_error, tracker_for_limits, tracker_from_query_json,
 };
 use crate::{
-    ExecutableQuery, Fluree, FormatterConfig, HistoricalLedgerView, LedgerState,
-    NoOpR2rmlProvider, OverlayProvider, PolicyContext, QueryResult, Result, SimpleCache,
-    Storage, TrackingOptions, TrackingTally, Tracker, VarRegistry,
+    ExecutableQuery, Fluree, FormatterConfig, HistoricalLedgerView, LedgerState, NoOpR2rmlProvider,
+    OverlayProvider, PolicyContext, QueryResult, Result, SimpleCache, Storage, Tracker,
+    TrackingOptions, TrackingTally, VarRegistry,
 };
 
 #[cfg(feature = "native")]
@@ -133,8 +132,9 @@ where
     {
         let tracker = tracker_from_query_json(query_json);
 
-        let (vars, parsed) = parse_jsonld_query(query_json, &ledger.db)
-            .map_err(|e| crate::query::TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally()))?;
+        let (vars, parsed) = parse_jsonld_query(query_json, &ledger.db).map_err(|e| {
+            crate::query::TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally())
+        })?;
 
         let executable = prepare_for_execution(&parsed);
         let r2rml_provider = NoOpR2rmlProvider::new();
@@ -170,7 +170,9 @@ where
         let result_json = query_result
             .to_jsonld_async_tracked(&ledger.db, &tracker)
             .await
-            .map_err(|e| crate::query::TrackedErrorResponse::from_error(500, e.to_string(), tracker.tally()))?;
+            .map_err(|e| {
+                crate::query::TrackedErrorResponse::from_error(500, e.to_string(), tracker.tally())
+            })?;
 
         Ok(crate::query::TrackedQueryResponse::success(
             result_json,
@@ -364,8 +366,8 @@ where
             parsed,
             batches,
             view.to_t(),
-            view.overlay().map(|n| Arc::clone(n) as Arc<dyn OverlayProvider>),
+            view.overlay()
+                .map(|n| Arc::clone(n) as Arc<dyn OverlayProvider>),
         ))
     }
-
 }

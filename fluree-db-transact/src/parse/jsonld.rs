@@ -15,10 +15,10 @@ use crate::error::{Result, TransactError};
 use crate::ir::{InlineValues, TemplateTerm, TripleTemplate, Txn, TxnOpts, TxnType};
 use crate::namespace::NamespaceRegistry;
 use fluree_db_core::FlakeValue;
-use fluree_vocab::rdf::{self, TYPE};
 use fluree_db_query::parse::{parse_where_with_counters, PathAliasMap, UnresolvedQuery};
 use fluree_db_query::VarRegistry;
 use fluree_graph_json_ld::{details, expand_with_context, parse_context, ParsedContext};
+use fluree_vocab::rdf::{self, TYPE};
 use serde_json::Value;
 
 /// Parse a JSON-LD transaction into the Transaction IR
@@ -152,7 +152,7 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
             object_var_parsing,
         )
         .map_err(|e| TransactError::Parse(format!("WHERE clause: {}", e)))?;
-        
+
         query.patterns
     } else {
         Vec::new()
@@ -162,8 +162,13 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     let delete_templates = if let Some(delete_val) = obj.get("delete") {
         validate_type_fields(delete_val)?;
         let expanded = expand_with_context(delete_val, &context)?;
-        let templates =
-            parse_expanded_triples(&expanded, &context, &mut vars, ns_registry, object_var_parsing)?;
+        let templates = parse_expanded_triples(
+            &expanded,
+            &context,
+            &mut vars,
+            ns_registry,
+            object_var_parsing,
+        )?;
         if templates.is_empty() {
             // Clojure parity: an explicit empty delete (e.g. `"delete": []`) is a no-op.
             // Still reject structurally-empty deletes like `{ "@id": "ex:foo" }`.
@@ -185,8 +190,13 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     let insert_templates = if let Some(insert_val) = obj.get("insert") {
         validate_type_fields(insert_val)?;
         let expanded = expand_with_context(insert_val, &context)?;
-        let templates =
-            parse_expanded_triples(&expanded, &context, &mut vars, ns_registry, object_var_parsing)?;
+        let templates = parse_expanded_triples(
+            &expanded,
+            &context,
+            &mut vars,
+            ns_registry,
+            object_var_parsing,
+        )?;
         if templates.is_empty() {
             return Err(TransactError::Parse(
                 "insert must contain at least one predicate or @type (an object with only @id is not a valid insert)"
@@ -294,9 +304,8 @@ fn parse_inline_values(
         Value::Array(vs) => vs
             .iter()
             .map(|v| {
-                v.as_str().ok_or_else(|| {
-                    TransactError::Parse("values vars must be strings".to_string())
-                })
+                v.as_str()
+                    .ok_or_else(|| TransactError::Parse("values vars must be strings".to_string()))
             })
             .collect::<Result<Vec<_>>>()?,
         _ => {
@@ -316,9 +325,9 @@ fn parse_inline_values(
         var_ids.push(vars.get_or_insert(name));
     }
 
-    let rows_val = arr[1].as_array().ok_or_else(|| {
-        TransactError::Parse("values rows must be an array".to_string())
-    })?;
+    let rows_val = arr[1]
+        .as_array()
+        .ok_or_else(|| TransactError::Parse("values rows must be an array".to_string()))?;
     let var_count = var_ids.len();
 
     let mut rows: Vec<Vec<TemplateTerm>> = Vec::with_capacity(rows_val.len());
@@ -445,19 +454,19 @@ fn parse_expanded_triples(
     object_var_parsing: bool,
 ) -> Result<Vec<TripleTemplate>> {
     match expanded {
-        Value::Array(arr) => {
-            arr.iter().try_fold(Vec::new(), |mut templates, item| {
-                templates.extend(parse_expanded_object(
-                    item,
-                    context,
-                    vars,
-                    ns_registry,
-                    object_var_parsing,
-                )?);
-                Ok(templates)
-            })
+        Value::Array(arr) => arr.iter().try_fold(Vec::new(), |mut templates, item| {
+            templates.extend(parse_expanded_object(
+                item,
+                context,
+                vars,
+                ns_registry,
+                object_var_parsing,
+            )?);
+            Ok(templates)
+        }),
+        Value::Object(_) => {
+            parse_expanded_object(expanded, context, vars, ns_registry, object_var_parsing)
         }
-        Value::Object(_) => parse_expanded_object(expanded, context, vars, ns_registry, object_var_parsing),
         _ => Err(TransactError::Parse(
             "Expected expanded object or array of objects".to_string(),
         )),
@@ -551,11 +560,8 @@ fn parse_expanded_object(
         )?;
 
         for parsed_value in parsed_values {
-            let mut template = TripleTemplate::new(
-                subject.clone(),
-                predicate.clone(),
-                parsed_value.term,
-            );
+            let mut template =
+                TripleTemplate::new(subject.clone(), predicate.clone(), parsed_value.term);
             if let Some(dt) = parsed_value.datatype {
                 template = template.with_datatype(dt);
             }
@@ -655,21 +661,26 @@ fn parse_expanded_objects(
                 if let Value::Object(obj) = v {
                     if let Some(list_val) = obj.get("@list") {
                         // Parse list and add all elements with their indices
-                        let list_items =
-                            parse_list_values(list_val, context, vars, ns_registry, object_var_parsing)?;
+                        let list_items = parse_list_values(
+                            list_val,
+                            context,
+                            vars,
+                            ns_registry,
+                            object_var_parsing,
+                        )?;
                         results.extend(list_items);
                         continue;
                     }
                 }
                 // Not a @list, parse normally
-                    results.push(parse_expanded_value(
-                        v,
-                        context,
-                        vars,
-                        ns_registry,
-                        templates,
-                        object_var_parsing,
-                    )?);
+                results.push(parse_expanded_value(
+                    v,
+                    context,
+                    vars,
+                    ns_registry,
+                    templates,
+                    object_var_parsing,
+                )?);
             }
             Ok(results)
         }
@@ -709,8 +720,13 @@ fn parse_expanded_value(
                     .keys()
                     .any(|k| k.as_str() != "@id" && k.as_str() != "@context");
                 if has_nested_props {
-                    let nested_templates =
-                        parse_expanded_object(value, context, vars, ns_registry, object_var_parsing)?;
+                    let nested_templates = parse_expanded_object(
+                        value,
+                        context,
+                        vars,
+                        ns_registry,
+                        object_var_parsing,
+                    )?;
                     templates.extend(nested_templates);
                 }
                 return Ok(ParsedValue::new(parse_expanded_id(id, vars, ns_registry)?));
@@ -736,12 +752,11 @@ fn parse_expanded_value(
             if let Some(var_val) = obj.get("@variable") {
                 let var = match var_val {
                     Value::String(s) => s.as_str(),
-                    Value::Object(map) => map
-                        .get("@value")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| {
+                    Value::Object(map) => {
+                        map.get("@value").and_then(|v| v.as_str()).ok_or_else(|| {
                             TransactError::Parse("@variable must be a string".to_string())
-                        })?,
+                        })?
+                    }
                     Value::Array(items) => items
                         .first()
                         .and_then(|item| match item {
@@ -795,7 +810,9 @@ fn parse_expanded_value(
                         )));
                     }
                 }
-                Ok(ParsedValue::new(TemplateTerm::Value(FlakeValue::String(s.clone()))))
+                Ok(ParsedValue::new(TemplateTerm::Value(FlakeValue::String(
+                    s.clone(),
+                ))))
             }
         }
         Value::Number(n) => {
@@ -838,14 +855,17 @@ fn parse_literal_value_with_meta(
                 // Only serialize if it's an object, array, or other non-string JSON value
                 let json_string = match val {
                     Value::String(s) => s.clone(),
-                    _ => serde_json::to_string(val)
-                        .map_err(|e| TransactError::Parse(format!("Failed to serialize @json value: {}", e)))?,
+                    _ => serde_json::to_string(val).map_err(|e| {
+                        TransactError::Parse(format!("Failed to serialize @json value: {}", e))
+                    })?,
                 };
                 let datatype_sid = ns_registry.sid_for_iri(rdf::JSON);
-                return Ok(ParsedValue::new(TemplateTerm::Value(FlakeValue::Json(json_string)))
-                    .with_datatype(datatype_sid));
+                return Ok(
+                    ParsedValue::new(TemplateTerm::Value(FlakeValue::Json(json_string)))
+                        .with_datatype(datatype_sid),
+                );
             }
-            
+
             // Route all @value types through typed coercion
             return coerce_value_with_datatype(val, type_iri, ns_registry);
         }
@@ -859,12 +879,14 @@ fn parse_literal_value_with_meta(
                 let var_id = vars.get_or_insert(s);
                 return Ok(ParsedValue::new(TemplateTerm::Var(var_id)));
             }
-            
+
             // Check for @language
             if let Some(lang_val) = obj.get("@language") {
                 if let Some(lang) = lang_val.as_str() {
-                    return Ok(ParsedValue::new(TemplateTerm::Value(FlakeValue::String(s.clone())))
-                        .with_language(lang.to_string()));
+                    return Ok(ParsedValue::new(TemplateTerm::Value(FlakeValue::String(
+                        s.clone(),
+                    )))
+                    .with_language(lang.to_string()));
                 }
             }
 
@@ -887,7 +909,9 @@ fn parse_literal_value_with_meta(
             }
 
             // Plain string literal
-            Ok(ParsedValue::new(TemplateTerm::Value(FlakeValue::String(s.clone()))))
+            Ok(ParsedValue::new(TemplateTerm::Value(FlakeValue::String(
+                s.clone(),
+            ))))
         }
         Value::Number(n) => {
             // No explicit type - infer from JSON number
@@ -902,15 +926,13 @@ fn parse_literal_value_with_meta(
                 )))
             }
         }
-        Value::Bool(b) => {
-            Ok(ParsedValue::new(TemplateTerm::Value(FlakeValue::Boolean(*b))))
-        }
-        _ => {
-            Err(TransactError::Parse(format!(
-                "Unsupported @value type: {:?}",
-                val
-            )))
-        }
+        Value::Bool(b) => Ok(ParsedValue::new(TemplateTerm::Value(FlakeValue::Boolean(
+            *b,
+        )))),
+        _ => Err(TransactError::Parse(format!(
+            "Unsupported @value type: {:?}",
+            val
+        ))),
     }
 }
 
@@ -932,11 +954,11 @@ fn coerce_value_with_datatype(
     ns_registry: &mut NamespaceRegistry,
 ) -> Result<ParsedValue> {
     let datatype_sid = ns_registry.sid_for_iri(type_iri);
-    
+
     // Delegate to core coercion module
     let flake_value = fluree_db_core::coerce::coerce_json_value(val, type_iri)
         .map_err(|e| TransactError::Parse(e.message))?;
-    
+
     Ok(ParsedValue::new(TemplateTerm::Value(flake_value)).with_datatype(datatype_sid))
 }
 
@@ -962,12 +984,12 @@ fn convert_typed_value_with_meta(
     ns_registry: &mut NamespaceRegistry,
 ) -> Result<ParsedValue> {
     let datatype_sid = ns_registry.sid_for_iri(type_iri);
-    
+
     // Create a JSON string value and delegate to core coercion
     let json_value = Value::String(raw.to_string());
     let flake_value = fluree_db_core::coerce::coerce_json_value(&json_value, type_iri)
         .map_err(|e| TransactError::Parse(e.message))?;
-    
+
     Ok(ParsedValue::new(TemplateTerm::Value(flake_value)).with_datatype(datatype_sid))
 }
 
@@ -1003,7 +1025,8 @@ fn parse_list_value(
     // empty list, it's an edge case where @list wasn't detected at the array level.
     if items.is_empty() {
         return Err(TransactError::Parse(
-            "Empty @list in unexpected position (should be handled by parse_expanded_objects)".to_string(),
+            "Empty @list in unexpected position (should be handled by parse_expanded_objects)"
+                .to_string(),
         ));
     }
 
@@ -1040,7 +1063,8 @@ fn parse_list_values(
     // Parse each item with its index
     let mut results = Vec::with_capacity(items.len());
     for (index, item) in items.iter().enumerate() {
-        let mut parsed = parse_single_list_item(item, context, vars, ns_registry, object_var_parsing)?;
+        let mut parsed =
+            parse_single_list_item(item, context, vars, ns_registry, object_var_parsing)?;
         parsed.list_index = Some(index as i32);
         results.push(parsed);
     }
@@ -1108,7 +1132,9 @@ fn parse_single_list_item(
                         )));
                     }
                 }
-                Ok(ParsedValue::new(TemplateTerm::Value(FlakeValue::String(s.clone()))))
+                Ok(ParsedValue::new(TemplateTerm::Value(FlakeValue::String(
+                    s.clone(),
+                ))))
             }
         }
         Value::Number(n) => {
@@ -1286,8 +1312,15 @@ mod tests {
 
         // @value with @type - should preserve datatype
         let val = json!({"@value": "42", "@type": "http://www.w3.org/2001/XMLSchema#integer"});
-        let result =
-            parse_expanded_value(&val, &ctx, &mut vars, &mut ns_registry, &mut templates, true).unwrap();
+        let result = parse_expanded_value(
+            &val,
+            &ctx,
+            &mut vars,
+            &mut ns_registry,
+            &mut templates,
+            true,
+        )
+        .unwrap();
         assert!(matches!(
             result.term,
             TemplateTerm::Value(FlakeValue::Long(42))
@@ -1306,8 +1339,15 @@ mod tests {
 
         // @value with @language
         let val = json!({"@value": "Hello", "@language": "en"});
-        let result =
-            parse_expanded_value(&val, &ctx, &mut vars, &mut ns_registry, &mut templates, true).unwrap();
+        let result = parse_expanded_value(
+            &val,
+            &ctx,
+            &mut vars,
+            &mut ns_registry,
+            &mut templates,
+            true,
+        )
+        .unwrap();
         assert!(matches!(
             result.term,
             TemplateTerm::Value(FlakeValue::String(_))
@@ -1324,7 +1364,8 @@ mod tests {
 
         // Parse a @list with three string items
         let list_val = json!(["a", "b", "c"]);
-        let results = parse_list_values(&list_val, &ctx, &mut vars, &mut ns_registry, true).unwrap();
+        let results =
+            parse_list_values(&list_val, &ctx, &mut vars, &mut ns_registry, true).unwrap();
 
         assert_eq!(results.len(), 3);
 
@@ -1356,7 +1397,8 @@ mod tests {
 
         // Empty @list produces zero ParsedValues
         let list_val = json!([]);
-        let results = parse_list_values(&list_val, &ctx, &mut vars, &mut ns_registry, true).unwrap();
+        let results =
+            parse_list_values(&list_val, &ctx, &mut vars, &mut ns_registry, true).unwrap();
         assert!(results.is_empty());
     }
 
@@ -1376,7 +1418,8 @@ mod tests {
         }]);
 
         let mut vars = VarRegistry::new();
-        let templates = parse_expanded_triples(&json, &ctx, &mut vars, &mut ns_registry, true).unwrap();
+        let templates =
+            parse_expanded_triples(&json, &ctx, &mut vars, &mut ns_registry, true).unwrap();
 
         // Should have 3 templates, one for each list item
         assert_eq!(templates.len(), 3);

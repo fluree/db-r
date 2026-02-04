@@ -45,11 +45,15 @@ pub fn can_contain_partition(
         }
         Expression::And(exprs) => {
             // All must be able to contain
-            exprs.iter().all(|e| can_contain_partition(e, summaries, _schema, _partition_spec_fields))
+            exprs
+                .iter()
+                .all(|e| can_contain_partition(e, summaries, _schema, _partition_spec_fields))
         }
         Expression::Or(exprs) => {
             // Any might contain
-            exprs.iter().any(|e| can_contain_partition(e, summaries, _schema, _partition_spec_fields))
+            exprs
+                .iter()
+                .any(|e| can_contain_partition(e, summaries, _schema, _partition_spec_fields))
         }
         // For column predicates, we can't easily map to partition summaries without
         // understanding partition transforms. Be conservative.
@@ -107,14 +111,19 @@ pub fn can_contain_file(expr: &Expression, data_file: &DataFile, schema: &Schema
             // File might contain non-null values
             data_file.might_contain_values(*field_id)
         }
-        Expression::Comparison { field_id, op, value, .. } => {
-            can_contain_comparison(*field_id, *op, value, data_file, schema)
-        }
-        Expression::In { field_id, values, .. } => {
+        Expression::Comparison {
+            field_id,
+            op,
+            value,
+            ..
+        } => can_contain_comparison(*field_id, *op, value, data_file, schema),
+        Expression::In {
+            field_id, values, ..
+        } => {
             // Any value in the list might be in range
-            values.iter().any(|v| {
-                can_contain_comparison(*field_id, ComparisonOp::Eq, v, data_file, schema)
-            })
+            values
+                .iter()
+                .any(|v| can_contain_comparison(*field_id, ComparisonOp::Eq, v, data_file, schema))
         }
         Expression::NotIn { .. } => {
             // NOT IN is hard to prune with just min/max bounds
@@ -158,15 +167,15 @@ fn can_contain_comparison(
     match op {
         ComparisonOp::Eq => {
             // value must be in [lower, upper]
-            let in_range = match (&lower_typed, &upper_typed) {
+
+            match (&lower_typed, &upper_typed) {
                 (Some(l), Some(u)) => {
                     lit_typed.ge(l).unwrap_or(true) && lit_typed.le(u).unwrap_or(true)
                 }
                 (Some(l), None) => lit_typed.ge(l).unwrap_or(true),
                 (None, Some(u)) => lit_typed.le(u).unwrap_or(true),
                 (None, None) => true,
-            };
-            in_range
+            }
         }
         ComparisonOp::NotEq => {
             // Can only prune if all values equal the excluded value
@@ -222,10 +231,7 @@ fn can_contain_comparison(
 ///
 /// * `expr` - The filter expression
 /// * `batch` - The column batch to evaluate
-pub fn evaluate_batch(
-    expr: &Expression,
-    batch: &crate::io::ColumnBatch,
-) -> Vec<usize> {
+pub fn evaluate_batch(expr: &Expression, batch: &crate::io::ColumnBatch) -> Vec<usize> {
     match expr {
         Expression::AlwaysTrue => (0..batch.num_rows).collect(),
         Expression::AlwaysFalse => Vec::new(),
@@ -270,10 +276,15 @@ pub fn evaluate_batch(
             };
             (0..batch.num_rows).filter(|&i| !col.is_null(i)).collect()
         }
-        Expression::Comparison { field_id, op, value, .. } => {
-            evaluate_comparison(*field_id, *op, value, batch)
-        }
-        Expression::In { field_id, values, .. } => {
+        Expression::Comparison {
+            field_id,
+            op,
+            value,
+            ..
+        } => evaluate_comparison(*field_id, *op, value, batch),
+        Expression::In {
+            field_id, values, ..
+        } => {
             let mut result_set = std::collections::HashSet::new();
             for value in values {
                 let matching = evaluate_comparison(*field_id, ComparisonOp::Eq, value, batch);
@@ -283,7 +294,9 @@ pub fn evaluate_batch(
             result.sort();
             result
         }
-        Expression::NotIn { field_id, values, .. } => {
+        Expression::NotIn {
+            field_id, values, ..
+        } => {
             // Start with all rows, remove those matching any value
             let mut excluded = std::collections::HashSet::new();
             for value in values {
@@ -314,33 +327,39 @@ fn evaluate_comparison(
 
     for i in 0..batch.num_rows {
         let matches = match (col, value) {
-            (Column::Boolean(vals), LiteralValue::Boolean(lit)) => {
-                vals.get(i).and_then(|v| *v).map_or(false, |v| compare_op(v, *lit, op))
-            }
-            (Column::Int32(vals), LiteralValue::Int32(lit)) => {
-                vals.get(i).and_then(|v| *v).map_or(false, |v| compare_op(v, *lit, op))
-            }
-            (Column::Int64(vals), LiteralValue::Int64(lit)) => {
-                vals.get(i).and_then(|v| *v).map_or(false, |v| compare_op(v, *lit, op))
-            }
-            (Column::Float32(vals), LiteralValue::Float32(lit)) => {
-                vals.get(i).and_then(|v| *v).map_or(false, |v| compare_op_f32(v, *lit, op))
-            }
-            (Column::Float64(vals), LiteralValue::Float64(lit)) => {
-                vals.get(i).and_then(|v| *v).map_or(false, |v| compare_op_f64(v, *lit, op))
-            }
-            (Column::String(vals), LiteralValue::String(lit)) => {
-                vals.get(i)
-                    .and_then(|v| v.as_ref())
-                    .map_or(false, |v| compare_op(v.as_str(), lit.as_str(), op))
-            }
-            (Column::Date(vals), LiteralValue::Date(lit)) => {
-                vals.get(i).and_then(|v| *v).map_or(false, |v| compare_op(v, *lit, op))
-            }
+            (Column::Boolean(vals), LiteralValue::Boolean(lit)) => vals
+                .get(i)
+                .and_then(|v| *v)
+                .is_some_and(|v| compare_op(v, *lit, op)),
+            (Column::Int32(vals), LiteralValue::Int32(lit)) => vals
+                .get(i)
+                .and_then(|v| *v)
+                .is_some_and(|v| compare_op(v, *lit, op)),
+            (Column::Int64(vals), LiteralValue::Int64(lit)) => vals
+                .get(i)
+                .and_then(|v| *v)
+                .is_some_and(|v| compare_op(v, *lit, op)),
+            (Column::Float32(vals), LiteralValue::Float32(lit)) => vals
+                .get(i)
+                .and_then(|v| *v)
+                .is_some_and(|v| compare_op_f32(v, *lit, op)),
+            (Column::Float64(vals), LiteralValue::Float64(lit)) => vals
+                .get(i)
+                .and_then(|v| *v)
+                .is_some_and(|v| compare_op_f64(v, *lit, op)),
+            (Column::String(vals), LiteralValue::String(lit)) => vals
+                .get(i)
+                .and_then(|v| v.as_ref())
+                .is_some_and(|v| compare_op(v.as_str(), lit.as_str(), op)),
+            (Column::Date(vals), LiteralValue::Date(lit)) => vals
+                .get(i)
+                .and_then(|v| *v)
+                .is_some_and(|v| compare_op(v, *lit, op)),
             (Column::Timestamp(vals), LiteralValue::Timestamp(lit))
-            | (Column::TimestampTz(vals), LiteralValue::Timestamp(lit)) => {
-                vals.get(i).and_then(|v| *v).map_or(false, |v| compare_op(v, *lit, op))
-            }
+            | (Column::TimestampTz(vals), LiteralValue::Timestamp(lit)) => vals
+                .get(i)
+                .and_then(|v| *v)
+                .is_some_and(|v| compare_op(v, *lit, op)),
             _ => false, // Type mismatch
         };
 

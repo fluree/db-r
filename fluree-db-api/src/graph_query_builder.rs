@@ -11,8 +11,8 @@ use crate::graph::Graph;
 use crate::query::builder::QueryCore;
 use crate::view::FlureeView;
 use crate::{
-    ApiError, Fluree, NameService, QueryResult, Result, SimpleCache, Storage,
-    TrackedErrorResponse, TrackedQueryResponse, TrackingOptions,
+    ApiError, Fluree, NameService, QueryResult, Result, SimpleCache, Storage, TrackedErrorResponse,
+    TrackedQueryResponse, TrackingOptions,
 };
 
 // ============================================================================
@@ -118,7 +118,11 @@ where
             return Err(ApiError::Builder(BuilderErrors(errs)));
         }
 
-        let view = self.graph.fluree.load_view_at(&self.graph.alias, self.graph.time_spec.clone()).await?;
+        let view = self
+            .graph
+            .fluree
+            .load_view_at(&self.graph.alias, self.graph.time_spec.clone())
+            .await?;
         let input = self.core.input.unwrap();
         self.graph.fluree.query_view(&view, input).await
     }
@@ -130,13 +134,23 @@ where
             return Err(ApiError::Builder(BuilderErrors(errs)));
         }
 
-        let view = self.graph.fluree.load_view_at(&self.graph.alias, self.graph.time_spec.clone()).await?;
-        let format_config = self.core.format.take().unwrap_or_else(|| self.core.default_format());
+        let view = self
+            .graph
+            .fluree
+            .load_view_at(&self.graph.alias, self.graph.time_spec.clone())
+            .await?;
+        let format_config = self
+            .core
+            .format
+            .take()
+            .unwrap_or_else(|| self.core.default_format());
         let input = self.core.input.unwrap();
         let result = self.graph.fluree.query_view(&view, input).await?;
         let config = format_config.with_select_mode(result.select_mode);
         match view.policy() {
-            Some(policy) => Ok(result.format_async_with_policy(&view.db, &config, policy).await?),
+            Some(policy) => Ok(result
+                .format_async_with_policy(&view.db, &config, policy)
+                .await?),
             None => Ok(result.format_async(&view.db, &config).await?),
         }
     }
@@ -151,7 +165,11 @@ where
             return Err(TrackedErrorResponse::new(400, msg, None));
         }
 
-        let view = self.graph.fluree.load_view_at(&self.graph.alias, self.graph.time_spec.clone()).await
+        let view = self
+            .graph
+            .fluree
+            .load_view_at(&self.graph.alias, self.graph.time_spec.clone())
+            .await
             .map_err(|e| TrackedErrorResponse::from_error(404, e.to_string(), None))?;
         let input = self.core.input.unwrap();
         self.graph.fluree.query_view_tracked(&view, input).await
@@ -270,12 +288,18 @@ where
             return Err(ApiError::Builder(BuilderErrors(errs)));
         }
 
-        let format_config = self.core.format.take().unwrap_or_else(|| self.core.default_format());
+        let format_config = self
+            .core
+            .format
+            .take()
+            .unwrap_or_else(|| self.core.default_format());
         let input = self.core.input.unwrap();
         let result = self.fluree.query_view(self.view, input).await?;
         let config = format_config.with_select_mode(result.select_mode);
         match self.view.policy() {
-            Some(policy) => Ok(result.format_async_with_policy(&self.view.db, &config, policy).await?),
+            Some(policy) => Ok(result
+                .format_async_with_policy(&self.view.db, &config, policy)
+                .await?),
             None => Ok(result.format_async(&self.view.db, &config).await?),
         }
     }

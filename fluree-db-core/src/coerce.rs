@@ -48,7 +48,7 @@
 //! - xsd:boolean
 //! - rdf:JSON
 
-use crate::{DateTime, Date, FlakeValue, Time};
+use crate::{Date, DateTime, FlakeValue, Time};
 use bigdecimal::BigDecimal;
 use fluree_vocab::{errors, rdf, xsd};
 use num_bigint::BigInt;
@@ -75,10 +75,7 @@ impl CoercionError {
     /// Create an incompatible type error
     pub fn incompatible(value_desc: &str, target_type: &str, hint: Option<&str>) -> Self {
         let msg = match hint {
-            Some(h) => format!(
-                "Cannot coerce {} to {}. {}",
-                value_desc, target_type, h
-            ),
+            Some(h) => format!("Cannot coerce {} to {}. {}", value_desc, target_type, h),
             None => format!("Cannot coerce {} to {}", value_desc, target_type),
         };
         Self::new(msg)
@@ -94,7 +91,12 @@ impl CoercionError {
     }
 
     /// Create a range error
-    pub fn out_of_range(value: impl std::fmt::Display, target_type: &str, min: i128, max: i128) -> Self {
+    pub fn out_of_range(
+        value: impl std::fmt::Display,
+        target_type: &str,
+        min: i128,
+        max: i128,
+    ) -> Self {
         Self::new(format!(
             "Value {} is out of range for {}: expected {} to {}",
             value, target_type, min, max
@@ -136,27 +138,21 @@ pub fn coerce_value(value: FlakeValue, datatype_iri: &str) -> CoercionResult<Fla
         // ====================================================================
 
         // Number → String-like is invalid
-        (FlakeValue::Long(n), dt) if xsd::is_string_like(dt) => {
-            Err(CoercionError::incompatible(
-                &format!("number {}", n),
-                dt,
-                Some(&format!("Use {{\"@value\": \"{}\"}} instead.", n)),
-            ))
-        }
-        (FlakeValue::Double(n), dt) if xsd::is_string_like(dt) => {
-            Err(CoercionError::incompatible(
-                &format!("number {}", n),
-                dt,
-                Some(&format!("Use {{\"@value\": \"{}\"}} instead.", n)),
-            ))
-        }
-        (FlakeValue::BigInt(n), dt) if xsd::is_string_like(dt) => {
-            Err(CoercionError::incompatible(
-                &format!("number {}", n),
-                dt,
-                Some(&format!("Use {{\"@value\": \"{}\"}} instead.", n)),
-            ))
-        }
+        (FlakeValue::Long(n), dt) if xsd::is_string_like(dt) => Err(CoercionError::incompatible(
+            &format!("number {}", n),
+            dt,
+            Some(&format!("Use {{\"@value\": \"{}\"}} instead.", n)),
+        )),
+        (FlakeValue::Double(n), dt) if xsd::is_string_like(dt) => Err(CoercionError::incompatible(
+            &format!("number {}", n),
+            dt,
+            Some(&format!("Use {{\"@value\": \"{}\"}} instead.", n)),
+        )),
+        (FlakeValue::BigInt(n), dt) if xsd::is_string_like(dt) => Err(CoercionError::incompatible(
+            &format!("number {}", n),
+            dt,
+            Some(&format!("Use {{\"@value\": \"{}\"}} instead.", n)),
+        )),
 
         // Boolean → String-like is invalid
         (FlakeValue::Boolean(b), dt) if xsd::is_string_like(dt) => {
@@ -210,13 +206,11 @@ pub fn coerce_value(value: FlakeValue, datatype_iri: &str) -> CoercionResult<Fla
                 Some(&hint),
             ))
         }
-        (FlakeValue::Double(n), dt) if dt == xsd::BOOLEAN => {
-            Err(CoercionError::incompatible(
-                &format!("number {}", n),
-                "xsd:boolean",
-                None,
-            ))
-        }
+        (FlakeValue::Double(n), dt) if dt == xsd::BOOLEAN => Err(CoercionError::incompatible(
+            &format!("number {}", n),
+            "xsd:boolean",
+            None,
+        )),
 
         // ====================================================================
         // Numeric coercions
@@ -276,16 +270,12 @@ pub fn coerce_value(value: FlakeValue, datatype_iri: &str) -> CoercionResult<Fla
         // ====================================================================
 
         // String → Integer types
-        (FlakeValue::String(s), dt) if xsd::is_integer_family(dt) => {
-            parse_string_to_integer(s, dt)
-        }
+        (FlakeValue::String(s), dt) if xsd::is_integer_family(dt) => parse_string_to_integer(s, dt),
 
         // String → Decimal
-        (FlakeValue::String(s), dt) if dt == xsd::DECIMAL => {
-            BigDecimal::from_str(s)
-                .map(|bd| FlakeValue::Decimal(Box::new(bd)))
-                .map_err(|_| CoercionError::parse_failed(s, "xsd:decimal", None))
-        }
+        (FlakeValue::String(s), dt) if dt == xsd::DECIMAL => BigDecimal::from_str(s)
+            .map(|bd| FlakeValue::Decimal(Box::new(bd)))
+            .map_err(|_| CoercionError::parse_failed(s, "xsd:decimal", None)),
 
         // String → Double/Float
         (FlakeValue::String(s), dt) if dt == xsd::DOUBLE || dt == xsd::FLOAT => {
@@ -293,25 +283,19 @@ pub fn coerce_value(value: FlakeValue, datatype_iri: &str) -> CoercionResult<Fla
         }
 
         // String → DateTime
-        (FlakeValue::String(s), dt) if dt == xsd::DATE_TIME => {
-            DateTime::parse(s)
-                .map(|dt| FlakeValue::DateTime(Box::new(dt)))
-                .map_err(|e| CoercionError::parse_failed(s, "xsd:dateTime", Some(&e)))
-        }
+        (FlakeValue::String(s), dt) if dt == xsd::DATE_TIME => DateTime::parse(s)
+            .map(|dt| FlakeValue::DateTime(Box::new(dt)))
+            .map_err(|e| CoercionError::parse_failed(s, "xsd:dateTime", Some(&e))),
 
         // String → Date
-        (FlakeValue::String(s), dt) if dt == xsd::DATE => {
-            Date::parse(s)
-                .map(|d| FlakeValue::Date(Box::new(d)))
-                .map_err(|e| CoercionError::parse_failed(s, "xsd:date", Some(&e)))
-        }
+        (FlakeValue::String(s), dt) if dt == xsd::DATE => Date::parse(s)
+            .map(|d| FlakeValue::Date(Box::new(d)))
+            .map_err(|e| CoercionError::parse_failed(s, "xsd:date", Some(&e))),
 
         // String → Time
-        (FlakeValue::String(s), dt) if dt == xsd::TIME => {
-            Time::parse(s)
-                .map(|t| FlakeValue::Time(Box::new(t)))
-                .map_err(|e| CoercionError::parse_failed(s, "xsd:time", Some(&e)))
-        }
+        (FlakeValue::String(s), dt) if dt == xsd::TIME => Time::parse(s)
+            .map(|t| FlakeValue::Time(Box::new(t)))
+            .map_err(|e| CoercionError::parse_failed(s, "xsd:time", Some(&e))),
 
         // String → Boolean
         (FlakeValue::String(s), dt) if dt == xsd::BOOLEAN => match s.as_str() {
@@ -780,14 +764,18 @@ mod tests {
     fn test_coerce_long_to_double() {
         let result = coerce_value(FlakeValue::Long(42), xsd::DOUBLE);
         assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), FlakeValue::Double(d) if (d - 42.0).abs() < f64::EPSILON));
+        assert!(
+            matches!(result.unwrap(), FlakeValue::Double(d) if (d - 42.0).abs() < f64::EPSILON)
+        );
     }
 
     #[test]
     fn test_coerce_long_to_float() {
         let result = coerce_value(FlakeValue::Long(42), xsd::FLOAT);
         assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), FlakeValue::Double(d) if (d - 42.0).abs() < f64::EPSILON));
+        assert!(
+            matches!(result.unwrap(), FlakeValue::Double(d) if (d - 42.0).abs() < f64::EPSILON)
+        );
     }
 
     #[test]

@@ -9,9 +9,9 @@ use crate::policy::QueryPolicyEnforcer;
 use crate::r2rml::{R2rmlProvider, R2rmlTableProvider};
 use crate::var_registry::VarRegistry;
 use crate::vector::VectorIndexProvider;
-use fluree_db_core::{Db, NoOverlay, NodeCache, OverlayProvider, Sid, Storage, Tracker};
 #[cfg(feature = "native")]
 use fluree_db_core::PrefetchService;
+use fluree_db_core::{Db, NoOverlay, NodeCache, OverlayProvider, Sid, Storage, Tracker};
 use fluree_vocab::namespaces::{JSON_LD, XSD};
 use fluree_vocab::xsd_names;
 use std::sync::Arc;
@@ -48,7 +48,7 @@ pub struct ExecutionContext<'a, S: Storage + 'static, C: NodeCache + 'static> {
     /// Maximum batch size for operators
     pub batch_size: usize,
     /// Optional policy enforcer for async policy evaluation with f:query support
-    /// 
+    ///
     /// When present, scan operators should use this for per-leaf batch filtering
     /// via `filter_flakes`. This provides full f:query support without deadlocks.
     pub policy_enforcer: Option<Arc<QueryPolicyEnforcer>>,
@@ -128,7 +128,12 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
     }
 
     /// Create context with specific time-travel settings
-    pub fn with_time(db: &'a Db<S, C>, vars: &'a VarRegistry, to_t: i64, from_t: Option<i64>) -> Self {
+    pub fn with_time(
+        db: &'a Db<S, C>,
+        vars: &'a VarRegistry,
+        to_t: i64,
+        from_t: Option<i64>,
+    ) -> Self {
         Self {
             db,
             vars,
@@ -270,7 +275,7 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
     }
 
     /// Add policy enforcer to this execution context
-    /// 
+    ///
     /// This enables per-leaf batch filtering with full f:query policy support.
     /// The enforcer wraps a PolicyContext and provides async evaluation.
     /// Access the raw PolicyContext via `enforcer.policy()` if needed.
@@ -510,7 +515,7 @@ impl<'a, S: Storage + 'static, C: NodeCache + 'static> ExecutionContext<'a, S, C
 /// Well-known datatype SIDs
 ///
 /// These are common XSD datatypes used in Fluree.
-/// 
+///
 /// Also provides fast datatype family equivalence checking for the scan loop.
 /// Integer family: xsd:integer, xsd:long, xsd:int, xsd:short, xsd:byte
 /// Float family: xsd:double, xsd:float

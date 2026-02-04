@@ -120,11 +120,7 @@ pub fn build_operator_tree<S: Storage + 'static, C: NodeCache + 'static>(
     // Post-aggregation BINDs (e.g., SELECT (CEIL(?avg) AS ?ceil))
     if !options.post_binds.is_empty() {
         for (var, expr) in &options.post_binds {
-            operator = Box::new(crate::bind::BindOperator::new(
-                operator,
-                *var,
-                expr.clone(),
-            ));
+            operator = Box::new(crate::bind::BindOperator::new(operator, *var, expr.clone()));
         }
     }
 

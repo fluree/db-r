@@ -120,8 +120,8 @@ where
         let key = self.keys.current_key();
 
         // Create cipher from key
-        let cipher = Aes256Gcm::new_from_slice(key.expose_secret())
-            .expect("key is always 32 bytes");
+        let cipher =
+            Aes256Gcm::new_from_slice(key.expose_secret()).expect("key is always 32 bytes");
 
         // Generate random nonce
         let mut nonce_bytes = [0u8; NONCE_LEN];
@@ -162,8 +162,8 @@ where
             .ok_or_else(|| EncryptionError::unknown_key_id(header.key_id))?;
 
         // Create cipher from key
-        let cipher = Aes256Gcm::new_from_slice(key.expose_secret())
-            .expect("key is always 32 bytes");
+        let cipher =
+            Aes256Gcm::new_from_slice(key.expose_secret()).expect("key is always 32 bytes");
 
         // Decrypt with header as AAD
         let nonce = Nonce::from_slice(&header.nonce);
@@ -243,7 +243,9 @@ where
 {
     async fn write_bytes(&self, address: &str, bytes: &[u8]) -> fluree_db_core::error::Result<()> {
         // Encrypt the plaintext
-        let encrypted = self.encrypt(bytes).map_err(fluree_db_core::error::Error::from)?;
+        let encrypted = self
+            .encrypt(bytes)
+            .map_err(fluree_db_core::error::Error::from)?;
 
         // Write encrypted bytes to underlying storage
         self.inner.write_bytes(address, &encrypted).await
@@ -272,7 +274,9 @@ where
         let plaintext_size = bytes.len();
 
         // Encrypt the plaintext
-        let encrypted = self.encrypt(bytes).map_err(fluree_db_core::error::Error::from)?;
+        let encrypted = self
+            .encrypt(bytes)
+            .map_err(fluree_db_core::error::Error::from)?;
 
         // Delegate to inner storage - it generates the address with its own method
         // (file, s3, memory, etc.) while we store encrypted bytes
@@ -406,10 +410,7 @@ mod tests {
         let plaintext = b"Hello, encrypted world!";
 
         // Write encrypted
-        encrypted
-            .write_bytes("test/data", plaintext)
-            .await
-            .unwrap();
+        encrypted.write_bytes("test/data", plaintext).await.unwrap();
 
         // Read and decrypt
         let decrypted = encrypted.read_bytes("test/data").await.unwrap();
@@ -425,10 +426,7 @@ mod tests {
         let plaintext = b"Hello, encrypted world!";
 
         // Write encrypted
-        encrypted
-            .write_bytes("test/data", plaintext)
-            .await
-            .unwrap();
+        encrypted.write_bytes("test/data", plaintext).await.unwrap();
 
         // Read raw (unencrypted) from underlying storage
         let raw = storage.read_bytes("test/data").await.unwrap();
@@ -449,7 +447,10 @@ mod tests {
         let key1 = EncryptionKey::new([0x01; 32], 1);
         let provider1 = StaticKeyProvider::new(key1);
         let encrypted1 = EncryptedStorage::new(storage.clone(), provider1);
-        encrypted1.write_bytes("test/data", b"secret").await.unwrap();
+        encrypted1
+            .write_bytes("test/data", b"secret")
+            .await
+            .unwrap();
 
         // Try to read with different key (same ID)
         let key2 = EncryptionKey::new([0x02; 32], 1);
@@ -468,7 +469,10 @@ mod tests {
         let key1 = EncryptionKey::new([0x01; 32], 1);
         let provider1 = StaticKeyProvider::new(key1);
         let encrypted1 = EncryptedStorage::new(storage.clone(), provider1);
-        encrypted1.write_bytes("test/data", b"secret").await.unwrap();
+        encrypted1
+            .write_bytes("test/data", b"secret")
+            .await
+            .unwrap();
 
         // Try to read with different key ID
         let key2 = EncryptionKey::new([0x01; 32], 2); // Same bytes, different ID

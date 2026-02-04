@@ -84,11 +84,17 @@ fn default_namespaces() -> HashMap<i32, String> {
     map.insert(NS_EMPTY, "".to_string());
     map.insert(NS_JSONLD, "@".to_string());
     map.insert(NS_XSD, "http://www.w3.org/2001/XMLSchema#".to_string());
-    map.insert(NS_RDF, "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string());
+    map.insert(
+        NS_RDF,
+        "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string(),
+    );
     map.insert(NS_RDFS, "http://www.w3.org/2000/01/rdf-schema#".to_string());
     map.insert(NS_SHACL, "http://www.w3.org/ns/shacl#".to_string());
     map.insert(NS_OWL, "http://www.w3.org/2002/07/owl#".to_string());
-    map.insert(NS_CREDENTIALS, "https://www.w3.org/2018/credentials#".to_string());
+    map.insert(
+        NS_CREDENTIALS,
+        "https://www.w3.org/2018/credentials#".to_string(),
+    );
     map.insert(NS_FLUREE_LEDGER, "https://ns.flur.ee/ledger#".to_string());
     map.insert(NS_FLUREE_DB, "fluree:db:sha256:".to_string());
     map.insert(NS_DID_KEY, "did:key:".to_string());
@@ -266,7 +272,7 @@ impl NamespaceRegistry {
 
         // No known prefix matched; fall back to split heuristic for new prefixes.
         // Find split point (last / or #)
-        let split_pos = iri.rfind(|c| c == '/' || c == '#');
+        let split_pos = iri.rfind(['/', '#']);
 
         let (prefix, local) = match split_pos {
             Some(pos) => {
@@ -341,7 +347,10 @@ mod tests {
 
         // Check reverse lookup
         assert_eq!(registry.get_prefix(NS_BLANK_NODE), Some("_:"));
-        assert_eq!(registry.get_prefix(NS_XSD), Some("http://www.w3.org/2001/XMLSchema#"));
+        assert_eq!(
+            registry.get_prefix(NS_XSD),
+            Some("http://www.w3.org/2001/XMLSchema#")
+        );
     }
 
     #[test]
@@ -404,7 +413,10 @@ mod tests {
         // did:key: is a predefined prefix (code 11), so did:key:z6Mk... should use it
         let sid = registry.sid_for_iri("did:key:z6MkqtpqKGs4Et8mqBLBBAitDC1DPBiTJEbu26AcBX75B5rR");
         assert_eq!(sid.namespace_code, NS_DID_KEY);
-        assert_eq!(sid.name.as_ref(), "z6MkqtpqKGs4Et8mqBLBBAitDC1DPBiTJEbu26AcBX75B5rR");
+        assert_eq!(
+            sid.name.as_ref(),
+            "z6MkqtpqKGs4Et8mqBLBBAitDC1DPBiTJEbu26AcBX75B5rR"
+        );
 
         // fluree:db:sha256: is predefined (code 10)
         let sid2 = registry.sid_for_iri("fluree:db:sha256:abc123");

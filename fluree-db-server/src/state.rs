@@ -119,12 +119,8 @@ impl FlureeInstance {
         sparql: &str,
     ) -> fluree_db_api::Result<serde_json::Value> {
         match self {
-            FlureeInstance::File(f) => {
-                f.query_from().sparql(sparql).execute_formatted().await
-            }
-            FlureeInstance::Proxy(p) => {
-                p.query_from().sparql(sparql).execute_formatted().await
-            }
+            FlureeInstance::File(f) => f.query_from().sparql(sparql).execute_formatted().await,
+            FlureeInstance::Proxy(p) => p.query_from().sparql(sparql).execute_formatted().await,
         }
     }
 
@@ -139,12 +135,8 @@ impl FlureeInstance {
         query_json: &serde_json::Value,
     ) -> fluree_db_api::Result<serde_json::Value> {
         match self {
-            FlureeInstance::File(f) => {
-                f.query_from().jsonld(query_json).execute_formatted().await
-            }
-            FlureeInstance::Proxy(p) => {
-                p.query_from().jsonld(query_json).execute_formatted().await
-            }
+            FlureeInstance::File(f) => f.query_from().jsonld(query_json).execute_formatted().await,
+            FlureeInstance::Proxy(p) => p.query_from().jsonld(query_json).execute_formatted().await,
         }
     }
 
@@ -158,10 +150,18 @@ impl FlureeInstance {
     ) -> fluree_db_api::Result<serde_json::Value> {
         match self {
             FlureeInstance::File(f) => {
-                f.graph(alias).query().jsonld(query_json).execute_formatted().await
+                f.graph(alias)
+                    .query()
+                    .jsonld(query_json)
+                    .execute_formatted()
+                    .await
             }
             FlureeInstance::Proxy(p) => {
-                p.graph(alias).query().jsonld(query_json).execute_formatted().await
+                p.graph(alias)
+                    .query()
+                    .jsonld(query_json)
+                    .execute_formatted()
+                    .await
             }
         }
     }
@@ -171,16 +171,22 @@ impl FlureeInstance {
         &self,
         alias: &str,
         query_json: &serde_json::Value,
-    ) -> std::result::Result<
-        fluree_db_api::TrackedQueryResponse,
-        fluree_db_api::TrackedErrorResponse,
-    > {
+    ) -> std::result::Result<fluree_db_api::TrackedQueryResponse, fluree_db_api::TrackedErrorResponse>
+    {
         match self {
             FlureeInstance::File(f) => {
-                f.graph(alias).query().jsonld(query_json).execute_tracked().await
+                f.graph(alias)
+                    .query()
+                    .jsonld(query_json)
+                    .execute_tracked()
+                    .await
             }
             FlureeInstance::Proxy(p) => {
-                p.graph(alias).query().jsonld(query_json).execute_tracked().await
+                p.graph(alias)
+                    .query()
+                    .jsonld(query_json)
+                    .execute_tracked()
+                    .await
             }
         }
     }
@@ -193,10 +199,18 @@ impl FlureeInstance {
     ) -> fluree_db_api::Result<serde_json::Value> {
         match self {
             FlureeInstance::File(f) => {
-                f.graph(alias).query().sparql(sparql).execute_formatted().await
+                f.graph(alias)
+                    .query()
+                    .sparql(sparql)
+                    .execute_formatted()
+                    .await
             }
             FlureeInstance::Proxy(p) => {
-                p.graph(alias).query().sparql(sparql).execute_formatted().await
+                p.graph(alias)
+                    .query()
+                    .sparql(sparql)
+                    .execute_formatted()
+                    .await
             }
         }
     }
@@ -223,11 +237,17 @@ impl FlureeInstance {
                 match self {
                     FlureeInstance::File(f) => {
                         let view = f.view_with_policy(alias, &opts).await?;
-                        view.query(f.as_ref()).sparql(sparql).execute_formatted().await
+                        view.query(f.as_ref())
+                            .sparql(sparql)
+                            .execute_formatted()
+                            .await
                     }
                     FlureeInstance::Proxy(p) => {
                         let view = p.view_with_policy(alias, &opts).await?;
-                        view.query(p.as_ref()).sparql(sparql).execute_formatted().await
+                        view.query(p.as_ref())
+                            .sparql(sparql)
+                            .execute_formatted()
+                            .await
                     }
                 }
             }
@@ -333,10 +353,7 @@ impl FlureeInstance {
     /// Works with both file-backed and proxy-backed instances. Loads the ledger
     /// into cache if not already cached, then builds metadata including commit info,
     /// namespace codes, and statistics.
-    pub async fn build_ledger_info(
-        &self,
-        alias: &str,
-    ) -> fluree_db_api::Result<serde_json::Value> {
+    pub async fn build_ledger_info(&self, alias: &str) -> fluree_db_api::Result<serde_json::Value> {
         match self {
             FlureeInstance::File(f) => {
                 let handle = f.ledger_cached(alias).await?;
@@ -379,7 +396,6 @@ pub struct AppState {
     pub registry: Arc<LedgerRegistry>,
 
     // === Peer mode state ===
-
     /// Peer state tracking remote watermarks (peer mode only)
     pub peer_state: Option<Arc<PeerState>>,
 
@@ -398,7 +414,10 @@ impl AppState {
     /// - Transaction server: Always file-backed
     /// - Peer with shared storage: File-backed
     /// - Peer with proxy storage: Proxy-backed (no local storage needed)
-    pub fn new(config: ServerConfig, telemetry_config: TelemetryConfig) -> Result<Self, fluree_db_api::ApiError> {
+    pub fn new(
+        config: ServerConfig,
+        telemetry_config: TelemetryConfig,
+    ) -> Result<Self, fluree_db_api::ApiError> {
         // Validate configuration at startup
         config.validate().map_err(|e| {
             fluree_db_api::ApiError::internal(format!("Invalid configuration: {}", e))
@@ -444,10 +463,13 @@ impl AppState {
     }
 
     /// Create a file-backed Fluree instance
-    fn create_file_fluree(config: &ServerConfig) -> Result<FlureeInstance, fluree_db_api::ApiError> {
-        let path = config.storage_path.clone().unwrap_or_else(|| {
-            std::env::temp_dir().join("fluree-server-data")
-        });
+    fn create_file_fluree(
+        config: &ServerConfig,
+    ) -> Result<FlureeInstance, fluree_db_api::ApiError> {
+        let path = config
+            .storage_path
+            .clone()
+            .unwrap_or_else(|| std::env::temp_dir().join("fluree-server-data"));
 
         // Convert PathBuf to String for FlureeBuilder
         let path_str = path.to_string_lossy().to_string();
@@ -461,15 +483,17 @@ impl AppState {
     }
 
     /// Create a proxy-backed Fluree instance for peer proxy mode
-    fn create_proxy_fluree(config: &ServerConfig) -> Result<FlureeInstance, fluree_db_api::ApiError> {
+    fn create_proxy_fluree(
+        config: &ServerConfig,
+    ) -> Result<FlureeInstance, fluree_db_api::ApiError> {
         let tx_url = config
             .tx_server_url
             .clone()
             .expect("tx_server_url validated in proxy mode");
 
-        let token = config
-            .load_storage_proxy_token()
-            .map_err(|e| fluree_db_api::ApiError::internal(format!("Failed to load storage proxy token: {}", e)))?;
+        let token = config.load_storage_proxy_token().map_err(|e| {
+            fluree_db_api::ApiError::internal(format!("Failed to load storage proxy token: {}", e))
+        })?;
 
         // Create proxy storage and nameservice
         let storage = ProxyStorage::new(tx_url.clone(), token.clone());

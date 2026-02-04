@@ -36,7 +36,14 @@ fn people_data() -> JsonValue {
     ])
 }
 
-async fn seed_people() -> (fluree_db_api::Fluree<fluree_db_core::MemoryStorage, SimpleCache, fluree_db_nameservice::memory::MemoryNameService>, LedgerState<fluree_db_core::MemoryStorage, SimpleCache>) {
+async fn seed_people() -> (
+    fluree_db_api::Fluree<
+        fluree_db_core::MemoryStorage,
+        SimpleCache,
+        fluree_db_nameservice::memory::MemoryNameService,
+    >,
+    LedgerState<fluree_db_core::MemoryStorage, SimpleCache>,
+) {
     let fluree = FlureeBuilder::memory().build_memory();
     let alias = "it/construct:people";
 
@@ -54,7 +61,9 @@ async fn seed_people() -> (fluree_db_api::Fluree<fluree_db_core::MemoryStorage, 
 
 fn normalize_construct(mut v: JsonValue) -> JsonValue {
     // Sort @graph entries by @id and sort any array values for stable comparison.
-    let obj = v.as_object_mut().expect("construct result must be an object");
+    let obj = v
+        .as_object_mut()
+        .expect("construct result must be an object");
     if let Some(JsonValue::Array(graph)) = obj.get_mut("@graph") {
         for node in graph.iter_mut() {
             if let JsonValue::Object(m) = node {
@@ -349,4 +358,3 @@ async fn construct_value_metadata_displays() {
 
     assert_eq!(actual, expected);
 }
-

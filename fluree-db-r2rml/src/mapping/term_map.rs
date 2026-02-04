@@ -9,20 +9,15 @@ use super::RefObjectMap;
 /// R2RML term type
 ///
 /// Specifies whether a term map generates IRIs, blank nodes, or literals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum TermType {
     /// Generate an IRI (default for subject and predicate maps)
+    #[default]
     Iri,
     /// Generate a blank node
     BlankNode,
     /// Generate a literal (default for object maps with column or constant)
     Literal,
-}
-
-impl Default for TermType {
-    fn default() -> Self {
-        TermType::Iri
-    }
 }
 
 impl TermType {
@@ -262,9 +257,11 @@ impl ObjectMap {
             ObjectMap::Column { column, .. } => vec![column.as_str()],
             ObjectMap::Constant { .. } => vec![],
             ObjectMap::Template { columns, .. } => columns.iter().map(|s| s.as_str()).collect(),
-            ObjectMap::RefObjectMap(ref_map) => {
-                ref_map.join_conditions.iter().map(|jc| jc.child_column.as_str()).collect()
-            }
+            ObjectMap::RefObjectMap(ref_map) => ref_map
+                .join_conditions
+                .iter()
+                .map(|jc| jc.child_column.as_str())
+                .collect(),
         }
     }
 
@@ -321,10 +318,7 @@ mod tests {
 
     #[test]
     fn test_object_map_template() {
-        let om = ObjectMap::template(
-            "http://example.org/{id}",
-            vec!["id".to_string()],
-        );
+        let om = ObjectMap::template("http://example.org/{id}", vec!["id".to_string()]);
         assert!(!om.is_ref());
         assert_eq!(om.referenced_columns(), vec!["id"]);
         assert_eq!(om.term_type(), TermType::Iri);

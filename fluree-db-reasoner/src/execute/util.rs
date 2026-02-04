@@ -13,10 +13,10 @@ use fluree_vocab::jsonld_names::ID as JSONLD_ID;
 use fluree_vocab::namespaces::{JSON_LD, RDF};
 use fluree_vocab::predicates::RDF_TYPE;
 
-use crate::same_as::SameAsTracker;
-use crate::ReasoningDiagnostics;
 use super::delta::DeltaSet;
 use super::derived::DerivedSet;
+use crate::same_as::SameAsTracker;
+use crate::ReasoningDiagnostics;
 
 /// Default datatype SID for derived Ref values.
 ///

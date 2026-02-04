@@ -105,7 +105,7 @@ async fn create_local(state: Arc<AppState>, request: Request) -> Result<impl Int
         .ok_or_else(|| ServerError::bad_request("Missing required field: ledger"))
     {
         Ok(alias) => {
-            span.record("ledger_alias", &alias);
+            span.record("ledger_alias", alias);
             alias.to_string()
         }
         Err(e) => {
@@ -238,7 +238,11 @@ async fn drop_local(state: Arc<AppState>, request: Request) -> Result<Json<DropR
     );
     let _guard = span.enter();
 
-    tracing::info!(status = "start", hard_drop = req.hard, "ledger drop requested");
+    tracing::info!(
+        status = "start",
+        hard_drop = req.hard,
+        "ledger drop requested"
+    );
 
     let mode = if req.hard {
         DropMode::Hard
@@ -315,7 +319,7 @@ pub async fn info(
         .ok_or(ServerError::MissingLedger)
     {
         Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
+            span.record("ledger_alias", alias.as_str());
             alias
         }
         Err(e) => {
@@ -348,7 +352,10 @@ pub async fn info(
 
     // Add top-level ledger alias and t for backwards compatibility
     if let Some(obj) = info.as_object_mut() {
-        obj.insert("ledger".to_string(), serde_json::Value::String(alias.to_string()));
+        obj.insert(
+            "ledger".to_string(),
+            serde_json::Value::String(alias.to_string()),
+        );
         obj.insert("t".to_string(), serde_json::Value::Number(t.into()));
     }
 
@@ -357,11 +364,7 @@ pub async fn info(
 }
 
 /// Simplified ledger info for proxy storage mode (nameservice lookup only)
-async fn info_simplified(
-    state: &AppState,
-    alias: &str,
-    span: &tracing::Span,
-) -> Result<Response> {
+async fn info_simplified(state: &AppState, alias: &str, span: &tracing::Span) -> Result<Response> {
     // Lookup ledger in nameservice
     let record = match state.fluree.nameservice_lookup(alias).await {
         Ok(Some(record)) => record,
@@ -380,13 +383,18 @@ async fn info_simplified(
     };
 
     // Return simplified ledger info from nameservice record
-    tracing::info!(status = "success", commit_t = record.commit_t, "ledger info retrieved (simplified)");
+    tracing::info!(
+        status = "success",
+        commit_t = record.commit_t,
+        "ledger info retrieved (simplified)"
+    );
     Ok(Json(LedgerInfoResponse {
         ledger: record.address.clone(),
         t: record.commit_t,
         commit: record.commit_address.clone(),
         index: record.index_address.clone(),
-    }).into_response())
+    })
+    .into_response())
 }
 
 /// Query parameters for ledger-info
@@ -440,7 +448,7 @@ pub async fn exists(
         .ok_or(ServerError::MissingLedger)
     {
         Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
+            span.record("ledger_alias", alias.as_str());
             alias.clone()
         }
         Err(e) => {
@@ -461,8 +469,15 @@ pub async fn exists(
         }
     };
 
-    tracing::info!(status = "success", exists = exists, "ledger exists check completed");
-    Ok(Json(ExistsResponse { ledger: alias, exists }))
+    tracing::info!(
+        status = "success",
+        exists = exists,
+        "ledger exists check completed"
+    );
+    Ok(Json(ExistsResponse {
+        ledger: alias,
+        exists,
+    }))
 }
 
 /// Forward a write request to the transaction server (peer mode)

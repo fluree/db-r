@@ -54,9 +54,11 @@ pub use datalog::{
 };
 pub use error::{ReasonerError, Result};
 pub use overlay::{DerivedFactsBuilder, DerivedFactsOverlay};
-pub use rdf_list::{collect_chain_elements, collect_list_elements, collect_list_values, resolve_property_expression};
-pub use same_as::{FrozenSameAs, SameAsTracker};
 pub use owl::{find_owl_typed_entities, OwlSidRegistry};
+pub use rdf_list::{
+    collect_chain_elements, collect_list_elements, collect_list_values, resolve_property_expression,
+};
+pub use same_as::{FrozenSameAs, SameAsTracker};
 
 use fluree_db_core::cache::NodeCache;
 use fluree_db_core::overlay::OverlayProvider;
@@ -66,21 +68,12 @@ use std::sync::Arc;
 pub use types::{ChainElement, PropertyChain, PropertyExpression, ReasoningModes};
 
 /// Options for OWL2-RL reasoning
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ReasoningOptions {
     /// Budget constraints for materialization
     pub budget: ReasoningBudget,
     /// Which RL rules to enable (empty = all)
     pub enabled_rules: Vec<String>,
-}
-
-impl Default for ReasoningOptions {
-    fn default() -> Self {
-        Self {
-            budget: ReasoningBudget::default(),
-            enabled_rules: Vec::new(), // Empty means all rules enabled
-        }
-    }
 }
 
 impl ReasoningOptions {

@@ -187,12 +187,12 @@ pub enum BinaryOp {
     Or,  // ||
 
     // Comparison
-    Eq,  // =
-    Ne,  // !=
-    Lt,  // <
-    Le,  // <=
-    Gt,  // >
-    Ge,  // >=
+    Eq, // =
+    Ne, // !=
+    Lt, // <
+    Le, // <=
+    Gt, // >
+    Ge, // >=
 
     // Arithmetic
     Add, // +
@@ -225,7 +225,12 @@ impl BinaryOp {
         match self {
             BinaryOp::Or => 1,
             BinaryOp::And => 2,
-            BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => 3,
+            BinaryOp::Eq
+            | BinaryOp::Ne
+            | BinaryOp::Lt
+            | BinaryOp::Le
+            | BinaryOp::Gt
+            | BinaryOp::Ge => 3,
             BinaryOp::Add | BinaryOp::Sub => 4,
             BinaryOp::Mul | BinaryOp::Div => 5,
         }
@@ -326,7 +331,7 @@ pub enum FunctionName {
     StrUuid,
 
     // SPARQL 1.1 functions
-    If,      // Handled separately as Expression::If but may appear
+    If,       // Handled separately as Expression::If but may appear
     Coalesce, // Handled separately as Expression::Coalesce but may appear
 
     /// Custom extension function (IRI)
@@ -496,9 +501,18 @@ mod tests {
 
     #[test]
     fn test_aggregate_function_parsing() {
-        assert_eq!(AggregateFunction::from_str("COUNT"), Some(AggregateFunction::Count));
-        assert_eq!(AggregateFunction::from_str("count"), Some(AggregateFunction::Count));
-        assert_eq!(AggregateFunction::from_str("GROUP_CONCAT"), Some(AggregateFunction::GroupConcat));
+        assert_eq!(
+            AggregateFunction::from_str("COUNT"),
+            Some(AggregateFunction::Count)
+        );
+        assert_eq!(
+            AggregateFunction::from_str("count"),
+            Some(AggregateFunction::Count)
+        );
+        assert_eq!(
+            AggregateFunction::from_str("GROUP_CONCAT"),
+            Some(AggregateFunction::GroupConcat)
+        );
         assert_eq!(AggregateFunction::from_str("UNKNOWN"), None);
     }
 }

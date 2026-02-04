@@ -56,11 +56,11 @@ impl ServerError {
     /// Map error to error type IRI (compact form)
     pub fn error_type(&self) -> &'static str {
         use fluree_vocab::errors;
-        
+
         match self {
             // API errors (explicit HTTP status passthrough)
             ServerError::Api(ApiError::Http { .. }) => errors::INTERNAL,
-            
+
             // Not Found
             ServerError::Api(ApiError::NotFound(msg)) => {
                 // Distinguish virtual graph not found from ledger not found
@@ -70,15 +70,15 @@ impl ServerError {
                     errors::LEDGER_NOT_FOUND
                 }
             }
-            
+
             // Ledger management
             ServerError::Api(ApiError::LedgerExists(_)) => errors::LEDGER_EXISTS,
-            
+
             // Index operations
             ServerError::Api(ApiError::IndexTimeout(_)) => errors::INDEX_TIMEOUT,
             ServerError::Api(ApiError::IndexingDisabled) => errors::INDEXING_DISABLED,
             ServerError::Api(ApiError::ReindexConflict { .. }) => errors::REINDEX_CONFLICT,
-            
+
             // Parsing errors
             ServerError::Api(ApiError::Parse(ParseError::TypeCoercion(_))) => errors::TYPE_COERCION,
             ServerError::Api(ApiError::Parse(_)) => errors::JSONLD_PARSE,
@@ -86,12 +86,12 @@ impl ServerError {
             ServerError::Api(ApiError::Sparql { .. }) => errors::SPARQL_PARSE,
             ServerError::Api(ApiError::SparqlLower(_)) => errors::SPARQL_LOWER,
             ServerError::Json(_) => errors::JSON_PARSE,
-            
+
             // Query/Transaction errors
             ServerError::Api(ApiError::Query(_)) => errors::INVALID_QUERY,
             ServerError::Api(ApiError::Batch(_)) => errors::INVALID_QUERY,
             ServerError::Api(ApiError::Transact(_)) => errors::INVALID_TRANSACTION,
-            
+
             // API-level errors
             ServerError::MissingLedger => errors::MISSING_LEDGER,
             ServerError::BadRequest(_) => errors::BAD_REQUEST,
@@ -101,11 +101,11 @@ impl ServerError {
             ServerError::NotFound(_) => errors::NOT_FOUND,
             ServerError::NotAcceptable(_) => errors::NOT_ACCEPTABLE,
             ServerError::SparqlUpdateLower(_) => errors::SPARQL_LOWER,
-            
+
             // Auth/Policy (requires credential feature)
             #[cfg(feature = "credential")]
             ServerError::Api(ApiError::Credential(_)) => errors::INVALID_CREDENTIAL,
-            
+
             // System errors
             ServerError::Api(ApiError::Connection(_)) => errors::CONNECTION,
             ServerError::Api(ApiError::NameService(_)) => errors::NAMESERVICE,
@@ -119,7 +119,7 @@ impl ServerError {
             ServerError::Api(ApiError::Json(_)) => errors::INTERNAL,
             ServerError::Api(ApiError::Config(_)) => errors::CONFIG,
             ServerError::Api(ApiError::Format(_)) => errors::FORMAT,
-            
+
             // Catch any new ApiError variants as internal
             #[allow(unreachable_patterns)]
             ServerError::Api(_) => errors::INTERNAL,
@@ -250,10 +250,10 @@ impl IntoResponse for ServerError {
     fn into_response(self) -> Response {
         let status = self.status_code();
         let error_type = self.error_type();
-        
+
         // Extract cause chain from underlying ApiError
         let cause = extract_cause(&self);
-        
+
         let body = ErrorResponse {
             error: self.to_string(),
             status: status.as_u16(),
@@ -270,19 +270,14 @@ impl IntoResponse for ServerError {
             )
         });
 
-        (
-            status,
-            [("content-type", "application/json")],
-            json,
-        )
-            .into_response()
+        (status, [("content-type", "application/json")], json).into_response()
     }
 }
 
 /// Extract cause chain from error (only for high-value cases)
 fn extract_cause(error: &ServerError) -> Option<Box<ErrorResponse>> {
     use fluree_vocab::errors;
-    
+
     match error {
         // High-value case 1: Transaction errors wrapping JSON parse errors
         ServerError::Api(ApiError::Transact(transact_err)) => {
@@ -308,7 +303,7 @@ fn extract_cause(error: &ServerError) -> Option<Box<ErrorResponse>> {
             }
             None
         }
-        
+
         // High-value case 2: Query errors wrapping storage failures
         ServerError::Api(ApiError::Query(query_err)) => {
             if let Some(source) = std::error::Error::source(query_err) {
@@ -323,21 +318,18 @@ fn extract_cause(error: &ServerError) -> Option<Box<ErrorResponse>> {
             }
             None
         }
-        
+
         // High-value case 3: JSON parsing at API level
         ServerError::Json(json_err) => {
             // Already at the leaf, but show it as a structured error
             Some(Box::new(ErrorResponse {
-                error: format!("at line {}, column {}", 
-                    json_err.line(),
-                    json_err.column()
-                ),
+                error: format!("at line {}, column {}", json_err.line(), json_err.column()),
                 status: 400,
                 error_type: errors::JSON_PARSE.to_string(),
                 cause: None,
             }))
         }
-        
+
         _ => None,
     }
 }

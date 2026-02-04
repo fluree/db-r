@@ -118,7 +118,9 @@ impl DatasetSpec {
 
     /// Check if this spec is empty (no graphs specified)
     pub fn is_empty(&self) -> bool {
-        self.default_graphs.is_empty() && self.named_graphs.is_empty() && self.history_range.is_none()
+        self.default_graphs.is_empty()
+            && self.named_graphs.is_empty()
+            && self.history_range.is_none()
     }
 
     /// Get total number of graphs specified
@@ -213,9 +215,7 @@ impl DatasetSpec {
             let to_iri_str = iri_value_to_string(&to_iri.value);
             let (to_identifier, to_time_spec) = parse_alias_time_travel(&to_iri_str)?;
             let to_time = to_time_spec.ok_or_else(|| {
-                DatasetParseError::InvalidFrom(
-                    "TO graph must have time specification".to_string(),
-                )
+                DatasetParseError::InvalidFrom("TO graph must have time specification".to_string())
             })?;
 
             // Verify same ledger
@@ -453,7 +453,8 @@ impl DatasetSpec {
             // Require time specs on both
             let from_time = from_source.time_spec.as_ref().ok_or_else(|| {
                 DatasetParseError::InvalidFrom(
-                    "'from' graph in history query must have time specification (e.g., ledger@t:1)".to_string(),
+                    "'from' graph in history query must have time specification (e.g., ledger@t:1)"
+                        .to_string(),
                 )
             })?;
             let to_time = to_source.time_spec.as_ref().ok_or_else(|| {
@@ -507,9 +508,7 @@ impl DatasetSpec {
             .and_then(|o| o.get("from-named"))
             .or_else(|| obj.get("from-named"));
 
-        let to_val = opts_obj
-            .and_then(|o| o.get("to"))
-            .or_else(|| obj.get("to"));
+        let to_val = opts_obj.and_then(|o| o.get("to")).or_else(|| obj.get("to"));
 
         let mut spec = Self::new();
         if let Some(v) = from_val {
@@ -538,7 +537,8 @@ impl DatasetSpec {
             // Require time specs on both
             let from_time = from_source.time_spec.as_ref().ok_or_else(|| {
                 DatasetParseError::InvalidFrom(
-                    "'from' graph in history query must have time specification (e.g., ledger@t:1)".to_string(),
+                    "'from' graph in history query must have time specification (e.g., ledger@t:1)"
+                        .to_string(),
                 )
             })?;
             let to_time = to_source.time_spec.as_ref().ok_or_else(|| {
@@ -648,7 +648,9 @@ impl QueryConnectionOptions {
             .or_else(|| opts.get("policyValues"));
         let policy_values = match policy_values_val {
             None | Some(JsonValue::Null) => None,
-            Some(JsonValue::Object(map)) => Some(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
+            Some(JsonValue::Object(map)) => {
+                Some(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            }
             Some(_) => {
                 return Err(DatasetParseError::InvalidOptions(
                     "'policy-values' must be an object".to_string(),
@@ -698,9 +700,8 @@ fn parse_alias_time_travel(alias: &str) -> Result<(String, Option<TimeSpec>), Da
         return Ok((identifier, Some(TimeSpec::Latest)));
     }
 
-    let (identifier, time) = core_alias::split_time_travel_suffix(alias).map_err(|e| {
-        DatasetParseError::InvalidGraphSource(e.to_string())
-    })?;
+    let (identifier, time) = core_alias::split_time_travel_suffix(alias)
+        .map_err(|e| DatasetParseError::InvalidGraphSource(e.to_string()))?;
 
     let time_spec = time.map(|spec| match spec {
         core_alias::AliasTimeSpec::AtT(t) => TimeSpec::AtT(t),
@@ -717,7 +718,10 @@ fn parse_alias_time_travel(alias: &str) -> Result<(String, Option<TimeSpec>), Da
 /// - String: single graph source (may include @t:/@iso:/@sha: time-travel syntax)
 /// - Array: multiple graph sources
 /// - Object: single graph source with time spec
-fn parse_graph_sources(val: &JsonValue, field_name: &str) -> Result<Vec<GraphSource>, DatasetParseError> {
+fn parse_graph_sources(
+    val: &JsonValue,
+    field_name: &str,
+) -> Result<Vec<GraphSource>, DatasetParseError> {
     match val {
         JsonValue::String(s) => {
             let (identifier, time_spec) = parse_alias_time_travel(s)?;
@@ -743,7 +747,10 @@ fn parse_graph_sources(val: &JsonValue, field_name: &str) -> Result<Vec<GraphSou
 /// Accepts:
 /// - String: identifier (may include @t:/@iso:/@sha: time-travel syntax)
 /// - Object: `{"@id": "ledger:main", "t": 42}` or `{"@id": "ledger:main", "at": "commit:abc"}`
-fn parse_single_graph_source(val: &JsonValue, field_name: &str) -> Result<GraphSource, DatasetParseError> {
+fn parse_single_graph_source(
+    val: &JsonValue,
+    field_name: &str,
+) -> Result<GraphSource, DatasetParseError> {
     match val {
         JsonValue::String(s) => {
             let (identifier, time_spec) = parse_alias_time_travel(s)?;
@@ -774,8 +781,8 @@ fn parse_single_graph_source(val: &JsonValue, field_name: &str) -> Result<GraphS
             } else if let Some(at_val) = obj.get("at") {
                 if let Some(at_str) = at_val.as_str() {
                     // Determine if it's a commit hash or timestamp
-                    if at_str.starts_with("commit:") {
-                        source.time_spec = Some(TimeSpec::AtCommit(at_str[7..].to_string()));
+                    if let Some(commit_hash) = at_str.strip_prefix("commit:") {
+                        source.time_spec = Some(TimeSpec::AtCommit(commit_hash.to_string()));
                     } else {
                         // Assume ISO timestamp
                         source.time_spec = Some(TimeSpec::AtTime(at_str.to_string()));
@@ -886,7 +893,10 @@ mod tests {
         let spec = DatasetSpec::from_json(&query).unwrap();
         assert_eq!(spec.default_graphs.len(), 1);
         assert_eq!(spec.default_graphs[0].identifier, "ledger:main");
-        assert!(matches!(spec.default_graphs[0].time_spec, Some(TimeSpec::AtT(42))));
+        assert!(matches!(
+            spec.default_graphs[0].time_spec,
+            Some(TimeSpec::AtT(42))
+        ));
     }
 
     #[test]
@@ -918,7 +928,10 @@ mod tests {
         let spec = DatasetSpec::from_json(&query).unwrap();
         assert_eq!(spec.default_graphs.len(), 1);
         assert_eq!(spec.default_graphs[0].identifier, "ledger:main");
-        assert!(matches!(spec.default_graphs[0].time_spec, Some(TimeSpec::AtT(42))));
+        assert!(matches!(
+            spec.default_graphs[0].time_spec,
+            Some(TimeSpec::AtT(42))
+        ));
     }
 
     #[test]
@@ -979,7 +992,10 @@ mod tests {
         assert_eq!(spec.default_graphs.len(), 3);
 
         assert_eq!(spec.default_graphs[0].identifier, "ledger1:main");
-        assert!(matches!(spec.default_graphs[0].time_spec, Some(TimeSpec::AtT(10))));
+        assert!(matches!(
+            spec.default_graphs[0].time_spec,
+            Some(TimeSpec::AtT(10))
+        ));
 
         assert_eq!(spec.default_graphs[1].identifier, "ledger2:main");
         assert!(spec.default_graphs[1].time_spec.is_none());
@@ -1035,7 +1051,10 @@ mod tests {
         assert_eq!(spec.default_graphs[0].identifier, "ledger1:main");
         assert!(spec.default_graphs[0].time_spec.is_none());
         assert_eq!(spec.default_graphs[1].identifier, "ledger2:main");
-        assert!(matches!(spec.default_graphs[1].time_spec, Some(TimeSpec::AtT(10))));
+        assert!(matches!(
+            spec.default_graphs[1].time_spec,
+            Some(TimeSpec::AtT(10))
+        ));
     }
 
     #[test]
@@ -1147,9 +1166,7 @@ mod tests {
     #[test]
     fn test_from_sparql_clause_mixed() {
         let clause = SparqlDatasetClause {
-            default_graphs: vec![
-                Iri::full("http://example.org/default1", make_span()),
-            ],
+            default_graphs: vec![Iri::full("http://example.org/default1", make_span())],
             named_graphs: vec![
                 Iri::full("http://example.org/named1", make_span()),
                 Iri::full("http://example.org/named2", make_span()),
@@ -1198,7 +1215,10 @@ mod tests {
         let spec = DatasetSpec::from_sparql_clause(&clause).unwrap();
         assert_eq!(spec.default_graphs.len(), 2);
         assert_eq!(spec.default_graphs[0].identifier, "ledger:main");
-        assert!(matches!(spec.default_graphs[0].time_spec, Some(TimeSpec::AtT(42))));
+        assert!(matches!(
+            spec.default_graphs[0].time_spec,
+            Some(TimeSpec::AtT(42))
+        ));
         assert_eq!(spec.default_graphs[1].identifier, "ledger:main");
         assert!(matches!(
             &spec.default_graphs[1].time_spec,
@@ -1224,8 +1244,11 @@ mod tests {
         };
 
         let spec = DatasetSpec::from_sparql_clause(&clause).unwrap();
-        assert!(spec.is_history_mode(), "Should detect history mode from TO clause");
-        
+        assert!(
+            spec.is_history_mode(),
+            "Should detect history mode from TO clause"
+        );
+
         let range = spec.history_range().expect("Should have history range");
         assert_eq!(range.identifier, "ledger:main");
         assert!(matches!(range.from, TimeSpec::AtT(1)));
@@ -1255,7 +1278,10 @@ mod tests {
         });
 
         let spec = DatasetSpec::from_json(&query).unwrap();
-        assert!(spec.is_history_mode(), "Should detect history mode from explicit 'to' key");
+        assert!(
+            spec.is_history_mode(),
+            "Should detect history mode from explicit 'to' key"
+        );
 
         let range = spec.history_range().expect("Should have history range");
         assert_eq!(range.identifier, "ledger:main");
@@ -1273,7 +1299,10 @@ mod tests {
         });
 
         let spec = DatasetSpec::from_json(&query).unwrap();
-        assert!(spec.is_history_mode(), "Should detect history mode with ISO dates");
+        assert!(
+            spec.is_history_mode(),
+            "Should detect history mode with ISO dates"
+        );
 
         let range = spec.history_range().expect("Should have history range");
         assert_eq!(range.identifier, "ledger:main");
@@ -1291,7 +1320,10 @@ mod tests {
         });
 
         let spec = DatasetSpec::from_json(&query).unwrap();
-        assert!(spec.is_history_mode(), "Mixed time types should be history mode");
+        assert!(
+            spec.is_history_mode(),
+            "Mixed time types should be history mode"
+        );
 
         let range = spec.history_range().expect("Should have history range");
         assert!(matches!(&range.from, TimeSpec::AtCommit(s) if s == "abc123def456"));
@@ -1308,7 +1340,10 @@ mod tests {
         });
 
         let spec = DatasetSpec::from_json(&query).unwrap();
-        assert!(!spec.is_history_mode(), "Array syntax should NOT be history mode (use explicit 'to')");
+        assert!(
+            !spec.is_history_mode(),
+            "Array syntax should NOT be history mode (use explicit 'to')"
+        );
         assert!(spec.history_range().is_none());
         // Should have two separate graphs
         assert_eq!(spec.default_graphs.len(), 2);
@@ -1323,7 +1358,10 @@ mod tests {
         });
 
         let spec = DatasetSpec::from_json(&query).unwrap();
-        assert!(!spec.is_history_mode(), "Different ledgers should not be history mode");
+        assert!(
+            !spec.is_history_mode(),
+            "Different ledgers should not be history mode"
+        );
         assert!(spec.history_range().is_none());
     }
 
@@ -1336,7 +1374,10 @@ mod tests {
         });
 
         let spec = DatasetSpec::from_json(&query).unwrap();
-        assert!(!spec.is_history_mode(), "Single endpoint should not be history mode");
+        assert!(
+            !spec.is_history_mode(),
+            "Single endpoint should not be history mode"
+        );
     }
 
     #[test]
@@ -1348,7 +1389,10 @@ mod tests {
         });
 
         let spec = DatasetSpec::from_json(&query).unwrap();
-        assert!(!spec.is_history_mode(), "No time specs should not be history mode");
+        assert!(
+            !spec.is_history_mode(),
+            "No time specs should not be history mode"
+        );
     }
 
     #[test]
@@ -1360,7 +1404,10 @@ mod tests {
         });
 
         let spec = DatasetSpec::from_json(&query).unwrap();
-        assert!(!spec.is_history_mode(), "Partial time specs should not be history mode");
+        assert!(
+            !spec.is_history_mode(),
+            "Partial time specs should not be history mode"
+        );
     }
 
     // Error cases for explicit "to" syntax
@@ -1375,9 +1422,16 @@ mod tests {
         });
 
         let result = DatasetSpec::from_json(&query);
-        assert!(result.is_err(), "'to' with multiple 'from' graphs should error");
+        assert!(
+            result.is_err(),
+            "'to' with multiple 'from' graphs should error"
+        );
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("exactly one"), "Error should mention 'exactly one': {}", err);
+        assert!(
+            err.contains("exactly one"),
+            "Error should mention 'exactly one': {}",
+            err
+        );
     }
 
     #[test]
@@ -1390,9 +1444,16 @@ mod tests {
         });
 
         let result = DatasetSpec::from_json(&query);
-        assert!(result.is_err(), "'from' and 'to' with different ledgers should error");
+        assert!(
+            result.is_err(),
+            "'from' and 'to' with different ledgers should error"
+        );
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("same ledger"), "Error should mention 'same ledger': {}", err);
+        assert!(
+            err.contains("same ledger"),
+            "Error should mention 'same ledger': {}",
+            err
+        );
     }
 
     #[test]
@@ -1407,7 +1468,11 @@ mod tests {
         let result = DatasetSpec::from_json(&query);
         assert!(result.is_err(), "'from' without time spec should error");
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("time specification"), "Error should mention 'time specification': {}", err);
+        assert!(
+            err.contains("time specification"),
+            "Error should mention 'time specification': {}",
+            err
+        );
     }
 
     #[test]
@@ -1422,7 +1487,11 @@ mod tests {
         let result = DatasetSpec::from_json(&query);
         assert!(result.is_err(), "'to' without time spec should error");
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("time specification"), "Error should mention 'time specification': {}", err);
+        assert!(
+            err.contains("time specification"),
+            "Error should mention 'time specification': {}",
+            err
+        );
     }
 
     #[test]
@@ -1435,6 +1504,9 @@ mod tests {
         let spec = DatasetSpec::from_json(&query).unwrap();
         assert_eq!(spec.default_graphs.len(), 1);
         assert_eq!(spec.default_graphs[0].identifier, "ledger:main");
-        assert!(matches!(spec.default_graphs[0].time_spec, Some(TimeSpec::Latest)));
+        assert!(matches!(
+            spec.default_graphs[0].time_spec,
+            Some(TimeSpec::Latest)
+        ));
     }
 }

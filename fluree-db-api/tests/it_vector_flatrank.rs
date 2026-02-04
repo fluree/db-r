@@ -68,7 +68,9 @@ async fn vector_search_test() {
             let row_arr = row.as_array().unwrap();
             let id = row_arr[0].as_str().unwrap().to_string();
             let score = row_arr[1].as_f64().unwrap();
-            let vec = row_arr[2].as_array().unwrap()
+            let vec = row_arr[2]
+                .as_array()
+                .unwrap()
                 .iter()
                 .map(|v| v.as_f64().unwrap())
                 .collect::<Vec<f64>>();
@@ -246,7 +248,11 @@ async fn vector_search_multi_cardinality() {
     let rows = result.to_jsonld(&ledger.db).unwrap();
     let arr = rows.as_array().unwrap();
 
-    assert_eq!(arr.len(), 3, "Should return 3 results (1 for Homer, 2 for Bart)");
+    assert_eq!(
+        arr.len(),
+        3,
+        "Should return 3 results (1 for Homer, 2 for Bart)"
+    );
 
     // Expected order by score: [Bart(0.61), Bart(0.68), Homer(0.72)]
     let row0 = arr[0].as_array().unwrap();
@@ -421,20 +427,26 @@ async fn vector_search_mixed_datatypes() {
     let rows = result.to_jsonld(&ledger.db).unwrap();
     let arr = rows.as_array().unwrap();
 
-    assert_eq!(arr.len(), 3, "Should return 3 results (including non-vector)");
+    assert_eq!(
+        arr.len(),
+        3,
+        "Should return 3 results (including non-vector)"
+    );
 
     // Lucy should have null score due to non-vector value
-    let lucy_row = arr.iter().find(|row| {
-        row.as_array().unwrap()[0] == "ex:lucy"
-    }).unwrap();
+    let lucy_row = arr
+        .iter()
+        .find(|row| row.as_array().unwrap()[0] == "ex:lucy")
+        .unwrap();
     let lucy_arr = lucy_row.as_array().unwrap();
     assert_eq!(lucy_arr[1], serde_json::Value::Null);
     assert_eq!(lucy_arr[2], "Not a Vector");
 
     // Vector results should be properly scored
-    let homer_row = arr.iter().find(|row| {
-        row.as_array().unwrap()[0] == "ex:homer"
-    }).unwrap();
+    let homer_row = arr
+        .iter()
+        .find(|row| row.as_array().unwrap()[0] == "ex:homer")
+        .unwrap();
     let homer_arr = homer_row.as_array().unwrap();
     assert!((homer_arr[1].as_f64().unwrap() - 0.72).abs() < 0.001);
 }

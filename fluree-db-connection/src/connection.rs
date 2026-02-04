@@ -2,9 +2,9 @@
 
 use crate::config::ConnectionConfig;
 use crate::error::Result;
-use fluree_db_core::{Db, MemoryStorage, NodeCache, SimpleCache, Storage};
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 use fluree_db_core::FileStorage;
+use fluree_db_core::{Db, MemoryStorage, NodeCache, SimpleCache, Storage};
 use std::sync::Arc;
 
 /// A Fluree database connection
@@ -74,7 +74,7 @@ impl FileConnection {
         &self,
         root_address: &str,
     ) -> Result<Db<FileStorage, SimpleCache>> {
-        let storage = FileStorage::new(&self.storage.base_path());
+        let storage = FileStorage::new(self.storage.base_path());
         let cache = SimpleCache::new(self.config.cache.max_entries);
         Ok(Db::load(storage, cache, root_address).await?)
     }
