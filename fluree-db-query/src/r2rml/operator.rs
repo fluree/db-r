@@ -532,7 +532,7 @@ impl<S: Storage + 'static> Operator<S> for R2rmlScanOperator<S> {
                             // Materialize subject
                             let subject_term = materialize_subject_from_batch(
                                 &triples_map.subject_map,
-                                &iceberg_batch,
+                                iceberg_batch,
                                 table_row_idx,
                             )?;
 
@@ -648,7 +648,7 @@ impl<S: Storage + 'static> Operator<S> for R2rmlScanOperator<S> {
                                     // Extract child join key from current row
                                     let child_key = match get_join_key_from_batch(
                                         &child_columns,
-                                        &iceberg_batch,
+                                        iceberg_batch,
                                         table_row_idx,
                                     ) {
                                         Some(k) => k,
@@ -689,7 +689,7 @@ impl<S: Storage + 'static> Operator<S> for R2rmlScanOperator<S> {
                                     // Regular object map - materialize from current row
                                     materialize_object_from_batch(
                                         &pom.object_map,
-                                        &iceberg_batch,
+                                        iceberg_batch,
                                         table_row_idx,
                                     )?
                                 };

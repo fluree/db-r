@@ -303,7 +303,7 @@ impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
                     GraphName::Iri(iri) => {
                         // Concrete graph: run inner patterns in that graph
                         // If graph doesn't exist in dataset → empty result (Clojure parity)
-                        if let Some(ref ds) = ctx.dataset {
+                        if let Some(ds) = &ctx.dataset {
                             if ds.has_named_graph(iri) {
                                 self.execute_in_graph(
                                     ctx,
@@ -342,7 +342,7 @@ impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
                         if let Some(binding) = parent_batch.get(row_idx, *var) {
                             if let Some(bound_iri) = Self::extract_graph_iri_from_binding(binding) {
                                 // ?g already bound: use only that graph
-                                if let Some(ref ds) = ctx.dataset {
+                                if let Some(ds) = &ctx.dataset {
                                     if ds.has_named_graph(&bound_iri) {
                                         self.execute_in_graph(
                                             ctx,
@@ -379,7 +379,7 @@ impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
                             // else: binding exists but isn't a string IRI → no output
                         } else {
                             // ?g unbound: iterate ALL named graphs, bind ?g
-                            if let Some(ref ds) = ctx.dataset {
+                            if let Some(ds) = &ctx.dataset {
                                 for iri in ds.named_graph_iris() {
                                     self.execute_in_graph(
                                         ctx,
