@@ -9,6 +9,9 @@ use serde_json::{json, Map, Value as JsonValue};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
+/// Type alias for IRI compaction functions used in JSON-LD formatting.
+type IriCompactor = Arc<dyn Fn(&str) -> String + Send + Sync>;
+
 /// Configuration for JSON-LD formatting
 #[derive(Clone, Default)]
 pub struct JsonLdFormatConfig {
@@ -36,12 +39,12 @@ pub struct JsonLdFormatConfig {
     /// Optional IRI compaction function for vocab positions (predicates and @type values)
     ///
     /// If None, IRIs are output in expanded form.
-    compactor_vocab: Option<Arc<dyn Fn(&str) -> String + Send + Sync>>,
+    compactor_vocab: Option<IriCompactor>,
 
     /// Optional IRI compaction function for `@id` positions (node identifiers)
     ///
     /// If None, falls back to `compactor_vocab` when present; otherwise expanded IRIs.
-    compactor_id: Option<Arc<dyn Fn(&str) -> String + Send + Sync>>,
+    compactor_id: Option<IriCompactor>,
 }
 
 impl std::fmt::Debug for JsonLdFormatConfig {
