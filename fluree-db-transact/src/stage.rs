@@ -780,7 +780,7 @@ async fn validate_staged_nodes<S: Storage + Clone + 'static>(
 
     for subject in staged_subjects {
         // Get the node's types for shape targeting
-        let rdf_type = db.sid_interner.intern(RDF, rdf_names::TYPE);
+        let rdf_type = Sid::new(RDF, rdf_names::TYPE);
         let type_flakes = fluree_db_core::range_with_overlay(
             db,
             view, // LedgerView implements OverlayProvider

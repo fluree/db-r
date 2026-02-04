@@ -593,15 +593,15 @@ pub fn build_where_operators_seeded<S: Storage + 'static>(
 
 /// Create a first-pattern scan operator.
 ///
-/// Creates a `DeferredScanOperator` that selects between `BinaryScanOperator`
-/// and `ScanOperator` at open() time based on whether a binary store is
-/// available on the `ExecutionContext`.
+/// Creates a `ScanOperator` that selects between `BinaryScanOperator` (streaming
+/// cursor) and `RangeScanOperator` (range fallback) at `open()` time based on
+/// the `ExecutionContext`.
 fn make_first_scan<S: Storage + 'static>(
     tp: &TriplePattern,
     object_bounds: &HashMap<VarId, ObjectBounds>,
 ) -> BoxedOperator<S> {
     let obj_bounds = tp.o.as_var().and_then(|v| object_bounds.get(&v).cloned());
-    Box::new(crate::binary_scan::DeferredScanOperator::<S>::new(
+    Box::new(crate::binary_scan::ScanOperator::<S>::new(
         tp.clone(),
         obj_bounds,
     ))
@@ -612,7 +612,7 @@ fn make_first_scan<S: Storage + 'static>(
 /// This is the extracted helper that eliminates the duplication between
 /// `build_where_operators_seeded` (incremental path) and `build_triple_operators`.
 ///
-/// - If `left` is None, creates a `DeferredScanOperator` for the first pattern
+/// - If `left` is None, creates a `ScanOperator` for the first pattern
 /// - If `left` is Some, creates a NestedLoopJoinOperator joining to the existing operator
 /// - Applies object bounds from filters when available
 pub fn build_scan_or_join<S: Storage + 'static>(

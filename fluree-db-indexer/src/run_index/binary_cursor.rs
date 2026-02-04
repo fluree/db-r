@@ -1071,7 +1071,7 @@ impl BinaryCursor {
     ///
     /// If Region 3 is empty (no history available), validates that no row
     /// has t > to_t (defense-in-depth), then uses the current state as-is.
-    /// This is safe when the DeferredScanOperator guard ensures
+    /// This is safe when the ScanOperator guard ensures
     /// `to_t >= store.base_t()` — an unmodified leaflet's rows all have
     /// t <= base_t <= to_t.
     fn process_leaflet_time_travel(

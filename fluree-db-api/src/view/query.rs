@@ -247,7 +247,7 @@ where
     ///
     /// Single internal path that handles both policy and non-policy execution.
     /// Threads `binary_store` from the view into `ContextConfig` so that
-    /// `DeferredScanOperator` can use `BinaryScanOperator` when available.
+    /// `ScanOperator` can use `BinaryScanOperator` when available.
     pub(crate) async fn execute_view_internal(
         &self,
         view: &FlureeView<S>,

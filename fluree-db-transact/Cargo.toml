@@ -43,11 +43,11 @@ chrono.workspace = true
 bigdecimal = "0.4"
 num-bigint = "0.4"
 
-# Compression (optional, for commit-v2 binary format)
-zstd = { workspace = true, optional = true }
+# Compression (binary commit format)
+zstd = { workspace = true }
 
 # Tempfile for streaming commit writer spool
-tempfile = { version = "3", optional = true }
+tempfile = "3"
 
 # Turtle parser (optional, for import mode)
 fluree-graph-turtle = { path = "../fluree-graph-turtle", optional = true }
@@ -55,7 +55,7 @@ fluree-graph-turtle = { path = "../fluree-graph-turtle", optional = true }
 [features]
 default = []
 shacl = ["dep:fluree-db-shacl"]
-commit-v2 = ["dep:zstd", "dep:tempfile", "dep:fluree-graph-turtle", "fluree-db-novelty/commit-v2"]
+import = ["dep:fluree-graph-turtle"]
 
 [dev-dependencies]
 tokio.workspace = true

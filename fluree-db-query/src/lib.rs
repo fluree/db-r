@@ -5,7 +5,7 @@
 //! This crate provides:
 //! - Columnar batch-based execution model
 //! - Operator trait with `open/next_batch/close` lifecycle
-//! - ScanOperator wrapping `fluree-db-core::range()`
+//! - ScanOperator for triple-pattern evaluation (binary cursor + range fallback)
 //! - Variable registry for compact binding indices
 //!
 //! ## Quick Start
@@ -99,7 +99,7 @@ pub use property_join::PropertyJoinOperator;
 pub use property_path::{PropertyPathOperator, DEFAULT_MAX_VISITED};
 pub use r2rml::{NoOpR2rmlProvider, R2rmlProvider, R2rmlScanOperator, R2rmlTableProvider};
 pub use binary_range::BinaryRangeProvider;
-pub use binary_scan::{BinaryScanOperator, DeferredScanOperator};
+pub use binary_scan::{BinaryScanOperator, ScanOperator};
 pub use graph_view::{GraphView, ResolvedGraphView, BaseView, AsOf, WithPolicy, WithReasoning};
 pub use seed::{EmptyOperator, SeedOperator};
 pub use sort::{compare_bindings, compare_flake_values, SortDirection, SortOperator, SortSpec};
@@ -142,7 +142,7 @@ pub async fn execute_pattern<S: Storage + 'static>(
     pattern: TriplePattern,
 ) -> Result<Vec<Batch>> {
     let ctx = ExecutionContext::new(db, vars);
-    let mut scan = DeferredScanOperator::<S>::new(pattern, None);
+    let mut scan = ScanOperator::<S>::new(pattern, None);
 
     scan.open(&ctx).await?;
 
@@ -201,7 +201,7 @@ pub async fn execute_pattern_at<S: Storage + 'static>(
     from_t: Option<i64>,
 ) -> Result<Vec<Batch>> {
     let ctx = ExecutionContext::with_time(db, vars, to_t, from_t);
-    let mut scan = DeferredScanOperator::<S>::new(pattern, None);
+    let mut scan = ScanOperator::<S>::new(pattern, None);
 
     scan.open(&ctx).await?;
 
@@ -234,7 +234,7 @@ pub async fn execute_pattern_with_overlay<S: Storage + 'static>(
     pattern: TriplePattern,
 ) -> Result<Vec<Batch>> {
     let ctx = ExecutionContext::with_overlay(db, vars, overlay);
-    let mut scan = DeferredScanOperator::<S>::new(pattern, None);
+    let mut scan = ScanOperator::<S>::new(pattern, None);
 
     scan.open(&ctx).await?;
 
@@ -261,7 +261,7 @@ pub async fn execute_pattern_with_overlay_at<S: Storage + 'static>(
     from_t: Option<i64>,
 ) -> Result<Vec<Batch>> {
     let ctx = ExecutionContext::with_time_and_overlay(db, vars, to_t, from_t, overlay);
-    let mut scan = DeferredScanOperator::<S>::new(pattern, None);
+    let mut scan = ScanOperator::<S>::new(pattern, None);
 
     scan.open(&ctx).await?;
 

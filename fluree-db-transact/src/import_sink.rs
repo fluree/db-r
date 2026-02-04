@@ -9,7 +9,6 @@
 //! This eliminates the intermediate flake buffer entirely, keeping memory
 //! bounded regardless of how large the input is.
 
-#[cfg(feature = "commit-v2")]
 mod inner {
     use crate::commit_v2::StreamingCommitWriter;
     use crate::generate::{infer_datatype, DT_ID, DT_JSON, DT_LANG_STRING};
@@ -419,5 +418,4 @@ mod inner {
     }
 }
 
-#[cfg(feature = "commit-v2")]
 pub use inner::ImportSink;

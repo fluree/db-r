@@ -118,8 +118,8 @@ pub struct FlureeView<S: Storage + 'static> {
     // ========================================================================
     /// Binary columnar index store for `BinaryScanOperator`.
     ///
-    /// When set, `DeferredScanOperator` uses this for direct columnar scans
-    /// instead of falling back to `ScanOperator`.
+    /// When set, `ScanOperator` uses this for direct columnar scans
+    /// via `BinaryScanOperator`.
     pub(crate) binary_store: Option<Arc<BinaryIndexStore>>,
 }
 

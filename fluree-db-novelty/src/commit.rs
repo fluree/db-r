@@ -304,17 +304,14 @@ pub async fn load_commit<S: Storage>(storage: &S, address: &str) -> Result<Commi
         .await
         .map_err(|e| NoveltyError::storage(format!("Failed to read commit {}: {}", address, e)))?;
 
-    // When commit-v2 is enabled: binary-only, no JSON fallback.
-    // When off: JSON deserialization (original path).
-    #[cfg(feature = "commit-v2")]
-    let mut commit = {
+    let mut commit = if data.len() >= 4 && data[0..4] == crate::commit_v2::format::MAGIC {
         let _span = tracing::debug_span!("load_commit_v2", blob_bytes = data.len()).entered();
         crate::commit_v2::read_commit(&data)
             .map_err(|e| NoveltyError::invalid_commit(e.to_string()))?
+    } else {
+        serde_json::from_slice(&data)
+            .map_err(|e| NoveltyError::invalid_commit(e.to_string()))?
     };
-
-    #[cfg(not(feature = "commit-v2"))]
-    let mut commit: Commit = serde_json::from_slice(&data)?;
 
     // Inject derived metadata that may be omitted from on-disk commit blobs.
     //
@@ -464,17 +461,11 @@ pub async fn load_commit_envelope<S: Storage>(storage: &S, address: &str) -> Res
         .await
         .map_err(|e| NoveltyError::storage(format!("Failed to read commit envelope {}: {}", address, e)))?;
 
-    // When commit-v2 is enabled: binary-only, no JSON fallback.
-    // When off: JSON deserialization (original path).
-    #[cfg(feature = "commit-v2")]
     let envelope = {
         let _span = tracing::debug_span!("load_commit_envelope_v2", blob_bytes = data.len()).entered();
         crate::commit_v2::read_commit_envelope(&data)
             .map_err(|e| NoveltyError::invalid_commit(e.to_string()))?
     };
-
-    #[cfg(not(feature = "commit-v2"))]
-    let envelope: CommitEnvelope = serde_json::from_slice(&data)?;
 
     Ok(envelope)
 }
@@ -560,10 +551,6 @@ pub fn trace_commits<S: Storage + Clone + 'static>(
 mod tests {
     use super::*;
     use fluree_db_core::{Flake, FlakeValue, Sid};
-    #[cfg(not(feature = "commit-v2"))]
-    use fluree_db_core::MemoryStorage;
-    #[cfg(not(feature = "commit-v2"))]
-    use futures::StreamExt;
 
     fn make_test_flake(s: i64, p: i64, o: i64, t: i64) -> Flake {
         Flake::new(
@@ -597,47 +584,6 @@ mod tests {
         assert!(commit1.previous.is_none());
         assert_eq!(commit2.previous, Some("commit-1".to_string()));
         assert_eq!(commit3.previous, Some("commit-2".to_string()));
-    }
-
-    #[tokio::test]
-    #[cfg(not(feature = "commit-v2"))]
-    async fn test_trace_commits() {
-        let storage = MemoryStorage::new();
-
-        // Create a chain of commits: 3 -> 2 -> 1
-        let commit1 = Commit::new("commit-1", 1, vec![make_test_flake(1, 1, 1, 1)]);
-        let commit2 =
-            Commit::new("commit-2", 2, vec![make_test_flake(2, 2, 2, 2)]).with_previous("commit-1");
-        let commit3 =
-            Commit::new("commit-3", 3, vec![make_test_flake(3, 3, 3, 3)]).with_previous("commit-2");
-
-        // Store commits
-        storage.insert("commit-1", serde_json::to_vec(&commit1).unwrap());
-        storage.insert("commit-2", serde_json::to_vec(&commit2).unwrap());
-        storage.insert("commit-3", serde_json::to_vec(&commit3).unwrap());
-
-        // Trace from commit-3, stop at t=0 (get all commits)
-        let mut stream = std::pin::pin!(trace_commits(storage.clone(), "commit-3".to_string(), 0));
-        let mut commits = Vec::new();
-        while let Some(result) = stream.next().await {
-            commits.push(result.unwrap());
-        }
-
-        assert_eq!(commits.len(), 3);
-        assert_eq!(commits[0].t, 3);
-        assert_eq!(commits[1].t, 2);
-        assert_eq!(commits[2].t, 1);
-
-        // Trace from commit-3, stop at t=1 (only get commits with t > 1)
-        let mut stream = std::pin::pin!(trace_commits(storage.clone(), "commit-3".to_string(), 1));
-        let mut commits = Vec::new();
-        while let Some(result) = stream.next().await {
-            commits.push(result.unwrap());
-        }
-
-        assert_eq!(commits.len(), 2);
-        assert_eq!(commits[0].t, 3);
-        assert_eq!(commits[1].t, 2);
     }
 
     // =========================================================================
@@ -715,74 +661,4 @@ mod tests {
         assert!(envelope.index_address().is_none());
     }
 
-    #[tokio::test]
-    #[cfg(not(feature = "commit-v2"))]
-    async fn test_trace_commit_envelopes() {
-        let storage = MemoryStorage::new();
-
-        // Create a chain of commits with flakes: 3 -> 2 -> 1
-        let commit1 = Commit::new("commit-1", 1, vec![make_test_flake(1, 1, 1, 1)]);
-        let commit2 = Commit::new("commit-2", 2, vec![make_test_flake(2, 2, 2, 2)])
-            .with_previous("commit-1");
-        let mut commit3 = Commit::new("commit-3", 3, vec![make_test_flake(3, 3, 3, 3)])
-            .with_previous("commit-2");
-        commit3.index = Some(IndexRef::new("index-at-3").with_t(3));
-
-        storage.insert("commit-1", serde_json::to_vec(&commit1).unwrap());
-        storage.insert("commit-2", serde_json::to_vec(&commit2).unwrap());
-        storage.insert("commit-3", serde_json::to_vec(&commit3).unwrap());
-
-        // Trace envelopes from commit-3
-        let mut stream = std::pin::pin!(trace_commit_envelopes(
-            storage.clone(),
-            "commit-3".to_string(),
-            0
-        ));
-
-        let mut envelopes = Vec::new();
-        while let Some(result) = stream.next().await {
-            envelopes.push(result.unwrap());
-        }
-
-        assert_eq!(envelopes.len(), 3);
-
-        // First envelope (commit-3) should have index ref
-        let (addr3, env3) = &envelopes[0];
-        assert_eq!(addr3, "commit-3");
-        assert_eq!(env3.t, 3);
-        assert!(env3.index_ref().is_some());
-        assert_eq!(env3.index_address(), Some("index-at-3"));
-
-        // Second envelope (commit-2) should not have index
-        let (addr2, env2) = &envelopes[1];
-        assert_eq!(addr2, "commit-2");
-        assert_eq!(env2.t, 2);
-        assert!(env2.index_ref().is_none());
-
-        // Third envelope (commit-1) genesis
-        let (addr1, env1) = &envelopes[2];
-        assert_eq!(addr1, "commit-1");
-        assert_eq!(env1.t, 1);
-        assert!(env1.previous_address().is_none());
-    }
-
-    #[tokio::test]
-    #[cfg(not(feature = "commit-v2"))]
-    async fn test_load_commit_envelope_ignores_large_flakes() {
-        let storage = MemoryStorage::new();
-
-        // Create a commit with many flakes
-        let many_flakes: Vec<Flake> = (0..1000)
-            .map(|i| make_test_flake(i, i, i, 1))
-            .collect();
-        let commit = Commit::new("big-commit", 1, many_flakes)
-            .with_namespace_delta(HashMap::from([(50, "test:".to_string())]));
-
-        storage.insert("big-commit", serde_json::to_vec(&commit).unwrap());
-
-        // Load as envelope - should succeed and ignore flakes
-        let envelope = load_commit_envelope(&storage, "big-commit").await.unwrap();
-        assert_eq!(envelope.t, 1);
-        assert_eq!(envelope.namespace_delta.get(&50), Some(&"test:".to_string()));
-    }
 }

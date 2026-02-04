@@ -26,7 +26,6 @@
 
 mod commit;
 mod commit_flakes;
-#[cfg(feature = "commit-v2")]
 pub mod commit_v2;
 mod error;
 mod stats;

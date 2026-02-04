@@ -77,8 +77,7 @@ pub enum TransactError {
     #[error("{0}")]
     PolicyViolation(#[from] fluree_db_policy::PolicyError),
 
-    /// Commit format v2 error (only available with `commit-v2` feature)
-    #[cfg(feature = "commit-v2")]
+    /// Commit format v2 error
     #[error("Commit v2 error: {0}")]
     CommitV2(#[from] crate::commit_v2::CommitV2Error),
 

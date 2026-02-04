@@ -624,7 +624,8 @@ where
         .unwrap_or_else(|| std::env::temp_dir().join("fluree-index"));
     let alias_path = fluree_db_core::address_path::alias_to_path_prefix(alias)
         .unwrap_or_else(|_| alias.replace(':', "/"));
-    let run_dir = data_dir.join(&alias_path).join("runs");
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let run_dir = data_dir.join(&alias_path).join("tmp_import").join(&session_id);
     let index_dir = data_dir.join(&alias_path).join("index");
 
     tracing::info!(
@@ -875,6 +876,11 @@ where
                 )
                 .await
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+            // Clean up ephemeral tmp_import session directory
+            if let Err(e) = std::fs::remove_dir_all(&run_dir) {
+                tracing::warn!(?run_dir, %e, "failed to clean up tmp_import session dir");
+            }
 
             // Compute stats from build results
             let total_leaves: usize = build_results

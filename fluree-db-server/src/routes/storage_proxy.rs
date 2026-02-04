@@ -26,7 +26,7 @@ use axum::{
 };
 use fluree_db_api::{policy_builder, NameService, QueryConnectionOptions, StorageRead};
 use fluree_db_core::flake::Flake;
-use fluree_db_core::{NoOverlay, OverlayProvider, SidInterner, Tracker};
+use fluree_db_core::{NoOverlay, OverlayProvider, Tracker};
 use fluree_db_query::QueryPolicyEnforcer;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -200,7 +200,6 @@ pub enum FilterableBlock {
 fn try_parse_as_leaf(
     bytes: Vec<u8>,
     address_context: &AddressContext,
-    interner: &SidInterner,
 ) -> FilterableBlock {
     // Fast path: VG artifacts detected from address pattern
     if matches!(address_context, AddressContext::VgArtifact { .. }) {
@@ -213,7 +212,7 @@ fn try_parse_as_leaf(
     }
 
     // Attempt to parse as leaf using existing core parser
-    match fluree_db_core::serde::parse_leaf_node_interned(bytes, interner) {
+    match fluree_db_core::serde::parse_leaf_node(bytes) {
         Ok(flakes) => FilterableBlock::Leaf(flakes),
         Err(_) => {
             // Parse failed - could be branch, corrupted, or different format
@@ -455,7 +454,7 @@ pub async fn get_block(
         ServerError::not_acceptable("Flakes format only available for ledger blocks")
     })?;
 
-    // Get cached ledger state (for interner)
+    // Get cached ledger state
     let fluree = state.fluree.as_file();
     let handle = fluree
         .ledger_cached(&alias)
@@ -466,7 +465,7 @@ pub async fn get_block(
     let snapshot = handle.snapshot().await;
 
     // Attempt to parse as leaf using actual core parser
-    let parsed = try_parse_as_leaf(bytes, &context, &snapshot.db.sid_interner);
+    let parsed = try_parse_as_leaf(bytes, &context);
 
     let flakes = match parsed {
         FilterableBlock::Leaf(flakes) => flakes,

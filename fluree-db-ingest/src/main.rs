@@ -17,7 +17,7 @@ fn alias_prefix(alias: &str) -> String {
 fn default_run_dir(args: &Args) -> PathBuf {
     args.run_dir
         .clone()
-        .unwrap_or_else(|| args.db_dir.join(alias_prefix(&args.ledger)).join("runs"))
+        .unwrap_or_else(|| args.db_dir.join(alias_prefix(&args.ledger)).join("tmp_import"))
 }
 
 fn default_index_dir(args: &Args) -> PathBuf {
@@ -1014,7 +1014,7 @@ struct Args {
     #[arg(long)]
     generate_runs: bool,
 
-    /// Directory for run files (default: {db_dir}/runs).
+    /// Directory for run files (default: {db_dir}/tmp_import).
     #[arg(long)]
     run_dir: Option<PathBuf>,
 
@@ -1296,7 +1296,7 @@ fn format_sid(sid: &fluree_db_core::Sid, ns: &std::collections::HashMap<i32, Str
 /// 1. Load BinaryIndexStore from run_dir + index_dir
 /// 2. Parse SPARQL string → SparqlAst
 /// 3. Lower to ParsedQuery using namespace-based IRI encoding
-/// 4. Build operator tree (DeferredScanOperator auto-selects binary path)
+/// 4. Build operator tree (ScanOperator auto-selects binary path)
 /// 5. Execute with ExecutionContext that has binary_store set
 /// 6. Print results
 #[cfg(feature = "commit-v2")]

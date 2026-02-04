@@ -45,10 +45,13 @@ pub struct IndexerConfig {
     /// Default: 30 minutes
     pub gc_min_time_mins: u32,
 
-    /// Base directory for binary index artifacts (run files, index files).
+    /// Base directory for binary index artifacts.
     ///
-    /// Index files for each ledger will be stored under:
-    /// `{data_dir}/{alias_path}/runs` and `{data_dir}/{alias_path}/index`
+    /// Ephemeral build artifacts (run files, dicts) are stored under:
+    /// `{data_dir}/{alias_path}/tmp_import/{session_id}/`
+    ///
+    /// Durable index files are stored under:
+    /// `{data_dir}/{alias_path}/index/`
     ///
     /// If `None`, defaults to `{system_temp_dir}/fluree-index`. For production
     /// deployments, this should always be set to a persistent directory.

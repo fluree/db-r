@@ -32,8 +32,6 @@ benchmarks = []
 search-remote-client = ["dep:reqwest"]
 # Embedded vector search (HNSW-based approximate nearest neighbor)
 vector = ["fluree-db-query/vector"]
-# Binary commit format v2 (compact binary instead of JSON)
-commit-v2 = ["fluree-db-transact/commit-v2", "fluree-db-novelty/commit-v2"]
 # Convenience: all features enabled
 full = ["native", "credential", "iceberg", "shacl"]
 

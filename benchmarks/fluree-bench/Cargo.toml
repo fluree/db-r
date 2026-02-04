@@ -5,8 +5,7 @@ edition.workspace = true
 publish = false
 
 [features]
-default = ["commit-v2"]
-commit-v2 = ["fluree-db-api/commit-v2", "fluree-db-transact/commit-v2"]
+default = []
 bench-otel = [
     "dep:opentelemetry",
     "dep:opentelemetry-otlp",
