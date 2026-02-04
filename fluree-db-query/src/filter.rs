@@ -468,6 +468,18 @@ impl ComparableValue {
             FlakeValue::Time(t) => Some(ComparableValue::Time(t.clone())),
         }
     }
+
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            ComparableValue::String(s) => Some(s.as_ref()),
+            ComparableValue::Iri(s) => Some(s.as_ref()),
+            ComparableValue::TypedLiteral {
+                val: FlakeValue::String(s),
+                ..
+            } => Some(s.as_str()),
+            _ => None,
+        }
+    }
 }
 
 impl From<&FilterValue> for ComparableValue {
@@ -838,19 +850,6 @@ fn parse_datetime_from_binding(binding: &Binding) -> Option<DateTime<FixedOffset
                 _ => None,
             }
         }
-        _ => None,
-    }
-}
-
-/// Helper to extract a string from a comparable value
-fn comparable_to_string(val: &ComparableValue) -> Option<&str> {
-    match val {
-        ComparableValue::String(s) => Some(s.as_ref()),
-        ComparableValue::Iri(s) => Some(s.as_ref()),
-        ComparableValue::TypedLiteral {
-            val: FlakeValue::String(s),
-            ..
-        } => Some(s.as_str()),
         _ => None,
     }
 }
@@ -1290,7 +1289,7 @@ fn eval_function_to_value(
             let mut result = String::new();
             for arg in args {
                 if let Some(val) = eval_to_comparable(arg, row)? {
-                    if let Some(s) = comparable_to_string(&val) {
+                    if let Some(s) = val.as_str() {
                         result.push_str(s);
                     }
                 }
@@ -1318,7 +1317,7 @@ fn eval_function_to_value(
             let replacement = eval_to_comparable(&args[2], row)?;
             let flags = if args.len() > 3 {
                 eval_to_comparable(&args[3], row)?
-                    .and_then(|v| comparable_to_string(&v).map(|s| s.to_string()))
+                    .and_then(|v| v.as_str().map(|s| s.to_string()))
                     .unwrap_or_default()
             } else {
                 String::new()
@@ -1599,7 +1598,7 @@ fn eval_function_to_value(
                 (Some(ComparableValue::String(s)), Some(dt_val)) => {
                     Ok(Some(ComparableValue::TypedLiteral {
                         val: FlakeValue::String(s.to_string()),
-                        dt_iri: comparable_to_string(dt_val).map(Arc::from),
+                        dt_iri: dt_val.as_str().map(Arc::from),
                         lang: None,
                     }))
                 }
@@ -1622,7 +1621,7 @@ fn eval_function_to_value(
                     Ok(Some(ComparableValue::TypedLiteral {
                         val: FlakeValue::String(s.to_string()),
                         dt_iri: None,
-                        lang: comparable_to_string(lang_val).map(Arc::from),
+                        lang: lang_val.as_str().map(Arc::from),
                     }))
                 }
                 (None, _) | (_, None) => Ok(None), // Unbound
@@ -1722,7 +1721,7 @@ fn evaluate_function(name: &FunctionName, args: &[FilterExpr], row: &RowView) ->
             let pattern = eval_to_comparable(&args[1], row)?;
             let flags = if args.len() > 2 {
                 eval_to_comparable(&args[2], row)?
-                    .and_then(|v| comparable_to_string(&v).map(|s| s.to_string()))
+                    .and_then(|v| v.as_str().map(|s| s.to_string()))
                     .unwrap_or_default()
             } else {
                 String::new()
