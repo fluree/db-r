@@ -823,7 +823,11 @@ mod tests {
         ];
 
         let block = collect_inner_join_block(&patterns, 0);
-        assert_eq!(block.end_index, patterns.len(), "block should consume all patterns");
+        assert_eq!(
+            block.end_index,
+            patterns.len(),
+            "block should consume all patterns"
+        );
         assert_eq!(block.values.len(), 0, "expected 0 VALUES in the block");
         assert_eq!(block.binds.len(), 0, "expected 0 BINDs in the block");
         assert_eq!(block.triples.len(), 3, "expected 3 triples in the block");

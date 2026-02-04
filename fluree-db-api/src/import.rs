@@ -352,8 +352,8 @@ where
     tracing::info!(chunks = total, path = %import_path.display(), "discovered import chunks");
 
     // ---- Phase 1: Create ledger (init nameservice) ----
-    let normalized_alias = fluree_db_core::alias::normalize_alias(alias)
-        .unwrap_or_else(|_| alias.to_string());
+    let normalized_alias =
+        fluree_db_core::alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
 
     // Check if ledger already exists
     let ns_record = nameservice
@@ -483,15 +483,8 @@ where
     N: NameService + Publisher,
 {
     // ---- Phase 2: Import TTL → commits + streaming runs ----
-    let import_result = run_import_chunks(
-        storage,
-        nameservice,
-        alias,
-        chunks,
-        run_dir,
-        config,
-    )
-    .await?;
+    let import_result =
+        run_import_chunks(storage, nameservice, alias, chunks, run_dir, config).await?;
 
     tracing::info!(
         t = import_result.final_t,
@@ -561,8 +554,8 @@ where
     N: NameService + Publisher,
 {
     use fluree_db_indexer::run_index::{
-        CommitResolver, GlobalDicts, MultiOrderConfig, MultiOrderRunWriter,
-        RunGenerationResult, RunSortOrder, persist_namespaces,
+        persist_namespaces, CommitResolver, GlobalDicts, MultiOrderConfig, MultiOrderRunWriter,
+        RunGenerationResult, RunSortOrder,
     };
     use fluree_db_transact::import::{
         finalize_parsed_chunk, import_commit, parse_chunk, ImportState, ParsedChunk,
@@ -591,89 +584,94 @@ where
 
     let ledger_alias = alias.to_string();
     let run_dir_clone = run_dir.to_path_buf();
-    let resolver_handle: std::thread::JoinHandle<
-        std::result::Result<RunGenerationResult, String>,
-    > = std::thread::Builder::new()
-        .name("run-resolver".into())
-        .spawn(move || {
-            // Singleton 1: GlobalDicts (file-backed subjects + strings in run_dir)
-            let mut dicts =
-                GlobalDicts::new(&run_dir_clone).map_err(|e| format!("init dicts: {}", e))?;
-            // Singleton 2: CommitResolver
-            let mut resolver = CommitResolver::new();
-            resolver.set_stats_hook(fluree_db_indexer::stats::IdStatsHook::new());
+    let resolver_handle: std::thread::JoinHandle<std::result::Result<RunGenerationResult, String>> =
+        std::thread::Builder::new()
+            .name("run-resolver".into())
+            .spawn(move || {
+                // Singleton 1: GlobalDicts (file-backed subjects + strings in run_dir)
+                let mut dicts =
+                    GlobalDicts::new(&run_dir_clone).map_err(|e| format!("init dicts: {}", e))?;
+                // Singleton 2: CommitResolver
+                let mut resolver = CommitResolver::new();
+                resolver.set_stats_hook(fluree_db_indexer::stats::IdStatsHook::new());
 
-            // Singleton 3: MultiOrderRunWriter
-            let mut writer = MultiOrderRunWriter::new(mo_config)
-                .map_err(|e| format!("init multi-order writer: {}", e))?;
-            let mut commit_count = 0usize;
+                // Singleton 3: MultiOrderRunWriter
+                let mut writer = MultiOrderRunWriter::new(mo_config)
+                    .map_err(|e| format!("init multi-order writer: {}", e))?;
+                let mut commit_count = 0usize;
 
-            while let Ok((bytes, commit_address)) = rx.recv() {
-                let (op_count, t) = resolver
-                    .resolve_blob(&bytes, &commit_address, &ledger_alias, &mut dicts, &mut writer)
-                    .map_err(|e| format!("{}", e))?;
-                commit_count += 1;
-                tracing::info!(
-                    commit = commit_count,
-                    t,
-                    ops = op_count,
-                    total_records = writer.total_records(),
-                    runs = writer.run_count(),
-                    subjects = dicts.subjects.len(),
-                    predicates = dicts.predicates.len(),
-                    "commit resolved"
-                );
-            }
+                while let Ok((bytes, commit_address)) = rx.recv() {
+                    let (op_count, t) = resolver
+                        .resolve_blob(
+                            &bytes,
+                            &commit_address,
+                            &ledger_alias,
+                            &mut dicts,
+                            &mut writer,
+                        )
+                        .map_err(|e| format!("{}", e))?;
+                    commit_count += 1;
+                    tracing::info!(
+                        commit = commit_count,
+                        t,
+                        ops = op_count,
+                        total_records = writer.total_records(),
+                        runs = writer.run_count(),
+                        subjects = dicts.subjects.len(),
+                        predicates = dicts.predicates.len(),
+                        "commit resolved"
+                    );
+                }
 
-            // Flush remaining run buffers
-            let order_results = writer
-                .finish(&mut dicts.languages)
-                .map_err(|e| format!("writer finish: {}", e))?;
+                // Flush remaining run buffers
+                let order_results = writer
+                    .finish(&mut dicts.languages)
+                    .map_err(|e| format!("writer finish: {}", e))?;
 
-            let mut all_run_files = Vec::new();
-            let mut total_records = 0u64;
-            for (order, result) in &order_results {
-                tracing::info!(
-                    order = order.dir_name(),
-                    run_files = result.run_files.len(),
-                    records = result.total_records,
-                    "order run generation complete"
-                );
-                all_run_files.extend(result.run_files.iter().cloned());
-                total_records += result.total_records;
-            }
+                let mut all_run_files = Vec::new();
+                let mut total_records = 0u64;
+                for (order, result) in &order_results {
+                    tracing::info!(
+                        order = order.dir_name(),
+                        run_files = result.run_files.len(),
+                        records = result.total_records,
+                        "order run generation complete"
+                    );
+                    all_run_files.extend(result.run_files.iter().cloned());
+                    total_records += result.total_records;
+                }
 
-            // Persist dictionaries for index build
-            dicts
-                .persist(&run_dir_clone)
-                .map_err(|e| format!("dict persist: {}", e))?;
+                // Persist dictionaries for index build
+                dicts
+                    .persist(&run_dir_clone)
+                    .map_err(|e| format!("dict persist: {}", e))?;
 
-            // Persist namespace map
-            persist_namespaces(resolver.ns_prefixes(), &run_dir_clone)
-                .map_err(|e| format!("namespace persist: {}", e))?;
+                // Persist namespace map
+                persist_namespaces(resolver.ns_prefixes(), &run_dir_clone)
+                    .map_err(|e| format!("namespace persist: {}", e))?;
 
-            // Persist reverse indexes
-            dicts
-                .subjects
-                .write_reverse_index(&run_dir_clone.join("subjects.rev"))
-                .map_err(|e| format!("subjects.rev: {}", e))?;
-            dicts
-                .strings
-                .write_reverse_index(&run_dir_clone.join("strings.rev"))
-                .map_err(|e| format!("strings.rev: {}", e))?;
+                // Persist reverse indexes
+                dicts
+                    .subjects
+                    .write_reverse_index(&run_dir_clone.join("subjects.rev"))
+                    .map_err(|e| format!("subjects.rev: {}", e))?;
+                dicts
+                    .strings
+                    .write_reverse_index(&run_dir_clone.join("strings.rev"))
+                    .map_err(|e| format!("strings.rev: {}", e))?;
 
-            Ok(RunGenerationResult {
-                run_files: all_run_files,
-                subject_count: dicts.subjects.len(),
-                predicate_count: dicts.predicates.len(),
-                string_count: dicts.strings.len(),
-                needs_wide: dicts.subjects.needs_wide(),
-                total_records,
-                commit_count,
-                stats_hook: resolver.take_stats_hook(),
+                Ok(RunGenerationResult {
+                    run_files: all_run_files,
+                    subject_count: dicts.subjects.len(),
+                    predicate_count: dicts.predicates.len(),
+                    string_count: dicts.strings.len(),
+                    needs_wide: dicts.subjects.needs_wide(),
+                    total_records,
+                    commit_count,
+                    stats_hook: resolver.take_stats_hook(),
+                })
             })
-        })
-        .map_err(|e| ImportError::RunGeneration(format!("spawn resolver: {}", e)))?;
+            .map_err(|e| ImportError::RunGeneration(format!("spawn resolver: {}", e)))?;
 
     // ---- Phase 2a: Parse + commit chunk 0 serially (establishes namespaces) ----
     if !chunks.is_empty() {
@@ -712,10 +710,9 @@ where
         let ledger = alias.to_string();
 
         let next_chunk = Arc::new(AtomicUsize::new(1));
-        let (result_tx, result_rx) =
-            std::sync::mpsc::sync_channel::<std::result::Result<(usize, ParsedChunk), String>>(
-                num_threads * 2,
-            );
+        let (result_tx, result_rx) = std::sync::mpsc::sync_channel::<
+            std::result::Result<(usize, ParsedChunk), String>,
+        >(num_threads * 2);
 
         // Spawn parse worker threads
         let mut parse_handles = Vec::with_capacity(num_threads);
@@ -728,36 +725,32 @@ where
 
             let handle = std::thread::Builder::new()
                 .name(format!("ttl-parser-{}", thread_idx))
-                .spawn(move || {
-                    loop {
-                        let idx = next_chunk.fetch_add(1, Ordering::Relaxed);
-                        if idx >= chunks.len() {
+                .spawn(move || loop {
+                    let idx = next_chunk.fetch_add(1, Ordering::Relaxed);
+                    if idx >= chunks.len() {
+                        break;
+                    }
+
+                    let ttl = match std::fs::read_to_string(&chunks[idx]) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            let _ =
+                                result_tx.send(Err(format!("failed to read chunk {}: {}", idx, e)));
                             break;
                         }
+                    };
 
-                        let ttl = match std::fs::read_to_string(&chunks[idx]) {
-                            Ok(s) => s,
-                            Err(e) => {
-                                let _ = result_tx.send(Err(format!(
-                                    "failed to read chunk {}: {}",
-                                    idx, e
-                                )));
+                    let t = (idx + 1) as i64;
+                    match parse_chunk(&ttl, base_registry.clone(), t, &ledger, compress) {
+                        Ok(parsed) => {
+                            if result_tx.send(Ok((idx, parsed))).is_err() {
                                 break;
                             }
-                        };
-
-                        let t = (idx + 1) as i64;
-                        match parse_chunk(&ttl, base_registry.clone(), t, &ledger, compress) {
-                            Ok(parsed) => {
-                                if result_tx.send(Ok((idx, parsed))).is_err() {
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                let _ = result_tx
-                                    .send(Err(format!("parse chunk {} failed: {}", idx, e)));
-                                break;
-                            }
+                        }
+                        Err(e) => {
+                            let _ =
+                                result_tx.send(Err(format!("parse chunk {} failed: {}", idx, e)));
+                            break;
                         }
                     }
                 })
@@ -772,8 +765,7 @@ where
         let mut pending: BTreeMap<usize, ParsedChunk> = BTreeMap::new();
 
         for recv_result in result_rx {
-            let (idx, parsed) = recv_result
-                .map_err(|e| ImportError::Transact(e))?;
+            let (idx, parsed) = recv_result.map_err(|e| ImportError::Transact(e))?;
 
             pending.insert(idx, parsed);
 
@@ -789,16 +781,17 @@ where
                     t = result.t,
                     flakes = result.flake_count,
                     cumulative_flakes = state.cumulative_flakes,
-                    flakes_per_sec = format!("{:.2}M", state.cumulative_flakes as f64 / total_elapsed / 1_000_000.0),
+                    flakes_per_sec = format!(
+                        "{:.2}M",
+                        state.cumulative_flakes as f64 / total_elapsed / 1_000_000.0
+                    ),
                     "chunk committed"
                 );
 
                 // Feed to resolver
                 let resolver_send_failed = {
                     let addr = result.address.clone();
-                    tokio::task::block_in_place(|| {
-                        run_tx.send((result.commit_blob, addr)).is_err()
-                    })
+                    tokio::task::block_in_place(|| run_tx.send((result.commit_blob, addr)).is_err())
                 };
                 if resolver_send_failed {
                     // Drop sender so resolver thread exits, then join to get error
@@ -812,9 +805,7 @@ where
                 }
 
                 // Periodic nameservice checkpoint
-                if config.publish_every > 0
-                    && (next_expected + 1) % config.publish_every == 0
-                {
+                if config.publish_every > 0 && (next_expected + 1) % config.publish_every == 0 {
                     nameservice
                         .publish_commit(alias, &result.address, result.t)
                         .await
@@ -844,9 +835,8 @@ where
                 .map_err(|e| ImportError::Transact(e.to_string()))?;
 
             let addr = result.address.clone();
-            let send_failed = tokio::task::block_in_place(|| {
-                run_tx.send((result.commit_blob, addr)).is_err()
-            });
+            let send_failed =
+                tokio::task::block_in_place(|| run_tx.send((result.commit_blob, addr)).is_err());
             if send_failed {
                 drop(run_tx);
                 let err = match resolver_handle.join() {
@@ -884,8 +874,17 @@ where
     tracing::info!("waiting for run resolver to finish...");
     let run_result = match resolver_handle.join() {
         Ok(Ok(result)) => result,
-        Ok(Err(e)) => return Err(ImportError::RunGeneration(format!("run generation failed: {}", e))),
-        Err(_) => return Err(ImportError::RunGeneration("resolver thread panicked".into())),
+        Ok(Err(e)) => {
+            return Err(ImportError::RunGeneration(format!(
+                "run generation failed: {}",
+                e
+            )))
+        }
+        Err(_) => {
+            return Err(ImportError::RunGeneration(
+                "resolver thread panicked".into(),
+            ))
+        }
     };
 
     tracing::info!(
@@ -902,8 +901,9 @@ where
     let ns_path = run_dir.join("namespaces.json");
     let namespace_codes: HashMap<u16, String> = if ns_path.exists() {
         let bytes = std::fs::read(&ns_path)?;
-        let entries: Vec<serde_json::Value> = serde_json::from_slice(&bytes)
-            .map_err(|e| ImportError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
+        let entries: Vec<serde_json::Value> = serde_json::from_slice(&bytes).map_err(|e| {
+            ImportError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        })?;
         entries
             .iter()
             .filter_map(|v| {
@@ -1016,8 +1016,9 @@ where
     let predicates_path = run_dir.join("predicates.json");
     let predicate_sids: Vec<(u16, String)> = if predicates_path.exists() {
         let bytes = std::fs::read(&predicates_path)?;
-        let by_id: Vec<String> = serde_json::from_slice(&bytes)
-            .map_err(|e| ImportError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
+        let by_id: Vec<String> = serde_json::from_slice(&bytes).map_err(|e| {
+            ImportError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        })?;
         by_id
             .iter()
             .map(|iri| match trie.longest_match(iri) {
@@ -1060,8 +1061,8 @@ where
     // ---- Phase 5: Build V2 root ----
     let root = BinaryIndexRootV2::from_cas_artifacts(
         alias,
-        final_t,    // index_t
-        0,          // base_t (fresh import)
+        final_t, // index_t
+        0,       // base_t (fresh import)
         predicate_sids,
         namespace_codes,
         uploaded_dicts.subject_id_encoding,

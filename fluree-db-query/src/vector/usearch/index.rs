@@ -77,10 +77,7 @@ mod collision_map_serde {
         id: u64,
     }
 
-    pub fn serialize<S>(
-        map: &CollisionMap,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error>
+    pub fn serialize<S>(map: &CollisionMap, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -120,7 +117,10 @@ impl PointIdAssigner {
     }
 
     /// Create from snapshot data.
-    pub fn from_snapshot(primary: BTreeMap<u64, (Arc<str>, Arc<str>)>, collisions: CollisionMap) -> Self {
+    pub fn from_snapshot(
+        primary: BTreeMap<u64, (Arc<str>, Arc<str>)>,
+        collisions: CollisionMap,
+    ) -> Self {
         // Derive next_collision_id from existing overflow IDs
         // If there are existing collisions, continue from max+1
         // Otherwise start at the high-bit boundary

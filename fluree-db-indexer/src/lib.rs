@@ -1079,7 +1079,9 @@ async fn upload_dicts_to_cas<S: Storage>(
     let subject_reverse = upload_tree(storage, alias, sr_tree, DictKind::SubjectReverse).await?;
 
     // String trees (read from file-backed forward file)
-    let string_pairs = dicts.strings.all_entries()
+    let string_pairs = dicts
+        .strings
+        .all_entries()
         .map_err(|e| IndexerError::StorageWrite(format!("read string entries: {}", e)))?;
 
     let mut str_fwd: Vec<ForwardEntry> = string_pairs
