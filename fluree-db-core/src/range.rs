@@ -85,7 +85,11 @@ where
         None if db.t == 0 => {
             // Genesis Db: no base data, return overlay flakes only.
             let to_t = opts.to_t.unwrap_or(db.t);
-            Ok(collect_overlay_only(overlay, index, to_t))
+            let mut flakes = collect_overlay_only(overlay, index, to_t);
+            // Apply RangeMatch filtering — collect_overlay_only returns all
+            // overlay flakes; narrow them to the requested range.
+            apply_range_filter(&mut flakes, test, &match_val);
+            Ok(flakes)
         }
         None => Err(crate::error::Error::invalid_index(
             "binary-only db has no range_provider attached \
@@ -153,6 +157,52 @@ impl<O: OverlayProvider + ?Sized> OverlayProvider for SizedOverlayRef<'_, O> {
         self.0
             .for_each_overlay_flake(index, first, rhs, leftmost, to_t, callback)
     }
+}
+
+// ============================================================================
+// Range match filtering for genesis overlay path
+// ============================================================================
+
+/// Apply range match filtering to overlay flakes.
+///
+/// The genesis Db path collects all overlay flakes; this narrows them
+/// to the requested range.  For `RangeTest::Eq` every specified component
+/// of `match_val` must match exactly.  Other test modes currently pass
+/// through unfiltered (callers post-filter as needed).
+fn apply_range_filter(flakes: &mut Vec<Flake>, test: RangeTest, match_val: &RangeMatch) {
+    if test != RangeTest::Eq {
+        // Non-equality tests are uncommon on genesis Db; callers
+        // post-filter so returning the full set is safe.
+        return;
+    }
+    flakes.retain(|f| {
+        if let Some(ref s) = match_val.s {
+            if f.s != *s {
+                return false;
+            }
+        }
+        if let Some(ref p) = match_val.p {
+            if f.p != *p {
+                return false;
+            }
+        }
+        if let Some(ref o) = match_val.o {
+            if f.o != *o {
+                return false;
+            }
+        }
+        if let Some(ref dt) = match_val.dt {
+            if f.dt != *dt {
+                return false;
+            }
+        }
+        if let Some(t) = match_val.t {
+            if f.t != t {
+                return false;
+            }
+        }
+        true
+    });
 }
 
 // ============================================================================

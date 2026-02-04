@@ -1623,6 +1623,26 @@ mod tests {
         // Minimal languages dict (empty).
         write_language_dict(&run_dir.join("languages.dict"), &LanguageTagDict::new()).unwrap();
 
+        // Write namespaces.json so the store's prefix_trie can decompose IRIs.
+        // Without this, encode_iri assigns ns_code=0 for unknown prefixes, but
+        // the reverse tree stores entries under ns_code=100.
+        {
+            let default_ns = fluree_db_core::default_namespace_codes();
+            let mut ns_entries: Vec<serde_json::Value> = default_ns
+                .iter()
+                .map(|(&code, prefix)| {
+                    serde_json::json!({"code": code, "prefix": prefix})
+                })
+                .collect();
+            // Add the test namespace
+            ns_entries.push(serde_json::json!({"code": ns, "prefix": "http://example.com/"}));
+            std::fs::write(
+                &run_dir.join("namespaces.json"),
+                serde_json::to_vec(&ns_entries).unwrap(),
+            )
+            .unwrap();
+        }
+
         // --- Run records ---
         // Facts:
         // score1 hasScore 0.5 ; score1 refersInstance concept1

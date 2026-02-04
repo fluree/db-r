@@ -32,8 +32,8 @@ pub enum LeafSource {
 ///
 /// For `LocalFiles` sources, uses the global `LeafletCache` (if provided)
 /// to avoid repeated disk reads. Dict tree leaves are content-addressed
-/// and immutable, so the CAS address hash is a collision-free cache key
-/// with no epoch/staging dimension.
+/// and immutable, so the CAS address hash has astronomically unlikely
+/// collisions with no epoch/staging dimension.
 pub struct DictTreeReader {
     branch: DictBranch,
     leaf_source: LeafSource,
@@ -53,7 +53,7 @@ impl DictTreeReader {
     ///
     /// The cache is shared across all stores and readers, giving one
     /// global memory budget. Dict leaves are cached by their CAS address
-    /// hash (content-addressed → immutable, no collision risk).
+    /// hash (content-addressed → immutable, astronomically unlikely collisions).
     pub fn with_cache(
         branch: DictBranch,
         leaf_source: LeafSource,

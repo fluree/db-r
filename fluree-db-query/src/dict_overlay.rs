@@ -577,7 +577,12 @@ impl DictOverlay {
                 let wm = self.dict_novelty.subjects.watermark_for_ns(sid64.ns_code());
                 sid64.local_id() > wm
             } else {
+                // Ephemeral IDs are flat sequential starting at base_s_count.
+                // Persisted sid64 IDs have namespace codes in upper bits, making
+                // them far larger than the ephemeral range. Only classify as
+                // ephemeral if the ID falls exactly in [base_s_count, base_s_count + len).
                 ref_id >= self.base_s_count
+                    && (ref_id - self.base_s_count) < self.ext_subject_iris.len() as u64
             };
             if is_novel {
                 let iri = self.resolve_subject_iri(ref_id)?;
@@ -591,6 +596,7 @@ impl DictOverlay {
                 str_id > self.dict_novelty.strings.watermark()
             } else {
                 str_id >= self.base_str_count
+                    && (str_id - self.base_str_count) < self.ext_string_values.len() as u32
             };
             if is_novel {
                 let s = self.resolve_string_value(str_id)?;
@@ -604,6 +610,7 @@ impl DictOverlay {
                 str_id > self.dict_novelty.strings.watermark()
             } else {
                 str_id >= self.base_str_count
+                    && (str_id - self.base_str_count) < self.ext_string_values.len() as u32
             };
             if is_novel {
                 let s = self.resolve_string_value(str_id)?;
