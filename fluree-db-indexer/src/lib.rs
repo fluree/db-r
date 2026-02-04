@@ -665,6 +665,9 @@ where
 
             // ---- Phase A: Walk commit chain backward to collect addresses ----
             let addresses = {
+                let span = tracing::info_span!("load_commit_chain");
+                let _g = span.enter();
+
                 let mut addrs = Vec::new();
                 let mut current = Some(head_commit_addr.clone());
 
@@ -685,62 +688,87 @@ where
             };
 
             // ---- Phase B: Resolve commits with multi-order run writer ----
-            let subject_forward_path = run_dir.join("subjects.fwd");
-            let mut dicts = run_index::GlobalDicts::new(&subject_forward_path)
-                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-            let mut resolver = run_index::CommitResolver::new();
-
-            let multi_config = run_index::MultiOrderConfig {
-                total_budget_bytes: 256 * 1024 * 1024,
-                orders: run_index::RunSortOrder::all_build_orders().to_vec(),
-                base_run_dir: run_dir.clone(),
-            };
-            let mut writer = run_index::MultiOrderRunWriter::new(multi_config)
-                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-            for (i, addr) in addresses.iter().enumerate() {
-                let bytes = storage
-                    .read_bytes(addr)
-                    .await
-                    .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", addr, e)))?;
-
-                let (op_count, t) = resolver
-                    .resolve_blob(&bytes, addr, &alias, &mut dicts, &mut writer)
-                    .map_err(|e| IndexerError::StorageRead(e.to_string()))?;
-
-                tracing::debug!(
-                    commit = i + 1,
-                    t = t,
-                    ops = op_count,
-                    subjects = dicts.subjects.len(),
-                    predicates = dicts.predicates.len(),
-                    "commit resolved"
+            let (mut dicts, mut resolver, total_records) = {
+                let span = tracing::info_span!(
+                    "resolve_commits",
+                    commit_count = addresses.len(),
+                    total_records = tracing::field::Empty,
                 );
+                let _g = span.enter();
+
+                let subject_forward_path = run_dir.join("subjects.fwd");
+                let mut dicts = run_index::GlobalDicts::new(&subject_forward_path)
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                let mut resolver = run_index::CommitResolver::new();
+
+                let multi_config = run_index::MultiOrderConfig {
+                    total_budget_bytes: 256 * 1024 * 1024,
+                    orders: run_index::RunSortOrder::all_build_orders().to_vec(),
+                    base_run_dir: run_dir.clone(),
+                };
+                let mut writer = run_index::MultiOrderRunWriter::new(multi_config)
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                for (i, addr) in addresses.iter().enumerate() {
+                    let otel_name = format!("resolve_commit({})", i + 1);
+                    let span = tracing::info_span!(
+                        "resolve_commit",
+                        commit = i + 1,
+                        t = tracing::field::Empty,
+                        ops = tracing::field::Empty,
+                        "otel.name" = %otel_name,
+                    );
+                    let _g = span.enter();
+
+                    let bytes = storage
+                        .read_bytes(addr)
+                        .await
+                        .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", addr, e)))?;
+
+                    let (op_count, t) = resolver
+                        .resolve_blob(&bytes, addr, &alias, &mut dicts, &mut writer)
+                        .map_err(|e| IndexerError::StorageRead(e.to_string()))?;
+
+                    tracing::Span::current().record("t", t);
+                    tracing::Span::current().record("ops", op_count);
+
+                    tracing::debug!(
+                        subjects = dicts.subjects.len(),
+                        predicates = dicts.predicates.len(),
+                        "commit resolved"
+                    );
+                }
+
+                let total_records = writer.total_records();
+                let _writer_results = writer
+                    .finish(&mut dicts.languages)
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                tracing::Span::current().record("total_records", total_records);
+                (dicts, resolver, total_records)
+            };
+
+            // Persist dictionaries, namespace map, and reverse indexes
+            {
+                let span = tracing::info_span!("persist_dicts");
+                let _g = span.enter();
+
+                dicts
+                    .persist(&run_dir)
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                run_index::persist_namespaces(resolver.ns_prefixes(), &run_dir)
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                dicts
+                    .subjects
+                    .write_reverse_index(&run_dir.join("subjects.rev"))
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                dicts
+                    .strings
+                    .write_reverse_index(&run_dir.join("strings.rev"))
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
             }
-
-            let total_records = writer.total_records();
-            let _writer_results = writer
-                .finish(&mut dicts.languages)
-                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-            // Persist dictionaries for index build
-            dicts
-                .persist(&run_dir)
-                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-            // Persist namespace map for query-time IRI encoding
-            run_index::persist_namespaces(resolver.ns_prefixes(), &run_dir)
-                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-            // Persist reverse hash indexes
-            dicts
-                .subjects
-                .write_reverse_index(&run_dir.join("subjects.rev"))
-                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-            dicts
-                .strings
-                .write_reverse_index(&run_dir.join("strings.rev"))
-                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
             tracing::info!(
                 total_records,

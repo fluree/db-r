@@ -13,6 +13,7 @@ use fluree_db_nameservice::{NameService, Publisher};
 use fluree_db_novelty::{Commit, CommitData, CommitRef};
 use fluree_db_novelty::generate_commit_flakes;
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// Receipt returned after a successful commit
 #[derive(Debug, Clone)]
@@ -110,7 +111,7 @@ where
         max_novelty_bytes = index_config.reindex_max_bytes,
         has_raw_txn = opts.raw_txn.is_some(),
     );
-    let _commit_guard = commit_span.enter();
+    async {
 
     // 2. Check for empty transaction
     if flakes.is_empty() {
@@ -126,9 +127,9 @@ where
     let delta_bytes: usize = flakes.iter().map(|f| f.size_bytes()).sum();
     let current_bytes = base.novelty_size();
     let max_bytes = index_config.reindex_max_bytes;
-    commit_span.record("flake_count", flakes.len());
-    commit_span.record("delta_bytes", delta_bytes);
-    commit_span.record("current_novelty_bytes", current_bytes);
+    tracing::Span::current().record("flake_count", flakes.len());
+    tracing::Span::current().record("delta_bytes", delta_bytes);
+    tracing::Span::current().record("current_novelty_bytes", current_bytes);
     if current_bytes + delta_bytes >= max_bytes {
         return Err(TransactError::NoveltyWouldExceed {
             current_bytes,
@@ -138,11 +139,11 @@ where
     }
 
     // 5. Verify sequencing
-    let current = {
-        let span = tracing::info_span!("commit_nameservice_lookup");
-        let _g = span.enter();
-        nameservice.lookup(base.alias()).await?
-    };
+    let current = async {
+        nameservice.lookup(base.alias()).await
+    }
+    .instrument(tracing::info_span!("commit_nameservice_lookup"))
+    .await?;
     {
         let span = tracing::info_span!("commit_verify_sequencing");
         let _g = span.enter();
@@ -173,15 +174,15 @@ where
 
     // Store original transaction JSON if provided (Clojure parity)
     let txn_address = if let Some(txn_json) = &opts.raw_txn {
-        let (txn_bytes, res) = {
-            let span = tracing::info_span!("commit_write_raw_txn");
-            let _g = span.enter();
+        let (txn_bytes, res) = async {
             let txn_bytes = serde_json::to_vec(txn_json)?;
             let res = storage
                 .content_write_bytes(ContentKind::Txn, base.alias(), &txn_bytes)
                 .await?;
-            (txn_bytes, res)
-        };
+            Ok::<_, TransactError>((txn_bytes, res))
+        }
+        .instrument(tracing::info_span!("commit_write_raw_txn"))
+        .await?;
         tracing::info!(raw_txn_bytes = txn_bytes.len(), "raw txn stored");
         Some(res.address)
     } else {
@@ -257,13 +258,13 @@ where
     commit_record.id = Some(format!("fluree:commit:{}", commit_id));
 
     // 8. Publish to nameservice
-    {
-        let span = tracing::info_span!("commit_publish_nameservice");
-        let _g = span.enter();
+    async {
         nameservice
             .publish_commit(base.alias(), &address, new_t)
-            .await?;
+            .await
     }
+    .instrument(tracing::info_span!("commit_publish_nameservice"))
+    .await?;
 
     // 9. Generate commit metadata flakes (Clojure parity)
     // Note: We merge these into novelty only, not into commit_record.flakes
@@ -282,7 +283,11 @@ where
     let mut all_flakes = flakes;
     all_flakes.extend(commit_metadata_flakes);
 
-    let mut new_novelty = (*base.novelty).clone();
+    let mut new_novelty = {
+        let span = tracing::info_span!("commit_clone_novelty");
+        let _g = span.enter();
+        (*base.novelty).clone()
+    };
     {
         let span = tracing::info_span!("commit_apply_to_novelty");
         let _g = span.enter();
@@ -304,6 +309,9 @@ where
     };
 
     Ok((receipt, new_state))
+    }
+    .instrument(commit_span)
+    .await
 }
 
 /// Verify that this commit follows the expected sequence
