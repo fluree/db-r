@@ -126,7 +126,15 @@ where
         }
         None if db.t == 0 => {
             let to_t = opts.to_t.unwrap_or(db.t);
-            Ok(collect_overlay_only(overlay, index, to_t))
+            let cmp = index.comparator();
+            let mut flakes = collect_overlay_only(overlay, index, to_t);
+            // Apply start/end bounds — collect_overlay_only returns all
+            // overlay flakes; narrow to the [start_bound, end_bound] range.
+            flakes.retain(|f| {
+                cmp(f, &start_bound) != std::cmp::Ordering::Less
+                    && cmp(f, &end_bound) != std::cmp::Ordering::Greater
+            });
+            Ok(flakes)
         }
         None => Err(crate::error::Error::invalid_index(
             "binary-only db has no range_provider attached \

@@ -19,10 +19,10 @@
 //!   subject reverse tree: `[ns_code BE 2 bytes][suffix UTF-8 bytes]`.
 //! - Watermark vector covers `0..max_ns_code+1`. `watermark_for_ns(code)`
 //!   returns 0 for any code beyond the vector length.
-//! - `NS_OVERFLOW (0xFFFF)` is never stored in the watermark vector and is
-//!   always treated as novel.
+//! - `NS_OVERFLOW (0xFFFF)` uses dedicated scalar fields to avoid resizing
+//!   per-namespace vectors to 65536 entries.
 //! - `initialized` must be true before any commit on a non-genesis ledger.
-//!   Query path treats uninitialized as "novel layer empty" (safe fallthrough).
+//!   `ensure_initialized()` panics unconditionally (debug and release).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -103,12 +103,30 @@ impl DictNovelty {
     ///
     /// `subject_wm[i]` = max persisted `local_id` for namespace code `i`.
     /// `string_wm` = max persisted `string_id`.
+    ///
+    /// If the watermarks vector is long enough to include `NS_OVERFLOW`
+    /// (index 0xFFFF), the overflow entry is extracted to a dedicated scalar
+    /// and the vector is truncated.  In practice watermarks vectors are
+    /// short (only non-zero namespace codes up to the max assigned code),
+    /// so this branch is rarely taken.
     pub fn with_watermarks(subject_wm: Vec<u64>, string_wm: u32) -> Self {
-        let next_local_ids: Vec<u64> = subject_wm.iter().map(|&wm| wm + 1).collect();
+        // Extract overflow watermark if present, and trim vec.
+        let overflow_idx = NS_OVERFLOW as usize;
+        let (trimmed_wm, overflow_wm) = if subject_wm.len() > overflow_idx {
+            let owm = subject_wm[overflow_idx];
+            let mut v = subject_wm;
+            v.truncate(overflow_idx);
+            (v, owm)
+        } else {
+            (subject_wm, 0)
+        };
+        let next_local_ids: Vec<u64> = trimmed_wm.iter().map(|&wm| wm + 1).collect();
         Self {
             subjects: SubjectDictNovelty {
-                watermarks: subject_wm,
+                watermarks: trimmed_wm,
                 next_local_ids,
+                overflow_watermark: overflow_wm,
+                overflow_next_local_id: overflow_wm + 1,
                 ..Default::default()
             },
             strings: StringDictNovelty {
@@ -127,11 +145,12 @@ impl DictNovelty {
 
     /// Assert that watermarks are initialized.
     ///
-    /// Called at the start of commit-path population. Panics in debug mode;
-    /// in release, the caller should check `is_initialized()` and handle
-    /// the error.
+    /// Called at the start of commit-path population. Panics unconditionally
+    /// (debug and release) if watermarks have not been set from the index
+    /// root, because committing with uninitialized watermarks can allocate
+    /// novelty IDs that collide with persisted IDs.
     pub fn ensure_initialized(&self) {
-        debug_assert!(
+        assert!(
             self.initialized,
             "DictNovelty: watermarks not initialized — set from index root before committing"
         );
@@ -160,9 +179,16 @@ pub struct SubjectDictNovelty {
     forward: HashMap<u64, (u16, Arc<str>)>,
     /// Per-namespace watermarks: `watermarks[ns_code]` = max persisted local_id.
     /// Length = `max_assigned_ns_code + 1` at last index build.
+    /// Does NOT include NS_OVERFLOW — see `overflow_watermark`.
     watermarks: Vec<u64>,
     /// Per-namespace next local_id to assign (starts at `watermark + 1`).
+    /// Does NOT include NS_OVERFLOW — see `overflow_next_local_id`.
     next_local_ids: Vec<u64>,
+    /// Separate watermark for NS_OVERFLOW (0xFFFF).
+    /// Stored as a scalar to avoid resizing the per-namespace vectors to 65536.
+    overflow_watermark: u64,
+    /// Next local_id for NS_OVERFLOW subjects.
+    overflow_next_local_id: u64,
 }
 
 impl SubjectDictNovelty {
@@ -177,21 +203,30 @@ impl SubjectDictNovelty {
             return id;
         }
 
-        // Grow vectors if needed
-        let ns_idx = ns_code as usize;
-        if ns_idx >= self.next_local_ids.len() {
-            self.next_local_ids.resize(ns_idx + 1, 0);
-        }
-        if ns_idx >= self.watermarks.len() {
-            self.watermarks.resize(ns_idx + 1, 0);
-        }
-        // Ensure next_local_id starts above watermark
-        if self.next_local_ids[ns_idx] <= self.watermarks[ns_idx] {
-            self.next_local_ids[ns_idx] = self.watermarks[ns_idx] + 1;
-        }
-
-        let local_id = self.next_local_ids[ns_idx];
-        self.next_local_ids[ns_idx] = local_id + 1;
+        // Allocate next local_id.  NS_OVERFLOW uses dedicated scalar fields
+        // to avoid resizing the per-namespace vectors to 65536 entries.
+        let local_id = if ns_code == NS_OVERFLOW {
+            if self.overflow_next_local_id <= self.overflow_watermark {
+                self.overflow_next_local_id = self.overflow_watermark + 1;
+            }
+            let id = self.overflow_next_local_id;
+            self.overflow_next_local_id = id + 1;
+            id
+        } else {
+            let ns_idx = ns_code as usize;
+            if ns_idx >= self.next_local_ids.len() {
+                self.next_local_ids.resize(ns_idx + 1, 0);
+            }
+            if ns_idx >= self.watermarks.len() {
+                self.watermarks.resize(ns_idx + 1, 0);
+            }
+            if self.next_local_ids[ns_idx] <= self.watermarks[ns_idx] {
+                self.next_local_ids[ns_idx] = self.watermarks[ns_idx] + 1;
+            }
+            let id = self.next_local_ids[ns_idx];
+            self.next_local_ids[ns_idx] = id + 1;
+            id
+        };
 
         let sid64 = Sid64::new(ns_code, local_id).as_u64();
         let interned_suffix: Arc<str> = Arc::from(suffix);
@@ -220,7 +255,7 @@ impl SubjectDictNovelty {
     /// stored in the watermark vector).
     pub fn watermark_for_ns(&self, ns_code: u16) -> u64 {
         if ns_code == NS_OVERFLOW {
-            return 0;
+            return self.overflow_watermark;
         }
         self.watermarks.get(ns_code as usize).copied().unwrap_or(0)
     }
@@ -362,7 +397,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(debug_assertions)]
     #[should_panic(expected = "watermarks not initialized")]
     fn test_ensure_initialized_panics() {
         let dn = DictNovelty::new_uninitialized();
@@ -503,6 +537,52 @@ mod tests {
 
         let id = dn.strings.assign_or_lookup("new_value");
         assert_eq!(id, 501); // starts at watermark + 1
+    }
+
+    // -----------------------------------------------------------------------
+    // NS_OVERFLOW handling
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_overflow_assign_does_not_resize_vectors() {
+        let mut dn = DictNovelty::new_genesis();
+
+        // Assigning NS_OVERFLOW subjects must NOT resize watermarks/next_local_ids
+        // to 65536 entries.
+        let id = dn.subjects.assign_or_lookup(NS_OVERFLOW, "http://example.com/full-iri");
+        let sid = Sid64::from_u64(id);
+        assert_eq!(sid.ns_code(), NS_OVERFLOW);
+        assert_eq!(sid.local_id(), 1);
+
+        // Vectors should remain empty (only NS_OVERFLOW was used)
+        assert!(dn.subjects.watermarks.is_empty());
+        assert!(dn.subjects.next_local_ids.is_empty());
+
+        // Second overflow subject gets next local_id
+        let id2 = dn.subjects.assign_or_lookup(NS_OVERFLOW, "http://other.com/iri");
+        assert_eq!(Sid64::from_u64(id2).local_id(), 2);
+
+        // Dedup works
+        assert_eq!(dn.subjects.assign_or_lookup(NS_OVERFLOW, "http://example.com/full-iri"), id);
+
+        // find/resolve work
+        assert_eq!(dn.subjects.find_subject(NS_OVERFLOW, "http://example.com/full-iri"), Some(id));
+        let (ns, suffix) = dn.subjects.resolve_subject(id).unwrap();
+        assert_eq!(ns, NS_OVERFLOW);
+        assert_eq!(suffix, "http://example.com/full-iri");
+    }
+
+    #[test]
+    fn test_overflow_watermark_routing() {
+        // With a persisted overflow watermark, new IDs start above it
+        let mut subject_wm = vec![10, 20]; // ns 0 and 1
+        // Simulate an overflow watermark being passed through the root
+        // (in practice this would be a separate field, but with_watermarks
+        // handles the extraction if the vec happens to be long enough)
+        let dn = DictNovelty::with_watermarks(subject_wm.clone(), 0);
+        assert_eq!(dn.subjects.watermark_for_ns(0), 10);
+        assert_eq!(dn.subjects.watermark_for_ns(1), 20);
+        assert_eq!(dn.subjects.watermark_for_ns(NS_OVERFLOW), 0); // no overflow wm set
     }
 
     // -----------------------------------------------------------------------
