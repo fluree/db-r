@@ -41,7 +41,6 @@ pub struct CommitResolver {
     hasher: Xxh3,
     /// Optional per-(graph, property) stats hook. When set, `on_record()` is
     /// called for every resolved user-data op (not txn-meta).
-    #[cfg(feature = "hll-stats")]
     stats_hook: Option<crate::stats::IdStatsHook>,
 }
 
@@ -51,19 +50,16 @@ impl CommitResolver {
         Self {
             ns_prefixes: fluree_db_core::default_namespace_codes(),
             hasher: Xxh3::new(),
-            #[cfg(feature = "hll-stats")]
             stats_hook: None,
         }
     }
 
     /// Set the ID-based stats hook for per-op stats collection.
-    #[cfg(feature = "hll-stats")]
     pub fn set_stats_hook(&mut self, hook: crate::stats::IdStatsHook) {
         self.stats_hook = Some(hook);
     }
 
     /// Take the stats hook out of the resolver (for finalization / merge).
-    #[cfg(feature = "hll-stats")]
     pub fn take_stats_hook(&mut self) -> Option<crate::stats::IdStatsHook> {
         self.stats_hook.take()
     }
@@ -94,7 +90,6 @@ impl CommitResolver {
             let record = self.resolve_single_op(&raw_op, t, dicts)?;
 
             // Feed resolved record to ID-based stats hook (user-data ops only)
-            #[cfg(feature = "hll-stats")]
             if let Some(ref mut hook) = self.stats_hook {
                 // IMPORTANT: `record.dt` is the binary run's datatype-dict ID (dt_id),
                 // not `fluree_db_core::ValueTypeTag`. For stats we want stable datatypes,

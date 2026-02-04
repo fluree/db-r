@@ -53,6 +53,7 @@ pub mod policy_builder;
 pub mod policy_view;
 mod query;
 mod time_resolve;
+pub mod import;
 pub mod tx;
 pub mod tx_builder;
 pub mod view;
@@ -85,6 +86,7 @@ pub use graph_query_builder::{GraphQueryBuilder, GraphSnapshotQueryBuilder};
 pub use graph_transact_builder::{GraphTransactBuilder, StagedGraph};
 pub use query::builder::{ViewQueryBuilder, DatasetQueryBuilder, FromQueryBuilder, VirtualGraphMode};
 pub use query::nameservice_builder::NameserviceQueryBuilder;
+pub use import::{ImportBuilder, ImportConfig, ImportError, ImportResult, CreateBuilder};
 pub use tx::{IndexingMode, IndexingStatus, StageResult, TransactResult, TransactResultRef};
 pub use tx_builder::{OwnedTransactBuilder, RefTransactBuilder, Staged};
 pub use ledger_info::LedgerInfoBuilder;
@@ -2025,6 +2027,30 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
 {
+    /// Create a builder for a new ledger.
+    ///
+    /// Returns a [`CreateBuilder`] that supports `.import(path)` for bulk import
+    /// or can be extended for other creation patterns.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Bulk import from TTL chunks
+    /// let result = fluree.create("mydb")
+    ///     .import("/data/chunks/")
+    ///     .threads(8)
+    ///     .run_budget_mb(4096)
+    ///     .execute()
+    ///     .await?;
+    ///
+    /// // Query normally after import
+    /// let view = fluree.view("mydb").await?;
+    /// let qr = fluree.query_view(&view, "SELECT * WHERE { ?s ?p ?o } LIMIT 10").await?;
+    /// ```
+    pub fn create(&self, alias: &str) -> import::CreateBuilder<'_, S, N> {
+        import::CreateBuilder::new(self, alias.to_string())
+    }
+
     /// Create a lazy graph handle for a ledger at the latest head.
     ///
     /// No I/O occurs until a terminal method is called (`.load()`,

@@ -1,4 +1,3 @@
-#[cfg(feature = "hll-stats")]
 mod tests {
     use fluree_db_core::PropertyStatEntry;
     use fluree_db_core::storage::MemoryStorage;

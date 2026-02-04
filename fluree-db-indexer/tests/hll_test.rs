@@ -1,4 +1,3 @@
-#[cfg(feature = "hll-stats")]
 mod tests {
     use fluree_db_indexer::hll::HllSketch256;
 

@@ -21,7 +21,6 @@
 pub mod config;
 pub mod error;
 pub mod gc;
-#[cfg(feature = "hll-stats")]
 pub mod hll;
 pub mod run_index;
 pub mod dict_tree;
@@ -660,7 +659,6 @@ where
             let mut dicts = run_index::GlobalDicts::new(&subject_forward_path)
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
             let mut resolver = run_index::CommitResolver::new();
-            #[cfg(feature = "hll-stats")]
             resolver.set_stats_hook(crate::stats::IdStatsHook::new());
 
             let multi_config = run_index::MultiOrderConfig {
@@ -693,7 +691,6 @@ where
                 );
             }
 
-            #[cfg(feature = "hll-stats")]
             let id_stats_hook = resolver.take_stats_hook();
 
             let total_records = writer.total_records();
@@ -765,7 +762,6 @@ where
             // stats with datatype counts + HLL NDV). Fallback: SPOT build result for per-graph
             // flake counts only.
             let stats_json = {
-                #[cfg(feature = "hll-stats")]
                 if let Some(hook) = id_stats_hook {
                     let id_result = hook.finalize();
 
@@ -834,37 +830,6 @@ where
                     })
                 }
 
-                #[cfg(not(feature = "hll-stats"))]
-                {
-                    let (_, spot_result) = build_results
-                        .iter()
-                        .find(|(order, _)| *order == run_index::RunSortOrder::Spot)
-                        .expect("SPOT index must always be present in build results");
-
-                    let graph_stats: Vec<serde_json::Value> = spot_result
-                        .graphs
-                        .iter()
-                        .map(|g| {
-                            serde_json::json!({
-                                "g_id": g.g_id,
-                                "flakes": g.total_rows,
-                                "size": 0
-                            })
-                        })
-                        .collect();
-
-                    let total_flakes: u64 = spot_result
-                        .graphs
-                        .iter()
-                        .map(|g| g.total_rows)
-                        .sum();
-
-                    serde_json::json!({
-                        "flakes": total_flakes,
-                        "size": 0,
-                        "graphs": graph_stats
-                    })
-                }
             };
 
             // D.5: Build v2 root with CAS addresses and stats (initially without GC fields)
@@ -1146,7 +1111,7 @@ async fn upload_dicts_to_cas<S: Storage>(
 /// Reads each `.fbr` and `.fli` file from the index directory, uploads via
 /// `content_write_bytes_with_hash` (reusing the existing SHA-256 hashes from
 /// the build), and returns per-graph CAS addresses.
-async fn upload_indexes_to_cas<S: Storage>(
+pub async fn upload_indexes_to_cas<S: Storage>(
     storage: &S,
     alias: &str,
     build_results: &[(run_index::RunSortOrder, run_index::IndexBuildResult)],
@@ -1240,6 +1205,287 @@ async fn upload_indexes_to_cas<S: Storage>(
     );
 
     Ok(graph_addresses)
+}
+
+/// Result of uploading persisted dict flat files to CAS.
+///
+/// Contains the CAS addresses for all dictionary artifacts plus derived metadata
+/// needed for `BinaryIndexRootV2::from_cas_artifacts`.
+#[derive(Debug)]
+pub struct UploadedDicts {
+    pub dict_addresses: run_index::DictAddresses,
+    pub subject_id_encoding: fluree_db_core::SubjectIdEncoding,
+    pub subject_watermarks: Vec<u64>,
+    pub string_watermark: u32,
+}
+
+/// Upload dictionary artifacts from persisted flat files to CAS.
+///
+/// Reads flat files written by `GlobalDicts::persist()` and builds CoW trees
+/// for subject/string dicts. Does NOT require `GlobalDicts` in memory.
+///
+/// Required files in `run_dir`:
+///   - `subjects.fwd`, `subjects.idx`, `subjects.sids`
+///   - `strings.fwd`, `strings.idx`
+///   - `graphs.dict`, `datatypes.dict`, `languages.dict`
+///   - `numbig/p_*.nba` (zero or more)
+///
+/// Watermark derivation from `subjects.sids`:
+///   - Decode each sid64 via `SubjectId::from_u64` → `(ns_code, local_id)`
+///   - `subject_watermarks[ns_code]` = max local_id for that ns_code
+///   - Overflow ns_code (0xFFFF): always wide, watermark = 0
+///   - `needs_wide` = any local_id exceeds `u16::MAX`
+///   - `string_watermark` = string entry count − 1 (IDs are 0..=N contiguous)
+pub async fn upload_dicts_from_disk<S: Storage>(
+    storage: &S,
+    alias: &str,
+    run_dir: &std::path::Path,
+    namespace_codes: &std::collections::HashMap<u16, String>,
+) -> Result<UploadedDicts> {
+    use fluree_db_core::{ContentKind, DictKind, SubjectIdEncoding};
+    use fluree_db_core::subject_id::SubjectId;
+    use std::collections::BTreeMap;
+    use dict_tree::builder::{self, TreeBuildResult};
+    use dict_tree::forward_leaf::ForwardEntry;
+    use dict_tree::reverse_leaf::{ReverseEntry, subject_reverse_key};
+
+    // ---- Inner helpers (same pattern as upload_dicts_to_cas) ----
+
+    async fn upload_flat<S: Storage>(
+        storage: &S,
+        alias: &str,
+        path: &std::path::Path,
+        dict: DictKind,
+    ) -> Result<String> {
+        let bytes = std::fs::read(path)
+            .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", path.display(), e)))?;
+        let result = storage
+            .content_write_bytes(ContentKind::DictBlob { dict }, alias, &bytes)
+            .await
+            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+        tracing::debug!(
+            path = %path.display(),
+            address = %result.address,
+            bytes = result.size_bytes,
+            "dict artifact uploaded to CAS (from disk)"
+        );
+        Ok(result.address)
+    }
+
+    async fn upload_tree<S: Storage>(
+        storage: &S,
+        alias: &str,
+        result: TreeBuildResult,
+        dict: DictKind,
+    ) -> Result<run_index::DictTreeAddresses> {
+        let mut leaf_addresses = Vec::with_capacity(result.leaves.len());
+        let mut hash_to_address = std::collections::HashMap::new();
+
+        for leaf in &result.leaves {
+            let cas_result = storage
+                .content_write_bytes(ContentKind::DictBlob { dict }, alias, &leaf.bytes)
+                .await
+                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+            leaf_addresses.push(cas_result.address.clone());
+            hash_to_address.insert(leaf.hash.clone(), cas_result.address);
+        }
+
+        let (_, branch_bytes, _) =
+            builder::finalize_branch(result.branch, &hash_to_address)
+                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+        let branch_result = storage
+            .content_write_bytes(ContentKind::DictBlob { dict }, alias, &branch_bytes)
+            .await
+            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+        Ok(run_index::DictTreeAddresses {
+            branch: branch_result.address,
+            leaves: leaf_addresses,
+        })
+    }
+
+    // ---- 1. Upload flat dicts ----
+    let graphs = upload_flat(storage, alias, &run_dir.join("graphs.dict"), DictKind::Graphs).await?;
+    let datatypes = upload_flat(storage, alias, &run_dir.join("datatypes.dict"), DictKind::Datatypes).await?;
+    let languages = upload_flat(storage, alias, &run_dir.join("languages.dict"), DictKind::Languages).await?;
+
+    // ---- 2. Read subjects.fwd + subjects.idx + subjects.sids → build trees ----
+    let sids_path = run_dir.join("subjects.sids");
+    let sids: Vec<u64> = run_index::dict_io::read_subject_sid_map(&sids_path)
+        .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", sids_path.display(), e)))?;
+
+    let subj_idx_path = run_dir.join("subjects.idx");
+    let (subj_offsets, subj_lens) = run_index::dict_io::read_forward_index(&subj_idx_path)
+        .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", subj_idx_path.display(), e)))?;
+
+    let subj_fwd_data = std::fs::read(run_dir.join("subjects.fwd"))
+        .map_err(|e| IndexerError::StorageRead(format!("read subjects.fwd: {}", e)))?;
+
+    // Build forward entries (suffix-only, ns-compressed) and reverse entries
+    let mut subj_fwd_entries: Vec<ForwardEntry> = Vec::with_capacity(sids.len());
+    let mut subj_rev_entries: Vec<ReverseEntry> = Vec::with_capacity(sids.len());
+    for (&sid, (&off, &len)) in sids.iter().zip(subj_offsets.iter().zip(subj_lens.iter())) {
+        let iri = &subj_fwd_data[off as usize..(off as usize + len as usize)];
+        let iri_str = std::str::from_utf8(iri).unwrap_or("");
+        let ns_code = SubjectId::from_u64(sid).ns_code();
+        let prefix = namespace_codes.get(&ns_code).map(|s| s.as_str()).unwrap_or("");
+        let suffix = if iri_str.starts_with(prefix) && !prefix.is_empty() {
+            &iri[prefix.len()..]
+        } else {
+            iri
+        };
+        subj_fwd_entries.push(ForwardEntry { id: sid, value: suffix.to_vec() });
+        subj_rev_entries.push(ReverseEntry {
+            key: subject_reverse_key(ns_code, suffix),
+            id: sid,
+        });
+    }
+    subj_fwd_entries.sort_by_key(|e| e.id);
+    subj_rev_entries.sort_by(|a, b| a.key.cmp(&b.key));
+
+    let sf_tree = builder::build_forward_tree(subj_fwd_entries, builder::DEFAULT_TARGET_LEAF_BYTES)
+        .map_err(|e| IndexerError::StorageWrite(format!("build subject fwd tree: {}", e)))?;
+    let sr_tree = builder::build_reverse_tree(subj_rev_entries, builder::DEFAULT_TARGET_LEAF_BYTES)
+        .map_err(|e| IndexerError::StorageWrite(format!("build subject rev tree: {}", e)))?;
+
+    let subject_forward = upload_tree(storage, alias, sf_tree, DictKind::SubjectForward).await?;
+    let subject_reverse = upload_tree(storage, alias, sr_tree, DictKind::SubjectReverse).await?;
+
+    // ---- 3. Read strings.fwd + strings.idx → build trees ----
+    let str_idx_path = run_dir.join("strings.idx");
+    let str_fwd_path = run_dir.join("strings.fwd");
+    let (string_count, string_forward, string_reverse) = if str_idx_path.exists() && str_fwd_path.exists() {
+        let (str_offsets, str_lens) = run_index::dict_io::read_forward_index(&str_idx_path)
+            .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", str_idx_path.display(), e)))?;
+        let str_fwd_data = std::fs::read(&str_fwd_path)
+            .map_err(|e| IndexerError::StorageRead(format!("read strings.fwd: {}", e)))?;
+
+        let str_fwd_entries: Vec<ForwardEntry> = str_offsets.iter()
+            .zip(str_lens.iter())
+            .enumerate()
+            .map(|(i, (&off, &len))| ForwardEntry {
+                id: i as u64,
+                value: str_fwd_data[off as usize..(off as usize + len as usize)].to_vec(),
+            })
+            .collect();
+        let count = str_fwd_entries.len();
+        let mut str_rev_entries: Vec<ReverseEntry> = str_fwd_entries.iter()
+            .map(|e| ReverseEntry { key: e.value.clone(), id: e.id })
+            .collect();
+        str_rev_entries.sort_by(|a, b| a.key.cmp(&b.key));
+
+        let stf_tree = builder::build_forward_tree(str_fwd_entries, builder::DEFAULT_TARGET_LEAF_BYTES)
+            .map_err(|e| IndexerError::StorageWrite(format!("build string fwd tree: {}", e)))?;
+        let str_tree = builder::build_reverse_tree(str_rev_entries, builder::DEFAULT_TARGET_LEAF_BYTES)
+            .map_err(|e| IndexerError::StorageWrite(format!("build string rev tree: {}", e)))?;
+
+        let sf = upload_tree(storage, alias, stf_tree, DictKind::StringForward).await?;
+        let sr = upload_tree(storage, alias, str_tree, DictKind::StringReverse).await?;
+        (count, sf, sr)
+    } else {
+        // No strings persisted — empty trees
+        let empty_fwd = builder::build_forward_tree(vec![], builder::DEFAULT_TARGET_LEAF_BYTES)
+            .map_err(|e| IndexerError::StorageWrite(format!("build empty string fwd tree: {}", e)))?;
+        let empty_rev = builder::build_reverse_tree(vec![], builder::DEFAULT_TARGET_LEAF_BYTES)
+            .map_err(|e| IndexerError::StorageWrite(format!("build empty string rev tree: {}", e)))?;
+        let sf = upload_tree(storage, alias, empty_fwd, DictKind::StringForward).await?;
+        let sr = upload_tree(storage, alias, empty_rev, DictKind::StringReverse).await?;
+        (0, sf, sr)
+    };
+
+    // ---- 4. Upload per-predicate numbig arenas ----
+    let mut numbig = BTreeMap::new();
+    let nb_dir = run_dir.join("numbig");
+    if nb_dir.exists() {
+        for entry in std::fs::read_dir(&nb_dir)
+            .map_err(|e| IndexerError::StorageRead(format!("read numbig dir: {}", e)))?
+        {
+            let entry = entry
+                .map_err(|e| IndexerError::StorageRead(format!("read numbig entry: {}", e)))?;
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if let Some(rest) = name_str.strip_prefix("p_") {
+                if let Some(id_str) = rest.strip_suffix(".nba") {
+                    if let Ok(p_id) = id_str.parse::<u32>() {
+                        let addr = upload_flat(storage, alias, &entry.path(), DictKind::NumBig { p_id }).await?;
+                        numbig.insert(p_id.to_string(), addr);
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- 5. Compute subject_id_encoding + watermarks from sids ----
+    let overflow_ns: u16 = 0xFFFF;
+    let mut needs_wide = false;
+    let mut max_ns_code: u16 = 0;
+    let mut watermark_map: BTreeMap<u16, u64> = BTreeMap::new();
+
+    for &sid in &sids {
+        let subject_id = SubjectId::from_u64(sid);
+        let ns_code = subject_id.ns_code();
+        let local_id = subject_id.local_id();
+
+        if ns_code == overflow_ns {
+            needs_wide = true;
+            // Overflow namespace: watermark stays at 0
+            continue;
+        }
+
+        if local_id > u16::MAX as u64 {
+            needs_wide = true;
+        }
+
+        if ns_code > max_ns_code {
+            max_ns_code = ns_code;
+        }
+
+        let entry = watermark_map.entry(ns_code).or_insert(0);
+        if local_id > *entry {
+            *entry = local_id;
+        }
+    }
+
+    let subject_id_encoding = if needs_wide {
+        SubjectIdEncoding::Wide
+    } else {
+        SubjectIdEncoding::Narrow
+    };
+
+    // Build watermarks vec: watermarks[i] = max local_id for ns_code i
+    let watermark_len = if watermark_map.is_empty() { 0 } else { max_ns_code as usize + 1 };
+    let mut subject_watermarks: Vec<u64> = vec![0; watermark_len];
+    for (&ns_code, &max_local) in &watermark_map {
+        subject_watermarks[ns_code as usize] = max_local;
+    }
+
+    let string_watermark = if string_count > 0 { (string_count - 1) as u32 } else { 0 };
+
+    tracing::info!(
+        subjects = sids.len(),
+        strings = string_count,
+        numbig_count = numbig.len(),
+        ?subject_id_encoding,
+        watermarks = subject_watermarks.len(),
+        string_watermark,
+        "dictionary trees built and uploaded to CAS (from disk)"
+    );
+
+    Ok(UploadedDicts {
+        dict_addresses: run_index::DictAddresses {
+            graphs,
+            datatypes,
+            languages,
+            subject_forward,
+            subject_reverse,
+            string_forward,
+            string_reverse,
+            numbig,
+        },
+        subject_id_encoding,
+        subject_watermarks,
+        string_watermark,
+    })
 }
 
 /// Publish index result to nameservice

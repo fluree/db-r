@@ -17,7 +17,7 @@ otel = ["dep:tracing-opentelemetry", "dep:opentelemetry", "dep:opentelemetry-otl
 fluree-db-api = { path = "../fluree-db-api", features = ["native"] }
 fluree-db-core = { path = "../fluree-db-core" }
 fluree-db-transact = { path = "../fluree-db-transact", features = ["import"] }
-fluree-db-indexer = { path = "../fluree-db-indexer", features = ["hll-stats"] }
+fluree-db-indexer = { path = "../fluree-db-indexer" }
 fluree-db-query = { path = "../fluree-db-query" }
 fluree-db-sparql = { path = "../fluree-db-sparql", features = ["lowering"] }
 tokio.workspace = true

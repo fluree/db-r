@@ -96,7 +96,6 @@ pub struct RunGenerationResult {
     /// ID-based stats hook accumulated across all resolved commits.
     /// Contains per-(graph, property) HLL sketches and datatype usage.
     /// `None` if stats collection was not enabled.
-    #[cfg(feature = "hll-stats")]
     pub stats_hook: Option<crate::stats::IdStatsHook>,
 }
 
@@ -264,7 +263,6 @@ pub async fn generate_runs<S: StorageRead>(
         needs_wide: dicts.subjects.needs_wide(),
         total_records: writer_result.total_records,
         commit_count: addresses.len(),
-        #[cfg(feature = "hll-stats")]
         stats_hook: resolver.take_stats_hook(),
     };
 

@@ -9,10 +9,8 @@ description = "Runtime-agnostic core library for Fluree DB queries"
 [features]
 # Default to runtime-agnostic behavior.
 # Enable `native` for filesystem-backed implementations that depend on tokio.
-# Enable `hll-stats` for HLL-based property statistics (canonical hashing).
-default = ["hll-stats"]
+default = []
 native = ["tokio", "moka", "dashmap"]
-hll-stats = ["dep:xxhash-rust"]
 
 [dependencies]
 fluree-vocab = { path = "../fluree-vocab" }
@@ -29,7 +27,7 @@ thiserror = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 tokio = { workspace = true, features = ["fs"], optional = true }
-xxhash-rust = { workspace = true, optional = true }
+xxhash-rust = { workspace = true }
 moka = { workspace = true, optional = true }
 dashmap = { workspace = true, optional = true }
 
