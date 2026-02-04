@@ -2485,7 +2485,6 @@ where
 }
 
 /// Convenience functions for common configurations
-
 /// Create a file-backed Fluree instance
 ///
 /// This is the most common configuration for production use.

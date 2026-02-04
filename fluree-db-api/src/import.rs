@@ -309,10 +309,10 @@ fn discover_chunks(dir: &Path) -> std::result::Result<Vec<PathBuf>, ImportError>
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| {
-            p.extension().map_or(false, |ext| ext == "ttl")
+            p.extension().is_some_and(|ext| ext == "ttl")
                 && p.file_name()
                     .and_then(|n| n.to_str())
-                    .map_or(false, |n| n.starts_with("chunk_"))
+                    .is_some_and(|n| n.starts_with("chunk_"))
         })
         .collect();
 
@@ -761,7 +761,7 @@ where
         let mut pending: BTreeMap<usize, ParsedChunk> = BTreeMap::new();
 
         for recv_result in result_rx {
-            let (idx, parsed) = recv_result.map_err(|e| ImportError::Transact(e))?;
+            let (idx, parsed) = recv_result.map_err(ImportError::Transact)?;
 
             pending.insert(idx, parsed);
 
@@ -801,7 +801,7 @@ where
                 }
 
                 // Periodic nameservice checkpoint
-                if config.publish_every > 0 && (next_expected + 1) % config.publish_every == 0 {
+                if config.publish_every > 0 && (next_expected + 1).is_multiple_of(config.publish_every) {
                     nameservice
                         .publish_commit(alias, &result.address, result.t)
                         .await
@@ -824,8 +824,8 @@ where
         }
     } else if chunks.len() > 1 {
         // Serial fallback (0 threads)
-        for i in 1..chunks.len() {
-            let ttl = std::fs::read_to_string(&chunks[i])?;
+        for (i, chunk) in chunks.iter().enumerate().skip(1) {
+            let ttl = std::fs::read_to_string(chunk)?;
             let result = import_commit(&mut state, &ttl, storage, alias, compress)
                 .await
                 .map_err(|e| ImportError::Transact(e.to_string()))?;
@@ -843,7 +843,7 @@ where
                 return Err(ImportError::RunGeneration(err));
             }
 
-            if config.publish_every > 0 && (i + 1) % config.publish_every == 0 {
+            if config.publish_every > 0 && (i + 1).is_multiple_of(config.publish_every) {
                 nameservice
                     .publish_commit(alias, &result.address, result.t)
                     .await

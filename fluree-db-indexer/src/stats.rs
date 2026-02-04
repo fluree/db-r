@@ -181,19 +181,11 @@ impl Default for PropertyHll {
 ///
 /// Uses `HllSketch256` (p=8) for direct serialization and incremental merging.
 /// Full HLL-based per-property NDV tracking.
+#[derive(Default)]
 pub struct HllStatsHook {
     flake_count: usize,
     /// Per-property HLL sketches, keyed by predicate SID
     properties: HashMap<Sid, PropertyHll>,
-}
-
-impl Default for HllStatsHook {
-    fn default() -> Self {
-        Self {
-            flake_count: 0,
-            properties: HashMap::new(),
-        }
-    }
 }
 
 impl HllStatsHook {
@@ -236,7 +228,7 @@ impl IndexStatsHook for HllStatsHook {
         let entry = self
             .properties
             .entry(flake.p.clone())
-            .or_insert_with(PropertyHll::new);
+            .or_default();
 
         // Update count
         if flake.op {
@@ -416,7 +408,7 @@ pub struct IdStatsResult {
 /// // After all ops:
 /// let result = hook.finalize();
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct IdStatsHook {
     flake_count: usize,
     properties: HashMap<GraphPropertyKey, IdPropertyHll>,
@@ -426,11 +418,7 @@ pub struct IdStatsHook {
 
 impl IdStatsHook {
     pub fn new() -> Self {
-        Self {
-            flake_count: 0,
-            properties: HashMap::new(),
-            graph_flakes: HashMap::new(),
-        }
+        Self::default()
     }
 
     /// Process a single record with resolved IDs.
@@ -545,8 +533,8 @@ impl IdStatsHook {
                 props.push(GraphPropertyStatEntry {
                     p_id: key.p_id,
                     count,
-                    ndv_values: hll.values_hll.estimate() as u64,
-                    ndv_subjects: hll.subjects_hll.estimate() as u64,
+                    ndv_values: hll.values_hll.estimate(),
+                    ndv_subjects: hll.subjects_hll.estimate(),
                     last_modified_t: hll.last_modified_t,
                     datatypes,
                 });
@@ -618,8 +606,8 @@ impl IdStatsHook {
                 GraphPropertyStatEntry {
                     p_id,
                     count,
-                    ndv_values: hll.values_hll.estimate() as u64,
-                    ndv_subjects: hll.subjects_hll.estimate() as u64,
+                    ndv_values: hll.values_hll.estimate(),
+                    ndv_subjects: hll.subjects_hll.estimate(),
                     last_modified_t: hll.last_modified_t,
                     datatypes,
                 }

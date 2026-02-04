@@ -156,10 +156,10 @@ fn discover_chunks(dir: &std::path::Path) -> Result<Vec<PathBuf>, std::io::Error
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| {
-            p.extension().map_or(false, |ext| ext == "ttl")
+            p.extension().is_some_and(|ext| ext == "ttl")
                 && p.file_name()
                     .and_then(|n| n.to_str())
-                    .map_or(false, |n| n.starts_with("chunk_"))
+                    .is_some_and(|n| n.starts_with("chunk_"))
         })
         .collect();
     chunks.sort();
