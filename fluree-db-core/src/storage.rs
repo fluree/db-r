@@ -159,8 +159,6 @@ pub trait StorageWrite: Debug + Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DictKind {
-    /// Predicate IRI dictionary (FRD1 format).
-    Predicates,
     /// Named-graph IRI dictionary (FRD1 format).
     Graphs,
     /// Datatype IRI dictionary (FRD1 format).
@@ -179,8 +177,6 @@ pub enum DictKind {
     StringIndex,
     /// String value reverse hash index (SRV1 format, mmap'd).
     StringReverse,
-    /// Namespace code→IRI prefix map (JSON).
-    Namespaces,
     /// Per-predicate overflow BigInt/BigDecimal arena (NBA1 format).
     NumBig { p_id: u32 },
 }
@@ -188,13 +184,10 @@ pub enum DictKind {
 /// File extension for a given [`DictKind`] (used in CAS paths).
 fn dict_kind_extension(dict: DictKind) -> &'static str {
     match dict {
-        DictKind::Predicates | DictKind::Graphs | DictKind::Datatypes | DictKind::Languages => {
-            "dict"
-        }
+        DictKind::Graphs | DictKind::Datatypes | DictKind::Languages => "dict",
         DictKind::SubjectForward | DictKind::StringForward => "fwd",
         DictKind::SubjectIndex | DictKind::StringIndex => "idx",
         DictKind::SubjectReverse | DictKind::StringReverse => "rev",
-        DictKind::Namespaces => "json",
         DictKind::NumBig { .. } => "nba",
     }
 }

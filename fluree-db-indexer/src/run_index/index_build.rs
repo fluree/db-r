@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 pub struct IndexBuildConfig {
     /// Directory containing run files for this order (run_*.frn).
     pub run_dir: PathBuf,
-    /// Directory containing shared dict files (predicates.dict, datatypes.dict).
+    /// Directory containing shared dict files (predicates.json, datatypes.dict).
     /// For single-order builds, this equals `run_dir`.
     /// For multi-order builds, this is the parent `base_run_dir`.
     pub dicts_dir: PathBuf,
@@ -163,12 +163,14 @@ pub fn build_index(config: IndexBuildConfig) -> Result<IndexBuildResult, IndexBu
     }
 
     // ---- Step 2b: Compute per-leaf field widths from dict sizes ----
-    let pred_dict_path = config.dicts_dir.join("predicates.dict");
+    let pred_ids_path = config.dicts_dir.join("predicates.json");
     let dt_dict_path = config.dicts_dir.join("datatypes.dict");
-    let p_width = if pred_dict_path.exists() {
-        let pred_dict = read_predicate_dict(&pred_dict_path)?;
-        let w = p_width_for_max(pred_dict.len().saturating_sub(1));
-        tracing::info!(predicates = pred_dict.len(), p_width = w, "predicate width");
+    let p_width = if pred_ids_path.exists() {
+        let bytes = std::fs::read(&pred_ids_path)?;
+        let preds: Vec<String> = serde_json::from_slice(&bytes)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let w = p_width_for_max(preds.len().saturating_sub(1) as u32);
+        tracing::info!(predicates = preds.len(), p_width = w, "predicate width");
         w
     } else {
         2 // default u16

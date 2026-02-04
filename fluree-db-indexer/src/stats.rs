@@ -285,6 +285,7 @@ impl IndexStatsHook for HllStatsHook {
                 ndv_values: hll.values_hll.estimate(),
                 ndv_subjects: hll.subjects_hll.estimate(),
                 last_modified_t: hll.last_modified_t,
+                datatypes: vec![],
             })
             .collect();
 
@@ -605,6 +606,54 @@ impl IdStatsHook {
             graphs,
             total_flakes,
         }
+    }
+
+    /// Finalize into per-graph stats plus a ledger-wide aggregate property view.
+    ///
+    /// The aggregate view is keyed only by `p_id` (across all graphs), with HLL sketches
+    /// merged across graphs so NDV estimates remain meaningful. Datatype counts are summed
+    /// across graphs.
+    ///
+    /// Excludes txn-meta graph (g_id=1) from both per-graph and aggregate results.
+    pub fn finalize_with_aggregate_properties(self) -> (IdStatsResult, Vec<GraphPropertyStatEntry>) {
+        // Aggregate by p_id across all graphs (excluding txn-meta g_id=1)
+        let mut agg: HashMap<u32, IdPropertyHll> = HashMap::new();
+        for (key, hll) in &self.properties {
+            if key.g_id == 1 {
+                continue;
+            }
+            agg.entry(key.p_id)
+                .or_insert_with(IdPropertyHll::new)
+                .merge_from(hll);
+        }
+
+        let mut properties: Vec<GraphPropertyStatEntry> = agg
+            .into_iter()
+            .map(|(p_id, hll)| {
+                let count = hll.count.max(0) as u64;
+                let datatypes: Vec<(u8, u64)> = hll
+                    .datatypes
+                    .iter()
+                    .filter(|(_, &v)| v > 0)
+                    .map(|(&dt, &v)| (dt, v.max(0) as u64))
+                    .collect();
+
+                GraphPropertyStatEntry {
+                    p_id,
+                    count,
+                    ndv_values: hll.values_hll.estimate() as u64,
+                    ndv_subjects: hll.subjects_hll.estimate() as u64,
+                    last_modified_t: hll.last_modified_t,
+                    datatypes,
+                }
+            })
+            .collect();
+
+        // Deterministic ordering
+        properties.sort_by_key(|p| p.p_id);
+
+        let graphs = self.finalize();
+        (graphs, properties)
     }
 }
 
@@ -1408,6 +1457,7 @@ mod tests {
                     ndv_values: 2,
                     ndv_subjects: 1,
                     last_modified_t: 5,  // Must match the t used during persist
+                    datatypes: vec![],
                 },
                 PropertyStatEntry {
                     sid: (100, "prop_b".to_string()),
@@ -1415,6 +1465,7 @@ mod tests {
                     ndv_values: 1,
                     ndv_subjects: 1,
                     last_modified_t: 3,  // Must match the t used during persist
+                    datatypes: vec![],
                 },
             ];
 
@@ -1472,6 +1523,7 @@ mod tests {
                 ndv_values: 5,
                 ndv_subjects: 5,
                 last_modified_t: 5,
+                datatypes: vec![],
             }];
 
             let mut updated_properties = HashMap::new();
@@ -1494,6 +1546,7 @@ mod tests {
                 ndv_values: 5,
                 ndv_subjects: 5,
                 last_modified_t: 5,
+                datatypes: vec![],
             }];
 
             let mut updated_properties = HashMap::new();
@@ -1519,6 +1572,7 @@ mod tests {
                 ndv_values: 5,
                 ndv_subjects: 5,
                 last_modified_t: 5,
+                datatypes: vec![],
             }];
 
             let updated_properties: HashMap<Sid, PropertyHll> = HashMap::new();
@@ -1542,6 +1596,7 @@ mod tests {
                     ndv_values: 5,
                     ndv_subjects: 5,
                     last_modified_t: 5,
+                    datatypes: vec![],
                 },
                 PropertyStatEntry {
                     sid: (100, "age".to_string()),
@@ -1549,6 +1604,7 @@ mod tests {
                     ndv_values: 4,
                     ndv_subjects: 4,
                     last_modified_t: 3,
+                    datatypes: vec![],
                 },
             ];
 
@@ -1600,6 +1656,7 @@ mod tests {
                 ndv_values: 3,
                 ndv_subjects: 3,
                 last_modified_t: 42,
+                datatypes: vec![],
             }];
 
             let mut updated_properties = HashMap::new();

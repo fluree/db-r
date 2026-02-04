@@ -25,7 +25,6 @@ pub mod gc;
 pub mod hll;
 #[cfg(feature = "commit-v2")]
 pub mod run_index;
-pub mod namespace;
 pub mod orchestrator;
 pub mod stats;
 
@@ -671,6 +670,8 @@ where
             let mut dicts = run_index::GlobalDicts::new(&subject_forward_path)
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
             let mut resolver = run_index::CommitResolver::new();
+            #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+            resolver.set_stats_hook(crate::stats::IdStatsHook::new());
 
             let multi_config = run_index::MultiOrderConfig {
                 total_budget_bytes: 256 * 1024 * 1024,
@@ -701,6 +702,9 @@ where
                     "commit resolved"
                 );
             }
+
+            #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+            let id_stats_hook = resolver.take_stats_hook();
 
             let total_records = writer.total_records();
             let _writer_results = writer.finish(&mut dicts.languages)
@@ -745,6 +749,15 @@ where
             let store = run_index::BinaryIndexStore::load(&run_dir, &index_dir)
                 .map_err(|e| IndexerError::StorageRead(e.to_string()))?;
 
+            // Build predicate p_id -> (ns_code, suffix) mapping for the root (compact).
+            let predicate_sids: Vec<(i32, String)> = (0..dicts.predicates.len())
+                .map(|p_id| {
+                    let iri = dicts.predicates.resolve(p_id).unwrap_or("");
+                    let sid = store.encode_iri(iri);
+                    (sid.namespace_code, sid.name.as_ref().to_string())
+                })
+                .collect();
+
             // D.2: Upload dictionary artifacts to CAS
             let numbig_p_ids: Vec<u32> = dicts.numbigs.keys().copied().collect();
             let dict_addresses = upload_dicts_to_cas(
@@ -756,38 +769,112 @@ where
                 &storage, &alias, &build_results,
             ).await?;
 
-            // D.4: Build stats JSON for the planner (RawDbRootStats format).
-            // Use the SPOT build result for per-graph flake counts (all orders
-            // index the same data, just in different sort orders).
+            // D.4: Build stats JSON for the planner (IndexStats / RawDbRootStats shape).
+            //
+            // Preferred: ID-based stats collected during commit resolution (per-graph property
+            // stats with datatype counts + HLL NDV). Fallback: SPOT build result for per-graph
+            // flake counts only.
             let stats_json = {
-                let (_, spot_result) = build_results
-                    .iter()
-                    .find(|(order, _)| *order == run_index::RunSortOrder::Spot)
-                    .expect("SPOT index must always be present in build results");
+                #[cfg(all(feature = "hll-stats", feature = "commit-v2"))]
+                if let Some(hook) = id_stats_hook {
+                    let id_result = hook.finalize();
 
-                let graph_stats: Vec<serde_json::Value> = spot_result
-                    .graphs
-                    .iter()
-                    .map(|g| {
-                        serde_json::json!({
-                            "g_id": g.g_id,
-                            "flakes": g.total_rows,
-                            "size": 0
+                    let graphs_json: Vec<serde_json::Value> = id_result
+                        .graphs
+                        .iter()
+                        .map(|g| {
+                            let props_json: Vec<serde_json::Value> = g
+                                .properties
+                                .iter()
+                                .map(|p| {
+                                    serde_json::json!({
+                                        "p_id": p.p_id,
+                                        "count": p.count,
+                                        "ndv_values": p.ndv_values,
+                                        "ndv_subjects": p.ndv_subjects,
+                                        "last_modified_t": p.last_modified_t,
+                                        "datatypes": p.datatypes,
+                                    })
+                                })
+                                .collect();
+
+                            serde_json::json!({
+                                "g_id": g.g_id,
+                                "flakes": g.flakes,
+                                "size": g.size,
+                                "properties": props_json,
+                            })
                         })
+                        .collect();
+
+                    serde_json::json!({
+                        "flakes": id_result.total_flakes,
+                        "size": 0,
+                        "graphs": graphs_json,
                     })
-                    .collect();
+                } else {
+                    // Fallback: flake counts only (no per-property / datatype breakdown).
+                    let (_, spot_result) = build_results
+                        .iter()
+                        .find(|(order, _)| *order == run_index::RunSortOrder::Spot)
+                        .expect("SPOT index must always be present in build results");
 
-                let total_flakes: u64 = spot_result
-                    .graphs
-                    .iter()
-                    .map(|g| g.total_rows)
-                    .sum();
+                    let graph_stats: Vec<serde_json::Value> = spot_result
+                        .graphs
+                        .iter()
+                        .map(|g| {
+                            serde_json::json!({
+                                "g_id": g.g_id,
+                                "flakes": g.total_rows,
+                                "size": 0
+                            })
+                        })
+                        .collect();
 
-                serde_json::json!({
-                    "flakes": total_flakes,
-                    "size": 0,
-                    "graphs": graph_stats
-                })
+                    let total_flakes: u64 = spot_result
+                        .graphs
+                        .iter()
+                        .map(|g| g.total_rows)
+                        .sum();
+
+                    serde_json::json!({
+                        "flakes": total_flakes,
+                        "size": 0,
+                        "graphs": graph_stats
+                    })
+                }
+
+                #[cfg(not(all(feature = "hll-stats", feature = "commit-v2")))]
+                {
+                    let (_, spot_result) = build_results
+                        .iter()
+                        .find(|(order, _)| *order == run_index::RunSortOrder::Spot)
+                        .expect("SPOT index must always be present in build results");
+
+                    let graph_stats: Vec<serde_json::Value> = spot_result
+                        .graphs
+                        .iter()
+                        .map(|g| {
+                            serde_json::json!({
+                                "g_id": g.g_id,
+                                "flakes": g.total_rows,
+                                "size": 0
+                            })
+                        })
+                        .collect();
+
+                    let total_flakes: u64 = spot_result
+                        .graphs
+                        .iter()
+                        .map(|g| g.total_rows)
+                        .sum();
+
+                    serde_json::json!({
+                        "flakes": total_flakes,
+                        "size": 0,
+                        "graphs": graph_stats
+                    })
+                }
             };
 
             // D.5: Build v2 root with CAS addresses and stats (initially without GC fields)
@@ -795,6 +882,7 @@ where
                 &alias,
                 store.max_t(),
                 store.base_t(),
+                predicate_sids,
                 store.namespace_codes(),
                 dict_addresses,
                 graph_addresses,
@@ -937,7 +1025,6 @@ async fn upload_dicts_to_cas<S: Storage>(
         Ok(result.address)
     }
 
-    let predicates = upload_one(storage, alias, &run_dir.join("predicates.dict"), DictKind::Predicates).await?;
     let graphs = upload_one(storage, alias, &run_dir.join("graphs.dict"), DictKind::Graphs).await?;
     let datatypes = upload_one(storage, alias, &run_dir.join("datatypes.dict"), DictKind::Datatypes).await?;
     let languages = upload_one(storage, alias, &run_dir.join("languages.dict"), DictKind::Languages).await?;
@@ -947,7 +1034,6 @@ async fn upload_dicts_to_cas<S: Storage>(
     let string_forward = upload_one(storage, alias, &run_dir.join("strings.fwd"), DictKind::StringForward).await?;
     let string_index = upload_one(storage, alias, &run_dir.join("strings.idx"), DictKind::StringIndex).await?;
     let string_reverse = upload_one(storage, alias, &run_dir.join("strings.rev"), DictKind::StringReverse).await?;
-    let namespaces = upload_one(storage, alias, &run_dir.join("namespaces.json"), DictKind::Namespaces).await?;
 
     let mut numbig = BTreeMap::new();
     let nb_dir = run_dir.join("numbig");
@@ -960,12 +1046,11 @@ async fn upload_dicts_to_cas<S: Storage>(
     }
 
     tracing::info!(
-        dict_count = 11 + numbig.len(),
+        dict_count = 9 + numbig.len(),
         "dictionary artifacts uploaded to CAS"
     );
 
     Ok(run_index::DictAddresses {
-        predicates,
         graphs,
         datatypes,
         languages,
@@ -975,7 +1060,6 @@ async fn upload_dicts_to_cas<S: Storage>(
         string_forward,
         string_index,
         string_reverse,
-        namespaces,
         numbig,
     })
 }

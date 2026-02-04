@@ -26,6 +26,7 @@ use std::borrow::Borrow;
 use std::hash::Hash;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use serde_json;
 
 // ============================================================================
 // SubjectDict (xxh3_128 reverse map, file-backed forward map)
@@ -550,8 +551,8 @@ impl GlobalDicts {
     /// Writes:
     /// - `subjects.idx` — subject forward-file offset/len index
     /// - `strings.fwd` + `strings.idx` — string value forward file + index
-    /// - `predicates.dict` — predicate dictionary
     /// - `graphs.dict` — graph dictionary
+    /// - `predicates.json` — predicate id→IRI table (for index-build p_width + tooling)
     pub fn persist(&mut self, run_dir: &Path) -> io::Result<()> {
         use super::dict_io::{write_predicate_dict, write_string_dict, write_subject_index};
 
@@ -572,8 +573,15 @@ impl GlobalDicts {
             &self.strings,
         )?;
 
-        // Write predicate dict
-        write_predicate_dict(&run_dir.join("predicates.dict"), &self.predicates)?;
+        // Write predicate id → IRI table (JSON array by id).
+        // This is not a CAS artifact; the canonical query-time mapping is in the v2 root.
+        let preds: Vec<&str> = (0..self.predicates.len())
+            .map(|p_id| self.predicates.resolve(p_id).unwrap_or(""))
+            .collect();
+        std::fs::write(
+            run_dir.join("predicates.json"),
+            serde_json::to_vec(&preds).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
+        )?;
 
         // Write graph dict
         write_predicate_dict(&run_dir.join("graphs.dict"), &self.graphs)?;

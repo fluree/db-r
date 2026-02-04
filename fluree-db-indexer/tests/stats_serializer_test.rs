@@ -44,6 +44,7 @@ mod tests {
             ndv_values: 0,
             ndv_subjects: 0,
             last_modified_t: hll.last_modified_t,
+            datatypes: vec![],
         }];
 
         let loaded = load_hll_sketches(&storage, alias, &entries)

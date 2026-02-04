@@ -1264,29 +1264,11 @@ pub mod fluree {
     /// f:rule IRI - datalog rule definition predicate
     pub const RULE: &str = "https://ns.flur.ee/ledger#rule";
 
-    /// Fluree DB namespace IRI
-    pub const DB: &str = "fluree:db:sha256:";
-
     /// Fluree commit namespace IRI
     pub const COMMIT: &str = "fluree:commit:sha256:";
 
     /// Fluree vector datatype IRI
     pub const VECTOR: &str = "https://ns.flur.ee/ledger#vector";
-
-    /// Fluree memory storage IRI
-    pub const MEMORY: &str = "fluree:memory://";
-
-    /// Fluree file storage IRI
-    pub const FILE: &str = "fluree:file://";
-
-    /// Fluree IPFS storage IRI
-    pub const IPFS: &str = "fluree:ipfs://";
-
-    /// Fluree S3 storage IRI
-    pub const S3: &str = "fluree:s3://";
-
-    /// Fluree index namespace IRI
-    pub const INDEX: &str = "https://ns.flur.ee/index#";
 }
 
 /// Namespace codes for IRI encoding
@@ -1315,14 +1297,8 @@ pub mod namespaces {
     /// Code 6: OWL
     pub const OWL: i32 = 6;
 
-    /// Code 7: W3C Verifiable Credentials
-    pub const CREDENTIALS: i32 = 7;
-
     /// Code 8: Fluree ledger namespace
     pub const FLUREE_LEDGER: i32 = 8;
-
-    /// Code 10: Fluree DB content address prefix
-    pub const FLUREE_DB: i32 = 10;
 
     /// Code 11: DID key prefix
     pub const DID_KEY: i32 = 11;
@@ -1330,44 +1306,8 @@ pub mod namespaces {
     /// Code 12: Fluree commit content address prefix
     pub const FLUREE_COMMIT: i32 = 12;
 
-    /// Code 13: fluree:memory://
-    pub const FLUREE_MEMORY: i32 = 13;
-
-    /// Code 14: fluree:file://
-    pub const FLUREE_FILE: i32 = 14;
-
-    /// Code 15: fluree:ipfs://
-    pub const FLUREE_IPFS: i32 = 15;
-
-    /// Code 16: fluree:s3://
-    pub const FLUREE_S3: i32 = 16;
-
-    /// Code 17: schema.org
-    pub const SCHEMA_ORG: i32 = 17;
-
-    /// Code 18: wikidata
-    pub const WIKIDATA: i32 = 18;
-
-    /// Code 19: foaf
-    pub const FOAF: i32 = 19;
-
-    /// Code 20: skos
-    pub const SKOS: i32 = 20;
-
-    /// Code 21: urn:uuid
-    pub const UUID: i32 = 21;
-
-    /// Code 22: urn:isbn:
-    pub const ISBN: i32 = 22;
-
-    /// Code 23: urn:issn:
-    pub const ISSN: i32 = 23;
-
     /// Code 24: blank nodes (_:)
     pub const BLANK_NODE: i32 = 24;
-
-    /// Code 25: Fluree index namespace
-    pub const FLUREE_INDEX: i32 = 25;
 
     /// First code available for user-defined namespaces
     pub const USER_START: i32 = 101;

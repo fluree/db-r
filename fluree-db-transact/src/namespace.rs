@@ -11,63 +11,8 @@
 //! with existing databases. User-supplied namespaces start at code 101.
 
 use fluree_db_core::{Db, Sid, Storage};
+use fluree_vocab::namespaces::BLANK_NODE;
 use std::collections::HashMap;
-
-// ============================================================================
-// Predefined Namespace Codes (must match Clojure implementation)
-// ============================================================================
-
-/// Empty/relative IRI prefix
-pub const NS_EMPTY: i32 = 0;
-/// JSON-LD keywords (@id, @type, etc.)
-pub const NS_JSONLD: i32 = 1;
-/// XSD datatypes (http://www.w3.org/2001/XMLSchema#)
-pub const NS_XSD: i32 = 2;
-/// RDF namespace (http://www.w3.org/1999/02/22-rdf-syntax-ns#)
-pub const NS_RDF: i32 = 3;
-/// RDFS namespace (http://www.w3.org/2000/01/rdf-schema#)
-pub const NS_RDFS: i32 = 4;
-/// SHACL namespace (http://www.w3.org/ns/shacl#)
-pub const NS_SHACL: i32 = 5;
-/// OWL namespace (http://www.w3.org/2002/07/owl#)
-pub const NS_OWL: i32 = 6;
-/// W3C Credentials (https://www.w3.org/2018/credentials#)
-pub const NS_CREDENTIALS: i32 = 7;
-/// Fluree ledger namespace (https://ns.flur.ee/ledger#)
-pub const NS_FLUREE_LEDGER: i32 = 8;
-// 9 is unused
-/// Fluree DB address (fluree:db:sha256:)
-pub const NS_FLUREE_DB: i32 = 10;
-/// DID key (did:key:)
-pub const NS_DID_KEY: i32 = 11;
-/// Fluree commit address (fluree:commit:sha256:)
-pub const NS_FLUREE_COMMIT: i32 = 12;
-/// Fluree memory storage (fluree:memory://)
-pub const NS_FLUREE_MEMORY: i32 = 13;
-/// Fluree file storage (fluree:file://)
-pub const NS_FLUREE_FILE: i32 = 14;
-/// Fluree IPFS storage (fluree:ipfs://)
-pub const NS_FLUREE_IPFS: i32 = 15;
-/// Fluree S3 storage (fluree:s3://)
-pub const NS_FLUREE_S3: i32 = 16;
-/// Schema.org (http://schema.org/)
-pub const NS_SCHEMA_ORG: i32 = 17;
-/// Wikidata (https://www.wikidata.org/wiki/)
-pub const NS_WIKIDATA: i32 = 18;
-/// FOAF (http://xmlns.com/foaf/0.1/)
-pub const NS_FOAF: i32 = 19;
-/// SKOS (http://www.w3.org/2008/05/skos#)
-pub const NS_SKOS: i32 = 20;
-/// UUID URN (urn:uuid)
-pub const NS_UUID: i32 = 21;
-/// ISBN URN (urn:isbn:)
-pub const NS_ISBN: i32 = 22;
-/// ISSN URN (urn:issn:)
-pub const NS_ISSN: i32 = 23;
-/// Blank nodes (_:)
-pub const NS_BLANK_NODE: i32 = 24;
-/// Fluree index namespace (https://ns.flur.ee/index#)
-pub const NS_FLUREE_INDEX: i32 = 25;
 
 /// First code available for user-defined namespaces
 pub const USER_NS_START: i32 = 101;
@@ -168,35 +113,9 @@ impl PrefixTrie {
     }
 }
 
-/// Build the default namespace mappings
+/// Build the default namespace mappings (single source of truth: `fluree-db-core`).
 fn default_namespaces() -> HashMap<i32, String> {
-    let mut map = HashMap::new();
-    map.insert(NS_EMPTY, "".to_string());
-    map.insert(NS_JSONLD, "@".to_string());
-    map.insert(NS_XSD, "http://www.w3.org/2001/XMLSchema#".to_string());
-    map.insert(NS_RDF, "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string());
-    map.insert(NS_RDFS, "http://www.w3.org/2000/01/rdf-schema#".to_string());
-    map.insert(NS_SHACL, "http://www.w3.org/ns/shacl#".to_string());
-    map.insert(NS_OWL, "http://www.w3.org/2002/07/owl#".to_string());
-    map.insert(NS_CREDENTIALS, "https://www.w3.org/2018/credentials#".to_string());
-    map.insert(NS_FLUREE_LEDGER, "https://ns.flur.ee/ledger#".to_string());
-    map.insert(NS_FLUREE_DB, "fluree:db:sha256:".to_string());
-    map.insert(NS_DID_KEY, "did:key:".to_string());
-    map.insert(NS_FLUREE_COMMIT, "fluree:commit:sha256:".to_string());
-    map.insert(NS_FLUREE_MEMORY, "fluree:memory://".to_string());
-    map.insert(NS_FLUREE_FILE, "fluree:file://".to_string());
-    map.insert(NS_FLUREE_IPFS, "fluree:ipfs://".to_string());
-    map.insert(NS_FLUREE_S3, "fluree:s3://".to_string());
-    map.insert(NS_SCHEMA_ORG, "http://schema.org/".to_string());
-    map.insert(NS_WIKIDATA, "https://www.wikidata.org/wiki/".to_string());
-    map.insert(NS_FOAF, "http://xmlns.com/foaf/0.1/".to_string());
-    map.insert(NS_SKOS, "http://www.w3.org/2008/05/skos#".to_string());
-    map.insert(NS_UUID, "urn:uuid".to_string());
-    map.insert(NS_ISBN, "urn:isbn:".to_string());
-    map.insert(NS_ISSN, "urn:issn:".to_string());
-    map.insert(NS_BLANK_NODE, BLANK_NODE_PREFIX.to_string());
-    map.insert(NS_FLUREE_INDEX, "https://ns.flur.ee/index#".to_string());
-    map
+    fluree_db_core::default_namespace_codes()
 }
 
 /// Registry for namespace prefix codes
@@ -318,9 +237,9 @@ impl NamespaceRegistry {
         code
     }
 
-    /// Get the namespace code for blank nodes (always NS_BLANK_NODE = 24)
+    /// Get the namespace code for blank nodes (always `BLANK_NODE` = 24)
     pub fn blank_node_code(&self) -> i32 {
-        NS_BLANK_NODE
+        BLANK_NODE
     }
 
     /// Look up a code without allocating
@@ -412,7 +331,7 @@ impl NamespaceRegistry {
     /// The returned IRI will look like `_:fdb-1672531200000-a1b2c3d4`.
     pub fn blank_node_sid(&self, unique_id: &str) -> Sid {
         let local = format!("{}-{}", BLANK_NODE_ID_PREFIX, unique_id);
-        Sid::new(NS_BLANK_NODE, local)
+        Sid::new(BLANK_NODE, local)
     }
 }
 
@@ -444,29 +363,33 @@ pub fn is_blank_node_id(iri: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluree_vocab::namespaces::{DID_KEY, EMPTY, JSON_LD, XSD};
 
     #[test]
     fn test_predefined_codes() {
         let registry = NamespaceRegistry::new();
 
         // Check predefined codes are present
-        assert_eq!(registry.get_code(""), Some(NS_EMPTY));
-        assert_eq!(registry.get_code("@"), Some(NS_JSONLD));
+        assert_eq!(registry.get_code(""), Some(EMPTY));
+        assert_eq!(registry.get_code("@"), Some(JSON_LD));
         assert_eq!(
             registry.get_code("http://www.w3.org/2001/XMLSchema#"),
-            Some(NS_XSD)
+            Some(XSD)
         );
-        assert_eq!(registry.get_code("_:"), Some(NS_BLANK_NODE));
+        assert_eq!(registry.get_code("_:"), Some(BLANK_NODE));
 
         // Check reverse lookup
-        assert_eq!(registry.get_prefix(NS_BLANK_NODE), Some("_:"));
-        assert_eq!(registry.get_prefix(NS_XSD), Some("http://www.w3.org/2001/XMLSchema#"));
+        assert_eq!(registry.get_prefix(BLANK_NODE), Some("_:"));
+        assert_eq!(
+            registry.get_prefix(XSD),
+            Some("http://www.w3.org/2001/XMLSchema#")
+        );
     }
 
     #[test]
     fn test_blank_node_code_is_fixed() {
         let registry = NamespaceRegistry::new();
-        assert_eq!(registry.blank_node_code(), NS_BLANK_NODE);
+        assert_eq!(registry.blank_node_code(), BLANK_NODE);
         assert_eq!(registry.blank_node_code(), 24);
     }
 
@@ -491,7 +414,7 @@ mod tests {
 
         // Test with a ULID-style ID
         let sid = registry.blank_node_sid("01ARZ3NDEKTSV4RRFFQ69G5FAV");
-        assert_eq!(sid.namespace_code, NS_BLANK_NODE);
+        assert_eq!(sid.namespace_code, BLANK_NODE);
         assert_eq!(sid.name.as_ref(), "fdb-01ARZ3NDEKTSV4RRFFQ69G5FAV");
     }
 
@@ -520,19 +443,14 @@ mod tests {
     fn test_sid_for_iri_uses_longest_prefix_match() {
         let mut registry = NamespaceRegistry::new();
 
-        // did:key: is a predefined prefix (code 11), so did:key:z6Mk... should use it
+        // did:key: is a predefined prefix, so did:key:z6Mk... should use it
         let sid = registry.sid_for_iri("did:key:z6MkqtpqKGs4Et8mqBLBBAitDC1DPBiTJEbu26AcBX75B5rR");
-        assert_eq!(sid.namespace_code, NS_DID_KEY);
+        assert_eq!(sid.namespace_code, DID_KEY);
         assert_eq!(sid.name.as_ref(), "z6MkqtpqKGs4Et8mqBLBBAitDC1DPBiTJEbu26AcBX75B5rR");
-
-        // fluree:db:sha256: is predefined (code 10)
-        let sid2 = registry.sid_for_iri("fluree:db:sha256:abc123");
-        assert_eq!(sid2.namespace_code, NS_FLUREE_DB);
-        assert_eq!(sid2.name.as_ref(), "abc123");
 
         // XSD namespace ends with #, should still work
         let sid3 = registry.sid_for_iri("http://www.w3.org/2001/XMLSchema#string");
-        assert_eq!(sid3.namespace_code, NS_XSD);
+        assert_eq!(sid3.namespace_code, XSD);
         assert_eq!(sid3.name.as_ref(), "string");
 
         // No delta should be created since all prefixes are predefined

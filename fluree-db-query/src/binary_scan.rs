@@ -782,7 +782,11 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
 
             match cursor.next_leaf() {
                 Ok(Some(decoded)) => {
-                    produced += self.batch_to_bindings(&decoded, &mut columns)?;
+                    let n = self.batch_to_bindings(&decoded, &mut columns)?;
+                    for _ in 0..n {
+                        ctx.tracker.consume_fuel_one()?;
+                    }
+                    produced += n;
                 }
                 Ok(None) => {
                     // Cursor exhausted
@@ -1335,6 +1339,9 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
             } else {
                 flakes.iter().filter(|f| self.flake_matches(f, ctx.db)).count()
             };
+            for _ in 0..match_count {
+                ctx.tracker.consume_fuel_one()?;
+            }
             if match_count > 0 {
                 self.batches.push_back(Batch::empty_schema_with_len(match_count));
             }
@@ -1348,6 +1355,7 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
                     continue;
                 }
 
+                ctx.tracker.consume_fuel_one()?;
                 let row = self.flake_to_row(f, ctx.history_mode);
                 for (col_idx, binding) in row.into_iter().enumerate() {
                     columns[col_idx].push(binding);

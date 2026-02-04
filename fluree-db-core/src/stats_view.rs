@@ -226,6 +226,7 @@ mod tests {
                 ndv_values: 40,
                 ndv_subjects: 45,
                 last_modified_t: 10,
+                datatypes: vec![],
             }]),
             classes: None,
             graphs: None,

@@ -13,12 +13,9 @@
 //! before any index exists.
 use std::collections::HashMap;
 use fluree_vocab::namespaces::{
-    BLANK_NODE, CREDENTIALS, DID_KEY, EMPTY, FLUREE_COMMIT, FLUREE_DB, FLUREE_FILE,
-    FLUREE_INDEX, FLUREE_IPFS, FLUREE_LEDGER, FLUREE_MEMORY, FLUREE_S3, FOAF, ISBN,
-    ISSN, JSON_LD, OWL, RDF, RDFS, SCHEMA_ORG, SHACL, SKOS, UUID, WIKIDATA, XSD
+    BLANK_NODE, DID_KEY, EMPTY, FLUREE_COMMIT, FLUREE_LEDGER, JSON_LD, OWL, RDF, RDFS, SHACL, XSD,
 };
 use fluree_vocab::predicates::*;
-use fluree_vocab::index::*;
 
 use crate::sid::Sid;
 
@@ -106,64 +103,6 @@ pub fn is_owl_transitive_property(sid: &Sid) -> bool {
     sid.namespace_code == OWL && sid.name.as_ref() == OWL_TRANSITIVEPROPERTY
 }
 
-// ============================================================================
-// Fluree Index namespace (idx:) SID checks
-// ============================================================================
-
-/// Check if a SID is idx:target
-#[inline]
-pub fn is_idx_target(sid: &Sid) -> bool {
-    sid.namespace_code == FLUREE_INDEX && sid.name.as_ref() == TARGET
-}
-
-/// Check if a SID is idx:limit
-#[inline]
-pub fn is_idx_limit(sid: &Sid) -> bool {
-    sid.namespace_code == FLUREE_INDEX && sid.name.as_ref() == LIMIT
-}
-
-/// Check if a SID is idx:result
-#[inline]
-pub fn is_idx_result(sid: &Sid) -> bool {
-    sid.namespace_code == FLUREE_INDEX && sid.name.as_ref() == RESULT
-}
-
-/// Check if a SID is idx:id
-#[inline]
-pub fn is_idx_id(sid: &Sid) -> bool {
-    sid.namespace_code == FLUREE_INDEX && sid.name.as_ref() == ID
-}
-
-/// Check if a SID is idx:score
-#[inline]
-pub fn is_idx_score(sid: &Sid) -> bool {
-    sid.namespace_code == FLUREE_INDEX && sid.name.as_ref() == SCORE
-}
-
-/// Check if a SID is idx:ledger
-#[inline]
-pub fn is_idx_ledger(sid: &Sid) -> bool {
-    sid.namespace_code == FLUREE_INDEX && sid.name.as_ref() == LEDGER
-}
-
-/// Check if a SID is idx:sync
-#[inline]
-pub fn is_idx_sync(sid: &Sid) -> bool {
-    sid.namespace_code == FLUREE_INDEX && sid.name.as_ref() == SYNC
-}
-
-/// Check if a SID is idx:timeout
-#[inline]
-pub fn is_idx_timeout(sid: &Sid) -> bool {
-    sid.namespace_code == FLUREE_INDEX && sid.name.as_ref() == TIMEOUT
-}
-
-/// Check if a SID is in the Fluree Index namespace
-#[inline]
-pub fn is_fluree_index_ns(sid: &Sid) -> bool {
-    sid.namespace_code == FLUREE_INDEX
-}
-
 /// Baseline namespace codes (code -> prefix) matching Fluree's reserved codepoints.
 pub fn default_namespace_codes() -> HashMap<i32, String> {
     let mut map = HashMap::new();
@@ -174,27 +113,10 @@ pub fn default_namespace_codes() -> HashMap<i32, String> {
     map.insert(RDFS, "http://www.w3.org/2000/01/rdf-schema#".to_string());
     map.insert(SHACL, "http://www.w3.org/ns/shacl#".to_string());
     map.insert(OWL, "http://www.w3.org/2002/07/owl#".to_string());
-    map.insert(
-        CREDENTIALS,
-        "https://www.w3.org/2018/credentials#".to_string(),
-    );
     map.insert(FLUREE_LEDGER, "https://ns.flur.ee/ledger#".to_string());
-    map.insert(FLUREE_DB, "fluree:db:sha256:".to_string());
     map.insert(DID_KEY, "did:key:".to_string());
     map.insert(FLUREE_COMMIT, "fluree:commit:sha256:".to_string());
-    map.insert(FLUREE_MEMORY, "fluree:memory://".to_string());
-    map.insert(FLUREE_FILE, "fluree:file://".to_string());
-    map.insert(FLUREE_IPFS, "fluree:ipfs://".to_string());
-    map.insert(FLUREE_S3, "fluree:s3://".to_string());
-    map.insert(SCHEMA_ORG, "http://schema.org/".to_string());
-    map.insert(WIKIDATA, "https://www.wikidata.org/wiki/".to_string());
-    map.insert(FOAF, "http://xmlns.com/foaf/0.1/".to_string());
-    map.insert(SKOS, "http://www.w3.org/2008/05/skos#".to_string());
-    map.insert(UUID, "urn:uuid".to_string());
-    map.insert(ISBN, "urn:isbn:".to_string());
-    map.insert(ISSN, "urn:issn:".to_string());
     map.insert(BLANK_NODE, "_:".to_string());
-    map.insert(FLUREE_INDEX, "https://ns.flur.ee/index#".to_string());
     map
 }
 

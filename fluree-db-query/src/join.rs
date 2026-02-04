@@ -1565,13 +1565,20 @@ mod tests {
         std::fs::create_dir_all(&index_dir).unwrap();
 
         // --- Dictionaries ---
-        // Predicates.dict
+        // Predicates (id -> IRI) written as predicates.json (v2 root also inlines IRI -> p_id).
         let p_has_score = "http://example.com/score#hasScore";
         let p_refers = "http://example.com/score#refersInstance";
         let mut pred_dict = PredicateDict::new();
         let p_id_has_score = pred_dict.get_or_insert(p_has_score);
         let p_id_refers = pred_dict.get_or_insert(p_refers);
-        write_predicate_dict(&run_dir.join("predicates.dict"), &pred_dict).unwrap();
+        let preds_by_id: Vec<&str> = (0..pred_dict.len())
+            .map(|p_id| pred_dict.resolve(p_id).unwrap_or(""))
+            .collect();
+        std::fs::write(
+            &run_dir.join("predicates.json"),
+            serde_json::to_vec(&preds_by_id).unwrap(),
+        )
+        .unwrap();
 
         // Datatypes.dict with reserved IDs up through DOUBLE (id=6).
         let mut dt_dict = PredicateDict::new();

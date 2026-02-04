@@ -1062,7 +1062,6 @@ mod tests {
         // not just data in the indexed db. This is the "time boundary" correctness test.
         use crate::commit::{commit, CommitOpts};
         use fluree_db_nameservice::memory::MemoryNameService;
-        use fluree_vocab::namespaces::SCHEMA_ORG;
 
         let storage = MemoryStorage::new();
         let db = Db::genesis(storage.clone(), "test:main");
@@ -1073,14 +1072,17 @@ mod tests {
         let config = IndexConfig::default();
 
         // Commit 1: Insert schema:alice with schema:name="Alice"
-        // Using SCHEMA_ORG namespace (code 17) which is pre-registered in genesis Db
+        // Do NOT rely on pre-registered SCHEMA_ORG codes — this build intentionally keeps
+        // the default namespace table minimal. Allocate via NamespaceRegistry.
+        let mut ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let schema_alice = ns_registry.sid_for_iri("http://schema.org/alice");
+        let schema_name = ns_registry.sid_for_iri("http://schema.org/name");
         let txn1 = Txn::insert().with_insert(TripleTemplate::new(
-            TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "alice")),
-            TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "name")),
+            TemplateTerm::Sid(schema_alice.clone()),
+            TemplateTerm::Sid(schema_name.clone()),
             TemplateTerm::Value(FlakeValue::String("Alice".to_string())),
         ));
 
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
         let (view1, ns1) = stage(ledger, txn1, ns_registry, StageOptions::default()).await.unwrap();
         let (_r1, state1) = commit(view1, ns1, &storage, &nameservice, &config, CommitOpts::default())
             .await
@@ -1106,18 +1108,22 @@ mod tests {
                 UnresolvedTerm::var("?name"),
             ))
             .with_delete(TripleTemplate::new(
-                TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "alice")),
-                TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "name")),
+                TemplateTerm::Sid(schema_alice.clone()),
+                TemplateTerm::Sid(schema_name.clone()),
                 TemplateTerm::Var(name_var),
             ))
             .with_insert(TripleTemplate::new(
-                TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "alice")),
-                TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "name")),
+                TemplateTerm::Sid(schema_alice),
+                TemplateTerm::Sid(schema_name),
                 TemplateTerm::Value(FlakeValue::String("Alicia".to_string())),
             ))
             .with_vars(vars);
 
-        let ns_registry2 = NamespaceRegistry::from_db(&state1.db);
+        let mut ns_registry2 = NamespaceRegistry::from_db(&state1.db);
+        // Ensure schema.org prefix is present in the registry used for lowering.
+        // (Should already be in Db.namespace_codes via commit delta, but this makes the test robust.)
+        let _ = ns_registry2.sid_for_iri("http://schema.org/alice");
+        let _ = ns_registry2.sid_for_iri("http://schema.org/name");
         let (view2, _ns2) = stage(state1, txn2, ns_registry2, StageOptions::default()).await.unwrap();
 
         // The WHERE should have found "Alice" (in novelty), so we should have:
@@ -1141,7 +1147,6 @@ mod tests {
         // This verifies that execute_where_with_overlay_at handles joins.
         use crate::commit::{commit, CommitOpts};
         use fluree_db_nameservice::memory::MemoryNameService;
-        use fluree_vocab::namespaces::SCHEMA_ORG;
 
         let storage = MemoryStorage::new();
         let db = Db::genesis(storage.clone(), "test:main");
@@ -1152,34 +1157,38 @@ mod tests {
         let config = IndexConfig::default();
 
         // Commit 1: Insert schema:alice with name="Alice" and age=30
-        // Using SCHEMA_ORG namespace (code 17) which is pre-registered in genesis Db
+        let mut ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let schema_alice = ns_registry.sid_for_iri("http://schema.org/alice");
+        let schema_name = ns_registry.sid_for_iri("http://schema.org/name");
+        let schema_age = ns_registry.sid_for_iri("http://schema.org/age");
         let txn1 = Txn::insert()
             .with_insert(TripleTemplate::new(
-                TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "alice")),
-                TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "name")),
+                TemplateTerm::Sid(schema_alice.clone()),
+                TemplateTerm::Sid(schema_name.clone()),
                 TemplateTerm::Value(FlakeValue::String("Alice".to_string())),
             ))
             .with_insert(TripleTemplate::new(
-                TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "alice")),
-                TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "age")),
+                TemplateTerm::Sid(schema_alice.clone()),
+                TemplateTerm::Sid(schema_age.clone()),
                 TemplateTerm::Value(FlakeValue::Long(30)),
             ));
 
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
         let (view1, ns1) = stage(ledger, txn1, ns_registry, StageOptions::default()).await.unwrap();
         let (_r1, state1) = commit(view1, ns1, &storage, &nameservice, &config, CommitOpts::default())
             .await
             .unwrap();
 
         // Commit 2: Also insert schema:bob with only a name (no age)
+        let mut ns_registry2 = NamespaceRegistry::from_db(&state1.db);
+        let schema_bob = ns_registry2.sid_for_iri("http://schema.org/bob");
+        let schema_name2 = ns_registry2.sid_for_iri("http://schema.org/name");
         let txn2 = Txn::insert()
             .with_insert(TripleTemplate::new(
-                TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "bob")),
-                TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "name")),
+                TemplateTerm::Sid(schema_bob.clone()),
+                TemplateTerm::Sid(schema_name2.clone()),
                 TemplateTerm::Value(FlakeValue::String("Bob".to_string())),
             ));
 
-        let ns_registry2 = NamespaceRegistry::from_db(&state1.db);
         let (view2, ns2) = stage(state1, txn2, ns_registry2, StageOptions::default()).await.unwrap();
         let (_r2, state2) = commit(view2, ns2, &storage, &nameservice, &config, CommitOpts::default())
             .await
@@ -1212,17 +1221,20 @@ mod tests {
             ))
             .with_delete(TripleTemplate::new(
                 TemplateTerm::Var(s_var),
-                TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "age")),
+                TemplateTerm::Sid(schema_age.clone()),
                 TemplateTerm::Var(age_var),
             ))
             .with_insert(TripleTemplate::new(
                 TemplateTerm::Var(s_var),
-                TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "age")),
+                TemplateTerm::Sid(schema_age),
                 TemplateTerm::Value(FlakeValue::Long(31)),
             ))
             .with_vars(vars);
 
-        let ns_registry3 = NamespaceRegistry::from_db(&state2.db);
+        let mut ns_registry3 = NamespaceRegistry::from_db(&state2.db);
+        // Ensure schema.org prefix exists for lowering WHERE IRIs.
+        let _ = ns_registry3.sid_for_iri("http://schema.org/age");
+        let _ = ns_registry3.sid_for_iri("http://schema.org/name");
         let (view3, _ns3) = stage(state2, txn3, ns_registry3, StageOptions::default()).await.unwrap();
 
         // Should have exactly 2 flakes:
@@ -1314,7 +1326,6 @@ mod tests {
         use crate::commit::{commit, CommitOpts};
         use crate::ir::InlineValues;
         use fluree_db_nameservice::memory::MemoryNameService;
-        use fluree_vocab::namespaces::SCHEMA_ORG;
 
         let storage = MemoryStorage::new();
         let db = Db::genesis(storage.clone(), "test:main");
@@ -1325,20 +1336,22 @@ mod tests {
         let config = IndexConfig::default();
 
         // Insert data: alice has age 30, bob has age 25
-        // Using SCHEMA_ORG namespace (code 17) which is pre-registered in genesis Db
+        let mut ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let schema_alice = ns_registry.sid_for_iri("http://schema.org/alice");
+        let schema_bob = ns_registry.sid_for_iri("http://schema.org/bob");
+        let schema_age = ns_registry.sid_for_iri("http://schema.org/age");
         let txn1 = Txn::insert()
             .with_insert(TripleTemplate::new(
-                TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "alice")),
-                TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "age")),
+                TemplateTerm::Sid(schema_alice.clone()),
+                TemplateTerm::Sid(schema_age.clone()),
                 TemplateTerm::Value(FlakeValue::Long(30)),
             ))
             .with_insert(TripleTemplate::new(
-                TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "bob")),
-                TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "age")),
+                TemplateTerm::Sid(schema_bob.clone()),
+                TemplateTerm::Sid(schema_age.clone()),
                 TemplateTerm::Value(FlakeValue::Long(25)),
             ));
 
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
         let (view1, ns1) = stage(ledger, txn1, ns_registry, StageOptions::default()).await.unwrap();
         let (_r1, state1) = commit(view1, ns1, &storage, &nameservice, &config, CommitOpts::default())
             .await
@@ -1360,7 +1373,7 @@ mod tests {
 
         let values = InlineValues::new(
             vec![s_var],
-            vec![vec![TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "alice"))]],
+            vec![vec![TemplateTerm::Sid(schema_alice.clone())]],
         );
 
         // WHERE pattern uses UnresolvedPattern with string variable names
@@ -1372,18 +1385,19 @@ mod tests {
             ))
             .with_delete(TripleTemplate::new(
                 TemplateTerm::Var(s_var),
-                TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "age")),
+                TemplateTerm::Sid(schema_age.clone()),
                 TemplateTerm::Var(age_var),
             ))
             .with_insert(TripleTemplate::new(
                 TemplateTerm::Var(s_var),
-                TemplateTerm::Sid(Sid::new(SCHEMA_ORG, "age")),
+                TemplateTerm::Sid(schema_age),
                 TemplateTerm::Value(FlakeValue::Long(35)),
             ))
             .with_values(values)
             .with_vars(vars);
 
-        let ns_registry2 = NamespaceRegistry::from_db(&state1.db);
+        let mut ns_registry2 = NamespaceRegistry::from_db(&state1.db);
+        let _ = ns_registry2.sid_for_iri("http://schema.org/age");
         let result = stage(state1, txn2, ns_registry2, StageOptions::default()).await;
 
         // Check if stage succeeded

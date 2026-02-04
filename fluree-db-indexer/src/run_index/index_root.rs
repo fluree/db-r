@@ -155,7 +155,6 @@ impl BinaryIndexRoot {
 /// `content_write_bytes` (e.g. `"fluree:file://mydb/main/objects/dicts/abc123.dict"`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DictAddresses {
-    pub predicates: String,
     pub graphs: String,
     pub datatypes: String,
     pub languages: String,
@@ -165,7 +164,6 @@ pub struct DictAddresses {
     pub string_forward: String,
     pub string_index: String,
     pub string_reverse: String,
-    pub namespaces: String,
     /// Per-predicate numbig arenas. Key is `p_id` as string (for JSON
     /// compatibility with integer map keys).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -252,6 +250,17 @@ pub struct BinaryIndexRootV2 {
     /// Per-graph index entries with CAS addresses.
     pub graphs: Vec<GraphEntryV2>,
 
+    /// Predicate/property ID → (namespace_code, suffix) mapping.
+    ///
+    /// This is the minimal inline mapping required at query time to translate
+    /// query predicate IRIs into numeric IDs for binary scans, without downloading
+    /// a redundant predicate dictionary blob.
+    ///
+    /// Stored as a vector indexed by `p_id` for compactness and to enforce
+    /// contiguous IDs. Each entry is serialized as a JSON array:
+    /// `[ns_code, "suffix"]`.
+    pub predicate_sids: Vec<(i32, String)>,
+
     /// Namespace code → IRI prefix mapping.
     pub namespace_codes: BTreeMap<i32, String>,
 
@@ -306,6 +315,7 @@ impl BinaryIndexRootV2 {
         ledger_alias: &str,
         index_t: i64,
         base_t: i64,
+        predicate_sids: Vec<(i32, String)>,
         namespace_codes: &HashMap<i32, String>,
         dict_addresses: DictAddresses,
         graph_addresses: Vec<GraphAddresses>,
@@ -333,6 +343,7 @@ impl BinaryIndexRootV2 {
             index_t,
             base_t,
             graphs,
+            predicate_sids,
             namespace_codes: ns_codes,
             dict_addresses,
             stats,
@@ -353,9 +364,8 @@ impl BinaryIndexRootV2 {
     pub fn all_cas_addresses(&self) -> Vec<String> {
         let mut addrs = Vec::new();
 
-        // Dict artifacts (11 standard)
+        // Dict artifacts (9 standard; predicates and namespace codes are inlined in the root)
         let d = &self.dict_addresses;
-        addrs.push(d.predicates.clone());
         addrs.push(d.graphs.clone());
         addrs.push(d.datatypes.clone());
         addrs.push(d.languages.clone());
@@ -365,7 +375,6 @@ impl BinaryIndexRootV2 {
         addrs.push(d.string_forward.clone());
         addrs.push(d.string_index.clone());
         addrs.push(d.string_reverse.clone());
-        addrs.push(d.namespaces.clone());
 
         // Per-predicate numbig arenas
         for addr in d.numbig.values() {
@@ -464,7 +473,6 @@ mod tests {
 
     fn sample_dict_addresses() -> DictAddresses {
         DictAddresses {
-            predicates: "fluree:file://t/main/objects/dicts/p.dict".into(),
             graphs: "fluree:file://t/main/objects/dicts/g.dict".into(),
             datatypes: "fluree:file://t/main/objects/dicts/d.dict".into(),
             languages: "fluree:file://t/main/objects/dicts/l.dict".into(),
@@ -474,7 +482,6 @@ mod tests {
             string_forward: "fluree:file://t/main/objects/dicts/stf.fwd".into(),
             string_index: "fluree:file://t/main/objects/dicts/sti.idx".into(),
             string_reverse: "fluree:file://t/main/objects/dicts/str.rev".into(),
-            namespaces: "fluree:file://t/main/objects/dicts/ns.json".into(),
             numbig: BTreeMap::new(),
         }
     }
@@ -500,6 +507,7 @@ mod tests {
                     m
                 },
             }],
+            predicate_sids: vec![],
             namespace_codes: {
                 let mut m = BTreeMap::new();
                 m.insert(0, String::new());
@@ -541,12 +549,14 @@ mod tests {
             },
         }];
 
+        let predicate_sids: Vec<(i32, String)> = vec![(0, "p0".to_string())];
+
         let root1 = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, &ns, sample_dict_addresses(), graph_addrs.clone(),
+            "test/main", 42, 1, predicate_sids.clone(), &ns, sample_dict_addresses(), graph_addrs.clone(),
             None, None, None, None,
         );
         let root2 = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, &ns, sample_dict_addresses(), graph_addrs,
+            "test/main", 42, 1, predicate_sids, &ns, sample_dict_addresses(), graph_addrs,
             None, None, None, None,
         );
 
@@ -582,7 +592,7 @@ mod tests {
     #[test]
     fn parse_index_root_v2() {
         let root = BinaryIndexRootV2::from_cas_artifacts(
-            "x", 0, 0, &HashMap::new(), sample_dict_addresses(), vec![],
+            "x", 0, 0, vec![], &HashMap::new(), sample_dict_addresses(), vec![],
             None, None, None, None,
         );
         let bytes = root.to_json_bytes().unwrap();
@@ -605,7 +615,7 @@ mod tests {
             "graphs": [{"g_id": 1, "flakes": 10000, "size": 0}]
         });
         let root = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, &HashMap::new(), sample_dict_addresses(), vec![],
+            "test/main", 42, 1, vec![], &HashMap::new(), sample_dict_addresses(), vec![],
             Some(stats.clone()), None, None, None,
         );
 
@@ -639,7 +649,6 @@ mod tests {
         numbig.insert("12".to_string(), "cas://numbig_12".into());
 
         let dicts = DictAddresses {
-            predicates: "cas://pred".into(),
             graphs: "cas://graphs".into(),
             datatypes: "cas://dt".into(),
             languages: "cas://lang".into(),
@@ -649,7 +658,6 @@ mod tests {
             string_forward: "cas://stf".into(),
             string_index: "cas://sti".into(),
             string_reverse: "cas://str".into(),
-            namespaces: "cas://ns".into(),
             numbig,
         };
 
@@ -670,14 +678,14 @@ mod tests {
         }];
 
         let root = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 10, 1, &HashMap::new(), dicts, graph_addrs,
+            "test/main", 10, 1, vec![], &HashMap::new(), dicts, graph_addrs,
             None, None, None, None,
         );
 
         let addrs = root.all_cas_addresses();
 
-        // 11 standard dicts + 2 numbig + 2 branches + 3 leaves = 18
-        assert_eq!(addrs.len(), 18);
+        // 9 standard dicts + 2 numbig + 2 branches + 3 leaves = 16
+        assert_eq!(addrs.len(), 16);
 
         // Verify sorted
         for w in addrs.windows(2) {
@@ -685,7 +693,6 @@ mod tests {
         }
 
         // Spot-check specific addresses
-        assert!(addrs.contains(&"cas://pred".to_string()));
         assert!(addrs.contains(&"cas://numbig_5".to_string()));
         assert!(addrs.contains(&"cas://g0_spot_br".to_string()));
         assert!(addrs.contains(&"cas://g0_spot_l1".to_string()));
@@ -695,7 +702,7 @@ mod tests {
     #[test]
     fn v2_round_trip_with_gc_fields() {
         let root = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, &HashMap::new(), sample_dict_addresses(), vec![],
+            "test/main", 42, 1, vec![], &HashMap::new(), sample_dict_addresses(), vec![],
             None, None,
             Some(BinaryPrevIndexRef { t: 40, address: "cas://prev_root".into() }),
             Some(BinaryGarbageRef { address: "cas://garbage_record".into() }),
@@ -712,7 +719,7 @@ mod tests {
     fn v2_round_trip_without_gc_fields() {
         // When prev_index and garbage are None, they should not appear in JSON
         let root = BinaryIndexRootV2::from_cas_artifacts(
-            "test/main", 42, 1, &HashMap::new(), sample_dict_addresses(), vec![],
+            "test/main", 42, 1, vec![], &HashMap::new(), sample_dict_addresses(), vec![],
             None, None, None, None,
         );
 

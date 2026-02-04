@@ -4,7 +4,7 @@
 //! This is a validation tool, not a production query engine.
 
 use super::branch::{find_branch_file, read_branch_manifest, BranchManifest};
-use super::dict_io::{read_forward_entry, read_forward_index, read_predicate_dict};
+use super::dict_io::{read_forward_entry, read_forward_index};
 use super::global_dict::PredicateDict;
 use super::leaf::read_leaf_header;
 use super::leaflet::decode_leaflet;
@@ -13,6 +13,7 @@ use fluree_db_core::value_id::{ObjKind, ObjKey};
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
+use serde_json;
 
 // ============================================================================
 // FactRow: human-readable query result
@@ -62,17 +63,24 @@ impl SpotQuery {
     /// Load a SpotQuery from the index directory.
     ///
     /// Expects the following files in `run_dir`:
-    /// - `predicates.dict`
+    /// - `predicates.json`
     /// - `strings.fwd`, `strings.idx`
     /// - `subjects.fwd`, `subjects.idx`
     ///
     /// And per-graph indexes in `index_dir`:
     /// - `graph_{g_id}/spot/branch.fbr`
     pub fn load(run_dir: &Path, index_dir: &Path) -> io::Result<Self> {
-        // Load predicate dict
-        let pred_path = run_dir.join("predicates.dict");
+        // Load predicate ids (id -> IRI)
+        let pred_path = run_dir.join("predicates.json");
         let predicates = if pred_path.exists() {
-            read_predicate_dict(&pred_path)?
+            let bytes = std::fs::read(&pred_path)?;
+            let by_id: Vec<String> = serde_json::from_slice(&bytes)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let mut dict = PredicateDict::new();
+            for iri in &by_id {
+                dict.get_or_insert(iri);
+            }
+            dict
         } else {
             PredicateDict::new()
         };

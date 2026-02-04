@@ -334,10 +334,10 @@ use crate::index_stats::{
 /// Backward-compatible alias for [`IndexStats`].
 pub type DbRootStats = IndexStats;
 
-/// Raw property stat entry as it appears in JSON
+/// Raw property stat entry as it appears in JSON (v2 only).
 ///
-/// Clojure format is a compact array: `[[namespace_code, "name"], [count, ndv_values, ndv_subjects, ?, ?, last_modified_t]]`
-#[derive(Debug)]
+/// Legacy compact “clojure parity” array formats are intentionally not supported.
+#[derive(Debug, Deserialize)]
 pub struct RawPropertyStatEntry {
     /// SID as (namespace_code, name)
     pub sid: (i32, String),
@@ -345,55 +345,9 @@ pub struct RawPropertyStatEntry {
     pub ndv_values: u64,
     pub ndv_subjects: u64,
     pub last_modified_t: i64,
-}
-
-impl<'de> serde::Deserialize<'de> for RawPropertyStatEntry {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use serde::de::{self, SeqAccess, Visitor};
-
-        struct PropertyStatVisitor;
-
-        impl<'de> Visitor<'de> for PropertyStatVisitor {
-            type Value = RawPropertyStatEntry;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("a property stat entry as [[ns_code, name], [count, ndv_values, ndv_subjects, ?, ?, last_modified_t]]")
-            }
-
-            fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
-            where
-                A: SeqAccess<'de>,
-            {
-                // First element: SID as [namespace_code, name]
-                let sid: (i32, String) = seq
-                    .next_element()?
-                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
-
-                // Second element: stats array [count, ndv_values, ndv_subjects, ?, ?, last_modified_t]
-                let stats: Vec<i64> = seq
-                    .next_element()?
-                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
-
-                if stats.len() < 6 {
-                    return Err(de::Error::invalid_length(stats.len(), &"stats array with at least 6 elements"));
-                }
-
-                Ok(RawPropertyStatEntry {
-                    sid,
-                    count: stats[0] as u64,
-                    ndv_values: stats[1] as u64,
-                    ndv_subjects: stats[2] as u64,
-                    // stats[3] and stats[4] are unknown/unused
-                    last_modified_t: stats[5],
-                })
-            }
-        }
-
-        deserializer.deserialize_seq(PropertyStatVisitor)
-    }
+    /// Optional per-datatype usage counts (DatatypeId.0, count).
+    #[serde(default)]
+    pub datatypes: Vec<(u8, u64)>,
 }
 
 /// Raw stats as it appears in JSON
@@ -664,6 +618,7 @@ pub fn raw_stats_to_index_stats(s: &RawDbRootStats) -> Option<IndexStats> {
                     ndv_values: p.ndv_values,
                     ndv_subjects: p.ndv_subjects,
                     last_modified_t: p.last_modified_t,
+                    datatypes: p.datatypes.clone(),
                 })
                 .collect()
         });

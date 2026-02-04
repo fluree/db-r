@@ -84,7 +84,7 @@ pub async fn extract_datalog_rules<S: Storage>(
     .collect();
 
     // Parse each rule
-    for flake in rule_flakes {
+    for flake in &rule_flakes {
         let rule_id = flake.s.clone();
 
         // The rule value should be a JSON string
@@ -96,20 +96,12 @@ pub async fn extract_datalog_rules<S: Storage>(
                             rule_set.add_rule(rule);
                         }
                         Err(e) => {
-                            tracing::warn!(
-                                "Failed to parse rule {:?}: {}",
-                                rule_id,
-                                e
-                            );
+                            tracing::warn!(?rule_id, %e, "Failed to parse datalog rule definition");
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "Failed to parse rule JSON for {:?}: {}",
-                        rule_id,
-                        e
-                    );
+                    tracing::warn!(?rule_id, %e, "Failed to parse datalog rule JSON");
                 }
             }
         }
@@ -740,7 +732,18 @@ async fn match_pattern_with_bindings<S: Storage>(
         .await
         .map_err(|e| QueryError::Internal(format!("Pattern matching failed: {}", e)))?
         .into_iter()
-        .filter(|f| f.op) // Only active assertions
+        .filter(|f| {
+            if !f.op { return false; } // Only active assertions
+            // Post-filter: range provider may return a superset; ensure
+            // subject and predicate actually match the requested pattern.
+            if let Some(ref s) = subject_sid {
+                if &f.s != s { return false; }
+            }
+            if let Some(ref p) = predicate_sid {
+                if &f.p != p { return false; }
+            }
+            true
+        })
         .collect();
 
     // Build binding rows from results

@@ -205,6 +205,10 @@ fn finalize_stats(
                     ndv_values: indexed_entry.map(|e| e.ndv_values).unwrap_or(0),
                     ndv_subjects: indexed_entry.map(|e| e.ndv_subjects).unwrap_or(0),
                     last_modified_t: indexed_entry.map(|e| e.last_modified_t).unwrap_or(0),
+                    // Preserve datatype breakdown from indexed stats when available.
+                    datatypes: indexed_entry
+                        .map(|e| e.datatypes.clone())
+                        .unwrap_or_default(),
                 }
             })
             .collect();
@@ -334,6 +338,7 @@ mod tests {
                 ndv_values: 25,
                 ndv_subjects: 20,
                 last_modified_t: 10,
+                datatypes: vec![],
             }]),
             classes: None,
             graphs: None,
@@ -357,6 +362,7 @@ mod tests {
                 ndv_values: 5,
                 ndv_subjects: 5,
                 last_modified_t: 5,
+                datatypes: vec![],
             }]),
             classes: None,
             graphs: None,
@@ -454,6 +460,7 @@ mod tests {
                 ndv_values: 5,
                 ndv_subjects: 5,
                 last_modified_t: 5,
+                datatypes: vec![],
             }]),
             classes: None,
             graphs: None,

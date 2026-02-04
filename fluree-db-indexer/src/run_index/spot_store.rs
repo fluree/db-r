@@ -11,7 +11,8 @@ use super::branch::{find_branch_file, read_branch_manifest, read_branch_manifest
 use super::dict_io::{
     read_forward_entry, read_forward_index, read_forward_index_from_bytes,
     read_language_dict, read_language_dict_from_bytes,
-    read_predicate_dict, read_predicate_dict_from_bytes,
+    read_predicate_dict,
+    read_predicate_dict_from_bytes,
 };
 use super::index_root::BinaryIndexRootV2;
 use super::global_dict::{LanguageTagDict, PredicateDict};
@@ -220,15 +221,27 @@ impl BinaryIndexStore {
             ));
         }
 
-        // ---- Load predicate dict ----
-        let predicates = read_predicate_dict(&run_dir.join("predicates.dict"))?;
-        let mut predicate_reverse = HashMap::with_capacity(predicates.len() as usize);
-        for i in 0..predicates.len() {
-            if let Some(iri) = predicates.resolve(i) {
-                predicate_reverse.insert(iri.to_string(), i);
+        // ---- Load predicate ids ----
+        // Written by GlobalDicts::persist() as JSON array (id -> IRI).
+        let predicates_json_path = run_dir.join("predicates.json");
+        let (predicates, predicate_reverse) = if predicates_json_path.exists() {
+            let bytes = std::fs::read(&predicates_json_path)?;
+            let by_id: Vec<String> = serde_json::from_slice(&bytes)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let mut dict = PredicateDict::new();
+            let mut rev = HashMap::with_capacity(by_id.len());
+            for (id, iri) in by_id.iter().enumerate() {
+                dict.get_or_insert(iri);
+                rev.insert(iri.clone(), id as u32);
             }
-        }
-        tracing::info!(predicates = predicates.len(), "loaded predicate dict");
+            tracing::info!(predicates = dict.len(), "loaded predicate ids (predicates.json)");
+            (dict, rev)
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "missing predicates.json (predicate id→IRI table)",
+            ));
+        };
 
         // ---- Load subject forward file + index ----
         let subject_fwd_path = run_dir.join("subjects.fwd");
@@ -482,16 +495,27 @@ impl BinaryIndexStore {
 
         std::fs::create_dir_all(cache_dir)?;
 
-        // ---- Load predicate dict (cache-aware) ----
-        let pred_bytes = fetch_cached_bytes(storage, &root.dict_addresses.predicates, cache_dir, "dict").await?;
-        let predicates = read_predicate_dict_from_bytes(&pred_bytes)?;
-        let mut predicate_reverse = HashMap::with_capacity(predicates.len() as usize);
-        for i in 0..predicates.len() {
-            if let Some(iri) = predicates.resolve(i) {
-                predicate_reverse.insert(iri.to_string(), i);
+        // ---- Load predicate ids (inline in root; avoid redundant dict download) ----
+        let (predicates, predicate_reverse) = {
+            let mut dict = PredicateDict::new();
+            let mut rev = HashMap::with_capacity(root.predicate_sids.len());
+
+            // Precompute prefix lookups (ns_code -> prefix)
+            for (p_id, (ns_code, suffix)) in root.predicate_sids.iter().enumerate() {
+                let prefix = root.namespace_codes.get(ns_code).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("predicate_sids[{}]: unknown namespace code {}", p_id, ns_code),
+                    )
+                })?;
+                let iri = format!("{}{}", prefix, suffix);
+                dict.get_or_insert(&iri);
+                rev.insert(iri, p_id as u32);
             }
-        }
-        tracing::info!(predicates = predicates.len(), "loaded predicate dict");
+
+            tracing::info!(predicates = dict.len(), "loaded predicate sids from root");
+            (dict, rev)
+        };
 
         // ---- Load subject forward index (cache-aware) ----
         let subj_idx_bytes = fetch_cached_bytes(storage, &root.dict_addresses.subject_index, cache_dir, "idx").await?;

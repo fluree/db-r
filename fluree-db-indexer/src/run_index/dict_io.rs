@@ -338,7 +338,7 @@ mod tests {
         let dir = std::env::temp_dir().join("fluree_test_dict_io_pred");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("predicates.dict");
+        let path = dir.join("graphs.dict");
 
         let mut dict = PredicateDict::new();
         dict.get_or_insert("http://www.w3.org/1999/02/22-rdf-syntax-ns#type");
@@ -370,7 +370,7 @@ mod tests {
         let dir = std::env::temp_dir().join("fluree_test_dict_io_pred_empty");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("predicates.dict");
+        let path = dir.join("graphs.dict");
 
         let dict = PredicateDict::new();
         write_predicate_dict(&path, &dict).unwrap();

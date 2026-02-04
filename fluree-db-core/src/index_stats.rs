@@ -24,6 +24,12 @@ pub struct PropertyStatEntry {
     pub ndv_subjects: u64,
     /// Most recent transaction time that modified this property.
     pub last_modified_t: i64,
+    /// Per-datatype flake counts for this property (DatatypeId.0, count).
+    ///
+    /// This is the **ledger-wide aggregate** view (across all graphs).
+    /// Graph-scoped property stats (authoritative for range narrowing) live under
+    /// `IndexStats.graphs[*].properties[*].datatypes`.
+    pub datatypes: Vec<(u8, u64)>,
 }
 
 // === Index Statistics ===
