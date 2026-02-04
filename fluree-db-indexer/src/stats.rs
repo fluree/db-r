@@ -225,10 +225,7 @@ impl IndexStatsHook for HllStatsHook {
         self.flake_count += 1;
 
         // Get or create property entry
-        let entry = self
-            .properties
-            .entry(flake.p.clone())
-            .or_default();
+        let entry = self.properties.entry(flake.p.clone()).or_default();
 
         // Update count
         if flake.op {

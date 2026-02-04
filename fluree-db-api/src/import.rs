@@ -801,7 +801,9 @@ where
                 }
 
                 // Periodic nameservice checkpoint
-                if config.publish_every > 0 && (next_expected + 1).is_multiple_of(config.publish_every) {
+                if config.publish_every > 0
+                    && (next_expected + 1).is_multiple_of(config.publish_every)
+                {
                     nameservice
                         .publish_commit(alias, &result.address, result.t)
                         .await

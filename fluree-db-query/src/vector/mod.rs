@@ -249,10 +249,7 @@ mod tests {
             DistanceMetric::parse("dotproduct"),
             Some(DistanceMetric::Dot)
         );
-        assert_eq!(
-            DistanceMetric::parse("l2"),
-            Some(DistanceMetric::Euclidean)
-        );
+        assert_eq!(DistanceMetric::parse("l2"), Some(DistanceMetric::Euclidean));
         assert_eq!(
             DistanceMetric::parse("euclidean"),
             Some(DistanceMetric::Euclidean)

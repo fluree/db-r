@@ -1098,53 +1098,54 @@ fn read_col_u64(data: &[u8], pos: &mut usize, row_count: usize) -> io::Result<Ve
 // ---- Per-order decode functions ----
 
 /// SPOT: RLE(s_id:u64), p_id[pw], o_kind[u8], o_key[u64]
-fn decode_region1_spot(
-    data: &[u8],
-    row_count: usize,
-    p_width: u8,
-) -> io::Result<TripleColumns> {
+fn decode_region1_spot(data: &[u8], row_count: usize, p_width: u8) -> io::Result<TripleColumns> {
     let mut pos = 0;
     let s_ids = decode_rle_u64(data, &mut pos, row_count)?;
     let p_ids = read_col_p_id(data, &mut pos, row_count, p_width)?;
     let o_kinds = read_col_u8(data, &mut pos, row_count)?;
     let o_keys = read_col_u64(data, &mut pos, row_count)?;
-    Ok(TripleColumns { s_ids, p_ids, o_kinds, o_keys })
+    Ok(TripleColumns {
+        s_ids,
+        p_ids,
+        o_kinds,
+        o_keys,
+    })
 }
 
 /// PSOT: RLE(p_id:u32), s_id[u64], o_kind[u8], o_key[u64]
-fn decode_region1_psot(
-    data: &[u8],
-    row_count: usize,
-) -> io::Result<TripleColumns> {
+fn decode_region1_psot(data: &[u8], row_count: usize) -> io::Result<TripleColumns> {
     let mut pos = 0;
     let p_ids = decode_rle_u32(data, &mut pos, row_count)?;
     let s_ids = read_col_u64(data, &mut pos, row_count)?;
     let o_kinds = read_col_u8(data, &mut pos, row_count)?;
     let o_keys = read_col_u64(data, &mut pos, row_count)?;
-    Ok(TripleColumns { s_ids, p_ids, o_kinds, o_keys })
+    Ok(TripleColumns {
+        s_ids,
+        p_ids,
+        o_kinds,
+        o_keys,
+    })
 }
 
 /// POST: RLE(p_id:u32), o_kind[u8], o_key[u64], s_id[u64]
-fn decode_region1_post(
-    data: &[u8],
-    row_count: usize,
-) -> io::Result<TripleColumns> {
+fn decode_region1_post(data: &[u8], row_count: usize) -> io::Result<TripleColumns> {
     let mut pos = 0;
     let p_ids = decode_rle_u32(data, &mut pos, row_count)?;
     let o_kinds = read_col_u8(data, &mut pos, row_count)?;
     let o_keys = read_col_u64(data, &mut pos, row_count)?;
     let s_ids = read_col_u64(data, &mut pos, row_count)?;
-    Ok(TripleColumns { s_ids, p_ids, o_kinds, o_keys })
+    Ok(TripleColumns {
+        s_ids,
+        p_ids,
+        o_kinds,
+        o_keys,
+    })
 }
 
 /// OPST: RLE(o_key:u64), p_id[pw], s_id[u64]
 ///
 /// OPST omits o_kind — it is always `REF_ID` (0x05). Filled on decode.
-fn decode_region1_opst(
-    data: &[u8],
-    row_count: usize,
-    p_width: u8,
-) -> io::Result<TripleColumns> {
+fn decode_region1_opst(data: &[u8], row_count: usize, p_width: u8) -> io::Result<TripleColumns> {
     use fluree_db_core::value_id::ObjKind;
     let mut pos = 0;
     let o_keys = decode_rle_u64(data, &mut pos, row_count)?;
@@ -1152,17 +1153,18 @@ fn decode_region1_opst(
     let s_ids = read_col_u64(data, &mut pos, row_count)?;
     // OPST is always REF_ID — fill o_kinds with the constant
     let o_kinds = vec![ObjKind::REF_ID.as_u8(); row_count];
-    Ok(TripleColumns { s_ids, p_ids, o_kinds, o_keys })
+    Ok(TripleColumns {
+        s_ids,
+        p_ids,
+        o_kinds,
+        o_keys,
+    })
 }
 
 /// Decode Region 2: dt[] + t[] + lang bitmap + i bitmap.
 ///
 /// `dt_width`: byte width of each dt value (1, 2, or 4).
-fn decode_region2(
-    data: &[u8],
-    row_count: usize,
-    dt_width: u8,
-) -> io::Result<MetadataColumns> {
+fn decode_region2(data: &[u8], row_count: usize, dt_width: u8) -> io::Result<MetadataColumns> {
     if dt_width != 1 && dt_width != 2 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,

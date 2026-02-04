@@ -74,7 +74,6 @@ impl FlakeMeta {
             i: Some(i32::MAX),
         }
     }
-
 }
 
 impl PartialOrd for FlakeMeta {

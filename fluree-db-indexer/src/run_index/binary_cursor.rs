@@ -939,11 +939,12 @@ impl BinaryCursor {
                 return Ok((None, cached));
             }
         }
-        let (lh, cols) =
-            decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
+        let (lh, cols) = decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
         let row_count = lh.row_count as usize;
         let r1 = CachedRegion1 {
-            s_ids: SubjectIdColumn::from_wide(cols.s_ids.into_iter().map(SubjectId::from_u64).collect()),
+            s_ids: SubjectIdColumn::from_wide(
+                cols.s_ids.into_iter().map(SubjectId::from_u64).collect(),
+            ),
             p_ids: cols.p_ids.into(),
             o_kinds: cols.o_kinds.into(),
             o_keys: cols.o_keys.into(),
@@ -1032,8 +1033,7 @@ impl BinaryCursor {
             if let Some(cached) = c.get_r1(cache_key) {
                 (None, cached)
             } else {
-                let (lh, cols) =
-                    decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
+                let (lh, cols) = decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
                 let row_count = lh.row_count as usize;
                 let cached_r1 = CachedRegion1 {
                     s_ids: SubjectIdColumn::from_wide(
@@ -1048,8 +1048,7 @@ impl BinaryCursor {
                 (Some(lh), cached_r1)
             }
         } else {
-            let (lh, cols) =
-                decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
+            let (lh, cols) = decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
             let row_count = lh.row_count as usize;
             let r1 = CachedRegion1 {
                 s_ids: SubjectIdColumn::from_wide(
@@ -1079,8 +1078,7 @@ impl BinaryCursor {
                         Some(h) => h.clone(),
                         None => LeafletHeader::read_from(leaflet_bytes)?,
                     };
-                    let cols =
-                        decode_leaflet_region2(leaflet_bytes, &lh, header.dt_width)?;
+                    let cols = decode_leaflet_region2(leaflet_bytes, &lh, header.dt_width)?;
                     let cached_r2 = CachedRegion2 {
                         dt_values: cols.dt_values.into(),
                         t_values: cols.t_values.into(),
@@ -1177,10 +1175,8 @@ impl BinaryCursor {
         }
 
         // Step 2: Cache miss — decode raw R1, R2, R3 from bytes.
-        let (lh, r1_cols) =
-            decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
-        let r2_cols =
-            decode_leaflet_region2(leaflet_bytes, &lh, header.dt_width)?;
+        let (lh, r1_cols) = decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
+        let r2_cols = decode_leaflet_region2(leaflet_bytes, &lh, header.dt_width)?;
         let r3_entries = decode_leaflet_region3(leaflet_bytes, &lh)?;
 
         // Step 3: Replay (or pass through if R3 is empty).

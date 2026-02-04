@@ -1035,10 +1035,8 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                                 &lh_owned
                             }
                         };
-                        let cols =
-                            decode_leaflet_region2(leaflet_bytes, lh, header.dt_width).map_err(
-                                |e| QueryError::Internal(format!("decode region2: {}", e)),
-                            )?;
+                        let cols = decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)
+                            .map_err(|e| QueryError::Internal(format!("decode region2: {}", e)))?;
                         let cached_r2 = CachedRegion2 {
                             dt_values: StdArc::from(cols.dt_values.into_boxed_slice()),
                             t_values: StdArc::from(cols.t_values.into_boxed_slice()),
@@ -1064,9 +1062,8 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                             &lh_owned
                         }
                     };
-                    let cols =
-                        decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)
-                            .map_err(|e| QueryError::Internal(format!("decode region2: {}", e)))?;
+                    let cols = decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)
+                        .map_err(|e| QueryError::Internal(format!("decode region2: {}", e)))?;
                     (
                         StdArc::from(cols.dt_values.into_boxed_slice()),
                         StdArc::from(cols.t_values.into_boxed_slice()),
