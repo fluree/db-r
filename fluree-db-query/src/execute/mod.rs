@@ -561,7 +561,7 @@ pub async fn execute_with_dataset_and_policy_tracked<'a, S: Storage + 'static>(
 /// * `dataset` - The dataset providing graph sources
 /// * `bm25_provider` - Provider for BM25 index lookups
 /// * `tracker` - Optional execution tracker
-pub async fn execute_with_dataset_and_bm25<'a, 'b, S: Storage + 'static>(
+pub async fn execute_with_dataset_and_bm25<'a, S: Storage + 'static>(
     db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     vars: &VarRegistry,
@@ -569,7 +569,7 @@ pub async fn execute_with_dataset_and_bm25<'a, 'b, S: Storage + 'static>(
     to_t: i64,
     from_t: Option<i64>,
     dataset: &'a DataSet<'a, S>,
-    bm25_provider: &'b dyn crate::bm25::Bm25IndexProvider,
+    bm25_provider: &dyn crate::bm25::Bm25IndexProvider,
     tracker: Option<&Tracker>,
 ) -> Result<Vec<Batch>> {
     let prepared = prepare_execution(db, overlay, query, to_t).await?;
@@ -605,7 +605,7 @@ pub async fn execute_with_dataset_and_bm25<'a, 'b, S: Storage + 'static>(
 /// * `policy` - Policy context for access control
 /// * `bm25_provider` - Provider for BM25 index lookups
 /// * `tracker` - Optional execution tracker
-pub async fn execute_with_dataset_and_policy_and_bm25<'a, 'b, S: Storage + 'static>(
+pub async fn execute_with_dataset_and_policy_and_bm25<'a, S: Storage + 'static>(
     db: &Db<S>,
     overlay: &dyn fluree_db_core::OverlayProvider,
     vars: &VarRegistry,
@@ -614,7 +614,7 @@ pub async fn execute_with_dataset_and_policy_and_bm25<'a, 'b, S: Storage + 'stat
     from_t: Option<i64>,
     dataset: &'a DataSet<'a, S>,
     policy: &fluree_db_policy::PolicyContext,
-    bm25_provider: &'b dyn crate::bm25::Bm25IndexProvider,
+    bm25_provider: &dyn crate::bm25::Bm25IndexProvider,
     tracker: Option<&Tracker>,
 ) -> Result<Vec<Batch>> {
     let prepared = prepare_execution(db, overlay, query, to_t).await?;

@@ -447,10 +447,10 @@ pub async fn execute_prepared<'a, 'b, S: Storage + 'static>(
 // ============================================================================
 
 /// Execute a prepared query with an overlay
-pub async fn execute_prepared_with_overlay<'a, S: Storage + 'static>(
+pub async fn execute_prepared_with_overlay<S: Storage + 'static>(
     db: &Db<S>,
     vars: &VarRegistry,
-    overlay: &'a dyn fluree_db_core::OverlayProvider,
+    overlay: &dyn fluree_db_core::OverlayProvider,
     prepared: PreparedExecution<S>,
     to_t: i64,
     from_t: Option<i64>,
@@ -471,10 +471,10 @@ pub async fn execute_prepared_with_overlay<'a, S: Storage + 'static>(
 }
 
 /// Execute with overlay, time bounds, and optional tracker
-pub async fn execute_prepared_with_overlay_tracked<'a, S: Storage + 'static>(
+pub async fn execute_prepared_with_overlay_tracked<S: Storage + 'static>(
     db: &Db<S>,
     vars: &VarRegistry,
-    overlay: &'a dyn fluree_db_core::OverlayProvider,
+    overlay: &dyn fluree_db_core::OverlayProvider,
     prepared: PreparedExecution<S>,
     to_t: i64,
     from_t: Option<i64>,
@@ -661,7 +661,7 @@ pub async fn execute_prepared_with_dataset_and_policy_history<'a, S: Storage + '
 }
 
 /// Execute with dataset and BM25 provider (for virtual graph BM25 queries)
-pub async fn execute_prepared_with_dataset_and_bm25<'a, 'b, S: Storage + 'static>(
+pub async fn execute_prepared_with_dataset_and_bm25<'a, S: Storage + 'static>(
     db: &Db<S>,
     vars: &VarRegistry,
     overlay: &'a dyn fluree_db_core::OverlayProvider,
@@ -669,7 +669,7 @@ pub async fn execute_prepared_with_dataset_and_bm25<'a, 'b, S: Storage + 'static
     to_t: i64,
     from_t: Option<i64>,
     dataset: &'a DataSet<'a, S>,
-    bm25_provider: &'b dyn crate::bm25::Bm25IndexProvider,
+    bm25_provider: &dyn crate::bm25::Bm25IndexProvider,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
     execute_prepared(
@@ -691,7 +691,7 @@ pub async fn execute_prepared_with_dataset_and_bm25<'a, 'b, S: Storage + 'static
 }
 
 /// Execute with dataset, policy, and BM25 provider (for virtual graph BM25 queries with policy)
-pub async fn execute_prepared_with_dataset_and_policy_and_bm25<'a, 'b, S: Storage + 'static>(
+pub async fn execute_prepared_with_dataset_and_policy_and_bm25<'a, S: Storage + 'static>(
     db: &Db<S>,
     vars: &VarRegistry,
     overlay: &'a dyn fluree_db_core::OverlayProvider,
@@ -700,7 +700,7 @@ pub async fn execute_prepared_with_dataset_and_policy_and_bm25<'a, 'b, S: Storag
     from_t: Option<i64>,
     dataset: &'a DataSet<'a, S>,
     policy: &'a fluree_db_policy::PolicyContext,
-    bm25_provider: &'b dyn crate::bm25::Bm25IndexProvider,
+    bm25_provider: &dyn crate::bm25::Bm25IndexProvider,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
     // Create policy enforcer for async f:query support
