@@ -36,9 +36,14 @@ use fluree_db_nameservice::{
 use futures::StreamExt;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::pin::Pin;
 use std::rc::Rc;
 use tokio::time::{self, Duration, Instant};
 use tracing::{debug, error, info, warn};
+
+/// Type alias for a pinned boxed future used in the BM25 sync worker.
+type SyncFuture<'a> = Pin<Box<dyn Future<Output = (String, Result<()>)> + 'a>>;
 
 /// Configuration for the BM25 maintenance worker.
 #[derive(Debug, Clone)]
@@ -395,9 +400,8 @@ where
         let mut next_flush: Option<Instant> = None;
 
         // In-flight syncs (bounded by config.max_concurrent_syncs).
-        let mut in_flight: futures::stream::FuturesUnordered<
-            std::pin::Pin<Box<dyn std::future::Future<Output = (String, Result<()>)>>>,
-        > = futures::stream::FuturesUnordered::new();
+        let mut in_flight: futures::stream::FuturesUnordered<SyncFuture<'_>> =
+            futures::stream::FuturesUnordered::new();
 
         loop {
             // Check for stop request
