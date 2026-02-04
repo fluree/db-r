@@ -238,11 +238,9 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
                     let value = match batch_to_row_mapping[batch_idx] {
                         Some(row_idx) => {
                             // Real column - get value from row
-                            row_fields
-                                .get(row_idx)
-                                .and_then(|field| {
-                                    convert_field_to_column_value(field, &field_info.field_type)
-                                })
+                            row_fields.get(row_idx).and_then(|field| {
+                                convert_field_to_column_value(field, &field_info.field_type)
+                            })
                         }
                         None => {
                             // NULL column (schema evolution) - always NULL
@@ -367,11 +365,9 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
 
                     for (batch_idx, field_info) in batch_schema.fields.iter().enumerate() {
                         let value = match batch_to_row_mapping[batch_idx] {
-                            Some(row_idx) => row_fields
-                                .get(row_idx)
-                                .and_then(|field| {
-                                    convert_field_to_column_value(field, &field_info.field_type)
-                                }),
+                            Some(row_idx) => row_fields.get(row_idx).and_then(|field| {
+                                convert_field_to_column_value(field, &field_info.field_type)
+                            }),
                             None => None,
                         };
                         column_data[batch_idx].push(value);

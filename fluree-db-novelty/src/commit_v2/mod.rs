@@ -20,9 +20,11 @@ pub mod raw_reader;
 mod reader;
 pub mod string_dict;
 pub mod varint;
+mod writer;
 
 pub use envelope::CommitV2Envelope;
 pub use error::CommitV2Error;
-pub use format::MAGIC;
+pub use format::{CommitSignature, MAGIC};
 pub use raw_reader::{load_commit_ops, CommitOps, RawObject, RawOp};
 pub use reader::{read_commit, read_commit_envelope};
+pub use writer::{write_commit, CommitWriteResult};

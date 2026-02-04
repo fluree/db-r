@@ -129,10 +129,7 @@ impl StorageProxyConfig {
     pub fn validate(&self, events_auth: &EventsAuthConfig) -> Result<(), String> {
         if self.enabled {
             // Must have some trusted issuers (own or from events_auth)
-            let has_trusted = self
-                .trusted_issuers
-                .as_ref()
-                .is_some_and(|v| !v.is_empty())
+            let has_trusted = self.trusted_issuers.as_ref().is_some_and(|v| !v.is_empty())
                 || !events_auth.trusted_issuers.is_empty()
                 || self.insecure_accept_any_issuer;
 

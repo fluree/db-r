@@ -49,8 +49,7 @@ pub fn write_numeric_shapes(
         })
         .collect();
 
-    let json =
-        serde_json::to_string_pretty(&map).map_err(io::Error::other)?;
+    let json = serde_json::to_string_pretty(&map).map_err(io::Error::other)?;
     std::fs::write(path, json)?;
     Ok(())
 }

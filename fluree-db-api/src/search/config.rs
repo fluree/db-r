@@ -17,7 +17,6 @@ pub enum DeploymentMode {
     Remote,
 }
 
-
 /// Search deployment configuration.
 ///
 /// This is typically embedded in the virtual graph configuration

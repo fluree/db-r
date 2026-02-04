@@ -11,7 +11,7 @@ use fluree_db_core::{ContentAddressedWrite, ContentKind, DictNovelty, Flake, Fla
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, Publisher};
 use fluree_db_novelty::generate_commit_flakes;
-use fluree_db_novelty::{Commit, CommitData, CommitRef};
+use fluree_db_novelty::{Commit, CommitData, CommitRef, SigningKey, TxnSignature};
 use std::sync::Arc;
 
 /// Receipt returned after a successful commit
@@ -28,7 +28,7 @@ pub struct CommitReceipt {
 }
 
 /// Options for commit operation
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct CommitOpts {
     /// Optional commit message
     pub message: Option<String>,
@@ -38,6 +38,26 @@ pub struct CommitOpts {
     /// When present, the raw transaction JSON is stored separately and
     /// can be retrieved via history queries with `txn: true`.
     pub raw_txn: Option<serde_json::Value>,
+    /// Ed25519 signing key for commit signatures (opt-in).
+    /// When set, the commit blob includes a trailing signature block.
+    pub signing_key: Option<Arc<SigningKey>>,
+    /// Transaction signature (audit metadata: who submitted the transaction).
+    pub txn_signature: Option<TxnSignature>,
+}
+
+impl std::fmt::Debug for CommitOpts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CommitOpts")
+            .field("message", &self.message)
+            .field("author", &self.author)
+            .field("raw_txn", &self.raw_txn.is_some())
+            .field("signing_key", &self.signing_key.is_some())
+            .field(
+                "txn_signature",
+                &self.txn_signature.as_ref().map(|s| &s.signer),
+            )
+            .finish()
+    }
 }
 
 impl CommitOpts {
@@ -58,6 +78,18 @@ impl CommitOpts {
     /// Set the raw transaction JSON for storage (Clojure parity)
     pub fn with_raw_txn(mut self, txn: serde_json::Value) -> Self {
         self.raw_txn = Some(txn);
+        self
+    }
+
+    /// Set the signing key for commit signatures
+    pub fn with_signing_key(mut self, key: Arc<SigningKey>) -> Self {
+        self.signing_key = Some(key);
+        self
+    }
+
+    /// Set the transaction signature (audit metadata)
+    pub fn with_txn_signature(mut self, sig: TxnSignature) -> Self {
+        self.txn_signature = Some(sig);
         self
     }
 }
@@ -201,6 +233,11 @@ where
         commit_record = commit_record.with_txn(txn_addr.clone());
     }
 
+    // Add txn signature if provided (audit metadata)
+    if let Some(txn_sig) = opts.txn_signature {
+        commit_record = commit_record.with_txn_signature(txn_sig);
+    }
+
     // Build previous commit reference with id and address
     if let Some(prev_addr) = &base.head_commit {
         // Try to extract commit ID from previous address
@@ -247,7 +284,11 @@ where
     let (commit_id, commit_hash_hex, bytes) = {
         let span = tracing::info_span!("commit_write_commit_blob");
         let _g = span.enter();
-        let result = crate::commit_v2::write_commit(&commit_record, true)?;
+        let signing = opts
+            .signing_key
+            .as_ref()
+            .map(|key| (key.as_ref(), base.alias()));
+        let result = crate::commit_v2::write_commit(&commit_record, true, signing)?;
         let commit_id = format!("sha256:{}", &result.content_hash_hex);
         (commit_id, result.content_hash_hex, result.bytes)
     };

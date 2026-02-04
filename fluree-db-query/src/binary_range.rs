@@ -24,7 +24,7 @@ use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::range::{RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::{Flake, IndexType, OverlayProvider, RangeProvider, Sid};
 use fluree_db_indexer::run_index::{
-    BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, RunSortOrder,
+    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch,
 };
 use std::io;
 use std::sync::Arc;
@@ -148,36 +148,7 @@ fn binary_range_eq(
 
             // Sort overlay ops to match the cursor's sort order.
             let mut sorted = overlay_ops;
-            sorted.sort_by(|a, b| match order {
-                RunSortOrder::Spot => a
-                    .s_id
-                    .cmp(&b.s_id)
-                    .then(a.p_id.cmp(&b.p_id))
-                    .then(a.o_kind.cmp(&b.o_kind))
-                    .then(a.o_key.cmp(&b.o_key))
-                    .then(a.dt.cmp(&b.dt)),
-                RunSortOrder::Psot => a
-                    .p_id
-                    .cmp(&b.p_id)
-                    .then(a.s_id.cmp(&b.s_id))
-                    .then(a.o_kind.cmp(&b.o_kind))
-                    .then(a.o_key.cmp(&b.o_key))
-                    .then(a.dt.cmp(&b.dt)),
-                RunSortOrder::Post => a
-                    .p_id
-                    .cmp(&b.p_id)
-                    .then(a.o_kind.cmp(&b.o_kind))
-                    .then(a.o_key.cmp(&b.o_key))
-                    .then(a.dt.cmp(&b.dt))
-                    .then(a.s_id.cmp(&b.s_id)),
-                RunSortOrder::Opst => a
-                    .o_kind
-                    .cmp(&b.o_kind)
-                    .then(a.o_key.cmp(&b.o_key))
-                    .then(a.dt.cmp(&b.dt))
-                    .then(a.p_id.cmp(&b.p_id))
-                    .then(a.s_id.cmp(&b.s_id)),
-            });
+            sort_overlay_ops(&mut sorted, order);
             cursor.set_overlay_ops(sorted);
         }
     }

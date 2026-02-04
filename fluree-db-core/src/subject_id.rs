@@ -171,7 +171,6 @@ pub enum SubjectIdEncoding {
     Wide,
 }
 
-
 // === SubjectIdColumn: compact array of subject IDs ===
 
 /// Compact array of subject IDs, stored as either narrow (`u32`) or wide (`SubjectId`).

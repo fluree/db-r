@@ -9,8 +9,7 @@ use super::RefObjectMap;
 /// R2RML term type
 ///
 /// Specifies whether a term map generates IRIs, blank nodes, or literals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum TermType {
     /// Generate an IRI (default for subject and predicate maps)
     #[default]
@@ -20,7 +19,6 @@ pub enum TermType {
     /// Generate a literal (default for object maps with column or constant)
     Literal,
 }
-
 
 impl TermType {
     /// Parse term type from R2RML IRI

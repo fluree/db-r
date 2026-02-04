@@ -5,7 +5,8 @@
 
 use super::error::CommitV2Error;
 use super::format::{
-    CommitV2Footer, CommitV2Header, FLAG_ZSTD, FOOTER_LEN, HASH_LEN, HEADER_LEN, MIN_COMMIT_LEN,
+    decode_sig_block, CommitV2Footer, CommitV2Header, FLAG_HAS_COMMIT_SIG, FLAG_ZSTD, FOOTER_LEN,
+    HASH_LEN, HEADER_LEN, MIN_COMMIT_LEN,
 };
 use super::op_codec::{decode_op, ReadDicts};
 use super::string_dict::StringDict;
@@ -30,11 +31,28 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
     // 2. Parse header
     let header = CommitV2Header::read_from(bytes)?;
 
-    // 3. Verify hash: SHA-256(bytes[0..len-32]) == trailing 32 bytes
+    // 3. Determine hash offset (accounts for trailing signature block)
+    let sig_block_len = header.sig_block_len as usize;
+    let has_sig_block = header.flags & FLAG_HAS_COMMIT_SIG != 0 && sig_block_len > 0;
+
+    let hash_offset = if has_sig_block {
+        if blob_len < HEADER_LEN + HASH_LEN + sig_block_len {
+            return Err(CommitV2Error::TooSmall {
+                got: blob_len,
+                min: HEADER_LEN + HASH_LEN + sig_block_len,
+            });
+        }
+        blob_len - sig_block_len - HASH_LEN
+    } else {
+        blob_len - HASH_LEN
+    };
+
+    // 4. Verify hash: SHA-256(bytes[0..hash_offset]) == bytes[hash_offset..hash_offset+32]
     {
         let _span = tracing::debug_span!("v2_read_verify_hash", blob_len).entered();
-        let hash_offset = blob_len - HASH_LEN;
-        let expected_hash: [u8; 32] = bytes[hash_offset..].try_into().unwrap();
+        let expected_hash: [u8; 32] = bytes[hash_offset..hash_offset + HASH_LEN]
+            .try_into()
+            .unwrap();
         let actual_hash: [u8; 32] = Sha256::digest(&bytes[..hash_offset]).into();
         if expected_hash != actual_hash {
             return Err(CommitV2Error::HashMismatch {
@@ -43,6 +61,15 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
             });
         }
     }
+
+    // 5. Parse signature block (if present)
+    let commit_signatures = if has_sig_block {
+        let sig_block_start = hash_offset + HASH_LEN;
+        let sig_block_data = &bytes[sig_block_start..sig_block_start + sig_block_len];
+        decode_sig_block(sig_block_data)?
+    } else {
+        Vec::new()
+    };
 
     // 4. Decode binary envelope
     let envelope_start = HEADER_LEN;
@@ -55,12 +82,11 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
     }
     let envelope = super::envelope::decode_envelope(&bytes[envelope_start..envelope_end])?;
 
-    // 5. Parse footer
-    let hash_offset = blob_len - HASH_LEN;
+    // 6. Parse footer
     let footer_start = hash_offset - FOOTER_LEN;
     let footer = CommitV2Footer::read_from(&bytes[footer_start..hash_offset])?;
 
-    // 6. Validate ops section bounds
+    // 7. Validate ops section bounds
     let ops_start = envelope_end;
     let ops_end = ops_start + footer.ops_section_len as usize;
     if ops_end > footer_start {
@@ -69,7 +95,7 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
         ));
     }
 
-    // 7. Load dictionaries (with bounds validation against ops_end..footer_start)
+    // 8. Load dictionaries (with bounds validation against ops_end..footer_start)
     let dicts = load_dicts(bytes, &footer, ops_end, footer_start)?;
     let ops_bytes = &bytes[ops_start..ops_end];
     let ops_decompressed;
@@ -88,7 +114,7 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
         ops_bytes
     };
 
-    // 8. Decode ops into flakes
+    // 9. Decode ops into flakes
     let flakes = {
         let _span = tracing::debug_span!(
             "v2_decode_ops",
@@ -113,7 +139,7 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
         "v2 commit read"
     );
 
-    // 9. Assemble Commit
+    // 10. Assemble Commit
     Ok(Commit {
         address: String::new(), // Injected at read time by load_commit()
         id: None,               // Injected at read time by load_commit()
@@ -126,6 +152,8 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
         index: envelope.index,
         txn: envelope.txn,
         namespace_delta: envelope.namespace_delta,
+        txn_signature: envelope.txn_signature,
+        commit_signatures,
     })
 }
 

@@ -192,10 +192,7 @@ impl EventsTokenPayload {
     /// Note: If events_all is true, ledgers/vgs lists are irrelevant.
     pub fn has_permissions(&self) -> bool {
         self.events_all.unwrap_or(false)
-            || self
-                .events_ledgers
-                .as_ref()
-                .is_some_and(|l| !l.is_empty())
+            || self.events_ledgers.as_ref().is_some_and(|l| !l.is_empty())
             || self.events_vgs.as_ref().is_some_and(|v| !v.is_empty())
     }
 
@@ -204,10 +201,7 @@ impl EventsTokenPayload {
     /// Note: If storage_all is true, ledgers list is irrelevant.
     pub fn has_storage_permissions(&self) -> bool {
         self.storage_all.unwrap_or(false)
-            || self
-                .storage_ledgers
-                .as_ref()
-                .is_some_and(|l| !l.is_empty())
+            || self.storage_ledgers.as_ref().is_some_and(|l| !l.is_empty())
     }
 
     /// Resolve identity: fluree.identity takes precedence, then sub.

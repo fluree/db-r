@@ -286,11 +286,9 @@ impl<'a, S: IcebergStorage> ParquetReader<'a, S> {
                     let value = match batch_to_row_mapping[batch_idx] {
                         Some(row_idx) => {
                             // Real column - get value from row
-                            row_fields
-                                .get(row_idx)
-                                .and_then(|field| {
-                                    convert_field_to_column_value(field, &field_info.field_type)
-                                })
+                            row_fields.get(row_idx).and_then(|field| {
+                                convert_field_to_column_value(field, &field_info.field_type)
+                            })
                         }
                         None => {
                             // NULL column (schema evolution) - always NULL

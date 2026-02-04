@@ -282,6 +282,7 @@ mod inner {
                 time: None,
                 data: None,
                 index: None,
+                txn_signature: None,
             }
         }
 

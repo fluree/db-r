@@ -478,13 +478,15 @@ mod tests {
         #[test]
         fn test_sid_canonical_hash_uniqueness() {
             // Various SIDs should produce unique hashes
-            let sids = [Sid::new(0, ""),
+            let sids = [
+                Sid::new(0, ""),
                 Sid::new(0, "a"),
                 Sid::new(1, ""),
                 Sid::new(1, "a"),
                 Sid::new(100, "Person"),
                 Sid::new(100, "Company"),
-                Sid::new(200, "Person")];
+                Sid::new(200, "Person"),
+            ];
 
             let hashes: Vec<u64> = sids.iter().map(|s| s.canonical_hash()).collect();
 

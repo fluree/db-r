@@ -141,12 +141,10 @@ impl SubjectDict {
         }
         let local_id = self.next_local_ids[ns_idx];
         if local_id > Self::MAX_LOCAL_ID {
-            return Err(io::Error::other(
-                format!(
-                    "SubjectDict: local_id overflow for ns_code {} (exceeded 2^48)",
-                    ns_code
-                ),
-            ));
+            return Err(io::Error::other(format!(
+                "SubjectDict: local_id overflow for ns_code {} (exceeded 2^48)",
+                ns_code
+            )));
         }
         self.next_local_ids[ns_idx] = local_id + 1;
 

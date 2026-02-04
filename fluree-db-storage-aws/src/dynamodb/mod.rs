@@ -646,9 +646,10 @@ impl ConfigPublisher for DynamoDbNameService {
         }
 
         // Check if expected payload has any legacy config data (default_context or extra)
-        let has_legacy_config_data = exp.payload.as_ref().is_some_and(|p| {
-            p.default_context.is_some() || !p.extra.is_empty()
-        });
+        let has_legacy_config_data = exp
+            .payload
+            .as_ref()
+            .is_some_and(|p| p.default_context.is_some() || !p.extra.is_empty());
 
         // Build condition based on expected state, with monotonic guard
         let condition = if exp.v == 0 {

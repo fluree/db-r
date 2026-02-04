@@ -38,8 +38,7 @@ pub enum TargetMode {
 }
 
 /// Policy action - which operations this policy applies to
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PolicyAction {
     /// View (query) operations only
     View,
@@ -111,7 +110,6 @@ impl<'a> PolicyDecision<'a> {
         }
     }
 }
-
 
 /// Policy value - the effect of the policy
 #[derive(Debug, Clone)]

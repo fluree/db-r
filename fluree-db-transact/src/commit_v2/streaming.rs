@@ -188,6 +188,7 @@ impl StreamingCommitWriter {
             t: envelope.t,
             op_count,
             envelope_len: envelope_bytes.len() as u32,
+            sig_block_len: 0,
         };
         let mut header_buf = [0u8; HEADER_LEN];
         header.write_to(&mut header_buf);
@@ -267,6 +268,7 @@ mod tests {
             time: None,
             data: None,
             index: None,
+            txn_signature: None,
         }
     }
 
@@ -501,6 +503,7 @@ mod tests {
                 previous: None,
             }),
             index: None,
+            txn_signature: None,
         };
 
         let result = writer.finish(&envelope).unwrap();

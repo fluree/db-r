@@ -84,7 +84,6 @@ pub enum AuthConfig {
     },
 }
 
-
 impl AuthConfig {
     /// Create the appropriate auth provider from this config.
     pub fn create_provider(&self) -> Result<Box<dyn CatalogAuth>> {

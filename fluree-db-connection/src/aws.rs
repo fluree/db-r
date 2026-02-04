@@ -82,8 +82,7 @@ use std::sync::Arc;
 static SDK_CONFIG: OnceCell<aws_config::SdkConfig> = OnceCell::new();
 
 /// S3 storage configuration
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct S3Config {
     /// S3 bucket name (supports both standard S3 and S3 Express directory buckets)
     pub bucket: String,
@@ -92,7 +91,6 @@ pub struct S3Config {
     /// Operation timeout in milliseconds
     pub timeout_ms: Option<u64>,
 }
-
 
 impl From<S3Config> for RawS3Config {
     fn from(config: S3Config) -> Self {

@@ -7,6 +7,7 @@ license = "Apache-2.0"
 
 [dependencies]
 fluree-db-core = { path = "../fluree-db-core" }
+fluree-db-credential = { path = "../fluree-db-credential" }
 fluree-vocab = { path = "../fluree-vocab" }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
@@ -22,8 +23,9 @@ rustc-hash = "2"
 bigdecimal = "0.4"
 num-bigint = "0.4"
 
-# Content addressing (hash verification)
+# Content addressing (hash verification + hex encoding)
 sha2 = { workspace = true }
+hex.workspace = true
 
 # Compression (binary commit format)
 zstd = { workspace = true }

@@ -1282,17 +1282,11 @@ impl YearMonthDuration {
     ///
     /// No day (`D`) or time (`T`) components are allowed.
     pub fn parse(s: &str) -> Result<Self, String> {
-        let (negative, rest) = s
-            .strip_prefix('-')
-            .map(|r| (true, r))
-            .unwrap_or((false, s));
+        let (negative, rest) = s.strip_prefix('-').map(|r| (true, r)).unwrap_or((false, s));
 
-        let body = rest.strip_prefix('P').ok_or_else(|| {
-            format!(
-                "yearMonthDuration must start with 'P' (or '-P'): {}",
-                s
-            )
-        })?;
+        let body = rest
+            .strip_prefix('P')
+            .ok_or_else(|| format!("yearMonthDuration must start with 'P' (or '-P'): {}", s))?;
 
         // Reject if it contains 'D' or 'T' — those are day/time components
         if body.contains('D') || body.contains('T') {
@@ -1447,17 +1441,11 @@ impl DayTimeDuration {
     ///
     /// No year (`Y`) or month (`M` before `T`) components are allowed.
     pub fn parse(s: &str) -> Result<Self, String> {
-        let (negative, rest) = s
-            .strip_prefix('-')
-            .map(|r| (true, r))
-            .unwrap_or((false, s));
+        let (negative, rest) = s.strip_prefix('-').map(|r| (true, r)).unwrap_or((false, s));
 
-        let body = rest.strip_prefix('P').ok_or_else(|| {
-            format!(
-                "dayTimeDuration must start with 'P' (or '-P'): {}",
-                s
-            )
-        })?;
+        let body = rest
+            .strip_prefix('P')
+            .ok_or_else(|| format!("dayTimeDuration must start with 'P' (or '-P'): {}", s))?;
 
         // Reject year component
         if body.contains('Y') {
@@ -1720,14 +1708,11 @@ impl Duration {
     ///
     /// Accepts: `"P1Y2M3DT4H5M6S"`, `"P1Y"`, `"PT1H"`, `"-P1Y2M3DT4H5M6.789S"`
     pub fn parse(s: &str) -> Result<Self, String> {
-        let (negative, rest) = s
-            .strip_prefix('-')
-            .map(|r| (true, r))
-            .unwrap_or((false, s));
+        let (negative, rest) = s.strip_prefix('-').map(|r| (true, r)).unwrap_or((false, s));
 
-        let body = rest.strip_prefix('P').ok_or_else(|| {
-            format!("Duration must start with 'P' (or '-P'): {}", s)
-        })?;
+        let body = rest
+            .strip_prefix('P')
+            .ok_or_else(|| format!("Duration must start with 'P' (or '-P'): {}", s))?;
 
         // Split on 'T' to separate date-part from time-part
         let (date_part, time_part) = if let Some(t_pos) = body.find('T') {

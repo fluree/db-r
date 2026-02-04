@@ -30,7 +30,7 @@ fn create_test_fluree(
 ) -> Fluree<MemoryStorage, MemoryNameService> {
     // Insert commits into storage as v2 binary blobs
     for (addr, commit) in commits {
-        let result = write_commit(&commit, false).unwrap();
+        let result = write_commit(&commit, false, None).unwrap();
         storage.insert(addr, result.bytes);
     }
 

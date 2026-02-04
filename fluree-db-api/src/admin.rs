@@ -47,8 +47,7 @@ pub enum DropMode {
 /// NOTE: This reflects the **nameservice state at lookup time**, not deletion success.
 /// Deletion success is reported via `index_files_deleted`, `commit_files_deleted`,
 /// and `warnings` fields in `DropReport`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DropStatus {
     /// Record existed and was not retracted at lookup time
     Dropped,
@@ -58,7 +57,6 @@ pub enum DropStatus {
     #[default]
     NotFound,
 }
-
 
 // =============================================================================
 // Drop Report Types
@@ -117,8 +115,7 @@ impl TriggerIndexOptions {
 }
 
 /// Options for reindex operation
-#[derive(Clone)]
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ReindexOptions {
     /// Indexer configuration (leaf/branch sizes)
     /// If not specified, uses IndexerConfig::default()
@@ -163,7 +160,6 @@ impl std::fmt::Debug for ReindexOptions {
             .finish()
     }
 }
-
 
 impl ReindexOptions {
     /// Set the indexer configuration for controlling output index structure

@@ -1318,8 +1318,7 @@ pub async fn connect_s3(
 /// Builder for creating Fluree instances
 ///
 /// Provides a fluent API for configuring storage, cache, and nameservice options.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct FlureeBuilder {
     config: ConnectionConfig,
     #[cfg(feature = "native")]
@@ -1329,7 +1328,6 @@ pub struct FlureeBuilder {
     /// Optional ledger cache configuration (enables LedgerManager)
     ledger_cache_config: Option<LedgerManagerConfig>,
 }
-
 
 impl FlureeBuilder {
     /// Create a new builder with default settings (memory storage)

@@ -67,15 +67,13 @@ use std::sync::Arc;
 pub use types::{ChainElement, PropertyChain, PropertyExpression, ReasoningModes};
 
 /// Options for OWL2-RL reasoning
-#[derive(Clone, Debug)]
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct ReasoningOptions {
     /// Budget constraints for materialization
     pub budget: ReasoningBudget,
     /// Which RL rules to enable (empty = all)
     pub enabled_rules: Vec<String>,
 }
-
 
 impl ReasoningOptions {
     /// Create options with default budget and all rules enabled

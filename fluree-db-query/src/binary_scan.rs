@@ -41,7 +41,7 @@ use fluree_db_core::{
 use fluree_db_indexer::run_index::numfloat_dict::NumericShape;
 use fluree_db_indexer::run_index::run_record::RunSortOrder;
 use fluree_db_indexer::run_index::{
-    BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, OverlayOp,
+    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, OverlayOp,
 };
 use fluree_vocab::namespaces::FLUREE_LEDGER;
 use std::collections::{HashMap, VecDeque};
@@ -264,7 +264,7 @@ impl BinaryScanOperator {
             && self
                 .p_sids
                 .get(p_id as usize)
-                .is_some_and(|s| s.namespace_code == FLUREE_LEDGER)
+                .map_or(false, |s| s.namespace_code == FLUREE_LEDGER)
     }
 
     /// Decode an object value, routing through DictOverlay when present.
@@ -735,36 +735,7 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
 
                 // Sort and pass pre-translated overlay ops for query-time merge.
                 if !self.overlay_ops.is_empty() {
-                    self.overlay_ops.sort_by(|a, b| match order {
-                        RunSortOrder::Spot => a
-                            .s_id
-                            .cmp(&b.s_id)
-                            .then(a.p_id.cmp(&b.p_id))
-                            .then(a.o_kind.cmp(&b.o_kind))
-                            .then(a.o_key.cmp(&b.o_key))
-                            .then(a.dt.cmp(&b.dt)),
-                        RunSortOrder::Psot => a
-                            .p_id
-                            .cmp(&b.p_id)
-                            .then(a.s_id.cmp(&b.s_id))
-                            .then(a.o_kind.cmp(&b.o_kind))
-                            .then(a.o_key.cmp(&b.o_key))
-                            .then(a.dt.cmp(&b.dt)),
-                        RunSortOrder::Post => a
-                            .p_id
-                            .cmp(&b.p_id)
-                            .then(a.o_kind.cmp(&b.o_kind))
-                            .then(a.o_key.cmp(&b.o_key))
-                            .then(a.dt.cmp(&b.dt))
-                            .then(a.s_id.cmp(&b.s_id)),
-                        RunSortOrder::Opst => a
-                            .o_kind
-                            .cmp(&b.o_kind)
-                            .then(a.o_key.cmp(&b.o_key))
-                            .then(a.dt.cmp(&b.dt))
-                            .then(a.p_id.cmp(&b.p_id))
-                            .then(a.s_id.cmp(&b.s_id)),
-                    });
+                    sort_overlay_ops(&mut self.overlay_ops, order);
                     cursor.set_overlay_ops(std::mem::take(&mut self.overlay_ops));
                 }
 
@@ -1001,7 +972,7 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
         // falls back to range_with_overlay() which works for multi-ledger,
         // pre-index, history, and time-travel-before-base_t via the
         // RangeProvider trait.
-        let use_binary = ctx.binary_store.as_ref().is_some_and(|s| {
+        let use_binary = ctx.binary_store.as_ref().map_or(false, |s| {
             !ctx.is_multi_ledger()
                 && ctx.to_t >= s.base_t()
                 && !ctx.history_mode

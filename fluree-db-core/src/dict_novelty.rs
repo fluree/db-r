@@ -582,9 +582,9 @@ mod tests {
     fn test_overflow_watermark_routing() {
         // With a persisted overflow watermark, new IDs start above it
         let subject_wm = vec![10, 20]; // ns 0 and 1
-                                           // Simulate an overflow watermark being passed through the root
-                                           // (in practice this would be a separate field, but with_watermarks
-                                           // handles the extraction if the vec happens to be long enough)
+                                       // Simulate an overflow watermark being passed through the root
+                                       // (in practice this would be a separate field, but with_watermarks
+                                       // handles the extraction if the vec happens to be long enough)
         let dn = DictNovelty::with_watermarks(subject_wm.clone(), 0);
         assert_eq!(dn.subjects.watermark_for_ns(0), 10);
         assert_eq!(dn.subjects.watermark_for_ns(1), 20);

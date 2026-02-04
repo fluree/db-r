@@ -345,10 +345,11 @@ mod tests {
         // Create a ledger with commits up to t=5
         ns.publish_commit("test:main", "commit-5", 5).await.unwrap();
 
-        // Store the commit
+        // Store the commit as v2 binary
         let commit = fluree_db_novelty::Commit::new("commit-5", 5, vec![make_flake(1, 1, 100, 5)]);
         let storage = storage;
-        storage.insert("commit-5", serde_json::to_vec(&commit).unwrap());
+        let blob = fluree_db_novelty::commit_v2::write_commit(&commit, false, None).unwrap();
+        storage.insert("commit-5", blob.bytes);
 
         // Try to load at t=10 (future)
         let result = HistoricalLedgerView::load_at(&ns, "test:main", storage, 10).await;
@@ -364,10 +365,11 @@ mod tests {
         // Create a ledger with commits but no index
         ns.publish_commit("test:main", "commit-5", 5).await.unwrap();
 
-        // Store the commit
+        // Store the commit as v2 binary
         let commit = fluree_db_novelty::Commit::new("commit-5", 5, vec![make_flake(1, 1, 100, 5)]);
         let storage = storage;
-        storage.insert("commit-5", serde_json::to_vec(&commit).unwrap());
+        let blob = fluree_db_novelty::commit_v2::write_commit(&commit, false, None).unwrap();
+        storage.insert("commit-5", blob.bytes);
 
         // Load at t=5 - should use genesis db since no index exists
         let view = HistoricalLedgerView::load_at(&ns, "test:main", storage, 5)

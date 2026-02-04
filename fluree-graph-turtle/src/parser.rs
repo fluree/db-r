@@ -1017,9 +1017,7 @@ fn parse_iri_components(iri: &str) -> (&str, Option<&str>, &str, Option<&str>) {
 }
 
 fn parse_hier_part(s: &str) -> (String, String, Option<String>) {
-    let auth_end = s
-        .find(['/', '?', '#'])
-        .unwrap_or(s.len());
+    let auth_end = s.find(['/', '?', '#']).unwrap_or(s.len());
     let authority = s[..auth_end].to_string();
     let rest = &s[auth_end..];
 

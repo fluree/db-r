@@ -35,10 +35,7 @@ mod tests {
     }
 
     fn string_to_longs(s: &str) -> Vec<i64> {
-        string_to_utf8(s)
-            .chunks(8)
-            .map(utf8_to_long)
-            .collect()
+        string_to_utf8(s).chunks(8).map(utf8_to_long).collect()
     }
 
     fn longs_to_string(longs: &[i64]) -> String {

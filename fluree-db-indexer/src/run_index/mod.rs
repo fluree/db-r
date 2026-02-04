@@ -19,6 +19,7 @@ pub mod run_record;
 pub mod run_writer;
 
 pub mod binary_cursor;
+pub mod binary_index_store;
 pub mod branch;
 pub mod dict_io;
 pub mod index_build;
@@ -35,10 +36,11 @@ pub mod prefix_trie;
 pub mod query;
 pub mod replay;
 pub mod spot_cursor;
-pub mod spot_store;
 pub mod streaming_reader;
+pub mod types;
 
-pub use binary_cursor::{BinaryCursor, BinaryFilter, DecodedBatch, OverlayOp};
+pub use binary_cursor::{BinaryCursor, BinaryFilter, DecodedBatch};
+pub use binary_index_store::BinaryIndexStore;
 pub use global_dict::{GlobalDicts, LanguageTagDict, PredicateDict, StringValueDict, SubjectDict};
 pub use index_build::{
     build_all_indexes, build_index, build_spot_index, IndexBuildConfig, IndexBuildResult,
@@ -61,8 +63,8 @@ pub use run_writer::{
     MultiOrderConfig, MultiOrderRunWriter, RecordSink, RunWriter, RunWriterConfig, RunWriterResult,
 };
 pub use spot_cursor::SpotCursor;
-pub use spot_store::{BinaryIndexStore, SpotIndexStore};
 pub use streaming_reader::StreamingRunReader;
+pub use types::{sort_overlay_ops, OverlayOp};
 
 use fluree_db_core::StorageRead;
 use fluree_db_novelty::commit_v2::{read_commit_envelope, CommitV2Error};
@@ -155,7 +157,7 @@ pub fn persist_namespaces(ns_prefixes: &HashMap<u16, String>, run_dir: &Path) ->
         .collect();
 
     let json_str = serde_json::to_string_pretty(&json_array)
-        .map_err(io::Error::other)?;
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
     let path = run_dir.join("namespaces.json");
     std::fs::write(&path, json_str)?;

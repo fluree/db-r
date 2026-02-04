@@ -1,7 +1,20 @@
-//! Ed25519 signature verification
+//! Ed25519 signature signing and verification
 
 use crate::error::{CredentialError, Result};
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+pub use ed25519_dalek::SigningKey;
+use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
+
+/// Sign a message with an Ed25519 signing key
+///
+/// # Arguments
+/// * `signing_key` - Ed25519 signing key (32-byte secret + derived public key)
+/// * `message` - Message bytes to sign (raw bytes, not a hex-encoded digest)
+///
+/// # Returns
+/// 64-byte Ed25519 signature
+pub fn sign_ed25519(signing_key: &SigningKey, message: &[u8]) -> [u8; 64] {
+    signing_key.sign(message).to_bytes()
+}
 
 /// Verify an Ed25519 signature
 ///
@@ -94,5 +107,26 @@ mod tests {
 
         let result = verify_ed25519(&pubkey, message, &short_sig);
         assert!(matches!(result, Err(CredentialError::InvalidSignature(_))));
+    }
+
+    #[test]
+    fn test_sign_and_verify_round_trip() {
+        let secret = [42u8; 32];
+        let key = SigningKey::from_bytes(&secret);
+        let pubkey = key.verifying_key().to_bytes();
+
+        let message = b"commit digest bytes";
+        let signature = sign_ed25519(&key, message);
+
+        assert_eq!(signature.len(), 64);
+        assert!(verify_ed25519(&pubkey, message, &signature).is_ok());
+    }
+
+    #[test]
+    fn test_sign_different_messages_produce_different_sigs() {
+        let key = SigningKey::from_bytes(&[1u8; 32]);
+        let sig1 = sign_ed25519(&key, b"message A");
+        let sig2 = sign_ed25519(&key, b"message B");
+        assert_ne!(sig1, sig2);
     }
 }

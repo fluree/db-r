@@ -435,8 +435,7 @@ fn write_col_u64(buf: &mut Vec<u8>, records: &[RunRecord], field_fn: fn(&RunReco
 fn encode_region1_spot(records: &[RunRecord], p_width: u8) -> Vec<u8> {
     let rle = build_rle_u64(records, |r| r.s_id.as_u64());
     let row_count = records.len();
-    let buf_size =
-        4 + rle.len() * 12 + row_count * (p_width as usize) + row_count + row_count * 8;
+    let buf_size = 4 + rle.len() * 12 + row_count * (p_width as usize) + row_count + row_count * 8;
     let mut buf = Vec::with_capacity(buf_size);
     write_rle_u64(&mut buf, &rle);
     write_col_p_id(&mut buf, records, p_width);

@@ -167,7 +167,7 @@ fn can_contain_comparison(
     match op {
         ComparisonOp::Eq => {
             // value must be in [lower, upper]
-            
+
             match (&lower_typed, &upper_typed) {
                 (Some(l), Some(u)) => {
                     lit_typed.ge(l).unwrap_or(true) && lit_typed.le(u).unwrap_or(true)
