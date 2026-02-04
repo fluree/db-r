@@ -678,7 +678,7 @@ pub fn apply_functional_property_rule(
         // (sameAs changes can create new conflicts by merging subjects)
         let delta_has_p = delta.get_by_p(p).next().is_some();
         let derived_has_p = derived.get_by_p(p).next().is_some();
-        if !delta_has_p && !(same_as_changed && derived_has_p) {
+        if !(delta_has_p || same_as_changed && derived_has_p) {
             continue;
         }
 
@@ -775,7 +775,7 @@ pub fn apply_inverse_functional_property_rule(
         // (sameAs changes can create new conflicts by merging objects)
         let delta_has_p = delta.get_by_p(p).next().is_some();
         let derived_has_p = derived.get_by_p(p).next().is_some();
-        if !delta_has_p && !(same_as_changed && derived_has_p) {
+        if !(delta_has_p || same_as_changed && derived_has_p) {
             continue;
         }
 
@@ -896,9 +896,9 @@ pub fn apply_has_key_rule(
                     .iter()
                     .any(|p| derived.get_by_p(p).next().is_some());
 
-            if !delta_has_new_type
-                && !delta_has_key_property
-                && !(same_as_changed && derived_has_relevant)
+            if !(delta_has_new_type
+                || delta_has_key_property
+                || same_as_changed && derived_has_relevant)
             {
                 continue;
             }

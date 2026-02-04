@@ -823,7 +823,7 @@ pub fn apply_max_cardinality_rule(
         let delta_has_p = delta.get_by_p(property).next().is_some();
         let delta_has_type = delta.get_by_p(rdf_type_sid).next().is_some();
         let derived_has_p = derived.get_by_p(property).next().is_some();
-        if !delta_has_p && !delta_has_type && !(same_as_changed && derived_has_p) {
+        if !(delta_has_p || delta_has_type || same_as_changed && derived_has_p) {
             continue;
         }
 
@@ -936,7 +936,7 @@ pub fn apply_max_qualified_cardinality_rule(
         let delta_has_p = delta.get_by_p(property).next().is_some();
         let delta_has_type = delta.get_by_p(rdf_type_sid).next().is_some();
         let derived_has_p = derived.get_by_p(property).next().is_some();
-        if !delta_has_p && !delta_has_type && !(same_as_changed && derived_has_p) {
+        if !(delta_has_p || delta_has_type || same_as_changed && derived_has_p) {
             continue;
         }
 
