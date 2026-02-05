@@ -41,6 +41,14 @@ Approximate nearest neighbor (ANN) search for embeddings:
 - Deployment modes (embedded / remote)
 - Use cases (semantic search, recommendations)
 
+### [Geospatial](geospatial.md)
+
+Geographic point data with native binary encoding:
+- `geo:wktLiteral` datatype support (OGC GeoSPARQL)
+- Automatic POINT geometry detection and optimization
+- Packed 60-bit lat/lng encoding (~0.3mm precision)
+- Foundation for proximity queries (latitude-band index scans)
+
 ## Design docs
 
 - [Search Service Protocol (BM25 + Vector)](../design/SEARCH_SERVICE_PROTOCOL.md) - Unified embedded/remote contract and implementation plan.

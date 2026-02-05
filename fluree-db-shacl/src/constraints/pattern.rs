@@ -125,6 +125,7 @@ fn string_length(value: &FlakeValue) -> usize {
         FlakeValue::YearMonthDuration(v) => v.original().len(),
         FlakeValue::DayTimeDuration(v) => v.original().len(),
         FlakeValue::Duration(v) => v.original().len(),
+        FlakeValue::GeoPoint(v) => v.to_string().len(), // "POINT(lng lat)"
     }
 }
 

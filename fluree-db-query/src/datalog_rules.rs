@@ -902,6 +902,7 @@ fn flake_value_to_binding(val: &FlakeValue) -> BindingValue {
         FlakeValue::YearMonthDuration(v) => BindingValue::String(v.to_string()),
         FlakeValue::DayTimeDuration(v) => BindingValue::String(v.to_string()),
         FlakeValue::Duration(v) => BindingValue::String(v.to_string()),
+        FlakeValue::GeoPoint(v) => BindingValue::String(v.to_string()),
     }
 }
 

@@ -22,7 +22,7 @@ use fluree_db_core::temporal::{
     Date, DateTime, DayTimeDuration, Duration, GDay, GMonth, GMonthDay, GYear, GYearMonth, Time,
     YearMonthDuration,
 };
-use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
+use fluree_db_core::{Flake, FlakeMeta, FlakeValue, GeoPointBits, Sid};
 
 // =============================================================================
 // CommitDicts — dictionary set for writing
@@ -205,6 +205,14 @@ fn encode_object(value: &FlakeValue, dicts: &mut CommitDicts, buf: &mut Vec<u8>)
         FlakeValue::Duration(v) => {
             buf.push(OTag::Duration as u8);
             encode_len_prefixed_str(&v.to_string(), buf);
+        }
+        FlakeValue::GeoPoint(bits) => {
+            buf.push(OTag::GeoPoint as u8);
+            // Encode as (lat, lng) pair for human-readable commit inspection
+            let lat = bits.lat();
+            let lng = bits.lng();
+            buf.extend_from_slice(&lat.to_le_bytes());
+            buf.extend_from_slice(&lng.to_le_bytes());
         }
         FlakeValue::Vector(_) => {
             return Err(CommitV2Error::UnsupportedValue(
@@ -432,6 +440,17 @@ fn decode_object(
             Duration::parse(&s)
                 .map(|v| FlakeValue::Duration(Box::new(v)))
                 .map_err(|e| CommitV2Error::InvalidOp(format!("bad duration: {}", e)))
+        }
+        OTag::GeoPoint => {
+            if *pos + 16 > data.len() {
+                return Err(CommitV2Error::UnexpectedEof);
+            }
+            let lat = f64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
+            let lng = f64::from_le_bytes(data[*pos + 8..*pos + 16].try_into().unwrap());
+            *pos += 16;
+            GeoPointBits::new(lat, lng)
+                .map(FlakeValue::GeoPoint)
+                .ok_or_else(|| CommitV2Error::InvalidOp(format!("bad geo point: ({}, {})", lat, lng)))
         }
     }
 }

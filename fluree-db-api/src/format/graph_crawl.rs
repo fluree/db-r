@@ -28,6 +28,7 @@ use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeT
 use fluree_db_core::value::FlakeValue;
 use fluree_db_core::{Db, Flake, NoOverlay, OverlayProvider, Sid, Storage, Tracker};
 use fluree_vocab::rdf::{self, TYPE as RDF_TYPE_IRI};
+use fluree_vocab::geo;
 use fluree_db_policy::{is_schema_flake, PolicyContext};
 use fluree_db_query::binding::Binding;
 use fluree_db_query::ir::{GraphSelectSpec, NestedSelectSpec, Root, SelectionSpec};
@@ -691,6 +692,7 @@ impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
                 FlakeValue::YearMonthDuration(v) => Ok(JsonValue::String(v.to_string())),
                 FlakeValue::DayTimeDuration(v) => Ok(JsonValue::String(v.to_string())),
                 FlakeValue::Duration(v) => Ok(JsonValue::String(v.to_string())),
+                FlakeValue::GeoPoint(v) => Ok(JsonValue::String(v.to_string())),
             };
         }
 
@@ -734,6 +736,7 @@ impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
             FlakeValue::YearMonthDuration(v) => JsonValue::String(v.to_string()),
             FlakeValue::DayTimeDuration(v) => JsonValue::String(v.to_string()),
             FlakeValue::Duration(v) => JsonValue::String(v.to_string()),
+            FlakeValue::GeoPoint(v) => JsonValue::String(v.to_string()),
         };
 
         Ok(json!({
@@ -857,6 +860,7 @@ impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
             FlakeValue::YearMonthDuration(v) => Ok(JsonValue::String(v.to_string())),
             FlakeValue::DayTimeDuration(v) => Ok(JsonValue::String(v.to_string())),
             FlakeValue::Duration(v) => Ok(JsonValue::String(v.to_string())),
+            FlakeValue::GeoPoint(v) => Ok(JsonValue::String(v.to_string())),
         }
     }
 

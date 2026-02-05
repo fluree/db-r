@@ -889,6 +889,8 @@ impl BinaryIndexStore {
             FlakeValue::GMonthDay(g) => Ok(Some((ObjKind::G_MONTH_DAY, ObjKey::encode_g_month_day(g.month(), g.day())))),
             // BigInt/Decimal need p_id for numbig arena → use value_to_obj_pair_for_predicate
             FlakeValue::BigInt(_) | FlakeValue::Decimal(_) => Ok(None),
+            // GeoPoint — packed lat/lng encoding enables latitude-band index scans
+            FlakeValue::GeoPoint(bits) => Ok(Some((ObjKind::GEO_POINT, ObjKey::from_u64(bits.as_u64())))),
             // Vector/Json/Duration: not yet supported for key translation
             _ => Ok(None),
         }
@@ -1488,6 +1490,9 @@ impl BinaryIndexStore {
             return Ok(FlakeValue::DayTimeDuration(Box::new(
                 fluree_db_core::temporal::DayTimeDuration::from_micros(micros),
             )));
+        }
+        if o_kind == ObjKind::GEO_POINT.as_u8() {
+            return Ok(FlakeValue::GeoPoint(fluree_db_core::GeoPointBits(o_key)));
         }
         if o_kind == ObjKind::MAX.as_u8() {
             return Ok(FlakeValue::Null);

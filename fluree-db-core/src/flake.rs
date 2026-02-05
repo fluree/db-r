@@ -326,6 +326,7 @@ impl Flake {
             FlakeValue::Json(s) => 8 + s.len(), // JSON stored as string
             FlakeValue::Ref(sid) => 8 + sid.name.len(),
             FlakeValue::Vector(v) => 8 + v.len() * 8, // length prefix + 8 bytes per f64
+            FlakeValue::GeoPoint(_) => 8,             // packed u64
         };
 
         // Metadata size
@@ -370,6 +371,7 @@ impl Flake {
             FlakeValue::Json(s) => s.len() as u64, // JSON stored as string
             FlakeValue::Ref(sid) => 8 + sid.name.len() as u64,
             FlakeValue::Vector(v) => (v.len() * 8) as u64,
+            FlakeValue::GeoPoint(_) => 8,
         };
 
         let m_size: u64 = match &self.m {

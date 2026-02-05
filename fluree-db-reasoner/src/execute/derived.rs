@@ -120,6 +120,10 @@ impl DerivedSet {
                 20u8.hash(&mut hasher);
                 v.hash(&mut hasher);
             }
+            FlakeValue::GeoPoint(v) => {
+                21u8.hash(&mut hasher);
+                v.hash(&mut hasher);
+            }
         }
         hasher.finish()
     }

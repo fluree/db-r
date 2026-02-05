@@ -658,6 +658,11 @@ impl CommitResolver {
                     .map_err(|e| format!("string dict write: {}", e))?;
                 Ok((ObjKind::LEX_ID, ObjKey::encode_u32_id(id)))
             }
+            RawObject::GeoPoint { lat, lng } => {
+                let key = ObjKey::encode_geo_point(*lat, *lng)
+                    .map_err(|e| format!("geo point encode: {}", e))?;
+                Ok((ObjKind::GEO_POINT, key))
+            }
         }
     }
 

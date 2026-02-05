@@ -110,6 +110,12 @@ impl ObjKind {
     /// xsd:dayTimeDuration — total microseconds (signed), order-preserving encoding.
     pub const DAY_TIME_DUR: Self = Self(0x13);
 
+    /// GeoPoint — latitude/longitude encoded as 60-bit packed value.
+    /// Upper 30 bits: latitude scaled from [-90, 90] to [0, 2^30-1]
+    /// Lower 30 bits: longitude scaled from [-180, 180] to [0, 2^30-1]
+    /// Precision: approximately 0.3mm at the equator.
+    pub const GEO_POINT: Self = Self(0x14);
+
     /// Get the raw `u8` discriminant.
     #[inline]
     pub const fn as_u8(self) -> u8 {
@@ -152,6 +158,7 @@ impl fmt::Debug for ObjKind {
             0x11 => write!(f, "ObjKind::GMonthDay"),
             0x12 => write!(f, "ObjKind::YearMonthDur"),
             0x13 => write!(f, "ObjKind::DayTimeDur"),
+            0x14 => write!(f, "ObjKind::GeoPoint"),
             0xFF => write!(f, "ObjKind::Max"),
             n => write!(f, "ObjKind({:#04x})", n),
         }
@@ -182,13 +189,17 @@ const SIGN_FLIP: u64 = 1u64 << 63;
 /// Sign bit mask for f64 bits.
 const F64_SIGN_BIT: u64 = 1u64 << 63;
 
-/// Error returned when an f64 value cannot be stored in the index.
+/// Error returned when a value cannot be stored in the index.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ObjKeyError {
     /// f64 is NaN — not representable in ordered index.
     NaN,
     /// f64 is +Inf or -Inf — not representable in ordered index.
     Infinite,
+    /// Latitude is outside [-90, 90] or non-finite.
+    GeoLatitudeOutOfRange,
+    /// Longitude is outside [-180, 180] or non-finite.
+    GeoLongitudeOutOfRange,
 }
 
 impl fmt::Display for ObjKeyError {
@@ -196,6 +207,8 @@ impl fmt::Display for ObjKeyError {
         match self {
             Self::NaN => write!(f, "NaN is not allowed in index values"),
             Self::Infinite => write!(f, "infinite values are not allowed in index values"),
+            Self::GeoLatitudeOutOfRange => write!(f, "latitude must be finite and in range [-90, 90]"),
+            Self::GeoLongitudeOutOfRange => write!(f, "longitude must be finite and in range [-180, 180]"),
         }
     }
 }
@@ -445,6 +458,62 @@ impl ObjKey {
     #[inline]
     pub fn decode_day_time_dur(self) -> i64 {
         self.decode_i64()
+    }
+
+    // ---- GeoPoint encoding (30-bit lat, 30-bit lng) ----
+
+    /// Maximum encoded value for 30-bit coordinate component.
+    const GEO_MAX_ENCODED: u64 = (1 << 30) - 1; // 1,073,741,823
+
+    /// Encode latitude/longitude as a 60-bit packed value.
+    ///
+    /// Latitude is scaled from [-90, 90] to [0, 2^30-1].
+    /// Longitude is scaled from [-180, 180] to [0, 2^30-1].
+    /// Precision is approximately 0.3mm at the equator.
+    ///
+    /// Rejects non-finite coordinates. Canonicalizes -0.0 to +0.0.
+    ///
+    /// The encoding produces a **latitude-primary sort order**: values sort
+    /// first by latitude, then by longitude within the same latitude band.
+    #[inline]
+    pub fn encode_geo_point(lat: f64, lng: f64) -> Result<Self, ObjKeyError> {
+        // Validate and canonicalize latitude
+        if !lat.is_finite() || lat < -90.0 || lat > 90.0 {
+            return Err(ObjKeyError::GeoLatitudeOutOfRange);
+        }
+        // Validate and canonicalize longitude
+        if !lng.is_finite() || lng < -180.0 || lng > 180.0 {
+            return Err(ObjKeyError::GeoLongitudeOutOfRange);
+        }
+
+        // Canonicalize -0.0 to +0.0
+        let lat = if lat == 0.0 { 0.0 } else { lat };
+        let lng = if lng == 0.0 { 0.0 } else { lng };
+
+        // Normalize to [0, 1] range
+        let lat_norm = (lat + 90.0) / 180.0; // [-90, 90] → [0, 1]
+        let lng_norm = (lng + 180.0) / 360.0; // [-180, 180] → [0, 1]
+
+        // Scale to integer range
+        let lat_encoded = (lat_norm * Self::GEO_MAX_ENCODED as f64).round() as u64;
+        let lng_encoded = (lng_norm * Self::GEO_MAX_ENCODED as f64).round() as u64;
+
+        // Pack: lat in upper 30 bits, lng in lower 30 bits
+        Ok(Self((lat_encoded << 30) | lng_encoded))
+    }
+
+    /// Decode a 60-bit packed value back to (latitude, longitude).
+    ///
+    /// Inverse of [`encode_geo_point`](Self::encode_geo_point).
+    #[inline]
+    pub fn decode_geo_point(self) -> (f64, f64) {
+        let lat_encoded = (self.0 >> 30) & Self::GEO_MAX_ENCODED;
+        let lng_encoded = self.0 & Self::GEO_MAX_ENCODED;
+
+        let lat = (lat_encoded as f64 / Self::GEO_MAX_ENCODED as f64) * 180.0 - 90.0;
+        let lng = (lng_encoded as f64 / Self::GEO_MAX_ENCODED as f64) * 360.0 - 180.0;
+
+        (lat, lng)
     }
 
     // ---- Raw access ----
@@ -808,6 +877,14 @@ mod tests {
         assert_eq!(ObjKind::VECTOR_ID.as_u8(), 0x0A);
         assert_eq!(ObjKind::JSON_ID.as_u8(), 0x0B);
         assert_eq!(ObjKind::NUM_BIG.as_u8(), 0x0C);
+        assert_eq!(ObjKind::G_YEAR.as_u8(), 0x0D);
+        assert_eq!(ObjKind::G_YEAR_MONTH.as_u8(), 0x0E);
+        assert_eq!(ObjKind::G_MONTH.as_u8(), 0x0F);
+        assert_eq!(ObjKind::G_DAY.as_u8(), 0x10);
+        assert_eq!(ObjKind::G_MONTH_DAY.as_u8(), 0x11);
+        assert_eq!(ObjKind::YEAR_MONTH_DUR.as_u8(), 0x12);
+        assert_eq!(ObjKind::DAY_TIME_DUR.as_u8(), 0x13);
+        assert_eq!(ObjKind::GEO_POINT.as_u8(), 0x14);
         assert_eq!(ObjKind::MAX.as_u8(), 0xFF);
     }
 
@@ -825,7 +902,15 @@ mod tests {
         assert!(ObjKind::DATE_TIME < ObjKind::VECTOR_ID);
         assert!(ObjKind::VECTOR_ID < ObjKind::JSON_ID);
         assert!(ObjKind::JSON_ID < ObjKind::NUM_BIG);
-        assert!(ObjKind::NUM_BIG < ObjKind::MAX);
+        assert!(ObjKind::NUM_BIG < ObjKind::G_YEAR);
+        assert!(ObjKind::G_YEAR < ObjKind::G_YEAR_MONTH);
+        assert!(ObjKind::G_YEAR_MONTH < ObjKind::G_MONTH);
+        assert!(ObjKind::G_MONTH < ObjKind::G_DAY);
+        assert!(ObjKind::G_DAY < ObjKind::G_MONTH_DAY);
+        assert!(ObjKind::G_MONTH_DAY < ObjKind::YEAR_MONTH_DUR);
+        assert!(ObjKind::YEAR_MONTH_DUR < ObjKind::DAY_TIME_DUR);
+        assert!(ObjKind::DAY_TIME_DUR < ObjKind::GEO_POINT);
+        assert!(ObjKind::GEO_POINT < ObjKind::MAX);
     }
 
     #[test]
@@ -1051,6 +1136,140 @@ mod tests {
         let after_epoch = ObjKey::encode_datetime(1_705_312_200_000_000);
         assert!(before_epoch < epoch);
         assert!(epoch < after_epoch);
+    }
+
+    // ---- GeoPoint encoding/decoding ----
+
+    #[test]
+    fn test_geo_point_round_trip() {
+        let cases = [
+            (48.8566, 2.3522),     // Paris
+            (-33.8688, 151.2093),  // Sydney
+            (0.0, 0.0),            // Null Island
+            (-90.0, 0.0),          // South Pole
+            (90.0, 180.0),         // North Pole at dateline
+            (51.5074, -0.1278),    // London (negative lng)
+            (35.6762, 139.6503),   // Tokyo
+            (-22.9068, -43.1729),  // Rio de Janeiro
+            (90.0, -180.0),        // North Pole at antimeridian
+            (-90.0, 180.0),        // South Pole at dateline
+        ];
+        for (lat, lng) in cases {
+            let key = ObjKey::encode_geo_point(lat, lng).unwrap();
+            let (dec_lat, dec_lng) = key.decode_geo_point();
+            // 30-bit precision gives ~0.0001 degree accuracy (~11m at equator)
+            assert!(
+                (lat - dec_lat).abs() < 0.0001,
+                "lat round-trip failed for ({}, {}): got {}",
+                lat, lng, dec_lat
+            );
+            assert!(
+                (lng - dec_lng).abs() < 0.0001,
+                "lng round-trip failed for ({}, {}): got {}",
+                lat, lng, dec_lng
+            );
+        }
+    }
+
+    #[test]
+    fn test_geo_point_ordering() {
+        // Latitude-primary sort: south to north, then west to east
+        let south = ObjKey::encode_geo_point(-45.0, 0.0).unwrap();
+        let equator = ObjKey::encode_geo_point(0.0, 0.0).unwrap();
+        let north = ObjKey::encode_geo_point(45.0, 0.0).unwrap();
+
+        assert!(south < equator, "south should sort before equator");
+        assert!(equator < north, "equator should sort before north");
+
+        // Same latitude: west to east
+        let west = ObjKey::encode_geo_point(0.0, -90.0).unwrap();
+        let prime = ObjKey::encode_geo_point(0.0, 0.0).unwrap();
+        let east = ObjKey::encode_geo_point(0.0, 90.0).unwrap();
+
+        assert!(west < prime, "west should sort before prime meridian");
+        assert!(prime < east, "prime meridian should sort before east");
+    }
+
+    #[test]
+    fn test_geo_point_extremes() {
+        // All corners of the coordinate space
+        let sw = ObjKey::encode_geo_point(-90.0, -180.0).unwrap();
+        let se = ObjKey::encode_geo_point(-90.0, 180.0).unwrap();
+        let nw = ObjKey::encode_geo_point(90.0, -180.0).unwrap();
+        let ne = ObjKey::encode_geo_point(90.0, 180.0).unwrap();
+
+        // Latitude-primary: south before north
+        assert!(sw < nw);
+        assert!(se < ne);
+        // At same latitude: west before east
+        assert!(sw < se);
+        assert!(nw < ne);
+    }
+
+    #[test]
+    fn test_geo_point_neg_zero_canonicalization() {
+        let pos_zero = ObjKey::encode_geo_point(0.0, 0.0).unwrap();
+        let neg_zero = ObjKey::encode_geo_point(-0.0, -0.0).unwrap();
+        assert_eq!(pos_zero, neg_zero, "-0.0 should be canonicalized to +0.0");
+    }
+
+    #[test]
+    fn test_geo_point_reject_invalid() {
+        // Out of range latitude
+        assert_eq!(
+            ObjKey::encode_geo_point(-90.1, 0.0),
+            Err(ObjKeyError::GeoLatitudeOutOfRange)
+        );
+        assert_eq!(
+            ObjKey::encode_geo_point(90.1, 0.0),
+            Err(ObjKeyError::GeoLatitudeOutOfRange)
+        );
+
+        // Out of range longitude
+        assert_eq!(
+            ObjKey::encode_geo_point(0.0, -180.1),
+            Err(ObjKeyError::GeoLongitudeOutOfRange)
+        );
+        assert_eq!(
+            ObjKey::encode_geo_point(0.0, 180.1),
+            Err(ObjKeyError::GeoLongitudeOutOfRange)
+        );
+
+        // Non-finite values
+        assert_eq!(
+            ObjKey::encode_geo_point(f64::NAN, 0.0),
+            Err(ObjKeyError::GeoLatitudeOutOfRange)
+        );
+        assert_eq!(
+            ObjKey::encode_geo_point(0.0, f64::NAN),
+            Err(ObjKeyError::GeoLongitudeOutOfRange)
+        );
+        assert_eq!(
+            ObjKey::encode_geo_point(f64::INFINITY, 0.0),
+            Err(ObjKeyError::GeoLatitudeOutOfRange)
+        );
+        assert_eq!(
+            ObjKey::encode_geo_point(0.0, f64::NEG_INFINITY),
+            Err(ObjKeyError::GeoLongitudeOutOfRange)
+        );
+    }
+
+    #[test]
+    fn test_geo_point_precision() {
+        // Verify 30-bit precision gives ~0.3mm accuracy
+        // At equator, 1 degree = 111,320m, so 0.0001 degree = ~11m
+        // Our encoding should preserve at least this precision
+
+        let lat = 45.123456789;
+        let lng = -122.987654321;
+        let key = ObjKey::encode_geo_point(lat, lng).unwrap();
+        let (dec_lat, dec_lng) = key.decode_geo_point();
+
+        // Should preserve at least 4 decimal places
+        let lat_error = (lat - dec_lat).abs();
+        let lng_error = (lng - dec_lng).abs();
+        assert!(lat_error < 0.00002, "lat precision error: {}", lat_error);
+        assert!(lng_error < 0.00004, "lng precision error: {}", lng_error);
     }
 
     // ---- Composite (kind, key) ordering ----

@@ -96,7 +96,8 @@ fn infer_node_kind(value: &FlakeValue) -> Option<NodeKind> {
         | FlakeValue::YearMonthDuration(_)
         | FlakeValue::DayTimeDuration(_)
         | FlakeValue::Duration(_)
-        | FlakeValue::Json(_) => Some(NodeKind::Literal),
+        | FlakeValue::Json(_)
+        | FlakeValue::GeoPoint(_) => Some(NodeKind::Literal),
         FlakeValue::Vector(_) => Some(NodeKind::Literal), // Treat vectors as literals
         FlakeValue::Null => None,
     }

@@ -51,12 +51,13 @@ pub mod index_stats;
 pub mod index_schema;
 pub mod subject_id;
 pub mod dict_novelty;
+pub mod geo;
 
 // Re-export main types
 pub use sid::{Sid, SidInterner};
 pub use subject_id::{SubjectId, SubjectIdColumn, SubjectIdEncoding};
 pub use dict_novelty::DictNovelty;
-pub use value::{FlakeValue, parse_integer, parse_decimal, parse_double, parse_integer_string, parse_decimal_string};
+pub use value::{FlakeValue, GeoPointBits, parse_integer, parse_decimal, parse_double, parse_integer_string, parse_decimal_string};
 pub use temporal::{DateTime, Date, Time};
 pub use alias::{
     AliasParseError, AliasTimeSpec, ParsedAlias, DEFAULT_BRANCH, format_alias, normalize_alias,

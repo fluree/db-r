@@ -249,6 +249,12 @@ fn format_binding(result: &QueryResult, binding: &Binding, compactor: &IriCompac
                         "@type": dt_iri
                     }))
                 }
+                FlakeValue::GeoPoint(v) => {
+                    Ok(json!({
+                        "@value": v.to_string(),
+                        "@type": dt_iri
+                    }))
+                }
             }
         }
 

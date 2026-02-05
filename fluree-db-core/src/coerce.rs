@@ -48,10 +48,11 @@
 //! - xsd:boolean
 //! - rdf:JSON
 
-use crate::{DateTime, Date, FlakeValue, Time};
+use crate::{DateTime, Date, FlakeValue, GeoPointBits, Time};
+use crate::geo::try_extract_point;
 use crate::temporal::{DayTimeDuration, Duration, GDay, GMonth, GMonthDay, GYear, GYearMonth, YearMonthDuration};
 use bigdecimal::BigDecimal;
-use fluree_vocab::{errors, rdf, xsd};
+use fluree_vocab::{errors, geo, rdf, xsd};
 use num_bigint::BigInt;
 use std::str::FromStr;
 
@@ -535,6 +536,19 @@ fn coerce_string_value(s: &str, datatype_iri: &str) -> CoercionResult<FlakeValue
         dt if dt == rdf::JSON => serde_json::from_str::<serde_json::Value>(s)
             .map(|_| FlakeValue::Json(s.to_string()))
             .map_err(|e| CoercionError::parse_failed(s, "rdf:JSON", Some(&e.to_string()))),
+
+        // geo:wktLiteral - detect POINT and store as GeoPoint, others as string
+        geo::WKT_LITERAL => {
+            if let Some((lat, lng)) = try_extract_point(s) {
+                match GeoPointBits::new(lat, lng) {
+                    Some(bits) => Ok(FlakeValue::GeoPoint(bits)),
+                    None => Ok(FlakeValue::String(s.to_string())), // fallback on encode fail
+                }
+            } else {
+                // Non-point WKT: store as string for sidecar spatial index
+                Ok(FlakeValue::String(s.to_string()))
+            }
+        }
 
         // Unknown datatype: store as string with explicit datatype (caller handles datatype SID)
         _ => Ok(FlakeValue::String(s.to_string())),
