@@ -11,7 +11,8 @@ mod support;
 
 use fluree_db_api::policy_builder;
 use fluree_db_api::{
-    CommitOpts, FlureeBuilder, IndexConfig, QueryConnectionOptions, TxnOpts, TxnType,
+    CommitOpts, FlureeBuilder, IndexConfig, QueryConnectionOptions, TrackedTransactionInput,
+    TxnOpts, TxnType,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -132,15 +133,18 @@ async fn modify_policy_allows_own_property() {
     });
 
     // This should succeed - John is updating his own email
+    let input = TrackedTransactionInput::new(
+        TxnType::Update,
+        &update_txn,
+        TxnOpts::default(),
+        &policy_ctx,
+    );
     let result = fluree
         .transact_tracked_with_policy(
             ledger,
-            TxnType::Update,
-            &update_txn,
-            TxnOpts::default(),
+            input,
             CommitOpts::default(),
             &IndexConfig::default(),
-            &policy_ctx,
         )
         .await;
 
@@ -245,15 +249,18 @@ async fn modify_policy_denies_other_property() {
     });
 
     // This should fail - Alice is not allowed to update John's email
+    let input = TrackedTransactionInput::new(
+        TxnType::Update,
+        &update_txn,
+        TxnOpts::default(),
+        &policy_ctx,
+    );
     let result = fluree
         .transact_tracked_with_policy(
             ledger,
-            TxnType::Update,
-            &update_txn,
-            TxnOpts::default(),
+            input,
             CommitOpts::default(),
             &IndexConfig::default(),
-            &policy_ctx,
         )
         .await;
 
@@ -324,15 +331,18 @@ async fn view_only_policy_blocks_modify() {
         }
     });
 
+    let input = TrackedTransactionInput::new(
+        TxnType::Update,
+        &update_txn,
+        TxnOpts::default(),
+        &policy_ctx,
+    );
     let result = fluree
         .transact_tracked_with_policy(
             ledger,
-            TxnType::Update,
-            &update_txn,
-            TxnOpts::default(),
+            input,
             CommitOpts::default(),
             &IndexConfig::default(),
-            &policy_ctx,
         )
         .await;
 
@@ -418,15 +428,18 @@ async fn modify_query_always_false_denies() {
         }
     });
 
+    let input = TrackedTransactionInput::new(
+        TxnType::Update,
+        &update_txn,
+        TxnOpts::default(),
+        &policy_ctx,
+    );
     let result = fluree
         .transact_tracked_with_policy(
             ledger,
-            TxnType::Update,
-            &update_txn,
-            TxnOpts::default(),
+            input,
             CommitOpts::default(),
             &IndexConfig::default(),
-            &policy_ctx,
         )
         .await;
 

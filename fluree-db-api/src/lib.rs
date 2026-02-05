@@ -99,7 +99,10 @@ pub use query::builder::{
 };
 pub use query::nameservice_builder::NameserviceQueryBuilder;
 pub use query::{QueryResult, TrackedErrorResponse, TrackedQueryResponse};
-pub use tx::{IndexingMode, IndexingStatus, StageResult, TransactResult, TransactResultRef};
+pub use tx::{
+    IndexingMode, IndexingStatus, StageResult, TrackedTransactionInput, TransactResult,
+    TransactResultRef,
+};
 pub use tx_builder::{OwnedTransactBuilder, RefTransactBuilder, Staged};
 pub use view::{FlureeDataSetView, FlureeView, QueryInput, ReasoningModePrecedence};
 pub use virtual_graph::{
@@ -156,7 +159,7 @@ pub use fluree_db_query::{
     execute_with_dataset_and_bm25, execute_with_dataset_and_policy_and_bm25,
     execute_with_dataset_and_policy_and_providers, execute_with_dataset_and_providers,
     execute_with_overlay, execute_with_overlay_tracked, execute_with_r2rml, Batch, DataSource,
-    ExecutableQuery, NoOpR2rmlProvider, Pattern, QueryOptions, VarRegistry,
+    ExecutableQuery, NoOpR2rmlProvider, Pattern, QueryContextParams, QueryOptions, VarRegistry,
 };
 // Re-export for lower-level pattern-based queries (internal/advanced use)
 pub use fluree_db_query::{Term, TriplePattern};

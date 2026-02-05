@@ -30,6 +30,37 @@ fn ledger_alias_from_txn(txn_json: &JsonValue) -> Result<&str> {
         .ok_or_else(|| ApiError::config("Invalid transaction, missing required key: ledger."))
 }
 
+/// Input parameters for tracked transactions with policy enforcement.
+///
+/// Bundles the common transaction parameters to reduce argument count.
+pub struct TrackedTransactionInput<'a> {
+    /// Transaction type (insert, delete, etc.)
+    pub txn_type: TxnType,
+    /// Transaction JSON body
+    pub txn_json: &'a JsonValue,
+    /// Transaction options
+    pub txn_opts: TxnOpts,
+    /// Policy context for access control
+    pub policy: &'a crate::PolicyContext,
+}
+
+impl<'a> TrackedTransactionInput<'a> {
+    /// Create new tracked transaction input.
+    pub fn new(
+        txn_type: TxnType,
+        txn_json: &'a JsonValue,
+        txn_opts: TxnOpts,
+        policy: &'a crate::PolicyContext,
+    ) -> Self {
+        Self {
+            txn_type,
+            txn_json,
+            txn_opts,
+            policy,
+        }
+    }
+}
+
 /// Create a tracker for fuel limits only (no time/policy tracking).
 ///
 /// This mirrors query behavior: even non-tracked transactions respect max-fuel.
@@ -261,20 +292,22 @@ where
     pub(crate) async fn stage_transaction_tracked_with_policy(
         &self,
         ledger: LedgerState<S>,
-        txn_type: TxnType,
-        txn_json: &JsonValue,
-        txn_opts: TxnOpts,
+        input: TrackedTransactionInput<'_>,
         index_config: Option<&IndexConfig>,
-        policy: &crate::PolicyContext,
         tracker: &Tracker,
     ) -> std::result::Result<StageResult<S>, TrackedErrorResponse> {
         let mut ns_registry = NamespaceRegistry::from_db(&ledger.db);
-        let txn = parse_transaction(txn_json, txn_type, txn_opts, &mut ns_registry)
-            .map_err(|e| TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally()))?;
+        let txn = parse_transaction(
+            input.txn_json,
+            input.txn_type,
+            input.txn_opts,
+            &mut ns_registry,
+        )
+        .map_err(|e| TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally()))?;
 
         // Build stage options with policy and tracker
         let mut options = StageOptions::new()
-            .with_policy(policy)
+            .with_policy(input.policy)
             .with_tracker(tracker);
         if let Some(cfg) = index_config {
             options = options.with_index_config(cfg);
@@ -310,34 +343,24 @@ where
     pub async fn transact_tracked_with_policy(
         &self,
         ledger: LedgerState<S>,
-        txn_type: TxnType,
-        txn_json: &JsonValue,
-        txn_opts: TxnOpts,
+        input: TrackedTransactionInput<'_>,
         commit_opts: CommitOpts,
         index_config: &IndexConfig,
-        policy: &crate::PolicyContext,
     ) -> std::result::Result<(TransactResult<S>, Option<TrackingTally>), TrackedErrorResponse> {
-        let store_raw_txn = txn_opts.store_raw_txn.unwrap_or(false);
+        let store_raw_txn = input.txn_opts.store_raw_txn.unwrap_or(false);
+        let txn_json_for_commit = input.txn_json.clone();
 
-        let opts = txn_json.as_object().and_then(|o| o.get("opts"));
+        let opts = input.txn_json.as_object().and_then(|o| o.get("opts"));
         let tracker = Tracker::new(TrackingOptions::from_opts_value(opts));
 
         let StageResult { view, ns_registry } = self
-            .stage_transaction_tracked_with_policy(
-                ledger,
-                txn_type,
-                txn_json,
-                txn_opts,
-                Some(index_config),
-                policy,
-                &tracker,
-            )
+            .stage_transaction_tracked_with_policy(ledger, input, Some(index_config), &tracker)
             .await?;
 
         // Store raw transaction JSON ONLY when explicitly opted-in, or when already provided
         // (e.g., signed credential envelope for provenance).
         let commit_opts = if commit_opts.raw_txn.is_none() && store_raw_txn {
-            commit_opts.with_raw_txn(txn_json.clone())
+            commit_opts.with_raw_txn(txn_json_for_commit)
         } else {
             commit_opts
         };
@@ -931,16 +954,14 @@ where
 
         // Use transact_tracked_with_policy and extract result
         let index_config = self.default_index_config();
+        let input = TrackedTransactionInput::new(
+            TxnType::Update, // credential-transact! uses update! internally
+            &txn_json,
+            txn_opts,
+            &policy_ctx,
+        );
         let (result, _tally) = self
-            .transact_tracked_with_policy(
-                ledger,
-                TxnType::Update, // credential-transact! uses update! internally
-                &txn_json,
-                txn_opts,
-                commit_opts,
-                &index_config,
-                &policy_ctx,
-            )
+            .transact_tracked_with_policy(ledger, input, commit_opts, &index_config)
             .await
             .map_err(|e: TrackedErrorResponse| {
                 // Map TrackedErrorResponse to ApiError, preserving HTTP status
@@ -977,16 +998,14 @@ where
         let ledger = self.ledger(ledger_alias).await?;
         let policy_ctx = crate::PolicyContext::new(fluree_db_policy::PolicyWrapper::root(), None);
         let index_config = self.default_index_config();
+        let input = TrackedTransactionInput::new(
+            TxnType::Update,
+            update_json,
+            TxnOpts::default(),
+            &policy_ctx,
+        );
         let (result, tally) = self
-            .transact_tracked_with_policy(
-                ledger,
-                TxnType::Update,
-                update_json,
-                TxnOpts::default(),
-                CommitOpts::default(),
-                &index_config,
-                &policy_ctx,
-            )
+            .transact_tracked_with_policy(ledger, input, CommitOpts::default(), &index_config)
             .await
             .map_err(|e| ApiError::http(e.status, e.error))?;
         Ok((result, tally))

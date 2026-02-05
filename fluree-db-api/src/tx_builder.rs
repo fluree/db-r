@@ -19,8 +19,8 @@ use crate::error::{BuilderError, BuilderErrors};
 use crate::ledger_manager::LedgerHandle;
 use crate::tx::{IndexingMode, IndexingStatus, StageResult, TransactResult, TransactResultRef};
 use crate::{
-    ApiError, Fluree, NameService, PolicyContext, Result, Storage, TrackedErrorResponse, Tracker,
-    TrackingOptions,
+    ApiError, Fluree, NameService, PolicyContext, Result, Storage, TrackedErrorResponse,
+    TrackedTransactionInput, Tracker, TrackingOptions,
 };
 use fluree_db_core::ContentAddressedWrite;
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
@@ -344,17 +344,11 @@ where
 
         // If policy + tracking are set, use the tracked+policy path
         if let Some(policy) = &self.core.policy {
+            let input =
+                TrackedTransactionInput::new(txn_type, &txn_json, self.core.txn_opts, policy);
             let (result, _tally) = self
                 .fluree
-                .transact_tracked_with_policy(
-                    self.ledger,
-                    txn_type,
-                    &txn_json,
-                    self.core.txn_opts,
-                    commit_opts,
-                    &index_config,
-                    policy,
-                )
+                .transact_tracked_with_policy(self.ledger, input, commit_opts, &index_config)
                 .await
                 .map_err(|e: TrackedErrorResponse| ApiError::http(e.status, e.error))?;
             return Ok(result);
@@ -406,15 +400,14 @@ where
                 track_policy: true,
                 max_fuel: None,
             }));
+            let input =
+                TrackedTransactionInput::new(txn_type, &txn_json_cow, self.core.txn_opts, policy);
             let stage_result = self
                 .fluree
                 .stage_transaction_tracked_with_policy(
                     self.ledger,
-                    txn_type,
-                    &txn_json_cow,
-                    self.core.txn_opts,
+                    input,
                     Some(&index_config),
-                    policy,
                     &tracker,
                 )
                 .await
@@ -641,14 +634,13 @@ where
                     track_policy: true,
                     max_fuel: None,
                 }));
+                let input =
+                    TrackedTransactionInput::new(txn_type, &txn_json, core.txn_opts, policy);
                 fluree
                     .stage_transaction_tracked_with_policy(
                         ledger_state,
-                        txn_type,
-                        &txn_json,
-                        core.txn_opts,
+                        input,
                         Some(&index_config),
-                        policy,
                         &tracker,
                     )
                     .await

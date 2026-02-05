@@ -11,8 +11,8 @@ use crate::graph_query_builder::GraphSnapshotQueryBuilder;
 use crate::tx_builder::{commit_with_handle, Staged, TransactCore, TransactOperation};
 use crate::view::FlureeView;
 use crate::{
-    ApiError, Fluree, NameService, PolicyContext, Result, Storage, TrackedErrorResponse, Tracker,
-    TrackingOptions, TransactResultRef,
+    ApiError, Fluree, NameService, PolicyContext, Result, Storage, TrackedErrorResponse,
+    TrackedTransactionInput, Tracker, TrackingOptions, TransactResultRef,
 };
 use fluree_db_core::ContentAddressedWrite;
 use fluree_db_ledger::IndexConfig;
@@ -192,15 +192,14 @@ where
                 track_policy: true,
                 max_fuel: None,
             }));
+            let input =
+                TrackedTransactionInput::new(txn_type, &txn_json_cow, self.core.txn_opts, policy);
             self.graph
                 .fluree
                 .stage_transaction_tracked_with_policy(
                     ledger_state,
-                    txn_type,
-                    &txn_json_cow,
-                    self.core.txn_opts,
+                    input,
                     Some(&index_config),
-                    policy,
                     &tracker,
                 )
                 .await

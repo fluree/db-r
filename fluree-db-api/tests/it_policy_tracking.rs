@@ -10,7 +10,8 @@ mod support;
 
 use fluree_db_api::policy_builder;
 use fluree_db_api::{
-    CommitOpts, FlureeBuilder, IndexConfig, QueryConnectionOptions, TxnOpts, TxnType,
+    CommitOpts, FlureeBuilder, IndexConfig, QueryConnectionOptions, TrackedTransactionInput,
+    TxnOpts, TxnType,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -87,15 +88,14 @@ async fn transact_policy_denied_includes_policy_and_fuel_tracking() {
         "opts": { "meta": true }
     });
 
+    let input =
+        TrackedTransactionInput::new(TxnType::Update, &txn, TxnOpts::default(), &policy_ctx);
     let err = match fluree
         .transact_tracked_with_policy(
             ledger,
-            TxnType::Update,
-            &txn,
-            TxnOpts::default(),
+            input,
             CommitOpts::default(),
             &IndexConfig::default(),
-            &policy_ctx,
         )
         .await
     {
