@@ -14,7 +14,7 @@ use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{NameService, Publisher, VgType, VirtualGraphPublisher};
 use fluree_db_query::bm25::{Bm25IndexBuilder, PropertyDeps};
 use fluree_db_query::parse::parse_query;
-use fluree_db_query::{execute_with_overlay_at, ExecutableQuery, SelectMode, VarRegistry};
+use fluree_db_query::{execute_with_overlay, DataSource, ExecutableQuery, SelectMode, VarRegistry};
 use serde_json::Value as JsonValue;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -199,15 +199,8 @@ where
 
         let executable = ExecutableQuery::simple(parsed_for_exec);
 
-        let batches = execute_with_overlay_at(
-            &ledger.db,
-            ledger.novelty.as_ref(),
-            &vars,
-            &executable,
-            ledger.t(),
-            None,
-        )
-        .await?;
+        let source = DataSource::new(&ledger.db, ledger.novelty.as_ref(), ledger.t());
+        let batches = execute_with_overlay(source, &vars, &executable).await?;
 
         // Format using the standard JSON-LD formatter
         let result = ApiQueryResult {
@@ -251,27 +244,12 @@ where
 
         let executable = ExecutableQuery::simple(parsed_for_exec);
 
-        let batches = if let Some(novelty) = view.overlay() {
-            execute_with_overlay_at(
-                &view.db,
-                novelty.as_ref(),
-                &vars,
-                &executable,
-                view.to_t(),
-                None,
-            )
-            .await?
-        } else {
-            execute_with_overlay_at(
-                &view.db,
-                &fluree_db_core::NoOverlay,
-                &vars,
-                &executable,
-                view.to_t(),
-                None,
-            )
-            .await?
-        };
+        let overlay: &dyn fluree_db_core::OverlayProvider = view
+            .overlay()
+            .map(|n| n.as_ref() as &dyn fluree_db_core::OverlayProvider)
+            .unwrap_or(&fluree_db_core::NoOverlay);
+        let source = DataSource::new(&view.db, overlay, view.to_t());
+        let batches = execute_with_overlay(source, &vars, &executable).await?;
 
         // Format using the standard JSON-LD formatter
         let result = ApiQueryResult {

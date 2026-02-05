@@ -2,8 +2,8 @@ use serde_json::Value as JsonValue;
 
 use crate::query::helpers::{parse_dataset_spec, tracker_for_limits};
 use crate::{
-    ApiError, ExecutableQuery, Fluree, FlureeDataSetView, FlureeIndexProvider, QueryResult, Result,
-    Storage, StorageWrite, VarRegistry,
+    ApiError, DataSource, ExecutableQuery, Fluree, FlureeDataSetView, FlureeIndexProvider,
+    QueryResult, Result, Storage, StorageWrite, VarRegistry,
 };
 
 use fluree_db_query::parse::parse_query;
@@ -52,43 +52,35 @@ where
         // Vector provider support is feature-gated. When disabled,
         // idx:vector patterns are not available and we run the BM25-only path.
         let tracker = tracker_for_limits(query_json);
+        let source = DataSource::new(primary.db.as_ref(), primary.overlay.as_ref(), primary_t);
+        let tracker_ref = if tracker.is_enabled() {
+            Some(&tracker)
+        } else {
+            None
+        };
         let batches = {
             #[cfg(feature = "vector")]
             {
                 crate::execute_with_dataset_and_providers(
-                    primary.db.as_ref(),
-                    primary.overlay.as_ref(),
+                    source,
                     &vars,
                     &executable,
-                    primary_t,
-                    None,
                     &runtime_dataset,
                     &provider,
                     &provider,
-                    if tracker.is_enabled() {
-                        Some(&tracker)
-                    } else {
-                        None
-                    },
+                    tracker_ref,
                 )
                 .await?
             }
             #[cfg(not(feature = "vector"))]
             {
                 crate::execute_with_dataset_and_bm25(
-                    primary.db.as_ref(),
-                    primary.overlay.as_ref(),
+                    source,
                     &vars,
                     &executable,
-                    primary_t,
-                    None,
                     &runtime_dataset,
                     &provider,
-                    if tracker.is_enabled() {
-                        Some(&tracker)
-                    } else {
-                        None
-                    },
+                    tracker_ref,
                 )
                 .await?
             }

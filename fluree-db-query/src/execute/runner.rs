@@ -28,6 +28,7 @@ use super::reasoning_prep::{
     compute_derived_facts, effective_reasoning_modes, schema_hierarchy_with_overlay,
 };
 use super::rewrite_glue::rewrite_query_patterns;
+use super::DataSource;
 
 /// Query with execution options
 ///
@@ -384,29 +385,31 @@ impl<'a, 'b, S: Storage + 'static> Default for ContextConfig<'a, 'b, S> {
 /// This is the unified internal execution path that handles all variants.
 /// The `config` parameter specifies which optional components to add to the context.
 pub async fn execute_prepared<'a, 'b, S: Storage + 'static>(
-    db: &Db<S>,
+    source: DataSource<'a, S>,
     vars: &VarRegistry,
-    overlay: &'a dyn fluree_db_core::OverlayProvider,
     prepared: PreparedExecution<S>,
-    to_t: i64,
-    from_t: Option<i64>,
     config: ContextConfig<'a, 'b, S>,
 ) -> Result<Vec<Batch>> {
     // Create composite overlay if we have derived facts
     let reasoning_overlay: Option<ReasoningOverlay<'a>> = prepared
         .derived_overlay
         .as_ref()
-        .map(|derived| ReasoningOverlay::new(overlay, derived.clone()));
+        .map(|derived| ReasoningOverlay::new(source.overlay, derived.clone()));
 
     // Use composite overlay if available, otherwise base overlay
     let effective_overlay: &dyn fluree_db_core::OverlayProvider = reasoning_overlay
         .as_ref()
         .map(|o| o as &dyn fluree_db_core::OverlayProvider)
-        .unwrap_or(overlay);
+        .unwrap_or(source.overlay);
 
     // Build context with all configured options
-    let mut ctx =
-        ExecutionContext::with_time_and_overlay(db, vars, to_t, from_t, effective_overlay);
+    let mut ctx = ExecutionContext::with_time_and_overlay(
+        source.db,
+        vars,
+        source.to_t,
+        source.from_t,
+        effective_overlay,
+    );
 
     if let Some(tracker) = config.tracker {
         ctx = ctx.with_tracker(tracker.clone());
@@ -448,20 +451,14 @@ pub async fn execute_prepared<'a, 'b, S: Storage + 'static>(
 
 /// Execute a prepared query with an overlay
 pub async fn execute_prepared_with_overlay<S: Storage + 'static>(
-    db: &Db<S>,
+    source: DataSource<'_, S>,
     vars: &VarRegistry,
-    overlay: &dyn fluree_db_core::OverlayProvider,
     prepared: PreparedExecution<S>,
-    to_t: i64,
-    from_t: Option<i64>,
 ) -> Result<Vec<Batch>> {
     execute_prepared(
-        db,
+        source,
         vars,
-        overlay,
         prepared,
-        to_t,
-        from_t,
         ContextConfig {
             strict_bind_errors: true,
             ..Default::default()
@@ -471,22 +468,16 @@ pub async fn execute_prepared_with_overlay<S: Storage + 'static>(
 }
 
 /// Execute with overlay, time bounds, and optional tracker
-pub async fn execute_prepared_with_overlay_tracked<S: Storage + 'static>(
-    db: &Db<S>,
+pub async fn execute_prepared_with_overlay_tracked<'a, S: Storage + 'static>(
+    source: DataSource<'a, S>,
     vars: &VarRegistry,
-    overlay: &dyn fluree_db_core::OverlayProvider,
     prepared: PreparedExecution<S>,
-    to_t: i64,
-    from_t: Option<i64>,
-    tracker: Option<&Tracker>,
+    tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
     execute_prepared(
-        db,
+        source,
         vars,
-        overlay,
         prepared,
-        to_t,
-        from_t,
         ContextConfig {
             tracker,
             strict_bind_errors: true,
@@ -498,12 +489,9 @@ pub async fn execute_prepared_with_overlay_tracked<S: Storage + 'static>(
 
 /// Execute with overlay, time bounds, and policy (with async f:query support)
 pub async fn execute_prepared_with_policy<'a, S: Storage + 'static>(
-    db: &Db<S>,
+    source: DataSource<'a, S>,
     vars: &VarRegistry,
-    overlay: &'a dyn fluree_db_core::OverlayProvider,
     prepared: PreparedExecution<S>,
-    to_t: i64,
-    from_t: Option<i64>,
     policy: &'a fluree_db_policy::PolicyContext,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
@@ -513,12 +501,9 @@ pub async fn execute_prepared_with_policy<'a, S: Storage + 'static>(
     )));
 
     execute_prepared(
-        db,
+        source,
         vars,
-        overlay,
         prepared,
-        to_t,
-        from_t,
         ContextConfig {
             tracker,
             policy_enforcer: Some(enforcer),
@@ -531,23 +516,17 @@ pub async fn execute_prepared_with_policy<'a, S: Storage + 'static>(
 
 /// Execute with overlay, time bounds, tracker, and R2RML providers
 pub async fn execute_prepared_with_r2rml<'a, 'b, S: Storage + 'static>(
-    db: &Db<S>,
+    source: DataSource<'a, S>,
     vars: &VarRegistry,
-    overlay: &'a dyn fluree_db_core::OverlayProvider,
     prepared: PreparedExecution<S>,
-    to_t: i64,
-    from_t: Option<i64>,
     tracker: &'a Tracker,
     r2rml_provider: &'b dyn crate::r2rml::R2rmlProvider,
     r2rml_table_provider: &'b dyn crate::r2rml::R2rmlTableProvider,
 ) -> Result<Vec<Batch>> {
     execute_prepared(
-        db,
+        source,
         vars,
-        overlay,
         prepared,
-        to_t,
-        from_t,
         ContextConfig {
             tracker: Some(tracker),
             r2rml: Some((r2rml_provider, r2rml_table_provider)),
@@ -560,40 +539,28 @@ pub async fn execute_prepared_with_r2rml<'a, 'b, S: Storage + 'static>(
 
 /// Execute with dataset (multi-graph query)
 pub async fn execute_prepared_with_dataset<'a, S: Storage + 'static>(
-    db: &Db<S>,
+    source: DataSource<'a, S>,
     vars: &VarRegistry,
-    overlay: &'a dyn fluree_db_core::OverlayProvider,
     prepared: PreparedExecution<S>,
-    to_t: i64,
-    from_t: Option<i64>,
     dataset: &'a DataSet<'a, S>,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
-    execute_prepared_with_dataset_history(
-        db, vars, overlay, prepared, to_t, from_t, dataset, tracker, false,
-    )
-    .await
+    execute_prepared_with_dataset_history(source, vars, prepared, dataset, tracker, false).await
 }
 
 /// Execute with dataset (multi-graph query), with optional history mode
 pub async fn execute_prepared_with_dataset_history<'a, S: Storage + 'static>(
-    db: &Db<S>,
+    source: DataSource<'a, S>,
     vars: &VarRegistry,
-    overlay: &'a dyn fluree_db_core::OverlayProvider,
     prepared: PreparedExecution<S>,
-    to_t: i64,
-    from_t: Option<i64>,
     dataset: &'a DataSet<'a, S>,
     tracker: Option<&'a Tracker>,
     history_mode: bool,
 ) -> Result<Vec<Batch>> {
     execute_prepared(
-        db,
+        source,
         vars,
-        overlay,
         prepared,
-        to_t,
-        from_t,
         ContextConfig {
             tracker,
             dataset: Some(dataset),
@@ -607,30 +574,24 @@ pub async fn execute_prepared_with_dataset_history<'a, S: Storage + 'static>(
 
 /// Execute with dataset and policy
 pub async fn execute_prepared_with_dataset_and_policy<'a, S: Storage + 'static>(
-    db: &Db<S>,
+    source: DataSource<'a, S>,
     vars: &VarRegistry,
-    overlay: &'a dyn fluree_db_core::OverlayProvider,
     prepared: PreparedExecution<S>,
-    to_t: i64,
-    from_t: Option<i64>,
     dataset: &'a DataSet<'a, S>,
     policy: &'a fluree_db_policy::PolicyContext,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
     execute_prepared_with_dataset_and_policy_history(
-        db, vars, overlay, prepared, to_t, from_t, dataset, policy, tracker, false,
+        source, vars, prepared, dataset, policy, tracker, false,
     )
     .await
 }
 
 /// Execute with dataset and policy, with optional history mode
 pub async fn execute_prepared_with_dataset_and_policy_history<'a, S: Storage + 'static>(
-    db: &Db<S>,
+    source: DataSource<'a, S>,
     vars: &VarRegistry,
-    overlay: &'a dyn fluree_db_core::OverlayProvider,
     prepared: PreparedExecution<S>,
-    to_t: i64,
-    from_t: Option<i64>,
     dataset: &'a DataSet<'a, S>,
     policy: &'a fluree_db_policy::PolicyContext,
     tracker: Option<&'a Tracker>,
@@ -642,12 +603,9 @@ pub async fn execute_prepared_with_dataset_and_policy_history<'a, S: Storage + '
     )));
 
     execute_prepared(
-        db,
+        source,
         vars,
-        overlay,
         prepared,
-        to_t,
-        from_t,
         ContextConfig {
             tracker,
             policy_enforcer: Some(enforcer),
@@ -661,24 +619,18 @@ pub async fn execute_prepared_with_dataset_and_policy_history<'a, S: Storage + '
 }
 
 /// Execute with dataset and BM25 provider (for virtual graph BM25 queries)
-pub async fn execute_prepared_with_dataset_and_bm25<'a, S: Storage + 'static>(
-    db: &Db<S>,
+pub async fn execute_prepared_with_dataset_and_bm25<'a, 'b, S: Storage + 'static>(
+    source: DataSource<'a, S>,
     vars: &VarRegistry,
-    overlay: &'a dyn fluree_db_core::OverlayProvider,
     prepared: PreparedExecution<S>,
-    to_t: i64,
-    from_t: Option<i64>,
     dataset: &'a DataSet<'a, S>,
-    bm25_provider: &dyn crate::bm25::Bm25IndexProvider,
+    bm25_provider: &'b dyn crate::bm25::Bm25IndexProvider,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
     execute_prepared(
-        db,
+        source,
         vars,
-        overlay,
         prepared,
-        to_t,
-        from_t,
         ContextConfig {
             tracker,
             dataset: Some(dataset),
@@ -691,16 +643,13 @@ pub async fn execute_prepared_with_dataset_and_bm25<'a, S: Storage + 'static>(
 }
 
 /// Execute with dataset, policy, and BM25 provider (for virtual graph BM25 queries with policy)
-pub async fn execute_prepared_with_dataset_and_policy_and_bm25<'a, S: Storage + 'static>(
-    db: &Db<S>,
+pub async fn execute_prepared_with_dataset_and_policy_and_bm25<'a, 'b, S: Storage + 'static>(
+    source: DataSource<'a, S>,
     vars: &VarRegistry,
-    overlay: &'a dyn fluree_db_core::OverlayProvider,
     prepared: PreparedExecution<S>,
-    to_t: i64,
-    from_t: Option<i64>,
     dataset: &'a DataSet<'a, S>,
     policy: &'a fluree_db_policy::PolicyContext,
-    bm25_provider: &dyn crate::bm25::Bm25IndexProvider,
+    bm25_provider: &'b dyn crate::bm25::Bm25IndexProvider,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
     // Create policy enforcer for async f:query support
@@ -709,12 +658,9 @@ pub async fn execute_prepared_with_dataset_and_policy_and_bm25<'a, S: Storage + 
     )));
 
     execute_prepared(
-        db,
+        source,
         vars,
-        overlay,
         prepared,
-        to_t,
-        from_t,
         ContextConfig {
             tracker,
             policy_enforcer: Some(enforcer),
@@ -729,24 +675,18 @@ pub async fn execute_prepared_with_dataset_and_policy_and_bm25<'a, S: Storage + 
 
 /// Execute with dataset and both BM25 and vector providers (for virtual graph queries)
 pub async fn execute_prepared_with_dataset_and_providers<'a, 'b, S: Storage + 'static>(
-    db: &Db<S>,
+    source: DataSource<'a, S>,
     vars: &VarRegistry,
-    overlay: &'a dyn fluree_db_core::OverlayProvider,
     prepared: PreparedExecution<S>,
-    to_t: i64,
-    from_t: Option<i64>,
     dataset: &'a DataSet<'a, S>,
     bm25_provider: &'b dyn crate::bm25::Bm25IndexProvider,
     vector_provider: &'b dyn crate::vector::VectorIndexProvider,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
     execute_prepared(
-        db,
+        source,
         vars,
-        overlay,
         prepared,
-        to_t,
-        from_t,
         ContextConfig {
             tracker,
             dataset: Some(dataset),
@@ -760,17 +700,10 @@ pub async fn execute_prepared_with_dataset_and_providers<'a, 'b, S: Storage + 's
 }
 
 /// Execute with dataset, policy, and both BM25 and vector providers
-pub async fn execute_prepared_with_dataset_and_policy_and_providers<
-    'a,
-    'b,
-    S: Storage + 'static,
->(
-    db: &Db<S>,
+pub async fn execute_prepared_with_dataset_and_policy_and_providers<'a, 'b, S: Storage + 'static>(
+    source: DataSource<'a, S>,
     vars: &VarRegistry,
-    overlay: &'a dyn fluree_db_core::OverlayProvider,
     prepared: PreparedExecution<S>,
-    to_t: i64,
-    from_t: Option<i64>,
     dataset: &'a DataSet<'a, S>,
     policy: &'a fluree_db_policy::PolicyContext,
     bm25_provider: &'b dyn crate::bm25::Bm25IndexProvider,
@@ -783,12 +716,9 @@ pub async fn execute_prepared_with_dataset_and_policy_and_providers<
     )));
 
     execute_prepared(
-        db,
+        source,
         vars,
-        overlay,
         prepared,
-        to_t,
-        from_t,
         ContextConfig {
             tracker,
             policy_enforcer: Some(enforcer),

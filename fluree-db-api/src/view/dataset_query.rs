@@ -12,7 +12,7 @@ use crate::{
     ApiError, ExecutableQuery, Fluree, NameService, QueryResult, Result, Storage, Tracker,
     TrackingOptions,
 };
-use fluree_db_query::execute::{execute_prepared, prepare_execution, ContextConfig};
+use fluree_db_query::execute::{execute_prepared, prepare_execution, ContextConfig, DataSource};
 
 // ============================================================================
 // Dataset Query Execution
@@ -290,17 +290,15 @@ where
             ..Default::default()
         };
 
-        execute_prepared(
-            &primary.db,
-            vars,
-            primary.overlay.as_ref(),
-            prepared,
+        let source = DataSource {
+            db: &primary.db,
+            overlay: primary.overlay.as_ref(),
             to_t,
             from_t,
-            config,
-        )
-        .await
-        .map_err(query_error_to_api_error)
+        };
+        execute_prepared(source, vars, prepared, config)
+            .await
+            .map_err(query_error_to_api_error)
     }
 
     /// Execute against dataset with tracking.
@@ -343,16 +341,13 @@ where
             ..Default::default()
         };
 
-        execute_prepared(
-            &primary.db,
-            vars,
-            primary.overlay.as_ref(),
-            prepared,
+        let source = DataSource {
+            db: &primary.db,
+            overlay: primary.overlay.as_ref(),
             to_t,
             from_t,
-            config,
-        )
-        .await
+        };
+        execute_prepared(source, vars, prepared, config).await
     }
 }
 

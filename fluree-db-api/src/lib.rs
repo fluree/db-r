@@ -157,7 +157,7 @@ pub use fluree_db_query::{
     execute_pattern, execute_pattern_with_overlay, execute_pattern_with_overlay_at,
     execute_with_dataset_and_bm25, execute_with_dataset_and_policy_and_bm25,
     execute_with_dataset_and_policy_and_providers, execute_with_dataset_and_providers,
-    execute_with_overlay_at, execute_with_overlay_at_tracked, execute_with_r2rml, Batch,
+    execute_with_overlay, execute_with_overlay_tracked, execute_with_r2rml, Batch, DataSource,
     ExecutableQuery, NoOpR2rmlProvider, Pattern, QueryOptions, VarRegistry,
 };
 // Re-export for lower-level pattern-based queries (internal/advanced use)

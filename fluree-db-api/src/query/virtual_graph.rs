@@ -3,7 +3,8 @@ use serde_json::Value as JsonValue;
 use crate::query::helpers::{build_query_result, parse_jsonld_query, parse_sparql_to_ir};
 use crate::query::nameservice_builder::NameserviceQueryBuilder;
 use crate::{
-    ExecutableQuery, Fluree, LedgerState, QueryResult, Result, Storage, VirtualGraphPublisher,
+    DataSource, ExecutableQuery, Fluree, LedgerState, QueryResult, Result, Storage,
+    VirtualGraphPublisher,
 };
 
 impl<S, N> Fluree<S, N>
@@ -77,13 +78,11 @@ where
 
         let r2rml_provider = crate::r2rml_provider!(self);
         let tracker = crate::Tracker::disabled();
+        let source = DataSource::new(&ledger.db, ledger.novelty.as_ref(), ledger.t());
         let batches = crate::execute_with_r2rml(
-            &ledger.db,
-            ledger.novelty.as_ref(),
+            source,
             &vars,
             &executable,
-            ledger.t(),
-            None,
             &tracker,
             &r2rml_provider,
             &r2rml_provider,
@@ -106,13 +105,11 @@ where
 
         let r2rml_provider = crate::r2rml_provider!(self);
         let tracker = crate::Tracker::disabled();
+        let source = DataSource::new(&ledger.db, ledger.novelty.as_ref(), ledger.t());
         let batches = crate::execute_with_r2rml(
-            &ledger.db,
-            ledger.novelty.as_ref(),
+            source,
             &vars,
             &executable,
-            ledger.t(),
-            None,
             &tracker,
             &r2rml_provider,
             &r2rml_provider,
