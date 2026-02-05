@@ -38,6 +38,7 @@ where
             batches,
             ledger.t(),
             Some(ledger.novelty.clone()),
+            None,
         ))
     }
 
@@ -144,6 +145,7 @@ where
             batches,
             ledger.t(),
             Some(ledger.novelty.clone()),
+            None,
         );
 
         let result_json = query_result
@@ -195,6 +197,7 @@ where
             batches,
             ledger.t(),
             Some(ledger.novelty.clone()),
+            None,
         ))
     }
 
@@ -225,6 +228,7 @@ where
             batches,
             ledger.t(),
             Some(ledger.novelty.clone()),
+            None,
         ))
     }
 
@@ -267,6 +271,7 @@ where
             batches,
             ledger.t(),
             Some(ledger.novelty.clone()),
+            None,
         ))
     }
 
@@ -294,6 +299,7 @@ where
                 batches,
                 ledger.t(),
                 Some(ledger.novelty.clone()),
+                None,
             ),
             tally,
         ))
@@ -344,6 +350,7 @@ where
             batches,
             view.to_t(),
             view.overlay().map(|n| Arc::clone(n) as Arc<dyn OverlayProvider>),
+            None,
         ))
     }
 

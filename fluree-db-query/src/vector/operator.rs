@@ -182,7 +182,11 @@ impl<S: Storage + 'static> VectorSearchOperator<S> {
                     }
                     _ => Ok(None),
                 },
-                Some(Binding::Sid(_)) | Some(Binding::IriMatch { .. }) | Some(Binding::Iri(_)) | Some(Binding::Grouped(_)) => Ok(None),
+                Some(Binding::EncodedLit { .. }) => Ok(None),
+                Some(Binding::Sid(_))
+                | Some(Binding::IriMatch { .. })
+                | Some(Binding::Iri(_))
+                | Some(Binding::Grouped(_)) => Ok(None),
             },
         }
     }

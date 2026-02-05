@@ -54,11 +54,10 @@ where
                 if let Ok(root) = serde_json::from_slice::<BinaryIndexRootV2>(&bytes) {
                     if root.version == BINARY_INDEX_ROOT_VERSION_V2 {
                         let cache_dir = std::env::temp_dir().join("fluree-cache");
-                        let store = BinaryIndexStore::load_from_root(
+                        let store = BinaryIndexStore::load_from_root_default(
                             storage,
                             &root,
                             &cache_dir,
-                            None,
                         )
                         .await
                         .map_err(|e| {

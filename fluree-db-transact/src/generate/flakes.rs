@@ -198,6 +198,9 @@ impl<'a> FlakeGenerator<'a> {
                         Binding::Lit { .. } => Err(TransactError::InvalidTerm(
                             "Subject must be a Sid, not a literal".to_string(),
                         )),
+                        Binding::EncodedLit { .. } => Err(TransactError::InvalidTerm(
+                            "Subject must be a Sid; EncodedLit must be materialized before flake generation".to_string(),
+                        )),
                         Binding::Iri(_) => Err(TransactError::InvalidTerm(
                             "Raw IRI from virtual graph cannot be used as subject for flake generation".to_string(),
                         )),
@@ -239,6 +242,9 @@ impl<'a> FlakeGenerator<'a> {
                         )),
                         Binding::Lit { .. } => Err(TransactError::InvalidTerm(
                             "Predicate must be a Sid, not a literal".to_string(),
+                        )),
+                        Binding::EncodedLit { .. } => Err(TransactError::InvalidTerm(
+                            "Predicate must be a Sid; EncodedLit must be materialized before flake generation".to_string(),
                         )),
                         Binding::Iri(_) => Err(TransactError::InvalidTerm(
                             "Raw IRI from virtual graph cannot be used as predicate for flake generation".to_string(),
@@ -289,6 +295,9 @@ impl<'a> FlakeGenerator<'a> {
                             Ok((Some(FlakeValue::Ref(primary_sid.clone())), Some(DT_ID.clone())))
                         }
                         Binding::Lit { val, dt, .. } => Ok((Some(val.clone()), Some(dt.clone()))),
+                        Binding::EncodedLit { .. } => Err(TransactError::InvalidTerm(
+                            "EncodedLit must be materialized before flake generation".to_string(),
+                        )),
                         Binding::Unbound | Binding::Poisoned => Ok((None, None)),
                         Binding::Grouped(_) => Err(TransactError::InvalidTerm(
                             "Object cannot be a grouped value (GROUP BY output)".to_string(),

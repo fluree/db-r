@@ -111,7 +111,10 @@ impl<S: Storage + 'static> Operator<S> for FilterOperator<S> {
             let keep_indices: Vec<usize> = (0..batch.len())
                 .filter_map(|row_idx| {
                     let row = batch.row_view(row_idx)?;
-                    evaluate(&self.expr, &row).ok().filter(|&pass| pass).map(|_| row_idx)
+                    evaluate_with_context(&self.expr, &row, ctx)
+                        .ok()
+                        .filter(|&pass| pass)
+                        .map(|_| row_idx)
                 })
                 .collect();
 
@@ -267,6 +270,7 @@ pub fn evaluate(expr: &FilterExpr, row: &RowView) -> Result<bool> {
                     FlakeValue::Boolean(b) => Ok(*b),
                     _ => Ok(true), // Non-bool literal is truthy
                 },
+                Some(Binding::EncodedLit { .. }) => Ok(true), // Encoded literal is truthy
                 Some(Binding::Sid(_)) => Ok(true), // SID is truthy
                 Some(Binding::IriMatch { .. }) => Ok(true), // IriMatch is truthy
                 Some(Binding::Iri(_)) => Ok(true), // IRI is truthy
@@ -407,6 +411,7 @@ fn eval_to_comparable(expr: &FilterExpr, row: &RowView) -> Result<Option<Compara
         FilterExpr::Var(var) => {
             match row.get(*var) {
                 Some(Binding::Lit { val, .. }) => Ok(flake_value_to_comparable(val)),
+                Some(Binding::EncodedLit { .. }) => Ok(None),
                 Some(Binding::Sid(sid)) => Ok(Some(ComparableValue::Sid(sid.clone()))),
                 Some(Binding::IriMatch { iri, .. }) => {
                     // IriMatch: use canonical IRI for comparisons (cross-ledger safe)

@@ -681,6 +681,38 @@ impl BinaryIndexStore {
         Self::load_from_root(storage, root, cache_dir, cache).await
     }
 
+    /// Log dictionary tree I/O stats (disk reads vs cache hits).
+    pub fn log_dict_stats(&self) {
+        if let Some(tree) = &self.dicts.subject_forward_tree {
+            tracing::info!(
+                disk_reads = tree.disk_reads(),
+                cache_hits = tree.cache_hits(),
+                "dict_stats: subject_forward"
+            );
+        }
+        if let Some(tree) = &self.dicts.subject_reverse_tree {
+            tracing::info!(
+                disk_reads = tree.disk_reads(),
+                cache_hits = tree.cache_hits(),
+                "dict_stats: subject_reverse"
+            );
+        }
+        if let Some(tree) = &self.dicts.string_forward_tree {
+            tracing::info!(
+                disk_reads = tree.disk_reads(),
+                cache_hits = tree.cache_hits(),
+                "dict_stats: string_forward"
+            );
+        }
+        if let Some(tree) = &self.dicts.string_reverse_tree {
+            tracing::info!(
+                disk_reads = tree.disk_reads(),
+                cache_hits = tree.cache_hits(),
+                "dict_stats: string_reverse"
+            );
+        }
+    }
+
     /// Replace the leaflet cache on an already-loaded store.
     ///
     /// Use this to attach a shared cache after construction, or to

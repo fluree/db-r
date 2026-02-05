@@ -35,8 +35,10 @@ pub struct LeafArtifact {
     pub bytes: Vec<u8>,
 }
 
-/// Target leaf size in bytes. Aim for ~64KB leaves.
-pub const DEFAULT_TARGET_LEAF_BYTES: usize = 64 * 1024;
+/// Target leaf size in bytes. Larger leaves reduce tree depth and file count
+/// at the cost of reading more data per lookup. 2MB keeps the leaf count
+/// manageable for large dictionaries while staying cache-friendly.
+pub const DEFAULT_TARGET_LEAF_BYTES: usize = 2 * 1024 * 1024;
 
 /// Build a forward tree (id → value) from sorted entries.
 ///

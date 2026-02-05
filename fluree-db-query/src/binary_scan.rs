@@ -747,6 +747,8 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
             .collect();
 
         let mut produced = 0usize;
+        let mut leaves_scanned = 0usize;
+        let scan_start = std::time::Instant::now();
 
         // Pull decoded batches from cursor until we fill a batch or exhaust cursor
         while produced < batch_size {
@@ -757,6 +759,7 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
 
             match cursor.next_leaf() {
                 Ok(Some(decoded)) => {
+                    leaves_scanned += 1;
                     let n = self.batch_to_bindings(&decoded, &mut columns)?;
                     for _ in 0..n {
                         ctx.tracker.consume_fuel_one()?;
@@ -771,6 +774,18 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
                     return Err(QueryError::Internal(format!("binary cursor: {}", e)));
                 }
             }
+        }
+
+        let scan_ms = scan_start.elapsed().as_secs_f64() * 1000.0;
+        if produced > 0 {
+            tracing::info!(
+                leaves_scanned,
+                rows = produced,
+                scan_ms = format!("{:.2}", scan_ms),
+                sid_cache_size = self.sid_cache.len(),
+                index = ?self.index,
+                "binary_scan batch"
+            );
         }
 
         if produced == 0 {

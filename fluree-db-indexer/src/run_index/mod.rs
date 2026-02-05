@@ -47,7 +47,7 @@ pub use run_writer::{RunWriter, RunWriterConfig, RunWriterResult, RecordSink, Mu
 pub use streaming_reader::StreamingRunReader;
 pub use lang_remap::build_lang_remap;
 pub use merge::KWayMerge;
-pub use index_build::{IndexBuildConfig, IndexBuildResult, build_spot_index, build_index, build_all_indexes};
+pub use index_build::{IndexBuildConfig, IndexBuildResult, build_spot_index, build_index, build_all_indexes, precompute_language_dict};
 pub use query::SpotQuery;
 pub use binary_index_store::BinaryIndexStore;
 pub use spot_cursor::SpotCursor;

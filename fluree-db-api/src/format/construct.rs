@@ -10,6 +10,7 @@
 use super::iri::IriCompactor;
 use super::{FormatError, Result};
 use crate::QueryResult;
+use fluree_db_core::Sid;
 use fluree_db_core::FlakeValue;
 use fluree_db_query::binding::Binding;
 use fluree_db_query::parse::ConstructTemplate;
@@ -75,7 +76,7 @@ fn instantiate_template(result: &QueryResult, compactor: &IriCompactor) -> Resul
 
     for batch in &result.batches {
         for row_idx in 0..batch.len() {
-            instantiate_row(template, batch, row_idx, compactor, &mut graph)?;
+            instantiate_row(result, template, batch, row_idx, compactor, &mut graph)?;
         }
     }
 
@@ -84,6 +85,7 @@ fn instantiate_template(result: &QueryResult, compactor: &IriCompactor) -> Resul
 
 /// Process a single result row through the template patterns
 fn instantiate_row(
+    result: &QueryResult,
     template: &ConstructTemplate,
     batch: &Batch,
     row_idx: usize,
@@ -94,7 +96,7 @@ fn instantiate_row(
         // Resolve template terms with bindings (all IRIs are EXPANDED)
         let subject = resolve_subject_term(&pattern.s, batch, row_idx, compactor)?;
         let predicate = resolve_predicate_term(&pattern.p, batch, row_idx, compactor)?;
-        let object = resolve_object_term(&pattern.o, batch, row_idx, compactor)?;
+        let object = resolve_object_term(result, &pattern.o, batch, row_idx, compactor)?;
 
         // Skip if any term is unbound (incomplete triple)
         let (Some(s), Some(p), Some(o)) = (subject, predicate, object) else {
@@ -141,6 +143,7 @@ fn resolve_subject_term(
             }
             Some(Binding::Unbound) | Some(Binding::Poisoned) | None => Ok(None),
             Some(Binding::Lit { .. }) => Ok(None), // Literals can't be subjects
+            Some(Binding::EncodedLit { .. }) => Ok(None),
             Some(Binding::Grouped(_)) => Err(FormatError::InvalidBinding(
                 "CONSTRUCT does not support GROUP BY (Binding::Grouped encountered)".to_string(),
             )),
@@ -195,6 +198,7 @@ fn resolve_predicate_term(
             }
             Some(Binding::Unbound) | Some(Binding::Poisoned) | None => Ok(None),
             Some(Binding::Lit { .. }) => Ok(None), // Literals can't be predicates
+            Some(Binding::EncodedLit { .. }) => Ok(None),
             Some(Binding::Grouped(_)) => Err(FormatError::InvalidBinding(
                 "CONSTRUCT does not support GROUP BY (Binding::Grouped encountered)".to_string(),
             )),
@@ -220,6 +224,7 @@ fn resolve_predicate_term(
 /// Objects can be IRIs, blank nodes, or literals.
 /// Returns expanded IRI for references (via decode_sid, not compact_sid).
 fn resolve_object_term(
+    result: &QueryResult,
     term: &Term,
     batch: &Batch,
     row_idx: usize,
@@ -227,7 +232,7 @@ fn resolve_object_term(
 ) -> Result<Option<IrTerm>> {
     match term {
         Term::Var(var_id) => match batch.get(row_idx, *var_id) {
-            Some(binding) => binding_to_ir_term(binding, compactor),
+            Some(binding) => binding_to_ir_term(result, binding, compactor),
             None => Ok(None),
         },
         Term::Sid(sid) => {
@@ -247,7 +252,7 @@ fn resolve_object_term(
 }
 
 /// Convert a Binding to an IR Term
-fn binding_to_ir_term(binding: &Binding, compactor: &IriCompactor) -> Result<Option<IrTerm>> {
+fn binding_to_ir_term(result: &QueryResult, binding: &Binding, compactor: &IriCompactor) -> Result<Option<IrTerm>> {
     match binding {
         Binding::Unbound | Binding::Poisoned => Ok(None),
 
@@ -400,10 +405,57 @@ fn binding_to_ir_term(binding: &Binding, compactor: &IriCompactor) -> Result<Opt
             }
         }
 
+        Binding::EncodedLit { .. } => {
+            let store = result.binary_store.as_ref().ok_or_else(|| {
+                FormatError::InvalidBinding(
+                    "Encountered EncodedLit during CONSTRUCT formatting but QueryResult has no binary_store".to_string(),
+                )
+            })?;
+            let materialized = materialize_encoded_lit(binding, store)
+                .map_err(|e| FormatError::InvalidBinding(format!("Failed to materialize EncodedLit: {}", e)))?;
+            binding_to_ir_term(result, &materialized, compactor)
+        }
+
         // GROUP BY + CONSTRUCT is not supported (semantics undefined)
         Binding::Grouped(_) => Err(FormatError::InvalidBinding(
             "CONSTRUCT does not support GROUP BY (Binding::Grouped encountered)".to_string(),
         )),
+    }
+}
+
+fn materialize_encoded_lit(
+    binding: &Binding,
+    store: &fluree_db_indexer::run_index::BinaryIndexStore,
+) -> std::io::Result<Binding> {
+    let Binding::EncodedLit {
+        o_kind,
+        o_key,
+        p_id,
+        dt_id,
+        lang_id,
+        i_val,
+        t,
+    } = binding else {
+        return Ok(binding.clone());
+    };
+    let val = store.decode_value(*o_kind, *o_key, *p_id)?;
+    match val {
+        FlakeValue::Ref(sid) => Ok(Binding::Sid(sid)),
+        other => {
+            let dt_sid = store
+                .dt_sids()
+                .get(*dt_id as usize)
+                .cloned()
+                .unwrap_or_else(|| Sid::new(0, ""));
+            let meta = store.decode_meta(*lang_id, *i_val);
+            Ok(Binding::Lit {
+                val: other,
+                dt: dt_sid,
+                lang: meta.and_then(|m| m.lang.map(std::sync::Arc::from)),
+                t: Some(*t),
+                op: None,
+            })
+        }
     }
 }
 

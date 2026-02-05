@@ -71,6 +71,7 @@ pub(crate) fn build_query_result(
     batches: Vec<Batch>,
     t: i64,
     novelty: Option<Arc<dyn OverlayProvider>>,
+    binary_store: Option<std::sync::Arc<fluree_db_indexer::run_index::BinaryIndexStore>>,
 ) -> QueryResult {
     QueryResult {
         vars,
@@ -81,6 +82,7 @@ pub(crate) fn build_query_result(
         select: parsed.select,
         select_mode: parsed.select_mode,
         batches,
+        binary_store,
         construct_template: parsed.construct_template,
         graph_select: parsed.graph_select,
     }
@@ -93,6 +95,7 @@ pub(crate) fn build_sparql_result(
     batches: Vec<Batch>,
     t: i64,
     novelty: Option<Arc<dyn OverlayProvider>>,
+    binary_store: Option<std::sync::Arc<fluree_db_indexer::run_index::BinaryIndexStore>>,
 ) -> QueryResult {
     QueryResult {
         vars,
@@ -103,6 +106,7 @@ pub(crate) fn build_sparql_result(
         select: parsed.select,
         select_mode: parsed.select_mode,
         batches,
+        binary_store,
         construct_template: parsed.construct_template,
         graph_select: None, // SPARQL doesn't support graph crawl
     }

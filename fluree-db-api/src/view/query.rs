@@ -57,6 +57,7 @@ where
         let input = q.into();
 
         // 1. Parse to common IR
+        let parse_start = std::time::Instant::now();
         let (vars, parsed) = match &input {
             QueryInput::JsonLd(json) => parse_jsonld_query(json, &view.db)?,
             QueryInput::Sparql(sparql) => {
@@ -65,9 +66,12 @@ where
                 parse_sparql_to_ir(sparql, &view.db)?
             }
         };
+        let parse_ms = parse_start.elapsed().as_secs_f64() * 1000.0;
 
         // 2. Build executable with optional reasoning override
+        let plan_start = std::time::Instant::now();
         let executable = self.build_executable_for_view(view, &parsed)?;
+        let plan_ms = plan_start.elapsed().as_secs_f64() * 1000.0;
 
         // 3. Get tracker for fuel limits only (no tracking overhead for non-tracked calls)
         let tracker = match &input {
@@ -76,9 +80,18 @@ where
         };
 
         // 4. Execute
+        let exec_start = std::time::Instant::now();
         let batches = self
             .execute_view_internal(view, &vars, &executable, &tracker)
             .await?;
+        let exec_ms = exec_start.elapsed().as_secs_f64() * 1000.0;
+
+        tracing::info!(
+            parse_ms = format!("{:.2}", parse_ms),
+            plan_ms = format!("{:.2}", plan_ms),
+            exec_ms = format!("{:.2}", exec_ms),
+            "query_view phases"
+        );
 
         // 5. Build result
         Ok(build_query_result(
@@ -87,6 +100,7 @@ where
             batches,
             view.to_t,
             Some(view.overlay.clone()),
+            view.binary_store.clone(),
         ))
     }
 
@@ -157,6 +171,7 @@ where
             batches,
             view.to_t,
             Some(view.overlay.clone()),
+            view.binary_store.clone(),
         );
 
         // Format with tracking

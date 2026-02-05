@@ -442,9 +442,12 @@ async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let sparql = args.sparql.as_ref().unwrap();
 
-    info!("Loading view for '{}' via fluree-db-api", args.ledger);
     let fluree = FlureeBuilder::file(args.db_dir.to_string_lossy().to_string()).build()?;
+
+    let load_start = Instant::now();
     let view = fluree.view(&args.ledger).await?;
+    let load_elapsed = load_start.elapsed();
+    info!("View loaded in {:.3}s", load_elapsed.as_secs_f64());
 
     info!("Executing SPARQL: {}", sparql);
     let start = Instant::now();
@@ -453,6 +456,11 @@ async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let total_rows: usize = result.batches.iter().map(|b| b.len()).sum();
     info!("Query: {} rows in {:.3}s", total_rows, elapsed.as_secs_f64());
+
+    // Log dict tree I/O stats
+    if let Some(store) = view.binary_store() {
+        store.log_dict_stats();
+    }
 
     // Print results as TSV
     let var_names: Vec<String> = result

@@ -250,6 +250,9 @@ impl<S: Storage + 'static> PatternOptionalBuilder<S> {
                         Binding::Lit { val, .. } => {
                             pattern.o = Term::Value(val.clone());
                         }
+                        Binding::EncodedLit { .. } => {
+                            // Late materialized literal: no decode context here; leave unbound.
+                        }
                         Binding::Iri(_) => {
                             // Raw IRI from VG can't be converted to native Term.
                             // Leave as variable - unify_check will compare Iri vs Sid and

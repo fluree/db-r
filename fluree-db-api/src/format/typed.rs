@@ -21,6 +21,7 @@ use super::{FormatError, Result};
 use crate::QueryResult;
 use fluree_db_core::FlakeValue;
 use fluree_db_query::binding::Binding;
+use fluree_db_core::Sid;
 use serde_json::{json, Map, Value as JsonValue};
 
 /// Format query results in TypedJson format
@@ -36,9 +37,9 @@ pub fn format(
             let row = match config.select_mode {
                 SelectMode::Wildcard => {
                     // Wildcard: use batch schema, return all bound vars as object
-                    format_row_wildcard(batch, row_idx, &result.vars, compactor)?
+                    format_row_wildcard(batch, row_idx, &result.vars, compactor, result)?
                 }
-                _ => format_row(batch, row_idx, &result.select, &result.vars, compactor)?,
+                _ => format_row(batch, row_idx, &result.select, &result.vars, compactor, result)?,
             };
             rows.push(row);
 
@@ -60,7 +61,19 @@ pub fn format(
 }
 
 /// Format a single binding to TypedJson
-fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Result<JsonValue> {
+fn format_binding(result: &QueryResult, binding: &Binding, compactor: &IriCompactor) -> Result<JsonValue> {
+    // Late materialization for encoded literals.
+    if matches!(binding, Binding::EncodedLit { .. }) {
+        let store = result.binary_store.as_ref().ok_or_else(|| {
+            FormatError::InvalidBinding(
+                "Encountered EncodedLit during formatting but QueryResult has no binary_store".to_string(),
+            )
+        })?;
+        let materialized = materialize_encoded_lit(binding, store)
+            .map_err(|e| FormatError::InvalidBinding(format!("Failed to materialize EncodedLit: {}", e)))?;
+        return format_binding(result, &materialized, compactor);
+    }
+
     match binding {
         Binding::Unbound | Binding::Poisoned => Ok(JsonValue::Null),
 
@@ -239,10 +252,51 @@ fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Result<JsonVal
             }
         }
 
+        Binding::EncodedLit { .. } => unreachable!("EncodedLit should have been materialized before TypedJson formatting"),
+
         // Grouped values - format as array of typed values
         Binding::Grouped(values) => {
-            let arr: Result<Vec<_>> = values.iter().map(|v| format_binding(v, compactor)).collect();
+            let arr: Result<Vec<_>> = values
+                .iter()
+                .map(|v| format_binding(result, v, compactor))
+                .collect();
             Ok(JsonValue::Array(arr?))
+        }
+    }
+}
+
+fn materialize_encoded_lit(
+    binding: &Binding,
+    store: &fluree_db_indexer::run_index::BinaryIndexStore,
+) -> std::io::Result<Binding> {
+    let Binding::EncodedLit {
+        o_kind,
+        o_key,
+        p_id,
+        dt_id,
+        lang_id,
+        i_val,
+        t,
+    } = binding else {
+        return Ok(binding.clone());
+    };
+    let val = store.decode_value(*o_kind, *o_key, *p_id)?;
+    match val {
+        FlakeValue::Ref(sid) => Ok(Binding::Sid(sid)),
+        other => {
+            let dt_sid = store
+                .dt_sids()
+                .get(*dt_id as usize)
+                .cloned()
+                .unwrap_or_else(|| Sid::new(0, ""));
+            let meta = store.decode_meta(*lang_id, *i_val);
+            Ok(Binding::Lit {
+                val: other,
+                dt: dt_sid,
+                lang: meta.and_then(|m| m.lang.map(std::sync::Arc::from)),
+                t: Some(*t),
+                op: None,
+            })
         }
     }
 }
@@ -254,13 +308,14 @@ fn format_row(
     select: &[fluree_db_query::VarId],
     vars: &fluree_db_query::VarRegistry,
     compactor: &IriCompactor,
+    result: &QueryResult,
 ) -> Result<JsonValue> {
     let mut obj = Map::new();
 
     for &var_id in select {
         let var_name = vars.name(var_id);
         let value = match batch.get(row_idx, var_id) {
-            Some(binding) => format_binding(binding, compactor)?,
+            Some(binding) => format_binding(result, binding, compactor)?,
             None => JsonValue::Null,
         };
         obj.insert(var_name.to_string(), value);
@@ -277,6 +332,7 @@ fn format_row_wildcard(
     row_idx: usize,
     vars: &fluree_db_query::VarRegistry,
     compactor: &IriCompactor,
+    result: &QueryResult,
 ) -> Result<JsonValue> {
     let mut obj = Map::new();
 
@@ -293,7 +349,7 @@ fn format_row_wildcard(
                 continue;
             }
 
-            let value = format_binding(binding, compactor)?;
+            let value = format_binding(result, binding, compactor)?;
             obj.insert(var_name.to_string(), value);
         }
     }

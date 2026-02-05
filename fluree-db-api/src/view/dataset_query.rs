@@ -115,6 +115,7 @@ where
             batches,
             dataset.max_t(),
             dataset.composite_overlay(),
+            primary.binary_store.clone(),
         ))
     }
 
@@ -173,7 +174,8 @@ where
             })?;
 
         // Build result
-        let query_result = build_query_result(vars, parsed, batches, dataset.max_t(), None);
+        let query_result =
+            build_query_result(vars, parsed, batches, dataset.max_t(), None, primary.binary_store.clone());
 
         // Format with tracking
         let result_json = match primary.policy() {

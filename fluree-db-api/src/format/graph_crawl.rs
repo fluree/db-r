@@ -215,6 +215,7 @@ pub async fn format_async<S: Storage>(
                         Some(Binding::IriMatch { primary_sid, .. }) => Some(primary_sid.clone()),
                         Some(Binding::Unbound) | Some(Binding::Poisoned) | None => None,
                         Some(Binding::Lit { .. }) | Some(Binding::Grouped(_)) | Some(Binding::Iri(_)) => None,
+                        Some(Binding::EncodedLit { .. }) => None,
                     };
 
                     let Some(root_sid) = root_sid else {

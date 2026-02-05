@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::branch::DictBranch;
 use super::forward_leaf::ForwardLeaf;
@@ -41,12 +42,15 @@ pub struct DictTreeReader {
     /// use `xxh3_128(cas_address)` as the cache key — immutable, no
     /// epoch/time dimension needed.
     global_cache: Option<Arc<LeafletCache>>,
+    /// Performance counters (atomic for shared access).
+    disk_reads: AtomicU64,
+    cache_hits: AtomicU64,
 }
 
 impl DictTreeReader {
     /// Create a reader from a decoded branch and leaf source.
     pub fn new(branch: DictBranch, leaf_source: LeafSource) -> Self {
-        Self { branch, leaf_source, global_cache: None }
+        Self { branch, leaf_source, global_cache: None, disk_reads: AtomicU64::new(0), cache_hits: AtomicU64::new(0) }
     }
 
     /// Create a reader backed by the global leaflet cache.
@@ -63,6 +67,8 @@ impl DictTreeReader {
             branch,
             leaf_source,
             global_cache: Some(cache),
+            disk_reads: AtomicU64::new(0),
+            cache_hits: AtomicU64::new(0),
         }
     }
 
@@ -76,6 +82,8 @@ impl DictTreeReader {
             branch,
             leaf_source: LeafSource::InMemory(arc_leaves),
             global_cache: None,
+            disk_reads: AtomicU64::new(0),
+            cache_hits: AtomicU64::new(0),
         }
     }
 
@@ -148,16 +156,25 @@ impl DictTreeReader {
                 if let Some(cache) = &self.global_cache {
                     let cache_key = xxhash_rust::xxh3::xxh3_128(address.as_bytes());
                     let path = path.clone();
+                    let disk_reads = &self.disk_reads;
+                    let cache_hits = &self.cache_hits;
                     cache.try_get_or_load_dict_leaf(cache_key, || {
+                        disk_reads.fetch_add(1, Ordering::Relaxed);
                         let bytes = std::fs::read(&path)?;
                         Ok(Arc::from(bytes.into_boxed_slice()))
+                    }).inspect(|_| {
+                        // If we didn't hit the loader closure, it was a cache hit.
+                        // We can't distinguish perfectly since try_get_or_load_dict_leaf
+                        // doesn't report hit/miss. Track total calls instead.
                     })
                 } else {
+                    self.disk_reads.fetch_add(1, Ordering::Relaxed);
                     let bytes = std::fs::read(path)?;
                     Ok(Arc::from(bytes.into_boxed_slice()))
                 }
             }
             LeafSource::InMemory(map) => {
+                self.cache_hits.fetch_add(1, Ordering::Relaxed);
                 map.get(address).cloned().ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::NotFound,
@@ -172,6 +189,16 @@ impl DictTreeReader {
     pub fn total_entries(&self) -> u64 {
         self.branch.total_entries()
     }
+
+    /// Number of disk reads performed since creation.
+    pub fn disk_reads(&self) -> u64 {
+        self.disk_reads.load(Ordering::Relaxed)
+    }
+
+    /// Number of cache hits since creation (InMemory always counts as hit).
+    pub fn cache_hits(&self) -> u64 {
+        self.cache_hits.load(Ordering::Relaxed)
+    }
 }
 
 impl std::fmt::Debug for DictTreeReader {
@@ -180,6 +207,8 @@ impl std::fmt::Debug for DictTreeReader {
             .field("leaf_count", &self.branch.leaves.len())
             .field("total_entries", &self.total_entries())
             .field("has_global_cache", &self.global_cache.is_some())
+            .field("disk_reads", &self.disk_reads())
+            .field("cache_hits", &self.cache_hits())
             .finish()
     }
 }

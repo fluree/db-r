@@ -948,11 +948,18 @@ where
     N: NameService + Publisher,
 {
     use fluree_db_indexer::run_index::{
-        build_all_indexes, BinaryIndexRootV2, PrefixTrie, RunSortOrder,
+        build_all_indexes, precompute_language_dict, BinaryIndexRootV2, PrefixTrie, RunSortOrder,
     };
     use fluree_db_indexer::{upload_dicts_from_disk, upload_indexes_to_cas};
 
-    // ---- Phase 3: Build indexes ----
+    // ---- Phase 3+4: Build indexes + upload dicts in parallel ----
+    //
+    // Pipeline overlap:
+    //   - Pre-compute language dict (fast, needed by both paths)
+    //   - Start index build (k-way merge, CPU-heavy) AND dict upload
+    //     (CoW tree building + CAS writes) concurrently
+    //   - After index build completes, upload index segments to CAS
+    //   - Wait for dict upload to finish (may already be done)
     let build_start = Instant::now();
     let orders = RunSortOrder::all_build_orders();
 
@@ -960,9 +967,29 @@ where
         orders = ?orders.iter().map(|o| o.dir_name()).collect::<Vec<_>>(),
         run_dir = %run_dir.display(),
         index_dir = %index_dir.display(),
-        "building multi-order indexes"
+        "building multi-order indexes + uploading dicts (parallel)"
     );
 
+    // Pre-compute language dict so upload_dicts_from_disk can start immediately.
+    let run_dir_for_lang = run_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || precompute_language_dict(&run_dir_for_lang))
+        .await
+        .map_err(|e| ImportError::IndexBuild(format!("lang dict task panicked: {}", e)))?
+        .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
+
+    // Start dict upload (reads flat files from run_dir, builds CoW trees, uploads to CAS).
+    // This runs concurrently with the index build below.
+    let dict_upload_handle = {
+        let storage = storage.clone();
+        let alias = alias.to_string();
+        let run_dir = run_dir.to_path_buf();
+        let namespace_codes = namespace_codes.clone();
+        tokio::spawn(async move {
+            upload_dicts_from_disk(&storage, &alias, &run_dir, &namespace_codes).await
+        })
+    };
+
+    // Start index build (k-way merge + leaf/branch file writes).
     let run_dir_owned = run_dir.to_path_buf();
     let index_dir_owned = index_dir.to_path_buf();
     let build_results = tokio::task::spawn_blocking(move || {
@@ -994,21 +1021,22 @@ where
         );
     }
 
-    // ---- Phase 4: Upload dicts + indexes to CAS ----
-    let upload_start = Instant::now();
-
-    let uploaded_dicts = upload_dicts_from_disk(storage, alias, run_dir, namespace_codes)
-        .await
-        .map_err(|e| ImportError::Upload(e.to_string()))?;
-
+    // Upload index segments to CAS (needs build_results).
+    // Dict upload may still be running — we overlap with it.
     let graph_addresses = upload_indexes_to_cas(storage, alias, &build_results)
         .await
         .map_err(|e| ImportError::Upload(e.to_string()))?;
 
+    // Wait for dict upload to complete.
+    let uploaded_dicts = dict_upload_handle
+        .await
+        .map_err(|e| ImportError::Upload(format!("dict upload task panicked: {}", e)))?
+        .map_err(|e| ImportError::Upload(e.to_string()))?;
+
     tracing::info!(
-        dict_upload_elapsed = ?upload_start.elapsed(),
+        elapsed = ?build_start.elapsed(),
         graphs = graph_addresses.len(),
-        "CAS upload complete"
+        "index build + CAS upload complete (overlapped)"
     );
 
     // ---- Build predicate SIDs via PrefixTrie (no BinaryIndexStore needed) ----

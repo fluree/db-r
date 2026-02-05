@@ -232,6 +232,16 @@ impl<S: Storage + 'static> Bm25SearchOperator<S> {
                     // Allow non-string literals to stringify (parity-ish; keeps things permissive)
                     other => Ok(Some(other.to_string())),
                 },
+                Some(Binding::EncodedLit { o_kind, o_key, p_id, .. }) => {
+                    // Late materialization: decode only when BM25 needs the target string.
+                    if let Some(store) = ctx.binary_store.as_deref() {
+                        let val = store.decode_value(*o_kind, *o_key, *p_id)
+                            .map_err(|e| crate::error::QueryError::Internal(format!("decode EncodedLit for BM25: {}", e)))?;
+                        Ok(Some(val.to_string()))
+                    } else {
+                        Ok(None)
+                    }
+                }
                 Some(Binding::Sid(sid)) => {
                     // If user bound idx:target to an IRI, treat its decoded IRI as the search string.
                     // (Not typical, but keeps query robust.)
