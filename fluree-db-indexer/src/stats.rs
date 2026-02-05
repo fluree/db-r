@@ -382,6 +382,31 @@ pub fn subject_hash(s_id: u64) -> u64 {
     xxh64(&buf, 0)
 }
 
+/// A single resolved record for stats collection.
+///
+/// Bundles the per-op fields needed by `IdStatsHook::on_record`.
+#[derive(Debug, Clone, Copy)]
+pub struct StatsRecord {
+    /// Graph dictionary ID (0 = default)
+    pub g_id: u32,
+    /// Predicate dictionary ID
+    pub p_id: u32,
+    /// Subject dictionary ID
+    pub s_id: u64,
+    /// Datatype ID
+    pub dt: ValueTypeTag,
+    /// Pre-computed object value hash (from `value_hash()`)
+    pub o_hash: u64,
+    /// Object kind discriminant (for class tracking)
+    pub o_kind: u8,
+    /// Object key payload (for class tracking; sid64 when o_kind == REF_ID)
+    pub o_key: u64,
+    /// Transaction time
+    pub t: i64,
+    /// true = assertion, false = retraction
+    pub op: bool,
+}
+
 /// Result from `IdStatsHook::finalize()`.
 pub struct IdStatsResult {
     /// Per-graph stats entries (authoritative, ID-keyed).
@@ -401,7 +426,7 @@ pub struct IdStatsResult {
 /// ```ignore
 /// let mut hook = IdStatsHook::new();
 /// // Per resolved op:
-/// hook.on_record(g_id, p_id, s_id, dt, value_hash(o_kind, o_key), o_kind, o_key, t, op);
+/// hook.on_record(&StatsRecord { g_id, p_id, s_id, dt, o_hash, o_kind, o_key, t, op });
 /// // After all ops:
 /// let result = hook.finalize();
 /// ```
@@ -436,36 +461,17 @@ impl IdStatsHook {
     /// Process a single record with resolved IDs.
     ///
     /// Called per-op after the resolver maps Sids to numeric IDs.
-    ///
-    /// # Arguments
-    /// * `g_id` - Graph dictionary ID (0 = default)
-    /// * `p_id` - Predicate dictionary ID
-    /// * `s_id` - Subject dictionary ID
-    /// * `dt` - Datatype ID
-    /// * `o_hash` - Pre-computed object value hash (from `value_hash()`)
-    /// * `o_kind` - Object kind discriminant (for class tracking)
-    /// * `o_key` - Object key payload (for class tracking; sid64 when o_kind == REF_ID)
-    /// * `t` - Transaction time
-    /// * `op` - true = assertion, false = retraction
-    pub fn on_record(
-        &mut self,
-        g_id: u32,
-        p_id: u32,
-        s_id: u64,
-        dt: ValueTypeTag,
-        o_hash: u64,
-        o_kind: u8,
-        o_key: u64,
-        t: i64,
-        op: bool,
-    ) {
+    pub fn on_record(&mut self, rec: &StatsRecord) {
         self.flake_count += 1;
-        let delta: i64 = if op { 1 } else { -1 };
+        let delta: i64 = if rec.op { 1 } else { -1 };
 
         // Track per-graph flake count
-        *self.graph_flakes.entry(g_id).or_insert(0) += delta;
+        *self.graph_flakes.entry(rec.g_id).or_insert(0) += delta;
 
-        let key = GraphPropertyKey { g_id, p_id };
+        let key = GraphPropertyKey {
+            g_id: rec.g_id,
+            p_id: rec.p_id,
+        };
         let hll = self
             .properties
             .entry(key)
@@ -474,47 +480,53 @@ impl IdStatsHook {
         hll.count += delta;
 
         // HLL: only insert on assertions (NDV is monotone)
-        if op {
-            hll.values_hll.insert_hash(o_hash);
-            hll.subjects_hll.insert_hash(subject_hash(s_id));
+        if rec.op {
+            hll.values_hll.insert_hash(rec.o_hash);
+            hll.subjects_hll.insert_hash(subject_hash(rec.s_id));
         }
 
-        if t > hll.last_modified_t {
-            hll.last_modified_t = t;
+        if rec.t > hll.last_modified_t {
+            hll.last_modified_t = rec.t;
         }
 
         // Track datatype usage
-        *hll.datatypes.entry(dt.as_u8()).or_insert(0) += delta;
+        *hll.datatypes.entry(rec.dt.as_u8()).or_insert(0) += delta;
 
         // Track class membership and class→property attribution.
         if let Some(rdf_type_pid) = self.rdf_type_p_id {
-            if p_id == rdf_type_pid && o_kind == 0x05 {
+            if rec.p_id == rdf_type_pid && rec.o_kind == 0x05 {
                 // ObjKind::REF_ID == 0x05: this is an rdf:type assertion/retraction
-                *self.class_counts.entry(o_key).or_insert(0) += delta;
+                *self.class_counts.entry(rec.o_key).or_insert(0) += delta;
 
-                if op {
+                if rec.op {
                     // Record subject→class membership
-                    self.subject_classes.entry(s_id).or_default().push(o_key);
+                    self.subject_classes
+                        .entry(rec.s_id)
+                        .or_default()
+                        .push(rec.o_key);
 
                     // Retroactively attribute properties already seen for this subject
                     // (handles case where properties appear before @type in commit)
-                    if let Some(props) = self.subject_props.get(&s_id) {
-                        let class_entry = self.class_properties.entry(o_key).or_default();
+                    if let Some(props) = self.subject_props.get(&rec.s_id) {
+                        let class_entry = self.class_properties.entry(rec.o_key).or_default();
                         for &pid in props {
                             class_entry.insert(pid);
                         }
                     }
                 }
-            } else if op {
+            } else if rec.op {
                 // Non-rdf:type property assertion: track per-subject and per-class
-                self.subject_props.entry(s_id).or_default().insert(p_id);
+                self.subject_props
+                    .entry(rec.s_id)
+                    .or_default()
+                    .insert(rec.p_id);
 
-                if let Some(classes) = self.subject_classes.get(&s_id) {
+                if let Some(classes) = self.subject_classes.get(&rec.s_id) {
                     for &class_sid in classes {
                         self.class_properties
                             .entry(class_sid)
                             .or_default()
-                            .insert(p_id);
+                            .insert(rec.p_id);
                     }
                 }
             }
