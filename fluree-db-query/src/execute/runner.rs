@@ -619,12 +619,12 @@ pub async fn execute_prepared_with_dataset_and_policy_history<'a, S: Storage + '
 }
 
 /// Execute with dataset and BM25 provider (for virtual graph BM25 queries)
-pub async fn execute_prepared_with_dataset_and_bm25<'a, 'b, S: Storage + 'static>(
+pub async fn execute_prepared_with_dataset_and_bm25<'a, S: Storage + 'static>(
     source: DataSource<'a, S>,
     vars: &VarRegistry,
     prepared: PreparedExecution<S>,
     dataset: &'a DataSet<'a, S>,
-    bm25_provider: &'b dyn crate::bm25::Bm25IndexProvider,
+    bm25_provider: &dyn crate::bm25::Bm25IndexProvider,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
     execute_prepared(
@@ -643,13 +643,13 @@ pub async fn execute_prepared_with_dataset_and_bm25<'a, 'b, S: Storage + 'static
 }
 
 /// Execute with dataset, policy, and BM25 provider (for virtual graph BM25 queries with policy)
-pub async fn execute_prepared_with_dataset_and_policy_and_bm25<'a, 'b, S: Storage + 'static>(
+pub async fn execute_prepared_with_dataset_and_policy_and_bm25<'a, S: Storage + 'static>(
     source: DataSource<'a, S>,
     vars: &VarRegistry,
     prepared: PreparedExecution<S>,
     dataset: &'a DataSet<'a, S>,
     policy: &'a fluree_db_policy::PolicyContext,
-    bm25_provider: &'b dyn crate::bm25::Bm25IndexProvider,
+    bm25_provider: &dyn crate::bm25::Bm25IndexProvider,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
     // Create policy enforcer for async f:query support

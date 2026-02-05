@@ -10,7 +10,7 @@
 //! - [`global_dict`]: Global dictionaries (subject, predicate, string value)
 //! - [`run_writer`]: Memory-bounded buffer + flush to sorted run files
 //! - [`run_file`]: Run file binary format (header + lang dict + records)
-//! - [`resolver`]: CommitResolver (RawOp → RunRecord)
+//! - [`resolver`][]: CommitResolver (RawOp → RunRecord)
 
 pub mod global_dict;
 pub mod resolver;
@@ -157,7 +157,7 @@ pub fn persist_namespaces(ns_prefixes: &HashMap<u16, String>, run_dir: &Path) ->
         .collect();
 
     let json_str = serde_json::to_string_pretty(&json_array)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        .map_err(io::Error::other)?;
 
     let path = run_dir.join("namespaces.json");
     std::fs::write(&path, json_str)?;

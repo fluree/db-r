@@ -43,20 +43,15 @@ pub enum DropMode {
 /// NOTE: This reflects the **nameservice state at lookup time**, not deletion success.
 /// Deletion success is reported via `index_files_deleted`, `commit_files_deleted`,
 /// and `warnings` fields in `DropReport`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DropStatus {
     /// Record existed and was not retracted at lookup time
     Dropped,
     /// Record was already marked as retracted
     AlreadyRetracted,
     /// No record found for this alias
+    #[default]
     NotFound,
-}
-
-impl Default for DropStatus {
-    fn default() -> Self {
-        DropStatus::NotFound
-    }
 }
 
 // =============================================================================

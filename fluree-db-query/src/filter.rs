@@ -995,10 +995,11 @@ fn comparable_to_string(val: &ComparableValue) -> Option<&str> {
     match val {
         ComparableValue::String(s) => Some(s.as_ref()),
         ComparableValue::Iri(s) => Some(s.as_ref()),
-        ComparableValue::TypedLiteral { val, .. } => match val {
-            FlakeValue::String(s) => Some(s.as_str()),
-            _ => None,
-        },
+        ComparableValue::TypedLiteral {
+            val: FlakeValue::String(s),
+            ..
+        } => Some(s.as_str()),
+        ComparableValue::TypedLiteral { .. } => None,
         _ => None,
     }
 }
@@ -1303,7 +1304,7 @@ where
 {
     check_arity(args, 1, fn_name)?;
     let val = eval_to_comparable(&args[0], row)?;
-    Ok(val.map_or(false, |v| check(&v)))
+    Ok(val.is_some_and(|v| check(&v)))
 }
 
 /// Evaluate a function to its actual value type (for use in expressions)

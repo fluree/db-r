@@ -162,7 +162,7 @@ impl DictTreeReader {
                     let cache_key = xxhash_rust::xxh3::xxh3_128(address.as_bytes());
                     let path = path.clone();
                     let disk_reads = &self.disk_reads;
-                    let cache_hits = &self.cache_hits;
+                    let _cache_hits = &self.cache_hits;
                     cache
                         .try_get_or_load_dict_leaf(cache_key, || {
                             disk_reads.fetch_add(1, Ordering::Relaxed);

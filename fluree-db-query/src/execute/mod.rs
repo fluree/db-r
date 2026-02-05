@@ -436,12 +436,12 @@ pub async fn execute_with_dataset_and_policy_tracked<'a, S: Storage + 'static>(
 /// This combines dataset execution (multiple default/named graphs) with BM25 index
 /// provider support, enabling `idx:*` patterns in queries to resolve against
 /// virtual graph BM25 indexes.
-pub async fn execute_with_dataset_and_bm25<'a, 'b, S: Storage + 'static>(
+pub async fn execute_with_dataset_and_bm25<'a, S: Storage + 'static>(
     source: DataSource<'a, S>,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     dataset: &'a DataSet<'a, S>,
-    bm25_provider: &'b dyn crate::bm25::Bm25IndexProvider,
+    bm25_provider: &dyn crate::bm25::Bm25IndexProvider,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
     let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
@@ -454,13 +454,13 @@ pub async fn execute_with_dataset_and_bm25<'a, 'b, S: Storage + 'static>(
 /// This combines dataset execution (multiple default/named graphs) with policy
 /// enforcement and BM25 index provider support, enabling `idx:*` patterns in
 /// queries with policy controls.
-pub async fn execute_with_dataset_and_policy_and_bm25<'a, 'b, S: Storage + 'static>(
+pub async fn execute_with_dataset_and_policy_and_bm25<'a, S: Storage + 'static>(
     source: DataSource<'a, S>,
     vars: &VarRegistry,
     query: &ExecutableQuery,
     dataset: &'a DataSet<'a, S>,
     policy: &'a fluree_db_policy::PolicyContext,
-    bm25_provider: &'b dyn crate::bm25::Bm25IndexProvider,
+    bm25_provider: &dyn crate::bm25::Bm25IndexProvider,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
     let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;

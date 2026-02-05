@@ -197,7 +197,7 @@ where
     let head_commit_addr = record
         .commit_address
         .clone()
-        .ok_or_else(|| IndexerError::NoCommits)?;
+        .ok_or(IndexerError::NoCommits)?;
 
     // Determine output directory for binary index artifacts
     let data_dir = config
