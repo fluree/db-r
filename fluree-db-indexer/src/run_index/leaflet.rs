@@ -13,6 +13,15 @@ use super::run_record::{RunRecord, RunSortOrder};
 use fluree_db_core::ListIndex;
 use std::io;
 
+/// Decoded Region 1 columns: (s_ids, p_ids, o_kinds, o_keys)
+pub type Region1Columns = (Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>);
+
+/// Decoded Region 1 with header: (header, s_ids, p_ids, o_kinds, o_keys)
+pub type Region1WithHeader = (LeafletHeader, Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>);
+
+/// Decoded Region 2 columns: (dt_values, t_values, lang_values, i_values)
+pub type Region2Columns = (Vec<u32>, Vec<i64>, Vec<u16>, Vec<i32>);
+
 /// Size of the leaflet header in bytes.
 pub const LEAFLET_HEADER_LEN: usize = 61;
 
@@ -777,7 +786,7 @@ pub fn decode_leaflet_region1(
     data: &[u8],
     p_width: u8,
     sort_order: RunSortOrder,
-) -> io::Result<(LeafletHeader, Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
+) -> io::Result<Region1WithHeader> {
     // New format: no "legacy width=0" defaults.
     if p_width != 2 && p_width != 4 {
         return Err(io::Error::new(
@@ -822,7 +831,7 @@ pub fn decode_leaflet_region2(
     data: &[u8],
     header: &LeafletHeader,
     dt_width: u8,
-) -> io::Result<(Vec<u32>, Vec<i64>, Vec<u16>, Vec<i32>)> {
+) -> io::Result<Region2Columns> {
     // dt widens from u8 → u16; Region 2 must match the leaf header's dt_width.
     if dt_width != 1 && dt_width != 2 {
         return Err(io::Error::new(
@@ -896,7 +905,7 @@ fn decode_region1(
     row_count: usize,
     p_width: u8,
     order: RunSortOrder,
-) -> io::Result<(Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
+) -> io::Result<Region1Columns> {
     match order {
         RunSortOrder::Spot => decode_region1_spot(data, row_count, p_width),
         RunSortOrder::Psot => decode_region1_psot(data, row_count),
@@ -1074,7 +1083,7 @@ fn decode_region1_spot(
     data: &[u8],
     row_count: usize,
     p_width: u8,
-) -> io::Result<(Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
+) -> io::Result<Region1Columns> {
     let mut pos = 0;
     let s_ids = decode_rle_u64(data, &mut pos, row_count)?;
     let p_ids = read_col_p_id(data, &mut pos, row_count, p_width)?;
@@ -1087,7 +1096,7 @@ fn decode_region1_spot(
 fn decode_region1_psot(
     data: &[u8],
     row_count: usize,
-) -> io::Result<(Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
+) -> io::Result<Region1Columns> {
     let mut pos = 0;
     let p_ids = decode_rle_u32(data, &mut pos, row_count)?;
     let s_ids = read_col_u64(data, &mut pos, row_count)?;
@@ -1100,7 +1109,7 @@ fn decode_region1_psot(
 fn decode_region1_post(
     data: &[u8],
     row_count: usize,
-) -> io::Result<(Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
+) -> io::Result<Region1Columns> {
     let mut pos = 0;
     let p_ids = decode_rle_u32(data, &mut pos, row_count)?;
     let o_kinds = read_col_u8(data, &mut pos, row_count)?;
@@ -1114,7 +1123,7 @@ fn decode_region1_opst(
     data: &[u8],
     row_count: usize,
     p_width: u8,
-) -> io::Result<(Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
+) -> io::Result<Region1Columns> {
     let mut pos = 0;
     let o_kinds = read_col_u8(data, &mut pos, row_count)?;
     let o_keys = decode_rle_u64(data, &mut pos, row_count)?;
@@ -1130,7 +1139,7 @@ fn decode_region2(
     data: &[u8],
     row_count: usize,
     dt_width: u8,
-) -> io::Result<(Vec<u32>, Vec<i64>, Vec<u16>, Vec<i32>)> {
+) -> io::Result<Region2Columns> {
     if dt_width != 1 && dt_width != 2 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,

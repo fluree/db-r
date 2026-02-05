@@ -46,6 +46,9 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// A pair of f64 vectors (used for vector distance functions)
+pub(crate) type VectorPair = (Arc<[f64]>, Arc<[f64]>);
+
 /// Filter operator - applies a predicate to each row from child
 ///
 /// Rows where the filter evaluates to `false` or encounters an error
@@ -1192,7 +1195,7 @@ fn extract_vector_pair(
     args: &[FilterExpr],
     row: &RowView,
     fn_name: &str,
-) -> Result<Option<(Arc<[f64]>, Arc<[f64]>)>> {
+) -> Result<Option<VectorPair>> {
     check_arity(args, 2, fn_name)?;
     let v1 = eval_to_comparable(&args[0], row)?;
     let v2 = eval_to_comparable(&args[1], row)?;
