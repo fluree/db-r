@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use std::path::PathBuf;
 
-use fluree_db_core::db::Db;
+use fluree_db_core::db::{Db, DbMetadata};
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::{alias as core_alias, Storage};
 use fluree_db_indexer::run_index::{BinaryIndexStore, LeafletCache};
@@ -373,16 +373,16 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
             .as_ref()
             .and_then(|s| serde_json::from_value::<RawDbRootSchema>(s.clone()).ok())
             .map(|raw| raw_schema_to_index_schema(&raw));
-        let mut db = Db::new_meta(
-            root.ledger_alias,
-            root.index_t,
-            ns_codes,
+        let meta = DbMetadata {
+            alias: root.ledger_alias,
+            t: root.index_t,
+            namespace_codes: ns_codes,
             stats,
             schema,
-            root.subject_watermarks,
-            root.string_watermark,
-            storage.clone(),
-        );
+            subject_watermarks: root.subject_watermarks,
+            string_watermark: root.string_watermark,
+        };
+        let mut db = Db::new_meta(meta, storage.clone());
         db.range_provider = Some(Arc::new(provider));
 
         // Brief lock: swap state + binary_store atomically.

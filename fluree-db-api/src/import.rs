@@ -401,13 +401,16 @@ where
     // - On success + cleanup_local_files=true → delete session dir
     // - On any failure → keep session dir for debugging
     // - If cleanup itself fails → log warning, do not fail import
+    let paths = PipelinePaths {
+        run_dir: &run_dir,
+        index_dir: &index_dir,
+    };
     let pipeline_result = run_pipeline_phases(
         storage,
         nameservice,
         &normalized_alias,
         &chunks,
-        &run_dir,
-        &index_dir,
+        paths,
         config,
         pipeline_start,
     )
@@ -463,18 +466,38 @@ where
 // Pipeline phases 2-6
 // ============================================================================
 
+/// Paths used by the import pipeline.
+struct PipelinePaths<'a> {
+    /// Directory for run files.
+    run_dir: &'a Path,
+    /// Directory for index files.
+    index_dir: &'a Path,
+}
+
+/// Input parameters for index building and uploading.
+struct IndexBuildInput<'a> {
+    /// Directory containing run files.
+    run_dir: &'a Path,
+    /// Directory for index output.
+    index_dir: &'a Path,
+    /// Final transaction t value.
+    final_t: i64,
+    /// Namespace code to prefix mappings.
+    namespace_codes: &'a HashMap<u16, String>,
+    /// Optional stats hook from commit resolution.
+    stats_hook: Option<fluree_db_indexer::stats::IdStatsHook>,
+}
+
 /// Run phases 2-6: import chunks, build indexes, upload to CAS, write V2 root, publish.
 ///
 /// Separated from `run_import_pipeline` to enable clean error-path handling:
 /// on failure, the caller keeps the session dir for debugging.
-#[allow(clippy::too_many_arguments)]
 async fn run_pipeline_phases<S, N>(
     storage: &S,
     nameservice: &N,
     alias: &str,
     chunks: &[PathBuf],
-    run_dir: &Path,
-    index_dir: &Path,
+    paths: PipelinePaths<'_>,
     config: &ImportConfig,
     pipeline_start: Instant,
 ) -> std::result::Result<ImportResult, ImportError>
@@ -484,7 +507,7 @@ where
 {
     // ---- Phase 2: Import TTL → commits + streaming runs ----
     let import_result =
-        run_import_chunks(storage, nameservice, alias, chunks, run_dir, config).await?;
+        run_import_chunks(storage, nameservice, alias, chunks, paths.run_dir, config).await?;
 
     tracing::info!(
         t = import_result.final_t,
@@ -499,18 +522,15 @@ where
     let index_t;
 
     if config.build_index {
-        let index_result = build_and_upload(
-            storage,
-            nameservice,
-            alias,
-            run_dir,
-            index_dir,
-            import_result.final_t,
-            &import_result.namespace_codes,
-            import_result.stats_hook,
-            config,
-        )
-        .await?;
+        let build_input = IndexBuildInput {
+            run_dir: paths.run_dir,
+            index_dir: paths.index_dir,
+            final_t: import_result.final_t,
+            namespace_codes: &import_result.namespace_codes,
+            stats_hook: import_result.stats_hook,
+        };
+        let index_result =
+            build_and_upload(storage, nameservice, alias, build_input, config).await?;
 
         root_address = Some(index_result.root_address);
         index_t = index_result.index_t;
@@ -942,11 +962,7 @@ async fn build_and_upload<S, N>(
     storage: &S,
     nameservice: &N,
     alias: &str,
-    run_dir: &Path,
-    index_dir: &Path,
-    final_t: i64,
-    namespace_codes: &HashMap<u16, String>,
-    stats_hook: Option<fluree_db_indexer::stats::IdStatsHook>,
+    input: IndexBuildInput<'_>,
     config: &ImportConfig,
 ) -> std::result::Result<IndexUploadResult, ImportError>
 where
@@ -972,13 +988,13 @@ where
 
     tracing::info!(
         orders = ?orders.iter().map(|o| o.dir_name()).collect::<Vec<_>>(),
-        run_dir = %run_dir.display(),
-        index_dir = %index_dir.display(),
+        run_dir = %input.run_dir.display(),
+        index_dir = %input.index_dir.display(),
         "building multi-order indexes + uploading dicts (parallel)"
     );
 
     // Pre-compute language dict so upload_dicts_from_disk can start immediately.
-    let run_dir_for_lang = run_dir.to_path_buf();
+    let run_dir_for_lang = input.run_dir.to_path_buf();
     tokio::task::spawn_blocking(move || precompute_language_dict(&run_dir_for_lang))
         .await
         .map_err(|e| ImportError::IndexBuild(format!("lang dict task panicked: {}", e)))?
@@ -989,16 +1005,16 @@ where
     let dict_upload_handle = {
         let storage = storage.clone();
         let alias = alias.to_string();
-        let run_dir = run_dir.to_path_buf();
-        let namespace_codes = namespace_codes.clone();
+        let run_dir = input.run_dir.to_path_buf();
+        let namespace_codes = input.namespace_codes.clone();
         tokio::spawn(async move {
             upload_dicts_from_disk(&storage, &alias, &run_dir, &namespace_codes).await
         })
     };
 
     // Start index build (k-way merge + leaf/branch file writes).
-    let run_dir_owned = run_dir.to_path_buf();
-    let index_dir_owned = index_dir.to_path_buf();
+    let run_dir_owned = input.run_dir.to_path_buf();
+    let index_dir_owned = input.index_dir.to_path_buf();
     let build_results = tokio::task::spawn_blocking(move || {
         build_all_indexes(
             &run_dir_owned,
@@ -1047,8 +1063,8 @@ where
     );
 
     // ---- Build predicate SIDs via PrefixTrie (no BinaryIndexStore needed) ----
-    let trie = PrefixTrie::from_namespace_codes(namespace_codes);
-    let predicates_path = run_dir.join("predicates.json");
+    let trie = PrefixTrie::from_namespace_codes(input.namespace_codes);
+    let predicates_path = input.run_dir.join("predicates.json");
     let predicate_sids: Vec<(u16, String)> = if predicates_path.exists() {
         let bytes = std::fs::read(&predicates_path)?;
         let by_id: Vec<String> = serde_json::from_slice(&bytes).map_err(|e| {
@@ -1069,7 +1085,7 @@ where
     // Preferred: ID-based stats collected during commit resolution (per-graph property
     // stats with datatype counts + HLL NDV). Fallback: SPOT build result for per-graph
     // flake counts only.
-    let stats_json = if let Some(hook) = stats_hook {
+    let stats_json = if let Some(hook) = input.stats_hook {
         let id_result = hook.finalize();
 
         // Per-graph stats (p_id-keyed, for StatsView.graph_properties)
@@ -1207,10 +1223,10 @@ where
     // ---- Phase 5: Build V2 root ----
     let root = BinaryIndexRootV2::from_cas_artifacts(CasArtifactsConfig {
         ledger_alias: alias,
-        index_t: final_t,
+        index_t: input.final_t,
         base_t: 0, // fresh import
         predicate_sids,
-        namespace_codes,
+        namespace_codes: input.namespace_codes,
         subject_id_encoding: uploaded_dicts.subject_id_encoding,
         dict_addresses: uploaded_dicts.dict_addresses,
         graph_addresses,
@@ -1233,18 +1249,18 @@ where
 
     tracing::info!(
         root_address = %write_result.address,
-        index_t = final_t,
+        index_t = input.final_t,
         "V2 index root written to CAS"
     );
 
     // ---- Phase 6: Publish ----
     if config.publish {
         nameservice
-            .publish_index(alias, &write_result.address, final_t)
+            .publish_index(alias, &write_result.address, input.final_t)
             .await
             .map_err(|e| ImportError::Storage(format!("publish index: {}", e)))?;
         tracing::info!(
-            index_t = final_t,
+            index_t = input.final_t,
             root_address = %write_result.address,
             "index published to nameservice"
         );
@@ -1252,7 +1268,7 @@ where
 
     Ok(IndexUploadResult {
         root_address: write_result.address,
-        index_t: final_t,
+        index_t: input.final_t,
     })
 }
 

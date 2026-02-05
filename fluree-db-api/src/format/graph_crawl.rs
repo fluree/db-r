@@ -43,6 +43,29 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 /// produce different cache entries.
 type CacheKey = (Sid, u64, usize);
 
+/// Selection specification for formatting a subject.
+///
+/// Bundles the immutable parameters that define what properties to select
+/// during graph crawl formatting.
+struct FormatSpec<'a> {
+    /// Forward property selections
+    selections: &'a [SelectionSpec],
+    /// Reverse property selections
+    reverse: &'a HashMap<Sid, Option<Box<NestedSelectSpec>>>,
+    /// Whether wildcard was specified at this level
+    has_wildcard: bool,
+}
+
+/// Context for formatting a specific predicate's values.
+struct PredicateContext<'a> {
+    /// The predicate SID being formatted.
+    pred: &'a Sid,
+    /// The flakes to format.
+    flakes: &'a [&'a Flake],
+    /// Explicit nested selection spec for this predicate (if any).
+    explicit_sub_spec: Option<&'a NestedSelectSpec>,
+}
+
 /// Compute hash for a local selection spec (forward, reverse, has_wildcard)
 ///
 /// This is used to generate cache keys that correctly distinguish between
@@ -191,16 +214,13 @@ pub async fn format_async<S: Storage>(
         Root::Sid(sid) => {
             // IRI constant root - single subject fetch (no batches needed)
             let mut visited = HashSet::new();
+            let format_spec = FormatSpec {
+                selections: &spec.selections,
+                reverse: &spec.reverse,
+                has_wildcard: spec.has_wildcard,
+            };
             let obj = formatter
-                .format_subject(
-                    sid,
-                    &spec.selections,
-                    &spec.reverse,
-                    0, // current_depth
-                    spec.has_wildcard,
-                    &mut visited,
-                    &mut cache,
-                )
+                .format_subject(sid, format_spec, 0, &mut visited, &mut cache)
                 .await?;
             rows.push(obj);
         }
@@ -231,16 +251,13 @@ pub async fn format_async<S: Storage>(
                     };
 
                     let mut visited = HashSet::new();
+                    let format_spec = FormatSpec {
+                        selections: &spec.selections,
+                        reverse: &spec.reverse,
+                        has_wildcard: spec.has_wildcard,
+                    };
                     let obj = formatter
-                        .format_subject(
-                            &root_sid,
-                            &spec.selections,
-                            &spec.reverse,
-                            0, // current_depth
-                            spec.has_wildcard,
-                            &mut visited,
-                            &mut cache,
-                        )
+                        .format_subject(&root_sid, format_spec, 0, &mut visited, &mut cache)
                         .await?;
 
                     if mixed_select {
@@ -307,10 +324,8 @@ impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
     ///
     /// # Arguments
     /// - `sid`: Subject to expand
-    /// - `selections`: Forward property selections at this level
-    /// - `reverse`: Reverse property selections at this level
-    /// - `current_depth`: Current recursion depth (starts at 0)
-    /// - `has_wildcard`: Whether wildcard was specified at this level
+    /// - `spec`: Selection specification (what properties to include)
+    /// - `current_depth`: Current recursion depth
     /// - `visited`: Cycle detection set (per-path)
     /// - `cache`: Result cache (shared across all subjects)
     ///
@@ -318,10 +333,8 @@ impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
     fn format_subject<'b>(
         &'b self,
         sid: &'b Sid,
-        selections: &'b [SelectionSpec],
-        reverse: &'b HashMap<Sid, Option<Box<NestedSelectSpec>>>,
+        spec: FormatSpec<'b>,
         current_depth: usize,
-        has_wildcard: bool,
         visited: &'b mut HashSet<Sid>,
         cache: &'b mut HashMap<CacheKey, JsonValue>,
     ) -> BoxFuture<'b, Result<JsonValue>> {
@@ -329,7 +342,8 @@ impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
             let depth_remaining = self.spec.depth.saturating_sub(current_depth);
             // Use LOCAL spec hash (selections, reverse, has_wildcard) not top-level spec
             // This ensures different nested expansions of the same Sid produce different cache entries
-            let spec_hash = compute_local_spec_hash(selections, reverse, has_wildcard);
+            let spec_hash =
+                compute_local_spec_hash(spec.selections, spec.reverse, spec.has_wildcard);
             let cache_key = (sid.clone(), spec_hash, depth_remaining);
 
             // Check cache first (same Sid + spec + depth = same result)
@@ -345,9 +359,12 @@ impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
             // Build object with sorted keys for determinism (BTreeMap)
             let mut obj: BTreeMap<String, JsonValue> = BTreeMap::new();
 
-            let has_explicit_id = selections.iter().any(|s| matches!(s, SelectionSpec::Id));
+            let has_explicit_id = spec
+                .selections
+                .iter()
+                .any(|s| matches!(s, SelectionSpec::Id));
             // @id inclusion: wildcard OR explicit @id selection
-            if has_wildcard || has_explicit_id {
+            if spec.has_wildcard || has_explicit_id {
                 obj.insert("@id".to_string(), json!(self.compactor.compact_sid(sid)?));
             }
 
@@ -364,9 +381,9 @@ impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
             for (pred, mut pred_flakes) in by_pred {
                 // Determine whether this predicate was explicitly selected.
                 // NOTE: a property selection like "schema:name" is explicit even when it has no sub-spec.
-                let selected_opt = self.find_selection_for_predicate(&pred, selections);
+                let selected_opt = self.find_selection_for_predicate(&pred, spec.selections);
                 let explicit_sub_spec = selected_opt.flatten();
-                if !has_wildcard && selected_opt.is_none() {
+                if !spec.has_wildcard && selected_opt.is_none() {
                     continue;
                 }
 
@@ -383,18 +400,13 @@ impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
                     pred_flakes.sort_by_key(|f| f.m.as_ref().and_then(|m| m.i).unwrap_or(i32::MAX));
                 }
 
+                let pred_ctx = PredicateContext {
+                    pred: &pred,
+                    flakes: &pred_flakes,
+                    explicit_sub_spec,
+                };
                 let values = self
-                    .format_predicate_values(
-                        &pred,
-                        &pred_flakes,
-                        explicit_sub_spec,
-                        selections,
-                        reverse,
-                        current_depth,
-                        has_wildcard,
-                        visited,
-                        cache,
-                    )
+                    .format_predicate_values(pred_ctx, &spec, current_depth, visited, cache)
                     .await?;
 
                 if !values.is_empty() {
@@ -409,17 +421,15 @@ impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
             }
 
             // Format reverse properties
-            for (rev_pred, rev_nested_opt) in reverse {
+            for (rev_pred, rev_nested_opt) in spec.reverse {
                 let rev_flakes = self.fetch_reverse_properties(sid, rev_pred).await?;
                 if !rev_flakes.is_empty() {
                     let values = self
                         .format_reverse_values(
                             &rev_flakes,
                             rev_nested_opt.as_deref(),
-                            selections,
-                            reverse,
+                            &spec,
                             current_depth,
-                            has_wildcard,
                             visited,
                             cache,
                         )
@@ -500,24 +510,19 @@ impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
     }
 
     /// Format values for a predicate
-    #[allow(clippy::too_many_arguments)]
-    async fn format_predicate_values(
-        &self,
-        pred: &Sid,
-        flakes: &[&Flake],
-        explicit_sub_spec: Option<&NestedSelectSpec>,
-        parent_selections: &[SelectionSpec],
-        parent_reverse: &HashMap<Sid, Option<Box<NestedSelectSpec>>>,
+    async fn format_predicate_values<'b>(
+        &'b self,
+        pred_ctx: PredicateContext<'b>,
+        parent_spec: &FormatSpec<'b>,
         current_depth: usize,
-        has_wildcard: bool,
-        visited: &mut HashSet<Sid>,
-        cache: &mut HashMap<CacheKey, JsonValue>,
+        visited: &'b mut HashSet<Sid>,
+        cache: &'b mut HashMap<CacheKey, JsonValue>,
     ) -> Result<Vec<JsonValue>> {
-        let expanded = self.compactor.decode_sid(pred)?;
+        let expanded = self.compactor.decode_sid(pred_ctx.pred)?;
         let is_rdf_type = expanded == RDF_TYPE_IRI;
 
         let mut values = Vec::new();
-        for flake in flakes {
+        for flake in pred_ctx.flakes {
             match &flake.o {
                 FlakeValue::Ref(ref_sid) => {
                     if is_rdf_type {
@@ -528,15 +533,18 @@ impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
                         // 1. If explicit sub-selection exists → expand with that spec
                         // 2. Else if current_depth < max_depth → auto-expand with FULL parent spec
                         // 3. Else → just return {"@id": ...}
-                        if let Some(nested) = explicit_sub_spec {
+                        if let Some(nested) = pred_ctx.explicit_sub_spec {
                             // Case 1: Explicit sub-selection
+                            let nested_spec = FormatSpec {
+                                selections: &nested.forward,
+                                reverse: &nested.reverse,
+                                has_wildcard: nested.has_wildcard,
+                            };
                             values.push(
                                 self.format_subject(
                                     ref_sid,
-                                    &nested.forward,
-                                    &nested.reverse,
+                                    nested_spec,
                                     current_depth + 1,
-                                    nested.has_wildcard,
                                     visited,
                                     cache,
                                 )
@@ -544,13 +552,16 @@ impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
                             );
                         } else if current_depth < self.spec.depth {
                             // Case 2: Auto-expand with FULL parent spec (forward + reverse!)
+                            let nested_spec = FormatSpec {
+                                selections: parent_spec.selections,
+                                reverse: parent_spec.reverse,
+                                has_wildcard: parent_spec.has_wildcard,
+                            };
                             values.push(
                                 self.format_subject(
                                     ref_sid,
-                                    parent_selections,
-                                    parent_reverse, // Continue reverse crawling
+                                    nested_spec,
                                     current_depth + 1,
-                                    has_wildcard,
                                     visited,
                                     cache,
                                 )
@@ -564,7 +575,7 @@ impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
                 }
                 _ => {
                     // Literal value
-                    if let Some(nested) = explicit_sub_spec {
+                    if let Some(nested) = pred_ctx.explicit_sub_spec {
                         values.push(self.format_literal_virtual(flake, nested)?);
                     } else {
                         values.push(self.format_literal_value(flake)?);
@@ -576,17 +587,14 @@ impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
     }
 
     /// Format reverse property values
-    #[allow(clippy::too_many_arguments)]
-    async fn format_reverse_values(
-        &self,
+    async fn format_reverse_values<'b>(
+        &'b self,
         flakes: &[Flake],
-        nested_spec: Option<&NestedSelectSpec>,
-        parent_selections: &[SelectionSpec],
-        parent_reverse: &HashMap<Sid, Option<Box<NestedSelectSpec>>>,
+        nested_spec: Option<&'b NestedSelectSpec>,
+        parent_spec: &FormatSpec<'b>,
         current_depth: usize,
-        has_wildcard: bool,
-        visited: &mut HashSet<Sid>,
-        cache: &mut HashMap<CacheKey, JsonValue>,
+        visited: &'b mut HashSet<Sid>,
+        cache: &'b mut HashMap<CacheKey, JsonValue>,
     ) -> Result<Vec<JsonValue>> {
         let mut values = Vec::new();
         for flake in flakes {
@@ -595,13 +603,16 @@ impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
 
             if let Some(spec) = nested_spec {
                 // Explicit sub-selection for reverse - use the full nested spec
+                let nested_spec = FormatSpec {
+                    selections: &spec.forward,
+                    reverse: &spec.reverse,
+                    has_wildcard: spec.has_wildcard,
+                };
                 values.push(
                     self.format_subject(
                         subject_sid,
-                        &spec.forward,
-                        &spec.reverse,
+                        nested_spec,
                         current_depth + 1,
-                        spec.has_wildcard,
                         visited,
                         cache,
                     )
@@ -609,13 +620,16 @@ impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
                 );
             } else if current_depth < self.spec.depth {
                 // Auto-expand reverse refs with FULL parent spec
+                let nested_spec = FormatSpec {
+                    selections: parent_spec.selections,
+                    reverse: parent_spec.reverse,
+                    has_wildcard: parent_spec.has_wildcard,
+                };
                 values.push(
                     self.format_subject(
                         subject_sid,
-                        parent_selections,
-                        parent_reverse,
+                        nested_spec,
                         current_depth + 1,
-                        has_wildcard,
                         visited,
                         cache,
                     )
