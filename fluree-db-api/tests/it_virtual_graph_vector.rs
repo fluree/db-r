@@ -672,7 +672,7 @@ async fn vector_idx_query_syntax_e2e() {
         // Cosine similarity can be in [-1, 1] (not [0, 1])
         // -1 = opposite, 0 = orthogonal, 1 = identical
         assert!(
-            score >= -1.0 && score <= 1.0,
+            (-1.0..=1.0).contains(&score),
             "cosine score should be in [-1,1]: {}",
             score
         );

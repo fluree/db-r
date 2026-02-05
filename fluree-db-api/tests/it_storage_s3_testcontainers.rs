@@ -40,7 +40,7 @@ fn set_test_aws_env() {
 async fn sdk_config_for_localstack(endpoint: &str) -> aws_config::SdkConfig {
     set_test_aws_env();
     let region_provider = RegionProviderChain::default_provider().or_else(REGION);
-    aws_config::from_env()
+    aws_config::defaults(aws_config::BehaviorVersion::latest())
         .region(region_provider)
         .endpoint_url(endpoint)
         .load()
@@ -192,6 +192,7 @@ async fn s3_testcontainers_basic_test() {
         DynamoDbConfig {
             table_name: table.to_string(),
             region: None,
+            endpoint: None,
             timeout_ms: Some(30_000),
         },
     )
@@ -299,6 +300,7 @@ async fn s3_testcontainers_indexing_test() {
         DynamoDbConfig {
             table_name: table.to_string(),
             region: None,
+            endpoint: None,
             timeout_ms: Some(30_000),
         },
     )
@@ -331,9 +333,10 @@ async fn s3_testcontainers_indexing_test() {
                 })).collect::<Vec<_>>()
             });
 
-            let mut index_cfg = fluree_db_api::IndexConfig::default();
-            index_cfg.reindex_min_bytes = 0;
-            index_cfg.reindex_max_bytes = 1_000_000;
+            let index_cfg = fluree_db_api::IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 1_000_000,
+            };
 
             let result = fluree
                 .insert_with_opts(

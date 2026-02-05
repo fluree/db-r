@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 // Additional imports for engine-level E2E tests
 use fluree_db_api::{
-    execute_with_r2rml, ExecutableQuery, FlureeBuilder, ParsedContext, Pattern, StorageWrite,
-    VarRegistry, VirtualGraphPublisher,
+    execute_with_r2rml, DataSource, ExecutableQuery, FlureeBuilder, ParsedContext, Pattern,
+    StorageWrite, VarRegistry, VirtualGraphPublisher,
 };
 use fluree_db_core::{NoOverlay, Tracker};
 use fluree_db_query::ir::GraphName;
@@ -265,7 +265,7 @@ fn test_r2rml_term_materialization() {
 #[test]
 fn test_r2rml_null_handling() {
     use fluree_db_r2rml::mapping::SubjectMap;
-    use fluree_db_r2rml::materialize::{materialize_subject_from_batch, RdfTerm};
+    use fluree_db_r2rml::materialize::materialize_subject_from_batch;
 
     // Create batch with null in template column
     let schema = BatchSchema::new(vec![FieldInfo {
@@ -444,12 +444,14 @@ async fn e2e_r2rml_query_iceberg_table() {
 
     // Execute query
     let result = execute_with_r2rml(
-        &ledger.db,
-        &NoOverlay,
+        DataSource {
+            db: &ledger.db,
+            overlay: &NoOverlay,
+            to_t: ledger.t(),
+            from_t: None,
+        },
         &vars,
         &executable,
-        ledger.t(),
-        None,
         &tracker,
         &provider,
         &provider,
@@ -1094,12 +1096,14 @@ async fn engine_e2e_graph_pattern_r2rml_scan() {
 
     // Execute with our mock R2RML provider
     let batches = execute_with_r2rml(
-        &ledger.db,
-        &NoOverlay,
+        DataSource {
+            db: &ledger.db,
+            overlay: &NoOverlay,
+            to_t: ledger.t(),
+            from_t: None,
+        },
         &vars,
         &executable,
-        ledger.t(),
-        None,
         &tracker,
         &provider,
         &provider,
@@ -1217,12 +1221,14 @@ async fn engine_e2e_provider_method_calls() {
 
     // Execute query - should succeed
     let result = execute_with_r2rml(
-        &ledger.db,
-        &NoOverlay,
+        DataSource {
+            db: &ledger.db,
+            overlay: &NoOverlay,
+            to_t: ledger.t(),
+            from_t: None,
+        },
         &vars,
         &executable,
-        ledger.t(),
-        None,
         &tracker,
         &provider,
         &provider,
@@ -1848,12 +1854,14 @@ async fn engine_e2e_ref_object_map_join_execution() {
 
     // Execute query
     let batches = execute_with_r2rml(
-        &ledger.db,
-        &NoOverlay,
+        DataSource {
+            db: &ledger.db,
+            overlay: &NoOverlay,
+            to_t: ledger.t(),
+            from_t: None,
+        },
         &vars,
         &executable,
-        ledger.t(),
-        None,
         &tracker,
         &provider,
         &provider,

@@ -132,8 +132,10 @@ mod tests {
 
     #[test]
     fn test_registry_new() {
-        let _registry = StorageRegistry::new();
+        let registry = StorageRegistry::new();
         #[cfg(feature = "aws")]
         assert!(!registry.has_s3("test"));
+        #[cfg(not(feature = "aws"))]
+        let _ = registry;
     }
 }
