@@ -61,7 +61,7 @@ pub use alias::{
 };
 pub use coerce::{coerce_json_value, coerce_value, CoercionError, CoercionResult};
 pub use comparator::IndexType;
-pub use db::Db;
+pub use db::{Db, DbMetadata};
 pub use dict_novelty::DictNovelty;
 pub use error::{Error, Result};
 pub use flake::{Flake, FlakeMeta};
