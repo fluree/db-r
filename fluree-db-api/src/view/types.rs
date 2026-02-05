@@ -200,6 +200,11 @@ impl<S: Storage + Clone + 'static> FlureeView<S> {
             ledger.alias(),
         );
         view.dict_novelty = Some(ledger.dict_novelty.clone());
+        // Extract binary_store from LedgerState's TypeErasedStore
+        view.binary_store = ledger
+            .binary_store
+            .as_ref()
+            .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok());
         view
     }
 

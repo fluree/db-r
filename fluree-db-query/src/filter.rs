@@ -37,11 +37,20 @@ use num_bigint::BigInt;
 use bigdecimal::BigDecimal;
 use md5::{Digest as Md5Digest, Md5};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-use regex::RegexBuilder;
+use regex::{Regex, RegexBuilder};
 use sha1::Sha1;
 use sha2::{Sha256, Sha384, Sha512};
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::sync::Arc;
+
+// Thread-local cache for compiled regexes to avoid recompiling on every row.
+// SPARQL REGEX patterns are typically constant across a query, so caching
+// provides significant speedup for filter-heavy queries.
+thread_local! {
+    static REGEX_CACHE: RefCell<lru::LruCache<(String, String), Regex>> =
+        RefCell::new(lru::LruCache::new(std::num::NonZeroUsize::new(32).unwrap()));
+}
 use uuid::Uuid;
 
 /// Filter operator - applies a predicate to each row from child
@@ -868,11 +877,25 @@ fn compare_values(left: &ComparableValue, right: &ComparableValue, op: CompareOp
     }
 }
 
-/// Build a regex with optional flags
+/// Build a regex with optional flags (cached)
 ///
 /// Supported flags: i (case-insensitive), m (multiline), s (dot-all), x (ignore whitespace)
 /// Returns an error for unknown flags (not silent ignore).
-fn build_regex_with_flags(pattern: &str, flags: &str) -> Result<regex::Regex> {
+///
+/// Uses a thread-local LRU cache to avoid recompiling the same pattern+flags
+/// on every row. Regex::clone is cheap (Arc internally).
+fn build_regex_with_flags(pattern: &str, flags: &str) -> Result<Regex> {
+    // Check cache first
+    let cache_key = (pattern.to_string(), flags.to_string());
+    let cached = REGEX_CACHE.with(|cache| {
+        cache.borrow_mut().get(&cache_key).cloned()
+    });
+
+    if let Some(re) = cached {
+        return Ok(re);
+    }
+
+    // Not in cache - compile and store
     let mut builder = RegexBuilder::new(pattern);
     for flag in flags.chars() {
         match flag {
@@ -896,9 +919,16 @@ fn build_regex_with_flags(pattern: &str, flags: &str) -> Result<regex::Regex> {
             }
         }
     }
-    builder
+    let re = builder
         .build()
-        .map_err(|e| QueryError::InvalidFilter(format!("Invalid regex: {}", e)))
+        .map_err(|e| QueryError::InvalidFilter(format!("Invalid regex: {}", e)))?;
+
+    // Cache for future use
+    REGEX_CACHE.with(|cache| {
+        cache.borrow_mut().put(cache_key, re.clone());
+    });
+
+    Ok(re)
 }
 
 /// Parse a datetime from a binding, respecting datatype
@@ -1322,6 +1352,32 @@ fn eval_function_to_value_inner<S: Storage>(
                 _ => String::new(),
             };
             Ok(Some(ComparableValue::String(Arc::from(tag))))
+        }
+
+        // String case functions - need context for EncodedLit decoding
+        FunctionName::Lcase => {
+            check_arity(args, 1, "LCASE")?;
+            let val = eval_to_comparable_inner(&args[0], row, ctx)?;
+            Ok(val.and_then(|v| {
+                comparable_to_string(&v).map(|s| ComparableValue::String(Arc::from(s.to_lowercase())))
+            }))
+        }
+
+        FunctionName::Ucase => {
+            check_arity(args, 1, "UCASE")?;
+            let val = eval_to_comparable_inner(&args[0], row, ctx)?;
+            Ok(val.and_then(|v| {
+                comparable_to_string(&v).map(|s| ComparableValue::String(Arc::from(s.to_uppercase())))
+            }))
+        }
+
+        // STRLEN needs context for EncodedLit decoding
+        FunctionName::Strlen => {
+            check_arity(args, 1, "STRLEN")?;
+            let val = eval_to_comparable_inner(&args[0], row, ctx)?;
+            Ok(val.and_then(|v| {
+                comparable_to_string(&v).map(|s| ComparableValue::Long(s.len() as i64))
+            }))
         }
 
         // All other functions fall back to contextless evaluation for now.
@@ -1788,6 +1844,44 @@ fn evaluate_function_inner<S: Storage>(
                 _ => Ok(false),
             }
         }
+
+        // String predicates need context for EncodedLit decoding
+        FunctionName::Contains => {
+            check_arity(args, 2, "CONTAINS")?;
+            let haystack = eval_to_comparable_inner(&args[0], row, ctx)?;
+            let needle = eval_to_comparable_inner(&args[1], row, ctx)?;
+            Ok(match (haystack, needle) {
+                (Some(ComparableValue::String(h)), Some(ComparableValue::String(n))) => {
+                    h.contains(n.as_ref())
+                }
+                _ => false,
+            })
+        }
+
+        FunctionName::StrStarts => {
+            check_arity(args, 2, "STRSTARTS")?;
+            let haystack = eval_to_comparable_inner(&args[0], row, ctx)?;
+            let prefix = eval_to_comparable_inner(&args[1], row, ctx)?;
+            Ok(match (haystack, prefix) {
+                (Some(ComparableValue::String(h)), Some(ComparableValue::String(p))) => {
+                    h.starts_with(p.as_ref())
+                }
+                _ => false,
+            })
+        }
+
+        FunctionName::StrEnds => {
+            check_arity(args, 2, "STRENDS")?;
+            let haystack = eval_to_comparable_inner(&args[0], row, ctx)?;
+            let suffix = eval_to_comparable_inner(&args[1], row, ctx)?;
+            Ok(match (haystack, suffix) {
+                (Some(ComparableValue::String(h)), Some(ComparableValue::String(s))) => {
+                    h.ends_with(s.as_ref())
+                }
+                _ => false,
+            })
+        }
+
         _ => evaluate_function(name, args, row),
     }
 }

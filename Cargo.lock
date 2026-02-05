@@ -2322,6 +2322,7 @@ dependencies = [
  "fluree-search-protocol",
  "fluree-vocab",
  "futures",
+ "lru 0.12.5",
  "md-5",
  "memmap2",
  "num-bigint",

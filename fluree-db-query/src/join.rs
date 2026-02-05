@@ -149,6 +149,8 @@ pub struct NestedLoopJoinOperator<S: Storage + 'static> {
     current_left_row: usize,
     /// Pending output rows (batch_ref, left_row_idx, right_batch)
     pending_output: VecDeque<(BatchRef, usize, Batch)>,
+    /// Current row index within the front right_batch (for partial processing across calls)
+    pending_right_row: usize,
     /// Optional object bounds for range filter pushdown
     object_bounds: Option<ObjectBounds>,
     /// Whether this join is eligible for batched subject join
@@ -316,6 +318,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
             current_left_batch: None,
             current_left_row: 0,
             pending_output: VecDeque::new(),
+            pending_right_row: 0,
             object_bounds,
             batched_eligible,
             subject_left_col,
@@ -548,6 +551,12 @@ impl<S: Storage + 'static> Operator<S> for NestedLoopJoinOperator<S> {
         // Open left operator
         self.left.open(ctx).await?;
 
+        // Reset state for fresh execution
+        self.pending_output.clear();
+        self.pending_right_row = 0;
+        self.current_left_batch = None;
+        self.current_left_row = 0;
+
         self.state = OperatorState::Open;
         Ok(())
     }
@@ -702,6 +711,7 @@ impl<S: Storage + 'static> Operator<S> for NestedLoopJoinOperator<S> {
         self.current_left_batch = None;
         self.current_left_batch_stored_idx = None;
         self.pending_output.clear();
+        self.pending_right_row = 0;
         self.batched_accumulator.clear();
         self.stored_left_batches.clear();
         self.batched_output.clear();
@@ -735,36 +745,41 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
         while rows_added < batch_size && !self.pending_output.is_empty() {
             let (batch_ref, left_row, right_batch) = self.pending_output.front().unwrap();
             let left_row = *left_row;
+            let right_batch_len = right_batch.len();
 
             let left_batch = match self.resolve_left_batch(batch_ref) {
                 Some(b) => b,
                 None => {
                     self.pending_output.pop_front();
+                    self.pending_right_row = 0;
                     continue;
                 }
             };
 
-            // Process rows from this right batch
-            for right_row in 0..right_batch.len() {
-                if rows_added >= batch_size {
-                    break;
-                }
-
+            // Process rows from this right batch, starting from where we left off
+            let mut right_row = self.pending_right_row;
+            while right_row < right_batch_len && rows_added < batch_size {
                 // Unification check: shared vars must match
-                if !self.unify_check(left_batch, left_row, right_batch, right_row) {
-                    continue; // Skip non-matching rows
+                if self.unify_check(left_batch, left_row, right_batch, right_row) {
+                    // Combine and add to output
+                    let combined = self.combine_rows(left_batch, left_row, right_batch, right_row);
+                    for (col, val) in combined.into_iter().enumerate() {
+                        output_columns[col].push(val);
+                    }
+                    rows_added += 1;
                 }
-
-                // Combine and add to output
-                let combined = self.combine_rows(left_batch, left_row, right_batch, right_row);
-                for (col, val) in combined.into_iter().enumerate() {
-                    output_columns[col].push(val);
-                }
-                rows_added += 1;
+                right_row += 1;
             }
 
-            // Remove processed right batch
-            self.pending_output.pop_front();
+            // Check if we've fully processed this right batch
+            if right_row >= right_batch_len {
+                // Fully processed - remove and reset
+                self.pending_output.pop_front();
+                self.pending_right_row = 0;
+            } else {
+                // Partially processed - save our position for next call
+                self.pending_right_row = right_row;
+            }
         }
 
         if rows_added == 0 {
