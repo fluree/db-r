@@ -138,8 +138,22 @@ pub async fn build_policy_context_from_opts<S: Storage + Clone + 'static, C: Nod
     let view_set = build_policy_set(restrictions.clone(), stats.as_ref(), PolicyAction::View);
     let modify_set = build_policy_set(restrictions, stats.as_ref(), PolicyAction::Modify);
 
-    // Check if this is a root policy (unrestricted access)
-    let is_root = view_set.restrictions.is_empty() && modify_set.restrictions.is_empty();
+    // Check if this is a root policy (unrestricted access).
+    //
+    // SECURITY: When policy enforcement was explicitly requested (identity, policy_class,
+    // or inline policy), is_root must be false even if no restrictions were found.
+    // This prevents a fail-open scenario where a misconfigured or non-existent policy
+    // class silently grants root access. In that case, default_allow governs instead.
+    let policy_was_requested = opts.identity.is_some()
+        || opts
+            .policy_class
+            .as_ref()
+            .is_some_and(|v| !v.is_empty())
+        || opts.policy.is_some();
+
+    let is_root = !policy_was_requested
+        && view_set.restrictions.is_empty()
+        && modify_set.restrictions.is_empty();
 
     // Create wrapper
     let wrapper = PolicyWrapper::new(
@@ -363,12 +377,54 @@ async fn load_policy_restriction<S: Storage + Clone + 'static, C: NodeCache + 's
         }
     }
 
-    // f:onSubject (can have multiple values)
+    // f:onSubject (can have multiple values - SID references or embedded JSON query)
+    let mut on_subject_query_json: Option<String> = None;
     if let Ok(pred_sid) = resolve_iri_to_sid(db, IRI_ON_SUBJECT) {
         let bindings = query_predicate(db, overlay, to_t, policy_sid, &pred_sid).await?;
         for binding in bindings {
             if let Some(sid) = binding.as_sid() {
                 on_subject.insert(sid.clone());
+            } else {
+                // f:onSubject with embedded JSON query (Clojure parity).
+                // The query is stored as a @json literal containing a WHERE clause
+                // that uses ?$this to identify matching subjects.
+                match &binding {
+                    Binding::Lit {
+                        val: FlakeValue::Json(json_str),
+                        ..
+                    } => {
+                        on_subject_query_json = Some(json_str.clone());
+                    }
+                    Binding::Lit {
+                        val: FlakeValue::String(s),
+                        ..
+                    } => {
+                        on_subject_query_json = Some(s.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // If f:onSubject contains an embedded query (not SID references),
+    // execute it once now to materialize the set of matching subject SIDs.
+    // This avoids per-flake query execution during policy evaluation.
+    if on_subject.is_empty() {
+        if let Some(ref query_json) = on_subject_query_json {
+            match execute_on_subject_query(db, overlay, to_t, query_json).await {
+                Ok(sids) => {
+                    on_subject = sids;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Policy '{}': failed to execute f:onSubject query, \
+                         policy will not target any subjects: {}",
+                        db.decode_sid(policy_sid)
+                            .unwrap_or_else(|| policy_sid.name.to_string()),
+                        e
+                    );
+                }
             }
         }
     }
@@ -921,6 +977,86 @@ fn extract_iris(value: &JsonValue) -> Vec<String> {
         JsonValue::Array(arr) => arr.iter().flat_map(extract_iris).collect(),
         _ => vec![],
     }
+}
+
+/// Execute an `f:onSubject` embedded query to materialize matching subject SIDs.
+///
+/// The query JSON is expected to contain a `where` clause using `?$this` as the
+/// subject variable. All matching `?$this` SID bindings are collected into a HashSet.
+///
+/// This is executed once during policy construction to avoid per-flake query execution.
+async fn execute_on_subject_query<S: Storage + Clone + 'static, C: NodeCache + 'static>(
+    db: &Db<S, C>,
+    overlay: &dyn fluree_db_core::OverlayProvider,
+    to_t: i64,
+    query_json_str: &str,
+) -> Result<HashSet<Sid>> {
+    // Parse the JSON query string
+    let query_value: JsonValue = serde_json::from_str(query_json_str).map_err(|e| {
+        ApiError::query(format!(
+            "Failed to parse f:onSubject query JSON: {}",
+            e
+        ))
+    })?;
+
+    // Wrap in a minimal query structure if it only has a "where" key.
+    // The parse_query function expects a full query object with "select" + "where".
+    let query_obj = if query_value.get("select").is_none() {
+        serde_json::json!({
+            "select": ["?$this"],
+            "where": query_value.get("where").unwrap_or(&query_value)
+        })
+    } else {
+        query_value
+    };
+
+    let mut vars = fluree_db_query::VarRegistry::new();
+    let parsed = fluree_db_query::parse_query(&query_obj, db, &mut vars).map_err(|e| {
+        ApiError::query(format!(
+            "Failed to parse f:onSubject query: {}",
+            e
+        ))
+    })?;
+
+    // Execute the WHERE patterns
+    let batches = fluree_db_query::execute_where_with_overlay_at(
+        db,
+        overlay,
+        &vars,
+        &parsed.patterns,
+        to_t,
+        None,
+    )
+    .await
+    .map_err(|e| {
+        ApiError::query(format!(
+            "Failed to execute f:onSubject query: {}",
+            e
+        ))
+    })?;
+
+    // Collect ?$this bindings as SIDs
+    let this_var = vars.get("?$this");
+    let mut sids = HashSet::new();
+
+    if let Some(var_id) = this_var {
+        for batch in &batches {
+            for row in 0..batch.len() {
+                if let Some(binding) = batch.get(row, var_id) {
+                    if let Some(sid) = binding.as_sid() {
+                        sids.insert(sid.clone());
+                    }
+                }
+            }
+        }
+    } else {
+        tracing::warn!(
+            "f:onSubject query does not contain ?$this variable - \
+             cannot determine target subjects"
+        );
+    }
+
+    Ok(sids)
 }
 
 #[cfg(test)]

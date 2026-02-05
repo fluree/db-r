@@ -663,6 +663,29 @@ impl QueryConnectionOptions {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        // Expand compact IRIs in identity and policy_class through the query's @context.
+        // This ensures "ex:MyPolicy" gets expanded to the full IRI when @context defines "ex".
+        // Full IRIs pass through expand_iri unchanged (backward compatible).
+        let parsed_ctx = obj
+            .get("@context")
+            .or_else(|| obj.get("context"))
+            .and_then(|cv| fluree_graph_json_ld::parse_context(cv).ok());
+
+        let identity = match (&identity, &parsed_ctx) {
+            (Some(ident), Some(ctx)) => Some(fluree_graph_json_ld::expand_iri(ident, ctx)),
+            _ => identity,
+        };
+
+        let policy_class = match (policy_class, &parsed_ctx) {
+            (Some(classes), Some(ctx)) => Some(
+                classes
+                    .iter()
+                    .map(|c| fluree_graph_json_ld::expand_iri(c, ctx))
+                    .collect(),
+            ),
+            (other, _) => other,
+        };
+
         Ok(Self {
             identity,
             policy_class,

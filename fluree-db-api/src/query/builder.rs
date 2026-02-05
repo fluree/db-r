@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use serde_json::Value as JsonValue;
 
+use crate::dataset::QueryConnectionOptions;
 use crate::error::{BuilderError, BuilderErrors};
 use crate::format::FormatterConfig;
 use crate::query::helpers::parse_dataset_spec;
@@ -473,6 +474,7 @@ pub struct FromQueryBuilder<'a, S: Storage + 'static, N> {
     fluree: &'a Fluree<S, SimpleCache, N>,
     core: QueryCore<'a>,
     policy: Option<Arc<PolicyContext>>,
+    policy_opts: Option<QueryConnectionOptions>,
 }
 
 impl<'a, S, N> FromQueryBuilder<'a, S, N>
@@ -486,6 +488,7 @@ where
             fluree,
             core: QueryCore::new(),
             policy: None,
+            policy_opts: None,
         }
     }
 
@@ -545,6 +548,40 @@ where
         self
     }
 
+    /// Set the policy class(es) for this query.
+    ///
+    /// The class IRIs identify which stored policies to load and enforce.
+    /// Works with both JSON-LD and SPARQL queries. If `.policy()` is also
+    /// set, the explicit `PolicyContext` takes precedence.
+    pub fn policy_class(mut self, classes: Vec<String>) -> Self {
+        self.policy_opts
+            .get_or_insert_with(QueryConnectionOptions::default)
+            .policy_class = Some(classes);
+        self
+    }
+
+    /// Set the default-allow flag for this query.
+    ///
+    /// When `true`, flakes not matched by any policy are allowed.
+    /// When `false` (the default), unmatched flakes are denied.
+    pub fn default_allow(mut self, allow: bool) -> Self {
+        self.policy_opts
+            .get_or_insert_with(QueryConnectionOptions::default)
+            .default_allow = allow;
+        self
+    }
+
+    /// Set the identity IRI for this query.
+    ///
+    /// The identity is used to look up the subject's `f:policyClass` property
+    /// and to bind `?$identity` in policy queries.
+    pub fn identity(mut self, iri: String) -> Self {
+        self.policy_opts
+            .get_or_insert_with(QueryConnectionOptions::default)
+            .identity = Some(iri);
+        self
+    }
+
     // --- Terminal operations ---
 
     /// Validate builder configuration without executing.
@@ -567,23 +604,39 @@ where
             return Err(ApiError::Builder(BuilderErrors(errs)));
         }
 
+        let has_policy_opts = self
+            .policy_opts
+            .as_ref()
+            .is_some_and(|o| o.has_any_policy_inputs());
+
         let input = self.core.input.unwrap();
         match input {
-            QueryInput::JsonLd(json) => match &self.policy {
-                Some(policy) => {
+            QueryInput::JsonLd(json) => match (&self.policy, has_policy_opts) {
+                (Some(policy), _) => {
                     self.fluree
                         .query_connection_with_policy(json, policy)
                         .await
                 }
-                None => self.fluree.query_connection(json).await,
+                // JSON-LD path already reads opts from the query body, so builder
+                // policy_opts would only matter for SPARQL. For JSON-LD, fall through
+                // to the normal path which parses opts from JSON.
+                _ => self.fluree.query_connection(json).await,
             },
-            QueryInput::Sparql(sparql) => match &self.policy {
-                Some(policy) => {
+            QueryInput::Sparql(sparql) => match (&self.policy, has_policy_opts) {
+                (Some(policy), _) => {
                     self.fluree
                         .query_connection_sparql_with_policy(sparql, policy)
                         .await
                 }
-                None => self.fluree.query_connection_sparql(sparql).await,
+                (None, true) => {
+                    self.fluree
+                        .query_connection_sparql_with_opts(
+                            sparql,
+                            self.policy_opts.as_ref().unwrap(),
+                        )
+                        .await
+                }
+                _ => self.fluree.query_connection_sparql(sparql).await,
             },
         }
     }
@@ -598,6 +651,11 @@ where
             return Err(ApiError::Builder(BuilderErrors(errs)));
         }
 
+        let has_policy_opts = self
+            .policy_opts
+            .as_ref()
+            .is_some_and(|o| o.has_any_policy_inputs());
+
         let format_config = self.core.format.take().unwrap_or_else(|| self.core.default_format());
         let input = self.core.input.unwrap();
         match input {
@@ -608,7 +666,7 @@ where
                             .query_connection_with_policy(json, policy)
                             .await?
                     }
-                    None => self.fluree.query_connection(json).await?,
+                    _ => self.fluree.query_connection(json).await?,
                 };
                 let (spec, _) = parse_dataset_spec(json)?;
                 if let Some(alias) = spec.default_graphs.first() {
@@ -620,13 +678,21 @@ where
                 }
             }
             QueryInput::Sparql(sparql) => {
-                let result = match &self.policy {
-                    Some(policy) => {
+                let result = match (&self.policy, has_policy_opts) {
+                    (Some(policy), _) => {
                         self.fluree
                             .query_connection_sparql_with_policy(sparql, policy)
                             .await?
                     }
-                    None => self.fluree.query_connection_sparql(sparql).await?,
+                    (None, true) => {
+                        self.fluree
+                            .query_connection_sparql_with_opts(
+                                sparql,
+                                self.policy_opts.as_ref().unwrap(),
+                            )
+                            .await?
+                    }
+                    _ => self.fluree.query_connection_sparql(sparql).await?,
                 };
                 let ast = crate::query::helpers::parse_and_validate_sparql(sparql)?;
                 let spec = crate::query::helpers::extract_sparql_dataset_spec(&ast)?;
@@ -654,6 +720,11 @@ where
             return Err(TrackedErrorResponse::new(400, msg, None));
         }
 
+        let has_policy_opts = self
+            .policy_opts
+            .as_ref()
+            .is_some_and(|o| o.has_any_policy_inputs());
+
         let input = self.core.input.unwrap();
         match input {
             QueryInput::JsonLd(json) => match &self.policy {
@@ -664,14 +735,22 @@ where
                 }
                 None => self.fluree.query_connection_jsonld_tracked(json).await,
             },
-            QueryInput::Sparql(sparql) => match &self.policy {
-                Some(policy) => {
+            QueryInput::Sparql(sparql) => match (&self.policy, has_policy_opts) {
+                (Some(policy), _) => {
                     self.fluree
                         .query_connection_sparql_tracked_with_policy(sparql, policy)
                         .await
                 }
-                None => self.fluree.query_connection_sparql_tracked(sparql).await,
-            }
+                (None, true) => {
+                    self.fluree
+                        .query_connection_sparql_tracked_with_opts(
+                            sparql,
+                            self.policy_opts.as_ref().unwrap(),
+                        )
+                        .await
+                }
+                _ => self.fluree.query_connection_sparql_tracked(sparql).await,
+            },
         }
     }
 }

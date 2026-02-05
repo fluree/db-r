@@ -1,6 +1,7 @@
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
 
+use crate::dataset::QueryConnectionOptions;
 use crate::query::helpers::{extract_sparql_dataset_spec, parse_and_validate_sparql, parse_dataset_spec};
 use crate::view::FlureeDataSetView;
 use crate::{ApiError, Fluree, PolicyContext, QueryResult, Result, SimpleCache, Storage};
@@ -305,6 +306,57 @@ where
             .await
             .map_err(|e| crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None))?;
         let dataset = apply_policy_to_dataset(dataset, policy);
+
+        self.query_dataset_view_tracked(&dataset, sparql).await
+    }
+
+    /// Execute a SPARQL query via connection with policy options (policy-class, default-allow, etc.).
+    ///
+    /// This is the SPARQL equivalent of the JSON-LD policy opts path. Policy options
+    /// are provided programmatically via `QueryConnectionOptions` since SPARQL text
+    /// cannot embed JSON opts.
+    pub(crate) async fn query_connection_sparql_with_opts(
+        &self,
+        sparql: &str,
+        opts: &QueryConnectionOptions,
+    ) -> Result<QueryResult> {
+        let ast = parse_and_validate_sparql(sparql)?;
+        let spec = extract_sparql_dataset_spec(&ast)?;
+
+        if spec.is_empty() {
+            return Err(ApiError::query(
+                "Missing dataset specification in SPARQL connection query (no FROM / FROM NAMED)",
+            ));
+        }
+
+        let dataset = self.build_dataset_view_with_policy(&spec, opts).await?;
+        self.query_dataset_view(&dataset, sparql).await
+    }
+
+    /// Execute a SPARQL query via connection with policy options and tracking.
+    pub(crate) async fn query_connection_sparql_tracked_with_opts(
+        &self,
+        sparql: &str,
+        opts: &QueryConnectionOptions,
+    ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
+    {
+        let ast = parse_and_validate_sparql(sparql)
+            .map_err(|e| crate::query::TrackedErrorResponse::from_error(400, e.to_string(), None))?;
+        let spec = extract_sparql_dataset_spec(&ast)
+            .map_err(|e| crate::query::TrackedErrorResponse::from_error(400, e.to_string(), None))?;
+
+        if spec.is_empty() {
+            return Err(crate::query::TrackedErrorResponse::from_error(
+                400,
+                "Missing dataset specification in SPARQL connection query (no FROM / FROM NAMED)",
+                None,
+            ));
+        }
+
+        let dataset = self
+            .build_dataset_view_with_policy(&spec, opts)
+            .await
+            .map_err(|e| crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None))?;
 
         self.query_dataset_view_tracked(&dataset, sparql).await
     }
