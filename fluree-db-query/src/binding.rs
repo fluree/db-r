@@ -105,6 +105,32 @@ pub enum Binding {
         i_val: i32,
         t: i64,
     },
+    /// Encoded subject/predicate/ref-object ID (late materialization).
+    ///
+    /// Used to defer subject dictionary lookups until join/output time.
+    /// The `s_id` is the raw u64 from the binary index.
+    ///
+    /// # Single-Ledger Only
+    ///
+    /// `EncodedSid` comparison by `s_id` is only valid within a single ledger.
+    /// For cross-ledger (dataset) queries, use `IriMatch` or derive canonical
+    /// IRI via the materializer's `JoinKey::Iri`.
+    EncodedSid {
+        /// Raw subject/ref ID from binary index
+        s_id: u64,
+    },
+    /// Encoded predicate ID (late materialization).
+    ///
+    /// Used when predicate is a variable in the pattern.
+    /// The `p_id` is the raw u32 from the binary index.
+    ///
+    /// # Single-Ledger Only
+    ///
+    /// Same constraint as `EncodedSid` - not cross-ledger comparable.
+    EncodedPid {
+        /// Raw predicate ID from binary index
+        p_id: u32,
+    },
     /// Grouped values (produced by GROUP BY for non-group-key variables)
     ///
     /// Contains all values for a variable within a single group. This is an
@@ -290,7 +316,11 @@ impl Binding {
     pub fn is_iri_type(&self) -> bool {
         matches!(
             self,
-            Binding::Sid(_) | Binding::IriMatch { .. } | Binding::Iri(_)
+            Binding::Sid(_)
+                | Binding::IriMatch { .. }
+                | Binding::Iri(_)
+                | Binding::EncodedSid { .. }
+                | Binding::EncodedPid { .. }
         )
     }
 
@@ -302,6 +332,42 @@ impl Binding {
     /// Check if this is an encoded (late-materialized) literal binding.
     pub fn is_encoded_lit(&self) -> bool {
         matches!(self, Binding::EncodedLit { .. })
+    }
+
+    /// Check if this is an encoded subject ID binding.
+    pub fn is_encoded_sid(&self) -> bool {
+        matches!(self, Binding::EncodedSid { .. })
+    }
+
+    /// Check if this is an encoded predicate ID binding.
+    pub fn is_encoded_pid(&self) -> bool {
+        matches!(self, Binding::EncodedPid { .. })
+    }
+
+    /// Check if this is any encoded (late-materialized) binding.
+    ///
+    /// Returns true for `EncodedLit`, `EncodedSid`, and `EncodedPid`.
+    pub fn is_encoded(&self) -> bool {
+        matches!(
+            self,
+            Binding::EncodedLit { .. } | Binding::EncodedSid { .. } | Binding::EncodedPid { .. }
+        )
+    }
+
+    /// Get the raw s_id from an EncodedSid binding.
+    pub fn encoded_s_id(&self) -> Option<u64> {
+        match self {
+            Binding::EncodedSid { s_id } => Some(*s_id),
+            _ => None,
+        }
+    }
+
+    /// Get the raw p_id from an EncodedPid binding.
+    pub fn encoded_p_id(&self) -> Option<u32> {
+        match self {
+            Binding::EncodedPid { p_id } => Some(*p_id),
+            _ => None,
+        }
     }
 
     /// Try to get as Sid (only for Binding::Sid, not IriMatch)
@@ -539,7 +605,6 @@ impl PartialEq for Binding {
                     p_id: p1,
                     dt_id: dt1,
                     lang_id: l1,
-                    i_val: i1,
                     ..
                 },
                 Binding::EncodedLit {
@@ -548,10 +613,48 @@ impl PartialEq for Binding {
                     p_id: p2,
                     dt_id: dt2,
                     lang_id: l2,
-                    i_val: i2,
                     ..
                 },
-            ) => k1 == k2 && ok1 == ok2 && p1 == p2 && dt1 == dt2 && l1 == l2 && i1 == i2,
+            ) => {
+                // IMPORTANT:
+                // - `t` is metadata and intentionally excluded (see docs above).
+                // - `i_val` is list index metadata and is intentionally excluded from
+                //   term identity (it should not affect DISTINCT/GROUP BY/join unification).
+                // - `p_id` is only required for NUM_BIG decoding (per-predicate arena);
+                //   for other kinds it must NOT affect term identity.
+                if k1 != k2 || ok1 != ok2 || dt1 != dt2 || l1 != l2 {
+                    return false;
+                }
+
+                let num_big = fluree_db_core::ObjKind::NUM_BIG.as_u8();
+                if *k1 == num_big {
+                    p1 == p2
+                } else {
+                    true
+                }
+            },
+
+            // EncodedSid: compare by s_id directly (single-ledger only)
+            (Binding::EncodedSid { s_id: a }, Binding::EncodedSid { s_id: b }) => a == b,
+
+            // EncodedPid: compare by p_id directly (single-ledger only)
+            (Binding::EncodedPid { p_id: a }, Binding::EncodedPid { p_id: b }) => a == b,
+
+            // EncodedSid vs Sid: NOT equal (don't mix encoded/decoded modes)
+            // This prevents accidental mixing which could corrupt hash structures
+            (Binding::EncodedSid { .. }, Binding::Sid(_)) => false,
+            (Binding::Sid(_), Binding::EncodedSid { .. }) => false,
+
+            // EncodedPid vs Sid: NOT equal
+            (Binding::EncodedPid { .. }, Binding::Sid(_)) => false,
+            (Binding::Sid(_), Binding::EncodedPid { .. }) => false,
+
+            // EncodedSid/EncodedPid vs IriMatch/Iri: NOT equal (single vs multi-ledger)
+            (Binding::EncodedSid { .. }, Binding::IriMatch { .. } | Binding::Iri(_)) => false,
+            (Binding::IriMatch { .. } | Binding::Iri(_), Binding::EncodedSid { .. }) => false,
+            (Binding::EncodedPid { .. }, Binding::IriMatch { .. } | Binding::Iri(_)) => false,
+            (Binding::IriMatch { .. } | Binding::Iri(_), Binding::EncodedPid { .. }) => false,
+
             (Binding::Grouped(a), Binding::Grouped(b)) => a == b,
             _ => false,
         }
@@ -609,17 +712,29 @@ impl std::hash::Hash for Binding {
                 p_id,
                 dt_id,
                 lang_id,
-                i_val,
                 ..
             } => {
                 // t intentionally excluded - metadata only
                 6u8.hash(state);
                 o_kind.hash(state);
                 o_key.hash(state);
-                p_id.hash(state);
                 dt_id.hash(state);
                 lang_id.hash(state);
-                i_val.hash(state);
+                // `p_id` is only required for NUM_BIG decoding (per-predicate arena).
+                // For all other literal kinds, it must not affect hash identity.
+                if *o_kind == fluree_db_core::ObjKind::NUM_BIG.as_u8() {
+                    p_id.hash(state);
+                }
+            }
+            Binding::EncodedSid { s_id } => {
+                // Distinct discriminant from Sid (2) - they are not interchangeable
+                7u8.hash(state);
+                s_id.hash(state);
+            }
+            Binding::EncodedPid { p_id } => {
+                // Distinct discriminant - predicates are not subjects
+                8u8.hash(state);
+                p_id.hash(state);
             }
             Binding::Grouped(values) => {
                 5u8.hash(state);

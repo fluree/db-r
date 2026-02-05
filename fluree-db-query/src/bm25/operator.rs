@@ -256,6 +256,27 @@ impl<S: Storage + 'static> Bm25SearchOperator<S> {
                     Ok(Some(iri.to_string()))
                 }
                 Some(Binding::Grouped(_)) => Ok(None),
+                // EncodedSid/EncodedPid: decode to IRI string if store available
+                Some(Binding::EncodedSid { s_id }) => {
+                    if let Some(store) = ctx.binary_store.as_deref() {
+                        match store.resolve_subject_iri(*s_id) {
+                            Ok(iri) => Ok(Some(iri)),
+                            Err(_) => Ok(None),
+                        }
+                    } else {
+                        Ok(None)
+                    }
+                }
+                Some(Binding::EncodedPid { p_id }) => {
+                    if let Some(store) = ctx.binary_store.as_deref() {
+                        match store.resolve_predicate_iri(*p_id) {
+                            Some(iri) => Ok(Some(iri.to_string())),
+                            None => Ok(None),
+                        }
+                    } else {
+                        Ok(None)
+                    }
+                }
             },
         }
     }

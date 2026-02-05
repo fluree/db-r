@@ -114,15 +114,15 @@ fn strip_question_mark(var_name: &str) -> String {
 ///
 /// Returns None for Unbound/Poisoned (omit from output per SPARQL spec)
 fn format_binding(result: &QueryResult, binding: &Binding, compactor: &IriCompactor) -> Result<Option<JsonValue>> {
-    // Late materialization for encoded literals.
-    if matches!(binding, Binding::EncodedLit { .. }) {
+    // Late materialization for encoded bindings.
+    if binding.is_encoded() {
         let store = result.binary_store.as_ref().ok_or_else(|| {
             FormatError::InvalidBinding(
-                "Encountered EncodedLit during formatting but QueryResult has no binary_store".to_string(),
+                "Encountered encoded binding during formatting but QueryResult has no binary_store".to_string(),
             )
         })?;
-        let materialized = materialize_encoded_lit(binding, store)
-            .map_err(|e| FormatError::InvalidBinding(format!("Failed to materialize EncodedLit: {}", e)))?;
+        let materialized = materialize_encoded_binding(binding, store)
+            .map_err(|e| FormatError::InvalidBinding(format!("Failed to materialize encoded binding: {}", e)))?;
         return format_binding(result, &materialized, compactor);
     }
 
@@ -371,7 +371,34 @@ fn format_binding(result: &QueryResult, binding: &Binding, compactor: &IriCompac
             "Binding::Grouped should be disaggregated before formatting".to_string(),
         )),
 
-        Binding::EncodedLit { .. } => unreachable!("EncodedLit should have been materialized before SPARQL JSON formatting"),
+        Binding::EncodedLit { .. } | Binding::EncodedSid { .. } | Binding::EncodedPid { .. } => {
+            unreachable!("Encoded bindings should have been materialized before SPARQL JSON formatting")
+        }
+    }
+}
+
+/// Materialize any encoded binding to its decoded form.
+fn materialize_encoded_binding(
+    binding: &Binding,
+    store: &fluree_db_indexer::run_index::BinaryIndexStore,
+) -> std::io::Result<Binding> {
+    match binding {
+        Binding::EncodedSid { s_id } => {
+            let iri = store.resolve_subject_iri(*s_id)?;
+            let sid = store.encode_iri(&iri);
+            Ok(Binding::Sid(sid))
+        }
+        Binding::EncodedPid { p_id } => {
+            match store.resolve_predicate_iri(*p_id) {
+                Some(iri) => Ok(Binding::Sid(store.encode_iri(iri))),
+                None => Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Unknown predicate ID: {}", p_id),
+                )),
+            }
+        }
+        Binding::EncodedLit { .. } => materialize_encoded_lit(binding, store),
+        _ => Ok(binding.clone()),
     }
 }
 
@@ -493,7 +520,10 @@ fn format_sparql_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::query::QueryResult;
+    use fluree_db_query::SelectMode;
     use fluree_db_core::Sid;
+    use fluree_db_query::var_registry::VarRegistry;
     use std::collections::HashMap;
 
     fn make_test_compactor() -> IriCompactor {
@@ -502,6 +532,23 @@ mod tests {
         namespaces.insert(3, "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string());
         namespaces.insert(100, "http://example.org/".to_string());
         IriCompactor::from_namespaces(&namespaces)
+    }
+
+    /// Create a minimal QueryResult for tests that don't need binary_store.
+    fn make_test_result() -> QueryResult {
+        QueryResult {
+            vars: VarRegistry::new(),
+            t: 0,
+            novelty: None,
+            context: crate::ParsedContext::default(),
+            orig_context: None,
+            select: vec![],
+            select_mode: SelectMode::Many,
+            batches: vec![],
+            binary_store: None,
+            construct_template: None,
+            graph_select: None,
+        }
     }
 
     #[test]
@@ -514,10 +561,11 @@ mod tests {
     #[test]
     fn test_format_binding_uri() {
         let compactor = make_test_compactor();
+        let result = make_test_result();
         let binding = Binding::Sid(Sid::new(100, "alice"));
-        let result = format_binding(&binding, &compactor).unwrap().unwrap();
+        let formatted = format_binding(&result, &binding, &compactor).unwrap().unwrap();
         assert_eq!(
-            result,
+            formatted,
             json!({"type": "uri", "value": "http://example.org/alice"})
         );
     }
@@ -525,23 +573,25 @@ mod tests {
     #[test]
     fn test_format_binding_literal_string() {
         let compactor = make_test_compactor();
+        let result = make_test_result();
         let binding = Binding::lit(
             FlakeValue::String("Alice".to_string()),
             Sid::new(2, "string"),
         );
-        let result = format_binding(&binding, &compactor).unwrap().unwrap();
+        let formatted = format_binding(&result, &binding, &compactor).unwrap().unwrap();
         // xsd:string is inferable, so no datatype
-        assert_eq!(result, json!({"type": "literal", "value": "Alice"}));
+        assert_eq!(formatted, json!({"type": "literal", "value": "Alice"}));
     }
 
     #[test]
     fn test_format_binding_literal_long() {
         let compactor = make_test_compactor();
+        let result = make_test_result();
         let binding = Binding::lit(FlakeValue::Long(42), Sid::new(2, "long"));
-        let result = format_binding(&binding, &compactor).unwrap().unwrap();
+        let formatted = format_binding(&result, &binding, &compactor).unwrap().unwrap();
         // SPARQL JSON includes datatype for typed literals
         assert_eq!(
-            result,
+            formatted,
             json!({"type": "literal", "value": "42", "datatype": "http://www.w3.org/2001/XMLSchema#long"})
         );
     }
@@ -549,10 +599,11 @@ mod tests {
     #[test]
     fn test_format_binding_literal_boolean() {
         let compactor = make_test_compactor();
+        let result = make_test_result();
         let binding = Binding::lit(FlakeValue::Boolean(true), Sid::new(2, "boolean"));
-        let result = format_binding(&binding, &compactor).unwrap().unwrap();
+        let formatted = format_binding(&result, &binding, &compactor).unwrap().unwrap();
         assert_eq!(
-            result,
+            formatted,
             json!({"type": "literal", "value": "true", "datatype": "http://www.w3.org/2001/XMLSchema#boolean"})
         );
     }
@@ -560,14 +611,15 @@ mod tests {
     #[test]
     fn test_format_binding_language_tagged() {
         let compactor = make_test_compactor();
+        let result = make_test_result();
         let binding = Binding::lit_lang(
             FlakeValue::String("Hello".to_string()),
             Sid::new(3, "langString"),
             "en",
         );
-        let result = format_binding(&binding, &compactor).unwrap().unwrap();
+        let formatted = format_binding(&result, &binding, &compactor).unwrap().unwrap();
         assert_eq!(
-            result,
+            formatted,
             json!({"type": "literal", "value": "Hello", "xml:lang": "en"})
         );
     }
@@ -575,14 +627,15 @@ mod tests {
     #[test]
     fn test_format_binding_non_inferable_datatype() {
         let compactor = make_test_compactor();
+        let result = make_test_result();
         let binding = Binding::lit(
             FlakeValue::String("2024-01-15".to_string()),
             Sid::new(2, "date"),
         );
-        let result = format_binding(&binding, &compactor).unwrap().unwrap();
+        let formatted = format_binding(&result, &binding, &compactor).unwrap().unwrap();
         // xsd:date is NOT inferable, so include datatype
         assert_eq!(
-            result,
+            formatted,
             json!({
                 "type": "literal",
                 "value": "2024-01-15",
@@ -594,36 +647,38 @@ mod tests {
     #[test]
     fn test_format_binding_unbound() {
         let compactor = make_test_compactor();
+        let result = make_test_result();
         let binding = Binding::Unbound;
-        let result = format_binding(&binding, &compactor).unwrap();
-        assert!(result.is_none());
+        let formatted = format_binding(&result, &binding, &compactor).unwrap();
+        assert!(formatted.is_none());
     }
 
     #[test]
     fn test_format_binding_double_special_values() {
         let compactor = make_test_compactor();
+        let result = make_test_result();
 
         // NaN
         let binding = Binding::lit(FlakeValue::Double(f64::NAN), Sid::new(2, "double"));
-        let result = format_binding(&binding, &compactor).unwrap().unwrap();
+        let formatted = format_binding(&result, &binding, &compactor).unwrap().unwrap();
         assert_eq!(
-            result,
+            formatted,
             json!({"type": "literal", "value": "NaN", "datatype": "http://www.w3.org/2001/XMLSchema#double"})
         );
 
         // Positive infinity
         let binding = Binding::lit(FlakeValue::Double(f64::INFINITY), Sid::new(2, "double"));
-        let result = format_binding(&binding, &compactor).unwrap().unwrap();
+        let formatted = format_binding(&result, &binding, &compactor).unwrap().unwrap();
         assert_eq!(
-            result,
+            formatted,
             json!({"type": "literal", "value": "INF", "datatype": "http://www.w3.org/2001/XMLSchema#double"})
         );
 
         // Negative infinity
         let binding = Binding::lit(FlakeValue::Double(f64::NEG_INFINITY), Sid::new(2, "double"));
-        let result = format_binding(&binding, &compactor).unwrap().unwrap();
+        let formatted = format_binding(&result, &binding, &compactor).unwrap().unwrap();
         assert_eq!(
-            result,
+            formatted,
             json!({"type": "literal", "value": "-INF", "datatype": "http://www.w3.org/2001/XMLSchema#double"})
         );
     }

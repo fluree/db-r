@@ -29,7 +29,7 @@ use std::path::PathBuf;
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::{alias as core_alias, Storage};
 use fluree_db_indexer::run_index::{BinaryIndexStore, LeafletCache};
-use fluree_db_ledger::LedgerState;
+use fluree_db_ledger::{LedgerState, TypeErasedStore};
 use fluree_db_nameservice::{NameService, NsRecord};
 use fluree_db_novelty::Novelty;
 use fluree_db_core::db::Db;
@@ -136,7 +136,7 @@ impl<S: Storage + Clone + 'static> LedgerSnapshot<S> {
             dict_novelty,
             head_commit: self.head_commit,
             ns_record: self.ns_record,
-            binary_store: None,
+            binary_store: self.binary_store.map(|store| TypeErasedStore(store)),
         }
     }
 }

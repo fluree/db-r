@@ -52,6 +52,7 @@ pub fn write_commit(
             algo: super::format::ALGO_ED25519,
             signature: [0u8; 64],
             timestamp: 0,
+            metadata: None,
         };
         let len = sig_block_size(&[tmp_sig]);
         (Some(did), len as u16)
@@ -184,6 +185,7 @@ pub fn write_commit(
             algo: super::format::ALGO_ED25519,
             signature,
             timestamp,
+            metadata: None,
         };
         encode_sig_block(&[commit_sig], &mut output);
     }

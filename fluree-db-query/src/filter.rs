@@ -295,6 +295,8 @@ fn evaluate_inner<S: Storage>(
                 Some(Binding::Sid(_)) => Ok(true), // SID is truthy
                 Some(Binding::IriMatch { .. }) => Ok(true), // IriMatch is truthy
                 Some(Binding::Iri(_)) => Ok(true), // IRI is truthy
+                Some(Binding::EncodedSid { .. }) => Ok(true), // Encoded SID is truthy
+                Some(Binding::EncodedPid { .. }) => Ok(true), // Encoded PID is truthy
                 Some(Binding::Unbound) | Some(Binding::Poisoned) | None => Ok(false),
                 Some(Binding::Grouped(_)) => {
                     // Grouped bindings shouldn't appear in filter evaluation
@@ -463,6 +465,29 @@ fn eval_to_comparable_inner<S: Storage>(
             Some(Binding::Iri(iri)) => {
                 // Raw IRI from VG - use Iri comparable value
                 Ok(Some(ComparableValue::Iri(Arc::clone(iri))))
+            }
+            Some(Binding::EncodedSid { s_id }) => {
+                // Encoded subject ID - resolve to IRI for comparisons
+                let Some(store) = ctx.and_then(|c| c.binary_store.as_deref()) else {
+                    return Ok(None);
+                };
+                match store.resolve_subject_iri(*s_id) {
+                    Ok(iri) => Ok(Some(ComparableValue::Iri(Arc::from(iri)))),
+                    Err(e) => Err(QueryError::Internal(format!("resolve_subject_iri: {}", e))),
+                }
+            }
+            Some(Binding::EncodedPid { p_id }) => {
+                // Encoded predicate ID - resolve to IRI for comparisons
+                let Some(store) = ctx.and_then(|c| c.binary_store.as_deref()) else {
+                    return Ok(None);
+                };
+                match store.resolve_predicate_iri(*p_id) {
+                    Some(iri) => Ok(Some(ComparableValue::Iri(Arc::from(iri)))),
+                    None => Err(QueryError::Internal(format!(
+                        "resolve_predicate_iri: unknown p_id {}",
+                        p_id
+                    ))),
+                }
             }
             Some(Binding::Unbound) | Some(Binding::Poisoned) | None => Ok(None),
             Some(Binding::Grouped(_)) => {
@@ -1272,6 +1297,31 @@ fn eval_function_to_value_inner<S: Storage>(
             check_arity(args, 1, "STR")?;
             let val = eval_to_comparable_inner(&args[0], row, ctx)?;
             Ok(val.and_then(comparable_to_str_value))
+        }
+
+        // LANG(literal) - needs ctx to decode lang_id from EncodedLit
+        FunctionName::Lang => {
+            check_arity(args, 1, "LANG")?;
+            let tag = match &args[0] {
+                FilterExpr::Var(var_id) => match row.get(*var_id) {
+                    Some(Binding::Lit { lang, .. }) => {
+                        lang.as_ref().map(|l| l.to_string()).unwrap_or_default()
+                    }
+                    Some(Binding::EncodedLit { lang_id, .. }) => {
+                        // Decode lang_id via binary store's language dictionary
+                        if let Some(store) = ctx.and_then(|c| c.binary_store.as_deref()) {
+                            store.resolve_lang_id(*lang_id)
+                                .map(|s| s.to_string())
+                                .unwrap_or_default()
+                        } else {
+                            String::new()
+                        }
+                    }
+                    _ => String::new(),
+                },
+                _ => String::new(),
+            };
+            Ok(Some(ComparableValue::String(Arc::from(tag))))
         }
 
         // All other functions fall back to contextless evaluation for now.

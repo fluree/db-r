@@ -17,6 +17,7 @@ use fluree_db_core::{
 };
 use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
 use fluree_db_core::value_id::ObjKind;
+use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
@@ -156,8 +157,9 @@ pub struct NestedLoopJoinOperator<S: Storage + 'static> {
     subject_left_col: Option<usize>,
     /// The fixed predicate SID (batched mode)
     batched_predicate: Option<Sid>,
-    /// Accumulated entries for batched processing: (stored_batch_idx, row_idx, subject_sid)
-    batched_accumulator: Vec<(usize, usize, Sid)>,
+    /// Accumulated entries for batched processing: (stored_batch_idx, row_idx, subject_s_id)
+    /// Stores the raw s_id directly to avoid dictionary round-trips with EncodedSid.
+    batched_accumulator: Vec<(usize, usize, u64)>,
     /// Left batches retained for the batched flush
     stored_left_batches: Vec<Batch>,
     /// Pre-built output batches from the batched path, ready to emit
@@ -344,17 +346,22 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
             let binding = left_batch.get_by_col(row, instr.left_col);
             match instr.position {
                 PatternPosition::Subject | PatternPosition::Predicate => {
-                    // Unbound does not constrain; Sid and IriMatch are valid.
+                    // Unbound does not constrain; Sid, IriMatch, and encoded variants are valid.
                     // Anything else (Lit, raw Iri) cannot match subject/predicate.
                     !matches!(
                         binding,
-                        Binding::Unbound | Binding::Sid(_) | Binding::IriMatch { .. }
+                        Binding::Unbound
+                            | Binding::Sid(_)
+                            | Binding::IriMatch { .. }
+                            | Binding::EncodedSid { .. }
+                            | Binding::EncodedPid { .. }
                     )
                 }
                 PatternPosition::Object => {
                     // Raw IRIs from virtual graphs can't match native object values
                     // (they're not in the namespace table and can't be compared to Sids)
-                    // Note: IriMatch is OK because it carries a SID
+                    // Note: IriMatch is OK because it carries a SID.
+                    // EncodedSid (refs) and EncodedLit (literals) are also valid.
                     matches!(binding, Binding::Iri(_))
                 }
             }
@@ -366,7 +373,21 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
     /// For IriMatch bindings, uses `Term::Iri` to carry the canonical IRI.
     /// The scan operator will encode this IRI for each target ledger's namespace
     /// table, enabling correct cross-ledger joins even when namespace tables differ.
+    ///
+    /// Note: Primarily used via substitute_pattern_with_store; kept for cases
+    /// without binary store context.
+    #[allow(dead_code)]
     fn substitute_pattern(&self, left_batch: &Batch, left_row: usize) -> TriplePattern {
+        self.substitute_pattern_with_store(left_batch, left_row, None)
+    }
+
+    /// Substitute left row bindings into right pattern with optional store for encoded binding resolution.
+    fn substitute_pattern_with_store(
+        &self,
+        left_batch: &Batch,
+        left_row: usize,
+        store: Option<&BinaryIndexStore>,
+    ) -> TriplePattern {
         let mut pattern = self.right_pattern.clone();
 
         for instr in &self.bind_instructions {
@@ -382,6 +403,15 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                             // Use Term::Iri so scan can encode for each target ledger
                             pattern.s = Term::Iri(iri.clone());
                         }
+                        Binding::EncodedSid { s_id } => {
+                            // Resolve encoded s_id to IRI if store available
+                            if let Some(store) = store {
+                                if let Ok(iri) = store.resolve_subject_iri(*s_id) {
+                                    pattern.s = Term::Iri(Arc::from(iri));
+                                }
+                            }
+                            // Otherwise leave as variable
+                        }
                         _ => {
                             // Leave as variable
                         }
@@ -395,6 +425,15 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                         Binding::IriMatch { iri, .. } => {
                             // Use Term::Iri so scan can encode for each target ledger
                             pattern.p = Term::Iri(iri.clone());
+                        }
+                        Binding::EncodedPid { p_id } => {
+                            // Resolve encoded p_id to IRI if store available
+                            if let Some(store) = store {
+                                if let Some(iri) = store.resolve_predicate_iri(*p_id) {
+                                    pattern.p = Term::Iri(Arc::from(iri));
+                                }
+                            }
+                            // Otherwise leave as variable
                         }
                         _ => {
                             // Leave as variable
@@ -413,10 +452,31 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                         Binding::Lit { val, .. } => {
                             pattern.o = Term::Value(val.clone());
                         }
-                        Binding::EncodedLit { .. } => {
-                            // Late materialized literal: we don't have decode context here.
-                            // Leave as variable; patterns that truly require binding this value
-                            // should be materialized before use (e.g., prior to FILTER/ORDER BY/output).
+                        Binding::EncodedLit {
+                            o_kind,
+                            o_key,
+                            p_id,
+                            ..
+                        } => {
+                            // Decode encoded literal if store available
+                            if let Some(store) = store {
+                                if let Ok(val) = store.decode_value(*o_kind, *o_key, *p_id) {
+                                    pattern.o = Term::Value(val);
+                                }
+                            }
+                            // Otherwise leave as variable
+                        }
+                        Binding::EncodedSid { s_id } => {
+                            // Resolve encoded s_id to IRI if store available (object is a ref)
+                            if let Some(store) = store {
+                                if let Ok(iri) = store.resolve_subject_iri(*s_id) {
+                                    pattern.o = Term::Iri(Arc::from(iri));
+                                }
+                            }
+                            // Otherwise leave as variable
+                        }
+                        Binding::EncodedPid { .. } => {
+                            // Predicate as object is unusual - leave as variable
                         }
                         Binding::Iri(_) => {
                             // Raw IRI from VG can't be converted to native Term
@@ -567,20 +627,33 @@ impl<S: Storage + 'static> Operator<S> for NestedLoopJoinOperator<S> {
             }
 
             if use_batched {
-                // Batched path: extract what we need, then call mutable methods
+                // Batched path: extract s_id directly to avoid dictionary round-trips.
+                // - EncodedSid: use s_id directly (no lookup needed)
+                // - Sid: call sid_to_s_id() once (cheap namespace lookup)
                 let subject_col = self.subject_left_col.unwrap();
-                let sid_opt = {
+                let resolved_s_id: Option<u64> = {
                     let left_batch = self.current_left_batch.as_ref().unwrap();
+                    let store = ctx.binary_store.as_deref();
                     match left_batch.get_by_col(left_row, subject_col) {
-                        Binding::Sid(sid) => Some(sid.clone()),
-                        Binding::IriMatch { primary_sid, .. } => Some(primary_sid.clone()),
+                        Binding::EncodedSid { s_id } => {
+                            // Direct s_id - no dictionary lookup needed!
+                            Some(*s_id)
+                        }
+                        Binding::Sid(sid) => {
+                            // Resolve Sid to s_id (single lookup, not a round-trip)
+                            store.and_then(|s| s.sid_to_s_id(sid).ok().flatten())
+                        }
+                        Binding::IriMatch { primary_sid, .. } => {
+                            // Resolve primary_sid to s_id
+                            store.and_then(|s| s.sid_to_s_id(primary_sid).ok().flatten())
+                        }
                         _ => None,
                     }
                 };
 
-                if let Some(sid) = sid_opt {
+                if let Some(s_id) = resolved_s_id {
                     let batch_idx = self.ensure_current_batch_stored();
-                    self.batched_accumulator.push((batch_idx, left_row, sid));
+                    self.batched_accumulator.push((batch_idx, left_row, s_id));
 
                     if self.batched_accumulator.len() >= BATCHED_JOIN_SIZE {
                         self.flush_batched_accumulator_for_ctx(ctx).await?;
@@ -590,7 +663,11 @@ impl<S: Storage + 'static> Operator<S> for NestedLoopJoinOperator<S> {
                     let batch_idx = self.ensure_current_batch_stored();
                     let batch_ref = BatchRef::Stored(batch_idx);
                     let left_batch = self.stored_left_batches.last().unwrap();
-                    let bound_pattern = self.substitute_pattern(left_batch, left_row);
+                    let bound_pattern = self.substitute_pattern_with_store(
+                        left_batch,
+                        left_row,
+                        ctx.binary_store.as_deref(),
+                    );
                     let mut right_scan = make_right_scan(bound_pattern, &self.object_bounds, ctx);
                     right_scan.open(ctx).await?;
                     while let Some(right_batch) = right_scan.next_batch(ctx).await? {
@@ -603,7 +680,11 @@ impl<S: Storage + 'static> Operator<S> for NestedLoopJoinOperator<S> {
             } else {
                 // Non-batched path: existing per-row join
                 let left_batch = self.current_left_batch.as_ref().unwrap();
-                let bound_pattern = self.substitute_pattern(left_batch, left_row);
+                let bound_pattern = self.substitute_pattern_with_store(
+                    left_batch,
+                    left_row,
+                    ctx.binary_store.as_deref(),
+                );
                 let mut right_scan = make_right_scan(bound_pattern, &self.object_bounds, ctx);
                 right_scan.open(ctx).await?;
                 while let Some(right_batch) = right_scan.next_batch(ctx).await? {
@@ -785,19 +866,13 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
             }
         };
 
-        // 1. Translate Sids → s_id and group accumulator indices by s_id
+        // 1. Group accumulator indices by s_id (already stored as u64, no lookup needed)
         let mut s_id_to_accum_indices: HashMap<u64, Vec<usize>> = HashMap::new();
         let mut unique_s_ids: Vec<u64> = Vec::new();
-        for (accum_idx, (_, _, sid)) in self.batched_accumulator.iter().enumerate() {
-            let s_id = match store
-                .sid_to_s_id(sid)
-                .map_err(|e| QueryError::Internal(format!("sid_to_s_id: {}", e)))?
-            {
-                Some(id) => id,
-                None => continue, // subject not in binary index
-            };
-            s_id_to_accum_indices.entry(s_id).or_default().push(accum_idx);
-            unique_s_ids.push(s_id);
+        for (accum_idx, (_, _, s_id)) in self.batched_accumulator.iter().enumerate() {
+            // s_id is already available from the accumulator - no dictionary lookup!
+            s_id_to_accum_indices.entry(*s_id).or_default().push(accum_idx);
+            unique_s_ids.push(*s_id);
         }
         if unique_s_ids.is_empty() {
             self.batched_accumulator.clear();
@@ -1108,16 +1183,11 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                     let t_emit = Instant::now();
                     for (row, s_id) in matches {
                         // Late materialization: do NOT call decode_value here.
-                        // Emit either a resolved ref (Sid) or an encoded literal.
+                        // Emit EncodedSid for refs, EncodedLit for literals.
                         let t = t_values[row];
                         let obj_binding = if o_kinds[row] == ObjKind::REF_ID.as_u8() {
-                            // Object is a reference; resolve s_id -> Sid without decode_value.
-                            // (This still hits subject dictionaries but avoids string literal decoding.)
-                            let ref_s_id = o_keys[row];
-                            let iri = store
-                                .resolve_subject_iri(ref_s_id)
-                                .map_err(|e| QueryError::Internal(format!("resolve ref s_id: {}", e)))?;
-                            Binding::Sid(store.encode_iri(&iri))
+                            // Object is a reference; emit EncodedSid for late materialization.
+                            Binding::EncodedSid { s_id: o_keys[row] }
                         } else {
                             Binding::EncodedLit {
                                 o_kind: o_kinds[row],
@@ -1895,7 +1965,14 @@ mod tests {
         let bound = batch0.get_by_col(0, concept_col);
         match bound {
             Binding::Sid(sid) => assert!(sid.name.contains("concept#c1")),
-            other => panic!("expected Sid for ?concept, got {:?}", other),
+            Binding::EncodedSid { s_id } => {
+                // Late materialization: resolve the encoded s_id to verify it's concept1
+                let iri = ctx.binary_store.as_ref().unwrap()
+                    .resolve_subject_iri(*s_id)
+                    .expect("should resolve encoded s_id");
+                assert!(iri.contains("concept#c1"), "expected concept1, got {}", iri);
+            }
+            other => panic!("expected Sid or EncodedSid for ?concept, got {:?}", other),
         }
 
         // Best-effort cleanup

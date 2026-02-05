@@ -202,12 +202,12 @@ async fn test_mock_r2rml_provider() {
     assert!(provider.has_r2rml_mapping("test-vg:main").await);
 
     // Test compiled_mapping
-    let loaded = provider.compiled_mapping("test-vg:main", 0).await.unwrap();
+    let loaded = provider.compiled_mapping("test-vg:main", Some(0)).await.unwrap();
     assert_eq!(loaded.triples_maps.len(), 1);
 
     // Test scan_table
     let batches = provider
-        .scan_table("test-vg:main", "openflights.airlines", &[], 0)
+        .scan_table("test-vg:main", "openflights.airlines", &[], Some(0))
         .await
         .unwrap();
     assert_eq!(batches.len(), 1);
@@ -715,7 +715,7 @@ impl R2rmlProvider for IcebergDirectProvider {
     async fn compiled_mapping(
         &self,
         _vg_alias: &str,
-        _as_of_t: i64,
+        _as_of_t: Option<i64>,
     ) -> QueryResult<Arc<CompiledR2rmlMapping>> {
         Ok(Arc::clone(&self.mapping))
     }
@@ -728,7 +728,7 @@ impl R2rmlTableProvider for IcebergDirectProvider {
         _vg_alias: &str,
         table_name: &str,
         projection: &[String],
-        _as_of_t: i64,
+        _as_of_t: Option<i64>,
     ) -> QueryResult<Vec<ColumnBatch>> {
         use fluree_db_iceberg::{
             auth::AuthConfig,
@@ -1119,7 +1119,7 @@ async fn engine_e2e_provider_method_calls() {
         async fn compiled_mapping(
             &self,
             vg_alias: &str,
-            _as_of_t: i64,
+            _as_of_t: Option<i64>,
         ) -> QueryResult<Arc<CompiledR2rmlMapping>> {
             eprintln!("compiled_mapping called for: {}", vg_alias);
             self.compiled_mapping_called.fetch_add(1, Ordering::SeqCst);
@@ -1134,7 +1134,7 @@ async fn engine_e2e_provider_method_calls() {
             vg_alias: &str,
             table_name: &str,
             projection: &[String],
-            _as_of_t: i64,
+            _as_of_t: Option<i64>,
         ) -> QueryResult<Vec<ColumnBatch>> {
             eprintln!(
                 "scan_table called: vg={}, table={}, projection={:?}",
@@ -1687,7 +1687,7 @@ impl R2rmlProvider for MultiTableMockProvider {
     async fn compiled_mapping(
         &self,
         _vg_alias: &str,
-        _as_of_t: i64,
+        _as_of_t: Option<i64>,
     ) -> QueryResult<Arc<CompiledR2rmlMapping>> {
         Ok(Arc::clone(&self.mapping))
     }
@@ -1700,7 +1700,7 @@ impl R2rmlTableProvider for MultiTableMockProvider {
         _vg_alias: &str,
         table_name: &str,
         _projection: &[String],
-        _as_of_t: i64,
+        _as_of_t: Option<i64>,
     ) -> QueryResult<Vec<ColumnBatch>> {
         eprintln!("MultiTableMockProvider.scan_table: {}", table_name);
         // Return appropriate batch based on table name

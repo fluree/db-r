@@ -74,10 +74,13 @@ Each signature entry contains:
 | `algo` | u8 | Signing algorithm (`0x01` = Ed25519) |
 | `signature` | [u8; 64] | Ed25519 signature bytes |
 | `timestamp` | i64 | Signing time (epoch millis, informational only) |
+| `metadata` | Option\<Vec\<u8\>\> | Optional metadata (node_id, region, role for consensus) |
 
 The `algo` byte provides forward compatibility for new signature algorithms. Unknown `algo` values are rejected on decode (not silently skipped).
 
 The `timestamp` is informational only and is **not** part of the signed digest. Ordering is determined by the commit chain, not by signature timestamps.
+
+The `metadata` field is reserved for future consensus features (multi-node signing, quorum sets). It allows nodes to include identifying information like node ID, region, or role. Currently unused but present in the format to avoid future versioning.
 
 ## Enabling Commit Signing (Rust API)
 
@@ -122,6 +125,22 @@ The verifier:
 3. Verifies the signature over `to_sign`
 
 No external key registry is needed for `did:key` identifiers — the public key is embedded in the DID itself.
+
+## Wire Format
+
+Each `CommitSignature` is encoded as:
+
+```
+signer_len:   u16 (LE)          - length of signer string
+signer:       [u8; signer_len]  - UTF-8 did:key identifier
+algo:         u8                - signature algorithm (0x01 = Ed25519)
+signature:    [u8; 64]          - Ed25519 signature bytes
+timestamp:    i64 (LE)          - signing timestamp (epoch millis)
+meta_len:     u16 (LE)          - metadata length (0 if none)
+metadata:     [u8; meta_len]    - optional metadata bytes
+```
+
+The signature block is prefixed with `sig_count: u16` (LE) containing the number of signatures.
 
 ## Security Properties
 

@@ -546,6 +546,8 @@ fn binding_to_flake_object(binding: &Binding) -> Option<(FlakeValue, Sid)> {
         }
         Binding::Lit { val, dt, .. } => Some((val.clone(), dt.clone())),
         Binding::EncodedLit { .. } => None,
+        Binding::EncodedSid { .. } => None, // Requires materialization
+        Binding::EncodedPid { .. } => None, // Requires materialization
         // Non-materializable bindings
         Binding::Unbound | Binding::Poisoned => None,
         Binding::Grouped(_) => {

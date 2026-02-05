@@ -216,6 +216,8 @@ pub async fn format_async<S: Storage>(
                         Some(Binding::Unbound) | Some(Binding::Poisoned) | None => None,
                         Some(Binding::Lit { .. }) | Some(Binding::Grouped(_)) | Some(Binding::Iri(_)) => None,
                         Some(Binding::EncodedLit { .. }) => None,
+                        // EncodedSid/EncodedPid require materialization before graph crawl
+                        Some(Binding::EncodedSid { .. }) | Some(Binding::EncodedPid { .. }) => None,
                     };
 
                     let Some(root_sid) = root_sid else {

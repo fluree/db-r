@@ -253,6 +253,9 @@ impl<S: Storage + 'static> PatternOptionalBuilder<S> {
                         Binding::EncodedLit { .. } => {
                             // Late materialized literal: no decode context here; leave unbound.
                         }
+                        Binding::EncodedSid { .. } | Binding::EncodedPid { .. } => {
+                            // Late materialized IRI: no decode context here; leave unbound.
+                        }
                         Binding::Iri(_) => {
                             // Raw IRI from VG can't be converted to native Term.
                             // Leave as variable - unify_check will compare Iri vs Sid and

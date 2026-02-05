@@ -316,6 +316,36 @@ impl CommitResolver {
             }
         }
 
+        // ledger:author (STRING) -- transaction signer DID
+        if let Some(txn_sig) = &envelope.txn_signature {
+            let p_author = dicts
+                .predicates
+                .get_or_insert_parts(fluree::LEDGER, ledger::AUTHOR);
+            let author_str_id = dicts.strings.get_or_insert(&txn_sig.signer)?;
+            push(
+                commit_s_id,
+                p_author,
+                ObjKind::LEX_ID,
+                ObjKey::encode_u32_id(author_str_id),
+                DatatypeDictId::STRING.as_u16(),
+            )?;
+        }
+
+        // ledger:txn (STRING) -- transaction storage address
+        if let Some(txn_addr) = &envelope.txn {
+            let p_txn = dicts
+                .predicates
+                .get_or_insert_parts(fluree::LEDGER, ledger::TXN);
+            let txn_str_id = dicts.strings.get_or_insert(txn_addr)?;
+            push(
+                commit_s_id,
+                p_txn,
+                ObjKind::LEX_ID,
+                ObjKey::encode_u32_id(txn_str_id),
+                DatatypeDictId::STRING.as_u16(),
+            )?;
+        }
+
         Ok(count)
     }
 

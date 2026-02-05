@@ -6,20 +6,85 @@
 use crate::aggregate::AggregateOperator;
 use crate::distinct::DistinctOperator;
 use crate::error::{QueryError, Result};
+use crate::group_aggregate::{GroupAggregateOperator, StreamingAggSpec};
 use crate::groupby::GroupByOperator;
 use crate::having::HavingOperator;
+use crate::ir::Pattern;
 use crate::limit::LimitOperator;
 use crate::offset::OffsetOperator;
 use crate::operator::BoxedOperator;
 use crate::options::QueryOptions;
 use crate::parse::{ParsedQuery, SelectMode};
+use crate::pattern::Term;
 use crate::project::ProjectOperator;
 use crate::sort::SortOperator;
+use crate::stats_query::StatsCountByPredicateOperator;
 use crate::var_registry::VarId;
+use crate::aggregate::AggregateFn;
 use fluree_db_core::{StatsView, Storage};
 use std::sync::Arc;
 
 use super::where_plan::build_where_operators;
+
+/// Detect if this is a stats fast-path query: `SELECT ?p (COUNT(?x) as ?c) WHERE { ?s ?p ?o } GROUP BY ?p`
+///
+/// Returns `Some((predicate_var, count_output_var))` if the query matches the pattern.
+fn detect_stats_count_by_predicate(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(VarId, VarId)> {
+    // Must have stats available (checked by caller)
+    // Must have exactly one triple pattern with all variables
+    if query.patterns.len() != 1 {
+        return None;
+    }
+    let Pattern::Triple(tp) = &query.patterns[0] else {
+        return None;
+    };
+
+    // All three positions must be variables
+    let Term::Var(s_var) = &tp.s else { return None; };
+    let Term::Var(p_var) = &tp.p else { return None; };
+    let Term::Var(o_var) = &tp.o else { return None; };
+
+    // GROUP BY must be exactly the predicate variable
+    if options.group_by.len() != 1 || options.group_by[0] != *p_var {
+        return None;
+    }
+
+    // Must have exactly one COUNT aggregate (not COUNT(*))
+    if options.aggregates.len() != 1 {
+        return None;
+    }
+    let agg = &options.aggregates[0];
+    if !matches!(agg.function, AggregateFn::Count) {
+        return None;
+    }
+
+    // COUNT input must be a non-predicate variable (subject or object)
+    let Some(input_var) = agg.input_var else { return None; };
+    if input_var != *s_var && input_var != *o_var {
+        return None;
+    }
+
+    // No HAVING (for simplicity)
+    if options.having.is_some() {
+        return None;
+    }
+
+    // No post_binds (for simplicity)
+    if !options.post_binds.is_empty() {
+        return None;
+    }
+
+    tracing::debug!(
+        predicate_var = ?p_var,
+        count_var = ?agg.output_var,
+        "detected stats count-by-predicate fast-path"
+    );
+
+    Some((*p_var, agg.output_var))
+}
 
 /// Build the complete operator tree for a query
 ///
@@ -30,14 +95,54 @@ pub fn build_operator_tree<S: Storage + 'static>(
     options: &QueryOptions,
     stats: Option<Arc<StatsView>>,
 ) -> Result<BoxedOperator<S>> {
+    // Fast-path: stats-based count-by-predicate query
+    // This avoids scanning all triples when we can answer directly from IndexStats.
+    if let Some(ref stats_view) = stats {
+        if let Some((pred_var, count_var)) = detect_stats_count_by_predicate(query, options) {
+            let mut operator: BoxedOperator<S> = Box::new(
+                StatsCountByPredicateOperator::new(Arc::clone(stats_view), pred_var, count_var)
+            );
+
+            // ORDER BY (on predicate or count)
+            if !options.order_by.is_empty() {
+                operator = Box::new(SortOperator::new(operator, options.order_by.clone()));
+            }
+
+            // PROJECT (select specific columns)
+            if query.select_mode != SelectMode::Construct && !query.select.is_empty() {
+                operator = Box::new(ProjectOperator::new(operator, query.select.clone()));
+            }
+
+            // DISTINCT
+            if options.distinct {
+                operator = Box::new(crate::distinct::DistinctOperator::new(operator));
+            }
+
+            // OFFSET
+            if let Some(offset) = options.offset {
+                if offset > 0 {
+                    operator = Box::new(OffsetOperator::new(operator, offset));
+                }
+            }
+
+            // LIMIT
+            if let Some(limit) = options.limit {
+                operator = Box::new(LimitOperator::new(operator, limit));
+            }
+
+            return Ok(operator);
+        }
+    }
+
     // Build WHERE clause operators
     let mut operator = build_where_operators(&query.patterns, stats)?;
 
     // Get the schema after WHERE (before grouping)
     let where_schema: Arc<[VarId]> = Arc::from(operator.schema().to_vec().into_boxed_slice());
 
-    // GROUP BY (partitions solutions by group key)
-    // Also add if there are aggregates but no explicit GROUP BY (implicit single group)
+    // GROUP BY + Aggregates
+    // We use streaming GroupAggregateOperator when all aggregates are streamable
+    // (COUNT, SUM, AVG, MIN, MAX). This is O(groups) memory instead of O(rows).
     let needs_grouping = !options.group_by.is_empty() || !options.aggregates.is_empty();
     if needs_grouping {
         // Validate group vars exist in where schema
@@ -49,23 +154,15 @@ pub fn build_operator_tree<S: Storage + 'static>(
                 )));
             }
         }
-        operator = Box::new(GroupByOperator::new(operator, options.group_by.clone()));
-    }
 
-    // Aggregates (compute COUNT, SUM, AVG, etc. on Grouped values)
-    if !options.aggregates.is_empty() {
-        // Validate aggregate input vars exist in current schema and will be Grouped.
+        // Validate aggregates
         let current_schema = operator.schema();
         let group_by_set: std::collections::HashSet<VarId> =
             options.group_by.iter().copied().collect();
-
-        // Validate output var uniqueness to avoid duplicate VarIds in schema.
         let mut seen_output_vars: std::collections::HashSet<VarId> =
             std::collections::HashSet::new();
 
         for spec in &options.aggregates {
-            // For regular aggregates with input variables, validate that the input exists
-            // COUNT(*) has input_var = None and doesn't need this check
             if let Some(input_var) = spec.input_var {
                 if !current_schema.contains(&input_var) {
                     return Err(QueryError::VariableNotFound(format!(
@@ -73,19 +170,12 @@ pub fn build_operator_tree<S: Storage + 'static>(
                         input_var
                     )));
                 }
-
-                // If grouping by explicit keys, group-by vars remain scalar. Aggregating them would
-                // silently pass-through today (since they aren't Grouped), which is incorrect.
-                // Disallow to avoid wrong answers.
                 if !options.group_by.is_empty() && group_by_set.contains(&input_var) {
                     return Err(QueryError::InvalidQuery(format!(
                         "Aggregate input variable {:?} is a GROUP BY key and will not be grouped",
                         input_var
                     )));
                 }
-
-                // If output var is different than input var, it must not already exist in schema,
-                // otherwise we'd create duplicate VarIds (Batch invariant).
                 if spec.output_var != input_var && current_schema.contains(&spec.output_var) {
                     return Err(QueryError::InvalidQuery(format!(
                         "Aggregate output variable {:?} already exists in schema",
@@ -93,7 +183,6 @@ pub fn build_operator_tree<S: Storage + 'static>(
                     )));
                 }
             } else {
-                // COUNT(*) - output var must not already exist in schema
                 if current_schema.contains(&spec.output_var) {
                     return Err(QueryError::InvalidQuery(format!(
                         "Aggregate output variable {:?} already exists in schema",
@@ -101,7 +190,6 @@ pub fn build_operator_tree<S: Storage + 'static>(
                     )));
                 }
             }
-
             if !seen_output_vars.insert(spec.output_var) {
                 return Err(QueryError::InvalidQuery(format!(
                     "Duplicate aggregate output variable {:?}",
@@ -109,7 +197,47 @@ pub fn build_operator_tree<S: Storage + 'static>(
                 )));
             }
         }
-        operator = Box::new(AggregateOperator::new(operator, options.aggregates.clone()));
+
+        // Try streaming path: GroupAggregateOperator replaces both GroupBy + Aggregate
+        // when all aggregates are streamable (COUNT, SUM, AVG, MIN, MAX).
+        let streaming_specs: Vec<StreamingAggSpec> = options
+            .aggregates
+            .iter()
+            .map(|spec| {
+                let input_col = spec.input_var.and_then(|v| {
+                    current_schema.iter().position(|&sv| sv == v)
+                });
+                StreamingAggSpec {
+                    function: spec.function.clone(),
+                    input_col,
+                    output_var: spec.output_var,
+                }
+            })
+            .collect();
+
+        let use_streaming = !options.aggregates.is_empty()
+            && GroupAggregateOperator::<S>::all_streamable(&streaming_specs);
+
+        if use_streaming {
+            // Streaming path: O(groups) memory
+            tracing::debug!(
+                group_by_count = options.group_by.len(),
+                agg_count = streaming_specs.len(),
+                "using streaming GroupAggregateOperator"
+            );
+            operator = Box::new(GroupAggregateOperator::new(
+                operator,
+                options.group_by.clone(),
+                streaming_specs,
+                None, // binary_store - will be set from context if needed
+            ));
+        } else {
+            // Traditional path: GroupByOperator + AggregateOperator
+            operator = Box::new(GroupByOperator::new(operator, options.group_by.clone()));
+            if !options.aggregates.is_empty() {
+                operator = Box::new(AggregateOperator::new(operator, options.aggregates.clone()));
+            }
+        }
     }
 
     // HAVING (filter on aggregated results)

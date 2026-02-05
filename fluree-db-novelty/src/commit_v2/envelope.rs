@@ -125,6 +125,13 @@ pub fn encode_envelope_fields(
     }
     if let Some(txn_sig) = &envelope.txn_signature {
         encode_len_str(&txn_sig.signer, buf);
+        // txn_id (optional string)
+        if let Some(txn_id) = &txn_sig.txn_id {
+            buf.push(1);
+            encode_len_str(txn_id, buf);
+        } else {
+            buf.push(0);
+        }
     }
 
     Ok(())
@@ -205,7 +212,25 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
                 signer.len()
             )));
         }
-        Some(TxnSignature { signer })
+        // txn_id (optional)
+        if pos >= data.len() {
+            return Err(CommitV2Error::UnexpectedEof);
+        }
+        let has_txn_id = data[pos] != 0;
+        pos += 1;
+        let txn_id = if has_txn_id {
+            let id = decode_len_str(data, &mut pos)?;
+            if id.len() > 256 {
+                return Err(CommitV2Error::EnvelopeDecode(format!(
+                    "txn_signature txn_id length {} exceeds maximum 256",
+                    id.len()
+                )));
+            }
+            Some(id)
+        } else {
+            None
+        };
+        Some(TxnSignature { signer, txn_id })
     } else {
         None
     };
