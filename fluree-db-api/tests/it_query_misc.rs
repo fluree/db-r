@@ -391,7 +391,8 @@ async fn s_p_o_full_db_queries_parity() {
         ))
     };
 
-    let expected = [(
+    let expected = [
+        (
             json!("ex:alice"),
             json!("ex:User"),
             json!("Alice"),
@@ -411,7 +412,8 @@ async fn s_p_o_full_db_queries_parity() {
             json!("Jane"),
             json!(30),
             Some(json!("jane@flur.ee")),
-        )];
+        ),
+    ];
 
     let rows = r_graph.as_array().expect("graph crawl results array");
     assert_eq!(rows.len(), 11);

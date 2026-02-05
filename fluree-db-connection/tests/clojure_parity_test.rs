@@ -32,7 +32,8 @@ fn find_root_file(test_db_path: &Path) -> Option<String> {
 
     std::fs::read_dir(&root_dir)
         .ok()?
-        .filter_map(|e| e.ok()).find(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
+        .filter_map(|e| e.ok())
+        .find(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
         .map(|e| {
             format!(
                 "fluree:file://test/range-scan/index/root/{}",

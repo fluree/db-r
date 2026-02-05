@@ -783,7 +783,8 @@ async fn sparql_mix_of_grouped_values_and_aggregates() {
         .collect();
     rows.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let expected = [(
+    let expected = [
+        (
             "ex:bbob".to_string(),
             "bbob".to_string(),
             vec![23],
@@ -803,7 +804,8 @@ async fn sparql_mix_of_grouped_values_and_aggregates() {
             vec![3, 7, 42, 99],
             37.75,
             99,
-        )];
+        ),
+    ];
 
     assert_eq!(rows.len(), expected.len());
     for (actual, target) in rows.iter().zip(expected.iter()) {

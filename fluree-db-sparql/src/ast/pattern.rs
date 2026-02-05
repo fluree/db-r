@@ -379,11 +379,13 @@ mod tests {
 
     #[test]
     fn test_graph_pattern_span() {
-        let patterns = [GraphPattern::empty_bgp(SourceSpan::new(0, 10)),
+        let patterns = [
+            GraphPattern::empty_bgp(SourceSpan::new(0, 10)),
             GraphPattern::Optional {
                 pattern: Box::new(GraphPattern::empty_bgp(SourceSpan::new(20, 30))),
                 span: SourceSpan::new(15, 35),
-            }];
+            },
+        ];
 
         assert_eq!(patterns[0].span(), SourceSpan::new(0, 10));
         assert_eq!(patterns[1].span(), SourceSpan::new(15, 35));

@@ -327,8 +327,10 @@ mod tests {
         assert!(op.is_compatible(
             &ctx,
             &input_row,
-            &[Binding::lit(FlakeValue::Long(10), xsd_long()),
-                Binding::lit(FlakeValue::Long(20), xsd_long())]
+            &[
+                Binding::lit(FlakeValue::Long(10), xsd_long()),
+                Binding::lit(FlakeValue::Long(20), xsd_long())
+            ]
         ));
 
         // Incompatible: child has 10, values has 99
@@ -337,8 +339,10 @@ mod tests {
         assert!(!op.is_compatible(
             &ctx,
             &input_row,
-            &[Binding::lit(FlakeValue::Long(99), xsd_long()),
-                Binding::lit(FlakeValue::Long(20), xsd_long())]
+            &[
+                Binding::lit(FlakeValue::Long(99), xsd_long()),
+                Binding::lit(FlakeValue::Long(20), xsd_long())
+            ]
         ));
 
         // Compatible: child is Unbound (matches anything)
@@ -347,8 +351,10 @@ mod tests {
         assert!(op.is_compatible(
             &ctx,
             &input_row,
-            &[Binding::lit(FlakeValue::Long(99), xsd_long()),
-                Binding::lit(FlakeValue::Long(20), xsd_long())]
+            &[
+                Binding::lit(FlakeValue::Long(99), xsd_long()),
+                Binding::lit(FlakeValue::Long(20), xsd_long())
+            ]
         ));
     }
 

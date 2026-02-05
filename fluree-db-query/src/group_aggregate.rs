@@ -852,7 +852,11 @@ mod tests {
             for row_idx in 0..batch.len() {
                 let venue = batch.get_by_col(row_idx, 0).clone();
                 let count = batch.get_by_col(row_idx, 1);
-                if let Binding::Lit { val: FlakeValue::Long(n), .. } = count {
+                if let Binding::Lit {
+                    val: FlakeValue::Long(n),
+                    ..
+                } = count
+                {
                     results.push((venue, *n));
                 }
             }

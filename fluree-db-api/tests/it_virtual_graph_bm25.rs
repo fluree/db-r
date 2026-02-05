@@ -762,7 +762,7 @@ async fn bm25_federated_query_with_aggregation() {
         if !result.batches.is_empty() && !result.batches[0].is_empty() {
             // Extract year from result
             let batch = &result.batches[0];
-    if let Some(fluree_db_query::binding::Binding::Lit {
+            if let Some(fluree_db_query::binding::Binding::Lit {
                 val: fluree_db_core::FlakeValue::Long(year),
                 ..
             }) = batch.column_by_idx(0).and_then(|col| col.first())
