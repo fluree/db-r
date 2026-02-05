@@ -22,7 +22,7 @@ use sha2::{Sha256, Sha384, Sha512};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use super::eval::{eval_to_comparable, eval_to_comparable_inner, evaluate, evaluate_inner};
+use super::eval::{eval_to_comparable_inner, evaluate_inner};
 use super::helpers::{
     build_regex_with_flags, check_arity, format_datatype_sid, parse_datetime_from_binding,
 };
@@ -354,7 +354,7 @@ pub fn eval_function<S: Storage>(
         FunctionName::IsIri => {
             check_arity(args, 1, "isIRI")?;
             let val = eval_to_comparable_inner(&args[0], row, ctx)?;
-            Ok(Some(ComparableValue::Bool(val.map_or(false, |v| {
+            Ok(Some(ComparableValue::Bool(val.is_some_and(|v| {
                 matches!(v, ComparableValue::Sid(_) | ComparableValue::Iri(_))
             }))))
         }
@@ -362,7 +362,7 @@ pub fn eval_function<S: Storage>(
         FunctionName::IsLiteral => {
             check_arity(args, 1, "isLiteral")?;
             let val = eval_to_comparable_inner(&args[0], row, ctx)?;
-            Ok(Some(ComparableValue::Bool(val.map_or(false, |v| {
+            Ok(Some(ComparableValue::Bool(val.is_some_and(|v| {
                 matches!(
                     v,
                     ComparableValue::Long(_)
@@ -376,7 +376,7 @@ pub fn eval_function<S: Storage>(
         FunctionName::IsNumeric => {
             check_arity(args, 1, "isNumeric")?;
             let val = eval_to_comparable_inner(&args[0], row, ctx)?;
-            Ok(Some(ComparableValue::Bool(val.map_or(false, |v| {
+            Ok(Some(ComparableValue::Bool(val.is_some_and(|v| {
                 matches!(v, ComparableValue::Long(_) | ComparableValue::Double(_))
             }))))
         }
@@ -468,8 +468,17 @@ pub fn eval_function<S: Storage>(
         FunctionName::T => {
             check_arity(args, 1, "T")?;
             if let FilterExpr::Var(var_id) = &args[0] {
-                if let Some(Binding::Lit { t: Some(t), .. }) = row.get(*var_id) {
-                    return Ok(Some(ComparableValue::Long(*t)));
+                if let Some(binding) = row.get(*var_id) {
+                    match binding {
+                        Binding::Lit { t: Some(t), .. } => {
+                            return Ok(Some(ComparableValue::Long(*t)));
+                        }
+                        // Late-materialized binary bindings still carry `t` directly.
+                        Binding::EncodedLit { t, .. } => {
+                            return Ok(Some(ComparableValue::Long(*t)));
+                        }
+                        _ => {}
+                    }
                 }
             }
             Ok(None)

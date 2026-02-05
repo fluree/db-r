@@ -74,6 +74,7 @@
   - [Reindex API](indexing-and-search/reindex.md)
   - [BM25](indexing-and-search/bm25.md)
   - [Vector search](indexing-and-search/vector-search.md)
+  - [Geospatial](indexing-and-search/geospatial.md)
 
 - [Virtual graphs and integrations](virtual-graphs/README.md)
   - [Overview](virtual-graphs/overview.md)

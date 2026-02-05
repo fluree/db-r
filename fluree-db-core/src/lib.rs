@@ -33,6 +33,7 @@ pub mod db;
 pub mod dict_novelty;
 pub mod error;
 pub mod flake;
+pub mod geo;
 pub mod ids;
 pub mod index_schema;
 pub mod index_stats;
@@ -108,7 +109,7 @@ pub use temporal::{Date, DateTime, Time};
 pub use tracking::{FuelExceededError, PolicyStats, Tracker, TrackingOptions, TrackingTally};
 pub use value::{
     parse_decimal, parse_decimal_string, parse_double, parse_integer, parse_integer_string,
-    FlakeValue,
+    FlakeValue, GeoPointBits,
 };
 pub use value_id::{ObjKey, ObjKeyError, ObjKind, ObjPair, ValueTypeTag};
 

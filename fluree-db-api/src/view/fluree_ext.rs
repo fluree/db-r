@@ -25,6 +25,63 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
 {
+    /// Split a graph reference like `ledger:main#txn-meta` into (ledger_alias, graph_id).
+    ///
+    /// Currently supported fragments:
+    /// - *(none)* → default graph (g_id = 0)
+    /// - `#txn-meta` → txn metadata graph (g_id = 1)
+    fn parse_graph_ref(alias: &str) -> Result<(&str, u32)> {
+        match alias.split_once('#') {
+            None => Ok((alias, 0)),
+            Some((ledger_alias, frag)) => {
+                if ledger_alias.is_empty() {
+                    return Err(ApiError::query("Missing ledger before '#'"));
+                }
+                if frag.is_empty() {
+                    return Err(ApiError::query("Missing named graph after '#'"));
+                }
+                match frag {
+                    "txn-meta" => Ok((ledger_alias, 1)),
+                    other => Err(ApiError::query(format!(
+                        "Unknown named graph '#{}' (supported: #txn-meta)",
+                        other
+                    ))),
+                }
+            }
+        }
+    }
+
+    /// Apply a graph ID selection to a loaded view.
+    ///
+    /// For non-default graphs, this re-scopes the view's `Db.range_provider` and
+    /// sets `view.graph_id` so both range queries and binary scans use the same graph.
+    fn select_graph_id(mut view: FlureeView<S>, graph_id: u32) -> Result<FlureeView<S>> {
+        if graph_id == 0 {
+            return Ok(view);
+        }
+
+        let Some(store) = view.binary_store.clone() else {
+            return Err(ApiError::internal(
+                "Named graph queries require a binary index store".to_string(),
+            ));
+        };
+        let Some(dict_novelty) = view.dict_novelty.clone() else {
+            return Err(ApiError::internal(
+                "Named graph queries require dict novelty".to_string(),
+            ));
+        };
+
+        // Re-scope the range provider to the requested graph_id.
+        // This ensures callers of `range_with_overlay()` (planner, policy, etc.)
+        // see the correct graph.
+        let provider = BinaryRangeProvider::new(store, dict_novelty, graph_id);
+        let mut db = (*view.db).clone();
+        db.range_provider = Some(Arc::new(provider));
+        view.db = Arc::new(db);
+
+        Ok(view.with_graph_id(graph_id))
+    }
+
     /// Load the current view (immutable snapshot) from a ledger.
     ///
     /// Uses the connection-level ledger cache when available (check cache first,
@@ -98,14 +155,21 @@ where
                 let snapshot = handle.snapshot().await;
                 let ledger = snapshot.to_ledger_state();
                 let current_t = ledger.t();
-                let target_epoch_ms = DateTime::parse_from_rfc3339(&iso)
-                    .map_err(|e| {
-                        ApiError::internal(format!(
-                            "Invalid ISO-8601 timestamp for time travel: {} ({})",
-                            iso, e
-                        ))
-                    })?
-                    .timestamp_millis();
+                let dt = DateTime::parse_from_rfc3339(&iso).map_err(|e| {
+                    ApiError::internal(format!(
+                        "Invalid ISO-8601 timestamp for time travel: {} ({})",
+                        iso, e
+                    ))
+                })?;
+                // `ledger#time` flakes store epoch milliseconds. If the ISO timestamp includes
+                // sub-millisecond precision, `timestamp_millis()` truncates, which can push the
+                // target *slightly before* the intended instant. To avoid off-by-one-ms
+                // resolution (especially around the first commit after genesis), we ceiling
+                // to the next millisecond when sub-ms precision is present.
+                let mut target_epoch_ms = dt.timestamp_millis();
+                if dt.timestamp_subsec_nanos() % 1_000_000 != 0 {
+                    target_epoch_ms += 1;
+                }
                 let resolved_t = time_resolve::datetime_to_t(
                     &ledger.db,
                     Some(ledger.novelty.as_ref()),
@@ -137,17 +201,23 @@ where
     /// Returns a [`FlureeView`] — an immutable, point-in-time snapshot.
     /// For the lazy API, use [`graph()`](Self::graph) instead.
     pub async fn view(&self, alias: &str) -> Result<FlureeView<S>> {
-        self.load_view(alias).await
+        let (ledger_alias, graph_id) = Self::parse_graph_ref(alias)?;
+        let view = self.load_view(ledger_alias).await?;
+        Self::select_graph_id(view, graph_id)
     }
 
     /// Load a historical snapshot at a specific transaction time.
     pub async fn view_at_t(&self, alias: &str, target_t: i64) -> Result<FlureeView<S>> {
-        self.load_view_at_t(alias, target_t).await
+        let (ledger_alias, graph_id) = Self::parse_graph_ref(alias)?;
+        let view = self.load_view_at_t(ledger_alias, target_t).await?;
+        Self::select_graph_id(view, graph_id)
     }
 
     /// Load a snapshot at a flexible time specification.
     pub async fn view_at(&self, alias: &str, spec: TimeSpec) -> Result<FlureeView<S>> {
-        self.load_view_at(alias, spec).await
+        let (ledger_alias, graph_id) = Self::parse_graph_ref(alias)?;
+        let view = self.load_view_at(ledger_alias, spec).await?;
+        Self::select_graph_id(view, graph_id)
     }
 }
 

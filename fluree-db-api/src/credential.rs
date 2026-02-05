@@ -66,7 +66,7 @@ mod tests {
 
     fn create_test_jws(payload: &str, signing_key: &SigningKey) -> String {
         let pubkey = signing_key.verifying_key().to_bytes();
-        let pubkey_b64 = URL_SAFE_NO_PAD.encode(&pubkey);
+        let pubkey_b64 = URL_SAFE_NO_PAD.encode(pubkey);
 
         let header = serde_json::json!({
             "alg": "EdDSA",

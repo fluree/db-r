@@ -347,7 +347,6 @@ mod tests {
 
         // Store the commit as v2 binary
         let commit = fluree_db_novelty::Commit::new("commit-5", 5, vec![make_flake(1, 1, 100, 5)]);
-        let storage = storage;
         let blob = fluree_db_novelty::commit_v2::write_commit(&commit, false, None).unwrap();
         storage.insert("commit-5", blob.bytes);
 
@@ -367,7 +366,6 @@ mod tests {
 
         // Store the commit as v2 binary
         let commit = fluree_db_novelty::Commit::new("commit-5", 5, vec![make_flake(1, 1, 100, 5)]);
-        let storage = storage;
         let blob = fluree_db_novelty::commit_v2::write_commit(&commit, false, None).unwrap();
         storage.insert("commit-5", blob.bytes);
 

@@ -234,7 +234,7 @@ mod tests {
         // We use 3σ bounds (99.7% confidence): [805, 1195]
         // Add some margin for no bias correction: [700, 1300]
         assert!(
-            estimate >= 700 && estimate <= 1300,
+            (700..=1300).contains(&estimate),
             "estimate {} not in expected range [700, 1300] for 1000 values",
             estimate
         );
@@ -275,7 +275,7 @@ mod tests {
         // Combined 1000 distinct values, expect ~6.5% error
         // Using 3σ bounds with margin: [700, 1300]
         assert!(
-            estimate >= 700 && estimate <= 1300,
+            (700..=1300).contains(&estimate),
             "merged estimate {} not in expected range [700, 1300]",
             estimate
         );
@@ -346,7 +346,7 @@ mod tests {
         // For 10000 values: 10000 ± 650 at 1σ, ± 1300 at 2σ, ± 1950 at 3σ
         // Using 3σ bounds with margin: [7000, 13000]
         assert!(
-            estimate >= 7000 && estimate <= 13000,
+            (7000..=13000).contains(&estimate),
             "large estimate {} not in expected range [7000, 13000]",
             estimate
         );

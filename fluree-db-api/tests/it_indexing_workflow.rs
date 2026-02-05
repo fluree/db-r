@@ -88,9 +88,11 @@ async fn manual_indexing_disabled_mode_then_trigger_updates_nameservice_and_load
             let db0 = Db::genesis(fluree.storage().clone(), alias);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
-            let mut index_cfg = IndexConfig::default();
-            index_cfg.reindex_min_bytes = 0;
-            index_cfg.reindex_max_bytes = 10_000_000;
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+                ..Default::default()
+            };
 
             for i in 0..10 {
                 let tx = json!({
@@ -187,9 +189,11 @@ async fn indexing_coalesces_multiple_commits_and_latest_root_is_queryable() {
             let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
-            let mut index_cfg = IndexConfig::default();
-            index_cfg.reindex_min_bytes = 0;
-            index_cfg.reindex_max_bytes = 10_000_000;
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+                ..Default::default()
+            };
 
             let tx1 = json!({
                 "@context": { "ex":"http://example.org/" },
@@ -298,9 +302,11 @@ async fn file_based_indexing_then_new_connection_loads_and_queries() {
             let db0 = Db::genesis(fluree.storage().clone(), alias);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
-            let mut index_cfg = IndexConfig::default();
-            index_cfg.reindex_min_bytes = 0;
-            index_cfg.reindex_max_bytes = 10_000_000;
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+                ..Default::default()
+            };
 
             for i in 0..20 {
                 let tx = json!({
@@ -406,9 +412,11 @@ async fn seed_some_commits(
     let db0 = Db::genesis(fluree.storage().clone(), alias);
     let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
-    let mut idx_cfg = IndexConfig::default();
-    idx_cfg.reindex_min_bytes = 0;
-    idx_cfg.reindex_max_bytes = 10_000_000;
+    let idx_cfg = IndexConfig {
+        reindex_min_bytes: 0,
+        reindex_max_bytes: 10_000_000,
+        ..Default::default()
+    };
 
     for i in 0..n {
         let tx = json!({
@@ -608,9 +616,11 @@ async fn reindex_populates_statistics() {
     let db0 = Db::genesis(fluree.storage().clone(), &a);
     let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
-    let mut idx_cfg = IndexConfig::default();
-    idx_cfg.reindex_min_bytes = 0;
-    idx_cfg.reindex_max_bytes = 10_000_000;
+    let idx_cfg = IndexConfig {
+        reindex_min_bytes: 0,
+        reindex_max_bytes: 10_000_000,
+        ..Default::default()
+    };
 
     // Insert people with types
     let tx1 = json!({
@@ -803,9 +813,11 @@ async fn reindex_preserves_filter_queries() {
     let db0 = Db::genesis(fluree.storage().clone(), &a);
     let ledger = LedgerState::new(db0, Novelty::new(0));
 
-    let mut idx_cfg = IndexConfig::default();
-    idx_cfg.reindex_min_bytes = 0;
-    idx_cfg.reindex_max_bytes = 10_000_000;
+    let idx_cfg = IndexConfig {
+        reindex_min_bytes: 0,
+        reindex_max_bytes: 10_000_000,
+        ..Default::default()
+    };
 
     let tx = json!({
         "@context": { "ex": "http://example.org/" },
@@ -889,9 +901,11 @@ async fn reindex_uses_provided_indexer_config() {
     let db0 = Db::genesis(fluree.storage().clone(), &a);
     let ledger = LedgerState::new(db0, Novelty::new(0));
 
-    let mut idx_cfg = IndexConfig::default();
-    idx_cfg.reindex_min_bytes = 0;
-    idx_cfg.reindex_max_bytes = 10_000_000;
+    let idx_cfg = IndexConfig {
+        reindex_min_bytes: 0,
+        reindex_max_bytes: 10_000_000,
+        ..Default::default()
+    };
 
     // Insert some data
     let tx = json!({
@@ -957,9 +971,11 @@ async fn reindex_default_from_t_includes_all_data() {
     let db0 = Db::genesis(fluree.storage().clone(), &a);
     let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
-    let mut idx_cfg = IndexConfig::default();
-    idx_cfg.reindex_min_bytes = 0;
-    idx_cfg.reindex_max_bytes = 10_000_000;
+    let idx_cfg = IndexConfig {
+        reindex_min_bytes: 0,
+        reindex_max_bytes: 10_000_000,
+        ..Default::default()
+    };
 
     // Insert 3 transactions
     for i in 0..3 {

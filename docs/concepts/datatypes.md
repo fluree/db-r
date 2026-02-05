@@ -192,6 +192,30 @@ Beyond XSD, Fluree supports RDF-specific datatypes:
 
 **rdf:JSON** stores JSON data as typed literals. This is useful for storing complex structured data that doesn't fit the RDF model.
 
+### Geographic Data
+
+```json
+{
+  "@context": {
+    "geo": "http://www.opengis.net/ont/geosparql#",
+    "ex": "http://example.org/"
+  },
+  "@graph": [
+    {
+      "@id": "ex:location1",
+      "ex:coordinates": {
+        "@value": "POINT(2.3522 48.8566)",
+        "@type": "geo:wktLiteral"
+      }
+    }
+  ]
+}
+```
+
+**geo:wktLiteral** stores geographic data in Well-Known Text (WKT) format. POINT geometries are automatically converted to an optimized binary encoding, while other geometry types (polygons, lines) are stored as strings.
+
+See [Geospatial](../indexing-and-search/geospatial.md) for complete documentation.
+
 ## Type Coercion and Compatibility
 
 ### Automatic Type Promotion

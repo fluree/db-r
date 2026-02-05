@@ -28,6 +28,8 @@ use crate::overlay::{NoOverlay, OverlayProvider};
 use crate::sid::Sid;
 use crate::storage::Storage;
 use crate::value::FlakeValue;
+use fluree_vocab::namespaces::XSD;
+use fluree_vocab::xsd_names;
 
 /// Batch size constant for batched subject joins.
 ///
@@ -89,6 +91,11 @@ where
             // Apply RangeMatch filtering — collect_overlay_only returns all
             // overlay flakes; narrow them to the requested range.
             apply_range_filter(&mut flakes, test, &match_val);
+            // Apply RangeOptions semantics for overlay-only path (object bounds, offset, limits).
+            //
+            // This matters for time resolution (`@iso:`), which uses `object_bounds`
+            // and `flake_limit(1)` to efficiently resolve the first flake after a target.
+            apply_overlay_only_options(&mut flakes, &opts);
             Ok(flakes)
         }
         None => Err(crate::error::Error::invalid_index(
@@ -134,6 +141,7 @@ where
                 cmp(f, &start_bound) != std::cmp::Ordering::Less
                     && cmp(f, &end_bound) != std::cmp::Ordering::Greater
             });
+            apply_overlay_only_options(&mut flakes, &opts);
             Ok(flakes)
         }
         None => Err(crate::error::Error::invalid_index(
@@ -200,7 +208,7 @@ fn apply_range_filter(flakes: &mut Vec<Flake>, test: RangeTest, match_val: &Rang
             }
         }
         if let Some(ref dt) = match_val.dt {
-            if f.dt != *dt {
+            if !dt_compatible(dt, &f.dt) {
                 return false;
             }
         }
@@ -211,6 +219,59 @@ fn apply_range_filter(flakes: &mut Vec<Flake>, test: RangeTest, match_val: &Rang
         }
         true
     });
+}
+
+/// Datatype matching used in the overlay-only (genesis Db) path.
+///
+/// Query parsing normalizes numeric datatype IRIs (e.g., xsd:int → xsd:integer).
+/// For Clojure parity and usability, range filtering treats numeric families as compatible:
+/// - xsd:integer matches xsd:int/long/short/byte/integer
+/// - xsd:double matches xsd:float/double
+#[inline]
+fn dt_compatible(expected: &Sid, actual: &Sid) -> bool {
+    if expected == actual {
+        return true;
+    }
+    if expected.namespace_code != XSD || actual.namespace_code != XSD {
+        return false;
+    }
+    match expected.name.as_ref() {
+        xsd_names::INTEGER => matches!(
+            actual.name.as_ref(),
+            xsd_names::INTEGER
+                | xsd_names::INT
+                | xsd_names::SHORT
+                | xsd_names::BYTE
+                | xsd_names::LONG
+        ),
+        xsd_names::DOUBLE => matches!(actual.name.as_ref(), xsd_names::DOUBLE | xsd_names::FLOAT),
+        _ => false,
+    }
+}
+
+/// Apply RangeOptions to the overlay-only (genesis Db) path.
+///
+/// The overlay-only path bypasses the index `RangeProvider`, so we must manually
+/// apply options that providers typically enforce (object bounds, offset, limits).
+fn apply_overlay_only_options(flakes: &mut Vec<Flake>, opts: &RangeOptions) {
+    // Object bounds (post-filter) — used by datetime resolution (`ledger#time > target`).
+    if let Some(bounds) = opts.object_bounds.as_ref() {
+        flakes.retain(|f| bounds.matches(&f.o));
+    }
+
+    // Offset (flake-wise for overlay-only path).
+    if let Some(offset) = opts.offset {
+        if offset > 0 {
+            let n = offset.min(flakes.len());
+            flakes.drain(0..n);
+        }
+    }
+
+    // Apply flake limit (preferred) or subject limit (fallback semantics for overlay-only).
+    let cap = opts.flake_limit.or(opts.limit).unwrap_or(usize::MAX);
+    if flakes.len() > cap {
+        flakes.truncate(cap);
+    }
 }
 
 // ============================================================================

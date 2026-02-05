@@ -162,14 +162,18 @@ async fn resolve_history_endpoint_t<S: Storage + Clone + Send + Sync + 'static>(
         dataset::TimeSpec::AtT(t) => Ok(*t),
         dataset::TimeSpec::Latest => Ok(latest_t),
         dataset::TimeSpec::AtTime(iso) => {
-            let target_epoch_ms = DateTime::parse_from_rfc3339(iso)
-                .map_err(|e| {
-                    ApiError::internal(format!(
-                        "Invalid ISO-8601 timestamp for time travel: {} ({})",
-                        iso, e
-                    ))
-                })?
-                .timestamp_millis();
+            let dt = DateTime::parse_from_rfc3339(iso).map_err(|e| {
+                ApiError::internal(format!(
+                    "Invalid ISO-8601 timestamp for time travel: {} ({})",
+                    iso, e
+                ))
+            })?;
+            // See `Fluree::load_view_at` for rationale: `ledger#time` is epoch-ms and we
+            // ceiling sub-ms ISO inputs to avoid truncation off-by-one.
+            let mut target_epoch_ms = dt.timestamp_millis();
+            if dt.timestamp_subsec_nanos() % 1_000_000 != 0 {
+                target_epoch_ms += 1;
+            }
 
             time_resolve::datetime_to_t(
                 &ledger.db,

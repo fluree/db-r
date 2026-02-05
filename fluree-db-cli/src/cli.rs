@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -209,6 +209,42 @@ pub enum Commands {
         /// Shell to generate completions for (bash, zsh, fish, powershell, elvish)
         shell: clap_complete::Shell,
     },
+
+    /// Manage JWS tokens for authentication
+    Token {
+        #[command(subcommand)]
+        action: TokenAction,
+    },
+
+    /// Manage remote servers
+    Remote {
+        #[command(subcommand)]
+        action: RemoteAction,
+    },
+
+    /// Manage upstream tracking configuration
+    Upstream {
+        #[command(subcommand)]
+        action: UpstreamAction,
+    },
+
+    /// Fetch refs from a remote (like git fetch)
+    Fetch {
+        /// Remote name (e.g., "origin")
+        remote: String,
+    },
+
+    /// Pull (fetch + fast-forward) a ledger from its upstream
+    Pull {
+        /// Ledger name (defaults to active ledger)
+        ledger: Option<String>,
+    },
+
+    /// Push a ledger to its upstream remote
+    Push {
+        /// Ledger name (defaults to active ledger)
+        ledger: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -250,5 +286,170 @@ pub enum PrefixAction {
     },
 
     /// List all prefix mappings
+    List,
+}
+
+#[derive(Subcommand)]
+pub enum TokenAction {
+    /// Create a new JWS token for authentication
+    Create {
+        /// Ed25519 private key (hex with 0x prefix, base58btc, @filepath, or @- for stdin)
+        #[arg(long, required = true)]
+        private_key: String,
+
+        /// Token lifetime (e.g., "1h", "30m", "7d", "1w") [default: 1h]
+        #[arg(long, default_value = "1h")]
+        expires_in: String,
+
+        /// Subject claim (sub) - identity of the token holder
+        #[arg(long)]
+        subject: Option<String>,
+
+        /// Audience claim (aud) - repeatable for multiple audiences
+        #[arg(long = "audience")]
+        audiences: Vec<String>,
+
+        /// Fluree identity claim (fluree.identity) - takes precedence over sub for policy
+        #[arg(long)]
+        identity: Option<String>,
+
+        /// Grant access to all ledgers (fluree.events.all=true, fluree.storage.all=true)
+        #[arg(long)]
+        all: bool,
+
+        /// Grant events access to specific ledger (repeatable)
+        #[arg(long = "events-ledger")]
+        events_ledgers: Vec<String>,
+
+        /// Grant storage access to specific ledger (repeatable)
+        #[arg(long = "storage-ledger")]
+        storage_ledgers: Vec<String>,
+
+        /// Grant access to specific virtual graph (repeatable)
+        #[arg(long = "vg")]
+        vgs: Vec<String>,
+
+        /// Output format
+        #[arg(long, default_value = "token", value_enum)]
+        output: TokenOutputFormat,
+
+        /// Print decoded claims to stderr (for verification)
+        #[arg(long)]
+        print_claims: bool,
+    },
+
+    /// Generate a new Ed25519 keypair
+    Keygen {
+        /// Output format for the keypair
+        #[arg(long, default_value = "hex", value_enum)]
+        format: KeyFormat,
+
+        /// Write private key to file (otherwise prints to stdout)
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+    },
+
+    /// Inspect (decode and verify) a JWS token
+    Inspect {
+        /// JWS token string or @filepath
+        token: String,
+
+        /// Skip signature verification
+        #[arg(long)]
+        no_verify: bool,
+
+        /// Output format
+        #[arg(long, default_value = "pretty", value_enum)]
+        output: InspectOutputFormat,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum TokenOutputFormat {
+    /// Just the JWS token string
+    Token,
+    /// JSON object with token and decoded claims
+    Json,
+    /// Ready-to-use curl command for events endpoint
+    Curl,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum KeyFormat {
+    /// Hex with 0x prefix (64 chars)
+    Hex,
+    /// Base58btc with z prefix (multibase)
+    Base58,
+    /// JSON object with hex, base58, and did:key
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum InspectOutputFormat {
+    /// Human-readable formatted output
+    Pretty,
+    /// Raw JSON
+    Json,
+    /// Table format for claims
+    Table,
+}
+
+#[derive(Subcommand)]
+pub enum RemoteAction {
+    /// Add a remote server
+    Add {
+        /// Remote name (e.g., "origin")
+        name: String,
+
+        /// Server URL (e.g., "http://localhost:8090")
+        url: String,
+
+        /// Authentication token (or @filepath to read from file)
+        #[arg(long)]
+        token: Option<String>,
+    },
+
+    /// Remove a remote
+    Remove {
+        /// Remote name to remove
+        name: String,
+    },
+
+    /// List all remotes
+    List,
+
+    /// Show details for a remote
+    Show {
+        /// Remote name
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum UpstreamAction {
+    /// Set upstream tracking for a ledger
+    Set {
+        /// Local ledger alias (e.g., "mydb" or "mydb:main")
+        local: String,
+
+        /// Remote name (e.g., "origin")
+        remote: String,
+
+        /// Remote ledger alias (defaults to local alias)
+        #[arg(long)]
+        remote_alias: Option<String>,
+
+        /// Automatically pull on fetch
+        #[arg(long)]
+        auto_pull: bool,
+    },
+
+    /// Remove upstream tracking for a ledger
+    Remove {
+        /// Local ledger alias
+        local: String,
+    },
+
+    /// List all upstream configurations
     List,
 }

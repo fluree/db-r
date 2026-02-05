@@ -786,7 +786,7 @@ async fn bm25_federated_query_with_aggregation() {
         "expected 2 rust books in 2021"
     );
     assert!(
-        year_counts.get(&2019).is_none(),
+        !year_counts.contains_key(&2019),
         "expected no rust books in 2019"
     );
 }

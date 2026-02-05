@@ -862,14 +862,15 @@ async fn build_s3_storage_from_config(
         // Use the maximum to avoid unexpectedly shortening slower operations.
         timeout_ms: {
             let mut max_ms: Option<u64> = None;
-            for v in [
+            for ms in [
                 s3_config.read_timeout_ms,
                 s3_config.write_timeout_ms,
                 s3_config.list_timeout_ms,
-            ] {
-                if let Some(ms) = v {
-                    max_ms = Some(max_ms.map(|cur| cur.max(ms)).unwrap_or(ms));
-                }
+            ]
+            .into_iter()
+            .flatten()
+            {
+                max_ms = Some(max_ms.map(|cur| cur.max(ms)).unwrap_or(ms));
             }
             max_ms
         },
@@ -1030,8 +1031,6 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
             ));
         };
 
-        let cache = Arc::new(aws_handle.cache().clone());
-
         // Decide whether to use tiered commit/index routing.
         let index = aws_handle.index_storage().clone();
         let commit = aws_handle.commit_storage().clone();
@@ -1060,7 +1059,7 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
             AnyStorage::new(base_storage)
         };
 
-        let connection = Connection::new(aws_handle.config().clone(), storage, Arc::clone(&cache));
+        let connection = Connection::new(aws_handle.config().clone(), storage);
 
         let commit_id = aws_handle
             .config()
@@ -1414,10 +1413,12 @@ impl FlureeBuilder {
             },
         };
 
-        let mut config = ConnectionConfig::default();
-        config.index_storage = storage;
-        config.commit_storage = None;
-        config.primary_publisher = Some(publisher);
+        let config = ConnectionConfig {
+            index_storage: storage,
+            commit_storage: None,
+            primary_publisher: Some(publisher),
+            ..Default::default()
+        };
 
         Self {
             config,

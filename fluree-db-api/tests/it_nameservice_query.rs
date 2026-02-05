@@ -176,7 +176,7 @@ async fn nameservice_query_file_storage_parity() {
         .await
         .expect("query_nameservice");
     let arr = result.as_array().expect("array");
-    assert!(arr.len() >= 1, "expected at least 1 ledger");
+    assert!(!arr.is_empty(), "expected at least 1 ledger");
     let file_ledger_rows = arr
         .iter()
         .filter_map(|row| row.as_array())

@@ -284,7 +284,7 @@ mod tests {
         // Simulate sid64 keys: (ns_code << 48) | local_id
         let entries = vec![
             ForwardEntry {
-                id: (2u64 << 48) | 0,
+                id: 2u64 << 48,
                 value: b"http://a.org/x".to_vec(),
             },
             ForwardEntry {
@@ -292,7 +292,7 @@ mod tests {
                 value: b"http://a.org/y".to_vec(),
             },
             ForwardEntry {
-                id: (3u64 << 48) | 0,
+                id: 3u64 << 48,
                 value: b"http://b.org/z".to_vec(),
             },
         ];
@@ -304,7 +304,7 @@ mod tests {
             Some(b"http://a.org/y".as_slice())
         );
         assert_eq!(
-            leaf.lookup((3u64 << 48) | 0),
+            leaf.lookup(3u64 << 48),
             Some(b"http://b.org/z".as_slice())
         );
         assert!(leaf.lookup((3u64 << 48) | 1).is_none());

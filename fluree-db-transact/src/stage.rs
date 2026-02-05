@@ -1134,7 +1134,7 @@ mod tests {
         assert_eq!(state1.t(), 1);
         // Novelty includes 1 txn flake + commit metadata flakes
         assert!(
-            state1.novelty.len() >= 1,
+            !state1.novelty.is_empty(),
             "novelty should have at least 1 transaction flake (Alice's name)"
         );
 

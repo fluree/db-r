@@ -1003,8 +1003,8 @@ mod tests {
         let id_a1 = dict.get_or_insert("http://a.org/z", ns_a).unwrap();
 
         // Each namespace has its own local_id counter
-        assert_eq!(id_a0, (10u64 << 48) | 0); // ns_a, local_id=0
-        assert_eq!(id_b0, (20u64 << 48) | 0); // ns_b, local_id=0
+        assert_eq!(id_a0, 10u64 << 48); // ns_a, local_id=0
+        assert_eq!(id_b0, 20u64 << 48); // ns_b, local_id=0
         assert_eq!(id_a1, (10u64 << 48) | 1); // ns_a, local_id=1
 
         assert_eq!(dict.len(), 3);

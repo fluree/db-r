@@ -21,7 +21,7 @@
 use crate::binary_scan::index_type_to_sort_order;
 use crate::dict_overlay::DictOverlay;
 use fluree_db_core::dict_novelty::DictNovelty;
-use fluree_db_core::range::{RangeMatch, RangeOptions, RangeTest};
+use fluree_db_core::range::{ObjectBounds, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::{Flake, IndexType, OverlayProvider, RangeProvider, Sid};
 use fluree_db_indexer::run_index::{
     sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch,
@@ -154,13 +154,28 @@ fn binary_range_eq(
     }
 
     // Iterate leaves and collect Flakes.
-    let limit = opts.limit.unwrap_or(usize::MAX);
+    //
+    // NOTE: `RangeOptions` has both `limit` (subject limit) and `flake_limit`.
+    // Historically, the binary shim treated `limit` as a flake cap. To preserve
+    // existing behavior while supporting callers that correctly use `flake_limit`
+    // (e.g., ISO time resolution), we apply:
+    //   effective_flake_limit = flake_limit.or(limit).unwrap_or(usize::MAX)
+    let effective_flake_limit = opts.flake_limit.or(opts.limit).unwrap_or(usize::MAX);
+    let bounds = opts.object_bounds.as_ref();
+    let mut offset_remaining = opts.offset.unwrap_or(0);
     let mut flakes = Vec::new();
 
     while let Some(batch) = cursor.next_leaf()? {
-        decode_batch_to_flakes(store, &batch, &mut flakes)?;
-        if flakes.len() >= limit {
-            flakes.truncate(limit);
+        decode_batch_to_flakes_filtered(
+            store,
+            &batch,
+            &mut flakes,
+            bounds,
+            &mut offset_remaining,
+            effective_flake_limit,
+        )?;
+        if flakes.len() >= effective_flake_limit {
+            flakes.truncate(effective_flake_limit);
             break;
         }
     }
@@ -170,10 +185,13 @@ fn binary_range_eq(
 
 /// Convert a `DecodedBatch` into `Vec<Flake>` by resolving integer IDs back
 /// to Sid/FlakeValue.
-fn decode_batch_to_flakes(
+fn decode_batch_to_flakes_filtered(
     store: &BinaryIndexStore,
     batch: &DecodedBatch,
     out: &mut Vec<Flake>,
+    bounds: Option<&ObjectBounds>,
+    offset_remaining: &mut usize,
+    flake_limit: usize,
 ) -> io::Result<()> {
     let dt_sids = store.dt_sids();
 
@@ -203,6 +221,13 @@ fn decode_batch_to_flakes(
         // (o_kind, o_key) → FlakeValue
         let o_val = store.decode_value(o_kind, o_key, p_id)?;
 
+        // Optional post-filter for object bounds (RangeOptions semantics).
+        if let Some(b) = bounds {
+            if !b.matches(&o_val) {
+                continue;
+            }
+        }
+
         // dt_id → Sid for datatype
         let dt = dt_sids
             .get(dt_id as usize)
@@ -212,7 +237,18 @@ fn decode_batch_to_flakes(
         // Language tag + list index → FlakeMeta
         let meta = store.decode_meta(lang_id, i_val);
 
+        // Offset applies to the filtered stream (RangeOptions semantics).
+        if *offset_remaining > 0 {
+            *offset_remaining -= 1;
+            continue;
+        }
+
         out.push(Flake::new(s_sid, p_sid, o_val, dt, t, true, meta));
+
+        // Stop early once we've reached the caller's flake limit.
+        if out.len() >= flake_limit {
+            break;
+        }
     }
 
     Ok(())

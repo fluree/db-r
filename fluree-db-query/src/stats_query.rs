@@ -18,8 +18,6 @@ use std::sync::Arc;
 /// `SELECT ?p (COUNT(?s) AS ?count) WHERE { ?s ?p ?o } GROUP BY ?p ORDER BY DESC(?count)`
 pub struct StatsCountByPredicateOperator<S: Storage + 'static> {
     stats: Arc<StatsView>,
-    pred_var: VarId,
-    count_var: VarId,
     schema: Arc<[VarId]>,
     state: OperatorState,
     rows: Vec<(Binding, Binding)>,
@@ -32,8 +30,6 @@ impl<S: Storage + 'static> StatsCountByPredicateOperator<S> {
         let schema: Arc<[VarId]> = Arc::from(vec![pred_var, count_var].into_boxed_slice());
         Self {
             stats,
-            pred_var,
-            count_var,
             schema,
             state: OperatorState::Created,
             rows: Vec::new(),

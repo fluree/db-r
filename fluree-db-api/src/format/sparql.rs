@@ -341,6 +341,11 @@ fn format_binding(
                     "value": v.to_string(),
                     "datatype": dt_iri
                 }))),
+                FlakeValue::GeoPoint(v) => Ok(Some(json!({
+                    "type": "literal",
+                    "value": v.to_string(),
+                    "datatype": dt_iri
+                }))),
             }
         }
 
@@ -499,10 +504,7 @@ fn format_sparql_row(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query::QueryResult;
     use fluree_db_core::Sid;
-    use fluree_db_query::var_registry::VarRegistry;
-    use fluree_db_query::SelectMode;
     use std::collections::HashMap;
 
     fn make_test_compactor() -> IriCompactor {

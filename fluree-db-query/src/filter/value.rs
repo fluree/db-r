@@ -88,7 +88,7 @@ pub fn flake_value_to_comparable(val: &FlakeValue) -> Option<ComparableValue> {
         FlakeValue::DateTime(dt) => Some(ComparableValue::DateTime(dt.clone())),
         FlakeValue::Date(d) => Some(ComparableValue::Date(d.clone())),
         FlakeValue::Time(t) => Some(ComparableValue::Time(t.clone())),
-        // Calendar fragments and durations: route through TypedLiteral
+        // Calendar fragments, durations, and geo: route through TypedLiteral
         FlakeValue::GYear(_)
         | FlakeValue::GYearMonth(_)
         | FlakeValue::GMonth(_)
@@ -96,7 +96,8 @@ pub fn flake_value_to_comparable(val: &FlakeValue) -> Option<ComparableValue> {
         | FlakeValue::GMonthDay(_)
         | FlakeValue::YearMonthDuration(_)
         | FlakeValue::DayTimeDuration(_)
-        | FlakeValue::Duration(_) => Some(ComparableValue::TypedLiteral {
+        | FlakeValue::Duration(_)
+        | FlakeValue::GeoPoint(_) => Some(ComparableValue::TypedLiteral {
             val: val.clone(),
             dt_iri: None,
             lang: None,
@@ -143,10 +144,11 @@ pub fn comparable_to_string(val: &ComparableValue) -> Option<&str> {
     match val {
         ComparableValue::String(s) => Some(s.as_ref()),
         ComparableValue::Iri(s) => Some(s.as_ref()),
-        ComparableValue::TypedLiteral { val, .. } => match val {
-            FlakeValue::String(s) => Some(s.as_str()),
-            _ => None,
-        },
+        ComparableValue::TypedLiteral {
+            val: FlakeValue::String(s),
+            ..
+        } => Some(s.as_str()),
+        ComparableValue::TypedLiteral { .. } => None,
         _ => None,
     }
 }

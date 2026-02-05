@@ -5,8 +5,6 @@
 //!
 //! This module is only available with the `iceberg` feature.
 
-#![cfg(feature = "iceberg")]
-
 use crate::virtual_graph::cache::R2rmlCache;
 use crate::virtual_graph::config::{IcebergCreateConfig, R2rmlCreateConfig};
 use crate::virtual_graph::result::{IcebergCreateResult, R2rmlCreateResult};

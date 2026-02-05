@@ -954,7 +954,8 @@ where
     N: NameService + Publisher,
 {
     use fluree_db_indexer::run_index::{
-        build_all_indexes, precompute_language_dict, BinaryIndexRootV2, PrefixTrie, RunSortOrder,
+        build_all_indexes, precompute_language_dict, BinaryIndexRootV2, CasArtifactsConfig,
+        PrefixTrie, RunSortOrder,
     };
     use fluree_db_indexer::{upload_dicts_from_disk, upload_indexes_to_cas};
 
@@ -1204,22 +1205,22 @@ where
     };
 
     // ---- Phase 5: Build V2 root ----
-    let root = BinaryIndexRootV2::from_cas_artifacts(
-        alias,
-        final_t, // index_t
-        0,       // base_t (fresh import)
+    let root = BinaryIndexRootV2::from_cas_artifacts(CasArtifactsConfig {
+        ledger_alias: alias,
+        index_t: final_t,
+        base_t: 0, // fresh import
         predicate_sids,
         namespace_codes,
-        uploaded_dicts.subject_id_encoding,
-        uploaded_dicts.dict_addresses,
+        subject_id_encoding: uploaded_dicts.subject_id_encoding,
+        dict_addresses: uploaded_dicts.dict_addresses,
         graph_addresses,
-        Some(stats_json),
-        None, // schema
-        None, // prev_index (fresh import)
-        None, // garbage (fresh import)
-        uploaded_dicts.subject_watermarks,
-        uploaded_dicts.string_watermark,
-    );
+        stats: Some(stats_json),
+        schema: None,
+        prev_index: None,     // fresh import
+        garbage: None,        // fresh import
+        subject_watermarks: uploaded_dicts.subject_watermarks,
+        string_watermark: uploaded_dicts.string_watermark,
+    });
 
     let root_bytes = root
         .to_json_bytes()

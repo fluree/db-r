@@ -183,7 +183,7 @@ mod tests {
     /// Create a test JWS token with the given claims
     fn create_test_token(claims: &serde_json::Value, signing_key: &SigningKey) -> String {
         let pubkey = signing_key.verifying_key().to_bytes();
-        let pubkey_b64 = URL_SAFE_NO_PAD.encode(&pubkey);
+        let pubkey_b64 = URL_SAFE_NO_PAD.encode(pubkey);
 
         let header = serde_json::json!({
             "alg": "EdDSA",

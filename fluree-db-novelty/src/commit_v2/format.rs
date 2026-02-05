@@ -76,6 +76,7 @@ pub enum OTag {
     YearMonthDuration = 17,
     DayTimeDuration = 18,
     Duration = 19,
+    GeoPoint = 20,
 }
 
 impl OTag {
@@ -101,6 +102,7 @@ impl OTag {
             17 => Ok(OTag::YearMonthDuration),
             18 => Ok(OTag::DayTimeDuration),
             19 => Ok(OTag::Duration),
+            20 => Ok(OTag::GeoPoint),
             _ => Err(CommitV2Error::InvalidOpTag(b)),
         }
     }
@@ -281,7 +283,7 @@ pub fn sig_block_size(sigs: &[CommitSignature]) -> usize {
     let mut size = 2; // sig_count: u16
     for sig in sigs {
         size += 2; // signer_len: u16
-        size += sig.signer.as_bytes().len();
+        size += sig.signer.len();
         size += 1; // algo: u8
         size += 64; // signature
         size += 8; // timestamp: i64
@@ -520,11 +522,11 @@ mod tests {
 
     #[test]
     fn test_otag_round_trip() {
-        for tag_byte in 0..=19u8 {
+        for tag_byte in 0..=20u8 {
             let tag = OTag::from_u8(tag_byte).unwrap();
             assert_eq!(tag as u8, tag_byte);
         }
-        assert!(OTag::from_u8(20).is_err());
+        assert!(OTag::from_u8(21).is_err());
         assert!(OTag::from_u8(255).is_err());
     }
 }

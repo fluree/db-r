@@ -48,11 +48,13 @@ async fn background_indexing_trigger_wait_then_load_index_root() {
             let ledger0 = fluree_db_api::LedgerState::new(db0, fluree_db_api::Novelty::new(0));
 
             // Force indexing_needed=true for the test.
-            let mut index_cfg = IndexConfig::default();
-            index_cfg.reindex_min_bytes = 0;
             // Must be large enough to allow the novelty write; we just want min_bytes=0
             // so background indexing is always triggered.
-            index_cfg.reindex_max_bytes = 1_000_000;
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 1_000_000,
+                ..Default::default()
+            };
 
             // 1) Transact
             let tx = json!({

@@ -114,9 +114,7 @@ pub fn normalize_rows(v: &JsonValue) -> Vec<JsonValue> {
     let mut rows = v
         .as_array()
         .expect("expected JSON array of rows")
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>();
+        .to_vec();
 
     rows.sort_by(|a, b| {
         serde_json::to_string(a)
@@ -139,7 +137,7 @@ pub fn normalize_rows_array(v: &JsonValue) -> Vec<Vec<JsonValue>> {
             // JSON-LD formatter flattens single-column selects to a flat array of values.
             // Preserve a consistent nested-array shape for callers by wrapping scalars.
             match row.as_array() {
-                Some(arr) => arr.iter().cloned().collect::<Vec<_>>(),
+                Some(arr) => arr.to_vec(),
                 None => vec![row.clone()],
             }
         })
@@ -162,7 +160,7 @@ pub fn normalize_sparql_bindings(v: &JsonValue) -> Vec<JsonValue> {
         .and_then(|r| r.get("bindings"))
         .and_then(|b| b.as_array())
         .expect("SPARQL JSON results.bindings should be an array");
-    let mut out: Vec<JsonValue> = bindings.iter().cloned().collect();
+    let mut out: Vec<JsonValue> = bindings.to_vec();
     out.sort_by(|a, b| {
         serde_json::to_string(a)
             .unwrap()

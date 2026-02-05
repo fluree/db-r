@@ -28,12 +28,85 @@ use crate::temporal::{
     Date, DateTime, DayTimeDuration, Duration, GDay, GMonth, GMonthDay, GYear, GYearMonth, Time,
     YearMonthDuration,
 };
+use crate::value_id::ObjKey;
 use bigdecimal::BigDecimal;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::fmt;
+
+// ============================================================================
+// GeoPointBits — Packed lat/lng for geographic point storage
+// ============================================================================
+
+/// Packed GeoPoint: 30-bit lat + 30-bit lng in a single u64.
+///
+/// This is the canonical in-memory representation for geographic POINT values.
+/// The encoding matches the index format exactly, avoiding representation drift.
+///
+/// Uses the same encoding as [`ObjKey::encode_geo_point`]:
+/// - Latitude scaled from [-90, 90] to [0, 2^30-1] in upper 30 bits
+/// - Longitude scaled from [-180, 180] to [0, 2^30-1] in lower 30 bits
+/// - Precision is approximately 0.3mm at the equator
+///
+/// **Important**: The sort order is latitude-primary (south-to-north), which
+/// enables efficient latitude-band scans for proximity queries.
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+#[repr(transparent)]
+pub struct GeoPointBits(pub u64);
+
+impl GeoPointBits {
+    /// Create a new GeoPointBits from lat/lng coordinates.
+    ///
+    /// Returns `None` if coordinates are out of range or non-finite.
+    /// - Latitude must be in [-90, 90]
+    /// - Longitude must be in [-180, 180]
+    pub fn new(lat: f64, lng: f64) -> Option<Self> {
+        ObjKey::encode_geo_point(lat, lng)
+            .ok()
+            .map(|k| Self(k.as_u64()))
+    }
+
+    /// Create from a raw packed u64 (e.g., from index storage).
+    #[inline]
+    pub const fn from_u64(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    /// Get the latitude coordinate.
+    #[inline]
+    pub fn lat(&self) -> f64 {
+        ObjKey::from_u64(self.0).decode_geo_point().0
+    }
+
+    /// Get the longitude coordinate.
+    #[inline]
+    pub fn lng(&self) -> f64 {
+        ObjKey::from_u64(self.0).decode_geo_point().1
+    }
+
+    /// Get the raw packed u64 representation.
+    #[inline]
+    pub const fn as_u64(&self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Debug for GeoPointBits {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (lat, lng) = ObjKey::from_u64(self.0).decode_geo_point();
+        write!(f, "GeoPointBits({:.6}, {:.6})", lat, lng)
+    }
+}
+
+impl fmt::Display for GeoPointBits {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // WKT format: POINT(lng lat) - note: longitude first!
+        let (lat, lng) = ObjKey::from_u64(self.0).decode_geo_point();
+        write!(f, "POINT({} {})", lng, lat)
+    }
+}
 
 /// Polymorphic value type for flake objects
 ///
@@ -84,6 +157,8 @@ pub enum FlakeValue {
     /// JSON value (@json datatype) - stored as serialized JSON string
     /// Deserialized on output for queries
     Json(String),
+    /// Geographic point (geo:wktLiteral POINT) — packed 60-bit lat/lng
+    GeoPoint(GeoPointBits),
     /// Null/None value
     Null,
 }
@@ -143,7 +218,9 @@ impl FlakeValue {
             // Other types
             FlakeValue::String(_) => 18,
             FlakeValue::Json(_) => 19,
-            FlakeValue::Vector(_) => 20,
+            FlakeValue::GeoPoint(_) => 20,
+            // Vector MUST be highest discriminant: empty Vector is used as max() sentinel
+            FlakeValue::Vector(_) => 21,
         }
     }
 
@@ -442,6 +519,8 @@ impl FlakeValue {
                 }
                 a.len().cmp(&b.len())
             }
+            // GeoPoint: compare by packed u64 (latitude-primary ordering)
+            (FlakeValue::GeoPoint(a), FlakeValue::GeoPoint(b)) => a.cmp(b),
             // Should not happen since discriminants are equal
             _ => Ordering::Equal,
         }
@@ -637,6 +716,13 @@ impl FlakeValue {
                 }
                 hasher.digest()
             }
+            FlakeValue::GeoPoint(bits) => {
+                // tag + packed u64 (already canonical)
+                let mut buf = [0u8; 9];
+                buf[0] = 0x15; // type tag for GeoPoint
+                buf[1..].copy_from_slice(&bits.as_u64().to_le_bytes());
+                xxh64(&buf, 0)
+            }
         }
     }
 }
@@ -681,6 +767,7 @@ impl PartialEq for FlakeValue {
                             .zip(b.iter())
                             .all(|(x, y)| x.to_bits() == y.to_bits())
                 }
+                (FlakeValue::GeoPoint(a), FlakeValue::GeoPoint(b)) => a == b,
                 // Numeric and temporal types already handled above
                 _ => false,
             }
@@ -864,6 +951,10 @@ impl std::hash::Hash for FlakeValue {
                     f.to_bits().hash(state);
                 }
             }
+            FlakeValue::GeoPoint(bits) => {
+                self.type_discriminant().hash(state);
+                bits.hash(state);
+            }
         }
     }
 }
@@ -901,6 +992,7 @@ impl fmt::Display for FlakeValue {
                 }
                 write!(f, "]")
             }
+            FlakeValue::GeoPoint(bits) => write!(f, "{}", bits),
         }
     }
 }
@@ -987,6 +1079,12 @@ impl From<Date> for FlakeValue {
 impl From<Time> for FlakeValue {
     fn from(v: Time) -> Self {
         FlakeValue::Time(Box::new(v))
+    }
+}
+
+impl From<GeoPointBits> for FlakeValue {
+    fn from(v: GeoPointBits) -> Self {
+        FlakeValue::GeoPoint(v)
     }
 }
 

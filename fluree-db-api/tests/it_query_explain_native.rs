@@ -53,9 +53,11 @@ async fn explain_no_optimization_when_equal_selectivity() {
             let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
-            let mut index_cfg = IndexConfig::default();
-            index_cfg.reindex_min_bytes = 0;
-            index_cfg.reindex_max_bytes = 10_000_000;
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+                ..Default::default()
+            };
 
             let txn = json!({
                 "@context": {"ex":"http://example.org/"},
@@ -116,9 +118,11 @@ async fn explain_reorders_bound_object_email_first() {
             let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
-            let mut index_cfg = IndexConfig::default();
-            index_cfg.reindex_min_bytes = 0;
-            index_cfg.reindex_max_bytes = 10_000_000;
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+                ..Default::default()
+            };
 
             let mut people = vec![
                 json!({"@id":"ex:alice","@type":"ex:Person","ex:name":"Alice","ex:email":"rare@example.org"}),
@@ -175,9 +179,11 @@ async fn explain_reorders_badge_property_scan_before_class_scan() {
             let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
-            let mut index_cfg = IndexConfig::default();
-            index_cfg.reindex_min_bytes = 0;
-            index_cfg.reindex_max_bytes = 10_000_000;
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+                ..Default::default()
+            };
 
             let mut people = Vec::new();
             for i in 0..5 {
@@ -233,9 +239,11 @@ async fn explain_includes_inputs_fields_and_flags() {
             let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
-            let mut index_cfg = IndexConfig::default();
-            index_cfg.reindex_min_bytes = 0;
-            index_cfg.reindex_max_bytes = 10_000_000;
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+                ..Default::default()
+            };
 
             let mut people = Vec::new();
             for i in 0..20 {

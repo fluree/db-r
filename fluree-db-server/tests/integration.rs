@@ -9,10 +9,12 @@ use tower::ServiceExt;
 
 fn test_state() -> (TempDir, Arc<AppState>) {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let mut cfg = ServerConfig::default();
-    cfg.cors_enabled = false;
-    cfg.indexing_enabled = false;
-    cfg.storage_path = Some(tmp.path().to_path_buf());
+    let cfg = ServerConfig {
+        cors_enabled: false,
+        indexing_enabled: false,
+        storage_path: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
     let telemetry = TelemetryConfig::with_server_config(&cfg);
     let state = Arc::new(AppState::new(cfg, telemetry).expect("AppState::new"));
     (tmp, state)

@@ -61,7 +61,11 @@ impl CommitRef {
 /// This is NOT the flake count of the commit itself, but the total DB state.
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct CommitData {
-    /// Content-address IRI (e.g., "fluree:db:sha256:...")
+    /// Content-address IRI (legacy / optional).
+    ///
+    /// Historically this could reference a separate DB snapshot subject. The Rust
+    /// pipeline now treats commit metadata as keyed by commit identifiers, so this
+    /// field is typically `None`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
 

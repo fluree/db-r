@@ -563,6 +563,8 @@ impl DictOverlay {
                 let str_id = self.assign_string_id(&repr)?;
                 Ok((ObjKind::VECTOR_ID, ObjKey::encode_u32_id(str_id)))
             }
+
+            FlakeValue::GeoPoint(bits) => Ok((ObjKind::GEO_POINT, ObjKey::from_u64(bits.as_u64()))),
         }
     }
 

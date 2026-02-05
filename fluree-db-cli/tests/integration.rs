@@ -852,3 +852,144 @@ fn help_shows_v12_commands() {
         .stdout(predicate::str::contains("history"))
         .stdout(predicate::str::contains("prefix"));
 }
+
+// ============================================================================
+// v2 — Remote/Upstream tests
+// ============================================================================
+
+#[test]
+fn remote_add_list_show_remove() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+
+    // Add a remote
+    fluree_cmd(&tmp)
+        .args(["remote", "add", "origin", "http://localhost:8090"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Added remote 'origin'"));
+
+    // List shows it
+    fluree_cmd(&tmp)
+        .args(["remote", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("origin"))
+        .stdout(predicate::str::contains("http://localhost:8090"));
+
+    // Show details
+    fluree_cmd(&tmp)
+        .args(["remote", "show", "origin"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Name: origin"))
+        .stdout(predicate::str::contains("Type: HTTP"));
+
+    // Remove it
+    fluree_cmd(&tmp)
+        .args(["remote", "remove", "origin"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed remote 'origin'"));
+
+    // List is empty
+    fluree_cmd(&tmp)
+        .args(["remote", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No remotes configured"));
+}
+
+#[test]
+fn upstream_set_list_remove() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+
+    // Need a remote first
+    fluree_cmd(&tmp)
+        .args(["remote", "add", "origin", "http://localhost:8090"])
+        .assert()
+        .success();
+
+    // Set upstream
+    fluree_cmd(&tmp)
+        .args(["upstream", "set", "mydb", "origin"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Set upstream"));
+
+    // List shows it
+    fluree_cmd(&tmp)
+        .args(["upstream", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("mydb"))
+        .stdout(predicate::str::contains("origin"));
+
+    // Remove it
+    fluree_cmd(&tmp)
+        .args(["upstream", "remove", "mydb:main"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed upstream"));
+}
+
+/// Regression test: adding a remote should not clobber existing config keys
+#[test]
+fn remote_add_preserves_other_config() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+
+    // Set a config value
+    fluree_cmd(&tmp)
+        .args(["config", "set", "storage.path", "/my/custom/path"])
+        .assert()
+        .success();
+
+    // Verify config is set
+    fluree_cmd(&tmp)
+        .args(["config", "get", "storage.path"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("/my/custom/path"));
+
+    // Add a remote
+    fluree_cmd(&tmp)
+        .args(["remote", "add", "origin", "http://localhost:8090"])
+        .assert()
+        .success();
+
+    // Config should still be there
+    fluree_cmd(&tmp)
+        .args(["config", "get", "storage.path"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("/my/custom/path"));
+
+    // Add an upstream
+    fluree_cmd(&tmp)
+        .args(["upstream", "set", "mydb", "origin"])
+        .assert()
+        .success();
+
+    // Config should still be there
+    fluree_cmd(&tmp)
+        .args(["config", "get", "storage.path"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("/my/custom/path"));
+}
+
+#[test]
+fn help_shows_sync_commands() {
+    cargo_bin_cmd!("fluree")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("remote"))
+        .stdout(predicate::str::contains("upstream"))
+        .stdout(predicate::str::contains("fetch"))
+        .stdout(predicate::str::contains("pull"))
+        .stdout(predicate::str::contains("push"))
+        .stdout(predicate::str::contains("token"));
+}

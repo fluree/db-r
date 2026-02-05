@@ -67,9 +67,11 @@ async fn property_and_class_statistics_persist_in_db_root() {
             let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
-            let mut index_cfg = IndexConfig::default();
-            index_cfg.reindex_min_bytes = 0;
-            index_cfg.reindex_max_bytes = 10_000_000;
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+                ..Default::default()
+            };
 
             let txn1 = json!({
                 "@context": { "ex": "http://example.org/" },
@@ -153,9 +155,11 @@ async fn class_statistics_decrement_after_delete_refresh() {
             let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
-            let mut index_cfg = IndexConfig::default();
-            index_cfg.reindex_min_bytes = 0;
-            index_cfg.reindex_max_bytes = 10_000_000;
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+                ..Default::default()
+            };
 
             let txn1 = json!({
                 "@context": { "ex": "http://example.org/" },
@@ -236,9 +240,11 @@ async fn statistics_work_with_memory_storage_when_indexed() {
             let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
-            let mut index_cfg = IndexConfig::default();
-            index_cfg.reindex_min_bytes = 0;
-            index_cfg.reindex_max_bytes = 10_000_000;
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+                ..Default::default()
+            };
 
             let txn = json!({
                 "@context": { "ex": "http://example.org/" },
@@ -321,9 +327,11 @@ async fn ledger_info_api_returns_expected_structure() {
             let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
-            let mut index_cfg = IndexConfig::default();
-            index_cfg.reindex_min_bytes = 0;
-            index_cfg.reindex_max_bytes = 10_000_000;
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+                ..Default::default()
+            };
 
             // Insert test data (like Clojure test)
             let txn = json!({
@@ -564,9 +572,11 @@ async fn ledger_info_api_with_context_compacts_stats_iris() {
             let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
-            let mut index_cfg = IndexConfig::default();
-            index_cfg.reindex_min_bytes = 0;
-            index_cfg.reindex_max_bytes = 10_000_000;
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+                ..Default::default()
+            };
 
             // Insert test data
             let txn = json!({
@@ -720,9 +730,11 @@ async fn ndv_cardinality_estimates_are_accurate() {
             let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
-            let mut index_cfg = IndexConfig::default();
-            index_cfg.reindex_min_bytes = 0;
-            index_cfg.reindex_max_bytes = 10_000_000;
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+                ..Default::default()
+            };
 
             // Create 20 people with:
             // - 20 distinct names (ndv_values = 20, ndv_subjects = 20)
@@ -881,9 +893,11 @@ async fn selectivity_calculation_is_correct() {
             let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
-            let mut index_cfg = IndexConfig::default();
-            index_cfg.reindex_min_bytes = 0;
-            index_cfg.reindex_max_bytes = 10_000_000;
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+                ..Default::default()
+            };
 
             // Create data where:
             // - ex:uniqueId: 10 flakes, 10 distinct values, 10 subjects → selectivity = 1
@@ -1004,9 +1018,11 @@ async fn multi_class_entities_tracked_correctly() {
             let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
-            let mut index_cfg = IndexConfig::default();
-            index_cfg.reindex_min_bytes = 0;
-            index_cfg.reindex_max_bytes = 10_000_000;
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+                ..Default::default()
+            };
 
             // Create entities with multiple types:
             // - alice: Person, Employee (2 classes)
@@ -1131,9 +1147,11 @@ async fn class_property_type_distribution_tracked() {
             let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
-            let mut index_cfg = IndexConfig::default();
-            index_cfg.reindex_min_bytes = 0;
-            index_cfg.reindex_max_bytes = 10_000_000;
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+                ..Default::default()
+            };
 
             // Create entities with various datatypes:
             // - ex:name: string type
@@ -1271,12 +1289,14 @@ async fn large_dataset_statistics_accuracy() {
             let db0 = Db::genesis(fluree.storage().clone(), alias);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
-            let mut index_cfg = IndexConfig::default();
             // This test is intentionally about accumulation across *indexes* (Clojure parity),
             // not about background indexing races. Disable auto-trigger and explicitly
             // `trigger+wait` after each transaction batch.
-            index_cfg.reindex_min_bytes = 1_000_000_000;
-            index_cfg.reindex_max_bytes = 1_000_000_000;
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 1_000_000_000,
+                reindex_max_bytes: 1_000_000_000,
+                ..Default::default()
+            };
 
             // Insert 100 entities in 5 batches of 20, indexing after each batch,
             // to test HLL accumulation across 5 index refreshes.

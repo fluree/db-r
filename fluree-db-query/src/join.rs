@@ -1090,8 +1090,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                 // only consider subjects in this leaflet's subject range, then binary-search
                 // their row ranges (avoids scanning every row).
                 let t_match = Instant::now();
-                let mut matches: Vec<(usize, u64)> = Vec::new(); // (row_idx, s_id)
-                matches.reserve(64);
+                let mut matches: Vec<(usize, u64)> = Vec::with_capacity(64); // (row_idx, s_id)
 
                 // PSOT leaflets are sorted by p_id then s_id. Boundary leaflets may contain
                 // adjacent predicates, so isolate the contiguous segment for our `p_id`.
@@ -1307,8 +1306,8 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
             .collect();
         let mut rows_added = 0;
 
-        for accum_idx in 0..accum_len {
-            for combined in scatter[accum_idx].drain(..) {
+        for scatter_item in scatter.iter_mut().take(accum_len) {
+            for combined in scatter_item.drain(..) {
                 for (col, val) in combined.into_iter().enumerate() {
                     output_columns[col].push(val);
                 }

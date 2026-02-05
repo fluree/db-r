@@ -150,6 +150,8 @@ pub enum RawObject<'a> {
     DayTimeDurationStr(&'a str),
     /// duration lexical form, borrowed from ops buffer.
     DurationStr(&'a str),
+    /// GeoPoint coordinates (lat, lng) parsed from commit.
+    GeoPoint { lat: f64, lng: f64 },
 }
 
 // ============================================================================
@@ -408,6 +410,15 @@ fn decode_raw_object<'a>(
         OTag::Duration => {
             let s = decode_inline_str(data, pos)?;
             Ok(RawObject::DurationStr(s))
+        }
+        OTag::GeoPoint => {
+            if *pos + 16 > data.len() {
+                return Err(CommitV2Error::UnexpectedEof);
+            }
+            let lat = f64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
+            let lng = f64::from_le_bytes(data[*pos + 8..*pos + 16].try_into().unwrap());
+            *pos += 16;
+            Ok(RawObject::GeoPoint { lat, lng })
         }
     }
 }

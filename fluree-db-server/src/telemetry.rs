@@ -5,6 +5,8 @@
 
 use crate::config::ServerConfig;
 use std::env;
+#[cfg(feature = "otel")]
+use tracing_subscriber::Layer;
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter};
 
 /// Telemetry configuration
@@ -205,7 +207,7 @@ fn init_otel_layer(
             .with_endpoint(config.otel_endpoint.as_ref().unwrap())
             .build()
             .expect("failed to build OTLP HTTP span exporter"),
-        "grpc" | _ => opentelemetry_otlp::SpanExporter::builder()
+        _ => opentelemetry_otlp::SpanExporter::builder()
             .with_tonic()
             .with_endpoint(config.otel_endpoint.as_ref().unwrap())
             .build()

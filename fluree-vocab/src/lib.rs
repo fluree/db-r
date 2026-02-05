@@ -363,6 +363,42 @@ pub mod xsd {
     }
 }
 
+/// OGC GeoSPARQL vocabulary constants
+///
+/// GeoSPARQL is the OGC standard for representing and querying geospatial
+/// data in RDF. See <http://www.opengis.net/ont/geosparql>.
+pub mod geo {
+    /// GeoSPARQL namespace IRI
+    pub const NS: &str = "http://www.opengis.net/ont/geosparql#";
+
+    /// geo:wktLiteral datatype IRI (Well-Known Text encoding)
+    pub const WKT_LITERAL: &str = "http://www.opengis.net/ont/geosparql#wktLiteral";
+
+    /// geo:gmlLiteral datatype IRI (GML encoding)
+    pub const GML_LITERAL: &str = "http://www.opengis.net/ont/geosparql#gmlLiteral";
+
+    /// geo:asWKT property IRI (geometry as WKT)
+    pub const AS_WKT: &str = "http://www.opengis.net/ont/geosparql#asWKT";
+
+    /// geo:hasGeometry property IRI
+    pub const HAS_GEOMETRY: &str = "http://www.opengis.net/ont/geosparql#hasGeometry";
+}
+
+/// GeoSPARQL local names (for SID construction)
+pub mod geo_names {
+    /// wktLiteral local name
+    pub const WKT_LITERAL: &str = "wktLiteral";
+
+    /// gmlLiteral local name
+    pub const GML_LITERAL: &str = "gmlLiteral";
+
+    /// asWKT local name
+    pub const AS_WKT: &str = "asWKT";
+
+    /// hasGeometry local name
+    pub const HAS_GEOMETRY: &str = "hasGeometry";
+}
+
 /// XSD datatype local names (for SID construction)
 ///
 /// XSD datatypes are encoded with namespace code 2 (XSD).
@@ -1300,9 +1336,12 @@ pub mod namespaces {
     /// Code 10: blank nodes (_:)
     pub const BLANK_NODE: u16 = 10;
 
+    /// Code 11: OGC GeoSPARQL namespace (geo:)
+    pub const OGC_GEO: u16 = 11;
+
     /// First code available for user-defined namespaces.
-    /// Built-in codes occupy 0..=10.
-    pub const USER_START: u16 = 11;
+    /// Built-in codes occupy 0..=11.
+    pub const USER_START: u16 = 12;
 
     /// Overflow namespace code (0xFFFE).
     /// Assigned when all user codes are exhausted. The SID name stores the

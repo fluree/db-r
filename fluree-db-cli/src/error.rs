@@ -26,6 +26,8 @@ pub enum CliError {
     Usage(String),
     /// Import errors.
     Import(String),
+    /// Credential/token errors.
+    Credential(fluree_db_credential::CredentialError),
 }
 
 impl fmt::Display for CliError {
@@ -49,6 +51,7 @@ impl fmt::Display for CliError {
             ),
             CliError::Usage(msg) => write!(f, "{} {msg}", "error:".red().bold()),
             CliError::Import(msg) => write!(f, "{} {msg}", "error:".red().bold()),
+            CliError::Credential(e) => write!(f, "{} {e}", "error:".red().bold()),
         }
     }
 }
@@ -98,6 +101,12 @@ impl From<fluree_db_api::FormatError> for CliError {
 impl From<fluree_db_novelty::NoveltyError> for CliError {
     fn from(e: fluree_db_novelty::NoveltyError) -> Self {
         CliError::Input(format!("commit read error: {e}"))
+    }
+}
+
+impl From<fluree_db_credential::CredentialError> for CliError {
+    fn from(e: fluree_db_credential::CredentialError) -> Self {
+        CliError::Credential(e)
     }
 }
 

@@ -237,8 +237,10 @@ async fn drop_ledger_cancels_pending_indexing() {
             let db = Db::genesis(fluree.storage().clone(), alias);
             let ledger = LedgerState::new(db, Novelty::new(0));
 
-            let mut index_cfg = IndexConfig::default();
-            index_cfg.reindex_min_bytes = 0;
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                ..Default::default()
+            };
 
             // Make commits to create indexing work
             let mut current = ledger;

@@ -44,8 +44,40 @@ use fluree_db_indexer::run_index::{
     sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, OverlayOp,
 };
 use fluree_vocab::namespaces::FLUREE_LEDGER;
-use std::collections::{HashMap, VecDeque};
+use fluree_vocab::namespaces::XSD;
+use fluree_vocab::xsd_names;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+
+/// Datatype match semantics for WHERE value objects.
+///
+/// We normalize numeric datatype IRIs at parse time (e.g., xsd:int → xsd:integer),
+/// so matching must treat numeric "families" as compatible at execution time:
+/// - xsd:integer matches integer-family stored datatypes (xsd:int, xsd:long, ...)
+/// - xsd:double matches xsd:float
+#[inline]
+fn dt_compatible(expected: &Sid, actual: &Sid) -> bool {
+    if expected == actual {
+        return true;
+    }
+    if expected.namespace_code != XSD || actual.namespace_code != XSD {
+        return false;
+    }
+    match expected.name.as_ref() {
+        // Integer family: int/short/byte/long normalize to integer for matching.
+        xsd_names::INTEGER => matches!(
+            actual.name.as_ref(),
+            xsd_names::INTEGER
+                | xsd_names::INT
+                | xsd_names::SHORT
+                | xsd_names::BYTE
+                | xsd_names::LONG
+        ),
+        // Float normalizes to double for matching.
+        xsd_names::DOUBLE => matches!(actual.name.as_ref(), xsd_names::DOUBLE | xsd_names::FLOAT),
+        _ => false,
+    }
+}
 
 // ============================================================================
 // IndexType → RunSortOrder mapping
@@ -268,7 +300,7 @@ impl BinaryScanOperator {
             && self
                 .p_sids
                 .get(p_id as usize)
-                .map_or(false, |s| s.namespace_code == FLUREE_LEDGER)
+                .is_some_and(|s| s.namespace_code == FLUREE_LEDGER)
     }
 
     /// Decode an object value, routing through DictOverlay when present.
@@ -364,7 +396,7 @@ impl BinaryScanOperator {
 
             // Subject binding - emit EncodedSid for late materialization
             if self.s_var_pos.is_some() {
-                let s_id = decoded.s_ids[row] as u64;
+                let s_id = decoded.s_ids[row];
                 tracing::trace!(s_id, "binary_scan emitting EncodedSid for subject");
                 columns[col_idx].push(Binding::EncodedSid { s_id });
                 col_idx += 1;
@@ -977,7 +1009,7 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
         // falls back to range_with_overlay() which works for multi-ledger,
         // pre-index, history, and time-travel-before-base_t via the
         // RangeProvider trait.
-        let use_binary = ctx.binary_store.as_ref().map_or(false, |s| {
+        let use_binary = ctx.binary_store.as_ref().is_some_and(|s| {
             !ctx.is_multi_ledger()
                 && ctx.to_t >= s.base_t()
                 && !ctx.history_mode
@@ -1211,7 +1243,7 @@ impl<S: Storage + 'static> RangeScanOperator<S> {
         }
 
         if let Some(dt) = &self.pattern.dt {
-            if &f.dt != dt {
+            if !dt_compatible(dt, &f.dt) {
                 return false;
             }
         }
@@ -1245,7 +1277,9 @@ impl<S: Storage + 'static> RangeScanOperator<S> {
                         .m
                         .as_ref()
                         .and_then(|m| m.lang.as_ref().map(|s| Arc::from(s.as_str()))),
-                    t: if history_mode { Some(f.t) } else { None },
+                    // Always attach `t` for literal bindings so `t(?var)` works even
+                    // outside history mode when explicitly requested via `@t`.
+                    t: Some(f.t),
                     op: if history_mode { Some(f.op) } else { None },
                 },
             };
@@ -1283,10 +1317,16 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
             index = IndexType::Post;
         }
 
-        // Collect matching flakes — iterate over all active default graphs
-        // in dataset mode so multi-ledger union queries return results from
-        // every graph, not just the primary.
+        // Collect matching flakes.
+        //
+        // Dataset mode:
+        // - ActiveGraph::Default → union across all default graphs (fast path via slice)
+        // - ActiveGraph::Named   → scan only the selected named graph(s)
+        //
+        // Single-db mode:
+        // - scan `ctx.db`
         let flakes = if let Some(graphs) = ctx.default_graphs_slice() {
+            // Fast path: dataset mode + default graphs active (no allocation).
             let mut all_flakes = Vec::new();
             for graph in graphs {
                 let range_match = self.build_range_match(graph.db);
@@ -1317,6 +1357,90 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
                     .or(ctx.policy_enforcer.as_ref())
                 {
                     Some(enforcer) if !enforcer.is_root() => {
+                        // Ensure rdf:type class cache is populated for f:onClass policies.
+                        let subjects: Vec<fluree_db_core::Sid> = graph_flakes
+                            .iter()
+                            .map(|f| f.s.clone())
+                            .collect::<HashSet<_>>()
+                            .into_iter()
+                            .collect();
+                        enforcer
+                            .populate_class_cache_for_graph(
+                                graph.db,
+                                graph.overlay,
+                                graph.to_t,
+                                &subjects,
+                            )
+                            .await?;
+                        enforcer
+                            .filter_flakes_for_graph(
+                                graph.db,
+                                graph.overlay,
+                                graph.to_t,
+                                &ctx.tracker,
+                                graph_flakes,
+                            )
+                            .await?
+                    }
+                    _ => graph_flakes,
+                };
+                // Pre-filter per graph (overlay may return a superset).
+                all_flakes.extend(
+                    graph_flakes
+                        .into_iter()
+                        .filter(|f| self.flake_matches(f, graph.db)),
+                );
+            }
+            all_flakes
+        } else if ctx.dataset.is_some() {
+            // Dataset mode + named graph active.
+            let active = ctx.active_graphs();
+            let graphs = active.as_many().unwrap_or(&[]);
+            let mut all_flakes = Vec::new();
+            for graph in graphs {
+                let graph = *graph;
+                let range_match = self.build_range_match(graph.db);
+                let mut opts = RangeOptions::new().with_to_t(graph.to_t);
+                if let Some(from_t) = ctx.from_t {
+                    opts = opts.with_from_t(from_t);
+                }
+                if ctx.history_mode {
+                    opts = opts.with_history_mode();
+                }
+                if let Some(ref bounds) = self.object_bounds {
+                    opts = opts.with_object_bounds(bounds.clone());
+                }
+                let graph_flakes = range_with_overlay(
+                    graph.db,
+                    graph.overlay,
+                    index,
+                    RangeTest::Eq,
+                    range_match,
+                    opts,
+                )
+                .await
+                .map_err(|e| QueryError::execution(e.to_string()))?;
+                // Policy filter per graph (before pattern matching).
+                let graph_flakes = match graph
+                    .policy_enforcer
+                    .as_ref()
+                    .or(ctx.policy_enforcer.as_ref())
+                {
+                    Some(enforcer) if !enforcer.is_root() => {
+                        let subjects: Vec<fluree_db_core::Sid> = graph_flakes
+                            .iter()
+                            .map(|f| f.s.clone())
+                            .collect::<HashSet<_>>()
+                            .into_iter()
+                            .collect();
+                        enforcer
+                            .populate_class_cache_for_graph(
+                                graph.db,
+                                graph.overlay,
+                                graph.to_t,
+                                &subjects,
+                            )
+                            .await?;
                         enforcer
                             .filter_flakes_for_graph(
                                 graph.db,
@@ -1338,6 +1462,7 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
             }
             all_flakes
         } else {
+            // Single-db mode.
             let range_match = self.build_range_match(ctx.db);
             let mut opts = RangeOptions::new().with_to_t(ctx.to_t);
             if let Some(from_t) = ctx.from_t {
@@ -1362,6 +1487,16 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
             // Policy filter (single-graph mode).
             match ctx.policy_enforcer.as_ref() {
                 Some(enforcer) if !enforcer.is_root() => {
+                    // Ensure rdf:type class cache is populated for f:onClass policies.
+                    let subjects: Vec<fluree_db_core::Sid> = flakes
+                        .iter()
+                        .map(|f| f.s.clone())
+                        .collect::<HashSet<_>>()
+                        .into_iter()
+                        .collect();
+                    enforcer
+                        .populate_class_cache_for_graph(ctx.db, ctx.overlay(), ctx.to_t, &subjects)
+                        .await?;
                     enforcer
                         .filter_flakes_for_graph(
                             ctx.db,

@@ -229,6 +229,10 @@ fn format_binding(
                     "@value": v.to_string(),
                     "@type": dt_iri
                 })),
+                FlakeValue::GeoPoint(v) => Ok(json!({
+                    "@value": v.to_string(),
+                    "@type": dt_iri
+                })),
             }
         }
 
@@ -368,10 +372,7 @@ fn format_row_wildcard(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query::QueryResult;
     use fluree_db_core::Sid;
-    use fluree_db_query::var_registry::VarRegistry;
-    use fluree_db_query::SelectMode;
     use std::collections::HashMap;
 
     fn make_test_compactor() -> IriCompactor {
@@ -386,7 +387,7 @@ mod tests {
     /// Used for testing format_binding with non-encoded bindings.
     fn make_test_result() -> QueryResult {
         QueryResult {
-            vars: VarRegistry::new(),
+            vars: crate::VarRegistry::new(),
             t: 0,
             novelty: None,
             context: crate::ParsedContext::default(),
@@ -440,11 +441,11 @@ mod tests {
     fn test_format_binding_double() {
         let compactor = make_test_compactor();
         let result = make_test_result();
-        let binding = Binding::lit(FlakeValue::Double(3.14), Sid::new(2, "double"));
+        let binding = Binding::lit(FlakeValue::Double(3.5), Sid::new(2, "double"));
         let formatted = format_binding(&result, &binding, &compactor).unwrap();
         assert_eq!(
             formatted,
-            json!({"@value": 3.14, "@type": "http://www.w3.org/2001/XMLSchema#double"})
+            json!({"@value": 3.5, "@type": "http://www.w3.org/2001/XMLSchema#double"})
         );
     }
 

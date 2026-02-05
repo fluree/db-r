@@ -358,7 +358,7 @@ mod tests {
             } else if i % 3 == 1 {
                 FlakeValue::String(format!("value_{}", i))
             } else {
-                FlakeValue::Ref(Sid::new(101, &format!("ref_{}", i)))
+                FlakeValue::Ref(Sid::new(101, format!("ref_{}", i)))
             };
             let dt = if i % 3 == 2 {
                 "id"
@@ -369,8 +369,8 @@ mod tests {
             };
             writer
                 .push_flake(&Flake::new(
-                    Sid::new(101, &format!("s_{}", i)),
-                    Sid::new(101, &format!("p_{}", i % 10)),
+                    Sid::new(101, format!("s_{}", i)),
+                    Sid::new(101, format!("p_{}", i % 10)),
                     value,
                     Sid::new(if i % 3 == 2 { 1 } else { 2 }, dt),
                     42,

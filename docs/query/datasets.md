@@ -72,9 +72,13 @@ WHERE {
 
 ## FROM NAMED Clauses
 
-### Named Graphs
+### Named graph sources (datasets)
 
-Query specific named graphs:
+In SPARQL, `FROM NAMED` identifies **named graphs in the dataset**. In Fluree, these are often *graph sources* such as:
+- another ledger (federation / multi-ledger queries), or
+- a virtual graph (search, tabular mapping, etc.).
+
+Query across multiple named graph sources:
 
 **JSON-LD Query:**
 
@@ -119,6 +123,45 @@ WHERE {
   GRAPH <mydb:main> {
     ?person ex:name ?name .
   }
+}
+```
+
+### Ledger named graph: `txn-meta`
+
+Fluree provides a built-in named graph inside each ledger for transactional / commit metadata: **`txn-meta`**.
+
+Use the `#txn-meta` fragment on a ledger reference:
+- `mydb:main#txn-meta`
+- `mydb:main@t:100#txn-meta` (time pinned)
+
+**JSON-LD Query (txn-meta as the default graph):**
+
+```json
+{
+  "@context": {
+    "f": "https://ns.flur.ee/ledger#",
+    "ex": "http://example.org/ns/"
+  },
+  "from": "mydb:main#txn-meta",
+  "select": ["?commit", "?t", "?machine"],
+  "where": [
+    { "@id": "?commit", "f:t": "?t" },
+    { "@id": "?commit", "ex:machine": "?machine" }
+  ]
+}
+```
+
+**SPARQL Query:**
+
+```sparql
+PREFIX f: <https://ns.flur.ee/ledger#>
+PREFIX ex: <http://example.org/ns/>
+
+SELECT ?commit ?t ?machine
+FROM <mydb:main#txn-meta>
+WHERE {
+  ?commit f:t ?t .
+  OPTIONAL { ?commit ex:machine ?machine }
 }
 ```
 
@@ -224,13 +267,16 @@ Combine default and named graph patterns:
 **SPARQL:**
 
 ```sparql
-SELECT ?name ?metadata
+PREFIX f: <https://ns.flur.ee/ledger#>
+PREFIX ex: <http://example.org/ns/>
+
+SELECT ?name ?commit ?t
 FROM <mydb:main>
-FROM NAMED <mydb:metadata>
+FROM NAMED <mydb:main#txn-meta>
 WHERE {
   ?person ex:name ?name .
-  GRAPH <mydb:metadata> {
-    ?person ex:created ?metadata .
+  GRAPH <mydb:main#txn-meta> {
+    ?commit f:t ?t .
   }
 }
 ```

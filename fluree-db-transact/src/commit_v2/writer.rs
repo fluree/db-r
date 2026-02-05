@@ -87,7 +87,7 @@ mod tests {
         let flakes: Vec<Flake> = (0..100)
             .map(|i| {
                 Flake::new(
-                    Sid::new(101, &format!("node{}", i)),
+                    Sid::new(101, format!("node{}", i)),
                     Sid::new(101, "value"),
                     FlakeValue::Long(i),
                     Sid::new(2, "integer"),
@@ -343,7 +343,7 @@ mod tests {
                 } else if i % 3 == 1 {
                     FlakeValue::String(format!("value_{}", i))
                 } else {
-                    FlakeValue::Ref(Sid::new(101, &format!("ref_{}", i)))
+                    FlakeValue::Ref(Sid::new(101, format!("ref_{}", i)))
                 };
                 let dt = if i % 3 == 2 {
                     Sid::new(1, "id")
@@ -353,8 +353,8 @@ mod tests {
                     Sid::new(2, "string")
                 };
                 Flake::new(
-                    Sid::new(101, &format!("s_{}", i)),
-                    Sid::new(101, &format!("p_{}", i % 10)),
+                    Sid::new(101, format!("s_{}", i)),
+                    Sid::new(101, format!("p_{}", i % 10)),
                     value,
                     dt,
                     42,

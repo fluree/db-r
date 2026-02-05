@@ -29,6 +29,19 @@ comfy-table = "7"
 colored = "2"
 clap_complete = "4"
 
+# Token command dependencies
+fluree-db-credential = { path = "../fluree-db-credential" }
+base64 = "0.22"
+bs58 = "0.5"
+shellexpand = "3"
+hex.workspace = true
+rand.workspace = true
+
+# Sync command dependencies
+fluree-db-nameservice-sync = { path = "../fluree-db-nameservice-sync" }
+async-trait.workspace = true
+parking_lot = "0.12"
+
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"

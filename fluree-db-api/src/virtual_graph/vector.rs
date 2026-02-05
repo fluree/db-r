@@ -16,7 +16,7 @@ use crate::virtual_graph::result::{
 #[cfg(feature = "vector")]
 use crate::{QueryResult as ApiQueryResult, Result};
 #[cfg(feature = "vector")]
-use fluree_db_core::{alias as core_alias, OverlayProvider, Storage, StorageWrite};
+use fluree_db_core::{alias as core_alias, Storage, StorageWrite};
 #[cfg(feature = "vector")]
 use fluree_db_ledger::LedgerState;
 #[cfg(feature = "vector")]
@@ -200,7 +200,7 @@ where
                 config.effective_branch(),
                 VgType::Vector,
                 &config_json,
-                &[config.ledger.clone()],
+                std::slice::from_ref(&config.ledger),
             )
             .await?;
 

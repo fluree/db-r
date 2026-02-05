@@ -16,7 +16,7 @@ pub fn run(action: ConfigAction, fluree_dir: &Path) -> CliResult<()> {
 
             match lookup_key(&doc, &key) {
                 Some(val) => {
-                    println!("{}", format_toml_value(&val));
+                    println!("{}", format_toml_value(val));
                     Ok(())
                 }
                 None => Err(CliError::NotFound(format!("config key '{key}' not set"))),

@@ -399,6 +399,7 @@ where
         let mut next_flush: Option<Instant> = None;
 
         // In-flight syncs (bounded by config.max_concurrent_syncs).
+        #[allow(clippy::type_complexity)]
         let mut in_flight: futures::stream::FuturesUnordered<
             std::pin::Pin<Box<dyn std::future::Future<Output = (String, Result<()>)>>>,
         > = futures::stream::FuturesUnordered::new();

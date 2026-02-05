@@ -709,6 +709,7 @@ impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
                 FlakeValue::YearMonthDuration(v) => Ok(JsonValue::String(v.to_string())),
                 FlakeValue::DayTimeDuration(v) => Ok(JsonValue::String(v.to_string())),
                 FlakeValue::Duration(v) => Ok(JsonValue::String(v.to_string())),
+                FlakeValue::GeoPoint(v) => Ok(JsonValue::String(v.to_string())),
             };
         }
 
@@ -752,6 +753,7 @@ impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
             FlakeValue::YearMonthDuration(v) => JsonValue::String(v.to_string()),
             FlakeValue::DayTimeDuration(v) => JsonValue::String(v.to_string()),
             FlakeValue::Duration(v) => JsonValue::String(v.to_string()),
+            FlakeValue::GeoPoint(v) => JsonValue::String(v.to_string()),
         };
 
         Ok(json!({
@@ -870,6 +872,7 @@ impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
             FlakeValue::YearMonthDuration(v) => Ok(JsonValue::String(v.to_string())),
             FlakeValue::DayTimeDuration(v) => Ok(JsonValue::String(v.to_string())),
             FlakeValue::Duration(v) => Ok(JsonValue::String(v.to_string())),
+            FlakeValue::GeoPoint(v) => Ok(JsonValue::String(v.to_string())),
         }
     }
 

@@ -1,0 +1,195 @@
+# fluree token
+
+Manage JWS tokens for authentication with Fluree servers.
+
+## Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `create` | Create a new JWS token |
+| `keygen` | Generate a new Ed25519 keypair |
+| `inspect` | Decode and verify a JWS token |
+
+---
+
+## fluree token create
+
+Create a new JWS token for authenticating with Fluree servers.
+
+### Usage
+
+```bash
+fluree token create --private-key <KEY> [OPTIONS]
+```
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--private-key <KEY>` | **Required.** Ed25519 private key (hex, base58, `@filepath`, or `@-` for stdin) |
+| `--expires-in <DUR>` | Token lifetime (default: `1h`). Supports `s`, `m`, `h`, `d`, `w` suffixes |
+| `--subject <SUB>` | Subject claim (`sub`) - identity of the token holder |
+| `--audience <AUD>` | Audience claim (`aud`) - repeatable for multiple audiences |
+| `--identity <ID>` | Fluree identity claim (`fluree.identity`) - takes precedence over `sub` for policy |
+| `--all` | Grant access to all ledgers (`fluree.events.all=true`, `fluree.storage.all=true`) |
+| `--events-ledger <ALIAS>` | Grant events access to specific ledger (repeatable) |
+| `--storage-ledger <ALIAS>` | Grant storage access to specific ledger (repeatable) |
+| `--vg <ALIAS>` | Grant access to specific virtual graph (repeatable) |
+| `--output <FMT>` | Output format: `token`, `json`, or `curl` (default: `token`) |
+| `--print-claims` | Print decoded claims to stderr |
+
+### Private Key Formats
+
+| Format | Example |
+|--------|---------|
+| Hex | `0x<64 hex chars>` or `<64 hex chars>` |
+| Base58 | `z<base58 string>` (multibase) or raw base58 |
+| File | `@/path/to/keyfile` or `@~/.fluree/key` (tilde expansion) |
+| Stdin | `@-` (read from stdin to avoid shell history) |
+
+### Examples
+
+```bash
+# Create a token with full access
+fluree token create --private-key 0x1234...abcd --all
+
+# Create a token for specific ledgers
+fluree token create --private-key @~/.fluree/key \
+  --events-ledger mydb --storage-ledger mydb
+
+# Create a token with identity and audience
+fluree token create --private-key @- \
+  --identity did:example:alice \
+  --audience https://api.example.com \
+  --expires-in 7d
+
+# Output as curl command
+fluree token create --private-key 0x... --all --output curl
+
+# View claims while creating
+fluree token create --private-key 0x... --all --print-claims
+```
+
+---
+
+## fluree token keygen
+
+Generate a new Ed25519 keypair for signing tokens.
+
+### Usage
+
+```bash
+fluree token keygen [OPTIONS]
+```
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--format <FMT>` | Output format: `hex`, `base58`, or `json` (default: `hex`) |
+| `-o, --output <PATH>` | Write private key to file (otherwise prints to stdout) |
+
+### Examples
+
+```bash
+# Generate keypair in hex format
+fluree token keygen
+
+# Generate in JSON format with all representations
+fluree token keygen --format json
+
+# Save private key to file
+fluree token keygen --output ~/.fluree/key
+
+# Generate base58 format
+fluree token keygen --format base58
+```
+
+### Output
+
+Hex format:
+```
+Private key: 0x1234567890abcdef...
+Public key:  0xabcdef1234567890...
+DID:         did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK
+```
+
+JSON format:
+```json
+{
+  "private_key": {
+    "hex": "0x1234...",
+    "base58": "z..."
+  },
+  "public_key": {
+    "hex": "0xabcd...",
+    "base58": "z..."
+  },
+  "did": "did:key:z6Mk..."
+}
+```
+
+---
+
+## fluree token inspect
+
+Decode and optionally verify a JWS token.
+
+### Usage
+
+```bash
+fluree token inspect <TOKEN> [OPTIONS]
+```
+
+### Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `<TOKEN>` | JWS token string or `@filepath` |
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--no-verify` | Skip signature verification (default: verify) |
+| `--output <FMT>` | Output format: `pretty`, `json`, or `table` (default: `pretty`) |
+
+### Examples
+
+```bash
+# Inspect and verify a token
+fluree token inspect eyJhbGciOiJFZERTQSI...
+
+# Inspect without verification
+fluree token inspect eyJ... --no-verify
+
+# Output as JSON
+fluree token inspect eyJ... --output json
+
+# Read token from file
+fluree token inspect @token.txt
+```
+
+### Output
+
+Pretty format:
+```
+Token Information
+─────────────────────────────────────────────────────
+Issuer:   did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK
+Subject:  test@example.com
+Issued:   2024-01-15 10:30:00 UTC
+Expires:  2024-01-15 11:30:00 UTC
+
+Permissions:
+  Events:  all ledgers
+  Storage: all ledgers
+
+Signature: ✓ Valid
+```
+
+## See Also
+
+- [remote](remote.md) - Configure remote servers
+- [fetch](fetch.md) - Fetch from remotes (requires auth token)
+- [push](push.md) - Push to remotes (requires auth token)

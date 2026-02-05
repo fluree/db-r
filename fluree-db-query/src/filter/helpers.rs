@@ -107,19 +107,6 @@ pub fn check_arity(args: &[FilterExpr], expected: usize, fn_name: &str) -> Resul
     }
 }
 
-/// Check that a function has arguments within a range
-#[inline]
-pub fn check_arity_range(args: &[FilterExpr], min: usize, max: usize, fn_name: &str) -> Result<()> {
-    if args.len() < min || args.len() > max {
-        Err(QueryError::InvalidFilter(format!(
-            "{} requires {}-{} arguments",
-            fn_name, min, max
-        )))
-    } else {
-        Ok(())
-    }
-}
-
 // =============================================================================
 // DateTime Parsing
 // =============================================================================

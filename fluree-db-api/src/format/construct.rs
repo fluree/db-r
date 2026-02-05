@@ -18,7 +18,7 @@ use fluree_db_query::pattern::Term;
 use fluree_db_query::Batch;
 use fluree_graph_format::{format_jsonld, JsonLdFormatConfig};
 use fluree_graph_ir::{BlankId, Datatype, Graph, LiteralValue, Term as IrTerm, Triple};
-use fluree_vocab::{rdf, xsd};
+use fluree_vocab::{geo, rdf, xsd};
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
 
@@ -408,6 +408,11 @@ fn binding_to_ir_term(
                     datatype: Datatype::from_iri(&dt_iri),
                     language: None,
                 })),
+                FlakeValue::GeoPoint(bits) => Ok(Some(IrTerm::Literal {
+                    value: LiteralValue::String(Arc::from(bits.to_string())),
+                    datatype: Datatype::from_iri(&dt_iri),
+                    language: None,
+                })),
             }
         }
 
@@ -446,7 +451,7 @@ fn binding_to_ir_term(
                 )
             })?;
             match store.resolve_predicate_iri(*p_id) {
-                Some(iri) => Ok(Some(IrTerm::iri(iri.to_string()))),
+                Some(iri) => Ok(Some(IrTerm::iri(iri))),
                 None => Err(FormatError::InvalidBinding(format!(
                     "Unknown predicate ID: {}",
                     p_id
@@ -603,6 +608,11 @@ fn flake_value_to_ir_term(val: &FlakeValue) -> Result<Option<IrTerm>> {
         FlakeValue::Duration(v) => Some(IrTerm::Literal {
             value: LiteralValue::String(Arc::from(v.to_string())),
             datatype: Datatype::from_iri(xsd::DURATION),
+            language: None,
+        }),
+        FlakeValue::GeoPoint(bits) => Some(IrTerm::Literal {
+            value: LiteralValue::String(Arc::from(bits.to_string())),
+            datatype: Datatype::from_iri(geo::WKT_LITERAL),
             language: None,
         }),
     })

@@ -153,6 +153,7 @@ impl From<&FlakeValue> for TransportValue {
             FlakeValue::Duration(v) => TransportValue::String(v.to_string()),
             FlakeValue::Vector(v) => TransportValue::Vector(v.clone()),
             FlakeValue::Json(s) => TransportValue::Json(s.clone()),
+            FlakeValue::GeoPoint(bits) => TransportValue::String(bits.to_string()),
             FlakeValue::Null => TransportValue::Null,
         }
     }

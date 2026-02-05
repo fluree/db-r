@@ -94,7 +94,7 @@ fn init_otel_layer() -> impl tracing_subscriber::Layer<tracing_subscriber::Regis
             .with_endpoint(endpoint)
             .build()
             .expect("failed to build OTLP HTTP span exporter"),
-        "grpc" | _ => opentelemetry_otlp::SpanExporter::builder()
+        _ => opentelemetry_otlp::SpanExporter::builder()
             .with_tonic()
             .with_endpoint(endpoint)
             .build()

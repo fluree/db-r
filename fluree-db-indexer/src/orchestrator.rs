@@ -210,8 +210,6 @@ impl LedgerIndexState {
 #[cfg(feature = "embedded-orchestrator")]
 use crate::error::IndexerError;
 #[cfg(feature = "embedded-orchestrator")]
-use fluree_db_core::NodeCache;
-#[cfg(feature = "embedded-orchestrator")]
 use fluree_db_ledger::{IndexConfig, LedgerState};
 
 /// Indexer orchestration for embedded mode
@@ -897,16 +895,15 @@ pub struct PostCommitIndexResult {
 /// - Never fails the commit path; returns status + error string for logging.
 /// - **Applies index even if publish fails** for local correctness.
 #[cfg(feature = "embedded-orchestrator")]
-pub async fn maybe_refresh_after_commit<S, C, N>(
+pub async fn maybe_refresh_after_commit<S, N>(
     nameservice: &N,
-    mut ledger: LedgerState<S, C>,
+    mut ledger: LedgerState<S>,
     index_config: &IndexConfig,
     indexer_config: IndexerConfig,
     _target_t: i64,
-) -> (LedgerState<S, C>, PostCommitIndexResult)
+) -> (LedgerState<S>, PostCommitIndexResult)
 where
     S: Storage + fluree_db_core::ContentAddressedWrite + Clone + Send + Sync + 'static,
-    C: NodeCache + Clone,
     N: fluree_db_nameservice::NameService + Publisher,
 {
     // Check threshold
@@ -999,15 +996,14 @@ where
 /// - Should typically run *before* staging (since `stage()` also checks max novelty).
 /// - Errors are fatal here because the caller is explicitly trying to unblock commits.
 #[cfg(feature = "embedded-orchestrator")]
-pub async fn require_refresh_before_commit<S, C, N>(
+pub async fn require_refresh_before_commit<S, N>(
     nameservice: &N,
-    mut ledger: LedgerState<S, C>,
+    mut ledger: LedgerState<S>,
     indexer_config: IndexerConfig,
     _target_t: i64,
-) -> Result<LedgerState<S, C>>
+) -> Result<LedgerState<S>>
 where
     S: Storage + fluree_db_core::ContentAddressedWrite + Clone + Send + Sync + 'static,
-    C: NodeCache + Clone,
     N: fluree_db_nameservice::NameService + Publisher,
 {
     let storage = ledger.db.storage.clone();

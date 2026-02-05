@@ -1440,12 +1440,12 @@ mod tests {
             let values_est = hll1.values_hll.estimate();
             let subjects_est = hll1.subjects_hll.estimate();
             assert!(
-                values_est >= 2 && values_est <= 8,
+                (2..=8).contains(&values_est),
                 "values estimate {} should be in range [2, 8]",
                 values_est
             );
             assert!(
-                subjects_est >= 1 && subjects_est <= 4,
+                (1..=4).contains(&subjects_est),
                 "subjects estimate {} should be in range [1, 4]",
                 subjects_est
             );

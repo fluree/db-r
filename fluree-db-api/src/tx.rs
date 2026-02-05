@@ -13,9 +13,11 @@ use fluree_db_nameservice::{NameService, Publisher};
 use fluree_db_shacl::ShaclEngine;
 #[cfg(feature = "shacl")]
 use fluree_db_transact::stage_with_shacl;
+#[cfg(not(feature = "shacl"))]
+use fluree_db_transact::stage as stage_txn;
 use fluree_db_transact::{
-    commit as commit_txn, parse_transaction, stage as stage_txn, CommitOpts, CommitReceipt,
-    NamespaceRegistry, StageOptions, TxnOpts, TxnType,
+    commit as commit_txn, parse_transaction, CommitOpts, CommitReceipt, NamespaceRegistry,
+    StageOptions, TxnOpts, TxnType,
 };
 use serde_json::Value as JsonValue;
 

@@ -10,7 +10,7 @@
 use async_trait::async_trait;
 use fluree_db_query::bm25::{Bm25SearchProvider, Bm25SearchResult};
 use fluree_db_query::error::{QueryError, Result};
-use fluree_search_protocol::{ErrorCode, QueryVariant, SearchError, SearchRequest, SearchResponse};
+use fluree_search_protocol::{ErrorCode, SearchError, SearchRequest, SearchResponse};
 use reqwest::Client;
 use std::fmt;
 use std::time::Duration;

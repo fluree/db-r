@@ -39,7 +39,7 @@ fn did_from_pubkey(pubkey: &[u8; 32]) -> String {
 /// Create a JWS token with storage proxy claims
 fn create_storage_proxy_token(signing_key: &SigningKey, storage_all: bool) -> String {
     let pubkey = signing_key.verifying_key().to_bytes();
-    let pubkey_b64 = URL_SAFE_NO_PAD.encode(&pubkey);
+    let pubkey_b64 = URL_SAFE_NO_PAD.encode(pubkey);
     let did = did_from_pubkey(&pubkey);
 
     // Create header with embedded JWK
@@ -85,14 +85,16 @@ fn create_storage_proxy_token(signing_key: &SigningKey, storage_all: bool) -> St
 /// Create a transaction server state with storage proxy enabled
 fn tx_server_state() -> (TempDir, Arc<AppState>) {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let mut cfg = ServerConfig::default();
-    cfg.cors_enabled = false;
-    cfg.indexing_enabled = false;
-    cfg.storage_path = Some(tmp.path().to_path_buf());
-    cfg.server_role = ServerRole::Transaction;
-    // Enable storage proxy with insecure mode for testing
-    cfg.storage_proxy_enabled = true;
-    cfg.storage_proxy_insecure_accept_any_issuer = true;
+    let cfg = ServerConfig {
+        cors_enabled: false,
+        indexing_enabled: false,
+        storage_path: Some(tmp.path().to_path_buf()),
+        server_role: ServerRole::Transaction,
+        // Enable storage proxy with insecure mode for testing
+        storage_proxy_enabled: true,
+        storage_proxy_insecure_accept_any_issuer: true,
+        ..Default::default()
+    };
 
     let telemetry = TelemetryConfig::with_server_config(&cfg);
     let state = Arc::new(AppState::new(cfg, telemetry).expect("AppState::new"));
@@ -106,16 +108,18 @@ fn tx_server_state() -> (TempDir, Arc<AppState>) {
 /// the storage proxy endpoints on the tx server side.
 fn proxy_peer_state(tx_server_url: &str, token: &str) -> Result<(TempDir, Arc<AppState>), String> {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let mut cfg = ServerConfig::default();
-    cfg.cors_enabled = false;
-    cfg.indexing_enabled = false;
-    // No storage_path needed in proxy mode
-    cfg.server_role = ServerRole::Peer;
-    cfg.storage_access_mode = StorageAccessMode::Proxy;
-    cfg.tx_server_url = Some(tx_server_url.to_string());
-    cfg.storage_proxy_token = Some(token.to_string());
-    // Required for peer mode
-    cfg.peer_subscribe_all = true;
+    let cfg = ServerConfig {
+        cors_enabled: false,
+        indexing_enabled: false,
+        // No storage_path needed in proxy mode
+        server_role: ServerRole::Peer,
+        storage_access_mode: StorageAccessMode::Proxy,
+        tx_server_url: Some(tx_server_url.to_string()),
+        storage_proxy_token: Some(token.to_string()),
+        // Required for peer mode
+        peer_subscribe_all: true,
+        ..Default::default()
+    };
 
     let telemetry = TelemetryConfig::with_server_config(&cfg);
     match AppState::new(cfg, telemetry) {
@@ -203,7 +207,7 @@ async fn test_storage_proxy_requires_storage_permissions() {
     let secret = [0u8; 32];
     let signing_key = SigningKey::from_bytes(&secret);
     let pubkey = signing_key.verifying_key().to_bytes();
-    let pubkey_b64 = URL_SAFE_NO_PAD.encode(&pubkey);
+    let pubkey_b64 = URL_SAFE_NO_PAD.encode(pubkey);
     let did = did_from_pubkey(&pubkey);
 
     let header = serde_json::json!({
@@ -390,7 +394,7 @@ async fn test_storage_proxy_ledger_scope_enforcement() {
     let secret = [0u8; 32];
     let signing_key = SigningKey::from_bytes(&secret);
     let pubkey = signing_key.verifying_key().to_bytes();
-    let pubkey_b64 = URL_SAFE_NO_PAD.encode(&pubkey);
+    let pubkey_b64 = URL_SAFE_NO_PAD.encode(pubkey);
     let did = did_from_pubkey(&pubkey);
 
     let header = serde_json::json!({
@@ -502,13 +506,15 @@ async fn test_fluree_instance_proxy_identification() {
 #[tokio::test]
 async fn test_storage_proxy_disabled() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let mut cfg = ServerConfig::default();
-    cfg.cors_enabled = false;
-    cfg.indexing_enabled = false;
-    cfg.storage_path = Some(tmp.path().to_path_buf());
-    cfg.server_role = ServerRole::Transaction;
-    // Storage proxy NOT enabled
-    cfg.storage_proxy_enabled = false;
+    let cfg = ServerConfig {
+        cors_enabled: false,
+        indexing_enabled: false,
+        storage_path: Some(tmp.path().to_path_buf()),
+        server_role: ServerRole::Transaction,
+        // Storage proxy NOT enabled
+        storage_proxy_enabled: false,
+        ..Default::default()
+    };
 
     let telemetry = TelemetryConfig::with_server_config(&cfg);
     let state = Arc::new(AppState::new(cfg, telemetry).expect("AppState::new"));
@@ -566,7 +572,7 @@ async fn test_storage_proxy_block_authorization() {
     let secret = [0u8; 32];
     let signing_key = SigningKey::from_bytes(&secret);
     let pubkey = signing_key.verifying_key().to_bytes();
-    let pubkey_b64 = URL_SAFE_NO_PAD.encode(&pubkey);
+    let pubkey_b64 = URL_SAFE_NO_PAD.encode(pubkey);
     let did = did_from_pubkey(&pubkey);
 
     let header = serde_json::json!({
@@ -698,7 +704,7 @@ async fn test_storage_proxy_rejects_expired_token() {
     let secret = [0u8; 32];
     let signing_key = SigningKey::from_bytes(&secret);
     let pubkey = signing_key.verifying_key().to_bytes();
-    let pubkey_b64 = URL_SAFE_NO_PAD.encode(&pubkey);
+    let pubkey_b64 = URL_SAFE_NO_PAD.encode(pubkey);
     let did = did_from_pubkey(&pubkey);
 
     let header = serde_json::json!({
@@ -1167,7 +1173,7 @@ async fn test_block_content_negotiation_json_flakes_406() {
 /// (avoids policy resolution errors when ledger doesn't have the identity)
 fn create_storage_proxy_token_no_identity(signing_key: &SigningKey, storage_all: bool) -> String {
     let pubkey = signing_key.verifying_key().to_bytes();
-    let pubkey_b64 = URL_SAFE_NO_PAD.encode(&pubkey);
+    let pubkey_b64 = URL_SAFE_NO_PAD.encode(pubkey);
     let did = did_from_pubkey(&pubkey);
 
     let header = serde_json::json!({
@@ -1525,17 +1531,19 @@ fn tx_server_state_with_policy(
     default_policy_class: Option<&str>,
 ) -> (TempDir, Arc<AppState>) {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let mut cfg = ServerConfig::default();
-    cfg.cors_enabled = false;
-    cfg.indexing_enabled = false; // We'll use reindex() manually
-    cfg.storage_path = Some(tmp.path().to_path_buf());
-    cfg.server_role = ServerRole::Transaction;
-    // Enable storage proxy with insecure mode for testing
-    cfg.storage_proxy_enabled = true;
-    cfg.storage_proxy_insecure_accept_any_issuer = true;
-    // Configure policy defaults
-    cfg.storage_proxy_default_identity = default_identity.map(|s| s.to_string());
-    cfg.storage_proxy_default_policy_class = default_policy_class.map(|s| s.to_string());
+    let cfg = ServerConfig {
+        cors_enabled: false,
+        indexing_enabled: false, // We'll use reindex() manually
+        storage_path: Some(tmp.path().to_path_buf()),
+        server_role: ServerRole::Transaction,
+        // Enable storage proxy with insecure mode for testing
+        storage_proxy_enabled: true,
+        storage_proxy_insecure_accept_any_issuer: true,
+        // Configure policy defaults
+        storage_proxy_default_identity: default_identity.map(|s| s.to_string()),
+        storage_proxy_default_policy_class: default_policy_class.map(|s| s.to_string()),
+        ..Default::default()
+    };
 
     let telemetry = TelemetryConfig::with_server_config(&cfg);
     let state = Arc::new(AppState::new(cfg, telemetry).expect("AppState::new"));

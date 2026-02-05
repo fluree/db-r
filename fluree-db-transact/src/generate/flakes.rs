@@ -8,7 +8,7 @@ use crate::ir::{TemplateTerm, TripleTemplate};
 use crate::namespace::NamespaceRegistry;
 use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
 use fluree_db_query::{Batch, Binding};
-use fluree_vocab::namespaces::{FLUREE_LEDGER, JSON_LD, RDF, XSD};
+use fluree_vocab::namespaces::{FLUREE_LEDGER, JSON_LD, OGC_GEO, RDF, XSD};
 use once_cell::sync::Lazy;
 
 // Well-known datatype SIDs, cached to avoid per-call Arc<str> allocation.
@@ -35,6 +35,7 @@ pub(crate) static DT_YEAR_MONTH_DURATION: Lazy<Sid> =
     Lazy::new(|| Sid::new(XSD, "yearMonthDuration"));
 pub(crate) static DT_DAY_TIME_DURATION: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "dayTimeDuration"));
 pub(crate) static DT_DURATION: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "duration"));
+pub(crate) static DT_WKT_LITERAL: Lazy<Sid> = Lazy::new(|| Sid::new(OGC_GEO, "wktLiteral"));
 
 /// Generates flakes from triple templates
 ///
@@ -377,6 +378,7 @@ pub fn infer_datatype(val: &FlakeValue) -> Sid {
         FlakeValue::YearMonthDuration(_) => DT_YEAR_MONTH_DURATION.clone(),
         FlakeValue::DayTimeDuration(_) => DT_DAY_TIME_DURATION.clone(),
         FlakeValue::Duration(_) => DT_DURATION.clone(),
+        FlakeValue::GeoPoint(_) => DT_WKT_LITERAL.clone(),
         // Null isn't a standard RDF literal; treat as xsd:string for now (MVP).
         FlakeValue::Null => DT_STRING.clone(),
     }
@@ -457,7 +459,7 @@ mod tests {
             "integer"
         );
         assert_eq!(
-            infer_datatype(&FlakeValue::Double(3.13)).name.as_ref(),
+            infer_datatype(&FlakeValue::Double(3.5)).name.as_ref(),
             "double"
         );
         assert_eq!(

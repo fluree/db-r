@@ -7,16 +7,17 @@
 use crate::generate::{
     DT_BOOLEAN, DT_DATE, DT_DATE_TIME, DT_DAY_TIME_DURATION, DT_DECIMAL, DT_DOUBLE, DT_DURATION,
     DT_G_DAY, DT_G_MONTH, DT_G_MONTH_DAY, DT_G_YEAR, DT_G_YEAR_MONTH, DT_INTEGER, DT_JSON,
-    DT_LANG_STRING, DT_STRING, DT_TIME, DT_YEAR_MONTH_DURATION,
+    DT_LANG_STRING, DT_STRING, DT_TIME, DT_WKT_LITERAL, DT_YEAR_MONTH_DURATION,
 };
 use crate::namespace::NamespaceRegistry;
+use fluree_db_core::geo::try_extract_point;
 use fluree_db_core::temporal::{
     Date, DateTime, DayTimeDuration, Duration, GDay, GMonth, GMonthDay, GYear, GYearMonth, Time,
     YearMonthDuration,
 };
-use fluree_db_core::{FlakeValue, Sid};
+use fluree_db_core::{FlakeValue, GeoPointBits, Sid};
 use fluree_graph_ir::LiteralValue;
-use fluree_vocab::{rdf, xsd};
+use fluree_vocab::{geo, rdf, xsd};
 
 /// Fast-path: return cached Sid for the most common datatype IRIs.
 /// Avoids trie lookup + Sid::new() allocation for high-frequency types.
@@ -40,6 +41,7 @@ fn cached_dt_sid(dt_iri: &str) -> Option<Sid> {
         xsd::YEAR_MONTH_DURATION => Some(DT_YEAR_MONTH_DURATION.clone()),
         rdf::JSON => Some(DT_JSON.clone()),
         rdf::LANG_STRING => Some(DT_LANG_STRING.clone()),
+        geo::WKT_LITERAL => Some(DT_WKT_LITERAL.clone()),
         _ => None,
     }
 }
@@ -122,6 +124,17 @@ pub(crate) fn convert_string_literal(
         rdf::LANG_STRING => {
             // Language goes in FlakeMeta, value is a plain string
             FlakeValue::String(value.to_string())
+        }
+        geo::WKT_LITERAL => {
+            // Detect POINT and store as GeoPoint, others as string
+            if let Some((lat, lng)) = try_extract_point(value) {
+                GeoPointBits::new(lat, lng)
+                    .map(FlakeValue::GeoPoint)
+                    .unwrap_or_else(|| FlakeValue::String(value.to_string()))
+            } else {
+                // Non-point WKT: store as string for sidecar spatial index
+                FlakeValue::String(value.to_string())
+            }
         }
         _ => {
             // Unknown datatype — store as string, preserve the dt Sid

@@ -104,6 +104,7 @@ impl Hash for FlakeValueKey {
             FlakeValue::YearMonthDuration(v) => v.hash(state),
             FlakeValue::DayTimeDuration(v) => v.hash(state),
             FlakeValue::Duration(v) => v.hash(state),
+            FlakeValue::GeoPoint(v) => v.hash(state),
         }
     }
 }
@@ -418,13 +419,10 @@ impl Materializer {
                 Some(ComparableValue::Iri(iri))
             }
 
-            Binding::EncodedPid { p_id } => {
-                if let Some(iri) = self.store.resolve_predicate_iri(*p_id) {
-                    Some(ComparableValue::Iri(Arc::from(iri)))
-                } else {
-                    None
-                }
-            }
+            Binding::EncodedPid { p_id } => self
+                .store
+                .resolve_predicate_iri(*p_id)
+                .map(|iri| ComparableValue::Iri(Arc::from(iri))),
 
             Binding::Lit { val, .. } => flake_value_to_comparable(val),
 
@@ -625,6 +623,7 @@ fn flake_value_to_comparable(val: &FlakeValue) -> Option<ComparableValue> {
         FlakeValue::YearMonthDuration(v) => Some(ComparableValue::String(Arc::from(v.to_string()))),
         FlakeValue::DayTimeDuration(v) => Some(ComparableValue::String(Arc::from(v.to_string()))),
         FlakeValue::Duration(v) => Some(ComparableValue::String(Arc::from(v.to_string()))),
+        FlakeValue::GeoPoint(v) => Some(ComparableValue::String(Arc::from(v.to_string()))),
     }
 }
 
@@ -667,8 +666,8 @@ mod tests {
         assert_eq!(long_val.as_f64(), Some(42.0));
         assert_eq!(long_val.as_i64(), Some(42));
 
-        let double_val = ComparableValue::Double(3.14);
-        assert_eq!(double_val.as_f64(), Some(3.14));
+        let double_val = ComparableValue::Double(3.5);
+        assert_eq!(double_val.as_f64(), Some(3.5));
         assert_eq!(double_val.as_i64(), None); // Has fractional part
     }
 }

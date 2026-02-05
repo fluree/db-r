@@ -8,7 +8,7 @@
 use crate::binding::{Binding, RowView};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::ir::{CompareOp, FilterExpr, FilterValue};
+use crate::ir::{FilterExpr, FilterValue};
 use fluree_db_core::{FlakeValue, Storage};
 use std::sync::Arc;
 

@@ -288,7 +288,7 @@ mod tests {
         let mut entries = vec![
             ReverseEntry {
                 key: subject_reverse_key(2, b"Alice"),
-                id: (2u64 << 48) | 0,
+                id: 2u64 << 48,
             },
             ReverseEntry {
                 key: subject_reverse_key(2, b"Bob"),
@@ -296,7 +296,7 @@ mod tests {
             },
             ReverseEntry {
                 key: subject_reverse_key(3, b"Carol"),
-                id: (3u64 << 48) | 0,
+                id: 3u64 << 48,
             },
         ];
         entries.sort_by(|a, b| a.key.cmp(&b.key));

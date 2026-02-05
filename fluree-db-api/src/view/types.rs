@@ -82,6 +82,15 @@ pub struct FlureeView<S: Storage + 'static> {
     /// Ledger alias (e.g., "mydb:main").
     pub ledger_alias: Arc<str>,
 
+    /// Graph ID within the ledger (0 = default graph).
+    ///
+    /// This is used to select the correct graph when querying a ledger that
+    /// contains multiple named graphs (e.g., `txn-meta` at g_id=1).
+    ///
+    /// Note: This is *not* the same thing as a SPARQL "named graph IRI" — it is
+    /// the internal numeric graph selector used by the binary indexes.
+    pub graph_id: u32,
+
     // ========================================================================
     // Novelty (for policy stats and time resolution)
     // ========================================================================
@@ -131,6 +140,7 @@ impl<S: Storage + 'static> std::fmt::Debug for FlureeView<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FlureeView")
             .field("ledger_alias", &self.ledger_alias)
+            .field("graph_id", &self.graph_id)
             .field("to_t", &self.to_t)
             .field("db_t", &self.db.t)
             .field("has_novelty", &self.novelty.is_some())
@@ -171,6 +181,7 @@ impl<S: Storage + Clone + 'static> FlureeView<S> {
             novelty,
             to_t,
             ledger_alias: ledger_alias.into(),
+            graph_id: 0,
             policy: None,
             policy_enforcer: None,
             reasoning: None,
@@ -327,6 +338,23 @@ impl<S: Storage + 'static> FlureeView<S> {
     /// ```
     pub fn as_of(mut self, to_t: i64) -> Self {
         self.to_t = to_t;
+        self
+    }
+}
+
+// ============================================================================
+// Graph selection
+// ============================================================================
+
+impl<S: Storage + 'static> FlureeView<S> {
+    /// Select a graph ID within this ledger view.
+    ///
+    /// This does **not** reload the underlying ledger; it only adjusts the
+    /// internal graph selector used by binary scans. Callers that rely on
+    /// `range_with_overlay()` must ensure the underlying `Db.range_provider`
+    /// is scoped appropriately for the chosen graph.
+    pub fn with_graph_id(mut self, graph_id: u32) -> Self {
+        self.graph_id = graph_id;
         self
     }
 }
