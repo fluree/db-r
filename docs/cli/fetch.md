@@ -1,0 +1,54 @@
+# fluree fetch
+
+Fetch refs from a remote server (similar to `git fetch`).
+
+## Usage
+
+```bash
+fluree fetch <REMOTE>
+```
+
+## Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `<REMOTE>` | Remote name (e.g., `origin`) |
+
+## Description
+
+Fetches ledger references from a remote server and updates local tracking data. This does **not** modify your local ledgers - it only updates what the CLI knows about the remote's state.
+
+After fetching, you can use `pull` to fast-forward your local ledger to match the remote.
+
+## Examples
+
+```bash
+# Fetch from origin
+fluree fetch origin
+
+# Typical workflow
+fluree fetch origin
+fluree pull mydb
+```
+
+## Output
+
+```
+Fetching from 'origin'...
+Updated:
+  mydb -> t=42
+  testdb -> t=15
+Already up to date: 2 ledger(s) unchanged
+```
+
+If no ledgers are found:
+```
+Fetching from 'origin'...
+No ledgers found on remote.
+```
+
+## See Also
+
+- [remote](remote.md) - Configure remote servers
+- [pull](pull.md) - Pull (fetch + fast-forward) from upstream
+- [push](push.md) - Push to upstream

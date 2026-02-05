@@ -233,3 +233,255 @@ pub fn prefixes_to_context(fluree_dir: &Path) -> serde_json::Value {
             .collect(),
     )
 }
+
+// --- Sync Configuration (remotes and upstreams) ---
+
+use async_trait::async_trait;
+use fluree_db_nameservice::RemoteName;
+use fluree_db_nameservice_sync::{
+    RemoteAuth, RemoteConfig, RemoteEndpoint, SyncConfigStore, UpstreamConfig,
+};
+use serde::{Deserialize, Serialize};
+
+/// TOML structure for sync configuration in config.toml
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct SyncToml {
+    #[serde(default)]
+    remotes: Vec<RemoteConfigToml>,
+    #[serde(default)]
+    upstreams: Vec<UpstreamConfig>,
+}
+
+/// TOML-friendly remote config (converts RemoteName to String)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RemoteConfigToml {
+    name: String,
+    #[serde(flatten)]
+    endpoint: RemoteEndpoint,
+    #[serde(default)]
+    auth: RemoteAuth,
+    fetch_interval_secs: Option<u64>,
+}
+
+impl From<RemoteConfig> for RemoteConfigToml {
+    fn from(c: RemoteConfig) -> Self {
+        Self {
+            name: c.name.as_str().to_string(),
+            endpoint: c.endpoint,
+            auth: c.auth,
+            fetch_interval_secs: c.fetch_interval_secs,
+        }
+    }
+}
+
+impl From<RemoteConfigToml> for RemoteConfig {
+    fn from(c: RemoteConfigToml) -> Self {
+        Self {
+            name: RemoteName::new(&c.name),
+            endpoint: c.endpoint,
+            auth: c.auth,
+            fetch_interval_secs: c.fetch_interval_secs,
+        }
+    }
+}
+
+/// File-backed sync config store using `.fluree/config.toml`
+#[derive(Debug)]
+pub struct TomlSyncConfigStore {
+    fluree_dir: PathBuf,
+}
+
+impl TomlSyncConfigStore {
+    pub fn new(fluree_dir: PathBuf) -> Self {
+        Self { fluree_dir }
+    }
+
+    fn config_path(&self) -> PathBuf {
+        self.fluree_dir.join(CONFIG_FILE)
+    }
+
+    fn read_sync_config(&self) -> SyncToml {
+        let path = self.config_path();
+        fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| toml::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    /// Write sync config using toml_edit to preserve other keys in config.toml
+    fn write_sync_config(&self, config: &SyncToml) -> CliResult<()> {
+        use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
+
+        let path = self.config_path();
+
+        // Parse existing file or start fresh
+        let mut doc: DocumentMut = fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_default();
+
+        // Build remotes array of tables ([[remotes]])
+        let mut remotes_aot = ArrayOfTables::new();
+        for remote in &config.remotes {
+            let mut table = Table::new();
+            table.insert("name", Value::from(remote.name.as_str()).into());
+
+            // RemoteEndpoint uses #[serde(tag = "type")] so we need to write the tag
+            match &remote.endpoint {
+                RemoteEndpoint::Http { base_url } => {
+                    table.insert("type", Value::from("Http").into());
+                    table.insert("base_url", Value::from(base_url.as_str()).into());
+                }
+                RemoteEndpoint::Sse { events_url } => {
+                    table.insert("type", Value::from("Sse").into());
+                    table.insert("events_url", Value::from(events_url.as_str()).into());
+                }
+                RemoteEndpoint::Storage { prefix } => {
+                    table.insert("type", Value::from("Storage").into());
+                    table.insert("prefix", Value::from(prefix.as_str()).into());
+                }
+            }
+
+            if let Some(token) = &remote.auth.token {
+                let mut auth = Table::new();
+                auth.insert("token", Value::from(token.as_str()).into());
+                table.insert("auth", Item::Table(auth));
+            }
+
+            if let Some(interval) = remote.fetch_interval_secs {
+                table.insert("fetch_interval_secs", Value::from(interval as i64).into());
+            }
+
+            remotes_aot.push(table);
+        }
+
+        // Build upstreams array of tables ([[upstreams]])
+        let mut upstreams_aot = ArrayOfTables::new();
+        for upstream in &config.upstreams {
+            let mut table = Table::new();
+            table.insert(
+                "local_alias",
+                Value::from(upstream.local_alias.as_str()).into(),
+            );
+            table.insert("remote", Value::from(upstream.remote.as_str()).into());
+            table.insert(
+                "remote_alias",
+                Value::from(upstream.remote_alias.as_str()).into(),
+            );
+            table.insert("auto_pull", Value::from(upstream.auto_pull).into());
+            upstreams_aot.push(table);
+        }
+
+        // Update only the remotes and upstreams keys, preserving everything else
+        if config.remotes.is_empty() {
+            doc.remove("remotes");
+        } else {
+            doc["remotes"] = Item::ArrayOfTables(remotes_aot);
+        }
+
+        if config.upstreams.is_empty() {
+            doc.remove("upstreams");
+        } else {
+            doc["upstreams"] = Item::ArrayOfTables(upstreams_aot);
+        }
+
+        fs::write(&path, doc.to_string())
+            .map_err(|e| CliError::Config(format!("failed to write config: {e}")))
+    }
+}
+
+#[async_trait]
+impl SyncConfigStore for TomlSyncConfigStore {
+    async fn get_remote(
+        &self,
+        name: &RemoteName,
+    ) -> fluree_db_nameservice_sync::Result<Option<RemoteConfig>> {
+        let config = self.read_sync_config();
+        Ok(config
+            .remotes
+            .into_iter()
+            .find(|r| r.name == name.as_str())
+            .map(RemoteConfig::from))
+    }
+
+    async fn set_remote(&self, remote: &RemoteConfig) -> fluree_db_nameservice_sync::Result<()> {
+        let mut config = self.read_sync_config();
+        let toml_config = RemoteConfigToml::from(remote.clone());
+
+        // Replace existing or add new
+        if let Some(pos) = config
+            .remotes
+            .iter()
+            .position(|r| r.name == remote.name.as_str())
+        {
+            config.remotes[pos] = toml_config;
+        } else {
+            config.remotes.push(toml_config);
+        }
+
+        self.write_sync_config(&config)
+            .map_err(|e| fluree_db_nameservice_sync::SyncError::Config(e.to_string()))
+    }
+
+    async fn remove_remote(
+        &self,
+        name: &RemoteName,
+    ) -> fluree_db_nameservice_sync::Result<()> {
+        let mut config = self.read_sync_config();
+        config.remotes.retain(|r| r.name != name.as_str());
+        self.write_sync_config(&config)
+            .map_err(|e| fluree_db_nameservice_sync::SyncError::Config(e.to_string()))
+    }
+
+    async fn list_remotes(&self) -> fluree_db_nameservice_sync::Result<Vec<RemoteConfig>> {
+        let config = self.read_sync_config();
+        Ok(config.remotes.into_iter().map(RemoteConfig::from).collect())
+    }
+
+    async fn get_upstream(
+        &self,
+        local_alias: &str,
+    ) -> fluree_db_nameservice_sync::Result<Option<UpstreamConfig>> {
+        let config = self.read_sync_config();
+        Ok(config
+            .upstreams
+            .into_iter()
+            .find(|u| u.local_alias == local_alias))
+    }
+
+    async fn set_upstream(
+        &self,
+        upstream: &UpstreamConfig,
+    ) -> fluree_db_nameservice_sync::Result<()> {
+        let mut config = self.read_sync_config();
+
+        // Replace existing or add new
+        if let Some(pos) = config
+            .upstreams
+            .iter()
+            .position(|u| u.local_alias == upstream.local_alias)
+        {
+            config.upstreams[pos] = upstream.clone();
+        } else {
+            config.upstreams.push(upstream.clone());
+        }
+
+        self.write_sync_config(&config)
+            .map_err(|e| fluree_db_nameservice_sync::SyncError::Config(e.to_string()))
+    }
+
+    async fn remove_upstream(
+        &self,
+        local_alias: &str,
+    ) -> fluree_db_nameservice_sync::Result<()> {
+        let mut config = self.read_sync_config();
+        config.upstreams.retain(|u| u.local_alias != local_alias);
+        self.write_sync_config(&config)
+            .map_err(|e| fluree_db_nameservice_sync::SyncError::Config(e.to_string()))
+    }
+
+    async fn list_upstreams(&self) -> fluree_db_nameservice_sync::Result<Vec<UpstreamConfig>> {
+        let config = self.read_sync_config();
+        Ok(config.upstreams)
+    }
+}

@@ -13,3 +13,7 @@ pub mod log;
 pub mod config_cmd;
 pub mod prefix;
 pub mod completions;
+pub mod token;
+pub mod remote;
+pub mod upstream;
+pub mod sync;

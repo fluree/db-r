@@ -170,5 +170,34 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             commands::completions::run(shell);
             Ok(())
         }
+
+        Commands::Token { action } => {
+            commands::token::run(action)
+        }
+
+        Commands::Remote { action } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::remote::run(action, &fluree_dir).await
+        }
+
+        Commands::Upstream { action } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::upstream::run(action, &fluree_dir).await
+        }
+
+        Commands::Fetch { remote } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::sync::run_fetch(&remote, &fluree_dir).await
+        }
+
+        Commands::Pull { ledger } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::sync::run_pull(ledger.as_deref(), &fluree_dir).await
+        }
+
+        Commands::Push { ledger } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::sync::run_push(ledger.as_deref(), &fluree_dir).await
+        }
     }
 }

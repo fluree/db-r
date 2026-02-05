@@ -42,6 +42,8 @@ fluree query --sparql -e 'SELECT ?name WHERE { ?s <http://example.org/name> ?nam
 
 ## Commands
 
+### Core Commands
+
 | Command | Description |
 |---------|-------------|
 | [`init`](init.md) | Initialize a new Fluree project directory |
@@ -56,6 +58,27 @@ fluree query --sparql -e 'SELECT ?name WHERE { ?s <http://example.org/name> ?nam
 | [`history`](history.md) | Show change history for an entity |
 | [`export`](export.md) | Export ledger data |
 | [`log`](log.md) | Show commit log |
+
+### Remote Sync
+
+| Command | Description |
+|---------|-------------|
+| [`remote`](remote.md) | Manage remote servers |
+| [`upstream`](upstream.md) | Manage upstream tracking configuration |
+| [`fetch`](fetch.md) | Fetch refs from a remote |
+| [`pull`](pull.md) | Pull (fetch + fast-forward) from upstream |
+| [`push`](push.md) | Push to upstream remote |
+
+### Authentication
+
+| Command | Description |
+|---------|-------------|
+| [`token`](token.md) | Manage JWS tokens for authentication |
+
+### Configuration
+
+| Command | Description |
+|---------|-------------|
 | [`config`](config.md) | Manage configuration |
 | [`prefix`](prefix.md) | Manage IRI prefix mappings |
 | [`completions`](completions.md) | Generate shell completions |
