@@ -2246,6 +2246,7 @@ mod tests {
             ("=", UnresolvedCompareOp::Eq),
             ("!=", UnresolvedCompareOp::Ne),
             ("<>", UnresolvedCompareOp::Ne),
+            ("not=", UnresolvedCompareOp::Ne),
             ("<", UnresolvedCompareOp::Lt),
             ("<=", UnresolvedCompareOp::Le),
             (">", UnresolvedCompareOp::Gt),

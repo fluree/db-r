@@ -158,7 +158,7 @@ where
 pub fn parse_compare_op(op: &str) -> Option<UnresolvedCompareOp> {
     match op.to_lowercase().as_str() {
         "=" | "eq" => Some(UnresolvedCompareOp::Eq),
-        "!=" | "<>" | "ne" => Some(UnresolvedCompareOp::Ne),
+        "!=" | "<>" | "ne" | "not=" => Some(UnresolvedCompareOp::Ne),
         "<" | "lt" => Some(UnresolvedCompareOp::Lt),
         "<=" | "le" => Some(UnresolvedCompareOp::Le),
         ">" | "gt" => Some(UnresolvedCompareOp::Gt),
