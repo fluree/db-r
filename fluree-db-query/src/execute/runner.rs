@@ -380,6 +380,47 @@ impl<'a, 'b, S: Storage + 'static> Default for ContextConfig<'a, 'b, S> {
     }
 }
 
+/// Parameters for query execution with dataset, policy, and search providers.
+///
+/// Bundles the common parameters needed for full-featured query execution
+/// to reduce argument count in execution functions.
+pub struct QueryContextParams<'a, 'b, S: Storage + 'static> {
+    /// Dataset for multi-ledger queries
+    pub dataset: &'a DataSet<'a, S>,
+    /// Policy context for access control
+    pub policy: &'a fluree_db_policy::PolicyContext,
+    /// BM25 index provider for full-text search
+    pub bm25_provider: &'b dyn crate::bm25::Bm25IndexProvider,
+    /// Vector index provider for similarity search
+    pub vector_provider: &'b dyn crate::vector::VectorIndexProvider,
+    /// Optional execution tracker
+    pub tracker: Option<&'a Tracker>,
+}
+
+impl<'a, 'b, S: Storage + 'static> QueryContextParams<'a, 'b, S> {
+    /// Create new query context parameters.
+    pub fn new(
+        dataset: &'a DataSet<'a, S>,
+        policy: &'a fluree_db_policy::PolicyContext,
+        bm25_provider: &'b dyn crate::bm25::Bm25IndexProvider,
+        vector_provider: &'b dyn crate::vector::VectorIndexProvider,
+    ) -> Self {
+        Self {
+            dataset,
+            policy,
+            bm25_provider,
+            vector_provider,
+            tracker: None,
+        }
+    }
+
+    /// Set the execution tracker.
+    pub fn with_tracker(mut self, tracker: Option<&'a Tracker>) -> Self {
+        self.tracker = tracker;
+        self
+    }
+}
+
 /// Execute a prepared query with configurable context options
 ///
 /// This is the unified internal execution path that handles all variants.
@@ -708,15 +749,11 @@ pub async fn execute_prepared_with_dataset_and_policy_and_providers<
     source: DataSource<'a, S>,
     vars: &VarRegistry,
     prepared: PreparedExecution<S>,
-    dataset: &'a DataSet<'a, S>,
-    policy: &'a fluree_db_policy::PolicyContext,
-    bm25_provider: &'b dyn crate::bm25::Bm25IndexProvider,
-    vector_provider: &'b dyn crate::vector::VectorIndexProvider,
-    tracker: Option<&'a Tracker>,
+    params: QueryContextParams<'a, 'b, S>,
 ) -> Result<Vec<Batch>> {
     // Create policy enforcer for async f:query support
     let enforcer = Arc::new(crate::policy::QueryPolicyEnforcer::new(Arc::new(
-        policy.clone(),
+        params.policy.clone(),
     )));
 
     execute_prepared(
@@ -724,11 +761,11 @@ pub async fn execute_prepared_with_dataset_and_policy_and_providers<
         vars,
         prepared,
         ContextConfig {
-            tracker,
+            tracker: params.tracker,
             policy_enforcer: Some(enforcer),
-            dataset: Some(dataset),
-            bm25_provider: Some(bm25_provider),
-            vector_provider: Some(vector_provider),
+            dataset: Some(params.dataset),
+            bm25_provider: Some(params.bm25_provider),
+            vector_provider: Some(params.vector_provider),
             strict_bind_errors: true,
             ..Default::default()
         },

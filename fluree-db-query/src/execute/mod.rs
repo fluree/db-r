@@ -41,6 +41,7 @@ mod where_plan;
 pub use runner::execute_prepared;
 pub use runner::ContextConfig;
 pub use runner::ExecutableQuery;
+pub use runner::QueryContextParams;
 
 // Re-export internal helpers for use in lib.rs
 pub use where_plan::build_where_operators_seeded;
@@ -511,24 +512,10 @@ pub async fn execute_with_dataset_and_policy_and_providers<'a, 'b, S: Storage + 
     source: DataSource<'a, S>,
     vars: &VarRegistry,
     query: &ExecutableQuery,
-    dataset: &'a DataSet<'a, S>,
-    policy: &'a fluree_db_policy::PolicyContext,
-    bm25_provider: &'b dyn crate::bm25::Bm25IndexProvider,
-    vector_provider: &'b dyn crate::vector::VectorIndexProvider,
-    tracker: Option<&'a Tracker>,
+    params: QueryContextParams<'a, 'b, S>,
 ) -> Result<Vec<Batch>> {
     let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
-    execute_prepared_with_dataset_and_policy_and_providers(
-        source,
-        vars,
-        prepared,
-        dataset,
-        policy,
-        bm25_provider,
-        vector_provider,
-        tracker,
-    )
-    .await
+    execute_prepared_with_dataset_and_policy_and_providers(source, vars, prepared, params).await
 }
 
 #[cfg(test)]

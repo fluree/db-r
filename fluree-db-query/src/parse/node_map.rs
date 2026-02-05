@@ -25,6 +25,21 @@ struct IndexSearchResultVars {
     ledger: Option<Arc<str>>,
 }
 
+/// Shared context for parsing properties within a WHERE clause.
+///
+/// Bundles the common parameters needed for property parsing to reduce
+/// argument count in recursive calls.
+struct PropertyParseContext<'a> {
+    /// JSON-LD context for IRI expansion
+    context: &'a ParsedContext,
+    /// Path alias mappings from @context
+    path_aliases: &'a PathAliasMap,
+    /// Counter for generating unique nested pattern variables
+    nested_counter: &'a mut u32,
+    /// Whether to allow variable objects (for history queries)
+    object_var_parsing: bool,
+}
+
 /// rdf:type IRI constant (re-exported from vocab crate for convenience)
 pub(crate) use fluree_vocab::rdf::TYPE as RDF_TYPE;
 use fluree_vocab::xsd;
@@ -487,16 +502,13 @@ pub fn parse_node_map(
         }
 
         // Regular property
-        parse_property(
-            key,
-            value,
-            &subject,
+        let mut ctx = PropertyParseContext {
             context,
             path_aliases,
-            query,
             nested_counter,
             object_var_parsing,
-        )?;
+        };
+        parse_property(key, value, &subject, query, &mut ctx)?;
     }
 
     Ok(())
@@ -565,15 +577,12 @@ fn parse_property(
     key: &str,
     value: &JsonValue,
     subject: &UnresolvedTerm,
-    context: &ParsedContext,
-    path_aliases: &PathAliasMap,
     query: &mut UnresolvedQuery,
-    nested_counter: &mut u32,
-    object_var_parsing: bool,
+    ctx: &mut PropertyParseContext<'_>,
 ) -> Result<()> {
     // Check if key is a @path alias from @context
-    if let Some(path_expr) = path_aliases.get(key) {
-        return parse_path_alias_usage(path_expr, value, subject, context, query);
+    if let Some(path_expr) = ctx.path_aliases.get(key) {
+        return parse_path_alias_usage(path_expr, value, subject, ctx.context, query);
     }
 
     // Check if predicate is a variable (e.g., "?p")
@@ -599,7 +608,7 @@ fn parse_property(
         (UnresolvedTerm::var(key), None, false)
     } else {
         // Expand the property IRI and get context entry
-        let (expanded_iri, entry) = details(key, context);
+        let (expanded_iri, entry) = details(key, ctx.context);
 
         // If the term is defined with @reverse in @context, interpret this predicate as reversed:
         // {"@id":"?s","parent":"?x"} where parent is @reverse ex:child
@@ -610,7 +619,7 @@ fn parse_property(
             .map(|rev| {
                 // JSON-LD allows "@reverse": "@type" as a special keyword mapping.
                 // Our engine represents @type as rdf:type.
-                if rev == "@type" || rev == "type" || rev.as_str() == context.type_key {
+                if rev == "@type" || rev == "type" || rev.as_str() == ctx.context.type_key {
                     (RDF_TYPE.to_string(), true)
                 } else {
                     (rev.clone(), true)
@@ -646,7 +655,7 @@ fn parse_property(
     // Handle value objects like {"@value": ..., "@type": ..., "@language": ..., "@t": ...} (typed literals in WHERE)
     if let JsonValue::Object(obj) = value {
         if obj.contains_key("@value") || obj.contains_key("@language") {
-            let parsed = parse_value_object(obj, context, object_var_parsing)?;
+            let parsed = parse_value_object(obj, ctx.context, ctx.object_var_parsing)?;
             let object = parsed.term;
             let pattern_dt = parsed.dt_iri.or(dt_iri);
 
@@ -755,10 +764,10 @@ fn parse_property(
             // IMPORTANT: If we used a generated var while the nested object has an explicit @id,
             // we'd break correlation between the connecting triple and the nested properties.
             let nested_subject = if let Some(id_val) = nested_map.get("@id") {
-                parse_subject(id_val, context)?
+                parse_subject(id_val, ctx.context)?
             } else {
-                let nested_subject_name = format!("?__n{}", *nested_counter);
-                *nested_counter += 1;
+                let nested_subject_name = format!("?__n{}", *ctx.nested_counter);
+                *ctx.nested_counter += 1;
                 UnresolvedTerm::var(&nested_subject_name)
             };
 
@@ -777,11 +786,11 @@ fn parse_property(
             parse_nested_node_map(
                 nested_map,
                 &nested_subject,
-                context,
-                path_aliases,
+                ctx.context,
+                ctx.path_aliases,
                 query,
-                nested_counter,
-                object_var_parsing,
+                ctx.nested_counter,
+                ctx.object_var_parsing,
             )?;
 
             return Ok(());
@@ -789,7 +798,7 @@ fn parse_property(
     }
 
     // Parse the object value (non-nested case)
-    let object = parse_json_value(value, is_ref_type, context, object_var_parsing)?;
+    let object = parse_json_value(value, is_ref_type, ctx.context, ctx.object_var_parsing)?;
 
     // Create and add the pattern
     let pattern = build_triple_pattern(subject, predicate, object, is_reverse, dt_iri.as_deref());
@@ -1011,16 +1020,13 @@ fn parse_nested_node_map(
         }
 
         // Regular property (may be recursively nested)
-        parse_property(
-            key,
-            value,
-            &actual_subject,
+        let mut ctx = PropertyParseContext {
             context,
             path_aliases,
-            query,
             nested_counter,
             object_var_parsing,
-        )?;
+        };
+        parse_property(key, value, &actual_subject, query, &mut ctx)?;
     }
 
     Ok(())

@@ -79,7 +79,7 @@ pub use execute::{
     execute_with_dataset_and_policy_tracked, execute_with_dataset_and_providers,
     execute_with_dataset_history, execute_with_dataset_tracked, execute_with_overlay,
     execute_with_overlay_tracked, execute_with_policy, execute_with_policy_tracked,
-    execute_with_r2rml, run_operator, DataSource, ExecutableQuery,
+    execute_with_r2rml, run_operator, DataSource, ExecutableQuery, QueryContextParams,
 };
 pub use exists::ExistsOperator;
 pub use explain::{
