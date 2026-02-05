@@ -93,6 +93,61 @@ impl std::fmt::Display for DistanceMetric {
     }
 }
 
+/// Parameters for vector similarity search.
+///
+/// This struct bundles the search parameters to reduce argument count
+/// in the `VectorIndexProvider::search` trait method.
+#[derive(Debug, Clone)]
+pub struct VectorSearchParams<'a> {
+    /// The query vector to find similar vectors for
+    pub query_vector: &'a [f32],
+    /// Distance metric to use
+    pub metric: DistanceMetric,
+    /// Maximum number of results
+    pub limit: usize,
+    /// Target transaction time (for time-travel queries).
+    /// In dataset (multi-ledger) mode, there is no meaningful "dataset t".
+    /// Callers should pass `None` unless the query provides an unambiguous
+    /// as-of anchor (e.g., graph-specific time selection).
+    pub as_of_t: Option<i64>,
+    /// Whether to sync before querying
+    pub sync: bool,
+    /// Query timeout in milliseconds
+    pub timeout_ms: Option<u64>,
+}
+
+impl<'a> VectorSearchParams<'a> {
+    /// Create new search params with required fields and defaults for optional ones.
+    pub fn new(query_vector: &'a [f32], metric: DistanceMetric, limit: usize) -> Self {
+        Self {
+            query_vector,
+            metric,
+            limit,
+            as_of_t: None,
+            sync: false,
+            timeout_ms: None,
+        }
+    }
+
+    /// Set the as-of transaction time.
+    pub fn with_as_of_t(mut self, t: Option<i64>) -> Self {
+        self.as_of_t = t;
+        self
+    }
+
+    /// Set whether to sync before querying.
+    pub fn with_sync(mut self, sync: bool) -> Self {
+        self.sync = sync;
+        self
+    }
+
+    /// Set the query timeout.
+    pub fn with_timeout_ms(mut self, timeout_ms: Option<u64>) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+}
+
 /// Configuration for a vector index
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VectorIndexConfig {

@@ -36,7 +36,7 @@ use crate::search::RemoteBm25SearchProvider;
 use crate::search::RemoteVectorSearchProvider;
 
 #[cfg(feature = "vector")]
-use fluree_db_query::vector::{DistanceMetric, VectorIndexProvider, VectorSearchHit};
+use fluree_db_query::vector::{DistanceMetric, VectorIndexProvider, VectorSearchHit, VectorSearchParams};
 
 /// BM25 index provider for query execution.
 ///
@@ -364,21 +364,11 @@ where
     /// # Arguments
     ///
     /// * `vg_alias` - Virtual graph alias (e.g., "embeddings:main")
-    /// * `query_vector` - The query vector to find similar vectors for
-    /// * `metric` - Distance metric (Cosine, Dot, or Euclidean)
-    /// * `limit` - Maximum number of results
-    /// * `as_of_t` - Target transaction time for time-travel queries
-    /// * `sync` - Whether to sync before querying if index is stale
-    /// * `timeout_ms` - Query timeout in milliseconds
+    /// * `params` - Search parameters (query vector, metric, limit, etc.)
     async fn search(
         &self,
         vg_alias: &str,
-        query_vector: &[f32],
-        metric: DistanceMetric,
-        limit: usize,
-        as_of_t: Option<i64>,
-        sync: bool,
-        timeout_ms: Option<u64>,
+        params: VectorSearchParams<'_>,
     ) -> QueryResult<Vec<VectorSearchHit>> {
         // Look up VG record to get deployment configuration
         let deployment_config = self.get_deployment_config(vg_alias).await?;
@@ -388,12 +378,12 @@ where
                 debug!(vg_alias = %vg_alias, "Using embedded vector search mode");
                 self.search_vector_embedded(
                     vg_alias,
-                    query_vector,
-                    metric,
-                    limit,
-                    as_of_t,
-                    sync,
-                    timeout_ms,
+                    params.query_vector,
+                    params.metric,
+                    params.limit,
+                    params.as_of_t,
+                    params.sync,
+                    params.timeout_ms,
                 )
                 .await
             }
@@ -406,15 +396,7 @@ where
                 );
                 let client = RemoteVectorSearchProvider::from_config(&deployment_config)?;
                 client
-                    .search(
-                        vg_alias,
-                        query_vector,
-                        metric,
-                        limit,
-                        as_of_t,
-                        sync,
-                        timeout_ms,
-                    )
+                    .search(vg_alias, params)
                     .await
             }
             #[cfg(not(feature = "search-remote-client"))]

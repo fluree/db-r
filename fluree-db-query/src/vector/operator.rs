@@ -40,7 +40,7 @@ use fluree_db_core::{FlakeValue, Storage};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use super::DistanceMetric;
+use super::VectorSearchParams;
 
 /// A single hit from vector search
 #[derive(Debug, Clone)]
@@ -79,16 +79,7 @@ pub trait VectorIndexProvider: std::fmt::Debug + Send + Sync {
     /// # Arguments
     ///
     /// * `vg_alias` - Virtual graph alias (e.g., "embeddings:main")
-    /// * `query_vector` - The query vector to find similar vectors for
-    /// * `metric` - Distance metric to use
-    /// * `limit` - Maximum number of results
-    /// * `as_of_t` - Target transaction time (for time-travel queries)
-    ///
-    /// In dataset (multi-ledger) mode, there is no meaningful "dataset t".
-    /// Callers should pass `None` unless the query provides an unambiguous
-    /// as-of anchor (e.g., graph-specific time selection).
-    /// * `sync` - Whether to sync before querying
-    /// * `timeout_ms` - Query timeout in milliseconds
+    /// * `params` - Search parameters (query vector, metric, limit, etc.)
     ///
     /// # Returns
     ///
@@ -96,12 +87,7 @@ pub trait VectorIndexProvider: std::fmt::Debug + Send + Sync {
     async fn search(
         &self,
         vg_alias: &str,
-        query_vector: &[f32],
-        metric: DistanceMetric,
-        limit: usize,
-        as_of_t: Option<i64>,
-        sync: bool,
-        timeout_ms: Option<u64>,
+        params: VectorSearchParams<'_>,
     ) -> Result<Vec<VectorSearchHit>>;
 
     /// Check if a collection exists for the given VG alias
@@ -286,20 +272,17 @@ impl<S: Storage + 'static> Operator<S> for VectorSearchOperator<S> {
             }
 
             // Execute vector search
+            let params = VectorSearchParams::new(&query_vector, self.pattern.metric, limit)
+                .with_as_of_t(if ctx.dataset.is_some() {
+                    None
+                } else {
+                    Some(ctx.to_t)
+                })
+                .with_sync(self.pattern.sync)
+                .with_timeout_ms(self.pattern.timeout);
+
             let results = provider
-                .search(
-                    &self.pattern.vg_alias,
-                    &query_vector,
-                    self.pattern.metric,
-                    limit,
-                    if ctx.dataset.is_some() {
-                        None
-                    } else {
-                        Some(ctx.to_t)
-                    },
-                    self.pattern.sync,
-                    self.pattern.timeout,
-                )
+                .search(&self.pattern.vg_alias, params)
                 .await?;
 
             // For each search result, merge with the child row.
@@ -404,6 +387,7 @@ mod tests {
     use crate::ir::{Pattern, VectorSearchTarget};
     use crate::seed::EmptyOperator;
     use crate::var_registry::VarRegistry;
+    use crate::vector::DistanceMetric;
     use fluree_db_core::{Db, MemoryStorage};
     use std::sync::Mutex;
 
@@ -445,21 +429,16 @@ mod tests {
         async fn search(
             &self,
             vg_alias: &str,
-            query_vector: &[f32],
-            metric: DistanceMetric,
-            limit: usize,
-            _as_of_t: Option<i64>,
-            _sync: bool,
-            _timeout_ms: Option<u64>,
+            params: VectorSearchParams<'_>,
         ) -> Result<Vec<VectorSearchHit>> {
             // Record the call
             self.search_calls.lock().unwrap().push(SearchCall {
                 vg_alias: vg_alias.to_string(),
-                query_vector: query_vector.to_vec(),
-                metric,
-                limit,
+                query_vector: params.query_vector.to_vec(),
+                metric: params.metric,
+                limit: params.limit,
             });
-            Ok(self.results.iter().take(limit).cloned().collect())
+            Ok(self.results.iter().take(params.limit).cloned().collect())
         }
 
         async fn collection_exists(&self, _vg_alias: &str) -> Result<bool> {

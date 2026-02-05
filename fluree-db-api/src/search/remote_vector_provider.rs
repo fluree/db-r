@@ -12,7 +12,7 @@
 
 use async_trait::async_trait;
 use fluree_db_query::error::{QueryError, Result};
-use fluree_db_query::vector::{DistanceMetric, VectorIndexProvider, VectorSearchHit};
+use fluree_db_query::vector::{VectorIndexProvider, VectorSearchHit, VectorSearchParams};
 use fluree_search_protocol::{ErrorCode, SearchError, SearchRequest, SearchResponse};
 use reqwest::Client;
 use std::fmt;
@@ -122,29 +122,25 @@ impl VectorIndexProvider for RemoteVectorSearchProvider {
     async fn search(
         &self,
         vg_alias: &str,
-        query_vector: &[f32],
-        metric: DistanceMetric,
-        limit: usize,
-        as_of_t: Option<i64>,
-        sync: bool,
-        timeout_ms: Option<u64>,
+        params: VectorSearchParams<'_>,
     ) -> Result<Vec<VectorSearchHit>> {
         // Build the search request
-        let mut request = SearchRequest::vector(vg_alias, query_vector.to_vec(), limit);
-        request.as_of_t = as_of_t;
-        request.sync = sync;
-        request.timeout_ms = timeout_ms;
+        let mut request = SearchRequest::vector(vg_alias, params.query_vector.to_vec(), params.limit);
+        request.as_of_t = params.as_of_t;
+        request.sync = params.sync;
+        request.timeout_ms = params.timeout_ms;
 
         // Set the metric on the query variant
         if let fluree_search_protocol::QueryVariant::Vector {
             metric: ref mut m, ..
         } = request.query
         {
-            *m = Some(metric.to_string());
+            *m = Some(params.metric.to_string());
         }
 
         // Use the per-request timeout if provided, otherwise use default
-        let timeout = timeout_ms
+        let timeout = params
+            .timeout_ms
             .map(Duration::from_millis)
             .unwrap_or(self.request_timeout);
 

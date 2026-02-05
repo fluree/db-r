@@ -462,7 +462,7 @@ async fn vector_supports_different_metrics() {
 /// Test that FlureeIndexProvider implements VectorIndexProvider for query integration
 #[tokio::test]
 async fn vector_provider_integration() {
-    use fluree_db_query::vector::VectorIndexProvider;
+    use fluree_db_query::vector::{VectorIndexProvider, VectorSearchParams};
 
     let fluree = FlureeBuilder::memory().build_memory();
 
@@ -505,16 +505,11 @@ async fn vector_provider_integration() {
     let provider = FlureeIndexProvider::new(&fluree);
     let query_vector = [0.85, 0.15, 0.0];
 
+    let params = VectorSearchParams::new(&query_vector, DistanceMetric::Cosine, 10)
+        .with_as_of_t(Some(t));
+
     let results = provider
-        .search(
-            &created.vg_alias,
-            &query_vector,
-            DistanceMetric::Cosine,
-            10,
-            Some(t),
-            false,
-            None,
-        )
+        .search(&created.vg_alias, params)
         .await
         .unwrap();
 
