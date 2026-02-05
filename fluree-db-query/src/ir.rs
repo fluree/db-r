@@ -1256,6 +1256,8 @@ pub enum FunctionName {
     DotProduct,
     CosineSimilarity,
     EuclideanDistance,
+    /// Geospatial functions
+    GeofDistance,
     /// Other
     Bound,
     If,

@@ -1367,6 +1367,9 @@ fn lower_function_name(name: &str) -> FunctionName {
         "euclideandistance" | "euclidean_distance" | "euclidiandistance" => {
             FunctionName::EuclideanDistance
         }
+        // Geospatial functions (OGC GeoSPARQL)
+        // Note: plain "distance" intentionally omitted to avoid collision with vector/edit distance
+        "geof:distance" | "geo_distance" | "geodistance" => FunctionName::GeofDistance,
         // Other
         "bound" => FunctionName::Bound,
         "if" => FunctionName::If,
