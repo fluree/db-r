@@ -429,8 +429,9 @@ fn binding_to_ir_term(
                     "Encountered EncodedSid during CONSTRUCT formatting but QueryResult has no binary_store".to_string(),
                 )
             })?;
-            let iri = store.resolve_subject_iri(*s_id)
-                .map_err(|e| FormatError::InvalidBinding(format!("Failed to resolve subject IRI: {}", e)))?;
+            let iri = store.resolve_subject_iri(*s_id).map_err(|e| {
+                FormatError::InvalidBinding(format!("Failed to resolve subject IRI: {}", e))
+            })?;
             if let Some(bnode_id) = iri.strip_prefix("_:") {
                 Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
             } else {
@@ -446,7 +447,10 @@ fn binding_to_ir_term(
             })?;
             match store.resolve_predicate_iri(*p_id) {
                 Some(iri) => Ok(Some(IrTerm::iri(iri.to_string()))),
-                None => Err(FormatError::InvalidBinding(format!("Unknown predicate ID: {}", p_id))),
+                None => Err(FormatError::InvalidBinding(format!(
+                    "Unknown predicate ID: {}",
+                    p_id
+                ))),
             }
         }
 

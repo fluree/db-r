@@ -247,9 +247,12 @@ pub(crate) fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Res
         )),
 
         // Encoded IRI types (late materialization) - require QueryResult for decoding.
-        Binding::EncodedSid { .. } | Binding::EncodedPid { .. } => Err(FormatError::InvalidBinding(
-            "Internal error: format_binding called without QueryResult for encoded IRI binding".to_string(),
-        )),
+        Binding::EncodedSid { .. } | Binding::EncodedPid { .. } => {
+            Err(FormatError::InvalidBinding(
+                "Internal error: format_binding called without QueryResult for encoded IRI binding"
+                    .to_string(),
+            ))
+        }
 
         // Grouped values (from GROUP BY without aggregation)
         Binding::Grouped(values) => {
@@ -283,22 +286,28 @@ pub(crate) fn format_binding_with_result(
         Binding::EncodedSid { s_id } => {
             let store = result.binary_store.as_ref().ok_or_else(|| {
                 FormatError::InvalidBinding(
-                    "Encountered EncodedSid during formatting but QueryResult has no binary_store".to_string(),
+                    "Encountered EncodedSid during formatting but QueryResult has no binary_store"
+                        .to_string(),
                 )
             })?;
-            let iri = store.resolve_subject_iri(*s_id)
-                .map_err(|e| FormatError::InvalidBinding(format!("Failed to resolve subject IRI: {}", e)))?;
+            let iri = store.resolve_subject_iri(*s_id).map_err(|e| {
+                FormatError::InvalidBinding(format!("Failed to resolve subject IRI: {}", e))
+            })?;
             Ok(JsonValue::String(compactor.compact_iri(&iri)?))
         }
         Binding::EncodedPid { p_id } => {
             let store = result.binary_store.as_ref().ok_or_else(|| {
                 FormatError::InvalidBinding(
-                    "Encountered EncodedPid during formatting but QueryResult has no binary_store".to_string(),
+                    "Encountered EncodedPid during formatting but QueryResult has no binary_store"
+                        .to_string(),
                 )
             })?;
             match store.resolve_predicate_iri(*p_id) {
                 Some(iri) => Ok(JsonValue::String(compactor.compact_iri(iri)?)),
-                None => Err(FormatError::InvalidBinding(format!("Unknown predicate ID: {}", p_id))),
+                None => Err(FormatError::InvalidBinding(format!(
+                    "Unknown predicate ID: {}",
+                    p_id
+                ))),
             }
         }
         _ => format_binding(binding, compactor),

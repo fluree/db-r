@@ -500,7 +500,7 @@ where
                     dict_addresses,
                     graph_addresses,
                     stats: Some(stats_json),
-                    schema: None, // schema: requires predicate definitions (future)
+                    schema: None,     // schema: requires predicate definitions (future)
                     prev_index: None, // set below after garbage computation
                     garbage: None,    // set below after garbage computation
                     subject_watermarks,

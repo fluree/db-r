@@ -3,10 +3,7 @@ use crate::error::{CliError, CliResult};
 use fluree_db_nameservice::NameService;
 use std::path::Path;
 
-pub async fn run(
-    ledger: Option<&str>,
-    fluree_dir: &Path,
-) -> CliResult<()> {
+pub async fn run(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> {
     let alias = context::resolve_ledger(ledger, fluree_dir)?;
     let fluree = context::build_fluree(fluree_dir)?;
     let address = context::to_ledger_address(&alias);

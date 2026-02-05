@@ -21,9 +21,9 @@ pub async fn run(
         .await?
         .ok_or_else(|| CliError::NotFound(format!("ledger '{}' not found", alias)))?;
 
-    let head_address = record.commit_address.ok_or_else(|| {
-        CliError::NotFound(format!("ledger '{}' has no commits", alias))
-    })?;
+    let head_address = record
+        .commit_address
+        .ok_or_else(|| CliError::NotFound(format!("ledger '{}' has no commits", alias)))?;
 
     // Walk commit chain
     let storage = fluree.storage().clone();

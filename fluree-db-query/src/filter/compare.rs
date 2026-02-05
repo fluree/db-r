@@ -75,30 +75,30 @@ pub fn try_coerce_temporal_string_cmp(left: &FlakeValue, right: &FlakeValue) -> 
 
     match (left, right) {
         // String on left, temporal on right → parse left as temporal
-        (FlakeValue::String(s), FlakeValue::GYear(g)) => {
-            temporal::GYear::parse(s).ok().map(|parsed| parsed.cmp(g.as_ref()))
-        }
+        (FlakeValue::String(s), FlakeValue::GYear(g)) => temporal::GYear::parse(s)
+            .ok()
+            .map(|parsed| parsed.cmp(g.as_ref())),
         (FlakeValue::String(s), FlakeValue::GYearMonth(g)) => temporal::GYearMonth::parse(s)
             .ok()
             .map(|parsed| parsed.cmp(g.as_ref())),
-        (FlakeValue::String(s), FlakeValue::GMonth(g)) => {
-            temporal::GMonth::parse(s).ok().map(|parsed| parsed.cmp(g.as_ref()))
-        }
-        (FlakeValue::String(s), FlakeValue::GDay(g)) => {
-            temporal::GDay::parse(s).ok().map(|parsed| parsed.cmp(g.as_ref()))
-        }
+        (FlakeValue::String(s), FlakeValue::GMonth(g)) => temporal::GMonth::parse(s)
+            .ok()
+            .map(|parsed| parsed.cmp(g.as_ref())),
+        (FlakeValue::String(s), FlakeValue::GDay(g)) => temporal::GDay::parse(s)
+            .ok()
+            .map(|parsed| parsed.cmp(g.as_ref())),
         (FlakeValue::String(s), FlakeValue::GMonthDay(g)) => temporal::GMonthDay::parse(s)
             .ok()
             .map(|parsed| parsed.cmp(g.as_ref())),
         (FlakeValue::String(s), FlakeValue::DateTime(dt)) => temporal::DateTime::parse(s)
             .ok()
             .map(|parsed| parsed.cmp(dt.as_ref())),
-        (FlakeValue::String(s), FlakeValue::Date(d)) => {
-            temporal::Date::parse(s).ok().map(|parsed| parsed.cmp(d.as_ref()))
-        }
-        (FlakeValue::String(s), FlakeValue::Time(t)) => {
-            temporal::Time::parse(s).ok().map(|parsed| parsed.cmp(t.as_ref()))
-        }
+        (FlakeValue::String(s), FlakeValue::Date(d)) => temporal::Date::parse(s)
+            .ok()
+            .map(|parsed| parsed.cmp(d.as_ref())),
+        (FlakeValue::String(s), FlakeValue::Time(t)) => temporal::Time::parse(s)
+            .ok()
+            .map(|parsed| parsed.cmp(t.as_ref())),
         // Temporal on left, string on right → parse right as temporal
         (FlakeValue::GYear(g), FlakeValue::String(s)) => temporal::GYear::parse(s)
             .ok()

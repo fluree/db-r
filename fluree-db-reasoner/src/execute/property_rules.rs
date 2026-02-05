@@ -80,7 +80,10 @@ pub fn apply_transitive_rule(ontology: &OntologyRL, ctx: &mut RuleContext<'_>) {
                                 None,
                             );
 
-                            if !ctx.derived.contains(&new_flake.s, &new_flake.p, &new_flake.o) {
+                            if !ctx
+                                .derived
+                                .contains(&new_flake.s, &new_flake.p, &new_flake.o)
+                            {
                                 ctx.new_delta.push(new_flake);
                                 ctx.diagnostics.record_rule_fired("prp-trp");
                             }
@@ -102,7 +105,10 @@ pub fn apply_transitive_rule(ontology: &OntologyRL, ctx: &mut RuleContext<'_>) {
                                 None,
                             );
 
-                            if !ctx.derived.contains(&new_flake.s, &new_flake.p, &new_flake.o) {
+                            if !ctx
+                                .derived
+                                .contains(&new_flake.s, &new_flake.p, &new_flake.o)
+                            {
                                 ctx.new_delta.push(new_flake);
                                 ctx.diagnostics.record_rule_fired("prp-trp");
                             }
@@ -126,7 +132,10 @@ pub fn apply_transitive_rule(ontology: &OntologyRL, ctx: &mut RuleContext<'_>) {
                             None,
                         );
 
-                        if !ctx.derived.contains(&new_flake.s, &new_flake.p, &new_flake.o) {
+                        if !ctx
+                            .derived
+                            .contains(&new_flake.s, &new_flake.p, &new_flake.o)
+                        {
                             ctx.new_delta.push(new_flake);
                             ctx.diagnostics.record_rule_fired("prp-trp");
                         }

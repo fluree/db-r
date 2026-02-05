@@ -120,7 +120,13 @@ fn cmp_overlay_vs_record(ov: &OverlayOp, rec: &RunRecord, order: RunSortOrder) -
 #[inline]
 fn same_identity_row_vs_overlay(row: &DecodedRow, ov: &OverlayOp) -> bool {
     FactKey::from_decoded_row(
-        row.s_id, row.p_id, row.o_kind, row.o_key, row.dt, row.lang_id, row.i,
+        row.s_id,
+        row.p_id,
+        row.o_kind,
+        row.o_key,
+        row.dt,
+        row.lang_id,
+        row.i,
     ) == FactKey::from_decoded_row(
         ov.s_id,
         ov.p_id,
@@ -1162,68 +1168,68 @@ impl BinaryCursor {
             lang: &lang_values,
             i: &i_values,
         };
-        let (eff_r1, eff_r2) = match replay_leaflet(&replay_input, &r3_entries, self.to_t, self.order)
-        {
-            Some(replayed) => {
-                // Replay produced new state
-                let r1 = CachedRegion1 {
-                    s_ids: SubjectIdColumn::from_wide(
-                        replayed
-                            .s_ids
-                            .into_iter()
-                            .map(SubjectId::from_u64)
-                            .collect(),
-                    ),
-                    p_ids: replayed.p_ids.into(),
-                    o_kinds: replayed.o_kinds.into(),
-                    o_keys: replayed.o_keys.into(),
-                    row_count: replayed.row_count,
-                };
-                let r2 = CachedRegion2 {
-                    dt_values: replayed.dt_values.into(),
-                    t_values: replayed.t_values.into(),
-                    lang_ids: replayed.lang_ids.into(),
-                    i_values: replayed.i_values.into(),
-                };
-                (r1, r2)
-            }
-            None => {
-                // No R3 entries after t_target — current state is valid.
-                //
-                // Defense-in-depth: verify that no row has t > to_t.
-                // An empty R3 legitimately means the leaflet wasn't modified
-                // since base_t. But if any row's t exceeds to_t, the leaflet
-                // WAS modified without a corresponding R3 entry — a data
-                // integrity issue that would produce incorrect time-travel results.
-                if t_values.iter().any(|&t| t > self.to_t) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "time-travel to t={} but leaflet contains rows with t > to_t \
-                             and empty Region 3 history",
-                            self.to_t,
+        let (eff_r1, eff_r2) =
+            match replay_leaflet(&replay_input, &r3_entries, self.to_t, self.order) {
+                Some(replayed) => {
+                    // Replay produced new state
+                    let r1 = CachedRegion1 {
+                        s_ids: SubjectIdColumn::from_wide(
+                            replayed
+                                .s_ids
+                                .into_iter()
+                                .map(SubjectId::from_u64)
+                                .collect(),
                         ),
-                    ));
+                        p_ids: replayed.p_ids.into(),
+                        o_kinds: replayed.o_kinds.into(),
+                        o_keys: replayed.o_keys.into(),
+                        row_count: replayed.row_count,
+                    };
+                    let r2 = CachedRegion2 {
+                        dt_values: replayed.dt_values.into(),
+                        t_values: replayed.t_values.into(),
+                        lang_ids: replayed.lang_ids.into(),
+                        i_values: replayed.i_values.into(),
+                    };
+                    (r1, r2)
                 }
-                let row_count = lh.row_count as usize;
-                let r1 = CachedRegion1 {
-                    s_ids: SubjectIdColumn::from_wide(
-                        s_ids.into_iter().map(SubjectId::from_u64).collect(),
-                    ),
-                    p_ids: p_ids.into(),
-                    o_kinds: o_kinds.into(),
-                    o_keys: o_keys.into(),
-                    row_count,
-                };
-                let r2 = CachedRegion2 {
-                    dt_values: dt_values.into(),
-                    t_values: t_values.into(),
-                    lang_ids: lang_values.into(),
-                    i_values: i_values.into(),
-                };
-                (r1, r2)
-            }
-        };
+                None => {
+                    // No R3 entries after t_target — current state is valid.
+                    //
+                    // Defense-in-depth: verify that no row has t > to_t.
+                    // An empty R3 legitimately means the leaflet wasn't modified
+                    // since base_t. But if any row's t exceeds to_t, the leaflet
+                    // WAS modified without a corresponding R3 entry — a data
+                    // integrity issue that would produce incorrect time-travel results.
+                    if t_values.iter().any(|&t| t > self.to_t) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "time-travel to t={} but leaflet contains rows with t > to_t \
+                             and empty Region 3 history",
+                                self.to_t,
+                            ),
+                        ));
+                    }
+                    let row_count = lh.row_count as usize;
+                    let r1 = CachedRegion1 {
+                        s_ids: SubjectIdColumn::from_wide(
+                            s_ids.into_iter().map(SubjectId::from_u64).collect(),
+                        ),
+                        p_ids: p_ids.into(),
+                        o_kinds: o_kinds.into(),
+                        o_keys: o_keys.into(),
+                        row_count,
+                    };
+                    let r2 = CachedRegion2 {
+                        dt_values: dt_values.into(),
+                        t_values: t_values.into(),
+                        lang_ids: lang_values.into(),
+                        i_values: i_values.into(),
+                    };
+                    (r1, r2)
+                }
+            };
 
         // Step 4: Cache the (replayed or original) result.
         if let Some(c) = cache {

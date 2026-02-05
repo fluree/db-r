@@ -111,7 +111,12 @@ pub fn canonicalize_flake(flake: &Flake, same_as: &SameAsTracker) -> Flake {
 /// This helper reduces boilerplate in rule implementations by encapsulating
 /// the common pattern of creating a type flake, checking for duplicates,
 /// and recording diagnostics.
-pub fn try_derive_type(ctx: &mut RuleContext<'_>, subject: &Sid, type_class: &Sid, rule_name: &str) -> bool {
+pub fn try_derive_type(
+    ctx: &mut RuleContext<'_>,
+    subject: &Sid,
+    type_class: &Sid,
+    rule_name: &str,
+) -> bool {
     let flake = Flake::new(
         subject.clone(),
         ctx.rdf_type_sid.clone(),

@@ -5,7 +5,9 @@
 
 use crate::ir::FilterValue;
 use bigdecimal::BigDecimal;
-use fluree_db_core::temporal::{Date as FlureeDate, DateTime as FlureeDateTime, Time as FlureeTime};
+use fluree_db_core::temporal::{
+    Date as FlureeDate, DateTime as FlureeDateTime, Time as FlureeTime,
+};
 use fluree_db_core::FlakeValue;
 use num_bigint::BigInt;
 use num_traits::Zero;
@@ -246,12 +248,16 @@ pub fn eval_arithmetic(
         }
         // Mixed numeric types -> promote to higher precision
         // Long <-> Double -> Double
-        (ComparableValue::Long(a), ComparableValue::Double(b)) => {
-            eval_arithmetic(op, ComparableValue::Double(a as f64), ComparableValue::Double(b))
-        }
-        (ComparableValue::Double(a), ComparableValue::Long(b)) => {
-            eval_arithmetic(op, ComparableValue::Double(a), ComparableValue::Double(b as f64))
-        }
+        (ComparableValue::Long(a), ComparableValue::Double(b)) => eval_arithmetic(
+            op,
+            ComparableValue::Double(a as f64),
+            ComparableValue::Double(b),
+        ),
+        (ComparableValue::Double(a), ComparableValue::Long(b)) => eval_arithmetic(
+            op,
+            ComparableValue::Double(a),
+            ComparableValue::Double(b as f64),
+        ),
         // Long <-> BigInt -> BigInt
         (ComparableValue::Long(a), ComparableValue::BigInt(b)) => eval_arithmetic(
             op,

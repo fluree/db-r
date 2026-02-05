@@ -431,8 +431,7 @@ pub fn apply_some_values_from_rule(restrictions: &RestrictionIndex, ctx: &mut Ru
             let x_canonical = ctx.same_as.canonical(x);
             let y_canonical = ctx.same_as.canonical(y);
 
-            let y_types =
-                collect_types(y, &y_canonical, ctx.delta, ctx.derived, ctx.rdf_type_sid);
+            let y_types = collect_types(y, &y_canonical, ctx.delta, ctx.derived, ctx.rdf_type_sid);
 
             for restriction_id in restriction_ids {
                 if let Some(restriction) = restrictions.get(restriction_id) {
@@ -637,10 +636,11 @@ pub fn apply_all_values_from_rule(restrictions: &RestrictionIndex, ctx: &mut Rul
                             None,
                         );
 
-                        if !ctx
-                            .derived
-                            .contains(&derived_flake.s, &derived_flake.p, &derived_flake.o)
-                        {
+                        if !ctx.derived.contains(
+                            &derived_flake.s,
+                            &derived_flake.p,
+                            &derived_flake.o,
+                        ) {
                             ctx.new_delta.push(derived_flake);
                             ctx.diagnostics.record_rule_fired("cls-avf");
                         }
@@ -674,16 +674,16 @@ pub fn apply_all_values_from_rule(restrictions: &RestrictionIndex, ctx: &mut Rul
                             &restriction.restriction_type
                         {
                             // Check if x is of type C (the restriction class) in derived ONLY
-                            let x_has_type_in_derived =
-                                ctx.derived.get_by_ps(ctx.rdf_type_sid, &x_canonical).any(
-                                    |f| {
-                                        if let FlakeValue::Ref(c) = &f.o {
-                                            c == restriction_id
-                                        } else {
-                                            false
-                                        }
-                                    },
-                                );
+                            let x_has_type_in_derived = ctx
+                                .derived
+                                .get_by_ps(ctx.rdf_type_sid, &x_canonical)
+                                .any(|f| {
+                                    if let FlakeValue::Ref(c) = &f.o {
+                                        c == restriction_id
+                                    } else {
+                                        false
+                                    }
+                                });
 
                             if x_has_type_in_derived {
                                 let derived_flake = Flake::new(
@@ -740,16 +740,16 @@ pub fn apply_all_values_from_rule(restrictions: &RestrictionIndex, ctx: &mut Rul
                         &restriction.restriction_type
                     {
                         // Check if x is of type C (the restriction class) in derived ONLY
-                        let x_has_type_in_derived =
-                            ctx.derived.get_by_ps(ctx.rdf_type_sid, &x_canonical).any(
-                                |f| {
-                                    if let FlakeValue::Ref(c) = &f.o {
-                                        c == restriction_id
-                                    } else {
-                                        false
-                                    }
-                                },
-                            );
+                        let x_has_type_in_derived = ctx
+                            .derived
+                            .get_by_ps(ctx.rdf_type_sid, &x_canonical)
+                            .any(|f| {
+                                if let FlakeValue::Ref(c) = &f.o {
+                                    c == restriction_id
+                                } else {
+                                    false
+                                }
+                            });
 
                         if x_has_type_in_derived {
                             let derived_flake = Flake::new(
@@ -968,16 +968,15 @@ pub fn apply_max_qualified_cardinality_rule(
                                             false
                                         }
                                     })
-                                    || ctx
-                                        .derived
-                                        .get_by_ps(ctx.rdf_type_sid, &y_canonical)
-                                        .any(|f| {
+                                    || ctx.derived.get_by_ps(ctx.rdf_type_sid, &y_canonical).any(
+                                        |f| {
                                             if let FlakeValue::Ref(cls) = &f.o {
                                                 cls == on_class
                                             } else {
                                                 false
                                             }
-                                        });
+                                        },
+                                    );
                                 if y_has_type_d {
                                     qualified_objects.push(y_canonical);
                                 }
@@ -998,16 +997,15 @@ pub fn apply_max_qualified_cardinality_rule(
                                             false
                                         }
                                     })
-                                    || ctx
-                                        .derived
-                                        .get_by_ps(ctx.rdf_type_sid, &y_canonical)
-                                        .any(|f| {
+                                    || ctx.derived.get_by_ps(ctx.rdf_type_sid, &y_canonical).any(
+                                        |f| {
                                             if let FlakeValue::Ref(cls) = &f.o {
                                                 cls == on_class
                                             } else {
                                                 false
                                             }
-                                        });
+                                        },
+                                    );
                                 if y_has_type_d {
                                     qualified_objects.push(y_canonical);
                                 }
@@ -1135,10 +1133,7 @@ fn entity_satisfies_class_ref(
 /// where I is owl:intersectionOf [C1, C2, ...]
 ///
 /// If x has all the member types of an intersection class I, then x is of type I.
-pub fn apply_intersection_forward_rule(
-    restrictions: &RestrictionIndex,
-    ctx: &mut RuleContext<'_>,
-) {
+pub fn apply_intersection_forward_rule(restrictions: &RestrictionIndex, ctx: &mut RuleContext<'_>) {
     let ref_dt = ref_dt();
 
     // Get all intersection restriction IDs
@@ -1196,10 +1191,11 @@ pub fn apply_intersection_forward_rule(
                             None,
                         );
 
-                        if !ctx
-                            .derived
-                            .contains(&derived_flake.s, &derived_flake.p, &derived_flake.o)
-                        {
+                        if !ctx.derived.contains(
+                            &derived_flake.s,
+                            &derived_flake.p,
+                            &derived_flake.o,
+                        ) {
                             ctx.new_delta.push(derived_flake);
                             ctx.diagnostics.record_rule_fired("cls-int1");
                         }
@@ -1241,10 +1237,11 @@ pub fn apply_intersection_backward_rule(
                             None,
                         );
 
-                        if !ctx
-                            .derived
-                            .contains(&derived_flake.s, &derived_flake.p, &derived_flake.o)
-                        {
+                        if !ctx.derived.contains(
+                            &derived_flake.s,
+                            &derived_flake.p,
+                            &derived_flake.o,
+                        ) {
                             ctx.new_delta.push(derived_flake);
                             ctx.diagnostics.record_rule_fired("cls-int2");
                         }
@@ -1319,10 +1316,11 @@ pub fn apply_union_rule(restrictions: &RestrictionIndex, ctx: &mut RuleContext<'
                             None,
                         );
 
-                        if !ctx
-                            .derived
-                            .contains(&derived_flake.s, &derived_flake.p, &derived_flake.o)
-                        {
+                        if !ctx.derived.contains(
+                            &derived_flake.s,
+                            &derived_flake.p,
+                            &derived_flake.o,
+                        ) {
                             ctx.new_delta.push(derived_flake);
                             ctx.diagnostics.record_rule_fired("cls-uni");
                         }

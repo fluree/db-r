@@ -12,11 +12,9 @@ use crate::operator::{Operator, OperatorState};
 use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{
-    ObjectBounds, Sid, Storage, BATCHED_JOIN_SIZE,
-};
 use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
 use fluree_db_core::value_id::ObjKind;
+use fluree_db_core::{ObjectBounds, Sid, Storage, BATCHED_JOIN_SIZE};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -258,12 +256,10 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
         // positions when the var is in left schema (they have bind_instructions)
         let bound_vars: std::collections::HashSet<VarId> = bind_instructions
             .iter()
-            .filter_map(|instr| {
-                match instr.position {
-                    PatternPosition::Subject => right_pattern.s.as_var(),
-                    PatternPosition::Predicate => right_pattern.p.as_var(),
-                    PatternPosition::Object => right_pattern.o.as_var(),
-                }
+            .filter_map(|instr| match instr.position {
+                PatternPosition::Subject => right_pattern.s.as_var(),
+                PatternPosition::Predicate => right_pattern.p.as_var(),
+                PatternPosition::Object => right_pattern.o.as_var(),
             })
             .collect();
 
@@ -288,7 +284,8 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
             }
         }
 
-        let batched_eligible = is_batched_eligible(&bind_instructions, &right_pattern, &object_bounds);
+        let batched_eligible =
+            is_batched_eligible(&bind_instructions, &right_pattern, &object_bounds);
         let subject_left_col = if batched_eligible {
             bind_instructions
                 .iter()
@@ -335,9 +332,9 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
     /// If a left binding is Poisoned, the right pattern cannot match,
     /// so we should skip this left row entirely (produces no results).
     fn has_poisoned_binding(&self, left_batch: &Batch, row: usize) -> bool {
-        self.bind_instructions.iter().any(|instr| {
-            left_batch.get_by_col(row, instr.left_col).is_poisoned()
-        })
+        self.bind_instructions
+            .iter()
+            .any(|instr| left_batch.get_by_col(row, instr.left_col).is_poisoned())
     }
 
     /// Check for invalid binding types on subject/predicate positions.
@@ -508,7 +505,13 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
     ///
     /// Uses `eq_for_join()` for same-ledger SID optimization when comparing
     /// `IriMatch` bindings from the same ledger.
-    fn unify_check(&self, left_batch: &Batch, left_row: usize, right_batch: &Batch, right_row: usize) -> bool {
+    fn unify_check(
+        &self,
+        left_batch: &Batch,
+        left_row: usize,
+        right_batch: &Batch,
+        right_row: usize,
+    ) -> bool {
         self.unify_instructions.iter().all(|instr| {
             let left_val = left_batch.get_by_col(left_row, instr.left_col);
             let right_val = right_batch.get_by_col(right_row, instr.right_col);
@@ -517,7 +520,13 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
     }
 
     /// Combine left row with right row into output row
-    fn combine_rows(&self, left_batch: &Batch, left_row: usize, right_batch: &Batch, right_row: usize) -> Vec<Binding> {
+    fn combine_rows(
+        &self,
+        left_batch: &Batch,
+        left_row: usize,
+        right_batch: &Batch,
+        right_row: usize,
+    ) -> Vec<Binding> {
         let right_schema = right_batch.schema();
 
         // Chain left columns with new right columns (skip shared vars already in left)
@@ -681,7 +690,11 @@ impl<S: Storage + 'static> Operator<S> for NestedLoopJoinOperator<S> {
                     right_scan.open(ctx).await?;
                     while let Some(right_batch) = right_scan.next_batch(ctx).await? {
                         if !right_batch.is_empty() {
-                            self.pending_output.push_back((batch_ref.clone(), left_row, right_batch));
+                            self.pending_output.push_back((
+                                batch_ref.clone(),
+                                left_row,
+                                right_batch,
+                            ));
                         }
                     }
                     right_scan.close();
@@ -698,7 +711,8 @@ impl<S: Storage + 'static> Operator<S> for NestedLoopJoinOperator<S> {
                 right_scan.open(ctx).await?;
                 while let Some(right_batch) = right_scan.next_batch(ctx).await? {
                     if !right_batch.is_empty() {
-                        self.pending_output.push_back((BatchRef::Current, left_row, right_batch));
+                        self.pending_output
+                            .push_back((BatchRef::Current, left_row, right_batch));
                     }
                 }
                 right_scan.close();
@@ -847,13 +861,15 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
         &mut self,
         ctx: &ExecutionContext<'_, S>,
     ) -> Result<()> {
+        use fluree_db_core::ListIndex;
         use fluree_db_indexer::run_index::leaf::read_leaf_header;
         use fluree_db_indexer::run_index::leaflet::{
             decode_leaflet_region1, decode_leaflet_region2, LeafletHeader,
         };
-        use fluree_db_indexer::run_index::leaflet_cache::{CachedRegion1, CachedRegion2, LeafletCacheKey};
+        use fluree_db_indexer::run_index::leaflet_cache::{
+            CachedRegion1, CachedRegion2, LeafletCacheKey,
+        };
         use fluree_db_indexer::run_index::run_record::{cmp_psot, RunRecord, RunSortOrder};
-        use fluree_db_core::ListIndex;
         use memmap2::Mmap;
         use std::sync::Arc as StdArc;
         use xxhash_rust::xxh3::xxh3_128;
@@ -886,7 +902,10 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
         let mut unique_s_ids: Vec<u64> = Vec::new();
         for (accum_idx, (_, _, s_id)) in self.batched_accumulator.iter().enumerate() {
             // s_id is already available from the accumulator - no dictionary lookup!
-            s_id_to_accum_indices.entry(*s_id).or_default().push(accum_idx);
+            s_id_to_accum_indices
+                .entry(*s_id)
+                .or_default()
+                .push(accum_idx);
             unique_s_ids.push(*s_id);
         }
         if unique_s_ids.is_empty() {
@@ -975,265 +994,292 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
 
         for leaf_idx in leaf_range {
             let leaf_entry = &branch.leaves[leaf_idx];
-                let t_open = Instant::now();
-                let file = std::fs::File::open(&leaf_entry.path)
-                    .map_err(|e| QueryError::Internal(format!("open leaf: {}", e)))?;
-                let leaf_mmap = unsafe { Mmap::map(&file) }
-                    .map_err(|e| QueryError::Internal(format!("mmap leaf: {}", e)))?;
-                us_open_mmap += t_open.elapsed().as_micros() as u64;
+            let t_open = Instant::now();
+            let file = std::fs::File::open(&leaf_entry.path)
+                .map_err(|e| QueryError::Internal(format!("open leaf: {}", e)))?;
+            let leaf_mmap = unsafe { Mmap::map(&file) }
+                .map_err(|e| QueryError::Internal(format!("mmap leaf: {}", e)))?;
+            us_open_mmap += t_open.elapsed().as_micros() as u64;
 
-                let t_hdr = Instant::now();
-                let header = read_leaf_header(&leaf_mmap)
-                    .map_err(|e| QueryError::Internal(format!("read leaf header: {}", e)))?;
-                us_read_leaf_header += t_hdr.elapsed().as_micros() as u64;
-                let leaf_id = xxh3_128(leaf_entry.content_hash.as_bytes());
+            let t_hdr = Instant::now();
+            let header = read_leaf_header(&leaf_mmap)
+                .map_err(|e| QueryError::Internal(format!("read leaf header: {}", e)))?;
+            us_read_leaf_header += t_hdr.elapsed().as_micros() as u64;
+            let leaf_id = xxh3_128(leaf_entry.content_hash.as_bytes());
 
-                for (leaflet_idx, dir_entry) in header.leaflet_dir.iter().enumerate() {
-                    leaflets_scanned += 1;
-                    let end = dir_entry.offset as usize + dir_entry.compressed_len as usize;
-                    if end > leaf_mmap.len() {
-                        break;
-                    }
-                    let leaflet_bytes = &leaf_mmap[dir_entry.offset as usize..end];
+            for (leaflet_idx, dir_entry) in header.leaflet_dir.iter().enumerate() {
+                leaflets_scanned += 1;
+                let end = dir_entry.offset as usize + dir_entry.compressed_len as usize;
+                if end > leaf_mmap.len() {
+                    break;
+                }
+                let leaflet_bytes = &leaf_mmap[dir_entry.offset as usize..end];
 
-                    let cache_key = LeafletCacheKey {
-                        leaf_id,
-                        leaflet_index: leaflet_idx as u8,
-                        to_t: ctx.to_t,
-                        epoch: 0,
-                    };
+                let cache_key = LeafletCacheKey {
+                    leaf_id,
+                    leaflet_index: leaflet_idx as u8,
+                    to_t: ctx.to_t,
+                    epoch: 0,
+                };
 
-                    // Region 1 (s_id, p_id, o_kind, o_key): cached across flushes and across runs.
-                    let (leaflet_header, s_ids, p_ids, o_kinds, o_keys) = if let Some(c) = cache {
-                        if let Some(cached) = c.get_r1(&cache_key) {
-                            r1_cache_hits += 1;
-                            (
-                                None,
-                                cached.s_ids,
-                                cached.p_ids,
-                                cached.o_kinds,
-                                cached.o_keys,
-                            )
-                        } else {
-                            r1_cache_misses += 1;
-                            let t_r1 = Instant::now();
-                            let (lh, s_ids, p_ids, o_kinds, o_keys) =
-                                decode_leaflet_region1(leaflet_bytes, header.p_width, RunSortOrder::Psot)
-                                    .map_err(|e| QueryError::Internal(format!("decode region1: {}", e)))?;
-                            us_decode_r1 += t_r1.elapsed().as_micros() as u64;
-                            let row_count = lh.row_count as usize;
-                            let cached_r1 = CachedRegion1 {
-                                s_ids: SubjectIdColumn::from_wide(s_ids.into_iter().map(SubjectId::from_u64).collect()),
-                                p_ids: StdArc::from(p_ids.into_boxed_slice()),
-                                o_kinds: StdArc::from(o_kinds.into_boxed_slice()),
-                                o_keys: StdArc::from(o_keys.into_boxed_slice()),
-                                row_count,
-                            };
-                            let s_ids = cached_r1.s_ids.clone();
-                            let p_ids = cached_r1.p_ids.clone();
-                            let o_kinds = cached_r1.o_kinds.clone();
-                            let o_keys = cached_r1.o_keys.clone();
-                            c.get_or_decode_r1(cache_key.clone(), || cached_r1);
-                            (Some(lh), s_ids, p_ids, o_kinds, o_keys)
-                        }
+                // Region 1 (s_id, p_id, o_kind, o_key): cached across flushes and across runs.
+                let (leaflet_header, s_ids, p_ids, o_kinds, o_keys) = if let Some(c) = cache {
+                    if let Some(cached) = c.get_r1(&cache_key) {
+                        r1_cache_hits += 1;
+                        (
+                            None,
+                            cached.s_ids,
+                            cached.p_ids,
+                            cached.o_kinds,
+                            cached.o_keys,
+                        )
                     } else {
+                        r1_cache_misses += 1;
                         let t_r1 = Instant::now();
-                        let (lh, s_ids, p_ids, o_kinds, o_keys) =
-                            decode_leaflet_region1(leaflet_bytes, header.p_width, RunSortOrder::Psot)
-                                .map_err(|e| QueryError::Internal(format!("decode region1: {}", e)))?;
+                        let (lh, s_ids, p_ids, o_kinds, o_keys) = decode_leaflet_region1(
+                            leaflet_bytes,
+                            header.p_width,
+                            RunSortOrder::Psot,
+                        )
+                        .map_err(|e| QueryError::Internal(format!("decode region1: {}", e)))?;
                         us_decode_r1 += t_r1.elapsed().as_micros() as u64;
-                        (Some(lh), SubjectIdColumn::from_wide(s_ids.into_iter().map(SubjectId::from_u64).collect()), StdArc::from(p_ids.into_boxed_slice()), StdArc::from(o_kinds.into_boxed_slice()), StdArc::from(o_keys.into_boxed_slice()))
-                    };
-
-                    let row_count = leaflet_header
-                        .as_ref()
-                        .map(|h| h.row_count as usize)
-                        .unwrap_or_else(|| s_ids.len());
-                    debug_assert_eq!(s_ids.len(), row_count);
-                    debug_assert_eq!(p_ids.len(), row_count);
-                    debug_assert_eq!(o_kinds.len(), row_count);
-                    debug_assert_eq!(o_keys.len(), row_count);
-
-                    // Collect matching row indices using PSOT's `(p_id, s_id, ...)` ordering:
-                    // only consider subjects in this leaflet's subject range, then binary-search
-                    // their row ranges (avoids scanning every row).
-                    let t_match = Instant::now();
-                    let mut matches: Vec<(usize, u64)> = Vec::new(); // (row_idx, s_id)
-                    matches.reserve(64);
-
-                    // PSOT leaflets are sorted by p_id then s_id. Boundary leaflets may contain
-                    // adjacent predicates, so isolate the contiguous segment for our `p_id`.
-                    let p_start = p_ids.partition_point(|&x| x < p_id);
-                    let p_end = p_ids.partition_point(|&x| x <= p_id);
-                    if p_start == p_end {
-                        continue;
+                        let row_count = lh.row_count as usize;
+                        let cached_r1 = CachedRegion1 {
+                            s_ids: SubjectIdColumn::from_wide(
+                                s_ids.into_iter().map(SubjectId::from_u64).collect(),
+                            ),
+                            p_ids: StdArc::from(p_ids.into_boxed_slice()),
+                            o_kinds: StdArc::from(o_kinds.into_boxed_slice()),
+                            o_keys: StdArc::from(o_keys.into_boxed_slice()),
+                            row_count,
+                        };
+                        let s_ids = cached_r1.s_ids.clone();
+                        let p_ids = cached_r1.p_ids.clone();
+                        let o_kinds = cached_r1.o_kinds.clone();
+                        let o_keys = cached_r1.o_keys.clone();
+                        c.get_or_decode_r1(cache_key.clone(), || cached_r1);
+                        (Some(lh), s_ids, p_ids, o_kinds, o_keys)
                     }
-                    let leaflet_s_min = s_ids.get(p_start).as_u64();
-                    let leaflet_s_max = s_ids.get(p_end - 1).as_u64();
-                    let subj_start = unique_s_ids.partition_point(|&x| x < leaflet_s_min);
-                    let subj_end = unique_s_ids.partition_point(|&x| x <= leaflet_s_max);
-                    if subj_start >= subj_end {
-                        continue;
-                    }
+                } else {
+                    let t_r1 = Instant::now();
+                    let (lh, s_ids, p_ids, o_kinds, o_keys) =
+                        decode_leaflet_region1(leaflet_bytes, header.p_width, RunSortOrder::Psot)
+                            .map_err(|e| QueryError::Internal(format!("decode region1: {}", e)))?;
+                    us_decode_r1 += t_r1.elapsed().as_micros() as u64;
+                    (
+                        Some(lh),
+                        SubjectIdColumn::from_wide(
+                            s_ids.into_iter().map(SubjectId::from_u64).collect(),
+                        ),
+                        StdArc::from(p_ids.into_boxed_slice()),
+                        StdArc::from(o_kinds.into_boxed_slice()),
+                        StdArc::from(o_keys.into_boxed_slice()),
+                    )
+                };
 
-                    // Avoid allocating/copying the predicate segment's s_ids into a Vec<u64>.
-                    // This can be very expensive for high-cardinality predicates.
-                    #[inline]
-                    fn lower_bound_s_id(s_ids: &SubjectIdColumn, start: usize, end: usize, target: u64) -> usize {
-                        let mut lo = start;
-                        let mut hi = end;
-                        while lo < hi {
-                            let mid = (lo + hi) / 2;
-                            if s_ids.get(mid).as_u64() < target {
-                                lo = mid + 1;
-                            } else {
-                                hi = mid;
-                            }
-                        }
-                        lo
-                    }
+                let row_count = leaflet_header
+                    .as_ref()
+                    .map(|h| h.row_count as usize)
+                    .unwrap_or_else(|| s_ids.len());
+                debug_assert_eq!(s_ids.len(), row_count);
+                debug_assert_eq!(p_ids.len(), row_count);
+                debug_assert_eq!(o_kinds.len(), row_count);
+                debug_assert_eq!(o_keys.len(), row_count);
 
-                    #[inline]
-                    fn upper_bound_s_id(s_ids: &SubjectIdColumn, start: usize, end: usize, target: u64) -> usize {
-                        let mut lo = start;
-                        let mut hi = end;
-                        while lo < hi {
-                            let mid = (lo + hi) / 2;
-                            if s_ids.get(mid).as_u64() <= target {
-                                lo = mid + 1;
-                            } else {
-                                hi = mid;
-                            }
-                        }
-                        lo
-                    }
+                // Collect matching row indices using PSOT's `(p_id, s_id, ...)` ordering:
+                // only consider subjects in this leaflet's subject range, then binary-search
+                // their row ranges (avoids scanning every row).
+                let t_match = Instant::now();
+                let mut matches: Vec<(usize, u64)> = Vec::new(); // (row_idx, s_id)
+                matches.reserve(64);
 
-                    for &s_id in &unique_s_ids[subj_start..subj_end] {
-                        // fast reject (should always be true, but keep it safe)
-                        if !s_id_to_accum_indices.contains_key(&s_id) {
-                            continue;
-                        }
-                        let row_start = lower_bound_s_id(&s_ids, p_start, p_end, s_id);
-                        let row_end = upper_bound_s_id(&s_ids, p_start, p_end, s_id);
-                        if row_start == row_end {
-                            continue;
-                        }
-                        for row in row_start..row_end {
-                            // Within [p_start, p_end) the predicate matches by construction.
-                            matches.push((row, s_id));
-                        }
-                    }
-                    us_build_matches += t_match.elapsed().as_micros() as u64;
-                    if matches.is_empty() {
-                        continue;
-                    }
-                    matched_rows += matches.len() as u64;
+                // PSOT leaflets are sorted by p_id then s_id. Boundary leaflets may contain
+                // adjacent predicates, so isolate the contiguous segment for our `p_id`.
+                let p_start = p_ids.partition_point(|&x| x < p_id);
+                let p_end = p_ids.partition_point(|&x| x <= p_id);
+                if p_start == p_end {
+                    continue;
+                }
+                let leaflet_s_min = s_ids.get(p_start).as_u64();
+                let leaflet_s_max = s_ids.get(p_end - 1).as_u64();
+                let subj_start = unique_s_ids.partition_point(|&x| x < leaflet_s_min);
+                let subj_end = unique_s_ids.partition_point(|&x| x <= leaflet_s_max);
+                if subj_start >= subj_end {
+                    continue;
+                }
 
-                    // Need Region 2 for correct literal bindings (dt/lang/i/t)
-                    let (dt_values, t_values, lang_ids, i_values) = if let Some(c) = cache {
-                        if let Some(cached) = c.get_r2(&cache_key) {
-                            r2_cache_hits += 1;
-                            (
-                                cached.dt_values,
-                                cached.t_values,
-                                cached.lang_ids,
-                                cached.i_values,
-                            )
+                // Avoid allocating/copying the predicate segment's s_ids into a Vec<u64>.
+                // This can be very expensive for high-cardinality predicates.
+                #[inline]
+                fn lower_bound_s_id(
+                    s_ids: &SubjectIdColumn,
+                    start: usize,
+                    end: usize,
+                    target: u64,
+                ) -> usize {
+                    let mut lo = start;
+                    let mut hi = end;
+                    while lo < hi {
+                        let mid = (lo + hi) / 2;
+                        if s_ids.get(mid).as_u64() < target {
+                            lo = mid + 1;
                         } else {
-                            r2_cache_misses += 1;
-                            region2_decodes += 1;
-                            // If R1 came from cache, we don't have `LeafletHeader` available.
-                            // Re-read it from the leaflet bytes (fixed-size, no decompression).
-                            let lh_owned;
-                            let lh: &LeafletHeader = match leaflet_header.as_ref() {
-                                Some(h) => h,
-                                None => {
-                                    lh_owned = LeafletHeader::read_from(leaflet_bytes)
-                                        .map_err(|e| QueryError::Internal(format!("read leaflet header: {}", e)))?;
-                                    &lh_owned
-                                }
-                            };
-                            let t_r2 = Instant::now();
-                            let (dt_values, t_values, lang_ids, i_values) =
-                                decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)
-                                    .map_err(|e| QueryError::Internal(format!("decode region2: {}", e)))?;
-                            us_decode_r2 += t_r2.elapsed().as_micros() as u64;
-                            let cached_r2 = CachedRegion2 {
-                                dt_values: StdArc::from(dt_values.into_boxed_slice()),
-                                t_values: StdArc::from(t_values.into_boxed_slice()),
-                                lang_ids: StdArc::from(lang_ids.into_boxed_slice()),
-                                i_values: StdArc::from(i_values.into_boxed_slice()),
-                            };
-                            let dt_values = cached_r2.dt_values.clone();
-                            let t_values = cached_r2.t_values.clone();
-                            let lang_ids = cached_r2.lang_ids.clone();
-                            let i_values = cached_r2.i_values.clone();
-                            c.get_or_decode_r2(cache_key.clone(), || cached_r2);
-                            (dt_values, t_values, lang_ids, i_values)
+                            hi = mid;
                         }
+                    }
+                    lo
+                }
+
+                #[inline]
+                fn upper_bound_s_id(
+                    s_ids: &SubjectIdColumn,
+                    start: usize,
+                    end: usize,
+                    target: u64,
+                ) -> usize {
+                    let mut lo = start;
+                    let mut hi = end;
+                    while lo < hi {
+                        let mid = (lo + hi) / 2;
+                        if s_ids.get(mid).as_u64() <= target {
+                            lo = mid + 1;
+                        } else {
+                            hi = mid;
+                        }
+                    }
+                    lo
+                }
+
+                for &s_id in &unique_s_ids[subj_start..subj_end] {
+                    // fast reject (should always be true, but keep it safe)
+                    if !s_id_to_accum_indices.contains_key(&s_id) {
+                        continue;
+                    }
+                    let row_start = lower_bound_s_id(&s_ids, p_start, p_end, s_id);
+                    let row_end = upper_bound_s_id(&s_ids, p_start, p_end, s_id);
+                    if row_start == row_end {
+                        continue;
+                    }
+                    for row in row_start..row_end {
+                        // Within [p_start, p_end) the predicate matches by construction.
+                        matches.push((row, s_id));
+                    }
+                }
+                us_build_matches += t_match.elapsed().as_micros() as u64;
+                if matches.is_empty() {
+                    continue;
+                }
+                matched_rows += matches.len() as u64;
+
+                // Need Region 2 for correct literal bindings (dt/lang/i/t)
+                let (dt_values, t_values, lang_ids, i_values) = if let Some(c) = cache {
+                    if let Some(cached) = c.get_r2(&cache_key) {
+                        r2_cache_hits += 1;
+                        (
+                            cached.dt_values,
+                            cached.t_values,
+                            cached.lang_ids,
+                            cached.i_values,
+                        )
                     } else {
+                        r2_cache_misses += 1;
                         region2_decodes += 1;
+                        // If R1 came from cache, we don't have `LeafletHeader` available.
+                        // Re-read it from the leaflet bytes (fixed-size, no decompression).
                         let lh_owned;
                         let lh: &LeafletHeader = match leaflet_header.as_ref() {
                             Some(h) => h,
                             None => {
-                                lh_owned = LeafletHeader::read_from(leaflet_bytes)
-                                    .map_err(|e| QueryError::Internal(format!("read leaflet header: {}", e)))?;
+                                lh_owned =
+                                    LeafletHeader::read_from(leaflet_bytes).map_err(|e| {
+                                        QueryError::Internal(format!("read leaflet header: {}", e))
+                                    })?;
                                 &lh_owned
                             }
                         };
                         let t_r2 = Instant::now();
                         let (dt_values, t_values, lang_ids, i_values) =
-                            decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)
-                                .map_err(|e| QueryError::Internal(format!("decode region2: {}", e)))?;
+                            decode_leaflet_region2(leaflet_bytes, lh, header.dt_width).map_err(
+                                |e| QueryError::Internal(format!("decode region2: {}", e)),
+                            )?;
                         us_decode_r2 += t_r2.elapsed().as_micros() as u64;
-                        (
-                            StdArc::from(dt_values.into_boxed_slice()),
-                            StdArc::from(t_values.into_boxed_slice()),
-                            StdArc::from(lang_ids.into_boxed_slice()),
-                            StdArc::from(i_values.into_boxed_slice()),
-                        )
+                        let cached_r2 = CachedRegion2 {
+                            dt_values: StdArc::from(dt_values.into_boxed_slice()),
+                            t_values: StdArc::from(t_values.into_boxed_slice()),
+                            lang_ids: StdArc::from(lang_ids.into_boxed_slice()),
+                            i_values: StdArc::from(i_values.into_boxed_slice()),
+                        };
+                        let dt_values = cached_r2.dt_values.clone();
+                        let t_values = cached_r2.t_values.clone();
+                        let lang_ids = cached_r2.lang_ids.clone();
+                        let i_values = cached_r2.i_values.clone();
+                        c.get_or_decode_r2(cache_key.clone(), || cached_r2);
+                        (dt_values, t_values, lang_ids, i_values)
+                    }
+                } else {
+                    region2_decodes += 1;
+                    let lh_owned;
+                    let lh: &LeafletHeader = match leaflet_header.as_ref() {
+                        Some(h) => h,
+                        None => {
+                            lh_owned = LeafletHeader::read_from(leaflet_bytes).map_err(|e| {
+                                QueryError::Internal(format!("read leaflet header: {}", e))
+                            })?;
+                            &lh_owned
+                        }
+                    };
+                    let t_r2 = Instant::now();
+                    let (dt_values, t_values, lang_ids, i_values) =
+                        decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)
+                            .map_err(|e| QueryError::Internal(format!("decode region2: {}", e)))?;
+                    us_decode_r2 += t_r2.elapsed().as_micros() as u64;
+                    (
+                        StdArc::from(dt_values.into_boxed_slice()),
+                        StdArc::from(t_values.into_boxed_slice()),
+                        StdArc::from(lang_ids.into_boxed_slice()),
+                        StdArc::from(i_values.into_boxed_slice()),
+                    )
+                };
+
+                let t_emit = Instant::now();
+                for (row, s_id) in matches {
+                    // Late materialization: do NOT call decode_value here.
+                    // Emit EncodedSid for refs, EncodedLit for literals.
+                    let t = t_values[row];
+                    let obj_binding = if o_kinds[row] == ObjKind::REF_ID.as_u8() {
+                        // Object is a reference; emit EncodedSid for late materialization.
+                        Binding::EncodedSid { s_id: o_keys[row] }
+                    } else {
+                        Binding::EncodedLit {
+                            o_kind: o_kinds[row],
+                            o_key: o_keys[row],
+                            p_id: p_ids[row],
+                            dt_id: dt_values[row] as u16,
+                            lang_id: lang_ids[row],
+                            i_val: i_values[row],
+                            t,
+                        }
                     };
 
-                    let t_emit = Instant::now();
-                    for (row, s_id) in matches {
-                        // Late materialization: do NOT call decode_value here.
-                        // Emit EncodedSid for refs, EncodedLit for literals.
-                        let t = t_values[row];
-                        let obj_binding = if o_kinds[row] == ObjKind::REF_ID.as_u8() {
-                            // Object is a reference; emit EncodedSid for late materialization.
-                            Binding::EncodedSid { s_id: o_keys[row] }
-                        } else {
-                            Binding::EncodedLit {
-                                o_kind: o_kinds[row],
-                                o_key: o_keys[row],
-                                p_id: p_ids[row],
-                                dt_id: dt_values[row] as u16,
-                                lang_id: lang_ids[row],
-                                i_val: i_values[row],
-                                t,
+                    if let Some(accum_indices) = s_id_to_accum_indices.get(&s_id) {
+                        for &accum_idx in accum_indices {
+                            let (batch_idx, row_idx, _) = &self.batched_accumulator[accum_idx];
+                            let left_batch = &self.stored_left_batches[*batch_idx];
+
+                            let mut combined = Vec::with_capacity(self.combined_schema.len());
+                            for col in 0..self.left_schema.len() {
+                                combined.push(left_batch.get_by_col(*row_idx, col).clone());
                             }
-                        };
-
-                        if let Some(accum_indices) = s_id_to_accum_indices.get(&s_id) {
-                            for &accum_idx in accum_indices {
-                                let (batch_idx, row_idx, _) = &self.batched_accumulator[accum_idx];
-                                let left_batch = &self.stored_left_batches[*batch_idx];
-
-                                let mut combined = Vec::with_capacity(self.combined_schema.len());
-                                for col in 0..self.left_schema.len() {
-                                    combined.push(left_batch.get_by_col(*row_idx, col).clone());
-                                }
-                                for _ in &self.right_new_vars {
-                                    combined.push(obj_binding.clone());
-                                }
-
-                                scatter[accum_idx].push(combined);
+                            for _ in &self.right_new_vars {
+                                combined.push(obj_binding.clone());
                             }
+
+                            scatter[accum_idx].push(combined);
                         }
                     }
-                    us_emit_rows += t_emit.elapsed().as_micros() as u64;
                 }
+                us_emit_rows += t_emit.elapsed().as_micros() as u64;
+            }
         }
 
         tracing::debug!(
@@ -1256,8 +1302,9 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
 
         // 4. Emit in left-row order (same scatter-gather as B-tree path)
         let num_cols = self.combined_schema.len();
-        let mut output_columns: Vec<Vec<Binding>> =
-            (0..num_cols).map(|_| Vec::with_capacity(batch_size)).collect();
+        let mut output_columns: Vec<Vec<Binding>> = (0..num_cols)
+            .map(|_| Vec::with_capacity(batch_size))
+            .collect();
         let mut rows_added = 0;
 
         for accum_idx in 0..accum_len {
@@ -1272,8 +1319,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                         self.batched_output
                             .push_back(Batch::empty_schema_with_len(rows_added));
                     } else {
-                        let batch =
-                            Batch::new(self.combined_schema.clone(), output_columns)?;
+                        let batch = Batch::new(self.combined_schema.clone(), output_columns)?;
                         self.batched_output.push_back(batch);
                     }
                     output_columns = (0..num_cols)
@@ -1289,8 +1335,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                 self.batched_output
                     .push_back(Batch::empty_schema_with_len(rows_added));
             } else {
-                let batch =
-                    Batch::new(self.combined_schema.clone(), output_columns)?;
+                let batch = Batch::new(self.combined_schema.clone(), output_columns)?;
                 self.batched_output.push_back(batch);
             }
         }
@@ -1321,9 +1366,9 @@ mod tests {
 
         // Right pattern: ?s :age ?age (shares ?s with left)
         let _right_pattern = TriplePattern::new(
-            Term::Var(VarId(0)),          // ?s - shared
+            Term::Var(VarId(0)), // ?s - shared
             Term::Sid(Sid::new(100, "age")),
-            Term::Var(VarId(2)),          // ?age - new
+            Term::Var(VarId(2)), // ?age - new
         );
 
         // Create a mock left operator - we'll use this pattern to test bind instructions
@@ -1347,9 +1392,9 @@ mod tests {
 
         let left_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let right_pattern = TriplePattern::new(
-            Term::Var(VarId(0)),          // ?s - shared
+            Term::Var(VarId(0)), // ?s - shared
             Term::Sid(Sid::new(100, "name")),
-            Term::Var(VarId(1)),          // ?name - new
+            Term::Var(VarId(1)), // ?name - new
         );
 
         let left_var_positions: std::collections::HashMap<VarId, usize> = left_schema
@@ -1383,9 +1428,9 @@ mod tests {
 
         let left_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
         let right_pattern = TriplePattern::new(
-            Term::Var(VarId(0)),          // ?s at right position 0
+            Term::Var(VarId(0)), // ?s at right position 0
             Term::Sid(Sid::new(100, "age")),
-            Term::Var(VarId(2)),          // ?age at right position 1
+            Term::Var(VarId(2)), // ?age at right position 1
         );
 
         let left_var_positions: std::collections::HashMap<VarId, usize> = left_schema
@@ -1410,7 +1455,7 @@ mod tests {
 
         // Should have one unify instruction for ?s
         assert_eq!(unify_instructions.len(), 1);
-        assert_eq!(unify_instructions[0].left_col, 0);  // ?s is col 0 in left
+        assert_eq!(unify_instructions[0].left_col, 0); // ?s is col 0 in left
         assert_eq!(unify_instructions[0].right_col, 0); // ?s is col 0 in right pattern output
     }
 
@@ -1429,9 +1474,7 @@ mod tests {
         // Create a mock operator
         struct MockOp;
         #[async_trait]
-        impl<S: fluree_db_core::Storage + 'static>
-            Operator<S> for MockOp
-        {
+        impl<S: fluree_db_core::Storage + 'static> Operator<S> for MockOp {
             fn schema(&self) -> &[VarId] {
                 &[]
             }
@@ -1454,7 +1497,10 @@ mod tests {
         // Create a batch with one row that has Poisoned in position 0 (used for binding)
         let columns_poisoned = vec![
             vec![Binding::Poisoned],
-            vec![Binding::lit(FlakeValue::String("Alice".to_string()), Sid::new(2, "string"))],
+            vec![Binding::lit(
+                FlakeValue::String("Alice".to_string()),
+                Sid::new(2, "string"),
+            )],
         ];
         let batch_poisoned = Batch::new(left_schema.clone(), columns_poisoned).unwrap();
 
@@ -1464,7 +1510,10 @@ mod tests {
         // Create a batch with one row that has NO Poisoned bindings
         let columns_normal = vec![
             vec![Binding::Sid(Sid::new(1, "alice"))],
-            vec![Binding::lit(FlakeValue::String("Alice".to_string()), Sid::new(2, "string"))],
+            vec![Binding::lit(
+                FlakeValue::String("Alice".to_string()),
+                Sid::new(2, "string"),
+            )],
         ];
         let batch_normal = Batch::new(left_schema.clone(), columns_normal).unwrap();
 
@@ -1506,28 +1555,20 @@ mod tests {
         // Left schema: [?v]
         let left_schema: Arc<[VarId]> = Arc::from(vec![v].into_boxed_slice());
         // Right pattern: ?x p ?v (shared ?v at Object position)
-        let right_pattern = TriplePattern::new(
-            Term::Var(x),
-            Term::Sid(Sid::new(100, "p")),
-            Term::Var(v),
-        );
+        let right_pattern =
+            TriplePattern::new(Term::Var(x), Term::Sid(Sid::new(100, "p")), Term::Var(v));
 
         // Mock left operator (unused; we inject batches directly into join state).
         struct MockOp;
         #[async_trait]
-        impl<S: fluree_db_core::Storage + 'static>
-            Operator<S> for MockOp
-        {
+        impl<S: fluree_db_core::Storage + 'static> Operator<S> for MockOp {
             fn schema(&self) -> &[VarId] {
                 &[]
             }
             async fn open(&mut self, _: &ExecutionContext<'_, S>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(
-                &mut self,
-                _: &ExecutionContext<'_, S>,
-            ) -> Result<Option<Batch>> {
+            async fn next_batch(&mut self, _: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
                 Ok(None)
             }
             fn close(&mut self) {}
@@ -1558,16 +1599,23 @@ mod tests {
         let right_schema: Arc<[VarId]> = Arc::from(vec![x].into_boxed_slice());
         let right_batch = Batch::new(
             right_schema,
-            vec![vec![Binding::lit(FlakeValue::Long(10), Sid::new(2, "long"))]],
+            vec![vec![Binding::lit(
+                FlakeValue::Long(10),
+                Sid::new(2, "long"),
+            )]],
         )
         .unwrap();
 
         join.current_left_batch = Some(left_batch);
-        join.pending_output.push_back((BatchRef::Current, 0, right_batch));
+        join.pending_output
+            .push_back((BatchRef::Current, 0, right_batch));
 
         // Should produce output since no unification check is needed
         let out = join.build_output_batch(&ctx).await.unwrap();
-        assert!(out.is_some(), "Expected output when var is substituted (no unification)");
+        assert!(
+            out.is_some(),
+            "Expected output when var is substituted (no unification)"
+        );
         let batch = out.unwrap();
         assert_eq!(batch.len(), 1);
         // Output schema is [?v, ?x] (left vars + new right vars)
@@ -1609,27 +1657,19 @@ mod tests {
         let left_schema: Arc<[VarId]> = Arc::from(vec![s].into_boxed_slice());
         // Right pattern: ?s p ?x with separate object ?y
         // Actually let's test: ?x p ?y where neither is in left schema
-        let right_pattern = TriplePattern::new(
-            Term::Var(x),
-            Term::Sid(Sid::new(100, "p")),
-            Term::Var(y),
-        );
+        let right_pattern =
+            TriplePattern::new(Term::Var(x), Term::Sid(Sid::new(100, "p")), Term::Var(y));
 
         struct MockOp;
         #[async_trait]
-        impl<S: fluree_db_core::Storage + 'static>
-            Operator<S> for MockOp
-        {
+        impl<S: fluree_db_core::Storage + 'static> Operator<S> for MockOp {
             fn schema(&self) -> &[VarId] {
                 &[]
             }
             async fn open(&mut self, _: &ExecutionContext<'_, S>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(
-                &mut self,
-                _: &ExecutionContext<'_, S>,
-            ) -> Result<Option<Batch>> {
+            async fn next_batch(&mut self, _: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
                 Ok(None)
             }
             fn close(&mut self) {}
@@ -1664,7 +1704,8 @@ mod tests {
         .unwrap();
 
         join.current_left_batch = Some(left_batch);
-        join.pending_output.push_back((BatchRef::Current, 0, right_batch));
+        join.pending_output
+            .push_back((BatchRef::Current, 0, right_batch));
 
         let out = join
             .build_output_batch(&ctx)
@@ -1689,24 +1730,24 @@ mod tests {
         use crate::parse::ParsedQuery;
         use crate::pattern::Term;
         use crate::var_registry::VarRegistry;
+        use fluree_db_core::value_id::{ObjKey, ObjKind};
+        use fluree_db_core::DatatypeDictId;
         use fluree_db_core::{Db, MemoryStorage};
         use fluree_db_indexer::run_index::dict_io::{
             write_language_dict, write_predicate_dict, write_subject_index,
         };
-        use fluree_db_indexer::run_index::global_dict::{LanguageTagDict, PredicateDict, SubjectDict};
+        use fluree_db_indexer::run_index::global_dict::{
+            LanguageTagDict, PredicateDict, SubjectDict,
+        };
         use fluree_db_indexer::run_index::index_build::build_all_indexes;
         use fluree_db_indexer::run_index::run_file::write_run_file;
         use fluree_db_indexer::run_index::run_record::{cmp_for_order, RunRecord, RunSortOrder};
         use fluree_db_indexer::run_index::BinaryIndexStore;
-        use fluree_db_core::DatatypeDictId;
-        use fluree_db_core::value_id::{ObjKind, ObjKey};
         use fluree_graph_json_ld::ParsedContext;
 
         // --- Temp dirs ---
-        let base = std::env::temp_dir().join(format!(
-            "fluree_test_binary_join_{}",
-            uuid::Uuid::new_v4()
-        ));
+        let base =
+            std::env::temp_dir().join(format!("fluree_test_binary_join_{}", uuid::Uuid::new_v4()));
         let run_dir = base.join("tmp_import");
         let spot_dir = run_dir.join("spot");
         let psot_dir = run_dir.join("psot");
@@ -1773,7 +1814,9 @@ mod tests {
             subjects.forward_sids(),
         )
         .unwrap();
-        subjects.write_reverse_index(&run_dir.join("subjects.rev")).unwrap();
+        subjects
+            .write_reverse_index(&run_dir.join("subjects.rev"))
+            .unwrap();
 
         // Minimal languages dict (empty).
         write_language_dict(&run_dir.join("languages.dict"), &LanguageTagDict::new()).unwrap();
@@ -1785,9 +1828,7 @@ mod tests {
             let default_ns = fluree_db_core::default_namespace_codes();
             let mut ns_entries: Vec<serde_json::Value> = default_ns
                 .iter()
-                .map(|(&code, prefix)| {
-                    serde_json::json!({"code": code, "prefix": prefix})
-                })
+                .map(|(&code, prefix)| serde_json::json!({"code": code, "prefix": prefix}))
                 .collect();
             // Add the test namespace
             ns_entries.push(serde_json::json!({"code": ns, "prefix": "http://example.com/"}));
@@ -1982,7 +2023,10 @@ mod tests {
             Binding::Sid(sid) => assert!(sid.name.contains("concept#c1")),
             Binding::EncodedSid { s_id } => {
                 // Late materialization: resolve the encoded s_id to verify it's concept1
-                let iri = ctx.binary_store.as_ref().unwrap()
+                let iri = ctx
+                    .binary_store
+                    .as_ref()
+                    .unwrap()
                     .resolve_subject_iri(*s_id)
                     .expect("should resolve encoded s_id");
                 assert!(iri.contains("concept#c1"), "expected concept1, got {}", iri);

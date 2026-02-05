@@ -1,7 +1,7 @@
 use crate::config;
 use crate::context;
 use crate::error::CliResult;
-use comfy_table::{Table, ContentArrangement};
+use comfy_table::{ContentArrangement, Table};
 use fluree_db_nameservice::NameService;
 use std::path::Path;
 

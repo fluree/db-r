@@ -18,11 +18,7 @@ pub async fn run(
             if verbose {
                 println!("Importing from directory: {}", path.display());
             }
-            let result = fluree
-                .create(ledger)
-                .import(path)
-                .execute()
-                .await?;
+            let result = fluree.create(ledger).import(path).execute().await?;
 
             config::write_active_ledger(fluree_dir, ledger)?;
             println!(
@@ -32,9 +28,8 @@ pub async fn run(
         }
         Some(path) => {
             // Single file import
-            let content = std::fs::read_to_string(path).map_err(|e| {
-                CliError::Input(format!("failed to read {}: {e}", path.display()))
-            })?;
+            let content = std::fs::read_to_string(path)
+                .map_err(|e| CliError::Input(format!("failed to read {}: {e}", path.display())))?;
             let format = detect::detect_data_format(Some(path), &content, None)?;
 
             // Create the ledger first

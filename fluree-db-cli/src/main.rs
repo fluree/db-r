@@ -32,9 +32,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
     let config_path = cli.config.as_deref();
 
     match cli.command {
-        Commands::Init { global } => {
-            commands::init::run(global)
-        }
+        Commands::Init { global } => commands::init::run(global),
 
         Commands::Create { ledger, from } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
@@ -74,7 +72,8 @@ async fn run(cli: Cli) -> error::CliResult<()> {
                 message.as_deref(),
                 format.as_deref(),
                 &fluree_dir,
-            ).await
+            )
+            .await
         }
 
         Commands::Upsert {
@@ -90,7 +89,8 @@ async fn run(cli: Cli) -> error::CliResult<()> {
                 message.as_deref(),
                 format.as_deref(),
                 &fluree_dir,
-            ).await
+            )
+            .await
         }
 
         Commands::Query {
@@ -110,7 +110,8 @@ async fn run(cli: Cli) -> error::CliResult<()> {
                 fql,
                 at.as_deref(),
                 &fluree_dir,
-            ).await
+            )
+            .await
         }
 
         Commands::History {
@@ -130,21 +131,13 @@ async fn run(cli: Cli) -> error::CliResult<()> {
                 predicate.as_deref(),
                 &format,
                 &fluree_dir,
-            ).await
+            )
+            .await
         }
 
-        Commands::Export {
-            ledger,
-            format,
-            at,
-        } => {
+        Commands::Export { ledger, format, at } => {
             let fluree_dir = config::require_fluree_dir_or_global(config_path)?;
-            commands::export::run(
-                ledger.as_deref(),
-                &format,
-                at.as_deref(),
-                &fluree_dir,
-            ).await
+            commands::export::run(ledger.as_deref(), &format, at.as_deref(), &fluree_dir).await
         }
 
         Commands::Log {

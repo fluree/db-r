@@ -132,4 +132,3 @@ impl<S: Storage + 'static> Operator<S> for StatsCountByPredicateOperator<S> {
         Some(self.rows.len())
     }
 }
-

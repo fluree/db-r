@@ -36,10 +36,14 @@ mod value;
 
 // Re-export public API
 pub use eval::{
-    evaluate, evaluate_to_binding, evaluate_to_binding_with_context,
-    evaluate_to_binding_with_context_strict, evaluate_with_context,
     // Internal exports for use by other modules in the crate
-    eval_to_comparable, eval_to_comparable_inner,
+    eval_to_comparable,
+    eval_to_comparable_inner,
+    evaluate,
+    evaluate_to_binding,
+    evaluate_to_binding_with_context,
+    evaluate_to_binding_with_context_strict,
+    evaluate_with_context,
 };
 pub use operator::FilterOperator;
 pub use value::ComparableValue;

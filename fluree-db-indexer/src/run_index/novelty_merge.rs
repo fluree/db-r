@@ -105,7 +105,13 @@ fn cmp_row_vs_record(
 #[inline]
 fn same_identity_row_vs_record(row: &DecodedRow, rec: &RunRecord) -> bool {
     FactKey::from_decoded_row(
-        row.s_id, row.p_id, row.o_kind, row.o_key, row.dt, row.lang_id, row.i,
+        row.s_id,
+        row.p_id,
+        row.o_kind,
+        row.o_key,
+        row.dt,
+        row.lang_id,
+        row.i,
     ) == FactKey::from_run_record(rec)
 }
 

@@ -13,12 +13,15 @@
 //! Build a `TriplePattern` with a `VarRegistry`, then call `execute_pattern` with a `Db` reference to get result batches.
 
 pub mod aggregate;
+pub mod binary_range;
+pub mod binary_scan;
 pub mod bind;
 pub mod binding;
 pub mod bm25;
 pub mod context;
 pub mod datalog_rules;
 pub mod dataset;
+pub mod dict_overlay;
 pub mod distinct;
 pub mod error;
 pub mod execute;
@@ -27,12 +30,13 @@ pub mod explain;
 pub mod filter;
 pub mod graph;
 pub mod graph_view;
-pub mod groupby;
 pub mod group_aggregate;
+pub mod groupby;
 pub mod having;
 pub mod ir;
 pub mod join;
 pub mod limit;
+pub mod materializer;
 pub mod minus;
 pub mod offset;
 pub mod operator;
@@ -48,78 +52,79 @@ pub mod property_path;
 pub mod r2rml;
 pub mod reasoning;
 pub mod rewrite;
-pub mod vector;
 pub mod rewrite_owl_ql;
-pub mod dict_overlay;
-pub mod binary_scan;
-pub mod binary_range;
 pub mod seed;
 pub mod sort;
 pub mod stats_query;
-pub mod materializer;
 pub mod subquery;
 pub mod union;
 pub mod values;
 pub mod var_registry;
+pub mod vector;
 
 // Re-exports
 pub use aggregate::{apply_aggregate, AggregateFn, AggregateOperator, AggregateSpec};
+pub use binary_range::BinaryRangeProvider;
+pub use binary_scan::{BinaryScanOperator, ScanOperator};
 pub use bind::BindOperator;
 pub use binding::{Batch, BatchError, BatchView, Binding, RowView};
 pub use context::{ExecutionContext, WellKnownDatatypes};
+pub use dataset::{ActiveGraph, ActiveGraphs, DataSet, GraphRef};
+pub use distinct::DistinctOperator;
 pub use error::{QueryError, Result};
-pub use ir::{CompareOp, FilterExpr, FilterValue, FunctionName, PathModifier, Pattern, PropertyPathPattern, Query, R2rmlPattern, SubqueryPattern};
+pub use execute::{
+    build_operator_tree, execute, execute_query, execute_with_dataset,
+    execute_with_dataset_and_bm25, execute_with_dataset_and_policy,
+    execute_with_dataset_and_policy_and_bm25, execute_with_dataset_and_policy_and_providers,
+    execute_with_dataset_and_policy_tracked, execute_with_dataset_and_providers,
+    execute_with_dataset_history, execute_with_dataset_tracked, execute_with_overlay,
+    execute_with_overlay_at, execute_with_overlay_at_tracked, execute_with_policy,
+    execute_with_policy_tracked, execute_with_r2rml, run_operator, ExecutableQuery,
+};
+pub use exists::ExistsOperator;
+pub use explain::{
+    explain_patterns, ExplainPlan, FallbackReason, OptimizationStatus, PatternDisplay,
+    SelectivityInputs,
+};
+pub use filter::{evaluate as evaluate_filter, FilterOperator};
+pub use graph::GraphOperator;
+pub use graph_view::{AsOf, BaseView, GraphView, ResolvedGraphView, WithPolicy, WithReasoning};
+pub use group_aggregate::{GroupAggregateOperator, StreamingAggSpec};
+pub use groupby::GroupByOperator;
+pub use having::HavingOperator;
+pub use ir::{
+    CompareOp, FilterExpr, FilterValue, FunctionName, PathModifier, Pattern, PropertyPathPattern,
+    Query, R2rmlPattern, SubqueryPattern,
+};
+pub use join::{BindInstruction, NestedLoopJoinOperator, PatternPosition, UnifyInstruction};
+pub use limit::LimitOperator;
+pub use materializer::{ComparableValue, JoinKey, Materializer};
+pub use minus::MinusOperator;
+pub use offset::OffsetOperator;
 pub use operator::{BoxedOperator, Operator, OperatorState};
+pub use optional::OptionalOperator;
+pub use options::QueryOptions;
 pub use pattern::{Term, TriplePattern};
 pub use planner::{
     can_match_pattern, extract_object_bounds_for_var, extract_range_constraints, is_property_join,
     plan, reorder_patterns, BindingState, PatternType, PlanResult, RangeConstraint, RangeValue,
 };
-pub use explain::{
-    explain_patterns, ExplainPlan, FallbackReason, OptimizationStatus, PatternDisplay, SelectivityInputs,
-};
-pub use distinct::DistinctOperator;
-pub use execute::{
-    build_operator_tree, execute, execute_query, execute_with_dataset,
-    execute_with_dataset_and_bm25, execute_with_dataset_and_policy,
-    execute_with_dataset_and_policy_and_bm25,
-    execute_with_dataset_and_policy_and_providers, execute_with_dataset_and_providers,
-    execute_with_dataset_and_policy_tracked, execute_with_dataset_history,
-    execute_with_dataset_tracked, execute_with_overlay, execute_with_overlay_at,
-    execute_with_overlay_at_tracked, execute_with_policy, execute_with_policy_tracked,
-    execute_with_r2rml, run_operator, ExecutableQuery,
-};
-pub use options::QueryOptions;
-pub use groupby::GroupByOperator;
-pub use group_aggregate::{GroupAggregateOperator, StreamingAggSpec};
-pub use having::HavingOperator;
-pub use filter::{evaluate as evaluate_filter, FilterOperator};
-pub use join::{BindInstruction, NestedLoopJoinOperator, PatternPosition, UnifyInstruction};
-pub use limit::LimitOperator;
-pub use offset::OffsetOperator;
-pub use optional::OptionalOperator;
+pub use policy::{QueryPolicyEnforcer, QueryPolicyExecutor};
 pub use project::ProjectOperator;
 pub use property_join::PropertyJoinOperator;
 pub use property_path::{PropertyPathOperator, DEFAULT_MAX_VISITED};
 pub use r2rml::{NoOpR2rmlProvider, R2rmlProvider, R2rmlScanOperator, R2rmlTableProvider};
-pub use binary_range::BinaryRangeProvider;
-pub use binary_scan::{BinaryScanOperator, ScanOperator};
-pub use graph_view::{GraphView, ResolvedGraphView, BaseView, AsOf, WithPolicy, WithReasoning};
+pub use reasoning::{global_reasoning_cache, ReasoningOverlay};
+pub use rewrite::{
+    rewrite_patterns, Diagnostics as RewriteDiagnostics, PlanContext, PlanLimits, ReasoningModes,
+};
+pub use rewrite_owl_ql::{rewrite_owl_ql_patterns, Ontology, OwlQlContext};
 pub use seed::{EmptyOperator, SeedOperator};
 pub use sort::{compare_bindings, compare_flake_values, SortDirection, SortOperator, SortSpec};
 pub use stats_query::StatsCountByPredicateOperator;
-pub use materializer::{ComparableValue, JoinKey, Materializer};
+pub use subquery::SubqueryOperator;
 pub use union::UnionOperator;
 pub use values::ValuesOperator;
-pub use minus::MinusOperator;
-pub use exists::ExistsOperator;
-pub use subquery::SubqueryOperator;
-pub use rewrite::{ReasoningModes, Diagnostics as RewriteDiagnostics, PlanContext, PlanLimits, rewrite_patterns};
-pub use rewrite_owl_ql::{Ontology, OwlQlContext, rewrite_owl_ql_patterns};
-pub use reasoning::{global_reasoning_cache, ReasoningOverlay};
-pub use dataset::{ActiveGraph, ActiveGraphs, DataSet, GraphRef};
-pub use graph::GraphOperator;
-pub use policy::{QueryPolicyEnforcer, QueryPolicyExecutor};
 
 // Re-export from fluree-db-core for convenience
 pub use fluree_db_core::ObjectBounds;

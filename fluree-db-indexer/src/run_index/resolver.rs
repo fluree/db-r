@@ -13,13 +13,13 @@ use super::run_record::RunRecord;
 use super::run_writer::RecordSink;
 use bigdecimal::BigDecimal;
 use chrono;
+use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::temporal::{
     Date, DateTime, DayTimeDuration, Duration as XsdDuration, GDay, GMonth, GMonthDay, GYear,
     GYearMonth, Time, YearMonthDuration,
 };
+use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::{DatatypeDictId, ListIndex};
-use fluree_db_core::subject_id::SubjectId;
-use fluree_db_core::value_id::{ObjKind, ObjKey};
 use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
 use fluree_db_novelty::commit_v2::raw_reader::{CommitOps, RawObject, RawOp};
 use fluree_db_novelty::commit_v2::{load_commit_ops, CommitV2Error};
@@ -70,7 +70,9 @@ impl CommitResolver {
     /// (the prefix for a code is stable once assigned).
     pub fn apply_namespace_delta(&mut self, delta: &HashMap<u16, String>) {
         for (&code, prefix) in delta {
-            self.ns_prefixes.entry(code).or_insert_with(|| prefix.clone());
+            self.ns_prefixes
+                .entry(code)
+                .or_insert_with(|| prefix.clone());
         }
     }
 
@@ -192,10 +194,9 @@ impl CommitResolver {
 
         // 3. Resolve commit subject: "fluree:commit:sha256:<hex>"
         let commit_iri = format!("{}{}", fluree::COMMIT, hex);
-        let commit_s_id = dicts.subjects.get_or_insert(
-            &commit_iri,
-            fluree_vocab::namespaces::FLUREE_COMMIT,
-        )?;
+        let commit_s_id = dicts
+            .subjects
+            .get_or_insert(&commit_iri, fluree_vocab::namespaces::FLUREE_COMMIT)?;
 
         // 4. Resolve predicate p_ids
         let p_address = dicts
@@ -302,10 +303,9 @@ impl CommitResolver {
         if let Some(prev_ref) = &envelope.previous_ref {
             if let Some(prev_id) = &prev_ref.id {
                 // prev_id is like "fluree:commit:sha256:<hex>"
-                let prev_s_id = dicts.subjects.get_or_insert(
-                    prev_id,
-                    fluree_vocab::namespaces::FLUREE_COMMIT,
-                )?;
+                let prev_s_id = dicts
+                    .subjects
+                    .get_or_insert(prev_id, fluree_vocab::namespaces::FLUREE_COMMIT)?;
                 push(
                     commit_s_id,
                     p_previous,
@@ -357,11 +357,13 @@ impl CommitResolver {
         dicts: &mut GlobalDicts,
     ) -> Result<RunRecord, CommitV2Error> {
         // 1. Resolve graph
-        let g_id = self.resolve_graph(op.g_ns_code, op.g_name, dicts)
+        let g_id = self
+            .resolve_graph(op.g_ns_code, op.g_name, dicts)
             .map_err(|e| CommitV2Error::InvalidOp(format!("graph resolve: {}", e)))?;
 
         // 2. Resolve subject (streaming hash) → sid64
-        let s_id = self.resolve_subject(op.s_ns_code, op.s_name, dicts)
+        let s_id = self
+            .resolve_subject(op.s_ns_code, op.s_name, dicts)
             .map_err(|e| CommitV2Error::InvalidOp(format!("subject resolve: {}", e)))?;
 
         // 3. Resolve predicate
@@ -381,7 +383,8 @@ impl CommitResolver {
         let dt_id = dt_id as u16;
 
         // 5. Encode object -> (ObjKind, ObjKey)
-        let (o_kind, o_key) = self.resolve_object(&op.o, p_id, dt_id, dicts)
+        let (o_kind, o_key) = self
+            .resolve_object(&op.o, p_id, dt_id, dicts)
             .map_err(|e| CommitV2Error::InvalidOp(format!("object resolve: {}", e)))?;
 
         // 6. Language tag
@@ -431,7 +434,11 @@ impl CommitResolver {
     ) -> io::Result<u64> {
         // Access ns_prefixes directly (not via lookup_prefix) so the borrow checker
         // can see that ns_prefixes and hasher are disjoint field borrows.
-        let prefix = self.ns_prefixes.get(&ns_code).map(|s| s.as_str()).unwrap_or("");
+        let prefix = self
+            .ns_prefixes
+            .get(&ns_code)
+            .map(|s| s.as_str())
+            .unwrap_or("");
 
         // Streaming hash: feed prefix + name without concatenation
         self.hasher.reset();
@@ -449,12 +456,7 @@ impl CommitResolver {
     }
 
     /// Resolve predicate IRI -> global p_id.
-    fn resolve_predicate(
-        &mut self,
-        ns_code: u16,
-        name: &str,
-        dicts: &mut GlobalDicts,
-    ) -> u32 {
+    fn resolve_predicate(&mut self, ns_code: u16, name: &str, dicts: &mut GlobalDicts) -> u32 {
         let prefix = self.lookup_prefix(ns_code);
         dicts.predicates.get_or_insert_parts(prefix, name)
     }
@@ -474,9 +476,7 @@ impl CommitResolver {
         dicts: &mut GlobalDicts,
     ) -> Result<(ObjKind, ObjKey), String> {
         match obj {
-            RawObject::Long(v) => {
-                Ok((ObjKind::NUM_INT, ObjKey::encode_i64(*v)))
-            }
+            RawObject::Long(v) => Ok((ObjKind::NUM_INT, ObjKey::encode_i64(*v))),
             RawObject::Double(v) => {
                 // Integer-valued doubles that fit i64 -> NumInt fast path
                 if v.is_finite() && v.fract() == 0.0 {
@@ -491,16 +491,20 @@ impl CommitResolver {
                 Ok((ObjKind::NUM_F64, key))
             }
             RawObject::Str(s) => {
-                let id = dicts.strings.get_or_insert(s)
+                let id = dicts
+                    .strings
+                    .get_or_insert(s)
                     .map_err(|e| format!("string dict write: {}", e))?;
                 Ok((ObjKind::LEX_ID, ObjKey::encode_u32_id(id)))
             }
-            RawObject::Boolean(b) => {
-                Ok((ObjKind::BOOL, ObjKey::encode_bool(*b)))
-            }
+            RawObject::Boolean(b) => Ok((ObjKind::BOOL, ObjKey::encode_bool(*b))),
             RawObject::Ref { ns_code, name } => {
                 // Resolve ref IRI -> global sid64 -> REF_ID.
-                let prefix = self.ns_prefixes.get(ns_code).map(|s| s.as_str()).unwrap_or("");
+                let prefix = self
+                    .ns_prefixes
+                    .get(ns_code)
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
                 self.hasher.reset();
                 self.hasher.update(prefix.as_bytes());
                 self.hasher.update(name.as_bytes());
@@ -517,24 +521,23 @@ impl CommitResolver {
                     .map_err(|e| format!("ref resolve: {}", e))?;
                 Ok((ObjKind::REF_ID, ObjKey::encode_sid64(sid64)))
             }
-            RawObject::DateTimeStr(s) => {
-                DateTime::parse(s)
-                    .map_err(|e| format!("datetime parse: {}", e))
-                    .map(|dt| {
-                        let micros = dt.epoch_micros();
-                        (ObjKind::DATE_TIME, ObjKey::encode_datetime(micros))
-                    })
-            }
-            RawObject::DateStr(s) => {
-                Date::parse(s)
-                    .map(|d| (ObjKind::DATE, ObjKey::encode_date(d.days_since_epoch())))
-                    .map_err(|e| format!("date parse: {}", e))
-            }
-            RawObject::TimeStr(s) => {
-                Time::parse(s)
-                    .map(|t| (ObjKind::TIME, ObjKey::encode_time(t.micros_since_midnight())))
-                    .map_err(|e| format!("time parse: {}", e))
-            }
+            RawObject::DateTimeStr(s) => DateTime::parse(s)
+                .map_err(|e| format!("datetime parse: {}", e))
+                .map(|dt| {
+                    let micros = dt.epoch_micros();
+                    (ObjKind::DATE_TIME, ObjKey::encode_datetime(micros))
+                }),
+            RawObject::DateStr(s) => Date::parse(s)
+                .map(|d| (ObjKind::DATE, ObjKey::encode_date(d.days_since_epoch())))
+                .map_err(|e| format!("date parse: {}", e)),
+            RawObject::TimeStr(s) => Time::parse(s)
+                .map(|t| {
+                    (
+                        ObjKind::TIME,
+                        ObjKey::encode_time(t.micros_since_midnight()),
+                    )
+                })
+                .map_err(|e| format!("time parse: {}", e)),
             RawObject::BigIntStr(s) => {
                 // Try to parse as i64 first for NumInt fast path
                 if let Ok(v) = s.parse::<i64>() {
@@ -556,7 +559,9 @@ impl CommitResolver {
                     }
                     Err(_) => {
                         // Cannot parse as BigInt -- store as string
-                        let id = dicts.strings.get_or_insert(s)
+                        let id = dicts
+                            .strings
+                            .get_or_insert(s)
                             .map_err(|e| format!("string dict write: {}", e))?;
                         Ok((ObjKind::LEX_ID, ObjKey::encode_u32_id(id)))
                     }
@@ -575,59 +580,70 @@ impl CommitResolver {
                     }
                     Err(_) => {
                         // Cannot parse as BigDecimal -- store as string
-                        let id = dicts.strings.get_or_insert(s)
+                        let id = dicts
+                            .strings
+                            .get_or_insert(s)
                             .map_err(|e| format!("string dict write: {}", e))?;
                         Ok((ObjKind::LEX_ID, ObjKey::encode_u32_id(id)))
                     }
                 }
             }
             RawObject::JsonStr(s) => {
-                let id = dicts.strings.get_or_insert(s)
+                let id = dicts
+                    .strings
+                    .get_or_insert(s)
                     .map_err(|e| format!("string dict write: {}", e))?;
                 Ok((ObjKind::JSON_ID, ObjKey::encode_u32_id(id)))
             }
             RawObject::Null => Ok((ObjKind::NULL, ObjKey::ZERO)),
-            RawObject::GYearStr(s) => {
-                GYear::parse(s)
-                    .map(|g| (ObjKind::G_YEAR, ObjKey::encode_g_year(g.year())))
-                    .map_err(|e| format!("gYear parse: {}", e))
-            }
-            RawObject::GYearMonthStr(s) => {
-                GYearMonth::parse(s)
-                    .map(|g| (ObjKind::G_YEAR_MONTH, ObjKey::encode_g_year_month(g.year(), g.month())))
-                    .map_err(|e| format!("gYearMonth parse: {}", e))
-            }
-            RawObject::GMonthStr(s) => {
-                GMonth::parse(s)
-                    .map(|g| (ObjKind::G_MONTH, ObjKey::encode_g_month(g.month())))
-                    .map_err(|e| format!("gMonth parse: {}", e))
-            }
-            RawObject::GDayStr(s) => {
-                GDay::parse(s)
-                    .map(|g| (ObjKind::G_DAY, ObjKey::encode_g_day(g.day())))
-                    .map_err(|e| format!("gDay parse: {}", e))
-            }
-            RawObject::GMonthDayStr(s) => {
-                GMonthDay::parse(s)
-                    .map(|g| (ObjKind::G_MONTH_DAY, ObjKey::encode_g_month_day(g.month(), g.day())))
-                    .map_err(|e| format!("gMonthDay parse: {}", e))
-            }
-            RawObject::YearMonthDurationStr(s) => {
-                YearMonthDuration::parse(s)
-                    .map(|d| (ObjKind::YEAR_MONTH_DUR, ObjKey::encode_year_month_dur(d.months())))
-                    .map_err(|e| format!("yearMonthDuration parse: {}", e))
-            }
-            RawObject::DayTimeDurationStr(s) => {
-                DayTimeDuration::parse(s)
-                    .map(|d| (ObjKind::DAY_TIME_DUR, ObjKey::encode_day_time_dur(d.micros())))
-                    .map_err(|e| format!("dayTimeDuration parse: {}", e))
-            }
+            RawObject::GYearStr(s) => GYear::parse(s)
+                .map(|g| (ObjKind::G_YEAR, ObjKey::encode_g_year(g.year())))
+                .map_err(|e| format!("gYear parse: {}", e)),
+            RawObject::GYearMonthStr(s) => GYearMonth::parse(s)
+                .map(|g| {
+                    (
+                        ObjKind::G_YEAR_MONTH,
+                        ObjKey::encode_g_year_month(g.year(), g.month()),
+                    )
+                })
+                .map_err(|e| format!("gYearMonth parse: {}", e)),
+            RawObject::GMonthStr(s) => GMonth::parse(s)
+                .map(|g| (ObjKind::G_MONTH, ObjKey::encode_g_month(g.month())))
+                .map_err(|e| format!("gMonth parse: {}", e)),
+            RawObject::GDayStr(s) => GDay::parse(s)
+                .map(|g| (ObjKind::G_DAY, ObjKey::encode_g_day(g.day())))
+                .map_err(|e| format!("gDay parse: {}", e)),
+            RawObject::GMonthDayStr(s) => GMonthDay::parse(s)
+                .map(|g| {
+                    (
+                        ObjKind::G_MONTH_DAY,
+                        ObjKey::encode_g_month_day(g.month(), g.day()),
+                    )
+                })
+                .map_err(|e| format!("gMonthDay parse: {}", e)),
+            RawObject::YearMonthDurationStr(s) => YearMonthDuration::parse(s)
+                .map(|d| {
+                    (
+                        ObjKind::YEAR_MONTH_DUR,
+                        ObjKey::encode_year_month_dur(d.months()),
+                    )
+                })
+                .map_err(|e| format!("yearMonthDuration parse: {}", e)),
+            RawObject::DayTimeDurationStr(s) => DayTimeDuration::parse(s)
+                .map(|d| {
+                    (
+                        ObjKind::DAY_TIME_DUR,
+                        ObjKey::encode_day_time_dur(d.micros()),
+                    )
+                })
+                .map_err(|e| format!("dayTimeDuration parse: {}", e)),
             RawObject::DurationStr(s) => {
                 // General xsd:duration has no total order — store as canonical string
-                let d = XsdDuration::parse(s)
-                    .map_err(|e| format!("duration parse: {}", e))?;
+                let d = XsdDuration::parse(s).map_err(|e| format!("duration parse: {}", e))?;
                 let canonical = d.to_canonical_string();
-                let id = dicts.strings.get_or_insert(&canonical)
+                let id = dicts
+                    .strings
+                    .get_or_insert(&canonical)
                     .map_err(|e| format!("string dict write: {}", e))?;
                 Ok((ObjKind::LEX_ID, ObjKey::encode_u32_id(id)))
             }
@@ -734,13 +750,15 @@ fn iso_to_epoch_ms(iso: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::run_index::run_writer::{RunWriter, RunWriterConfig};
     use crate::run_index::run_record::RunSortOrder;
-    use fluree_db_novelty::commit_v2::op_codec::{encode_op, CommitDicts};
-    use fluree_db_novelty::commit_v2::envelope::{encode_envelope_fields, CommitV2Envelope};
-    use fluree_db_novelty::commit_v2::format::{self, CommitV2Footer, CommitV2Header, HEADER_LEN, FOOTER_LEN, HASH_LEN};
-    use fluree_db_novelty::commit_v2::raw_reader::load_commit_ops;
+    use crate::run_index::run_writer::{RunWriter, RunWriterConfig};
     use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
+    use fluree_db_novelty::commit_v2::envelope::{encode_envelope_fields, CommitV2Envelope};
+    use fluree_db_novelty::commit_v2::format::{
+        self, CommitV2Footer, CommitV2Header, FOOTER_LEN, HASH_LEN, HEADER_LEN,
+    };
+    use fluree_db_novelty::commit_v2::op_codec::{encode_op, CommitDicts};
+    use fluree_db_novelty::commit_v2::raw_reader::load_commit_ops;
     use sha2::{Digest, Sha256};
 
     /// Build a minimal commit blob from flakes (reused from raw_reader tests).
@@ -752,18 +770,24 @@ mod tests {
         }
 
         let envelope = CommitV2Envelope {
-            t, v: 0,
+            t,
+            v: 0,
             previous_ref: None,
             namespace_delta: HashMap::new(),
-            txn: None, time: None, data: None, index: None,
+            txn: None,
+            time: None,
+            data: None,
+            index: None,
             txn_signature: None,
         };
         let mut envelope_bytes = Vec::new();
         encode_envelope_fields(&envelope, &mut envelope_bytes).unwrap();
 
         let dict_bytes: Vec<Vec<u8>> = vec![
-            dicts.graph.serialize(), dicts.subject.serialize(),
-            dicts.predicate.serialize(), dicts.datatype.serialize(),
+            dicts.graph.serialize(),
+            dicts.subject.serialize(),
+            dicts.predicate.serialize(),
+            dicts.datatype.serialize(),
             dicts.object_ref.serialize(),
         ];
 
@@ -773,20 +797,32 @@ mod tests {
         let mut dict_locations = [format::DictLocation::default(); 5];
         let mut offset = dict_start as u64;
         for (i, d) in dict_bytes.iter().enumerate() {
-            dict_locations[i] = format::DictLocation { offset, len: d.len() as u32 };
+            dict_locations[i] = format::DictLocation {
+                offset,
+                len: d.len() as u32,
+            };
             offset += d.len() as u64;
         }
 
-        let footer = CommitV2Footer { dicts: dict_locations, ops_section_len };
+        let footer = CommitV2Footer {
+            dicts: dict_locations,
+            ops_section_len,
+        };
         let header = CommitV2Header {
-            version: format::VERSION, flags: 0, t,
-            op_count: flakes.len() as u32, envelope_len,
+            version: format::VERSION,
+            flags: 0,
+            t,
+            op_count: flakes.len() as u32,
+            envelope_len,
             sig_block_len: 0,
         };
 
-        let total_len = HEADER_LEN + envelope_bytes.len() + ops_buf.len()
+        let total_len = HEADER_LEN
+            + envelope_bytes.len()
+            + ops_buf.len()
             + dict_bytes.iter().map(|d| d.len()).sum::<usize>()
-            + FOOTER_LEN + HASH_LEN;
+            + FOOTER_LEN
+            + HASH_LEN;
         let mut blob = vec![0u8; total_len];
 
         let mut pos = 0;
@@ -815,16 +851,31 @@ mod tests {
 
         let flakes = vec![
             Flake::new(
-                Sid::new(101, "Alice"), Sid::new(101, "age"),
-                FlakeValue::Long(30), Sid::new(2, "integer"), 1, true, None,
+                Sid::new(101, "Alice"),
+                Sid::new(101, "age"),
+                FlakeValue::Long(30),
+                Sid::new(2, "integer"),
+                1,
+                true,
+                None,
             ),
             Flake::new(
-                Sid::new(101, "Alice"), Sid::new(101, "name"),
-                FlakeValue::String("Alice".into()), Sid::new(2, "string"), 1, true, None,
+                Sid::new(101, "Alice"),
+                Sid::new(101, "name"),
+                FlakeValue::String("Alice".into()),
+                Sid::new(2, "string"),
+                1,
+                true,
+                None,
             ),
             Flake::new(
-                Sid::new(101, "Bob"), Sid::new(101, "age"),
-                FlakeValue::Long(25), Sid::new(2, "integer"), 1, true, None,
+                Sid::new(101, "Bob"),
+                Sid::new(101, "age"),
+                FlakeValue::Long(25),
+                Sid::new(2, "integer"),
+                1,
+                true,
+                None,
             ),
         ];
 
@@ -835,7 +886,9 @@ mod tests {
         let mut resolver = CommitResolver::new();
 
         // Add user namespace prefix (code 101)
-        resolver.ns_prefixes.insert(101, "http://example.org/".to_string());
+        resolver
+            .ns_prefixes
+            .insert(101, "http://example.org/".to_string());
 
         let config = RunWriterConfig {
             buffer_budget_bytes: 1024 * 1024,
@@ -844,7 +897,9 @@ mod tests {
         };
         let mut writer = RunWriter::new(config);
 
-        let count = resolver.resolve_commit_ops(&commit_ops, &mut dicts, &mut writer).unwrap();
+        let count = resolver
+            .resolve_commit_ops(&commit_ops, &mut dicts, &mut writer)
+            .unwrap();
         assert_eq!(count, 3);
 
         // Check dictionary state
@@ -864,13 +919,23 @@ mod tests {
         let flakes = vec![
             // Alice knows Bob (Ref)
             Flake::new(
-                Sid::new(101, "Alice"), Sid::new(101, "knows"),
-                FlakeValue::Ref(Sid::new(101, "Bob")), Sid::new(1, "id"), 1, true, None,
+                Sid::new(101, "Alice"),
+                Sid::new(101, "knows"),
+                FlakeValue::Ref(Sid::new(101, "Bob")),
+                Sid::new(1, "id"),
+                1,
+                true,
+                None,
             ),
             // Bob's age
             Flake::new(
-                Sid::new(101, "Bob"), Sid::new(101, "age"),
-                FlakeValue::Long(25), Sid::new(2, "integer"), 1, true, None,
+                Sid::new(101, "Bob"),
+                Sid::new(101, "age"),
+                FlakeValue::Long(25),
+                Sid::new(2, "integer"),
+                1,
+                true,
+                None,
             ),
         ];
 
@@ -879,7 +944,9 @@ mod tests {
 
         let mut dicts = GlobalDicts::new_memory();
         let mut resolver = CommitResolver::new();
-        resolver.ns_prefixes.insert(101, "http://example.org/".to_string());
+        resolver
+            .ns_prefixes
+            .insert(101, "http://example.org/".to_string());
 
         let dir = std::env::temp_dir().join("fluree_test_resolver_ref");
         let _ = std::fs::remove_dir_all(&dir);
@@ -892,7 +959,9 @@ mod tests {
         };
         let mut writer = RunWriter::new(config);
 
-        resolver.resolve_commit_ops(&commit_ops, &mut dicts, &mut writer).unwrap();
+        resolver
+            .resolve_commit_ops(&commit_ops, &mut dicts, &mut writer)
+            .unwrap();
 
         assert_eq!(dicts.subjects.len(), 2); // Alice, Bob
         assert_eq!(dicts.predicates.len(), 2); // knows, age
@@ -902,20 +971,24 @@ mod tests {
 
     #[test]
     fn test_resolve_datetime() {
-        let flakes = vec![
-            Flake::new(
-                Sid::new(101, "x"), Sid::new(101, "created"),
-                FlakeValue::DateTime(Box::new(DateTime::parse("2024-01-15T10:30:00Z").unwrap())),
-                Sid::new(2, "dateTime"), 1, true, None,
-            ),
-        ];
+        let flakes = vec![Flake::new(
+            Sid::new(101, "x"),
+            Sid::new(101, "created"),
+            FlakeValue::DateTime(Box::new(DateTime::parse("2024-01-15T10:30:00Z").unwrap())),
+            Sid::new(2, "dateTime"),
+            1,
+            true,
+            None,
+        )];
 
         let blob = build_test_blob(&flakes, 1);
         let commit_ops = load_commit_ops(&blob).unwrap();
 
         let mut dicts = GlobalDicts::new_memory();
         let mut resolver = CommitResolver::new();
-        resolver.ns_prefixes.insert(101, "http://example.org/".to_string());
+        resolver
+            .ns_prefixes
+            .insert(101, "http://example.org/".to_string());
 
         let dir = std::env::temp_dir().join("fluree_test_resolver_dt");
         let _ = std::fs::remove_dir_all(&dir);
@@ -928,7 +1001,9 @@ mod tests {
         };
         let mut writer = RunWriter::new(config);
 
-        let count = resolver.resolve_commit_ops(&commit_ops, &mut dicts, &mut writer).unwrap();
+        let count = resolver
+            .resolve_commit_ops(&commit_ops, &mut dicts, &mut writer)
+            .unwrap();
         assert_eq!(count, 1);
 
         let result = writer.finish(&mut dicts.languages).unwrap();
@@ -946,12 +1021,22 @@ mod tests {
     fn test_resolve_boolean_and_null() {
         let flakes = vec![
             Flake::new(
-                Sid::new(101, "x"), Sid::new(101, "active"),
-                FlakeValue::Boolean(true), Sid::new(2, "boolean"), 1, true, None,
+                Sid::new(101, "x"),
+                Sid::new(101, "active"),
+                FlakeValue::Boolean(true),
+                Sid::new(2, "boolean"),
+                1,
+                true,
+                None,
             ),
             Flake::new(
-                Sid::new(101, "x"), Sid::new(101, "deleted"),
-                FlakeValue::Null, Sid::new(2, "string"), 1, true, None,
+                Sid::new(101, "x"),
+                Sid::new(101, "deleted"),
+                FlakeValue::Null,
+                Sid::new(2, "string"),
+                1,
+                true,
+                None,
             ),
         ];
 
@@ -960,7 +1045,9 @@ mod tests {
 
         let mut dicts = GlobalDicts::new_memory();
         let mut resolver = CommitResolver::new();
-        resolver.ns_prefixes.insert(101, "http://example.org/".to_string());
+        resolver
+            .ns_prefixes
+            .insert(101, "http://example.org/".to_string());
 
         let dir = std::env::temp_dir().join("fluree_test_resolver_bool");
         let _ = std::fs::remove_dir_all(&dir);
@@ -973,7 +1060,9 @@ mod tests {
         };
         let mut writer = RunWriter::new(config);
 
-        resolver.resolve_commit_ops(&commit_ops, &mut dicts, &mut writer).unwrap();
+        resolver
+            .resolve_commit_ops(&commit_ops, &mut dicts, &mut writer)
+            .unwrap();
 
         let result = writer.finish(&mut dicts.languages).unwrap();
         let (_, _, records) = crate::run_index::read_run_file(&result.run_files[0].path).unwrap();
@@ -989,14 +1078,22 @@ mod tests {
     fn test_resolve_with_lang_tag() {
         let flakes = vec![
             Flake::new(
-                Sid::new(101, "x"), Sid::new(101, "label"),
-                FlakeValue::String("hello".into()), Sid::new(3, "langString"),
-                1, true, Some(FlakeMeta::with_lang("en")),
+                Sid::new(101, "x"),
+                Sid::new(101, "label"),
+                FlakeValue::String("hello".into()),
+                Sid::new(3, "langString"),
+                1,
+                true,
+                Some(FlakeMeta::with_lang("en")),
             ),
             Flake::new(
-                Sid::new(101, "x"), Sid::new(101, "label"),
-                FlakeValue::String("bonjour".into()), Sid::new(3, "langString"),
-                1, true, Some(FlakeMeta::with_lang("fr")),
+                Sid::new(101, "x"),
+                Sid::new(101, "label"),
+                FlakeValue::String("bonjour".into()),
+                Sid::new(3, "langString"),
+                1,
+                true,
+                Some(FlakeMeta::with_lang("fr")),
             ),
         ];
 
@@ -1005,7 +1102,9 @@ mod tests {
 
         let mut dicts = GlobalDicts::new_memory();
         let mut resolver = CommitResolver::new();
-        resolver.ns_prefixes.insert(101, "http://example.org/".to_string());
+        resolver
+            .ns_prefixes
+            .insert(101, "http://example.org/".to_string());
 
         let dir = std::env::temp_dir().join("fluree_test_resolver_lang");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1018,7 +1117,9 @@ mod tests {
         };
         let mut writer = RunWriter::new(config);
 
-        resolver.resolve_commit_ops(&commit_ops, &mut dicts, &mut writer).unwrap();
+        resolver
+            .resolve_commit_ops(&commit_ops, &mut dicts, &mut writer)
+            .unwrap();
 
         // Should have 2 language tags
         assert_eq!(dicts.languages.len(), 2);
@@ -1044,7 +1145,10 @@ mod tests {
             ),
             Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
         );
-        assert_eq!(super::extract_commit_hex("fluree:file://test/commit/abc.json"), None);
+        assert_eq!(
+            super::extract_commit_hex("fluree:file://test/commit/abc.json"),
+            None
+        );
         assert_eq!(
             super::extract_commit_hex(
                 "fluree:file://test/commit/abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
@@ -1085,9 +1189,7 @@ mod tests {
 
         let hex = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
         let prev_hex = "0000000000000000000000000000000000000000000000000000000000000000";
-        let commit_address = format!(
-            "fluree:file://test/main/commit/{}.json", hex
-        );
+        let commit_address = format!("fluree:file://test/main/commit/{}.json", hex);
         let prev_commit_id = format!("fluree:commit:sha256:{}", prev_hex);
 
         let envelope = CommitV2Envelope {
@@ -1103,17 +1205,23 @@ mod tests {
         };
 
         let count = resolver
-            .emit_txn_meta(&commit_address, "test-ledger", &envelope, &mut dicts, &mut writer)
+            .emit_txn_meta(
+                &commit_address,
+                "test-ledger",
+                &envelope,
+                &mut dicts,
+                &mut writer,
+            )
             .unwrap();
 
         // 6 records on commit subject: address, alias, v, time, t, previous
         assert_eq!(count, 6);
 
         // Verify g_id=1 reservation
-        let g_id = dicts.graphs.get_or_insert_parts(
-            fluree_vocab::fluree::LEDGER,
-            "transactions",
-        ) + 1;
+        let g_id = dicts
+            .graphs
+            .get_or_insert_parts(fluree_vocab::fluree::LEDGER, "transactions")
+            + 1;
         assert_eq!(g_id, 1);
 
         // Verify subjects created
@@ -1145,8 +1253,16 @@ mod tests {
         // Find the time record and verify it's NUM_INT with DatatypeDictId::LONG
         let time_pid = p_time.unwrap();
         let time_rec = records.iter().find(|r| r.p_id == time_pid).unwrap();
-        assert_eq!(time_rec.dt, DatatypeDictId::LONG.as_u16(), "ledger:time must be DatatypeDictId::LONG");
-        assert_eq!(time_rec.o_kind, ObjKind::NUM_INT.as_u8(), "ledger:time must be NUM_INT");
+        assert_eq!(
+            time_rec.dt,
+            DatatypeDictId::LONG.as_u16(),
+            "ledger:time must be DatatypeDictId::LONG"
+        );
+        assert_eq!(
+            time_rec.o_kind,
+            ObjKind::NUM_INT.as_u8(),
+            "ledger:time must be NUM_INT"
+        );
         // Verify epoch ms is reasonable (2025)
         let epoch_ms = ObjKey::from_u64(time_rec.o_key).decode_i64();
         assert!(epoch_ms > 1718000000000, "epoch ms should be in 2025");
@@ -1154,14 +1270,30 @@ mod tests {
         // Find the t record
         let t_pid = p_t.unwrap();
         let t_rec = records.iter().find(|r| r.p_id == t_pid).unwrap();
-        assert_eq!(t_rec.dt, DatatypeDictId::INTEGER.as_u16(), "ledger:t must be DatatypeDictId::INTEGER");
-        assert_eq!(t_rec.o_kind, ObjKind::NUM_INT.as_u8(), "ledger:t must be NUM_INT");
+        assert_eq!(
+            t_rec.dt,
+            DatatypeDictId::INTEGER.as_u16(),
+            "ledger:t must be DatatypeDictId::INTEGER"
+        );
+        assert_eq!(
+            t_rec.o_kind,
+            ObjKind::NUM_INT.as_u8(),
+            "ledger:t must be NUM_INT"
+        );
 
         // Find the previous record and verify it's REF_ID with DatatypeDictId::ID
         let prev_pid = p_previous.unwrap();
         let prev_rec = records.iter().find(|r| r.p_id == prev_pid).unwrap();
-        assert_eq!(prev_rec.dt, DatatypeDictId::ID.as_u16(), "ledger:previous must be DatatypeDictId::ID");
-        assert_eq!(prev_rec.o_kind, ObjKind::REF_ID.as_u8(), "ledger:previous must be REF_ID");
+        assert_eq!(
+            prev_rec.dt,
+            DatatypeDictId::ID.as_u16(),
+            "ledger:previous must be DatatypeDictId::ID"
+        );
+        assert_eq!(
+            prev_rec.o_kind,
+            ObjKind::REF_ID.as_u8(),
+            "ledger:previous must be REF_ID"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1200,7 +1332,13 @@ mod tests {
         };
 
         let count = resolver
-            .emit_txn_meta(&commit_address, "test-ledger", &envelope, &mut dicts, &mut writer)
+            .emit_txn_meta(
+                &commit_address,
+                "test-ledger",
+                &envelope,
+                &mut dicts,
+                &mut writer,
+            )
             .unwrap();
 
         // 4 records: address, alias, v, t (no time, no previous)
@@ -1213,6 +1351,10 @@ mod tests {
     fn test_global_dicts_reserves_g_id_1() {
         let dicts = GlobalDicts::new_memory();
         let g_id = dicts.graphs.get("https://ns.flur.ee/ledger#transactions");
-        assert_eq!(g_id, Some(0), "txn-meta graph must be first entry (dict id=0, g_id=0+1=1)");
+        assert_eq!(
+            g_id,
+            Some(0),
+            "txn-meta graph must be first entry (dict id=0, g_id=0+1=1)"
+        );
     }
 }

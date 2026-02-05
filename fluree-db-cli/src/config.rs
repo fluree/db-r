@@ -61,7 +61,10 @@ fn resolve_config_override(p: &Path) -> CliResult<PathBuf> {
         let dir = resolved
             .parent()
             .ok_or_else(|| {
-                CliError::Config(format!("cannot determine parent of: {}", resolved.display()))
+                CliError::Config(format!(
+                    "cannot determine parent of: {}",
+                    resolved.display()
+                ))
             })?
             .to_path_buf();
         if dir.is_dir() {
@@ -102,7 +105,8 @@ pub fn require_fluree_dir_or_global(config_override: Option<&Path>) -> CliResult
 /// Create `.fluree/` directory with empty config and storage subdirectory.
 pub fn init_fluree_dir(global: bool) -> CliResult<PathBuf> {
     let base = if global {
-        dirs::home_dir().ok_or_else(|| CliError::Config("cannot determine home directory".into()))?
+        dirs::home_dir()
+            .ok_or_else(|| CliError::Config("cannot determine home directory".into()))?
     } else {
         std::env::current_dir()?
     };
@@ -110,19 +114,13 @@ pub fn init_fluree_dir(global: bool) -> CliResult<PathBuf> {
     let storage_dir = fluree_dir.join(STORAGE_DIR);
 
     fs::create_dir_all(&storage_dir).map_err(|e| {
-        CliError::Config(format!(
-            "failed to create {}: {e}",
-            storage_dir.display()
-        ))
+        CliError::Config(format!("failed to create {}: {e}", storage_dir.display()))
     })?;
 
     let config_path = fluree_dir.join(CONFIG_FILE);
     if !config_path.exists() {
         fs::write(&config_path, "").map_err(|e| {
-            CliError::Config(format!(
-                "failed to create {}: {e}",
-                config_path.display()
-            ))
+            CliError::Config(format!("failed to create {}: {e}", config_path.display()))
         })?;
     }
 
@@ -153,11 +151,8 @@ pub fn write_active_ledger(fluree_dir: &Path, alias: &str) -> CliResult<()> {
 pub fn clear_active_ledger(fluree_dir: &Path) -> CliResult<()> {
     let path = fluree_dir.join(ACTIVE_FILE);
     if path.exists() {
-        fs::remove_file(&path).map_err(|e| {
-            CliError::Config(format!(
-                "failed to clear active ledger: {e}"
-            ))
-        })?;
+        fs::remove_file(&path)
+            .map_err(|e| CliError::Config(format!("failed to clear active ledger: {e}")))?;
     }
     Ok(())
 }
@@ -182,12 +177,9 @@ pub fn read_prefixes(fluree_dir: &Path) -> PrefixMap {
 /// Write prefixes to `.fluree/prefixes.json`.
 pub fn write_prefixes(fluree_dir: &Path, prefixes: &PrefixMap) -> CliResult<()> {
     let path = fluree_dir.join(PREFIXES_FILE);
-    let json = serde_json::to_string_pretty(prefixes).map_err(|e| {
-        CliError::Config(format!("failed to serialize prefixes: {e}"))
-    })?;
-    fs::write(&path, json).map_err(|e| {
-        CliError::Config(format!("failed to write prefixes: {e}"))
-    })
+    let json = serde_json::to_string_pretty(prefixes)
+        .map_err(|e| CliError::Config(format!("failed to serialize prefixes: {e}")))?;
+    fs::write(&path, json).map_err(|e| CliError::Config(format!("failed to write prefixes: {e}")))
 }
 
 /// Add a prefix mapping.

@@ -444,8 +444,7 @@ fn write_col_u64(buf: &mut Vec<u8>, records: &[RunRecord], field_fn: fn(&RunReco
 fn encode_region1_spot(records: &[RunRecord], p_width: u8) -> Vec<u8> {
     let rle = build_rle_u64(records, |r| r.s_id.as_u64());
     let row_count = records.len();
-    let buf_size =
-        4 + rle.len() * 12 + row_count * (p_width as usize) + row_count + row_count * 8;
+    let buf_size = 4 + rle.len() * 12 + row_count * (p_width as usize) + row_count + row_count * 8;
     let mut buf = Vec::with_capacity(buf_size);
     write_rle_u64(&mut buf, &rle);
     write_col_p_id(&mut buf, records, p_width);
@@ -1079,11 +1078,7 @@ fn read_col_u64(data: &[u8], pos: &mut usize, row_count: usize) -> io::Result<Ve
 // ---- Per-order decode functions ----
 
 /// SPOT: RLE(s_id:u64), p_id[pw], o_kind[u8], o_key[u64]
-fn decode_region1_spot(
-    data: &[u8],
-    row_count: usize,
-    p_width: u8,
-) -> io::Result<Region1Columns> {
+fn decode_region1_spot(data: &[u8], row_count: usize, p_width: u8) -> io::Result<Region1Columns> {
     let mut pos = 0;
     let s_ids = decode_rle_u64(data, &mut pos, row_count)?;
     let p_ids = read_col_p_id(data, &mut pos, row_count, p_width)?;
@@ -1093,10 +1088,7 @@ fn decode_region1_spot(
 }
 
 /// PSOT: RLE(p_id:u32), s_id[u64], o_kind[u8], o_key[u64]
-fn decode_region1_psot(
-    data: &[u8],
-    row_count: usize,
-) -> io::Result<Region1Columns> {
+fn decode_region1_psot(data: &[u8], row_count: usize) -> io::Result<Region1Columns> {
     let mut pos = 0;
     let p_ids = decode_rle_u32(data, &mut pos, row_count)?;
     let s_ids = read_col_u64(data, &mut pos, row_count)?;
@@ -1106,10 +1098,7 @@ fn decode_region1_psot(
 }
 
 /// POST: RLE(p_id:u32), o_kind[u8], o_key[u64], s_id[u64]
-fn decode_region1_post(
-    data: &[u8],
-    row_count: usize,
-) -> io::Result<Region1Columns> {
+fn decode_region1_post(data: &[u8], row_count: usize) -> io::Result<Region1Columns> {
     let mut pos = 0;
     let p_ids = decode_rle_u32(data, &mut pos, row_count)?;
     let o_kinds = read_col_u8(data, &mut pos, row_count)?;
@@ -1119,11 +1108,7 @@ fn decode_region1_post(
 }
 
 /// OPST: o_kind[u8], RLE(o_key:u64), p_id[pw], s_id[u64]
-fn decode_region1_opst(
-    data: &[u8],
-    row_count: usize,
-    p_width: u8,
-) -> io::Result<Region1Columns> {
+fn decode_region1_opst(data: &[u8], row_count: usize, p_width: u8) -> io::Result<Region1Columns> {
     let mut pos = 0;
     let o_kinds = read_col_u8(data, &mut pos, row_count)?;
     let o_keys = decode_rle_u64(data, &mut pos, row_count)?;
@@ -1135,11 +1120,7 @@ fn decode_region1_opst(
 /// Decode Region 2: dt[] + t[] + lang bitmap + i bitmap.
 ///
 /// `dt_width`: byte width of each dt value (1, 2, or 4).
-fn decode_region2(
-    data: &[u8],
-    row_count: usize,
-    dt_width: u8,
-) -> io::Result<Region2Columns> {
+fn decode_region2(data: &[u8], row_count: usize, dt_width: u8) -> io::Result<Region2Columns> {
     if dt_width != 1 && dt_width != 2 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,

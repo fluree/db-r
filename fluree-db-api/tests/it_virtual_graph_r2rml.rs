@@ -202,7 +202,10 @@ async fn test_mock_r2rml_provider() {
     assert!(provider.has_r2rml_mapping("test-vg:main").await);
 
     // Test compiled_mapping
-    let loaded = provider.compiled_mapping("test-vg:main", Some(0)).await.unwrap();
+    let loaded = provider
+        .compiled_mapping("test-vg:main", Some(0))
+        .await
+        .unwrap();
     assert_eq!(loaded.triples_maps.len(), 1);
 
     // Test scan_table

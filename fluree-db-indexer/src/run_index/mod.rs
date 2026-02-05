@@ -157,8 +157,7 @@ pub fn persist_namespaces(ns_prefixes: &HashMap<u16, String>, run_dir: &Path) ->
         .map(|(&code, prefix)| serde_json::json!({ "code": code, "prefix": prefix }))
         .collect();
 
-    let json_str = serde_json::to_string_pretty(&json_array)
-        .map_err(io::Error::other)?;
+    let json_str = serde_json::to_string_pretty(&json_array).map_err(io::Error::other)?;
 
     let path = run_dir.join("namespaces.json");
     std::fs::write(&path, json_str)?;

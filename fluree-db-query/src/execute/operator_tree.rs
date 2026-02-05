@@ -3,6 +3,7 @@
 //! Builds the complete operator tree for a query including:
 //! WHERE patterns → GROUP BY → Aggregates → HAVING → ORDER BY → PROJECT → DISTINCT → OFFSET → LIMIT
 
+use crate::aggregate::AggregateFn;
 use crate::aggregate::AggregateOperator;
 use crate::distinct::DistinctOperator;
 use crate::error::{QueryError, Result};
@@ -20,7 +21,6 @@ use crate::project::ProjectOperator;
 use crate::sort::SortOperator;
 use crate::stats_query::StatsCountByPredicateOperator;
 use crate::var_registry::VarId;
-use crate::aggregate::AggregateFn;
 use fluree_db_core::{StatsView, Storage};
 use std::sync::Arc;
 
@@ -43,9 +43,15 @@ fn detect_stats_count_by_predicate(
     };
 
     // All three positions must be variables
-    let Term::Var(s_var) = &tp.s else { return None; };
-    let Term::Var(p_var) = &tp.p else { return None; };
-    let Term::Var(o_var) = &tp.o else { return None; };
+    let Term::Var(s_var) = &tp.s else {
+        return None;
+    };
+    let Term::Var(p_var) = &tp.p else {
+        return None;
+    };
+    let Term::Var(o_var) = &tp.o else {
+        return None;
+    };
 
     // GROUP BY must be exactly the predicate variable
     if options.group_by.len() != 1 || options.group_by[0] != *p_var {
@@ -62,7 +68,9 @@ fn detect_stats_count_by_predicate(
     }
 
     // COUNT input must be a non-predicate variable (subject or object)
-    let Some(input_var) = agg.input_var else { return None; };
+    let Some(input_var) = agg.input_var else {
+        return None;
+    };
     if input_var != *s_var && input_var != *o_var {
         return None;
     }
@@ -99,9 +107,11 @@ pub fn build_operator_tree<S: Storage + 'static>(
     // This avoids scanning all triples when we can answer directly from IndexStats.
     if let Some(ref stats_view) = stats {
         if let Some((pred_var, count_var)) = detect_stats_count_by_predicate(query, options) {
-            let mut operator: BoxedOperator<S> = Box::new(
-                StatsCountByPredicateOperator::new(Arc::clone(stats_view), pred_var, count_var)
-            );
+            let mut operator: BoxedOperator<S> = Box::new(StatsCountByPredicateOperator::new(
+                Arc::clone(stats_view),
+                pred_var,
+                count_var,
+            ));
 
             // ORDER BY (on predicate or count)
             if !options.order_by.is_empty() {
@@ -204,9 +214,9 @@ pub fn build_operator_tree<S: Storage + 'static>(
             .aggregates
             .iter()
             .map(|spec| {
-                let input_col = spec.input_var.and_then(|v| {
-                    current_schema.iter().position(|&sv| sv == v)
-                });
+                let input_col = spec
+                    .input_var
+                    .and_then(|v| current_schema.iter().position(|&sv| sv == v));
                 StreamingAggSpec {
                     function: spec.function.clone(),
                     input_col,

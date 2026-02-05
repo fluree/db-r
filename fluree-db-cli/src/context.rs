@@ -1,16 +1,13 @@
 use crate::config;
 use crate::error::{CliError, CliResult};
-use fluree_db_api::{FlureeBuilder, Fluree, FileStorage};
+use fluree_db_api::{FileStorage, Fluree, FlureeBuilder};
 use fluree_db_nameservice::file::FileNameService;
 use std::path::Path;
 
 /// Resolve which ledger to operate on.
 ///
 /// Priority: explicit argument > active ledger > error.
-pub fn resolve_ledger(
-    explicit: Option<&str>,
-    fluree_dir: &Path,
-) -> CliResult<String> {
+pub fn resolve_ledger(explicit: Option<&str>, fluree_dir: &Path) -> CliResult<String> {
     if let Some(alias) = explicit {
         return Ok(alias.to_string());
     }
