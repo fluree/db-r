@@ -106,6 +106,14 @@ pub async fn build_policy_context_from_opts<S: Storage + Clone + 'static, C: Nod
     // Priority follows Clojure semantics: identity > policy_class > policy
     // If identity is present, it triggers f:policyClass lookup AND binds ?$identity.
     // For inline policies with identity binding, use policy_values["?$identity"] instead.
+    tracing::debug!(
+        identity = ?opts.identity,
+        policy_class = ?opts.policy_class,
+        has_inline_policy = opts.policy.is_some(),
+        default_allow = opts.default_allow,
+        "build_policy_context_from_opts: resolving policy"
+    );
+
     let restrictions = if opts.identity.is_some() {
         // Identity-based: query for policies via f:policyClass (highest priority)
         load_policies_by_identity(db, overlay, to_t, opts.identity.as_ref().unwrap()).await?
@@ -119,6 +127,28 @@ pub async fn build_policy_context_from_opts<S: Storage + Clone + 'static, C: Nod
         // No policy specified - return empty (will use default_allow)
         vec![]
     };
+
+    for (i, r) in restrictions.iter().enumerate() {
+        tracing::debug!(
+            idx = i,
+            id = %r.id,
+            target_mode = ?r.target_mode,
+            action = ?r.action,
+            value_type = match &r.value {
+                PolicyValue::Allow => "Allow",
+                PolicyValue::Deny => "Deny",
+                PolicyValue::Query(_) => "Query",
+            },
+            required = r.required,
+            num_targets = r.targets.len(),
+            num_for_classes = r.for_classes.len(),
+            "policy restriction loaded"
+        );
+    }
+    tracing::debug!(
+        count = restrictions.len(),
+        "total restrictions loaded from policy class"
+    );
 
     // Build policy sets (view and modify)
     //
@@ -154,6 +184,15 @@ pub async fn build_policy_context_from_opts<S: Storage + Clone + 'static, C: Nod
     let is_root = !policy_was_requested
         && view_set.restrictions.is_empty()
         && modify_set.restrictions.is_empty();
+
+    tracing::debug!(
+        is_root,
+        policy_was_requested,
+        default_allow = opts.default_allow,
+        view_restrictions = view_set.restrictions.len(),
+        modify_restrictions = modify_set.restrictions.len(),
+        "policy context summary"
+    );
 
     // Create wrapper
     let wrapper = PolicyWrapper::new(
@@ -242,7 +281,16 @@ async fn load_policies_by_class<S: Storage + Clone + 'static, C: NodeCache + 'st
     // Resolve class IRIs to SIDs
     let mut class_sids = Vec::with_capacity(class_iris.len());
     for iri in class_iris {
-        class_sids.push(resolve_iri_to_sid(db, iri)?);
+        match resolve_iri_to_sid(db, iri) {
+            Ok(sid) => {
+                tracing::debug!(iri = %iri, sid = ?sid, "policy class IRI resolved to SID");
+                class_sids.push(sid);
+            }
+            Err(e) => {
+                tracing::warn!(iri = %iri, error = %e, "failed to resolve policy class IRI to SID");
+                return Err(e);
+            }
+        }
     }
 
     load_policies_of_classes(db, overlay, to_t, &class_sids).await
@@ -292,6 +340,12 @@ async fn load_policies_of_classes<S: Storage + Clone + 'static, C: NodeCache + '
             }
         }
     }
+
+    tracing::debug!(
+        num_policy_subjects = policy_sids.len(),
+        policy_sids = ?policy_sids.iter().map(|s| db.decode_sid(s).unwrap_or_else(|| format!("{:?}", s))).collect::<Vec<_>>(),
+        "policy subjects found for class lookup"
+    );
 
     // Load each policy's restrictions
     let mut restrictions = Vec::new();
@@ -381,6 +435,17 @@ async fn load_policy_restriction<S: Storage + Clone + 'static, C: NodeCache + 's
     let mut on_subject_query_json: Option<String> = None;
     if let Ok(pred_sid) = resolve_iri_to_sid(db, IRI_ON_SUBJECT) {
         let bindings = query_predicate(db, overlay, to_t, policy_sid, &pred_sid).await?;
+        tracing::debug!(
+            policy = ?db.decode_sid(policy_sid),
+            num_bindings = bindings.len(),
+            binding_types = ?bindings.iter().map(|b| match b {
+                Binding::Sid(_) => "Sid",
+                Binding::Lit { val: FlakeValue::Json(_), .. } => "Json",
+                Binding::Lit { val: FlakeValue::String(_), .. } => "String",
+                _ => "Other",
+            }).collect::<Vec<_>>(),
+            "f:onSubject bindings"
+        );
         for binding in bindings {
             if let Some(sid) = binding.as_sid() {
                 on_subject.insert(sid.clone());
@@ -393,18 +458,27 @@ async fn load_policy_restriction<S: Storage + Clone + 'static, C: NodeCache + 's
                         val: FlakeValue::Json(json_str),
                         ..
                     } => {
+                        tracing::debug!(json = %json_str, "f:onSubject contains JSON query");
                         on_subject_query_json = Some(json_str.clone());
                     }
                     Binding::Lit {
                         val: FlakeValue::String(s),
                         ..
                     } => {
+                        tracing::debug!(json = %s, "f:onSubject contains string query");
                         on_subject_query_json = Some(s.clone());
                     }
-                    _ => {}
+                    _ => {
+                        tracing::debug!(binding = ?binding, "f:onSubject: unhandled binding type");
+                    }
                 }
             }
         }
+    } else {
+        tracing::debug!(
+            policy = ?db.decode_sid(policy_sid),
+            "f:onSubject predicate IRI not found in DB"
+        );
     }
 
     // If f:onSubject contains an embedded query (not SID references),
@@ -412,8 +486,13 @@ async fn load_policy_restriction<S: Storage + Clone + 'static, C: NodeCache + 's
     // This avoids per-flake query execution during policy evaluation.
     if on_subject.is_empty() {
         if let Some(ref query_json) = on_subject_query_json {
+            tracing::debug!(query = %query_json, "executing f:onSubject query to materialize subject SIDs");
             match execute_on_subject_query(db, overlay, to_t, query_json).await {
                 Ok(sids) => {
+                    tracing::debug!(
+                        num_materialized = sids.len(),
+                        "f:onSubject query materialized subject SIDs"
+                    );
                     on_subject = sids;
                 }
                 Err(e) => {

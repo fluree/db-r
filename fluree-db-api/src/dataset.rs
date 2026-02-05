@@ -677,12 +677,18 @@ impl QueryConnectionOptions {
         };
 
         let policy_class = match (policy_class, &parsed_ctx) {
-            (Some(classes), Some(ctx)) => Some(
-                classes
+            (Some(classes), Some(ctx)) => {
+                let expanded: Vec<String> = classes
                     .iter()
                     .map(|c| fluree_graph_json_ld::expand_iri(c, ctx))
-                    .collect(),
-            ),
+                    .collect();
+                tracing::debug!(
+                    raw = ?classes,
+                    expanded = ?expanded,
+                    "policy-class IRIs expanded via @context"
+                );
+                Some(expanded)
+            }
             (other, _) => other,
         };
 
