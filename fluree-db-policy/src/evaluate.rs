@@ -19,6 +19,38 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use uuid::Uuid;
 
+/// Parameters for flake policy evaluation.
+///
+/// Bundles the flake-related parameters to reduce argument count in evaluation methods.
+#[derive(Debug, Clone, Copy)]
+struct FlakeEvalParams<'a> {
+    /// The flake's subject SID
+    subject: &'a Sid,
+    /// The flake's property SID
+    property: &'a Sid,
+    /// The flake's object value
+    object: &'a FlakeValue,
+    /// Classes the subject belongs to (for class policy checks)
+    subject_classes: &'a [Sid],
+}
+
+impl<'a> FlakeEvalParams<'a> {
+    /// Create new flake evaluation parameters.
+    fn new(
+        subject: &'a Sid,
+        property: &'a Sid,
+        object: &'a FlakeValue,
+        subject_classes: &'a [Sid],
+    ) -> Self {
+        Self {
+            subject,
+            property,
+            object,
+            subject_classes,
+        }
+    }
+}
+
 /// Policy context for evaluation
 ///
 /// Holds the policy wrapper, grounded identity, and class cache.
@@ -134,16 +166,9 @@ impl PolicyContext {
         executor: &dyn PolicyQueryExecutor,
         tracker: &Tracker,
     ) -> Result<bool> {
-        self.evaluate_flake_async(
-            self.wrapper.view(),
-            subject,
-            property,
-            object,
-            subject_classes,
-            executor,
-            tracker,
-        )
-        .await
+        let flake = FlakeEvalParams::new(subject, property, object, subject_classes);
+        self.evaluate_flake_async(self.wrapper.view(), flake, executor, tracker)
+            .await
     }
 
     /// Check if a modify flake is allowed by policy (async with full f:query support)
@@ -156,16 +181,9 @@ impl PolicyContext {
         executor: &dyn PolicyQueryExecutor,
         tracker: &Tracker,
     ) -> Result<bool> {
-        self.evaluate_flake_async(
-            self.wrapper.modify(),
-            subject,
-            property,
-            object,
-            subject_classes,
-            executor,
-            tracker,
-        )
-        .await
+        let flake = FlakeEvalParams::new(subject, property, object, subject_classes);
+        self.evaluate_flake_async(self.wrapper.modify(), flake, executor, tracker)
+            .await
     }
 
     /// Check if a modify flake is allowed by policy with detailed result
@@ -181,16 +199,9 @@ impl PolicyContext {
         executor: &dyn PolicyQueryExecutor,
         tracker: &Tracker,
     ) -> Result<PolicyDecision<'a>> {
-        self.evaluate_flake_async_detailed(
-            self.wrapper.modify(),
-            subject,
-            property,
-            object,
-            subject_classes,
-            executor,
-            tracker,
-        )
-        .await
+        let flake = FlakeEvalParams::new(subject, property, object, subject_classes);
+        self.evaluate_flake_async_detailed(self.wrapper.modify(), flake, executor, tracker)
+            .await
     }
 
     /// Check if a view flake is allowed by policy with detailed result
@@ -206,16 +217,9 @@ impl PolicyContext {
         executor: &dyn PolicyQueryExecutor,
         tracker: &Tracker,
     ) -> Result<PolicyDecision<'a>> {
-        self.evaluate_flake_async_detailed(
-            self.wrapper.view(),
-            subject,
-            property,
-            object,
-            subject_classes,
-            executor,
-            tracker,
-        )
-        .await
+        let flake = FlakeEvalParams::new(subject, property, object, subject_classes);
+        self.evaluate_flake_async_detailed(self.wrapper.view(), flake, executor, tracker)
+            .await
     }
 
     /// Check if a modify flake is allowed by policy
@@ -367,10 +371,7 @@ impl PolicyContext {
     async fn evaluate_flake_async(
         &self,
         policy_set: &PolicySet,
-        subject: &Sid,
-        property: &Sid,
-        object: &FlakeValue,
-        subject_classes: &[Sid],
+        flake: FlakeEvalParams<'_>,
         executor: &dyn PolicyQueryExecutor,
         tracker: &Tracker,
     ) -> Result<bool> {
@@ -380,15 +381,15 @@ impl PolicyContext {
         }
 
         // Schema flakes always allowed (needed for query planning/formatting)
-        if is_schema_flake(property, object) {
+        if is_schema_flake(flake.property, flake.object) {
             return Ok(true);
         }
 
         // 1. Collect all candidate policy entries (property -> subject -> default order)
-        let candidate_entries = policy_set.policy_entries_for_flake(subject, property);
+        let candidate_entries = policy_set.policy_entries_for_flake(flake.subject, flake.property);
 
         // Convert subject_classes to HashSet for efficient lookup
-        let subject_class_set: HashSet<&Sid> = subject_classes.iter().collect();
+        let subject_class_set: HashSet<&Sid> = flake.subject_classes.iter().collect();
 
         // 2. Filter by class applicability
         let applicable_entries: Vec<FlakePolicyEntry> = candidate_entries
@@ -448,7 +449,7 @@ impl PolicyContext {
                 PolicyValue::Query(q) => {
                     // Build bindings for special variables + wrapper's policy_values
                     let bindings = build_policy_values_clause(
-                        subject,
+                        flake.subject,
                         &self.identity,
                         self.wrapper.policy_values(),
                     );
@@ -483,10 +484,7 @@ impl PolicyContext {
     async fn evaluate_flake_async_detailed<'a>(
         &'a self,
         policy_set: &'a PolicySet,
-        subject: &Sid,
-        property: &Sid,
-        object: &FlakeValue,
-        subject_classes: &[Sid],
+        flake: FlakeEvalParams<'_>,
         executor: &dyn PolicyQueryExecutor,
         tracker: &Tracker,
     ) -> Result<PolicyDecision<'a>> {
@@ -496,15 +494,15 @@ impl PolicyContext {
         }
 
         // Schema flakes always allowed (needed for query planning/formatting)
-        if is_schema_flake(property, object) {
+        if is_schema_flake(flake.property, flake.object) {
             return Ok(PolicyDecision::Allowed { restriction: None });
         }
 
         // 1. Collect all candidate policy entries (property -> subject -> default order)
-        let candidate_entries = policy_set.policy_entries_for_flake(subject, property);
+        let candidate_entries = policy_set.policy_entries_for_flake(flake.subject, flake.property);
 
         // Convert subject_classes to HashSet for efficient lookup
-        let subject_class_set: HashSet<&Sid> = subject_classes.iter().collect();
+        let subject_class_set: HashSet<&Sid> = flake.subject_classes.iter().collect();
 
         // 2. Filter by class applicability
         let applicable_entries: Vec<FlakePolicyEntry> = candidate_entries
@@ -576,7 +574,7 @@ impl PolicyContext {
                 PolicyValue::Query(q) => {
                     // Build bindings for special variables + wrapper's policy_values
                     let bindings = build_policy_values_clause(
-                        subject,
+                        flake.subject,
                         &self.identity,
                         self.wrapper.policy_values(),
                     );
