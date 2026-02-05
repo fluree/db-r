@@ -5,11 +5,15 @@
 //! literal values into `FlakeValue` + datatype `Sid`.
 
 use crate::generate::{
-    DT_BOOLEAN, DT_DATE, DT_DATE_TIME, DT_DECIMAL, DT_DOUBLE,
-    DT_INTEGER, DT_JSON, DT_LANG_STRING, DT_STRING, DT_TIME,
+    DT_BOOLEAN, DT_DATE, DT_DATE_TIME, DT_DAY_TIME_DURATION, DT_DECIMAL, DT_DOUBLE,
+    DT_DURATION, DT_G_DAY, DT_G_MONTH, DT_G_MONTH_DAY, DT_G_YEAR, DT_G_YEAR_MONTH,
+    DT_INTEGER, DT_JSON, DT_LANG_STRING, DT_STRING, DT_TIME, DT_YEAR_MONTH_DURATION,
 };
 use crate::namespace::NamespaceRegistry;
-use fluree_db_core::temporal::{Date, DateTime, Time};
+use fluree_db_core::temporal::{
+    Date, DateTime, DayTimeDuration, Duration, GDay, GMonth, GMonthDay, GYear, GYearMonth, Time,
+    YearMonthDuration,
+};
 use fluree_db_core::{FlakeValue, Sid};
 use fluree_graph_ir::LiteralValue;
 use fluree_vocab::{rdf, xsd};
@@ -26,6 +30,14 @@ fn cached_dt_sid(dt_iri: &str) -> Option<Sid> {
         xsd::DATE => Some(DT_DATE.clone()),
         xsd::TIME => Some(DT_TIME.clone()),
         xsd::DECIMAL => Some(DT_DECIMAL.clone()),
+        xsd::G_YEAR => Some(DT_G_YEAR.clone()),
+        xsd::G_YEAR_MONTH => Some(DT_G_YEAR_MONTH.clone()),
+        xsd::G_MONTH => Some(DT_G_MONTH.clone()),
+        xsd::G_DAY => Some(DT_G_DAY.clone()),
+        xsd::G_MONTH_DAY => Some(DT_G_MONTH_DAY.clone()),
+        xsd::DURATION => Some(DT_DURATION.clone()),
+        xsd::DAY_TIME_DURATION => Some(DT_DAY_TIME_DURATION.clone()),
+        xsd::YEAR_MONTH_DURATION => Some(DT_YEAR_MONTH_DURATION.clone()),
         rdf::JSON => Some(DT_JSON.clone()),
         rdf::LANG_STRING => Some(DT_LANG_STRING.clone()),
         _ => None,
@@ -78,6 +90,30 @@ pub(crate) fn convert_string_literal(
             .unwrap_or_else(|_| FlakeValue::String(value.to_string())),
         xsd::TIME => Time::parse(value)
             .map(|t| FlakeValue::Time(Box::new(t)))
+            .unwrap_or_else(|_| FlakeValue::String(value.to_string())),
+        xsd::G_YEAR => GYear::parse(value)
+            .map(|v| FlakeValue::GYear(Box::new(v)))
+            .unwrap_or_else(|_| FlakeValue::String(value.to_string())),
+        xsd::G_YEAR_MONTH => GYearMonth::parse(value)
+            .map(|v| FlakeValue::GYearMonth(Box::new(v)))
+            .unwrap_or_else(|_| FlakeValue::String(value.to_string())),
+        xsd::G_MONTH => GMonth::parse(value)
+            .map(|v| FlakeValue::GMonth(Box::new(v)))
+            .unwrap_or_else(|_| FlakeValue::String(value.to_string())),
+        xsd::G_DAY => GDay::parse(value)
+            .map(|v| FlakeValue::GDay(Box::new(v)))
+            .unwrap_or_else(|_| FlakeValue::String(value.to_string())),
+        xsd::G_MONTH_DAY => GMonthDay::parse(value)
+            .map(|v| FlakeValue::GMonthDay(Box::new(v)))
+            .unwrap_or_else(|_| FlakeValue::String(value.to_string())),
+        xsd::DURATION => Duration::parse(value)
+            .map(|v| FlakeValue::Duration(Box::new(v)))
+            .unwrap_or_else(|_| FlakeValue::String(value.to_string())),
+        xsd::DAY_TIME_DURATION => DayTimeDuration::parse(value)
+            .map(|v| FlakeValue::DayTimeDuration(Box::new(v)))
+            .unwrap_or_else(|_| FlakeValue::String(value.to_string())),
+        xsd::YEAR_MONTH_DURATION => YearMonthDuration::parse(value)
+            .map(|v| FlakeValue::YearMonthDuration(Box::new(v)))
             .unwrap_or_else(|_| FlakeValue::String(value.to_string())),
         rdf::JSON => FlakeValue::Json(value.to_string()),
         rdf::LANG_STRING => {

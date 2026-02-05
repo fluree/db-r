@@ -409,7 +409,7 @@ pub struct IdStatsResult {
 /// ```ignore
 /// let mut hook = IdStatsHook::new();
 /// // Per resolved op:
-/// hook.on_record(g_id, p_id, s_id, dt, value_hash(o_kind, o_key), t, op);
+/// hook.on_record(g_id, p_id, s_id, dt, value_hash(o_kind, o_key), o_kind, o_key, t, op);
 /// // After all ops:
 /// let result = hook.finalize();
 /// ```
@@ -419,6 +419,16 @@ pub struct IdStatsHook {
     properties: HashMap<GraphPropertyKey, IdPropertyHll>,
     /// Per-graph flake count (signed delta)
     graph_flakes: HashMap<u32, i64>,
+    /// p_id for rdf:type (when set, enables class tracking)
+    rdf_type_p_id: Option<u32>,
+    /// Class membership counts: class sid64 → signed delta count
+    class_counts: HashMap<u64, i64>,
+    /// Subject → class memberships (for class property attribution)
+    subject_classes: HashMap<u64, Vec<u64>>,
+    /// Per-subject property tracking (for retroactive class attribution)
+    subject_props: HashMap<u64, HashSet<u32>>,
+    /// Class → set of property p_ids used by instances of that class
+    class_properties: HashMap<u64, HashSet<u32>>,
 }
 
 impl IdStatsHook {
@@ -427,7 +437,17 @@ impl IdStatsHook {
             flake_count: 0,
             properties: HashMap::new(),
             graph_flakes: HashMap::new(),
+            rdf_type_p_id: None,
+            class_counts: HashMap::new(),
+            subject_classes: HashMap::new(),
+            subject_props: HashMap::new(),
+            class_properties: HashMap::new(),
         }
+    }
+
+    /// Set the predicate ID for rdf:type to enable class tracking.
+    pub fn set_rdf_type_p_id(&mut self, p_id: u32) {
+        self.rdf_type_p_id = Some(p_id);
     }
 
     /// Process a single record with resolved IDs.
@@ -440,6 +460,8 @@ impl IdStatsHook {
     /// * `s_id` - Subject dictionary ID
     /// * `dt` - Datatype ID
     /// * `o_hash` - Pre-computed object value hash (from `value_hash()`)
+    /// * `o_kind` - Object kind discriminant (for class tracking)
+    /// * `o_key` - Object key payload (for class tracking; sid64 when o_kind == REF_ID)
     /// * `t` - Transaction time
     /// * `op` - true = assertion, false = retraction
     pub fn on_record(
@@ -449,6 +471,8 @@ impl IdStatsHook {
         s_id: u64,
         dt: ValueTypeTag,
         o_hash: u64,
+        o_kind: u8,
+        o_key: u64,
         t: i64,
         op: bool,
     ) {
@@ -475,6 +499,46 @@ impl IdStatsHook {
 
         // Track datatype usage
         *hll.datatypes.entry(dt.as_u8()).or_insert(0) += delta;
+
+        // Track class membership and class→property attribution.
+        if let Some(rdf_type_pid) = self.rdf_type_p_id {
+            if p_id == rdf_type_pid && o_kind == 0x05 {
+                // ObjKind::REF_ID == 0x05: this is an rdf:type assertion/retraction
+                *self.class_counts.entry(o_key).or_insert(0) += delta;
+
+                if op {
+                    // Record subject→class membership
+                    self.subject_classes
+                        .entry(s_id)
+                        .or_default()
+                        .push(o_key);
+
+                    // Retroactively attribute properties already seen for this subject
+                    // (handles case where properties appear before @type in commit)
+                    if let Some(props) = self.subject_props.get(&s_id) {
+                        let class_entry = self
+                            .class_properties
+                            .entry(o_key)
+                            .or_default();
+                        for &pid in props {
+                            class_entry.insert(pid);
+                        }
+                    }
+                }
+            } else if op {
+                // Non-rdf:type property assertion: track per-subject and per-class
+                self.subject_props.entry(s_id).or_default().insert(p_id);
+
+                if let Some(classes) = self.subject_classes.get(&s_id) {
+                    for &class_sid in classes {
+                        self.class_properties
+                            .entry(class_sid)
+                            .or_default()
+                            .insert(p_id);
+                    }
+                }
+            }
+        }
     }
 
     /// Merge another hook into this one (for cross-commit accumulation).
@@ -492,6 +556,23 @@ impl IdStatsHook {
                 .entry(key)
                 .or_insert_with(IdPropertyHll::new)
                 .merge_from(&other_hll);
+        }
+
+        // Merge class counts and property attribution
+        if self.rdf_type_p_id.is_none() {
+            self.rdf_type_p_id = other.rdf_type_p_id;
+        }
+        for (class_sid, delta) in other.class_counts {
+            *self.class_counts.entry(class_sid).or_insert(0) += delta;
+        }
+        for (subject, classes) in other.subject_classes {
+            self.subject_classes.entry(subject).or_default().extend(classes);
+        }
+        for (subject, props) in other.subject_props {
+            self.subject_props.entry(subject).or_default().extend(props);
+        }
+        for (class_sid, props) in other.class_properties {
+            self.class_properties.entry(class_sid).or_default().extend(props);
         }
     }
 
@@ -581,14 +662,24 @@ impl IdStatsHook {
         }
     }
 
-    /// Finalize into per-graph stats plus a ledger-wide aggregate property view.
+    /// Finalize into per-graph stats plus a ledger-wide aggregate property view
+    /// and class membership counts.
     ///
     /// The aggregate view is keyed only by `p_id` (across all graphs), with HLL sketches
     /// merged across graphs so NDV estimates remain meaningful. Datatype counts are summed
     /// across graphs.
     ///
+    /// Class counts are keyed by class sid64 (only populated when `set_rdf_type_p_id` was called).
+    ///
     /// Excludes txn-meta graph (g_id=1) from both per-graph and aggregate results.
-    pub fn finalize_with_aggregate_properties(self) -> (IdStatsResult, Vec<GraphPropertyStatEntry>) {
+    pub fn finalize_with_aggregate_properties(
+        self,
+    ) -> (
+        IdStatsResult,
+        Vec<GraphPropertyStatEntry>,
+        Vec<(u64, u64)>,
+        HashMap<u64, HashSet<u32>>,
+    ) {
         // Aggregate by p_id across all graphs (excluding txn-meta g_id=1)
         let mut agg: HashMap<u32, IdPropertyHll> = HashMap::new();
         for (key, hll) in &self.properties {
@@ -625,8 +716,20 @@ impl IdStatsHook {
         // Deterministic ordering
         properties.sort_by_key(|p| p.p_id);
 
+        // Extract class counts (sid64 → count), clamped to 0
+        let mut class_counts: Vec<(u64, u64)> = self
+            .class_counts
+            .iter()
+            .filter(|(_, &delta)| delta > 0)
+            .map(|(&sid64, &delta)| (sid64, delta as u64))
+            .collect();
+        class_counts.sort_by_key(|(sid64, _)| *sid64);
+
+        // Take class_properties before finalize consumes self
+        let class_properties = self.class_properties.clone();
+
         let graphs = self.finalize();
-        (graphs, properties)
+        (graphs, properties, class_counts, class_properties)
     }
 }
 

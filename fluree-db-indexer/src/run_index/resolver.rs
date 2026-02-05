@@ -104,6 +104,8 @@ impl CommitResolver {
                     record.s_id.as_u64(),
                     dt,
                     crate::stats::value_hash(record.o_kind, record.o_key),
+                    record.o_kind,
+                    record.o_key,
                     record.t,
                     record.op != 0,
                 );
