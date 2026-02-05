@@ -197,12 +197,19 @@ mod tests {
             "http://example.org/Person".to_string()
         );
 
-        // Unknown namespace
+        // Unknown namespace (truly unknown code, not the sentinel)
         let sid = Sid::new(999, "unknown");
         assert!(matches!(
             compactor.decode_sid(&sid),
             Err(FormatError::UnknownNamespace(999))
         ));
+
+        // EMPTY namespace (code 0) fallback decodes to the full IRI stored as name
+        let sid = Sid::new(0, "http://unregistered.org/Thing");
+        assert_eq!(
+            compactor.decode_sid(&sid).unwrap(),
+            "http://unregistered.org/Thing"
+        );
     }
 
     #[test]

@@ -6,6 +6,7 @@
 //! context-only encoders.
 
 use fluree_db_core::{Db, NodeCache, Sid, Storage};
+use fluree_vocab::namespaces::EMPTY;
 
 /// Trait for encoding IRIs to SIDs
 ///
@@ -81,9 +82,12 @@ impl IriEncoder for MemoryEncoder {
             }
         }
 
-        best_match.map(|(code, prefix_len)| {
-            let name = &iri[prefix_len..];
-            Sid::new(code, name)
+        Some(match best_match {
+            Some((code, prefix_len)) => {
+                let name = &iri[prefix_len..];
+                Sid::new(code, name)
+            }
+            None => Sid::new(EMPTY, iri),
         })
     }
 }
@@ -107,8 +111,10 @@ mod tests {
         assert_eq!(sid.namespace_code, 100);
         assert_eq!(sid.name.as_ref(), "Person");
 
-        // Unknown namespace returns None
-        assert!(encoder.encode_iri("http://other.org/Thing").is_none());
+        // Unknown namespace falls back to EMPTY namespace (code 0) with full IRI as name
+        let fallback = encoder.encode_iri("http://other.org/Thing").unwrap();
+        assert_eq!(fallback.namespace_code, EMPTY);
+        assert_eq!(fallback.name.as_ref(), "http://other.org/Thing");
     }
 
     #[test]

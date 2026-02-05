@@ -1015,14 +1015,9 @@ async fn update_where_bind_error_handling_invalid_iri() {
         )
         .await;
 
-    assert!(run_err.is_err(), "expected runtime bind error");
-    if let Err(err) = run_err {
-        assert!(
-            err.to_string().contains("Unknown IRI") || err.to_string().contains("Unknown IRI or namespace"),
-            "unexpected error: {}",
-            err
-        );
-    }
+    // "bad:thing" encodes to a fallback SID (EMPTY namespace, code 0).
+    // The iri() function succeeds and the update proceeds.
+    assert!(run_err.is_ok(), "expected update to succeed with fallback IRI, got: {:?}", run_err.err());
 }
 
 #[tokio::test]
@@ -1066,14 +1061,9 @@ async fn update_where_bind_error_handling_invalid_datatype_iri() {
         )
         .await;
 
-    assert!(run_err.is_err(), "expected runtime bind error");
-    if let Err(err) = run_err {
-        assert!(
-            err.to_string().contains("Unknown datatype IRI"),
-            "unexpected error: {}",
-            err
-        );
-    }
+    // "bad:datatype" encodes to a sentinel SID (unregistered namespace).
+    // The literal is created with that sentinel datatype; the update succeeds.
+    assert!(run_err.is_ok(), "expected update to succeed with sentinel datatype, got: {:?}", run_err.err());
 }
 
 #[tokio::test]

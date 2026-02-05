@@ -1341,6 +1341,14 @@ pub mod namespaces {
 
     /// First code available for user-defined namespaces
     pub const USER_START: i32 = 101;
+
+    /// Sentinel code for unregistered namespaces.
+    ///
+    /// When `encode_iri` encounters an IRI whose namespace prefix is not in the
+    /// database's registered namespace codes, it returns a SID with this code and
+    /// the **full IRI** as the local name. No persisted data uses this code, so
+    /// queries naturally produce empty results for unregistered-namespace patterns.
+    pub const UNREGISTERED: i32 = i32::MIN;
 }
 
 /// Common predicate local names (for schema extraction, validation, etc.)

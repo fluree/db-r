@@ -20,6 +20,7 @@ use crate::serde::json::{parse_db_root, DbRoot, DbRootConfig, DbRootSchema, DbRo
 use crate::sid::{Sid, SidInterner};
 use crate::storage::Storage;
 use crate::namespaces::default_namespace_codes;
+use fluree_vocab::namespaces::EMPTY;
 use once_cell::sync::OnceCell;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -211,7 +212,11 @@ impl<S: Storage, C: NodeCache> Db<S, C> {
 
     /// Encode an IRI to a SID using this db's namespace codes
     ///
-    /// Returns None if the namespace is not registered.
+    /// If no registered namespace prefix matches the IRI, falls back to the
+    /// EMPTY namespace (code 0, prefix `""`), storing the full IRI as the local
+    /// name. This matches the transaction layer's behavior for bare-string
+    /// identifiers and ensures queries return empty results (rather than
+    /// erroring) for truly unknown IRIs.
     pub fn encode_iri(&self, iri: &str) -> Option<Sid> {
         // Find the longest matching namespace prefix
         let mut best_match: Option<(i32, usize)> = None;
@@ -222,9 +227,16 @@ impl<S: Storage, C: NodeCache> Db<S, C> {
             }
         }
 
-        best_match.map(|(code, prefix_len)| {
-            let name = &iri[prefix_len..];
-            self.sid_interner.intern(code, name)
+        Some(match best_match {
+            Some((code, prefix_len)) => {
+                let name = &iri[prefix_len..];
+                self.sid_interner.intern(code, name)
+            }
+            // EMPTY namespace (code 0, prefix "") is the universal fallback.
+            // The longest-prefix loop can't select it (0 > 0 is false), so we
+            // handle it explicitly here. This matches the transaction layer
+            // which also uses code 0 for identifiers without a namespace split.
+            None => self.sid_interner.intern(EMPTY, iri),
         })
     }
 

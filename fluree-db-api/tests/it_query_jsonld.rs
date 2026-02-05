@@ -152,7 +152,10 @@ async fn jsonld_bind_error_invalid_datatype_iri() {
         "select": "?err"
     });
 
-    assert_query_bind_error(&fluree, &ledger, query, "Unknown datatype IRI").await;
+    // "bad:datatype" encodes to a sentinel SID (unregistered namespace).
+    // The literal is created with that sentinel datatype; the query succeeds.
+    let result = fluree.query(&ledger, &query).await;
+    assert!(result.is_ok(), "expected query to succeed with sentinel datatype, got: {:?}", result.err());
 }
 
 #[tokio::test]
