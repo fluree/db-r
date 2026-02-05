@@ -19,7 +19,7 @@
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::filter::evaluate;
+use crate::filter::evaluate_with_ns;
 use crate::ir::FilterExpr;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
@@ -104,7 +104,7 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for HavingOper
                 };
 
                 // Evaluate the HAVING expression
-                let passes = evaluate(&self.expr, &row)?;
+                let passes = evaluate_with_ns(&self.expr, &row, ctx.db.namespaces())?;
 
                 if passes {
                     // Copy this row to output

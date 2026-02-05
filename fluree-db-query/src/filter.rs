@@ -40,9 +40,13 @@ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use regex::RegexBuilder;
 use sha1::Sha1;
 use sha2::{Sha256, Sha384, Sha512};
+use std::collections::HashMap;
 use std::cmp::Ordering;
 use std::sync::Arc;
 use uuid::Uuid;
+
+/// Namespace code → IRI prefix mapping, used to decode SIDs to full IRIs.
+type NsCodes = HashMap<i32, String>;
 
 /// Filter operator - applies a predicate to each row from child
 ///
@@ -108,10 +112,11 @@ impl<S: Storage + 'static, C: NodeCache + 'static> Operator<S, C> for FilterOper
             }
 
             // Collect row indices where filter evaluates to true
+            let ns = ctx.db.namespaces();
             let keep_indices: Vec<usize> = (0..batch.len())
                 .filter_map(|row_idx| {
                     let row = batch.row_view(row_idx)?;
-                    evaluate(&self.expr, &row).ok().filter(|&pass| pass).map(|_| row_idx)
+                    evaluate_with_ns(&self.expr, &row, ns).ok().filter(|&pass| pass).map(|_| row_idx)
                 })
                 .collect();
 
@@ -259,6 +264,35 @@ fn has_unbound_vars(expr: &FilterExpr, row: &RowView) -> bool {
 /// Returns `true` if the row passes the filter, `false` otherwise.
 /// Type mismatches and unbound variables result in `false`.
 pub fn evaluate(expr: &FilterExpr, row: &RowView) -> Result<bool> {
+    evaluate_inner(expr, row, None)
+}
+
+/// Evaluate a filter expression with namespace codes for SID→IRI resolution.
+///
+/// When namespace codes are provided, `Binding::Sid` values are decoded to their
+/// full IRI strings before comparison. This enables correct equality/inequality
+/// comparisons between SID-bound variables (e.g. `?type` from `@type` patterns)
+/// and IRI string literals.
+pub fn evaluate_with_ns(expr: &FilterExpr, row: &RowView, ns_codes: &NsCodes) -> Result<bool> {
+    evaluate_inner(expr, row, Some(ns_codes))
+}
+
+/// Resolve a `ComparableValue::Sid` to `ComparableValue::Iri` using namespace codes.
+/// Returns the value unchanged if it's not a Sid or if resolution fails.
+fn resolve_sid_comparable(val: ComparableValue, ns_codes: Option<&NsCodes>) -> ComparableValue {
+    match (&val, ns_codes) {
+        (ComparableValue::Sid(sid), Some(ns)) => {
+            if let Some(prefix) = ns.get(&sid.namespace_code) {
+                ComparableValue::Iri(Arc::from(format!("{}{}", prefix, sid.name)))
+            } else {
+                val
+            }
+        }
+        _ => val,
+    }
+}
+
+fn evaluate_inner(expr: &FilterExpr, row: &RowView, ns_codes: Option<&NsCodes>) -> Result<bool> {
     match expr {
         FilterExpr::Var(var) => {
             // Var as boolean: check if bound and truthy
@@ -292,7 +326,11 @@ pub fn evaluate(expr: &FilterExpr, row: &RowView) -> Result<bool> {
             let right_val = eval_to_comparable(right, row)?;
 
             match (left_val, right_val) {
-                (Some(l), Some(r)) => Ok(compare_values(&l, &r, *op)),
+                (Some(l), Some(r)) => {
+                    let l = resolve_sid_comparable(l, ns_codes);
+                    let r = resolve_sid_comparable(r, ns_codes);
+                    Ok(compare_values(&l, &r, *op))
+                }
                 // Either side unbound/null -> comparison is false
                 _ => Ok(false),
             }
@@ -300,7 +338,7 @@ pub fn evaluate(expr: &FilterExpr, row: &RowView) -> Result<bool> {
 
         FilterExpr::And(exprs) => {
             for e in exprs {
-                if !evaluate(e, row)? {
+                if !evaluate_inner(e, row, ns_codes)? {
                     return Ok(false);
                 }
             }
@@ -309,14 +347,14 @@ pub fn evaluate(expr: &FilterExpr, row: &RowView) -> Result<bool> {
 
         FilterExpr::Or(exprs) => {
             for e in exprs {
-                if evaluate(e, row)? {
+                if evaluate_inner(e, row, ns_codes)? {
                     return Ok(true);
                 }
             }
             Ok(false)
         }
 
-        FilterExpr::Not(inner) => Ok(!evaluate(inner, row)?),
+        FilterExpr::Not(inner) => Ok(!evaluate_inner(inner, row, ns_codes)?),
 
         FilterExpr::Arithmetic { .. } => {
             // Arithmetic as boolean: check if result is truthy (non-zero)
@@ -342,11 +380,11 @@ pub fn evaluate(expr: &FilterExpr, row: &RowView) -> Result<bool> {
             then_expr,
             else_expr,
         } => {
-            let cond = evaluate(condition, row)?;
+            let cond = evaluate_inner(condition, row, ns_codes)?;
             if cond {
-                evaluate(then_expr, row)
+                evaluate_inner(then_expr, row, ns_codes)
             } else {
-                evaluate(else_expr, row)
+                evaluate_inner(else_expr, row, ns_codes)
             }
         }
 
@@ -355,13 +393,15 @@ pub fn evaluate(expr: &FilterExpr, row: &RowView) -> Result<bool> {
             values,
             negated,
         } => {
-            let test_val = eval_to_comparable(test_expr, row)?;
+            let test_val = eval_to_comparable(test_expr, row)?
+                .map(|v| resolve_sid_comparable(v, ns_codes));
             match test_val {
                 Some(tv) => {
                     let found = values.iter().any(|v| {
                         eval_to_comparable(v, row)
                             .ok()
                             .flatten()
+                            .map(|cv| resolve_sid_comparable(cv, ns_codes))
                             .map(|cv| cv == tv)
                             .unwrap_or(false)
                     });
@@ -682,6 +722,9 @@ fn compare_values(left: &ComparableValue, right: &ComparableValue, op: CompareOp
         (ComparableValue::Sid(a), ComparableValue::Sid(b)) => a.cmp(b),
         // Raw IRIs from VGs compare by string value
         (ComparableValue::Iri(a), ComparableValue::Iri(b)) => a.cmp(b),
+        // Cross-type IRI vs String: compare by string value
+        (ComparableValue::Iri(a), ComparableValue::String(b)) => a.as_ref().cmp(b.as_ref()),
+        (ComparableValue::String(a), ComparableValue::Iri(b)) => a.as_ref().cmp(b.as_ref()),
         // Type mismatch -> always not equal
         _ => return matches!(op, CompareOp::Ne),
     };
