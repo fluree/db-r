@@ -54,16 +54,17 @@ fn test_subclass_rule() {
     let same_as = SameAsTracker::new();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_subclass_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &rdf_type_sid,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+
+    apply_subclass_rule(&ontology, &mut ctx);
 
     // Should derive type(1, Animal)
     assert_eq!(new_delta.len(), 1);
@@ -124,16 +125,17 @@ fn test_subclass_rule_transitive() {
     let same_as = SameAsTracker::new();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_subclass_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &rdf_type_sid,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+
+    apply_subclass_rule(&ontology, &mut ctx);
 
     // Should derive type(1, Dog) AND type(1, Animal)
     assert_eq!(new_delta.len(), 2);
@@ -198,16 +200,17 @@ fn test_subclass_rule_no_superclass() {
     let same_as = SameAsTracker::new();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_subclass_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &rdf_type_sid,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+
+    apply_subclass_rule(&ontology, &mut ctx);
 
     // Should derive nothing
     assert_eq!(new_delta.len(), 0);
@@ -260,16 +263,17 @@ fn test_equivalent_class_rule() {
     let same_as = SameAsTracker::new();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_equivalent_class_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &rdf_type_sid,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+
+    apply_equivalent_class_rule(&ontology, &mut ctx);
 
     // Should derive type(1, Man)
     assert_eq!(new_delta.len(), 1);
@@ -329,16 +333,17 @@ fn test_equivalent_class_rule_bidirectional() {
     let same_as = SameAsTracker::new();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_equivalent_class_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &rdf_type_sid,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+
+    apply_equivalent_class_rule(&ontology, &mut ctx);
 
     // Should derive type(1, Male)
     assert_eq!(new_delta.len(), 1);
@@ -395,16 +400,17 @@ fn test_equivalent_class_rule_no_equivalent() {
     let same_as = SameAsTracker::new();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_equivalent_class_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &rdf_type_sid,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+
+    apply_equivalent_class_rule(&ontology, &mut ctx);
 
     // Should derive nothing
     assert_eq!(new_delta.len(), 0);

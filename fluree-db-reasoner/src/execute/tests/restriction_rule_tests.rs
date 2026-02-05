@@ -53,16 +53,17 @@ fn test_has_value_backward_rule() {
     let same_as = SameAsTracker::new();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_has_value_backward_rule(
-        &index,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &rdf_type_sid,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+
+    apply_has_value_backward_rule(&index, &mut ctx);
 
     // Should derive P(1, v) = P10(1, 50)
     assert_eq!(new_delta.len(), 1);
@@ -101,16 +102,17 @@ fn test_has_value_forward_rule() {
     let same_as = SameAsTracker::new();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_has_value_forward_rule(
-        &index,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &rdf_type_sid,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+
+    apply_has_value_forward_rule(&index, &mut ctx);
 
     // Should derive type(1, C) = type(1, 100)
     assert_eq!(new_delta.len(), 1);
@@ -149,16 +151,17 @@ fn test_has_value_forward_rule_no_match() {
     let same_as = SameAsTracker::new();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_has_value_forward_rule(
-        &index,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &rdf_type_sid,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+
+    apply_has_value_forward_rule(&index, &mut ctx);
 
     // Should derive nothing - value doesn't match
     assert_eq!(new_delta.len(), 0);
@@ -200,16 +203,17 @@ fn test_some_values_from_rule() {
     let same_as = SameAsTracker::new();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_some_values_from_rule(
-        &index,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &rdf_type_sid,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+
+    apply_some_values_from_rule(&index, &mut ctx);
 
     // Should derive type(1, C)
     assert_eq!(new_delta.len(), 1);
@@ -260,16 +264,17 @@ fn test_all_values_from_rule() {
     let same_as = SameAsTracker::new();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_all_values_from_rule(
-        &index,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &rdf_type_sid,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+
+    apply_all_values_from_rule(&index, &mut ctx);
 
     // Should derive type(2, D)
     assert_eq!(new_delta.len(), 1);
@@ -321,18 +326,19 @@ fn test_max_cardinality_rule() {
     let same_as = SameAsTracker::new();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_max_cardinality_rule(
-        &index,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &owl_same_as_sid,
-        &rdf_type_sid,
-        1,
-        false,
-        &mut diagnostics,
-    );
+    let mut ctx = IdentityRuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        owl_same_as_sid: &owl_same_as_sid,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        same_as_changed: false,
+        diagnostics: &mut diagnostics,
+    };
+
+    apply_max_cardinality_rule(&index, &mut ctx);
 
     // Should derive sameAs(2, 3)
     assert_eq!(new_delta.len(), 1);
@@ -377,16 +383,17 @@ fn test_intersection_backward_rule() {
     let same_as = SameAsTracker::new();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_intersection_backward_rule(
-        &index,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &rdf_type_sid,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+
+    apply_intersection_backward_rule(&index, &mut ctx);
 
     // Should derive type(1, C1) and type(1, C2)
     assert_eq!(new_delta.len(), 2);
@@ -446,16 +453,17 @@ fn test_intersection_forward_rule() {
     let same_as = SameAsTracker::new();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_intersection_forward_rule(
-        &index,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &rdf_type_sid,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+
+    apply_intersection_forward_rule(&index, &mut ctx);
 
     // Should derive type(1, I)
     assert_eq!(new_delta.len(), 1);
@@ -504,16 +512,17 @@ fn test_union_rule() {
     let same_as = SameAsTracker::new();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_union_rule(
-        &index,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &rdf_type_sid,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+
+    apply_union_rule(&index, &mut ctx);
 
     // Should derive type(1, U) because x has type C1 which is a member
     assert_eq!(new_delta.len(), 1);
@@ -552,16 +561,17 @@ fn test_one_of_rule() {
     let same_as = SameAsTracker::new();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_one_of_rule(
-        &index,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &rdf_type_sid,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+
+    apply_one_of_rule(&index, &mut ctx);
 
     // Should derive type(i, C) for each individual
     assert_eq!(new_delta.len(), 3);

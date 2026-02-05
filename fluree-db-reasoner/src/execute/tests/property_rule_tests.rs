@@ -30,16 +30,20 @@ fn test_symmetric_rule() {
 
     let derived = DerivedSet::new();
     let mut new_delta = DeltaSet::new();
+    let same_as = SameAsTracker::new();
+    let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_symmetric_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+    apply_symmetric_rule(&ontology, &mut ctx);
 
     // Should derive P(2, 1)
     assert_eq!(new_delta.len(), 1);
@@ -69,16 +73,20 @@ fn test_transitive_rule() {
     delta.push(make_ref_flake(1, 10, 2, 1));
 
     let mut new_delta = DeltaSet::new();
+    let same_as = SameAsTracker::new();
+    let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_transitive_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+    apply_transitive_rule(&ontology, &mut ctx);
 
     // Should derive P(1, 3) from P(1,2) ⋈ P(2,3)
     assert_eq!(new_delta.len(), 1);
@@ -124,16 +132,16 @@ fn test_domain_rule() {
     let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_domain_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &rdf_type_sid,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+    apply_domain_rule(&ontology, &mut ctx);
 
     // Should derive rdf:type(1, 100)
     assert_eq!(new_delta.len(), 1);
@@ -189,16 +197,16 @@ fn test_domain_rule_sets_dt_id_even_for_literal_objects() {
     let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_domain_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &rdf_type_sid,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+    apply_domain_rule(&ontology, &mut ctx);
 
     assert_eq!(new_delta.len(), 1);
     let type_flake = new_delta.iter().next().unwrap();
@@ -240,16 +248,16 @@ fn test_range_rule() {
     let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_range_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &rdf_type_sid,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+    apply_range_rule(&ontology, &mut ctx);
 
     // Should derive rdf:type(2, 200) - object gets typed
     assert_eq!(new_delta.len(), 1);
@@ -304,16 +312,16 @@ fn test_range_rule_ignores_literals() {
     let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_range_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &rdf_type_sid,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+    apply_range_rule(&ontology, &mut ctx);
 
     // Should NOT derive anything - literals don't get rdf:type
     assert_eq!(new_delta.len(), 0);
@@ -349,17 +357,19 @@ fn test_sub_property_rule() {
     let derived = DerivedSet::new();
     let mut new_delta = DeltaSet::new();
     let same_as = SameAsTracker::new();
+    let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_sub_property_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+    apply_sub_property_rule(&ontology, &mut ctx);
 
     // Should derive P2(1, 2) where P2=20
     assert_eq!(new_delta.len(), 1);
@@ -404,17 +414,19 @@ fn test_sub_property_rule_transitive_chain() {
     let derived = DerivedSet::new();
     let mut new_delta = DeltaSet::new();
     let same_as = SameAsTracker::new();
+    let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_sub_property_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+    apply_sub_property_rule(&ontology, &mut ctx);
 
     // Should derive both P2(1, 2) and P3(1, 2)
     assert_eq!(new_delta.len(), 2);
@@ -459,17 +471,19 @@ fn test_property_chain_rule() {
     let derived = DerivedSet::new();
     let mut new_delta = DeltaSet::new();
     let same_as = SameAsTracker::new();
+    let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_property_chain_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+    apply_property_chain_rule(&ontology, &mut ctx);
 
     // Should derive P30(1, 3)
     assert_eq!(new_delta.len(), 1);
@@ -517,17 +531,19 @@ fn test_property_chain_rule_with_derived() {
 
     let mut new_delta = DeltaSet::new();
     let same_as = SameAsTracker::new();
+    let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_property_chain_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+    apply_property_chain_rule(&ontology, &mut ctx);
 
     // Should derive P30(1, 3)
     assert_eq!(new_delta.len(), 1);
@@ -583,17 +599,19 @@ fn test_property_chain_rule_with_inverse() {
     let derived = DerivedSet::new();
     let mut new_delta = DeltaSet::new();
     let same_as = SameAsTracker::new();
+    let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_property_chain_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+    apply_property_chain_rule(&ontology, &mut ctx);
 
     // Should derive hasSibling(1, 3) and hasSibling(3, 1)
     // Plus self-sibling (Alice sibling Alice, Bob sibling Bob) - 4 total
@@ -657,17 +675,19 @@ fn test_property_chain_rule_inverse_last_requires_forward_inverse_lookup() {
 
     let mut new_delta = DeltaSet::new();
     let same_as = SameAsTracker::new();
+    let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_property_chain_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+    apply_property_chain_rule(&ontology, &mut ctx);
 
     // Expect: P30(1, 3)
     let got = new_delta.iter().any(|f| {
@@ -721,17 +741,19 @@ fn test_property_chain_rule_inverse_first_requires_backward_inverse_lookup() {
 
     let mut new_delta = DeltaSet::new();
     let same_as = SameAsTracker::new();
+    let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_property_chain_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+    apply_property_chain_rule(&ontology, &mut ctx);
 
     // Expect: P30(1, 3)
     let got = new_delta.iter().any(|f| {
@@ -779,17 +801,19 @@ fn test_property_chain_rule_length_3() {
     let derived = DerivedSet::new();
     let mut new_delta = DeltaSet::new();
     let same_as = SameAsTracker::new();
+    let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_property_chain_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        1,
-        &mut diagnostics,
-    );
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+    apply_property_chain_rule(&ontology, &mut ctx);
 
     // Should derive hasGreatGrandparent(1, 4)
     let chain_facts: Vec<_> = new_delta.iter().filter(|f| f.p == sid(30)).collect();
@@ -836,19 +860,21 @@ fn test_functional_property_rule() {
     let mut new_delta = DeltaSet::new();
     let same_as = SameAsTracker::new();
     let owl_same_as_sid = owl::same_as_sid();
+    let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_functional_property_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &owl_same_as_sid,
-        1,
-        false, // same_as_changed
-        &mut diagnostics,
-    );
+    let mut ctx = IdentityRuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        owl_same_as_sid: &owl_same_as_sid,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        same_as_changed: false,
+        diagnostics: &mut diagnostics,
+    };
+    apply_functional_property_rule(&ontology, &mut ctx);
 
     // Should derive owl:sameAs(2, 3) or owl:sameAs(3, 2)
     assert_eq!(new_delta.len(), 1);
@@ -903,19 +929,21 @@ fn test_functional_property_rule_with_derived() {
     let mut new_delta = DeltaSet::new();
     let same_as = SameAsTracker::new();
     let owl_same_as_sid = owl::same_as_sid();
+    let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_functional_property_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &owl_same_as_sid,
-        1,
-        false, // same_as_changed
-        &mut diagnostics,
-    );
+    let mut ctx = IdentityRuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        owl_same_as_sid: &owl_same_as_sid,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        same_as_changed: false,
+        diagnostics: &mut diagnostics,
+    };
+    apply_functional_property_rule(&ontology, &mut ctx);
 
     // Should derive owl:sameAs between 2 and 3
     assert_eq!(new_delta.len(), 1);
@@ -955,19 +983,21 @@ fn test_functional_property_rule_no_conflict() {
     let mut new_delta = DeltaSet::new();
     let same_as = SameAsTracker::new();
     let owl_same_as_sid = owl::same_as_sid();
+    let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_functional_property_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &owl_same_as_sid,
-        1,
-        false, // same_as_changed
-        &mut diagnostics,
-    );
+    let mut ctx = IdentityRuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        owl_same_as_sid: &owl_same_as_sid,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        same_as_changed: false,
+        diagnostics: &mut diagnostics,
+    };
+    apply_functional_property_rule(&ontology, &mut ctx);
 
     // No sameAs should be derived
     assert_eq!(new_delta.len(), 0);
@@ -1005,19 +1035,21 @@ fn test_inverse_functional_property_rule() {
     let mut new_delta = DeltaSet::new();
     let same_as = SameAsTracker::new();
     let owl_same_as_sid = owl::same_as_sid();
+    let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_inverse_functional_property_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &owl_same_as_sid,
-        1,
-        false, // same_as_changed
-        &mut diagnostics,
-    );
+    let mut ctx = IdentityRuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        owl_same_as_sid: &owl_same_as_sid,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        same_as_changed: false,
+        diagnostics: &mut diagnostics,
+    };
+    apply_inverse_functional_property_rule(&ontology, &mut ctx);
 
     // Should derive owl:sameAs(1, 2) or owl:sameAs(2, 1)
     assert_eq!(new_delta.len(), 1);
@@ -1072,19 +1104,21 @@ fn test_inverse_functional_property_rule_with_derived() {
     let mut new_delta = DeltaSet::new();
     let same_as = SameAsTracker::new();
     let owl_same_as_sid = owl::same_as_sid();
+    let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_inverse_functional_property_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &owl_same_as_sid,
-        1,
-        false, // same_as_changed
-        &mut diagnostics,
-    );
+    let mut ctx = IdentityRuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        owl_same_as_sid: &owl_same_as_sid,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        same_as_changed: false,
+        diagnostics: &mut diagnostics,
+    };
+    apply_inverse_functional_property_rule(&ontology, &mut ctx);
 
     // Should derive owl:sameAs between 1 and 2
     assert_eq!(new_delta.len(), 1);
@@ -1136,20 +1170,22 @@ fn test_inverse_functional_property_triggered_by_sameas() {
 
     let mut new_delta = DeltaSet::new();
     let owl_same_as_sid = owl::same_as_sid();
+    let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
     let mut diagnostics = ReasoningDiagnostics::default();
 
     // Call with same_as_changed = true
-    apply_inverse_functional_property_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &owl_same_as_sid,
-        1,
-        true, // same_as_changed = true triggers re-evaluation
-        &mut diagnostics,
-    );
+    let mut ctx = IdentityRuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        owl_same_as_sid: &owl_same_as_sid,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        same_as_changed: true,
+        diagnostics: &mut diagnostics,
+    };
+    apply_inverse_functional_property_rule(&ontology, &mut ctx);
 
     // Should derive sameAs(x1, x2) = sameAs(1, 2) because after canonicalization,
     // both P(1, 3) and P(2, 4) have the same object (canonical of 3 == canonical of 4)
@@ -1214,20 +1250,22 @@ fn test_functional_property_triggered_by_sameas() {
 
     let mut new_delta = DeltaSet::new();
     let owl_same_as_sid = owl::same_as_sid();
+    let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
     let mut diagnostics = ReasoningDiagnostics::default();
 
     // Call with same_as_changed = true
-    apply_functional_property_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &owl_same_as_sid,
-        1,
-        true, // same_as_changed = true triggers re-evaluation
-        &mut diagnostics,
-    );
+    let mut ctx = IdentityRuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        owl_same_as_sid: &owl_same_as_sid,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        same_as_changed: true,
+        diagnostics: &mut diagnostics,
+    };
+    apply_functional_property_rule(&ontology, &mut ctx);
 
     // Should derive sameAs(y1, y2) = sameAs(3, 4) because after canonicalization,
     // both P(1, 3) and P(2, 4) have the same subject (canonical of 1 == canonical of 2)
@@ -1315,18 +1353,18 @@ fn test_has_key_rule() {
     let owl_same_as_sid = owl::same_as_sid();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_has_key_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &owl_same_as_sid,
-        &rdf_type_sid,
-        1,
-        false,
-        &mut diagnostics,
-    );
+    let mut ctx = IdentityRuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        owl_same_as_sid: &owl_same_as_sid,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        same_as_changed: false,
+        diagnostics: &mut diagnostics,
+    };
+    apply_has_key_rule(&ontology, &mut ctx);
 
     // Should derive sameAs(1, 2) because both instances have same key value
     assert_eq!(new_delta.len(), 1, "Should derive one sameAs fact");
@@ -1404,18 +1442,18 @@ fn test_has_key_rule_no_match() {
     let owl_same_as_sid = owl::same_as_sid();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_has_key_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &owl_same_as_sid,
-        &rdf_type_sid,
-        1,
-        false,
-        &mut diagnostics,
-    );
+    let mut ctx = IdentityRuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        owl_same_as_sid: &owl_same_as_sid,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        same_as_changed: false,
+        diagnostics: &mut diagnostics,
+    };
+    apply_has_key_rule(&ontology, &mut ctx);
 
     // Should derive nothing because key values differ
     assert_eq!(
@@ -1483,18 +1521,18 @@ fn test_has_key_rule_missing_key_property() {
     let owl_same_as_sid = owl::same_as_sid();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_has_key_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &owl_same_as_sid,
-        &rdf_type_sid,
-        1,
-        false,
-        &mut diagnostics,
-    );
+    let mut ctx = IdentityRuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        owl_same_as_sid: &owl_same_as_sid,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        same_as_changed: false,
+        diagnostics: &mut diagnostics,
+    };
+    apply_has_key_rule(&ontology, &mut ctx);
 
     // Should derive nothing because instance 2 is missing the required key property
     assert_eq!(
@@ -1564,18 +1602,18 @@ fn test_has_key_rule_multi_key() {
     let owl_same_as_sid = owl::same_as_sid();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_has_key_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &owl_same_as_sid,
-        &rdf_type_sid,
-        1,
-        false,
-        &mut diagnostics,
-    );
+    let mut ctx = IdentityRuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        owl_same_as_sid: &owl_same_as_sid,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        same_as_changed: false,
+        diagnostics: &mut diagnostics,
+    };
+    apply_has_key_rule(&ontology, &mut ctx);
 
     // Should derive sameAs(1, 2) because both composite key values match
     assert_eq!(
@@ -1654,18 +1692,18 @@ fn test_has_key_rule_multi_valued_key_skipped() {
     let owl_same_as_sid = owl::same_as_sid();
     let mut diagnostics = ReasoningDiagnostics::default();
 
-    apply_has_key_rule(
-        &ontology,
-        &delta,
-        &derived,
-        &mut new_delta,
-        &same_as,
-        &owl_same_as_sid,
-        &rdf_type_sid,
-        1,
-        false,
-        &mut diagnostics,
-    );
+    let mut ctx = IdentityRuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        owl_same_as_sid: &owl_same_as_sid,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        same_as_changed: false,
+        diagnostics: &mut diagnostics,
+    };
+    apply_has_key_rule(&ontology, &mut ctx);
 
     // Should derive nothing because instance 1 has multiple key values (ambiguous)
     // and instance 2 is the only valid instance (can't match with itself)

@@ -1,6 +1,7 @@
 //! Shared utility functions for rule execution.
 //!
 //! This module provides helper functions used across multiple rule implementations:
+//! - `RuleContext` - Shared context for rule execution
 //! - `ref_dt()` - Default datatype SID for Ref values
 //! - `rdf_type_sid()` - SID for the rdf:type predicate
 //! - `canonicalize_flake()` - Apply sameAs canonicalization to a flake
@@ -17,6 +18,47 @@ use super::delta::DeltaSet;
 use super::derived::DerivedSet;
 use crate::same_as::SameAsTracker;
 use crate::ReasoningDiagnostics;
+
+/// Shared context for rule execution.
+///
+/// Bundles common parameters passed to all reasoning rules, reducing
+/// function signatures from 8-10 parameters to 2 (ontology/restrictions + context).
+///
+/// # Fields
+///
+/// * `delta` - New facts from the current iteration to process
+/// * `derived` - Accumulated derived facts for deduplication checks
+/// * `new_delta` - Output buffer for newly derived facts
+/// * `same_as` - SameAs equivalence tracker for canonicalization
+/// * `rdf_type_sid` - SID for the rdf:type predicate
+/// * `t` - Transaction time for derived flakes
+/// * `diagnostics` - Diagnostic counters for rule firings
+pub struct RuleContext<'a> {
+    pub delta: &'a DeltaSet,
+    pub derived: &'a DerivedSet,
+    pub new_delta: &'a mut DeltaSet,
+    pub same_as: &'a SameAsTracker,
+    pub rdf_type_sid: &'a Sid,
+    pub t: i64,
+    pub diagnostics: &'a mut ReasoningDiagnostics,
+}
+
+/// Extended context for identity-producing rules (prp-fp, prp-ifp, prp-key, cls-maxc, cls-maxqc).
+///
+/// These rules derive owl:sameAs facts and need additional parameters:
+/// * `owl_same_as_sid` - SID for the owl:sameAs predicate
+/// * `same_as_changed` - Whether sameAs equivalences changed this iteration
+pub struct IdentityRuleContext<'a> {
+    pub delta: &'a DeltaSet,
+    pub derived: &'a DerivedSet,
+    pub new_delta: &'a mut DeltaSet,
+    pub same_as: &'a SameAsTracker,
+    pub owl_same_as_sid: &'a Sid,
+    pub rdf_type_sid: &'a Sid,
+    pub t: i64,
+    pub same_as_changed: bool,
+    pub diagnostics: &'a mut ReasoningDiagnostics,
+}
 
 /// Default datatype SID for derived Ref values.
 ///
@@ -63,35 +105,26 @@ pub fn canonicalize_flake(flake: &Flake, same_as: &SameAsTracker) -> Flake {
 
 /// Attempt to derive a type fact `rdf:type(subject, type_class)`.
 ///
-/// Creates the flake and adds it to `new_delta` if not already in `derived`.
+/// Creates the flake and adds it to `ctx.new_delta` if not already in `ctx.derived`.
 /// Returns `true` if the fact was new and added, `false` if it already existed.
 ///
 /// This helper reduces boilerplate in rule implementations by encapsulating
 /// the common pattern of creating a type flake, checking for duplicates,
 /// and recording diagnostics.
-pub fn try_derive_type(
-    subject: &Sid,
-    type_class: &Sid,
-    rdf_type_sid: &Sid,
-    t: i64,
-    derived: &DerivedSet,
-    new_delta: &mut DeltaSet,
-    diagnostics: &mut ReasoningDiagnostics,
-    rule_name: &str,
-) -> bool {
+pub fn try_derive_type(ctx: &mut RuleContext<'_>, subject: &Sid, type_class: &Sid, rule_name: &str) -> bool {
     let flake = Flake::new(
         subject.clone(),
-        rdf_type_sid.clone(),
+        ctx.rdf_type_sid.clone(),
         FlakeValue::Ref(type_class.clone()),
         ref_dt(),
-        t,
+        ctx.t,
         true,
         None,
     );
 
-    if !derived.contains(&flake.s, &flake.p, &flake.o) {
-        new_delta.push(flake);
-        diagnostics.record_rule_fired(rule_name);
+    if !ctx.derived.contains(&flake.s, &flake.p, &flake.o) {
+        ctx.new_delta.push(flake);
+        ctx.diagnostics.record_rule_fired(rule_name);
         true
     } else {
         false
