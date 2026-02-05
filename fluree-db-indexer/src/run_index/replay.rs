@@ -21,6 +21,7 @@
 
 use super::leaflet::Region3Entry;
 use super::run_record::{FactKey, RunSortOrder};
+use super::types::RowColumnSlice;
 use std::collections::HashSet;
 
 // ============================================================================
@@ -271,21 +272,22 @@ pub fn replay_leaflet(
             order,
         );
 
+        // Bundle input columns for emit helper
+        let input = RowColumnSlice {
+            s: r1_s_ids,
+            p: r1_p_ids,
+            o_kinds: r1_o_kinds,
+            o_keys: r1_o_keys,
+            dt: r2_dt,
+            t: r2_t,
+            lang: r2_lang_ids,
+            i: r2_i,
+        };
+
         match cmp {
             std::cmp::Ordering::Less => {
                 // R1 row comes first — emit it
-                emit_r1_row(
-                    &mut out,
-                    r1_idx,
-                    r1_s_ids,
-                    r1_p_ids,
-                    r1_o_kinds,
-                    r1_o_keys,
-                    r2_dt,
-                    r2_t,
-                    r2_lang_ids,
-                    r2_i,
-                );
+                emit_r1_row(&mut out, r1_idx, &input);
                 r1_idx += 1;
             }
             std::cmp::Ordering::Greater => {
@@ -301,18 +303,7 @@ pub fn replay_leaflet(
                 // include entry is a distinct restored fact at the same sort
                 // position. Emit R1 first to maintain stable ordering,
                 // then the include entry.
-                emit_r1_row(
-                    &mut out,
-                    r1_idx,
-                    r1_s_ids,
-                    r1_p_ids,
-                    r1_o_kinds,
-                    r1_o_keys,
-                    r2_dt,
-                    r2_t,
-                    r2_lang_ids,
-                    r2_i,
-                );
+                emit_r1_row(&mut out, r1_idx, &input);
                 emit_include_entry(&mut out, &include[inc_idx]);
                 r1_idx += 1;
                 inc_idx += 1;
@@ -321,6 +312,16 @@ pub fn replay_leaflet(
     }
 
     // Drain remaining R1 rows
+    let input = RowColumnSlice {
+        s: r1_s_ids,
+        p: r1_p_ids,
+        o_kinds: r1_o_kinds,
+        o_keys: r1_o_keys,
+        dt: r2_dt,
+        t: r2_t,
+        lang: r2_lang_ids,
+        i: r2_i,
+    };
     while r1_idx < row_count {
         let r1_key = FactKey::from_decoded_row(
             r1_s_ids[r1_idx],
@@ -332,18 +333,7 @@ pub fn replay_leaflet(
             r2_i[r1_idx],
         );
         if !exclude.contains(&r1_key) {
-            emit_r1_row(
-                &mut out,
-                r1_idx,
-                r1_s_ids,
-                r1_p_ids,
-                r1_o_kinds,
-                r1_o_keys,
-                r2_dt,
-                r2_t,
-                r2_lang_ids,
-                r2_i,
-            );
+            emit_r1_row(&mut out, r1_idx, &input);
         }
         r1_idx += 1;
     }
@@ -364,26 +354,15 @@ pub fn replay_leaflet(
 
 /// Emit a Region 1+2 row to the output.
 #[inline]
-fn emit_r1_row(
-    out: &mut ReplayedLeaflet,
-    idx: usize,
-    s_ids: &[u64],
-    p_ids: &[u32],
-    o_kinds: &[u8],
-    o_keys: &[u64],
-    dt: &[u32],
-    t: &[i64],
-    lang_ids: &[u16],
-    i_vals: &[i32],
-) {
-    out.s_ids.push(s_ids[idx]);
-    out.p_ids.push(p_ids[idx]);
-    out.o_kinds.push(o_kinds[idx]);
-    out.o_keys.push(o_keys[idx]);
-    out.dt_values.push(dt[idx]);
-    out.t_values.push(t[idx]);
-    out.lang_ids.push(lang_ids[idx]);
-    out.i_values.push(i_vals[idx]);
+fn emit_r1_row(out: &mut ReplayedLeaflet, idx: usize, input: &RowColumnSlice<'_>) {
+    out.s_ids.push(input.s[idx]);
+    out.p_ids.push(input.p[idx]);
+    out.o_kinds.push(input.o_kinds[idx]);
+    out.o_keys.push(input.o_keys[idx]);
+    out.dt_values.push(input.dt[idx]);
+    out.t_values.push(input.t[idx]);
+    out.lang_ids.push(input.lang[idx]);
+    out.i_values.push(input.i[idx]);
 }
 
 /// Emit a Region 3 include entry (restored retraction) to the output.

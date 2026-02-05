@@ -2,6 +2,52 @@
 
 use super::run_record::RunSortOrder;
 
+/// Mutable output column vectors for emitting row data.
+///
+/// Bundles the 8 column vectors that receive decoded row data during
+/// cursor merging (overlay/novelty/existing data merge operations).
+pub struct RowColumnOutput<'a> {
+    /// Subject IDs (u64).
+    pub s: &'a mut Vec<u64>,
+    /// Predicate IDs (u32).
+    pub p: &'a mut Vec<u32>,
+    /// Object kind discriminants.
+    pub o_kinds: &'a mut Vec<u8>,
+    /// Object key payloads.
+    pub o_keys: &'a mut Vec<u64>,
+    /// Datatype codes.
+    pub dt: &'a mut Vec<u32>,
+    /// Transaction timestamps.
+    pub t: &'a mut Vec<i64>,
+    /// Language tag IDs.
+    pub lang: &'a mut Vec<u16>,
+    /// List indices.
+    pub i: &'a mut Vec<i32>,
+}
+
+/// Immutable input column slices for reading row data.
+///
+/// Bundles the 8 column slices that provide decoded row data during
+/// replay operations (reading existing leaflet data).
+pub struct RowColumnSlice<'a> {
+    /// Subject IDs (u64).
+    pub s: &'a [u64],
+    /// Predicate IDs (u32).
+    pub p: &'a [u32],
+    /// Object kind discriminants.
+    pub o_kinds: &'a [u8],
+    /// Object key payloads.
+    pub o_keys: &'a [u64],
+    /// Datatype codes.
+    pub dt: &'a [u32],
+    /// Transaction timestamps.
+    pub t: &'a [i64],
+    /// Language tag IDs.
+    pub lang: &'a [u16],
+    /// List indices.
+    pub i: &'a [i32],
+}
+
 /// An overlay operation translated to integer-ID space.
 ///
 /// Produced by translating `Flake` overlay ops via `BinaryIndexStore` reverse

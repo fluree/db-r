@@ -20,7 +20,7 @@ use super::leaflet::{
 use super::leaflet_cache::{CachedRegion1, CachedRegion2, LeafletCacheKey};
 use super::replay::replay_leaflet;
 use super::run_record::{cmp_for_order, FactKey, RunRecord, RunSortOrder};
-use super::types::OverlayOp;
+use super::types::{OverlayOp, RowColumnOutput};
 use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
 use memmap2::Mmap;
 use std::cmp::Ordering;
@@ -209,17 +209,17 @@ fn merge_overlay(
             Ordering::Greater => {
                 // Overlay comes first (not in existing data)
                 if ov.op {
-                    emit_overlay(
-                        ov,
-                        &mut out_s,
-                        &mut out_p,
-                        &mut out_o_kinds,
-                        &mut out_o_keys,
-                        &mut out_dt,
-                        &mut out_t,
-                        &mut out_lang,
-                        &mut out_i,
-                    );
+                    let mut out = RowColumnOutput {
+                        s: &mut out_s,
+                        p: &mut out_p,
+                        o_kinds: &mut out_o_kinds,
+                        o_keys: &mut out_o_keys,
+                        dt: &mut out_dt,
+                        t: &mut out_t,
+                        lang: &mut out_lang,
+                        i: &mut out_i,
+                    };
+                    emit_overlay(ov, &mut out);
                 }
                 // Retract of non-existent → skip
                 oi += 1;
@@ -239,17 +239,17 @@ fn merge_overlay(
                     // Same fact identity
                     if ov.op {
                         // Assert (update) — emit overlay with new t
-                        emit_overlay(
-                            ov,
-                            &mut out_s,
-                            &mut out_p,
-                            &mut out_o_kinds,
-                            &mut out_o_keys,
-                            &mut out_dt,
-                            &mut out_t,
-                            &mut out_lang,
-                            &mut out_i,
-                        );
+                        let mut out = RowColumnOutput {
+                            s: &mut out_s,
+                            p: &mut out_p,
+                            o_kinds: &mut out_o_kinds,
+                            o_keys: &mut out_o_keys,
+                            dt: &mut out_dt,
+                            t: &mut out_t,
+                            lang: &mut out_lang,
+                            i: &mut out_i,
+                        };
+                        emit_overlay(ov, &mut out);
                     }
                     // else: Retract — omit from output
                     ri += 1;
@@ -287,17 +287,17 @@ fn merge_overlay(
     // Drain remaining overlay asserts
     while oi < overlay.len() {
         if overlay[oi].op {
-            emit_overlay(
-                &overlay[oi],
-                &mut out_s,
-                &mut out_p,
-                &mut out_o_kinds,
-                &mut out_o_keys,
-                &mut out_dt,
-                &mut out_t,
-                &mut out_lang,
-                &mut out_i,
-            );
+            let mut out = RowColumnOutput {
+                s: &mut out_s,
+                p: &mut out_p,
+                o_kinds: &mut out_o_kinds,
+                o_keys: &mut out_o_keys,
+                dt: &mut out_dt,
+                t: &mut out_t,
+                lang: &mut out_lang,
+                i: &mut out_i,
+            };
+            emit_overlay(&overlay[oi], &mut out);
         }
         oi += 1;
     }
@@ -321,25 +321,15 @@ fn merge_overlay(
 
 /// Emit an OverlayOp to the output column vectors.
 #[inline]
-fn emit_overlay(
-    ov: &OverlayOp,
-    s: &mut Vec<u64>,
-    p: &mut Vec<u32>,
-    o_kinds: &mut Vec<u8>,
-    o_keys: &mut Vec<u64>,
-    dt: &mut Vec<u32>,
-    t: &mut Vec<i64>,
-    lang: &mut Vec<u16>,
-    i: &mut Vec<i32>,
-) {
-    s.push(ov.s_id);
-    p.push(ov.p_id);
-    o_kinds.push(ov.o_kind);
-    o_keys.push(ov.o_key);
-    dt.push(ov.dt as u32);
-    t.push(ov.t);
-    lang.push(ov.lang_id);
-    i.push(ov.i_val);
+fn emit_overlay(ov: &OverlayOp, out: &mut RowColumnOutput<'_>) {
+    out.s.push(ov.s_id);
+    out.p.push(ov.p_id);
+    out.o_kinds.push(ov.o_kind);
+    out.o_keys.push(ov.o_key);
+    out.dt.push(ov.dt as u32);
+    out.t.push(ov.t);
+    out.lang.push(ov.lang_id);
+    out.i.push(ov.i_val);
 }
 
 // ============================================================================

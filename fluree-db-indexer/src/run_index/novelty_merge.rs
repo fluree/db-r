@@ -9,6 +9,7 @@
 
 use super::leaflet::Region3Entry;
 use super::run_record::{FactKey, RunRecord, RunSortOrder};
+use super::types::RowColumnOutput;
 use fluree_db_core::subject_id::SubjectIdColumn;
 use std::cmp::Ordering;
 
@@ -168,35 +169,34 @@ pub fn merge_novelty(input: &MergeInput<'_>) -> MergeOutput {
         match cmp {
             Ordering::Less => {
                 // Existing row comes first — emit unchanged
-                emit_existing(
-                    input,
-                    ei,
-                    &mut out_s,
-                    &mut out_p,
-                    &mut out_ok,
-                    &mut out_okey,
-                    &mut out_dt,
-                    &mut out_t,
-                    &mut out_lang,
-                    &mut out_i,
-                );
+                let mut out = RowColumnOutput {
+                    s: &mut out_s,
+                    p: &mut out_p,
+                    o_kinds: &mut out_ok,
+                    o_keys: &mut out_okey,
+                    dt: &mut out_dt,
+                    t: &mut out_t,
+                    lang: &mut out_lang,
+                    i: &mut out_i,
+                };
+                emit_existing(input, ei, &mut out);
                 ei += 1;
             }
             Ordering::Greater => {
                 // Novelty comes first (not in existing data)
                 if nov.op == 1 {
                     // Assert of new fact — emit to output
-                    emit_novelty(
-                        nov,
-                        &mut out_s,
-                        &mut out_p,
-                        &mut out_ok,
-                        &mut out_okey,
-                        &mut out_dt,
-                        &mut out_t,
-                        &mut out_lang,
-                        &mut out_i,
-                    );
+                    let mut out = RowColumnOutput {
+                        s: &mut out_s,
+                        p: &mut out_p,
+                        o_kinds: &mut out_ok,
+                        o_keys: &mut out_okey,
+                        dt: &mut out_dt,
+                        t: &mut out_t,
+                        lang: &mut out_lang,
+                        i: &mut out_i,
+                    };
+                    emit_novelty(nov, &mut out);
                 }
                 // Record in R3 regardless (retract of non-existent is still logged)
                 new_r3.push(Region3Entry::from_run_record(nov));
@@ -217,17 +217,17 @@ pub fn merge_novelty(input: &MergeInput<'_>) -> MergeOutput {
                     // Same fact identity
                     if nov.op == 1 {
                         // Assert (update) — emit novelty, record old retraction + new assert
-                        emit_novelty(
-                            nov,
-                            &mut out_s,
-                            &mut out_p,
-                            &mut out_ok,
-                            &mut out_okey,
-                            &mut out_dt,
-                            &mut out_t,
-                            &mut out_lang,
-                            &mut out_i,
-                        );
+                        let mut out = RowColumnOutput {
+                            s: &mut out_s,
+                            p: &mut out_p,
+                            o_kinds: &mut out_ok,
+                            o_keys: &mut out_okey,
+                            dt: &mut out_dt,
+                            t: &mut out_t,
+                            lang: &mut out_lang,
+                            i: &mut out_i,
+                        };
+                        emit_novelty(nov, &mut out);
 
                         // Record retraction of old value in R3
                         new_r3.push(Region3Entry {
@@ -251,18 +251,17 @@ pub fn merge_novelty(input: &MergeInput<'_>) -> MergeOutput {
                     // This is an edge case: the sort-order comparison doesn't include
                     // lang_id/i, so we can have equal sort position but distinct facts.
                     // Emit the existing row and try the novelty again on the next iteration.
-                    emit_existing(
-                        input,
-                        ei,
-                        &mut out_s,
-                        &mut out_p,
-                        &mut out_ok,
-                        &mut out_okey,
-                        &mut out_dt,
-                        &mut out_t,
-                        &mut out_lang,
-                        &mut out_i,
-                    );
+                    let mut out = RowColumnOutput {
+                        s: &mut out_s,
+                        p: &mut out_p,
+                        o_kinds: &mut out_ok,
+                        o_keys: &mut out_okey,
+                        dt: &mut out_dt,
+                        t: &mut out_t,
+                        lang: &mut out_lang,
+                        i: &mut out_i,
+                    };
+                    emit_existing(input, ei, &mut out);
                     ei += 1;
                 }
             }
@@ -271,18 +270,17 @@ pub fn merge_novelty(input: &MergeInput<'_>) -> MergeOutput {
 
     // Drain remaining existing rows
     while ei < existing_len {
-        emit_existing(
-            input,
-            ei,
-            &mut out_s,
-            &mut out_p,
-            &mut out_ok,
-            &mut out_okey,
-            &mut out_dt,
-            &mut out_t,
-            &mut out_lang,
-            &mut out_i,
-        );
+        let mut out = RowColumnOutput {
+            s: &mut out_s,
+            p: &mut out_p,
+            o_kinds: &mut out_ok,
+            o_keys: &mut out_okey,
+            dt: &mut out_dt,
+            t: &mut out_t,
+            lang: &mut out_lang,
+            i: &mut out_i,
+        };
+        emit_existing(input, ei, &mut out);
         ei += 1;
     }
 
@@ -290,17 +288,17 @@ pub fn merge_novelty(input: &MergeInput<'_>) -> MergeOutput {
     while ni < novelty_len {
         let nov = &input.novelty[ni];
         if nov.op == 1 {
-            emit_novelty(
-                nov,
-                &mut out_s,
-                &mut out_p,
-                &mut out_ok,
-                &mut out_okey,
-                &mut out_dt,
-                &mut out_t,
-                &mut out_lang,
-                &mut out_i,
-            );
+            let mut out = RowColumnOutput {
+                s: &mut out_s,
+                p: &mut out_p,
+                o_kinds: &mut out_ok,
+                o_keys: &mut out_okey,
+                dt: &mut out_dt,
+                t: &mut out_t,
+                lang: &mut out_lang,
+                i: &mut out_i,
+            };
+            emit_novelty(nov, &mut out);
         }
         new_r3.push(Region3Entry::from_run_record(nov));
         ni += 1;
@@ -400,49 +398,28 @@ fn dedup_adjacent_asserts(entries: &mut Vec<Region3Entry>) {
 
 /// Emit an existing row (from decoded R1+R2 columns) to the output vectors.
 #[inline]
-fn emit_existing(
-    input: &MergeInput<'_>,
-    row: usize,
-    s: &mut Vec<u64>,
-    p: &mut Vec<u32>,
-    ok: &mut Vec<u8>,
-    okey: &mut Vec<u64>,
-    dt: &mut Vec<u32>,
-    t: &mut Vec<i64>,
-    lang: &mut Vec<u16>,
-    i: &mut Vec<i32>,
-) {
-    s.push(input.r1_s_ids.get(row).as_u64());
-    p.push(input.r1_p_ids[row]);
-    ok.push(input.r1_o_kinds[row]);
-    okey.push(input.r1_o_keys[row]);
-    dt.push(input.r2_dt[row]);
-    t.push(input.r2_t[row]);
-    lang.push(input.r2_lang_ids[row]);
-    i.push(input.r2_i[row]);
+fn emit_existing(input: &MergeInput<'_>, row: usize, out: &mut RowColumnOutput<'_>) {
+    out.s.push(input.r1_s_ids.get(row).as_u64());
+    out.p.push(input.r1_p_ids[row]);
+    out.o_kinds.push(input.r1_o_kinds[row]);
+    out.o_keys.push(input.r1_o_keys[row]);
+    out.dt.push(input.r2_dt[row]);
+    out.t.push(input.r2_t[row]);
+    out.lang.push(input.r2_lang_ids[row]);
+    out.i.push(input.r2_i[row]);
 }
 
 /// Emit a novelty RunRecord to the output vectors.
 #[inline]
-fn emit_novelty(
-    rec: &RunRecord,
-    s: &mut Vec<u64>,
-    p: &mut Vec<u32>,
-    ok: &mut Vec<u8>,
-    okey: &mut Vec<u64>,
-    dt: &mut Vec<u32>,
-    t: &mut Vec<i64>,
-    lang: &mut Vec<u16>,
-    i: &mut Vec<i32>,
-) {
-    s.push(rec.s_id.as_u64());
-    p.push(rec.p_id);
-    ok.push(rec.o_kind);
-    okey.push(rec.o_key);
-    dt.push(rec.dt as u32);
-    t.push(rec.t);
-    lang.push(rec.lang_id);
-    i.push(rec.i);
+fn emit_novelty(rec: &RunRecord, out: &mut RowColumnOutput<'_>) {
+    out.s.push(rec.s_id.as_u64());
+    out.p.push(rec.p_id);
+    out.o_kinds.push(rec.o_kind);
+    out.o_keys.push(rec.o_key);
+    out.dt.push(rec.dt as u32);
+    out.t.push(rec.t);
+    out.lang.push(rec.lang_id);
+    out.i.push(rec.i);
 }
 
 // ============================================================================
