@@ -6,7 +6,7 @@
 use crate::ir::FilterValue;
 use bigdecimal::BigDecimal;
 use fluree_db_core::temporal::{Date as FlureeDate, DateTime as FlureeDateTime, Time as FlureeTime};
-use fluree_db_core::FlakeValue;
+use fluree_db_core::{FlakeValue, GeoPointBits};
 use num_bigint::BigInt;
 use num_traits::Zero;
 use std::sync::Arc;
@@ -32,6 +32,8 @@ pub enum ComparableValue {
     DateTime(Box<FlureeDateTime>),
     Date(Box<FlureeDate>),
     Time(Box<FlureeTime>),
+    // Geospatial
+    GeoPoint(GeoPointBits),
     // IRI string (to be encoded at bind time)
     Iri(Arc<str>),
     // Typed literal with explicit datatype or language
@@ -86,7 +88,9 @@ pub fn flake_value_to_comparable(val: &FlakeValue) -> Option<ComparableValue> {
         FlakeValue::DateTime(dt) => Some(ComparableValue::DateTime(dt.clone())),
         FlakeValue::Date(d) => Some(ComparableValue::Date(d.clone())),
         FlakeValue::Time(t) => Some(ComparableValue::Time(t.clone())),
-        // Calendar fragments, durations, and geo: route through TypedLiteral
+        // Geospatial
+        FlakeValue::GeoPoint(bits) => Some(ComparableValue::GeoPoint(*bits)),
+        // Calendar fragments, durations: route through TypedLiteral
         FlakeValue::GYear(_)
         | FlakeValue::GYearMonth(_)
         | FlakeValue::GMonth(_)
@@ -94,8 +98,7 @@ pub fn flake_value_to_comparable(val: &FlakeValue) -> Option<ComparableValue> {
         | FlakeValue::GMonthDay(_)
         | FlakeValue::YearMonthDuration(_)
         | FlakeValue::DayTimeDuration(_)
-        | FlakeValue::Duration(_)
-        | FlakeValue::GeoPoint(_) => Some(ComparableValue::TypedLiteral {
+        | FlakeValue::Duration(_) => Some(ComparableValue::TypedLiteral {
             val: val.clone(),
             dt_iri: None,
             lang: None,
@@ -132,6 +135,7 @@ pub fn comparable_to_flake(val: &ComparableValue) -> FlakeValue {
         ComparableValue::DateTime(dt) => FlakeValue::DateTime(dt.clone()),
         ComparableValue::Date(d) => FlakeValue::Date(d.clone()),
         ComparableValue::Time(t) => FlakeValue::Time(t.clone()),
+        ComparableValue::GeoPoint(bits) => FlakeValue::GeoPoint(*bits),
         ComparableValue::Iri(s) => FlakeValue::String(s.to_string()),
         ComparableValue::TypedLiteral { val, .. } => val.clone(),
     }
@@ -167,6 +171,10 @@ pub fn comparable_to_str_value(val: ComparableValue) -> Option<ComparableValue> 
         ComparableValue::DateTime(dt) => Some(ComparableValue::String(Arc::from(dt.to_string()))),
         ComparableValue::Date(d) => Some(ComparableValue::String(Arc::from(d.to_string()))),
         ComparableValue::Time(t) => Some(ComparableValue::String(Arc::from(t.to_string()))),
+        ComparableValue::GeoPoint(bits) => {
+            // Convert to WKT format: POINT(lng lat)
+            Some(ComparableValue::String(Arc::from(bits.to_string())))
+        }
         ComparableValue::Vector(_) => None, // Vectors don't have a string representation
         ComparableValue::TypedLiteral { val, .. } => match val {
             FlakeValue::String(s) => Some(ComparableValue::String(Arc::from(s))),

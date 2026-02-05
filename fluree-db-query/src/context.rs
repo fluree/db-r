@@ -12,8 +12,8 @@ use crate::vector::VectorIndexProvider;
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::{Db, NoOverlay, OverlayProvider, Sid, Storage, Tracker};
 use fluree_db_indexer::run_index::BinaryIndexStore;
-use fluree_vocab::namespaces::{FLUREE_LEDGER, JSON_LD, RDF, XSD};
-use fluree_vocab::xsd_names;
+use fluree_vocab::namespaces::{FLUREE_LEDGER, JSON_LD, OGC_GEO, RDF, XSD};
+use fluree_vocab::{geo_names, xsd_names};
 use std::sync::Arc;
 
 /// Execution context providing access to database and query state
@@ -523,6 +523,8 @@ pub struct WellKnownDatatypes {
     pub fluree_vector: Sid,
     /// rdf:JSON (@json datatype)
     pub rdf_json: Sid,
+    /// geo:wktLiteral (http://www.opengis.net/ont/geosparql#wktLiteral)
+    pub geo_wkt_literal: Sid,
 }
 
 impl Default for WellKnownDatatypes {
@@ -559,6 +561,7 @@ impl WellKnownDatatypes {
             id_type: Sid::new(JSON_LD, "id"),
             fluree_vector: Sid::new(FLUREE_LEDGER, "vector"),
             rdf_json: Sid::new(RDF, "JSON"),
+            geo_wkt_literal: Sid::new(OGC_GEO, geo_names::WKT_LITERAL),
         }
     }
 

@@ -8,7 +8,7 @@
 use crate::binding::{Binding, RowView};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::ir::{CompareOp, FilterExpr, FilterValue};
+use crate::ir::{FilterExpr, FilterValue};
 use fluree_db_core::{FlakeValue, Storage};
 use std::sync::Arc;
 
@@ -100,6 +100,10 @@ pub fn evaluate_to_binding_with_context_strict<S: Storage>(
         ComparableValue::Time(t) => {
             Ok(Binding::lit(FlakeValue::Time(t), datatypes.xsd_time.clone()))
         }
+        ComparableValue::GeoPoint(bits) => Ok(Binding::lit(
+            FlakeValue::GeoPoint(bits),
+            datatypes.geo_wkt_literal.clone(),
+        )),
         ComparableValue::Iri(iri) => {
             let Some(ctx) = ctx else {
                 return Err(QueryError::InvalidFilter(

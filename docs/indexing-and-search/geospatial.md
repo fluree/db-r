@@ -181,11 +181,62 @@ GeoPoints use `ObjKind::GEO_POINT` (0x14) in the binary index:
 
 The latitude-primary encoding enables POST index scans that efficiently retrieve all points within a latitude band.
 
-## Proximity Queries (Future)
+## Distance Queries
 
-The current implementation provides the foundation for proximity queries. The following capabilities are planned:
+Fluree supports the `geof:distance` function (OGC GeoSPARQL) for calculating haversine distances between geographic points.
+
+### geof:distance Function
+
+Calculate the distance between two points in meters:
+
+**JSON-LD Query:**
+```json
+{
+  "@context": {
+    "ex": "http://example.org/",
+    "geo": "http://www.opengis.net/ont/geosparql#"
+  },
+  "from": "places:main",
+  "where": [
+    { "@id": "?place", "ex:location": "?loc" },
+    { "@id": "ex:paris", "ex:location": "?paris_loc" }
+  ],
+  "select": ["?place", ["distance", "?loc", "?paris_loc"]],
+  "filter": [["<", ["distance", "?loc", "?paris_loc"], 500000]]
+}
+```
+
+**SPARQL:**
+```sparql
+PREFIX ex: <http://example.org/>
+PREFIX geo: <http://www.opengis.net/ont/geosparql#>
+PREFIX geof: <http://www.opengis.net/def/function/geosparql/>
+
+SELECT ?place ?distance
+WHERE {
+  ?place ex:location ?loc .
+  ex:paris ex:location ?parisLoc .
+  BIND(geof:distance(?loc, ?parisLoc) AS ?distance)
+  FILTER(?distance < 500000)
+}
+ORDER BY ?distance
+```
+
+**Function aliases:** `geof:distance`, `geo_distance`, `geodistance`
+
+**Arguments:**
+- Two GeoPoint values (stored as `geo:wktLiteral` POINT)
+- Or two WKT POINT strings
+
+**Returns:** Distance in meters (Double)
+
+**Calculation:** Uses the haversine formula with Earth's mean radius (6,371 km), accurate to within 0.3% for typical distances.
+
+## Planned Capabilities
 
 ### Bounding Box Scans
+
+Index-accelerated spatial queries are planned:
 
 ```json
 {
@@ -196,20 +247,9 @@ The current implementation provides the foundation for proximity queries. The fo
 }
 ```
 
-### Distance Filtering
-
-```json
-{
-  "where": [
-    { "@id": "?place", "ex:location": "?loc" },
-    { "geo:distance": { "?loc": "POINT(2.2945 48.8584)", "radius": 10000 } }
-  ]
-}
-```
-
 ### Query Implementation Notes
 
-Proximity queries will use:
+Future index-accelerated proximity queries will use:
 
 1. **POST latitude-band scan**: Returns all points in the latitude range (may include false positives outside longitude bounds)
 2. **Haversine post-filter**: Filters results to actual distance threshold

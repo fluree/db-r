@@ -13,7 +13,7 @@ use crate::error::{QueryError, Result};
 use crate::ir::{FilterExpr, FunctionName};
 use chrono::{DateTime, Datelike, FixedOffset, SecondsFormat, Timelike, Utc};
 use fluree_db_core::temporal::DateTime as FlureeDateTime;
-use fluree_db_core::{FlakeValue, Storage};
+use fluree_db_core::{geo, FlakeValue, Storage};
 use md5::{Digest as Md5Digest, Md5};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use rand::random;
@@ -22,7 +22,7 @@ use sha2::{Sha256, Sha384, Sha512};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use super::eval::{eval_to_comparable, eval_to_comparable_inner, evaluate, evaluate_inner};
+use super::eval::{eval_to_comparable_inner, evaluate_inner};
 use super::helpers::{
     build_regex_with_flags, check_arity, format_datatype_sid, parse_datetime_from_binding,
 };
@@ -662,6 +662,27 @@ pub fn eval_function<S: Storage>(
             )))))
         }
 
+        // =================================================================
+        // Geospatial functions (OGC GeoSPARQL)
+        // =================================================================
+        FunctionName::GeofDistance => {
+            check_arity(args, 2, "geof:distance")?;
+            let v1 = eval_to_comparable_inner(&args[0], row, ctx)?;
+            let v2 = eval_to_comparable_inner(&args[1], row, ctx)?;
+
+            // Extract lat/lng from each argument
+            let coords1 = extract_geo_coords(&v1);
+            let coords2 = extract_geo_coords(&v2);
+
+            match (coords1, coords2) {
+                (Some((lat1, lng1)), Some((lat2, lng2))) => {
+                    let distance = geo::haversine_distance(lat1, lng1, lat2, lng2);
+                    Ok(Some(ComparableValue::Double(distance)))
+                }
+                _ => Ok(None), // Return None if either argument is not a valid point
+            }
+        }
+
         FunctionName::Custom(name) => Err(QueryError::InvalidFilter(format!(
             "Unknown function: {}",
             name
@@ -758,6 +779,24 @@ where
     }
 }
 
+/// Extract (lat, lng) from a ComparableValue
+///
+/// Supports:
+/// - GeoPoint: direct extraction from packed representation
+/// - String/TypedLiteral: parse WKT POINT format
+fn extract_geo_coords(val: &Option<ComparableValue>) -> Option<(f64, f64)> {
+    match val {
+        Some(ComparableValue::GeoPoint(bits)) => Some((bits.lat(), bits.lng())),
+        Some(ComparableValue::String(s)) => geo::try_extract_point(s),
+        Some(ComparableValue::TypedLiteral { val, .. }) => match val {
+            FlakeValue::GeoPoint(bits) => Some((bits.lat(), bits.lng())),
+            FlakeValue::String(s) => geo::try_extract_point(s),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -851,5 +890,111 @@ mod tests {
         )
         .unwrap();
         assert!(!result); // 0 is falsy
+    }
+
+    #[test]
+    fn test_geof_distance_with_geopoints() {
+        use fluree_db_core::GeoPointBits;
+        use fluree_vocab::namespaces::OGC_GEO;
+
+        // Paris: 48.8566°N, 2.3522°E
+        // London: 51.5074°N, 0.1278°W
+        let paris = GeoPointBits::new(48.8566, 2.3522).unwrap();
+        let london = GeoPointBits::new(51.5074, -0.1278).unwrap();
+
+        let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
+        // Each column represents one variable binding across rows
+        let col0 = vec![Binding::lit(
+            FlakeValue::GeoPoint(paris),
+            Sid::new(OGC_GEO, "wktLiteral"),
+        )];
+        let col1 = vec![Binding::lit(
+            FlakeValue::GeoPoint(london),
+            Sid::new(OGC_GEO, "wktLiteral"),
+        )];
+        let batch = Batch::new(schema, vec![col0, col1]).unwrap();
+        let row = batch.row_view(0).unwrap();
+
+        let result = eval_function::<fluree_db_core::MemoryStorage>(
+            &FunctionName::GeofDistance,
+            &[FilterExpr::Var(VarId(0)), FilterExpr::Var(VarId(1))],
+            &row,
+            None,
+        )
+        .unwrap();
+
+        // Distance should be approximately 343 km
+        if let Some(ComparableValue::Double(d)) = result {
+            assert!(
+                (d - 343_500.0).abs() < 5_000.0,
+                "Expected ~343 km, got {} m",
+                d
+            );
+        } else {
+            panic!("Expected Double result, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_geof_distance_with_wkt_strings() {
+        // Test with WKT string literals
+        let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
+        // Each column represents one variable binding across rows
+        let col0 = vec![Binding::lit(
+            FlakeValue::String("POINT(2.3522 48.8566)".to_string()), // Paris (lng, lat)
+            Sid::new(2, "string"),
+        )];
+        let col1 = vec![Binding::lit(
+            FlakeValue::String("POINT(-0.1278 51.5074)".to_string()), // London (lng, lat)
+            Sid::new(2, "string"),
+        )];
+        let batch = Batch::new(schema, vec![col0, col1]).unwrap();
+        let row = batch.row_view(0).unwrap();
+
+        let result = eval_function::<fluree_db_core::MemoryStorage>(
+            &FunctionName::GeofDistance,
+            &[FilterExpr::Var(VarId(0)), FilterExpr::Var(VarId(1))],
+            &row,
+            None,
+        )
+        .unwrap();
+
+        // Distance should be approximately 343 km
+        if let Some(ComparableValue::Double(d)) = result {
+            assert!(
+                (d - 343_500.0).abs() < 5_000.0,
+                "Expected ~343 km, got {} m",
+                d
+            );
+        } else {
+            panic!("Expected Double result, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_geof_distance_with_non_point_returns_none() {
+        // Non-POINT WKT geometries should return None (LINESTRING, POLYGON, etc.)
+        let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
+        let col0 = vec![Binding::lit(
+            FlakeValue::String("LINESTRING(0 0, 1 1, 2 2)".to_string()),
+            Sid::new(2, "string"),
+        )];
+        let col1 = vec![Binding::lit(
+            FlakeValue::String("POINT(2.3522 48.8566)".to_string()),
+            Sid::new(2, "string"),
+        )];
+        let batch = Batch::new(schema, vec![col0, col1]).unwrap();
+        let row = batch.row_view(0).unwrap();
+
+        let result = eval_function::<fluree_db_core::MemoryStorage>(
+            &FunctionName::GeofDistance,
+            &[FilterExpr::Var(VarId(0)), FilterExpr::Var(VarId(1))],
+            &row,
+            None,
+        )
+        .unwrap();
+
+        // Non-point geometries should return None (filters evaluate as false)
+        assert_eq!(result, None);
     }
 }
