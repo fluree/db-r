@@ -614,11 +614,11 @@ impl<'a, S: Storage, C: NodeCache> GraphCrawlFormatter<'a, S, C> {
         let dt_full = self.compactor.decode_sid(&flake.dt)?;
         let dt_compact = self.compactor.compact_sid(&flake.dt)?;
 
-        // Special handling for @json datatype: deserialize the JSON string
+        // Special handling for @json datatype: deserialize the JSON string.
+        // Accept both Json and String variants (see jsonld.rs for rationale).
         if dt_full == rdf::JSON || dt_compact == "@json" {
             return match &flake.o {
-                FlakeValue::Json(json_str) => {
-                    // Deserialize the JSON string back to a JSON value
+                FlakeValue::Json(json_str) | FlakeValue::String(json_str) => {
                     serde_json::from_str(json_str)
                         .map_err(|e| FormatError::InvalidBinding(format!("Invalid JSON in @json value: {}", e)))
                 }
@@ -790,9 +790,11 @@ impl<'a, S: Storage, C: NodeCache> GraphCrawlFormatter<'a, S, C> {
 
         if dt_full == rdf::JSON || dt_compact == "@json" {
             return match &flake.o {
-                FlakeValue::Json(json_str) => serde_json::from_str(json_str).map_err(|e| {
-                    FormatError::InvalidBinding(format!("Invalid JSON in @json value: {}", e))
-                }),
+                FlakeValue::Json(json_str) | FlakeValue::String(json_str) => {
+                    serde_json::from_str(json_str).map_err(|e| {
+                        FormatError::InvalidBinding(format!("Invalid JSON in @json value: {}", e))
+                    })
+                }
                 _ => Err(FormatError::InvalidBinding(
                     "@json datatype must have FlakeValue::Json".to_string(),
                 )),
