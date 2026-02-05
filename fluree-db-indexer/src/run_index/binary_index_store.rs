@@ -21,6 +21,7 @@ use super::leaflet::decode_leaflet;
 use super::leaflet_cache::LeafletCache;
 use super::prefix_trie::PrefixTrie;
 use super::run_record::{RunRecord, RunSortOrder};
+use super::types::DecodedRow;
 use crate::dict_tree::builder;
 use crate::dict_tree::forward_leaf::ForwardEntry;
 use crate::dict_tree::reader::LeafSource;
@@ -1428,45 +1429,35 @@ impl BinaryIndexStore {
     ///
     /// Does IRI round-trip: `id → IRI string → encode_iri(iri) → Sid`.
     /// PrefixTrie makes this O(len(iri)) per call.
-    pub fn row_to_flake(
-        &self,
-        s_id: u64,
-        p_id: u32,
-        o_kind: u8,
-        o_key: u64,
-        dt_raw: u32,
-        t: i64,
-        lang_id: u16,
-        i_val: i32,
-    ) -> io::Result<Flake> {
+    pub fn row_to_flake(&self, row: &DecodedRow) -> io::Result<Flake> {
         // Subject: s_id → IRI → Sid
-        let s_iri = self.resolve_subject_iri(s_id)?;
+        let s_iri = self.resolve_subject_iri(row.s_id)?;
         let s_sid = self.encode_iri(&s_iri);
 
         // Predicate: p_id → IRI → Sid
-        let p_iri = self.resolve_predicate_iri(p_id).ok_or_else(|| {
+        let p_iri = self.resolve_predicate_iri(row.p_id).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("p_id {} not in predicate dict", p_id),
+                format!("p_id {} not in predicate dict", row.p_id),
             )
         })?;
         let p_sid = self.encode_iri(p_iri);
 
         // Object: (ObjKind, ObjKey) → FlakeValue
-        let o_val = self.decode_value(o_kind, o_key, p_id)?;
+        let o_val = self.decode_value(row.o_kind, row.o_key, row.p_id)?;
 
         // Datatype: dt_id → Sid via pre-computed dt_sids vec
         let dt_sid = self
             .dicts
             .dt_sids
-            .get(dt_raw as usize)
+            .get(row.dt as usize)
             .cloned()
             .unwrap_or_else(|| Sid::new(0, ""));
 
         // Meta: lang + list index
-        let meta = self.decode_meta(lang_id, i_val);
+        let meta = self.decode_meta(row.lang_id, row.i);
 
-        Ok(Flake::new(s_sid, p_sid, o_val, dt_sid, t, true, meta))
+        Ok(Flake::new(s_sid, p_sid, o_val, dt_sid, row.t, true, meta))
     }
 
     /// Decode an `(o_kind, o_key)` pair into a FlakeValue.
@@ -1686,16 +1677,17 @@ impl BinaryIndexStore {
                         }
                     }
 
-                    let flake = self.row_to_flake(
-                        row_s_id,
-                        row_p_id,
-                        decoded.o_kinds[row],
-                        decoded.o_keys[row],
-                        decoded.dt_values[row],
-                        decoded.t_values[row],
-                        decoded.lang_ids[row],
-                        decoded.i_values[row],
-                    )?;
+                    let decoded_row = DecodedRow {
+                        s_id: row_s_id,
+                        p_id: row_p_id,
+                        o_kind: decoded.o_kinds[row],
+                        o_key: decoded.o_keys[row],
+                        dt: decoded.dt_values[row],
+                        t: decoded.t_values[row],
+                        lang_id: decoded.lang_ids[row],
+                        i: decoded.i_values[row],
+                    };
+                    let flake = self.row_to_flake(&decoded_row)?;
                     flakes.push(flake);
                 }
             }

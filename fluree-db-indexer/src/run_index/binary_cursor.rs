@@ -20,7 +20,7 @@ use super::leaflet::{
 use super::leaflet_cache::{CachedRegion1, CachedRegion2, LeafletCacheKey};
 use super::replay::replay_leaflet;
 use super::run_record::{cmp_for_order, FactKey, RunRecord, RunSortOrder};
-use super::types::{OverlayOp, RowColumnOutput};
+use super::types::{DecodedRow, OverlayOp, RowColumnOutput, RowColumnSlice};
 use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
 use memmap2::Mmap;
 use std::cmp::Ordering;
@@ -118,26 +118,18 @@ fn cmp_overlay_vs_record(ov: &OverlayOp, rec: &RunRecord, order: RunSortOrder) -
 ///
 /// Uses FactKey semantics: (s_id, p_id, o_kind, o_key, dt, effective_lang_id, i).
 #[inline]
-fn same_identity_row_vs_overlay(
-    s_id: u64,
-    p_id: u32,
-    o_kind: u8,
-    o_key: u64,
-    dt: u32,
-    lang_id: u16,
-    i: i32,
-    ov: &OverlayOp,
-) -> bool {
-    FactKey::from_decoded_row(s_id, p_id, o_kind, o_key, dt, lang_id, i)
-        == FactKey::from_decoded_row(
-            ov.s_id,
-            ov.p_id,
-            ov.o_kind,
-            ov.o_key,
-            ov.dt as u32,
-            ov.lang_id,
-            ov.i_val,
-        )
+fn same_identity_row_vs_overlay(row: &DecodedRow, ov: &OverlayOp) -> bool {
+    FactKey::from_decoded_row(
+        row.s_id, row.p_id, row.o_kind, row.o_key, row.dt, row.lang_id, row.i,
+    ) == FactKey::from_decoded_row(
+        ov.s_id,
+        ov.p_id,
+        ov.o_kind,
+        ov.o_key,
+        ov.dt as u32,
+        ov.lang_id,
+        ov.i_val,
+    )
 }
 
 // ============================================================================
@@ -155,18 +147,11 @@ fn same_identity_row_vs_overlay(
 ///
 /// Returns merged (CachedRegion1, CachedRegion2).
 fn merge_overlay(
-    r1_s: &[u64],
-    r1_p: &[u32],
-    r1_o_kinds: &[u8],
-    r1_o_keys: &[u64],
-    r2_dt: &[u32],
-    r2_t: &[i64],
-    r2_lang: &[u16],
-    r2_i: &[i32],
+    input: &RowColumnSlice<'_>,
     overlay: &[OverlayOp],
     order: RunSortOrder,
 ) -> (CachedRegion1, CachedRegion2) {
-    let row_count = r1_s.len();
+    let row_count = input.len();
     let cap = row_count + overlay.len();
 
     let mut out_s: Vec<u64> = Vec::with_capacity(cap);
@@ -184,11 +169,11 @@ fn merge_overlay(
     while ri < row_count && oi < overlay.len() {
         let ov = &overlay[oi];
         let cmp = cmp_row_vs_overlay(
-            r1_s[ri],
-            r1_p[ri],
-            r1_o_kinds[ri],
-            r1_o_keys[ri],
-            r2_dt[ri] as u16,
+            input.s[ri],
+            input.p[ri],
+            input.o_kinds[ri],
+            input.o_keys[ri],
+            input.dt[ri] as u16,
             ov,
             order,
         );
@@ -196,14 +181,14 @@ fn merge_overlay(
         match cmp {
             Ordering::Less => {
                 // Row comes first — emit unchanged
-                out_s.push(r1_s[ri]);
-                out_p.push(r1_p[ri]);
-                out_o_kinds.push(r1_o_kinds[ri]);
-                out_o_keys.push(r1_o_keys[ri]);
-                out_dt.push(r2_dt[ri]);
-                out_t.push(r2_t[ri]);
-                out_lang.push(r2_lang[ri]);
-                out_i.push(r2_i[ri]);
+                out_s.push(input.s[ri]);
+                out_p.push(input.p[ri]);
+                out_o_kinds.push(input.o_kinds[ri]);
+                out_o_keys.push(input.o_keys[ri]);
+                out_dt.push(input.dt[ri]);
+                out_t.push(input.t[ri]);
+                out_lang.push(input.lang[ri]);
+                out_i.push(input.i[ri]);
                 ri += 1;
             }
             Ordering::Greater => {
@@ -226,16 +211,8 @@ fn merge_overlay(
             }
             Ordering::Equal => {
                 // Sort-order position match — check full identity
-                if same_identity_row_vs_overlay(
-                    r1_s[ri],
-                    r1_p[ri],
-                    r1_o_kinds[ri],
-                    r1_o_keys[ri],
-                    r2_dt[ri],
-                    r2_lang[ri],
-                    r2_i[ri],
-                    ov,
-                ) {
+                let row = input.get(ri);
+                if same_identity_row_vs_overlay(&row, ov) {
                     // Same fact identity
                     if ov.op {
                         // Assert (update) — emit overlay with new t
@@ -257,14 +234,14 @@ fn merge_overlay(
                 } else {
                     // Same sort position but different identity (e.g., different lang_id/i).
                     // Emit the existing row and retry the overlay on the next iteration.
-                    out_s.push(r1_s[ri]);
-                    out_p.push(r1_p[ri]);
-                    out_o_kinds.push(r1_o_kinds[ri]);
-                    out_o_keys.push(r1_o_keys[ri]);
-                    out_dt.push(r2_dt[ri]);
-                    out_t.push(r2_t[ri]);
-                    out_lang.push(r2_lang[ri]);
-                    out_i.push(r2_i[ri]);
+                    out_s.push(input.s[ri]);
+                    out_p.push(input.p[ri]);
+                    out_o_kinds.push(input.o_kinds[ri]);
+                    out_o_keys.push(input.o_keys[ri]);
+                    out_dt.push(input.dt[ri]);
+                    out_t.push(input.t[ri]);
+                    out_lang.push(input.lang[ri]);
+                    out_i.push(input.i[ri]);
                     ri += 1;
                 }
             }
@@ -273,14 +250,14 @@ fn merge_overlay(
 
     // Drain remaining rows
     while ri < row_count {
-        out_s.push(r1_s[ri]);
-        out_p.push(r1_p[ri]);
-        out_o_kinds.push(r1_o_kinds[ri]);
-        out_o_keys.push(r1_o_keys[ri]);
-        out_dt.push(r2_dt[ri]);
-        out_t.push(r2_t[ri]);
-        out_lang.push(r2_lang[ri]);
-        out_i.push(r2_i[ri]);
+        out_s.push(input.s[ri]);
+        out_p.push(input.p[ri]);
+        out_o_kinds.push(input.o_kinds[ri]);
+        out_o_keys.push(input.o_keys[ri]);
+        out_dt.push(input.dt[ri]);
+        out_t.push(input.t[ri]);
+        out_lang.push(input.lang[ri]);
+        out_i.push(input.i[ri]);
         ri += 1;
     }
 
@@ -872,18 +849,17 @@ impl BinaryCursor {
                 let r1_s_u64: Vec<u64> = (0..r1.row_count)
                     .map(|i| r1.s_ids.get(i).as_u64())
                     .collect();
-                let (merged_r1, merged_r2) = merge_overlay(
-                    &r1_s_u64,
-                    &r1.p_ids,
-                    &r1.o_kinds,
-                    &r1.o_keys,
-                    &r2.dt_values,
-                    &r2.t_values,
-                    &r2.lang_ids,
-                    &r2.i_values,
-                    local_overlay,
-                    self.order,
-                );
+                let input_slice = RowColumnSlice {
+                    s: &r1_s_u64,
+                    p: &r1.p_ids,
+                    o_kinds: &r1.o_kinds,
+                    o_keys: &r1.o_keys,
+                    dt: &r2.dt_values,
+                    t: &r2.t_values,
+                    lang: &r2.lang_ids,
+                    i: &r2.i_values,
+                };
+                let (merged_r1, merged_r2) = merge_overlay(&input_slice, local_overlay, self.order);
 
                 // Cache merged result at the overlay epoch key.
                 let merged_key = LeafletCacheKey {
@@ -1176,19 +1152,18 @@ impl BinaryCursor {
         let r3_entries = decode_leaflet_region3(leaflet_bytes, &lh)?;
 
         // Step 3: Replay (or pass through if R3 is empty).
-        let (eff_r1, eff_r2) = match replay_leaflet(
-            &s_ids,
-            &p_ids,
-            &o_kinds,
-            &o_keys,
-            &dt_values,
-            &t_values,
-            &lang_values,
-            &i_values,
-            &r3_entries,
-            self.to_t,
-            self.order,
-        ) {
+        let replay_input = RowColumnSlice {
+            s: &s_ids,
+            p: &p_ids,
+            o_kinds: &o_kinds,
+            o_keys: &o_keys,
+            dt: &dt_values,
+            t: &t_values,
+            lang: &lang_values,
+            i: &i_values,
+        };
+        let (eff_r1, eff_r2) = match replay_leaflet(&replay_input, &r3_entries, self.to_t, self.order)
+        {
             Some(replayed) => {
                 // Replay produced new state
                 let r1 = CachedRegion1 {
@@ -1379,110 +1354,83 @@ mod tests {
         }
     }
 
-    /// Helper: make decoded R1+R2 columns from simple (s, p, val, t) tuples.
-    fn make_columns(
-        rows: &[(u64, u32, i64, i64)],
-    ) -> (
-        Vec<u64>,
-        Vec<u32>,
-        Vec<u8>,
-        Vec<u64>,
-        Vec<u32>,
-        Vec<i64>,
-        Vec<u16>,
-        Vec<i32>,
-    ) {
-        let s: Vec<u64> = rows.iter().map(|r| r.0).collect();
-        let p: Vec<u32> = rows.iter().map(|r| r.1).collect();
-        let o_kinds: Vec<u8> = vec![ObjKind::NUM_INT.as_u8(); rows.len()];
-        let o_keys: Vec<u64> = rows
-            .iter()
-            .map(|r| ObjKey::encode_i64(r.2).as_u64())
-            .collect();
-        let dt: Vec<u32> = vec![DatatypeDictId::INTEGER.as_u16() as u32; rows.len()];
-        let t: Vec<i64> = rows.iter().map(|r| r.3).collect();
-        let lang: Vec<u16> = vec![0; rows.len()];
-        let i: Vec<i32> = vec![ListIndex::none().as_i32(); rows.len()];
-        (s, p, o_kinds, o_keys, dt, t, lang, i)
+    /// Test helper: owns decoded R1+R2 columns and provides slice access.
+    struct TestColumns {
+        s: Vec<u64>,
+        p: Vec<u32>,
+        o_kinds: Vec<u8>,
+        o_keys: Vec<u64>,
+        dt: Vec<u32>,
+        t: Vec<i64>,
+        lang: Vec<u16>,
+        i: Vec<i32>,
+    }
+
+    impl TestColumns {
+        /// Create columns from simple (s, p, val, t) tuples.
+        fn from_rows(rows: &[(u64, u32, i64, i64)]) -> Self {
+            Self {
+                s: rows.iter().map(|r| r.0).collect(),
+                p: rows.iter().map(|r| r.1).collect(),
+                o_kinds: vec![ObjKind::NUM_INT.as_u8(); rows.len()],
+                o_keys: rows
+                    .iter()
+                    .map(|r| ObjKey::encode_i64(r.2).as_u64())
+                    .collect(),
+                dt: vec![DatatypeDictId::INTEGER.as_u16() as u32; rows.len()],
+                t: rows.iter().map(|r| r.3).collect(),
+                lang: vec![0; rows.len()],
+                i: vec![ListIndex::none().as_i32(); rows.len()],
+            }
+        }
+
+        /// Get a RowColumnSlice view of this data.
+        fn as_slice(&self) -> RowColumnSlice<'_> {
+            RowColumnSlice {
+                s: &self.s,
+                p: &self.p,
+                o_kinds: &self.o_kinds,
+                o_keys: &self.o_keys,
+                dt: &self.dt,
+                t: &self.t,
+                lang: &self.lang,
+                i: &self.i,
+            }
+        }
     }
 
     #[test]
     fn test_merge_overlay_empty() {
-        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[(1, 1, 10, 1), (2, 1, 20, 1)]);
+        let cols = TestColumns::from_rows(&[(1, 1, 10, 1), (2, 1, 20, 1)]);
         let overlay: Vec<OverlayOp> = vec![];
-        let (r1, _r2) = merge_overlay(
-            &s,
-            &p,
-            &ok,
-            &okey,
-            &dt,
-            &t,
-            &lang,
-            &i,
-            &overlay,
-            RunSortOrder::Spot,
-        );
+        let (r1, _r2) = merge_overlay(&cols.as_slice(), &overlay, RunSortOrder::Spot);
         assert_eq!(r1.row_count, 2);
         assert_eq!(sid_col_to_u64(&r1.s_ids), &[1, 2]);
     }
 
     #[test]
     fn test_merge_overlay_assert_new_fact() {
-        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[(1, 1, 10, 1), (3, 1, 30, 1)]);
+        let cols = TestColumns::from_rows(&[(1, 1, 10, 1), (3, 1, 30, 1)]);
         let overlay = vec![make_overlay_op(2, 1, 20, 5, true)];
-        let (r1, _r2) = merge_overlay(
-            &s,
-            &p,
-            &ok,
-            &okey,
-            &dt,
-            &t,
-            &lang,
-            &i,
-            &overlay,
-            RunSortOrder::Spot,
-        );
+        let (r1, _r2) = merge_overlay(&cols.as_slice(), &overlay, RunSortOrder::Spot);
         assert_eq!(r1.row_count, 3);
         assert_eq!(sid_col_to_u64(&r1.s_ids), &[1, 2, 3]);
     }
 
     #[test]
     fn test_merge_overlay_retract_existing() {
-        let (s, p, ok, okey, dt, t, lang, i) =
-            make_columns(&[(1, 1, 10, 1), (2, 1, 20, 1), (3, 1, 30, 1)]);
+        let cols = TestColumns::from_rows(&[(1, 1, 10, 1), (2, 1, 20, 1), (3, 1, 30, 1)]);
         let overlay = vec![make_overlay_op(2, 1, 20, 5, false)];
-        let (r1, _r2) = merge_overlay(
-            &s,
-            &p,
-            &ok,
-            &okey,
-            &dt,
-            &t,
-            &lang,
-            &i,
-            &overlay,
-            RunSortOrder::Spot,
-        );
+        let (r1, _r2) = merge_overlay(&cols.as_slice(), &overlay, RunSortOrder::Spot);
         assert_eq!(r1.row_count, 2);
         assert_eq!(sid_col_to_u64(&r1.s_ids), &[1, 3]);
     }
 
     #[test]
     fn test_merge_overlay_update_existing() {
-        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[(1, 1, 10, 1)]);
+        let cols = TestColumns::from_rows(&[(1, 1, 10, 1)]);
         let overlay = vec![make_overlay_op(1, 1, 10, 5, true)];
-        let (r1, r2) = merge_overlay(
-            &s,
-            &p,
-            &ok,
-            &okey,
-            &dt,
-            &t,
-            &lang,
-            &i,
-            &overlay,
-            RunSortOrder::Spot,
-        );
+        let (r1, r2) = merge_overlay(&cols.as_slice(), &overlay, RunSortOrder::Spot);
         assert_eq!(r1.row_count, 1);
         assert_eq!(sid_col_to_u64(&r1.s_ids), &[1]);
         assert_eq!(r2.t_values[0], 5); // updated t
@@ -1490,91 +1438,47 @@ mod tests {
 
     #[test]
     fn test_merge_overlay_retract_nonexistent() {
-        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[(1, 1, 10, 1)]);
+        let cols = TestColumns::from_rows(&[(1, 1, 10, 1)]);
         let overlay = vec![make_overlay_op(0, 1, 5, 5, false)]; // retract before s=1
-        let (r1, _r2) = merge_overlay(
-            &s,
-            &p,
-            &ok,
-            &okey,
-            &dt,
-            &t,
-            &lang,
-            &i,
-            &overlay,
-            RunSortOrder::Spot,
-        );
+        let (r1, _r2) = merge_overlay(&cols.as_slice(), &overlay, RunSortOrder::Spot);
         assert_eq!(r1.row_count, 1);
         assert_eq!(sid_col_to_u64(&r1.s_ids), &[1]);
     }
 
     #[test]
     fn test_merge_overlay_append_after() {
-        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[(1, 1, 10, 1)]);
+        let cols = TestColumns::from_rows(&[(1, 1, 10, 1)]);
         let overlay = vec![
             make_overlay_op(5, 1, 50, 5, true),
             make_overlay_op(6, 1, 60, 5, true),
         ];
-        let (r1, _r2) = merge_overlay(
-            &s,
-            &p,
-            &ok,
-            &okey,
-            &dt,
-            &t,
-            &lang,
-            &i,
-            &overlay,
-            RunSortOrder::Spot,
-        );
+        let (r1, _r2) = merge_overlay(&cols.as_slice(), &overlay, RunSortOrder::Spot);
         assert_eq!(r1.row_count, 3);
         assert_eq!(sid_col_to_u64(&r1.s_ids), &[1, 5, 6]);
     }
 
     #[test]
     fn test_merge_overlay_prepend_before() {
-        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[(5, 1, 50, 1)]);
+        let cols = TestColumns::from_rows(&[(5, 1, 50, 1)]);
         let overlay = vec![
             make_overlay_op(1, 1, 10, 5, true),
             make_overlay_op(2, 1, 20, 5, true),
         ];
-        let (r1, _r2) = merge_overlay(
-            &s,
-            &p,
-            &ok,
-            &okey,
-            &dt,
-            &t,
-            &lang,
-            &i,
-            &overlay,
-            RunSortOrder::Spot,
-        );
+        let (r1, _r2) = merge_overlay(&cols.as_slice(), &overlay, RunSortOrder::Spot);
         assert_eq!(r1.row_count, 3);
         assert_eq!(sid_col_to_u64(&r1.s_ids), &[1, 2, 5]);
     }
 
     #[test]
     fn test_merge_overlay_mixed_operations() {
-        let (s, p, ok, okey, dt, t, lang, i) =
-            make_columns(&[(1, 1, 10, 1), (2, 1, 20, 1), (3, 1, 30, 1), (5, 1, 50, 1)]);
+        let cols =
+            TestColumns::from_rows(&[(1, 1, 10, 1), (2, 1, 20, 1), (3, 1, 30, 1), (5, 1, 50, 1)]);
         let overlay = vec![
             make_overlay_op(2, 1, 20, 5, false), // retract s=2
             make_overlay_op(3, 1, 30, 5, true),  // update s=3
             make_overlay_op(4, 1, 40, 5, true),  // insert s=4
         ];
-        let (r1, r2) = merge_overlay(
-            &s,
-            &p,
-            &ok,
-            &okey,
-            &dt,
-            &t,
-            &lang,
-            &i,
-            &overlay,
-            RunSortOrder::Spot,
-        );
+        let (r1, r2) = merge_overlay(&cols.as_slice(), &overlay, RunSortOrder::Spot);
         assert_eq!(r1.row_count, 4);
         assert_eq!(sid_col_to_u64(&r1.s_ids), &[1, 3, 4, 5]);
         assert_eq!(r2.t_values[1], 5); // s=3 updated
@@ -1583,53 +1487,31 @@ mod tests {
 
     #[test]
     fn test_merge_overlay_into_empty() {
-        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[]);
+        let cols = TestColumns::from_rows(&[]);
         let overlay = vec![
             make_overlay_op(1, 1, 10, 1, true),
             make_overlay_op(2, 1, 20, 1, true),
         ];
-        let (r1, _r2) = merge_overlay(
-            &s,
-            &p,
-            &ok,
-            &okey,
-            &dt,
-            &t,
-            &lang,
-            &i,
-            &overlay,
-            RunSortOrder::Spot,
-        );
+        let (r1, _r2) = merge_overlay(&cols.as_slice(), &overlay, RunSortOrder::Spot);
         assert_eq!(r1.row_count, 2);
         assert_eq!(sid_col_to_u64(&r1.s_ids), &[1, 2]);
     }
 
     #[test]
     fn test_merge_overlay_retract_all() {
-        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[(1, 1, 10, 1), (2, 1, 20, 1)]);
+        let cols = TestColumns::from_rows(&[(1, 1, 10, 1), (2, 1, 20, 1)]);
         let overlay = vec![
             make_overlay_op(1, 1, 10, 5, false),
             make_overlay_op(2, 1, 20, 5, false),
         ];
-        let (r1, _r2) = merge_overlay(
-            &s,
-            &p,
-            &ok,
-            &okey,
-            &dt,
-            &t,
-            &lang,
-            &i,
-            &overlay,
-            RunSortOrder::Spot,
-        );
+        let (r1, _r2) = merge_overlay(&cols.as_slice(), &overlay, RunSortOrder::Spot);
         assert_eq!(r1.row_count, 0);
     }
 
     #[test]
     fn test_merge_overlay_psot_order() {
         // PSOT: (p, s, o, dt) — p sorts first
-        let (s, p, ok, okey, dt, t, lang, i) = make_columns(&[
+        let cols = TestColumns::from_rows(&[
             (1, 1, 10, 1), // p=1, s=1
             (2, 1, 20, 1), // p=1, s=2
             (1, 2, 30, 1), // p=2, s=1
@@ -1646,18 +1528,7 @@ mod tests {
             lang_id: 0,
             i_val: ListIndex::none().as_i32(),
         }];
-        let (r1, _r2) = merge_overlay(
-            &s,
-            &p,
-            &ok,
-            &okey,
-            &dt,
-            &t,
-            &lang,
-            &i,
-            &overlay,
-            RunSortOrder::Psot,
-        );
+        let (r1, _r2) = merge_overlay(&cols.as_slice(), &overlay, RunSortOrder::Psot);
         assert_eq!(r1.row_count, 4);
         // PSOT order: (p=1,s=1), (p=1,s=2), (p=1,s=3), (p=2,s=1)
         assert_eq!(&*r1.p_ids, &[1, 1, 1, 2]);
@@ -1668,19 +1539,21 @@ mod tests {
     fn test_merge_overlay_same_sort_different_identity() {
         // Two facts with same (s, p, o_kind, o_key, dt) in sort position but different lang_id
         use fluree_db_core::DatatypeDictId;
-        let s = vec![1u64, 1];
-        let p = vec![1u32, 1];
         let o_kind_val = ObjKind::LEX_ID.as_u8();
         let o_key_val = ObjKey::encode_u32_id(5).as_u64();
-        let ok = vec![o_kind_val, o_kind_val];
-        let okey = vec![o_key_val, o_key_val];
-        let dt = vec![
-            DatatypeDictId::LANG_STRING.as_u16() as u32,
-            DatatypeDictId::LANG_STRING.as_u16() as u32,
-        ];
-        let t = vec![1i64, 1];
-        let lang = vec![1u16, 2]; // different lang_ids
-        let i = vec![ListIndex::none().as_i32(), ListIndex::none().as_i32()];
+        let cols = RowColumnSlice {
+            s: &[1u64, 1],
+            p: &[1u32, 1],
+            o_kinds: &[o_kind_val, o_kind_val],
+            o_keys: &[o_key_val, o_key_val],
+            dt: &[
+                DatatypeDictId::LANG_STRING.as_u16() as u32,
+                DatatypeDictId::LANG_STRING.as_u16() as u32,
+            ],
+            t: &[1i64, 1],
+            lang: &[1u16, 2], // different lang_ids
+            i: &[ListIndex::none().as_i32(), ListIndex::none().as_i32()],
+        };
 
         // Retract lang_id=1 version only
         let overlay = vec![OverlayOp {
@@ -1694,18 +1567,7 @@ mod tests {
             lang_id: 1,
             i_val: ListIndex::none().as_i32(),
         }];
-        let (r1, r2) = merge_overlay(
-            &s,
-            &p,
-            &ok,
-            &okey,
-            &dt,
-            &t,
-            &lang,
-            &i,
-            &overlay,
-            RunSortOrder::Spot,
-        );
+        let (r1, r2) = merge_overlay(&cols, &overlay, RunSortOrder::Spot);
         assert_eq!(r1.row_count, 1);
         assert_eq!(r2.lang_ids[0], 2); // lang_id=2 survives
     }

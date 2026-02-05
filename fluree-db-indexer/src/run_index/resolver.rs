@@ -100,15 +100,15 @@ impl CommitResolver {
                     raw_op.dt_ns_code,
                     raw_op.dt_name,
                 );
-                hook.on_record(
-                    record.g_id,
-                    record.p_id,
-                    record.s_id.as_u64(),
+                hook.on_record(&crate::stats::StatsRecord {
+                    g_id: record.g_id,
+                    p_id: record.p_id,
+                    s_id: record.s_id.as_u64(),
                     dt,
-                    crate::stats::value_hash(record.o_kind, record.o_key),
-                    record.t,
-                    record.op != 0,
-                );
+                    o_hash: crate::stats::value_hash(record.o_kind, record.o_key),
+                    t: record.t,
+                    op: record.op != 0,
+                });
             }
 
             writer

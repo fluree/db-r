@@ -391,6 +391,27 @@ pub struct IdStatsResult {
     pub total_flakes: u64,
 }
 
+/// A single resolved record for stats collection.
+///
+/// Bundles the per-op fields needed by `IdStatsHook::on_record`.
+#[derive(Debug, Clone, Copy)]
+pub struct StatsRecord {
+    /// Graph dictionary ID (0 = default)
+    pub g_id: u32,
+    /// Predicate dictionary ID
+    pub p_id: u32,
+    /// Subject dictionary ID
+    pub s_id: u64,
+    /// Datatype ID
+    pub dt: ValueTypeTag,
+    /// Pre-computed object value hash (from `value_hash()`)
+    pub o_hash: u64,
+    /// Transaction time
+    pub t: i64,
+    /// true = assertion, false = retraction
+    pub op: bool,
+}
+
 /// ID-based stats hook for import/index paths where GlobalDicts are available.
 ///
 /// Maintains per-(graph, property) HLL sketches and datatype usage.
@@ -401,7 +422,7 @@ pub struct IdStatsResult {
 /// ```ignore
 /// let mut hook = IdStatsHook::new();
 /// // Per resolved op:
-/// hook.on_record(g_id, p_id, s_id, dt, value_hash(o_kind, o_key), t, op);
+/// hook.on_record(&StatsRecord { g_id, p_id, s_id, dt, o_hash, t, op });
 /// // After all ops:
 /// let result = hook.finalize();
 /// ```
@@ -421,32 +442,17 @@ impl IdStatsHook {
     /// Process a single record with resolved IDs.
     ///
     /// Called per-op after the resolver maps Sids to numeric IDs.
-    ///
-    /// # Arguments
-    /// * `g_id` - Graph dictionary ID (0 = default)
-    /// * `p_id` - Predicate dictionary ID
-    /// * `s_id` - Subject dictionary ID
-    /// * `dt` - Datatype ID
-    /// * `o_hash` - Pre-computed object value hash (from `value_hash()`)
-    /// * `t` - Transaction time
-    /// * `op` - true = assertion, false = retraction
-    pub fn on_record(
-        &mut self,
-        g_id: u32,
-        p_id: u32,
-        s_id: u64,
-        dt: ValueTypeTag,
-        o_hash: u64,
-        t: i64,
-        op: bool,
-    ) {
+    pub fn on_record(&mut self, rec: &StatsRecord) {
         self.flake_count += 1;
-        let delta: i64 = if op { 1 } else { -1 };
+        let delta: i64 = if rec.op { 1 } else { -1 };
 
         // Track per-graph flake count
-        *self.graph_flakes.entry(g_id).or_insert(0) += delta;
+        *self.graph_flakes.entry(rec.g_id).or_insert(0) += delta;
 
-        let key = GraphPropertyKey { g_id, p_id };
+        let key = GraphPropertyKey {
+            g_id: rec.g_id,
+            p_id: rec.p_id,
+        };
         let hll = self
             .properties
             .entry(key)
@@ -455,17 +461,17 @@ impl IdStatsHook {
         hll.count += delta;
 
         // HLL: only insert on assertions (NDV is monotone)
-        if op {
-            hll.values_hll.insert_hash(o_hash);
-            hll.subjects_hll.insert_hash(subject_hash(s_id));
+        if rec.op {
+            hll.values_hll.insert_hash(rec.o_hash);
+            hll.subjects_hll.insert_hash(subject_hash(rec.s_id));
         }
 
-        if t > hll.last_modified_t {
-            hll.last_modified_t = t;
+        if rec.t > hll.last_modified_t {
+            hll.last_modified_t = rec.t;
         }
 
         // Track datatype usage
-        *hll.datatypes.entry(dt.as_u8()).or_insert(0) += delta;
+        *hll.datatypes.entry(rec.dt.as_u8()).or_insert(0) += delta;
     }
 
     /// Merge another hook into this one (for cross-commit accumulation).

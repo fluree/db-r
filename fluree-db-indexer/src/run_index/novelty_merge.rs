@@ -9,7 +9,7 @@
 
 use super::leaflet::Region3Entry;
 use super::run_record::{FactKey, RunRecord, RunSortOrder};
-use super::types::RowColumnOutput;
+use super::types::{DecodedRow, RowColumnOutput};
 use fluree_db_core::subject_id::SubjectIdColumn;
 use std::cmp::Ordering;
 
@@ -102,18 +102,11 @@ fn cmp_row_vs_record(
 /// Check if a decoded row and a RunRecord share the same fact identity.
 ///
 /// Uses FactKey semantics: (s_id, p_id, o, dt, effective_lang_id, i).
-fn same_identity_row_vs_record(
-    s_id: u64,
-    p_id: u32,
-    o_kind: u8,
-    o_key: u64,
-    dt: u32,
-    lang_id: u16,
-    i: i32,
-    rec: &RunRecord,
-) -> bool {
-    FactKey::from_decoded_row(s_id, p_id, o_kind, o_key, dt, lang_id, i)
-        == FactKey::from_run_record(rec)
+#[inline]
+fn same_identity_row_vs_record(row: &DecodedRow, rec: &RunRecord) -> bool {
+    FactKey::from_decoded_row(
+        row.s_id, row.p_id, row.o_kind, row.o_key, row.dt, row.lang_id, row.i,
+    ) == FactKey::from_run_record(rec)
 }
 
 // ============================================================================
@@ -204,16 +197,17 @@ pub fn merge_novelty(input: &MergeInput<'_>) -> MergeOutput {
             }
             Ordering::Equal => {
                 // Sort-order position match — check full identity
-                if same_identity_row_vs_record(
-                    input.r1_s_ids.get(ei).as_u64(),
-                    input.r1_p_ids[ei],
-                    input.r1_o_kinds[ei],
-                    input.r1_o_keys[ei],
-                    input.r2_dt[ei],
-                    input.r2_lang_ids[ei],
-                    input.r2_i[ei],
-                    nov,
-                ) {
+                let row = DecodedRow {
+                    s_id: input.r1_s_ids.get(ei).as_u64(),
+                    p_id: input.r1_p_ids[ei],
+                    o_kind: input.r1_o_kinds[ei],
+                    o_key: input.r1_o_keys[ei],
+                    dt: input.r2_dt[ei],
+                    t: input.r2_t[ei],
+                    lang_id: input.r2_lang_ids[ei],
+                    i: input.r2_i[ei],
+                };
+                if same_identity_row_vs_record(&row, nov) {
                     // Same fact identity
                     if nov.op == 1 {
                         // Assert (update) — emit novelty, record old retraction + new assert

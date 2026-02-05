@@ -48,6 +48,59 @@ pub struct RowColumnSlice<'a> {
     pub i: &'a [i32],
 }
 
+impl<'a> RowColumnSlice<'a> {
+    /// Get the number of rows in these column slices.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.s.len()
+    }
+
+    /// Check if the column slices are empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.s.is_empty()
+    }
+
+    /// Get a single decoded row at the given index.
+    #[inline]
+    pub fn get(&self, idx: usize) -> DecodedRow {
+        DecodedRow {
+            s_id: self.s[idx],
+            p_id: self.p[idx],
+            o_kind: self.o_kinds[idx],
+            o_key: self.o_keys[idx],
+            dt: self.dt[idx],
+            t: self.t[idx],
+            lang_id: self.lang[idx],
+            i: self.i[idx],
+        }
+    }
+}
+
+/// A single decoded row from columnar storage.
+///
+/// Used for identity comparisons, conversions to Flake, and passing
+/// row data through function boundaries without 8 separate parameters.
+#[derive(Debug, Clone, Copy)]
+pub struct DecodedRow {
+    /// Subject dictionary ID.
+    pub s_id: u64,
+    /// Predicate dictionary ID.
+    pub p_id: u32,
+    /// Object kind discriminant (see `ObjKind`).
+    pub o_kind: u8,
+    /// Object key payload (interpretation depends on `o_kind`).
+    pub o_key: u64,
+    /// Datatype code.
+    pub dt: u32,
+    /// Transaction timestamp.
+    pub t: i64,
+    /// Language tag ID.
+    pub lang_id: u16,
+    /// List index.
+    pub i: i32,
+}
+
 /// An overlay operation translated to integer-ID space.
 ///
 /// Produced by translating `Flake` overlay ops via `BinaryIndexStore` reverse

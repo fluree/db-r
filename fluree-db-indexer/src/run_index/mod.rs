@@ -47,8 +47,9 @@ pub use index_build::{
     IndexBuildResult,
 };
 pub use index_root::{
-    BinaryGarbageRef, BinaryIndexRootV2, BinaryPrevIndexRef, DictAddresses, DictTreeAddresses,
-    GraphAddresses, GraphEntryV2, GraphOrderAddresses, BINARY_INDEX_ROOT_VERSION_V2,
+    BinaryGarbageRef, BinaryIndexRootV2, BinaryPrevIndexRef, CasArtifactsConfig, DictAddresses,
+    DictTreeAddresses, GraphAddresses, GraphEntryV2, GraphOrderAddresses,
+    BINARY_INDEX_ROOT_VERSION_V2,
 };
 pub use lang_remap::build_lang_remap;
 pub use leaflet_cache::{CachedRegion1, CachedRegion2, LeafletCache, LeafletCacheKey};

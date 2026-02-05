@@ -12,6 +12,7 @@ use super::binary_index_store::BinaryIndexStore;
 use super::leaf::read_leaf_header;
 use super::leaflet::decode_leaflet;
 use super::run_record::RunSortOrder;
+use super::types::DecodedRow;
 use fluree_db_core::Flake;
 use std::io;
 use std::ops::Range;
@@ -128,16 +129,17 @@ impl SpotCursor {
                         }
                     }
 
-                    let flake = self.store.row_to_flake(
-                        row_s_id,
-                        row_p_id,
-                        decoded.o_kinds[row],
-                        decoded.o_keys[row],
-                        decoded.dt_values[row],
-                        decoded.t_values[row],
-                        decoded.lang_ids[row],
-                        decoded.i_values[row],
-                    )?;
+                    let decoded_row = DecodedRow {
+                        s_id: row_s_id,
+                        p_id: row_p_id,
+                        o_kind: decoded.o_kinds[row],
+                        o_key: decoded.o_keys[row],
+                        dt: decoded.dt_values[row],
+                        t: decoded.t_values[row],
+                        lang_id: decoded.lang_ids[row],
+                        i: decoded.i_values[row],
+                    };
+                    let flake = self.store.row_to_flake(&decoded_row)?;
                     flakes.push(flake);
                 }
             }

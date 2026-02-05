@@ -431,22 +431,23 @@ where
             let subject_watermarks = dicts.subjects.subject_watermarks();
             let string_watermark = dicts.strings.len().saturating_sub(1);
 
-            let mut root = run_index::BinaryIndexRootV2::from_cas_artifacts(
-                &alias,
-                store.max_t(),
-                store.base_t(),
-                predicate_sids,
-                store.namespace_codes(),
-                sid_encoding,
-                dict_addresses,
-                graph_addresses,
-                Some(stats_json),
-                None, // schema: requires predicate definitions (future)
-                None, // prev_index: set below after garbage computation
-                None, // garbage: set below after garbage computation
-                subject_watermarks,
-                string_watermark,
-            );
+            let mut root =
+                run_index::BinaryIndexRootV2::from_cas_artifacts(run_index::CasArtifactsConfig {
+                    ledger_alias: &alias,
+                    index_t: store.max_t(),
+                    base_t: store.base_t(),
+                    predicate_sids,
+                    namespace_codes: store.namespace_codes(),
+                    subject_id_encoding: sid_encoding,
+                    dict_addresses,
+                    graph_addresses,
+                    stats: Some(stats_json),
+                    schema: None, // schema: requires predicate definitions (future)
+                    prev_index: None, // set below after garbage computation
+                    garbage: None,    // set below after garbage computation
+                    subject_watermarks,
+                    string_watermark,
+                });
 
             // D.5.1: Compute garbage and link prev_index for GC chain.
             //
