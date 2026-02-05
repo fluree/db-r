@@ -2,6 +2,23 @@
 
 - [Introduction](README.md)
 
+- [CLI (fluree-db-cli)](cli/README.md)
+  - [init](cli/init.md)
+  - [create](cli/create.md)
+  - [use](cli/use.md)
+  - [list](cli/list.md)
+  - [info](cli/info.md)
+  - [drop](cli/drop.md)
+  - [insert](cli/insert.md)
+  - [upsert](cli/upsert.md)
+  - [query](cli/query.md)
+  - [history](cli/history.md)
+  - [export](cli/export.md)
+  - [log](cli/log.md)
+  - [config](cli/config.md)
+  - [prefix](cli/prefix.md)
+  - [completions](cli/completions.md)
+
 - [Getting started](getting-started/README.md)
   - [Quickstart: run the server](getting-started/quickstart-server.md)
   - [Quickstart: create a ledger](getting-started/quickstart-ledger.md)
