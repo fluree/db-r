@@ -469,7 +469,7 @@ mod tests {
             }
         ));
 
-        let expr = Expression::gt(2, "value", LiteralValue::Float64(3.14));
+        let expr = Expression::gt(2, "value", LiteralValue::Float64(3.13));
         assert!(matches!(
             expr,
             Expression::Comparison {
@@ -543,7 +543,7 @@ mod tests {
     fn test_referenced_field_ids() {
         let expr = Expression::and(vec![
             Expression::eq(1, "id", LiteralValue::Int32(1)),
-            Expression::gt(2, "value", LiteralValue::Float64(3.14)),
+            Expression::gt(2, "value", LiteralValue::Float64(3.13)),
             Expression::is_not_null(3, "name"),
         ]);
 
@@ -555,12 +555,12 @@ mod tests {
     fn test_expression_display() {
         let expr = Expression::and(vec![
             Expression::eq(1, "id", LiteralValue::Int64(42)),
-            Expression::gt(2, "value", LiteralValue::Float64(3.14)),
+            Expression::gt(2, "value", LiteralValue::Float64(3.13)),
         ]);
 
         let s = expr.to_string();
         assert!(s.contains("id = 42L"));
-        assert!(s.contains("value > 3.14"));
+        assert!(s.contains("value > 3.13"));
         assert!(s.contains("AND"));
     }
 

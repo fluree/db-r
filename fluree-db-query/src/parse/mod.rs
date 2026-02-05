@@ -1460,14 +1460,14 @@ mod tests {
         let json = json!({
             "@context": { "ex": "http://example.org/" },
             "select": ["?s"],
-            "where": { "@id": "?s", "ex:score": 3.14 }
+            "where": { "@id": "?s", "ex:score": 3.13 }
         });
 
         let (ast, _) = parse_query_ast(&json).unwrap();
 
         let pattern = triple(&ast.patterns[0]);
         if let UnresolvedTerm::Literal(LiteralValue::Double(d)) = &pattern.o {
-            assert!((d - 3.14).abs() < f64::EPSILON);
+            assert!((d - 3.13).abs() < f64::EPSILON);
         } else {
             panic!("Expected double literal");
         }

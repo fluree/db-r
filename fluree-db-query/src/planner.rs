@@ -1497,9 +1497,9 @@ mod tests {
             FlakeValue::String("hello".to_string())
         );
         // Double conversion
-        let d = RangeValue::Double(3.14).to_flake_value();
+        let d = RangeValue::Double(3.13).to_flake_value();
         match d {
-            FlakeValue::Double(v) => assert!((f64::from(v) - 3.14).abs() < 0.001),
+            FlakeValue::Double(v) => assert!((f64::from(v) - 3.13).abs() < 0.001),
             _ => panic!("Expected Double"),
         }
     }

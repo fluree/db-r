@@ -6,11 +6,11 @@
 //!
 //! ## Sub-modules
 //!
-//! - `run_record`: Fixed-width 48-byte (in-memory) / 44-byte (wire) record type + SPOT comparator
-//! - `global_dict`: Global dictionaries (subject, predicate, string value)
-//! - `run_writer`: Memory-bounded buffer + flush to sorted run files
-//! - `run_file`: Run file binary format (header + lang dict + records)
-//! - `resolver`: CommitResolver (RawOp → RunRecord)
+//! - [`run_record`]: Fixed-width 48-byte (in-memory) / 44-byte (wire) record type + SPOT comparator
+//! - [`global_dict`]: Global dictionaries (subject, predicate, string value)
+//! - [`run_writer`]: Memory-bounded buffer + flush to sorted run files
+//! - [`run_file`]: Run file binary format (header + lang dict + records)
+//! - [`resolver`]: CommitResolver (RawOp → RunRecord)
 
 pub mod global_dict;
 pub mod resolver;
@@ -43,7 +43,8 @@ pub use binary_cursor::{BinaryCursor, BinaryFilter, DecodedBatch};
 pub use binary_index_store::BinaryIndexStore;
 pub use global_dict::{GlobalDicts, LanguageTagDict, PredicateDict, StringValueDict, SubjectDict};
 pub use index_build::{
-    build_all_indexes, build_index, build_spot_index, IndexBuildConfig, IndexBuildResult,
+    build_all_indexes, build_index, build_spot_index, precompute_language_dict, IndexBuildConfig,
+    IndexBuildResult,
 };
 pub use index_root::{
     BinaryGarbageRef, BinaryIndexRootV2, BinaryPrevIndexRef, DictAddresses, DictTreeAddresses,
@@ -155,7 +156,8 @@ pub fn persist_namespaces(ns_prefixes: &HashMap<u16, String>, run_dir: &Path) ->
         .map(|(&code, prefix)| serde_json::json!({ "code": code, "prefix": prefix }))
         .collect();
 
-    let json_str = serde_json::to_string_pretty(&json_array).map_err(io::Error::other)?;
+    let json_str = serde_json::to_string_pretty(&json_array)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
     let path = run_dir.join("namespaces.json");
     std::fs::write(&path, json_str)?;

@@ -534,8 +534,8 @@ mod tests {
         let i = LiteralValue::Integer(42);
         assert_eq!(i.lexical(), "42");
 
-        let d = LiteralValue::Double(3.14);
-        assert!(d.lexical().starts_with("3.14"));
+        let d = LiteralValue::Double(3.13);
+        assert!(d.lexical().starts_with("3.13"));
 
         let nan = LiteralValue::Double(f64::NAN);
         assert_eq!(nan.lexical(), "NaN");

@@ -24,7 +24,7 @@ fn test_value_codec_roundtrip_all_types() {
         ("long", TypedValue::Int64(i64::MAX)),
         ("long", TypedValue::Int64(i64::MIN)),
         ("float", TypedValue::Float32(0.0)),
-        ("float", TypedValue::Float32(3.14159)),
+        ("float", TypedValue::Float32(3.13159)),
         ("float", TypedValue::Float32(-273.15)),
         ("double", TypedValue::Float64(0.0)),
         ("double", TypedValue::Float64(std::f64::consts::PI)),

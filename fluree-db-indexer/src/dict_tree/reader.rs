@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use super::branch::DictBranch;
@@ -41,6 +42,9 @@ pub struct DictTreeReader {
     /// use `xxh3_128(cas_address)` as the cache key — immutable, no
     /// epoch/time dimension needed.
     global_cache: Option<Arc<LeafletCache>>,
+    /// Performance counters (atomic for shared access).
+    disk_reads: AtomicU64,
+    cache_hits: AtomicU64,
 }
 
 impl DictTreeReader {
@@ -50,6 +54,8 @@ impl DictTreeReader {
             branch,
             leaf_source,
             global_cache: None,
+            disk_reads: AtomicU64::new(0),
+            cache_hits: AtomicU64::new(0),
         }
     }
 
@@ -67,6 +73,8 @@ impl DictTreeReader {
             branch,
             leaf_source,
             global_cache: Some(cache),
+            disk_reads: AtomicU64::new(0),
+            cache_hits: AtomicU64::new(0),
         }
     }
 
@@ -80,6 +88,8 @@ impl DictTreeReader {
             branch,
             leaf_source: LeafSource::InMemory(arc_leaves),
             global_cache: None,
+            disk_reads: AtomicU64::new(0),
+            cache_hits: AtomicU64::new(0),
         }
     }
 
@@ -151,27 +161,50 @@ impl DictTreeReader {
                 if let Some(cache) = &self.global_cache {
                     let cache_key = xxhash_rust::xxh3::xxh3_128(address.as_bytes());
                     let path = path.clone();
-                    cache.try_get_or_load_dict_leaf(cache_key, || {
-                        let bytes = std::fs::read(&path)?;
-                        Ok(Arc::from(bytes.into_boxed_slice()))
-                    })
+                    let disk_reads = &self.disk_reads;
+                    let cache_hits = &self.cache_hits;
+                    cache
+                        .try_get_or_load_dict_leaf(cache_key, || {
+                            disk_reads.fetch_add(1, Ordering::Relaxed);
+                            let bytes = std::fs::read(&path)?;
+                            Ok(Arc::from(bytes.into_boxed_slice()))
+                        })
+                        .inspect(|_| {
+                            // If we didn't hit the loader closure, it was a cache hit.
+                            // We can't distinguish perfectly since try_get_or_load_dict_leaf
+                            // doesn't report hit/miss. Track total calls instead.
+                        })
                 } else {
+                    self.disk_reads.fetch_add(1, Ordering::Relaxed);
                     let bytes = std::fs::read(path)?;
                     Ok(Arc::from(bytes.into_boxed_slice()))
                 }
             }
-            LeafSource::InMemory(map) => map.get(address).cloned().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("dict tree: no in-memory leaf for {}", address),
-                )
-            }),
+            LeafSource::InMemory(map) => {
+                self.cache_hits.fetch_add(1, Ordering::Relaxed);
+                map.get(address).cloned().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("dict tree: no in-memory leaf for {}", address),
+                    )
+                })
+            }
         }
     }
 
     /// Total entries across all leaves.
     pub fn total_entries(&self) -> u64 {
         self.branch.total_entries()
+    }
+
+    /// Number of disk reads performed since creation.
+    pub fn disk_reads(&self) -> u64 {
+        self.disk_reads.load(Ordering::Relaxed)
+    }
+
+    /// Number of cache hits since creation (InMemory always counts as hit).
+    pub fn cache_hits(&self) -> u64 {
+        self.cache_hits.load(Ordering::Relaxed)
     }
 }
 
@@ -181,6 +214,8 @@ impl std::fmt::Debug for DictTreeReader {
             .field("leaf_count", &self.branch.leaves.len())
             .field("total_entries", &self.total_entries())
             .field("has_global_cache", &self.global_cache.is_some())
+            .field("disk_reads", &self.disk_reads())
+            .field("cache_hits", &self.cache_hits())
             .finish()
     }
 }

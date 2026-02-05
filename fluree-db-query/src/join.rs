@@ -13,6 +13,7 @@ use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
+use fluree_db_core::value_id::ObjKind;
 use fluree_db_core::{ObjectBounds, Sid, Storage, BATCHED_JOIN_SIZE};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -409,6 +410,11 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                         Binding::Lit { val, .. } => {
                             pattern.o = Term::Value(val.clone());
                         }
+                        Binding::EncodedLit { .. } => {
+                            // Late materialized literal: we don't have decode context here.
+                            // Leave as variable; patterns that truly require binding this value
+                            // should be materialized before use (e.g., prior to FILTER/ORDER BY/output).
+                        }
                         Binding::Iri(_) => {
                             // Raw IRI from VG can't be converted to native Term
                             // This case should not be reached due to has_invalid_binding_type check,
@@ -759,7 +765,6 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
         &mut self,
         ctx: &ExecutionContext<'_, S>,
     ) -> Result<()> {
-        use fluree_db_core::FlakeValue;
         use fluree_db_core::ListIndex;
         use fluree_db_indexer::run_index::leaf::read_leaf_header;
         use fluree_db_indexer::run_index::leaflet::{
@@ -834,10 +839,15 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
             .branch_for_order(g_id, RunSortOrder::Psot)
             .expect("PSOT index must exist for every graph");
 
-        // Restrict scan to the predicate's PSOT range (contiguous partition).
+        // Restrict scan to the predicate's PSOT range (contiguous partition),
+        // AND the subject range of the current left batch.
+        //
+        // This is critical: without subject bounds we'd scan the entire predicate
+        // partition (potentially many leaves/leaflets) even when the left batch's
+        // subject ids fall into a very narrow range.
         let min_key = RunRecord {
             g_id,
-            s_id: SubjectId::min(),
+            s_id: SubjectId::from_u64(min_s_id),
             p_id,
             dt: 0,
             o_kind: 0,
@@ -849,7 +859,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
         };
         let max_key = RunRecord {
             g_id,
-            s_id: SubjectId::max(),
+            s_id: SubjectId::from_u64(max_s_id),
             p_id,
             dt: u16::MAX,
             o_kind: u8::MAX,
@@ -883,14 +893,28 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
         let mut r2_cache_hits: u64 = 0;
         let mut r2_cache_misses: u64 = 0;
 
+        // Coarse-grained phase timing (microseconds) to break down join_flush_scan_spot.
+        // This is intentionally low-overhead (no per-row spans).
+        let mut us_open_mmap: u64 = 0;
+        let mut us_read_leaf_header: u64 = 0;
+        let mut us_decode_r1: u64 = 0;
+        let mut us_build_matches: u64 = 0;
+        let mut us_decode_r2: u64 = 0;
+        let mut us_emit_rows: u64 = 0;
+
         for leaf_idx in leaf_range {
             let leaf_entry = &branch.leaves[leaf_idx];
+            let t_open = Instant::now();
             let file = std::fs::File::open(&leaf_entry.path)
                 .map_err(|e| QueryError::Internal(format!("open leaf: {}", e)))?;
             let leaf_mmap = unsafe { Mmap::map(&file) }
                 .map_err(|e| QueryError::Internal(format!("mmap leaf: {}", e)))?;
+            us_open_mmap += t_open.elapsed().as_micros() as u64;
+
+            let t_hdr = Instant::now();
             let header = read_leaf_header(&leaf_mmap)
                 .map_err(|e| QueryError::Internal(format!("read leaf header: {}", e)))?;
+            us_read_leaf_header += t_hdr.elapsed().as_micros() as u64;
             let leaf_id = xxh3_128(leaf_entry.content_hash.as_bytes());
 
             for (leaflet_idx, dir_entry) in header.leaflet_dir.iter().enumerate() {
@@ -921,12 +945,14 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                         )
                     } else {
                         r1_cache_misses += 1;
+                        let t_r1 = Instant::now();
                         let (lh, cols) = decode_leaflet_region1(
                             leaflet_bytes,
                             header.p_width,
                             RunSortOrder::Psot,
                         )
                         .map_err(|e| QueryError::Internal(format!("decode region1: {}", e)))?;
+                        us_decode_r1 += t_r1.elapsed().as_micros() as u64;
                         let row_count = lh.row_count as usize;
                         let cached_r1 = CachedRegion1 {
                             s_ids: SubjectIdColumn::from_wide(
@@ -945,9 +971,11 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                         (Some(lh), s_ids, p_ids, o_kinds, o_keys)
                     }
                 } else {
+                    let t_r1 = Instant::now();
                     let (lh, cols) =
                         decode_leaflet_region1(leaflet_bytes, header.p_width, RunSortOrder::Psot)
                             .map_err(|e| QueryError::Internal(format!("decode region1: {}", e)))?;
+                    us_decode_r1 += t_r1.elapsed().as_micros() as u64;
                     (
                         Some(lh),
                         SubjectIdColumn::from_wide(
@@ -971,7 +999,9 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                 // Collect matching row indices using PSOT's `(p_id, s_id, ...)` ordering:
                 // only consider subjects in this leaflet's subject range, then binary-search
                 // their row ranges (avoids scanning every row).
-                let mut matches: Vec<(usize, u64)> = Vec::with_capacity(64); // (row_idx, s_id)
+                let t_match = Instant::now();
+                let mut matches: Vec<(usize, u64)> = Vec::new(); // (row_idx, s_id)
+                matches.reserve(64);
 
                 // PSOT leaflets are sorted by p_id then s_id. Boundary leaflets may contain
                 // adjacent predicates, so isolate the contiguous segment for our `p_id`.
@@ -987,15 +1017,56 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                 if subj_start >= subj_end {
                     continue;
                 }
-                // Extract u64 s_id values for the predicate segment for binary search.
-                let s_slice: Vec<u64> = (p_start..p_end).map(|i| s_ids.get(i).as_u64()).collect();
+
+                // Avoid allocating/copying the predicate segment's s_ids into a Vec<u64>.
+                // This can be very expensive for high-cardinality predicates.
+                #[inline]
+                fn lower_bound_s_id(
+                    s_ids: &SubjectIdColumn,
+                    start: usize,
+                    end: usize,
+                    target: u64,
+                ) -> usize {
+                    let mut lo = start;
+                    let mut hi = end;
+                    while lo < hi {
+                        let mid = (lo + hi) / 2;
+                        if s_ids.get(mid).as_u64() < target {
+                            lo = mid + 1;
+                        } else {
+                            hi = mid;
+                        }
+                    }
+                    lo
+                }
+
+                #[inline]
+                fn upper_bound_s_id(
+                    s_ids: &SubjectIdColumn,
+                    start: usize,
+                    end: usize,
+                    target: u64,
+                ) -> usize {
+                    let mut lo = start;
+                    let mut hi = end;
+                    while lo < hi {
+                        let mid = (lo + hi) / 2;
+                        if s_ids.get(mid).as_u64() <= target {
+                            lo = mid + 1;
+                        } else {
+                            hi = mid;
+                        }
+                    }
+                    lo
+                }
+
                 for &s_id in &unique_s_ids[subj_start..subj_end] {
                     // fast reject (should always be true, but keep it safe)
                     if !s_id_to_accum_indices.contains_key(&s_id) {
                         continue;
                     }
-                    let row_start = p_start + s_slice.partition_point(|&x| x < s_id);
-                    let row_end = p_start + s_slice.partition_point(|&x| x <= s_id);
+                    let row_start = lower_bound_s_id(&s_ids, p_start, p_end, s_id);
+                    let row_end = upper_bound_s_id(&s_ids, p_start, p_end, s_id);
                     if row_start == row_end {
                         continue;
                     }
@@ -1004,6 +1075,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                         matches.push((row, s_id));
                     }
                 }
+                us_build_matches += t_match.elapsed().as_micros() as u64;
                 if matches.is_empty() {
                     continue;
                 }
@@ -1035,13 +1107,15 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                                 &lh_owned
                             }
                         };
-                        let cols = decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)
+                        let t_r2 = Instant::now();
+                        let meta = decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)
                             .map_err(|e| QueryError::Internal(format!("decode region2: {}", e)))?;
+                        us_decode_r2 += t_r2.elapsed().as_micros() as u64;
                         let cached_r2 = CachedRegion2 {
-                            dt_values: StdArc::from(cols.dt_values.into_boxed_slice()),
-                            t_values: StdArc::from(cols.t_values.into_boxed_slice()),
-                            lang_ids: StdArc::from(cols.lang_values.into_boxed_slice()),
-                            i_values: StdArc::from(cols.i_values.into_boxed_slice()),
+                            dt_values: StdArc::from(meta.dt_values.into_boxed_slice()),
+                            t_values: StdArc::from(meta.t_values.into_boxed_slice()),
+                            lang_ids: StdArc::from(meta.lang_values.into_boxed_slice()),
+                            i_values: StdArc::from(meta.i_values.into_boxed_slice()),
                         };
                         let dt_values = cached_r2.dt_values.clone();
                         let t_values = cached_r2.t_values.clone();
@@ -1062,42 +1136,41 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                             &lh_owned
                         }
                     };
-                    let cols = decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)
+                    let t_r2 = Instant::now();
+                    let meta = decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)
                         .map_err(|e| QueryError::Internal(format!("decode region2: {}", e)))?;
+                    us_decode_r2 += t_r2.elapsed().as_micros() as u64;
                     (
-                        StdArc::from(cols.dt_values.into_boxed_slice()),
-                        StdArc::from(cols.t_values.into_boxed_slice()),
-                        StdArc::from(cols.lang_values.into_boxed_slice()),
-                        StdArc::from(cols.i_values.into_boxed_slice()),
+                        StdArc::from(meta.dt_values.into_boxed_slice()),
+                        StdArc::from(meta.t_values.into_boxed_slice()),
+                        StdArc::from(meta.lang_values.into_boxed_slice()),
+                        StdArc::from(meta.i_values.into_boxed_slice()),
                     )
                 };
 
+                let t_emit = Instant::now();
                 for (row, s_id) in matches {
-                    let val = store
-                        .decode_value(o_kinds[row], o_keys[row], p_ids[row])
-                        .map_err(|e| QueryError::Internal(format!("decode value: {}", e)))?;
-
-                    let dt_id = dt_values[row] as usize;
-                    let dt_sid = store
-                        .dt_sids()
-                        .get(dt_id)
-                        .cloned()
-                        .unwrap_or_else(|| Sid::new(0, ""));
-
-                    let lang_id = lang_ids[row];
-                    let i_val = i_values[row];
-                    let meta = store.decode_meta(lang_id, i_val);
+                    // Late materialization: do NOT call decode_value here.
+                    // Emit either a resolved ref (Sid) or an encoded literal.
                     let t = t_values[row];
-
-                    let obj_binding = match val {
-                        FlakeValue::Ref(ref s) => Binding::Sid(s.clone()),
-                        other => Binding::Lit {
-                            val: other,
-                            dt: dt_sid,
-                            lang: meta.and_then(|m| m.lang.map(Arc::from)),
-                            t: Some(t),
-                            op: None,
-                        },
+                    let obj_binding = if o_kinds[row] == ObjKind::REF_ID.as_u8() {
+                        // Object is a reference; resolve s_id -> Sid without decode_value.
+                        // (This still hits subject dictionaries but avoids string literal decoding.)
+                        let ref_s_id = o_keys[row];
+                        let iri = store.resolve_subject_iri(ref_s_id).map_err(|e| {
+                            QueryError::Internal(format!("resolve ref s_id: {}", e))
+                        })?;
+                        Binding::Sid(store.encode_iri(&iri))
+                    } else {
+                        Binding::EncodedLit {
+                            o_kind: o_kinds[row],
+                            o_key: o_keys[row],
+                            p_id: p_ids[row],
+                            dt_id: dt_values[row] as u16,
+                            lang_id: lang_ids[row],
+                            i_val: i_values[row],
+                            t,
+                        }
                     };
 
                     if let Some(accum_indices) = s_id_to_accum_indices.get(&s_id) {
@@ -1117,6 +1190,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                         }
                     }
                 }
+                us_emit_rows += t_emit.elapsed().as_micros() as u64;
             }
         }
 
@@ -1129,6 +1203,12 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
             r1_cache_misses,
             r2_cache_hits,
             r2_cache_misses,
+            us_open_mmap,
+            us_read_leaf_header,
+            us_decode_r1,
+            us_build_matches,
+            us_decode_r2,
+            us_emit_rows,
             "join batched binary scan complete"
         );
 
@@ -1139,8 +1219,8 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
             .collect();
         let mut rows_added = 0;
 
-        for scatter_bucket in scatter.iter_mut() {
-            for combined in scatter_bucket.drain(..) {
+        for accum_idx in 0..accum_len {
+            for combined in scatter[accum_idx].drain(..) {
                 for (col, val) in combined.into_iter().enumerate() {
                     output_columns[col].push(val);
                 }

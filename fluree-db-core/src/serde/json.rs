@@ -1103,7 +1103,7 @@ mod tests {
             Flake::new(
                 Sid::new(1, "s1"),
                 Sid::new(2, "score"),
-                FlakeValue::Double(3.14),
+                FlakeValue::Double(3.13),
                 Sid::new(3, "double"),
                 3,
                 true,
@@ -1137,7 +1137,7 @@ mod tests {
         assert_eq!(parsed.len(), 5);
         assert!(matches!(&parsed[0].o, FlakeValue::String(_)));
         assert!(matches!(&parsed[1].o, FlakeValue::Long(42)));
-        assert!(matches!(&parsed[2].o, FlakeValue::Double(f) if (*f - 3.14).abs() < 0.0001));
+        assert!(matches!(&parsed[2].o, FlakeValue::Double(f) if (*f - 3.13).abs() < 0.0001));
         assert!(matches!(&parsed[3].o, FlakeValue::Boolean(true)));
         assert!(!parsed[4].op); // retraction
     }

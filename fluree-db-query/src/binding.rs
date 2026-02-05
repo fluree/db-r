@@ -82,6 +82,29 @@ pub enum Binding {
         /// Only populated in history mode when both assertions and retractions are returned.
         op: Option<bool>,
     },
+    /// Encoded literal value from the binary index (late materialization).
+    ///
+    /// This is used to avoid decoding (especially string dictionary lookups)
+    /// in the middle of index scans and batched joins when the value is not
+    /// needed until projection/formatting time.
+    ///
+    /// Fields mirror binary index columns:
+    /// - `o_kind`/`o_key` are the object value encoding
+    /// - `p_id` is required for `BinaryIndexStore::decode_value`
+    /// - `dt_id`/`lang_id`/`i_val` provide literal metadata
+    /// - `t` is the assertion transaction time (metadata)
+    ///
+    /// NOTE: EncodedLit represents only literal values. References are still
+    /// represented as `Binding::Sid` (resolved via subject dictionaries).
+    EncodedLit {
+        o_kind: u8,
+        o_key: u64,
+        p_id: u32,
+        dt_id: u16,
+        lang_id: u16,
+        i_val: i32,
+        t: i64,
+    },
     /// Grouped values (produced by GROUP BY for non-group-key variables)
     ///
     /// Contains all values for a variable within a single group. This is an
@@ -279,7 +302,12 @@ impl Binding {
 
     /// Check if this is a literal binding
     pub fn is_lit(&self) -> bool {
-        matches!(self, Binding::Lit { .. })
+        matches!(self, Binding::Lit { .. } | Binding::EncodedLit { .. })
+    }
+
+    /// Check if this is an encoded (late-materialized) literal binding.
+    pub fn is_encoded_lit(&self) -> bool {
+        matches!(self, Binding::EncodedLit { .. })
     }
 
     /// Try to get as Sid (only for Binding::Sid, not IriMatch)
@@ -501,6 +529,27 @@ impl PartialEq for Binding {
                     .. // t and op intentionally ignored - they are metadata only
                 },
             ) => v1 == v2 && d1 == d2 && l1 == l2,
+            // Encoded literals compare by their encoded identity (excluding t metadata).
+            (
+                Binding::EncodedLit {
+                    o_kind: k1,
+                    o_key: ok1,
+                    p_id: p1,
+                    dt_id: dt1,
+                    lang_id: l1,
+                    i_val: i1,
+                    ..
+                },
+                Binding::EncodedLit {
+                    o_kind: k2,
+                    o_key: ok2,
+                    p_id: p2,
+                    dt_id: dt2,
+                    lang_id: l2,
+                    i_val: i2,
+                    ..
+                },
+            ) => k1 == k2 && ok1 == ok2 && p1 == p2 && dt1 == dt2 && l1 == l2 && i1 == i2,
             (Binding::Grouped(a), Binding::Grouped(b)) => a == b,
             _ => false,
         }
@@ -551,6 +600,24 @@ impl std::hash::Hash for Binding {
                 val.hash(state);
                 dt.hash(state);
                 lang.hash(state);
+            }
+            Binding::EncodedLit {
+                o_kind,
+                o_key,
+                p_id,
+                dt_id,
+                lang_id,
+                i_val,
+                ..
+            } => {
+                // t intentionally excluded - metadata only
+                6u8.hash(state);
+                o_kind.hash(state);
+                o_key.hash(state);
+                p_id.hash(state);
+                dt_id.hash(state);
+                lang_id.hash(state);
+                i_val.hash(state);
             }
             Binding::Grouped(values) => {
                 5u8.hash(state);

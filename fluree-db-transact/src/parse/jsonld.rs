@@ -1253,13 +1253,13 @@ mod tests {
 
         // Double - should preserve xsd:double datatype
         let result = convert_typed_value_with_meta(
-            "3.14",
+            "3.13",
             "http://www.w3.org/2001/XMLSchema#double",
             &mut ns_registry,
         )
         .unwrap();
         if let TemplateTerm::Value(FlakeValue::Double(f)) = result.term {
-            assert!((f - 3.14).abs() < 0.001);
+            assert!((f - 3.13).abs() < 0.001);
         } else {
             panic!("Expected double");
         }

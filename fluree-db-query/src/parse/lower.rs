@@ -1561,10 +1561,10 @@ mod tests {
         assert!(matches!(lowered, Term::Value(FlakeValue::Long(42))));
 
         // Double
-        let term = UnresolvedTerm::double(3.14);
+        let term = UnresolvedTerm::double(3.13);
         let lowered = lower_term(&term, &encoder, &mut vars).unwrap();
         assert!(
-            matches!(lowered, Term::Value(FlakeValue::Double(d)) if (d - 3.14).abs() < f64::EPSILON)
+            matches!(lowered, Term::Value(FlakeValue::Double(d)) if (d - 3.13).abs() < f64::EPSILON)
         );
 
         // Boolean
@@ -1723,9 +1723,9 @@ mod tests {
 
     #[test]
     fn test_coerce_string_to_double() {
-        let result = coerce_value_by_datatype(FlakeValue::String("3.14".to_string()), xsd::DOUBLE);
+        let result = coerce_value_by_datatype(FlakeValue::String("3.13".to_string()), xsd::DOUBLE);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), FlakeValue::Double(3.14));
+        assert_eq!(result.unwrap(), FlakeValue::Double(3.13));
     }
 
     #[test]
@@ -1760,7 +1760,7 @@ mod tests {
 
     #[test]
     fn test_coerce_double_to_string_errors() {
-        let result = coerce_value_by_datatype(FlakeValue::Double(3.14), xsd::STRING);
+        let result = coerce_value_by_datatype(FlakeValue::Double(3.13), xsd::STRING);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), ParseError::TypeCoercion(_)));
     }
@@ -1788,7 +1788,7 @@ mod tests {
 
     #[test]
     fn test_coerce_non_integral_double_to_integer_errors() {
-        let result = coerce_value_by_datatype(FlakeValue::Double(3.14), xsd::INTEGER);
+        let result = coerce_value_by_datatype(FlakeValue::Double(3.13), xsd::INTEGER);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, ParseError::TypeCoercion(_)));

@@ -52,21 +52,6 @@ pub enum IndexerError {
     /// Error applying index to ledger state
     #[error("Ledger apply error: {0}")]
     LedgerApply(String),
-
-    /// Checkpoint error (load, write, corrupt, or missing)
-    #[error("Checkpoint error: {0}")]
-    Checkpoint(String),
-
-    /// B-tree index pipeline has been removed; binary pipeline not yet wired
-    #[error("B-tree index pipeline removed; binary index pipeline pending")]
-    BTreePipelineRemoved,
-
-    /// Head mismatch on resume (ledger has new commits since checkpoint)
-    #[error("Checkpoint head mismatch: checkpoint targets {checkpoint_head}, but current head is {current_head}")]
-    CheckpointHeadMismatch {
-        checkpoint_head: String,
-        current_head: String,
-    },
 }
 
 impl From<serde_json::Error> for IndexerError {

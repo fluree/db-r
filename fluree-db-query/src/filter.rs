@@ -113,7 +113,7 @@ impl<S: Storage + 'static> Operator<S> for FilterOperator<S> {
             let keep_indices: Vec<usize> = (0..batch.len())
                 .filter_map(|row_idx| {
                     let row = batch.row_view(row_idx)?;
-                    evaluate(&self.expr, &row)
+                    evaluate_with_context(&self.expr, &row, Some(ctx))
                         .ok()
                         .filter(|&pass| pass)
                         .map(|_| row_idx)
@@ -275,6 +275,23 @@ fn has_unbound_vars(expr: &FilterExpr, row: &RowView) -> bool {
     })
 }
 
+/// Evaluate a filter expression against a row with execution context.
+///
+/// Returns `true` if the row passes the filter, `false` otherwise.
+/// Type mismatches and unbound variables result in `false`.
+///
+/// The context parameter allows access to the database for operations
+/// that require IRI encoding or other database lookups.
+pub fn evaluate_with_context<S: Storage>(
+    expr: &FilterExpr,
+    row: &RowView,
+    _ctx: Option<&ExecutionContext<'_, S>>,
+) -> Result<bool> {
+    // Currently delegates to context-free evaluate.
+    // Context will be used when we add context-aware filter operations.
+    evaluate(expr, row)
+}
+
 /// Evaluate a filter expression against a row
 ///
 /// Returns `true` if the row passes the filter, `false` otherwise.
@@ -288,9 +305,10 @@ pub fn evaluate(expr: &FilterExpr, row: &RowView) -> Result<bool> {
                     FlakeValue::Boolean(b) => Ok(*b),
                     _ => Ok(true), // Non-bool literal is truthy
                 },
-                Some(Binding::Sid(_)) => Ok(true), // SID is truthy
-                Some(Binding::IriMatch { .. }) => Ok(true), // IriMatch is truthy
-                Some(Binding::Iri(_)) => Ok(true), // IRI is truthy
+                Some(Binding::EncodedLit { .. }) => Ok(true), // Encoded literal is truthy
+                Some(Binding::Sid(_)) => Ok(true),            // SID is truthy
+                Some(Binding::IriMatch { .. }) => Ok(true),   // IriMatch is truthy
+                Some(Binding::Iri(_)) => Ok(true),            // IRI is truthy
                 Some(Binding::Unbound) | Some(Binding::Poisoned) | None => Ok(false),
                 Some(Binding::Grouped(_)) => {
                     // Grouped bindings shouldn't appear in filter evaluation
@@ -428,6 +446,7 @@ fn eval_to_comparable(expr: &FilterExpr, row: &RowView) -> Result<Option<Compara
         FilterExpr::Var(var) => {
             match row.get(*var) {
                 Some(Binding::Lit { val, .. }) => Ok(flake_value_to_comparable(val)),
+                Some(Binding::EncodedLit { .. }) => Ok(None),
                 Some(Binding::Sid(sid)) => Ok(Some(ComparableValue::Sid(sid.clone()))),
                 Some(Binding::IriMatch { iri, .. }) => {
                     // IriMatch: use canonical IRI for comparisons (cross-ledger safe)
@@ -871,10 +890,10 @@ fn comparable_to_string(val: &ComparableValue) -> Option<&str> {
     match val {
         ComparableValue::String(s) => Some(s.as_ref()),
         ComparableValue::Iri(s) => Some(s.as_ref()),
-        ComparableValue::TypedLiteral {
-            val: FlakeValue::String(s),
-            ..
-        } => Some(s.as_str()),
+        ComparableValue::TypedLiteral { val, .. } => match val {
+            FlakeValue::String(s) => Some(s.as_str()),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -1060,12 +1079,6 @@ fn eval_truthy_if_arg_valid(args: &[FilterExpr], row: &RowView) -> Result<bool> 
     }
 }
 
-/// A pair of vectors for binary vector operations (dot product, cosine similarity, etc.)
-struct VectorPair {
-    left: Arc<[f64]>,
-    right: Arc<[f64]>,
-}
-
 /// Extract two vectors from binary function arguments
 ///
 /// Returns None if args don't evaluate to two equal-length vectors.
@@ -1073,7 +1086,7 @@ fn extract_vector_pair(
     args: &[FilterExpr],
     row: &RowView,
     fn_name: &str,
-) -> Result<Option<VectorPair>> {
+) -> Result<Option<(Arc<[f64]>, Arc<[f64]>)>> {
     check_arity(args, 2, fn_name)?;
     let v1 = eval_to_comparable(&args[0], row)?;
     let v2 = eval_to_comparable(&args[1], row)?;
@@ -1082,7 +1095,7 @@ fn extract_vector_pair(
             if a.len() != b.len() {
                 Ok(None) // Vectors must have same dimension
             } else {
-                Ok(Some(VectorPair { left: a, right: b }))
+                Ok(Some((a, b)))
             }
         }
         _ => Ok(None),
@@ -1102,7 +1115,7 @@ where
     F: Fn(&[f64], &[f64]) -> Option<f64>,
 {
     match extract_vector_pair(args, row, fn_name)? {
-        Some(pair) => Ok(compute(&pair.left, &pair.right).map(ComparableValue::Double)),
+        Some((a, b)) => Ok(compute(&a, &b).map(ComparableValue::Double)),
         None => Ok(None),
     }
 }
@@ -1185,7 +1198,7 @@ where
 {
     check_arity(args, 1, fn_name)?;
     let val = eval_to_comparable(&args[0], row)?;
-    Ok(val.is_some_and(|v| check(&v)))
+    Ok(val.map_or(false, |v| check(&v)))
 }
 
 /// Evaluate a function to its actual value type (for use in expressions)

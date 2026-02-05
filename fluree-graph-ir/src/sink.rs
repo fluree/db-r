@@ -353,7 +353,7 @@ mod tests {
 
         // Double
         let double_val =
-            sink.term_literal_value(LiteralValue::Double(3.14), Datatype::xsd_double());
+            sink.term_literal_value(LiteralValue::Double(3.13), Datatype::xsd_double());
         sink.emit_triple(s, p, double_val);
 
         let graph = sink.finish();

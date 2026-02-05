@@ -403,7 +403,7 @@ mod tests {
         let cases: Vec<(FlakeValue, &str)> = vec![
             (FlakeValue::String("test".to_string()), "string"),
             (FlakeValue::Long(123), "long"),
-            (FlakeValue::Double(3.14), "double"),
+            (FlakeValue::Double(3.13), "double"),
             (FlakeValue::Boolean(true), "bool"),
             (FlakeValue::Ref(make_sid(1, "ref")), "ref"),
             (FlakeValue::Vector(vec![1.0, 2.0, 3.0]), "vector"),

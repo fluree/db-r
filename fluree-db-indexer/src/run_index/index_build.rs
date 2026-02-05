@@ -231,16 +231,17 @@ pub fn build_index(config: IndexBuildConfig) -> Result<IndexBuildResult, IndexBu
     let mut current_writer: Option<LeafWriter> = None;
 
     while let Some(record) = merge.next_deduped()? {
+        // Track max t for manifest metadata (must happen before retraction
+        // skip so that retraction-only commits are still reflected in max_t).
+        if record.t > max_t {
+            max_t = record.t;
+        }
+
         // Snapshot semantics: if dedup selected a retract (op=0), the fact is
         // no longer asserted and must be excluded from the snapshot index.
         if record.op == 0 {
             retract_count += 1;
             continue;
-        }
-
-        // Track max t for manifest metadata.
-        if record.t > max_t {
-            max_t = record.t;
         }
 
         let g_id = record.g_id;
@@ -363,7 +364,7 @@ pub fn build_spot_index(config: IndexBuildConfig) -> Result<IndexBuildResult, In
 // ============================================================================
 
 /// Discover run files in a directory (sorted by name).
-fn discover_run_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
+pub fn discover_run_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -448,6 +449,30 @@ fn write_index_manifest(
 ///
 /// Each order is built in its own thread — zero contention because each reads
 /// from its own run files and writes to its own output directory.
+/// Pre-compute the unified language dictionary from SPOT run files.
+///
+/// Writes `languages.dict` to `base_run_dir`. Safe to call before
+/// `build_all_indexes()` — the index build will skip re-computing
+/// if the file already exists.
+pub fn precompute_language_dict(base_run_dir: &Path) -> Result<(), IndexBuildError> {
+    let lang_dict_path = base_run_dir.join("languages.dict");
+    let spot_run_dir = base_run_dir.join("spot");
+    if spot_run_dir.exists() {
+        let mut spot_runs = discover_run_files(&spot_run_dir)?;
+        if !spot_runs.is_empty() {
+            spot_runs.sort();
+            let (unified_lang_dict, _) = build_lang_remap(&spot_runs)?;
+            write_language_dict(&lang_dict_path, &unified_lang_dict)?;
+            tracing::info!(
+                tags = unified_lang_dict.len(),
+                path = %lang_dict_path.display(),
+                "pre-computed unified language dict"
+            );
+        }
+    }
+    Ok(())
+}
+
 ///
 /// The unified language dictionary is pre-computed from SPOT run files and
 /// written to `base_run_dir/languages.dict` before spawning threads.
@@ -462,21 +487,10 @@ pub fn build_all_indexes(
     let _span = tracing::info_span!("build_all_indexes").entered();
     let start = Instant::now();
 
-    // Pre-compute unified language dict from SPOT run files
-    let spot_run_dir = base_run_dir.join("spot");
-    if spot_run_dir.exists() {
-        let mut spot_runs = discover_run_files(&spot_run_dir)?;
-        if !spot_runs.is_empty() {
-            spot_runs.sort();
-            let (unified_lang_dict, _) = build_lang_remap(&spot_runs)?;
-            let lang_dict_path = base_run_dir.join("languages.dict");
-            write_language_dict(&lang_dict_path, &unified_lang_dict)?;
-            tracing::info!(
-                tags = unified_lang_dict.len(),
-                path = %lang_dict_path.display(),
-                "pre-computed unified language dict"
-            );
-        }
+    // Pre-compute unified language dict (skips if already done).
+    let lang_dict_path = base_run_dir.join("languages.dict");
+    if !lang_dict_path.exists() {
+        precompute_language_dict(base_run_dir)?;
     }
 
     // Spawn one thread per order

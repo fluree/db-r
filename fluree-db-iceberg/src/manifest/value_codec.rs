@@ -357,19 +357,19 @@ mod tests {
 
     #[test]
     fn test_decode_float() {
-        let bytes = 3.14f32.to_le_bytes();
+        let bytes = 3.13f32.to_le_bytes();
         assert_eq!(
             decode_by_type_string(&bytes, Some("float")).unwrap(),
-            TypedValue::Float32(3.14)
+            TypedValue::Float32(3.13)
         );
     }
 
     #[test]
     fn test_decode_double() {
-        let bytes = 3.14159265359f64.to_le_bytes();
+        let bytes = 3.13159265359f64.to_le_bytes();
         assert_eq!(
             decode_by_type_string(&bytes, Some("double")).unwrap(),
-            TypedValue::Float64(3.14159265359)
+            TypedValue::Float64(3.13159265359)
         );
     }
 
@@ -478,8 +478,8 @@ mod tests {
             TypedValue::Int32(42),
             TypedValue::Int32(-100),
             TypedValue::Int64(1234567890123),
-            TypedValue::Float32(3.14),
-            TypedValue::Float64(3.14159265359),
+            TypedValue::Float32(3.13),
+            TypedValue::Float64(3.13159265359),
             TypedValue::Date(19723),
             TypedValue::Timestamp(1700000000000000),
             TypedValue::String("hello".to_string()),

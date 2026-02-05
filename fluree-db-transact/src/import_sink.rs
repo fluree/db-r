@@ -325,7 +325,7 @@ mod inner {
 
             // Double
             let p = sink.term_iri("http://example.org/dbl");
-            let o = sink.term_literal_value(LiteralValue::Double(3.14), Datatype::xsd_double());
+            let o = sink.term_literal_value(LiteralValue::Double(3.13), Datatype::xsd_double());
             sink.emit_triple(s, p, o);
 
             // Boolean

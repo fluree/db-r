@@ -45,6 +45,16 @@ pub struct IndexerConfig {
     /// Default: 30 minutes
     pub gc_min_time_mins: u32,
 
+    /// Memory budget (bytes) for the run-sort buffer during index building.
+    ///
+    /// This total is split evenly across all sort orders (SPOT, PSOT, POST, OPST).
+    /// Larger budgets produce fewer spill files and speed up the merge phase at
+    /// the cost of higher peak memory. For bulk imports of 1 GB+, 1–2 GB is
+    /// recommended.
+    ///
+    /// Default: 256 MB.
+    pub run_budget_bytes: usize,
+
     /// Base directory for binary index artifacts.
     ///
     /// Ephemeral build artifacts (run files, dicts) are stored under:
@@ -58,6 +68,9 @@ pub struct IndexerConfig {
     pub data_dir: Option<PathBuf>,
 }
 
+/// Default run-sort budget: 256 MB.
+pub const DEFAULT_RUN_BUDGET_BYTES: usize = 256 * 1024 * 1024;
+
 impl Default for IndexerConfig {
     fn default() -> Self {
         Self {
@@ -67,6 +80,7 @@ impl Default for IndexerConfig {
             branch_max_children: 200,
             gc_max_old_indexes: DEFAULT_MAX_OLD_INDEXES,
             gc_min_time_mins: DEFAULT_MIN_TIME_GARBAGE_MINS,
+            run_budget_bytes: DEFAULT_RUN_BUDGET_BYTES,
             data_dir: None,
         }
     }
@@ -87,6 +101,7 @@ impl IndexerConfig {
             branch_max_children,
             gc_max_old_indexes: DEFAULT_MAX_OLD_INDEXES,
             gc_min_time_mins: DEFAULT_MIN_TIME_GARBAGE_MINS,
+            run_budget_bytes: DEFAULT_RUN_BUDGET_BYTES,
             data_dir: None,
         }
     }
@@ -100,6 +115,7 @@ impl IndexerConfig {
             branch_max_children: 40,
             gc_max_old_indexes: DEFAULT_MAX_OLD_INDEXES,
             gc_min_time_mins: DEFAULT_MIN_TIME_GARBAGE_MINS,
+            run_budget_bytes: DEFAULT_RUN_BUDGET_BYTES,
             data_dir: None,
         }
     }
@@ -113,6 +129,7 @@ impl IndexerConfig {
             branch_max_children: 400,
             gc_max_old_indexes: DEFAULT_MAX_OLD_INDEXES,
             gc_min_time_mins: DEFAULT_MIN_TIME_GARBAGE_MINS,
+            run_budget_bytes: DEFAULT_RUN_BUDGET_BYTES,
             data_dir: None,
         }
     }
@@ -126,6 +143,14 @@ impl IndexerConfig {
     /// Builder method to set GC min time in minutes
     pub fn with_gc_min_time_mins(mut self, min_time: u32) -> Self {
         self.gc_min_time_mins = min_time;
+        self
+    }
+
+    /// Builder method to set the run-sort memory budget.
+    ///
+    /// For bulk imports of 1 GB+, use 1–2 GB (e.g., `1024 * 1024 * 1024`).
+    pub fn with_run_budget_bytes(mut self, bytes: usize) -> Self {
+        self.run_budget_bytes = bytes;
         self
     }
 

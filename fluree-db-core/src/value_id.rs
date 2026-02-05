@@ -903,7 +903,7 @@ mod tests {
 
     #[test]
     fn test_num_f64_round_trip() {
-        for &v in &[0.0f64, 1.0, -1.0, 0.5, -0.5, 3.14159, -2.71828, 1e10, -1e10] {
+        for &v in &[0.0f64, 1.0, -1.0, 0.5, -0.5, 3.13, -2.77, 1e10, -1e10] {
             let key = ObjKey::encode_f64(v).unwrap();
             let decoded = key.decode_f64();
             assert_eq!(

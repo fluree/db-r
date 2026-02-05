@@ -594,7 +594,7 @@ mod tests {
             Flake::new(
                 Sid::new(101, "x"),
                 Sid::new(101, "dbl_val"),
-                FlakeValue::Double(3.14),
+                FlakeValue::Double(3.13),
                 Sid::new(2, "double"),
                 1,
                 true,
@@ -694,7 +694,7 @@ mod tests {
                 0 => assert!(matches!(raw.o, RawObject::Long(42))),
                 1 => {
                     if let RawObject::Double(d) = raw.o {
-                        assert!((d - 3.14).abs() < f64::EPSILON);
+                        assert!((d - 3.13).abs() < f64::EPSILON);
                     } else {
                         panic!("expected Double");
                     }

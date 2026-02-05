@@ -667,9 +667,9 @@ async fn decimal_json_number_input_becomes_double() {
         "@graph": [
             {
                 "@id": "ex:item1",
-                // JSON number 3.14 loses precision during JSON parsing
+                // JSON number 3.13 loses precision during JSON parsing
                 // Per policy: JSON numbers with xsd:decimal become Double
-                "ex:value": {"@value": 3.14, "@type": "xsd:decimal"}
+                "ex:value": {"@value": 3.13, "@type": "xsd:decimal"}
             },
             {
                 "@id": "ex:item2",
@@ -701,8 +701,8 @@ async fn decimal_json_number_input_becomes_double() {
     assert_eq!(arr.len(), 2);
     // JSON numbers become Double, which serializes as JSON number
     assert_eq!(arr[0][0], "ex:item1");
-    // 3.14 as f64 should round-trip to 3.14
-    assert_eq!(arr[0][1].as_f64(), Some(3.14), "item1 value should be 3.14");
+    // 3.13 as f64 should round-trip to 3.13
+    assert_eq!(arr[0][1].as_f64(), Some(3.13), "item1 value should be 3.13");
 
     assert_eq!(arr[1][0], "ex:item2");
     // Integer 42 as Double - JSON may serialize as 42 or 42.0
@@ -713,7 +713,7 @@ async fn decimal_json_number_input_becomes_double() {
     let dt2 = arr[1][2].as_str().unwrap();
     assert!(
         dt1.ends_with("#decimal") || dt1 == "xsd:decimal",
-        "3.14 should preserve xsd:decimal datatype, got: {}",
+        "3.13 should preserve xsd:decimal datatype, got: {}",
         dt1
     );
     assert!(
@@ -973,7 +973,7 @@ async fn decimal_non_integral_to_integer_should_error() {
     let q = json!({
         "@context": ctx,
         "select": ["?id"],
-        "where": {"@id": "?id", "ex:value": {"@value": 3.14, "@type": "xsd:integer"}}
+        "where": {"@id": "?id", "ex:value": {"@value": 3.13, "@type": "xsd:integer"}}
     });
 
     let result = fluree.query(&ledger, &q).await;

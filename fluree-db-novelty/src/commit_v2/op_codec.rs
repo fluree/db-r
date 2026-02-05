@@ -632,7 +632,7 @@ mod tests {
         let flake = Flake::new(
             Sid::new(101, "x"),
             Sid::new(101, "val"),
-            FlakeValue::Double(3.14159),
+            FlakeValue::Double(3.13159),
             Sid::new(2, "double"),
             1,
             true,
@@ -647,7 +647,7 @@ mod tests {
         let mut pos = 0;
         let decoded = decode_op(&buf, &mut pos, &read_dicts, 1).unwrap();
         match decoded.o {
-            FlakeValue::Double(d) => assert!((d - 3.14159).abs() < f64::EPSILON),
+            FlakeValue::Double(d) => assert!((d - 3.13159).abs() < f64::EPSILON),
             _ => panic!("expected Double"),
         }
     }

@@ -3,7 +3,7 @@
 //! This operator executes vector similarity search against a vector index provider
 //! and emits bindings for:
 //! - idx:id      -> `Binding::IriMatch` (canonical IRI with ledger provenance for cross-ledger joins)
-//!   or `Binding::Iri` (if IRI cannot be encoded to SID)
+//!                  or `Binding::Iri` (if IRI cannot be encoded to SID)
 //! - idx:score   -> `Binding::Lit` (xsd:double, similarity score)
 //! - idx:ledger  -> `Binding::Lit` (xsd:string; ledger alias) [optional]
 //!
@@ -183,6 +183,7 @@ impl<S: Storage + 'static> VectorSearchOperator<S> {
                     }
                     _ => Ok(None),
                 },
+                Some(Binding::EncodedLit { .. }) => Ok(None),
                 Some(Binding::Sid(_))
                 | Some(Binding::IriMatch { .. })
                 | Some(Binding::Iri(_))
@@ -270,7 +271,6 @@ impl<S: Storage + 'static> Operator<S> for VectorSearchOperator<S> {
 
         let limit = self.pattern.limit.unwrap_or(10);
 
-        #[allow(clippy::needless_range_loop)]
         for row_idx in 0..input_batch.len() {
             let row_view = input_batch.row_view(row_idx).unwrap();
             let Some(query_vector) = self.resolve_vector_from_row(ctx, &row_view)? else {

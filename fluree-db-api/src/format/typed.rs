@@ -20,6 +20,7 @@ use super::iri::IriCompactor;
 use super::{FormatError, Result};
 use crate::QueryResult;
 use fluree_db_core::FlakeValue;
+use fluree_db_core::Sid;
 use fluree_db_query::binding::Binding;
 use serde_json::{json, Map, Value as JsonValue};
 
@@ -36,9 +37,16 @@ pub fn format(
             let row = match config.select_mode {
                 SelectMode::Wildcard => {
                     // Wildcard: use batch schema, return all bound vars as object
-                    format_row_wildcard(batch, row_idx, &result.vars, compactor)?
+                    format_row_wildcard(batch, row_idx, &result.vars, compactor, result)?
                 }
-                _ => format_row(batch, row_idx, &result.select, &result.vars, compactor)?,
+                _ => format_row(
+                    batch,
+                    row_idx,
+                    &result.select,
+                    &result.vars,
+                    compactor,
+                    result,
+                )?,
             };
             rows.push(row);
 
@@ -60,7 +68,25 @@ pub fn format(
 }
 
 /// Format a single binding to TypedJson
-fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Result<JsonValue> {
+fn format_binding(
+    result: &QueryResult,
+    binding: &Binding,
+    compactor: &IriCompactor,
+) -> Result<JsonValue> {
+    // Late materialization for encoded literals.
+    if matches!(binding, Binding::EncodedLit { .. }) {
+        let store = result.binary_store.as_ref().ok_or_else(|| {
+            FormatError::InvalidBinding(
+                "Encountered EncodedLit during formatting but QueryResult has no binary_store"
+                    .to_string(),
+            )
+        })?;
+        let materialized = materialize_encoded_lit(binding, store).map_err(|e| {
+            FormatError::InvalidBinding(format!("Failed to materialize EncodedLit: {}", e))
+        })?;
+        return format_binding(result, &materialized, compactor);
+    }
+
     match binding {
         Binding::Unbound | Binding::Poisoned => Ok(JsonValue::Null),
 
@@ -206,13 +232,54 @@ fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Result<JsonVal
             }
         }
 
+        Binding::EncodedLit { .. } => {
+            unreachable!("EncodedLit should have been materialized before TypedJson formatting")
+        }
+
         // Grouped values - format as array of typed values
         Binding::Grouped(values) => {
             let arr: Result<Vec<_>> = values
                 .iter()
-                .map(|v| format_binding(v, compactor))
+                .map(|v| format_binding(result, v, compactor))
                 .collect();
             Ok(JsonValue::Array(arr?))
+        }
+    }
+}
+
+fn materialize_encoded_lit(
+    binding: &Binding,
+    store: &fluree_db_indexer::run_index::BinaryIndexStore,
+) -> std::io::Result<Binding> {
+    let Binding::EncodedLit {
+        o_kind,
+        o_key,
+        p_id,
+        dt_id,
+        lang_id,
+        i_val,
+        t,
+    } = binding
+    else {
+        return Ok(binding.clone());
+    };
+    let val = store.decode_value(*o_kind, *o_key, *p_id)?;
+    match val {
+        FlakeValue::Ref(sid) => Ok(Binding::Sid(sid)),
+        other => {
+            let dt_sid = store
+                .dt_sids()
+                .get(*dt_id as usize)
+                .cloned()
+                .unwrap_or_else(|| Sid::new(0, ""));
+            let meta = store.decode_meta(*lang_id, *i_val);
+            Ok(Binding::Lit {
+                val: other,
+                dt: dt_sid,
+                lang: meta.and_then(|m| m.lang.map(std::sync::Arc::from)),
+                t: Some(*t),
+                op: None,
+            })
         }
     }
 }
@@ -224,13 +291,14 @@ fn format_row(
     select: &[fluree_db_query::VarId],
     vars: &fluree_db_query::VarRegistry,
     compactor: &IriCompactor,
+    result: &QueryResult,
 ) -> Result<JsonValue> {
     let mut obj = Map::new();
 
     for &var_id in select {
         let var_name = vars.name(var_id);
         let value = match batch.get(row_idx, var_id) {
-            Some(binding) => format_binding(binding, compactor)?,
+            Some(binding) => format_binding(result, binding, compactor)?,
             None => JsonValue::Null,
         };
         obj.insert(var_name.to_string(), value);
@@ -247,6 +315,7 @@ fn format_row_wildcard(
     row_idx: usize,
     vars: &fluree_db_query::VarRegistry,
     compactor: &IriCompactor,
+    result: &QueryResult,
 ) -> Result<JsonValue> {
     let mut obj = Map::new();
 
@@ -263,7 +332,7 @@ fn format_row_wildcard(
                 continue;
             }
 
-            let value = format_binding(binding, compactor)?;
+            let value = format_binding(result, binding, compactor)?;
             obj.insert(var_name.to_string(), value);
         }
     }
@@ -275,6 +344,8 @@ fn format_row_wildcard(
 mod tests {
     use super::*;
     use fluree_db_core::Sid;
+    use fluree_db_query::VarRegistry;
+    use fluree_graph_json_ld::ParsedContext;
     use std::collections::HashMap;
 
     fn make_test_compactor() -> IriCompactor {
@@ -285,22 +356,41 @@ mod tests {
         IriCompactor::from_namespaces(&namespaces)
     }
 
+    /// Create a dummy QueryResult for testing format_binding
+    fn make_test_result() -> QueryResult {
+        QueryResult {
+            vars: VarRegistry::new(),
+            t: 1,
+            novelty: None,
+            context: ParsedContext::default(),
+            orig_context: None,
+            select: vec![],
+            select_mode: super::SelectMode::Many,
+            batches: vec![],
+            binary_store: None,
+            construct_template: None,
+            graph_select: None,
+        }
+    }
+
     #[test]
     fn test_format_binding_sid() {
         let compactor = make_test_compactor();
+        let qr = make_test_result();
         let binding = Binding::Sid(Sid::new(100, "alice"));
-        let result = format_binding(&binding, &compactor).unwrap();
+        let result = format_binding(&qr, &binding, &compactor).unwrap();
         assert_eq!(result, json!({"@id": "http://example.org/alice"}));
     }
 
     #[test]
     fn test_format_binding_string() {
         let compactor = make_test_compactor();
+        let qr = make_test_result();
         let binding = Binding::lit(
             FlakeValue::String("Alice".to_string()),
             Sid::new(2, "string"),
         );
-        let result = format_binding(&binding, &compactor).unwrap();
+        let result = format_binding(&qr, &binding, &compactor).unwrap();
         assert_eq!(
             result,
             json!({"@value": "Alice", "@type": "http://www.w3.org/2001/XMLSchema#string"})
@@ -310,8 +400,9 @@ mod tests {
     #[test]
     fn test_format_binding_long() {
         let compactor = make_test_compactor();
+        let qr = make_test_result();
         let binding = Binding::lit(FlakeValue::Long(42), Sid::new(2, "long"));
-        let result = format_binding(&binding, &compactor).unwrap();
+        let result = format_binding(&qr, &binding, &compactor).unwrap();
         assert_eq!(
             result,
             json!({"@value": 42, "@type": "http://www.w3.org/2001/XMLSchema#long"})
@@ -321,19 +412,21 @@ mod tests {
     #[test]
     fn test_format_binding_double() {
         let compactor = make_test_compactor();
-        let binding = Binding::lit(FlakeValue::Double(3.14), Sid::new(2, "double"));
-        let result = format_binding(&binding, &compactor).unwrap();
+        let qr = make_test_result();
+        let binding = Binding::lit(FlakeValue::Double(3.13), Sid::new(2, "double"));
+        let result = format_binding(&qr, &binding, &compactor).unwrap();
         assert_eq!(
             result,
-            json!({"@value": 3.14, "@type": "http://www.w3.org/2001/XMLSchema#double"})
+            json!({"@value": 3.13, "@type": "http://www.w3.org/2001/XMLSchema#double"})
         );
     }
 
     #[test]
     fn test_format_binding_boolean() {
         let compactor = make_test_compactor();
+        let qr = make_test_result();
         let binding = Binding::lit(FlakeValue::Boolean(true), Sid::new(2, "boolean"));
-        let result = format_binding(&binding, &compactor).unwrap();
+        let result = format_binding(&qr, &binding, &compactor).unwrap();
         assert_eq!(
             result,
             json!({"@value": true, "@type": "http://www.w3.org/2001/XMLSchema#boolean"})
@@ -343,12 +436,13 @@ mod tests {
     #[test]
     fn test_format_binding_language_tagged() {
         let compactor = make_test_compactor();
+        let qr = make_test_result();
         let binding = Binding::lit_lang(
             FlakeValue::String("Hello".to_string()),
             Sid::new(3, "langString"),
             "en",
         );
-        let result = format_binding(&binding, &compactor).unwrap();
+        let result = format_binding(&qr, &binding, &compactor).unwrap();
         // Language-tagged strings use @language, not @type
         assert_eq!(result, json!({"@value": "Hello", "@language": "en"}));
     }
@@ -356,19 +450,21 @@ mod tests {
     #[test]
     fn test_format_binding_unbound() {
         let compactor = make_test_compactor();
+        let qr = make_test_result();
         let binding = Binding::Unbound;
-        let result = format_binding(&binding, &compactor).unwrap();
+        let result = format_binding(&qr, &binding, &compactor).unwrap();
         assert_eq!(result, JsonValue::Null);
     }
 
     #[test]
     fn test_format_binding_grouped() {
         let compactor = make_test_compactor();
+        let qr = make_test_result();
         let binding = Binding::Grouped(vec![
             Binding::lit(FlakeValue::Long(1), Sid::new(2, "long")),
             Binding::lit(FlakeValue::Long(2), Sid::new(2, "long")),
         ]);
-        let result = format_binding(&binding, &compactor).unwrap();
+        let result = format_binding(&qr, &binding, &compactor).unwrap();
         assert_eq!(
             result,
             json!([
@@ -381,10 +477,11 @@ mod tests {
     #[test]
     fn test_format_binding_double_special() {
         let compactor = make_test_compactor();
+        let qr = make_test_result();
 
         // NaN
         let binding = Binding::lit(FlakeValue::Double(f64::NAN), Sid::new(2, "double"));
-        let result = format_binding(&binding, &compactor).unwrap();
+        let result = format_binding(&qr, &binding, &compactor).unwrap();
         assert_eq!(
             result,
             json!({"@value": "NaN", "@type": "http://www.w3.org/2001/XMLSchema#double"})
@@ -392,7 +489,7 @@ mod tests {
 
         // Infinity
         let binding = Binding::lit(FlakeValue::Double(f64::INFINITY), Sid::new(2, "double"));
-        let result = format_binding(&binding, &compactor).unwrap();
+        let result = format_binding(&qr, &binding, &compactor).unwrap();
         assert_eq!(
             result,
             json!({"@value": "INF", "@type": "http://www.w3.org/2001/XMLSchema#double"})

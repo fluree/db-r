@@ -631,22 +631,49 @@ impl BinaryIndexStore {
                     )
                 })?;
 
-                // Load branch manifest (cache-aware), resolving leaf paths against cache_dir
+                // Load branch manifest, initially resolving leaf paths against cache_dir.
                 let branch_bytes =
                     fetch_cached_bytes(storage, &order_addrs.branch, cache_dir, "fbr").await?;
-                let branch = read_branch_manifest_from_bytes(&branch_bytes, Some(cache_dir))?;
+                let mut branch = read_branch_manifest_from_bytes(&branch_bytes, Some(cache_dir))?;
+
+                // Build content_hash → CAS address map for local path resolution.
+                let mut hash_to_cas: HashMap<String, &str> =
+                    HashMap::with_capacity(order_addrs.leaves.len());
+                for leaf_addr in &order_addrs.leaves {
+                    if let Some(hash) = extract_hash_from_address(leaf_addr) {
+                        hash_to_cas.insert(hash, leaf_addr.as_str());
+                    }
+                }
+
+                // Resolve leaf paths: for file storage, point directly at CAS files
+                // (no download needed). For remote storage, download to cache.
+                let mut local_resolved = 0usize;
+                let mut cache_resolved = 0usize;
+                for leaf_entry in &mut branch.leaves {
+                    if let Some(cas_addr) = hash_to_cas.get(&leaf_entry.content_hash) {
+                        if let Some(local_path) = storage.resolve_local_path(cas_addr) {
+                            leaf_entry.path = local_path;
+                            local_resolved += 1;
+                            continue;
+                        }
+                    }
+                    // Fall back: ensure leaf is in cache (download if needed)
+                    if !leaf_entry.path.exists() {
+                        if let Some(cas_addr) = hash_to_cas.get(&leaf_entry.content_hash) {
+                            ensure_leaf_cached(storage, cas_addr, cache_dir).await?;
+                        }
+                    }
+                    cache_resolved += 1;
+                }
+
                 tracing::info!(
                     g_id = graph_entry.g_id,
                     order = order_name,
                     leaves = branch.leaves.len(),
+                    local_resolved,
+                    cache_resolved,
                     "loaded branch manifest"
                 );
-
-                // Eagerly download leaf files to cache_dir (skip on cache hit).
-                // Sync cursors open these via File::open or leaf_dir.join(path).
-                for leaf_addr in &order_addrs.leaves {
-                    ensure_leaf_cached(storage, leaf_addr, cache_dir).await?;
-                }
 
                 order_indexes.insert(
                     order,
@@ -726,6 +753,38 @@ impl BinaryIndexStore {
             .unwrap_or(8 * 1024 * 1024 * 1024);
         let cache = Some(Arc::new(LeafletCache::with_max_bytes(leaflet_cache_bytes)));
         Self::load_from_root(storage, root, cache_dir, cache).await
+    }
+
+    /// Log dictionary tree I/O stats (disk reads vs cache hits).
+    pub fn log_dict_stats(&self) {
+        if let Some(tree) = &self.dicts.subject_forward_tree {
+            tracing::info!(
+                disk_reads = tree.disk_reads(),
+                cache_hits = tree.cache_hits(),
+                "dict_stats: subject_forward"
+            );
+        }
+        if let Some(tree) = &self.dicts.subject_reverse_tree {
+            tracing::info!(
+                disk_reads = tree.disk_reads(),
+                cache_hits = tree.cache_hits(),
+                "dict_stats: subject_reverse"
+            );
+        }
+        if let Some(tree) = &self.dicts.string_forward_tree {
+            tracing::info!(
+                disk_reads = tree.disk_reads(),
+                cache_hits = tree.cache_hits(),
+                "dict_stats: string_forward"
+            );
+        }
+        if let Some(tree) = &self.dicts.string_reverse_tree {
+            tracing::info!(
+                disk_reads = tree.disk_reads(),
+                cache_hits = tree.cache_hits(),
+                "dict_stats: string_reverse"
+            );
+        }
     }
 
     /// Replace the leaflet cache on an already-loaded store.
@@ -1082,7 +1141,7 @@ impl BinaryIndexStore {
         self.graph_indexes
             .graphs
             .get(&g_id)
-            .is_some_and(|g| g.orders.contains_key(&order))
+            .map_or(false, |g| g.orders.contains_key(&order))
     }
 
     /// Get the available sort orders for a graph.
@@ -1769,23 +1828,27 @@ fn cache_bytes_to_file(
         // same content, so if target now exists we can discard our tmp.
         let _ = std::fs::remove_file(&tmp);
         if !target.exists() {
-            return Err(io::Error::other(format!(
-                "failed to cache {}.{} to {:?}",
-                hash, ext, cache_dir
-            )));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("failed to cache {}.{} to {:?}", hash, ext, cache_dir),
+            ));
         }
     }
     Ok(target)
 }
 
-/// Fetch artifact bytes: reads from local cache if available, otherwise
-/// downloads from storage and writes to cache for next time.
+/// Fetch artifact bytes: reads from local file if available (file storage),
+/// then local cache, otherwise downloads from storage and writes to cache.
 async fn fetch_cached_bytes<S: StorageRead>(
     storage: &S,
     address: &str,
     cache_dir: &Path,
     ext: &str,
 ) -> io::Result<Vec<u8>> {
+    // For file storage: read directly from the CAS file, no cache needed.
+    if let Some(local_path) = storage.resolve_local_path(address) {
+        return std::fs::read(&local_path);
+    }
     let hash = extract_hash_from_address(address).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1832,9 +1895,13 @@ fn build_dict_reader_reverse(entries: Vec<ReverseEntry>) -> io::Result<DictTreeR
 /// Load a `DictTreeReader` from CAS by fetching branch + leaf artifacts.
 ///
 /// Downloads branch manifest, decodes it, validates that the branch's
-/// leaf addresses match the root's leaf list (GC integrity), then eagerly
-/// fetches all leaf artifacts to the local cache directory. Returns a
-/// reader backed by `LeafSource::LocalFiles`.
+/// leaf addresses match the root's leaf list (GC integrity), then builds
+/// a demand-loading reader backed by `LeafSource::LocalFiles`.
+///
+/// For storage backends with local files (e.g., `FileStorage`), leaf paths
+/// are resolved directly via `resolve_local_path` — no download required.
+/// For remote backends, leaves are fetched to `cache_dir` on demand at
+/// lookup time.
 ///
 /// If `leaflet_cache` is provided, the reader will use it for in-memory
 /// caching of leaf blobs (keyed by `xxh3_128(cas_address)`, immutable).
@@ -1850,10 +1917,6 @@ async fn load_dict_tree_from_cas<S: StorageRead>(
     let branch = DictBranch::decode(&branch_bytes)?;
 
     // Validate branch/root leaf list consistency.
-    // The root's `addrs.leaves` is the authoritative set that GC uses to
-    // determine reachable artifacts. If the branch references leaves not
-    // in the root's list, GC could delete them. Warn (don't fail) since
-    // this is a consistency check, not a hard requirement for loading.
     if branch.leaves.len() != addrs.leaves.len() {
         tracing::warn!(
             branch_leaves = branch.leaves.len(),
@@ -1872,29 +1935,49 @@ async fn load_dict_tree_from_cas<S: StorageRead>(
         }
     }
 
-    // Pre-fetch all leaves to local cache, build address → path mapping.
-    // Iterates branch leaves (the authoritative set for lookups).
-    let mut file_map = HashMap::new();
+    // Build address → local path mapping WITHOUT pre-downloading.
+    // For file storage: resolve_local_path gives us the actual CAS file path.
+    // For remote storage: use cache_dir paths (will be fetched on demand).
+    let mut file_map = HashMap::with_capacity(branch.leaves.len());
+    let mut local_resolved = 0usize;
+    let mut cache_resolved = 0usize;
+
     for leaf in &branch.leaves {
-        let hash = extract_hash_from_address(&leaf.address).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "cannot extract hash from dict leaf address: {}",
-                    leaf.address
-                ),
-            )
-        })?;
-        let cached_path = cache_dir.join(format!("{}.{}", hash, leaf_ext));
-        if !cached_path.exists() {
-            let bytes = storage
-                .read_bytes(&leaf.address)
-                .await
-                .map_err(storage_to_io_error)?;
-            cache_bytes_to_file(cache_dir, &hash, leaf_ext, &bytes)?;
+        // Try direct local resolution first (zero-copy for file storage)
+        if let Some(local_path) = storage.resolve_local_path(&leaf.address) {
+            file_map.insert(leaf.address.clone(), local_path);
+            local_resolved += 1;
+        } else {
+            // Remote storage: map to cache path (will be downloaded on first access)
+            let hash = extract_hash_from_address(&leaf.address).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "cannot extract hash from dict leaf address: {}",
+                        leaf.address
+                    ),
+                )
+            })?;
+            let cached_path = cache_dir.join(format!("{}.{}", hash, leaf_ext));
+            // Only download if not already cached
+            if !cached_path.exists() {
+                let bytes = storage
+                    .read_bytes(&leaf.address)
+                    .await
+                    .map_err(storage_to_io_error)?;
+                cache_bytes_to_file(cache_dir, &hash, leaf_ext, &bytes)?;
+            }
+            file_map.insert(leaf.address.clone(), cached_path);
+            cache_resolved += 1;
         }
-        file_map.insert(leaf.address.clone(), cached_path);
     }
+
+    tracing::info!(
+        leaves = branch.leaves.len(),
+        local_resolved,
+        cache_resolved,
+        "dict tree leaf paths resolved"
+    );
 
     let leaf_source = LeafSource::LocalFiles(file_map);
     match leaflet_cache {

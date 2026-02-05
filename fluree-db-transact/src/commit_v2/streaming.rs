@@ -410,7 +410,7 @@ mod tests {
             .push_flake(&make_flake(
                 "x",
                 "dbl",
-                FlakeValue::Double(3.14),
+                FlakeValue::Double(3.13),
                 "double",
                 1,
             ))

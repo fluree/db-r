@@ -147,8 +147,8 @@ fn coerce_datetime() {
 #[test]
 fn coerce_decimal() {
     assert_eq!(
-        coerce(serde_json::json!(3.14), xsd::DECIMAL),
-        Some(serde_json::json!(3.14))
+        coerce(serde_json::json!(3.13), xsd::DECIMAL),
+        Some(serde_json::json!(3.13))
     );
     assert_eq!(
         coerce(serde_json::json!("3.14"), xsd::DECIMAL),
@@ -193,7 +193,7 @@ fn coerce_integer() {
         coerce(serde_json::json!("42"), xsd::INTEGER),
         Some(serde_json::json!(42))
     );
-    assert_eq!(coerce(serde_json::json!(3.14), xsd::INTEGER), None);
+    assert_eq!(coerce(serde_json::json!(3.13), xsd::INTEGER), None);
 }
 
 #[test]
@@ -202,7 +202,7 @@ fn coerce_int() {
         coerce(serde_json::json!(42), xsd::INT),
         Some(serde_json::json!(42))
     );
-    assert_eq!(coerce(serde_json::json!(3.14), xsd::INT), None);
+    assert_eq!(coerce(serde_json::json!(3.13), xsd::INT), None);
     assert_eq!(coerce(serde_json::json!("3.14"), xsd::INT), None);
 }
 

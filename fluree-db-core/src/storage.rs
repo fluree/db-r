@@ -125,6 +125,19 @@ pub trait StorageRead: Debug + Send + Sync {
     /// - Admin operations
     /// - Small, bounded prefixes
     async fn list_prefix(&self, prefix: &str) -> Result<Vec<String>>;
+
+    /// Resolve a CAS address to a local filesystem path, if available.
+    ///
+    /// Returns `Some(path)` for storage backends where data is already on
+    /// the local filesystem (e.g., `FileStorage`). Returns `None` for
+    /// remote or in-memory backends.
+    ///
+    /// Callers use this to avoid redundant copy-to-cache when the data
+    /// is already locally accessible.
+    fn resolve_local_path(&self, address: &str) -> Option<std::path::PathBuf> {
+        let _ = address;
+        None
+    }
 }
 
 /// Mutating storage operations
@@ -206,8 +219,6 @@ pub enum ContentKind {
     IndexRoot,
     /// Garbage record (GC metadata)
     GarbageRecord,
-    /// Reindex checkpoint (mutable / overwritten)
-    ReindexCheckpoint,
     /// Dictionary artifact (predicates, subjects, strings, etc.)
     DictBlob { dict: DictKind },
     /// Index branch manifest (FBR1 format)
@@ -308,7 +319,6 @@ pub fn content_path(kind: ContentKind, alias: &str, hash_hex: &str) -> String {
         ContentKind::Txn => format!("{}/txn/{}.json", prefix, hash_hex),
         ContentKind::IndexRoot => format!("{}/index/roots/{}.json", prefix, hash_hex),
         ContentKind::GarbageRecord => format!("{}/index/garbage/{}.json", prefix, hash_hex),
-        ContentKind::ReindexCheckpoint => format!("{}/index/reindex-checkpoint.json", prefix),
         ContentKind::DictBlob { dict } => {
             let ext = dict_kind_extension(dict);
             format!("{}/index/objects/dicts/{}.{}", prefix, hash_hex, ext)
@@ -578,6 +588,15 @@ impl StorageRead for FileStorage {
                 crate::error::Error::io(format!("Failed to read {}: {}", path.display(), e))
             }
         })
+    }
+
+    fn resolve_local_path(&self, address: &str) -> Option<std::path::PathBuf> {
+        let path = self.resolve_path(address).ok()?;
+        if path.exists() {
+            Some(path)
+        } else {
+            None
+        }
     }
 
     async fn exists(&self, address: &str) -> Result<bool> {

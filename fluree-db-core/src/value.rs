@@ -1116,7 +1116,7 @@ mod tests {
         let ref_val = FlakeValue::Ref(Sid::new(1, "test"));
         let bool_val = FlakeValue::Boolean(true);
         let long_val = FlakeValue::Long(42);
-        let double_val = FlakeValue::Double(3.14);
+        let double_val = FlakeValue::Double(3.13);
         let string_val = FlakeValue::String("hello".to_string());
         let vector_val = FlakeValue::Vector(vec![1.0, 2.0]);
 
@@ -1299,7 +1299,7 @@ mod tests {
     #[test]
     fn test_parse_decimal() {
         // JSON number → Double
-        let val = parse_decimal(&serde_json::json!(3.14)).unwrap();
+        let val = parse_decimal(&serde_json::json!(3.13)).unwrap();
         assert!(matches!(val, FlakeValue::Double(_)));
 
         // String with many digits → BigDecimal

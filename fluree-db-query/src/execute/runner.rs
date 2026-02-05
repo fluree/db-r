@@ -700,7 +700,11 @@ pub async fn execute_prepared_with_dataset_and_providers<'a, 'b, S: Storage + 's
 }
 
 /// Execute with dataset, policy, and both BM25 and vector providers
-pub async fn execute_prepared_with_dataset_and_policy_and_providers<'a, 'b, S: Storage + 'static>(
+pub async fn execute_prepared_with_dataset_and_policy_and_providers<
+    'a,
+    'b,
+    S: Storage + 'static,
+>(
     source: DataSource<'a, S>,
     vars: &VarRegistry,
     prepared: PreparedExecution<S>,

@@ -359,8 +359,15 @@ pub async fn execute_with_r2rml<'a, 'b, S: Storage + 'static>(
     r2rml_table_provider: &'b dyn crate::r2rml::R2rmlTableProvider,
 ) -> Result<Vec<Batch>> {
     let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
-    execute_prepared_with_r2rml(source, vars, prepared, tracker, r2rml_provider, r2rml_table_provider)
-        .await
+    execute_prepared_with_r2rml(
+        source,
+        vars,
+        prepared,
+        tracker,
+        r2rml_provider,
+        r2rml_table_provider,
+    )
+    .await
 }
 
 /// Execute a query against a dataset (multi-graph query)

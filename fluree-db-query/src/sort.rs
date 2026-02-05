@@ -10,9 +10,61 @@ use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::{FlakeValue, Sid, Storage};
+use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::cmp::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
+
+fn materialize_encoded_lit_for_sort(b: &Binding, store: &BinaryIndexStore) -> Option<Binding> {
+    let Binding::EncodedLit {
+        o_kind,
+        o_key,
+        p_id,
+        dt_id,
+        lang_id,
+        i_val,
+        t,
+    } = b
+    else {
+        return None;
+    };
+
+    let val = store.decode_value(*o_kind, *o_key, *p_id).ok()?;
+    match val {
+        FlakeValue::Ref(sid) => Some(Binding::Sid(sid)),
+        other => {
+            let dt_sid = store
+                .dt_sids()
+                .get(*dt_id as usize)
+                .cloned()
+                .unwrap_or_else(|| Sid::new(0, ""));
+            let meta = store.decode_meta(*lang_id, *i_val);
+            Some(Binding::Lit {
+                val: other,
+                dt: dt_sid,
+                lang: meta.and_then(|m| m.lang.map(Arc::from)),
+                t: Some(*t),
+                op: None,
+            })
+        }
+    }
+}
+
+fn materialize_sort_keys_in_rows(
+    rows: &mut [Vec<Binding>],
+    sort_col_indices: &[usize],
+    store: &BinaryIndexStore,
+) {
+    for row in rows.iter_mut() {
+        for &col_idx in sort_col_indices {
+            if let Some(existing) = row.get(col_idx) {
+                if let Some(materialized) = materialize_encoded_lit_for_sort(existing, store) {
+                    row[col_idx] = materialized;
+                }
+            }
+        }
+    }
+}
 
 /// Sort direction for ORDER BY clauses
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -107,6 +159,45 @@ pub fn compare_bindings(a: &Binding, b: &Binding) -> Ordering {
             compare_flake_values(v1, v2)
         }
         (Binding::Lit { .. }, Binding::Grouped(_)) => Ordering::Less,
+        // EncodedLit: treat as literal class for ordering. Prefer materialization
+        // before sort/filter/output when semantic comparison is required.
+        (
+            Binding::EncodedLit { .. },
+            Binding::Unbound
+            | Binding::Poisoned
+            | Binding::Sid(_)
+            | Binding::IriMatch { .. }
+            | Binding::Iri(_),
+        ) => Ordering::Greater,
+        (Binding::EncodedLit { .. }, Binding::Lit { .. }) => Ordering::Equal,
+        (Binding::Lit { .. }, Binding::EncodedLit { .. }) => Ordering::Equal,
+        (
+            Binding::EncodedLit {
+                o_kind: k1,
+                o_key: ok1,
+                p_id: p1,
+                dt_id: dt1,
+                lang_id: l1,
+                i_val: i1,
+                ..
+            },
+            Binding::EncodedLit {
+                o_kind: k2,
+                o_key: ok2,
+                p_id: p2,
+                dt_id: dt2,
+                lang_id: l2,
+                i_val: i2,
+                ..
+            },
+        ) => k1
+            .cmp(k2)
+            .then(ok1.cmp(ok2))
+            .then(p1.cmp(p2))
+            .then(dt1.cmp(dt2))
+            .then(l1.cmp(l2))
+            .then(i1.cmp(i2)),
+        (Binding::EncodedLit { .. }, Binding::Grouped(_)) => Ordering::Less,
 
         // Grouped sorts last (should not appear in normal sort contexts)
         // This is an intermediate representation for aggregation
@@ -300,6 +391,12 @@ impl<S: Storage + 'static> Operator<S> for SortOperator<S> {
             let drain_ms = (drain_start.elapsed().as_secs_f64() * 1000.0) as u64;
 
             // Sort rows
+            // Late materialization hook:
+            // If the batched-join path produced EncodedLit bindings, we must
+            // materialize ONLY the ORDER BY key columns before sorting.
+            if let Some(store) = ctx.binary_store.as_deref() {
+                materialize_sort_keys_in_rows(&mut all_rows, &self.sort_col_indices, store);
+            }
             let sort_start = Instant::now();
             all_rows.sort_by(|a, b| self.compare_rows(a, b));
             let sort_ms = (sort_start.elapsed().as_secs_f64() * 1000.0) as u64;

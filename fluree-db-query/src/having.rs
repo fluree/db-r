@@ -19,7 +19,7 @@
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::filter::evaluate;
+use crate::filter::evaluate_with_context;
 use crate::ir::FilterExpr;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
@@ -103,7 +103,7 @@ impl<S: Storage + 'static> Operator<S> for HavingOperator<S> {
                 };
 
                 // Evaluate the HAVING expression
-                let passes = evaluate(&self.expr, &row)?;
+                let passes = evaluate_with_context(&self.expr, &row, Some(ctx))?;
 
                 if passes {
                     // Copy this row to output

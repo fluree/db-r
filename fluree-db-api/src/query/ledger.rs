@@ -37,6 +37,7 @@ where
             batches,
             ledger.t(),
             Some(ledger.novelty.clone()),
+            None,
         ))
     }
 
@@ -56,8 +57,13 @@ where
         tracker: &Tracker,
     ) -> Result<Vec<crate::Batch>> {
         let r2rml_provider = NoOpR2rmlProvider::new();
-        let source = DataSource::new(&ledger.db, ledger.novelty.as_ref(), ledger.t());
 
+        let source = DataSource {
+            db: &ledger.db,
+            overlay: ledger.novelty.as_ref(),
+            to_t: ledger.t(),
+            from_t: None,
+        };
         let batches = crate::execute_with_r2rml(
             source,
             vars,
@@ -115,8 +121,13 @@ where
 
         let executable = prepare_for_execution(&parsed);
         let r2rml_provider = NoOpR2rmlProvider::new();
-        let source = DataSource::new(&ledger.db, ledger.novelty.as_ref(), ledger.t());
 
+        let source = DataSource {
+            db: &ledger.db,
+            overlay: ledger.novelty.as_ref(),
+            to_t: ledger.t(),
+            from_t: None,
+        };
         let batches = crate::execute_with_r2rml(
             source,
             &vars,
@@ -140,6 +151,7 @@ where
             batches,
             ledger.t(),
             Some(ledger.novelty.clone()),
+            None,
         );
 
         let result_json = query_result
@@ -175,10 +187,15 @@ where
     ) -> Result<QueryResult> {
         let (vars, parsed) = parse_jsonld_query(query_json, &ledger.db)?;
         let executable = ExecutableQuery::simple(parsed.clone());
-        let source = DataSource::new(&ledger.db, ledger.novelty.as_ref(), ledger.t());
 
-        let batches = fluree_db_query::execute_with_policy(source, &vars, &executable, policy)
-            .await?;
+        let source = DataSource {
+            db: &ledger.db,
+            overlay: ledger.novelty.as_ref(),
+            to_t: ledger.t(),
+            from_t: None,
+        };
+        let batches =
+            fluree_db_query::execute_with_policy(source, &vars, &executable, policy).await?;
 
         Ok(build_query_result(
             vars,
@@ -186,6 +203,7 @@ where
             batches,
             ledger.t(),
             Some(ledger.novelty.clone()),
+            None,
         ))
     }
 
@@ -198,10 +216,15 @@ where
     ) -> Result<QueryResult> {
         let (vars, parsed) = parse_sparql_to_ir(sparql, &ledger.db)?;
         let executable = ExecutableQuery::simple(parsed.clone());
-        let source = DataSource::new(&ledger.db, ledger.novelty.as_ref(), ledger.t());
 
-        let batches = fluree_db_query::execute_with_policy(source, &vars, &executable, policy)
-            .await?;
+        let source = DataSource {
+            db: &ledger.db,
+            overlay: ledger.novelty.as_ref(),
+            to_t: ledger.t(),
+            from_t: None,
+        };
+        let batches =
+            fluree_db_query::execute_with_policy(source, &vars, &executable, policy).await?;
 
         Ok(build_sparql_result(
             vars,
@@ -209,6 +232,7 @@ where
             batches,
             ledger.t(),
             Some(ledger.novelty.clone()),
+            None,
         ))
     }
 
@@ -247,6 +271,7 @@ where
             batches,
             ledger.t(),
             Some(ledger.novelty.clone()),
+            None,
         ))
     }
 
@@ -274,6 +299,7 @@ where
                 batches,
                 ledger.t(),
                 Some(ledger.novelty.clone()),
+                None,
             ),
             tally,
         ))
@@ -289,21 +315,40 @@ where
         let executable = ExecutableQuery::simple(parsed.clone());
         let r2rml_provider = NoOpR2rmlProvider::new();
         let tracker = Tracker::disabled();
-        let overlay: &dyn fluree_db_core::OverlayProvider = view
-            .overlay()
-            .map(|n| n.as_ref() as &dyn fluree_db_core::OverlayProvider)
-            .unwrap_or(&fluree_db_core::NoOverlay);
-        let source = DataSource::new(&view.db, overlay, view.to_t());
 
-        let batches = crate::execute_with_r2rml(
-            source,
-            &vars,
-            &executable,
-            &tracker,
-            &r2rml_provider,
-            &r2rml_provider,
-        )
-        .await?;
+        let batches = if let Some(novelty) = view.overlay() {
+            let source = DataSource {
+                db: &view.db,
+                overlay: novelty.as_ref(),
+                to_t: view.to_t(),
+                from_t: None,
+            };
+            crate::execute_with_r2rml(
+                source,
+                &vars,
+                &executable,
+                &tracker,
+                &r2rml_provider,
+                &r2rml_provider,
+            )
+            .await?
+        } else {
+            let source = DataSource {
+                db: &view.db,
+                overlay: &fluree_db_core::NoOverlay,
+                to_t: view.to_t(),
+                from_t: None,
+            };
+            crate::execute_with_r2rml(
+                source,
+                &vars,
+                &executable,
+                &tracker,
+                &r2rml_provider,
+                &r2rml_provider,
+            )
+            .await?
+        };
 
         Ok(build_query_result(
             vars,
@@ -312,6 +357,7 @@ where
             view.to_t(),
             view.overlay()
                 .map(|n| Arc::clone(n) as Arc<dyn OverlayProvider>),
+            None,
         ))
     }
 }

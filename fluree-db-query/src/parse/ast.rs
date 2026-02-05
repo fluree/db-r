@@ -1073,7 +1073,7 @@ mod tests {
         let l = LiteralValue::Long(42);
         assert_eq!(l, LiteralValue::Long(42));
 
-        let d = LiteralValue::Double(3.14);
+        let d = LiteralValue::Double(3.13);
         assert!(matches!(d, LiteralValue::Double(_)));
 
         let b = LiteralValue::Boolean(true);

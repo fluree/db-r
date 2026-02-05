@@ -77,12 +77,8 @@ pub use admin::{
     TriggerIndexResult,
     VgDropReport,
 };
-// Re-export checkpoint and progress types from indexer
 pub use dataset::{DatasetParseError, DatasetSpec, GraphSource, QueryConnectionOptions, TimeSpec};
 pub use error::{ApiError, BuilderError, BuilderErrors, Result};
-pub use fluree_db_indexer::{
-    IndexerConfigSnapshot, ProgressCallback, ReindexCheckpoint, ReindexProgress,
-};
 pub use format::{FormatError, FormatterConfig, JsonLdRowShape, OutputFormat, SelectMode};
 pub use graph::Graph;
 pub use graph_query_builder::{GraphQueryBuilder, GraphSnapshotQueryBuilder};
@@ -252,6 +248,10 @@ impl StorageRead for AnyStorage {
         prefix: &str,
     ) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
         self.0.list_prefix(prefix).await
+    }
+
+    fn resolve_local_path(&self, address: &str) -> Option<std::path::PathBuf> {
+        self.0.resolve_local_path(address)
     }
 }
 
@@ -760,6 +760,10 @@ impl StorageRead for AddressIdentifierResolverStorage {
         prefix: &str,
     ) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
         self.default.list_prefix(prefix).await
+    }
+
+    fn resolve_local_path(&self, address: &str) -> Option<std::path::PathBuf> {
+        self.route(address).resolve_local_path(address)
     }
 }
 
@@ -1320,7 +1324,7 @@ pub async fn connect_s3(
 /// Builder for creating Fluree instances
 ///
 /// Provides a fluent API for configuring storage, cache, and nameservice options.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct FlureeBuilder {
     config: ConnectionConfig,
     #[cfg(feature = "native")]
@@ -1329,6 +1333,18 @@ pub struct FlureeBuilder {
     encryption_key: Option<[u8; 32]>,
     /// Optional ledger cache configuration (enables LedgerManager)
     ledger_cache_config: Option<LedgerManagerConfig>,
+}
+
+impl Default for FlureeBuilder {
+    fn default() -> Self {
+        Self {
+            config: ConnectionConfig::default(),
+            #[cfg(feature = "native")]
+            storage_path: None,
+            encryption_key: None,
+            ledger_cache_config: None,
+        }
+    }
 }
 
 impl FlureeBuilder {
@@ -2473,6 +2489,7 @@ where
 }
 
 /// Convenience functions for common configurations
+
 /// Create a file-backed Fluree instance
 ///
 /// This is the most common configuration for production use.

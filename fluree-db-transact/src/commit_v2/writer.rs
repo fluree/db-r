@@ -168,7 +168,7 @@ mod tests {
             Flake::new(
                 Sid::new(101, "x"),
                 Sid::new(101, "dbl"),
-                FlakeValue::Double(3.14),
+                FlakeValue::Double(3.13),
                 Sid::new(2, "double"),
                 1,
                 true,

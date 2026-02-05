@@ -10,6 +10,7 @@ use super::iri::IriCompactor;
 use super::{FormatError, Result};
 use crate::QueryResult;
 use fluree_db_core::FlakeValue;
+use fluree_db_core::Sid;
 use fluree_db_query::binding::Binding;
 use fluree_vocab::rdf;
 use serde_json::{json, Map, Value as JsonValue};
@@ -27,15 +28,16 @@ pub fn format(
             let row = match config.select_mode {
                 SelectMode::Wildcard => {
                     // Wildcard: use batch schema, return all bound vars as object
-                    format_row_wildcard(batch, row_idx, &result.vars, compactor)?
+                    format_row_wildcard(result, batch, row_idx, &result.vars, compactor)?
                 }
                 _ => {
                     // Normal select: use select list
                     match config.jsonld_row_shape {
                         JsonLdRowShape::Array => {
-                            format_row_array(batch, row_idx, &result.select, compactor)?
+                            format_row_array(result, batch, row_idx, &result.select, compactor)?
                         }
                         JsonLdRowShape::Object => format_row_object(
+                            result,
                             batch,
                             row_idx,
                             &result.select,
@@ -239,6 +241,11 @@ pub(crate) fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Res
             }))
         }
 
+        // Encoded literal (late materialization) - decode via binary store at formatting time.
+        Binding::EncodedLit { .. } => Err(FormatError::InvalidBinding(
+            "Internal error: format_binding called without QueryResult for EncodedLit".to_string(),
+        )),
+
         // Grouped values (from GROUP BY without aggregation)
         Binding::Grouped(values) => {
             let arr: Result<Vec<_>> = values
@@ -250,8 +257,68 @@ pub(crate) fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Res
     }
 }
 
+pub(crate) fn format_binding_with_result(
+    result: &QueryResult,
+    binding: &Binding,
+    compactor: &IriCompactor,
+) -> Result<JsonValue> {
+    match binding {
+        Binding::EncodedLit { .. } => {
+            let store = result.binary_store.as_ref().ok_or_else(|| {
+                FormatError::InvalidBinding(
+                    "Encountered EncodedLit during formatting but QueryResult has no binary_store"
+                        .to_string(),
+                )
+            })?;
+            let materialized = materialize_encoded_lit(binding, store).map_err(|e| {
+                FormatError::InvalidBinding(format!("Failed to materialize EncodedLit: {}", e))
+            })?;
+            format_binding_with_result(result, &materialized, compactor)
+        }
+        _ => format_binding(binding, compactor),
+    }
+}
+
+fn materialize_encoded_lit(
+    binding: &Binding,
+    store: &fluree_db_indexer::run_index::BinaryIndexStore,
+) -> std::io::Result<Binding> {
+    let Binding::EncodedLit {
+        o_kind,
+        o_key,
+        p_id,
+        dt_id,
+        lang_id,
+        i_val,
+        t,
+    } = binding
+    else {
+        return Ok(binding.clone());
+    };
+    let val = store.decode_value(*o_kind, *o_key, *p_id)?;
+    match val {
+        FlakeValue::Ref(sid) => Ok(Binding::Sid(sid)),
+        other => {
+            let dt_sid = store
+                .dt_sids()
+                .get(*dt_id as usize)
+                .cloned()
+                .unwrap_or_else(|| Sid::new(0, ""));
+            let meta = store.decode_meta(*lang_id, *i_val);
+            Ok(Binding::Lit {
+                val: other,
+                dt: dt_sid,
+                lang: meta.and_then(|m| m.lang.map(std::sync::Arc::from)),
+                t: Some(*t),
+                op: None,
+            })
+        }
+    }
+}
+
 /// Format row as array (Clojure parity)
 fn format_row_array(
+    result: &QueryResult,
     batch: &fluree_db_query::Batch,
     row_idx: usize,
     select: &[fluree_db_query::VarId],
@@ -262,7 +329,7 @@ fn format_row_array(
     if select.len() == 1 {
         let var_id = select[0];
         return match batch.get(row_idx, var_id) {
-            Some(binding) => format_binding(binding, compactor),
+            Some(binding) => format_binding_with_result(result, binding, compactor),
             None => Ok(JsonValue::Null),
         };
     }
@@ -270,7 +337,7 @@ fn format_row_array(
     let values: Result<Vec<_>> = select
         .iter()
         .map(|&var_id| match batch.get(row_idx, var_id) {
-            Some(binding) => format_binding(binding, compactor),
+            Some(binding) => format_binding_with_result(result, binding, compactor),
             None => Ok(JsonValue::Null),
         })
         .collect();
@@ -279,6 +346,7 @@ fn format_row_array(
 
 /// Format row as object {var: value}
 fn format_row_object(
+    result: &QueryResult,
     batch: &fluree_db_query::Batch,
     row_idx: usize,
     select: &[fluree_db_query::VarId],
@@ -289,7 +357,7 @@ fn format_row_object(
     for &var_id in select {
         let var_name = vars.name(var_id);
         let value = match batch.get(row_idx, var_id) {
-            Some(binding) => format_binding(binding, compactor)?,
+            Some(binding) => format_binding_with_result(result, binding, compactor)?,
             None => JsonValue::Null,
         };
         obj.insert(var_name.to_string(), value);
@@ -301,6 +369,7 @@ fn format_row_object(
 ///
 /// Uses batch.schema() to get all variables, omits unbound/poisoned.
 fn format_row_wildcard(
+    result: &QueryResult,
     batch: &fluree_db_query::Batch,
     row_idx: usize,
     vars: &fluree_db_query::VarRegistry,
@@ -327,7 +396,7 @@ fn format_row_wildcard(
                 continue;
             }
 
-            let value = format_binding(binding, compactor)?;
+            let value = format_binding_with_result(result, binding, compactor)?;
             obj.insert(var_name.to_string(), value);
         }
     }
@@ -371,9 +440,9 @@ mod tests {
     #[test]
     fn test_format_binding_double() {
         let compactor = make_test_compactor();
-        let binding = Binding::lit(FlakeValue::Double(3.14), Sid::new(2, "double"));
+        let binding = Binding::lit(FlakeValue::Double(3.13), Sid::new(2, "double"));
         let result = format_binding(&binding, &compactor).unwrap();
-        assert_eq!(result, json!(3.14));
+        assert_eq!(result, json!(3.13));
     }
 
     #[test]

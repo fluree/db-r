@@ -187,7 +187,7 @@ impl LedgerIndexState {
             .drain(..)
             .partition(|(min_t, _)| *min_t <= threshold_t);
 
-        for (_, sender) in satisfied {
+        for (_min_t, sender) in satisfied {
             let _ = sender.send(outcome.clone());
         }
         self.waiters = remaining;
@@ -1079,6 +1079,7 @@ mod tests {
                 time: commit.time.clone(),
                 data: commit.data.clone(),
                 index: commit.index.clone(),
+                txn_signature: None,
             };
             let mut envelope_bytes = Vec::new();
             encode_envelope_fields(&envelope, &mut envelope_bytes).unwrap();
@@ -1114,6 +1115,7 @@ mod tests {
                 t: commit.t,
                 op_count: commit.flakes.len() as u32,
                 envelope_len,
+                sig_block_len: 0,
             };
 
             let total_len = HEADER_LEN
@@ -1185,6 +1187,8 @@ mod tests {
             index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
+            txn_signature: None,
+            commit_signatures: Vec::new(),
         };
         let addr = store_commit(&storage, &commit).await;
         ns.publish_commit("test:main", &addr, 1).await.unwrap();
@@ -1214,6 +1218,8 @@ mod tests {
             index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
+            txn_signature: None,
+            commit_signatures: Vec::new(),
         };
         let addr = store_commit(&storage, &commit).await;
         ns.publish_commit("test:main", &addr, 1).await.unwrap();
@@ -1249,6 +1255,8 @@ mod tests {
             index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
+            txn_signature: None,
+            commit_signatures: Vec::new(),
         };
         let addr1 = store_commit(&storage, &commit1).await;
         ns.publish_commit("test:main", &addr1, 1).await.unwrap();
@@ -1271,6 +1279,8 @@ mod tests {
             index: None,
             txn: None,
             namespace_delta: HashMap::new(),
+            txn_signature: None,
+            commit_signatures: Vec::new(),
         };
         let addr2 = store_commit(&storage, &commit2).await;
         ns.publish_commit("test:main", &addr2, 2).await.unwrap();
@@ -1298,6 +1308,8 @@ mod tests {
             index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
+            txn_signature: None,
+            commit_signatures: Vec::new(),
         };
         let addr = store_commit(&storage, &commit).await;
         ns.publish_commit("test:main", &addr, 1).await.unwrap();
@@ -1329,6 +1341,8 @@ mod tests {
             index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
+            txn_signature: None,
+            commit_signatures: Vec::new(),
         };
         let addr = store_commit(&storage, &commit).await;
         ns.publish_commit("test:main", &addr, 1).await.unwrap();
@@ -1364,6 +1378,8 @@ mod tests {
             index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
+            txn_signature: None,
+            commit_signatures: Vec::new(),
         };
         let addr = store_commit(&storage, &commit).await;
         ns.publish_commit("test:main", &addr, 1).await.unwrap();
@@ -1681,6 +1697,7 @@ mod embedded_tests {
             time: commit.time.clone(),
             data: commit.data.clone(),
             index: commit.index.clone(),
+            txn_signature: None,
         };
         let mut envelope_bytes = Vec::new();
         encode_envelope_fields(&envelope, &mut envelope_bytes).unwrap();
@@ -1716,6 +1733,7 @@ mod embedded_tests {
             t: commit.t,
             op_count: commit.flakes.len() as u32,
             envelope_len,
+            sig_block_len: 0,
         };
 
         let total_len = HEADER_LEN
@@ -1813,6 +1831,8 @@ mod embedded_tests {
             index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
+            txn_signature: None,
+            commit_signatures: Vec::new(),
         };
         let addr = store_commit(&storage, &commit).await;
         ns.publish_commit("test:main", &addr, 1).await.unwrap();
@@ -1865,6 +1885,8 @@ mod embedded_tests {
             index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
+            txn_signature: None,
+            commit_signatures: Vec::new(),
         };
         let addr = store_commit(&storage, &commit).await;
         ns.publish_commit("test:main", &addr, 1).await.unwrap();

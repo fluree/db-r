@@ -95,6 +95,7 @@ where
             batches,
             ledger.t(),
             Some(ledger.novelty.clone()),
+            None,
         ))
     }
 
@@ -122,6 +123,7 @@ where
             batches,
             ledger.t(),
             Some(ledger.novelty.clone()),
+            None,
         ))
     }
 }
