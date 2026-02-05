@@ -303,10 +303,7 @@ mod tests {
             leaf.lookup((2u64 << 48) | 1),
             Some(b"http://a.org/y".as_slice())
         );
-        assert_eq!(
-            leaf.lookup(3u64 << 48),
-            Some(b"http://b.org/z".as_slice())
-        );
+        assert_eq!(leaf.lookup(3u64 << 48), Some(b"http://b.org/z".as_slice()));
         assert!(leaf.lookup((3u64 << 48) | 1).is_none());
     }
 

@@ -125,7 +125,8 @@ impl VectorIndexProvider for RemoteVectorSearchProvider {
         params: VectorSearchParams<'_>,
     ) -> Result<Vec<VectorSearchHit>> {
         // Build the search request
-        let mut request = SearchRequest::vector(vg_alias, params.query_vector.to_vec(), params.limit);
+        let mut request =
+            SearchRequest::vector(vg_alias, params.query_vector.to_vec(), params.limit);
         request.as_of_t = params.as_of_t;
         request.sync = params.sync;
         request.timeout_ms = params.timeout_ms;

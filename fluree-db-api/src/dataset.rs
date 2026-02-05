@@ -271,7 +271,6 @@ impl GraphSource {
         self.time_spec = Some(time_spec);
         self
     }
-
 }
 
 impl From<&str> for GraphSource {

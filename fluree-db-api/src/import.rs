@@ -1216,8 +1216,8 @@ where
         graph_addresses,
         stats: Some(stats_json),
         schema: None,
-        prev_index: None,     // fresh import
-        garbage: None,        // fresh import
+        prev_index: None, // fresh import
+        garbage: None,    // fresh import
         subject_watermarks: uploaded_dicts.subject_watermarks,
         string_watermark: uploaded_dicts.string_watermark,
     });

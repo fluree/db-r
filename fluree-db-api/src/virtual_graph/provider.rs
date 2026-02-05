@@ -36,7 +36,9 @@ use crate::search::RemoteBm25SearchProvider;
 use crate::search::RemoteVectorSearchProvider;
 
 #[cfg(feature = "vector")]
-use fluree_db_query::vector::{DistanceMetric, VectorIndexProvider, VectorSearchHit, VectorSearchParams};
+use fluree_db_query::vector::{
+    DistanceMetric, VectorIndexProvider, VectorSearchHit, VectorSearchParams,
+};
 
 /// BM25 index provider for query execution.
 ///

@@ -47,4 +47,3 @@ pub use eval::{
 };
 pub use operator::FilterOperator;
 pub use value::ComparableValue;
-

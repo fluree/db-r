@@ -11,10 +11,10 @@ use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, Publisher};
 #[cfg(feature = "shacl")]
 use fluree_db_shacl::ShaclEngine;
-#[cfg(feature = "shacl")]
-use fluree_db_transact::stage_with_shacl;
 #[cfg(not(feature = "shacl"))]
 use fluree_db_transact::stage as stage_txn;
+#[cfg(feature = "shacl")]
+use fluree_db_transact::stage_with_shacl;
 use fluree_db_transact::{
     commit as commit_txn, parse_transaction, CommitOpts, CommitReceipt, NamespaceRegistry,
     StageOptions, TxnOpts, TxnType,

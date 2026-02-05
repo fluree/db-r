@@ -281,9 +281,7 @@ impl<S: Storage + 'static> Operator<S> for VectorSearchOperator<S> {
                 .with_sync(self.pattern.sync)
                 .with_timeout_ms(self.pattern.timeout);
 
-            let results = provider
-                .search(&self.pattern.vg_alias, params)
-                .await?;
+            let results = provider.search(&self.pattern.vg_alias, params).await?;
 
             // For each search result, merge with the child row.
             for hit in results {

@@ -111,10 +111,7 @@ pub fn assert_index_defaults() {
 /// Sorts rows by their JSON string representation so tests can compare
 /// result sets without relying on a specific order.
 pub fn normalize_rows(v: &JsonValue) -> Vec<JsonValue> {
-    let mut rows = v
-        .as_array()
-        .expect("expected JSON array of rows")
-        .to_vec();
+    let mut rows = v.as_array().expect("expected JSON array of rows").to_vec();
 
     rows.sort_by(|a, b| {
         serde_json::to_string(a)

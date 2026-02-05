@@ -505,13 +505,10 @@ async fn vector_provider_integration() {
     let provider = FlureeIndexProvider::new(&fluree);
     let query_vector = [0.85, 0.15, 0.0];
 
-    let params = VectorSearchParams::new(&query_vector, DistanceMetric::Cosine, 10)
-        .with_as_of_t(Some(t));
+    let params =
+        VectorSearchParams::new(&query_vector, DistanceMetric::Cosine, 10).with_as_of_t(Some(t));
 
-    let results = provider
-        .search(&created.vg_alias, params)
-        .await
-        .unwrap();
+    let results = provider.search(&created.vg_alias, params).await.unwrap();
 
     assert_eq!(results.len(), 2);
     // doc1 should rank first (more similar to query)

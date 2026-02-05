@@ -198,12 +198,8 @@ pub fn compare_bindings(a: &Binding, b: &Binding) -> Ordering {
             Binding::Sid(_) | Binding::IriMatch { .. } | Binding::Iri(_),
         ) => Ordering::Greater,
         // EncodedSid vs EncodedPid: compare by ID (they're in same class)
-        (Binding::EncodedSid { s_id }, Binding::EncodedPid { p_id }) => {
-            s_id.cmp(&(*p_id as u64))
-        }
-        (Binding::EncodedPid { p_id }, Binding::EncodedSid { s_id }) => {
-            (*p_id as u64).cmp(s_id)
-        }
+        (Binding::EncodedSid { s_id }, Binding::EncodedPid { p_id }) => s_id.cmp(&(*p_id as u64)),
+        (Binding::EncodedPid { p_id }, Binding::EncodedSid { s_id }) => (*p_id as u64).cmp(s_id),
 
         // Within Lit types: compare by value
         (Binding::Lit { val: v1, .. }, Binding::Lit { val: v2, .. }) => {
