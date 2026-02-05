@@ -12,6 +12,28 @@ use std::io::{self, Read};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Token claims for JWT creation.
+struct TokenClaims<'a> {
+    /// Subject claim (sub).
+    subject: Option<&'a str>,
+    /// Audience claim (aud).
+    audiences: &'a [String],
+    /// Fluree identity claim.
+    identity: Option<&'a str>,
+}
+
+/// Permission settings for the token.
+struct TokenPermissions<'a> {
+    /// Grant all permissions.
+    all: bool,
+    /// Ledgers for events access.
+    events_ledgers: &'a [String],
+    /// Ledgers for storage access.
+    storage_ledgers: &'a [String],
+    /// Virtual graphs for access.
+    vgs: &'a [String],
+}
+
 pub fn run(action: TokenAction) -> CliResult<()> {
     match action {
         TokenAction::Create {
@@ -26,19 +48,27 @@ pub fn run(action: TokenAction) -> CliResult<()> {
             vgs,
             output,
             print_claims,
-        } => run_create(
-            &private_key,
-            &expires_in,
-            subject.as_deref(),
-            &audiences,
-            identity.as_deref(),
-            all,
-            &events_ledgers,
-            &storage_ledgers,
-            &vgs,
-            output,
-            print_claims,
-        ),
+        } => {
+            let claims = TokenClaims {
+                subject: subject.as_deref(),
+                audiences: &audiences,
+                identity: identity.as_deref(),
+            };
+            let permissions = TokenPermissions {
+                all,
+                events_ledgers: &events_ledgers,
+                storage_ledgers: &storage_ledgers,
+                vgs: &vgs,
+            };
+            run_create(
+                &private_key,
+                &expires_in,
+                claims,
+                permissions,
+                output,
+                print_claims,
+            )
+        }
         TokenAction::Keygen { format, output } => run_keygen(format, output),
         TokenAction::Inspect {
             token,
@@ -51,18 +81,17 @@ pub fn run(action: TokenAction) -> CliResult<()> {
 fn run_create(
     private_key: &str,
     expires_in: &str,
-    subject: Option<&str>,
-    audiences: &[String],
-    identity: Option<&str>,
-    all: bool,
-    events_ledgers: &[String],
-    storage_ledgers: &[String],
-    vgs: &[String],
+    token_claims: TokenClaims<'_>,
+    permissions: TokenPermissions<'_>,
     output: TokenOutputFormat,
     print_claims: bool,
 ) -> CliResult<()> {
     // Validate permissions
-    if !all && events_ledgers.is_empty() && storage_ledgers.is_empty() && vgs.is_empty() {
+    if !permissions.all
+        && permissions.events_ledgers.is_empty()
+        && permissions.storage_ledgers.is_empty()
+        && permissions.vgs.is_empty()
+    {
         return Err(CliError::Usage(
             "no permissions granted; use --all, --events-ledger, --storage-ledger, or --vg".into(),
         ));
@@ -85,7 +114,7 @@ fn run_create(
     let iat = now;
 
     // Warn if subject not provided
-    if subject.is_none() {
+    if token_claims.subject.is_none() {
         eprintln!(
             "{} --subject not provided; token may be rejected by servers with --events-auth-mode=required",
             "warning:".yellow().bold()
@@ -99,37 +128,37 @@ fn run_create(
         "iat": iat,
     });
 
-    if let Some(sub) = subject {
+    if let Some(sub) = token_claims.subject {
         claims["sub"] = json!(sub);
     }
 
     // Handle audience (single value or array)
-    match audiences.len() {
+    match token_claims.audiences.len() {
         0 => {}
-        1 => claims["aud"] = json!(&audiences[0]),
-        _ => claims["aud"] = json!(audiences),
+        1 => claims["aud"] = json!(&token_claims.audiences[0]),
+        _ => claims["aud"] = json!(token_claims.audiences),
     }
 
-    if let Some(id) = identity {
+    if let Some(id) = token_claims.identity {
         claims["fluree.identity"] = json!(id);
     }
 
     // Events permissions
-    if all {
+    if permissions.all {
         claims["fluree.events.all"] = json!(true);
         claims["fluree.storage.all"] = json!(true);
     }
 
-    if !events_ledgers.is_empty() {
-        claims["fluree.events.ledgers"] = json!(events_ledgers);
+    if !permissions.events_ledgers.is_empty() {
+        claims["fluree.events.ledgers"] = json!(permissions.events_ledgers);
     }
 
-    if !storage_ledgers.is_empty() {
-        claims["fluree.storage.ledgers"] = json!(storage_ledgers);
+    if !permissions.storage_ledgers.is_empty() {
+        claims["fluree.storage.ledgers"] = json!(permissions.storage_ledgers);
     }
 
-    if !vgs.is_empty() {
-        claims["fluree.events.vgs"] = json!(vgs);
+    if !permissions.vgs.is_empty() {
+        claims["fluree.events.vgs"] = json!(permissions.vgs);
     }
 
     // Create JWS
@@ -158,7 +187,8 @@ fn run_create(
             println!("{}", serde_json::to_string_pretty(&output)?);
         }
         TokenOutputFormat::Curl => {
-            let params = build_curl_params(all, events_ledgers, vgs);
+            let params =
+                build_curl_params(permissions.all, permissions.events_ledgers, permissions.vgs);
             println!(
                 r#"curl -N -H "Authorization: Bearer {}" "http://localhost:8090/fluree/events?{}""#,
                 token, params
