@@ -1,0 +1,174 @@
+mod cli;
+mod commands;
+mod config;
+mod context;
+mod detect;
+mod error;
+mod input;
+mod output;
+
+use clap::Parser;
+use cli::{Cli, Commands};
+use error::exit_with_error;
+
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+
+    // Disable color when --no-color flag or NO_COLOR env var is set.
+    // We intentionally do NOT disable on "stdout is not a TTY" because errors
+    // go to stderr — piping stdout (e.g., `fluree query ... | jq`) should not
+    // strip color from error messages that appear on the terminal's stderr.
+    if cli.no_color || std::env::var_os("NO_COLOR").is_some() {
+        colored::control::set_override(false);
+    }
+
+    if let Err(e) = run(cli).await {
+        exit_with_error(e);
+    }
+}
+
+async fn run(cli: Cli) -> error::CliResult<()> {
+    let config_path = cli.config.as_deref();
+
+    match cli.command {
+        Commands::Init { global } => {
+            commands::init::run(global)
+        }
+
+        Commands::Create { ledger, from } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::create::run(&ledger, from.as_deref(), &fluree_dir, cli.verbose).await
+        }
+
+        Commands::Use { ledger } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::use_cmd::run(&ledger, &fluree_dir).await
+        }
+
+        Commands::List => {
+            let fluree_dir = config::require_fluree_dir_or_global(config_path)?;
+            commands::list::run(&fluree_dir).await
+        }
+
+        Commands::Info { ledger } => {
+            let fluree_dir = config::require_fluree_dir_or_global(config_path)?;
+            commands::info::run(ledger.as_deref(), &fluree_dir).await
+        }
+
+        Commands::Drop { name, force } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::drop::run(&name, force, &fluree_dir).await
+        }
+
+        Commands::Insert {
+            args,
+            expr,
+            message,
+            format,
+        } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::insert::run(
+                &args,
+                expr.as_deref(),
+                message.as_deref(),
+                format.as_deref(),
+                &fluree_dir,
+            ).await
+        }
+
+        Commands::Upsert {
+            args,
+            expr,
+            message,
+            format,
+        } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::upsert::run(
+                &args,
+                expr.as_deref(),
+                message.as_deref(),
+                format.as_deref(),
+                &fluree_dir,
+            ).await
+        }
+
+        Commands::Query {
+            args,
+            expr,
+            format,
+            sparql,
+            fql,
+            at,
+        } => {
+            let fluree_dir = config::require_fluree_dir_or_global(config_path)?;
+            commands::query::run(
+                &args,
+                expr.as_deref(),
+                &format,
+                sparql,
+                fql,
+                at.as_deref(),
+                &fluree_dir,
+            ).await
+        }
+
+        Commands::History {
+            entity,
+            ledger,
+            from,
+            to,
+            predicate,
+            format,
+        } => {
+            let fluree_dir = config::require_fluree_dir_or_global(config_path)?;
+            commands::history::run(
+                &entity,
+                ledger.as_deref(),
+                &from,
+                &to,
+                predicate.as_deref(),
+                &format,
+                &fluree_dir,
+            ).await
+        }
+
+        Commands::Export {
+            ledger,
+            format,
+            at,
+        } => {
+            let fluree_dir = config::require_fluree_dir_or_global(config_path)?;
+            commands::export::run(
+                ledger.as_deref(),
+                &format,
+                at.as_deref(),
+                &fluree_dir,
+            ).await
+        }
+
+        Commands::Log {
+            ledger,
+            oneline,
+            count,
+        } => {
+            let fluree_dir = config::require_fluree_dir_or_global(config_path)?;
+            commands::log::run(ledger.as_deref(), oneline, count, &fluree_dir).await
+        }
+
+        Commands::Config { action } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::config_cmd::run(action, &fluree_dir)
+        }
+
+        Commands::Prefix { action } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::prefix::run(action, &fluree_dir)
+        }
+
+        Commands::Completions { shell } => {
+            commands::completions::run(shell);
+            Ok(())
+        }
+    }
+}

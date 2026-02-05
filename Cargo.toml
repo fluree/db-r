@@ -33,6 +33,7 @@ members = [
     "fluree-search-service",
     "fluree-search-httpd",
     "fluree-db-ingest",
+    "fluree-db-cli",
 ]
 
 [workspace.package]
