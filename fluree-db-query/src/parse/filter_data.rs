@@ -112,7 +112,7 @@ pub fn parse_filter_array(arr: &[JsonValue]) -> Result<UnresolvedFilterExpr> {
     match op_lower.as_str() {
         // Comparison operators
         "=" | "eq" => parse_binary_compare(args, UnresolvedCompareOp::Eq),
-        "!=" | "<>" | "ne" => parse_binary_compare(args, UnresolvedCompareOp::Ne),
+        "!=" | "<>" | "ne" | "not=" => parse_binary_compare(args, UnresolvedCompareOp::Ne),
         "<" | "lt" => parse_binary_compare(args, UnresolvedCompareOp::Lt),
         "<=" | "le" => parse_binary_compare(args, UnresolvedCompareOp::Le),
         ">" | "gt" => parse_binary_compare(args, UnresolvedCompareOp::Gt),

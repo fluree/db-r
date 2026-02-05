@@ -80,7 +80,7 @@ pub fn parse_s_expression(s: &str) -> Result<UnresolvedFilterExpr> {
         "=" | "eq" => {
             filter_common::build_binary_compare(&args, UnresolvedCompareOp::Eq, clone_expr, op)
         }
-        "!=" | "<>" | "ne" => {
+        "!=" | "<>" | "ne" | "not=" => {
             filter_common::build_binary_compare(&args, UnresolvedCompareOp::Ne, clone_expr, op)
         }
         "<" | "lt" => {
@@ -363,6 +363,17 @@ mod tests {
                 assert_eq!(op, UnresolvedArithmeticOp::Add);
             }
             _ => panic!("Expected arithmetic"),
+        }
+    }
+
+    #[test]
+    fn test_parse_not_equal_clojure_style() {
+        let expr = parse_s_expression("(not= ?type \"https://ns.flur.ee/ledger#AccessPolicy\")").unwrap();
+        match expr {
+            UnresolvedFilterExpr::Compare { op, .. } => {
+                assert_eq!(op, UnresolvedCompareOp::Ne);
+            }
+            _ => panic!("Expected not-equal comparison"),
         }
     }
 
