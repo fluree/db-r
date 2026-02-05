@@ -511,5 +511,6 @@ try {
 
 - [Overview](overview.md) - Transaction overview
 - [Signed Transactions](signed-transactions.md) - Transaction signing
+- [Commit Signing and Attestation](../security/commit-signing.md) - Commit-level signatures
 - [Time Travel](../concepts/time-travel.md) - Historical queries
 - [Indexing Side-Effects](indexing-side-effects.md) - Indexing behavior

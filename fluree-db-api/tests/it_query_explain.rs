@@ -43,3 +43,31 @@ async fn explain_no_stats_reports_none_and_reason() {
     assert!(resp["plan"].get("where-clause").is_some());
 }
 
+#[tokio::test]
+async fn explain_sparql_no_stats_reports_none_and_reason() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = genesis_ledger(&fluree, "no-stats-sparql:main");
+
+    let ledger = fluree
+        .insert(
+            ledger0,
+            &json!({
+                "@context": {"ex":"http://example.org/"},
+                "@id":"ex:alice",
+                "ex:name":"Alice"
+            }),
+        )
+        .await
+        .expect("seed")
+        .ledger;
+
+    let sparql = "PREFIX ex: <http://example.org/>\nSELECT ?person WHERE { ?person ex:name ?name }";
+
+    let resp = fluree.explain_sparql(&ledger, sparql).await.expect("explain_sparql");
+    assert_eq!(resp["plan"]["optimization"], "none");
+    assert_eq!(resp["plan"]["reason"], "No statistics available");
+    assert!(resp.get("query").is_some());
+    // SPARQL explain does not include where-clause (that's a JSON-LD concept)
+    assert!(resp["plan"].get("where-clause").is_none());
+}
+

@@ -434,15 +434,14 @@ fn encode_region1_post(records: &[RunRecord]) -> Vec<u8> {
     buf
 }
 
-/// OPST Region 1: RLE(o_key:u64), p_id[pw], s_id[u64]
-///
-/// OPST omits o_kind — it is always `REF_ID` (0x05). Hardcoded on decode.
+/// OPST Region 1: o_kind[u8], RLE(o_key:u64), p_id[pw], s_id[u64]
 fn encode_region1_opst(records: &[RunRecord], p_width: u8) -> Vec<u8> {
     let rle = build_rle_u64(records, |r| r.o_key);
     let row_count = records.len();
     // u64 RLE entries are 12 bytes each (8 key + 4 count)
-    let buf_size = 4 + rle.len() * 12 + row_count * (p_width as usize) + row_count * 8;
+    let buf_size = row_count + 4 + rle.len() * 12 + row_count * (p_width as usize) + row_count * 8;
     let mut buf = Vec::with_capacity(buf_size);
+    write_col_u8(&mut buf, records, |r| r.o_kind);
     write_rle_u64(&mut buf, &rle);
     write_col_p_id(&mut buf, records, p_width);
     write_col_u64(&mut buf, records, |r| r.s_id.as_u64());
@@ -992,17 +991,13 @@ fn decode_region1_post(data: &[u8], row_count: usize) -> io::Result<(Vec<u64>, V
     Ok((s_ids, p_ids, o_kinds, o_keys))
 }
 
-/// OPST: RLE(o_key:u64), p_id[pw], s_id[u64]
-///
-/// OPST omits o_kind — it is always `REF_ID` (0x05). Filled on decode.
+/// OPST: o_kind[u8], RLE(o_key:u64), p_id[pw], s_id[u64]
 fn decode_region1_opst(data: &[u8], row_count: usize, p_width: u8) -> io::Result<(Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
-    use fluree_db_core::value_id::ObjKind;
     let mut pos = 0;
+    let o_kinds = read_col_u8(data, &mut pos, row_count)?;
     let o_keys = decode_rle_u64(data, &mut pos, row_count)?;
     let p_ids = read_col_p_id(data, &mut pos, row_count, p_width)?;
     let s_ids = read_col_u64(data, &mut pos, row_count)?;
-    // OPST is always REF_ID — fill o_kinds with the constant
-    let o_kinds = vec![ObjKind::REF_ID.as_u8(); row_count];
     Ok((s_ids, p_ids, o_kinds, o_keys))
 }
 

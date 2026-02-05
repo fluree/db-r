@@ -81,6 +81,12 @@ async fn explain_no_optimization_when_equal_selectivity() {
             let resp = fluree.explain(&ledger, &q).await.expect("explain");
             assert_eq!(resp["plan"]["optimization"], "unchanged");
             assert_eq!(resp["plan"]["original"], resp["plan"]["optimized"]);
+
+            // SPARQL equivalent
+            let sparql = "PREFIX ex: <http://example.org/>\nSELECT ?person ?name WHERE { ?person a ex:Person . ?person ex:name ?name }";
+            let resp_s = fluree.explain_sparql(&ledger, sparql).await.expect("explain_sparql");
+            assert_eq!(resp_s["plan"]["optimization"], "unchanged");
+            assert_eq!(resp_s["plan"]["original"], resp_s["plan"]["optimized"]);
         })
         .await;
 }
@@ -134,6 +140,12 @@ async fn explain_reorders_bound_object_email_first() {
             let resp = fluree.explain(&ledger, &q).await.expect("explain");
             assert_eq!(resp["plan"]["optimization"], "reordered");
             assert_eq!(resp["plan"]["optimized"][0]["pattern"]["property"], "ex:email");
+
+            // SPARQL equivalent
+            let sparql = "PREFIX ex: <http://example.org/>\nSELECT ?person WHERE { ?person a ex:Person . ?person ex:email \"rare@example.org\" }";
+            let resp_s = fluree.explain_sparql(&ledger, sparql).await.expect("explain_sparql");
+            assert_eq!(resp_s["plan"]["optimization"], "reordered");
+            assert_eq!(resp_s["plan"]["optimized"][0]["pattern"]["property"], "ex:email");
         })
         .await;
 }
@@ -186,6 +198,12 @@ async fn explain_reorders_badge_property_scan_before_class_scan() {
             let resp = fluree.explain(&ledger, &q).await.expect("explain");
             assert_eq!(resp["plan"]["optimization"], "reordered");
             assert_eq!(resp["plan"]["optimized"][0]["pattern"]["property"], "ex:badge");
+
+            // SPARQL equivalent
+            let sparql = "PREFIX ex: <http://example.org/>\nSELECT ?person ?badge WHERE { ?person a ex:Person . ?person ex:badge ?badge }";
+            let resp_s = fluree.explain_sparql(&ledger, sparql).await.expect("explain_sparql");
+            assert_eq!(resp_s["plan"]["optimization"], "reordered");
+            assert_eq!(resp_s["plan"]["optimized"][0]["pattern"]["property"], "ex:badge");
         })
         .await;
 }
@@ -246,6 +264,21 @@ async fn explain_includes_inputs_fields_and_flags() {
             let inputs = email_pat["inputs"].as_object().expect("inputs object");
             assert!(inputs.get("used-values-ndv?").is_some());
             assert!(inputs.get("clamped-to-one?").is_some());
+
+            // SPARQL equivalent
+            let sparql = "PREFIX ex: <http://example.org/>\nSELECT ?person WHERE { ?person a ex:Person . ?person ex:email \"person0@example.org\" }";
+            let resp_s = fluree.explain_sparql(&ledger, sparql).await.expect("explain_sparql");
+            let original_s = resp_s["plan"]["original"].as_array().expect("original array");
+            let optimized_s = resp_s["plan"]["optimized"].as_array().expect("optimized array");
+            assert!(original_s.iter().all(|p| p.get("inputs").is_some()));
+            assert!(optimized_s.iter().all(|p| p.get("inputs").is_some()));
+            let email_pat_s = original_s
+                .iter()
+                .find(|p| p["pattern"]["property"] == "ex:email")
+                .expect("email pattern exists");
+            let inputs_s = email_pat_s["inputs"].as_object().expect("inputs object");
+            assert!(inputs_s.get("used-values-ndv?").is_some());
+            assert!(inputs_s.get("clamped-to-one?").is_some());
         })
         .await;
 }

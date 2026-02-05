@@ -110,6 +110,11 @@ impl OTag {
 // Header
 // =============================================================================
 
+/// Signing algorithm identifier stored in commit signatures.
+///
+/// Unknown values must be rejected, not silently skipped.
+pub const ALGO_ED25519: u8 = 0x01;
+
 /// A single commit signature (proof of which node wrote the commit).
 ///
 /// Independently verifiable using the domain-separated commit digest:
@@ -118,7 +123,9 @@ impl OTag {
 pub struct CommitSignature {
     /// Signer identity (did:key:z6Mk...)
     pub signer: String,
-    /// Ed25519 signature (64 bytes) over domain-separated commit digest
+    /// Signing algorithm (0x01 = Ed25519)
+    pub algo: u8,
+    /// Signature bytes (64 bytes for Ed25519) over domain-separated commit digest
     pub signature: [u8; 64],
     /// Signing timestamp (epoch millis, informational only — not part of signed digest)
     pub timestamp: i64,
@@ -133,13 +140,14 @@ const MAX_SIGNER_LEN: usize = 256;
 /// Encode a signature block into a buffer.
 ///
 /// Format: `sig_count: u16` (LE) + for each signature:
-/// `signer_len: u16` (LE) + `signer` + `signature: [u8; 64]` + `timestamp: i64` (LE)
+/// `signer_len: u16` (LE) + `signer` + `algo: u8` + `signature: [u8; 64]` + `timestamp: i64` (LE)
 pub fn encode_sig_block(sigs: &[CommitSignature], buf: &mut Vec<u8>) {
     buf.extend_from_slice(&(sigs.len() as u16).to_le_bytes());
     for sig in sigs {
         let signer_bytes = sig.signer.as_bytes();
         buf.extend_from_slice(&(signer_bytes.len() as u16).to_le_bytes());
         buf.extend_from_slice(signer_bytes);
+        buf.push(sig.algo);
         buf.extend_from_slice(&sig.signature);
         buf.extend_from_slice(&sig.timestamp.to_le_bytes());
     }
@@ -184,6 +192,19 @@ pub fn decode_sig_block(data: &[u8]) -> Result<Vec<CommitSignature>, CommitV2Err
             .map_err(|e| CommitV2Error::EnvelopeDecode(format!("invalid signer UTF-8: {}", e)))?;
         pos += signer_len;
 
+        // algo (u8)
+        if pos + 1 > data.len() {
+            return Err(CommitV2Error::UnexpectedEof);
+        }
+        let algo = data[pos];
+        pos += 1;
+        if algo != ALGO_ED25519 {
+            return Err(CommitV2Error::EnvelopeDecode(format!(
+                "unknown signature algorithm: 0x{:02x}",
+                algo
+            )));
+        }
+
         // signature (64 bytes)
         if pos + 64 > data.len() {
             return Err(CommitV2Error::UnexpectedEof);
@@ -201,6 +222,7 @@ pub fn decode_sig_block(data: &[u8]) -> Result<Vec<CommitSignature>, CommitV2Err
 
         sigs.push(CommitSignature {
             signer: signer.to_string(),
+            algo,
             signature,
             timestamp,
         });
@@ -222,6 +244,7 @@ pub fn sig_block_size(sigs: &[CommitSignature]) -> usize {
     for sig in sigs {
         size += 2; // signer_len: u16
         size += sig.signer.as_bytes().len();
+        size += 1;  // algo: u8
         size += 64; // signature
         size += 8;  // timestamp: i64
     }

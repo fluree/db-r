@@ -12,6 +12,16 @@ Protect data at rest with AES-256-GCM encryption:
 - Portable ciphertext format
 - Key rotation support
 
+## Commit Integrity
+
+### [Commit Signing and Attestation](commit-signing.md)
+
+Cryptographic proof of which node wrote a commit:
+- Ed25519 signatures over domain-separated commit digests
+- Embedded signature blocks in commit files
+- did:key signer identities
+- Future: detached attestations and consensus policies
+
 ## Policy System
 
 ### [Policy Model and Inputs](policy-model.md)
@@ -436,3 +446,4 @@ async function testPolicy(policy, testCases) {
 - [Verifiable Data](../concepts/verifiable-data.md) - Cryptographic signatures
 - [Signed Requests](../api/signed-requests.md) - Request authentication
 - [Signed Transactions](../transactions/signed-transactions.md) - Transaction signing
+- [Commit Signing and Attestation](commit-signing.md) - Commit-level signatures

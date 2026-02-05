@@ -39,6 +39,20 @@ use fluree_db_novelty::{generate_commit_flakes, trace_commits, Novelty};
 use futures::StreamExt;
 use std::sync::Arc;
 
+/// Type-erased binary index store for query engine access.
+///
+/// Allows `LedgerState` to carry a `BinaryIndexStore` without
+/// depending on `fluree-db-indexer`. The API layer downcasts to
+/// the concrete type when building `ContextConfig` for queries.
+#[derive(Clone)]
+pub struct TypeErasedStore(pub Arc<dyn std::any::Any + Send + Sync>);
+
+impl std::fmt::Debug for TypeErasedStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TypeErasedStore").finish()
+    }
+}
+
 /// Configuration for novelty backpressure
 #[derive(Clone, Debug)]
 pub struct IndexConfig {
@@ -80,6 +94,11 @@ pub struct LedgerState<S> {
     pub head_commit: Option<String>,
     /// Nameservice record (if loaded via nameservice)
     pub ns_record: Option<NsRecord>,
+    /// Type-erased binary index store (concrete type: `Arc<BinaryIndexStore>`).
+    ///
+    /// Set by `Fluree::ledger()` when a binary index is available. Used by
+    /// the query engine to enable `BinaryScanOperator` for IRI resolution.
+    pub binary_store: Option<TypeErasedStore>,
 }
 
 impl<S: Storage + Clone + 'static> LedgerState<S> {
@@ -134,6 +153,7 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
             dict_novelty: Arc::new(dict_novelty),
             head_commit: record.commit_address.clone(),
             ns_record: Some(record),
+            binary_store: None,
         })
     }
 
@@ -186,6 +206,7 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
             dict_novelty: Arc::new(dict_novelty),
             head_commit: None,
             ns_record: None,
+            binary_store: None,
         }
     }
 

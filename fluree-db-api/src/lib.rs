@@ -134,7 +134,7 @@ pub use fluree_db_core::{
 };
 #[cfg(feature = "native")]
 pub use fluree_db_core::FileStorage;
-pub use fluree_db_ledger::{HistoricalLedgerView, IndexConfig, LedgerState, LedgerView};
+pub use fluree_db_ledger::{HistoricalLedgerView, IndexConfig, LedgerState, LedgerView, TypeErasedStore};
 pub use fluree_db_nameservice::{NameService, NsRecord, Publisher, VirtualGraphPublisher};
 pub use fluree_db_novelty::Novelty;
 pub use fluree_db_query::{

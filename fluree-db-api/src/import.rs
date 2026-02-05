@@ -514,6 +514,7 @@ where
             index_dir,
             import_result.final_t,
             &import_result.namespace_codes,
+            import_result.stats_hook,
             config,
         )
         .await?;
@@ -545,6 +546,7 @@ struct ChunkImportResult {
     cumulative_flakes: u64,
     commit_head_address: String,
     namespace_codes: HashMap<u16, String>,
+    stats_hook: Option<fluree_db_indexer::stats::IdStatsHook>,
 }
 
 /// Import all TTL chunks: parallel parse + serial commit + streaming runs.
@@ -921,6 +923,7 @@ where
         cumulative_flakes: state.cumulative_flakes,
         commit_head_address,
         namespace_codes,
+        stats_hook: run_result.stats_hook,
     })
 }
 
@@ -941,6 +944,7 @@ async fn build_and_upload<S, N>(
     index_dir: &Path,
     final_t: i64,
     namespace_codes: &HashMap<u16, String>,
+    stats_hook: Option<fluree_db_indexer::stats::IdStatsHook>,
     config: &ImportConfig,
 ) -> std::result::Result<IndexUploadResult, ImportError>
 where
@@ -1057,8 +1061,103 @@ where
         Vec::new()
     };
 
-    // ---- Build stats JSON from SPOT build results ----
-    let stats_json = {
+    // ---- Build stats JSON ----
+    // Preferred: ID-based stats collected during commit resolution (per-graph property
+    // stats with datatype counts + HLL NDV). Fallback: SPOT build result for per-graph
+    // flake counts only.
+    let stats_json = if let Some(hook) = stats_hook {
+        let id_result = hook.finalize();
+
+        // Per-graph stats (p_id-keyed, for StatsView.graph_properties)
+        let graphs_json: Vec<serde_json::Value> = id_result
+            .graphs
+            .iter()
+            .map(|g| {
+                let props_json: Vec<serde_json::Value> = g
+                    .properties
+                    .iter()
+                    .map(|p| {
+                        serde_json::json!({
+                            "p_id": p.p_id,
+                            "count": p.count,
+                            "ndv_values": p.ndv_values,
+                            "ndv_subjects": p.ndv_subjects,
+                            "last_modified_t": p.last_modified_t,
+                            "datatypes": p.datatypes,
+                        })
+                    })
+                    .collect();
+
+                serde_json::json!({
+                    "g_id": g.g_id,
+                    "flakes": g.flakes,
+                    "size": g.size,
+                    "properties": props_json,
+                })
+            })
+            .collect();
+
+        // Aggregate per-property stats across graphs, map p_id → SID
+        // (for StatsView.properties — the map the planner actually consults)
+        struct AggProp {
+            count: u64,
+            ndv_values: u64,
+            ndv_subjects: u64,
+            last_modified_t: i64,
+        }
+        let mut agg: HashMap<u32, AggProp> = HashMap::new();
+        for g in &id_result.graphs {
+            for p in &g.properties {
+                let entry = agg.entry(p.p_id).or_insert(AggProp {
+                    count: 0,
+                    ndv_values: 0,
+                    ndv_subjects: 0,
+                    last_modified_t: 0,
+                });
+                entry.count += p.count;
+                entry.ndv_values = entry.ndv_values.max(p.ndv_values);
+                entry.ndv_subjects = entry.ndv_subjects.max(p.ndv_subjects);
+                entry.last_modified_t = entry.last_modified_t.max(p.last_modified_t);
+            }
+        }
+        let mut properties_json: Vec<serde_json::Value> = agg
+            .iter()
+            .filter_map(|(&p_id, prop)| {
+                let sid = predicate_sids.get(p_id as usize)?;
+                Some(serde_json::json!({
+                    "sid": [sid.0, &sid.1],
+                    "count": prop.count,
+                    "ndv_values": prop.ndv_values,
+                    "ndv_subjects": prop.ndv_subjects,
+                    "last_modified_t": prop.last_modified_t,
+                }))
+            })
+            .collect();
+        properties_json.sort_by(|a, b| {
+            let a_code = a.get("sid").and_then(|v| v.get(0)).and_then(|v| v.as_u64()).unwrap_or(0);
+            let b_code = b.get("sid").and_then(|v| v.get(0)).and_then(|v| v.as_u64()).unwrap_or(0);
+            a_code.cmp(&b_code).then_with(|| {
+                let a_name = a.get("sid").and_then(|v| v.get(1)).and_then(|v| v.as_str()).unwrap_or("");
+                let b_name = b.get("sid").and_then(|v| v.get(1)).and_then(|v| v.as_str()).unwrap_or("");
+                a_name.cmp(b_name)
+            })
+        });
+
+        tracing::info!(
+            property_stats = properties_json.len(),
+            graph_count = graphs_json.len(),
+            total_flakes = id_result.total_flakes,
+            "stats collected from IdStatsHook"
+        );
+
+        serde_json::json!({
+            "flakes": id_result.total_flakes,
+            "size": 0,
+            "properties": properties_json,
+            "graphs": graphs_json,
+        })
+    } else {
+        // Fallback: flake counts only (no per-property / datatype breakdown).
         let (_, spot_result) = build_results
             .iter()
             .find(|(order, _)| *order == RunSortOrder::Spot)

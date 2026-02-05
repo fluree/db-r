@@ -575,7 +575,8 @@ impl DictOverlay {
             let is_novel = if initialized {
                 let sid64 = SubjectId::from_u64(ref_id);
                 let wm = self.dict_novelty.subjects.watermark_for_ns(sid64.ns_code());
-                sid64.local_id() > wm
+                let novel = sid64.local_id() > wm;
+                novel
             } else {
                 // Ephemeral IDs are flat sequential starting at base_s_count.
                 // Persisted sid64 IDs have namespace codes in upper bits, making

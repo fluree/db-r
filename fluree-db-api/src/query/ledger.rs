@@ -12,6 +12,8 @@ use crate::{
     NoOpR2rmlProvider, OverlayProvider, PolicyContext, QueryResult, Result,
     Storage, TrackingOptions, TrackingTally, Tracker, VarRegistry,
 };
+use fluree_db_indexer::run_index::BinaryIndexStore;
+use fluree_db_query::execute::{ContextConfig, execute_prepared, prepare_execution};
 
 impl<S, N> Fluree<S, N>
 where
@@ -32,24 +34,26 @@ where
             .execute_query_internal(ledger, &vars, &executable, &tracker)
             .await?;
 
+        let binary_store = ledger
+            .binary_store
+            .as_ref()
+            .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok());
+
         Ok(build_query_result(
             vars,
             parsed,
             batches,
             ledger.t(),
             Some(ledger.novelty.clone()),
-            None,
+            binary_store,
         ))
     }
 
     /// Internal helper for query execution.
     ///
-    /// Note: This path uses `LedgerState` which does not carry `binary_store`.
-    /// Queries still execute correctly via `Db.range_provider` (which serves
-    /// all `range_with_overlay()` callers automatically). The faster
-    /// `BinaryScanOperator` path is available through the view-based API
-    /// (`query_view` / `execute_view_internal`) which threads `binary_store`
-    /// from `LedgerSnapshot` into `ContextConfig`.
+    /// When `LedgerState.binary_store` is available, threads it into
+    /// `ContextConfig` so `ScanOperator` uses `BinaryScanOperator` for
+    /// correct IRI-to-SID resolution at scan time.
     async fn execute_query_internal(
         &self,
         ledger: &LedgerState<S>,
@@ -57,18 +61,42 @@ where
         executable: &ExecutableQuery,
         tracker: &Tracker,
     ) -> Result<Vec<crate::Batch>> {
-        let r2rml_provider = NoOpR2rmlProvider::new();
+        let binary_store = ledger
+            .binary_store
+            .as_ref()
+            .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok());
 
-        let batches = crate::execute_with_r2rml(
+        let prepared = prepare_execution(
             &ledger.db,
             ledger.novelty.as_ref(),
-            vars,
             executable,
             ledger.t(),
+        )
+        .await?;
+
+        let r2rml_provider = NoOpR2rmlProvider::new();
+
+        let config = ContextConfig {
+            tracker: Some(tracker),
+            r2rml: Some((&r2rml_provider, &r2rml_provider)),
+            binary_store: binary_store.clone(),
+            dict_novelty: if binary_store.is_some() {
+                Some(ledger.dict_novelty.clone())
+            } else {
+                None
+            },
+            strict_bind_errors: true,
+            ..Default::default()
+        };
+
+        let batches = execute_prepared(
+            &ledger.db,
+            vars,
+            ledger.novelty.as_ref(),
+            prepared,
+            ledger.t(),
             None,
-            tracker,
-            &r2rml_provider,
-            &r2rml_provider,
+            config,
         )
         .await?;
 
@@ -82,6 +110,15 @@ where
         query_json: &JsonValue,
     ) -> Result<JsonValue> {
         crate::explain::explain_jsonld(&ledger.db, query_json).await
+    }
+
+    /// Explain a SPARQL query (query optimization plan).
+    pub async fn explain_sparql(
+        &self,
+        ledger: &LedgerState<S>,
+        sparql: &str,
+    ) -> Result<JsonValue> {
+        crate::explain::explain_sparql(&ledger.db, sparql).await
     }
 
     /// Execute a JSON-LD query and return formatted JSON-LD output.

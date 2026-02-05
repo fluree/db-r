@@ -34,7 +34,7 @@ pub use commit::{
     load_commit, load_commit_envelope, trace_commit_envelopes, trace_commits,
     Commit, CommitData, CommitEnvelope, CommitRef, IndexRef, TxnSignature,
 };
-pub use commit_v2::format::CommitSignature;
+pub use commit_v2::format::{CommitSignature, ALGO_ED25519};
 pub use fluree_db_credential::SigningKey;
 pub use commit_flakes::generate_commit_flakes;
 pub use error::{NoveltyError, Result};

@@ -183,7 +183,7 @@ pub fn evaluate_to_binding_with_context_strict<S: Storage>(
     use crate::context::WellKnownDatatypes;
 
     // Evaluate to comparable value, errors become None
-    let comparable = match eval_to_comparable(expr, row) {
+    let comparable = match eval_to_comparable_inner(expr, row, ctx) {
         Ok(Some(val)) => val,
         Ok(None) => {
             if has_unbound_vars(expr, row) {
@@ -262,6 +262,27 @@ fn has_unbound_vars(expr: &FilterExpr, row: &RowView) -> bool {
 /// Returns `true` if the row passes the filter, `false` otherwise.
 /// Type mismatches and unbound variables result in `false`.
 pub fn evaluate(expr: &FilterExpr, row: &RowView) -> Result<bool> {
+    evaluate_inner::<fluree_db_core::MemoryStorage>(expr, row, None)
+}
+
+/// Evaluate a filter expression with access to execution context.
+///
+/// This is required for correct evaluation when a row contains
+/// `Binding::EncodedLit` (late materialization), e.g. for `REGEX`, `STR`,
+/// and comparisons.
+pub fn evaluate_with_context<S: Storage>(
+    expr: &FilterExpr,
+    row: &RowView,
+    ctx: &ExecutionContext<'_, S>,
+) -> Result<bool> {
+    evaluate_inner(expr, row, Some(ctx))
+}
+
+fn evaluate_inner<S: Storage>(
+    expr: &FilterExpr,
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_, S>>,
+) -> Result<bool> {
     match expr {
         FilterExpr::Var(var) => {
             // Var as boolean: check if bound and truthy
@@ -292,8 +313,8 @@ pub fn evaluate(expr: &FilterExpr, row: &RowView) -> Result<bool> {
         }
 
         FilterExpr::Compare { op, left, right } => {
-            let left_val = eval_to_comparable(left, row)?;
-            let right_val = eval_to_comparable(right, row)?;
+            let left_val = eval_to_comparable_inner(left, row, ctx)?;
+            let right_val = eval_to_comparable_inner(right, row, ctx)?;
 
             match (left_val, right_val) {
                 (Some(l), Some(r)) => Ok(compare_values(&l, &r, *op)),
@@ -304,7 +325,7 @@ pub fn evaluate(expr: &FilterExpr, row: &RowView) -> Result<bool> {
 
         FilterExpr::And(exprs) => {
             for e in exprs {
-                if !evaluate(e, row)? {
+                if !evaluate_inner(e, row, ctx)? {
                     return Ok(false);
                 }
             }
@@ -313,18 +334,18 @@ pub fn evaluate(expr: &FilterExpr, row: &RowView) -> Result<bool> {
 
         FilterExpr::Or(exprs) => {
             for e in exprs {
-                if evaluate(e, row)? {
+                if evaluate_inner(e, row, ctx)? {
                     return Ok(true);
                 }
             }
             Ok(false)
         }
 
-        FilterExpr::Not(inner) => Ok(!evaluate(inner, row)?),
+        FilterExpr::Not(inner) => Ok(!evaluate_inner(inner, row, ctx)?),
 
         FilterExpr::Arithmetic { .. } => {
             // Arithmetic as boolean: check if result is truthy (non-zero)
-            match eval_to_comparable(expr, row)? {
+            match eval_to_comparable_inner(expr, row, ctx)? {
                 Some(ComparableValue::Long(n)) => Ok(n != 0),
                 Some(ComparableValue::Double(d)) => Ok(d != 0.0),
                 Some(ComparableValue::Bool(b)) => Ok(b),
@@ -334,7 +355,7 @@ pub fn evaluate(expr: &FilterExpr, row: &RowView) -> Result<bool> {
 
         FilterExpr::Negate(_) => {
             // Negation as boolean: check if result is truthy (non-zero)
-            match eval_to_comparable(expr, row)? {
+            match eval_to_comparable_inner(expr, row, ctx)? {
                 Some(ComparableValue::Long(n)) => Ok(n != 0),
                 Some(ComparableValue::Double(d)) => Ok(d != 0.0),
                 _ => Ok(false),
@@ -346,11 +367,11 @@ pub fn evaluate(expr: &FilterExpr, row: &RowView) -> Result<bool> {
             then_expr,
             else_expr,
         } => {
-            let cond = evaluate(condition, row)?;
+            let cond = evaluate_inner(condition, row, ctx)?;
             if cond {
-                evaluate(then_expr, row)
+                evaluate_inner(then_expr, row, ctx)
             } else {
-                evaluate(else_expr, row)
+                evaluate_inner(else_expr, row, ctx)
             }
         }
 
@@ -359,11 +380,11 @@ pub fn evaluate(expr: &FilterExpr, row: &RowView) -> Result<bool> {
             values,
             negated,
         } => {
-            let test_val = eval_to_comparable(test_expr, row)?;
+            let test_val = eval_to_comparable_inner(test_expr, row, ctx)?;
             match test_val {
                 Some(tv) => {
                     let found = values.iter().any(|v| {
-                        eval_to_comparable(v, row)
+                        eval_to_comparable_inner(v, row, ctx)
                             .ok()
                             .flatten()
                             .map(|cv| cv == tv)
@@ -375,7 +396,7 @@ pub fn evaluate(expr: &FilterExpr, row: &RowView) -> Result<bool> {
             }
         }
 
-        FilterExpr::Function { name, args } => evaluate_function(name, args, row),
+        FilterExpr::Function { name, args } => evaluate_function_inner(name, args, row, ctx),
     }
 }
 
@@ -405,78 +426,101 @@ enum ComparableValue {
     },
 }
 
-/// Evaluate expression to a comparable value
+/// Evaluate expression to a comparable value (contextless).
+///
+/// Prefer [`eval_to_comparable_inner`] when `Binding::EncodedLit` may appear.
 fn eval_to_comparable(expr: &FilterExpr, row: &RowView) -> Result<Option<ComparableValue>> {
+    eval_to_comparable_inner::<fluree_db_core::MemoryStorage>(expr, row, None)
+}
+
+fn eval_to_comparable_inner<S: Storage>(
+    expr: &FilterExpr,
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_, S>>,
+) -> Result<Option<ComparableValue>> {
     match expr {
-        FilterExpr::Var(var) => {
-            match row.get(*var) {
-                Some(Binding::Lit { val, .. }) => Ok(flake_value_to_comparable(val)),
-                Some(Binding::EncodedLit { .. }) => Ok(None),
-                Some(Binding::Sid(sid)) => Ok(Some(ComparableValue::Sid(sid.clone()))),
-                Some(Binding::IriMatch { iri, .. }) => {
-                    // IriMatch: use canonical IRI for comparisons (cross-ledger safe)
-                    Ok(Some(ComparableValue::Iri(Arc::clone(iri))))
-                }
-                Some(Binding::Iri(iri)) => {
-                    // Raw IRI from VG - use Iri comparable value
-                    Ok(Some(ComparableValue::Iri(Arc::clone(iri))))
-                }
-                Some(Binding::Unbound) | Some(Binding::Poisoned) | None => Ok(None),
-                Some(Binding::Grouped(_)) => {
-                    // Grouped bindings shouldn't appear in filter evaluation
-                    debug_assert!(false, "Grouped binding in filter evaluation");
-                    Ok(None)
-                }
+        FilterExpr::Var(var) => match row.get(*var) {
+            Some(Binding::Lit { val, .. }) => Ok(flake_value_to_comparable(val)),
+            Some(Binding::EncodedLit {
+                o_kind,
+                o_key,
+                p_id,
+                ..
+            }) => {
+                let Some(store) = ctx.and_then(|c| c.binary_store.as_deref()) else {
+                    return Ok(None);
+                };
+                let val = store
+                    .decode_value(*o_kind, *o_key, *p_id)
+                    .map_err(|e| QueryError::Internal(format!("decode_value: {}", e)))?;
+                Ok(flake_value_to_comparable(&val))
             }
-        }
+            Some(Binding::Sid(sid)) => Ok(Some(ComparableValue::Sid(sid.clone()))),
+            Some(Binding::IriMatch { iri, .. }) => {
+                // IriMatch: use canonical IRI for comparisons (cross-ledger safe)
+                Ok(Some(ComparableValue::Iri(Arc::clone(iri))))
+            }
+            Some(Binding::Iri(iri)) => {
+                // Raw IRI from VG - use Iri comparable value
+                Ok(Some(ComparableValue::Iri(Arc::clone(iri))))
+            }
+            Some(Binding::Unbound) | Some(Binding::Poisoned) | None => Ok(None),
+            Some(Binding::Grouped(_)) => {
+                // Grouped bindings shouldn't appear in filter evaluation
+                debug_assert!(false, "Grouped binding in filter evaluation");
+                Ok(None)
+            }
+        },
 
         FilterExpr::Const(val) => Ok(Some(filter_value_to_comparable(val))),
 
         FilterExpr::Compare { .. } => {
             // Comparison result is boolean
-            Ok(Some(ComparableValue::Bool(evaluate(expr, row)?)))
+            Ok(Some(ComparableValue::Bool(evaluate_inner(expr, row, ctx)?)))
         }
 
         FilterExpr::Arithmetic { op, left, right } => {
-            let l = eval_to_comparable(left, row)?;
-            let r = eval_to_comparable(right, row)?;
+            let l = eval_to_comparable_inner(left, row, ctx)?;
+            let r = eval_to_comparable_inner(right, row, ctx)?;
             match (l, r) {
                 (Some(lv), Some(rv)) => Ok(eval_arithmetic(*op, lv, rv)),
                 _ => Ok(None),
             }
         }
 
-        FilterExpr::Negate(inner) => {
-            match eval_to_comparable(inner, row)? {
-                Some(ComparableValue::Long(n)) => Ok(Some(ComparableValue::Long(-n))),
-                Some(ComparableValue::Double(d)) => Ok(Some(ComparableValue::Double(-d))),
-                Some(ComparableValue::BigInt(n)) => Ok(Some(ComparableValue::BigInt(Box::new(-(*n))))),
-                Some(ComparableValue::Decimal(d)) => Ok(Some(ComparableValue::Decimal(Box::new(-(*d))))),
-                _ => Ok(None),
-            }
-        }
+        FilterExpr::Negate(inner) => match eval_to_comparable_inner(inner, row, ctx)? {
+            Some(ComparableValue::Long(n)) => Ok(Some(ComparableValue::Long(-n))),
+            Some(ComparableValue::Double(d)) => Ok(Some(ComparableValue::Double(-d))),
+            Some(ComparableValue::BigInt(n)) => Ok(Some(ComparableValue::BigInt(Box::new(-(*n))))),
+            Some(ComparableValue::Decimal(d)) => Ok(Some(ComparableValue::Decimal(Box::new(-(*d))))),
+            _ => Ok(None),
+        },
 
         FilterExpr::And(_) | FilterExpr::Or(_) | FilterExpr::Not(_) => {
-            Ok(Some(ComparableValue::Bool(evaluate(expr, row)?)))
+            Ok(Some(ComparableValue::Bool(evaluate_inner(expr, row, ctx)?)))
         }
 
-        FilterExpr::If { condition, then_expr, else_expr } => {
-            let cond = evaluate(condition, row)?;
+        FilterExpr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            let cond = evaluate_inner(condition, row, ctx)?;
             if cond {
-                eval_to_comparable(then_expr, row)
+                eval_to_comparable_inner(then_expr, row, ctx)
             } else {
-                eval_to_comparable(else_expr, row)
+                eval_to_comparable_inner(else_expr, row, ctx)
             }
         }
 
         FilterExpr::In { .. } => {
             // IN expression evaluates to boolean
-            Ok(Some(ComparableValue::Bool(evaluate(expr, row)?)))
+            Ok(Some(ComparableValue::Bool(evaluate_inner(expr, row, ctx)?)))
         }
 
         FilterExpr::Function { name, args } => {
             // Evaluate functions to their actual value type
-            eval_function_to_value(name, args, row)
+            eval_function_to_value_inner(name, args, row, ctx)
         }
     }
 }
@@ -666,6 +710,71 @@ fn comparable_to_flake(val: &ComparableValue) -> FlakeValue {
     }
 }
 
+/// Try to compare a temporal FlakeValue against a String by parsing the
+/// string as the matching temporal type. Returns `None` if neither side is
+/// a string or parsing fails.
+///
+/// This handles values stored as LEX_ID (string dict entry) with a temporal
+/// datatype annotation — the index stores the raw string but the FILTER
+/// constant is a properly-typed temporal value.
+fn try_coerce_temporal_string_cmp(left: &FlakeValue, right: &FlakeValue) -> Option<Ordering> {
+    use fluree_db_core::temporal;
+
+    match (left, right) {
+        // String on left, temporal on right → parse left as temporal
+        (FlakeValue::String(s), FlakeValue::GYear(g)) => {
+            temporal::GYear::parse(s).ok().map(|parsed| parsed.cmp(g.as_ref()))
+        }
+        (FlakeValue::String(s), FlakeValue::GYearMonth(g)) => {
+            temporal::GYearMonth::parse(s).ok().map(|parsed| parsed.cmp(g.as_ref()))
+        }
+        (FlakeValue::String(s), FlakeValue::GMonth(g)) => {
+            temporal::GMonth::parse(s).ok().map(|parsed| parsed.cmp(g.as_ref()))
+        }
+        (FlakeValue::String(s), FlakeValue::GDay(g)) => {
+            temporal::GDay::parse(s).ok().map(|parsed| parsed.cmp(g.as_ref()))
+        }
+        (FlakeValue::String(s), FlakeValue::GMonthDay(g)) => {
+            temporal::GMonthDay::parse(s).ok().map(|parsed| parsed.cmp(g.as_ref()))
+        }
+        (FlakeValue::String(s), FlakeValue::DateTime(dt)) => {
+            temporal::DateTime::parse(s).ok().map(|parsed| parsed.cmp(dt.as_ref()))
+        }
+        (FlakeValue::String(s), FlakeValue::Date(d)) => {
+            temporal::Date::parse(s).ok().map(|parsed| parsed.cmp(d.as_ref()))
+        }
+        (FlakeValue::String(s), FlakeValue::Time(t)) => {
+            temporal::Time::parse(s).ok().map(|parsed| parsed.cmp(t.as_ref()))
+        }
+        // Temporal on left, string on right → parse right as temporal
+        (FlakeValue::GYear(g), FlakeValue::String(s)) => {
+            temporal::GYear::parse(s).ok().map(|parsed| g.as_ref().cmp(&parsed))
+        }
+        (FlakeValue::GYearMonth(g), FlakeValue::String(s)) => {
+            temporal::GYearMonth::parse(s).ok().map(|parsed| g.as_ref().cmp(&parsed))
+        }
+        (FlakeValue::GMonth(g), FlakeValue::String(s)) => {
+            temporal::GMonth::parse(s).ok().map(|parsed| g.as_ref().cmp(&parsed))
+        }
+        (FlakeValue::GDay(g), FlakeValue::String(s)) => {
+            temporal::GDay::parse(s).ok().map(|parsed| g.as_ref().cmp(&parsed))
+        }
+        (FlakeValue::GMonthDay(g), FlakeValue::String(s)) => {
+            temporal::GMonthDay::parse(s).ok().map(|parsed| g.as_ref().cmp(&parsed))
+        }
+        (FlakeValue::DateTime(dt), FlakeValue::String(s)) => {
+            temporal::DateTime::parse(s).ok().map(|parsed| dt.as_ref().cmp(&parsed))
+        }
+        (FlakeValue::Date(d), FlakeValue::String(s)) => {
+            temporal::Date::parse(s).ok().map(|parsed| d.as_ref().cmp(&parsed))
+        }
+        (FlakeValue::Time(t), FlakeValue::String(s)) => {
+            temporal::Time::parse(s).ok().map(|parsed| t.as_ref().cmp(&parsed))
+        }
+        _ => None,
+    }
+}
+
 /// Compare two values with the given operator
 ///
 /// Delegates to FlakeValue's comparison methods to avoid duplicating logic.
@@ -688,6 +797,21 @@ fn compare_values(left: &ComparableValue, right: &ComparableValue, op: CompareOp
 
     // Try temporal comparison (same-type temporal only)
     if let Some(ordering) = left_fv.temporal_cmp(&right_fv) {
+        return match op {
+            CompareOp::Eq => ordering == Ordering::Equal,
+            CompareOp::Ne => ordering != Ordering::Equal,
+            CompareOp::Lt => ordering == Ordering::Less,
+            CompareOp::Le => ordering != Ordering::Greater,
+            CompareOp::Gt => ordering == Ordering::Greater,
+            CompareOp::Ge => ordering != Ordering::Less,
+        };
+    }
+
+    // Cross-type coercion: when one side is a temporal type and the other
+    // is a string, try to parse the string as that temporal type. This
+    // handles values stored as LEX_ID (string dict) with a temporal
+    // datatype annotation (e.g. gYear values in bulk-imported data).
+    if let Some(ordering) = try_coerce_temporal_string_cmp(&left_fv, &right_fv) {
         return match op {
             CompareOp::Eq => ordering == Ordering::Equal,
             CompareOp::Ne => ordering != Ordering::Equal,
@@ -1136,6 +1260,27 @@ where
 /// Evaluate a function to its actual value type (for use in expressions)
 ///
 /// This is used when functions appear in arithmetic contexts like `STRLEN(?x) + 1`.
+fn eval_function_to_value_inner<S: Storage>(
+    name: &FunctionName,
+    args: &[FilterExpr],
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_, S>>,
+) -> Result<Option<ComparableValue>> {
+    match name {
+        // STR(value) - convert to string representation (needs ctx for EncodedLit)
+        FunctionName::Str => {
+            check_arity(args, 1, "STR")?;
+            let val = eval_to_comparable_inner(&args[0], row, ctx)?;
+            Ok(val.and_then(comparable_to_str_value))
+        }
+
+        // All other functions fall back to contextless evaluation for now.
+        // (This is safe for non-EncodedLit inputs; for EncodedLit-heavy workloads,
+        // prefer extending context-aware support as needed.)
+        _ => eval_function_to_value(name, args, row),
+    }
+}
+
 fn eval_function_to_value(
     name: &FunctionName,
     args: &[FilterExpr],
@@ -1554,6 +1699,46 @@ fn eval_function_to_value(
 
         // Custom/unknown function - not implemented
         FunctionName::Custom(_) => Ok(None),
+    }
+}
+
+/// Evaluate a function call in boolean context, with optional ExecutionContext.
+///
+/// This is primarily used to correctly materialize `Binding::EncodedLit` for
+/// functions like `REGEX(STR(?x), ...)` that require string decoding.
+fn evaluate_function_inner<S: Storage>(
+    name: &FunctionName,
+    args: &[FilterExpr],
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_, S>>,
+) -> Result<bool> {
+    match name {
+        FunctionName::Regex => {
+            // REGEX(text, pattern, [flags]) - regex pattern matching
+            if args.len() < 2 {
+                return Err(QueryError::InvalidFilter(
+                    "REGEX requires 2-3 arguments".to_string(),
+                ));
+            }
+            let text = eval_to_comparable_inner(&args[0], row, ctx)?;
+            let pattern = eval_to_comparable_inner(&args[1], row, ctx)?;
+            let flags = if args.len() > 2 {
+                eval_to_comparable_inner(&args[2], row, ctx)?
+                    .and_then(|v| comparable_to_string(&v).map(|s| s.to_string()))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+
+            match (text, pattern) {
+                (Some(ComparableValue::String(t)), Some(ComparableValue::String(p))) => {
+                    let re = build_regex_with_flags(&p, &flags)?;
+                    Ok(re.is_match(&t))
+                }
+                _ => Ok(false),
+            }
+        }
+        _ => evaluate_function(name, args, row),
     }
 }
 

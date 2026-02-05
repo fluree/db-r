@@ -49,6 +49,7 @@ pub fn write_commit(
         // Build a temporary CommitSignature to compute encoded size
         let tmp_sig = CommitSignature {
             signer: did.clone(),
+            algo: super::format::ALGO_ED25519,
             signature: [0u8; 64],
             timestamp: 0,
         };
@@ -180,6 +181,7 @@ pub fn write_commit(
         let timestamp = chrono::Utc::now().timestamp_millis();
         let commit_sig = CommitSignature {
             signer: signer_did.expect("signer_did set when signing is Some"),
+            algo: super::format::ALGO_ED25519,
             signature,
             timestamp,
         };

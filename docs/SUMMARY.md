@@ -46,6 +46,7 @@
 
 - [Security and policy](security/README.md)
   - [Storage encryption](security/encryption.md)
+  - [Commit signing and attestation](security/commit-signing.md)
   - [Policy model and inputs](security/policy-model.md)
   - [Policy in queries](security/policy-in-queries.md)
   - [Policy in transactions](security/policy-in-transactions.md)

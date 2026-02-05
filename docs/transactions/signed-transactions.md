@@ -487,6 +487,7 @@ Cryptographic signatures provide non-repudiation:
 ## Related Documentation
 
 - [API: Signed Requests](../api/signed-requests.md) - HTTP API details
+- [Commit Signing and Attestation](../security/commit-signing.md) - Infrastructure-level commit signatures
 - [Security: Policy Model](../security/policy-model.md) - Authorization policies
 - [Verifiable Data](../concepts/verifiable-data.md) - Cryptographic verification concepts
 - [Commit Receipts](commit-receipts.md) - Transaction metadata

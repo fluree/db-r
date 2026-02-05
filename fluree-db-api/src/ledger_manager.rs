@@ -136,6 +136,7 @@ impl<S: Storage + Clone + 'static> LedgerSnapshot<S> {
             dict_novelty,
             head_commit: self.head_commit,
             ns_record: self.ns_record,
+            binary_store: None,
         }
     }
 }
