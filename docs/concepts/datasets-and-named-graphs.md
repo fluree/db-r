@@ -20,38 +20,40 @@ FROM NAMED <ledger:staging>  # Another named graph
 
 ## Named Graphs
 
-**Named graphs** partition data within a ledger, allowing:
+In SPARQL, **named graphs** are additional graphs (identified by IRIs) that participate in query execution and are accessed via `GRAPH <iri> { ... }`.
 
-- **Data Organization**: Logical separation of different data domains
-- **Access Control**: Different permissions per graph
-- **Provenance**: Tracking data source and quality
-- **Versioning**: Different graphs for different data versions
+In Fluree, there are currently two practical ways “named graphs” show up:
 
-### Creating Named Graphs
+- **Multi-graph execution (datasets)**: `FROM NAMED <...>` identifies additional **graph sources** (often other ledgers or virtual graphs) that you can reference with `GRAPH <...> { ... }`.
+- **Named graphs within a ledger (txn metadata)**: Fluree provides a built-in named graph for commit/transaction metadata called **`txn-meta`**, queryable via the `#txn-meta` fragment on a ledger reference (e.g., `<mydb:main#txn-meta>`).
 
-Data is assigned to named graphs during transactions:
+Longer-term, we can add ingestion support for arbitrary user-defined named graphs (TriG / JSON-LD named graph forms), but that is not part of the current ingestion surface.
 
-```json
-{
-  "@context": {
-    "ex": "http://example.org/ns/",
-    "@base": "http://example.org/data/"
-  },
-  "@graph": [
-    {
-      "@id": "ex:graph1",
-      "@graph": [
-        {
-          "@id": "alice",
-          "ex:name": "Alice"
-        }
-      ]
-    }
-  ]
+### Txn metadata named graph (`#txn-meta`)
+
+The `txn-meta` graph contains per-commit metadata stored as triples. This is useful for auditing and operational metadata (machine address, internal user id, job id, etc.).
+
+**Querying txn-meta via SPARQL:**
+
+```sparql
+PREFIX f: <https://ns.flur.ee/ledger#>
+PREFIX ex: <http://example.org/ns/>
+
+SELECT ?commit ?t ?machine
+FROM <mydb:main#txn-meta>
+WHERE {
+  ?commit f:t ?t .
+  OPTIONAL { ?commit ex:machine ?machine }
 }
 ```
 
-This creates a named graph `http://example.org/ns/graph1` containing the triple about Alice.
+Notes:
+- Using `FROM <mydb:main#txn-meta>` makes txn-meta the **default graph** for the query.
+- You can also use dataset syntax (`FROM NAMED` + `GRAPH`) if you need to mix default graph and txn-meta in one query.
+
+### (Planned) Creating user-defined named graphs during ingestion
+
+Fluree’s current write APIs ingest user data into the **default graph**. Supporting arbitrary user-defined named graph ingestion (e.g., TriG `GRAPH <...> { ... }` and JSON-LD named graph forms) requires additional implementation work. For the concrete plan for txn-meta metadata ingestion, see `TXN_META_INGESTION_SPEC.md` at the repository root.
 
 ### Querying Named Graphs
 
@@ -178,26 +180,7 @@ WHERE {
 
 ### Graph Metadata
 
-Graphs can have metadata:
-
-```json
-{
-  "@graph": [
-    {
-      "@id": "ex:graph1",
-      "@type": "ex:NamedGraph",
-      "ex:description": "Customer data",
-      "ex:created": "2024-01-15T10:00:00Z"^^xsd:dateTime
-    },
-    {
-      "@id": "ex:graph1",
-      "@graph": [
-        // Actual data in the named graph
-      ]
-    }
-  ]
-}
-```
+For transaction-scoped metadata, Fluree uses the **`txn-meta`** named graph (see above). Transaction metadata is stored as properties on commit subjects in `txn-meta`, and can be queried independently of user data.
 
 ## Use Cases
 

@@ -155,10 +155,10 @@ impl CommitResolver {
     /// Emit txn-meta RunRecords for a single commit into the txn-meta graph (g_id=1).
     ///
     /// Mirrors the canonical `generate_commit_flakes()` in
-    /// `fluree-db-novelty/src/commit_flakes.rs`. Two subjects per commit:
+    /// `fluree-db-novelty/src/commit_flakes.rs`.
     ///
-    /// - **Commit subject** (`fluree:commit:sha256:<hex>`): address, alias, v, time, data, previous
-    /// - **DB subject** (`fluree:db:sha256:<hex>`): t
+    /// - **Commit subject** (`fluree:commit:sha256:<hex>`): address, alias, v, time, previous,
+    ///   and DB metadata (t/size/flakes).
     ///
     /// Returns the number of records emitted.
     pub fn emit_txn_meta<W: RecordSink>(
@@ -216,6 +216,12 @@ impl CommitResolver {
         let p_t = dicts
             .predicates
             .get_or_insert_parts(fluree::LEDGER, ledger::T);
+        let p_size = dicts
+            .predicates
+            .get_or_insert_parts(fluree::LEDGER, ledger::SIZE);
+        let p_flakes = dicts
+            .predicates
+            .get_or_insert_parts(fluree::LEDGER, ledger::FLAKES);
 
         let mut count = 0u32;
 
@@ -297,6 +303,27 @@ impl CommitResolver {
             ObjKey::encode_i64(t),
             DatatypeDictId::INTEGER.as_u16(),
         )?;
+
+        // Optional cumulative stats (if present in commit envelope)
+        if let Some(data) = &envelope.data {
+            // ledger:size (LONG)
+            push(
+                commit_s_id,
+                p_size,
+                ObjKind::NUM_INT,
+                ObjKey::encode_i64(data.size as i64),
+                DatatypeDictId::LONG.as_u16(),
+            )?;
+
+            // ledger:flakes (LONG)
+            push(
+                commit_s_id,
+                p_flakes,
+                ObjKind::NUM_INT,
+                ObjKey::encode_i64(data.flakes as i64),
+                DatatypeDictId::LONG.as_u16(),
+            )?;
+        }
 
         // ledger:previous (ID) -- ref to previous commit
         if let Some(prev_ref) = &envelope.previous_ref {

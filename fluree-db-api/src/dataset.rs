@@ -692,15 +692,38 @@ impl QueryConnectionOptions {
 ///
 /// Returns (identifier, Option<TimeSpec>).
 fn parse_alias_time_travel(alias: &str) -> Result<(String, Option<TimeSpec>), DatasetParseError> {
+    // Support optional named-graph fragment selector after time spec:
+    //   ledger:main@t:42#txn-meta
+    // We parse time-travel on the portion before '#', then re-attach the fragment
+    // to the identifier (so the identifier remains stable and time is separate).
+    let (before_fragment, fragment) = match alias.split_once('#') {
+        Some((left, right)) => {
+            if right.is_empty() {
+                return Err(DatasetParseError::InvalidGraphSource(
+                    "Missing named graph after '#'".to_string(),
+                ));
+            }
+            (left, Some(right))
+        }
+        None => (alias, None),
+    };
+    let fragment_suffix = fragment.map(|f| format!("#{f}")).unwrap_or_default();
+
     // Check for @t:latest special case before standard parsing
-    if let Some(idx) = alias.find("@t:latest") {
-        let identifier = alias[..idx].to_string();
+    if let Some(base) = before_fragment.strip_suffix("@t:latest") {
+        if base.is_empty() {
+            return Err(DatasetParseError::InvalidGraphSource(
+                "Alias cannot be empty before '@'".to_string(),
+            ));
+        }
+        let identifier = format!("{base}{fragment_suffix}");
         return Ok((identifier, Some(TimeSpec::Latest)));
     }
 
-    let (identifier, time) = core_alias::split_time_travel_suffix(alias).map_err(|e| {
-        DatasetParseError::InvalidGraphSource(e.to_string())
-    })?;
+    let (identifier, time) =
+        core_alias::split_time_travel_suffix(before_fragment).map_err(|e| {
+            DatasetParseError::InvalidGraphSource(e.to_string())
+        })?;
 
     let time_spec = time.map(|spec| match spec {
         core_alias::AliasTimeSpec::AtT(t) => TimeSpec::AtT(t),
@@ -708,7 +731,7 @@ fn parse_alias_time_travel(alias: &str) -> Result<(String, Option<TimeSpec>), Da
         core_alias::AliasTimeSpec::AtSha(value) => TimeSpec::AtCommit(value),
     });
 
-    Ok((identifier, time_spec))
+    Ok((format!("{identifier}{fragment_suffix}"), time_spec))
 }
 
 /// Parse graph sources from a JSON value
@@ -918,6 +941,20 @@ mod tests {
         let spec = DatasetSpec::from_json(&query).unwrap();
         assert_eq!(spec.default_graphs.len(), 1);
         assert_eq!(spec.default_graphs[0].identifier, "ledger:main");
+        assert!(matches!(spec.default_graphs[0].time_spec, Some(TimeSpec::AtT(42))));
+    }
+
+    #[test]
+    fn test_parse_alias_at_t_with_named_graph_fragment() {
+        let query = json!({
+            "from": "ledger:main@t:42#txn-meta",
+            "select": ["?s"],
+            "where": {"@id": "?s"}
+        });
+
+        let spec = DatasetSpec::from_json(&query).unwrap();
+        assert_eq!(spec.default_graphs.len(), 1);
+        assert_eq!(spec.default_graphs[0].identifier, "ledger:main#txn-meta");
         assert!(matches!(spec.default_graphs[0].time_spec, Some(TimeSpec::AtT(42))));
     }
 
@@ -1435,6 +1472,19 @@ mod tests {
         let spec = DatasetSpec::from_json(&query).unwrap();
         assert_eq!(spec.default_graphs.len(), 1);
         assert_eq!(spec.default_graphs[0].identifier, "ledger:main");
+        assert!(matches!(spec.default_graphs[0].time_spec, Some(TimeSpec::Latest)));
+    }
+
+    #[test]
+    fn test_parse_latest_keyword_with_named_graph_fragment() {
+        let query = json!({
+            "from": "ledger:main@t:latest#txn-meta",
+            "select": ["?s"]
+        });
+
+        let spec = DatasetSpec::from_json(&query).unwrap();
+        assert_eq!(spec.default_graphs.len(), 1);
+        assert_eq!(spec.default_graphs[0].identifier, "ledger:main#txn-meta");
         assert!(matches!(spec.default_graphs[0].time_spec, Some(TimeSpec::Latest)));
     }
 }

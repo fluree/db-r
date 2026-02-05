@@ -454,6 +454,10 @@ WHERE {
 }
 ```
 
+Fluree also exposes a built-in named graph inside each ledger for transaction / commit metadata:
+- `FROM <mydb:main#txn-meta>` (txn-meta as the default graph), or
+- `FROM NAMED <mydb:main#txn-meta>` and `GRAPH <mydb:main#txn-meta> { ... }`
+
 See [Datasets](datasets.md) for details.
 
 ## SPARQL Functions

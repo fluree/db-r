@@ -460,8 +460,17 @@ pub fn eval_function<S: Storage>(
         FunctionName::T => {
             check_arity(args, 1, "T")?;
             if let FilterExpr::Var(var_id) = &args[0] {
-                if let Some(Binding::Lit { t: Some(t), .. }) = row.get(*var_id) {
-                    return Ok(Some(ComparableValue::Long(*t)));
+                if let Some(binding) = row.get(*var_id) {
+                    match binding {
+                        Binding::Lit { t: Some(t), .. } => {
+                            return Ok(Some(ComparableValue::Long(*t)));
+                        }
+                        // Late-materialized binary bindings still carry `t` directly.
+                        Binding::EncodedLit { t, .. } => {
+                            return Ok(Some(ComparableValue::Long(*t)));
+                        }
+                        _ => {}
+                    }
                 }
             }
             Ok(None)

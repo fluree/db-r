@@ -422,16 +422,20 @@ async fn commit_db_metadata_spo_queries_parity() {
 
     let q_db = json!({
         "@context": {"f": "https://ns.flur.ee/ledger#"},
-        "select": ["?db","?t"],
-        "where": {"@id": "?db", "f:t": "?t"}
+        "select": ["?c","?t"],
+        "where": {"@id": "?c", "f:t": "?t"}
     });
     let r_db = fluree.query(&ledger2, &q_db).await.unwrap().to_jsonld(&ledger2.db).unwrap();
     let rows = r_db.as_array().expect("db rows array");
-    let mut db_subjects = std::collections::HashSet::new();
+    let mut commit_subjects = std::collections::HashSet::new();
     for row in rows {
         let arr = row.as_array().expect("db row array");
         let subject = arr[0].as_str().unwrap_or_default();
-        assert!(subject.starts_with("fluree:db:"), "unexpected db subject: {}", subject);
+        assert!(
+            subject.starts_with("fluree:commit:"),
+            "unexpected commit subject: {}",
+            subject
+        );
         let t_val = &arr[1];
         let t_ok = if t_val.is_number() || t_val.is_string() {
             true
@@ -441,29 +445,13 @@ async fn commit_db_metadata_spo_queries_parity() {
             false
         };
         assert!(t_ok, "expected t value to be number/string or typed literal, got: {:?}", t_val);
-        db_subjects.insert(subject.to_string());
+        commit_subjects.insert(subject.to_string());
     }
     assert!(
-        db_subjects.len() >= 2,
-        "expected at least two db subjects, got: {:?}",
-        db_subjects
+        commit_subjects.len() >= 2,
+        "expected at least two commit subjects, got: {:?}",
+        commit_subjects
     );
-
-    let q_data = json!({
-        "@context": {"f": "https://ns.flur.ee/ledger#"},
-        "select": ["?commit","?db"],
-        "where": {"@id": "?commit", "f:data": "?db"}
-    });
-    let r_data = fluree.query(&ledger2, &q_data).await.unwrap().to_jsonld(&ledger2.db).unwrap();
-    let rows = r_data.as_array().expect("data rows array");
-    assert!(rows.len() >= 2, "expected commit->db links, got: {:?}", r_data);
-    for row in rows {
-        let arr = row.as_array().expect("data row array");
-        let commit = arr[0].as_str().unwrap_or_default();
-        let db = arr[1].as_str().unwrap_or_default();
-        assert!(commit.starts_with("fluree:commit:"), "unexpected commit ref: {}", commit);
-        assert!(db.starts_with("fluree:db:"), "unexpected db ref: {}", db);
-    }
 }
 
 #[tokio::test]
@@ -832,8 +820,8 @@ async fn untyped_value_matching_parity() {
             "f": "https://ns.flur.ee/ledger#",
             "xsd": "http://www.w3.org/2001/XMLSchema#"
         },
-        "select": "?db",
-        "where": [{"@id": "?db", "f:t": {"@value": commit_t, "@type": "xsd:int"}}]
+        "select": "?c",
+        "where": [{"@id": "?c", "f:t": {"@value": commit_t, "@type": "xsd:int"}}]
     });
     let r_typed = fluree
         .query(&ledger2, &q_typed)
@@ -847,15 +835,15 @@ async fn untyped_value_matching_parity() {
         r_typed[0]
             .as_str()
             .unwrap_or_default()
-            .starts_with("fluree:db:"),
-        "expected db IRI, got: {:?}",
+            .starts_with("fluree:commit:"),
+        "expected commit IRI, got: {:?}",
         r_typed
     );
 
     let q_untyped = json!({
         "@context": {"f": "https://ns.flur.ee/ledger#"},
-        "select": "?db",
-        "where": [{"@id": "?db", "f:t": commit_t}]
+        "select": "?c",
+        "where": [{"@id": "?c", "f:t": commit_t}]
     });
     let r_untyped = fluree
         .query(&ledger2, &q_untyped)
@@ -869,8 +857,8 @@ async fn untyped_value_matching_parity() {
         r_untyped[0]
             .as_str()
             .unwrap_or_default()
-            .starts_with("fluree:db:"),
-        "expected db IRI, got: {:?}",
+            .starts_with("fluree:commit:"),
+        "expected commit IRI, got: {:?}",
         r_untyped
     );
 }

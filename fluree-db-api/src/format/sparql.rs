@@ -520,10 +520,7 @@ fn format_sparql_row(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query::QueryResult;
-    use fluree_db_query::SelectMode;
     use fluree_db_core::Sid;
-    use fluree_db_query::var_registry::VarRegistry;
     use std::collections::HashMap;
 
     fn make_test_compactor() -> IriCompactor {

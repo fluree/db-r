@@ -5,9 +5,8 @@
 //!
 //! # Background
 //!
-//! Commit metadata is stored as queryable flakes (8-9 per commit):
-//! - **Commit subject** (FLUREE_COMMIT + hex): ledger#time, ledger#data, etc.
-//! - **DB subject** (NS_FLUREE_DB + hex): ledger#t, ledger#size, ledger#flakes
+//! Commit metadata is stored as queryable flakes (8-10 per commit):
+//! - **Commit subject** (FLUREE_COMMIT + hex): ledger#time, ledger#t, ledger#size, ledger#flakes, etc.
 //!
 //! The `Flake.t` value on these flakes IS the commit transaction number,
 //! so we can resolve time travel efficiently using index queries.
@@ -69,6 +68,11 @@ where
     S: Storage,
     O: OverlayProvider + ?Sized,
 {
+    tracing::debug!(
+        target_epoch_ms,
+        current_t,
+        "datetime_to_t: resolving ISO epoch-ms"
+    );
     let time_predicate = Sid::new(FLUREE_LEDGER, LEDGER_TIME);
 
     // Step 1: Check if any ledger#time flakes exist at all
@@ -87,6 +91,7 @@ where
 
     if earliest_flakes.is_empty() {
         // No commit timestamps exist - fall back to head (matches existing behavior)
+        tracing::debug!("datetime_to_t: no ledger#time flakes found; returning head");
         return Ok(current_t);
     }
 
@@ -95,6 +100,7 @@ where
         FlakeValue::Long(ms) => *ms,
         _ => return Ok(current_t), // Invalid timestamp type, fall back
     };
+    tracing::debug!(earliest_time, "datetime_to_t: earliest ledger#time");
 
     // Check if target is before earliest commit
     if target_epoch_ms < earliest_time {
@@ -126,6 +132,7 @@ where
 
     if after_flakes.is_empty() {
         // Target is >= all commit times, return head
+        tracing::debug!("datetime_to_t: no commit after target; returning head");
         return Ok(current_t);
     }
 
@@ -133,9 +140,12 @@ where
     // Its t is the transaction number of that commit.
     // The previous transaction (t - 1) is what we want.
     let after_t = after_flakes[0].t;
+    let after_o = &after_flakes[0].o;
+    tracing::debug!(after_t, ?after_o, "datetime_to_t: first commit after target");
 
     // Clamp to 0 minimum (t=0 may be valid for genesis-as-of queries)
     let resolved_t = (after_t - 1).max(0);
+    tracing::debug!(resolved_t, "datetime_to_t: resolved t");
 
     Ok(resolved_t)
 }

@@ -53,12 +53,7 @@ Fluree supports time pinning in graph references.
 - `<ledger>:<branch>@iso:<rfc3339>` — pin to ISO datetime
 - `<ledger>:<branch>@sha:<commit-sha>` — pin to commit SHA (prefix allowed)
 
-**Recommended syntax (preferred for new examples/docs):**
-- `<ledger>:<branch>@t=<t>`
-- `<ledger>:<branch>@iso=<rfc3339>`
-- `<ledger>:<branch>@sha=<commit-sha>`
-
-The `=` form avoids ambiguity and escaping headaches around `:` and is more URL/IRI-friendly.
+Note: you may see an `=` form in older design notes (`@t=100`, etc.). That form is **not** the supported user-facing syntax today; use the `@t:` / `@iso:` / `@sha:` forms in docs and examples.
 
 From a user perspective:
 - The `@…` portion selects **which Db value** you mean for that ledger graph.
@@ -74,9 +69,9 @@ Recommended user-facing convention (alias-friendly, URL-friendly, avoids `/` as 
 
 Examples:
 - Default graph, latest: `<acme/people:main>`
-- Default graph at \(t=1000\): `<acme/people:main@t=1000>`
+- Default graph at \(t=1000\): `<acme/people:main@t:1000>`
 - Txn metadata graph at latest: `<acme/people:main#txn-meta>`
-- Txn metadata graph at \(t=1000\): `<acme/people:main@t=1000#txn-meta>`
+- Txn metadata graph at \(t=1000\): `<acme/people:main@t:1000#txn-meta>`
 
 #### Important note about `#` fragments
 Using `#<named-graph-alias>` is idiomatic RDF identity, but **HTTP clients do not send fragments to servers**.
@@ -85,7 +80,7 @@ plan to expose a server-visible selector (e.g., `?graph=txn-meta`) in addition t
 
 ### Full IRIs are always allowed
 Semantic web users may prefer full IRIs:
-- `https://data.flur.ee/acme/people:main@t=1000#txn-meta`
+- `https://data.flur.ee/acme/people:main@t:1000#txn-meta`
 
 These should be used as-is (no resolution needed).
 
@@ -96,8 +91,8 @@ Many users prefer short names like `people:main` or `acme/people:main`. To make 
 
 Example:
 - Base: `https://data.flur.ee/`
-- Ref: `<acme/people:main@t=1000#txn-meta>`
-- Graph IRI: `https://data.flur.ee/acme/people:main@t=1000#txn-meta`
+- Ref: `<acme/people:main@t:1000#txn-meta>`
+- Graph IRI: `https://data.flur.ee/acme/people:main@t:1000#txn-meta`
 
 ### Character and encoding rules (user-facing)
 To avoid ambiguity and URL pitfalls:
@@ -147,7 +142,7 @@ This repo currently mixes `alias`, `address`, and `ledger_alias` in ways that ca
 
 - **`address`**: canonical identifier used as a cache key / stable identity.
   - For ledgers this is the full `name:branch` form (e.g., `people:main`).
-  - For graph identities this is the resolved graph IRI (e.g., `https://data.flur.ee/acme/people:main@t=42#txn-meta`).
+  - For graph identities this is the resolved graph IRI (e.g., `https://data.flur.ee/acme/people:main@t:42#txn-meta`).
 - **`name`**: a base name without branch (e.g., `people`).
 - **`branch`**: the branch name (e.g., `main`).
 - **`alias`**: a human-friendly label, and only that.
@@ -268,7 +263,7 @@ This centralizes:
 BASE <https://data.flur.ee/>
 
 SELECT ?s ?p ?o
-FROM <acme/people:main@t=1000>
+FROM <acme/people:main@t:1000>
 WHERE {
   ?s ?p ?o .
 }
@@ -279,9 +274,9 @@ WHERE {
 BASE <https://data.flur.ee/>
 
 SELECT ?commit ?t
-FROM NAMED <acme/people:main@t=1000#txn-meta>
+FROM NAMED <acme/people:main@t:1000#txn-meta>
 WHERE {
-  GRAPH <acme/people:main@t=1000#txn-meta> {
+  GRAPH <acme/people:main@t:1000#txn-meta> {
     ?commit <https://ns.flur.ee/ledger#t> ?t .
   }
 }
@@ -290,7 +285,7 @@ WHERE {
 ### JSON-LD Query: pinned graph reference
 ```json
 {
-  "from": "acme/people:main@t=1000",
+  "from": "acme/people:main@t:1000",
   "select": ["?name"],
   "where": [{ "@id": "?p", "http://schema.org/name": "?name" }]
 }

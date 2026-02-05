@@ -68,7 +68,7 @@ pub fn generate_commit_flakes(commit: &Commit, ledger_alias: &str, t: i64) -> Ve
         return Vec::new();
     };
 
-    let mut flakes = Vec::with_capacity(8);
+    let mut flakes = Vec::with_capacity(10);
 
     // Build commit subject SID
     // FLUREE_COMMIT prefix is "fluree:commit:sha256:", so name is hex only

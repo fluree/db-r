@@ -551,7 +551,7 @@ mod tests {
         commit.txn = Some("fluree:file://txn/xyz.json".into());
         commit.time = Some("2024-06-15T12:00:00Z".into());
         commit.data = Some(CommitData {
-            id: Some("fluree:db:sha256:def".into()),
+            id: None,
             address: Some("fluree:file://db/def.json".into()),
             flakes: 5000,
             size: 128000,
@@ -575,7 +575,7 @@ mod tests {
         assert_eq!(d.txn.as_deref(), Some("fluree:file://txn/xyz.json"));
         assert_eq!(d.time.as_deref(), Some("2024-06-15T12:00:00Z"));
         let data = d.data.as_ref().unwrap();
-        assert_eq!(data.id.as_deref(), Some("fluree:db:sha256:def"));
+        assert!(data.id.is_none());
         assert_eq!(data.address.as_deref(), Some("fluree:file://db/def.json"));
         assert_eq!(data.flakes, 5000);
         assert_eq!(data.size, 128000);

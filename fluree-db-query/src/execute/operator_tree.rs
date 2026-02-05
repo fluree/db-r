@@ -215,8 +215,19 @@ pub fn build_operator_tree<S: Storage + 'static>(
             })
             .collect();
 
+        // The streaming GroupAggregateOperator only outputs GROUP BY keys + aggregate outputs.
+        // If the SELECT projects any *grouped* variables (non-key, non-aggregate),
+        // we must use the traditional GroupByOperator path so those vars become
+        // `Binding::Grouped(Vec<Binding>)` and remain selectable.
+        let select_needs_grouped_vars = query.select_mode != SelectMode::Construct
+            && query.select.iter().any(|v| {
+                !options.group_by.contains(v)
+                    && !options.aggregates.iter().any(|a| a.output_var == *v)
+            });
+
         let use_streaming = !options.aggregates.is_empty()
-            && GroupAggregateOperator::<S>::all_streamable(&streaming_specs);
+            && GroupAggregateOperator::<S>::all_streamable(&streaming_specs)
+            && !select_needs_grouped_vars;
 
         if use_streaming {
             // Streaming path: O(groups) memory

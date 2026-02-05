@@ -21,7 +21,7 @@ fn ctx_ex() -> serde_json::Value {
 /// Filter query results to only rows whose subject starts with "ex:".
 ///
 /// Commit/db metadata flakes introduce additional subjects like `fluree:commit:...`
-/// and `fluree:db:...` which are orthogonal to these negation semantics tests.
+/// and commit metadata subjects which are orthogonal to these negation semantics tests.
 fn filter_rows_subject_ex(v: &serde_json::Value) -> serde_json::Value {
     let Some(arr) = v.as_array() else {
         return v.clone();

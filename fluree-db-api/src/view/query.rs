@@ -278,6 +278,7 @@ where
             tracker: Some(tracker),
             policy_enforcer: view.policy_enforcer().cloned(),
             binary_store: view.binary_store.clone(),
+            binary_g_id: view.graph_id,
             dict_novelty: view.dict_novelty.clone(),
             strict_bind_errors: true,
             ..Default::default()
@@ -313,6 +314,7 @@ where
             tracker: Some(tracker),
             policy_enforcer: view.policy_enforcer().cloned(),
             binary_store: view.binary_store.clone(),
+            binary_g_id: view.graph_id,
             dict_novelty: view.dict_novelty.clone(),
             strict_bind_errors: true,
             ..Default::default()

@@ -387,10 +387,7 @@ fn format_row_wildcard(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query::QueryResult;
-    use fluree_db_query::SelectMode;
     use fluree_db_core::Sid;
-    use fluree_db_query::var_registry::VarRegistry;
     use std::collections::HashMap;
 
     fn make_test_compactor() -> IriCompactor {
@@ -405,7 +402,7 @@ mod tests {
     /// Used for testing format_binding with non-encoded bindings.
     fn make_test_result() -> QueryResult {
         QueryResult {
-            vars: VarRegistry::new(),
+            vars: crate::VarRegistry::new(),
             t: 0,
             novelty: None,
             context: crate::ParsedContext::default(),
