@@ -66,6 +66,14 @@ fn is_decimal_dt(dt: &Sid) -> bool {
     dt.namespace_code == XSD_NAMESPACE_CODE && dt.name.as_ref() == "decimal"
 }
 
+/// RDF namespace code
+const RDF_NAMESPACE_CODE: i32 = 3;
+
+/// Check if datatype is rdf:JSON
+fn is_json_dt(dt: &Sid) -> bool {
+    dt.namespace_code == RDF_NAMESPACE_CODE && dt.name.as_ref() == "JSON"
+}
+
 // === Raw JSON structures for deserialization ===
 
 /// Raw flake as it appears in JSON (7-element array)
@@ -228,6 +236,13 @@ pub fn deserialize_object(value: &serde_json::Value, dt: &Sid) -> Result<FlakeVa
                     .map_err(|e| Error::other(format!("Invalid decimal: {}", e)));
             }
             _ => {}
+        }
+    }
+
+    // rdf:JSON: the serialized JSON string must be restored as FlakeValue::Json
+    if is_json_dt(dt) {
+        if let serde_json::Value::String(s) = value {
+            return Ok(FlakeValue::Json(s.clone()));
         }
     }
 
@@ -434,6 +449,13 @@ fn borrowed_object_interned(
                     .map_err(|e| Error::other(format!("Invalid decimal: {}", e)));
             }
             _ => {}
+        }
+    }
+
+    // rdf:JSON: the serialized JSON string must be restored as FlakeValue::Json
+    if is_json_dt(dt) {
+        if let simd_json::BorrowedValue::String(s) = value {
+            return Ok(FlakeValue::Json(s.to_string()));
         }
     }
 
