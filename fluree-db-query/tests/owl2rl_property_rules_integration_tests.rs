@@ -25,6 +25,9 @@ use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
+/// Parameters recorded from psot lookup calls: (start, end, inclusive, limit)
+type PsotCallParams = (Option<Flake>, Option<Flake>, bool, i64);
+
 /// Small overlay that stores a fixed set of flakes, pre-sorted for all indexes,
 /// and respects range boundaries.
 ///
@@ -36,7 +39,7 @@ struct SortedOverlay {
     psot: Vec<Flake>,
     post: Vec<Flake>,
     opst: Vec<Flake>,
-    psot_last_call: std::sync::Mutex<Option<(Option<Flake>, Option<Flake>, bool, i64)>>,
+    psot_last_call: std::sync::Mutex<Option<PsotCallParams>>,
 }
 
 impl SortedOverlay {
@@ -238,7 +241,7 @@ async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
     assert!(!flakes.iter().any(|f| f.p == rdf_type));
 
     let overlay_epoch = overlay_epoch_from_flakes(&flakes);
-    let overlay = SortedOverlay::new(overlay_epoch, flakes.drain(..).collect());
+    let overlay = SortedOverlay::new(overlay_epoch, std::mem::take(&mut flakes));
 
     // Sanity check: core range_with_overlay can see the schema axioms in overlay.
     let domain_flakes = range_with_overlay(

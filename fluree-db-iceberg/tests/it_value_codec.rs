@@ -199,12 +199,10 @@ fn test_decimal_encoding() {
 
         // Note: decimal decoding may not preserve exact unscaled value
         // if the byte representation differs, but ordering should be preserved
-        if let TypedValue::Decimal { unscaled: u, .. } = decoded {
-            // Just verify it decoded to a decimal
-            assert!(true, "Decoded decimal with unscaled value {}", u);
-        } else {
-            panic!("Expected Decimal type");
-        }
+        assert!(
+            matches!(decoded, TypedValue::Decimal { .. }),
+            "Expected Decimal type"
+        );
     }
 }
 

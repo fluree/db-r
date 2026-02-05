@@ -390,7 +390,7 @@ async fn jsonld_query_with_faux_compact_iri_ids() {
     let r1 = fluree.query(&loaded, &q1).await.expect("query select");
     let mut rows = r1.to_jsonld(&loaded.db).expect("to_jsonld");
     let arr = rows.as_array_mut().expect("rows array");
-    arr.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
+    arr.sort_by_key(|a| a.to_string());
     assert_eq!(rows, json!([["foaf:bar", "Bar"], ["foo", "Foo"]]));
 
     // Subject crawl SELECT

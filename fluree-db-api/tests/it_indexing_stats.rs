@@ -70,7 +70,6 @@ async fn property_and_class_statistics_persist_in_db_root() {
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
                 reindex_max_bytes: 10_000_000,
-                ..Default::default()
             };
 
             let txn1 = json!({
@@ -158,7 +157,6 @@ async fn class_statistics_decrement_after_delete_refresh() {
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
                 reindex_max_bytes: 10_000_000,
-                ..Default::default()
             };
 
             let txn1 = json!({
@@ -243,7 +241,6 @@ async fn statistics_work_with_memory_storage_when_indexed() {
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
                 reindex_max_bytes: 10_000_000,
-                ..Default::default()
             };
 
             let txn = json!({
@@ -330,7 +327,6 @@ async fn ledger_info_api_returns_expected_structure() {
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
                 reindex_max_bytes: 10_000_000,
-                ..Default::default()
             };
 
             // Insert test data (like Clojure test)
@@ -575,7 +571,6 @@ async fn ledger_info_api_with_context_compacts_stats_iris() {
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
                 reindex_max_bytes: 10_000_000,
-                ..Default::default()
             };
 
             // Insert test data
@@ -733,7 +728,6 @@ async fn ndv_cardinality_estimates_are_accurate() {
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
                 reindex_max_bytes: 10_000_000,
-                ..Default::default()
             };
 
             // Create 20 people with:
@@ -896,7 +890,6 @@ async fn selectivity_calculation_is_correct() {
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
                 reindex_max_bytes: 10_000_000,
-                ..Default::default()
             };
 
             // Create data where:
@@ -1021,7 +1014,6 @@ async fn multi_class_entities_tracked_correctly() {
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
                 reindex_max_bytes: 10_000_000,
-                ..Default::default()
             };
 
             // Create entities with multiple types:
@@ -1150,7 +1142,6 @@ async fn class_property_type_distribution_tracked() {
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
                 reindex_max_bytes: 10_000_000,
-                ..Default::default()
             };
 
             // Create entities with various datatypes:
@@ -1295,7 +1286,6 @@ async fn large_dataset_statistics_accuracy() {
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 1_000_000_000,
                 reindex_max_bytes: 1_000_000_000,
-                ..Default::default()
             };
 
             // Insert 100 entities in 5 batches of 20, indexing after each batch,

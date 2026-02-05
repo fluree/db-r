@@ -155,9 +155,10 @@ mod tests {
         }
     }
 
-    fn make_hierarchy(
-        entries: Vec<(u16, &str, Vec<(u16, &str)>)>,
-    ) -> (SchemaHierarchy, SidInterner) {
+    /// A hierarchy entry tuple: (namespace, name, subclass_of entries)
+    type HierarchyEntry<'a> = (u16, &'a str, Vec<(u16, &'a str)>);
+
+    fn make_hierarchy(entries: Vec<HierarchyEntry<'_>>) -> (SchemaHierarchy, SidInterner) {
         let interner = SidInterner::new();
         let vals: Vec<SchemaPredicateInfo> = entries
             .into_iter()

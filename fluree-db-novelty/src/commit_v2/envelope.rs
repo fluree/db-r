@@ -671,10 +671,13 @@ mod tests {
         assert!(decode_envelope(&buf).is_ok());
     }
 
+    /// A function that mutates a Commit for testing purposes
+    type CommitMutator = Box<dyn Fn(&mut Commit)>;
+
     #[test]
     fn test_individual_flags() {
         // Test each active flag individually (legacy flags not tested here)
-        let test_cases: Vec<Box<dyn Fn(&mut Commit)>> = vec![
+        let test_cases: Vec<CommitMutator> = vec![
             Box::new(|c: &mut Commit| c.previous_ref = Some(CommitRef::new("addr"))),
             Box::new(|c: &mut Commit| {
                 c.namespace_delta = HashMap::from([(1, "ns:".into())]);

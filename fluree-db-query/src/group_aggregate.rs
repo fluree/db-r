@@ -852,10 +852,8 @@ mod tests {
             for row_idx in 0..batch.len() {
                 let venue = batch.get_by_col(row_idx, 0).clone();
                 let count = batch.get_by_col(row_idx, 1);
-                if let Binding::Lit { val, .. } = count {
-                    if let FlakeValue::Long(n) = val {
-                        results.push((venue, *n));
-                    }
+                if let Binding::Lit { val: FlakeValue::Long(n), .. } = count {
+                    results.push((venue, *n));
                 }
             }
         }
@@ -1034,7 +1032,7 @@ mod tests {
             .map(|p_id| pred_dict.resolve(p_id).unwrap_or(""))
             .collect();
         std::fs::write(
-            &run_dir.join("predicates.json"),
+            run_dir.join("predicates.json"),
             serde_json::to_vec(&preds_by_id).unwrap(),
         )
         .unwrap();
@@ -1091,7 +1089,7 @@ mod tests {
                 .collect();
             ns_entries.push(serde_json::json!({"code": ns, "prefix": "http://example.com/"}));
             std::fs::write(
-                &run_dir.join("namespaces.json"),
+                run_dir.join("namespaces.json"),
                 serde_json::to_vec(&ns_entries).unwrap(),
             )
             .unwrap();

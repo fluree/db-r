@@ -376,8 +376,7 @@ async fn transact_api_test() {
     let err = fluree
         .update_with_ledger(&bad_txn)
         .await
-        .err()
-        .expect("expected missing-ledger error");
+        .expect_err("expected missing-ledger error");
     assert_eq!(
         err.to_string(),
         "Invalid configuration: Invalid transaction, missing required key: ledger."
@@ -743,7 +742,7 @@ async fn insert_data_then_query_names() {
     let result = fluree.query(&inserted.ledger, &query).await.expect("query");
     let mut rows = result.to_jsonld(&inserted.ledger.db).expect("to_jsonld");
     let arr = rows.as_array_mut().expect("rows array");
-    arr.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
+    arr.sort_by_key(|a| a.to_string());
 
     assert_eq!(rows, json!(["Alice", "Bob"]));
 }

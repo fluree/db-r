@@ -762,12 +762,12 @@ async fn bm25_federated_query_with_aggregation() {
         if !result.batches.is_empty() && !result.batches[0].is_empty() {
             // Extract year from result
             let batch = &result.batches[0];
-            if let Some(binding) = batch.column_by_idx(0).and_then(|col| col.first()) {
-                if let fluree_db_query::binding::Binding::Lit { val, .. } = binding {
-                    if let fluree_db_core::FlakeValue::Long(year) = val {
-                        *year_counts.entry(*year).or_insert(0) += 1;
-                    }
-                }
+    if let Some(fluree_db_query::binding::Binding::Lit {
+                val: fluree_db_core::FlakeValue::Long(year),
+                ..
+            }) = batch.column_by_idx(0).and_then(|col| col.first())
+            {
+                *year_counts.entry(*year).or_insert(0) += 1;
             }
         }
     }

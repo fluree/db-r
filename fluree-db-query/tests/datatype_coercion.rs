@@ -17,11 +17,7 @@ fn json_to_flake_value(json: &serde_json::Value) -> Option<FlakeValue> {
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 Some(FlakeValue::Long(i))
-            } else if let Some(f) = n.as_f64() {
-                Some(FlakeValue::Double(f))
-            } else {
-                None
-            }
+            } else { n.as_f64().map(FlakeValue::Double) }
         }
         serde_json::Value::Bool(b) => Some(FlakeValue::Boolean(*b)),
         serde_json::Value::Array(_) | serde_json::Value::Object(_) => {

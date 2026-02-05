@@ -1244,7 +1244,7 @@ mod tests {
             },
         };
 
-        let (result, diag) = rewrite_patterns(&[pattern.clone()], &ctx);
+        let (result, diag) = rewrite_patterns(std::slice::from_ref(&pattern), &ctx);
         assert_eq!(result.len(), 1);
         assert!(matches!(result[0], Pattern::Triple(_)));
         assert!(diag.was_capped, "Should report capping when budget is 0");

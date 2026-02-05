@@ -219,7 +219,10 @@ mod tests {
     use crate::index_schema::{SchemaPredicateInfo, SchemaPredicates};
     use crate::sid::SidInterner;
 
-    fn make_schema(entries: Vec<(u16, &str, Vec<(u16, &str)>, Vec<(u16, &str)>)>) -> IndexSchema {
+    /// A schema entry tuple: (namespace, name, subclass_of entries, parent_props entries)
+    type SchemaEntry<'a> = (u16, &'a str, Vec<(u16, &'a str)>, Vec<(u16, &'a str)>);
+
+    fn make_schema(entries: Vec<SchemaEntry<'_>>) -> IndexSchema {
         let interner = SidInterner::new();
         let vals: Vec<SchemaPredicateInfo> = entries
             .into_iter()

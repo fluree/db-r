@@ -555,8 +555,8 @@ mod tests {
         let infos = writer.finish().unwrap();
 
         assert_eq!(infos.len(), 6);
-        for i in 0..5 {
-            assert_eq!(infos[i].total_rows, 10);
+        for info in &infos[..5] {
+            assert_eq!(info.total_rows, 10);
         }
         assert_eq!(infos[5].total_rows, 5);
 

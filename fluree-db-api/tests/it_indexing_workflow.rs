@@ -91,7 +91,6 @@ async fn manual_indexing_disabled_mode_then_trigger_updates_nameservice_and_load
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
                 reindex_max_bytes: 10_000_000,
-                ..Default::default()
             };
 
             for i in 0..10 {
@@ -192,7 +191,6 @@ async fn indexing_coalesces_multiple_commits_and_latest_root_is_queryable() {
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
                 reindex_max_bytes: 10_000_000,
-                ..Default::default()
             };
 
             let tx1 = json!({
@@ -305,7 +303,6 @@ async fn file_based_indexing_then_new_connection_loads_and_queries() {
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
                 reindex_max_bytes: 10_000_000,
-                ..Default::default()
             };
 
             for i in 0..20 {
@@ -415,7 +412,6 @@ async fn seed_some_commits(
     let idx_cfg = IndexConfig {
         reindex_min_bytes: 0,
         reindex_max_bytes: 10_000_000,
-        ..Default::default()
     };
 
     for i in 0..n {
@@ -619,7 +615,6 @@ async fn reindex_populates_statistics() {
     let idx_cfg = IndexConfig {
         reindex_min_bytes: 0,
         reindex_max_bytes: 10_000_000,
-        ..Default::default()
     };
 
     // Insert people with types
@@ -816,7 +811,6 @@ async fn reindex_preserves_filter_queries() {
     let idx_cfg = IndexConfig {
         reindex_min_bytes: 0,
         reindex_max_bytes: 10_000_000,
-        ..Default::default()
     };
 
     let tx = json!({
@@ -904,7 +898,6 @@ async fn reindex_uses_provided_indexer_config() {
     let idx_cfg = IndexConfig {
         reindex_min_bytes: 0,
         reindex_max_bytes: 10_000_000,
-        ..Default::default()
     };
 
     // Insert some data
@@ -974,7 +967,6 @@ async fn reindex_default_from_t_includes_all_data() {
     let idx_cfg = IndexConfig {
         reindex_min_bytes: 0,
         reindex_max_bytes: 10_000_000,
-        ..Default::default()
     };
 
     // Insert 3 transactions
@@ -994,7 +986,7 @@ async fn reindex_default_from_t_includes_all_data() {
                 &idx_cfg,
             )
             .await
-            .expect(&format!("insert tx{}", i))
+            .unwrap_or_else(|_| panic!("insert tx{}", i))
             .ledger;
     }
     assert_eq!(ledger.t(), 3, "Should be at t=3 after 3 transactions");

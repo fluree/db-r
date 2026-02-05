@@ -56,7 +56,6 @@ async fn explain_no_optimization_when_equal_selectivity() {
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
                 reindex_max_bytes: 10_000_000,
-                ..Default::default()
             };
 
             let txn = json!({
@@ -121,7 +120,6 @@ async fn explain_reorders_bound_object_email_first() {
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
                 reindex_max_bytes: 10_000_000,
-                ..Default::default()
             };
 
             let mut people = vec![
@@ -182,7 +180,6 @@ async fn explain_reorders_badge_property_scan_before_class_scan() {
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
                 reindex_max_bytes: 10_000_000,
-                ..Default::default()
             };
 
             let mut people = Vec::new();
@@ -242,7 +239,6 @@ async fn explain_includes_inputs_fields_and_flags() {
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
                 reindex_max_bytes: 10_000_000,
-                ..Default::default()
             };
 
             let mut people = Vec::new();

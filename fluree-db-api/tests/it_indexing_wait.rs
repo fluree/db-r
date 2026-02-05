@@ -53,7 +53,6 @@ async fn background_indexing_trigger_wait_then_load_index_root() {
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
                 reindex_max_bytes: 1_000_000,
-                ..Default::default()
             };
 
             // 1) Transact

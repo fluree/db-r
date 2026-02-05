@@ -684,7 +684,8 @@ mod tests {
         let patterns = vec![Pattern::IndexSearch(isp)];
 
         // Build operator with explicit seed (EmptyOperator) to mimic runner behavior.
-        let seed: BoxedOperator<MemoryStorage> = Box::new(EmptyOperator::new());
+        let empty = EmptyOperator::new();
+        let seed: BoxedOperator<MemoryStorage> = Box::new(empty);
         let mut op = build_where_operators_seeded::<MemoryStorage>(Some(seed), &patterns, None)
             .expect("build operators");
 
@@ -724,7 +725,8 @@ mod tests {
         );
         let patterns = vec![Pattern::IndexSearch(isp)];
 
-        let seed: BoxedOperator<MemoryStorage> = Box::new(EmptyOperator::new());
+        let empty = EmptyOperator::new();
+        let seed: BoxedOperator<MemoryStorage> = Box::new(empty);
         let mut op = build_where_operators_seeded::<MemoryStorage>(Some(seed), &patterns, None)
             .expect("build operators");
 

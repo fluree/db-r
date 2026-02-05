@@ -470,7 +470,7 @@ mod tests {
             "where": {"@id": "http://example.org/alice", "http://example.org/name": "?name"}
         });
         let result = fluree.query_view(&view, &query).await.unwrap();
-        assert!(result.batches.is_empty() || result.batches[0].len() == 0);
+        assert!(result.batches.is_empty() || result.batches[0].is_empty());
 
         // Query at t=1 (after insert)
         let view = fluree.view_at_t("testdb:main", 1).await.unwrap();

@@ -8,7 +8,7 @@
 use fluree_db_connection::{connect, ConnectionConfig, ConnectionHandle, StorageType};
 use fluree_db_query::{execute_pattern, Term, TriplePattern, VarRegistry};
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn get_test_db_path() -> Option<PathBuf> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -23,7 +23,7 @@ fn get_test_db_path() -> Option<PathBuf> {
     }
 }
 
-fn find_root_file(test_db_path: &PathBuf) -> Option<String> {
+fn find_root_file(test_db_path: &Path) -> Option<String> {
     let root_dir = test_db_path.join("test/range-scan/index/root");
 
     if !root_dir.exists() {
@@ -32,9 +32,7 @@ fn find_root_file(test_db_path: &PathBuf) -> Option<String> {
 
     std::fs::read_dir(&root_dir)
         .ok()?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
-        .next()
+        .filter_map(|e| e.ok()).find(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
         .map(|e| {
             format!(
                 "fluree:file://test/range-scan/index/root/{}",

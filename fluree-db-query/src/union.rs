@@ -307,7 +307,8 @@ mod tests {
     fn test_union_operator_allows_position_0_via_empty_seed_child() {
         // UNION at position 0 should still be able to run using an EmptyOperator child.
         // Here we only validate it constructs; runtime behavior is covered by execute.rs integration tests.
-        let child: BoxedOperator<MemoryStorage> = Box::new(EmptyOperator::new());
+        let empty = EmptyOperator::new();
+        let child: BoxedOperator<MemoryStorage> = Box::new(empty);
         let branches = vec![vec![], vec![]];
         let op = UnionOperator::new(child, branches);
         assert_eq!(op.schema().len(), 0);

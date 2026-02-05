@@ -1112,7 +1112,7 @@ mod tests {
         assert!(!is_property_join(&[p1.clone(), p3]));
 
         // Not property join: single pattern
-        assert!(!is_property_join(&[p1.clone()]));
+        assert!(!is_property_join(std::slice::from_ref(&p1)));
 
         // Not property join: predicate is var
         let p4 = TriplePattern::new(
@@ -1499,7 +1499,7 @@ mod tests {
         // Double conversion
         let d = RangeValue::Double(3.13).to_flake_value();
         match d {
-            FlakeValue::Double(v) => assert!((f64::from(v) - 3.13).abs() < 0.001),
+            FlakeValue::Double(v) => assert!((v - 3.13).abs() < 0.001),
             _ => panic!("Expected Double"),
         }
     }

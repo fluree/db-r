@@ -544,13 +544,11 @@ mod tests {
 
     #[test]
     fn test_sort_unstable_by_spot() {
-        let mut records = vec![
-            make_record(3, 1, 0, DatatypeDictId::INTEGER.as_u16(), 1),
+        let mut records = [make_record(3, 1, 0, DatatypeDictId::INTEGER.as_u16(), 1),
             make_record(1, 2, 0, DatatypeDictId::INTEGER.as_u16(), 1),
             make_record(1, 1, 0, DatatypeDictId::INTEGER.as_u16(), 1),
             make_record(2, 1, 0, DatatypeDictId::INTEGER.as_u16(), 1),
-            make_record(1, 1, 10, DatatypeDictId::INTEGER.as_u16(), 1),
-        ];
+            make_record(1, 1, 10, DatatypeDictId::INTEGER.as_u16(), 1)];
         records.sort_unstable_by(cmp_spot);
 
         assert_eq!(records[0].s_id, SubjectId::from_u64(1));

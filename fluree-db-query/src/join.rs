@@ -1770,7 +1770,7 @@ mod tests {
             .map(|p_id| pred_dict.resolve(p_id).unwrap_or(""))
             .collect();
         std::fs::write(
-            &run_dir.join("predicates.json"),
+            run_dir.join("predicates.json"),
             serde_json::to_vec(&preds_by_id).unwrap(),
         )
         .unwrap();
@@ -1832,7 +1832,7 @@ mod tests {
             // Add the test namespace
             ns_entries.push(serde_json::json!({"code": ns, "prefix": "http://example.com/"}));
             std::fs::write(
-                &run_dir.join("namespaces.json"),
+                run_dir.join("namespaces.json"),
                 serde_json::to_vec(&ns_entries).unwrap(),
             )
             .unwrap();

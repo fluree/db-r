@@ -749,20 +749,22 @@ fn test_filter_expression_logical() {
     use crate::ast::expr::{BinaryOp, Expression};
 
     let ast = assert_parses("SELECT * WHERE { ?s ?p ?o . FILTER(?o > 0 && ?o < 100) }");
-    if let QueryBody::Select(q) = &ast.body {
-        if let GraphPattern::Group { patterns, .. } = &q.where_clause.pattern {
-            if let GraphPattern::Filter { expr, .. } = &patterns[1] {
-                if let Expression::Bracketed { inner, .. } = expr {
-                    match &**inner {
-                        Expression::Binary { op, .. } => {
-                            assert_eq!(*op, BinaryOp::And);
-                        }
-                        _ => panic!("Expected AND expression in FILTER"),
-                    }
-                }
-            }
-        }
-    }
+    let QueryBody::Select(q) = &ast.body else {
+        panic!("Expected SELECT query body");
+    };
+    let GraphPattern::Group { patterns, .. } = &q.where_clause.pattern else {
+        panic!("Expected GROUP pattern");
+    };
+    let GraphPattern::Filter { expr, .. } = &patterns[1] else {
+        panic!("Expected FILTER pattern");
+    };
+    let Expression::Bracketed { inner, .. } = expr else {
+        panic!("Expected BRACKETED expression");
+    };
+    let Expression::Binary { op, .. } = &**inner else {
+        panic!("Expected AND expression in FILTER");
+    };
+    assert_eq!(*op, BinaryOp::And);
 }
 
 #[test]
@@ -881,21 +883,23 @@ fn test_filter_bound_function() {
     use crate::ast::expr::{Expression, FunctionName};
 
     let ast = assert_parses("SELECT * WHERE { ?s ?p ?o . FILTER(BOUND(?o)) }");
-    if let QueryBody::Select(q) = &ast.body {
-        if let GraphPattern::Group { patterns, .. } = &q.where_clause.pattern {
-            if let GraphPattern::Filter { expr, .. } = &patterns[1] {
-                if let Expression::Bracketed { inner, .. } = expr {
-                    match &**inner {
-                        Expression::FunctionCall { name, args, .. } => {
-                            assert!(matches!(name, FunctionName::Bound));
-                            assert_eq!(args.len(), 1);
-                        }
-                        _ => panic!("Expected BOUND function call, got {:?}", inner),
-                    }
-                }
-            }
-        }
-    }
+    let QueryBody::Select(q) = &ast.body else {
+        panic!("Expected SELECT query body");
+    };
+    let GraphPattern::Group { patterns, .. } = &q.where_clause.pattern else {
+        panic!("Expected GROUP pattern");
+    };
+    let GraphPattern::Filter { expr, .. } = &patterns[1] else {
+        panic!("Expected FILTER pattern");
+    };
+    let Expression::Bracketed { inner, .. } = expr else {
+        panic!("Expected BRACKETED expression");
+    };
+    let Expression::FunctionCall { name, args, .. } = &**inner else {
+        panic!("Expected BOUND function call, got {:?}", inner);
+    };
+    assert!(matches!(name, FunctionName::Bound));
+    assert_eq!(args.len(), 1);
 }
 
 #[test]
@@ -903,21 +907,23 @@ fn test_filter_in_expression() {
     use crate::ast::expr::Expression;
 
     let ast = assert_parses("SELECT * WHERE { ?s ?p ?o . FILTER(?o IN (1, 2, 3)) }");
-    if let QueryBody::Select(q) = &ast.body {
-        if let GraphPattern::Group { patterns, .. } = &q.where_clause.pattern {
-            if let GraphPattern::Filter { expr, .. } = &patterns[1] {
-                if let Expression::Bracketed { inner, .. } = expr {
-                    match &**inner {
-                        Expression::In { negated, list, .. } => {
-                            assert!(!negated);
-                            assert_eq!(list.len(), 3);
-                        }
-                        _ => panic!("Expected IN expression, got {:?}", inner),
-                    }
-                }
-            }
-        }
-    }
+    let QueryBody::Select(q) = &ast.body else {
+        panic!("Expected SELECT query body");
+    };
+    let GraphPattern::Group { patterns, .. } = &q.where_clause.pattern else {
+        panic!("Expected GROUP pattern");
+    };
+    let GraphPattern::Filter { expr, .. } = &patterns[1] else {
+        panic!("Expected FILTER pattern");
+    };
+    let Expression::Bracketed { inner, .. } = expr else {
+        panic!("Expected BRACKETED expression");
+    };
+    let Expression::In { negated, list, .. } = &**inner else {
+        panic!("Expected IN expression, got {:?}", inner);
+    };
+    assert!(!negated);
+    assert_eq!(list.len(), 3);
 }
 
 // ========================================================================

@@ -126,7 +126,7 @@ async fn nameservice_query_memory_parity() {
     let ledger_three_t = t_arr
         .iter()
         .filter_map(|row| row.as_array())
-        .find(|row| row.get(0).and_then(|v| v.as_str()) == Some("ledger-three"))
+        .find(|row| row.first().and_then(|v| v.as_str()) == Some("ledger-three"))
         .and_then(|row| row.get(1))
         .and_then(|v| v.as_i64())
         .expect("ledger-three t");

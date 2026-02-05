@@ -79,7 +79,7 @@ fn extract_single_column_numbers(rows: &JsonValue) -> Vec<i64> {
                 return n;
             }
             row.as_array()
-                .and_then(|a| a.get(0))
+                .and_then(|a| a.first())
                 .and_then(|v| v.as_i64())
                 .expect("i64 (flat or row[0])")
         })

@@ -98,7 +98,7 @@ async fn jsonld_insert_then_query_file_backed() {
         for row in rows {
             // 1-col SELECTs are formatted as a flat array of values; older tests used `[["Alice"], ...]`.
             let name = if let Some(cols) = row.as_array() {
-                cols.get(0)
+                cols.first()
                     .and_then(|x| x.as_str())
                     .expect("name should be a string")
             } else {
