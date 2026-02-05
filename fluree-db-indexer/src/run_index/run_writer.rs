@@ -324,12 +324,9 @@ impl MultiOrderRunWriter {
         Ok(Self { writers })
     }
 
-    /// Push a record to all writers. OPST skips non-IRI records.
+    /// Push a record to all writers.
     pub fn push(&mut self, record: RunRecord, lang_dict: &mut LanguageTagDict) -> io::Result<()> {
-        for (order, writer) in &mut self.writers {
-            if *order == RunSortOrder::Opst && !record.is_iri_ref() {
-                continue;
-            }
+        for (_order, writer) in &mut self.writers {
             writer.push(record, lang_dict)?;
         }
         Ok(())
@@ -524,21 +521,16 @@ mod tests {
         let results = writer.finish(&mut lang_dict).unwrap();
         assert_eq!(results.len(), 4);
 
-        // SPOT, PSOT, POST should each have 3 records
+        // All orders should have 3 records
         for (order, result) in &results {
-            if *order == RunSortOrder::Opst {
-                // OPST skips non-IRI records
-                assert_eq!(result.total_records, 0, "OPST should have 0 records");
-            } else {
-                assert_eq!(result.total_records, 3, "{:?} should have 3 records", order);
-            }
+            assert_eq!(result.total_records, 3, "{:?} should have 3 records", order);
         }
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn test_multi_order_writer_opst_filtering() {
+    fn test_multi_order_writer_opst_mixed_types() {
         let dir = std::env::temp_dir().join("fluree_test_multi_order_opst");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -552,7 +544,7 @@ mod tests {
         let mut writer = MultiOrderRunWriter::new(config).unwrap();
         let mut lang_dict = LanguageTagDict::new();
 
-        // Push 2 integer records (not IRI)
+        // Push 2 integer records
         writer
             .push(make_test_record(1, 1, 10, 1), &mut lang_dict)
             .unwrap();
@@ -577,14 +569,9 @@ mod tests {
 
         let results = writer.finish(&mut lang_dict).unwrap();
 
+        // All orders receive all records (OPST no longer filters by type)
         for (order, result) in &results {
-            match order {
-                RunSortOrder::Spot => assert_eq!(result.total_records, 3),
-                RunSortOrder::Opst => {
-                    assert_eq!(result.total_records, 1, "OPST should only have IRI record")
-                }
-                _ => unreachable!(),
-            }
+            assert_eq!(result.total_records, 3, "{:?} should have 3 records", order);
         }
 
         let _ = std::fs::remove_dir_all(&dir);

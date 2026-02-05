@@ -146,7 +146,9 @@ pub use fluree_db_core::{
     ContentAddressedWrite, ContentKind, ContentWriteResult, MemoryStorage, OverlayProvider,
     Storage, StorageRead, StorageWrite,
 };
-pub use fluree_db_ledger::{HistoricalLedgerView, IndexConfig, LedgerState, LedgerView};
+pub use fluree_db_ledger::{
+    HistoricalLedgerView, IndexConfig, LedgerState, LedgerView, TypeErasedStore,
+};
 pub use fluree_db_nameservice::{NameService, NsRecord, Publisher, VirtualGraphPublisher};
 pub use fluree_db_novelty::Novelty;
 pub use fluree_db_query::{

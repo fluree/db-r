@@ -103,7 +103,7 @@ impl<S: Storage + 'static> Operator<S> for HavingOperator<S> {
                 };
 
                 // Evaluate the HAVING expression
-                let passes = evaluate_with_context(&self.expr, &row, Some(ctx))?;
+                let passes = evaluate_with_context(&self.expr, &row, ctx)?;
 
                 if passes {
                     // Copy this row to output

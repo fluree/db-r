@@ -338,8 +338,15 @@ where
 
             // D.2: Upload dictionary artifacts to CAS
             let numbig_p_ids: Vec<u32> = dicts.numbigs.keys().copied().collect();
-            let dict_addresses =
-                upload_dicts_to_cas(&storage, &alias, &run_dir, &dicts, &numbig_p_ids).await?;
+            let dict_addresses = upload_dicts_to_cas(
+                &storage,
+                &alias,
+                &run_dir,
+                &dicts,
+                &numbig_p_ids,
+                store.namespace_codes(),
+            )
+            .await?;
 
             // D.3: Upload index artifacts (branches + leaves) to CAS
             let graph_addresses = upload_indexes_to_cas(&storage, &alias, &build_results).await?;
@@ -540,10 +547,12 @@ async fn upload_dicts_to_cas<S: Storage>(
     run_dir: &std::path::Path,
     dicts: &run_index::GlobalDicts,
     numbig_p_ids: &[u32],
+    namespace_codes: &std::collections::HashMap<u16, String>,
 ) -> Result<run_index::DictAddresses> {
     use dict_tree::builder::{self, TreeBuildResult};
     use dict_tree::forward_leaf::ForwardEntry;
-    use dict_tree::reverse_leaf::ReverseEntry;
+    use dict_tree::reverse_leaf::{subject_reverse_key, ReverseEntry};
+    use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::{ContentKind, DictKind};
     use std::collections::BTreeMap;
 
@@ -625,24 +634,49 @@ async fn upload_dicts_to_cas<S: Storage>(
     )
     .await?;
 
-    // Subject trees
+    // Subject trees – strip namespace prefix so trees store suffix-only values,
+    // matching the format expected by translate_range / find_subject_id lookups.
     let subject_pairs = dicts
         .subjects
         .read_all_entries()
         .map_err(|e| IndexerError::StorageRead(format!("read subject entries: {}", e)))?;
 
+    let subject_suffix = |sid: u64, iri: &[u8]| -> (u16, Vec<u8>) {
+        let iri_str = std::str::from_utf8(iri).unwrap_or("");
+        let ns_code = SubjectId::from_u64(sid).ns_code();
+        let prefix = namespace_codes
+            .get(&ns_code)
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        let suffix = if iri_str.starts_with(prefix) && !prefix.is_empty() {
+            &iri[prefix.len()..]
+        } else {
+            iri
+        };
+        (ns_code, suffix.to_vec())
+    };
+
     let mut subj_fwd: Vec<ForwardEntry> = subject_pairs
         .iter()
-        .map(|(sid, iri)| ForwardEntry {
-            id: *sid,
-            value: iri.clone(),
+        .map(|(sid, iri)| {
+            let (_ns, suffix) = subject_suffix(*sid, iri);
+            ForwardEntry {
+                id: *sid,
+                value: suffix,
+            }
         })
         .collect();
     subj_fwd.sort_unstable_by_key(|e| e.id);
 
     let mut subj_rev: Vec<ReverseEntry> = subject_pairs
-        .into_iter()
-        .map(|(sid, iri)| ReverseEntry { key: iri, id: sid })
+        .iter()
+        .map(|(sid, iri)| {
+            let (ns_code, suffix) = subject_suffix(*sid, iri);
+            ReverseEntry {
+                key: subject_reverse_key(ns_code, &suffix),
+                id: *sid,
+            }
+        })
         .collect();
     subj_rev.sort_unstable_by(|a, b| a.key.cmp(&b.key));
 

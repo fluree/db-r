@@ -946,21 +946,22 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                     } else {
                         r1_cache_misses += 1;
                         let t_r1 = Instant::now();
-                        let (lh, cols) = decode_leaflet_region1(
-                            leaflet_bytes,
-                            header.p_width,
-                            RunSortOrder::Psot,
-                        )
-                        .map_err(|e| QueryError::Internal(format!("decode region1: {}", e)))?;
+                        let (lh, raw_s_ids, raw_p_ids, raw_o_kinds, raw_o_keys) =
+                            decode_leaflet_region1(
+                                leaflet_bytes,
+                                header.p_width,
+                                RunSortOrder::Psot,
+                            )
+                            .map_err(|e| QueryError::Internal(format!("decode region1: {}", e)))?;
                         us_decode_r1 += t_r1.elapsed().as_micros() as u64;
                         let row_count = lh.row_count as usize;
                         let cached_r1 = CachedRegion1 {
                             s_ids: SubjectIdColumn::from_wide(
-                                cols.s_ids.into_iter().map(SubjectId::from_u64).collect(),
+                                raw_s_ids.into_iter().map(SubjectId::from_u64).collect(),
                             ),
-                            p_ids: StdArc::from(cols.p_ids.into_boxed_slice()),
-                            o_kinds: StdArc::from(cols.o_kinds.into_boxed_slice()),
-                            o_keys: StdArc::from(cols.o_keys.into_boxed_slice()),
+                            p_ids: StdArc::from(raw_p_ids.into_boxed_slice()),
+                            o_kinds: StdArc::from(raw_o_kinds.into_boxed_slice()),
+                            o_keys: StdArc::from(raw_o_keys.into_boxed_slice()),
                             row_count,
                         };
                         let s_ids = cached_r1.s_ids.clone();
@@ -972,18 +973,18 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                     }
                 } else {
                     let t_r1 = Instant::now();
-                    let (lh, cols) =
+                    let (lh, raw_s_ids, raw_p_ids, raw_o_kinds, raw_o_keys) =
                         decode_leaflet_region1(leaflet_bytes, header.p_width, RunSortOrder::Psot)
                             .map_err(|e| QueryError::Internal(format!("decode region1: {}", e)))?;
                     us_decode_r1 += t_r1.elapsed().as_micros() as u64;
                     (
                         Some(lh),
                         SubjectIdColumn::from_wide(
-                            cols.s_ids.into_iter().map(SubjectId::from_u64).collect(),
+                            raw_s_ids.into_iter().map(SubjectId::from_u64).collect(),
                         ),
-                        StdArc::from(cols.p_ids.into_boxed_slice()),
-                        StdArc::from(cols.o_kinds.into_boxed_slice()),
-                        StdArc::from(cols.o_keys.into_boxed_slice()),
+                        StdArc::from(raw_p_ids.into_boxed_slice()),
+                        StdArc::from(raw_o_kinds.into_boxed_slice()),
+                        StdArc::from(raw_o_keys.into_boxed_slice()),
                     )
                 };
 
@@ -1108,14 +1109,16 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                             }
                         };
                         let t_r2 = Instant::now();
-                        let meta = decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)
-                            .map_err(|e| QueryError::Internal(format!("decode region2: {}", e)))?;
+                        let (raw_dt_values, raw_t_values, raw_lang_values, raw_i_values) =
+                            decode_leaflet_region2(leaflet_bytes, lh, header.dt_width).map_err(
+                                |e| QueryError::Internal(format!("decode region2: {}", e)),
+                            )?;
                         us_decode_r2 += t_r2.elapsed().as_micros() as u64;
                         let cached_r2 = CachedRegion2 {
-                            dt_values: StdArc::from(meta.dt_values.into_boxed_slice()),
-                            t_values: StdArc::from(meta.t_values.into_boxed_slice()),
-                            lang_ids: StdArc::from(meta.lang_values.into_boxed_slice()),
-                            i_values: StdArc::from(meta.i_values.into_boxed_slice()),
+                            dt_values: StdArc::from(raw_dt_values.into_boxed_slice()),
+                            t_values: StdArc::from(raw_t_values.into_boxed_slice()),
+                            lang_ids: StdArc::from(raw_lang_values.into_boxed_slice()),
+                            i_values: StdArc::from(raw_i_values.into_boxed_slice()),
                         };
                         let dt_values = cached_r2.dt_values.clone();
                         let t_values = cached_r2.t_values.clone();
@@ -1137,14 +1140,15 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                         }
                     };
                     let t_r2 = Instant::now();
-                    let meta = decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)
-                        .map_err(|e| QueryError::Internal(format!("decode region2: {}", e)))?;
+                    let (raw_dt_values, raw_t_values, raw_lang_values, raw_i_values) =
+                        decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)
+                            .map_err(|e| QueryError::Internal(format!("decode region2: {}", e)))?;
                     us_decode_r2 += t_r2.elapsed().as_micros() as u64;
                     (
-                        StdArc::from(meta.dt_values.into_boxed_slice()),
-                        StdArc::from(meta.t_values.into_boxed_slice()),
-                        StdArc::from(meta.lang_values.into_boxed_slice()),
-                        StdArc::from(meta.i_values.into_boxed_slice()),
+                        StdArc::from(raw_dt_values.into_boxed_slice()),
+                        StdArc::from(raw_t_values.into_boxed_slice()),
+                        StdArc::from(raw_lang_values.into_boxed_slice()),
+                        StdArc::from(raw_i_values.into_boxed_slice()),
                     )
                 };
 

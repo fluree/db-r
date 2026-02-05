@@ -1,5 +1,14 @@
-use crate::{ApiError, Fluree, HistoricalLedgerView, LedgerState, NameService, Result, Storage};
+use std::sync::Arc;
+
+use crate::{
+    ApiError, Fluree, HistoricalLedgerView, LedgerState, NameService, Result, Storage,
+    TypeErasedStore,
+};
+use fluree_db_indexer::run_index::{
+    BinaryIndexRootV2, BinaryIndexStore, BINARY_INDEX_ROOT_VERSION_V2,
+};
 use fluree_db_nameservice::{NameServiceError, Publisher};
+use fluree_db_query::BinaryRangeProvider;
 
 impl<S, N> Fluree<S, N>
 where
@@ -197,8 +206,65 @@ where
     /// This loads the ledger state using the connection-wide cache.
     /// The ledger state combines the indexed database with any uncommitted novelty transactions.
     pub async fn ledger(&self, alias: &str) -> Result<LedgerState<S>> {
-        let state =
+        let mut state =
             LedgerState::load(&self.nameservice, alias, self.connection.storage().clone()).await?;
+
+        // If nameservice has an index address, require that the binary index root is
+        // readable and loadable. This ensures `fluree.ledger()` always returns a
+        // queryable, indexed Db after (re)indexing.
+        //
+        // Note: we may already have a `Db.range_provider` (e.g. created during Db::load),
+        // but we still want `binary_store` so query execution can use `BinaryScanOperator`.
+        if let Some(index_addr) = state
+            .ns_record
+            .as_ref()
+            .and_then(|r| r.index_address.as_ref())
+            .cloned()
+        {
+            if state.db.range_provider.is_none() || state.binary_store.is_none() {
+                let storage = self.connection.storage();
+                let bytes = storage.read_bytes(&index_addr).await.map_err(|e| {
+                    ApiError::internal(format!(
+                        "failed to read binary index root at {}: {}",
+                        index_addr, e
+                    ))
+                })?;
+
+                let root = serde_json::from_slice::<BinaryIndexRootV2>(&bytes).map_err(|e| {
+                    ApiError::internal(format!(
+                        "failed to parse binary index root at {}: {}",
+                        index_addr, e
+                    ))
+                })?;
+                if root.version != BINARY_INDEX_ROOT_VERSION_V2 {
+                    return Err(ApiError::internal(format!(
+                        "unsupported binary index root version {} at {} (expected {})",
+                        root.version, index_addr, BINARY_INDEX_ROOT_VERSION_V2
+                    )));
+                }
+
+                let cache_dir = std::env::temp_dir().join("fluree-cache");
+                let store = BinaryIndexStore::load_from_root_default(storage, &root, &cache_dir)
+                    .await
+                    .map_err(|e| {
+                        ApiError::internal(format!(
+                            "failed to load binary index store from {}: {}",
+                            index_addr, e
+                        ))
+                    })?;
+
+                let arc_store = Arc::new(store);
+                if state.db.range_provider.is_none() {
+                    let provider = BinaryRangeProvider::new(
+                        Arc::clone(&arc_store),
+                        state.dict_novelty.clone(),
+                        0,
+                    );
+                    state.db.range_provider = Some(Arc::new(provider));
+                }
+                state.binary_store = Some(TypeErasedStore(arc_store));
+            }
+        }
 
         Ok(state)
     }

@@ -17,40 +17,6 @@ use std::io;
 pub const LEAFLET_HEADER_LEN: usize = 61;
 
 // ============================================================================
-// Region column types
-// ============================================================================
-
-/// Decoded columns from Region 1 (core columns).
-///
-/// These are the primary flake components: subject, predicate, object kind/key.
-#[derive(Debug, Clone)]
-pub struct TripleColumns {
-    /// Subject IDs
-    pub s_ids: Vec<u64>,
-    /// Predicate IDs
-    pub p_ids: Vec<u32>,
-    /// Object kind indicators
-    pub o_kinds: Vec<u8>,
-    /// Object keys (value IDs or inline values)
-    pub o_keys: Vec<u64>,
-}
-
-/// Decoded columns from Region 2 (metadata columns).
-///
-/// These are the flake metadata: datatype, transaction, language, list index.
-#[derive(Debug, Clone)]
-pub struct MetadataColumns {
-    /// Datatype IDs
-    pub dt_values: Vec<u32>,
-    /// Transaction IDs
-    pub t_values: Vec<i64>,
-    /// Language tags (sparse, 0 = no language)
-    pub lang_values: Vec<u16>,
-    /// List indices (sparse, 0 = not a list item)
-    pub i_values: Vec<i32>,
-}
-
-// ============================================================================
 // Leaflet header
 // ============================================================================
 
@@ -442,7 +408,6 @@ fn write_col_p_id(buf: &mut Vec<u8>, records: &[RunRecord], p_width: u8) {
 }
 
 /// Write a fixed u32 column.
-#[allow(dead_code)]
 fn write_col_u32(buf: &mut Vec<u8>, records: &[RunRecord], field_fn: fn(&RunRecord) -> u32) {
     for r in records {
         buf.extend_from_slice(&field_fn(r).to_le_bytes());
@@ -469,7 +434,8 @@ fn write_col_u64(buf: &mut Vec<u8>, records: &[RunRecord], field_fn: fn(&RunReco
 fn encode_region1_spot(records: &[RunRecord], p_width: u8) -> Vec<u8> {
     let rle = build_rle_u64(records, |r| r.s_id.as_u64());
     let row_count = records.len();
-    let buf_size = 4 + rle.len() * 12 + row_count * (p_width as usize) + row_count + row_count * 8;
+    let buf_size =
+        4 + rle.len() * 12 + row_count * (p_width as usize) + row_count * 1 + row_count * 8;
     let mut buf = Vec::with_capacity(buf_size);
     write_rle_u64(&mut buf, &rle);
     write_col_p_id(&mut buf, records, p_width);
@@ -482,7 +448,7 @@ fn encode_region1_spot(records: &[RunRecord], p_width: u8) -> Vec<u8> {
 fn encode_region1_psot(records: &[RunRecord]) -> Vec<u8> {
     let rle = build_rle_u32(records, |r| r.p_id);
     let row_count = records.len();
-    let buf_size = 4 + rle.len() * 8 + row_count * 8 + row_count + row_count * 8;
+    let buf_size = 4 + rle.len() * 8 + row_count * 8 + row_count * 1 + row_count * 8;
     let mut buf = Vec::with_capacity(buf_size);
     write_rle_u32(&mut buf, &rle);
     write_col_u64(&mut buf, records, |r| r.s_id.as_u64());
@@ -495,7 +461,7 @@ fn encode_region1_psot(records: &[RunRecord]) -> Vec<u8> {
 fn encode_region1_post(records: &[RunRecord]) -> Vec<u8> {
     let rle = build_rle_u32(records, |r| r.p_id);
     let row_count = records.len();
-    let buf_size = 4 + rle.len() * 8 + row_count + row_count * 8 + row_count * 8;
+    let buf_size = 4 + rle.len() * 8 + row_count * 1 + row_count * 8 + row_count * 8;
     let mut buf = Vec::with_capacity(buf_size);
     write_rle_u32(&mut buf, &rle);
     write_col_u8(&mut buf, records, |r| r.o_kind);
@@ -504,15 +470,14 @@ fn encode_region1_post(records: &[RunRecord]) -> Vec<u8> {
     buf
 }
 
-/// OPST Region 1: RLE(o_key:u64), p_id[pw], s_id[u64]
-///
-/// OPST omits o_kind — it is always `REF_ID` (0x05). Hardcoded on decode.
+/// OPST Region 1: o_kind[u8], RLE(o_key:u64), p_id[pw], s_id[u64]
 fn encode_region1_opst(records: &[RunRecord], p_width: u8) -> Vec<u8> {
     let rle = build_rle_u64(records, |r| r.o_key);
     let row_count = records.len();
     // u64 RLE entries are 12 bytes each (8 key + 4 count)
-    let buf_size = 4 + rle.len() * 12 + row_count * (p_width as usize) + row_count * 8;
+    let buf_size = row_count + 4 + rle.len() * 12 + row_count * (p_width as usize) + row_count * 8;
     let mut buf = Vec::with_capacity(buf_size);
+    write_col_u8(&mut buf, records, |r| r.o_kind);
     write_rle_u64(&mut buf, &rle);
     write_col_p_id(&mut buf, records, p_width);
     write_col_u64(&mut buf, records, |r| r.s_id.as_u64());
@@ -532,7 +497,7 @@ fn encode_region1_opst(records: &[RunRecord], p_width: u8) -> Vec<u8> {
 /// `dt_width` controls the byte width of each dt value: 1 (u8), 2 (u16), or 4 (u32).
 fn encode_region2(records: &[RunRecord], dt_width: u8) -> Vec<u8> {
     let row_count = records.len();
-    let bitmap_bytes = row_count.div_ceil(8);
+    let bitmap_bytes = (row_count + 7) / 8;
 
     // Pre-count sparse entries
     let lang_count = records.iter().filter(|r| r.lang_id != 0).count();
@@ -805,11 +770,13 @@ pub struct DecodedLeaflet {
 ///
 /// This is used by `BinaryCursor` to apply integer-ID filters before paying to
 /// decompress/parse Region 2 metadata (dt/t/lang/i).
+///
+/// Returns `(header, s_ids, p_ids, o_kinds, o_keys)`.
 pub fn decode_leaflet_region1(
     data: &[u8],
     p_width: u8,
     sort_order: RunSortOrder,
-) -> io::Result<(LeafletHeader, TripleColumns)> {
+) -> io::Result<(LeafletHeader, Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
     // New format: no "legacy width=0" defaults.
     if p_width != 2 && p_width != 4 {
         return Err(io::Error::new(
@@ -842,8 +809,8 @@ pub fn decode_leaflet_region1(
     })?;
 
     // ---- Decode Region 1 ----
-    let cols = decode_region1(&r1_raw, row_count, p_width, sort_order)?;
-    Ok((header, cols))
+    let (s_ids, p_ids, o_kinds, o_keys) = decode_region1(&r1_raw, row_count, p_width, sort_order)?;
+    Ok((header, s_ids, p_ids, o_kinds, o_keys))
 }
 
 /// Decode Region 2 of a leaflet (metadata columns) using a previously-read header.
@@ -854,7 +821,7 @@ pub fn decode_leaflet_region2(
     data: &[u8],
     header: &LeafletHeader,
     dt_width: u8,
-) -> io::Result<MetadataColumns> {
+) -> io::Result<(Vec<u32>, Vec<i64>, Vec<u16>, Vec<i32>)> {
     // dt widens from u8 → u16; Region 2 must match the leaf header's dt_width.
     if dt_width != 1 && dt_width != 2 {
         return Err(io::Error::new(
@@ -898,19 +865,21 @@ pub fn decode_leaflet(
     dt_width: u8,
     sort_order: RunSortOrder,
 ) -> io::Result<DecodedLeaflet> {
-    let (header, r1) = decode_leaflet_region1(data, p_width, sort_order)?;
-    let r2 = decode_leaflet_region2(data, &header, dt_width)?;
+    let (header, s_ids, p_ids, o_kinds, o_keys) =
+        decode_leaflet_region1(data, p_width, sort_order)?;
+    let (dt_values, t_values, lang_ids, i_values) =
+        decode_leaflet_region2(data, &header, dt_width)?;
 
     Ok(DecodedLeaflet {
         row_count: header.row_count as usize,
-        s_ids: r1.s_ids,
-        p_ids: r1.p_ids,
-        o_kinds: r1.o_kinds,
-        o_keys: r1.o_keys,
-        dt_values: r2.dt_values,
-        t_values: r2.t_values,
-        lang_ids: r2.lang_values,
-        i_values: r2.i_values,
+        s_ids,
+        p_ids,
+        o_kinds,
+        o_keys,
+        dt_values,
+        t_values,
+        lang_ids,
+        i_values,
     })
 }
 
@@ -919,12 +888,14 @@ pub fn decode_leaflet(
 // ============================================================================
 
 /// Decode Region 1 for the given sort order.
+///
+/// Returns `(s_ids, p_ids, o_kinds, o_keys)` regardless of sort order.
 fn decode_region1(
     data: &[u8],
     row_count: usize,
     p_width: u8,
     order: RunSortOrder,
-) -> io::Result<TripleColumns> {
+) -> io::Result<(Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
     match order {
         RunSortOrder::Spot => decode_region1_spot(data, row_count, p_width),
         RunSortOrder::Psot => decode_region1_psot(data, row_count),
@@ -1063,7 +1034,6 @@ fn read_col_u8(data: &[u8], pos: &mut usize, row_count: usize) -> io::Result<Vec
 }
 
 /// Read a fixed u32 column.
-#[allow(dead_code)]
 fn read_col_u32(data: &[u8], pos: &mut usize, row_count: usize) -> io::Result<Vec<u32>> {
     let mut vals = Vec::with_capacity(row_count);
     for _ in 0..row_count {
@@ -1098,73 +1068,67 @@ fn read_col_u64(data: &[u8], pos: &mut usize, row_count: usize) -> io::Result<Ve
 // ---- Per-order decode functions ----
 
 /// SPOT: RLE(s_id:u64), p_id[pw], o_kind[u8], o_key[u64]
-fn decode_region1_spot(data: &[u8], row_count: usize, p_width: u8) -> io::Result<TripleColumns> {
+fn decode_region1_spot(
+    data: &[u8],
+    row_count: usize,
+    p_width: u8,
+) -> io::Result<(Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
     let mut pos = 0;
     let s_ids = decode_rle_u64(data, &mut pos, row_count)?;
     let p_ids = read_col_p_id(data, &mut pos, row_count, p_width)?;
     let o_kinds = read_col_u8(data, &mut pos, row_count)?;
     let o_keys = read_col_u64(data, &mut pos, row_count)?;
-    Ok(TripleColumns {
-        s_ids,
-        p_ids,
-        o_kinds,
-        o_keys,
-    })
+    Ok((s_ids, p_ids, o_kinds, o_keys))
 }
 
 /// PSOT: RLE(p_id:u32), s_id[u64], o_kind[u8], o_key[u64]
-fn decode_region1_psot(data: &[u8], row_count: usize) -> io::Result<TripleColumns> {
+fn decode_region1_psot(
+    data: &[u8],
+    row_count: usize,
+) -> io::Result<(Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
     let mut pos = 0;
     let p_ids = decode_rle_u32(data, &mut pos, row_count)?;
     let s_ids = read_col_u64(data, &mut pos, row_count)?;
     let o_kinds = read_col_u8(data, &mut pos, row_count)?;
     let o_keys = read_col_u64(data, &mut pos, row_count)?;
-    Ok(TripleColumns {
-        s_ids,
-        p_ids,
-        o_kinds,
-        o_keys,
-    })
+    Ok((s_ids, p_ids, o_kinds, o_keys))
 }
 
 /// POST: RLE(p_id:u32), o_kind[u8], o_key[u64], s_id[u64]
-fn decode_region1_post(data: &[u8], row_count: usize) -> io::Result<TripleColumns> {
+fn decode_region1_post(
+    data: &[u8],
+    row_count: usize,
+) -> io::Result<(Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
     let mut pos = 0;
     let p_ids = decode_rle_u32(data, &mut pos, row_count)?;
     let o_kinds = read_col_u8(data, &mut pos, row_count)?;
     let o_keys = read_col_u64(data, &mut pos, row_count)?;
     let s_ids = read_col_u64(data, &mut pos, row_count)?;
-    Ok(TripleColumns {
-        s_ids,
-        p_ids,
-        o_kinds,
-        o_keys,
-    })
+    Ok((s_ids, p_ids, o_kinds, o_keys))
 }
 
-/// OPST: RLE(o_key:u64), p_id[pw], s_id[u64]
-///
-/// OPST omits o_kind — it is always `REF_ID` (0x05). Filled on decode.
-fn decode_region1_opst(data: &[u8], row_count: usize, p_width: u8) -> io::Result<TripleColumns> {
-    use fluree_db_core::value_id::ObjKind;
+/// OPST: o_kind[u8], RLE(o_key:u64), p_id[pw], s_id[u64]
+fn decode_region1_opst(
+    data: &[u8],
+    row_count: usize,
+    p_width: u8,
+) -> io::Result<(Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
     let mut pos = 0;
+    let o_kinds = read_col_u8(data, &mut pos, row_count)?;
     let o_keys = decode_rle_u64(data, &mut pos, row_count)?;
     let p_ids = read_col_p_id(data, &mut pos, row_count, p_width)?;
     let s_ids = read_col_u64(data, &mut pos, row_count)?;
-    // OPST is always REF_ID — fill o_kinds with the constant
-    let o_kinds = vec![ObjKind::REF_ID.as_u8(); row_count];
-    Ok(TripleColumns {
-        s_ids,
-        p_ids,
-        o_kinds,
-        o_keys,
-    })
+    Ok((s_ids, p_ids, o_kinds, o_keys))
 }
 
 /// Decode Region 2: dt[] + t[] + lang bitmap + i bitmap.
 ///
 /// `dt_width`: byte width of each dt value (1, 2, or 4).
-fn decode_region2(data: &[u8], row_count: usize, dt_width: u8) -> io::Result<MetadataColumns> {
+fn decode_region2(
+    data: &[u8],
+    row_count: usize,
+    dt_width: u8,
+) -> io::Result<(Vec<u32>, Vec<i64>, Vec<u16>, Vec<i32>)> {
     if dt_width != 1 && dt_width != 2 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1175,7 +1139,7 @@ fn decode_region2(data: &[u8], row_count: usize, dt_width: u8) -> io::Result<Met
         ));
     }
     let dw = dt_width as usize;
-    let bitmap_bytes = row_count.div_ceil(8);
+    let bitmap_bytes = (row_count + 7) / 8;
     let mut pos = 0;
 
     // dt array (u8/u16, zero-extended to u32)
@@ -1283,12 +1247,7 @@ fn decode_region2(data: &[u8], row_count: usize, dt_width: u8) -> io::Result<Met
         }
     }
 
-    Ok(MetadataColumns {
-        dt_values,
-        t_values,
-        lang_values: lang_ids,
-        i_values,
-    })
+    Ok((dt_values, t_values, lang_ids, i_values))
 }
 
 // ============================================================================

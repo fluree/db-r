@@ -125,13 +125,6 @@ impl RunRecord {
         }
     }
 
-    /// Returns true if the object value is an IRI reference (`ObjKind::REF_ID`).
-    /// Used to filter records for the OPST index, which only contains IRI refs.
-    #[inline]
-    pub fn is_iri_ref(&self) -> bool {
-        self.o_kind == ObjKind::REF_ID.as_u8()
-    }
-
     /// Get the object kind as an `ObjKind`.
     #[inline]
     pub fn obj_kind(&self) -> ObjKind {
@@ -752,48 +745,6 @@ mod tests {
         let b = make_record(1, 2, 0, DatatypeDictId::INTEGER.as_u16(), 1);
         assert_eq!(cmp_for_order(RunSortOrder::Spot)(&a, &b), Ordering::Greater);
         assert_eq!(cmp_for_order(RunSortOrder::Psot)(&a, &b), Ordering::Less);
-    }
-
-    // ---- is_iri_ref ----
-
-    #[test]
-    fn test_is_iri_ref_true_for_iri() {
-        let rec = RunRecord::new(
-            0,
-            SubjectId::from_u64(1),
-            1,
-            ObjKind::REF_ID,
-            ObjKey::encode_u32_id(42),
-            1,
-            true,
-            DatatypeDictId::ID.as_u16(),
-            0,
-            None,
-        );
-        assert!(rec.is_iri_ref());
-    }
-
-    #[test]
-    fn test_is_iri_ref_false_for_integer() {
-        let rec = make_record(1, 1, 42, DatatypeDictId::INTEGER.as_u16(), 1);
-        assert!(!rec.is_iri_ref());
-    }
-
-    #[test]
-    fn test_is_iri_ref_false_for_null() {
-        let rec = RunRecord::new(
-            0,
-            SubjectId::from_u64(1),
-            1,
-            ObjKind::NULL,
-            ObjKey::ZERO,
-            1,
-            true,
-            DatatypeDictId::STRING.as_u16(),
-            0,
-            None,
-        );
-        assert!(!rec.is_iri_ref());
     }
 
     // ---- Cross-kind ordering in comparators ----

@@ -35,7 +35,7 @@ pub use commit::{
     CommitEnvelope, CommitRef, IndexRef, TxnSignature,
 };
 pub use commit_flakes::generate_commit_flakes;
-pub use commit_v2::format::CommitSignature;
+pub use commit_v2::format::{CommitSignature, ALGO_ED25519};
 pub use error::{NoveltyError, Result};
 pub use fluree_db_credential::SigningKey;
 pub use stats::current_stats;
@@ -260,10 +260,10 @@ impl Novelty {
         let mut alive = vec![false; n];
         let mut new_size = 0usize;
 
-        for (i, alive_flag) in alive.iter_mut().enumerate() {
+        for (i, is_alive) in alive.iter_mut().enumerate() {
             let flake = self.store.get(i as FlakeId);
             if flake.t > cutoff_t {
-                *alive_flag = true;
+                *is_alive = true;
                 new_size += self.store.size(i as FlakeId);
             }
         }

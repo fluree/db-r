@@ -939,15 +939,14 @@ impl BinaryCursor {
                 return Ok((None, cached));
             }
         }
-        let (lh, cols) = decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
+        let (lh, s_ids, p_ids, o_kinds, o_keys) =
+            decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
         let row_count = lh.row_count as usize;
         let r1 = CachedRegion1 {
-            s_ids: SubjectIdColumn::from_wide(
-                cols.s_ids.into_iter().map(SubjectId::from_u64).collect(),
-            ),
-            p_ids: cols.p_ids.into(),
-            o_kinds: cols.o_kinds.into(),
-            o_keys: cols.o_keys.into(),
+            s_ids: SubjectIdColumn::from_wide(s_ids.into_iter().map(SubjectId::from_u64).collect()),
+            p_ids: p_ids.into(),
+            o_kinds: o_kinds.into(),
+            o_keys: o_keys.into(),
             row_count,
         };
         if let Some(c) = cache {
@@ -974,12 +973,13 @@ impl BinaryCursor {
             Some(h) => h.clone(),
             None => LeafletHeader::read_from(leaflet_bytes)?,
         };
-        let cols = decode_leaflet_region2(leaflet_bytes, &lh, header.dt_width)?;
+        let (dt_values, t_values, lang_values, i_values) =
+            decode_leaflet_region2(leaflet_bytes, &lh, header.dt_width)?;
         let r2 = CachedRegion2 {
-            dt_values: cols.dt_values.into(),
-            t_values: cols.t_values.into(),
-            lang_ids: cols.lang_values.into(),
-            i_values: cols.i_values.into(),
+            dt_values: dt_values.into(),
+            t_values: t_values.into(),
+            lang_ids: lang_values.into(),
+            i_values: i_values.into(),
         };
         if let Some(c) = cache {
             c.get_or_decode_r2(cache_key.clone(), || r2.clone());
@@ -1033,30 +1033,32 @@ impl BinaryCursor {
             if let Some(cached) = c.get_r1(cache_key) {
                 (None, cached)
             } else {
-                let (lh, cols) = decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
+                let (lh, s_ids, p_ids, o_kinds, o_keys) =
+                    decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
                 let row_count = lh.row_count as usize;
                 let cached_r1 = CachedRegion1 {
                     s_ids: SubjectIdColumn::from_wide(
-                        cols.s_ids.into_iter().map(SubjectId::from_u64).collect(),
+                        s_ids.into_iter().map(SubjectId::from_u64).collect(),
                     ),
-                    p_ids: cols.p_ids.into(),
-                    o_kinds: cols.o_kinds.into(),
-                    o_keys: cols.o_keys.into(),
+                    p_ids: p_ids.into(),
+                    o_kinds: o_kinds.into(),
+                    o_keys: o_keys.into(),
                     row_count,
                 };
                 c.get_or_decode_r1(cache_key.clone(), || cached_r1.clone());
                 (Some(lh), cached_r1)
             }
         } else {
-            let (lh, cols) = decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
+            let (lh, s_ids, p_ids, o_kinds, o_keys) =
+                decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
             let row_count = lh.row_count as usize;
             let r1 = CachedRegion1 {
                 s_ids: SubjectIdColumn::from_wide(
-                    cols.s_ids.into_iter().map(SubjectId::from_u64).collect(),
+                    s_ids.into_iter().map(SubjectId::from_u64).collect(),
                 ),
-                p_ids: cols.p_ids.into(),
-                o_kinds: cols.o_kinds.into(),
-                o_keys: cols.o_keys.into(),
+                p_ids: p_ids.into(),
+                o_kinds: o_kinds.into(),
+                o_keys: o_keys.into(),
                 row_count,
             };
             (Some(lh), r1)
@@ -1078,24 +1080,26 @@ impl BinaryCursor {
                         Some(h) => h.clone(),
                         None => LeafletHeader::read_from(leaflet_bytes)?,
                     };
-                    let cols = decode_leaflet_region2(leaflet_bytes, &lh, header.dt_width)?;
+                    let (dt_values, t_values, lang_values, i_values) =
+                        decode_leaflet_region2(leaflet_bytes, &lh, header.dt_width)?;
                     let cached_r2 = CachedRegion2 {
-                        dt_values: cols.dt_values.into(),
-                        t_values: cols.t_values.into(),
-                        lang_ids: cols.lang_values.into(),
-                        i_values: cols.i_values.into(),
+                        dt_values: dt_values.into(),
+                        t_values: t_values.into(),
+                        lang_ids: lang_values.into(),
+                        i_values: i_values.into(),
                     };
                     c.get_or_decode_r2(cache_key.clone(), || cached_r2.clone());
                     cached_r2
                 }
             } else {
                 let lh = leaflet_header.as_ref().unwrap();
-                let cols = decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)?;
+                let (dt_values, t_values, lang_values, i_values) =
+                    decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)?;
                 CachedRegion2 {
-                    dt_values: cols.dt_values.into(),
-                    t_values: cols.t_values.into(),
-                    lang_ids: cols.lang_values.into(),
-                    i_values: cols.i_values.into(),
+                    dt_values: dt_values.into(),
+                    t_values: t_values.into(),
+                    lang_ids: lang_values.into(),
+                    i_values: i_values.into(),
                 }
             };
 
@@ -1175,20 +1179,22 @@ impl BinaryCursor {
         }
 
         // Step 2: Cache miss — decode raw R1, R2, R3 from bytes.
-        let (lh, r1_cols) = decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
-        let r2_cols = decode_leaflet_region2(leaflet_bytes, &lh, header.dt_width)?;
+        let (lh, s_ids, p_ids, o_kinds, o_keys) =
+            decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
+        let (dt_values, t_values, lang_values, i_values) =
+            decode_leaflet_region2(leaflet_bytes, &lh, header.dt_width)?;
         let r3_entries = decode_leaflet_region3(leaflet_bytes, &lh)?;
 
         // Step 3: Replay (or pass through if R3 is empty).
         let (eff_r1, eff_r2) = match replay_leaflet(
-            &r1_cols.s_ids,
-            &r1_cols.p_ids,
-            &r1_cols.o_kinds,
-            &r1_cols.o_keys,
-            &r2_cols.dt_values,
-            &r2_cols.t_values,
-            &r2_cols.lang_values,
-            &r2_cols.i_values,
+            &s_ids,
+            &p_ids,
+            &o_kinds,
+            &o_keys,
+            &dt_values,
+            &t_values,
+            &lang_values,
+            &i_values,
             &r3_entries,
             self.to_t,
             self.order,
@@ -1224,7 +1230,7 @@ impl BinaryCursor {
                 // since base_t. But if any row's t exceeds to_t, the leaflet
                 // WAS modified without a corresponding R3 entry — a data
                 // integrity issue that would produce incorrect time-travel results.
-                if r2_cols.t_values.iter().any(|&t| t > self.to_t) {
+                if t_values.iter().any(|&t| t > self.to_t) {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
@@ -1237,18 +1243,18 @@ impl BinaryCursor {
                 let row_count = lh.row_count as usize;
                 let r1 = CachedRegion1 {
                     s_ids: SubjectIdColumn::from_wide(
-                        r1_cols.s_ids.into_iter().map(SubjectId::from_u64).collect(),
+                        s_ids.into_iter().map(SubjectId::from_u64).collect(),
                     ),
-                    p_ids: r1_cols.p_ids.into(),
-                    o_kinds: r1_cols.o_kinds.into(),
-                    o_keys: r1_cols.o_keys.into(),
+                    p_ids: p_ids.into(),
+                    o_kinds: o_kinds.into(),
+                    o_keys: o_keys.into(),
                     row_count,
                 };
                 let r2 = CachedRegion2 {
-                    dt_values: r2_cols.dt_values.into(),
-                    t_values: r2_cols.t_values.into(),
-                    lang_ids: r2_cols.lang_values.into(),
-                    i_values: r2_cols.i_values.into(),
+                    dt_values: dt_values.into(),
+                    t_values: t_values.into(),
+                    lang_ids: lang_values.into(),
+                    i_values: i_values.into(),
                 };
                 (r1, r2)
             }

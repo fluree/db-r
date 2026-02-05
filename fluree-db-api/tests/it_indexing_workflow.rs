@@ -234,7 +234,7 @@ async fn indexing_coalesces_multiple_commits_and_latest_root_is_queryable() {
             let c1 = handle.trigger(alias, t1).await;
             let c2 = handle.trigger(alias, t2).await;
 
-            let (index_t2, root2) = match c2.wait().await {
+            let (index_t2, _root2) = match c2.wait().await {
                 fluree_db_api::IndexOutcome::Completed {
                     index_t,
                     root_address,
@@ -252,12 +252,13 @@ async fn indexing_coalesces_multiple_commits_and_latest_root_is_queryable() {
                 fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
             };
 
-            let loaded = Db::load(fluree.storage().clone(), &root2)
-                .await
-                .expect("Db::load(root2)");
-            assert_eq!(loaded.t, index_t2, "loaded db.t should match indexed t");
+            // Load via fluree.ledger() which attaches BinaryRangeProvider
+            let ledger_loaded = fluree.ledger(alias).await.expect("ledger load");
+            assert!(
+                ledger_loaded.t() >= index_t2,
+                "loaded db.t should be >= indexed t"
+            );
 
-            let ledger_loaded = LedgerState::new(loaded, Novelty::new(0));
             let query = json!({
                 "@context": { "ex":"http://example.org/" },
                 "select": ["?name"],
@@ -682,24 +683,18 @@ async fn reindex_populates_statistics() {
         .as_ref()
         .expect("db.stats should be Some after reindex");
 
-    // Verify property stats exist
-    assert!(
-        stats.properties.is_some(),
-        "Should have property statistics"
-    );
-    let props = stats.properties.as_ref().unwrap();
-    assert!(
-        !props.is_empty(),
-        "Should have non-empty property statistics"
-    );
-
-    // Verify class stats exist
-    assert!(stats.classes.is_some(), "Should have class statistics");
-    let classes = stats.classes.as_ref().unwrap();
-    assert!(
-        !classes.is_empty(),
-        "Should have non-empty class statistics"
-    );
+    // Verify per-graph property stats exist (produced by IdStatsHook)
+    assert!(stats.graphs.is_some(), "Should have per-graph statistics");
+    let graphs = stats.graphs.as_ref().unwrap();
+    assert!(!graphs.is_empty(), "Should have non-empty graph statistics");
+    // Each graph entry should have property stats
+    for g in graphs {
+        assert!(
+            !g.properties.is_empty(),
+            "Graph {} should have property stats",
+            g.g_id
+        );
+    }
 
     // Query should still work
     let q = json!({

@@ -350,6 +350,7 @@ where
         dict_novelty,
         head_commit: Some(address.clone()),
         ns_record: base.ns_record,
+        binary_store: base.binary_store,
     };
 
     let receipt = CommitReceipt {

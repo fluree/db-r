@@ -861,7 +861,14 @@ impl BinaryIndexStore {
             .get(&ns_code)
             .map(|s| s.as_str())
             .unwrap_or("");
-        Ok(format!("{}{}", prefix, suffix))
+        // The forward tree may store full IRIs (including namespace prefix) rather
+        // than just suffixes. Guard against double-prefixing by checking if the
+        // suffix already starts with the namespace prefix.
+        if !prefix.is_empty() && suffix.starts_with(prefix) {
+            Ok(suffix)
+        } else {
+            Ok(format!("{}{}", prefix, suffix))
+        }
     }
 
     /// Resolve p_id → full IRI string.
@@ -944,9 +951,35 @@ impl BinaryIndexStore {
                     Ok(None) // NaN/Inf not in index
                 }
             }
+            // Temporal types — order-preserving encoding enables index scans.
+            FlakeValue::DateTime(dt) => Ok(Some((
+                ObjKind::DATE_TIME,
+                ObjKey::encode_datetime(dt.epoch_micros()),
+            ))),
+            FlakeValue::Date(d) => Ok(Some((
+                ObjKind::DATE,
+                ObjKey::encode_date(d.days_since_epoch()),
+            ))),
+            FlakeValue::Time(t) => Ok(Some((
+                ObjKind::TIME,
+                ObjKey::encode_time(t.micros_since_midnight()),
+            ))),
+            FlakeValue::GYear(g) => Ok(Some((ObjKind::G_YEAR, ObjKey::encode_g_year(g.year())))),
+            FlakeValue::GYearMonth(g) => Ok(Some((
+                ObjKind::G_YEAR_MONTH,
+                ObjKey::encode_g_year_month(g.year(), g.month()),
+            ))),
+            FlakeValue::GMonth(g) => {
+                Ok(Some((ObjKind::G_MONTH, ObjKey::encode_g_month(g.month()))))
+            }
+            FlakeValue::GDay(g) => Ok(Some((ObjKind::G_DAY, ObjKey::encode_g_day(g.day())))),
+            FlakeValue::GMonthDay(g) => Ok(Some((
+                ObjKind::G_MONTH_DAY,
+                ObjKey::encode_g_month_day(g.month(), g.day()),
+            ))),
             // BigInt/Decimal need p_id for numbig arena → use value_to_obj_pair_for_predicate
             FlakeValue::BigInt(_) | FlakeValue::Decimal(_) => Ok(None),
-            // Date/Time/DateTime/Vector/Json: not yet supported for key translation
+            // Vector/Json/Duration: not yet supported for key translation
             _ => Ok(None),
         }
     }
@@ -955,27 +988,15 @@ impl BinaryIndexStore {
     ///
     /// Returns `None` if any required lookup fails (meaning 0 results are possible).
     /// The RunRecord bounds define the key range to search in the branch manifest.
-    ///
-    /// **OPST guard:** If the sort order is OPST and the object is not a Ref,
-    /// returns `None` (OPST only contains IRI references).
     pub fn translate_range(
         &self,
         s: Option<&Sid>,
         p: Option<&Sid>,
         o: Option<&FlakeValue>,
-        order: RunSortOrder,
+        _order: RunSortOrder,
         g_id: u32,
     ) -> io::Result<Option<(RunRecord, RunRecord)>> {
         use fluree_db_core::ListIndex;
-
-        // OPST guard: only IRI refs exist in OPST index
-        if order == RunSortOrder::Opst {
-            if let Some(val) = o {
-                if !matches!(val, FlakeValue::Ref(_)) {
-                    return Ok(None);
-                }
-            }
-        }
 
         // Translate bound components to integer IDs
         let s_id = match s {
@@ -1814,13 +1835,11 @@ fn cache_bytes_to_file(
         return Ok(target);
     }
     std::fs::create_dir_all(cache_dir)?;
-    // Unique tmp name: PID + nanosecond timestamp to avoid races between
+    // Unique tmp name: PID + monotonic counter to avoid races between
     // concurrent writers (threads / processes / warm-start lambdas).
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let tmp = cache_dir.join(format!(".cas_{}_{}.{}.tmp", std::process::id(), nanos, ext));
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = cache_dir.join(format!(".cas_{}_{}.{}.tmp", std::process::id(), seq, ext));
     std::fs::write(&tmp, bytes)?;
     if let Err(_rename_err) = std::fs::rename(&tmp, &target) {
         // Rename failed — concurrent writer may have created target (Windows),

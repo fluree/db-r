@@ -5,9 +5,11 @@
 
 use crate::error::{ApiError, Result};
 use crate::format::iri::IriCompactor;
+use crate::query::helpers::parse_sparql_to_ir;
 use fluree_db_core::{is_rdf_type, StatsView};
 use fluree_db_query::{
-    parse_query, ExplainPlan, OptimizationStatus, Pattern, Term, TriplePattern, VarRegistry,
+    parse_query, ExplainPlan, OptimizationStatus, ParsedQuery, Pattern, Term, TriplePattern,
+    VarRegistry,
 };
 use serde_json::{json, Map, Value as JsonValue};
 
@@ -113,7 +115,7 @@ fn plan_patterns_to_json(
                 let used = tp.o_bound() && n > 0;
                 inputs.insert("used-values-ndv?".to_string(), json!(used));
                 if let Some(c) = inp.count {
-                    let sel = if n == 0 { 1 } else { c.div_ceil(n).max(1) };
+                    let sel = if n == 0 { 1 } else { ((c + n - 1) / n).max(1) };
                     let clamped = sel == 1 && c > 0 && n > c;
                     inputs.insert("clamped-to-one?".to_string(), json!(clamped));
                 } else {
@@ -164,21 +166,20 @@ fn plan_patterns_to_json(
     (original, optimized)
 }
 
-/// Explain a JSON-LD query against a Db.
+/// Shared explain logic operating on an already-parsed query.
 ///
-/// Returns a JSON object like:
-/// `{ "query": <parsed/echo>, "plan": { ... } }`
-pub async fn explain_jsonld<S: fluree_db_core::Storage + 'static>(
+/// Both JSON-LD and SPARQL entry points parse into `(VarRegistry, ParsedQuery)`
+/// and then delegate here.  The `query_echo` value is placed in the `"query"`
+/// field of the response (JSON-LD echoes the original JSON object; SPARQL echoes
+/// the raw SPARQL string).  `where_clause` is optionally included in the
+/// no-stats early-return path (only meaningful for JSON-LD).
+fn explain_from_parsed<S: fluree_db_core::Storage + 'static>(
     db: &fluree_db_core::Db<S>,
-    query_json: &JsonValue,
+    vars: &VarRegistry,
+    parsed: &ParsedQuery,
+    query_echo: JsonValue,
+    where_clause: Option<JsonValue>,
 ) -> Result<JsonValue> {
-    let mut vars = VarRegistry::new();
-    let parsed = parse_query(query_json, db, &mut vars)
-        .map_err(|e| ApiError::query(format!("Explain parse error: {e}")))?;
-
-    let query_obj = query_json
-        .as_object()
-        .ok_or_else(|| ApiError::query("Query must be an object"))?;
     let compactor = IriCompactor::new(&db.namespace_codes, &parsed.context);
 
     // Extract triple patterns in query order.
@@ -219,21 +220,21 @@ pub async fn explain_jsonld<S: fluree_db_core::Storage + 'static>(
         .unwrap_or(false);
 
     if !stats_available {
-        // Clojure parity: no stats => no optimization, include reason + where clause.
-        let where_clause = query_obj.get("where").cloned().unwrap_or(JsonValue::Null);
+        let mut plan = serde_json::Map::new();
+        plan.insert("optimization".into(), json!("none"));
+        plan.insert("reason".into(), json!("No statistics available"));
+        if let Some(wc) = where_clause {
+            plan.insert("where-clause".into(), wc);
+        }
         return Ok(json!({
-            "query": query_json.clone(),
-            "plan": {
-                "optimization": "none",
-                "reason": "No statistics available",
-                "where-clause": where_clause
-            }
+            "query": query_echo,
+            "plan": JsonValue::Object(plan)
         }));
     }
 
     let explain = fluree_db_query::explain_patterns(&triples_in_order, stats_view.as_ref());
     let (original, optimized) =
-        plan_patterns_to_json(&explain, &triples_in_order, &vars, &compactor);
+        plan_patterns_to_json(&explain, &triples_in_order, vars, &compactor);
 
     // Minimal statistics summary (stable + useful).
     let stats = db.stats.as_ref().unwrap();
@@ -242,7 +243,7 @@ pub async fn explain_jsonld<S: fluree_db_core::Storage + 'static>(
     });
 
     Ok(json!({
-        "query": query_json.clone(),
+        "query": query_echo,
         "plan": {
             "optimization": status_to_str(explain.optimization),
             "statistics-available": explain.statistics_available,
@@ -251,4 +252,37 @@ pub async fn explain_jsonld<S: fluree_db_core::Storage + 'static>(
             "optimized": optimized
         }
     }))
+}
+
+/// Explain a JSON-LD query against a Db.
+///
+/// Returns a JSON object like:
+/// `{ "query": <parsed/echo>, "plan": { ... } }`
+pub async fn explain_jsonld<S: fluree_db_core::Storage + 'static>(
+    db: &fluree_db_core::Db<S>,
+    query_json: &JsonValue,
+) -> Result<JsonValue> {
+    let mut vars = VarRegistry::new();
+    let parsed = parse_query(query_json, db, &mut vars)
+        .map_err(|e| ApiError::query(format!("Explain parse error: {e}")))?;
+
+    let query_obj = query_json
+        .as_object()
+        .ok_or_else(|| ApiError::query("Query must be an object"))?;
+    let where_clause = query_obj.get("where").cloned();
+
+    explain_from_parsed(db, &vars, &parsed, query_json.clone(), where_clause)
+}
+
+/// Explain a SPARQL query against a Db.
+///
+/// Returns a JSON object like:
+/// `{ "query": "<sparql string>", "plan": { ... } }`
+pub async fn explain_sparql<S: fluree_db_core::Storage + 'static>(
+    db: &fluree_db_core::Db<S>,
+    sparql: &str,
+) -> Result<JsonValue> {
+    let (vars, parsed) = parse_sparql_to_ir(sparql, db)?;
+
+    explain_from_parsed(db, &vars, &parsed, json!(sparql), None)
 }
