@@ -204,6 +204,12 @@ impl<'a> FlakeGenerator<'a> {
                         Binding::EncodedLit { .. } => Err(TransactError::InvalidTerm(
                             "Subject must be a Sid; EncodedLit must be materialized before flake generation".to_string(),
                         )),
+                        Binding::EncodedSid { .. } => Err(TransactError::InvalidTerm(
+                            "Subject must be a Sid; EncodedSid must be materialized before flake generation".to_string(),
+                        )),
+                        Binding::EncodedPid { .. } => Err(TransactError::InvalidTerm(
+                            "Subject must be a Sid; EncodedPid cannot be used as subject".to_string(),
+                        )),
                         Binding::Iri(_) => Err(TransactError::InvalidTerm(
                             "Raw IRI from virtual graph cannot be used as subject for flake generation".to_string(),
                         )),
@@ -248,6 +254,12 @@ impl<'a> FlakeGenerator<'a> {
                         )),
                         Binding::EncodedLit { .. } => Err(TransactError::InvalidTerm(
                             "Predicate must be a Sid; EncodedLit must be materialized before flake generation".to_string(),
+                        )),
+                        Binding::EncodedSid { .. } => Err(TransactError::InvalidTerm(
+                            "Predicate must be a Sid; EncodedSid must be materialized before flake generation".to_string(),
+                        )),
+                        Binding::EncodedPid { .. } => Err(TransactError::InvalidTerm(
+                            "Predicate must be a Sid; EncodedPid must be materialized before flake generation".to_string(),
                         )),
                         Binding::Iri(_) => Err(TransactError::InvalidTerm(
                             "Raw IRI from virtual graph cannot be used as predicate for flake generation".to_string(),
@@ -298,6 +310,12 @@ impl<'a> FlakeGenerator<'a> {
                         Binding::Lit { val, dt, .. } => Ok((Some(val.clone()), Some(dt.clone()))),
                         Binding::EncodedLit { .. } => Err(TransactError::InvalidTerm(
                             "EncodedLit must be materialized before flake generation".to_string(),
+                        )),
+                        Binding::EncodedSid { .. } => Err(TransactError::InvalidTerm(
+                            "EncodedSid must be materialized before flake generation".to_string(),
+                        )),
+                        Binding::EncodedPid { .. } => Err(TransactError::InvalidTerm(
+                            "EncodedPid must be materialized before flake generation".to_string(),
                         )),
                         Binding::Unbound | Binding::Poisoned => Ok((None, None)),
                         Binding::Grouped(_) => Err(TransactError::InvalidTerm(

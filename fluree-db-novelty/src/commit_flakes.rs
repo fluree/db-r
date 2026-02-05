@@ -6,7 +6,7 @@
 //!
 //! # Flake Structure
 //!
-//! Each commit generates 7-8 flakes:
+//! Each commit generates 7-10 flakes:
 //!
 //! **Commit subject flakes** (subject = commit IRI):
 //! - `ledger#address` - commit storage address (xsd:string)
@@ -17,6 +17,8 @@
 //! - `ledger#t` - transaction number (xsd:int)
 //! - `ledger#size` - cumulative size in bytes (xsd:long)
 //! - `ledger#flakes` - cumulative flake count (xsd:long)
+//! - `ledger#author` - transaction signer DID (xsd:string, optional)
+//! - `ledger#txn` - transaction storage address (xsd:string, optional)
 
 use chrono::DateTime;
 use fluree_db_core::{Flake, FlakeValue, Sid};
@@ -172,7 +174,7 @@ pub fn generate_commit_flakes(commit: &Commit, ledger_alias: &str, t: i64) -> Ve
         if let Some(prev_hex) = commit_iri_hex_local_part(prev_iri) {
             let prev_sid = Sid::new(FLUREE_COMMIT, prev_hex);
             flakes.push(Flake::new(
-                commit_sid,
+                commit_sid.clone(),
                 Sid::new(FLUREE_LEDGER, ledger::PREVIOUS),
                 FlakeValue::Ref(prev_sid),
                 ref_dt,
@@ -181,6 +183,32 @@ pub fn generate_commit_flakes(commit: &Commit, ledger_alias: &str, t: i64) -> Ve
                 None,
             ));
         }
+    }
+
+    // 9. ledger#author (optional: transaction signer DID)
+    if let Some(txn_sig) = &commit.txn_signature {
+        flakes.push(Flake::new(
+            commit_sid.clone(),
+            Sid::new(FLUREE_LEDGER, ledger::AUTHOR),
+            FlakeValue::String(txn_sig.signer.clone()),
+            string_dt.clone(),
+            t,
+            true,
+            None,
+        ));
+    }
+
+    // 10. ledger#txn (optional: transaction storage address)
+    if let Some(txn_addr) = &commit.txn {
+        flakes.push(Flake::new(
+            commit_sid,
+            Sid::new(FLUREE_LEDGER, ledger::TXN),
+            FlakeValue::String(txn_addr.clone()),
+            string_dt,
+            t,
+            true,
+            None,
+        ));
     }
 
     flakes

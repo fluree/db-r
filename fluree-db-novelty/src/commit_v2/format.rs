@@ -129,6 +129,8 @@ pub struct CommitSignature {
     pub signature: [u8; 64],
     /// Signing timestamp (epoch millis, informational only — not part of signed digest)
     pub timestamp: i64,
+    /// Optional metadata (node_id, region, role, etc. for consensus)
+    pub metadata: Option<Vec<u8>>,
 }
 
 /// Maximum number of signatures in a signature block (decode cap).
@@ -137,10 +139,14 @@ const MAX_SIG_COUNT: u16 = 64;
 /// Maximum signer DID string length (decode cap).
 const MAX_SIGNER_LEN: usize = 256;
 
+/// Maximum metadata length (decode cap).
+const MAX_METADATA_LEN: usize = 4096;
+
 /// Encode a signature block into a buffer.
 ///
 /// Format: `sig_count: u16` (LE) + for each signature:
 /// `signer_len: u16` (LE) + `signer` + `algo: u8` + `signature: [u8; 64]` + `timestamp: i64` (LE)
+/// + `meta_len: u16` (LE) + `metadata` (if meta_len > 0)
 pub fn encode_sig_block(sigs: &[CommitSignature], buf: &mut Vec<u8>) {
     buf.extend_from_slice(&(sigs.len() as u16).to_le_bytes());
     for sig in sigs {
@@ -150,6 +156,13 @@ pub fn encode_sig_block(sigs: &[CommitSignature], buf: &mut Vec<u8>) {
         buf.push(sig.algo);
         buf.extend_from_slice(&sig.signature);
         buf.extend_from_slice(&sig.timestamp.to_le_bytes());
+        // metadata (optional, length-prefixed)
+        if let Some(meta) = &sig.metadata {
+            buf.extend_from_slice(&(meta.len() as u16).to_le_bytes());
+            buf.extend_from_slice(meta);
+        } else {
+            buf.extend_from_slice(&0u16.to_le_bytes());
+        }
     }
 }
 
@@ -220,19 +233,42 @@ pub fn decode_sig_block(data: &[u8]) -> Result<Vec<CommitSignature>, CommitV2Err
         let timestamp = i64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
         pos += 8;
 
+        // metadata (optional, length-prefixed)
+        if pos + 2 > data.len() {
+            return Err(CommitV2Error::UnexpectedEof);
+        }
+        let meta_len = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap()) as usize;
+        pos += 2;
+        let metadata = if meta_len > 0 {
+            if meta_len > MAX_METADATA_LEN {
+                return Err(CommitV2Error::EnvelopeDecode(format!(
+                    "metadata length {} exceeds maximum {}",
+                    meta_len, MAX_METADATA_LEN
+                )));
+            }
+            if pos + meta_len > data.len() {
+                return Err(CommitV2Error::UnexpectedEof);
+            }
+            let meta = data[pos..pos + meta_len].to_vec();
+            pos += meta_len;
+            Some(meta)
+        } else {
+            None
+        };
+
         sigs.push(CommitSignature {
             signer: signer.to_string(),
             algo,
             signature,
             timestamp,
+            metadata,
         });
     }
 
     if pos != data.len() {
         return Err(CommitV2Error::EnvelopeDecode(format!(
             "signature block: consumed {} of {} bytes",
-            pos,
-            data.len()
+            pos, data.len()
         )));
     }
 
@@ -244,10 +280,14 @@ pub fn sig_block_size(sigs: &[CommitSignature]) -> usize {
     let mut size = 2; // sig_count: u16
     for sig in sigs {
         size += 2; // signer_len: u16
-        size += sig.signer.len();
-        size += 1; // algo: u8
+        size += sig.signer.as_bytes().len();
+        size += 1;  // algo: u8
         size += 64; // signature
-        size += 8; // timestamp: i64
+        size += 8;  // timestamp: i64
+        size += 2;  // meta_len: u16
+        if let Some(meta) = &sig.metadata {
+            size += meta.len();
+        }
     }
     size
 }
@@ -443,26 +483,11 @@ mod tests {
     fn test_footer_round_trip() {
         let footer = CommitV2Footer {
             dicts: [
-                DictLocation {
-                    offset: 100,
-                    len: 50,
-                },
-                DictLocation {
-                    offset: 150,
-                    len: 200,
-                },
-                DictLocation {
-                    offset: 350,
-                    len: 100,
-                },
-                DictLocation {
-                    offset: 450,
-                    len: 80,
-                },
-                DictLocation {
-                    offset: 530,
-                    len: 120,
-                },
+                DictLocation { offset: 100, len: 50 },
+                DictLocation { offset: 150, len: 200 },
+                DictLocation { offset: 350, len: 100 },
+                DictLocation { offset: 450, len: 80 },
+                DictLocation { offset: 530, len: 120 },
             ],
             ops_section_len: 9999,
         };

@@ -32,17 +32,17 @@ use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::value_id::ValueTypeTag;
-use fluree_db_core::value_id::{ObjKey, ObjKind};
-use fluree_db_core::ListIndex;
+use fluree_db_core::value_id::{ObjKind, ObjKey};
 use fluree_db_core::{
     range_with_overlay, Db, Flake, FlakeValue, IndexType, ObjectBounds, OverlayProvider,
     RangeMatch, RangeOptions, RangeTest, Sid, Storage,
 };
-use fluree_db_indexer::run_index::numfloat_dict::NumericShape;
-use fluree_db_indexer::run_index::run_record::RunSortOrder;
 use fluree_db_indexer::run_index::{
-    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, OverlayOp,
+    BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, OverlayOp, sort_overlay_ops,
 };
+use fluree_db_indexer::run_index::run_record::RunSortOrder;
+use fluree_db_core::ListIndex;
+use fluree_db_indexer::run_index::numfloat_dict::NumericShape;
 use fluree_vocab::namespaces::FLUREE_LEDGER;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -234,19 +234,20 @@ impl BinaryScanOperator {
     ///
     /// When a DictOverlay is present, delegates to it (handles both persisted
     /// and ephemeral subject IDs). Otherwise, uses the store directly.
+    ///
+    /// Note: Currently unused with late materialization (EncodedSid emitted instead),
+    /// but kept for future materialization needs.
+    #[allow(dead_code)]
     fn resolve_s_id(&mut self, s_id: u64) -> Result<Sid> {
         if let Some(sid) = self.sid_cache.get(&s_id) {
             return Ok(sid.clone());
         }
 
         let sid = if let Some(ref dict_ov) = self.dict_overlay {
-            dict_ov
-                .resolve_subject_sid(s_id)
+            dict_ov.resolve_subject_sid(s_id)
                 .map_err(|e| QueryError::Internal(format!("resolve s_id {}: {}", s_id, e)))?
         } else {
-            let iri = self
-                .store
-                .resolve_subject_iri(s_id)
+            let iri = self.store.resolve_subject_iri(s_id)
                 .map_err(|e| QueryError::Internal(format!("resolve s_id {}: {}", s_id, e)))?;
             self.store.encode_iri(&iri)
         };
@@ -261,10 +262,8 @@ impl BinaryScanOperator {
     #[inline]
     fn is_internal_predicate(&self, p_id: u32) -> bool {
         self.p_is_var
-            && self
-                .p_sids
-                .get(p_id as usize)
-                .is_some_and(|s| s.namespace_code == FLUREE_LEDGER)
+            && self.p_sids.get(p_id as usize)
+                .map_or(false, |s| s.namespace_code == FLUREE_LEDGER)
     }
 
     /// Decode an object value, routing through DictOverlay when present.
@@ -277,6 +276,10 @@ impl BinaryScanOperator {
     }
 
     /// Resolve a predicate ID to Sid, handling ephemeral IDs via DictOverlay.
+    ///
+    /// Note: Currently unused with late materialization (EncodedPid emitted instead),
+    /// but kept for future materialization needs.
+    #[allow(dead_code)]
     #[inline]
     fn resolve_p_id(&self, p_id: u32) -> Sid {
         let idx = p_id as usize;
@@ -320,15 +323,10 @@ impl BinaryScanOperator {
             // (ObjKind, ObjKey) pair (e.g. string literal — no reverse string index),
             // decode each row's object and skip non-matching rows.
             if let Some(ref filter_val) = self.bound_o_filter {
-                let decoded_val = self
-                    .decode_obj(
-                        decoded.o_kinds[row],
-                        decoded.o_keys[row],
-                        decoded.p_ids[row],
-                    )
-                    .map_err(|e| {
-                        QueryError::Internal(format!("decode object for filter: {}", e))
-                    })?;
+                let decoded_val = self.decode_obj(decoded.o_kinds[row], decoded.o_keys[row], decoded.p_ids[row])
+                    .map_err(|e| QueryError::Internal(
+                        format!("decode object for filter: {}", e),
+                    ))?;
                 if decoded_val != *filter_val {
                     continue;
                 }
@@ -338,15 +336,10 @@ impl BinaryScanOperator {
             // POST key range provides coarse leaf filtering; this handles
             // inclusive/exclusive boundaries and cross-type comparisons exactly.
             if let Some(ref obj_bounds) = self.object_bounds {
-                let decoded_val = self
-                    .decode_obj(
-                        decoded.o_kinds[row],
-                        decoded.o_keys[row],
-                        decoded.p_ids[row],
-                    )
-                    .map_err(|e| {
-                        QueryError::Internal(format!("decode object for bounds: {}", e))
-                    })?;
+                let decoded_val = self.decode_obj(decoded.o_kinds[row], decoded.o_keys[row], decoded.p_ids[row])
+                    .map_err(|e| QueryError::Internal(
+                        format!("decode object for bounds: {}", e),
+                    ))?;
                 if !obj_bounds.matches(&decoded_val) {
                     continue;
                 }
@@ -354,60 +347,42 @@ impl BinaryScanOperator {
 
             let mut col_idx = 0;
 
-            // Subject binding
+            // Subject binding - emit EncodedSid for late materialization
             if self.s_var_pos.is_some() {
-                let sid = self.resolve_s_id(decoded.s_ids[row])?;
-                columns[col_idx].push(Binding::Sid(sid));
+                let s_id = decoded.s_ids[row] as u64;
+                tracing::trace!(s_id, "binary_scan emitting EncodedSid for subject");
+                columns[col_idx].push(Binding::EncodedSid { s_id });
                 col_idx += 1;
             }
 
-            // Predicate binding
+            // Predicate binding - emit EncodedPid for late materialization
             if self.p_var_pos.is_some() {
-                let sid = self.resolve_p_id(decoded.p_ids[row]);
-                columns[col_idx].push(Binding::Sid(sid));
+                let p_id = decoded.p_ids[row];
+                tracing::trace!(p_id, "binary_scan emitting EncodedPid for predicate");
+                columns[col_idx].push(Binding::EncodedPid { p_id });
                 col_idx += 1;
             }
 
-            // Object binding
+            // Object binding - emit EncodedSid for refs, EncodedLit for literals
             if self.o_var_pos.is_some() {
-                let val = self
-                    .decode_obj(
-                        decoded.o_kinds[row],
-                        decoded.o_keys[row],
-                        decoded.p_ids[row],
-                    )
-                    .map_err(|e| QueryError::Internal(format!("decode object: {}", e)))?;
-
-                let binding = match val {
-                    FlakeValue::Ref(ref sid) => Binding::Sid(sid.clone()),
-                    other => {
-                        // Literal: requires datatype/lang/index/t metadata.
-                        let dt_id = decoded.dt_values[row] as u16;
-                        let dt_sid = match &self.dict_overlay {
-                            Some(ov) => ov.decode_dt_sid(dt_id),
-                            None => self
-                                .store
-                                .dt_sids()
-                                .get(dt_id as usize)
-                                .cloned()
-                                .unwrap_or_else(|| Sid::new(0, "")),
-                        };
-
-                        let lang_id = decoded.lang_ids[row];
-                        let i_val = decoded.i_values[row];
-                        let meta = match &self.dict_overlay {
-                            Some(ov) => ov.decode_meta(lang_id, i_val),
-                            None => self.store.decode_meta(lang_id, i_val),
-                        };
-                        let t = decoded.t_values[row];
-
-                        Binding::Lit {
-                            val: other,
-                            dt: dt_sid,
-                            lang: meta.and_then(|m| m.lang.map(Arc::from)),
-                            t: Some(t),
-                            op: None, // snapshot-only, no retractions
-                        }
+                let o_kind = decoded.o_kinds[row];
+                let binding = if o_kind == ObjKind::REF_ID.as_u8() {
+                    // Ref object: use EncodedSid for late materialization
+                    let ref_s_id = decoded.o_keys[row];
+                    tracing::trace!(ref_s_id, "binary_scan emitting EncodedSid for ref object");
+                    Binding::EncodedSid { s_id: ref_s_id }
+                } else {
+                    // Literal: use EncodedLit (avoids string dictionary lookups)
+                    // This is the main late materialization win - literal strings
+                    // are only decoded when needed for FILTER/ORDER BY/output.
+                    Binding::EncodedLit {
+                        o_kind,
+                        o_key: decoded.o_keys[row],
+                        p_id: decoded.p_ids[row],
+                        dt_id: decoded.dt_values[row] as u16,
+                        lang_id: decoded.lang_ids[row],
+                        i_val: decoded.i_values[row],
+                        t: decoded.t_values[row],
                     }
                 };
                 columns[col_idx].push(binding);
@@ -515,12 +490,12 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
 
         // Pre-compute p_sids for all predicates (typically ~96 for DBLP)
         let pred_count = self.store.predicate_count();
-        self.p_sids = (0..pred_count)
-            .map(|p_id| match self.store.resolve_predicate_iri(p_id) {
+        self.p_sids = (0..pred_count).map(|p_id| {
+            match self.store.resolve_predicate_iri(p_id) {
                 Some(iri) => self.store.encode_iri(iri),
                 None => Sid::new(0, ""),
-            })
-            .collect();
+            }
+        }).collect();
 
         // Extract bound terms from the pattern
         let (s_sid, p_sid, o_val) = self.extract_bound_terms();
@@ -528,16 +503,13 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
         let order = index_type_to_sort_order(self.index);
 
         // Translate to RunRecord bounds
-        let bounds = self
-            .store
-            .translate_range(
-                s_sid.as_ref(),
-                p_sid.as_ref(),
-                o_val.as_ref(),
-                order,
-                self.g_id,
-            )
-            .map_err(|e| QueryError::Internal(format!("translate_range: {}", e)))?;
+        let bounds = self.store.translate_range(
+            s_sid.as_ref(),
+            p_sid.as_ref(),
+            o_val.as_ref(),
+            order,
+            self.g_id,
+        ).map_err(|e| QueryError::Internal(format!("translate_range: {}", e)))?;
 
         // If translate_range returned None but we had an object value,
         // the value may be untranslatable (e.g., string literal with no
@@ -547,13 +519,18 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
             some @ Some(_) => some,
             None => {
                 if o_val.is_some() {
-                    let retry = self
-                        .store
-                        .translate_range(s_sid.as_ref(), p_sid.as_ref(), None, order, self.g_id)
-                        .map_err(|e| QueryError::Internal(format!("translate_range: {}", e)))?;
+                    let retry = self.store.translate_range(
+                        s_sid.as_ref(),
+                        p_sid.as_ref(),
+                        None,
+                        order,
+                        self.g_id,
+                    ).map_err(|e| QueryError::Internal(format!("translate_range: {}", e)))?;
                     if retry.is_some() {
                         self.bound_o_filter = o_val.clone();
-                        tracing::debug!("object value untranslatable, using post-filter scan");
+                        tracing::debug!(
+                            "object value untranslatable, using post-filter scan"
+                        );
                     }
                     retry
                 } else {
@@ -850,22 +827,23 @@ pub(crate) fn translate_overlay_flakes(
 
     // Collect all overlay flakes (no boundary filtering — the cursor
     // partitions per-leaf internally via find_overlay_for_leaf).
-    overlay.for_each_overlay_flake(IndexType::Spot, None, None, true, to_t, &mut |flake| {
-        if io_error.is_some() {
-            return;
-        }
-        match translate_one_flake(flake, dict_overlay) {
-            Ok(op) => ops.push(op),
-            Err(e) => {
-                // IO errors from mmap reads are truly exceptional; log and
-                // stop collecting (remaining flakes will be missing from
-                // overlay, but this is a storage-level failure, not a
-                // dictionary gap).
-                tracing::error!(%e, "IO error during overlay translation");
-                io_error = Some(e);
+    overlay.for_each_overlay_flake(
+        IndexType::Spot, None, None, true, to_t,
+        &mut |flake| {
+            if io_error.is_some() { return; }
+            match translate_one_flake(flake, dict_overlay) {
+                Ok(op) => ops.push(op),
+                Err(e) => {
+                    // IO errors from mmap reads are truly exceptional; log and
+                    // stop collecting (remaining flakes will be missing from
+                    // overlay, but this is a storage-level failure, not a
+                    // dictionary gap).
+                    tracing::error!(%e, "IO error during overlay translation");
+                    io_error = Some(e);
+                }
             }
-        }
-    });
+        },
+    );
 
     ops
 }
@@ -987,7 +965,7 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
         // falls back to range_with_overlay() which works for multi-ledger,
         // pre-index, history, and time-travel-before-base_t via the
         // RangeProvider trait.
-        let use_binary = ctx.binary_store.as_ref().is_some_and(|s| {
+        let use_binary = ctx.binary_store.as_ref().map_or(false, |s| {
             !ctx.is_multi_ledger()
                 && ctx.to_t >= s.base_t()
                 && !ctx.history_mode
@@ -1000,9 +978,8 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
         // ephemeral IDs are allocated for entities not in persisted dictionaries).
         let (overlay_data, dict_overlay) = if use_binary && ctx.overlay.is_some() {
             let store = ctx.binary_store.as_ref().unwrap().clone();
-            let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
-                Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
-            });
+            let dn = ctx.dict_novelty.clone()
+                .unwrap_or_else(|| Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized()));
             let mut dict_ov = crate::dict_overlay::DictOverlay::new(store, dn);
             let ops = translate_overlay_flakes(ctx.overlay(), &mut dict_ov, ctx.to_t);
             let epoch = ctx.overlay().epoch();
@@ -1013,9 +990,8 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
             }
         } else if use_binary {
             let store = ctx.binary_store.as_ref().unwrap().clone();
-            let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
-                Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
-            });
+            let dn = ctx.dict_novelty.clone()
+                .unwrap_or_else(|| Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized()));
             (None, Some(crate::dict_overlay::DictOverlay::new(store, dn)))
         } else {
             (None, None)
@@ -1092,6 +1068,12 @@ struct RangeScanOperator<S: Storage + 'static> {
     s_var_pos: Option<usize>,
     p_var_pos: Option<usize>,
     o_var_pos: Option<usize>,
+    /// Whether predicate is a variable (for internal predicate filtering).
+    ///
+    /// Mirrors `BinaryScanOperator` behavior: when `?p` is unbound, skip
+    /// internal fluree:ledger predicates (commit metadata) so wildcard
+    /// patterns like `?s ?p ?o` don't surface internal rows.
+    p_is_var: bool,
     state: OperatorState,
     batches: VecDeque<Batch>,
     _marker: std::marker::PhantomData<S>,
@@ -1099,6 +1081,7 @@ struct RangeScanOperator<S: Storage + 'static> {
 
 impl<S: Storage + 'static> RangeScanOperator<S> {
     fn new(pattern: TriplePattern, object_bounds: Option<ObjectBounds>) -> Self {
+        let p_is_var = matches!(pattern.p, Term::Var(_));
         let mut schema_vec = Vec::with_capacity(3);
         let mut s_var_pos = None;
         let mut p_var_pos = None;
@@ -1124,6 +1107,7 @@ impl<S: Storage + 'static> RangeScanOperator<S> {
             s_var_pos,
             p_var_pos,
             o_var_pos,
+            p_is_var,
             state: OperatorState::Created,
             batches: VecDeque::new(),
             _marker: std::marker::PhantomData,
@@ -1243,7 +1227,10 @@ impl<S: Storage + 'static> RangeScanOperator<S> {
                 val => Binding::Lit {
                     val: val.clone(),
                     dt: f.dt.clone(),
-                    lang: None,
+                    lang: f
+                        .m
+                        .as_ref()
+                        .and_then(|m| m.lang.as_ref().map(|s| Arc::from(s.as_str()))),
                     t: if history_mode { Some(f.t) } else { None },
                     op: if history_mode { Some(f.op) } else { None },
                 },
@@ -1310,29 +1297,18 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
                 .await
                 .map_err(|e| QueryError::execution(e.to_string()))?;
                 // Policy filter per graph (before pattern matching).
-                let graph_flakes = match graph
-                    .policy_enforcer
-                    .as_ref()
-                    .or(ctx.policy_enforcer.as_ref())
-                {
+                let graph_flakes = match graph.policy_enforcer.as_ref().or(ctx.policy_enforcer.as_ref()) {
                     Some(enforcer) if !enforcer.is_root() => {
-                        enforcer
-                            .filter_flakes_for_graph(
-                                graph.db,
-                                graph.overlay,
-                                graph.to_t,
-                                &ctx.tracker,
-                                graph_flakes,
-                            )
-                            .await?
+                        enforcer.filter_flakes_for_graph(
+                            graph.db, graph.overlay, graph.to_t,
+                            &ctx.tracker, graph_flakes,
+                        ).await?
                     }
                     _ => graph_flakes,
                 };
                 // Pre-filter per graph (overlay may return a superset).
                 all_flakes.extend(
-                    graph_flakes
-                        .into_iter()
-                        .filter(|f| self.flake_matches(f, graph.db)),
+                    graph_flakes.into_iter().filter(|f| self.flake_matches(f, graph.db)),
                 );
             }
             all_flakes
@@ -1361,15 +1337,10 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
             // Policy filter (single-graph mode).
             match ctx.policy_enforcer.as_ref() {
                 Some(enforcer) if !enforcer.is_root() => {
-                    enforcer
-                        .filter_flakes_for_graph(
-                            ctx.db,
-                            ctx.overlay(),
-                            ctx.to_t,
-                            &ctx.tracker,
-                            flakes,
-                        )
-                        .await?
+                    enforcer.filter_flakes_for_graph(
+                        ctx.db, ctx.overlay(), ctx.to_t,
+                        &ctx.tracker, flakes,
+                    ).await?
                 }
                 _ => flakes,
             }
@@ -1385,19 +1356,28 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
         if ncols == 0 {
             // All terms bound (existence check): count matches, emit empty-schema batch
             let match_count = if is_multi_graph {
-                flakes.len()
+                if self.p_is_var {
+                    flakes
+                        .iter()
+                        .filter(|f| f.p.namespace_code != FLUREE_LEDGER)
+                        .count()
+                } else {
+                    flakes.len()
+                }
             } else {
                 flakes
                     .iter()
-                    .filter(|f| self.flake_matches(f, ctx.db))
+                    .filter(|f| {
+                        (!self.p_is_var || f.p.namespace_code != FLUREE_LEDGER)
+                            && self.flake_matches(f, ctx.db)
+                    })
                     .count()
             };
             for _ in 0..match_count {
                 ctx.tracker.consume_fuel_one()?;
             }
             if match_count > 0 {
-                self.batches
-                    .push_back(Batch::empty_schema_with_len(match_count));
+                self.batches.push_back(Batch::empty_schema_with_len(match_count));
             }
         } else {
             let mut columns: Vec<Vec<Binding>> =
@@ -1406,6 +1386,11 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
 
             for f in &flakes {
                 if !is_multi_graph && !self.flake_matches(f, ctx.db) {
+                    continue;
+                }
+                // Filter internal predicates (commit metadata) for wildcard predicate patterns.
+                // Matches `BinaryScanOperator` behavior.
+                if self.p_is_var && f.p.namespace_code == FLUREE_LEDGER {
                     continue;
                 }
 

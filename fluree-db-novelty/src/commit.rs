@@ -133,12 +133,16 @@ impl IndexRef {
 
 /// Transaction signature — audit record of who submitted a transaction.
 ///
-/// This is metadata, not independently verifiable. The raw JWS (stored
-/// via `raw_txn`) is the actual cryptographic proof for re-verification.
+/// The raw signed transaction (JWS/VC) is stored separately via content-addressed
+/// storage. The `txn_id` provides a content-addressed reference to retrieve and
+/// re-verify the original signed transaction.
 #[derive(Clone, Debug)]
 pub struct TxnSignature {
     /// Verified signer identity (did:key:z6Mk...)
     pub signer: String,
+    /// Content-addressed transaction ID (e.g., "fluree:tx:sha256:...")
+    /// References the original signed transaction stored in CAS.
+    pub txn_id: Option<String>,
 }
 
 /// A commit represents a single transaction in the ledger

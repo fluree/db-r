@@ -10,6 +10,11 @@ use serde_json::Value as JsonValue;
 #[cfg(feature = "iceberg")]
 use fluree_db_iceberg::IcebergVgConfig;
 
+#[cfg(feature = "vector")]
+use crate::search::SearchDeploymentConfig;
+#[cfg(feature = "vector")]
+use fluree_db_query::vector::DistanceMetric;
+
 // =============================================================================
 // BM25 Configuration
 // =============================================================================

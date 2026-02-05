@@ -187,7 +187,9 @@ impl<S: Storage + 'static> VectorSearchOperator<S> {
                 Some(Binding::Sid(_))
                 | Some(Binding::IriMatch { .. })
                 | Some(Binding::Iri(_))
-                | Some(Binding::Grouped(_)) => Ok(None),
+                | Some(Binding::Grouped(_))
+                | Some(Binding::EncodedSid { .. })
+                | Some(Binding::EncodedPid { .. }) => Ok(None),
             },
         }
     }

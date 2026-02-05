@@ -910,12 +910,21 @@ where
             ..Default::default()
         };
 
+        // Compute content-addressed txn_id from the raw credential bytes
+        let txn_id = {
+            use fluree_db_core::sha256_hex;
+            let raw_bytes = serde_json::to_vec(&raw_credential).unwrap_or_default();
+            let hash_hex = sha256_hex(&raw_bytes);
+            format!("fluree:tx:sha256:{}", hash_hex)
+        };
+
         // CommitOpts: author for provenance, raw_txn for storage, txn_signature for audit
         let commit_opts = CommitOpts::default()
             .author(verified.did.clone())
             .with_raw_txn(raw_credential)
             .with_txn_signature(fluree_db_novelty::TxnSignature {
                 signer: verified.did.clone(),
+                txn_id: Some(txn_id),
             });
 
         // Use transact_tracked_with_policy and extract result

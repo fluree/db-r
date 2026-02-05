@@ -144,6 +144,7 @@ fn resolve_subject_term(
             Some(Binding::Unbound) | Some(Binding::Poisoned) | None => Ok(None),
             Some(Binding::Lit { .. }) => Ok(None), // Literals can't be subjects
             Some(Binding::EncodedLit { .. }) => Ok(None),
+            Some(Binding::EncodedSid { .. }) | Some(Binding::EncodedPid { .. }) => Ok(None), // Require materialization
             Some(Binding::Grouped(_)) => Err(FormatError::InvalidBinding(
                 "CONSTRUCT does not support GROUP BY (Binding::Grouped encountered)".to_string(),
             )),
@@ -199,6 +200,7 @@ fn resolve_predicate_term(
             Some(Binding::Unbound) | Some(Binding::Poisoned) | None => Ok(None),
             Some(Binding::Lit { .. }) => Ok(None), // Literals can't be predicates
             Some(Binding::EncodedLit { .. }) => Ok(None),
+            Some(Binding::EncodedSid { .. }) | Some(Binding::EncodedPid { .. }) => Ok(None), // Require materialization
             Some(Binding::Grouped(_)) => Err(FormatError::InvalidBinding(
                 "CONSTRUCT does not support GROUP BY (Binding::Grouped encountered)".to_string(),
             )),
@@ -419,6 +421,33 @@ fn binding_to_ir_term(
                 FormatError::InvalidBinding(format!("Failed to materialize EncodedLit: {}", e))
             })?;
             binding_to_ir_term(result, &materialized, compactor)
+        }
+
+        Binding::EncodedSid { s_id } => {
+            let store = result.binary_store.as_ref().ok_or_else(|| {
+                FormatError::InvalidBinding(
+                    "Encountered EncodedSid during CONSTRUCT formatting but QueryResult has no binary_store".to_string(),
+                )
+            })?;
+            let iri = store.resolve_subject_iri(*s_id)
+                .map_err(|e| FormatError::InvalidBinding(format!("Failed to resolve subject IRI: {}", e)))?;
+            if let Some(bnode_id) = iri.strip_prefix("_:") {
+                Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
+            } else {
+                Ok(Some(IrTerm::iri(iri)))
+            }
+        }
+
+        Binding::EncodedPid { p_id } => {
+            let store = result.binary_store.as_ref().ok_or_else(|| {
+                FormatError::InvalidBinding(
+                    "Encountered EncodedPid during CONSTRUCT formatting but QueryResult has no binary_store".to_string(),
+                )
+            })?;
+            match store.resolve_predicate_iri(*p_id) {
+                Some(iri) => Ok(Some(IrTerm::iri(iri.to_string()))),
+                None => Err(FormatError::InvalidBinding(format!("Unknown predicate ID: {}", p_id))),
+            }
         }
 
         // GROUP BY + CONSTRUCT is not supported (semantics undefined)

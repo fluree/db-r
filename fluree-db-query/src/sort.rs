@@ -15,41 +15,62 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 
-fn materialize_encoded_lit_for_sort(b: &Binding, store: &BinaryIndexStore) -> Option<Binding> {
-    let Binding::EncodedLit {
-        o_kind,
-        o_key,
-        p_id,
-        dt_id,
-        lang_id,
-        i_val,
-        t,
-    } = b
-    else {
-        return None;
-    };
-
-    let val = store.decode_value(*o_kind, *o_key, *p_id).ok()?;
-    match val {
-        FlakeValue::Ref(sid) => Some(Binding::Sid(sid)),
-        other => {
-            let dt_sid = store
-                .dt_sids()
-                .get(*dt_id as usize)
-                .cloned()
-                .unwrap_or_else(|| Sid::new(0, ""));
-            let meta = store.decode_meta(*lang_id, *i_val);
-            Some(Binding::Lit {
-                val: other,
-                dt: dt_sid,
-                lang: meta.and_then(|m| m.lang.map(Arc::from)),
-                t: Some(*t),
-                op: None,
-            })
+/// Materialize an encoded binding to its decoded form for sort comparison.
+///
+/// This ensures ORDER BY uses correct term ordering (namespace/name for IRIs,
+/// value semantics for literals) rather than raw ID ordering.
+fn materialize_encoded_for_sort(
+    b: &Binding,
+    store: &BinaryIndexStore,
+) -> Option<Binding> {
+    match b {
+        Binding::EncodedLit {
+            o_kind,
+            o_key,
+            p_id,
+            dt_id,
+            lang_id,
+            i_val,
+            t,
+        } => {
+            let val = store.decode_value(*o_kind, *o_key, *p_id).ok()?;
+            match val {
+                FlakeValue::Ref(sid) => Some(Binding::Sid(sid)),
+                other => {
+                    let dt_sid = store
+                        .dt_sids()
+                        .get(*dt_id as usize)
+                        .cloned()
+                        .unwrap_or_else(|| Sid::new(0, ""));
+                    let meta = store.decode_meta(*lang_id, *i_val);
+                    Some(Binding::Lit {
+                        val: other,
+                        dt: dt_sid,
+                        lang: meta.and_then(|m| m.lang.map(Arc::from)),
+                        t: Some(*t),
+                        op: None,
+                    })
+                }
+            }
         }
+        Binding::EncodedSid { s_id } => {
+            // Resolve to Sid for correct namespace/name ordering
+            let iri = store.resolve_subject_iri(*s_id).ok()?;
+            Some(Binding::Sid(store.encode_iri(&iri)))
+        }
+        Binding::EncodedPid { p_id } => {
+            // Resolve to Sid for correct namespace/name ordering
+            let iri = store.resolve_predicate_iri(*p_id)?;
+            Some(Binding::Sid(store.encode_iri(iri)))
+        }
+        _ => None,
     }
 }
 
+/// Materialize encoded bindings in sort key columns before sorting.
+///
+/// This is the safe boundary for materialization: we modify bindings BEFORE
+/// they are used in any hash-based operations or sorting comparisons.
 fn materialize_sort_keys_in_rows(
     rows: &mut [Vec<Binding>],
     sort_col_indices: &[usize],
@@ -58,7 +79,7 @@ fn materialize_sort_keys_in_rows(
     for row in rows.iter_mut() {
         for &col_idx in sort_col_indices {
             if let Some(existing) = row.get(col_idx) {
-                if let Some(materialized) = materialize_encoded_lit_for_sort(existing, store) {
+                if let Some(materialized) = materialize_encoded_for_sort(existing, store) {
                     row[col_idx] = materialized;
                 }
             }
@@ -114,63 +135,64 @@ impl SortSpec {
 ///    - Cross-type: use type ordering
 /// 6. Grouped sorts last (shouldn't appear in normal sort contexts)
 pub fn compare_bindings(a: &Binding, b: &Binding) -> Ordering {
+    // Type class ordering: Unbound < Poisoned < IRI types < Lit types < Grouped
+    // IRI types: Sid, IriMatch, Iri, EncodedSid, EncodedPid (all in same class)
+    // Lit types: Lit, EncodedLit (same class)
+
     match (a, b) {
         // Unbound sorts first
         (Binding::Unbound, Binding::Unbound) => Ordering::Equal,
         (Binding::Unbound, _) => Ordering::Less,
+        (_, Binding::Unbound) => Ordering::Greater,
 
         // Poisoned sorts after Unbound but before bound values
-        (Binding::Poisoned, Binding::Unbound) => Ordering::Greater,
         (Binding::Poisoned, Binding::Poisoned) => Ordering::Equal,
         (Binding::Poisoned, _) => Ordering::Less,
+        (_, Binding::Poisoned) => Ordering::Greater,
 
-        // Sid sorts after Unbound/Poisoned
-        (Binding::Sid(_), Binding::Unbound | Binding::Poisoned) => Ordering::Greater,
+        // Grouped sorts last (should not appear in normal sort contexts)
+        (Binding::Grouped(_), Binding::Grouped(_)) => {
+            debug_assert!(false, "Grouped bindings should not appear in sort comparisons");
+            Ordering::Equal
+        }
+        (_, Binding::Grouped(_)) => Ordering::Less,
+        (Binding::Grouped(_), _) => Ordering::Greater,
+
+        // IRI types vs Lit types: IRI sorts before Lit
+        (
+            Binding::Sid(_) | Binding::IriMatch { .. } | Binding::Iri(_) | Binding::EncodedSid { .. } | Binding::EncodedPid { .. },
+            Binding::Lit { .. } | Binding::EncodedLit { .. },
+        ) => Ordering::Less,
+        (
+            Binding::Lit { .. } | Binding::EncodedLit { .. },
+            Binding::Sid(_) | Binding::IriMatch { .. } | Binding::Iri(_) | Binding::EncodedSid { .. } | Binding::EncodedPid { .. },
+        ) => Ordering::Greater,
+
+        // Within IRI types: compare by concrete value or ID
         (Binding::Sid(a), Binding::Sid(b)) => compare_sids(a, b),
-        (Binding::Sid(_), Binding::IriMatch { .. } | Binding::Iri(_)) => Ordering::Less, // Sid before IriMatch/Iri
-        (Binding::Sid(_), _) => Ordering::Less,
-
-        // IriMatch (multi-ledger IRI with cached SID) sorts after Sid, compare by IRI
-        (Binding::IriMatch { .. }, Binding::Unbound | Binding::Poisoned | Binding::Sid(_)) => {
+        (Binding::IriMatch { iri: a, .. }, Binding::IriMatch { iri: b, .. }) => a.cmp(b),
+        (Binding::Iri(a), Binding::Iri(b)) => a.cmp(b),
+        (Binding::EncodedSid { s_id: a }, Binding::EncodedSid { s_id: b }) => a.cmp(b),
+        (Binding::EncodedPid { p_id: a }, Binding::EncodedPid { p_id: b }) => a.cmp(b),
+        // Cross-IRI type comparisons: Sid < IriMatch/Iri < EncodedSid/EncodedPid
+        // (Prefer materialized over encoded for consistent ordering)
+        (Binding::Sid(_), Binding::IriMatch { .. } | Binding::Iri(_)) => Ordering::Less,
+        (Binding::IriMatch { .. } | Binding::Iri(_), Binding::Sid(_)) => Ordering::Greater,
+        (Binding::IriMatch { iri: a, .. }, Binding::Iri(b)) => a.as_ref().cmp(b.as_ref()),
+        (Binding::Iri(a), Binding::IriMatch { iri: b, .. }) => a.as_ref().cmp(b.as_ref()),
+        // Encoded IRI types sort after decoded types when mixed
+        (Binding::Sid(_) | Binding::IriMatch { .. } | Binding::Iri(_), Binding::EncodedSid { .. } | Binding::EncodedPid { .. }) => {
+            Ordering::Less
+        }
+        (Binding::EncodedSid { .. } | Binding::EncodedPid { .. }, Binding::Sid(_) | Binding::IriMatch { .. } | Binding::Iri(_)) => {
             Ordering::Greater
         }
-        (Binding::IriMatch { iri: a, .. }, Binding::IriMatch { iri: b, .. }) => a.cmp(b),
-        (Binding::IriMatch { iri: a, .. }, Binding::Iri(b)) => a.as_ref().cmp(b.as_ref()),
-        (Binding::IriMatch { .. }, _) => Ordering::Less,
+        // EncodedSid vs EncodedPid: compare by ID (they're in same class)
+        (Binding::EncodedSid { s_id }, Binding::EncodedPid { p_id }) => (*s_id as u64).cmp(&(*p_id as u64)),
+        (Binding::EncodedPid { p_id }, Binding::EncodedSid { s_id }) => (*p_id as u64).cmp(&(*s_id as u64)),
 
-        // Iri (raw IRI string) sorts after IriMatch but before Lit
-        (
-            Binding::Iri(_),
-            Binding::Unbound | Binding::Poisoned | Binding::Sid(_) | Binding::IriMatch { .. },
-        ) => Ordering::Greater,
-        (Binding::Iri(a), Binding::Iri(b)) => a.cmp(b),
-        (Binding::Iri(_), _) => Ordering::Less,
-
-        // Lit sorts after Iri but before Grouped
-        (
-            Binding::Lit { .. },
-            Binding::Unbound
-            | Binding::Poisoned
-            | Binding::Sid(_)
-            | Binding::IriMatch { .. }
-            | Binding::Iri(_),
-        ) => Ordering::Greater,
-        (Binding::Lit { val: v1, .. }, Binding::Lit { val: v2, .. }) => {
-            compare_flake_values(v1, v2)
-        }
-        (Binding::Lit { .. }, Binding::Grouped(_)) => Ordering::Less,
-        // EncodedLit: treat as literal class for ordering. Prefer materialization
-        // before sort/filter/output when semantic comparison is required.
-        (
-            Binding::EncodedLit { .. },
-            Binding::Unbound
-            | Binding::Poisoned
-            | Binding::Sid(_)
-            | Binding::IriMatch { .. }
-            | Binding::Iri(_),
-        ) => Ordering::Greater,
-        (Binding::EncodedLit { .. }, Binding::Lit { .. }) => Ordering::Equal,
-        (Binding::Lit { .. }, Binding::EncodedLit { .. }) => Ordering::Equal,
+        // Within Lit types: compare by value
+        (Binding::Lit { val: v1, .. }, Binding::Lit { val: v2, .. }) => compare_flake_values(v1, v2),
         (
             Binding::EncodedLit {
                 o_kind: k1,
@@ -178,7 +200,6 @@ pub fn compare_bindings(a: &Binding, b: &Binding) -> Ordering {
                 p_id: p1,
                 dt_id: dt1,
                 lang_id: l1,
-                i_val: i1,
                 ..
             },
             Binding::EncodedLit {
@@ -187,30 +208,30 @@ pub fn compare_bindings(a: &Binding, b: &Binding) -> Ordering {
                 p_id: p2,
                 dt_id: dt2,
                 lang_id: l2,
-                i_val: i2,
                 ..
             },
-        ) => k1
-            .cmp(k2)
-            .then(ok1.cmp(ok2))
-            .then(p1.cmp(p2))
-            .then(dt1.cmp(dt2))
-            .then(l1.cmp(l2))
-            .then(i1.cmp(i2)),
-        (Binding::EncodedLit { .. }, Binding::Grouped(_)) => Ordering::Less,
+        ) => {
+            // IMPORTANT:
+            // - `i_val` is list-index metadata and must not affect value ordering.
+            // - `p_id` is only relevant for NUM_BIG (per-predicate arena); for other kinds
+            //   it must not affect ordering semantics.
+            let base = k1
+                .cmp(k2)
+                .then(ok1.cmp(ok2))
+                .then(dt1.cmp(dt2))
+                .then(l1.cmp(l2));
 
-        // Grouped sorts last (should not appear in normal sort contexts)
-        // This is an intermediate representation for aggregation
-        (Binding::Grouped(_), Binding::Grouped(_)) => {
-            // Grouped bindings compare equal since they shouldn't be in sort contexts
-            // If we ever need to compare them, we could compare contents
-            debug_assert!(
-                false,
-                "Grouped bindings should not appear in sort comparisons"
-            );
-            Ordering::Equal
+            if base != Ordering::Equal {
+                base
+            } else if *k1 == fluree_db_core::ObjKind::NUM_BIG.as_u8() {
+                p1.cmp(p2)
+            } else {
+                Ordering::Equal
+            }
         }
-        (Binding::Grouped(_), _) => Ordering::Greater,
+        // Cross-Lit type: Lit sorts before EncodedLit when mixed
+        (Binding::Lit { .. }, Binding::EncodedLit { .. }) => Ordering::Less,
+        (Binding::EncodedLit { .. }, Binding::Lit { .. }) => Ordering::Greater,
     }
 }
 
@@ -371,9 +392,7 @@ impl<S: Storage + 'static> Operator<S> for SortOperator<S> {
                     self.child.next_batch(ctx).await?
                 };
                 child_next_ms += (next_start.elapsed().as_secs_f64() * 1000.0) as u64;
-                let Some(batch) = next else {
-                    break;
-                };
+                let Some(batch) = next else { break; };
 
                 input_batches += 1;
                 let build_span = tracing::info_span!("sort_build_rows_batch", rows = batch.len());
@@ -401,12 +420,12 @@ impl<S: Storage + 'static> Operator<S> for SortOperator<S> {
             all_rows.sort_by(|a, b| self.compare_rows(a, b));
             let sort_ms = (sort_start.elapsed().as_secs_f64() * 1000.0) as u64;
 
-            span.record("input_batches", input_batches);
-            span.record("input_rows", input_rows);
-            span.record("drain_ms", drain_ms);
-            span.record("sort_ms", sort_ms);
-            span.record("child_next_ms", child_next_ms);
-            span.record("build_rows_ms", build_rows_ms);
+            span.record("input_batches", &input_batches);
+            span.record("input_rows", &input_rows);
+            span.record("drain_ms", &drain_ms);
+            span.record("sort_ms", &sort_ms);
+            span.record("child_next_ms", &child_next_ms);
+            span.record("build_rows_ms", &build_rows_ms);
 
             self.buffer = Some(all_rows);
         }
@@ -653,14 +672,8 @@ mod tests {
 
     #[test]
     fn test_compare_bindings_string() {
-        let a = Binding::lit(
-            FlakeValue::String("apple".to_string()),
-            Sid::new(1, "string"),
-        );
-        let b = Binding::lit(
-            FlakeValue::String("banana".to_string()),
-            Sid::new(1, "string"),
-        );
+        let a = Binding::lit(FlakeValue::String("apple".to_string()), Sid::new(1, "string"));
+        let b = Binding::lit(FlakeValue::String("banana".to_string()), Sid::new(1, "string"));
 
         assert_eq!(compare_bindings(&a, &a), Ordering::Equal);
         assert_eq!(compare_bindings(&a, &b), Ordering::Less);

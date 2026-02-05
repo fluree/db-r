@@ -254,7 +254,13 @@ where
             let mut dicts = run_index::GlobalDicts::new(&run_dir)
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
             let mut resolver = run_index::CommitResolver::new();
-            resolver.set_stats_hook(crate::stats::IdStatsHook::new());
+
+            // Pre-insert rdf:type into predicate dictionary so class tracking
+            // works from the very first commit.
+            let rdf_type_p_id = dicts.predicates.get_or_insert(fluree_vocab::rdf::TYPE);
+            let mut stats_hook = crate::stats::IdStatsHook::new();
+            stats_hook.set_rdf_type_p_id(rdf_type_p_id);
+            resolver.set_stats_hook(stats_hook);
 
             let multi_config = run_index::MultiOrderConfig {
                 total_budget_bytes: config.run_budget_bytes,
@@ -358,7 +364,8 @@ where
             // flake counts only.
             let stats_json = {
                 if let Some(hook) = id_stats_hook {
-                    let id_result = hook.finalize();
+                    let (id_result, agg_props, class_counts, class_properties) =
+                        hook.finalize_with_aggregate_properties();
 
                     let graphs_json: Vec<serde_json::Value> = id_result
                         .graphs
@@ -388,10 +395,61 @@ where
                         })
                         .collect();
 
+                    // Build top-level properties array with SID keys (for the planner).
+                    // Each entry: [[ns_code, "suffix"], count, ndv_values, ndv_subjects, last_modified_t, datatypes]
+                    let properties_json: Vec<serde_json::Value> = agg_props
+                        .iter()
+                        .filter_map(|p| {
+                            let sid = predicate_sids.get(p.p_id as usize)?;
+                            Some(serde_json::json!({
+                                "sid": [sid.0, sid.1],
+                                "count": p.count,
+                                "ndv_values": p.ndv_values,
+                                "ndv_subjects": p.ndv_subjects,
+                                "last_modified_t": p.last_modified_t,
+                                "datatypes": p.datatypes,
+                            }))
+                        })
+                        .collect();
+
+                    // Build classes array with SID keys.
+                    // class sid64 -> (ns_code, suffix) via subject IRI resolution.
+                    // Format: [[ns_code, "suffix"], [count, [prop_usages...]]]
+                    let classes_json: Vec<serde_json::Value> = class_counts
+                        .iter()
+                        .filter_map(|&(class_sid64, count)| {
+                            let iri = store.resolve_subject_iri(class_sid64).ok()?;
+                            let sid = store.encode_iri(&iri);
+
+                            // Build property usages for this class
+                            let prop_usages: Vec<serde_json::Value> = class_properties
+                                .get(&class_sid64)
+                                .map(|props| {
+                                    let mut sorted: Vec<u32> = props.iter().copied().collect();
+                                    sorted.sort();
+                                    sorted
+                                        .iter()
+                                        .filter_map(|&pid| {
+                                            let psid = predicate_sids.get(pid as usize)?;
+                                            Some(serde_json::json!([[psid.0, psid.1]]))
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+
+                            Some(serde_json::json!([
+                                [sid.namespace_code, sid.name.as_ref()],
+                                [count, prop_usages],
+                            ]))
+                        })
+                        .collect();
+
                     serde_json::json!({
                         "flakes": id_result.total_flakes,
                         "size": 0,
                         "graphs": graphs_json,
+                        "properties": properties_json,
+                        "classes": classes_json,
                     })
                 } else {
                     // Fallback: flake counts only (no per-property / datatype breakdown).

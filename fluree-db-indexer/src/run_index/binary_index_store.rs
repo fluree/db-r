@@ -1272,6 +1272,17 @@ impl BinaryIndexStore {
         self.dicts.language_tags.find_id(tag)
     }
 
+    /// Resolve a lang_id to its language tag string.
+    ///
+    /// Returns `None` if the ID is 0 (no language) or not found.
+    pub fn resolve_lang_id(&self, lang_id: u16) -> Option<&str> {
+        if lang_id == 0 {
+            None
+        } else {
+            self.dicts.language_tags.resolve(lang_id)
+        }
+    }
+
     // ========================================================================
     // Value → ObjKind/ObjKey translation
     // ========================================================================
