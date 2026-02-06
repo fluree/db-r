@@ -201,6 +201,10 @@ where
     }
 
     // Generate ISO 8601 timestamp
+    // TODO: Refactor to accept an optional timestamp via CommitOpts instead of calling
+    // Utc::now() directly. This would enable deterministic commit hashes for testing
+    // (see fluree-db-api/tests/it_stable_hashes.rs) and allow callers to provide
+    // externally-sourced timestamps when needed.
     let timestamp = Utc::now().to_rfc3339();
 
     // Store original transaction JSON if provided (Clojure parity)
