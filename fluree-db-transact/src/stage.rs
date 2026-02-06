@@ -160,8 +160,16 @@ pub async fn stage<S: Storage + Clone + 'static>(
     // Generate transaction ID for blank node skolemization
     let txn_id = generate_txn_id();
 
+    // Convert graph_delta (g_id -> IRI) to graph_sids (g_id -> Sid) for named graph support
+    let graph_sids: std::collections::HashMap<u32, Sid> = txn
+        .graph_delta
+        .iter()
+        .map(|(&g_id, iri)| (g_id, ns_registry.sid_for_iri(iri)))
+        .collect();
+
     // Generate retractions from DELETE templates
-    let mut generator = FlakeGenerator::new(new_t, &mut ns_registry, txn_id);
+    let mut generator =
+        FlakeGenerator::new(new_t, &mut ns_registry, txn_id).with_graph_sids(graph_sids);
     tracing::debug!(
         template_count = txn.delete_templates.len(),
         "generating retractions from DELETE templates"

@@ -178,13 +178,17 @@ where
 
         let op = self.core.operation.unwrap();
         let txn_type = op.txn_type();
-        let txn_json_cow = op.to_json()?;
+        // Parse transaction, extracting TriG metadata for Turtle inputs
+        let parsed = op.to_json_with_trig_meta()?;
+        let txn_json = parsed.json;
+        let trig_meta = parsed.trig_meta;
         let index_config = self.core.index_config.unwrap_or_default();
 
         // Load the current ledger state
         let ledger_state = self.graph.fluree.ledger(&self.graph.alias).await?;
 
         // Stage
+        // TODO: Add trig_meta support to tracked+policy path
         let stage_result = if let Some(policy) = &self.core.policy {
             let tracker = Tracker::new(self.core.tracking.unwrap_or(TrackingOptions {
                 track_time: true,
@@ -193,7 +197,7 @@ where
                 max_fuel: None,
             }));
             let input =
-                TrackedTransactionInput::new(txn_type, &txn_json_cow, self.core.txn_opts, policy);
+                TrackedTransactionInput::new(txn_type, &txn_json, self.core.txn_opts, policy);
             self.graph
                 .fluree
                 .stage_transaction_tracked_with_policy(
@@ -207,12 +211,13 @@ where
         } else {
             self.graph
                 .fluree
-                .stage_transaction(
+                .stage_transaction_with_trig_meta(
                     ledger_state,
                     txn_type,
-                    &txn_json_cow,
+                    &txn_json,
                     self.core.txn_opts,
                     Some(&index_config),
+                    trig_meta.as_ref(),
                 )
                 .await?
         };

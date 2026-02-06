@@ -1051,6 +1051,48 @@ async fn fql_graph_pattern_basic() {
     );
 }
 
+/// Test FQL ["graph", <alias>, ...] syntax - graph pattern using dataset-local alias
+///
+/// When `from-named` specifies an alias (e.g., "alias": "folks"), the GRAPH pattern
+/// should be able to reference by that alias, not just by the ledger identifier.
+#[tokio::test]
+async fn fql_graph_pattern_with_alias() {
+    let fluree = FlureeBuilder::memory().build_memory();
+
+    // Create ledgers (seed_* functions handle ledger creation + data insertion)
+    let _default = seed_orgs_ledger(&fluree, "default:main").await;
+    let _people = seed_people_ledger(&fluree, "people:main").await;
+
+    // Create dataset with alias for named graph
+    let spec = DatasetSpec::new()
+        .with_default(GraphSource::new("default:main"))
+        .with_named(GraphSource::new("people:main").with_alias("folks"));
+    let dataset = fluree.build_dataset_view(&spec).await.unwrap();
+
+    // Query using FQL ["graph", <alias>, {...}] syntax with the alias "folks"
+    let query = json!({
+        "@context": {"schema": "http://schema.org/"},
+        "select": ["?name"],
+        "where": [
+            ["graph", "folks", {"@id": "?person", "schema:name": "?name"}]
+        ]
+    });
+
+    let result = fluree
+        .query_dataset_view(&dataset, &query)
+        .await
+        .expect("query should succeed using alias");
+
+    let primary = dataset.primary().unwrap();
+    let jsonld = result.to_jsonld(primary.db.as_ref()).expect("to_jsonld");
+
+    // Should return names from the named graph referenced by alias
+    assert_eq!(
+        normalize_flat_results(&jsonld),
+        normalize_flat_results(&json!(["Alice", "Bob"]))
+    );
+}
+
 // =============================================================================
 // Time travel tests (dataset per-graph time specs)
 // =============================================================================

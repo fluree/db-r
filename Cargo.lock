@@ -2146,6 +2146,7 @@ dependencies = [
  "mimalloc",
  "num-bigint",
  "reqwest",
+ "rustc-hash",
  "serde",
  "serde_json",
  "tempfile",
@@ -2363,6 +2364,7 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2572,6 +2574,7 @@ dependencies = [
  "schemars 1.2.0",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sha2",
  "shellexpand",
  "tempfile",
@@ -2668,6 +2671,7 @@ dependencies = [
  "num-bigint",
  "once_cell",
  "postcard",
+ "rustc-hash",
  "serde",
  "serde_json",
  "sha2",

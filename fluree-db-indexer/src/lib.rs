@@ -270,20 +270,30 @@ where
             let mut writer = run_index::MultiOrderRunWriter::new(multi_config)
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
+            // Accumulate commit statistics for index root
+            let mut total_commit_size = 0u64;
+            let mut total_asserts = 0u64;
+            let mut total_retracts = 0u64;
+
             for (i, addr) in addresses.iter().enumerate() {
                 let bytes = storage
                     .read_bytes(addr)
                     .await
                     .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", addr, e)))?;
 
-                let (op_count, t) = resolver
-                    .resolve_blob(&bytes, addr, &alias, &mut dicts, &mut writer)
+                let resolved = resolver
+                    .resolve_blob(&bytes, addr, &mut dicts, &mut writer)
                     .map_err(|e| IndexerError::StorageRead(e.to_string()))?;
+
+                // Accumulate totals
+                total_commit_size += resolved.size;
+                total_asserts += resolved.asserts as u64;
+                total_retracts += resolved.retracts as u64;
 
                 tracing::debug!(
                     commit = i + 1,
-                    t = t,
-                    ops = op_count,
+                    t = resolved.t,
+                    ops = resolved.total_records,
                     subjects = dicts.subjects.len(),
                     predicates = dicts.predicates.len(),
                     "commit resolved"
@@ -506,6 +516,11 @@ where
                     subject_watermarks,
                     string_watermark,
                 });
+
+            // Populate cumulative commit stats (kept out of CasArtifactsConfig for now).
+            root.total_commit_size = total_commit_size;
+            root.total_asserts = total_asserts;
+            root.total_retracts = total_retracts;
 
             // D.5.1: Compute garbage and link prev_index for GC chain.
             //

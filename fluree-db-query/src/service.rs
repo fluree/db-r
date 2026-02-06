@@ -1,0 +1,600 @@
+//! SERVICE pattern operator - executes patterns against another ledger
+//!
+//! Implements SPARQL SERVICE semantics for local Fluree ledgers:
+//! - `SERVICE <fluree:ledger:alias:branch> { ... }`: Execute against a specific ledger
+//! - `SERVICE SILENT <...> { ... }`: Errors produce empty results instead of failure
+//!
+//! # Semantics
+//!
+//! For local Fluree ledger queries using `fluree:ledger:<alias>` endpoints:
+//! - The endpoint IRI identifies a ledger in the current dataset
+//! - Inner patterns are executed against that ledger's view
+//! - Results are joined with the outer query on shared variables
+//!
+//! # Architecture
+//!
+//! ServiceOperator is a correlated operator (like SubqueryOperator):
+//! 1. Receives input solutions from child operator
+//! 2. For each input row, determines the target ledger from the endpoint
+//! 3. Looks up the ledger in the dataset
+//! 4. Executes inner patterns seeded with parent row bindings
+//! 5. Merges results with parent row
+
+use crate::binding::{Batch, Binding};
+use crate::context::{ExecutionContext, WellKnownDatatypes};
+use crate::error::{QueryError, Result};
+use crate::execute::build_where_operators_seeded;
+use crate::ir::{ServiceEndpoint, ServicePattern};
+use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::seed::SeedOperator;
+use crate::var_registry::VarId;
+use async_trait::async_trait;
+use fluree_db_core::{FlakeValue, Storage};
+use std::sync::Arc;
+
+/// Fluree ledger SERVICE endpoint prefix
+const FLUREE_LEDGER_PREFIX: &str = "fluree:ledger:";
+
+/// SERVICE pattern operator - executes patterns against another ledger
+///
+/// This is a correlated operator: for each input row, it executes the inner
+/// patterns against the appropriate ledger (determined by the endpoint).
+pub struct ServiceOperator<S: Storage + 'static> {
+    /// Child operator providing input solutions
+    child: BoxedOperator<S>,
+    /// SERVICE pattern (silent, endpoint, inner patterns)
+    service: ServicePattern,
+    /// Well-known datatypes for binding endpoint variable as xsd:string
+    well_known: WellKnownDatatypes,
+    /// Output schema (parent schema + any new vars from inner patterns)
+    schema: Arc<[VarId]>,
+    /// Operator state
+    state: OperatorState,
+    /// Buffered output rows
+    result_buffer: Vec<Vec<Binding>>,
+    /// Current position in result buffer
+    buffer_pos: usize,
+}
+
+impl<S: Storage + 'static> ServiceOperator<S> {
+    /// Create a new SERVICE pattern operator
+    ///
+    /// # Arguments
+    ///
+    /// * `child` - Input solutions operator
+    /// * `service` - The SERVICE pattern (silent, endpoint, patterns)
+    pub fn new(child: BoxedOperator<S>, service: ServicePattern) -> Self {
+        // Compute output schema: parent schema + new vars from inner patterns
+        let parent_schema: std::collections::HashSet<VarId> =
+            child.schema().iter().copied().collect();
+
+        let mut inner_vars: std::collections::HashSet<VarId> = std::collections::HashSet::new();
+        for p in &service.patterns {
+            inner_vars.extend(p.variables());
+        }
+
+        // If endpoint is a variable, it may be bound by this operator
+        if let ServiceEndpoint::Var(var) = &service.endpoint {
+            inner_vars.insert(*var);
+        }
+
+        // New vars are inner vars not in parent schema
+        let new_vars: Vec<VarId> = inner_vars
+            .iter()
+            .copied()
+            .filter(|v| !parent_schema.contains(v))
+            .collect();
+
+        // Output schema = parent schema + new vars
+        let mut schema_vec: Vec<VarId> = child.schema().to_vec();
+        schema_vec.extend(&new_vars);
+        let schema = Arc::from(schema_vec.into_boxed_slice());
+
+        Self {
+            child,
+            service,
+            well_known: WellKnownDatatypes::new(),
+            schema,
+            state: OperatorState::Created,
+            result_buffer: Vec::new(),
+            buffer_pos: 0,
+        }
+    }
+
+    /// Parse a Fluree ledger reference from an endpoint IRI
+    ///
+    /// Format: `fluree:ledger:<alias>` or `fluree:ledger:<alias>:<branch>`
+    ///
+    /// Returns the full ledger reference string that matches dataset storage format.
+    /// - `fluree:ledger:orders` → `"orders:main"` (defaults to :main branch)
+    /// - `fluree:ledger:orders:main` → `"orders:main"`
+    /// - `fluree:ledger:orders:dev` → `"orders:dev"`
+    fn parse_fluree_ledger_ref(endpoint: &str) -> Option<String> {
+        let rest = endpoint.strip_prefix(FLUREE_LEDGER_PREFIX)?;
+        if rest.is_empty() {
+            return None;
+        }
+
+        // Split on first colon after the alias
+        if let Some(colon_pos) = rest.find(':') {
+            let alias = &rest[..colon_pos];
+            let branch = &rest[colon_pos + 1..];
+            if alias.is_empty() || branch.is_empty() {
+                return None;
+            }
+            // Return full "alias:branch" format
+            Some(format!("{}:{}", alias, branch))
+        } else {
+            // No branch specified, default to "main"
+            Some(format!("{}:main", rest))
+        }
+    }
+
+    /// Check if an endpoint is a local Fluree ledger reference
+    fn is_fluree_ledger_endpoint(endpoint: &str) -> bool {
+        endpoint.starts_with(FLUREE_LEDGER_PREFIX)
+    }
+
+    /// Extract endpoint IRI from a binding (for variable endpoint check)
+    fn extract_endpoint_from_binding(binding: &Binding) -> Option<Arc<str>> {
+        match binding {
+            Binding::Lit {
+                val: FlakeValue::String(s),
+                ..
+            } => Some(Arc::from(s.as_str())),
+            _ => None,
+        }
+    }
+
+    /// Execute inner patterns against a specific ledger
+    ///
+    /// The `full_ledger_ref` should be the complete ledger reference string
+    /// that matches how datasets store ledger_alias (e.g., "orders:main").
+    async fn execute_against_ledger(
+        &mut self,
+        ctx: &ExecutionContext<'_, S>,
+        parent_batch: &Batch,
+        row_idx: usize,
+        full_ledger_ref: &str,
+        bind_endpoint_var: Option<VarId>,
+        endpoint_iri: &str,
+    ) -> Result<()> {
+        // Look up the ledger in the dataset
+        let graph_ref = if let Some(ds) = &ctx.dataset {
+            ds.find_by_ledger_alias(full_ledger_ref)
+        } else {
+            // No dataset - check if alias matches the current db
+            if ctx.db.alias != full_ledger_ref {
+                if self.service.silent {
+                    // SILENT: return empty result for unknown ledgers
+                    return Ok(());
+                } else {
+                    return Err(QueryError::InvalidQuery(format!(
+                        "SERVICE endpoint references unknown ledger '{}' (no dataset configured)",
+                        full_ledger_ref
+                    )));
+                }
+            }
+            None // Signal to use ctx directly (self-reference)
+        };
+
+        // Build seed operator from parent row (like EXISTS/Subquery)
+        let seed = SeedOperator::from_batch_row(parent_batch, row_idx);
+        let mut inner =
+            build_where_operators_seeded::<S>(Some(Box::new(seed)), &self.service.patterns, None)?;
+
+        // Create execution context for the target ledger
+        // If graph_ref is Some, create a new context; otherwise use the current context (self-reference)
+        let target_ctx;
+        let ctx_to_use: &ExecutionContext<'_, S> = if let Some(gref) = graph_ref {
+            target_ctx = ctx.with_graph_ref(gref);
+            &target_ctx
+        } else {
+            ctx
+        };
+
+        match inner.open(ctx_to_use).await {
+            Ok(()) => {}
+            Err(e) if self.service.silent => {
+                tracing::debug!(
+                    error = %e,
+                    "SERVICE SILENT: ignoring error from ledger '{}'",
+                    full_ledger_ref
+                );
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        }
+
+        loop {
+            let batch = match inner.next_batch(ctx_to_use).await {
+                Ok(Some(b)) => b,
+                Ok(None) => break,
+                Err(e) if self.service.silent => {
+                    tracing::debug!(
+                        error = %e,
+                        "SERVICE SILENT: ignoring error from ledger '{}'",
+                        full_ledger_ref
+                    );
+                    break;
+                }
+                Err(e) => {
+                    inner.close();
+                    return Err(e);
+                }
+            };
+
+            // Merge each inner result with parent row
+            for inner_row_idx in 0..batch.len() {
+                let mut merged_row = Vec::with_capacity(self.schema.len());
+
+                // Copy parent bindings first
+                for var in self.child.schema() {
+                    let binding = parent_batch
+                        .get(row_idx, *var)
+                        .cloned()
+                        .unwrap_or(Binding::Unbound);
+                    merged_row.push(binding);
+                }
+
+                // Append new variables from inner patterns
+                let parent_len = self.child.schema().len();
+                for (_i, var) in self.schema.iter().enumerate().skip(parent_len) {
+                    // Check if this is the endpoint variable we need to bind
+                    if bind_endpoint_var == Some(*var) {
+                        // Bind endpoint variable to the endpoint IRI
+                        let binding = Binding::Lit {
+                            val: FlakeValue::String(endpoint_iri.to_string()),
+                            dt: self.well_known.xsd_string.clone(),
+                            lang: None,
+                            t: None,
+                            op: None,
+                        };
+                        merged_row.push(binding);
+                    } else {
+                        // Get from inner batch
+                        let binding = batch
+                            .get(inner_row_idx, *var)
+                            .cloned()
+                            .unwrap_or(Binding::Unbound);
+                        merged_row.push(binding);
+                    }
+                }
+
+                self.result_buffer.push(merged_row);
+            }
+        }
+
+        inner.close();
+        Ok(())
+    }
+
+    /// Drain buffered results into a batch
+    fn drain_buffer(&mut self) -> Result<Option<Batch>> {
+        if self.buffer_pos >= self.result_buffer.len() {
+            return Ok(None);
+        }
+
+        let num_cols = self.schema.len();
+        let mut columns: Vec<Vec<Binding>> = (0..num_cols).map(|_| Vec::new()).collect();
+
+        for row in &self.result_buffer[self.buffer_pos..] {
+            for (col_idx, binding) in row.iter().enumerate() {
+                if col_idx < columns.len() {
+                    columns[col_idx].push(binding.clone());
+                }
+            }
+        }
+
+        self.buffer_pos = self.result_buffer.len();
+
+        if columns.is_empty() || columns[0].is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(Batch::new(self.schema.clone(), columns)?))
+        }
+    }
+}
+
+#[async_trait]
+impl<S: Storage + 'static> Operator<S> for ServiceOperator<S> {
+    fn schema(&self) -> &[VarId] {
+        &self.schema
+    }
+
+    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+        self.child.open(ctx).await?;
+        self.state = OperatorState::Open;
+        self.result_buffer.clear();
+        self.buffer_pos = 0;
+        Ok(())
+    }
+
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+        if self.state != OperatorState::Open {
+            return Ok(None);
+        }
+
+        // Return buffered results first
+        if self.buffer_pos < self.result_buffer.len() {
+            return self.drain_buffer();
+        }
+
+        // Clone service to avoid borrow conflicts
+        let service_endpoint = self.service.endpoint.clone();
+        let silent = self.service.silent;
+
+        loop {
+            // Get next batch from child
+            let parent_batch = match self.child.next_batch(ctx).await? {
+                Some(b) if !b.is_empty() => b,
+                Some(_) => continue, // Skip empty batches
+                None => {
+                    self.state = OperatorState::Exhausted;
+                    return Ok(None);
+                }
+            };
+
+            // Clear buffer for new parent batch
+            self.result_buffer.clear();
+            self.buffer_pos = 0;
+
+            // Process each parent row
+            for row_idx in 0..parent_batch.len() {
+                match &service_endpoint {
+                    ServiceEndpoint::Iri(iri) => {
+                        // Concrete endpoint
+                        if Self::is_fluree_ledger_endpoint(iri) {
+                            if let Some(full_ref) = Self::parse_fluree_ledger_ref(iri) {
+                                self.execute_against_ledger(
+                                    ctx,
+                                    &parent_batch,
+                                    row_idx,
+                                    &full_ref,
+                                    None, // No variable binding needed
+                                    iri,
+                                )
+                                .await?;
+                            } else if silent {
+                                // Malformed ledger ref with SILENT - skip
+                                tracing::debug!(
+                                    endpoint = %iri,
+                                    "SERVICE SILENT: malformed fluree:ledger endpoint"
+                                );
+                            } else {
+                                return Err(QueryError::InvalidQuery(format!(
+                                    "Invalid fluree:ledger endpoint format: '{}'. Expected 'fluree:ledger:<alias>' or 'fluree:ledger:<alias>:<branch>'",
+                                    iri
+                                )));
+                            }
+                        } else {
+                            // Non-Fluree endpoint - not yet supported
+                            if silent {
+                                tracing::debug!(
+                                    endpoint = %iri,
+                                    "SERVICE SILENT: external endpoints not supported"
+                                );
+                            } else {
+                                return Err(QueryError::InvalidQuery(format!(
+                                    "External SERVICE endpoints not supported. Use 'fluree:ledger:<alias>' for local ledger queries. Got: '{}'",
+                                    iri
+                                )));
+                            }
+                        }
+                    }
+                    ServiceEndpoint::Var(var) => {
+                        // Variable endpoint - check if bound
+                        if let Some(binding) = parent_batch.get(row_idx, *var) {
+                            if let Some(bound_iri) = Self::extract_endpoint_from_binding(binding) {
+                                // Variable is bound - use that endpoint
+                                if Self::is_fluree_ledger_endpoint(&bound_iri) {
+                                    if let Some(full_ref) =
+                                        Self::parse_fluree_ledger_ref(&bound_iri)
+                                    {
+                                        self.execute_against_ledger(
+                                            ctx,
+                                            &parent_batch,
+                                            row_idx,
+                                            &full_ref,
+                                            None, // Already bound
+                                            &bound_iri,
+                                        )
+                                        .await?;
+                                    } else if silent {
+                                        // Malformed ledger ref with SILENT - skip
+                                        tracing::debug!(
+                                            endpoint = %bound_iri,
+                                            "SERVICE SILENT: malformed fluree:ledger endpoint"
+                                        );
+                                    } else {
+                                        return Err(QueryError::InvalidQuery(format!(
+                                            "Invalid fluree:ledger endpoint format: '{}'",
+                                            bound_iri
+                                        )));
+                                    }
+                                } else if silent {
+                                    tracing::debug!(
+                                        endpoint = %bound_iri,
+                                        "SERVICE SILENT: external endpoints not supported"
+                                    );
+                                } else {
+                                    return Err(QueryError::InvalidQuery(format!(
+                                        "External SERVICE endpoints not supported: '{}'",
+                                        bound_iri
+                                    )));
+                                }
+                            }
+                            // Binding exists but not a string - skip silently
+                        } else {
+                            // Variable unbound - iterate all ledgers in dataset
+                            if let Some(ds) = &ctx.dataset {
+                                // Iterate all ledgers in dataset
+                                let ledger_aliases: Vec<Arc<str>> = ds
+                                    .named_graphs_iter()
+                                    .map(|(_, g)| g.ledger_alias.clone())
+                                    .collect();
+
+                                for ledger_alias in ledger_aliases {
+                                    let endpoint_iri =
+                                        format!("{}{}", FLUREE_LEDGER_PREFIX, ledger_alias);
+                                    self.execute_against_ledger(
+                                        ctx,
+                                        &parent_batch,
+                                        row_idx,
+                                        &ledger_alias,
+                                        Some(*var), // Bind the variable
+                                        &endpoint_iri,
+                                    )
+                                    .await?;
+                                }
+
+                                // Also try default graphs
+                                for gref in ds.default_graphs() {
+                                    let ledger_alias = &gref.ledger_alias;
+                                    let endpoint_iri =
+                                        format!("{}{}", FLUREE_LEDGER_PREFIX, ledger_alias);
+                                    self.execute_against_ledger(
+                                        ctx,
+                                        &parent_batch,
+                                        row_idx,
+                                        ledger_alias,
+                                        Some(*var),
+                                        &endpoint_iri,
+                                    )
+                                    .await?;
+                                }
+                            } else {
+                                // No dataset - use current db as only service
+                                let ledger_alias = &ctx.db.alias;
+                                let endpoint_iri =
+                                    format!("{}{}", FLUREE_LEDGER_PREFIX, ledger_alias);
+                                self.execute_against_ledger(
+                                    ctx,
+                                    &parent_batch,
+                                    row_idx,
+                                    ledger_alias,
+                                    Some(*var),
+                                    &endpoint_iri,
+                                )
+                                .await?;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // If we produced any results, return them
+            if !self.result_buffer.is_empty() {
+                return self.drain_buffer();
+            }
+            // Otherwise, try next parent batch
+        }
+    }
+
+    fn close(&mut self) {
+        self.child.close();
+        self.result_buffer.clear();
+        self.state = OperatorState::Closed;
+    }
+
+    fn estimated_rows(&self) -> Option<usize> {
+        // SERVICE patterns can multiply rows; hard to estimate
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_fluree_ledger_ref() {
+        // Valid: alias only (defaults to main)
+        assert_eq!(
+            ServiceOperator::<fluree_db_core::MemoryStorage>::parse_fluree_ledger_ref(
+                "fluree:ledger:mydb"
+            ),
+            Some("mydb:main".to_string())
+        );
+
+        // Valid: alias and branch
+        assert_eq!(
+            ServiceOperator::<fluree_db_core::MemoryStorage>::parse_fluree_ledger_ref(
+                "fluree:ledger:orders:main"
+            ),
+            Some("orders:main".to_string())
+        );
+
+        // Valid: alias and custom branch
+        assert_eq!(
+            ServiceOperator::<fluree_db_core::MemoryStorage>::parse_fluree_ledger_ref(
+                "fluree:ledger:orders:dev"
+            ),
+            Some("orders:dev".to_string())
+        );
+
+        // Valid: alias containing slash (e.g., org/ledger-name)
+        assert_eq!(
+            ServiceOperator::<fluree_db_core::MemoryStorage>::parse_fluree_ledger_ref(
+                "fluree:ledger:acme/people:main"
+            ),
+            Some("acme/people:main".to_string())
+        );
+
+        // Valid: alias with slash, default branch
+        assert_eq!(
+            ServiceOperator::<fluree_db_core::MemoryStorage>::parse_fluree_ledger_ref(
+                "fluree:ledger:acme/people"
+            ),
+            Some("acme/people:main".to_string())
+        );
+
+        // Invalid: just prefix
+        assert_eq!(
+            ServiceOperator::<fluree_db_core::MemoryStorage>::parse_fluree_ledger_ref(
+                "fluree:ledger:"
+            ),
+            None
+        );
+
+        // Invalid: not a fluree:ledger endpoint
+        assert_eq!(
+            ServiceOperator::<fluree_db_core::MemoryStorage>::parse_fluree_ledger_ref(
+                "http://example.org/sparql"
+            ),
+            None
+        );
+
+        // Invalid: empty alias
+        assert_eq!(
+            ServiceOperator::<fluree_db_core::MemoryStorage>::parse_fluree_ledger_ref(
+                "fluree:ledger::main"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn test_is_fluree_ledger_endpoint() {
+        assert!(
+            ServiceOperator::<fluree_db_core::MemoryStorage>::is_fluree_ledger_endpoint(
+                "fluree:ledger:mydb"
+            )
+        );
+        assert!(
+            ServiceOperator::<fluree_db_core::MemoryStorage>::is_fluree_ledger_endpoint(
+                "fluree:ledger:orders:main"
+            )
+        );
+        assert!(
+            !ServiceOperator::<fluree_db_core::MemoryStorage>::is_fluree_ledger_endpoint(
+                "http://example.org/sparql"
+            )
+        );
+        assert!(
+            !ServiceOperator::<fluree_db_core::MemoryStorage>::is_fluree_ledger_endpoint(
+                "fluree:other"
+            )
+        );
+    }
+}

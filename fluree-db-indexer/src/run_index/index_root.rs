@@ -221,6 +221,21 @@ pub struct BinaryIndexRootV2 {
     /// Used by `DictNovelty` to route string forward lookups.
     #[serde(default)]
     pub string_watermark: u32,
+
+    // =========================================================================
+    // Cumulative commit statistics
+    // =========================================================================
+    /// Total size of all commit blobs in bytes up to `index_t`.
+    #[serde(default)]
+    pub total_commit_size: u64,
+
+    /// Total number of assertions across all commits up to `index_t`.
+    #[serde(default)]
+    pub total_asserts: u64,
+
+    /// Total number of retractions across all commits up to `index_t`.
+    #[serde(default)]
+    pub total_retracts: u64,
 }
 
 impl BinaryIndexRootV2 {
@@ -282,6 +297,9 @@ impl BinaryIndexRootV2 {
             garbage: cfg.garbage,
             subject_watermarks: cfg.subject_watermarks,
             string_watermark: cfg.string_watermark,
+            total_commit_size: 0,
+            total_asserts: 0,
+            total_retracts: 0,
         }
     }
 
@@ -427,6 +445,9 @@ mod tests {
             garbage: None,
             subject_watermarks: vec![100, 200],
             string_watermark: 50,
+            total_commit_size: 0,
+            total_asserts: 0,
+            total_retracts: 0,
         };
 
         let bytes = root.to_json_bytes().expect("serialize");

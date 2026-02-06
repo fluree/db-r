@@ -108,6 +108,7 @@ impl Ord for FlakeMeta {
 /// A Flake represents a single fact in the database
 ///
 /// The 7 components are:
+/// - `g`: Graph (optional: named graph for this fact, None = default graph)
 /// - `s`: Subject (who/what the fact is about)
 /// - `p`: Predicate (the property/relationship)
 /// - `o`: Object (the value)
@@ -117,6 +118,10 @@ impl Ord for FlakeMeta {
 /// - `m`: Metadata (optional: language tags, list indices)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Flake {
+    /// Graph ID (optional). None = default graph.
+    /// When Some, the Sid identifies the named graph IRI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub g: Option<Sid>,
     /// Subject ID
     pub s: Sid,
     /// Predicate ID
@@ -134,7 +139,7 @@ pub struct Flake {
 }
 
 impl Flake {
-    /// Create a new Flake
+    /// Create a new Flake in the default graph
     pub fn new(
         s: Sid,
         p: Sid,
@@ -145,6 +150,31 @@ impl Flake {
         m: Option<FlakeMeta>,
     ) -> Self {
         Self {
+            g: None,
+            s,
+            p,
+            o,
+            dt,
+            t,
+            op,
+            m,
+        }
+    }
+
+    /// Create a new Flake in a named graph
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_in_graph(
+        g: Sid,
+        s: Sid,
+        p: Sid,
+        o: FlakeValue,
+        dt: Sid,
+        t: i64,
+        op: bool,
+        m: Option<FlakeMeta>,
+    ) -> Self {
+        Self {
+            g: Some(g),
             s,
             p,
             o,
@@ -160,6 +190,7 @@ impl Flake {
     /// All components set to minimum values.
     pub fn min_spot() -> Self {
         Self {
+            g: None,
             s: Sid::min(),
             p: Sid::min(),
             o: FlakeValue::min(),
@@ -175,6 +206,7 @@ impl Flake {
     /// All components set to maximum values.
     pub fn max_spot() -> Self {
         Self {
+            g: None,
             s: Sid::max(),
             p: Sid::max(),
             o: FlakeValue::max(),
@@ -190,6 +222,7 @@ impl Flake {
     /// Use this to find "all flakes for subject X".
     pub fn min_for_subject(s: Sid) -> Self {
         Self {
+            g: None,
             s,
             p: Sid::min(),
             o: FlakeValue::min(),
@@ -203,6 +236,7 @@ impl Flake {
     /// Create a maximum flake with a specific subject (for SPOT index)
     pub fn max_for_subject(s: Sid) -> Self {
         Self {
+            g: None,
             s,
             p: Sid::max(),
             o: FlakeValue::max(),
@@ -216,6 +250,7 @@ impl Flake {
     /// Create a minimum flake with specific subject and predicate (for SPOT index)
     pub fn min_for_subject_predicate(s: Sid, p: Sid) -> Self {
         Self {
+            g: None,
             s,
             p,
             o: FlakeValue::min(),
@@ -229,6 +264,7 @@ impl Flake {
     /// Create a maximum flake with specific subject and predicate (for SPOT index)
     pub fn max_for_subject_predicate(s: Sid, p: Sid) -> Self {
         Self {
+            g: None,
             s,
             p,
             o: FlakeValue::max(),
@@ -253,6 +289,7 @@ impl Flake {
     /// Create a minimum flake with a specific predicate (for PSOT/POST index)
     pub fn min_for_predicate(p: Sid) -> Self {
         Self {
+            g: None,
             s: Sid::min(),
             p,
             o: FlakeValue::min(),
@@ -266,6 +303,7 @@ impl Flake {
     /// Create a maximum flake with a specific predicate (for PSOT/POST index)
     pub fn max_for_predicate(p: Sid) -> Self {
         Self {
+            g: None,
             s: Sid::max(),
             p,
             o: FlakeValue::max(),

@@ -227,6 +227,10 @@ pub fn load_commit_ops(bytes: &[u8]) -> Result<CommitOps, CommitV2Error> {
         ops_bytes.to_vec()
     };
 
+    // Populate envelope.t from header (decode_envelope returns t=0)
+    let mut envelope = envelope;
+    envelope.t = header.t;
+
     Ok(CommitOps {
         envelope,
         t: header.t,
@@ -492,6 +496,8 @@ mod tests {
             data: None,
             index: None,
             txn_signature: None,
+            txn_meta: Vec::new(),
+            graph_delta: HashMap::new(),
         };
         let mut envelope_bytes = Vec::new();
         encode_envelope_fields(&envelope, &mut envelope_bytes).unwrap();

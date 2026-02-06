@@ -150,6 +150,7 @@ impl ParsedQuery {
                     Pattern::Graph {
                         patterns: inner, ..
                     } => collect(inner, out),
+                    Pattern::Service(sp) => collect(&sp.patterns, out),
                     Pattern::Filter(_)
                     | Pattern::Bind { .. }
                     | Pattern::Values { .. }

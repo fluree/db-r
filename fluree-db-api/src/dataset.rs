@@ -249,12 +249,76 @@ impl DatasetSpec {
 ///
 /// Represents a single graph in a dataset, identified by a ledger alias
 /// (IRI) and optionally pinned to a specific time.
+///
+/// ## New fields (query-connection named graph support)
+///
+/// - `source_alias`: Dataset-local alias for referencing this source in the query.
+///   Must be unique across all sources in a request.
+/// - `graph_selector`: Which graph within the ledger to query (default, txn-meta, or IRI).
+/// - `policy_override`: Per-source policy options (overrides global query options).
 #[derive(Debug, Clone)]
 pub struct GraphSource {
     /// Ledger alias or IRI (e.g., "mydb:main", "http://example.org/ledger1")
     pub identifier: String,
     /// Optional time-travel specification
     pub time_spec: Option<TimeSpec>,
+    /// Dataset-local alias for this source (unique within the request)
+    ///
+    /// Used to reference this specific graph source in query patterns,
+    /// especially when the same graph IRI exists in multiple ledgers.
+    pub source_alias: Option<String>,
+    /// Graph selector within the ledger
+    ///
+    /// If None, the default graph is selected (same as `GraphSelector::Default`).
+    /// This is separate from the `#txn-meta` fragment in the identifier for cleaner semantics.
+    pub graph_selector: Option<GraphSelector>,
+    /// Per-source policy override
+    ///
+    /// If present, applies policy options only to this source, overriding
+    /// any global policy settings for this specific graph.
+    pub policy_override: Option<SourcePolicyOverride>,
+}
+
+/// Per-source policy override options
+///
+/// A subset of `QueryConnectionOptions` that can be applied per-source.
+/// When present on a `GraphSource`, this policy takes precedence over any
+/// global policy specified in `QueryConnectionOptions`.
+#[derive(Debug, Clone, Default)]
+pub struct SourcePolicyOverride {
+    pub identity: Option<String>,
+    pub policy_class: Option<Vec<String>>,
+    pub policy: Option<JsonValue>,
+    pub policy_values: Option<HashMap<String, JsonValue>>,
+    pub default_allow: Option<bool>,
+}
+
+impl SourcePolicyOverride {
+    /// Check if this override specifies any policy fields.
+    ///
+    /// Returns true if at least one policy field is set.
+    pub fn has_policy(&self) -> bool {
+        self.identity.is_some()
+            || self.policy_class.is_some()
+            || self.policy.is_some()
+            || self.policy_values.is_some()
+            || self.default_allow.is_some()
+    }
+
+    /// Convert to `QueryConnectionOptions` for policy wrapping.
+    ///
+    /// This creates a minimal `QueryConnectionOptions` with only the policy
+    /// fields from this override, suitable for passing to `wrap_policy()`.
+    pub fn to_query_connection_options(&self) -> QueryConnectionOptions {
+        QueryConnectionOptions {
+            identity: self.identity.clone(),
+            policy_class: self.policy_class.clone(),
+            policy: self.policy.clone(),
+            policy_values: self.policy_values.clone(),
+            default_allow: self.default_allow.unwrap_or(false),
+            tracking: Default::default(),
+        }
+    }
 }
 
 impl GraphSource {
@@ -263,6 +327,9 @@ impl GraphSource {
         Self {
             identifier: identifier.into(),
             time_spec: None,
+            source_alias: None,
+            graph_selector: None,
+            policy_override: None,
         }
     }
 
@@ -270,6 +337,30 @@ impl GraphSource {
     pub fn with_time(mut self, time_spec: TimeSpec) -> Self {
         self.time_spec = Some(time_spec);
         self
+    }
+
+    /// Set dataset-local alias
+    pub fn with_alias(mut self, alias: impl Into<String>) -> Self {
+        self.source_alias = Some(alias.into());
+        self
+    }
+
+    /// Set graph selector
+    pub fn with_graph(mut self, selector: GraphSelector) -> Self {
+        self.graph_selector = Some(selector);
+        self
+    }
+
+    /// Set per-source policy override
+    pub fn with_policy(mut self, policy: SourcePolicyOverride) -> Self {
+        self.policy_override = Some(policy);
+        self
+    }
+
+    /// Create from identifier string
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Self {
+        Self::new(s)
     }
 }
 
@@ -282,6 +373,54 @@ impl From<&str> for GraphSource {
 impl From<String> for GraphSource {
     fn from(s: String) -> Self {
         Self::new(s)
+    }
+}
+
+/// Graph selector for specifying which graph within a ledger to query.
+///
+/// A ledger can contain multiple named graphs:
+/// - Default graph (g_id=0): the main data graph
+/// - txn-meta graph (g_id=1): transaction metadata
+/// - User-defined named graphs: arbitrary IRIs mapped to g_id via registry
+#[derive(Debug, Clone, PartialEq)]
+pub enum GraphSelector {
+    /// The ledger's default graph (g_id=0)
+    Default,
+    /// The built-in transaction metadata graph (g_id=1)
+    TxnMeta,
+    /// A user-defined named graph by IRI
+    /// The IRI is resolved to a g_id via the ledger's graph registry
+    Iri(String),
+}
+
+impl GraphSelector {
+    /// Create a selector for the default graph
+    pub fn default_graph() -> Self {
+        Self::Default
+    }
+
+    /// Create a selector for the txn-meta graph
+    pub fn txn_meta() -> Self {
+        Self::TxnMeta
+    }
+
+    /// Create a selector for a named graph by IRI
+    pub fn iri(iri: impl Into<String>) -> Self {
+        Self::Iri(iri.into())
+    }
+
+    /// Parse from string value (as used in JSON "graph" field)
+    ///
+    /// - `"default"` → Default
+    /// - `"txn-meta"` → TxnMeta
+    /// - anything else → Iri(value)
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "default" => Self::Default,
+            "txn-meta" => Self::TxnMeta,
+            _ => Self::Iri(s.to_string()),
+        }
     }
 }
 
@@ -366,6 +505,10 @@ pub enum DatasetParseError {
     InvalidGraphSource(String),
     /// Invalid query-connection options object
     InvalidOptions(String),
+    /// Duplicate dataset-local alias
+    DuplicateAlias(String),
+    /// Ambiguous graph selector (both #txn-meta fragment and graph field)
+    AmbiguousGraphSelector(String),
 }
 
 impl std::fmt::Display for DatasetParseError {
@@ -375,6 +518,16 @@ impl std::fmt::Display for DatasetParseError {
             Self::InvalidFromNamed(msg) => write!(f, "Invalid 'from-named' value: {}", msg),
             Self::InvalidGraphSource(msg) => write!(f, "Invalid graph source: {}", msg),
             Self::InvalidOptions(msg) => write!(f, "Invalid query options: {}", msg),
+            Self::DuplicateAlias(alias) => {
+                write!(f, "Duplicate dataset-local alias: '{}'", alias)
+            }
+            Self::AmbiguousGraphSelector(id) => {
+                write!(
+                    f,
+                    "Ambiguous graph selector for '{}': cannot use both #txn-meta fragment and 'graph' field",
+                    id
+                )
+            }
         }
     }
 }
@@ -393,10 +546,12 @@ impl DatasetSpec {
     /// - Array of strings: `"from": ["ledger1:main", "ledger2:main"]`
     /// - Object with time: `"from": {"@id": "ledger:main", "t": 42}`
     /// - Array of objects: `"from": [{"@id": "ledger1", "t": 10}, "ledger2"]`
+    /// - **New**: Object with alias/graph: `"from": {"@id": "ledger:main", "alias": "a", "graph": "txn-meta"}`
     ///
     /// **"from-named" (named graphs)**:
     /// - Single string: `"from-named": "graph1"`
     /// - Array: `"from-named": ["graph1", "graph2"]`
+    /// - **New**: Objects with alias/graph/policy
     ///
     /// # Example
     ///
@@ -469,6 +624,9 @@ impl DatasetSpec {
         if let Some(from_named_val) = obj.get("from-named") {
             spec.named_graphs = parse_graph_sources(from_named_val, "from-named")?;
         }
+
+        // Validate alias uniqueness across all sources
+        validate_alias_uniqueness(&spec)?;
 
         Ok(spec)
     }
@@ -552,6 +710,9 @@ impl DatasetSpec {
         if let Some(v) = from_named_val {
             spec.named_graphs = parse_graph_sources(v, "from-named")?;
         }
+
+        // Validate alias uniqueness across all sources
+        validate_alias_uniqueness(&spec)?;
 
         let qc_opts = QueryConnectionOptions::from_json(json)?;
         Ok((spec, qc_opts))
@@ -762,8 +923,13 @@ fn parse_graph_sources(
 /// Parse a single graph source from a JSON value
 ///
 /// Accepts:
-/// - String: identifier (may include @t:/@iso:/@sha: time-travel syntax)
-/// - Object: `{"@id": "ledger:main", "t": 42}` or `{"@id": "ledger:main", "at": "commit:abc"}`
+/// - String: identifier (may include @t:/@iso:/@sha: time-travel syntax and #txn-meta fragment)
+/// - Object: Extended graph source object with optional fields:
+///   - `@id` / `id`: ledger reference (required)
+///   - `t` / `at`: time specification
+///   - `alias`: dataset-local alias (optional)
+///   - `graph`: graph selector - "default", "txn-meta", or IRI string (optional)
+///   - `policy`: per-source policy override (optional)
 fn parse_single_graph_source(
     val: &JsonValue,
     field_name: &str,
@@ -777,7 +943,7 @@ fn parse_single_graph_source(
         }
         JsonValue::Object(obj) => {
             // Get identifier from @id or id
-            let identifier = obj
+            let raw_identifier = obj
                 .get("@id")
                 .or_else(|| obj.get("id"))
                 .and_then(|v| v.as_str())
@@ -788,9 +954,13 @@ fn parse_single_graph_source(
                     ))
                 })?;
 
-            let mut source = GraphSource::new(identifier);
+            // Parse time-travel and fragment from the identifier
+            let (identifier, time_spec) = parse_alias_time_travel(raw_identifier)?;
 
-            // Parse time specification
+            let mut source = GraphSource::new(&identifier);
+            source.time_spec = time_spec;
+
+            // Parse time specification from explicit keys (overrides string suffix)
             if let Some(t_val) = obj.get("t") {
                 if let Some(t) = t_val.as_i64() {
                     source.time_spec = Some(TimeSpec::AtT(t));
@@ -807,6 +977,41 @@ fn parse_single_graph_source(
                 }
             }
 
+            // Parse alias (dataset-local identifier for this source)
+            if let Some(alias_val) = obj.get("alias") {
+                if let Some(alias) = alias_val.as_str() {
+                    source.source_alias = Some(alias.to_string());
+                } else {
+                    return Err(DatasetParseError::InvalidGraphSource(
+                        "'alias' must be a string".to_string(),
+                    ));
+                }
+            }
+
+            // Parse graph selector
+            if let Some(graph_val) = obj.get("graph") {
+                // Check for ambiguity: identifier has #txn-meta AND graph field provided
+                if identifier.contains("#txn-meta") {
+                    return Err(DatasetParseError::AmbiguousGraphSelector(
+                        raw_identifier.to_string(),
+                    ));
+                }
+
+                if let Some(graph_str) = graph_val.as_str() {
+                    source.graph_selector = Some(GraphSelector::from_str(graph_str));
+                } else {
+                    return Err(DatasetParseError::InvalidGraphSource(
+                        "'graph' must be a string ('default', 'txn-meta', or a graph IRI)"
+                            .to_string(),
+                    ));
+                }
+            }
+
+            // Parse policy override
+            if let Some(policy_val) = obj.get("policy") {
+                source.policy_override = Some(parse_source_policy_override(policy_val)?);
+            }
+
             Ok(source)
         }
         _ => Err(DatasetParseError::InvalidGraphSource(format!(
@@ -814,6 +1019,112 @@ fn parse_single_graph_source(
             field_name
         ))),
     }
+}
+
+/// Parse per-source policy override from JSON
+fn parse_source_policy_override(
+    val: &JsonValue,
+) -> Result<SourcePolicyOverride, DatasetParseError> {
+    let obj = val.as_object().ok_or_else(|| {
+        DatasetParseError::InvalidGraphSource("'policy' must be an object".to_string())
+    })?;
+
+    let identity = obj
+        .get("identity")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let policy_class_val = obj
+        .get("policy-class")
+        .or_else(|| obj.get("policy_class"))
+        .or_else(|| obj.get("policyClass"));
+    let policy_class = match policy_class_val {
+        None | Some(JsonValue::Null) => None,
+        Some(JsonValue::String(s)) => Some(vec![s.to_string()]),
+        Some(JsonValue::Array(arr)) => {
+            let mut out = Vec::with_capacity(arr.len());
+            for v in arr {
+                let Some(s) = v.as_str() else {
+                    return Err(DatasetParseError::InvalidGraphSource(
+                        "'policy-class' must be a string or array of strings".to_string(),
+                    ));
+                };
+                out.push(s.to_string());
+            }
+            Some(out)
+        }
+        Some(_) => {
+            return Err(DatasetParseError::InvalidGraphSource(
+                "'policy-class' must be a string or array of strings".to_string(),
+            ))
+        }
+    };
+
+    let policy = obj.get("policy").cloned().and_then(|v| match v {
+        JsonValue::Null => None,
+        other => Some(other),
+    });
+
+    let policy_values_val = obj
+        .get("policy-values")
+        .or_else(|| obj.get("policy_values"))
+        .or_else(|| obj.get("policyValues"));
+    let policy_values = match policy_values_val {
+        None | Some(JsonValue::Null) => None,
+        Some(JsonValue::Object(map)) => {
+            Some(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        }
+        Some(_) => {
+            return Err(DatasetParseError::InvalidGraphSource(
+                "'policy-values' must be an object".to_string(),
+            ))
+        }
+    };
+
+    let default_allow = obj
+        .get("default-allow")
+        .or_else(|| obj.get("default_allow"))
+        .or_else(|| obj.get("defaultAllow"))
+        .and_then(|v| v.as_bool());
+
+    Ok(SourcePolicyOverride {
+        identity,
+        policy_class,
+        policy,
+        policy_values,
+        default_allow,
+    })
+}
+
+/// Validate that all dataset-local aliases are unique across the dataset spec.
+///
+/// Per the handoff spec: "if an alias appears more than once in the request
+/// (across both 'from' and 'from-named'), return an error."
+///
+/// Also validates that aliases don't collide with identifiers, since the dataset
+/// builder adds both identifier and alias as lookup keys in the runtime dataset.
+fn validate_alias_uniqueness(spec: &DatasetSpec) -> Result<(), DatasetParseError> {
+    use std::collections::HashSet;
+
+    // Collect all identifiers first (these are always present)
+    let mut all_keys: HashSet<String> = spec
+        .default_graphs
+        .iter()
+        .chain(spec.named_graphs.iter())
+        .map(|s| s.identifier.clone())
+        .collect();
+
+    // Check each alias for collisions
+    for source in spec.default_graphs.iter().chain(spec.named_graphs.iter()) {
+        if let Some(alias) = &source.source_alias {
+            // Check against identifiers and other aliases
+            if !all_keys.insert(alias.clone()) {
+                return Err(DatasetParseError::DuplicateAlias(alias.clone()));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1558,5 +1869,364 @@ mod tests {
             spec.default_graphs[0].time_spec,
             Some(TimeSpec::Latest)
         ));
+    }
+
+    // =============================================================================
+    // Named Graph / Graph Selector Tests (query-connection handoff spec)
+    // =============================================================================
+
+    #[test]
+    fn test_graph_selector_from_str() {
+        assert!(matches!(
+            GraphSelector::from_str("default"),
+            GraphSelector::Default
+        ));
+        assert!(matches!(
+            GraphSelector::from_str("txn-meta"),
+            GraphSelector::TxnMeta
+        ));
+        assert!(matches!(
+            GraphSelector::from_str("http://example.org/graph"),
+            GraphSelector::Iri(ref s) if s == "http://example.org/graph"
+        ));
+        // IRI with hash (should not be confused with "default" or "txn-meta")
+        assert!(matches!(
+            GraphSelector::from_str("http://example.org/vocab#products"),
+            GraphSelector::Iri(ref s) if s == "http://example.org/vocab#products"
+        ));
+    }
+
+    #[test]
+    fn test_graph_source_with_alias() {
+        let source = GraphSource::new("ledger:main")
+            .with_alias("myAlias")
+            .with_time(TimeSpec::at_t(42));
+
+        assert_eq!(source.identifier, "ledger:main");
+        assert_eq!(source.source_alias, Some("myAlias".to_string()));
+        assert!(matches!(source.time_spec, Some(TimeSpec::AtT(42))));
+    }
+
+    #[test]
+    fn test_graph_source_with_graph_selector() {
+        let source = GraphSource::new("ledger:main").with_graph(GraphSelector::TxnMeta);
+
+        assert_eq!(source.identifier, "ledger:main");
+        assert!(matches!(
+            source.graph_selector,
+            Some(GraphSelector::TxnMeta)
+        ));
+    }
+
+    #[test]
+    fn test_parse_from_object_with_alias() {
+        let query = json!({
+            "from": {"@id": "ledger:main", "alias": "mydb"},
+            "select": ["?s"]
+        });
+
+        let spec = DatasetSpec::from_json(&query).unwrap();
+        assert_eq!(spec.default_graphs.len(), 1);
+        assert_eq!(spec.default_graphs[0].identifier, "ledger:main");
+        assert_eq!(
+            spec.default_graphs[0].source_alias,
+            Some("mydb".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_from_object_with_graph_default() {
+        let query = json!({
+            "from": {"@id": "ledger:main", "graph": "default"},
+            "select": ["?s"]
+        });
+
+        let spec = DatasetSpec::from_json(&query).unwrap();
+        assert_eq!(spec.default_graphs.len(), 1);
+        assert!(matches!(
+            spec.default_graphs[0].graph_selector,
+            Some(GraphSelector::Default)
+        ));
+    }
+
+    #[test]
+    fn test_parse_from_object_with_graph_txn_meta() {
+        let query = json!({
+            "from": {"@id": "ledger:main", "alias": "meta", "graph": "txn-meta"},
+            "select": ["?s"]
+        });
+
+        let spec = DatasetSpec::from_json(&query).unwrap();
+        assert_eq!(spec.default_graphs.len(), 1);
+        assert_eq!(spec.default_graphs[0].identifier, "ledger:main");
+        assert_eq!(
+            spec.default_graphs[0].source_alias,
+            Some("meta".to_string())
+        );
+        assert!(matches!(
+            spec.default_graphs[0].graph_selector,
+            Some(GraphSelector::TxnMeta)
+        ));
+    }
+
+    #[test]
+    fn test_parse_from_object_with_graph_iri() {
+        let query = json!({
+            "from": {
+                "@id": "ledger:main",
+                "alias": "products",
+                "graph": "http://example.org/vocab#products"
+            },
+            "select": ["?s"]
+        });
+
+        let spec = DatasetSpec::from_json(&query).unwrap();
+        assert_eq!(spec.default_graphs.len(), 1);
+        assert_eq!(spec.default_graphs[0].identifier, "ledger:main");
+        assert_eq!(
+            spec.default_graphs[0].source_alias,
+            Some("products".to_string())
+        );
+        assert!(matches!(
+            &spec.default_graphs[0].graph_selector,
+            Some(GraphSelector::Iri(ref iri)) if iri == "http://example.org/vocab#products"
+        ));
+    }
+
+    #[test]
+    fn test_parse_from_named_with_graph_iri() {
+        // Cross-ledger named graphs with collision disambiguation (handoff spec example)
+        let query = json!({
+            "from-named": [
+                {
+                    "@id": "sales:main",
+                    "alias": "salesProducts",
+                    "graph": "http://example.org/vocab#products"
+                },
+                {
+                    "@id": "inventory:main",
+                    "alias": "inventoryProducts",
+                    "graph": "http://example.org/vocab#products"
+                }
+            ],
+            "select": ["?g", "?sku"]
+        });
+
+        let spec = DatasetSpec::from_json(&query).unwrap();
+        assert_eq!(spec.named_graphs.len(), 2);
+
+        assert_eq!(spec.named_graphs[0].identifier, "sales:main");
+        assert_eq!(
+            spec.named_graphs[0].source_alias,
+            Some("salesProducts".to_string())
+        );
+        assert!(matches!(
+            &spec.named_graphs[0].graph_selector,
+            Some(GraphSelector::Iri(ref iri)) if iri == "http://example.org/vocab#products"
+        ));
+
+        assert_eq!(spec.named_graphs[1].identifier, "inventory:main");
+        assert_eq!(
+            spec.named_graphs[1].source_alias,
+            Some("inventoryProducts".to_string())
+        );
+        assert!(matches!(
+            &spec.named_graphs[1].graph_selector,
+            Some(GraphSelector::Iri(ref iri)) if iri == "http://example.org/vocab#products"
+        ));
+    }
+
+    #[test]
+    fn test_parse_from_object_with_time_in_id_and_alias() {
+        // Time travel in @id string plus alias field
+        let query = json!({
+            "from": {"@id": "ledger:main@t:5", "alias": "oldData"},
+            "select": ["?s"]
+        });
+
+        let spec = DatasetSpec::from_json(&query).unwrap();
+        assert_eq!(spec.default_graphs.len(), 1);
+        assert_eq!(spec.default_graphs[0].identifier, "ledger:main");
+        assert!(matches!(
+            spec.default_graphs[0].time_spec,
+            Some(TimeSpec::AtT(5))
+        ));
+        assert_eq!(
+            spec.default_graphs[0].source_alias,
+            Some("oldData".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_from_with_policy_override() {
+        let query = json!({
+            "from": {
+                "@id": "ledger:main",
+                "alias": "restricted",
+                "policy": {
+                    "identity": "did:example:user1",
+                    "policy-class": ["ReadOnly"],
+                    "default-allow": false
+                }
+            },
+            "select": ["?s"]
+        });
+
+        let spec = DatasetSpec::from_json(&query).unwrap();
+        assert_eq!(spec.default_graphs.len(), 1);
+
+        let policy = spec.default_graphs[0].policy_override.as_ref().unwrap();
+        assert_eq!(policy.identity, Some("did:example:user1".to_string()));
+        assert_eq!(policy.policy_class, Some(vec!["ReadOnly".to_string()]));
+        assert_eq!(policy.default_allow, Some(false));
+    }
+
+    // Error cases for named graph features
+
+    #[test]
+    fn test_duplicate_alias_error() {
+        let query = json!({
+            "from": [
+                {"@id": "ledger1:main", "alias": "mydb"},
+                {"@id": "ledger2:main", "alias": "mydb"}
+            ],
+            "select": ["?s"]
+        });
+
+        let result = DatasetSpec::from_json(&query);
+        assert!(result.is_err(), "Duplicate aliases should error");
+        let err = result.unwrap_err();
+        assert!(matches!(err, DatasetParseError::DuplicateAlias(ref a) if a == "mydb"));
+    }
+
+    #[test]
+    fn test_duplicate_alias_across_from_and_from_named_error() {
+        let query = json!({
+            "from": {"@id": "ledger1:main", "alias": "shared"},
+            "from-named": [{"@id": "ledger2:main", "alias": "shared"}],
+            "select": ["?s"]
+        });
+
+        let result = DatasetSpec::from_json(&query);
+        assert!(
+            result.is_err(),
+            "Duplicate aliases across from/from-named should error"
+        );
+        let err = result.unwrap_err();
+        assert!(matches!(err, DatasetParseError::DuplicateAlias(ref a) if a == "shared"));
+    }
+
+    #[test]
+    fn test_alias_collides_with_identifier_error() {
+        // Alias "ledger2:main" collides with the identifier of another source
+        let query = json!({
+            "from": "ledger1:main",
+            "from-named": [{"@id": "ledger2:main", "alias": "ledger1:main"}],
+            "select": ["?s"]
+        });
+
+        let result = DatasetSpec::from_json(&query);
+        assert!(
+            result.is_err(),
+            "Alias matching another source's identifier should error"
+        );
+        let err = result.unwrap_err();
+        assert!(matches!(err, DatasetParseError::DuplicateAlias(ref a) if a == "ledger1:main"));
+    }
+
+    #[test]
+    fn test_ambiguous_graph_selector_error() {
+        // Both #txn-meta fragment AND graph field = error
+        let query = json!({
+            "from": {"@id": "ledger:main#txn-meta", "graph": "txn-meta"},
+            "select": ["?s"]
+        });
+
+        let result = DatasetSpec::from_json(&query);
+        assert!(
+            result.is_err(),
+            "Both fragment and graph field should error"
+        );
+        let err = result.unwrap_err();
+        assert!(matches!(err, DatasetParseError::AmbiguousGraphSelector(_)));
+    }
+
+    #[test]
+    fn test_ambiguous_graph_selector_error_with_different_graph() {
+        // #txn-meta in id but graph field points to different graph
+        let query = json!({
+            "from": {"@id": "ledger:main#txn-meta", "graph": "default"},
+            "select": ["?s"]
+        });
+
+        let result = DatasetSpec::from_json(&query);
+        assert!(
+            result.is_err(),
+            "Fragment and different graph field should error"
+        );
+        assert!(matches!(
+            result.unwrap_err(),
+            DatasetParseError::AmbiguousGraphSelector(_)
+        ));
+    }
+
+    #[test]
+    fn test_invalid_alias_type_error() {
+        let query = json!({
+            "from": {"@id": "ledger:main", "alias": 123},
+            "select": ["?s"]
+        });
+
+        let result = DatasetSpec::from_json(&query);
+        assert!(result.is_err(), "Non-string alias should error");
+    }
+
+    #[test]
+    fn test_invalid_graph_type_error() {
+        let query = json!({
+            "from": {"@id": "ledger:main", "graph": ["array"]},
+            "select": ["?s"]
+        });
+
+        let result = DatasetSpec::from_json(&query);
+        assert!(result.is_err(), "Non-string graph should error");
+    }
+
+    // Backward compatibility tests
+
+    #[test]
+    fn test_backward_compat_txn_meta_fragment() {
+        // Old style #txn-meta fragment should still work
+        let query = json!({
+            "from": "ledger:main#txn-meta",
+            "select": ["?s"]
+        });
+
+        let spec = DatasetSpec::from_json(&query).unwrap();
+        assert_eq!(spec.default_graphs.len(), 1);
+        assert_eq!(spec.default_graphs[0].identifier, "ledger:main#txn-meta");
+        // No graph_selector since it's in the identifier
+        assert!(spec.default_graphs[0].graph_selector.is_none());
+    }
+
+    #[test]
+    fn test_backward_compat_object_with_time() {
+        // Old style object with just @id and t
+        let query = json!({
+            "from": {"@id": "ledger:main", "t": 42},
+            "select": ["?s"]
+        });
+
+        let spec = DatasetSpec::from_json(&query).unwrap();
+        assert_eq!(spec.default_graphs.len(), 1);
+        assert_eq!(spec.default_graphs[0].identifier, "ledger:main");
+        assert!(matches!(
+            spec.default_graphs[0].time_spec,
+            Some(TimeSpec::AtT(42))
+        ));
+        // New fields are None
+        assert!(spec.default_graphs[0].source_alias.is_none());
+        assert!(spec.default_graphs[0].graph_selector.is_none());
+        assert!(spec.default_graphs[0].policy_override.is_none());
     }
 }

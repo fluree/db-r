@@ -22,12 +22,11 @@ FROM NAMED <ledger:staging>  # Another named graph
 
 In SPARQL, **named graphs** are additional graphs (identified by IRIs) that participate in query execution and are accessed via `GRAPH <iri> { ... }`.
 
-In Fluree, there are currently two practical ways “named graphs” show up:
+In Fluree, named graphs are used in several ways:
 
 - **Multi-graph execution (datasets)**: `FROM NAMED <...>` identifies additional **graph sources** (often other ledgers or virtual graphs) that you can reference with `GRAPH <...> { ... }`.
 - **Named graphs within a ledger (txn metadata)**: Fluree provides a built-in named graph for commit/transaction metadata called **`txn-meta`**, queryable via the `#txn-meta` fragment on a ledger reference (e.g., `<mydb:main#txn-meta>`).
-
-Longer-term, we can add ingestion support for arbitrary user-defined named graphs (TriG / JSON-LD named graph forms), but that is not part of the current ingestion surface.
+- **User-defined named graphs**: Fluree supports ingesting data into user-defined named graphs using TriG format. These graphs are identified by their IRI and can be queried using the structured `from` object syntax with a `graph` field.
 
 ### Txn metadata named graph (`#txn-meta`)
 
@@ -51,9 +50,71 @@ Notes:
 - Using `FROM <mydb:main#txn-meta>` makes txn-meta the **default graph** for the query.
 - You can also use dataset syntax (`FROM NAMED` + `GRAPH`) if you need to mix default graph and txn-meta in one query.
 
-### (Planned) Creating user-defined named graphs during ingestion
+### User-Defined Named Graphs
 
-Fluree’s current write APIs ingest user data into the **default graph**. Supporting arbitrary user-defined named graph ingestion (e.g., TriG `GRAPH <...> { ... }` and JSON-LD named graph forms) requires additional implementation work. For the concrete plan for txn-meta metadata ingestion, see `TXN_META_INGESTION_SPEC.md` at the repository root.
+Fluree supports ingesting data into user-defined named graphs using **TriG format**. TriG extends Turtle by adding `GRAPH` blocks that assign triples to specific named graphs.
+
+**Creating named graphs via TriG:**
+
+```trig
+@prefix ex: <http://example.org/ns/> .
+@prefix schema: <http://schema.org/> .
+
+# Default graph triples
+ex:company a schema:Organization ;
+    schema:name "Acme Corp" .
+
+# Named graph for product data
+GRAPH <http://example.org/graphs/products> {
+    ex:widget a schema:Product ;
+        schema:name "Widget" ;
+        schema:price "29.99"^^xsd:decimal .
+}
+
+# Named graph for inventory
+GRAPH <http://example.org/graphs/inventory> {
+    ex:widget schema:inventory 42 ;
+        schema:warehouse "main" .
+}
+```
+
+Submit TriG data via HTTP API:
+
+```bash
+curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
+  -H "Content-Type: application/trig" \
+  --data-binary '@data.trig'
+```
+
+**Querying user-defined named graphs (JSON-LD):**
+
+Use the structured `from` object with a `graph` field:
+
+```json
+{
+  "@context": { "schema": "http://schema.org/" },
+  "from": {
+    "@id": "mydb:main",
+    "graph": "http://example.org/graphs/products"
+  },
+  "select": ["?name", "?price"],
+  "where": [
+    { "@id": "?product", "schema:name": "?name" },
+    { "@id": "?product", "schema:price": "?price" }
+  ]
+}
+```
+
+**Graph IDs:**
+- **g_id=0**: Default graph (user data without GRAPH blocks)
+- **g_id=1**: txn-meta graph (commit metadata)
+- **g_id=2+**: User-defined named graphs (assigned in order of first use)
+
+**Notes:**
+- Named graph IRIs are stored in the commit's `graph_delta` field for replay
+- Queries against named graphs are scoped to the indexed data (post-indexing)
+- Maximum 256 named graphs can be introduced per transaction
+- Maximum IRI length is 8KB per graph IRI
 
 ### Querying Named Graphs
 

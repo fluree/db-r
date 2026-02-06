@@ -49,13 +49,16 @@ zstd = { workspace = true }
 # Tempfile for streaming commit writer spool
 tempfile = "3"
 
-# Turtle parser (optional, for import mode)
-fluree-graph-turtle = { path = "../fluree-graph-turtle", optional = true }
+# Turtle/TriG parser (required for trig_meta, optional import mode)
+fluree-graph-turtle = { path = "../fluree-graph-turtle" }
+
+# Hash map for trig_meta parser
+rustc-hash = "2"
 
 [features]
 default = []
 shacl = ["dep:fluree-db-shacl"]
-import = ["dep:fluree-graph-turtle"]
+import = []
 
 [dev-dependencies]
 tokio.workspace = true

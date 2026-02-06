@@ -283,6 +283,8 @@ mod inner {
                 data: None,
                 index: None,
                 txn_signature: None,
+                txn_meta: Vec::new(),
+                graph_delta: HashMap::new(),
             }
         }
 

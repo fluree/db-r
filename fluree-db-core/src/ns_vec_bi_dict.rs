@@ -32,6 +32,16 @@ pub struct NsVecBiDict {
     entries: Vec<Vec<Arc<str>>>,
     /// Reverse: `[ns_code BE 2B][suffix bytes]` → sid64.
     reverse: HashMap<Box<[u8]>, u64>,
+    /// Default local-id base for namespaces not present in `watermarks`.
+    ///
+    /// This exists so callers can build overlay-only dictionaries that allocate
+    /// `sid64` values in a high local-id range (to sort after persisted IDs)
+    /// without needing to pre-size watermark vectors for all namespace codes.
+    ///
+    /// For normal novelty dictionaries this is `1` (allocate from local_id=1),
+    /// but query-time ephemeral subject dictionaries may choose a much larger
+    /// base (e.g., `0x0000_8000_0000_0000`).
+    local_base: u64,
     /// Per-namespace watermarks: `watermarks[ns_code]` = max persisted local_id.
     watermarks: Vec<u64>,
     /// Per-namespace next allocation counter.
@@ -50,10 +60,30 @@ impl NsVecBiDict {
         Self {
             entries: Vec::new(),
             reverse: HashMap::new(),
+            local_base: 1,
             watermarks: Vec::new(),
             next_local_ids: Vec::new(),
             overflow_watermark: 0,
             overflow_next_local_id: 0,
+            overflow_entries: Vec::new(),
+        }
+    }
+
+    /// Create an empty dict that allocates local IDs starting at `local_base`.
+    ///
+    /// This is useful for query-time ephemeral subject dictionaries: by choosing
+    /// a high `local_base`, IDs are guaranteed to sort after persisted IDs
+    /// within the same namespace (while still using proper `SubjectId` encoding).
+    pub fn with_local_base(local_base: u64) -> Self {
+        let local_base = local_base.max(1);
+        Self {
+            entries: Vec::new(),
+            reverse: HashMap::new(),
+            local_base,
+            watermarks: Vec::new(),
+            next_local_ids: Vec::new(),
+            overflow_watermark: local_base - 1,
+            overflow_next_local_id: local_base,
             overflow_entries: Vec::new(),
         }
     }
@@ -68,6 +98,7 @@ impl NsVecBiDict {
         Self {
             entries,
             reverse: HashMap::new(),
+            local_base: 1,
             watermarks,
             next_local_ids,
             overflow_watermark: overflow_wm,
@@ -97,13 +128,22 @@ impl NsVecBiDict {
         } else {
             let ns_idx = ns_code as usize;
             if ns_idx >= self.next_local_ids.len() {
-                self.next_local_ids.resize(ns_idx + 1, 0);
+                self.next_local_ids.resize(ns_idx + 1, self.local_base);
             }
             if ns_idx >= self.watermarks.len() {
-                self.watermarks.resize(ns_idx + 1, 0);
+                self.watermarks.resize(ns_idx + 1, self.local_base - 1);
             }
             if ns_idx >= self.entries.len() {
                 self.entries.resize_with(ns_idx + 1, Vec::new);
+            }
+            // For newly-created namespaces (or callers that seeded with 0),
+            // ensure allocation begins above the namespace watermark and respects
+            // `local_base`.
+            if self.watermarks[ns_idx] == 0 && self.local_base > 1 {
+                self.watermarks[ns_idx] = self.local_base - 1;
+            }
+            if self.next_local_ids[ns_idx] == 0 && self.local_base > 1 {
+                self.next_local_ids[ns_idx] = self.local_base;
             }
             if self.next_local_ids[ns_idx] <= self.watermarks[ns_idx] {
                 self.next_local_ids[ns_idx] = self.watermarks[ns_idx] + 1;

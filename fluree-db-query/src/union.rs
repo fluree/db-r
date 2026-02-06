@@ -267,6 +267,15 @@ fn extend_schema_from_patterns(
                 }
                 extend_schema_from_patterns(schema, seen, inner);
             }
+            Pattern::Service(sp) => {
+                // Service pattern contributes variables from inner patterns and the endpoint variable (if any)
+                if let crate::ir::ServiceEndpoint::Var(v) = &sp.endpoint {
+                    if seen.insert(*v) {
+                        schema.push(*v);
+                    }
+                }
+                extend_schema_from_patterns(schema, seen, &sp.patterns);
+            }
         }
     }
 }

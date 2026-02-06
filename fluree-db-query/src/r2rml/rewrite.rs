@@ -109,6 +109,16 @@ pub fn rewrite_patterns_for_r2rml<S: Storage>(
                 converted += inner_result.converted_count;
                 unconverted += inner_result.unconverted_count;
             }
+            Pattern::Service(sp) => {
+                let inner_result = rewrite_patterns_for_r2rml(&sp.patterns, vg_alias, db);
+                result_patterns.push(Pattern::Service(crate::ir::ServicePattern::new(
+                    sp.silent,
+                    sp.endpoint.clone(),
+                    inner_result.patterns,
+                )));
+                converted += inner_result.converted_count;
+                unconverted += inner_result.unconverted_count;
+            }
             // Preserve other patterns as-is
             Pattern::Filter(_)
             | Pattern::Bind { .. }

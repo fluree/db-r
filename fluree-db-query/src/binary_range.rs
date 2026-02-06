@@ -142,7 +142,7 @@ fn binary_range_eq(
     // Overlay merge.
     if let Some((ovl, dict_ov)) = overlay {
         let overlay_ops =
-            crate::binary_scan::translate_overlay_flakes(ovl, dict_ov, effective_to_t);
+            crate::binary_scan::translate_overlay_flakes(ovl, dict_ov, effective_to_t, g_id);
         if !overlay_ops.is_empty() {
             cursor.set_epoch(ovl.epoch());
 

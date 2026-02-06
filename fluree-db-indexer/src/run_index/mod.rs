@@ -100,6 +100,12 @@ pub struct RunGenerationResult {
     /// Contains per-(graph, property) HLL sketches and datatype usage.
     /// `None` if stats collection was not enabled.
     pub stats_hook: Option<crate::stats::IdStatsHook>,
+    /// Total size of all commit blobs in bytes.
+    pub total_commit_size: u64,
+    /// Total number of assertions across all commits.
+    pub total_asserts: u64,
+    /// Total number of retractions across all commits.
+    pub total_retracts: u64,
 }
 
 /// Errors from the run generation pipeline.
@@ -185,7 +191,7 @@ pub fn persist_namespaces(ns_prefixes: &HashMap<u16, String>, run_dir: &Path) ->
 pub async fn generate_runs<S: StorageRead>(
     storage: &S,
     head_commit_address: &str,
-    ledger_alias: &str,
+    _ledger_alias: &str,
     config: RunWriterConfig,
 ) -> Result<RunGenerationResult, RunGenError> {
     let _span = tracing::info_span!("generate_runs", head = %head_commit_address).entered();
@@ -221,19 +227,28 @@ pub async fn generate_runs<S: StorageRead>(
     let mut writer = RunWriter::new(config);
 
     // ---- Phase 3: Resolve commits in forward order ----
+    // Accumulate commit statistics
+    let mut total_commit_size = 0u64;
+    let mut total_asserts = 0u64;
+    let mut total_retracts = 0u64;
+
     for (i, addr) in addresses.iter().enumerate() {
         let bytes = storage
             .read_bytes(addr)
             .await
             .map_err(|e| RunGenError::Storage(format!("read {}: {}", addr, e)))?;
 
-        let (op_count, t) =
-            resolver.resolve_blob(&bytes, addr, ledger_alias, &mut dicts, &mut writer)?;
+        let resolved = resolver.resolve_blob(&bytes, addr, &mut dicts, &mut writer)?;
+
+        // Accumulate totals
+        total_commit_size += resolved.size;
+        total_asserts += resolved.asserts as u64;
+        total_retracts += resolved.retracts as u64;
 
         tracing::debug!(
             commit = i + 1,
-            t = t,
-            ops = op_count,
+            t = resolved.t,
+            ops = resolved.total_records,
             subjects = dicts.subjects.len(),
             predicates = dicts.predicates.len(),
             "commit resolved"
@@ -268,6 +283,9 @@ pub async fn generate_runs<S: StorageRead>(
         total_records: writer_result.total_records,
         commit_count: addresses.len(),
         stats_hook: resolver.take_stats_hook(),
+        total_commit_size,
+        total_asserts,
+        total_retracts,
     };
 
     tracing::info!(

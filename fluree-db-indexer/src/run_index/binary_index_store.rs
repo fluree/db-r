@@ -97,6 +97,8 @@ struct GraphIndex {
 struct DictionarySet {
     predicates: PredicateDict,
     predicate_reverse: HashMap<String, u32>,
+    /// Graph IRI → dict_index (0-based). g_id = dict_index + 1.
+    graphs_reverse: HashMap<String, u32>,
     subject_forward_tree: Option<DictTreeReader>,
     subject_reverse_tree: Option<DictTreeReader>,
     string_forward_tree: Option<DictTreeReader>,
@@ -361,6 +363,20 @@ impl BinaryIndexStore {
             .collect();
         tracing::info!(datatypes = dt_dict.len(), "loaded datatype dict → dt_sids");
 
+        // ---- Load graphs dict ----
+        // Build reverse map: IRI → dict_index (0-based). g_id = dict_index + 1.
+        let graphs_path = run_dir.join("graphs.dict");
+        let graphs_reverse: HashMap<String, u32> = if graphs_path.exists() {
+            let graphs_dict = read_predicate_dict(&graphs_path)?;
+            let rev: HashMap<String, u32> = (0..graphs_dict.len())
+                .filter_map(|id| graphs_dict.resolve(id).map(|iri| (iri.to_string(), id)))
+                .collect();
+            tracing::info!(graphs = graphs_dict.len(), "loaded graphs dict");
+            rev
+        } else {
+            HashMap::new()
+        };
+
         // ---- Load numbig arenas ----
         let nb_dir = run_dir.join("numbig");
         let mut numbig_forward: HashMap<u32, super::numbig_dict::NumBigArena> = HashMap::new();
@@ -422,6 +438,7 @@ impl BinaryIndexStore {
             dicts: DictionarySet {
                 predicates,
                 predicate_reverse,
+                graphs_reverse,
                 subject_forward_tree,
                 subject_reverse_tree,
                 string_forward_tree,
@@ -435,7 +452,10 @@ impl BinaryIndexStore {
             },
             graph_indexes: GraphIndexes { graphs },
             max_t,
-            base_t: max_t,
+            // Fresh bulk builds populate R3 for all records, so time-travel
+            // is supported from t=1. Legacy behavior was `base_t: max_t` which
+            // disabled time-travel for bulk builds.
+            base_t: 1,
             leaflet_cache,
         })
     }
@@ -601,6 +621,16 @@ impl BinaryIndexStore {
             .collect();
         tracing::info!(datatypes = dt_dict.len(), "loaded datatype dict → dt_sids");
 
+        // ---- Load graphs dict (cache-aware) ----
+        // Build reverse map: IRI → dict_index (0-based). g_id = dict_index + 1.
+        let graphs_bytes =
+            fetch_cached_bytes(storage, &root.dict_addresses.graphs, cache_dir, "dict").await?;
+        let graphs_dict = read_predicate_dict_from_bytes(&graphs_bytes)?;
+        let graphs_reverse: HashMap<String, u32> = (0..graphs_dict.len())
+            .filter_map(|id| graphs_dict.resolve(id).map(|iri| (iri.to_string(), id)))
+            .collect();
+        tracing::info!(graphs = graphs_dict.len(), "loaded graphs dict");
+
         // ---- Load numbig arenas (cache-aware) ----
         let mut numbig_forward: HashMap<u32, super::numbig_dict::NumBigArena> = HashMap::new();
         for (p_id_str, addr) in &root.dict_addresses.numbig {
@@ -722,6 +752,7 @@ impl BinaryIndexStore {
             dicts: DictionarySet {
                 predicates,
                 predicate_reverse,
+                graphs_reverse,
                 subject_forward_tree,
                 subject_reverse_tree,
                 string_forward_tree,
@@ -1190,6 +1221,15 @@ impl BinaryIndexStore {
         ids
     }
 
+    /// Look up a named graph by IRI, returning its g_id if found.
+    ///
+    /// Graph IDs: 0 = default graph, 1 = txn-meta, 2+ = user-defined.
+    /// Returns `None` if the graph IRI is not in the dictionary.
+    pub fn graph_id_for_iri(&self, iri: &str) -> Option<u32> {
+        // graphs_reverse stores dict_index (0-based), g_id = dict_index + 1
+        self.dicts.graphs_reverse.get(iri).map(|&idx| idx + 1)
+    }
+
     // ========================================================================
     // Namespace codes access
     // ========================================================================
@@ -1653,13 +1693,16 @@ impl BinaryIndexStore {
         s_id: u64,
         p_id: Option<u32>,
     ) -> io::Result<Vec<Flake>> {
-        let branch = self
-            .branch_for_order(g_id, RunSortOrder::Spot)
-            .expect("SPOT index must exist for every graph");
+        // Return empty if graph has no index (e.g., empty default graph when only named graphs have data)
+        let branch = match self.branch_for_order(g_id, RunSortOrder::Spot) {
+            Some(b) => b,
+            None => return Ok(Vec::new()),
+        };
 
-        let _leaf_dir = self
-            .leaf_dir_for_order(g_id, RunSortOrder::Spot)
-            .expect("SPOT leaf dir must exist for every graph");
+        let _leaf_dir = match self.leaf_dir_for_order(g_id, RunSortOrder::Spot) {
+            Some(d) => d,
+            None => return Ok(Vec::new()),
+        };
 
         let leaf_range = branch.find_leaves_for_subject(g_id, s_id);
         let mut flakes = Vec::new();

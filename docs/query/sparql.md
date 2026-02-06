@@ -534,16 +534,126 @@ WHERE {
 
 ## Service Queries
 
-Federated queries (planned):
+SERVICE enables cross-ledger queries within Fluree. You can execute patterns against different ledgers within the same query using the `fluree:ledger:` URI scheme.
+
+### Basic Cross-Ledger Query
+
+Query data from another ledger in your dataset:
 
 ```sparql
-SELECT ?name
+PREFIX ex: <http://example.org/ns/>
+
+SELECT ?customer ?name ?total
+FROM <customers:main>
+FROM NAMED <orders:main>
 WHERE {
-  SERVICE <http://example.org/sparql> {
+  ?customer ex:name ?name .
+  SERVICE <fluree:ledger:orders:main> {
+    ?order ex:customer ?customer ;
+           ex:total ?total .
+  }
+}
+```
+
+### Endpoint URI Format
+
+For local Fluree ledger queries, use the `fluree:ledger:` scheme:
+
+| Format | Description | Matches dataset alias |
+|--------|-------------|----------------------|
+| `fluree:ledger:<name>` | Query ledger with default branch (main) | `<name>:main` |
+| `fluree:ledger:<name>:<branch>` | Query specific branch | `<name>:<branch>` |
+
+Where:
+- `<name>` is the ledger name **without** the branch (e.g., `orders`, `acme/people`)
+- `<branch>` is the branch name (e.g., `main`, `dev`)
+- The full dataset alias is always `<name>:<branch>` (e.g., `orders:main`, `acme/people:dev`)
+
+The endpoint is resolved by matching against the full `ledger_alias` in the dataset.
+
+**Examples:**
+
+```sparql
+SERVICE <fluree:ledger:orders> { ... }         -- matches orders:main
+SERVICE <fluree:ledger:orders:main> { ... }    -- matches orders:main (explicit)
+SERVICE <fluree:ledger:orders:dev> { ... }     -- matches orders:dev
+```
+
+### SERVICE SILENT
+
+Use `SERVICE SILENT` to return empty results instead of failing if the service errors or is unavailable:
+
+```sparql
+PREFIX ex: <http://example.org/ns/>
+
+SELECT ?name ?order
+WHERE {
+  ?person ex:name ?name .
+  SERVICE SILENT <fluree:ledger:orders:main> {
+    ?order ex:customer ?person .
+  }
+}
+```
+
+If the `orders` ledger is not in the dataset or encounters an error, the query returns results with unbound `?order` values instead of failing.
+
+### Variable Endpoints
+
+SERVICE supports variable endpoints that iterate over available ledgers:
+
+```sparql
+PREFIX ex: <http://example.org/ns/>
+
+SELECT ?ledger ?person ?name
+FROM NAMED <db1:main>
+FROM NAMED <db2:main>
+WHERE {
+  SERVICE ?ledger {
     ?person ex:name ?name .
   }
 }
 ```
+
+This queries all named ledgers in the dataset.
+
+### Cross-Ledger Join Example
+
+Join customer data from one ledger with their orders from another:
+
+```sparql
+PREFIX ex: <http://example.org/ns/>
+
+SELECT ?customerName ?productName ?quantity
+FROM <customers:main>
+FROM NAMED <orders:main>
+FROM NAMED <products:main>
+WHERE {
+  # Get customer from default graph (customers ledger)
+  ?customer ex:name ?customerName .
+
+  # Get orders for this customer from orders ledger
+  SERVICE <fluree:ledger:orders:main> {
+    ?order ex:customer ?customer ;
+           ex:product ?product ;
+           ex:quantity ?quantity .
+  }
+
+  # Get product details from products ledger
+  SERVICE <fluree:ledger:products:main> {
+    ?product ex:name ?productName .
+  }
+}
+```
+
+### Requirements
+
+- The target ledger must be included in the dataset (via `FROM` or `FROM NAMED` clauses)
+- Results are joined with the outer query on shared variables
+- SERVICE patterns are executed as correlated subqueries (like EXISTS)
+
+### External SPARQL Endpoints
+
+Federated queries to external SPARQL endpoints are not yet supported. Only local Fluree ledgers using the `fluree:ledger:` scheme are currently available.
 
 ## Time Travel
 

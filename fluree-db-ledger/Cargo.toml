@@ -12,6 +12,7 @@ fluree-db-nameservice = { path = "../fluree-db-nameservice" }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 futures = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }

@@ -63,6 +63,7 @@ async-trait.workspace = true
 chrono.workspace = true
 futures.workspace = true
 lru.workspace = true
+rustc-hash = "2"
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
