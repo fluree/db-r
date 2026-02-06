@@ -1,0 +1,1084 @@
+//! Baseline benchmark for all Fluree dictionary structures targeted for VecBiDict replacement.
+//!
+//! Measures insert, forward lookup, reverse lookup, and memory footprint
+//! for each dictionary at realistic low and high scales.
+//!
+//! Dictionaries benchmarked (matching new-vec-bidict-plan.md):
+//!   1. StringDictNovelty           — fluree-db-core        (Step 3)
+//!   2. SubjectDictNovelty          — fluree-db-core        (Step 4)
+//!   3. DictOverlay::ext_predicates — ephemeral pattern     (Step 5)
+//!   4. DictOverlay::ext_graphs     — ephemeral pattern     (Step 5)
+//!   5. DictOverlay::ext_lang_tags  — ephemeral pattern     (Step 5)
+//!   6. DictOverlay::ext_subjects   — ephemeral pattern     (Step 5)
+//!   7. DictOverlay::ext_strings    — ephemeral pattern     (Step 5)
+//!   8. PredicateDict               — fluree-db-indexer     (Step 6)
+//!   9. LanguageTagDict             — fluree-db-indexer     (Step 6)
+
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::collections::HashMap;
+use std::hash::Hash;
+use std::hint::black_box;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
+
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
+
+use fluree_db_core::DictNovelty;
+use fluree_db_indexer::run_index::global_dict::{LanguageTagDict, PredicateDict};
+
+// ============================================================================
+// Tracking allocator
+// ============================================================================
+
+struct TrackingAllocator;
+
+static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
+static PEAK: AtomicUsize = AtomicUsize::new(0);
+
+#[global_allocator]
+static ALLOC: TrackingAllocator = TrackingAllocator;
+
+unsafe impl GlobalAlloc for TrackingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let ptr = unsafe { System.alloc(layout) };
+        if !ptr.is_null() {
+            let prev = ALLOCATED.fetch_add(layout.size(), Ordering::Relaxed);
+            let current = prev + layout.size();
+            let mut peak = PEAK.load(Ordering::Relaxed);
+            while current > peak {
+                match PEAK.compare_exchange_weak(
+                    peak,
+                    current,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(p) => peak = p,
+                }
+            }
+        }
+        ptr
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        ALLOCATED.fetch_sub(layout.size(), Ordering::Relaxed);
+        unsafe { System.dealloc(ptr, layout) };
+    }
+}
+
+fn current_allocated() -> usize {
+    ALLOCATED.load(Ordering::Relaxed)
+}
+
+fn reset_peak() {
+    PEAK.store(ALLOCATED.load(Ordering::Relaxed), Ordering::Relaxed);
+}
+
+// ============================================================================
+// Data generation
+// ============================================================================
+
+/// Generate realistic IRI-like strings (mix of predicates and entities).
+fn generate_iris(count: usize, seed: u64) -> Vec<String> {
+    let mut rng = SmallRng::seed_from_u64(seed);
+    let namespaces = [
+        "http://www.w3.org/2001/XMLSchema#",
+        "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+        "http://www.w3.org/2000/01/rdf-schema#",
+        "http://xmlns.com/foaf/0.1/",
+        "http://schema.org/",
+        "http://dbpedia.org/resource/",
+        "http://example.org/people/",
+        "http://example.org/organizations/",
+        "http://example.org/products/",
+        "http://example.org/events/",
+        "https://ns.flur.ee/ledger#",
+        "http://purl.org/dc/terms/",
+    ];
+    let local_parts = [
+        "name",
+        "label",
+        "type",
+        "description",
+        "value",
+        "created",
+        "modified",
+        "author",
+        "title",
+        "status",
+        "category",
+        "identifier",
+        "version",
+    ];
+
+    (0..count)
+        .map(|i| {
+            let ns = namespaces[rng.gen_range(0..namespaces.len())];
+            if rng.gen_bool(0.3) {
+                let local = local_parts[rng.gen_range(0..local_parts.len())];
+                format!("{ns}{local}")
+            } else {
+                format!("{ns}entity_{i}_{}", rng.gen_range(0u32..100_000))
+            }
+        })
+        .collect()
+}
+
+/// Generate (ns_code, suffix) pairs with realistic namespace distribution.
+/// 80% core namespaces (0-9), 15% medium (10-99), 5% overflow (0xFFFF).
+fn generate_subject_data(count: usize, seed: u64) -> Vec<(u16, String)> {
+    let mut rng = SmallRng::seed_from_u64(seed);
+    (0..count)
+        .map(|i| {
+            let r: f64 = rng.gen();
+            let ns_code: u16 = if r < 0.80 {
+                rng.gen_range(0..10)
+            } else if r < 0.95 {
+                rng.gen_range(10..100)
+            } else {
+                0xFFFF
+            };
+            let suffix = format!("entity_{i}_{}", rng.gen_range(0u32..100_000));
+            (ns_code, suffix)
+        })
+        .collect()
+}
+
+/// Generate predicate-like IRIs (higher reuse ratio — ~140 unique predicates).
+fn generate_predicate_iris(count: usize, seed: u64) -> Vec<String> {
+    let mut rng = SmallRng::seed_from_u64(seed);
+    let namespaces = [
+        "http://www.w3.org/2001/XMLSchema#",
+        "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+        "http://www.w3.org/2000/01/rdf-schema#",
+        "http://xmlns.com/foaf/0.1/",
+        "http://schema.org/",
+        "https://ns.flur.ee/ledger#",
+        "http://purl.org/dc/terms/",
+    ];
+    let local_parts = [
+        "name",
+        "label",
+        "type",
+        "description",
+        "value",
+        "created",
+        "modified",
+        "author",
+        "title",
+        "status",
+        "category",
+        "identifier",
+        "version",
+        "email",
+        "phone",
+        "address",
+        "age",
+        "birthDate",
+        "gender",
+        "nationality",
+    ];
+
+    (0..count)
+        .map(|i| {
+            let ns = namespaces[rng.gen_range(0..namespaces.len())];
+            if rng.gen_bool(0.7) {
+                let local = local_parts[rng.gen_range(0..local_parts.len())];
+                format!("{ns}{local}")
+            } else {
+                format!("{ns}prop_{i}_{}", rng.gen_range(0u32..10_000))
+            }
+        })
+        .collect()
+}
+
+/// Generate graph IRIs (very few unique — typically < 10 graphs per ledger).
+fn generate_graph_iris(count: usize, seed: u64) -> Vec<String> {
+    let graphs = [
+        "http://example.org/graph/main",
+        "http://example.org/graph/audit",
+        "http://example.org/graph/policy",
+        "http://example.org/graph/system",
+        "http://example.org/graph/public",
+        "http://example.org/graph/private",
+        "https://ns.flur.ee/ledger#default",
+        "https://ns.flur.ee/ledger#commit",
+    ];
+    let mut rng = SmallRng::seed_from_u64(seed);
+    (0..count)
+        .map(|i| {
+            if rng.gen_bool(0.9) {
+                graphs[rng.gen_range(0..graphs.len())].to_string()
+            } else {
+                format!("http://example.org/graph/custom_{i}")
+            }
+        })
+        .collect()
+}
+
+/// Generate realistic language tags (~30 unique, massive reuse).
+fn generate_language_tags(count: usize, seed: u64) -> Vec<String> {
+    let tags = [
+        "en", "fr", "de", "es", "pt", "zh", "ja", "ko", "ar", "hi", "ru", "it", "nl", "sv", "no",
+        "da", "fi", "pl", "cs", "el", "en-US", "en-GB", "pt-BR", "zh-CN", "zh-TW", "es-MX",
+        "fr-CA", "de-AT", "de-CH", "nl-BE",
+    ];
+    let mut rng = SmallRng::seed_from_u64(seed);
+    (0..count)
+        .map(|_| tags[rng.gen_range(0..tags.len())].to_string())
+        .collect()
+}
+
+/// Generate mixed string values (labels, descriptions, numeric strings).
+fn generate_string_values(count: usize, seed: u64) -> Vec<String> {
+    let mut rng = SmallRng::seed_from_u64(seed);
+    let short_values = [
+        "Alice",
+        "Bob",
+        "Charlie",
+        "active",
+        "pending",
+        "completed",
+        "true",
+        "false",
+        "yes",
+        "no",
+    ];
+
+    (0..count)
+        .map(|i| {
+            let r: f64 = rng.gen();
+            if r < 0.3 {
+                short_values[rng.gen_range(0..short_values.len())].to_string()
+            } else if r < 0.6 {
+                format!("value_{i}_{}", rng.gen_range(0u32..100_000))
+            } else {
+                format!(
+                    "Description for entity {} with suffix {}",
+                    i,
+                    rng.gen_range(0u32..100_000)
+                )
+            }
+        })
+        .collect()
+}
+
+/// Build string lookup data: 50% known values (hits), 50% novel (misses).
+fn build_string_lookups(source: &[String], count: usize, seed: u64) -> Vec<String> {
+    let mut rng = SmallRng::seed_from_u64(seed);
+    (0..count)
+        .map(|_| {
+            if rng.gen_bool(0.5) && !source.is_empty() {
+                source[rng.gen_range(0..source.len())].clone()
+            } else {
+                format!(
+                    "http://example.org/miss/{}",
+                    rng.gen_range(0u64..10_000_000)
+                )
+            }
+        })
+        .collect()
+}
+
+/// Build u32 lookup IDs: uniformly distributed in [0, max_id).
+fn build_u32_lookup_ids(count: usize, max_id: u32, seed: u64) -> Vec<u32> {
+    let mut rng = SmallRng::seed_from_u64(seed);
+    (0..count)
+        .map(|_| rng.gen_range(0..max_id.max(1)))
+        .collect()
+}
+
+/// Build u16 lookup IDs: uniformly distributed in [0, max_id].
+fn build_u16_lookup_ids(count: usize, max_id: u16, seed: u64) -> Vec<u16> {
+    let mut rng = SmallRng::seed_from_u64(seed);
+    (0..count)
+        .map(|_| rng.gen_range(0..=max_id.max(1)))
+        .collect()
+}
+
+// ============================================================================
+// Benchmark result
+// ============================================================================
+
+struct BenchResult {
+    label: &'static str,
+    scale: usize,
+    lookup_count: usize,
+    insert_ms: f64,
+    fwd_lookup_ms: f64,
+    rev_lookup_ms: f64,
+    mem_bytes: usize,
+    unique_count: usize,
+}
+
+fn print_detail(r: &BenchResult) {
+    let scale_str = format_scale(r.scale);
+    let bytes_per_entry = if r.unique_count > 0 {
+        r.mem_bytes / r.unique_count
+    } else {
+        0
+    };
+    println!("\n--- {} ({} entries) ---", r.label, format_count(r.scale));
+    println!(
+        "  Inserts:     {} calls -> {} unique entries",
+        format_count(r.scale),
+        format_count(r.unique_count)
+    );
+    println!("  Insert:      {:>10.2} ms", r.insert_ms);
+    println!(
+        "  Fwd lookup:  {:>10.2} ms  ({} lookups)",
+        r.fwd_lookup_ms,
+        format_count(r.lookup_count)
+    );
+    println!(
+        "  Rev lookup:  {:>10.2} ms  ({} lookups)",
+        r.rev_lookup_ms,
+        format_count(r.lookup_count)
+    );
+    println!(
+        "  Memory:      {:>10.2} MB  ({} bytes/entry)",
+        r.mem_bytes as f64 / 1_048_576.0,
+        bytes_per_entry
+    );
+    let _ = scale_str;
+}
+
+fn format_scale(n: usize) -> String {
+    if n >= 1_000_000 {
+        format!("{}M", n / 1_000_000)
+    } else if n >= 1_000 {
+        format!("{}K", n / 1_000)
+    } else {
+        format!("{}", n)
+    }
+}
+
+fn format_count(n: usize) -> String {
+    if n >= 1_000_000 {
+        let m = n as f64 / 1_000_000.0;
+        if m == m.floor() {
+            format!("{:.0}M", m)
+        } else {
+            format!("{:.1}M", m)
+        }
+    } else if n >= 1_000 {
+        let k = n as f64 / 1_000.0;
+        if k == k.floor() {
+            format!("{:.0}K", k)
+        } else {
+            format!("{:.1}K", k)
+        }
+    } else {
+        format!("{n}")
+    }
+}
+
+// ============================================================================
+// DictOverlay ephemeral pair — standalone clone of the paired HashMap+Vec pattern
+//
+// Mirrors the exact code pattern in fluree-db-query/src/dict_overlay.rs:
+//   reverse: HashMap<String, Id>  (string -> id)
+//   forward: Vec<String>          (id -> string, indexed by id - base)
+// The string is duplicated in both structures — one allocation each.
+// ============================================================================
+
+trait ExtId: Copy + Eq + Hash {
+    fn from_usize(v: usize) -> Self;
+    fn to_usize(self) -> usize;
+}
+
+impl ExtId for u16 {
+    fn from_usize(v: usize) -> Self {
+        v as u16
+    }
+    fn to_usize(self) -> usize {
+        self as usize
+    }
+}
+impl ExtId for u32 {
+    fn from_usize(v: usize) -> Self {
+        v as u32
+    }
+    fn to_usize(self) -> usize {
+        self as usize
+    }
+}
+impl ExtId for u64 {
+    fn from_usize(v: usize) -> Self {
+        v as u64
+    }
+    fn to_usize(self) -> usize {
+        self as usize
+    }
+}
+
+struct ExtPair<Id: ExtId> {
+    reverse: HashMap<String, Id>,
+    forward: Vec<String>,
+    base: usize,
+}
+
+impl<Id: ExtId> ExtPair<Id> {
+    fn new(base: usize) -> Self {
+        Self {
+            reverse: HashMap::new(),
+            forward: Vec::new(),
+            base,
+        }
+    }
+
+    fn assign_or_lookup(&mut self, value: &str) -> Id {
+        if let Some(&id) = self.reverse.get(value) {
+            return id;
+        }
+        let id = Id::from_usize(self.base + self.forward.len());
+        self.reverse.insert(value.to_string(), id);
+        self.forward.push(value.to_string());
+        id
+    }
+
+    fn find(&self, value: &str) -> Option<Id> {
+        self.reverse.get(value).copied()
+    }
+
+    fn resolve(&self, id: Id) -> Option<&str> {
+        let idx = id.to_usize().checked_sub(self.base)?;
+        self.forward.get(idx).map(|s| s.as_str())
+    }
+
+    fn len(&self) -> usize {
+        self.forward.len()
+    }
+}
+
+// ============================================================================
+// Benchmark functions — one per target dict
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// 1. StringDictNovelty (Step 3)
+// ---------------------------------------------------------------------------
+
+fn bench_string_dict_novelty(n: usize) -> BenchResult {
+    let iris = generate_iris(n, 42);
+    let lookup_count = n.clamp(10_000, 500_000);
+    let lookup_iris = build_string_lookups(&iris, lookup_count, 99);
+    let lookup_ids = build_u32_lookup_ids(lookup_count, n as u32, 100);
+
+    let baseline = current_allocated();
+    reset_peak();
+
+    let start = Instant::now();
+    let mut dn = DictNovelty::new_genesis();
+    for iri in &iris {
+        dn.strings.assign_or_lookup(iri);
+    }
+    let insert_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let mem_bytes = current_allocated() - baseline;
+    let unique_count = dn.strings.len();
+
+    let start = Instant::now();
+    for &id in &lookup_ids {
+        black_box(dn.strings.resolve_string(id));
+    }
+    let fwd_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    let start = Instant::now();
+    for iri in &lookup_iris {
+        black_box(dn.strings.find_string(iri));
+    }
+    let rev_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    black_box(&dn);
+
+    BenchResult {
+        label: "StringDictNovelty",
+        scale: n,
+        lookup_count,
+        insert_ms,
+        fwd_lookup_ms: fwd_ms,
+        rev_lookup_ms: rev_ms,
+        mem_bytes,
+        unique_count,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 2. SubjectDictNovelty (Step 4)
+// ---------------------------------------------------------------------------
+
+fn bench_subject_dict_novelty(n: usize) -> BenchResult {
+    let subjects = generate_subject_data(n, 42);
+    let lookup_count = n.clamp(10_000, 500_000);
+
+    // Pre-populate to collect valid sid64s for forward lookup generation.
+    let mut pre_dn = DictNovelty::new_genesis();
+    let assigned_sids: Vec<u64> = subjects
+        .iter()
+        .map(|(ns, s)| pre_dn.subjects.assign_or_lookup(*ns, s))
+        .collect();
+    drop(pre_dn);
+
+    let mut rng = SmallRng::seed_from_u64(99);
+    let lookup_sid64s: Vec<u64> = (0..lookup_count)
+        .map(|_| {
+            if rng.gen_bool(0.5) {
+                assigned_sids[rng.gen_range(0..assigned_sids.len())]
+            } else {
+                rng.gen::<u64>()
+            }
+        })
+        .collect();
+    drop(assigned_sids);
+
+    let lookup_subjects: Vec<(u16, String)> = (0..lookup_count)
+        .map(|_| {
+            if rng.gen_bool(0.5) {
+                subjects[rng.gen_range(0..subjects.len())].clone()
+            } else {
+                (
+                    rng.gen_range(0..100u16),
+                    format!("miss_{}", rng.gen::<u32>()),
+                )
+            }
+        })
+        .collect();
+
+    // Actual benchmark
+    let baseline = current_allocated();
+    reset_peak();
+
+    let start = Instant::now();
+    let mut dn = DictNovelty::new_genesis();
+    for (ns_code, suffix) in &subjects {
+        dn.subjects.assign_or_lookup(*ns_code, suffix);
+    }
+    let insert_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let mem_bytes = current_allocated() - baseline;
+    let unique_count = dn.subjects.len();
+
+    let start = Instant::now();
+    for &sid64 in &lookup_sid64s {
+        black_box(dn.subjects.resolve_subject(sid64));
+    }
+    let fwd_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    let start = Instant::now();
+    for (ns_code, suffix) in &lookup_subjects {
+        black_box(dn.subjects.find_subject(*ns_code, suffix));
+    }
+    let rev_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    black_box(&dn);
+
+    BenchResult {
+        label: "SubjectDictNovelty",
+        scale: n,
+        lookup_count,
+        insert_ms,
+        fwd_lookup_ms: fwd_ms,
+        rev_lookup_ms: rev_ms,
+        mem_bytes,
+        unique_count,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 3. DictOverlay::ext_predicates (Step 5) — HashMap<String, u32> + Vec<String>
+// ---------------------------------------------------------------------------
+
+fn bench_ext_predicates(n: usize) -> BenchResult {
+    let iris = generate_predicate_iris(n, 42);
+    let lookup_count = n.clamp(10_000, 500_000);
+    let lookup_iris = build_string_lookups(&iris, lookup_count, 99);
+    let lookup_ids = build_u32_lookup_ids(lookup_count, n as u32, 100);
+
+    let baseline = current_allocated();
+    reset_peak();
+
+    let start = Instant::now();
+    let mut dict = ExtPair::<u32>::new(100); // base simulates existing persisted predicates
+    for iri in &iris {
+        dict.assign_or_lookup(iri);
+    }
+    let insert_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let mem_bytes = current_allocated() - baseline;
+    let unique_count = dict.len();
+
+    let start = Instant::now();
+    for &id in &lookup_ids {
+        black_box(dict.resolve(id));
+    }
+    let fwd_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    let start = Instant::now();
+    for iri in &lookup_iris {
+        black_box(dict.find(iri));
+    }
+    let rev_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    black_box(&dict);
+
+    BenchResult {
+        label: "DictOverlay::ext_predicates",
+        scale: n,
+        lookup_count,
+        insert_ms,
+        fwd_lookup_ms: fwd_ms,
+        rev_lookup_ms: rev_ms,
+        mem_bytes,
+        unique_count,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 4. DictOverlay::ext_graphs (Step 5) — HashMap<String, u32> + Vec<String>
+// ---------------------------------------------------------------------------
+
+fn bench_ext_graphs(n: usize) -> BenchResult {
+    let iris = generate_graph_iris(n, 42);
+    let lookup_count = n.clamp(10_000, 500_000);
+    let lookup_iris = build_string_lookups(&iris, lookup_count, 99);
+    let lookup_ids = build_u32_lookup_ids(lookup_count, n as u32, 100);
+
+    let baseline = current_allocated();
+    reset_peak();
+
+    let start = Instant::now();
+    let mut dict = ExtPair::<u32>::new(10); // base simulates existing persisted graphs
+    for iri in &iris {
+        dict.assign_or_lookup(iri);
+    }
+    let insert_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let mem_bytes = current_allocated() - baseline;
+    let unique_count = dict.len();
+
+    let start = Instant::now();
+    for &id in &lookup_ids {
+        black_box(dict.resolve(id));
+    }
+    let fwd_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    let start = Instant::now();
+    for iri in &lookup_iris {
+        black_box(dict.find(iri));
+    }
+    let rev_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    black_box(&dict);
+
+    BenchResult {
+        label: "DictOverlay::ext_graphs",
+        scale: n,
+        lookup_count,
+        insert_ms,
+        fwd_lookup_ms: fwd_ms,
+        rev_lookup_ms: rev_ms,
+        mem_bytes,
+        unique_count,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 5. DictOverlay::ext_lang_tags (Step 5) — HashMap<String, u16> + Vec<String>
+// ---------------------------------------------------------------------------
+
+fn bench_ext_lang_tags(n: usize) -> BenchResult {
+    let tags = generate_language_tags(n, 42);
+    let lookup_count = n.clamp(10_000, 500_000);
+    let lookup_tags = build_string_lookups(&tags, lookup_count, 99);
+    let lookup_ids = build_u16_lookup_ids(lookup_count, 30, 100); // ~30 unique tags
+
+    let baseline = current_allocated();
+    reset_peak();
+
+    let start = Instant::now();
+    let mut dict = ExtPair::<u16>::new(1); // base_lang_count + 1 (1-based, 0 = no tag)
+    for tag in &tags {
+        dict.assign_or_lookup(tag);
+    }
+    let insert_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let mem_bytes = current_allocated() - baseline;
+    let unique_count = dict.len();
+
+    let start = Instant::now();
+    for &id in &lookup_ids {
+        black_box(dict.resolve(id));
+    }
+    let fwd_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    let start = Instant::now();
+    for tag in &lookup_tags {
+        black_box(dict.find(tag));
+    }
+    let rev_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    black_box(&dict);
+
+    BenchResult {
+        label: "DictOverlay::ext_lang_tags",
+        scale: n,
+        lookup_count,
+        insert_ms,
+        fwd_lookup_ms: fwd_ms,
+        rev_lookup_ms: rev_ms,
+        mem_bytes,
+        unique_count,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 6. DictOverlay::ext_subjects (Step 5) — HashMap<String, u64> + Vec<String>
+// ---------------------------------------------------------------------------
+
+fn bench_ext_subjects(n: usize) -> BenchResult {
+    let iris = generate_iris(n, 42); // entity-like IRIs
+    let lookup_count = n.clamp(10_000, 500_000);
+    let lookup_iris = build_string_lookups(&iris, lookup_count, 99);
+    // u64 IDs — generate as u32 then widen (IDs are sequential from base)
+    let lookup_ids: Vec<u64> = build_u32_lookup_ids(lookup_count, n as u32, 100)
+        .into_iter()
+        .map(u64::from)
+        .collect();
+
+    let baseline = current_allocated();
+    reset_peak();
+
+    let start = Instant::now();
+    let mut dict = ExtPair::<u64>::new(1000); // base simulates existing persisted subjects
+    for iri in &iris {
+        dict.assign_or_lookup(iri);
+    }
+    let insert_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let mem_bytes = current_allocated() - baseline;
+    let unique_count = dict.len();
+
+    let start = Instant::now();
+    for &id in &lookup_ids {
+        black_box(dict.resolve(id));
+    }
+    let fwd_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    let start = Instant::now();
+    for iri in &lookup_iris {
+        black_box(dict.find(iri));
+    }
+    let rev_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    black_box(&dict);
+
+    BenchResult {
+        label: "DictOverlay::ext_subjects",
+        scale: n,
+        lookup_count,
+        insert_ms,
+        fwd_lookup_ms: fwd_ms,
+        rev_lookup_ms: rev_ms,
+        mem_bytes,
+        unique_count,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 7. DictOverlay::ext_strings (Step 5) — HashMap<String, u32> + Vec<String>
+// ---------------------------------------------------------------------------
+
+fn bench_ext_strings(n: usize) -> BenchResult {
+    let values = generate_string_values(n, 42);
+    let lookup_count = n.clamp(10_000, 500_000);
+    let lookup_values = build_string_lookups(&values, lookup_count, 99);
+    let lookup_ids = build_u32_lookup_ids(lookup_count, n as u32, 100);
+
+    let baseline = current_allocated();
+    reset_peak();
+
+    let start = Instant::now();
+    let mut dict = ExtPair::<u32>::new(5000); // base simulates existing persisted strings
+    for val in &values {
+        dict.assign_or_lookup(val);
+    }
+    let insert_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let mem_bytes = current_allocated() - baseline;
+    let unique_count = dict.len();
+
+    let start = Instant::now();
+    for &id in &lookup_ids {
+        black_box(dict.resolve(id));
+    }
+    let fwd_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    let start = Instant::now();
+    for val in &lookup_values {
+        black_box(dict.find(val));
+    }
+    let rev_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    black_box(&dict);
+
+    BenchResult {
+        label: "DictOverlay::ext_strings",
+        scale: n,
+        lookup_count,
+        insert_ms,
+        fwd_lookup_ms: fwd_ms,
+        rev_lookup_ms: rev_ms,
+        mem_bytes,
+        unique_count,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 8. PredicateDict (Step 6) — FxHashMap<BorrowableString, u32> + Vec<String>
+// ---------------------------------------------------------------------------
+
+fn bench_predicate_dict(n: usize) -> BenchResult {
+    let iris = generate_predicate_iris(n, 42);
+    let lookup_count = n.clamp(10_000, 500_000);
+    let lookup_iris = build_string_lookups(&iris, lookup_count, 99);
+    let lookup_ids = build_u32_lookup_ids(lookup_count, n as u32, 100);
+
+    let baseline = current_allocated();
+    reset_peak();
+
+    let start = Instant::now();
+    let mut dict = PredicateDict::new();
+    for iri in &iris {
+        dict.get_or_insert(iri);
+    }
+    let insert_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let mem_bytes = current_allocated() - baseline;
+    let unique_count = dict.len() as usize;
+
+    let start = Instant::now();
+    for &id in &lookup_ids {
+        black_box(dict.resolve(id));
+    }
+    let fwd_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    let start = Instant::now();
+    for iri in &lookup_iris {
+        black_box(dict.get(iri));
+    }
+    let rev_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    black_box(&dict);
+
+    BenchResult {
+        label: "PredicateDict",
+        scale: n,
+        lookup_count,
+        insert_ms,
+        fwd_lookup_ms: fwd_ms,
+        rev_lookup_ms: rev_ms,
+        mem_bytes,
+        unique_count,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 9. LanguageTagDict (Step 6) — FxHashMap<BorrowableString, u16> + Vec<String>
+// ---------------------------------------------------------------------------
+
+fn bench_language_tag_dict(n: usize) -> BenchResult {
+    let tags = generate_language_tags(n, 42);
+    let lookup_count = n.clamp(10_000, 500_000);
+    let lookup_tags = build_string_lookups(&tags, lookup_count, 99);
+    let lookup_ids = build_u16_lookup_ids(lookup_count, 30, 100); // ~30 unique tags
+
+    let baseline = current_allocated();
+    reset_peak();
+
+    let start = Instant::now();
+    let mut dict = LanguageTagDict::new();
+    for tag in &tags {
+        dict.get_or_insert(Some(tag.as_str()));
+    }
+    let insert_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let mem_bytes = current_allocated() - baseline;
+    let unique_count = dict.len() as usize;
+
+    let start = Instant::now();
+    for &id in &lookup_ids {
+        black_box(dict.resolve(id));
+    }
+    let fwd_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    let start = Instant::now();
+    for tag in &lookup_tags {
+        black_box(dict.find_id(tag));
+    }
+    let rev_ms = start.elapsed().as_secs_f64() * 1000.0;
+
+    black_box(&dict);
+
+    BenchResult {
+        label: "LanguageTagDict",
+        scale: n,
+        lookup_count,
+        insert_ms,
+        fwd_lookup_ms: fwd_ms,
+        rev_lookup_ms: rev_ms,
+        mem_bytes,
+        unique_count,
+    }
+}
+
+// ============================================================================
+// Summary
+// ============================================================================
+
+fn print_summary(results: &[BenchResult]) {
+    println!("\n{}", "=".repeat(100));
+    println!("  BASELINE SUMMARY -- All Dictionary Structs");
+    println!(
+        "  Compare first-commit vs last-commit of this branch to measure VecBiDict improvement."
+    );
+    println!("{}", "=".repeat(100));
+    println!(
+        "  {:<30} {:>6} {:>10} {:>10} {:>10} {:>10} {:>7}",
+        "Dict", "Scale", "Insert", "Fwd Lk", "Rev Lk", "Memory", "B/ent"
+    );
+    println!("  {}", "-".repeat(90));
+
+    for r in results {
+        let scale = format_scale(r.scale);
+        let bytes_per_entry = if r.unique_count > 0 {
+            r.mem_bytes / r.unique_count
+        } else {
+            0
+        };
+        println!(
+            "  {:<30} {:>6} {:>8.1}ms {:>8.1}ms {:>8.1}ms {:>8.1}MB {:>5}",
+            r.label,
+            scale,
+            r.insert_ms,
+            r.fwd_lookup_ms,
+            r.rev_lookup_ms,
+            r.mem_bytes as f64 / 1_048_576.0,
+            bytes_per_entry
+        );
+    }
+
+    println!("  {}", "-".repeat(90));
+    println!();
+}
+
+// ============================================================================
+// Main
+// ============================================================================
+
+fn main() {
+    println!("VecBiDict Baseline Benchmark");
+    println!("============================");
+    println!();
+    println!("Benchmarking all 9 dictionary structs targeted for VecBiDict replacement.");
+    println!("See new-vec-bidict-plan.md for the replacement plan.");
+    println!();
+
+    let mut all_results: Vec<BenchResult> = Vec::new();
+
+    // --- Warmup (exercises allocator paths, populates CPU caches) ---
+    println!("Warming up...");
+    let _ = bench_string_dict_novelty(10_000);
+    let _ = bench_ext_predicates(1_000);
+    println!("Warmup complete.\n");
+
+    // -----------------------------------------------------------------------
+    // Step 3: StringDictNovelty — HashMap<String, u32> + HashMap<u32, Arc<str>>
+    // -----------------------------------------------------------------------
+    println!("{}", "=".repeat(76));
+    println!("  Step 3: StringDictNovelty  (HashMap<String, u32> + HashMap<u32, Arc<str>>)");
+    println!("{}", "=".repeat(76));
+
+    for &n in &[500_000, 25_000_000] {
+        let r = bench_string_dict_novelty(n);
+        print_detail(&r);
+        all_results.push(r);
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 4: SubjectDictNovelty — HashMap<Box<[u8]>, u64> + HashMap<u64, (u16, Arc<str>)>
+    // -----------------------------------------------------------------------
+    println!("\n{}", "=".repeat(76));
+    println!(
+        "  Step 4: SubjectDictNovelty  (HashMap<Box<[u8]>, u64> + HashMap<u64, (u16, Arc<str>)>)"
+    );
+    println!("{}", "=".repeat(76));
+
+    for &n in &[500_000, 25_000_000] {
+        let r = bench_subject_dict_novelty(n);
+        print_detail(&r);
+        all_results.push(r);
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 5: DictOverlay ephemerals — HashMap<String, Id> + Vec<String>
+    // -----------------------------------------------------------------------
+    println!("\n{}", "=".repeat(76));
+    println!("  Step 5: DictOverlay ephemerals  (HashMap<String, Id> + Vec<String>)");
+    println!("{}", "=".repeat(76));
+
+    for &n in &[1_000, 100_000] {
+        let r = bench_ext_predicates(n);
+        print_detail(&r);
+        all_results.push(r);
+    }
+
+    for &n in &[1_000, 100_000] {
+        let r = bench_ext_graphs(n);
+        print_detail(&r);
+        all_results.push(r);
+    }
+
+    for &n in &[1_000, 100_000] {
+        let r = bench_ext_lang_tags(n);
+        print_detail(&r);
+        all_results.push(r);
+    }
+
+    for &n in &[1_000, 100_000] {
+        let r = bench_ext_subjects(n);
+        print_detail(&r);
+        all_results.push(r);
+    }
+
+    for &n in &[1_000, 100_000] {
+        let r = bench_ext_strings(n);
+        print_detail(&r);
+        all_results.push(r);
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 6: PredicateDict — FxHashMap<BorrowableString, u32> + Vec<String>
+    // -----------------------------------------------------------------------
+    println!("\n{}", "=".repeat(76));
+    println!("  Step 6: PredicateDict  (FxHashMap<BorrowableString, u32> + Vec<String>)");
+    println!("{}", "=".repeat(76));
+
+    for &n in &[10_000, 500_000] {
+        let r = bench_predicate_dict(n);
+        print_detail(&r);
+        all_results.push(r);
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 6: LanguageTagDict — FxHashMap<BorrowableString, u16> + Vec<String>
+    // -----------------------------------------------------------------------
+    println!("\n{}", "=".repeat(76));
+    println!("  Step 6: LanguageTagDict  (FxHashMap<BorrowableString, u16> + Vec<String>)");
+    println!("{}", "=".repeat(76));
+
+    for &n in &[100, 10_000] {
+        let r = bench_language_tag_dict(n);
+        print_detail(&r);
+        all_results.push(r);
+    }
+
+    // -----------------------------------------------------------------------
+    // Final summary
+    // -----------------------------------------------------------------------
+    print_summary(&all_results);
+
+    println!("Done.");
+}
