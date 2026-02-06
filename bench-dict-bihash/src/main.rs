@@ -1,11 +1,13 @@
-//! Baseline benchmark for all Fluree dictionary structures targeted for VecBiDict replacement.
+//! VecBiDict migration benchmark with embedded baselines for comparison.
 //!
 //! Measures insert, forward lookup, reverse lookup, and memory footprint
-//! for each dictionary at realistic low and high scales.
+//! for each dictionary at realistic low and high scales. Shows side-by-side
+//! comparison against static baseline values captured before migration
+//! (commit 38cb4af, stored in initial-bench.log).
 //!
 //! Dictionaries benchmarked (matching new-vec-bidict-plan.md):
-//!   1. StringDictNovelty           — fluree-db-core        (Step 3)
-//!   2. SubjectDictNovelty          — fluree-db-core        (Step 4)
+//!   1. StringDictNovelty           — fluree-db-core        (Step 3)  [MIGRATED]
+//!   2. SubjectDictNovelty          — fluree-db-core        (Step 4)  [MIGRATED]
 //!   3. DictOverlay::ext_predicates — ephemeral pattern     (Step 5)
 //!   4. DictOverlay::ext_graphs     — ephemeral pattern     (Step 5)
 //!   5. DictOverlay::ext_lang_tags  — ephemeral pattern     (Step 5)
@@ -312,36 +314,279 @@ struct BenchResult {
     unique_count: usize,
 }
 
+// ============================================================================
+// Static baselines — captured at commit 38cb4af (pre-VecBiDict migration)
+//
+// Values are from initial-bench.log (detail sections, 2-decimal precision).
+// These never change; running the benchmark shows current vs these baselines.
+// ============================================================================
+
+struct Baseline {
+    label: &'static str,
+    scale: usize,
+    insert_ms: f64,
+    fwd_lookup_ms: f64,
+    rev_lookup_ms: f64,
+    mem_mb: f64,
+    bytes_per_entry: usize,
+}
+
+static BASELINES: &[Baseline] = &[
+    // Step 3: StringDictNovelty
+    Baseline {
+        label: "StringDictNovelty",
+        scale: 500_000,
+        insert_ms: 64.20,
+        fwd_lookup_ms: 10.51,
+        rev_lookup_ms: 29.41,
+        mem_mb: 67.20,
+        bytes_per_entry: 201,
+    },
+    Baseline {
+        label: "StringDictNovelty",
+        scale: 25_000_000,
+        insert_ms: 6582.72,
+        fwd_lookup_ms: 23.49,
+        rev_lookup_ms: 64.41,
+        mem_mb: 3817.21,
+        bytes_per_entry: 228,
+    },
+    // Step 4: SubjectDictNovelty
+    Baseline {
+        label: "SubjectDictNovelty",
+        scale: 500_000,
+        insert_ms: 81.59,
+        fwd_lookup_ms: 15.80,
+        rev_lookup_ms: 39.72,
+        mem_mb: 86.91,
+        bytes_per_entry: 182,
+    },
+    Baseline {
+        label: "SubjectDictNovelty",
+        scale: 25_000_000,
+        insert_ms: 7384.31,
+        fwd_lookup_ms: 31.19,
+        rev_lookup_ms: 81.15,
+        mem_mb: 3344.76,
+        bytes_per_entry: 140,
+    },
+    // Step 5: DictOverlay ephemerals
+    Baseline {
+        label: "DictOverlay::ext_predicates",
+        scale: 1_000,
+        insert_ms: 0.12,
+        fwd_lookup_ms: 0.04,
+        rev_lookup_ms: 0.22,
+        mem_mb: 0.08,
+        bytes_per_entry: 182,
+    },
+    Baseline {
+        label: "DictOverlay::ext_predicates",
+        scale: 100_000,
+        insert_ms: 5.59,
+        fwd_lookup_ms: 0.23,
+        rev_lookup_ms: 2.25,
+        mem_mb: 5.35,
+        bytes_per_entry: 186,
+    },
+    Baseline {
+        label: "DictOverlay::ext_graphs",
+        scale: 1_000,
+        insert_ms: 0.05,
+        fwd_lookup_ms: 0.01,
+        rev_lookup_ms: 0.20,
+        mem_mb: 0.02,
+        bytes_per_entry: 169,
+    },
+    Baseline {
+        label: "DictOverlay::ext_graphs",
+        scale: 100_000,
+        insert_ms: 2.54,
+        fwd_lookup_ms: 0.11,
+        rev_lookup_ms: 2.04,
+        mem_mb: 1.60,
+        bytes_per_entry: 166,
+    },
+    Baseline {
+        label: "DictOverlay::ext_lang_tags",
+        scale: 1_000,
+        insert_ms: 0.02,
+        fwd_lookup_ms: 0.01,
+        rev_lookup_ms: 0.13,
+        mem_mb: 0.00,
+        bytes_per_entry: 102,
+    },
+    Baseline {
+        label: "DictOverlay::ext_lang_tags",
+        scale: 100_000,
+        insert_ms: 0.97,
+        fwd_lookup_ms: 0.07,
+        rev_lookup_ms: 1.32,
+        mem_mb: 0.00,
+        bytes_per_entry: 102,
+    },
+    Baseline {
+        label: "DictOverlay::ext_subjects",
+        scale: 1_000,
+        insert_ms: 0.12,
+        fwd_lookup_ms: 0.00,
+        rev_lookup_ms: 0.27,
+        mem_mb: 0.12,
+        bytes_per_entry: 157,
+    },
+    Baseline {
+        label: "DictOverlay::ext_subjects",
+        scale: 100_000,
+        insert_ms: 9.35,
+        fwd_lookup_ms: 0.22,
+        rev_lookup_ms: 2.89,
+        mem_mb: 13.38,
+        bytes_per_entry: 200,
+    },
+    Baseline {
+        label: "DictOverlay::ext_strings",
+        scale: 1_000,
+        insert_ms: 0.11,
+        fwd_lookup_ms: 0.00,
+        rev_lookup_ms: 0.18,
+        mem_mb: 0.10,
+        bytes_per_entry: 146,
+    },
+    Baseline {
+        label: "DictOverlay::ext_strings",
+        scale: 100_000,
+        insert_ms: 7.66,
+        fwd_lookup_ms: 0.23,
+        rev_lookup_ms: 2.22,
+        mem_mb: 11.58,
+        bytes_per_entry: 173,
+    },
+    // Step 6: PredicateDict + LanguageTagDict
+    Baseline {
+        label: "PredicateDict",
+        scale: 10_000,
+        insert_ms: 0.39,
+        fwd_lookup_ms: 0.02,
+        rev_lookup_ms: 0.15,
+        mem_mb: 0.49,
+        bytes_per_entry: 158,
+    },
+    Baseline {
+        label: "PredicateDict",
+        scale: 500_000,
+        insert_ms: 19.72,
+        fwd_lookup_ms: 1.12,
+        rev_lookup_ms: 11.39,
+        mem_mb: 27.25,
+        bytes_per_entry: 190,
+    },
+    Baseline {
+        label: "LanguageTagDict",
+        scale: 100,
+        insert_ms: 0.02,
+        fwd_lookup_ms: 0.01,
+        rev_lookup_ms: 0.10,
+        mem_mb: 0.00,
+        bytes_per_entry: 102,
+    },
+    Baseline {
+        label: "LanguageTagDict",
+        scale: 10_000,
+        insert_ms: 0.09,
+        fwd_lookup_ms: 0.01,
+        rev_lookup_ms: 0.09,
+        mem_mb: 0.00,
+        bytes_per_entry: 102,
+    },
+];
+
+fn find_baseline(label: &str, scale: usize) -> Option<&'static Baseline> {
+    BASELINES
+        .iter()
+        .find(|b| b.label == label && b.scale == scale)
+}
+
+/// Format a percentage delta. Returns "" if the baseline is too small to compare.
+fn format_delta(new_val: f64, old_val: f64) -> String {
+    if old_val.abs() < 0.005 {
+        "   --".to_string()
+    } else {
+        let pct = (new_val - old_val) / old_val * 100.0;
+        format!("{:+.1}%", pct)
+    }
+}
+
+fn format_delta_int(new_val: usize, old_val: usize) -> String {
+    if old_val == 0 {
+        "   --".to_string()
+    } else {
+        let pct = (new_val as f64 - old_val as f64) / old_val as f64 * 100.0;
+        format!("{:+.0}%", pct)
+    }
+}
+
 fn print_detail(r: &BenchResult) {
-    let scale_str = format_scale(r.scale);
     let bytes_per_entry = if r.unique_count > 0 {
         r.mem_bytes / r.unique_count
     } else {
         0
     };
+    let mem_mb = r.mem_bytes as f64 / 1_048_576.0;
+    let bl = find_baseline(r.label, r.scale);
+
     println!("\n--- {} ({} entries) ---", r.label, format_count(r.scale));
     println!(
         "  Inserts:     {} calls -> {} unique entries",
         format_count(r.scale),
         format_count(r.unique_count)
     );
-    println!("  Insert:      {:>10.2} ms", r.insert_ms);
-    println!(
-        "  Fwd lookup:  {:>10.2} ms  ({} lookups)",
-        r.fwd_lookup_ms,
-        format_count(r.lookup_count)
-    );
-    println!(
-        "  Rev lookup:  {:>10.2} ms  ({} lookups)",
-        r.rev_lookup_ms,
-        format_count(r.lookup_count)
-    );
-    println!(
-        "  Memory:      {:>10.2} MB  ({} bytes/entry)",
-        r.mem_bytes as f64 / 1_048_576.0,
-        bytes_per_entry
-    );
-    let _ = scale_str;
+
+    if let Some(b) = bl {
+        println!(
+            "  Insert:      {:>10.2} ms    (was {:>8.2} ms  {})",
+            r.insert_ms,
+            b.insert_ms,
+            format_delta(r.insert_ms, b.insert_ms)
+        );
+        println!(
+            "  Fwd lookup:  {:>10.2} ms    (was {:>8.2} ms  {})  ({} lookups)",
+            r.fwd_lookup_ms,
+            b.fwd_lookup_ms,
+            format_delta(r.fwd_lookup_ms, b.fwd_lookup_ms),
+            format_count(r.lookup_count)
+        );
+        println!(
+            "  Rev lookup:  {:>10.2} ms    (was {:>8.2} ms  {})  ({} lookups)",
+            r.rev_lookup_ms,
+            b.rev_lookup_ms,
+            format_delta(r.rev_lookup_ms, b.rev_lookup_ms),
+            format_count(r.lookup_count)
+        );
+        println!(
+            "  Memory:      {:>10.2} MB    (was {:>8.2} MB  {})  ({} bytes/entry, was {})",
+            mem_mb,
+            b.mem_mb,
+            format_delta(mem_mb, b.mem_mb),
+            bytes_per_entry,
+            b.bytes_per_entry
+        );
+    } else {
+        println!("  Insert:      {:>10.2} ms", r.insert_ms);
+        println!(
+            "  Fwd lookup:  {:>10.2} ms  ({} lookups)",
+            r.fwd_lookup_ms,
+            format_count(r.lookup_count)
+        );
+        println!(
+            "  Rev lookup:  {:>10.2} ms  ({} lookups)",
+            r.rev_lookup_ms,
+            format_count(r.lookup_count)
+        );
+        println!(
+            "  Memory:      {:>10.2} MB  ({} bytes/entry)",
+            mem_mb, bytes_per_entry
+        );
+    }
 }
 
 fn format_scale(n: usize) -> String {
@@ -930,10 +1175,8 @@ fn bench_language_tag_dict(n: usize) -> BenchResult {
 
 fn print_summary(results: &[BenchResult]) {
     println!("\n{}", "=".repeat(100));
-    println!("  BASELINE SUMMARY -- All Dictionary Structs");
-    println!(
-        "  Compare first-commit vs last-commit of this branch to measure VecBiDict improvement."
-    );
+    println!("  VecBiDict COMPARISON -- Current vs Baseline (pre-migration, commit 38cb4af)");
+    println!("  Negative Δ = improvement.  '--' = baseline too small to compare.");
     println!("{}", "=".repeat(100));
     println!(
         "  {:<30} {:>6} {:>10} {:>10} {:>10} {:>10} {:>7}",
@@ -943,6 +1186,7 @@ fn print_summary(results: &[BenchResult]) {
 
     for r in results {
         let scale = format_scale(r.scale);
+        let mem_mb = r.mem_bytes as f64 / 1_048_576.0;
         let bytes_per_entry = if r.unique_count > 0 {
             r.mem_bytes / r.unique_count
         } else {
@@ -950,14 +1194,21 @@ fn print_summary(results: &[BenchResult]) {
         };
         println!(
             "  {:<30} {:>6} {:>8.1}ms {:>8.1}ms {:>8.1}ms {:>8.1}MB {:>5}",
-            r.label,
-            scale,
-            r.insert_ms,
-            r.fwd_lookup_ms,
-            r.rev_lookup_ms,
-            r.mem_bytes as f64 / 1_048_576.0,
-            bytes_per_entry
+            r.label, scale, r.insert_ms, r.fwd_lookup_ms, r.rev_lookup_ms, mem_mb, bytes_per_entry
         );
+
+        if let Some(bl) = find_baseline(r.label, r.scale) {
+            println!(
+                "  {:<30} {:>6} {:>10} {:>10} {:>10} {:>10} {:>7}",
+                "  Δ vs baseline",
+                "",
+                format_delta(r.insert_ms, bl.insert_ms),
+                format_delta(r.fwd_lookup_ms, bl.fwd_lookup_ms),
+                format_delta(r.rev_lookup_ms, bl.rev_lookup_ms),
+                format_delta(mem_mb, bl.mem_mb),
+                format_delta_int(bytes_per_entry, bl.bytes_per_entry),
+            );
+        }
     }
 
     println!("  {}", "-".repeat(90));
@@ -969,11 +1220,11 @@ fn print_summary(results: &[BenchResult]) {
 // ============================================================================
 
 fn main() {
-    println!("VecBiDict Baseline Benchmark");
-    println!("============================");
+    println!("VecBiDict Migration Benchmark");
+    println!("==============================");
     println!();
-    println!("Benchmarking all 9 dictionary structs targeted for VecBiDict replacement.");
-    println!("See new-vec-bidict-plan.md for the replacement plan.");
+    println!("Benchmarking all 9 dictionary structs. Comparing current vs pre-migration baseline.");
+    println!("Baseline from commit 38cb4af (initial-bench.log). Negative Δ = improvement.");
     println!();
 
     let mut all_results: Vec<BenchResult> = Vec::new();
@@ -988,7 +1239,8 @@ fn main() {
     // Step 3: StringDictNovelty — HashMap<String, u32> + HashMap<u32, Arc<str>>
     // -----------------------------------------------------------------------
     println!("{}", "=".repeat(76));
-    println!("  Step 3: StringDictNovelty  (HashMap<String, u32> + HashMap<u32, Arc<str>>)");
+    println!("  Step 3: StringDictNovelty  [MIGRATED: VecBiDict<u32>]");
+    println!("  was: HashMap<String, u32> + HashMap<u32, Arc<str>>");
     println!("{}", "=".repeat(76));
 
     for &n in &[500_000, 25_000_000] {
@@ -1001,9 +1253,8 @@ fn main() {
     // Step 4: SubjectDictNovelty — HashMap<Box<[u8]>, u64> + HashMap<u64, (u16, Arc<str>)>
     // -----------------------------------------------------------------------
     println!("\n{}", "=".repeat(76));
-    println!(
-        "  Step 4: SubjectDictNovelty  (HashMap<Box<[u8]>, u64> + HashMap<u64, (u16, Arc<str>)>)"
-    );
+    println!("  Step 4: SubjectDictNovelty  [MIGRATED: NsVecBiDict]");
+    println!("  was: HashMap<Box<[u8]>, u64> + HashMap<u64, (u16, Arc<str>)>");
     println!("{}", "=".repeat(76));
 
     for &n in &[500_000, 25_000_000] {

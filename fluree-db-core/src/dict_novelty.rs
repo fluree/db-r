@@ -24,10 +24,8 @@
 //! - `initialized` must be true before any commit on a non-genesis ledger.
 //!   `ensure_initialized()` panics unconditionally (debug and release).
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use crate::subject_id::SubjectId;
+use crate::ns_vec_bi_dict::NsVecBiDict;
+use crate::vec_bi_dict::VecBiDict;
 
 /// Namespace code reserved for overflow subjects (full IRI as suffix).
 /// Never stored in watermark vectors; always treated as novel.
@@ -47,15 +45,6 @@ pub fn subject_reverse_key(ns_code: u16, suffix: &str) -> Box<[u8]> {
     key.extend_from_slice(&ns_code.to_be_bytes());
     key.extend_from_slice(suffix.as_bytes());
     key.into_boxed_slice()
-}
-
-/// Build a temporary lookup key as `Vec<u8>` (avoids boxing for read-only probes).
-#[inline]
-fn lookup_key(ns_code: u16, suffix: &str) -> Vec<u8> {
-    let mut key = Vec::with_capacity(2 + suffix.len());
-    key.extend_from_slice(&ns_code.to_be_bytes());
-    key.extend_from_slice(suffix.as_bytes());
-    key
 }
 
 // ---------------------------------------------------------------------------
@@ -120,19 +109,13 @@ impl DictNovelty {
         } else {
             (subject_wm, 0)
         };
-        let next_local_ids: Vec<u64> = trimmed_wm.iter().map(|&wm| wm + 1).collect();
         Self {
             subjects: SubjectDictNovelty {
-                watermarks: trimmed_wm,
-                next_local_ids,
-                overflow_watermark: overflow_wm,
-                overflow_next_local_id: overflow_wm + 1,
-                ..Default::default()
+                inner: NsVecBiDict::with_watermarks(trimmed_wm, overflow_wm),
             },
             strings: StringDictNovelty {
+                inner: VecBiDict::new(string_wm + 1),
                 watermark: string_wm,
-                next_id: string_wm + 1,
-                ..Default::default()
             },
             initialized: true,
         }
@@ -169,105 +152,49 @@ impl Default for DictNovelty {
 // ---------------------------------------------------------------------------
 
 /// Subject dictionary novelty: `(ns_code, suffix)` ↔ `sid64`.
+///
+/// Backed by [`NsVecBiDict`]: Vec-indexed forward lookups (zero hashing),
+/// single-HashMap reverse lookups. Arc-shared string storage.
 #[derive(Clone, Debug, Default)]
 pub struct SubjectDictNovelty {
-    /// Reverse map: compressed key `[ns_code BE][suffix]` → sid64.
-    /// `Box<[u8]>` keys for compact storage; lookups use `&[u8]` slices
-    /// via `HashMap::get` (which works because `Box<[u8]>: Borrow<[u8]>`).
-    reverse: HashMap<Box<[u8]>, u64>,
-    /// Forward map: sid64 → (ns_code, suffix).
-    forward: HashMap<u64, (u16, Arc<str>)>,
-    /// Per-namespace watermarks: `watermarks[ns_code]` = max persisted local_id.
-    /// Length = `max_assigned_ns_code + 1` at last index build.
-    /// Does NOT include NS_OVERFLOW — see `overflow_watermark`.
-    watermarks: Vec<u64>,
-    /// Per-namespace next local_id to assign (starts at `watermark + 1`).
-    /// Does NOT include NS_OVERFLOW — see `overflow_next_local_id`.
-    next_local_ids: Vec<u64>,
-    /// Separate watermark for NS_OVERFLOW (0xFFFF).
-    /// Stored as a scalar to avoid resizing the per-namespace vectors to 65536.
-    overflow_watermark: u64,
-    /// Next local_id for NS_OVERFLOW subjects.
-    overflow_next_local_id: u64,
+    inner: NsVecBiDict,
 }
 
 impl SubjectDictNovelty {
     /// Look up or assign a sid64 for `(ns_code, suffix)`.
     ///
-    /// If already present in the reverse map, returns the existing sid64.
+    /// If already present, returns the existing sid64.
     /// Otherwise allocates a new sid64 with the next local_id for this
-    /// namespace and inserts into both forward and reverse maps.
+    /// namespace.
     pub fn assign_or_lookup(&mut self, ns_code: u16, suffix: &str) -> u64 {
-        let key = lookup_key(ns_code, suffix);
-        if let Some(&id) = self.reverse.get(key.as_slice()) {
-            return id;
-        }
-
-        // Allocate next local_id.  NS_OVERFLOW uses dedicated scalar fields
-        // to avoid resizing the per-namespace vectors to 65536 entries.
-        let local_id = if ns_code == NS_OVERFLOW {
-            if self.overflow_next_local_id <= self.overflow_watermark {
-                self.overflow_next_local_id = self.overflow_watermark + 1;
-            }
-            let id = self.overflow_next_local_id;
-            self.overflow_next_local_id = id + 1;
-            id
-        } else {
-            let ns_idx = ns_code as usize;
-            if ns_idx >= self.next_local_ids.len() {
-                self.next_local_ids.resize(ns_idx + 1, 0);
-            }
-            if ns_idx >= self.watermarks.len() {
-                self.watermarks.resize(ns_idx + 1, 0);
-            }
-            if self.next_local_ids[ns_idx] <= self.watermarks[ns_idx] {
-                self.next_local_ids[ns_idx] = self.watermarks[ns_idx] + 1;
-            }
-            let id = self.next_local_ids[ns_idx];
-            self.next_local_ids[ns_idx] = id + 1;
-            id
-        };
-
-        let sid64 = SubjectId::new(ns_code, local_id).as_u64();
-        let interned_suffix: Arc<str> = Arc::from(suffix);
-
-        self.reverse.insert(key.into_boxed_slice(), sid64);
-        self.forward.insert(sid64, (ns_code, interned_suffix));
-
-        sid64
+        self.inner.assign_or_lookup(ns_code, suffix)
     }
 
     /// Reverse lookup: find sid64 by `(ns_code, suffix)`.
     pub fn find_subject(&self, ns_code: u16, suffix: &str) -> Option<u64> {
-        let key = lookup_key(ns_code, suffix);
-        self.reverse.get(key.as_slice()).copied()
+        self.inner.find_subject(ns_code, suffix)
     }
 
     /// Forward lookup: resolve sid64 → `(ns_code, &suffix)`.
     pub fn resolve_subject(&self, sid64: u64) -> Option<(u16, &str)> {
-        self.forward.get(&sid64).map(|(ns, s)| (*ns, &**s))
+        self.inner.resolve_subject(sid64)
     }
 
     /// Get the watermark (max persisted local_id) for a namespace code.
     ///
-    /// Returns 0 for unknown/out-of-range namespace codes, meaning everything
-    /// is treated as novel. `NS_OVERFLOW (0xFFFF)` always returns 0 (never
-    /// stored in the watermark vector).
+    /// Returns 0 for unknown/out-of-range namespace codes.
     pub fn watermark_for_ns(&self, ns_code: u16) -> u64 {
-        if ns_code == NS_OVERFLOW {
-            return self.overflow_watermark;
-        }
-        self.watermarks.get(ns_code as usize).copied().unwrap_or(0)
+        self.inner.watermark_for_ns(ns_code)
     }
 
     /// Number of entries in the novelty layer.
     pub fn len(&self) -> usize {
-        self.forward.len()
+        self.inner.len()
     }
 
     /// True if no novel subjects have been registered.
     pub fn is_empty(&self) -> bool {
-        self.forward.is_empty()
+        self.inner.is_empty()
     }
 }
 
@@ -276,48 +203,39 @@ impl SubjectDictNovelty {
 // ---------------------------------------------------------------------------
 
 /// String dictionary novelty: value ↔ string_id (u32).
-#[derive(Clone, Debug, Default)]
+///
+/// Backed by [`VecBiDict<u32>`]: Vec-indexed forward lookups (zero hashing),
+/// single-HashMap reverse lookups. Arc-shared string storage.
+#[derive(Clone, Debug)]
 pub struct StringDictNovelty {
-    /// Reverse map: value → string_id.
-    reverse: HashMap<String, u32>,
-    /// Forward map: string_id → value.
-    forward: HashMap<u32, Arc<str>>,
+    inner: VecBiDict<u32>,
     /// Max persisted string_id from the last index build.
     watermark: u32,
-    /// Next string_id to assign (starts at `watermark + 1`).
-    next_id: u32,
+}
+
+impl Default for StringDictNovelty {
+    fn default() -> Self {
+        Self {
+            inner: VecBiDict::new(1),
+            watermark: 0,
+        }
+    }
 }
 
 impl StringDictNovelty {
     /// Look up or assign a string_id for `value`.
     pub fn assign_or_lookup(&mut self, value: &str) -> u32 {
-        if let Some(&id) = self.reverse.get(value) {
-            return id;
-        }
-
-        // Ensure next_id starts above watermark
-        if self.next_id <= self.watermark {
-            self.next_id = self.watermark + 1;
-        }
-
-        let id = self.next_id;
-        self.next_id = id + 1;
-
-        let interned: Arc<str> = Arc::from(value);
-        self.reverse.insert(value.to_string(), id);
-        self.forward.insert(id, interned);
-
-        id
+        self.inner.assign_or_lookup(value)
     }
 
     /// Reverse lookup: find string_id by value.
     pub fn find_string(&self, value: &str) -> Option<u32> {
-        self.reverse.get(value).copied()
+        self.inner.find(value)
     }
 
     /// Forward lookup: resolve string_id → value.
     pub fn resolve_string(&self, id: u32) -> Option<&str> {
-        self.forward.get(&id).map(|s| &**s)
+        self.inner.resolve(id)
     }
 
     /// Get the watermark (max persisted string_id).
@@ -327,12 +245,12 @@ impl StringDictNovelty {
 
     /// Number of entries in the novelty layer.
     pub fn len(&self) -> usize {
-        self.forward.len()
+        self.inner.len()
     }
 
     /// True if no novel strings have been registered.
     pub fn is_empty(&self) -> bool {
-        self.forward.is_empty()
+        self.inner.is_empty()
     }
 }
 
@@ -343,6 +261,7 @@ impl StringDictNovelty {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::subject_id::SubjectId;
 
     // -----------------------------------------------------------------------
     // Key encoding
@@ -550,9 +469,8 @@ mod tests {
         assert_eq!(sid.ns_code(), NS_OVERFLOW);
         assert_eq!(sid.local_id(), 1);
 
-        // Vectors should remain empty (only NS_OVERFLOW was used)
-        assert!(dn.subjects.watermarks.is_empty());
-        assert!(dn.subjects.next_local_ids.is_empty());
+        // Regular namespace watermarks remain at 0 (overflow is separate)
+        assert_eq!(dn.subjects.watermark_for_ns(0), 0);
 
         // Second overflow subject gets next local_id
         let id2 = dn
