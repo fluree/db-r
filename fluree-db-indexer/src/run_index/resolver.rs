@@ -679,6 +679,15 @@ impl CommitResolver {
                     .map_err(|e| format!("geo point encode: {}", e))?;
                 Ok((ObjKind::GEO_POINT, key))
             }
+            RawObject::Vector(v) => {
+                let json =
+                    serde_json::to_string(v).map_err(|e| format!("vector serialize: {}", e))?;
+                let id = dicts
+                    .strings
+                    .get_or_insert(&json)
+                    .map_err(|e| format!("string dict write: {}", e))?;
+                Ok((ObjKind::VECTOR_ID, ObjKey::encode_u32_id(id)))
+            }
         }
     }
 
