@@ -15,9 +15,7 @@ use std::sync::Arc;
 use super::compare::compare_values;
 use super::dispatch::{eval_function, eval_function_to_bool};
 use super::helpers::{has_unbound_vars, WELL_KNOWN_DATATYPES};
-use super::value::{
-    eval_arithmetic, filter_value_to_comparable, flake_value_to_comparable, ComparableValue,
-};
+use super::value::ComparableValue;
 
 // =============================================================================
 // Public API: evaluate_to_binding
@@ -321,7 +319,7 @@ pub fn eval_to_comparable_inner<S: Storage>(
 ) -> Result<Option<ComparableValue>> {
     match expr {
         FilterExpr::Var(var) => match row.get(*var) {
-            Some(Binding::Lit { val, .. }) => Ok(flake_value_to_comparable(val)),
+            Some(Binding::Lit { val, .. }) => Ok(ComparableValue::from_flake_value(val)),
             Some(Binding::EncodedLit {
                 o_kind,
                 o_key,
@@ -334,7 +332,7 @@ pub fn eval_to_comparable_inner<S: Storage>(
                 let val = store
                     .decode_value(*o_kind, *o_key, *p_id)
                     .map_err(|e| QueryError::Internal(format!("decode_value: {}", e)))?;
-                Ok(flake_value_to_comparable(&val))
+                Ok(ComparableValue::from_flake_value(&val))
             }
             Some(Binding::Sid(sid)) => Ok(Some(ComparableValue::Sid(sid.clone()))),
             Some(Binding::IriMatch { iri, .. }) => Ok(Some(ComparableValue::Iri(Arc::clone(iri)))),
@@ -367,7 +365,7 @@ pub fn eval_to_comparable_inner<S: Storage>(
             }
         },
 
-        FilterExpr::Const(val) => Ok(Some(filter_value_to_comparable(val))),
+        FilterExpr::Const(val) => Ok(Some(val.into())),
 
         FilterExpr::Compare { .. } => {
             // Comparison result is boolean
@@ -378,7 +376,7 @@ pub fn eval_to_comparable_inner<S: Storage>(
             let l = eval_to_comparable_inner(left, row, ctx)?;
             let r = eval_to_comparable_inner(right, row, ctx)?;
             match (l, r) {
-                (Some(lv), Some(rv)) => Ok(eval_arithmetic(*op, lv, rv)),
+                (Some(lv), Some(rv)) => Ok(lv.apply_arithmetic(*op, rv)),
                 _ => Ok(None),
             }
         }

@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use super::eval::eval_to_comparable_inner;
 use super::helpers::check_arity;
-use super::value::{comparable_to_string, ComparableValue};
+use super::value::ComparableValue;
 
 /// Evaluate a hash function
 pub fn eval_hash_function<S: Storage>(
@@ -72,6 +72,7 @@ where
     check_arity(args, 1, fn_name)?;
     let val = eval_to_comparable_inner(&args[0], row, ctx)?;
     Ok(val.and_then(|v| {
-        comparable_to_string(&v).map(|s| ComparableValue::String(Arc::from(hash_fn(s))))
+        v.as_str()
+            .map(|s| ComparableValue::String(Arc::from(hash_fn(s))))
     }))
 }

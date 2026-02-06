@@ -7,7 +7,7 @@ use crate::ir::CompareOp;
 use fluree_db_core::FlakeValue;
 use std::cmp::Ordering;
 
-use super::value::{comparable_to_flake, ComparableValue};
+use super::value::ComparableValue;
 
 /// Compare two values with the given operator
 ///
@@ -15,8 +15,8 @@ use super::value::{comparable_to_flake, ComparableValue};
 /// Returns `false` for type mismatches (except `!=` which returns `true`).
 pub fn compare_values(left: &ComparableValue, right: &ComparableValue, op: CompareOp) -> bool {
     // Convert to FlakeValue and use its comparison methods
-    let left_fv = comparable_to_flake(left);
-    let right_fv = comparable_to_flake(right);
+    let left_fv: FlakeValue = left.into();
+    let right_fv: FlakeValue = right.into();
 
     // Try numeric comparison first (handles all numeric cross-type comparisons)
     if let Some(ordering) = left_fv.numeric_cmp(&right_fv) {

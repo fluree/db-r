@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use super::eval::eval_to_comparable_inner;
 use super::helpers::{build_regex_with_flags, check_arity};
-use super::value::{comparable_to_str_value, comparable_to_string, ComparableValue};
+use super::value::ComparableValue;
 
 /// Evaluate a string function
 pub fn eval_string_function<S: Storage>(
@@ -27,7 +27,7 @@ pub fn eval_string_function<S: Storage>(
         FunctionName::Str => {
             check_arity(args, 1, "STR")?;
             let val = eval_to_comparable_inner(&args[0], row, ctx)?;
-            Ok(val.and_then(comparable_to_str_value))
+            Ok(val.and_then(|v| v.into_string_value()))
         }
 
         FunctionName::Lang => {
@@ -58,7 +58,7 @@ pub fn eval_string_function<S: Storage>(
             check_arity(args, 1, "LCASE")?;
             let val = eval_to_comparable_inner(&args[0], row, ctx)?;
             Ok(val.and_then(|v| {
-                comparable_to_string(&v)
+                v.as_str()
                     .map(|s| ComparableValue::String(Arc::from(s.to_lowercase())))
             }))
         }
@@ -67,7 +67,7 @@ pub fn eval_string_function<S: Storage>(
             check_arity(args, 1, "UCASE")?;
             let val = eval_to_comparable_inner(&args[0], row, ctx)?;
             Ok(val.and_then(|v| {
-                comparable_to_string(&v)
+                v.as_str()
                     .map(|s| ComparableValue::String(Arc::from(s.to_uppercase())))
             }))
         }
@@ -76,7 +76,7 @@ pub fn eval_string_function<S: Storage>(
             check_arity(args, 1, "STRLEN")?;
             let val = eval_to_comparable_inner(&args[0], row, ctx)?;
             Ok(val.and_then(|v| {
-                comparable_to_string(&v).map(|s| ComparableValue::Long(s.len() as i64))
+                v.as_str().map(|s| ComparableValue::Long(s.len() as i64))
             }))
         }
 
@@ -126,7 +126,7 @@ pub fn eval_string_function<S: Storage>(
             let pattern = eval_to_comparable_inner(&args[1], row, ctx)?;
             let flags = if args.len() > 2 {
                 eval_to_comparable_inner(&args[2], row, ctx)?
-                    .and_then(|v| comparable_to_string(&v).map(|s| s.to_string()))
+                    .and_then(|v| v.as_str().map(|s| s.to_string()))
                     .unwrap_or_default()
             } else {
                 String::new()
@@ -145,7 +145,7 @@ pub fn eval_string_function<S: Storage>(
             let mut result = String::new();
             for arg in args {
                 if let Some(val) = eval_to_comparable_inner(arg, row, ctx)? {
-                    if let Some(s) = comparable_to_string(&val) {
+                    if let Some(s) = val.as_str() {
                         result.push_str(s);
                     }
                 }
@@ -193,7 +193,7 @@ pub fn eval_string_function<S: Storage>(
             let replacement = eval_to_comparable_inner(&args[2], row, ctx)?;
             let flags = if args.len() > 3 {
                 eval_to_comparable_inner(&args[3], row, ctx)?
-                    .and_then(|v| comparable_to_string(&v).map(|s| s.to_string()))
+                    .and_then(|v| v.as_str().map(|s| s.to_string()))
                     .unwrap_or_default()
             } else {
                 String::new()
@@ -257,7 +257,7 @@ pub fn eval_string_function<S: Storage>(
             check_arity(args, 1, "ENCODE_FOR_URI")?;
             let val = eval_to_comparable_inner(&args[0], row, ctx)?;
             Ok(val.and_then(|v| {
-                comparable_to_string(&v).map(|s| {
+                v.as_str().map(|s| {
                     ComparableValue::String(Arc::from(
                         utf8_percent_encode(s, NON_ALPHANUMERIC).to_string(),
                     ))
@@ -273,7 +273,7 @@ pub fn eval_string_function<S: Storage>(
                 (Some(ComparableValue::String(s)), Some(dt_val)) => {
                     Ok(Some(ComparableValue::TypedLiteral {
                         val: FlakeValue::String(s.to_string()),
-                        dt_iri: comparable_to_string(&dt_val).map(Arc::from),
+                        dt_iri: dt_val.as_str().map(Arc::from),
                         lang: None,
                     }))
                 }
@@ -293,7 +293,7 @@ pub fn eval_string_function<S: Storage>(
                     Ok(Some(ComparableValue::TypedLiteral {
                         val: FlakeValue::String(s.to_string()),
                         dt_iri: None,
-                        lang: comparable_to_string(&lang_val).map(Arc::from),
+                        lang: lang_val.as_str().map(Arc::from),
                     }))
                 }
                 (Some(_), Some(_)) => Err(QueryError::InvalidFilter(
