@@ -58,7 +58,10 @@ pub use generate::{apply_cancellation, FlakeGenerator};
 pub use ir::{InlineValues, TemplateTerm, TripleTemplate, Txn, TxnOpts, TxnType};
 pub use lower_sparql_update::{lower_sparql_update, lower_sparql_update_ast, LowerError};
 pub use namespace::{NamespaceRegistry, BLANK_NODE_PREFIX};
-pub use parse::parse_transaction;
+pub use parse::{
+    parse_transaction, parse_trig_phase1, resolve_trig_meta, NamedGraphBlock, RawObject, RawTerm,
+    RawTrigMeta, RawTriple, TrigPhase1Result,
+};
 pub use stage::{generate_txn_id, stage, stage_flakes, StageOptions};
 
 #[cfg(feature = "shacl")]

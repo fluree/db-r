@@ -25,7 +25,10 @@ use crate::{
 use fluree_db_core::ContentAddressedWrite;
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::Publisher;
-use fluree_db_transact::{CommitOpts, NamespaceRegistry, Txn, TxnOpts, TxnType};
+use fluree_db_transact::{
+    parse_trig_phase1, CommitOpts, NamedGraphBlock, NamespaceRegistry, RawTrigMeta, Txn, TxnOpts,
+    TxnType,
+};
 
 // ============================================================================
 // TransactOperation (private)
@@ -40,6 +43,14 @@ pub(crate) enum TransactOperation<'a> {
     UpsertTurtle(&'a str),
 }
 
+/// Result of parsing a transaction operation to JSON.
+/// For Turtle inputs with TriG GRAPH blocks, also includes raw txn-meta and named graphs.
+pub(crate) struct ParsedOperation {
+    pub json: JsonValue,
+    pub trig_meta: Option<RawTrigMeta>,
+    pub named_graphs: Vec<NamedGraphBlock>,
+}
+
 impl<'a> TransactOperation<'a> {
     /// Get the `TxnType` for this operation.
     pub(crate) fn txn_type(&self) -> TxnType {
@@ -52,19 +63,44 @@ impl<'a> TransactOperation<'a> {
         }
     }
 
-    /// Resolve the operation to a JSON value, parsing turtle if needed.
-    pub(crate) fn to_json(&self) -> Result<std::borrow::Cow<'a, JsonValue>> {
+    /// Parse the operation to JSON, extracting TriG txn-meta and named graphs from Turtle inputs.
+    ///
+    /// For Turtle inputs with `GRAPH <...> { ... }` blocks, this extracts:
+    /// - Metadata from txn-meta graph
+    /// - Named graph blocks for user-defined graphs
+    ///
+    /// The metadata can be resolved to `TxnMetaEntry` using `resolve_trig_meta()` once a
+    /// `NamespaceRegistry` is available. Named graphs are converted to
+    /// `TripleTemplate`s with appropriate graph_id during staging.
+    pub(crate) fn to_json_with_trig_meta(&self) -> Result<ParsedOperation> {
         match self {
-            TransactOperation::InsertJson(j) => Ok(std::borrow::Cow::Borrowed(j)),
-            TransactOperation::UpsertJson(j) => Ok(std::borrow::Cow::Borrowed(j)),
-            TransactOperation::UpdateJson(j) => Ok(std::borrow::Cow::Borrowed(j)),
-            TransactOperation::InsertTurtle(ttl) => {
-                let json = fluree_graph_turtle::parse_to_json(ttl)?;
-                Ok(std::borrow::Cow::Owned(json))
-            }
-            TransactOperation::UpsertTurtle(ttl) => {
-                let json = fluree_graph_turtle::parse_to_json(ttl)?;
-                Ok(std::borrow::Cow::Owned(json))
+            TransactOperation::InsertJson(j) => Ok(ParsedOperation {
+                json: (*j).clone(),
+                trig_meta: None,
+                named_graphs: Vec::new(),
+            }),
+            TransactOperation::UpsertJson(j) => Ok(ParsedOperation {
+                json: (*j).clone(),
+                trig_meta: None,
+                named_graphs: Vec::new(),
+            }),
+            TransactOperation::UpdateJson(j) => Ok(ParsedOperation {
+                json: (*j).clone(),
+                trig_meta: None,
+                named_graphs: Vec::new(),
+            }),
+            TransactOperation::InsertTurtle(ttl) | TransactOperation::UpsertTurtle(ttl) => {
+                // Phase 1: Extract TriG GRAPH block (if present)
+                let phase1 = parse_trig_phase1(ttl)?;
+
+                // Parse cleaned Turtle to JSON
+                let json = fluree_graph_turtle::parse_to_json(&phase1.turtle)?;
+
+                Ok(ParsedOperation {
+                    json,
+                    trig_meta: phase1.raw_meta,
+                    named_graphs: phase1.named_graphs,
+                })
             }
         }
     }
@@ -328,21 +364,24 @@ where
         }
 
         let txn_type = op.txn_type();
-        let txn_json = op.to_json()?;
+        // Parse transaction, extracting TriG metadata and named graphs for Turtle inputs
+        let parsed = op.to_json_with_trig_meta()?;
+        let txn_json = parsed.json;
+        let trig_meta = parsed.trig_meta;
+        let named_graphs = parsed.named_graphs;
         let index_config = self.core.index_config.unwrap_or_default();
 
         // Store raw transaction JSON ONLY when explicitly opted-in, or when already provided
         // (e.g., signed credential envelope for provenance).
         let store_raw_txn = self.core.txn_opts.store_raw_txn.unwrap_or(false);
         let commit_opts = if self.core.commit_opts.raw_txn.is_none() && store_raw_txn {
-            self.core
-                .commit_opts
-                .with_raw_txn(txn_json.clone().into_owned())
+            self.core.commit_opts.with_raw_txn(txn_json.clone())
         } else {
             self.core.commit_opts
         };
 
         // If policy + tracking are set, use the tracked+policy path
+        // TODO: Add named_graphs support to tracked+policy path
         if let Some(policy) = &self.core.policy {
             let input =
                 TrackedTransactionInput::new(txn_type, &txn_json, self.core.txn_opts, policy);
@@ -354,15 +393,17 @@ where
             return Ok(result);
         }
 
-        // Standard path: delegate to existing transact
+        // Standard path: delegate to transact_with_named_graphs
         self.fluree
-            .transact(
+            .transact_with_named_graphs(
                 self.ledger,
                 txn_type,
                 &txn_json,
                 self.core.txn_opts,
                 commit_opts,
                 &index_config,
+                trig_meta.as_ref(),
+                &named_graphs,
             )
             .await
     }
@@ -389,10 +430,15 @@ where
         }
 
         let txn_type = op.txn_type();
-        let txn_json_cow = op.to_json()?;
+        // Parse transaction, extracting TriG metadata and named graphs for Turtle inputs
+        let parsed = op.to_json_with_trig_meta()?;
+        let txn_json = parsed.json;
+        let trig_meta = parsed.trig_meta;
+        let named_graphs = parsed.named_graphs;
         let index_config = self.core.index_config.unwrap_or_default();
 
         // If policy is set, use the tracked+policy staging path
+        // TODO: Add named_graphs support to tracked+policy path
         if let Some(policy) = &self.core.policy {
             let tracker = Tracker::new(self.core.tracking.unwrap_or(TrackingOptions {
                 track_time: true,
@@ -400,8 +446,7 @@ where
                 track_policy: true,
                 max_fuel: None,
             }));
-            let input =
-                TrackedTransactionInput::new(txn_type, &txn_json_cow, self.core.txn_opts, policy);
+            let input = TrackedTransactionInput::new(txn_type, &txn_json, self.core.txn_opts, policy);
             let stage_result = self
                 .fluree
                 .stage_transaction_tracked_with_policy(
@@ -419,15 +464,17 @@ where
             });
         }
 
-        // Standard staging path
+        // Standard staging path with named graphs support
         let stage_result = self
             .fluree
-            .stage_transaction(
+            .stage_transaction_with_named_graphs(
                 self.ledger,
                 txn_type,
-                &txn_json_cow,
+                &txn_json,
                 self.core.txn_opts,
                 Some(&index_config),
+                trig_meta.as_ref(),
+                &named_graphs,
             )
             .await?;
 
@@ -616,17 +663,22 @@ where
             (stage_result, TxnType::Insert, commit_opts)
         } else {
             let txn_type = op.txn_type();
-            let txn_json = op.to_json()?;
+            // Parse transaction, extracting TriG metadata and named graphs for Turtle inputs
+            let parsed = op.to_json_with_trig_meta()?;
+            let txn_json = parsed.json;
+            let trig_meta = parsed.trig_meta;
+            let named_graphs = parsed.named_graphs;
 
             // Store raw transaction JSON ONLY when explicitly opted-in, or when already provided
             // (e.g., signed credential envelope for provenance).
             let commit_opts = if core.commit_opts.raw_txn.is_none() && store_raw_txn {
-                core.commit_opts.with_raw_txn(txn_json.clone().into_owned())
+                core.commit_opts.with_raw_txn(txn_json.clone())
             } else {
                 core.commit_opts
             };
 
             // Stage
+            // TODO: Add named_graphs support to tracked+policy path
             let stage_result = if let Some(policy) = &core.policy {
                 let tracker = Tracker::new(core.tracking.unwrap_or(TrackingOptions {
                     track_time: true,
@@ -647,12 +699,14 @@ where
                     .map_err(|e: TrackedErrorResponse| ApiError::http(e.status, e.error))?
             } else {
                 fluree
-                    .stage_transaction(
+                    .stage_transaction_with_named_graphs(
                         ledger_state,
                         txn_type,
                         &txn_json,
                         core.txn_opts,
                         Some(&index_config),
+                        trig_meta.as_ref(),
+                        &named_graphs,
                     )
                     .await?
             };
@@ -660,7 +714,12 @@ where
         }
     };
 
-    let StageResult { view, ns_registry } = stage_result;
+    let StageResult { view, ns_registry, txn_meta, graph_delta } = stage_result;
+
+    // Add extracted transaction metadata and graph delta to commit opts
+    let commit_opts = commit_opts
+        .with_txn_meta(txn_meta)
+        .with_graph_delta(graph_delta.into_iter().collect());
 
     // Handle no-op
     let (receipt, new_state) =

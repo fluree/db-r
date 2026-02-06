@@ -30,13 +30,18 @@ For SPARQL SELECT, ASK, CONSTRUCT queries.
 ```http
 Content-Type: application/sparql-update
 ```
-For SPARQL UPDATE operations (future support).
+For SPARQL UPDATE operations. See [SPARQL Transactions](../transactions/sparql.md) for supported operations.
 
 **RDF Formats:**
 ```http
 Content-Type: text/turtle
 ```
-For Turtle RDF format transactions.
+For Turtle RDF format transactions. Supported on `/insert` (fast direct path) and `/upsert`.
+
+```http
+Content-Type: application/trig
+```
+For TriG format transactions with named graphs (GRAPH blocks). **Only supported on `/upsert` and `/transact`** - returns 400 error on `/insert` because named graph ingestion requires the upsert path.
 
 ```http
 Content-Type: application/n-triples

@@ -8,7 +8,7 @@ use crate::ast::pattern::GraphPattern as SparqlGraphPattern;
 use crate::ast::term::{Term as SparqlTerm, Var};
 
 use fluree_db_query::binding::Binding;
-use fluree_db_query::ir::{GraphName as IrGraphName, Pattern};
+use fluree_db_query::ir::{GraphName as IrGraphName, Pattern, ServiceEndpoint as IrServiceEndpoint, ServicePattern};
 use fluree_db_query::parse::encode::IriEncoder;
 use fluree_db_query::var_registry::VarId;
 
@@ -62,9 +62,12 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 self.lower_named_graph_pattern(name, pattern)
             }
 
-            SparqlGraphPattern::Service { span, .. } => {
-                Err(LowerError::not_implemented("SERVICE pattern", *span))
-            }
+            SparqlGraphPattern::Service {
+                silent,
+                endpoint,
+                pattern,
+                ..
+            } => self.lower_service_pattern(*silent, endpoint, pattern),
 
             SparqlGraphPattern::SubSelect { query, span } => self.lower_subselect(query, *span),
 
@@ -89,6 +92,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                     | Pattern::PropertyPath(_)
                     | Pattern::Subquery(_)
                     | Pattern::Graph { .. }
+                    | Pattern::Service(_)
                     | Pattern::IndexSearch(_)
                     | Pattern::VectorSearch(_)
                     | Pattern::R2rml(_)
@@ -208,5 +212,39 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             name: ir_name,
             patterns: inner_patterns,
         }])
+    }
+
+    /// Lower SERVICE pattern
+    ///
+    /// SERVICE <endpoint> { ... } or SERVICE SILENT <endpoint> { ... }
+    ///
+    /// For local Fluree ledgers, the endpoint should be `fluree:ledger:<alias>:<branch>`
+    /// or just `fluree:ledger:<alias>` (defaults to :main branch).
+    fn lower_service_pattern(
+        &mut self,
+        silent: bool,
+        endpoint: &crate::ast::pattern::ServiceEndpoint,
+        pattern: &SparqlGraphPattern,
+    ) -> Result<Vec<Pattern>> {
+        // Lower the endpoint (IRI or variable)
+        let ir_endpoint = match endpoint {
+            crate::ast::pattern::ServiceEndpoint::Iri(iri) => {
+                let expanded = self.expand_iri(iri)?;
+                IrServiceEndpoint::Iri(std::sync::Arc::from(expanded))
+            }
+            crate::ast::pattern::ServiceEndpoint::Var(v) => {
+                let var_id = self.register_var(v);
+                IrServiceEndpoint::Var(var_id)
+            }
+        };
+
+        // Lower the inner pattern
+        let inner_patterns = self.lower_graph_pattern(pattern)?;
+
+        Ok(vec![Pattern::Service(ServicePattern::new(
+            silent,
+            ir_endpoint,
+            inner_patterns,
+        ))])
     }
 }

@@ -154,6 +154,8 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
         namespace_delta: envelope.namespace_delta,
         txn_signature: envelope.txn_signature,
         commit_signatures,
+        txn_meta: envelope.txn_meta,
+        graph_delta: envelope.graph_delta,
     })
 }
 
@@ -190,6 +192,7 @@ pub fn read_commit_envelope(bytes: &[u8]) -> Result<CommitEnvelope, CommitV2Erro
         previous_ref: env.previous_ref,
         index: env.index,
         namespace_delta: env.namespace_delta,
+        txn_meta: env.txn_meta,
     })
 }
 

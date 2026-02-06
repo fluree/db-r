@@ -10,6 +10,7 @@ use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
 use fluree_db_query::{Batch, Binding};
 use fluree_vocab::namespaces::{FLUREE_LEDGER, JSON_LD, OGC_GEO, RDF, XSD};
 use once_cell::sync::Lazy;
+use std::collections::HashMap;
 
 // Well-known datatype SIDs, cached to avoid per-call Arc<str> allocation.
 // Clone is ~5ns (atomic Arc bump) vs ~30-50ns for Sid::new().
@@ -54,6 +55,13 @@ pub struct FlakeGenerator<'a> {
 
     /// Transaction ID for blank node skolemization
     txn_id: String,
+
+    /// Graph ID to Sid mapping for named graphs
+    ///
+    /// When a template has a `graph_id`, this map provides the corresponding
+    /// graph Sid for `Flake::new_in_graph()`. Graph IDs 0 (default) and 1 (txn-meta)
+    /// are reserved and should not appear in this map.
+    graph_sids: HashMap<u32, Sid>,
 }
 
 impl<'a> FlakeGenerator<'a> {
@@ -68,7 +76,18 @@ impl<'a> FlakeGenerator<'a> {
             t,
             ns_registry,
             txn_id,
+            graph_sids: HashMap::new(),
         }
+    }
+
+    /// Set the graph Sid mapping for named graph support.
+    ///
+    /// The map should contain entries for user-defined named graphs (g_id >= 2).
+    /// Templates with a `graph_id` matching an entry in this map will produce
+    /// flakes in the corresponding named graph.
+    pub fn with_graph_sids(mut self, graph_sids: HashMap<u32, Sid>) -> Self {
+        self.graph_sids = graph_sids;
+        self
     }
 
     /// Generate assertion flakes from insert templates
@@ -175,7 +194,20 @@ impl<'a> FlakeGenerator<'a> {
             (None, None) => None,
         };
 
-        Ok(Some(Flake::new(s, p, o, dt, self.t, op, meta)))
+        // Create flake in named graph if template has graph_id
+        let flake = if let Some(g_id) = template.graph_id {
+            if let Some(g_sid) = self.graph_sids.get(&g_id) {
+                Flake::new_in_graph(g_sid.clone(), s, p, o, dt, self.t, op, meta)
+            } else {
+                // graph_id not in map - this is a bug in the caller
+                // For robustness, fall back to default graph
+                Flake::new(s, p, o, dt, self.t, op, meta)
+            }
+        } else {
+            Flake::new(s, p, o, dt, self.t, op, meta)
+        };
+
+        Ok(Some(flake))
     }
 
     /// Resolve a subject term

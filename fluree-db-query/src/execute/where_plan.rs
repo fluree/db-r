@@ -654,6 +654,13 @@ pub fn build_where_operators_seeded<S: Storage + 'static>(
                 )));
                 i += 1;
             }
+
+            Pattern::Service(service_pattern) => {
+                // SERVICE pattern - execute patterns against another ledger
+                let child = require_child(operator, "SERVICE pattern")?;
+                operator = Some(Box::new(crate::service::ServiceOperator::new(child, service_pattern.clone())));
+                i += 1;
+            }
         }
     }
 

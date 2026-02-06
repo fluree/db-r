@@ -1,8 +1,24 @@
 //! Transaction endpoints: /fluree/transact, /fluree/update, /fluree/insert, /fluree/upsert
 //!
-//! Supports both JSON-LD (FQL) and SPARQL UPDATE content types:
+//! Supports multiple content types:
 //! - `application/json`: JSON-LD transaction format
 //! - `application/sparql-update`: SPARQL UPDATE syntax
+//! - `text/turtle`: Turtle RDF format (for all transaction endpoints)
+//! - `application/trig`: TriG format with named graphs (transact/upsert only)
+//!
+//! # Ledger Selection Priority
+//!
+//! For non-path endpoints (/fluree/transact, etc.), ledger is resolved in this order:
+//! 1. Path parameter (/:ledger/transact, etc.)
+//! 2. Query parameter (?ledger=mydb:main)
+//! 3. Header (Fluree-Ledger: mydb:main)
+//! 4. Body field ("ledger" or "from")
+//!
+//! # Turtle vs TriG Semantics
+//!
+//! - **Turtle on `/insert`**: Uses fast direct flake path. Pure insert semantics.
+//! - **TriG on `/insert`**: Returns 400 error. Named graphs require upsert path.
+//! - **Turtle/TriG on `/transact` or `/upsert`**: Uses upsert path with GRAPH block extraction for named graphs.
 
 use crate::config::ServerRole;
 use crate::error::{Result, ServerError};
@@ -18,10 +34,17 @@ use fluree_db_api::{
     lower_sparql_update, parse_sparql, CommitOpts, NamespaceRegistry, SparqlQueryBody, TxnOpts,
     TxnType,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+
+/// Query parameters for transaction endpoints
+#[derive(Debug, Deserialize, Default)]
+pub struct TransactQueryParams {
+    /// Target ledger (format: name:branch)
+    pub ledger: Option<String>,
+}
 
 /// Commit information in transaction response
 #[derive(Serialize)]
@@ -85,15 +108,31 @@ fn raw_txn_from_credential(credential: &MaybeCredential) -> Option<JsonValue> {
     Some(JsonValue::String(format!("base64:{}", b64)))
 }
 
+/// Extract query params from request URI before consuming the request
+fn extract_query_params(request: &Request) -> TransactQueryParams {
+    request
+        .uri()
+        .query()
+        .and_then(|q| serde_urlencoded::from_str(q).ok())
+        .unwrap_or_default()
+}
+
 /// Helper to extract ledger alias from request
+///
+/// Priority: path > query param > header > body.ledger > body.from
 fn get_ledger_alias(
     path_ledger: Option<&str>,
+    query_params: &TransactQueryParams,
     headers: &FlureeHeaders,
     body: &JsonValue,
 ) -> Result<String> {
-    // Priority: path > header > body.ledger > body.from
+    // Priority: path > query param > header > body.ledger > body.from
     if let Some(ledger) = path_ledger {
         return Ok(ledger.to_string());
+    }
+
+    if let Some(ledger) = &query_params.ledger {
+        return Ok(ledger.clone());
     }
 
     if let Some(ledger) = &headers.ledger {
@@ -129,7 +168,12 @@ pub async fn transact(State(state): State<Arc<AppState>>, request: Request) -> R
 }
 
 /// Local implementation of transact (transaction mode only)
-async fn transact_local(state: Arc<AppState>, request: Request) -> Result<Json<TransactResponse>> {
+async fn transact_local(
+    state: Arc<AppState>,
+    request: Request,
+) -> Result<Json<TransactResponse>> {
+    // Extract query params before consuming the request
+    let query_params = extract_query_params(&request);
     // Extract headers
     let headers_result = FlureeHeaders::from_headers(request.headers());
     let headers = match headers_result {
@@ -155,12 +199,40 @@ async fn transact_local(state: Arc<AppState>, request: Request) -> Result<Json<T
 
     // Check if this is a SPARQL UPDATE request
     if credential.is_sparql_update() {
-        tracing::info!(
-            status = "start",
-            format = "sparql-update",
-            "SPARQL UPDATE request received"
-        );
-        return execute_sparql_update_request(&state, None, &headers, &credential, &span).await;
+        tracing::info!(status = "start", format = "sparql-update", "SPARQL UPDATE request received");
+        return execute_sparql_update_request(&state, None, &query_params, &headers, &credential, &span).await;
+    }
+
+    // Check if this is a Turtle or TriG request
+    if credential.is_turtle_or_trig() {
+        let format = if credential.is_trig() { "trig" } else { "turtle" };
+        tracing::info!(status = "start", format = format, "Turtle/TriG transaction received");
+
+        let turtle = match credential.body_string() {
+            Ok(s) => s,
+            Err(e) => {
+                set_span_error_code(&span, "error:BadRequest");
+                tracing::warn!(error = %e, "invalid UTF-8 in Turtle/TriG body");
+                return Err(e);
+            }
+        };
+
+        // For Turtle/TriG, ledger must come from query param or header
+        let alias = match query_params.ledger.as_ref().or(headers.ledger.as_ref()) {
+            Some(ledger) => {
+                span.record("ledger_alias", ledger.as_str());
+                ledger.clone()
+            }
+            None => {
+                set_span_error_code(&span, "error:BadRequest");
+                tracing::warn!("missing ledger alias for Turtle/TriG transact");
+                return Err(ServerError::MissingLedger);
+            }
+        };
+
+        // /transact uses Update (upsert) semantics for Turtle/TriG
+        return execute_turtle_transaction(&state, &alias, TxnType::Upsert, &turtle, &credential)
+            .await;
     }
 
     tracing::info!(status = "start", "transaction request received");
@@ -174,7 +246,7 @@ async fn transact_local(state: Arc<AppState>, request: Request) -> Result<Json<T
         }
     };
 
-    let alias = match get_ledger_alias(None, &headers, &body_json) {
+    let alias = match get_ledger_alias(None, &query_params, &headers, &body_json) {
         Ok(alias) => {
             span.record("ledger_alias", alias.as_str());
             alias
@@ -216,6 +288,9 @@ async fn transact_ledger_local(
     ledger: String,
     request: Request,
 ) -> Result<Json<TransactResponse>> {
+    // Extract query params before consuming the request
+    let query_params = extract_query_params(&request);
+
     let headers_result = FlureeHeaders::from_headers(request.headers());
     let headers = match headers_result {
         Ok(h) => h,
@@ -237,12 +312,27 @@ async fn transact_ledger_local(
 
     // Check if this is a SPARQL UPDATE request
     if credential.is_sparql_update() {
-        tracing::info!(
-            status = "start",
-            format = "sparql-update",
-            "SPARQL UPDATE request received"
-        );
-        return execute_sparql_update_request(&state, Some(&ledger), &headers, &credential, &span)
+        tracing::info!(status = "start", format = "sparql-update", "SPARQL UPDATE request received");
+        return execute_sparql_update_request(&state, Some(&ledger), &query_params, &headers, &credential, &span)
+            .await;
+    }
+
+    // Check if this is a Turtle or TriG request
+    if credential.is_turtle_or_trig() {
+        let format = if credential.is_trig() { "trig" } else { "turtle" };
+        tracing::info!(status = "start", format = format, "Turtle/TriG ledger transaction received");
+
+        let turtle = match credential.body_string() {
+            Ok(s) => s,
+            Err(e) => {
+                set_span_error_code(&span, "error:BadRequest");
+                tracing::warn!(error = %e, "invalid UTF-8 in Turtle/TriG body");
+                return Err(e);
+            }
+        };
+
+        // /transact uses Update (upsert) semantics for Turtle/TriG
+        return execute_turtle_transaction(&state, &ledger, TxnType::Upsert, &turtle, &credential)
             .await;
     }
 
@@ -257,7 +347,7 @@ async fn transact_ledger_local(
         }
     };
 
-    let alias = match get_ledger_alias(Some(&ledger), &headers, &body_json) {
+    let alias = match get_ledger_alias(Some(&ledger), &query_params, &headers, &body_json) {
         Ok(alias) => {
             span.record("ledger_alias", alias.as_str());
             alias
@@ -290,6 +380,9 @@ pub async fn insert(State(state): State<Arc<AppState>>, request: Request) -> Res
 
 /// Local implementation of insert
 async fn insert_local(state: Arc<AppState>, request: Request) -> Result<Json<TransactResponse>> {
+    // Extract query params before consuming the request
+    let query_params = extract_query_params(&request);
+
     let headers_result = FlureeHeaders::from_headers(request.headers());
     let headers = match headers_result {
         Ok(h) => h,
@@ -309,6 +402,37 @@ async fn insert_local(state: Arc<AppState>, request: Request) -> Result<Json<Tra
     );
     let _guard = span.enter();
 
+    // Check if this is a Turtle or TriG request
+    if credential.is_turtle_or_trig() {
+        let format = if credential.is_trig() { "trig" } else { "turtle" };
+        tracing::info!(status = "start", format = format, "insert transaction requested");
+
+        let turtle = match credential.body_string() {
+            Ok(s) => s,
+            Err(e) => {
+                set_span_error_code(&span, "error:BadRequest");
+                tracing::warn!(error = %e, "invalid UTF-8 in Turtle/TriG body");
+                return Err(e);
+            }
+        };
+
+        // For Turtle/TriG, ledger must come from query param or header
+        let alias = match query_params.ledger.as_ref().or(headers.ledger.as_ref()) {
+            Some(ledger) => {
+                span.record("ledger_alias", ledger.as_str());
+                ledger.clone()
+            }
+            None => {
+                set_span_error_code(&span, "error:BadRequest");
+                tracing::warn!("missing ledger alias for Turtle/TriG insert");
+                return Err(ServerError::MissingLedger);
+            }
+        };
+
+        return execute_turtle_transaction(&state, &alias, TxnType::Insert, &turtle, &credential)
+            .await;
+    }
+
     tracing::info!(status = "start", "insert transaction requested");
 
     let body_json = match credential.body_json() {
@@ -320,7 +444,7 @@ async fn insert_local(state: Arc<AppState>, request: Request) -> Result<Json<Tra
         }
     };
 
-    let alias = match get_ledger_alias(None, &headers, &body_json) {
+    let alias = match get_ledger_alias(None, &query_params, &headers, &body_json) {
         Ok(alias) => {
             span.record("ledger_alias", alias.as_str());
             alias
@@ -353,6 +477,9 @@ pub async fn upsert(State(state): State<Arc<AppState>>, request: Request) -> Res
 
 /// Local implementation of upsert
 async fn upsert_local(state: Arc<AppState>, request: Request) -> Result<Json<TransactResponse>> {
+    // Extract query params before consuming the request
+    let query_params = extract_query_params(&request);
+
     let headers_result = FlureeHeaders::from_headers(request.headers());
     let headers = match headers_result {
         Ok(h) => h,
@@ -372,6 +499,37 @@ async fn upsert_local(state: Arc<AppState>, request: Request) -> Result<Json<Tra
     );
     let _guard = span.enter();
 
+    // Check if this is a Turtle or TriG request
+    if credential.is_turtle_or_trig() {
+        let format = if credential.is_trig() { "trig" } else { "turtle" };
+        tracing::info!(status = "start", format = format, "upsert transaction requested");
+
+        let turtle = match credential.body_string() {
+            Ok(s) => s,
+            Err(e) => {
+                set_span_error_code(&span, "error:BadRequest");
+                tracing::warn!(error = %e, "invalid UTF-8 in Turtle/TriG body");
+                return Err(e);
+            }
+        };
+
+        // For Turtle/TriG, ledger must come from query param or header
+        let alias = match query_params.ledger.as_ref().or(headers.ledger.as_ref()) {
+            Some(ledger) => {
+                span.record("ledger_alias", ledger.as_str());
+                ledger.clone()
+            }
+            None => {
+                set_span_error_code(&span, "error:BadRequest");
+                tracing::warn!("missing ledger alias for Turtle/TriG upsert");
+                return Err(ServerError::MissingLedger);
+            }
+        };
+
+        return execute_turtle_transaction(&state, &alias, TxnType::Upsert, &turtle, &credential)
+            .await;
+    }
+
     tracing::info!(status = "start", "upsert transaction requested");
 
     let body_json = match credential.body_json() {
@@ -383,7 +541,7 @@ async fn upsert_local(state: Arc<AppState>, request: Request) -> Result<Json<Tra
         }
     };
 
-    let alias = match get_ledger_alias(None, &headers, &body_json) {
+    let alias = match get_ledger_alias(None, &query_params, &headers, &body_json) {
         Ok(alias) => {
             span.record("ledger_alias", alias.as_str());
             alias
@@ -424,6 +582,9 @@ async fn insert_ledger_local(
     ledger: String,
     request: Request,
 ) -> Result<Json<TransactResponse>> {
+    // Extract query params before consuming the request
+    let query_params = extract_query_params(&request);
+
     let headers_result = FlureeHeaders::from_headers(request.headers());
     let headers = match headers_result {
         Ok(h) => h,
@@ -443,6 +604,24 @@ async fn insert_ledger_local(
     );
     let _guard = span.enter();
 
+    // Check if this is a Turtle or TriG request
+    if credential.is_turtle_or_trig() {
+        let format = if credential.is_trig() { "trig" } else { "turtle" };
+        tracing::info!(status = "start", format = format, "ledger insert transaction requested");
+
+        let turtle = match credential.body_string() {
+            Ok(s) => s,
+            Err(e) => {
+                set_span_error_code(&span, "error:BadRequest");
+                tracing::warn!(error = %e, "invalid UTF-8 in Turtle/TriG body");
+                return Err(e);
+            }
+        };
+
+        return execute_turtle_transaction(&state, &ledger, TxnType::Insert, &turtle, &credential)
+            .await;
+    }
+
     tracing::info!(status = "start", "ledger insert transaction requested");
 
     let body_json = match credential.body_json() {
@@ -454,7 +633,7 @@ async fn insert_ledger_local(
         }
     };
 
-    let alias = match get_ledger_alias(Some(&ledger), &headers, &body_json) {
+    let alias = match get_ledger_alias(Some(&ledger), &query_params, &headers, &body_json) {
         Ok(alias) => {
             span.record("ledger_alias", alias.as_str());
             alias
@@ -495,6 +674,9 @@ async fn upsert_ledger_local(
     ledger: String,
     request: Request,
 ) -> Result<Json<TransactResponse>> {
+    // Extract query params before consuming the request
+    let query_params = extract_query_params(&request);
+
     let headers_result = FlureeHeaders::from_headers(request.headers());
     let headers = match headers_result {
         Ok(h) => h,
@@ -514,6 +696,24 @@ async fn upsert_ledger_local(
     );
     let _guard = span.enter();
 
+    // Check if this is a Turtle or TriG request
+    if credential.is_turtle_or_trig() {
+        let format = if credential.is_trig() { "trig" } else { "turtle" };
+        tracing::info!(status = "start", format = format, "ledger upsert transaction requested");
+
+        let turtle = match credential.body_string() {
+            Ok(s) => s,
+            Err(e) => {
+                set_span_error_code(&span, "error:BadRequest");
+                tracing::warn!(error = %e, "invalid UTF-8 in Turtle/TriG body");
+                return Err(e);
+            }
+        };
+
+        return execute_turtle_transaction(&state, &ledger, TxnType::Upsert, &turtle, &credential)
+            .await;
+    }
+
     tracing::info!(status = "start", "ledger upsert transaction requested");
 
     let body_json = match credential.body_json() {
@@ -525,7 +725,7 @@ async fn upsert_ledger_local(
         }
     };
 
-    let alias = match get_ledger_alias(Some(&ledger), &headers, &body_json) {
+    let alias = match get_ledger_alias(Some(&ledger), &query_params, &headers, &body_json) {
         Ok(alias) => {
             span.record("ledger_alias", alias.as_str());
             alias
@@ -629,6 +829,136 @@ async fn execute_transaction(
     }))
 }
 
+// ===== Turtle/TriG execution =====
+
+/// Compute transaction ID from Turtle/TriG string
+fn compute_tx_id_turtle(turtle: &str) -> String {
+    let hash = Sha256::digest(turtle.as_bytes());
+    format!("fluree:tx:sha256:{}", hex::encode(hash))
+}
+
+/// Execute a Turtle/TriG transaction
+///
+/// This function handles both:
+/// - text/turtle: Standard Turtle format (insert or upsert)
+/// - application/trig: TriG format with GRAPH blocks for named graphs (upsert only)
+///
+/// # Insert vs Upsert Semantics
+///
+/// - **Insert with Turtle** (`text/turtle` on `/insert`): Uses direct flake parsing (fast path).
+///   Pure insert - will fail if subjects already exist with conflicting data.
+/// - **Insert with TriG** (`application/trig` on `/insert`): Not supported - returns 400.
+///   Named graphs require the upsert path for GRAPH block extraction.
+/// - **Upsert with Turtle/TriG** (`/upsert`): Uses `upsert_turtle` which handles GRAPH blocks
+///   and supports named graph ingestion. For each (subject, predicate) pair, existing values
+///   are retracted before new values are asserted.
+async fn execute_turtle_transaction(
+    state: &AppState,
+    alias: &str,
+    txn_type: TxnType,
+    turtle: &str,
+    credential: &MaybeCredential,
+) -> Result<Json<TransactResponse>> {
+    let is_trig = credential.is_trig();
+
+    // Create execution span
+    let format = if is_trig { "trig" } else { "turtle" };
+    let span = tracing::info_span!("transact_execute", ledger_alias = alias, txn_type = ?txn_type, format = format);
+    let _guard = span.enter();
+
+    // TriG on /insert is not supported - named graphs require upsert path
+    if is_trig && txn_type == TxnType::Insert {
+        set_span_error_code(&span, "error:BadRequest");
+        tracing::warn!("TriG format not supported on insert endpoint");
+        return Err(ServerError::bad_request(
+            "TriG format (application/trig) is not supported on the insert endpoint. \
+             Named graph ingestion requires the upsert endpoint (/upsert or /:ledger/upsert).",
+        ));
+    }
+
+    // Compute tx-id from Turtle string
+    let tx_id = compute_tx_id_turtle(turtle);
+
+    tracing::debug!(tx_id = %tx_id, "computed transaction ID");
+
+    // Get cached ledger handle (loads if not cached)
+    let handle = match state.fluree.as_file().ledger_cached(alias).await {
+        Ok(handle) => handle,
+        Err(e) => {
+            let server_error = ServerError::Api(e);
+            set_span_error_code(&span, "error:NotFound");
+            tracing::error!(error = %server_error, "ledger not found");
+            return Err(server_error);
+        }
+    };
+
+    let did = credential.did().map(String::from);
+
+    // Build transaction options with DID as author if credential was signed
+    let txn_opts = match &did {
+        Some(d) => TxnOpts::default().author(d.clone()),
+        None => TxnOpts::default(),
+    };
+
+    // If the request was signed, ALWAYS store the original signed envelope for provenance.
+    let mut commit_opts = match &did {
+        Some(d) => CommitOpts::default().author(d.clone()),
+        None => CommitOpts::default(),
+    };
+    if let Some(raw_txn) = raw_txn_from_credential(credential) {
+        commit_opts = commit_opts.with_raw_txn(raw_txn);
+    }
+
+    // Build and execute the transaction via the builder API
+    let fluree = state.fluree.as_file();
+    let builder = fluree.stage(&handle);
+    let builder = match txn_type {
+        // Insert with plain Turtle: use fast direct flake path
+        TxnType::Insert => builder.insert_turtle(turtle),
+        // Upsert: use upsert_turtle which handles GRAPH blocks for named graphs
+        TxnType::Upsert => builder.upsert_turtle(turtle),
+        TxnType::Update => {
+            // Update with Turtle is not supported - use SPARQL UPDATE instead
+            set_span_error_code(&span, "error:BadRequest");
+            return Err(ServerError::bad_request(
+                "Turtle format is not supported for update transactions. Use SPARQL UPDATE instead.",
+            ));
+        }
+    };
+    let mut builder = builder.txn_opts(txn_opts).commit_opts(commit_opts);
+    if let Some(config) = &state.index_config {
+        builder = builder.index_config(config.clone());
+    }
+
+    let result = match builder.execute().await {
+        Ok(result) => {
+            tracing::info!(
+                status = "success",
+                commit_t = result.receipt.t,
+                commit_address = %result.receipt.address,
+                "Turtle/TriG transaction committed"
+            );
+            result
+        }
+        Err(e) => {
+            let server_error = ServerError::Api(e);
+            set_span_error_code(&span, "error:InvalidTransaction");
+            tracing::error!(error = %server_error, "Turtle/TriG transaction failed");
+            return Err(server_error);
+        }
+    };
+
+    Ok(Json(TransactResponse {
+        ledger: alias.to_string(),
+        t: result.receipt.t,
+        tx_id,
+        commit: CommitInfo {
+            address: result.receipt.address,
+            hash: result.receipt.commit_id,
+        },
+    }))
+}
+
 // ===== SPARQL UPDATE execution =====
 
 /// Execute a SPARQL UPDATE request
@@ -641,6 +971,7 @@ async fn execute_transaction(
 async fn execute_sparql_update_request(
     state: &AppState,
     path_ledger: Option<&str>,
+    query_params: &TransactQueryParams,
     headers: &FlureeHeaders,
     credential: &MaybeCredential,
     parent_span: &tracing::Span,
@@ -658,10 +989,10 @@ async fn execute_sparql_update_request(
     // Compute tx-id from SPARQL string
     let tx_id = compute_tx_id_sparql(&sparql);
 
-    // Get ledger alias from path or header (SPARQL UPDATE body doesn't contain ledger)
+    // Get ledger alias from path, query param, or header (SPARQL UPDATE body doesn't contain ledger)
     let alias = match path_ledger {
         Some(ledger) => ledger.to_string(),
-        None => match &headers.ledger {
+        None => match query_params.ledger.as_ref().or(headers.ledger.as_ref()) {
             Some(ledger) => ledger.clone(),
             None => {
                 set_span_error_code(parent_span, "error:BadRequest");

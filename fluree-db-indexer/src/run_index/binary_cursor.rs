@@ -451,6 +451,9 @@ impl BinaryCursor {
     ///
     /// Uses `translate_range` output (min_key, max_key) to find relevant leaves
     /// via `find_leaves_in_range`. The filter is applied during leaflet decoding.
+    ///
+    /// If the graph has no index (e.g., empty default graph), returns an
+    /// immediately-exhausted cursor.
     pub fn new(
         store: Arc<BinaryIndexStore>,
         order: RunSortOrder,
@@ -460,15 +463,35 @@ impl BinaryCursor {
         filter: BinaryFilter,
         need_region2: bool,
     ) -> Self {
+        let to_t = store.max_t();
+
+        // Handle missing graph index gracefully (e.g., empty default graph)
+        let Some(branch) = store.branch_for_order(g_id, order) else {
+            tracing::debug!(
+                g_id = g_id,
+                order = order.dir_name(),
+                "BinaryCursor: no index branch for graph, returning exhausted cursor"
+            );
+            return Self {
+                store,
+                order,
+                g_id,
+                leaf_indices: 0..0,
+                current_idx: 0,
+                filter,
+                need_region2,
+                to_t,
+                epoch: 0,
+                overlay_ops: Vec::new(),
+                exhausted: true,
+            };
+        };
+
         let cmp = cmp_for_order(order);
-        let branch = store
-            .branch_for_order(g_id, order)
-            .expect("all four index orders must exist for every graph");
         let leaf_indices = branch.find_leaves_in_range(min_key, max_key, cmp);
 
         let current_idx = leaf_indices.start;
         let exhausted = leaf_indices.is_empty();
-        let to_t = store.max_t();
 
         Self {
             store,
@@ -488,6 +511,9 @@ impl BinaryCursor {
     /// Create a cursor for a SPOT subject lookup (convenience).
     ///
     /// Uses the existing `find_leaves_for_subject` optimization on the SPOT branch.
+    ///
+    /// If the graph has no index (e.g., empty default graph), returns an
+    /// immediately-exhausted cursor.
     pub fn for_subject(
         store: Arc<BinaryIndexStore>,
         g_id: u32,
@@ -495,14 +521,39 @@ impl BinaryCursor {
         p_id: Option<u32>,
         need_region2: bool,
     ) -> Self {
-        let branch = store
-            .branch_for_order(g_id, RunSortOrder::Spot)
-            .expect("SPOT index must exist for every graph");
+        let to_t = store.max_t();
+
+        // Handle missing graph index gracefully (e.g., empty default graph)
+        let Some(branch) = store.branch_for_order(g_id, RunSortOrder::Spot) else {
+            tracing::debug!(
+                g_id = g_id,
+                s_id = s_id,
+                "BinaryCursor::for_subject: no SPOT index for graph, returning exhausted cursor"
+            );
+            return Self {
+                store,
+                order: RunSortOrder::Spot,
+                g_id,
+                leaf_indices: 0..0,
+                current_idx: 0,
+                filter: BinaryFilter {
+                    s_id: Some(s_id),
+                    p_id,
+                    o_kind: None,
+                    o_key: None,
+                },
+                need_region2,
+                to_t,
+                epoch: 0,
+                overlay_ops: Vec::new(),
+                exhausted: true,
+            };
+        };
+
         let leaf_indices = branch.find_leaves_for_subject(g_id, s_id);
 
         let current_idx = leaf_indices.start;
         let exhausted = leaf_indices.is_empty();
-        let to_t = store.max_t();
 
         Self {
             store,

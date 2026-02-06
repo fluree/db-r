@@ -81,9 +81,15 @@ pub fn encode_op(
     dicts: &mut CommitDicts,
     buf: &mut Vec<u8>,
 ) -> Result<(), CommitV2Error> {
-    // Graph: always (0, 0) = default graph in Phase 1
-    encode_varint(0, buf); // g_ns_code
-    encode_varint(0, buf); // g_name_id = 0 means default graph
+    // Graph: None = default graph (0, 0), Some(Sid) = named graph
+    if let Some(ref g) = flake.g {
+        encode_varint(g.namespace_code as u64, buf);
+        let g_name_id = dicts.graph.insert(g.name.as_ref());
+        encode_varint(g_name_id as u64, buf);
+    } else {
+        encode_varint(0, buf); // g_ns_code = 0
+        encode_varint(0, buf); // g_name_id = 0 (empty string = default graph)
+    }
 
     // Subject
     encode_varint(flake.s.namespace_code as u64, buf);
@@ -265,15 +271,20 @@ pub fn decode_op(
     dicts: &ReadDicts,
     t: i64,
 ) -> Result<Flake, CommitV2Error> {
-    // Graph: validate it's the default graph (Phase 1 only supports default)
+    // Graph: (0, 0) = default graph; otherwise named graph Sid encoded as (ns_code, name_id)
     let g_ns_code = decode_ns_code(data, pos)?;
     let g_name_id = decode_varint(data, pos)? as u32;
-    if g_ns_code != 0 || g_name_id != 0 {
-        return Err(CommitV2Error::NonDefaultGraph {
-            ns_code: g_ns_code,
-            name_id: g_name_id,
-        });
-    }
+    let g = if g_ns_code == 0 && g_name_id == 0 {
+        None
+    } else {
+        if g_name_id == 0 {
+            return Err(CommitV2Error::InvalidOp(
+                "graph name_id 0 is reserved (use (0,0) for default graph)".into(),
+            ));
+        }
+        let g_name = dicts.graph.get(g_name_id)?;
+        Some(Sid::new(g_ns_code, g_name))
+    };
 
     // Subject
     let s_ns_code = decode_ns_code(data, pos)?;
@@ -334,7 +345,10 @@ pub fn decode_op(
         (None, None) => None,
     };
 
-    Ok(Flake::new(s, p, o, dt, t, op, meta))
+    Ok(match g {
+        Some(g) => Flake::new_in_graph(g, s, p, o, dt, t, op, meta),
+        None => Flake::new(s, p, o, dt, t, op, meta),
+    })
 }
 
 fn decode_object(

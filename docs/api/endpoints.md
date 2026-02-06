@@ -35,6 +35,18 @@ Content-Type: application/sparql-update
 Accept: application/json
 ```
 
+For Turtle (RDF triples):
+```http
+Content-Type: text/turtle
+Accept: application/json
+```
+
+For TriG (named graphs):
+```http
+Content-Type: application/trig
+Accept: application/json
+```
+
 **Request Body (JSON-LD):**
 
 JSON-LD transaction document:
@@ -146,6 +158,108 @@ curl -X POST http://localhost:8090/fluree/transact \
   -d 'PREFIX ex: <http://example.org/ns/>
       DELETE { ?s ex:age ?old } INSERT { ?s ex:age 31 }
       WHERE { ?s ex:name "Alice" . ?s ex:age ?old }'
+```
+
+Turtle transaction:
+```bash
+curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
+  -H "Content-Type: text/turtle" \
+  -d '@prefix ex: <http://example.org/ns/> .
+      ex:alice ex:name "Alice" ; ex:age 30 .'
+```
+
+TriG transaction with named graphs:
+```bash
+curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
+  -H "Content-Type: application/trig" \
+  -d '@prefix ex: <http://example.org/ns/> .
+
+      # Default graph
+      ex:company ex:name "Acme Corp" .
+
+      # Named graph for products
+      GRAPH <http://example.org/graphs/products> {
+          ex:widget ex:name "Widget" ;
+                    ex:price "29.99"^^xsd:decimal .
+      }'
+```
+
+### POST /insert
+
+Insert new data into a ledger. Data must not conflict with existing data.
+
+**URL:**
+```
+POST /insert?ledger={ledger-alias}
+POST /:ledger/insert
+POST /fluree/insert
+```
+
+**Supported Content Types:**
+- `application/json` - JSON-LD
+- `text/turtle` - Turtle (fast direct flake path)
+
+**Note:** TriG (`application/trig`) is **not supported** on the insert endpoint. Named graph ingestion via GRAPH blocks requires the upsert path. Use `/upsert` for TriG data.
+
+**Example (JSON-LD):**
+```bash
+curl -X POST "http://localhost:8090/insert?ledger=mydb:main" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "@context": { "ex": "http://example.org/ns/" },
+    "@graph": [{ "@id": "ex:alice", "ex:name": "Alice" }]
+  }'
+```
+
+**Example (Turtle):**
+```bash
+curl -X POST "http://localhost:8090/insert?ledger=mydb:main" \
+  -H "Content-Type: text/turtle" \
+  -d '@prefix ex: <http://example.org/ns/> .
+      ex:alice ex:name "Alice" ; ex:age 30 .'
+```
+
+### POST /upsert
+
+Upsert data into a ledger. For each (subject, predicate) pair, existing values are retracted before new values are asserted.
+
+**URL:**
+```
+POST /upsert?ledger={ledger-alias}
+POST /:ledger/upsert
+POST /fluree/upsert
+```
+
+**Supported Content Types:**
+- `application/json` - JSON-LD
+- `text/turtle` - Turtle
+- `application/trig` - TriG with named graphs
+
+**Example (JSON-LD):**
+```bash
+curl -X POST "http://localhost:8090/upsert?ledger=mydb:main" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "@context": { "ex": "http://example.org/ns/" },
+    "@id": "ex:alice",
+    "ex:age": 31
+  }'
+```
+
+**Example (TriG with named graphs):**
+```bash
+curl -X POST "http://localhost:8090/upsert?ledger=mydb:main" \
+  -H "Content-Type: application/trig" \
+  -d '@prefix ex: <http://example.org/ns/> .
+
+      # Default graph
+      ex:company ex:name "Acme Corp" .
+
+      # Named graph for products
+      GRAPH <http://example.org/graphs/products> {
+          ex:widget ex:name "Widget" ;
+                    ex:price "29.99"^^xsd:decimal .
+      }'
 ```
 
 ## Query Endpoints

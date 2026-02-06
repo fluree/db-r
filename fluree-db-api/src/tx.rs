@@ -9,6 +9,7 @@ use fluree_db_core::{ContentAddressedWrite, Storage};
 use fluree_db_indexer::IndexerHandle;
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, Publisher};
+use fluree_db_novelty::TxnMetaEntry;
 #[cfg(feature = "shacl")]
 use fluree_db_shacl::ShaclEngine;
 #[cfg(not(feature = "shacl"))]
@@ -16,8 +17,9 @@ use fluree_db_transact::stage as stage_txn;
 #[cfg(feature = "shacl")]
 use fluree_db_transact::stage_with_shacl;
 use fluree_db_transact::{
-    commit as commit_txn, parse_transaction, CommitOpts, CommitReceipt, NamespaceRegistry,
-    StageOptions, TxnOpts, TxnType,
+    commit as commit_txn, parse_transaction, resolve_trig_meta, CommitOpts, CommitReceipt,
+    NamedGraphBlock, NamespaceRegistry, RawTrigMeta, StageOptions, TemplateTerm, TripleTemplate,
+    Txn, TxnOpts, TxnType,
 };
 use serde_json::Value as JsonValue;
 
@@ -75,6 +77,37 @@ fn tracker_for_limits(txn_json: &JsonValue) -> Tracker {
             max_fuel: Some(limit),
         }),
         None => Tracker::disabled(),
+    }
+}
+
+/// Check if a JSON-LD document represents an empty default graph.
+///
+/// This is the case when:
+/// - The document is null
+/// - The document is an empty array
+/// - The document is an object with only JSON-LD keywords (@context, @id, etc.)
+///   AND the @graph key is missing or empty
+///
+/// This correctly handles envelope-form JSON-LD where data is in @graph.
+fn is_empty_default_graph(json: &JsonValue) -> bool {
+    match json {
+        JsonValue::Null => true,
+        JsonValue::Array(arr) => arr.is_empty(),
+        JsonValue::Object(obj) => {
+            // Check if there are any non-@ keys (actual data predicates at top level)
+            let has_data_keys = obj.keys().any(|k| !k.starts_with('@'));
+            if has_data_keys {
+                return false;
+            }
+            // No data keys at top level, check if @graph has content
+            match obj.get("@graph") {
+                Some(JsonValue::Array(arr)) => arr.is_empty(),
+                Some(JsonValue::Object(inner_obj)) => inner_obj.is_empty(),
+                Some(_) => false, // @graph has some other non-empty value
+                None => true,     // No @graph key, and no data keys = empty
+            }
+        }
+        _ => false,
     }
 }
 
@@ -166,6 +199,149 @@ pub struct TransactResultRef {
 pub struct StageResult<S> {
     pub view: LedgerView<S>,
     pub ns_registry: NamespaceRegistry,
+    /// User-provided transaction metadata (extracted from envelope-form JSON-LD)
+    pub txn_meta: Vec<TxnMetaEntry>,
+    /// Named graph IRI to g_id mappings introduced by this transaction
+    pub graph_delta: rustc_hash::FxHashMap<u32, String>,
+}
+
+/// Convert named graph blocks to TripleTemplates with proper graph_id assignments.
+///
+/// Returns a tuple of (templates, graph_delta) where:
+/// - templates: Vec<TripleTemplate> with graph_id set for each template
+/// - graph_delta: HashMap<u32, String> mapping g_id to graph IRI
+///
+/// Graph IDs are assigned starting at 2 (0=default, 1=txn-meta).
+fn convert_named_graphs_to_templates(
+    named_graphs: &[NamedGraphBlock],
+    ns_registry: &mut NamespaceRegistry,
+) -> Result<(Vec<TripleTemplate>, rustc_hash::FxHashMap<u32, String>)> {
+    use fluree_db_core::FlakeValue;
+    use fluree_db_transact::{RawObject, RawTerm};
+
+    let mut templates = Vec::new();
+    let mut graph_delta: rustc_hash::FxHashMap<u32, String> = rustc_hash::FxHashMap::default();
+    let mut iri_to_id: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut next_graph_id: u32 = 2; // 0=default, 1=txn-meta
+
+    // Helper to expand prefixed name to full IRI
+    fn expand_prefixed_name(
+        prefix: &str,
+        local: &str,
+        prefixes: &rustc_hash::FxHashMap<String, String>,
+    ) -> Result<String> {
+        prefixes
+            .get(prefix)
+            .map(|ns| format!("{}{}", ns, local))
+            .ok_or_else(|| ApiError::query(format!("undefined prefix: {}", prefix)))
+    }
+
+    // Helper to convert RawTerm to TemplateTerm
+    fn convert_term(
+        term: &RawTerm,
+        prefixes: &rustc_hash::FxHashMap<String, String>,
+        ns_registry: &mut NamespaceRegistry,
+    ) -> Result<TemplateTerm> {
+        match term {
+            RawTerm::Iri(iri) => {
+                if iri.starts_with("_:") {
+                    Ok(TemplateTerm::BlankNode(iri[2..].to_string()))
+                } else {
+                    Ok(TemplateTerm::Sid(ns_registry.sid_for_iri(iri)))
+                }
+            }
+            RawTerm::PrefixedName { prefix, local } => {
+                let iri = expand_prefixed_name(prefix, local, prefixes)?;
+                Ok(TemplateTerm::Sid(ns_registry.sid_for_iri(&iri)))
+            }
+        }
+    }
+
+    // Helper to convert RawObject to TemplateTerm and optional datatype/language
+    fn convert_object(
+        obj: &RawObject,
+        prefixes: &rustc_hash::FxHashMap<String, String>,
+        ns_registry: &mut NamespaceRegistry,
+    ) -> Result<(TemplateTerm, Option<fluree_db_core::Sid>, Option<String>)> {
+        use fluree_db_core::FlakeValue;
+        match obj {
+            RawObject::Iri(iri) => {
+                if iri.starts_with("_:") {
+                    Ok((TemplateTerm::BlankNode(iri[2..].to_string()), None, None))
+                } else {
+                    Ok((TemplateTerm::Sid(ns_registry.sid_for_iri(iri)), None, None))
+                }
+            }
+            RawObject::PrefixedName { prefix, local } => {
+                let iri = expand_prefixed_name(prefix, local, prefixes)?;
+                Ok((TemplateTerm::Sid(ns_registry.sid_for_iri(&iri)), None, None))
+            }
+            RawObject::String(s) => Ok((
+                TemplateTerm::Value(FlakeValue::String(s.clone())),
+                None,
+                None,
+            )),
+            RawObject::Integer(n) => {
+                Ok((TemplateTerm::Value(FlakeValue::Long(*n)), None, None))
+            }
+            RawObject::Double(n) => {
+                Ok((TemplateTerm::Value(FlakeValue::Double(*n)), None, None))
+            }
+            RawObject::Boolean(b) => {
+                Ok((TemplateTerm::Value(FlakeValue::Boolean(*b)), None, None))
+            }
+            RawObject::LangString { value, lang } => Ok((
+                TemplateTerm::Value(FlakeValue::String(value.clone())),
+                None,
+                Some(lang.clone()),
+            )),
+            RawObject::TypedLiteral { value, datatype } => {
+                let dt_sid = ns_registry.sid_for_iri(datatype);
+                Ok((
+                    TemplateTerm::Value(FlakeValue::String(value.clone())),
+                    Some(dt_sid),
+                    None,
+                ))
+            }
+        }
+    }
+
+    for block in named_graphs {
+        // Assign a graph_id to this graph IRI (or reuse existing)
+        let g_id = *iri_to_id.entry(block.iri.clone()).or_insert_with(|| {
+            let id = next_graph_id;
+            graph_delta.insert(id, block.iri.clone());
+            next_graph_id += 1;
+            id
+        });
+
+        // Convert each triple in this graph block
+        for triple in &block.triples {
+            let subject = triple
+                .subject
+                .as_ref()
+                .ok_or_else(|| ApiError::query("named graph triple missing subject"))?;
+            let subject_term = convert_term(subject, &block.prefixes, ns_registry)?;
+            let predicate_term = convert_term(&triple.predicate, &block.prefixes, ns_registry)?;
+
+            for obj in &triple.objects {
+                let (object_term, datatype, language) =
+                    convert_object(obj, &block.prefixes, ns_registry)?;
+                let mut template =
+                    TripleTemplate::new(subject_term.clone(), predicate_term.clone(), object_term);
+                template = template.with_graph_id(g_id);
+                if let Some(dt) = datatype {
+                    template = template.with_datatype(dt);
+                }
+                if let Some(lang) = language {
+                    template = template.with_language(lang);
+                }
+                templates.push(template);
+            }
+        }
+    }
+
+    Ok((templates, graph_delta))
 }
 
 impl<S, N> crate::Fluree<S, N>
@@ -214,8 +390,84 @@ where
         txn_opts: TxnOpts,
         index_config: Option<&IndexConfig>,
     ) -> Result<StageResult<S>> {
+        self.stage_transaction_with_trig_meta(ledger, txn_type, txn_json, txn_opts, index_config, None)
+            .await
+    }
+
+    /// Stage a transaction with optional TriG transaction metadata.
+    ///
+    /// This is the internal implementation that handles both JSON-LD and TriG inputs.
+    /// For TriG inputs, the `trig_meta` parameter contains pre-parsed metadata that
+    /// will be resolved and merged into the transaction's txn_meta.
+    pub async fn stage_transaction_with_trig_meta(
+        &self,
+        ledger: LedgerState<S>,
+        txn_type: TxnType,
+        txn_json: &JsonValue,
+        txn_opts: TxnOpts,
+        index_config: Option<&IndexConfig>,
+        trig_meta: Option<&RawTrigMeta>,
+    ) -> Result<StageResult<S>> {
+        self.stage_transaction_with_named_graphs(
+            ledger,
+            txn_type,
+            txn_json,
+            txn_opts,
+            index_config,
+            trig_meta,
+            &[],
+        )
+        .await
+    }
+
+    /// Stage a transaction with optional TriG transaction metadata and named graphs.
+    ///
+    /// This is the full implementation that handles:
+    /// - JSON-LD transactions (default graph)
+    /// - TriG txn-meta (commit metadata)
+    /// - TriG named graphs (user-defined graphs with separate g_id)
+    pub async fn stage_transaction_with_named_graphs(
+        &self,
+        ledger: LedgerState<S>,
+        txn_type: TxnType,
+        txn_json: &JsonValue,
+        txn_opts: TxnOpts,
+        index_config: Option<&IndexConfig>,
+        trig_meta: Option<&RawTrigMeta>,
+        named_graphs: &[NamedGraphBlock],
+    ) -> Result<StageResult<S>> {
         let mut ns_registry = NamespaceRegistry::from_db(&ledger.db);
-        let txn = parse_transaction(txn_json, txn_type, txn_opts, &mut ns_registry)?;
+
+        // Handle case where default graph is empty but named graphs are present
+        // (e.g., TriG with only GRAPH blocks and no default graph triples)
+        let mut txn = if is_empty_default_graph(txn_json) && !named_graphs.is_empty() {
+            // Create empty transaction of the appropriate type
+            match txn_type {
+                TxnType::Insert => Txn::insert().with_opts(txn_opts),
+                TxnType::Upsert => Txn::upsert().with_opts(txn_opts),
+                TxnType::Update => Txn::update().with_opts(txn_opts),
+            }
+        } else {
+            parse_transaction(txn_json, txn_type, txn_opts, &mut ns_registry)?
+        };
+
+        // If TriG metadata was extracted, resolve it and merge into txn_meta
+        if let Some(raw_meta) = trig_meta {
+            let resolved = resolve_trig_meta(raw_meta, &mut ns_registry)?;
+            txn.txn_meta.extend(resolved);
+        }
+
+        // Convert named graph blocks to TripleTemplates and merge into the transaction
+        if !named_graphs.is_empty() {
+            let (named_graph_templates, named_graph_delta) =
+                convert_named_graphs_to_templates(named_graphs, &mut ns_registry)?;
+            txn.insert_templates.extend(named_graph_templates);
+            txn.graph_delta.extend(named_graph_delta);
+        }
+
+        // Extract txn_meta and graph_delta before staging consumes the Txn
+        let txn_meta = txn.txn_meta.clone();
+        let graph_delta = txn.graph_delta.clone();
 
         // Check for max-fuel in opts and create tracker if present (same pattern as queries)
         let tracker = tracker_for_limits(txn_json);
@@ -248,7 +500,7 @@ where
             }
             stage_txn(ledger, txn, ns_registry, options).await?
         };
-        Ok(StageResult { view, ns_registry })
+        Ok(StageResult { view, ns_registry, txn_meta, graph_delta })
     }
 
     /// Stage a pre-built transaction IR (bypasses JSON/Turtle parsing).
@@ -262,6 +514,11 @@ where
         index_config: Option<&IndexConfig>,
     ) -> Result<StageResult<S>> {
         let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+
+        // Extract txn_meta and graph_delta before staging consumes the Txn
+        let txn_meta = txn.txn_meta.clone();
+        let graph_delta = txn.graph_delta.clone();
+
         #[cfg(feature = "shacl")]
         let (view, ns_registry) = {
             let engine =
@@ -283,7 +540,7 @@ where
             };
             stage_txn(ledger, txn, ns_registry, options).await?
         };
-        Ok(StageResult { view, ns_registry })
+        Ok(StageResult { view, ns_registry, txn_meta, graph_delta })
     }
 
     /// Stage a transaction with policy enforcement + tracking (opts.meta / opts.max-fuel).
@@ -304,6 +561,10 @@ where
             &mut ns_registry,
         )
         .map_err(|e| TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally()))?;
+
+        // Extract txn_meta and graph_delta before staging consumes the Txn
+        let txn_meta = txn.txn_meta.clone();
+        let graph_delta = txn.graph_delta.clone();
 
         // Build stage options with policy and tracker
         let mut options = StageOptions::new()
@@ -334,7 +595,7 @@ where
             .await
             .map_err(|e| TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally()))?;
 
-        Ok(StageResult { view, ns_registry })
+        Ok(StageResult { view, ns_registry, txn_meta, graph_delta })
     }
 
     /// Convenience: stage + commit + tracking + policy.
@@ -353,7 +614,12 @@ where
         let opts = input.txn_json.as_object().and_then(|o| o.get("opts"));
         let tracker = Tracker::new(TrackingOptions::from_opts_value(opts));
 
-        let StageResult { view, ns_registry } = self
+        let StageResult {
+            view,
+            ns_registry,
+            txn_meta,
+            graph_delta,
+        } = self
             .stage_transaction_tracked_with_policy(ledger, input, Some(index_config), &tracker)
             .await?;
 
@@ -364,6 +630,11 @@ where
         } else {
             commit_opts
         };
+
+        // Add extracted transaction metadata and graph delta to commit opts
+        let commit_opts = commit_opts
+            .with_txn_meta(txn_meta)
+            .with_graph_delta(graph_delta.into_iter().collect());
 
         // Commit (no-op updates handled by existing transact; for the tracked path we just mirror it).
         let (receipt, ledger) = self
@@ -434,7 +705,7 @@ where
     ) -> Result<TransactResult<S>> {
         let store_raw_txn = txn_opts.store_raw_txn.unwrap_or(false);
 
-        let StageResult { view, ns_registry } = self
+        let StageResult { view, ns_registry, txn_meta, graph_delta } = self
             .stage_transaction(ledger, txn_type, txn_json, txn_opts, Some(index_config))
             .await?;
 
@@ -445,6 +716,11 @@ where
         } else {
             commit_opts
         };
+
+        // Add extracted transaction metadata and graph delta to commit opts
+        let commit_opts = commit_opts
+            .with_txn_meta(txn_meta)
+            .with_graph_delta(graph_delta.into_iter().collect());
 
         // No-op updates: if WHERE matches nothing (or templates produce no flakes),
         // return success without committing (Clojure parity).
@@ -471,6 +747,190 @@ where
                 self.commit_staged(view, ns_registry, index_config, commit_opts)
                     .await?
             };
+
+        // Compute indexing status AFTER publish_commit succeeds
+        let indexing_enabled = self.indexing_mode.is_enabled() && self.defaults_indexing_enabled();
+        let indexing_needed = ledger.should_reindex(index_config);
+
+        let indexing_status = IndexingStatus {
+            enabled: indexing_enabled,
+            needed: indexing_needed,
+            novelty_size: ledger.novelty_size(),
+            index_t: ledger.index_t(),
+            commit_t: receipt.t,
+        };
+
+        // Trigger indexing AFTER publish_commit succeeds (fast operation)
+        if let IndexingMode::Background(handle) = &self.indexing_mode {
+            if indexing_enabled && indexing_needed {
+                handle.trigger(ledger.alias(), receipt.t).await;
+            }
+        }
+
+        Ok(TransactResult {
+            receipt,
+            ledger,
+            indexing: indexing_status,
+        })
+    }
+
+    /// Execute a transaction with optional TriG metadata.
+    ///
+    /// This is similar to `transact` but accepts pre-extracted TriG metadata
+    /// from Turtle inputs that had GRAPH blocks.
+    pub async fn transact_with_trig_meta(
+        &self,
+        ledger: LedgerState<S>,
+        txn_type: TxnType,
+        txn_json: &JsonValue,
+        txn_opts: TxnOpts,
+        commit_opts: CommitOpts,
+        index_config: &IndexConfig,
+        trig_meta: Option<&RawTrigMeta>,
+    ) -> Result<TransactResult<S>> {
+        let store_raw_txn = txn_opts.store_raw_txn.unwrap_or(false);
+
+        let StageResult { view, ns_registry, txn_meta, graph_delta } = self
+            .stage_transaction_with_trig_meta(
+                ledger,
+                txn_type,
+                txn_json,
+                txn_opts,
+                Some(index_config),
+                trig_meta,
+            )
+            .await?;
+
+        // Store raw transaction JSON ONLY when explicitly opted-in, or when already provided
+        // (e.g., signed credential envelope for provenance).
+        let commit_opts = if commit_opts.raw_txn.is_none() && store_raw_txn {
+            commit_opts.with_raw_txn(txn_json.clone())
+        } else {
+            commit_opts
+        };
+
+        // Add extracted transaction metadata and graph delta to commit opts
+        let commit_opts = commit_opts
+            .with_txn_meta(txn_meta)
+            .with_graph_delta(graph_delta.into_iter().collect());
+
+        // No-op updates: if WHERE matches nothing (or templates produce no flakes),
+        // return success without committing (Clojure parity).
+        let (receipt, ledger) = if !view.has_staged()
+            && matches!(txn_type, TxnType::Update | TxnType::Upsert)
+        {
+            let (base, flakes) = view.into_parts();
+            debug_assert!(
+                flakes.is_empty(),
+                "no-op transaction path requires zero staged flakes"
+            );
+            (
+                CommitReceipt {
+                    address: String::new(),
+                    commit_id: String::new(),
+                    t: base.t(),
+                    flake_count: 0,
+                },
+                base,
+            )
+        } else {
+            self.commit_staged(view, ns_registry, index_config, commit_opts)
+                .await?
+        };
+
+        // Compute indexing status AFTER publish_commit succeeds
+        let indexing_enabled = self.indexing_mode.is_enabled() && self.defaults_indexing_enabled();
+        let indexing_needed = ledger.should_reindex(index_config);
+
+        let indexing_status = IndexingStatus {
+            enabled: indexing_enabled,
+            needed: indexing_needed,
+            novelty_size: ledger.novelty_size(),
+            index_t: ledger.index_t(),
+            commit_t: receipt.t,
+        };
+
+        // Trigger indexing AFTER publish_commit succeeds (fast operation)
+        if let IndexingMode::Background(handle) = &self.indexing_mode {
+            if indexing_enabled && indexing_needed {
+                handle.trigger(ledger.alias(), receipt.t).await;
+            }
+        }
+
+        Ok(TransactResult {
+            receipt,
+            ledger,
+            indexing: indexing_status,
+        })
+    }
+
+    /// Execute a transaction with optional TriG metadata and named graphs.
+    ///
+    /// This is the full implementation that handles:
+    /// - JSON-LD transactions (default graph)
+    /// - TriG txn-meta (commit metadata)
+    /// - TriG named graphs (user-defined graphs with separate g_id)
+    pub async fn transact_with_named_graphs(
+        &self,
+        ledger: LedgerState<S>,
+        txn_type: TxnType,
+        txn_json: &JsonValue,
+        txn_opts: TxnOpts,
+        commit_opts: CommitOpts,
+        index_config: &IndexConfig,
+        trig_meta: Option<&RawTrigMeta>,
+        named_graphs: &[NamedGraphBlock],
+    ) -> Result<TransactResult<S>> {
+        let store_raw_txn = txn_opts.store_raw_txn.unwrap_or(false);
+
+        let StageResult { view, ns_registry, txn_meta, graph_delta } = self
+            .stage_transaction_with_named_graphs(
+                ledger,
+                txn_type,
+                txn_json,
+                txn_opts,
+                Some(index_config),
+                trig_meta,
+                named_graphs,
+            )
+            .await?;
+
+        // Store raw transaction JSON ONLY when explicitly opted-in, or when already provided
+        // (e.g., signed credential envelope for provenance).
+        let commit_opts = if commit_opts.raw_txn.is_none() && store_raw_txn {
+            commit_opts.with_raw_txn(txn_json.clone())
+        } else {
+            commit_opts
+        };
+
+        // Add extracted transaction metadata and graph delta to commit opts
+        let commit_opts = commit_opts
+            .with_txn_meta(txn_meta)
+            .with_graph_delta(graph_delta.into_iter().collect());
+
+        // No-op updates: if WHERE matches nothing (or templates produce no flakes),
+        // return success without committing (Clojure parity).
+        let (receipt, ledger) = if !view.has_staged()
+            && matches!(txn_type, TxnType::Update | TxnType::Upsert)
+        {
+            let (base, flakes) = view.into_parts();
+            debug_assert!(
+                flakes.is_empty(),
+                "no-op transaction path requires zero staged flakes"
+            );
+            (
+                CommitReceipt {
+                    address: String::new(),
+                    commit_id: String::new(),
+                    t: base.t(),
+                    flake_count: 0,
+                },
+                base,
+            )
+        } else {
+            self.commit_staged(view, ns_registry, index_config, commit_opts)
+                .await?
+        };
 
         // Compute indexing status AFTER publish_commit succeeds
         let indexing_enabled = self.indexing_mode.is_enabled() && self.defaults_indexing_enabled();
@@ -589,7 +1049,7 @@ where
             .stage_turtle_insert(ledger, turtle, Some(index_config))
             .await?;
 
-        let StageResult { view, ns_registry } = stage_result;
+        let StageResult { view, ns_registry, txn_meta, graph_delta } = stage_result;
 
         // Store raw Turtle text when explicitly opted-in (same pattern as JSON path)
         let commit_opts = if commit_opts.raw_txn.is_none() && store_raw_txn {
@@ -597,6 +1057,11 @@ where
         } else {
             commit_opts
         };
+
+        // Add transaction metadata and graph delta (graph_delta typically empty for Turtle)
+        let commit_opts = commit_opts
+            .with_txn_meta(txn_meta)
+            .with_graph_delta(graph_delta.into_iter().collect());
 
         let (receipt, ledger) = self
             .commit_staged(view, ns_registry, index_config, commit_opts)
@@ -669,7 +1134,8 @@ where
         };
         let view = stage_flakes(ledger, flakes, options).await?;
 
-        Ok(StageResult { view, ns_registry })
+        // Plain Turtle doesn't support named graphs or txn-meta extraction (TriG support handles these)
+        Ok(StageResult { view, ns_registry, txn_meta: Vec::new(), graph_delta: rustc_hash::FxHashMap::default() })
     }
 
     /// Insert new data with options

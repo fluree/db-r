@@ -31,13 +31,15 @@ mod error;
 mod stats;
 
 pub use commit::{
-    load_commit, load_commit_envelope, trace_commit_envelopes, trace_commits, Commit, CommitData,
-    CommitEnvelope, CommitRef, IndexRef, TxnSignature,
+    load_commit, load_commit_envelope, trace_commit_envelopes, trace_commits,
+    Commit, CommitData, CommitEnvelope, CommitRef, IndexRef, TxnMetaEntry, TxnMetaValue,
+    TxnSignature, MAX_TXN_META_BYTES, MAX_TXN_META_ENTRIES,
 };
-pub use commit_flakes::generate_commit_flakes;
+pub use commit_v2::envelope::{MAX_GRAPH_DELTA_ENTRIES, MAX_GRAPH_IRI_LENGTH};
 pub use commit_v2::format::{CommitSignature, ALGO_ED25519};
-pub use error::{NoveltyError, Result};
 pub use fluree_db_credential::SigningKey;
+pub use commit_flakes::generate_commit_flakes;
+pub use error::{NoveltyError, Result};
 pub use stats::current_stats;
 
 use fluree_db_core::{Flake, IndexType};

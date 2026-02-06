@@ -85,7 +85,7 @@ Query across multiple named graph sources:
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "fromNamed": ["mydb:main", "otherdb:main"],
+  "from-named": ["mydb:main", "otherdb:main"],
   "select": ["?graph", "?name"],
   "where": [
     ["graph", "?graph", { "@id": "?person", "ex:name": "?name" }]
@@ -164,6 +164,85 @@ WHERE {
   OPTIONAL { ?commit ex:machine ?machine }
 }
 ```
+
+### User-Defined Named Graphs
+
+Fluree supports user-defined named graphs ingested via TriG format. These graphs are queryable using the structured `from` object syntax with a `graph` field.
+
+**Ingesting data with named graphs (TriG):**
+
+```bash
+curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
+  -H "Content-Type: application/trig" \
+  -d '@prefix ex: <http://example.org/ns/> .
+
+      GRAPH <http://example.org/graphs/products> {
+          ex:widget ex:name "Widget" ;
+                    ex:price "29.99"^^xsd:decimal .
+      }'
+```
+
+**Querying the named graph (JSON-LD):**
+
+Use the structured `from` object with a `graph` field specifying the graph IRI:
+
+```json
+{
+  "@context": { "ex": "http://example.org/ns/" },
+  "from": {
+    "@id": "mydb:main",
+    "graph": "http://example.org/graphs/products"
+  },
+  "select": ["?name", "?price"],
+  "where": [
+    { "@id": "?product", "ex:name": "?name" },
+    { "@id": "?product", "ex:price": "?price" }
+  ]
+}
+```
+
+**With time-travel:**
+
+```json
+{
+  "from": {
+    "@id": "mydb:main",
+    "t": 100,
+    "graph": "http://example.org/graphs/products"
+  },
+  "select": ["?name", "?price"],
+  "where": [...]
+}
+```
+
+**Combining multiple graphs (JSON-LD):**
+
+Query across the default graph and user-defined named graphs:
+
+```json
+{
+  "@context": { "ex": "http://example.org/ns/" },
+  "from": "mydb:main",
+  "from-named": [
+    {
+      "@id": "mydb:main",
+      "alias": "products",
+      "graph": "http://example.org/graphs/products"
+    }
+  ],
+  "select": ["?company", "?product", "?price"],
+  "where": [
+    { "@id": "?company", "@type": "ex:Company" },
+    ["graph", "products", { "@id": "?product", "ex:name": "?productName", "ex:price": "?price" }]
+  ]
+}
+```
+
+**Notes:**
+- Named graphs are queryable after indexing completes
+- The `graph` field accepts the full graph IRI (no URL-encoding required)
+- Time-travel is specified via the `t`, `iso`, or `sha` field in the object form
+- Use `alias` to create a short reference name for use in GRAPH patterns
 
 ## Multi-Ledger Queries
 
@@ -317,6 +396,39 @@ WHERE {
   ?order ex:product ?product .
 }
 ```
+
+### SERVICE for Cross-Ledger Queries
+
+Use SPARQL SERVICE to explicitly target specific ledgers within a query:
+
+```sparql
+PREFIX ex: <http://example.org/ns/>
+
+SELECT ?customerName ?productName ?quantity
+FROM <customers:main>
+FROM NAMED <orders:main>
+FROM NAMED <products:main>
+WHERE {
+  # Get customer from default graph
+  ?customer ex:name ?customerName .
+
+  # Get orders from orders ledger
+  SERVICE <fluree:ledger:orders:main> {
+    ?order ex:customer ?customer ;
+           ex:product ?product ;
+           ex:quantity ?quantity .
+  }
+
+  # Get product details from products ledger
+  SERVICE <fluree:ledger:products:main> {
+    ?product ex:name ?productName .
+  }
+}
+```
+
+SERVICE provides explicit control over which ledger each pattern executes against, enabling complex cross-ledger joins with clear data provenance.
+
+See [SPARQL Service Queries](sparql.md#service-queries) for full documentation.
 
 ### Time-Consistent Queries
 

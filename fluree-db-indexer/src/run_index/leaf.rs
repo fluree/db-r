@@ -20,7 +20,7 @@
 //! [Leaflet data: concatenated encoded leaflets]
 //! ```
 
-use super::leaflet::LeafletEncoder;
+use super::leaflet::{LeafletEncoder, Region3Entry};
 use super::run_record::{RunRecord, RunSortOrder};
 use sha2::{Digest, Sha256};
 use std::io;
@@ -238,7 +238,17 @@ impl LeafWriter {
         let first_s_id = self.record_buf[0].s_id.as_u64();
         let first_p_id = self.record_buf[0].p_id;
 
-        let data = self.leaflet_encoder.encode_leaflet(&self.record_buf);
+        // Build R3 entries for time-travel support in bulk builds.
+        // Must be sorted in reverse chronological order (newest first) for replay.
+        let mut r3_entries: Vec<Region3Entry> = self
+            .record_buf
+            .iter()
+            .map(Region3Entry::from_run_record)
+            .collect();
+        r3_entries.sort_by(|a, b| b.abs_t().cmp(&a.abs_t()));
+        let data = self
+            .leaflet_encoder
+            .encode_leaflet_with_r3(&self.record_buf, &r3_entries);
         self.record_buf.clear();
 
         self.current_leaflets.push(EncodedLeaflet {

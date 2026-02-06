@@ -240,6 +240,7 @@ impl TransportFlake {
         };
 
         Ok(Flake {
+            g: None, // TODO: transport format doesn't support graph yet
             s: self.s.to_sid(interner),
             p: self.p.to_sid(interner),
             o: self.o.to_flake_value(interner)?,
@@ -341,6 +342,7 @@ mod tests {
 
     fn make_flake(s: Sid, p: Sid, o: FlakeValue, dt: Sid, t: i64, op: bool) -> Flake {
         Flake {
+            g: None,
             s,
             p,
             o,

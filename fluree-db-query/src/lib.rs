@@ -54,6 +54,7 @@ pub mod reasoning;
 pub mod rewrite;
 pub mod rewrite_owl_ql;
 pub mod seed;
+pub mod service;
 pub mod sort;
 pub mod stats_query;
 pub mod subquery;
@@ -94,7 +95,7 @@ pub use groupby::GroupByOperator;
 pub use having::HavingOperator;
 pub use ir::{
     CompareOp, FilterExpr, FilterValue, FunctionName, PathModifier, Pattern, PropertyPathPattern,
-    Query, R2rmlPattern, SubqueryPattern,
+    Query, R2rmlPattern, ServiceEndpoint, ServicePattern, SubqueryPattern,
 };
 pub use join::{BindInstruction, NestedLoopJoinOperator, PatternPosition, UnifyInstruction};
 pub use limit::LimitOperator;

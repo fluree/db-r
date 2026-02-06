@@ -57,7 +57,12 @@ where
         // Load named graphs
         for source in &spec.named_graphs {
             let view = self.load_view_from_source(source).await?;
-            dataset = dataset.with_named(source.identifier.as_str(), view);
+            // Add by identifier (primary key)
+            dataset = dataset.with_named(source.identifier.as_str(), view.clone());
+            // Also add by alias if present (enables ["graph", "<alias>", ...] lookup)
+            if let Some(alias) = &source.source_alias {
+                dataset = dataset.with_named(alias.as_str(), view);
+            }
         }
 
         Ok(dataset)
@@ -98,7 +103,12 @@ where
         for source in &spec.named_graphs {
             let view = self.load_view_from_source(source).await?;
             let view = self.wrap_policy(view, opts).await?;
-            dataset = dataset.with_named(source.identifier.as_str(), view);
+            // Add by identifier (primary key)
+            dataset = dataset.with_named(source.identifier.as_str(), view.clone());
+            // Also add by alias if present (enables ["graph", "<alias>", ...] lookup)
+            if let Some(alias) = &source.source_alias {
+                dataset = dataset.with_named(alias.as_str(), view);
+            }
         }
 
         Ok(dataset)
@@ -106,18 +116,34 @@ where
 
     /// Build a single `FlureeView` from a `GraphSource`.
     ///
-    /// Applies time travel specification if present.
+    /// Applies time travel specification and graph selector if present.
+    ///
+    /// Graph selection can come from two sources (mutually exclusive):
+    /// - Fragment syntax in identifier: `ledger:main#txn-meta`
+    /// - Explicit `graph_selector` field in the GraphSource
+    ///
+    /// If `graph_selector` is set, it overrides any fragment in the identifier
+    /// (but this combination is rejected at parse time as ambiguous).
     pub(crate) async fn load_view_from_source(
         &self,
         source: &dataset::GraphSource,
     ) -> Result<FlureeView<S>> {
-        match &source.time_spec {
-            None => self.view(&source.identifier).await,
+        let view = match &source.time_spec {
+            None => self.view(&source.identifier).await?,
             Some(time_spec) => {
                 // Convert dataset::TimeSpec to crate::TimeSpec
                 let ts = convert_time_spec(time_spec)?;
-                self.view_at(&source.identifier, ts).await
+                self.view_at(&source.identifier, ts).await?
             }
+        };
+
+        // Apply explicit graph selector if set.
+        // Note: If the identifier contained a fragment like #txn-meta, that was
+        // already applied by view()/view_at(). The parser rejects the ambiguous
+        // case where both fragment and graph_selector are present.
+        match &source.graph_selector {
+            Some(selector) => Self::apply_graph_selector(view, selector),
+            None => Ok(view),
         }
     }
 

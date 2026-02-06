@@ -449,6 +449,35 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
         }
     }
 
+    /// Create a new context targeting a specific graph reference
+    ///
+    /// Used by SERVICE operator to execute patterns against a specific ledger.
+    /// The new context uses the graph's db, overlay, and to_t settings.
+    pub fn with_graph_ref(&self, graph: &crate::dataset::GraphRef<'a, S>) -> Self {
+        Self {
+            db: graph.db,
+            vars: self.vars,
+            to_t: graph.to_t,
+            from_t: self.from_t,
+            overlay: Some(graph.overlay),
+            batch_size: self.batch_size,
+            policy_enforcer: graph.policy_enforcer.clone().or_else(|| self.policy_enforcer.clone()),
+            bm25_provider: self.bm25_provider,
+            bm25_search_provider: self.bm25_search_provider,
+            vector_provider: self.vector_provider,
+            r2rml_provider: self.r2rml_provider,
+            r2rml_table_provider: self.r2rml_table_provider,
+            dataset: self.dataset,
+            active_graph: ActiveGraph::Default,
+            tracker: self.tracker.clone(),
+            history_mode: self.history_mode,
+            strict_bind_errors: self.strict_bind_errors,
+            binary_store: None, // GraphRef doesn't have binary store
+            binary_g_id: 0,
+            dict_novelty: None, // GraphRef doesn't have dict novelty
+        }
+    }
+
     /// Attach a binary columnar index store for fast local-file scans.
     ///
     /// When set, scan operators will use `BinaryScanOperator` instead of

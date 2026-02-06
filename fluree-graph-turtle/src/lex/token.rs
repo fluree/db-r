@@ -138,6 +138,9 @@ pub enum TokenKind {
     /// `false` boolean literal
     KwFalse,
 
+    /// TriG `GRAPH` keyword
+    KwGraph,
+
     // =========================================================================
     // Punctuation
     // =========================================================================
@@ -157,6 +160,10 @@ pub enum TokenKind {
     LParen,
     /// `)`
     RParen,
+    /// `{` (TriG graph block open)
+    LBrace,
+    /// `}` (TriG graph block close)
+    RBrace,
 
     // =========================================================================
     // Special
@@ -189,6 +196,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::KwA => write!(f, "a"),
             TokenKind::KwTrue => write!(f, "true"),
             TokenKind::KwFalse => write!(f, "false"),
+            TokenKind::KwGraph => write!(f, "GRAPH"),
             TokenKind::Dot => write!(f, "."),
             TokenKind::Comma => write!(f, ","),
             TokenKind::Semicolon => write!(f, ";"),
@@ -197,6 +205,8 @@ impl std::fmt::Display for TokenKind {
             TokenKind::RBracket => write!(f, "]"),
             TokenKind::LParen => write!(f, "("),
             TokenKind::RParen => write!(f, ")"),
+            TokenKind::LBrace => write!(f, "{{"),
+            TokenKind::RBrace => write!(f, "}}"),
             TokenKind::Eof => write!(f, "EOF"),
         }
     }

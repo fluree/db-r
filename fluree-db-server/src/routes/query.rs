@@ -296,6 +296,40 @@ pub async fn query_ledger(
 /// When tracking options are present (via headers or body), returns a tracked response:
 /// - Body: `{status, result, time?, fuel?, policy?}`
 /// - Headers: `x-fdb-time`, `x-fdb-fuel`, `x-fdb-policy` (Clojure parity)
+/// Check if a query requires dataset features (multi-ledger, named graphs, etc.)
+///
+/// Dataset features that require the connection execution path:
+/// - `from-named`: Named graphs in the dataset
+/// - `from` as array: Multiple default graphs
+/// - `from` as object with special fields: graph selector, alias, time-travel
+fn requires_dataset_features(query: &JsonValue) -> bool {
+    // Check for from-named
+    if query.get("from-named").is_some() {
+        return true;
+    }
+
+    // Check the structure of "from"
+    if let Some(from) = query.get("from") {
+        // Array of sources = multiple default graphs
+        if from.is_array() {
+            return true;
+        }
+
+        // Object form with special keys (graph, alias, t, iso, sha, etc.)
+        if let Some(obj) = from.as_object() {
+            // Any key other than just @id indicates dataset features
+            let has_special_keys = obj.keys().any(|k| {
+                !matches!(k.as_str(), "@id")
+            });
+            if has_special_keys {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 async fn execute_query(
     state: &AppState,
     alias: &str,
@@ -305,15 +339,21 @@ async fn execute_query(
     let span = tracing::info_span!("query_execute", ledger_alias = alias, query_kind = "fql");
     let _guard = span.enter();
 
-    // In proxy mode, use the unified FlureeInstance methods (no local freshness checking)
-    if state.config.is_proxy_storage_mode() {
-        return execute_query_proxy(state, alias, query_json, &span).await;
-    }
-
     // Check for history query: explicit "to" key indicates history mode
     // History queries must go through the dataset/connection path for correct index selection
     if query_json.get("to").is_some() {
         return execute_history_query(state, alias, query_json, &span).await;
+    }
+
+    // Check for dataset features (from-named, from array, from object with graph/alias/time)
+    // These require the connection execution path for proper dataset handling
+    if requires_dataset_features(query_json) {
+        return execute_dataset_query(state, alias, query_json, &span).await;
+    }
+
+    // In proxy mode, use the unified FlureeInstance methods (no local freshness checking)
+    if state.config.is_proxy_storage_mode() {
+        return execute_query_proxy(state, alias, query_json, &span).await;
     }
 
     // Shared storage mode: use load_ledger_for_query with freshness checking
@@ -689,20 +729,163 @@ async fn execute_history_query(
     }
 
     // Execute through the connection path which handles dataset/history parsing
-    match state.fluree.query_connection_jsonld(&query).await {
-        Ok(result) => {
-            tracing::info!(
-                status = "success",
-                query_kind = "history",
-                result_count = result.as_array().map(|a| a.len()).unwrap_or(0)
-            );
-            Ok((HeaderMap::new(), Json(result)))
+    if has_tracking_opts(&query) {
+        let response = match state.fluree.query_connection_jsonld_tracked(&query).await {
+            Ok(response) => response,
+            Err(e) => {
+                let server_error =
+                    ServerError::Api(fluree_db_api::ApiError::http(e.status, e.error));
+                set_span_error_code(span, "error:InvalidQuery");
+                tracing::error!(
+                    error = %server_error,
+                    query_kind = "history",
+                    "tracked history query failed"
+                );
+                return Err(server_error);
+            }
+        };
+
+        let tally = TrackingTally {
+            time: response.time.clone(),
+            fuel: response.fuel,
+            policy: response.policy.clone(),
+        };
+        let headers = tracking_headers(&tally);
+
+        // Serialize TrackedQueryResponse to JSON
+        let json = match serde_json::to_value(&response) {
+            Ok(json) => json,
+            Err(e) => {
+                let server_error =
+                    ServerError::internal(format!("Failed to serialize response: {}", e));
+                set_span_error_code(span, "error:InternalError");
+                tracing::error!(error = %server_error, "response serialization failed");
+                return Err(server_error);
+            }
+        };
+
+        tracing::info!(
+            status = "success",
+            tracked = true,
+            query_kind = "history",
+            time = ?response.time,
+            fuel = response.fuel
+        );
+        Ok((headers, Json(json)))
+    } else {
+        match state.fluree.query_connection_jsonld(&query).await {
+            Ok(result) => {
+                tracing::info!(
+                    status = "success",
+                    query_kind = "history",
+                    result_count = result.as_array().map(|a| a.len()).unwrap_or(0)
+                );
+                Ok((HeaderMap::new(), Json(result)))
+            }
+            Err(e) => {
+                let server_error = ServerError::Api(e);
+                set_span_error_code(span, "error:InvalidQuery");
+                tracing::error!(
+                    error = %server_error,
+                    query_kind = "history",
+                    "history query failed"
+                );
+                Err(server_error)
+            }
         }
-        Err(e) => {
-            let server_error = ServerError::Api(e);
-            set_span_error_code(span, "error:InvalidQuery");
-            tracing::error!(error = %server_error, query_kind = "history", "history query failed");
-            Err(server_error)
+    }
+}
+
+/// Execute a dataset query (query with from-named, from array, or structured from object)
+///
+/// Dataset queries must go through the connection/dataset path to properly handle:
+/// - Multiple default graphs (from array)
+/// - Named graphs (from-named)
+/// - Graph selectors (from object with graph field)
+/// - Dataset-local aliases for GRAPH patterns
+///
+/// If the query doesn't have a `from` key, the ledger alias from the URL path is injected.
+async fn execute_dataset_query(
+    state: &AppState,
+    alias: &str,
+    query_json: &JsonValue,
+    span: &tracing::Span,
+) -> Result<(HeaderMap, Json<JsonValue>)> {
+    // Clone the query so we can potentially inject the `from` key
+    let mut query = query_json.clone();
+
+    // If query doesn't have a `from` key, inject the ledger alias from the URL path
+    // This allows users to POST to /:ledger/query with just `{ "from-named": [...], ... }`
+    if query.get("from").is_none() {
+        if let Some(obj) = query.as_object_mut() {
+            obj.insert("from".to_string(), JsonValue::String(alias.to_string()));
+        }
+    }
+
+    // Execute through the connection path which handles dataset parsing
+    if has_tracking_opts(&query) {
+        let response = match state.fluree.query_connection_jsonld_tracked(&query).await {
+            Ok(response) => response,
+            Err(e) => {
+                let server_error =
+                    ServerError::Api(fluree_db_api::ApiError::http(e.status, e.error));
+                set_span_error_code(span, "error:InvalidQuery");
+                tracing::error!(
+                    error = %server_error,
+                    query_kind = "dataset",
+                    "tracked dataset query failed"
+                );
+                return Err(server_error);
+            }
+        };
+
+        let tally = TrackingTally {
+            time: response.time.clone(),
+            fuel: response.fuel,
+            policy: response.policy.clone(),
+        };
+        let headers = tracking_headers(&tally);
+
+        // Serialize TrackedQueryResponse to JSON
+        let json = match serde_json::to_value(&response) {
+            Ok(json) => json,
+            Err(e) => {
+                let server_error =
+                    ServerError::internal(format!("Failed to serialize response: {}", e));
+                set_span_error_code(span, "error:InternalError");
+                tracing::error!(error = %server_error, "response serialization failed");
+                return Err(server_error);
+            }
+        };
+
+        tracing::info!(
+            status = "success",
+            tracked = true,
+            query_kind = "dataset",
+            time = ?response.time,
+            fuel = response.fuel
+        );
+        Ok((headers, Json(json)))
+    } else {
+        match state.fluree.query_connection_jsonld(&query).await {
+            Ok(result) => {
+                tracing::info!(
+                    status = "success",
+                    query_kind = "dataset",
+                    result_count = result.as_array().map(|a| a.len()).unwrap_or(0)
+                );
+                Ok((HeaderMap::new(), Json(result)))
+            }
+            Err(e) => {
+                let server_error = ServerError::Api(e);
+                set_span_error_code(span, "error:InvalidQuery");
+                tracing::error!(
+                    error = %server_error,
+                    query_kind = "dataset",
+                    "dataset query failed"
+                );
+                Err(server_error)
+            }
         }
     }
 }

@@ -11,7 +11,7 @@ use fluree_db_core::{ContentAddressedWrite, ContentKind, DictNovelty, Flake, Fla
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, Publisher};
 use fluree_db_novelty::generate_commit_flakes;
-use fluree_db_novelty::{Commit, CommitData, CommitRef, SigningKey, TxnSignature};
+use fluree_db_novelty::{Commit, CommitData, CommitRef, SigningKey, TxnMetaEntry, TxnSignature};
 use std::sync::Arc;
 
 /// Receipt returned after a successful commit
@@ -43,6 +43,16 @@ pub struct CommitOpts {
     pub signing_key: Option<Arc<SigningKey>>,
     /// Transaction signature (audit metadata: who submitted the transaction).
     pub txn_signature: Option<TxnSignature>,
+    /// User-provided transaction metadata.
+    ///
+    /// Stored in the commit envelope and emitted to the txn-meta graph (`g_id=1`)
+    /// during indexing. Each entry becomes a triple with the commit as subject.
+    pub txn_meta: Vec<TxnMetaEntry>,
+    /// Named graph IRI to g_id mappings introduced by this transaction.
+    ///
+    /// Stored in the commit envelope for replay-safe persistence. The indexer
+    /// uses this to resolve graph IRIs to dictionary IDs when building the index.
+    pub graph_delta: std::collections::HashMap<u32, String>,
 }
 
 impl std::fmt::Debug for CommitOpts {
@@ -52,10 +62,9 @@ impl std::fmt::Debug for CommitOpts {
             .field("author", &self.author)
             .field("raw_txn", &self.raw_txn.is_some())
             .field("signing_key", &self.signing_key.is_some())
-            .field(
-                "txn_signature",
-                &self.txn_signature.as_ref().map(|s| &s.signer),
-            )
+            .field("txn_signature", &self.txn_signature.as_ref().map(|s| &s.signer))
+            .field("txn_meta_count", &self.txn_meta.len())
+            .field("graph_delta_count", &self.graph_delta.len())
             .finish()
     }
 }
@@ -90,6 +99,18 @@ impl CommitOpts {
     /// Set the transaction signature (audit metadata)
     pub fn with_txn_signature(mut self, sig: TxnSignature) -> Self {
         self.txn_signature = Some(sig);
+        self
+    }
+
+    /// Set the user-provided transaction metadata
+    pub fn with_txn_meta(mut self, txn_meta: Vec<TxnMetaEntry>) -> Self {
+        self.txn_meta = txn_meta;
+        self
+    }
+
+    /// Set the named graph delta (g_id -> IRI mappings)
+    pub fn with_graph_delta(mut self, graph_delta: std::collections::HashMap<u32, String>) -> Self {
+        self.graph_delta = graph_delta;
         self
     }
 }
@@ -240,6 +261,16 @@ where
     // Add txn signature if provided (audit metadata)
     if let Some(txn_sig) = opts.txn_signature {
         commit_record = commit_record.with_txn_signature(txn_sig);
+    }
+
+    // Add user-provided transaction metadata
+    if !opts.txn_meta.is_empty() {
+        commit_record = commit_record.with_txn_meta(opts.txn_meta.clone());
+    }
+
+    // Add named graph delta (g_id -> IRI mappings)
+    if !opts.graph_delta.is_empty() {
+        commit_record.graph_delta = opts.graph_delta.clone();
     }
 
     // Build previous commit reference with id and address
