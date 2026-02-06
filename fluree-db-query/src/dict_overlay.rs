@@ -63,8 +63,11 @@ pub struct DictOverlay {
     // BinaryRangeProvider fallback path where dict_novelty can't be shared
     // across commits). In the main binary scan path with properly threaded
     // DictNovelty, these remain empty.
+    //
+    // Ephemeral subject IDs use proper `SubjectId` encoding: (ns_code << 48) | local_id.
+    // The local_id starts at EPHEMERAL_SUBJECT_LOCAL_BASE to sort after persisted subjects.
     ext_subjects: HashMap<String, u64>,
-    ext_subject_iris: Vec<String>,
+    ext_subject_entries: Vec<(u16, String)>, // (ns_code, suffix) for resolution
     ext_strings: HashMap<String, u32>,
     ext_string_values: Vec<String>,
     base_s_count: u64,
@@ -79,6 +82,13 @@ pub struct DictOverlay {
 
 /// Handles above this value are ephemeral NumBig entries from DictOverlay.
 const EPHEMERAL_NUMBIG_BASE: u32 = 0x8000_0000;
+
+/// Base local ID for ephemeral subjects within a namespace.
+///
+/// Ephemeral subject IDs use `SubjectId::new(ns_code, EPHEMERAL_SUBJECT_LOCAL_BASE + seq)`.
+/// This ensures they sort after persisted subjects (which have smaller local IDs) and
+/// use the same `SubjectId` structure for proper index ordering.
+const EPHEMERAL_SUBJECT_LOCAL_BASE: u64 = 0x0000_8000_0000_0000;
 
 impl DictOverlay {
     /// Create a new overlay wrapping the given store and DictNovelty.
@@ -101,7 +111,7 @@ impl DictOverlay {
             ext_numbig: Vec::new(),
             ext_numbig_map: HashMap::new(),
             ext_subjects: HashMap::new(),
-            ext_subject_iris: Vec::new(),
+            ext_subject_entries: Vec::new(),
             ext_strings: HashMap::new(),
             ext_string_values: Vec::new(),
             base_s_count,
@@ -144,12 +154,18 @@ impl DictOverlay {
             }
         }
         // 3. Ephemeral fallback (for range provider path)
+        //
+        // Create a proper SubjectId with the encoded namespace code and an ephemeral
+        // local_id. This ensures ephemeral subjects sort correctly with persisted
+        // subjects in the same namespace.
         if let Some(&id) = self.ext_subjects.get(iri) {
             return Ok(id);
         }
-        let id = self.base_s_count + self.ext_subject_iris.len() as u64;
+        let sid = self.store.encode_iri(iri);
+        let ephemeral_local = EPHEMERAL_SUBJECT_LOCAL_BASE + self.ext_subject_entries.len() as u64;
+        let id = SubjectId::new(sid.namespace_code, ephemeral_local).as_u64();
         self.ext_subjects.insert(iri.to_string(), id);
-        self.ext_subject_iris.push(iri.to_string());
+        self.ext_subject_entries.push((sid.namespace_code, sid.name.to_string()));
         Ok(id)
     }
 
@@ -177,13 +193,18 @@ impl DictOverlay {
             }
         }
         // 3. Ephemeral fallback (for range provider path)
+        //
+        // Create a proper SubjectId with the Sid's namespace code and an ephemeral
+        // local_id. This ensures ephemeral subjects sort correctly with persisted
+        // subjects in the same namespace.
         let iri = self.store.sid_to_iri(sid);
         if let Some(&id) = self.ext_subjects.get(&iri) {
             return Ok(id);
         }
-        let id = self.base_s_count + self.ext_subject_iris.len() as u64;
-        self.ext_subjects.insert(iri.clone(), id);
-        self.ext_subject_iris.push(iri);
+        let ephemeral_local = EPHEMERAL_SUBJECT_LOCAL_BASE + self.ext_subject_entries.len() as u64;
+        let id = SubjectId::new(sid.namespace_code, ephemeral_local).as_u64();
+        self.ext_subjects.insert(iri, id);
+        self.ext_subject_entries.push((sid.namespace_code, sid.name.to_string()));
         Ok(id)
     }
 
@@ -194,15 +215,18 @@ impl DictOverlay {
     /// When DictNovelty is uninitialized, tries persisted tree then ephemeral.
     pub fn resolve_subject_iri(&self, id: u64) -> io::Result<String> {
         if !self.dict_novelty.is_initialized() {
-            // Uninitialized: try persisted tree first (handles both sid64 and flat IDs)
+            // Uninitialized: try persisted tree first
             if let Ok(iri) = self.store.resolve_subject_iri(id) {
                 return Ok(iri);
             }
-            // Ephemeral fallback: flat IDs allocated starting from base_s_count
-            if id >= self.base_s_count {
-                let idx = (id - self.base_s_count) as usize;
-                if let Some(iri) = self.ext_subject_iris.get(idx) {
-                    return Ok(iri.clone());
+            // Ephemeral fallback: SubjectId with local_id >= EPHEMERAL_SUBJECT_LOCAL_BASE
+            let sid64 = SubjectId::from_u64(id);
+            let local = sid64.local_id();
+            if local >= EPHEMERAL_SUBJECT_LOCAL_BASE {
+                let idx = (local - EPHEMERAL_SUBJECT_LOCAL_BASE) as usize;
+                if let Some((ns_code, suffix)) = self.ext_subject_entries.get(idx) {
+                    let prefix = self.store.namespace_prefix(*ns_code)?;
+                    return Ok(format!("{}{}", prefix, suffix));
                 }
             }
             return Err(io::Error::new(
@@ -222,6 +246,19 @@ impl DictOverlay {
             let prefix = self.store.namespace_prefix(ns_code)?;
             return Ok(format!("{}{}", prefix, suffix));
         }
+
+        // Ephemeral fallback: even with DictNovelty initialized, subjects from
+        // overlay translation may be in ext_subject_entries (e.g., historical
+        // view overlay subjects not in DictNovelty)
+        let local = sid64.local_id();
+        if local >= EPHEMERAL_SUBJECT_LOCAL_BASE {
+            let idx = (local - EPHEMERAL_SUBJECT_LOCAL_BASE) as usize;
+            if let Some((ns_code, suffix)) = self.ext_subject_entries.get(idx) {
+                let prefix = self.store.namespace_prefix(*ns_code)?;
+                return Ok(format!("{}{}", prefix, suffix));
+            }
+        }
+
         Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("s_id {} not found in store or DictNovelty", id),
@@ -284,19 +321,29 @@ impl DictOverlay {
     pub fn assign_string_id(&mut self, value: &str) -> io::Result<u32> {
         // 1. Persisted tree
         if let Some(id) = self.store.find_string_id(value)? {
+            tracing::trace!(value, id, "assign_string_id: found in persisted tree");
             return Ok(id);
         }
         // 2. DictNovelty (populated during commit)
         if self.dict_novelty.is_initialized() {
             if let Some(id) = self.dict_novelty.strings.find_string(value) {
+                tracing::trace!(value, id, "assign_string_id: found in DictNovelty");
                 return Ok(id);
             }
         }
         // 3. Ephemeral fallback (for range provider path)
         if let Some(&id) = self.ext_strings.get(value) {
+            tracing::trace!(value, id, "assign_string_id: found in ephemeral");
             return Ok(id);
         }
         let id = self.base_str_count + self.ext_string_values.len() as u32;
+        tracing::trace!(
+            value,
+            id,
+            base_str_count = self.base_str_count,
+            ext_len = self.ext_string_values.len(),
+            "assign_string_id: assigned ephemeral"
+        );
         self.ext_strings.insert(value.to_string(), id);
         self.ext_string_values.push(value.to_string());
         Ok(id)
@@ -309,6 +356,12 @@ impl DictOverlay {
     /// When DictNovelty is uninitialized, tries persisted tree then ephemeral.
     pub fn resolve_string_value(&self, id: u32) -> io::Result<String> {
         if !self.dict_novelty.is_initialized() {
+            tracing::trace!(
+                id,
+                base_str_count = self.base_str_count,
+                ext_len = self.ext_string_values.len(),
+                "resolve_string_value: dict_novelty NOT initialized"
+            );
             // Try persisted tree first
             if let Ok(val) = self.store.resolve_string_value(id) {
                 return Ok(val);
@@ -334,6 +387,17 @@ impl DictOverlay {
         if let Some(value) = self.dict_novelty.strings.resolve_string(id) {
             return Ok(value.to_string());
         }
+
+        // Ephemeral fallback: even with DictNovelty initialized, strings from
+        // overlay translation may be in ext_string_values (e.g., historical
+        // view overlay strings not in DictNovelty)
+        if id >= self.base_str_count {
+            let idx = (id - self.base_str_count) as usize;
+            if let Some(val) = self.ext_string_values.get(idx) {
+                return Ok(val.clone());
+            }
+        }
+
         Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("str_id {} not found in store or DictNovelty", id),
@@ -588,12 +652,12 @@ impl DictOverlay {
                 let wm = self.dict_novelty.subjects.watermark_for_ns(sid64.ns_code());
                 sid64.local_id() > wm
             } else {
-                // Ephemeral IDs are flat sequential starting at base_s_count.
-                // Persisted sid64 IDs have namespace codes in upper bits, making
-                // them far larger than the ephemeral range. Only classify as
-                // ephemeral if the ID falls exactly in [base_s_count, base_s_count + len).
-                ref_id >= self.base_s_count
-                    && (ref_id - self.base_s_count) < self.ext_subject_iris.len() as u64
+                // Ephemeral IDs use SubjectId encoding with local_id >= EPHEMERAL_SUBJECT_LOCAL_BASE.
+                // Check if this ID falls in the ephemeral range.
+                let sid64 = SubjectId::from_u64(ref_id);
+                let local = sid64.local_id();
+                local >= EPHEMERAL_SUBJECT_LOCAL_BASE
+                    && (local - EPHEMERAL_SUBJECT_LOCAL_BASE) < self.ext_subject_entries.len() as u64
             };
             if is_novel {
                 let iri = self.resolve_subject_iri(ref_id)?;
@@ -681,6 +745,86 @@ impl DictOverlay {
             meta.i = Some(i_val);
         }
         Some(meta)
+    }
+
+    /// Check if a value needs early materialization.
+    ///
+    /// Returns true if the value uses ephemeral dictionary IDs that can't be
+    /// resolved by `BinaryIndexStore` alone (only `DictOverlay` knows them).
+    /// For such values, `batch_to_bindings` should emit `Binding::Lit` instead
+    /// of `Binding::EncodedLit` to materialize them while the overlay is available.
+    pub fn needs_early_materialize(&self, o_kind: u8, o_key: u64) -> bool {
+        let initialized = self.dict_novelty.is_initialized();
+
+        // REF_ID — check for ephemeral subject IDs
+        if o_kind == ObjKind::REF_ID.as_u8() {
+            let sid64 = SubjectId::from_u64(o_key);
+            let local = sid64.local_id();
+            let ns_code = sid64.ns_code();
+            if initialized {
+                let wm = self.dict_novelty.subjects.watermark_for_ns(ns_code);
+                return local > wm;
+            } else {
+                return local >= EPHEMERAL_SUBJECT_LOCAL_BASE
+                    && (local - EPHEMERAL_SUBJECT_LOCAL_BASE) < self.ext_subject_entries.len() as u64;
+            }
+        }
+
+        // LEX_ID — check for ephemeral string IDs
+        if o_kind == ObjKind::LEX_ID.as_u8() {
+            let str_id = o_key as u32;
+            if initialized {
+                return str_id > self.dict_novelty.strings.watermark();
+            } else {
+                return str_id >= self.base_str_count
+                    && (str_id - self.base_str_count) < self.ext_string_values.len() as u32;
+            }
+        }
+
+        // JSON_ID — same as LEX_ID (uses string dictionary)
+        if o_kind == ObjKind::JSON_ID.as_u8() {
+            let str_id = o_key as u32;
+            if initialized {
+                return str_id > self.dict_novelty.strings.watermark();
+            } else {
+                return str_id >= self.base_str_count
+                    && (str_id - self.base_str_count) < self.ext_string_values.len() as u32;
+            }
+        }
+
+        // NUM_BIG with ephemeral handle
+        if o_kind == ObjKind::NUM_BIG.as_u8() {
+            let handle = o_key as u32;
+            return handle >= EPHEMERAL_NUMBIG_BASE;
+        }
+
+        // All other types can be decoded by the store alone
+        false
+    }
+
+    /// Check if a subject ID is ephemeral and needs early materialization.
+    ///
+    /// Returns true if the subject ID can't be resolved by `BinaryIndexStore` alone.
+    pub fn is_ephemeral_subject(&self, s_id: u64) -> bool {
+        let initialized = self.dict_novelty.is_initialized();
+        let sid64 = SubjectId::from_u64(s_id);
+        let local = sid64.local_id();
+        let ns_code = sid64.ns_code();
+
+        if initialized {
+            let wm = self.dict_novelty.subjects.watermark_for_ns(ns_code);
+            local > wm
+        } else {
+            local >= EPHEMERAL_SUBJECT_LOCAL_BASE
+                && (local - EPHEMERAL_SUBJECT_LOCAL_BASE) < self.ext_subject_entries.len() as u64
+        }
+    }
+
+    /// Check if a predicate ID is ephemeral and needs early materialization.
+    ///
+    /// Returns true if the predicate ID can't be resolved by `BinaryIndexStore` alone.
+    pub fn is_ephemeral_predicate(&self, p_id: u32) -> bool {
+        p_id >= self.base_p_count
     }
 }
 

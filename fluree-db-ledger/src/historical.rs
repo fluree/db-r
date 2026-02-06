@@ -102,6 +102,7 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
         // Build novelty from commits between index_t and target_t
         let overlay = if let Some(commit_addr) = &record.commit_address {
             if target_t > index_t {
+                tracing::trace!(target_t, index_t, "HistoricalLedgerView: loading novelty");
                 let (novelty, ns_delta) = Self::load_novelty_range(
                     storage,
                     commit_addr,
@@ -118,6 +119,7 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
                 }
 
                 if novelty.is_empty() {
+                    tracing::trace!("HistoricalLedgerView: novelty is empty");
                     return Ok(Self {
                         db,
                         overlay: None,
@@ -125,14 +127,17 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
                     });
                 }
 
+                tracing::trace!(epoch = novelty.epoch, "HistoricalLedgerView: returning with overlay");
                 return Ok(Self {
                     db,
                     overlay: Some(Arc::new(novelty)),
                     to_t: target_t,
                 });
             }
+            tracing::trace!(target_t, index_t, "HistoricalLedgerView: no novelty needed");
             None
         } else {
+            tracing::trace!("HistoricalLedgerView: no commit_address, no novelty");
             None
         };
 
@@ -156,6 +161,8 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
     ) -> Result<(Novelty, std::collections::HashMap<u16, String>)> {
         use std::collections::HashMap;
 
+        tracing::trace!(head_address, index_t, target_t, "load_novelty_range: starting");
+
         let mut novelty = Novelty::new(index_t);
         let mut merged_ns_delta: HashMap<u16, String> = HashMap::new();
 
@@ -163,17 +170,32 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
         let stream = trace_commits(storage, head_address.to_string(), index_t);
         futures::pin_mut!(stream);
 
+        let mut commit_count = 0;
         while let Some(result) = stream.next().await {
             let commit = result?;
+            commit_count += 1;
+            tracing::trace!(
+                commit_count,
+                t = commit.t,
+                flakes = commit.flakes.len(),
+                "load_novelty_range: processing commit"
+            );
 
             // Skip commits beyond target_t
             if commit.t > target_t {
+                tracing::trace!(t = commit.t, target_t, "load_novelty_range: skipping future commit");
                 continue;
             }
 
             let meta_flakes = generate_commit_flakes(&commit, ledger_alias, commit.t);
+            let meta_len = meta_flakes.len();
             let mut all_flakes = commit.flakes;
             all_flakes.extend(meta_flakes);
+            tracing::trace!(
+                total_flakes = all_flakes.len(),
+                meta_flakes = meta_len,
+                "load_novelty_range: applying commit"
+            );
             novelty.apply_commit(all_flakes, commit.t)?;
 
             // Merge namespace deltas (newer wins - trace_commits is newest first)
@@ -182,6 +204,11 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
             }
         }
 
+        tracing::trace!(
+            commit_count,
+            novelty_empty = novelty.is_empty(),
+            "load_novelty_range: completed"
+        );
         Ok((novelty, merged_ns_delta))
     }
 

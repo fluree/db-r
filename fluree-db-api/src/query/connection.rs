@@ -30,26 +30,27 @@ where
 
         // Single-ledger fast path: use FlureeView API
         if Self::is_single_ledger_fast_path(&spec) {
-            let alias = spec.default_graphs[0].identifier.as_str();
+            let source = &spec.default_graphs[0];
+            let alias = source.identifier.as_str();
             let view = self.view(alias).await?;
 
-            // Apply policy if present
-            let view = if qc_opts.has_any_policy_inputs() {
-                self.wrap_policy(view, &qc_opts).await?
-            } else {
-                view
-            };
+            // Apply policy: per-source overrides global
+            let view = self
+                .apply_source_or_global_policy(view, source, &qc_opts)
+                .await?;
 
             return self.query_view(&view, query_json).await;
         }
 
         // Single-ledger with time travel: use FlureeView API
         if let Some(view) = self.try_single_view_from_spec(&spec).await? {
-            let view = if qc_opts.has_any_policy_inputs() {
-                self.wrap_policy(view, &qc_opts).await?
-            } else {
-                view
-            };
+            let source = &spec.default_graphs[0];
+
+            // Apply policy: per-source overrides global
+            let view = self
+                .apply_source_or_global_policy(view, source, &qc_opts)
+                .await?;
+
             return self.query_view(&view, query_json).await;
         }
 
@@ -85,18 +86,19 @@ where
 
         // Single-ledger fast path (no time override): use FlureeView API
         if Self::is_single_ledger_fast_path(&spec) {
-            let alias = spec.default_graphs[0].identifier.as_str();
+            let source = &spec.default_graphs[0];
+            let alias = source.identifier.as_str();
             let view = self.view(alias).await.map_err(|e| {
                 crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
             })?;
 
-            let view = if qc_opts.has_any_policy_inputs() {
-                self.wrap_policy(view, &qc_opts).await.map_err(|e| {
+            // Apply policy: per-source overrides global
+            let view = self
+                .apply_source_or_global_policy(view, source, &qc_opts)
+                .await
+                .map_err(|e| {
                     crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
-                })?
-            } else {
-                view
-            };
+                })?;
 
             return self.query_view_tracked(&view, query_json).await;
         }
@@ -107,13 +109,16 @@ where
         })?;
 
         if let Some(view) = single_view {
-            let view = if qc_opts.has_any_policy_inputs() {
-                self.wrap_policy(view, &qc_opts).await.map_err(|e| {
+            let source = &spec.default_graphs[0];
+
+            // Apply policy: per-source overrides global
+            let view = self
+                .apply_source_or_global_policy(view, source, &qc_opts)
+                .await
+                .map_err(|e| {
                     crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
-                })?
-            } else {
-                view
-            };
+                })?;
+
             return self.query_view_tracked(&view, query_json).await;
         }
 
@@ -311,6 +316,31 @@ where
         let dataset = apply_policy_to_dataset(dataset, policy);
 
         self.query_dataset_view_tracked(&dataset, sparql).await
+    }
+
+    /// Apply per-source or global policy to a view.
+    ///
+    /// Per-source policy takes precedence if present, otherwise global policy is used.
+    /// If neither has policy, returns the view unchanged.
+    async fn apply_source_or_global_policy(
+        &self,
+        view: crate::view::FlureeView<S>,
+        source: &crate::dataset::GraphSource,
+        global_opts: &crate::QueryConnectionOptions,
+    ) -> Result<crate::view::FlureeView<S>> {
+        // Per-source policy takes precedence
+        if let Some(policy_override) = &source.policy_override {
+            if policy_override.has_policy() {
+                let opts = policy_override.to_query_connection_options();
+                return self.wrap_policy(view, &opts).await;
+            }
+        }
+        // Fall back to global policy if present
+        if global_opts.has_any_policy_inputs() {
+            self.wrap_policy(view, global_opts).await
+        } else {
+            Ok(view)
+        }
     }
 }
 

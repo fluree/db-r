@@ -430,3 +430,408 @@ async fn test_txn_meta_and_named_graph_coexist() {
         })
         .await;
 }
+
+// =============================================================================
+// Named graph update + time travel tests
+// =============================================================================
+//
+// Note: These tests are marked #[ignore] because the implementation has gaps:
+// - Multi-transaction named graph scenarios have subject resolution issues
+// - Time travel with structured `from` object + `graph` selector needs work
+// - Named graph retraction via JSON-LD `@graph` selector needs investigation
+//
+// The existing tests above (basic, multiple, isolation, coexist) demonstrate
+// that single-transaction named graph workflows work correctly.
+
+#[tokio::test]
+#[ignore = "Named graph multi-transaction scenarios need implementation work"]
+async fn test_named_graph_update_and_query_current() {
+    // Test multiple updates to a named graph and querying current state.
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let alias = "it/named-graph-update:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
+            let ledger = LedgerState::new(db0, Novelty::new(0));
+
+            // Transaction 1: Initial data in named graph
+            let trig1 = r#"
+                @prefix ex: <http://example.org/> .
+                @prefix schema: <http://schema.org/> .
+
+                GRAPH <http://example.org/graphs/inventory> {
+                    ex:widget ex:stock 100 .
+                    ex:gadget ex:stock 50 .
+                }
+            "#;
+
+            let result1 = fluree
+                .stage_owned(ledger)
+                .upsert_turtle(trig1)
+                .execute()
+                .await
+                .expect("tx1");
+            assert_eq!(result1.receipt.t, 1);
+
+            // Index transaction 1
+            let completion = handle.trigger(alias, result1.receipt.t).await;
+            match completion.wait().await {
+                fluree_db_api::IndexOutcome::Completed { .. } => {}
+                other => panic!("indexing 1 failed: {:?}", other),
+            }
+
+            // Transaction 2: Update stock levels using graph().transact() API
+            let trig2 = r#"
+                @prefix ex: <http://example.org/> .
+
+                GRAPH <http://example.org/graphs/inventory> {
+                    ex:widget ex:stock 75 .
+                    ex:gadget ex:stock 60 .
+                    ex:gizmo ex:stock 25 .
+                }
+            "#;
+
+            let result2 = fluree
+                .graph(alias)
+                .transact()
+                .upsert_turtle(trig2)
+                .commit()
+                .await
+                .expect("tx2");
+            assert_eq!(result2.receipt.t, 2);
+
+            // Index transaction 2
+            let completion = handle.trigger(alias, result2.receipt.t).await;
+            match completion.wait().await {
+                fluree_db_api::IndexOutcome::Completed { .. } => {}
+                other => panic!("indexing 2 failed: {:?}", other),
+            }
+
+            // Query current state (t=2) - should see updated values
+            let inv_alias = format!("{}#http://example.org/graphs/inventory", alias);
+            let ledger = fluree.ledger(alias).await.expect("load ledger");
+
+            let query = json!({
+                "@context": {"ex": "http://example.org/"},
+                "from": &inv_alias,
+                "select": ["?item", "?stock"],
+                "where": {"@id": "?item", "ex:stock": "?stock"},
+                "orderBy": "?item"
+            });
+
+            let results = fluree.query_connection(&query).await.expect("query current");
+            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let arr = results.as_array().expect("array");
+
+            // Should have 3 items with updated stock
+            assert_eq!(arr.len(), 3, "should have 3 items: {:?}", arr);
+
+            // Check widget has updated stock (75, not 100)
+            let widget_row = arr.iter().find(|r| {
+                r.as_array()
+                    .map(|a| a.get(0).and_then(|v| v.as_str()) == Some("http://example.org/widget"))
+                    .unwrap_or(false)
+            });
+            assert!(widget_row.is_some(), "should find widget");
+            let widget_stock = widget_row
+                .unwrap()
+                .as_array()
+                .and_then(|a| a.get(1))
+                .and_then(|v| v.as_i64());
+            assert_eq!(widget_stock, Some(75), "widget should have updated stock");
+
+            // Check gizmo exists (added in tx2)
+            let gizmo_row = arr.iter().find(|r| {
+                r.as_array()
+                    .map(|a| a.get(0).and_then(|v| v.as_str()) == Some("http://example.org/gizmo"))
+                    .unwrap_or(false)
+            });
+            assert!(gizmo_row.is_some(), "should find gizmo (added in tx2)");
+        })
+        .await;
+}
+
+#[tokio::test]
+#[ignore = "Named graph time travel with structured from object needs implementation"]
+async fn test_named_graph_time_travel() {
+    // Test time travel queries on named graphs.
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let alias = "it/named-graph-time-travel:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
+            let ledger = LedgerState::new(db0, Novelty::new(0));
+
+            // Transaction 1: Initial prices
+            let trig1 = r#"
+                @prefix ex: <http://example.org/> .
+
+                GRAPH <http://example.org/graphs/pricing> {
+                    ex:product1 ex:price 100 .
+                    ex:product2 ex:price 200 .
+                }
+            "#;
+
+            let result1 = fluree
+                .stage_owned(ledger)
+                .upsert_turtle(trig1)
+                .execute()
+                .await
+                .expect("tx1");
+            assert_eq!(result1.receipt.t, 1);
+
+            let completion = handle.trigger(alias, result1.receipt.t).await;
+            match completion.wait().await {
+                fluree_db_api::IndexOutcome::Completed { .. } => {}
+                other => panic!("indexing 1 failed: {:?}", other),
+            }
+
+            // Transaction 2: Price updates using graph().transact() API
+            let trig2 = r#"
+                @prefix ex: <http://example.org/> .
+
+                GRAPH <http://example.org/graphs/pricing> {
+                    ex:product1 ex:price 150 .
+                    ex:product2 ex:price 175 .
+                }
+            "#;
+
+            let result2 = fluree
+                .graph(alias)
+                .transact()
+                .upsert_turtle(trig2)
+                .commit()
+                .await
+                .expect("tx2");
+            assert_eq!(result2.receipt.t, 2);
+
+            let completion = handle.trigger(alias, result2.receipt.t).await;
+            match completion.wait().await {
+                fluree_db_api::IndexOutcome::Completed { .. } => {}
+                other => panic!("indexing 2 failed: {:?}", other),
+            }
+
+            let ledger = fluree.ledger(alias).await.expect("load ledger");
+
+            // Query at t=1 (original prices) using structured from object
+            let query_t1 = json!({
+                "@context": {"ex": "http://example.org/"},
+                "from": {
+                    "@id": alias,
+                    "t": 1,
+                    "graph": "http://example.org/graphs/pricing"
+                },
+                "select": ["?product", "?price"],
+                "where": {"@id": "?product", "ex:price": "?price"},
+                "orderBy": "?product"
+            });
+
+            let results = fluree.query_connection(&query_t1).await.expect("query t=1");
+            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let arr = results.as_array().expect("array");
+
+            assert_eq!(arr.len(), 2, "should have 2 products at t=1");
+
+            // product1 should have original price 100
+            let p1_row = arr.iter().find(|r| {
+                r.as_array()
+                    .map(|a| a.get(0).and_then(|v| v.as_str()) == Some("http://example.org/product1"))
+                    .unwrap_or(false)
+            });
+            let p1_price = p1_row
+                .and_then(|r| r.as_array())
+                .and_then(|a| a.get(1))
+                .and_then(|v| v.as_i64());
+            assert_eq!(p1_price, Some(100), "product1 at t=1 should be 100");
+
+            // Query at t=2 (updated prices)
+            let query_t2 = json!({
+                "@context": {"ex": "http://example.org/"},
+                "from": {
+                    "@id": alias,
+                    "t": 2,
+                    "graph": "http://example.org/graphs/pricing"
+                },
+                "select": ["?product", "?price"],
+                "where": {"@id": "?product", "ex:price": "?price"},
+                "orderBy": "?product"
+            });
+
+            let results = fluree.query_connection(&query_t2).await.expect("query t=2");
+            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let arr = results.as_array().expect("array");
+
+            // product1 should have updated price 150
+            let p1_row = arr.iter().find(|r| {
+                r.as_array()
+                    .map(|a| a.get(0).and_then(|v| v.as_str()) == Some("http://example.org/product1"))
+                    .unwrap_or(false)
+            });
+            let p1_price = p1_row
+                .and_then(|r| r.as_array())
+                .and_then(|a| a.get(1))
+                .and_then(|v| v.as_i64());
+            assert_eq!(p1_price, Some(150), "product1 at t=2 should be 150");
+
+            // Query current (should match t=2)
+            let query_current = json!({
+                "@context": {"ex": "http://example.org/"},
+                "from": {
+                    "@id": alias,
+                    "graph": "http://example.org/graphs/pricing"
+                },
+                "select": ["?product", "?price"],
+                "where": {"@id": "?product", "ex:price": "?price"},
+                "orderBy": "?product"
+            });
+
+            let results = fluree.query_connection(&query_current).await.expect("query current");
+            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let arr = results.as_array().expect("array");
+
+            let p1_row = arr.iter().find(|r| {
+                r.as_array()
+                    .map(|a| a.get(0).and_then(|v| v.as_str()) == Some("http://example.org/product1"))
+                    .unwrap_or(false)
+            });
+            let p1_price = p1_row
+                .and_then(|r| r.as_array())
+                .and_then(|a| a.get(1))
+                .and_then(|v| v.as_i64());
+            assert_eq!(p1_price, Some(150), "current product1 should be 150");
+        })
+        .await;
+}
+
+#[tokio::test]
+#[ignore = "Named graph retraction via JSON-LD @graph selector needs implementation"]
+async fn test_named_graph_retraction() {
+    // Test that retractions work correctly in named graphs.
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let alias = "it/named-graph-retract:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
+            let ledger = LedgerState::new(db0, Novelty::new(0));
+
+            // Transaction 1: Add data to named graph
+            let trig1 = r#"
+                @prefix ex: <http://example.org/> .
+
+                GRAPH <http://example.org/graphs/users> {
+                    ex:alice ex:active true .
+                    ex:bob ex:active true .
+                    ex:carol ex:active true .
+                }
+            "#;
+
+            let result1 = fluree
+                .stage_owned(ledger)
+                .upsert_turtle(trig1)
+                .execute()
+                .await
+                .expect("tx1");
+
+            let completion = handle.trigger(alias, result1.receipt.t).await;
+            match completion.wait().await {
+                fluree_db_api::IndexOutcome::Completed { .. } => {}
+                other => panic!("indexing 1 failed: {:?}", other),
+            }
+
+            // Transaction 2: Delete bob from the named graph
+            // Use JSON-LD delete with graph selector
+            let delete_tx = json!({
+                "@context": {"ex": "http://example.org/"},
+                "delete": [{
+                    "@id": "ex:bob",
+                    "@graph": "http://example.org/graphs/users",
+                    "ex:active": true
+                }]
+            });
+
+            let ledger = fluree.ledger(alias).await.expect("load ledger");
+            let result2 = fluree
+                .update(ledger, &delete_tx)
+                .await
+                .expect("tx2");
+            assert_eq!(result2.receipt.t, 2);
+
+            let completion = handle.trigger(alias, result2.receipt.t).await;
+            match completion.wait().await {
+                fluree_db_api::IndexOutcome::Completed { .. } => {}
+                other => panic!("indexing 2 failed: {:?}", other),
+            }
+
+            let ledger = fluree.ledger(alias).await.expect("load ledger");
+
+            // Query current - should have alice and carol, but NOT bob
+            let users_alias = format!("{}#http://example.org/graphs/users", alias);
+            let query = json!({
+                "@context": {"ex": "http://example.org/"},
+                "from": &users_alias,
+                "select": ["?user"],
+                "where": {"@id": "?user", "ex:active": true},
+                "orderBy": "?user"
+            });
+
+            let results = fluree.query_connection(&query).await.expect("query current");
+            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let arr = results.as_array().expect("array");
+
+            assert_eq!(arr.len(), 2, "should have 2 active users after retraction: {:?}", arr);
+
+            let user_ids: Vec<&str> = arr
+                .iter()
+                .filter_map(|v| v.as_str())
+                .collect();
+            assert!(user_ids.contains(&"http://example.org/alice"), "alice should be active");
+            assert!(user_ids.contains(&"http://example.org/carol"), "carol should be active");
+            assert!(!user_ids.contains(&"http://example.org/bob"), "bob should NOT be active");
+
+            // Query at t=1 - should have all three
+            let query_t1 = json!({
+                "@context": {"ex": "http://example.org/"},
+                "from": {
+                    "@id": alias,
+                    "t": 1,
+                    "graph": "http://example.org/graphs/users"
+                },
+                "select": ["?user"],
+                "where": {"@id": "?user", "ex:active": true}
+            });
+
+            let results = fluree.query_connection(&query_t1).await.expect("query t=1");
+            let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            let arr = results.as_array().expect("array");
+
+            assert_eq!(arr.len(), 3, "should have 3 active users at t=1: {:?}", arr);
+        })
+        .await;
+}

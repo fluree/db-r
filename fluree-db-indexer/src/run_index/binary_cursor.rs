@@ -491,7 +491,10 @@ impl BinaryCursor {
         let leaf_indices = branch.find_leaves_in_range(min_key, max_key, cmp);
 
         let current_idx = leaf_indices.start;
-        let exhausted = leaf_indices.is_empty();
+        // Don't set exhausted = true even when leaf_indices is empty.
+        // The overlay-only path in next_leaf() needs a chance to run for
+        // subjects that exist only in novelty (not in any indexed leaf).
+        let exhausted = false;
 
         Self {
             store,
@@ -553,7 +556,10 @@ impl BinaryCursor {
         let leaf_indices = branch.find_leaves_for_subject(g_id, s_id);
 
         let current_idx = leaf_indices.start;
-        let exhausted = leaf_indices.is_empty();
+        // Don't set exhausted = true even when leaf_indices is empty.
+        // The overlay-only path in next_leaf() needs a chance to run for
+        // subjects that exist only in novelty (not in any indexed leaf).
+        let exhausted = false;
 
         Self {
             store,
@@ -633,6 +639,13 @@ impl BinaryCursor {
     /// use the normal (lazy R2) path. Leaflets with overlay ops force R2 decode
     /// and use a streaming merge.
     pub fn next_leaf(&mut self) -> io::Result<Option<DecodedBatch>> {
+        tracing::trace!(
+            order = ?self.order,
+            leaf_indices = ?self.leaf_indices,
+            overlay_ops = self.overlay_ops.len(),
+            to_t = self.to_t,
+            "binary_cursor::next_leaf"
+        );
         if self.exhausted {
             return Ok(None);
         }
@@ -675,7 +688,14 @@ impl BinaryCursor {
                 } else {
                     None
                 };
-                find_overlay_for_leaf(&self.overlay_ops, leaf_entry, next_key, self.order)
+                let overlay_slice = find_overlay_for_leaf(&self.overlay_ops, leaf_entry, next_key, self.order);
+                tracing::trace!(
+                    leaf_idx,
+                    leaf_first_key = ?leaf_entry.first_key.s_id,
+                    overlay_slice_len = overlay_slice.len(),
+                    "binary_cursor: overlay slice for leaf"
+                );
+                overlay_slice
             } else {
                 &[]
             };
@@ -708,6 +728,11 @@ impl BinaryCursor {
             let mut r2_misses: u64 = 0;
 
             if !leaf_overlay.is_empty() {
+                tracing::trace!(
+                    leaf_idx,
+                    overlay_slice_len = leaf_overlay.len(),
+                    "binary_cursor: processing leaf with overlay merge"
+                );
                 // Overlay merge path: merge overlay ops into leaflet rows.
                 // Each leaflet gets its assigned slice of overlay ops;
                 // merge_overlay handles insertions, updates, and retractions.
@@ -719,6 +744,12 @@ impl BinaryCursor {
                     leaf_overlay,
                     &mut batch,
                 )?;
+
+                // Clear overlay ops after processing the last leaf to prevent
+                // the overlay-only path from re-emitting them on subsequent calls.
+                if self.current_idx >= self.leaf_indices.end {
+                    self.overlay_ops.clear();
+                }
             } else {
                 // No overlay for this leaf — use per-leaflet normal/time-travel paths.
                 for (leaflet_idx, dir_entry) in header.leaflet_dir.iter().enumerate() {
@@ -784,6 +815,92 @@ impl BinaryCursor {
                 return Ok(Some(batch));
             }
             // Empty after filtering — continue to next leaf
+        }
+
+        // Clear overlay ops after processing all indexed leaves.
+        // This prevents the overlay-only path below from re-emitting ops that
+        // were already merged into indexed data. The overlay-only path is for
+        // subjects that exist ONLY in novelty (not in any indexed leaf).
+        if !self.leaf_indices.is_empty() {
+            self.overlay_ops.clear();
+        }
+
+        // Overlay-only path: when no leaves matched but we have overlay ops,
+        // emit assertion ops directly. This handles novelty-only subjects that
+        // don't exist in any indexed leaf.
+        tracing::trace!(
+            overlay_ops = self.overlay_ops.len(),
+            filter_s_id = ?self.filter.s_id,
+            filter_p_id = ?self.filter.p_id,
+            "binary_cursor: overlay-only path check"
+        );
+        if !self.overlay_ops.is_empty() {
+            let mut batch = DecodedBatch {
+                s_ids: Vec::new(),
+                p_ids: Vec::new(),
+                o_kinds: Vec::new(),
+                o_keys: Vec::new(),
+                dt_values: Vec::new(),
+                t_values: Vec::new(),
+                lang_ids: Vec::new(),
+                i_values: Vec::new(),
+                row_count: 0,
+            };
+
+            // Emit assertion ops that match the cursor's filter and to_t bound.
+            // Note: overlay ops are already filtered by graph during translation,
+            // so we don't need to check g_id here.
+            for ov in &self.overlay_ops {
+                // Must be an assertion and within time bounds
+                if !ov.op || ov.t > self.to_t {
+                    continue;
+                }
+
+                // Apply filter constraints (if any)
+                if let Some(f_s_id) = self.filter.s_id {
+                    if ov.s_id != f_s_id {
+                        continue;
+                    }
+                }
+                if let Some(f_p_id) = self.filter.p_id {
+                    if ov.p_id != f_p_id {
+                        continue;
+                    }
+                }
+                if let Some(f_o_kind) = self.filter.o_kind {
+                    if ov.o_kind != f_o_kind {
+                        continue;
+                    }
+                }
+                if let Some(f_o_key) = self.filter.o_key {
+                    if ov.o_key != f_o_key {
+                        continue;
+                    }
+                }
+
+                batch.s_ids.push(ov.s_id);
+                batch.p_ids.push(ov.p_id);
+                batch.o_kinds.push(ov.o_kind);
+                batch.o_keys.push(ov.o_key);
+                batch.dt_values.push(ov.dt as u32);
+                batch.t_values.push(ov.t);
+                batch.lang_ids.push(ov.lang_id);
+                batch.i_values.push(ov.i_val);
+            }
+            batch.row_count = batch.s_ids.len();
+
+            // Clear overlay ops to prevent re-emission on next call
+            self.overlay_ops.clear();
+
+            if batch.row_count > 0 {
+                tracing::debug!(
+                    rows = batch.row_count,
+                    "binary_cursor: emitting overlay-only batch (no matching leaves)"
+                );
+                span.record("leaflets", 0u64);
+                span.record("ms", (start.elapsed().as_secs_f64() * 1000.0) as u64);
+                return Ok(Some(batch));
+            }
         }
 
         self.exhausted = true;
@@ -931,7 +1048,17 @@ impl BinaryCursor {
                 }
 
                 // Filter and emit.
+                tracing::trace!(
+                    row_count = merged_r1.row_count,
+                    "binary_cursor: merge completed"
+                );
                 let matches = self.filter_r1(&merged_r1);
+                tracing::trace!(
+                    matches_len = matches.len(),
+                    filter_s_id = ?self.filter.s_id,
+                    filter_p_id = ?self.filter.p_id,
+                    "binary_cursor: filter applied"
+                );
                 if !matches.is_empty() {
                     self.emit_matched_rows(&merged_r1, &merged_r2, &matches, batch);
                 }

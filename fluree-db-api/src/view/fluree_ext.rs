@@ -61,39 +61,26 @@ where
     }
 
     /// Resolve a GraphRef to a concrete g_id using the binary index store.
+    ///
+    /// For `Named` graphs, the IRI must be an exact match in the binary index.
+    /// No prefix expansion or guessing is performed - use the structured
+    /// `graph` field in dataset specs for cleaner IRI handling.
     fn resolve_graph_ref(view: &FlureeView<S>, graph_ref: GraphRef) -> Result<u32> {
         match graph_ref {
             GraphRef::Default => Ok(0),
             GraphRef::TxnMeta => Ok(1),
-            GraphRef::Named(iri_or_suffix) => {
+            GraphRef::Named(iri) => {
                 let Some(store) = view.binary_store.as_ref() else {
                     return Err(ApiError::query(format!(
                         "Named graph queries require a binary index store (graph: #{})",
-                        iri_or_suffix
+                        iri
                     )));
                 };
 
-                // Try the fragment as-is (it might be a full IRI)
-                if let Some(g_id) = store.graph_id_for_iri(&iri_or_suffix) {
-                    return Ok(g_id);
-                }
-
-                // Try common namespace prefixes for partial IRIs
-                let well_known_prefixes = [
-                    "https://ns.flur.ee/ledger#",
-                    "http://example.org/",
-                ];
-                for prefix in well_known_prefixes {
-                    let full_iri = format!("{}{}", prefix, iri_or_suffix);
-                    if let Some(g_id) = store.graph_id_for_iri(&full_iri) {
-                        return Ok(g_id);
-                    }
-                }
-
-                Err(ApiError::query(format!(
-                    "Unknown named graph '#{}'",
-                    iri_or_suffix
-                )))
+                // Exact IRI match only - no prefix guessing
+                store.graph_id_for_iri(&iri).ok_or_else(|| {
+                    ApiError::query(format!("Unknown named graph '#{}'", iri))
+                })
             }
         }
     }

@@ -244,6 +244,110 @@ Query across the default graph and user-defined named graphs:
 - Time-travel is specified via the `t`, `iso`, or `sha` field in the object form
 - Use `alias` to create a short reference name for use in GRAPH patterns
 
+## Graph Source Object Schema
+
+When using object syntax for `from` or `from-named`, the following fields are available:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `@id` | string | Yes | Ledger reference (e.g., `mydb:main`, `mydb:main@t:100`) |
+| `alias` | string | No | Dataset-local alias for GRAPH pattern reference |
+| `graph` | string | No | Graph selector: `"default"`, `"txn-meta"`, or full IRI |
+| `t` | integer | No | Time-travel: specific transaction number |
+| `iso` | string | No | Time-travel: ISO-8601 timestamp |
+| `sha` | string | No | Time-travel: commit SHA prefix |
+| `policy` | object | No | Per-source policy override (see below) |
+
+### Dataset-Local Aliases
+
+Aliases provide short names for referencing graphs in query patterns. They are especially useful when:
+
+1. **Same graph IRI exists in multiple ledgers** - Use distinct aliases to disambiguate
+2. **Complex IRIs** - Use short aliases instead of repeating long IRIs
+
+**Example: Disambiguating same graph IRI across ledgers**
+
+```json
+{
+  "@context": { "ex": "http://example.org/ns/" },
+  "from-named": [
+    {
+      "@id": "sales:main",
+      "alias": "salesProducts",
+      "graph": "http://example.org/vocab#products"
+    },
+    {
+      "@id": "inventory:main",
+      "alias": "inventoryProducts",
+      "graph": "http://example.org/vocab#products"
+    }
+  ],
+  "select": ["?g", "?sku", "?data"],
+  "where": [
+    ["graph", "?g", { "@id": "?sku", "ex:data": "?data" }]
+  ]
+}
+```
+
+In this example, both ledgers have a graph with the same IRI (`http://example.org/vocab#products`). The aliases `salesProducts` and `inventoryProducts` allow you to reference them distinctly.
+
+**Validation Rules:**
+- Aliases must be unique across the entire dataset (both `from` and `from-named`)
+- Aliases cannot collide with identifiers (the `@id` values)
+- Duplicate aliases will cause an error
+
+### Graph Selector Values
+
+The `graph` field accepts three types of values:
+
+| Value | Meaning |
+|-------|---------|
+| `"default"` | Explicitly select the ledger's default graph (g_id=0) |
+| `"txn-meta"` | Select the built-in transaction metadata graph (g_id=1) |
+| `"<full-iri>"` | Select a user-defined named graph by its full IRI |
+
+**Note:** If using `#txn-meta` fragment syntax in `@id`, do not also specify `graph: "txn-meta"`. This is considered ambiguous and will return an error.
+
+### Per-Source Policy Override
+
+Each graph source can have its own policy, enabling fine-grained access control where different graphs in the same query use different policies.
+
+**Policy object fields:**
+- `identity`: Identity IRI string
+- `policy-class`: Policy class IRI or array of IRIs
+- `policy`: Inline policy JSON
+- `policy-values`: Policy parameter values
+- `default-allow`: Boolean (default: false)
+
+**Example:**
+
+```json
+{
+  "from": [
+    {
+      "@id": "public:main",
+      "policy": {
+        "default-allow": true
+      }
+    },
+    {
+      "@id": "sensitive:main",
+      "policy": {
+        "identity": "did:fluree:alice",
+        "policy-class": ["ex:EmployeePolicy"],
+        "default-allow": false
+      }
+    }
+  ],
+  "select": ["?data"],
+  "where": [{ "@id": "?s", "ex:data": "?data" }]
+}
+```
+
+**Policy Precedence:**
+- Per-source `policy` takes precedence over global `opts` policy
+- If a source has no `policy` field, the global policy (if any) applies
+
 ## Multi-Ledger Queries
 
 Query across different ledgers:
@@ -450,12 +554,86 @@ Query multiple ledgers at the same point in time:
 }
 ```
 
+## Error Handling
+
+### Common Dataset Errors
+
+| Error | Cause | Resolution |
+|-------|-------|------------|
+| Duplicate alias | Same `alias` used twice in dataset spec | Use unique aliases for each source |
+| Alias collision | `alias` matches an existing `@id` | Choose a different alias name |
+| Ambiguous graph selector | Both `#txn-meta` fragment AND `graph` field specified | Use only one method |
+| Unknown ledger | Ledger reference not found | Verify ledger exists and is accessible |
+| Unknown graph IRI | Graph IRI not found in ledger | Verify graph was ingested and indexed |
+| Binary index required | Named graph query requires binary index | Ensure ledger has been indexed |
+
+### Example Error Messages
+
+**Duplicate alias:**
+```json
+{
+  "error": "Duplicate dataset-local alias: 'products' appears multiple times"
+}
+```
+
+**Ambiguous graph selector:**
+```json
+{
+  "error": "Ambiguous graph selector: cannot specify both #txn-meta fragment and graph field"
+}
+```
+
+## SPARQL Execution Modes
+
+Fluree supports two SPARQL execution modes:
+
+### Ledger-Bound Mode
+
+When a query targets a single ledger (via endpoint or single FROM clause), GRAPH patterns reference **named graphs within that ledger**:
+
+```sparql
+-- Ledger-bound: GRAPH references graphs inside mydb:main
+SELECT ?name ?price
+FROM <mydb:main>
+WHERE {
+  GRAPH <http://example.org/graphs/products> {
+    ?product ex:name ?name ;
+             ex:price ?price .
+  }
+}
+```
+
+### Connection-Bound Mode
+
+When querying across multiple ledgers, use SERVICE to select which ledger each pattern executes against:
+
+```sparql
+-- Connection-bound: SERVICE selects the target ledger
+SELECT ?name ?stock
+WHERE {
+  SERVICE <fluree:ledger:sales:main> {
+    GRAPH <http://example.org/graphs/products> {
+      ?product ex:name ?name .
+    }
+  }
+  SERVICE <fluree:ledger:inventory:main> {
+    ?product ex:stock ?stock .
+  }
+}
+```
+
+**When to use each mode:**
+- **Ledger-bound**: Single ledger queries, standard SPARQL datasets within one ledger
+- **Connection-bound**: Multi-ledger queries, explicit control over data provenance
+
 ## Best Practices
 
 1. **Consistent Time Points**: Use the same time specifier for all graphs in a query
 2. **Graph Selection**: Use FROM NAMED when you need to identify the source graph
-3. **Performance**: Queries across multiple ledgers may be slower
-4. **Data Locality**: Consider data locality when designing multi-ledger queries
+3. **Use Aliases**: Create meaningful aliases for complex graph IRIs or disambiguation
+4. **Performance**: Queries across multiple ledgers may be slower
+5. **Data Locality**: Consider data locality when designing multi-ledger queries
+6. **Policy Granularity**: Use per-source policy when different graphs need different access control
 
 ## Related Documentation
 

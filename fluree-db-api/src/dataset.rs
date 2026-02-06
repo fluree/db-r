@@ -282,6 +282,8 @@ pub struct GraphSource {
 /// Per-source policy override options
 ///
 /// A subset of `QueryConnectionOptions` that can be applied per-source.
+/// When present on a `GraphSource`, this policy takes precedence over any
+/// global policy specified in `QueryConnectionOptions`.
 #[derive(Debug, Clone, Default)]
 pub struct SourcePolicyOverride {
     pub identity: Option<String>,
@@ -289,6 +291,34 @@ pub struct SourcePolicyOverride {
     pub policy: Option<JsonValue>,
     pub policy_values: Option<HashMap<String, JsonValue>>,
     pub default_allow: Option<bool>,
+}
+
+impl SourcePolicyOverride {
+    /// Check if this override specifies any policy fields.
+    ///
+    /// Returns true if at least one policy field is set.
+    pub fn has_policy(&self) -> bool {
+        self.identity.is_some()
+            || self.policy_class.is_some()
+            || self.policy.is_some()
+            || self.policy_values.is_some()
+            || self.default_allow.is_some()
+    }
+
+    /// Convert to `QueryConnectionOptions` for policy wrapping.
+    ///
+    /// This creates a minimal `QueryConnectionOptions` with only the policy
+    /// fields from this override, suitable for passing to `wrap_policy()`.
+    pub fn to_query_connection_options(&self) -> QueryConnectionOptions {
+        QueryConnectionOptions {
+            identity: self.identity.clone(),
+            policy_class: self.policy_class.clone(),
+            policy: self.policy.clone(),
+            policy_values: self.policy_values.clone(),
+            default_allow: self.default_allow.unwrap_or(false),
+            tracking: Default::default(),
+        }
+    }
 }
 
 impl GraphSource {

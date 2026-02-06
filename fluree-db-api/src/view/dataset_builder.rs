@@ -22,7 +22,13 @@ where
     /// Build a `FlureeDataSetView` from a `DatasetSpec`.
     ///
     /// This loads views for all graphs in the spec, applying time travel
-    /// specifications where present.
+    /// specifications and per-source policy overrides where present.
+    ///
+    /// # Per-Source Policy
+    ///
+    /// If a `GraphSource` has a `policy_override` set, that policy is applied
+    /// to that source's view. This enables fine-grained access control where
+    /// different graphs in the same query can have different policies.
     ///
     /// # Example
     ///
@@ -48,15 +54,17 @@ where
 
         let mut dataset = FlureeDataSetView::new();
 
-        // Load default graphs
+        // Load default graphs, applying per-source policy if present
         for source in &spec.default_graphs {
             let view = self.load_view_from_source(source).await?;
+            let view = self.maybe_apply_source_policy(view, source).await?;
             dataset = dataset.with_default(view);
         }
 
-        // Load named graphs
+        // Load named graphs, applying per-source policy if present
         for source in &spec.named_graphs {
             let view = self.load_view_from_source(source).await?;
+            let view = self.maybe_apply_source_policy(view, source).await?;
             // Add by identifier (primary key)
             dataset = dataset.with_named(source.identifier.as_str(), view.clone());
             // Also add by alias if present (enables ["graph", "<alias>", ...] lookup)
@@ -71,7 +79,14 @@ where
     /// Build a `FlureeDataSetView` with policy applied to all views.
     ///
     /// Policy is built from `QueryConnectionOptions` and applied uniformly
-    /// to all views in the dataset.
+    /// to all views in the dataset, unless a source has a per-source policy
+    /// override which takes precedence.
+    ///
+    /// # Policy Precedence
+    ///
+    /// Per-source `policy_override` takes precedence over global `opts`:
+    /// - If source has `policy_override` with any fields set → use per-source policy
+    /// - Otherwise → use global `opts` policy
     pub async fn build_dataset_view_with_policy(
         &self,
         spec: &DatasetSpec,
@@ -92,17 +107,17 @@ where
 
         let mut dataset = FlureeDataSetView::new();
 
-        // Load default graphs with policy
+        // Load default graphs with policy (per-source overrides global)
         for source in &spec.default_graphs {
             let view = self.load_view_from_source(source).await?;
-            let view = self.wrap_policy(view, opts).await?;
+            let view = self.apply_policy_with_override(view, source, opts).await?;
             dataset = dataset.with_default(view);
         }
 
-        // Load named graphs with policy
+        // Load named graphs with policy (per-source overrides global)
         for source in &spec.named_graphs {
             let view = self.load_view_from_source(source).await?;
-            let view = self.wrap_policy(view, opts).await?;
+            let view = self.apply_policy_with_override(view, source, opts).await?;
             // Add by identifier (primary key)
             dataset = dataset.with_named(source.identifier.as_str(), view.clone());
             // Also add by alias if present (enables ["graph", "<alias>", ...] lookup)
@@ -112,6 +127,44 @@ where
         }
 
         Ok(dataset)
+    }
+
+    /// Apply per-source policy if present, otherwise no policy.
+    ///
+    /// This is used by `build_dataset_view` when no global policy is provided.
+    async fn maybe_apply_source_policy(
+        &self,
+        view: FlureeView<S>,
+        source: &dataset::GraphSource,
+    ) -> Result<FlureeView<S>> {
+        if let Some(policy_override) = &source.policy_override {
+            if policy_override.has_policy() {
+                let opts = policy_override.to_query_connection_options();
+                return self.wrap_policy(view, &opts).await;
+            }
+        }
+        Ok(view)
+    }
+
+    /// Apply policy with per-source override taking precedence over global.
+    ///
+    /// This is used by `build_dataset_view_with_policy` to allow per-source
+    /// policy to override the global policy from `QueryConnectionOptions`.
+    async fn apply_policy_with_override(
+        &self,
+        view: FlureeView<S>,
+        source: &dataset::GraphSource,
+        global_opts: &QueryConnectionOptions,
+    ) -> Result<FlureeView<S>> {
+        // Per-source policy override takes precedence
+        if let Some(policy_override) = &source.policy_override {
+            if policy_override.has_policy() {
+                let opts = policy_override.to_query_connection_options();
+                return self.wrap_policy(view, &opts).await;
+            }
+        }
+        // Fall back to global policy
+        self.wrap_policy(view, global_opts).await
     }
 
     /// Build a single `FlureeView` from a `GraphSource`.
