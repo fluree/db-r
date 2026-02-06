@@ -228,10 +228,12 @@ fn encode_object(
             buf.extend_from_slice(&lat.to_le_bytes());
             buf.extend_from_slice(&lng.to_le_bytes());
         }
-        FlakeValue::Vector(_) => {
-            return Err(CommitV2Error::UnsupportedValue(
-                "Vector is not supported in commit-v2 format".into(),
-            ));
+        FlakeValue::Vector(v) => {
+            buf.push(OTag::Vector as u8);
+            encode_varint(v.len() as u64, buf);
+            for &element in v {
+                buf.extend_from_slice(&element.to_le_bytes());
+            }
         }
     }
     Ok(())
@@ -469,6 +471,20 @@ fn decode_object(
                 .ok_or_else(|| {
                     CommitV2Error::InvalidOp(format!("bad geo point: ({}, {})", lat, lng))
                 })
+        }
+        OTag::Vector => {
+            let len = decode_varint(data, pos)? as usize;
+            let byte_len = len.checked_mul(8).ok_or(CommitV2Error::UnexpectedEof)?;
+            if *pos + byte_len > data.len() {
+                return Err(CommitV2Error::UnexpectedEof);
+            }
+            let mut vec = Vec::with_capacity(len);
+            for _ in 0..len {
+                let element = f64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
+                *pos += 8;
+                vec.push(element);
+            }
+            Ok(FlakeValue::Vector(vec))
         }
     }
 }
@@ -720,5 +736,59 @@ mod tests {
             assert_eq!(decoded.p.name.as_ref(), original.p.name.as_ref());
         }
         assert_eq!(pos, buf.len());
+    }
+
+    #[test]
+    fn test_round_trip_vector() {
+        let flake = Flake::new(
+            Sid::new(101, "x"),
+            Sid::new(101, "embedding"),
+            FlakeValue::Vector(vec![1.0, 2.5, -3.7]),
+            Sid::new(2, "vector"),
+            1,
+            true,
+            None,
+        );
+
+        let mut dicts = CommitDicts::new();
+        let mut buf = Vec::new();
+        encode_op(&flake, &mut dicts, &mut buf).unwrap();
+
+        let read_dicts = round_trip_dicts(&dicts);
+        let mut pos = 0;
+        let decoded = decode_op(&buf, &mut pos, &read_dicts, 1).unwrap();
+        assert_eq!(pos, buf.len());
+        match &decoded.o {
+            FlakeValue::Vector(v) => {
+                assert_eq!(v.len(), 3);
+                assert!((v[0] - 1.0).abs() < f64::EPSILON);
+                assert!((v[1] - 2.5).abs() < f64::EPSILON);
+                assert!((v[2] - (-3.7)).abs() < f64::EPSILON);
+            }
+            other => panic!("expected Vector, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_round_trip_empty_vector() {
+        let flake = Flake::new(
+            Sid::new(101, "x"),
+            Sid::new(101, "embedding"),
+            FlakeValue::Vector(vec![]),
+            Sid::new(2, "vector"),
+            1,
+            true,
+            None,
+        );
+
+        let mut dicts = CommitDicts::new();
+        let mut buf = Vec::new();
+        encode_op(&flake, &mut dicts, &mut buf).unwrap();
+
+        let read_dicts = round_trip_dicts(&dicts);
+        let mut pos = 0;
+        let decoded = decode_op(&buf, &mut pos, &read_dicts, 1).unwrap();
+        assert_eq!(pos, buf.len());
+        assert_eq!(decoded.o, FlakeValue::Vector(vec![]));
     }
 }

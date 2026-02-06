@@ -14,6 +14,9 @@
 # OS
 .DS_Store
 
+# Claude Code — track commands/ (team skills) but not local settings
+.claude/settings.local.json
+
 # Test database (generated data)
 /test-database/
 

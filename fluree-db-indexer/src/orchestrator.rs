@@ -1857,9 +1857,6 @@ mod embedded_tests {
             result.error
         );
         assert!(result.refresh.is_some(), "expected refresh result");
-        // apply_index currently fails because LedgerState::apply_index() uses Db::load()
-        // which expects the old db-root format. This will be fixed in Phase 4.3-4.5.
-        // The build and publish steps succeed.
         assert!(result.published, "expected published");
     }
 
@@ -1898,18 +1895,11 @@ mod embedded_tests {
 
         let result = require_refresh_before_commit(&ns, ledger, indexer_config, 2).await;
 
-        // Currently fails at apply_index because LedgerState::apply_index()
-        // uses Db::load() which expects old db-root format. Will be fixed in Phase 4.3-4.5.
-        // The build and publish steps succeed (verified by maybe_refresh test above).
+        // Phase 4.3-4.5 is complete: apply_index now succeeds with v2 roots.
+        let updated_ledger = result.expect("require_refresh should succeed");
         assert!(
-            result.is_err(),
-            "expected apply_index error until Phase 4.3-4.5"
-        );
-        let err = result.unwrap_err();
-        assert!(
-            err.to_string().contains("apply"),
-            "expected apply error, got: {}",
-            err
+            updated_ledger.t() > 0,
+            "ledger should have advanced past genesis"
         );
     }
 

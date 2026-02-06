@@ -8,7 +8,7 @@
 use crate::binding::{Binding, RowView};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::ir::{FilterExpr, FilterValue};
+use crate::ir::{FilterExpr, FilterValue, FunctionName};
 use fluree_db_core::{FlakeValue, Storage};
 use std::sync::Arc;
 
@@ -53,6 +53,21 @@ pub fn evaluate_to_binding_with_context_strict<S: Storage>(
         Ok(Some(val)) => val,
         Ok(None) => {
             if has_unbound_vars(expr, row) {
+                return Ok(Binding::Unbound);
+            }
+            // Vector similarity functions legitimately return None for type
+            // mismatches (e.g. dotProduct on a non-vector value). Treat as
+            // Unbound so mixed-datatype queries produce null scores instead
+            // of hard errors.
+            if matches!(
+                expr,
+                FilterExpr::Function { name, .. } if matches!(
+                    name,
+                    FunctionName::DotProduct
+                    | FunctionName::CosineSimilarity
+                    | FunctionName::EuclideanDistance
+                )
+            ) {
                 return Ok(Binding::Unbound);
             }
             return Err(QueryError::InvalidFilter(format!(
