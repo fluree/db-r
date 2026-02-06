@@ -1,6 +1,21 @@
 //! Filter operator
 //!
-//! Wraps a child operator and filters rows based on a predicate expression.
+//! This module provides the FilterOperator which wraps a child operator
+//! and filters rows based on a predicate expression.
+//!
+//! # Filter Evaluation Semantics
+//!
+//! This uses **two-valued logic** (true/false), not SQL 3-valued NULL logic:
+//!
+//! - **Unbound variables**: Comparisons involving unbound vars yield `false`
+//! - **Type mismatches**: Comparisons between incompatible types yield `false`
+//!   (except `!=` which yields `true` for mismatched types)
+//! - **NaN**: Comparisons involving NaN yield `false` (except `!=` → `true`)
+//! - **Logical operators**: Standard boolean logic (AND, OR, NOT)
+//!
+//! Note: `NOT(unbound_comparison)` evaluates to `true` because the inner
+//! comparison returns `false`, which is then negated. This differs from
+//! SQL NULL semantics where NULL comparisons propagate.
 
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
@@ -12,7 +27,7 @@ use async_trait::async_trait;
 use fluree_db_core::Storage;
 use std::sync::Arc;
 
-use super::eval::evaluate_with_context;
+use crate::function::evaluate_with_context;
 
 /// Filter operator - applies a predicate to each row from child
 ///

@@ -13,7 +13,7 @@ use fluree_db_core::{FlakeValue, Storage};
 use std::sync::Arc;
 
 use super::compare::compare_values;
-use super::functions::{eval_function, eval_function_to_bool};
+use super::dispatch::{eval_function, eval_function_to_bool};
 use super::helpers::{has_unbound_vars, WELL_KNOWN_DATATYPES};
 use super::value::{
     eval_arithmetic, filter_value_to_comparable, flake_value_to_comparable, ComparableValue,

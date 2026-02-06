@@ -1,0 +1,82 @@
+//! Vector function implementations
+//!
+//! Implements vector/embedding functions: dotProduct, cosineSimilarity, euclideanDistance
+
+use crate::binding::RowView;
+use crate::context::ExecutionContext;
+use crate::error::Result;
+use crate::ir::{FilterExpr, FunctionName};
+use fluree_db_core::Storage;
+
+use super::eval::eval_to_comparable_inner;
+use super::helpers::check_arity;
+use super::value::ComparableValue;
+
+/// Evaluate a vector function
+pub fn eval_vector_function<S: Storage>(
+    name: &FunctionName,
+    args: &[FilterExpr],
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_, S>>,
+) -> Result<Option<ComparableValue>> {
+    match name {
+        FunctionName::DotProduct => eval_binary_vector_fn(args, row, ctx, "dotProduct", |a, b| {
+            Some(a.iter().zip(b.iter()).map(|(x, y)| x * y).sum())
+        }),
+
+        FunctionName::CosineSimilarity => {
+            eval_binary_vector_fn(args, row, ctx, "cosineSimilarity", |a, b| {
+                let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+                let mag_a: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
+                let mag_b: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt();
+                if mag_a == 0.0 || mag_b == 0.0 {
+                    None
+                } else {
+                    Some(dot / (mag_a * mag_b))
+                }
+            })
+        }
+
+        FunctionName::EuclideanDistance => {
+            eval_binary_vector_fn(args, row, ctx, "euclideanDistance", |a, b| {
+                let sum_sq: f64 = a
+                    .iter()
+                    .zip(b.iter())
+                    .map(|(x, y)| {
+                        let diff = x - y;
+                        diff * diff
+                    })
+                    .sum();
+                Some(sum_sq.sqrt())
+            })
+        }
+
+        _ => unreachable!("Non-vector function routed to vector module: {:?}", name),
+    }
+}
+
+/// Evaluate a binary vector function
+fn eval_binary_vector_fn<S: Storage, F>(
+    args: &[FilterExpr],
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_, S>>,
+    fn_name: &str,
+    compute: F,
+) -> Result<Option<ComparableValue>>
+where
+    F: Fn(&[f64], &[f64]) -> Option<f64>,
+{
+    check_arity(args, 2, fn_name)?;
+    let v1 = eval_to_comparable_inner(&args[0], row, ctx)?;
+    let v2 = eval_to_comparable_inner(&args[1], row, ctx)?;
+    match (v1, v2) {
+        (Some(ComparableValue::Vector(a)), Some(ComparableValue::Vector(b))) => {
+            if a.len() != b.len() {
+                Ok(None)
+            } else {
+                Ok(compute(&a, &b).map(ComparableValue::Double))
+            }
+        }
+        _ => Ok(None),
+    }
+}

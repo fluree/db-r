@@ -19,7 +19,7 @@
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::filter::evaluate_with_context;
+use crate::function::evaluate_with_context;
 use crate::ir::FilterExpr;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;

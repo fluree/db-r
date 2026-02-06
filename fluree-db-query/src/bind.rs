@@ -15,7 +15,7 @@
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::filter::{evaluate_to_binding_with_context, evaluate_to_binding_with_context_strict};
+use crate::function::{evaluate_to_binding_with_context, evaluate_to_binding_with_context_strict};
 use crate::ir::FilterExpr;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;

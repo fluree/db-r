@@ -28,6 +28,7 @@ pub mod execute;
 pub mod exists;
 pub mod explain;
 pub mod filter;
+pub mod function;
 pub mod graph;
 pub mod graph_view;
 pub mod group_aggregate;
@@ -86,7 +87,8 @@ pub use explain::{
     explain_patterns, ExplainPlan, FallbackReason, OptimizationStatus, PatternDisplay,
     SelectivityInputs,
 };
-pub use filter::{evaluate as evaluate_filter, FilterOperator};
+pub use filter::FilterOperator;
+pub use function::evaluate as evaluate_filter;
 pub use graph::GraphOperator;
 pub use graph_view::{AsOf, BaseView, GraphView, ResolvedGraphView, WithPolicy, WithReasoning};
 pub use group_aggregate::{GroupAggregateOperator, StreamingAggSpec};
