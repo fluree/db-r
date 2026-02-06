@@ -8,17 +8,15 @@
 //! Dictionaries benchmarked (matching new-vec-bidict-plan.md):
 //!   1. StringDictNovelty           — fluree-db-core        (Step 3)  [MIGRATED]
 //!   2. SubjectDictNovelty          — fluree-db-core        (Step 4)  [MIGRATED]
-//!   3. DictOverlay::ext_predicates — ephemeral pattern     (Step 5)
-//!   4. DictOverlay::ext_graphs     — ephemeral pattern     (Step 5)
-//!   5. DictOverlay::ext_lang_tags  — ephemeral pattern     (Step 5)
-//!   6. DictOverlay::ext_subjects   — ephemeral pattern     (Step 5)
-//!   7. DictOverlay::ext_strings    — ephemeral pattern     (Step 5)
-//!   8. PredicateDict               — fluree-db-indexer     (Step 6)
-//!   9. LanguageTagDict             — fluree-db-indexer     (Step 6)
+//!   3. DictOverlay::ext_predicates — ephemeral pattern     (Step 5)  [MIGRATED]
+//!   4. DictOverlay::ext_graphs     — ephemeral pattern     (Step 5)  [MIGRATED]
+//!   5. DictOverlay::ext_lang_tags  — ephemeral pattern     (Step 5)  [MIGRATED]
+//!   6. DictOverlay::ext_subjects   — ephemeral pattern     (Step 5)  [MIGRATED]
+//!   7. DictOverlay::ext_strings    — ephemeral pattern     (Step 5)  [MIGRATED]
+//!   8. PredicateDict               — fluree-db-indexer     (Step 6)  [MIGRATED]
+//!   9. LanguageTagDict             — fluree-db-indexer     (Step 6)  [MIGRATED]
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::collections::HashMap;
-use std::hash::Hash;
 use std::hint::black_box;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -26,6 +24,7 @@ use std::time::Instant;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
+use fluree_db_core::vec_bi_dict::VecBiDict;
 use fluree_db_core::DictNovelty;
 use fluree_db_indexer::run_index::global_dict::{LanguageTagDict, PredicateDict};
 
@@ -620,84 +619,6 @@ fn format_count(n: usize) -> String {
 }
 
 // ============================================================================
-// DictOverlay ephemeral pair — standalone clone of the paired HashMap+Vec pattern
-//
-// Mirrors the exact code pattern in fluree-db-query/src/dict_overlay.rs:
-//   reverse: HashMap<String, Id>  (string -> id)
-//   forward: Vec<String>          (id -> string, indexed by id - base)
-// The string is duplicated in both structures — one allocation each.
-// ============================================================================
-
-trait ExtId: Copy + Eq + Hash {
-    fn from_usize(v: usize) -> Self;
-    fn to_usize(self) -> usize;
-}
-
-impl ExtId for u16 {
-    fn from_usize(v: usize) -> Self {
-        v as u16
-    }
-    fn to_usize(self) -> usize {
-        self as usize
-    }
-}
-impl ExtId for u32 {
-    fn from_usize(v: usize) -> Self {
-        v as u32
-    }
-    fn to_usize(self) -> usize {
-        self as usize
-    }
-}
-impl ExtId for u64 {
-    fn from_usize(v: usize) -> Self {
-        v as u64
-    }
-    fn to_usize(self) -> usize {
-        self as usize
-    }
-}
-
-struct ExtPair<Id: ExtId> {
-    reverse: HashMap<String, Id>,
-    forward: Vec<String>,
-    base: usize,
-}
-
-impl<Id: ExtId> ExtPair<Id> {
-    fn new(base: usize) -> Self {
-        Self {
-            reverse: HashMap::new(),
-            forward: Vec::new(),
-            base,
-        }
-    }
-
-    fn assign_or_lookup(&mut self, value: &str) -> Id {
-        if let Some(&id) = self.reverse.get(value) {
-            return id;
-        }
-        let id = Id::from_usize(self.base + self.forward.len());
-        self.reverse.insert(value.to_string(), id);
-        self.forward.push(value.to_string());
-        id
-    }
-
-    fn find(&self, value: &str) -> Option<Id> {
-        self.reverse.get(value).copied()
-    }
-
-    fn resolve(&self, id: Id) -> Option<&str> {
-        let idx = id.to_usize().checked_sub(self.base)?;
-        self.forward.get(idx).map(|s| s.as_str())
-    }
-
-    fn len(&self) -> usize {
-        self.forward.len()
-    }
-}
-
-// ============================================================================
 // Benchmark functions — one per target dict
 // ============================================================================
 
@@ -830,7 +751,7 @@ fn bench_subject_dict_novelty(n: usize) -> BenchResult {
 }
 
 // ---------------------------------------------------------------------------
-// 3. DictOverlay::ext_predicates (Step 5) — HashMap<String, u32> + Vec<String>
+// 3. DictOverlay::ext_predicates (Step 5) [MIGRATED: VecBiDict<u32>]
 // ---------------------------------------------------------------------------
 
 fn bench_ext_predicates(n: usize) -> BenchResult {
@@ -843,7 +764,7 @@ fn bench_ext_predicates(n: usize) -> BenchResult {
     reset_peak();
 
     let start = Instant::now();
-    let mut dict = ExtPair::<u32>::new(100); // base simulates existing persisted predicates
+    let mut dict = VecBiDict::<u32>::new(100); // base simulates existing persisted predicates
     for iri in &iris {
         dict.assign_or_lookup(iri);
     }
@@ -878,7 +799,7 @@ fn bench_ext_predicates(n: usize) -> BenchResult {
 }
 
 // ---------------------------------------------------------------------------
-// 4. DictOverlay::ext_graphs (Step 5) — HashMap<String, u32> + Vec<String>
+// 4. DictOverlay::ext_graphs (Step 5) [MIGRATED: VecBiDict<u32>]
 // ---------------------------------------------------------------------------
 
 fn bench_ext_graphs(n: usize) -> BenchResult {
@@ -891,7 +812,7 @@ fn bench_ext_graphs(n: usize) -> BenchResult {
     reset_peak();
 
     let start = Instant::now();
-    let mut dict = ExtPair::<u32>::new(10); // base simulates existing persisted graphs
+    let mut dict = VecBiDict::<u32>::new(10); // base simulates existing persisted graphs
     for iri in &iris {
         dict.assign_or_lookup(iri);
     }
@@ -926,7 +847,7 @@ fn bench_ext_graphs(n: usize) -> BenchResult {
 }
 
 // ---------------------------------------------------------------------------
-// 5. DictOverlay::ext_lang_tags (Step 5) — HashMap<String, u16> + Vec<String>
+// 5. DictOverlay::ext_lang_tags (Step 5) [MIGRATED: VecBiDict<u16>]
 // ---------------------------------------------------------------------------
 
 fn bench_ext_lang_tags(n: usize) -> BenchResult {
@@ -939,7 +860,7 @@ fn bench_ext_lang_tags(n: usize) -> BenchResult {
     reset_peak();
 
     let start = Instant::now();
-    let mut dict = ExtPair::<u16>::new(1); // base_lang_count + 1 (1-based, 0 = no tag)
+    let mut dict = VecBiDict::<u16>::new(1); // base_lang_count + 1 (1-based, 0 = no tag)
     for tag in &tags {
         dict.assign_or_lookup(tag);
     }
@@ -974,7 +895,7 @@ fn bench_ext_lang_tags(n: usize) -> BenchResult {
 }
 
 // ---------------------------------------------------------------------------
-// 6. DictOverlay::ext_subjects (Step 5) — HashMap<String, u64> + Vec<String>
+// 6. DictOverlay::ext_subjects (Step 5) [MIGRATED: VecBiDict<u64>]
 // ---------------------------------------------------------------------------
 
 fn bench_ext_subjects(n: usize) -> BenchResult {
@@ -991,7 +912,7 @@ fn bench_ext_subjects(n: usize) -> BenchResult {
     reset_peak();
 
     let start = Instant::now();
-    let mut dict = ExtPair::<u64>::new(1000); // base simulates existing persisted subjects
+    let mut dict = VecBiDict::<u64>::new(1000); // base simulates existing persisted subjects
     for iri in &iris {
         dict.assign_or_lookup(iri);
     }
@@ -1026,7 +947,7 @@ fn bench_ext_subjects(n: usize) -> BenchResult {
 }
 
 // ---------------------------------------------------------------------------
-// 7. DictOverlay::ext_strings (Step 5) — HashMap<String, u32> + Vec<String>
+// 7. DictOverlay::ext_strings (Step 5) [MIGRATED: VecBiDict<u32>]
 // ---------------------------------------------------------------------------
 
 fn bench_ext_strings(n: usize) -> BenchResult {
@@ -1039,7 +960,7 @@ fn bench_ext_strings(n: usize) -> BenchResult {
     reset_peak();
 
     let start = Instant::now();
-    let mut dict = ExtPair::<u32>::new(5000); // base simulates existing persisted strings
+    let mut dict = VecBiDict::<u32>::new(5000); // base simulates existing persisted strings
     for val in &values {
         dict.assign_or_lookup(val);
     }
@@ -1074,7 +995,7 @@ fn bench_ext_strings(n: usize) -> BenchResult {
 }
 
 // ---------------------------------------------------------------------------
-// 8. PredicateDict (Step 6) — FxHashMap<BorrowableString, u32> + Vec<String>
+// 8. PredicateDict (Step 6) [MIGRATED: VecBiDict<u32>]
 // ---------------------------------------------------------------------------
 
 fn bench_predicate_dict(n: usize) -> BenchResult {
@@ -1122,7 +1043,7 @@ fn bench_predicate_dict(n: usize) -> BenchResult {
 }
 
 // ---------------------------------------------------------------------------
-// 9. LanguageTagDict (Step 6) — FxHashMap<BorrowableString, u16> + Vec<String>
+// 9. LanguageTagDict (Step 6) [MIGRATED: VecBiDict<u16>]
 // ---------------------------------------------------------------------------
 
 fn bench_language_tag_dict(n: usize) -> BenchResult {
@@ -1264,10 +1185,11 @@ fn main() {
     }
 
     // -----------------------------------------------------------------------
-    // Step 5: DictOverlay ephemerals — HashMap<String, Id> + Vec<String>
+    // Step 5: DictOverlay ephemerals [MIGRATED: VecBiDict<Id>]
     // -----------------------------------------------------------------------
     println!("\n{}", "=".repeat(76));
-    println!("  Step 5: DictOverlay ephemerals  (HashMap<String, Id> + Vec<String>)");
+    println!("  Step 5: DictOverlay ephemerals  [MIGRATED: VecBiDict<Id>]");
+    println!("  was: HashMap<String, Id> + Vec<String>");
     println!("{}", "=".repeat(76));
 
     for &n in &[1_000, 100_000] {
@@ -1301,10 +1223,11 @@ fn main() {
     }
 
     // -----------------------------------------------------------------------
-    // Step 6: PredicateDict — FxHashMap<BorrowableString, u32> + Vec<String>
+    // Step 6: PredicateDict [MIGRATED: VecBiDict<u32>]
     // -----------------------------------------------------------------------
     println!("\n{}", "=".repeat(76));
-    println!("  Step 6: PredicateDict  (FxHashMap<BorrowableString, u32> + Vec<String>)");
+    println!("  Step 6: PredicateDict  [MIGRATED: VecBiDict<u32>]");
+    println!("  was: FxHashMap<BorrowableString, u32> + Vec<String>");
     println!("{}", "=".repeat(76));
 
     for &n in &[10_000, 500_000] {
@@ -1314,10 +1237,11 @@ fn main() {
     }
 
     // -----------------------------------------------------------------------
-    // Step 6: LanguageTagDict — FxHashMap<BorrowableString, u16> + Vec<String>
+    // Step 6: LanguageTagDict [MIGRATED: VecBiDict<u16>]
     // -----------------------------------------------------------------------
     println!("\n{}", "=".repeat(76));
-    println!("  Step 6: LanguageTagDict  (FxHashMap<BorrowableString, u16> + Vec<String>)");
+    println!("  Step 6: LanguageTagDict  [MIGRATED: VecBiDict<u16>]");
+    println!("  was: FxHashMap<BorrowableString, u16> + Vec<String>");
     println!("{}", "=".repeat(76));
 
     for &n in &[100, 10_000] {
