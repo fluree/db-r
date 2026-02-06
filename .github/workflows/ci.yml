@@ -11,6 +11,8 @@ concurrency:
 jobs:
   check-and-test:
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: "-C link-arg=-fuse-ld=bfd"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -28,7 +30,4 @@ jobs:
         run: cargo clippy --all --all-features --all-targets
 
       - name: Test
-        env:
-          CARGO_BUILD_JOBS: 2
-          RUSTFLAGS: "-C link-arg=-fuse-ld=bfd"
         run: cargo nextest run --workspace --all-features --no-fail-fast
