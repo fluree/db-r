@@ -77,6 +77,62 @@ fn reset_peak() {
 }
 
 // ============================================================================
+// Multi-iteration support
+// ============================================================================
+
+/// Number of timed iterations per benchmark. Median timing is reported.
+const ITERATIONS: usize = 3;
+
+/// Brief pause to let the allocator reclaim freed pages between benchmarks.
+/// Without this, a 25M-entry benchmark that just freed ~2.5 GB can pollute
+/// subsequent benchmarks via retained virtual-memory mappings and fragmented
+/// free lists.
+fn settle() {
+    // Small alloc+dealloc to nudge the allocator, then yield to the OS.
+    let v: Vec<u8> = vec![0u8; 4096];
+    drop(black_box(v));
+    std::thread::sleep(std::time::Duration::from_millis(50));
+}
+
+fn f64_sort(v: &mut [f64]) {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+}
+
+/// Run a benchmark function `ITERATIONS` times, returning a result with
+/// median timing values and [min..max] ranges. Memory is taken from the
+/// first run (deterministic for same input data).
+fn run_bench(f: impl Fn() -> BenchResult) -> BenchResult {
+    let mut results: Vec<BenchResult> = Vec::with_capacity(ITERATIONS);
+    for _ in 0..ITERATIONS {
+        results.push(f());
+        settle();
+    }
+
+    let mut inserts: Vec<f64> = results.iter().map(|r| r.insert_ms).collect();
+    let mut fwds: Vec<f64> = results.iter().map(|r| r.fwd_lookup_ms).collect();
+    let mut revs: Vec<f64> = results.iter().map(|r| r.rev_lookup_ms).collect();
+    f64_sort(&mut inserts);
+    f64_sort(&mut fwds);
+    f64_sort(&mut revs);
+
+    let mid = ITERATIONS / 2;
+
+    BenchResult {
+        label: results[0].label,
+        scale: results[0].scale,
+        lookup_count: results[0].lookup_count,
+        insert_ms: inserts[mid],
+        fwd_lookup_ms: fwds[mid],
+        rev_lookup_ms: revs[mid],
+        insert_range: (inserts[0], inserts[ITERATIONS - 1]),
+        fwd_lookup_range: (fwds[0], fwds[ITERATIONS - 1]),
+        rev_lookup_range: (revs[0], revs[ITERATIONS - 1]),
+        mem_bytes: results[0].mem_bytes,
+        unique_count: results[0].unique_count,
+    }
+}
+
+// ============================================================================
 // Data generation
 // ============================================================================
 
@@ -306,9 +362,14 @@ struct BenchResult {
     label: &'static str,
     scale: usize,
     lookup_count: usize,
+    /// Median timing across `ITERATIONS` runs (or single-run if from bench fn).
     insert_ms: f64,
     fwd_lookup_ms: f64,
     rev_lookup_ms: f64,
+    /// (min, max) across iterations. Zero/zero when from a single bench fn call.
+    insert_range: (f64, f64),
+    fwd_lookup_range: (f64, f64),
+    rev_lookup_range: (f64, f64),
     mem_bytes: usize,
     unique_count: usize,
 }
@@ -505,10 +566,16 @@ fn find_baseline(label: &str, scale: usize) -> Option<&'static Baseline> {
         .find(|b| b.label == label && b.scale == scale)
 }
 
-/// Format a percentage delta. Returns "" if the baseline is too small to compare.
+/// Format a percentage delta.
+/// - Returns "--" if the baseline is near zero.
+/// - Returns "~noise" if both values are sub-millisecond (measurement unreliable).
 fn format_delta(new_val: f64, old_val: f64) -> String {
     if old_val.abs() < 0.005 {
         "   --".to_string()
+    } else if old_val < 0.5 && new_val < 0.5 {
+        // Sub-millisecond timings are dominated by system noise (cache state,
+        // context switches, allocator jitter). Percentage deltas are misleading.
+        "~noise".to_string()
     } else {
         let pct = (new_val - old_val) / old_val * 100.0;
         format!("{:+.1}%", pct)
@@ -524,6 +591,19 @@ fn format_delta_int(new_val: usize, old_val: usize) -> String {
     }
 }
 
+/// Format a [min..max] range bracket. Omitted when range is trivially small.
+fn format_range(median: f64, range: (f64, f64)) -> String {
+    if range.0 == 0.0 && range.1 == 0.0 {
+        return String::new(); // single-run, no range data
+    }
+    // Skip range display when the spread is < 5% of median (stable measurement).
+    let spread = range.1 - range.0;
+    if median > 0.01 && spread / median < 0.05 {
+        return String::new();
+    }
+    format!("  [{:.2}..{:.2}]", range.0, range.1)
+}
+
 fn print_detail(r: &BenchResult) {
     let bytes_per_entry = if r.unique_count > 0 {
         r.mem_bytes / r.unique_count
@@ -533,7 +613,12 @@ fn print_detail(r: &BenchResult) {
     let mem_mb = r.mem_bytes as f64 / 1_048_576.0;
     let bl = find_baseline(r.label, r.scale);
 
-    println!("\n--- {} ({} entries) ---", r.label, format_count(r.scale));
+    println!(
+        "\n--- {} ({} entries, median of {} iterations) ---",
+        r.label,
+        format_count(r.scale),
+        ITERATIONS
+    );
     println!(
         "  Inserts:     {} calls -> {} unique entries",
         format_count(r.scale),
@@ -542,24 +627,27 @@ fn print_detail(r: &BenchResult) {
 
     if let Some(b) = bl {
         println!(
-            "  Insert:      {:>10.2} ms    (was {:>8.2} ms  {})",
+            "  Insert:      {:>10.2} ms    (was {:>8.2} ms  {}){}",
             r.insert_ms,
             b.insert_ms,
-            format_delta(r.insert_ms, b.insert_ms)
+            format_delta(r.insert_ms, b.insert_ms),
+            format_range(r.insert_ms, r.insert_range)
         );
         println!(
-            "  Fwd lookup:  {:>10.2} ms    (was {:>8.2} ms  {})  ({} lookups)",
+            "  Fwd lookup:  {:>10.2} ms    (was {:>8.2} ms  {})  ({} lookups){}",
             r.fwd_lookup_ms,
             b.fwd_lookup_ms,
             format_delta(r.fwd_lookup_ms, b.fwd_lookup_ms),
-            format_count(r.lookup_count)
+            format_count(r.lookup_count),
+            format_range(r.fwd_lookup_ms, r.fwd_lookup_range)
         );
         println!(
-            "  Rev lookup:  {:>10.2} ms    (was {:>8.2} ms  {})  ({} lookups)",
+            "  Rev lookup:  {:>10.2} ms    (was {:>8.2} ms  {})  ({} lookups){}",
             r.rev_lookup_ms,
             b.rev_lookup_ms,
             format_delta(r.rev_lookup_ms, b.rev_lookup_ms),
-            format_count(r.lookup_count)
+            format_count(r.lookup_count),
+            format_range(r.rev_lookup_ms, r.rev_lookup_range)
         );
         println!(
             "  Memory:      {:>10.2} MB    (was {:>8.2} MB  {})  ({} bytes/entry, was {})",
@@ -570,16 +658,22 @@ fn print_detail(r: &BenchResult) {
             b.bytes_per_entry
         );
     } else {
-        println!("  Insert:      {:>10.2} ms", r.insert_ms);
         println!(
-            "  Fwd lookup:  {:>10.2} ms  ({} lookups)",
-            r.fwd_lookup_ms,
-            format_count(r.lookup_count)
+            "  Insert:      {:>10.2} ms{}",
+            r.insert_ms,
+            format_range(r.insert_ms, r.insert_range)
         );
         println!(
-            "  Rev lookup:  {:>10.2} ms  ({} lookups)",
+            "  Fwd lookup:  {:>10.2} ms  ({} lookups){}",
+            r.fwd_lookup_ms,
+            format_count(r.lookup_count),
+            format_range(r.fwd_lookup_ms, r.fwd_lookup_range)
+        );
+        println!(
+            "  Rev lookup:  {:>10.2} ms  ({} lookups){}",
             r.rev_lookup_ms,
-            format_count(r.lookup_count)
+            format_count(r.lookup_count),
+            format_range(r.rev_lookup_ms, r.rev_lookup_range)
         );
         println!(
             "  Memory:      {:>10.2} MB  ({} bytes/entry)",
@@ -665,6 +759,9 @@ fn bench_string_dict_novelty(n: usize) -> BenchResult {
         insert_ms,
         fwd_lookup_ms: fwd_ms,
         rev_lookup_ms: rev_ms,
+        insert_range: (0.0, 0.0),
+        fwd_lookup_range: (0.0, 0.0),
+        rev_lookup_range: (0.0, 0.0),
         mem_bytes,
         unique_count,
     }
@@ -745,6 +842,9 @@ fn bench_subject_dict_novelty(n: usize) -> BenchResult {
         insert_ms,
         fwd_lookup_ms: fwd_ms,
         rev_lookup_ms: rev_ms,
+        insert_range: (0.0, 0.0),
+        fwd_lookup_range: (0.0, 0.0),
+        rev_lookup_range: (0.0, 0.0),
         mem_bytes,
         unique_count,
     }
@@ -793,6 +893,9 @@ fn bench_ext_predicates(n: usize) -> BenchResult {
         insert_ms,
         fwd_lookup_ms: fwd_ms,
         rev_lookup_ms: rev_ms,
+        insert_range: (0.0, 0.0),
+        fwd_lookup_range: (0.0, 0.0),
+        rev_lookup_range: (0.0, 0.0),
         mem_bytes,
         unique_count,
     }
@@ -841,6 +944,9 @@ fn bench_ext_graphs(n: usize) -> BenchResult {
         insert_ms,
         fwd_lookup_ms: fwd_ms,
         rev_lookup_ms: rev_ms,
+        insert_range: (0.0, 0.0),
+        fwd_lookup_range: (0.0, 0.0),
+        rev_lookup_range: (0.0, 0.0),
         mem_bytes,
         unique_count,
     }
@@ -889,6 +995,9 @@ fn bench_ext_lang_tags(n: usize) -> BenchResult {
         insert_ms,
         fwd_lookup_ms: fwd_ms,
         rev_lookup_ms: rev_ms,
+        insert_range: (0.0, 0.0),
+        fwd_lookup_range: (0.0, 0.0),
+        rev_lookup_range: (0.0, 0.0),
         mem_bytes,
         unique_count,
     }
@@ -941,6 +1050,9 @@ fn bench_ext_subjects(n: usize) -> BenchResult {
         insert_ms,
         fwd_lookup_ms: fwd_ms,
         rev_lookup_ms: rev_ms,
+        insert_range: (0.0, 0.0),
+        fwd_lookup_range: (0.0, 0.0),
+        rev_lookup_range: (0.0, 0.0),
         mem_bytes,
         unique_count,
     }
@@ -989,6 +1101,9 @@ fn bench_ext_strings(n: usize) -> BenchResult {
         insert_ms,
         fwd_lookup_ms: fwd_ms,
         rev_lookup_ms: rev_ms,
+        insert_range: (0.0, 0.0),
+        fwd_lookup_range: (0.0, 0.0),
+        rev_lookup_range: (0.0, 0.0),
         mem_bytes,
         unique_count,
     }
@@ -1037,6 +1152,9 @@ fn bench_predicate_dict(n: usize) -> BenchResult {
         insert_ms,
         fwd_lookup_ms: fwd_ms,
         rev_lookup_ms: rev_ms,
+        insert_range: (0.0, 0.0),
+        fwd_lookup_range: (0.0, 0.0),
+        rev_lookup_range: (0.0, 0.0),
         mem_bytes,
         unique_count,
     }
@@ -1085,6 +1203,9 @@ fn bench_language_tag_dict(n: usize) -> BenchResult {
         insert_ms,
         fwd_lookup_ms: fwd_ms,
         rev_lookup_ms: rev_ms,
+        insert_range: (0.0, 0.0),
+        fwd_lookup_range: (0.0, 0.0),
+        rev_lookup_range: (0.0, 0.0),
         mem_bytes,
         unique_count,
     }
@@ -1144,8 +1265,12 @@ fn main() {
     println!("VecBiDict Migration Benchmark");
     println!("==============================");
     println!();
-    println!("Benchmarking all 9 dictionary structs. Comparing current vs pre-migration baseline.");
-    println!("Baseline from commit 38cb4af (initial-bench.log). Negative Δ = improvement.");
+    println!(
+        "Benchmarking all 9 dictionary structs ({} iterations each, median reported).",
+        ITERATIONS
+    );
+    println!("Comparing current vs pre-migration baseline (commit 38cb4af).");
+    println!("Negative Δ = improvement.  '~noise' = both values sub-ms (unreliable comparison).");
     println!();
 
     let mut all_results: Vec<BenchResult> = Vec::new();
@@ -1154,84 +1279,49 @@ fn main() {
     println!("Warming up...");
     let _ = bench_string_dict_novelty(10_000);
     let _ = bench_ext_predicates(1_000);
+    settle();
     println!("Warmup complete.\n");
 
-    // -----------------------------------------------------------------------
-    // Step 3: StringDictNovelty — HashMap<String, u32> + HashMap<u32, Arc<str>>
-    // -----------------------------------------------------------------------
-    println!("{}", "=".repeat(76));
-    println!("  Step 3: StringDictNovelty  [MIGRATED: VecBiDict<u32>]");
-    println!("  was: HashMap<String, u32> + HashMap<u32, Arc<str>>");
-    println!("{}", "=".repeat(76));
-
-    for &n in &[500_000, 25_000_000] {
-        let r = bench_string_dict_novelty(n);
-        print_detail(&r);
-        all_results.push(r);
-    }
-
-    // -----------------------------------------------------------------------
-    // Step 4: SubjectDictNovelty — HashMap<Box<[u8]>, u64> + HashMap<u64, (u16, Arc<str>)>
-    // -----------------------------------------------------------------------
-    println!("\n{}", "=".repeat(76));
-    println!("  Step 4: SubjectDictNovelty  [MIGRATED: NsVecBiDict]");
-    println!("  was: HashMap<Box<[u8]>, u64> + HashMap<u64, (u16, Arc<str>)>");
-    println!("{}", "=".repeat(76));
-
-    for &n in &[500_000, 25_000_000] {
-        let r = bench_subject_dict_novelty(n);
-        print_detail(&r);
-        all_results.push(r);
-    }
+    // ===================================================================
+    // PASS 1: Small-to-medium scale benchmarks (< 1M entries).
+    // Run these FIRST so they aren't polluted by multi-GB allocations
+    // from the 25M-entry benchmarks.
+    // ===================================================================
 
     // -----------------------------------------------------------------------
     // Step 5: DictOverlay ephemerals [MIGRATED: VecBiDict<Id>]
     // -----------------------------------------------------------------------
-    println!("\n{}", "=".repeat(76));
+    println!("{}", "=".repeat(76));
     println!("  Step 5: DictOverlay ephemerals  [MIGRATED: VecBiDict<Id>]");
     println!("  was: HashMap<String, Id> + Vec<String>");
     println!("{}", "=".repeat(76));
 
     for &n in &[1_000, 100_000] {
-        let r = bench_ext_predicates(n);
+        let r = run_bench(|| bench_ext_predicates(n));
         print_detail(&r);
         all_results.push(r);
     }
 
     for &n in &[1_000, 100_000] {
-        let r = bench_ext_graphs(n);
+        let r = run_bench(|| bench_ext_graphs(n));
         print_detail(&r);
         all_results.push(r);
     }
 
     for &n in &[1_000, 100_000] {
-        let r = bench_ext_lang_tags(n);
+        let r = run_bench(|| bench_ext_lang_tags(n));
         print_detail(&r);
         all_results.push(r);
     }
 
     for &n in &[1_000, 100_000] {
-        let r = bench_ext_subjects(n);
+        let r = run_bench(|| bench_ext_subjects(n));
         print_detail(&r);
         all_results.push(r);
     }
 
     for &n in &[1_000, 100_000] {
-        let r = bench_ext_strings(n);
-        print_detail(&r);
-        all_results.push(r);
-    }
-
-    // -----------------------------------------------------------------------
-    // Step 6: PredicateDict [MIGRATED: VecBiDict<u32>]
-    // -----------------------------------------------------------------------
-    println!("\n{}", "=".repeat(76));
-    println!("  Step 6: PredicateDict  [MIGRATED: VecBiDict<u32>]");
-    println!("  was: FxHashMap<BorrowableString, u32> + Vec<String>");
-    println!("{}", "=".repeat(76));
-
-    for &n in &[10_000, 500_000] {
-        let r = bench_predicate_dict(n);
+        let r = run_bench(|| bench_ext_strings(n));
         print_detail(&r);
         all_results.push(r);
     }
@@ -1245,7 +1335,59 @@ fn main() {
     println!("{}", "=".repeat(76));
 
     for &n in &[100, 10_000] {
-        let r = bench_language_tag_dict(n);
+        let r = run_bench(|| bench_language_tag_dict(n));
+        print_detail(&r);
+        all_results.push(r);
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 6: PredicateDict [MIGRATED: VecBiDict<u32>]
+    // -----------------------------------------------------------------------
+    println!("\n{}", "=".repeat(76));
+    println!("  Step 6: PredicateDict  [MIGRATED: VecBiDict<u32>]");
+    println!("  was: FxHashMap<BorrowableString, u32> + Vec<String>");
+    println!("{}", "=".repeat(76));
+
+    for &n in &[10_000, 500_000] {
+        let r = run_bench(|| bench_predicate_dict(n));
+        print_detail(&r);
+        all_results.push(r);
+    }
+
+    settle();
+
+    // ===================================================================
+    // PASS 2: Large-scale benchmarks (500K–25M entries).
+    // These allocate multi-GB working sets. Run them last to avoid
+    // polluting smaller benchmarks via retained memory mappings.
+    // ===================================================================
+
+    // -----------------------------------------------------------------------
+    // Step 3: StringDictNovelty [MIGRATED: VecBiDict<u32>]
+    // -----------------------------------------------------------------------
+    println!("\n{}", "=".repeat(76));
+    println!("  Step 3: StringDictNovelty  [MIGRATED: VecBiDict<u32>]");
+    println!("  was: HashMap<String, u32> + HashMap<u32, Arc<str>>");
+    println!("{}", "=".repeat(76));
+
+    for &n in &[500_000, 25_000_000] {
+        let r = run_bench(|| bench_string_dict_novelty(n));
+        print_detail(&r);
+        all_results.push(r);
+    }
+
+    settle();
+
+    // -----------------------------------------------------------------------
+    // Step 4: SubjectDictNovelty [MIGRATED: NsVecBiDict]
+    // -----------------------------------------------------------------------
+    println!("\n{}", "=".repeat(76));
+    println!("  Step 4: SubjectDictNovelty  [MIGRATED: NsVecBiDict]");
+    println!("  was: HashMap<Box<[u8]>, u64> + HashMap<u64, (u16, Arc<str>)>");
+    println!("{}", "=".repeat(76));
+
+    for &n in &[500_000, 25_000_000] {
+        let r = run_bench(|| bench_subject_dict_novelty(n));
         print_detail(&r);
         all_results.push(r);
     }
