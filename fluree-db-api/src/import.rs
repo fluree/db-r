@@ -292,7 +292,7 @@ where
 // Chunk discovery
 // ============================================================================
 
-/// Discover and sort `chunk_*.ttl` files from a directory.
+/// Discover and sort `chunk_*.ttl` or `chunk_*.trig` files from a directory.
 fn discover_chunks(dir: &Path) -> std::result::Result<Vec<PathBuf>, ImportError> {
     if !dir.is_dir() {
         // Single file import
@@ -309,16 +309,20 @@ fn discover_chunks(dir: &Path) -> std::result::Result<Vec<PathBuf>, ImportError>
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| {
-            p.extension().is_some_and(|ext| ext == "ttl")
-                && p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with("chunk_"))
+            let is_supported_ext = p
+                .extension()
+                .is_some_and(|ext| ext == "ttl" || ext == "trig");
+            let starts_with_chunk = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("chunk_"));
+            is_supported_ext && starts_with_chunk
         })
         .collect();
 
     if chunks.is_empty() {
         return Err(ImportError::NoChunks(format!(
-            "no chunk_*.ttl files found in {}",
+            "no chunk_*.ttl or chunk_*.trig files found in {}",
             dir.display()
         )));
     }
@@ -529,8 +533,17 @@ where
             namespace_codes: &import_result.namespace_codes,
             stats_hook: import_result.stats_hook,
         };
-        let index_result =
-            build_and_upload(storage, nameservice, alias, build_input, config).await?;
+        let index_result = build_and_upload(
+            storage,
+            nameservice,
+            alias,
+            build_input,
+            config,
+            import_result.total_commit_size,
+            import_result.total_asserts,
+            import_result.total_retracts,
+        )
+        .await?;
 
         root_address = Some(index_result.root_address);
         index_t = index_result.index_t;
@@ -560,6 +573,12 @@ struct ChunkImportResult {
     commit_head_address: String,
     namespace_codes: HashMap<u16, String>,
     stats_hook: Option<fluree_db_indexer::stats::IdStatsHook>,
+    /// Total size of all commit blobs in bytes.
+    total_commit_size: u64,
+    /// Total number of assertions across all commits.
+    total_asserts: u64,
+    /// Total number of retractions across all commits.
+    total_retracts: u64,
 }
 
 /// Import all TTL chunks: parallel parse + serial commit + streaming runs.
@@ -580,7 +599,8 @@ where
         RunGenerationResult, RunSortOrder,
     };
     use fluree_db_transact::import::{
-        finalize_parsed_chunk, import_commit, parse_chunk, ImportState, ParsedChunk,
+        finalize_parsed_chunk, import_commit, import_trig_commit, parse_chunk, ImportState,
+        ParsedChunk,
     };
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -604,7 +624,6 @@ where
     // Bounded channel: backpressures import if resolver falls behind.
     let (run_tx, rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, String)>(2);
 
-    let ledger_alias = alias.to_string();
     let run_dir_clone = run_dir.to_path_buf();
     let resolver_handle: std::thread::JoinHandle<std::result::Result<RunGenerationResult, String>> =
         std::thread::Builder::new()
@@ -622,21 +641,26 @@ where
                     .map_err(|e| format!("init multi-order writer: {}", e))?;
                 let mut commit_count = 0usize;
 
+                // Accumulate commit statistics
+                let mut total_commit_size = 0u64;
+                let mut total_asserts = 0u64;
+                let mut total_retracts = 0u64;
+
                 while let Ok((bytes, commit_address)) = rx.recv() {
-                    let (op_count, t) = resolver
-                        .resolve_blob(
-                            &bytes,
-                            &commit_address,
-                            &ledger_alias,
-                            &mut dicts,
-                            &mut writer,
-                        )
+                    let resolved = resolver
+                        .resolve_blob(&bytes, &commit_address, &mut dicts, &mut writer)
                         .map_err(|e| format!("{}", e))?;
                     commit_count += 1;
+
+                    // Accumulate totals
+                    total_commit_size += resolved.size;
+                    total_asserts += resolved.asserts as u64;
+                    total_retracts += resolved.retracts as u64;
+
                     tracing::info!(
                         commit = commit_count,
-                        t,
-                        ops = op_count,
+                        t = resolved.t,
+                        ops = resolved.total_records,
                         total_records = writer.total_records(),
                         runs = writer.run_count(),
                         subjects = dicts.subjects.len(),
@@ -691,24 +715,37 @@ where
                     total_records,
                     commit_count,
                     stats_hook: resolver.take_stats_hook(),
+                    total_commit_size,
+                    total_asserts,
+                    total_retracts,
                 })
             })
             .map_err(|e| ImportError::RunGeneration(format!("spawn resolver: {}", e)))?;
 
     // ---- Phase 2a: Parse + commit chunk 0 serially (establishes namespaces) ----
     if !chunks.is_empty() {
-        let ttl = std::fs::read_to_string(&chunks[0])?;
-        let size_mb = ttl.len() as f64 / (1024.0 * 1024.0);
+        let content = std::fs::read_to_string(&chunks[0])?;
+        let size_mb = content.len() as f64 / (1024.0 * 1024.0);
+        let is_trig = chunks[0].extension().is_some_and(|ext| ext == "trig");
         tracing::info!(
             chunk = 1,
             total,
             size_mb = format!("{:.1}", size_mb),
+            is_trig,
             "parsing chunk 0 serially (establishes namespaces)"
         );
 
-        let result = import_commit(&mut state, &ttl, storage, alias, compress)
-            .await
-            .map_err(|e| ImportError::Transact(e.to_string()))?;
+        // Use import_trig_commit for TriG files (handles named graphs),
+        // import_commit for pure Turtle (faster path)
+        let result = if is_trig {
+            import_trig_commit(&mut state, &content, storage, alias, compress)
+                .await
+                .map_err(|e| ImportError::Transact(e.to_string()))?
+        } else {
+            import_commit(&mut state, &content, storage, alias, compress)
+                .await
+                .map_err(|e| ImportError::Transact(e.to_string()))?
+        };
 
         tracing::info!(
             t = result.t,
@@ -727,7 +764,12 @@ where
     }
 
     // ---- Phase 2b: Parse remaining chunks in parallel, commit serially ----
-    if chunks.len() > 1 && num_threads > 0 {
+    // Note: Parallel parsing only works with pure Turtle files. If any chunks are TriG,
+    // we fall back to serial processing (TriG needs parse_trig_phase1 which is different).
+    let has_trig = chunks[1..]
+        .iter()
+        .any(|p| p.extension().is_some_and(|ext| ext == "trig"));
+    if chunks.len() > 1 && num_threads > 0 && !has_trig {
         let base_registry = state.ns_registry.clone();
         let ledger = alias.to_string();
 
@@ -853,10 +895,17 @@ where
     } else if chunks.len() > 1 {
         // Serial fallback (0 threads)
         for (i, chunk) in chunks.iter().enumerate().skip(1) {
-            let ttl = std::fs::read_to_string(chunk)?;
-            let result = import_commit(&mut state, &ttl, storage, alias, compress)
-                .await
-                .map_err(|e| ImportError::Transact(e.to_string()))?;
+            let content = std::fs::read_to_string(chunk)?;
+            let is_trig = chunk.extension().is_some_and(|ext| ext == "trig");
+            let result = if is_trig {
+                import_trig_commit(&mut state, &content, storage, alias, compress)
+                    .await
+                    .map_err(|e| ImportError::Transact(e.to_string()))?
+            } else {
+                import_commit(&mut state, &content, storage, alias, compress)
+                    .await
+                    .map_err(|e| ImportError::Transact(e.to_string()))?
+            };
 
             let addr = result.address.clone();
             let send_failed =
@@ -946,6 +995,9 @@ where
         commit_head_address,
         namespace_codes,
         stats_hook: run_result.stats_hook,
+        total_commit_size: run_result.total_commit_size,
+        total_asserts: run_result.total_asserts,
+        total_retracts: run_result.total_retracts,
     })
 }
 
@@ -958,12 +1010,16 @@ struct IndexUploadResult {
     index_t: i64,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn build_and_upload<S, N>(
     storage: &S,
     nameservice: &N,
     alias: &str,
     input: IndexBuildInput<'_>,
     config: &ImportConfig,
+    total_commit_size: u64,
+    total_asserts: u64,
+    total_retracts: u64,
 ) -> std::result::Result<IndexUploadResult, ImportError>
 where
     S: Storage + Clone + Send + Sync + 'static,
@@ -1221,7 +1277,7 @@ where
     };
 
     // ---- Phase 5: Build V2 root ----
-    let root = BinaryIndexRootV2::from_cas_artifacts(CasArtifactsConfig {
+    let mut root = BinaryIndexRootV2::from_cas_artifacts(CasArtifactsConfig {
         ledger_alias: alias,
         index_t: input.final_t,
         base_t: 0, // fresh import
@@ -1237,6 +1293,11 @@ where
         subject_watermarks: uploaded_dicts.subject_watermarks,
         string_watermark: uploaded_dicts.string_watermark,
     });
+
+    // Populate cumulative commit statistics (optional planner telemetry).
+    root.total_commit_size = total_commit_size;
+    root.total_asserts = total_asserts;
+    root.total_retracts = total_retracts;
 
     let root_bytes = root
         .to_json_bytes()

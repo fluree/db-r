@@ -1,6 +1,6 @@
-# Turtle Ingest
+# Turtle and TriG Ingest
 
-Fluree supports ingesting RDF data in **Turtle** (Terse RDF Triple Language) format. Turtle is a compact, human-readable format for RDF data, commonly used for data exchange and bulk imports.
+Fluree supports ingesting RDF data in **Turtle** (Terse RDF Triple Language) and **TriG** formats. Turtle is a compact, human-readable format for RDF triples, while TriG extends Turtle to support named graphs.
 
 ## What is Turtle?
 
@@ -21,12 +21,31 @@ ex:bob a schema:Person ;
   schema:email "bob@example.org" .
 ```
 
+## Transaction Endpoints
+
+Fluree supports Turtle and TriG on different endpoints with different semantics:
+
+| Endpoint | Turtle (`text/turtle`) | TriG (`application/trig`) |
+|----------|------------------------|---------------------------|
+| `/insert` | Supported (fast direct path) | Not supported (400 error) |
+| `/upsert` | Supported | Supported |
+| `/transact` | Supported (treated as upsert) | Supported |
+
+- **Insert** (`/insert`): Pure insert semantics. Uses fast direct flake parsing. Will fail if subjects already exist with conflicting data. TriG is not supported because named graphs require the upsert path for GRAPH block extraction.
+- **Upsert** (`/upsert`): For each (subject, predicate) pair, existing values are retracted before new values are asserted. Supports TriG with GRAPH blocks for named graph ingestion.
+
 ## Basic Turtle Transaction
 
 Submit Turtle data via HTTP API:
 
 ```bash
-curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
+# Insert (pure insert, fast path)
+curl -X POST "http://localhost:8090/insert?ledger=mydb:main" \
+  -H "Content-Type: text/turtle" \
+  --data-binary '@data.ttl'
+
+# Or upsert (replace existing values)
+curl -X POST "http://localhost:8090/upsert?ledger=mydb:main" \
   -H "Content-Type: text/turtle" \
   --data-binary '@data.ttl'
 ```
@@ -450,6 +469,146 @@ Use JSON-LD for:
 - JavaScript/TypeScript apps
 - REST API interactions
 
+## TriG Format (Named Graphs)
+
+TriG extends Turtle to support **named graphs**. Each named graph groups triples under a graph IRI.
+
+### What is TriG?
+
+TriG (TriG RDF Triple Graph) is a W3C standard format that adds named graph support to Turtle syntax. It allows you to partition data into logical groups that can be queried independently.
+
+### Basic TriG Syntax
+
+```trig
+@prefix ex: <http://example.org/ns/> .
+@prefix schema: <http://schema.org/> .
+
+# Default graph triples (no GRAPH block)
+ex:company a schema:Organization ;
+    schema:name "Acme Corp" .
+
+# Named graph for products
+GRAPH <http://example.org/graphs/products> {
+    ex:widget a schema:Product ;
+        schema:name "Widget" ;
+        schema:price "29.99"^^xsd:decimal .
+
+    ex:gadget a schema:Product ;
+        schema:name "Gadget" ;
+        schema:price "49.99"^^xsd:decimal .
+}
+
+# Named graph for inventory
+GRAPH <http://example.org/graphs/inventory> {
+    ex:widget schema:inventory 42 ;
+        schema:warehouse "main" .
+
+    ex:gadget schema:inventory 15 ;
+        schema:warehouse "secondary" .
+}
+```
+
+### Submitting TriG Data
+
+TriG is only supported on the **upsert** endpoint (or transact). Use the `application/trig` content type:
+
+```bash
+# TriG requires upsert (for named graph support)
+curl -X POST "http://localhost:8090/upsert?ledger=mydb:main" \
+  -H "Content-Type: application/trig" \
+  --data-binary '@data.trig'
+```
+
+TriG on the `/insert` endpoint will return a 400 error because named graph extraction requires the upsert path.
+
+### Querying Named Graphs
+
+After ingesting TriG data, query specific graphs using JSON-LD with the structured `from` object:
+
+```json
+{
+  "@context": { "schema": "http://schema.org/" },
+  "from": {
+    "@id": "mydb:main",
+    "graph": "http://example.org/graphs/products"
+  },
+  "select": ["?name", "?price"],
+  "where": [
+    { "@id": "?product", "schema:name": "?name" },
+    { "@id": "?product", "schema:price": "?price" }
+  ]
+}
+```
+
+For cross-graph queries, use `from-named` with aliases:
+
+```json
+{
+  "@context": { "schema": "http://schema.org/" },
+  "from": "mydb:main",
+  "from-named": [
+    { "@id": "mydb:main", "alias": "products", "graph": "http://example.org/graphs/products" },
+    { "@id": "mydb:main", "alias": "inventory", "graph": "http://example.org/graphs/inventory" }
+  ],
+  "select": ["?name", "?inventory", "?warehouse"],
+  "where": [
+    ["graph", "products", { "@id": "?product", "schema:name": "?name" }],
+    ["graph", "inventory", { "@id": "?product", "schema:inventory": "?inventory", "schema:warehouse": "?warehouse" }]
+  ]
+}
+```
+
+### Graph IDs
+
+Fluree assigns internal graph IDs to named graphs:
+
+| Graph ID | Purpose |
+|----------|---------|
+| 0 | Default graph (triples without GRAPH block) |
+| 1 | txn-meta (commit metadata) |
+| 2+ | User-defined named graphs |
+
+### TriG with Transaction Metadata
+
+You can combine named graphs with transaction metadata using the special `txn-meta` graph IRI:
+
+```trig
+@prefix ex: <http://example.org/ns/> .
+@prefix f: <https://ns.flur.ee/ledger#> .
+
+# Transaction metadata (stored in txn-meta graph)
+GRAPH <https://ns.flur.ee/ledger#transactions> {
+    fluree:commit:this ex:jobId "batch-import-001" ;
+        ex:source "warehouse-export" ;
+        ex:operator "system-admin" .
+}
+
+# User data in named graph
+GRAPH <http://example.org/graphs/products> {
+    ex:widget a ex:Product ;
+        ex:name "Widget" .
+}
+```
+
+### Limits
+
+- Maximum 256 named graphs per transaction
+- Maximum 8KB per graph IRI
+- Named graphs are queryable after indexing completes
+
+### When to Use TriG
+
+Use TriG when you need to:
+- Partition data into logical groups
+- Separate data by source, tenant, or domain
+- Maintain provenance at the graph level
+- Integrate with RDF quad stores
+
+Use plain Turtle when:
+- All data belongs in the default graph
+- Graph partitioning isn't needed
+- Working with simpler data models
+
 ## Bulk import (Rust API)
 
 For high-throughput ingest of large Turtle datasets into a **fresh ledger**, prefer the bulk import
@@ -517,5 +676,6 @@ model.read("data.ttl", "TURTLE");
 
 - [Insert](insert.md) - Adding data via JSON-LD
 - [Overview](overview.md) - Transaction overview
+- [Datasets and Named Graphs](../concepts/datasets-and-named-graphs.md) - Named graph concepts
 - [Data Types](../concepts/datatypes.md) - Supported datatypes
 - [API Headers](../api/headers.md) - Content-Type specifications

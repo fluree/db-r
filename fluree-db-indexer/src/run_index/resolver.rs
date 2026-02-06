@@ -29,6 +29,21 @@ use std::collections::HashMap;
 use std::io;
 use xxhash_rust::xxh3::Xxh3;
 
+/// Statistics for a single resolved commit.
+#[derive(Debug, Clone, Copy)]
+pub struct ResolvedCommit {
+    /// Total records emitted (ops + txn-meta records).
+    pub total_records: u32,
+    /// Transaction time of this commit.
+    pub t: i64,
+    /// Size of the commit blob in bytes.
+    pub size: u64,
+    /// Number of assertions in this commit.
+    pub asserts: u32,
+    /// Number of retractions in this commit.
+    pub retracts: u32,
+}
+
 /// Resolves commit-local ops into globally-addressed RunRecords.
 pub struct CommitResolver {
     /// namespace_code -> prefix IRI.
@@ -78,15 +93,16 @@ impl CommitResolver {
 
     /// Resolve one commit's ops into RunRecords, pushing them to the writer.
     ///
-    /// Returns the number of records emitted.
+    /// Returns `(asserts, retracts)` - the count of assertions and retractions.
     pub fn resolve_commit_ops<W: RecordSink>(
         &mut self,
         commit_ops: &CommitOps,
         dicts: &mut GlobalDicts,
         writer: &mut W,
-    ) -> Result<u32, ResolverError> {
+    ) -> Result<(u32, u32), ResolverError> {
         let t = commit_ops.t;
-        let mut count = 0u32;
+        let mut asserts = 0u32;
+        let mut retracts = 0u32;
 
         commit_ops.for_each_op(|raw_op: RawOp<'_>| {
             let record = self.resolve_single_op(&raw_op, t, dicts)?;
@@ -116,37 +132,50 @@ impl CommitResolver {
             writer
                 .push(record, &mut dicts.languages)
                 .map_err(|e| CommitV2Error::InvalidOp(format!("run writer error: {}", e)))?;
-            count += 1;
+            if record.op != 0 {
+                asserts += 1;
+            } else {
+                retracts += 1;
+            }
             Ok(())
         })?;
 
-        Ok(count)
+        Ok((asserts, retracts))
     }
 
     /// Resolve a raw commit blob end-to-end: parse, apply namespace delta, resolve ops,
     /// and emit txn-meta records.
     ///
     /// Convenience wrapper that combines [`load_commit_ops`], [`apply_namespace_delta`],
-    /// [`resolve_commit_ops`], and [`emit_txn_meta`]. Returns `(op_count, t)`.
+    /// [`resolve_commit_ops`], and [`emit_txn_meta`]. Returns [`ResolvedCommit`] with
+    /// per-commit statistics for accumulation.
     pub fn resolve_blob<W: RecordSink>(
         &mut self,
         bytes: &[u8],
         commit_address: &str,
-        ledger_alias: &str,
         dicts: &mut GlobalDicts,
         writer: &mut W,
-    ) -> Result<(u32, i64), ResolverError> {
+    ) -> Result<ResolvedCommit, ResolverError> {
+        let commit_size = bytes.len() as u64;
         let commit_ops = load_commit_ops(bytes)?;
         self.apply_namespace_delta(&commit_ops.envelope.namespace_delta);
-        let mut op_count = self.resolve_commit_ops(&commit_ops, dicts, writer)?;
-        op_count += self.emit_txn_meta(
+        let (asserts, retracts) = self.resolve_commit_ops(&commit_ops, dicts, writer)?;
+        let meta_count = self.emit_txn_meta(
             commit_address,
-            ledger_alias,
             &commit_ops.envelope,
+            commit_size,
+            asserts,
+            retracts,
             dicts,
             writer,
         )?;
-        Ok((op_count, commit_ops.t))
+        Ok(ResolvedCommit {
+            total_records: asserts + retracts + meta_count,
+            t: commit_ops.t,
+            size: commit_size,
+            asserts,
+            retracts,
+        })
     }
 
     /// Access the accumulated namespace prefix map (code -> prefix IRI).
@@ -156,18 +185,20 @@ impl CommitResolver {
 
     /// Emit txn-meta RunRecords for a single commit into the txn-meta graph (g_id=1).
     ///
-    /// Mirrors the canonical `generate_commit_flakes()` in
-    /// `fluree-db-novelty/src/commit_flakes.rs`.
-    ///
-    /// - **Commit subject** (`fluree:commit:sha256:<hex>`): address, alias, v, time, previous,
-    ///   and DB metadata (t/size/flakes).
+    /// Emits commit metadata as queryable triples:
+    /// - **Commit subject** (`fluree:commit:sha256:<hex>`): address, time, previous,
+    ///   t, size (commit blob bytes), asserts, retracts.
+    /// - **User metadata**: any `txn_meta` entries from the envelope.
     ///
     /// Returns the number of records emitted.
+    #[allow(clippy::too_many_arguments)]
     pub fn emit_txn_meta<W: RecordSink>(
         &mut self,
         commit_address: &str,
-        ledger_alias: &str,
         envelope: &CommitV2Envelope,
+        commit_size: u64,
+        asserts: u32,
+        retracts: u32,
         dicts: &mut GlobalDicts,
         writer: &mut W,
     ) -> Result<u32, ResolverError> {
@@ -202,12 +233,6 @@ impl CommitResolver {
         let p_address = dicts
             .predicates
             .get_or_insert_parts(fluree::LEDGER, ledger::ADDRESS);
-        let p_alias = dicts
-            .predicates
-            .get_or_insert_parts(fluree::LEDGER, ledger::ALIAS);
-        let p_v = dicts
-            .predicates
-            .get_or_insert_parts(fluree::LEDGER, ledger::V);
         let p_time = dicts
             .predicates
             .get_or_insert_parts(fluree::LEDGER, ledger::TIME);
@@ -220,9 +245,12 @@ impl CommitResolver {
         let p_size = dicts
             .predicates
             .get_or_insert_parts(fluree::LEDGER, ledger::SIZE);
-        let p_flakes = dicts
+        let p_asserts = dicts
             .predicates
-            .get_or_insert_parts(fluree::LEDGER, ledger::FLAKES);
+            .get_or_insert_parts(fluree::LEDGER, ledger::ASSERTS);
+        let p_retracts = dicts
+            .predicates
+            .get_or_insert_parts(fluree::LEDGER, ledger::RETRACTS);
 
         let mut count = 0u32;
 
@@ -264,25 +292,6 @@ impl CommitResolver {
             DatatypeDictId::STRING.as_u16(),
         )?;
 
-        // ledger:alias (STRING)
-        let alias_str_id = dicts.strings.get_or_insert(ledger_alias)?;
-        push(
-            commit_s_id,
-            p_alias,
-            ObjKind::LEX_ID,
-            ObjKey::encode_u32_id(alias_str_id),
-            DatatypeDictId::STRING.as_u16(),
-        )?;
-
-        // ledger:v (INTEGER)
-        push(
-            commit_s_id,
-            p_v,
-            ObjKind::NUM_INT,
-            ObjKey::encode_i64(envelope.v as i64),
-            DatatypeDictId::INTEGER.as_u16(),
-        )?;
-
         // ledger:time (LONG) -- epoch milliseconds (skipped if ISO parse fails)
         if let Some(time_str) = &envelope.time {
             if let Some(epoch_ms) = iso_to_epoch_ms(time_str) {
@@ -305,26 +314,32 @@ impl CommitResolver {
             DatatypeDictId::INTEGER.as_u16(),
         )?;
 
-        // Optional cumulative stats (if present in commit envelope)
-        if let Some(data) = &envelope.data {
-            // ledger:size (LONG)
-            push(
-                commit_s_id,
-                p_size,
-                ObjKind::NUM_INT,
-                ObjKey::encode_i64(data.size as i64),
-                DatatypeDictId::LONG.as_u16(),
-            )?;
+        // ledger:size (LONG) -- commit blob size in bytes
+        push(
+            commit_s_id,
+            p_size,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(commit_size as i64),
+            DatatypeDictId::LONG.as_u16(),
+        )?;
 
-            // ledger:flakes (LONG)
-            push(
-                commit_s_id,
-                p_flakes,
-                ObjKind::NUM_INT,
-                ObjKey::encode_i64(data.flakes as i64),
-                DatatypeDictId::LONG.as_u16(),
-            )?;
-        }
+        // ledger:asserts (INTEGER) -- number of assertions in this commit
+        push(
+            commit_s_id,
+            p_asserts,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(asserts as i64),
+            DatatypeDictId::INTEGER.as_u16(),
+        )?;
+
+        // ledger:retracts (INTEGER) -- number of retractions in this commit
+        push(
+            commit_s_id,
+            p_retracts,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(retracts as i64),
+            DatatypeDictId::INTEGER.as_u16(),
+        )?;
 
         // ledger:previous (ID) -- ref to previous commit
         if let Some(prev_ref) = &envelope.previous_ref {
@@ -373,7 +388,149 @@ impl CommitResolver {
             )?;
         }
 
+        // === User-provided txn_meta entries ===
+        for entry in &envelope.txn_meta {
+            count += self.emit_txn_meta_entry(commit_s_id, g_id, t, entry, dicts, writer)?;
+        }
+
         Ok(count)
+    }
+
+    /// Emit a single user-provided txn_meta entry as a RunRecord.
+    fn emit_txn_meta_entry<W: RecordSink>(
+        &mut self,
+        commit_s_id: u64,
+        g_id: u32,
+        t: i64,
+        entry: &fluree_db_novelty::TxnMetaEntry,
+        dicts: &mut GlobalDicts,
+        writer: &mut W,
+    ) -> Result<u32, ResolverError> {
+        // Resolve predicate using ns_code + name
+        let p_prefix = self.lookup_prefix(entry.predicate_ns);
+        let p_id = dicts
+            .predicates
+            .get_or_insert_parts(p_prefix, &entry.predicate_name);
+
+        // Resolve value to (o_kind, o_key, dt, lang_id)
+        let (o_kind, o_key, dt, lang_id) = self.resolve_txn_meta_value(&entry.value, dicts)?;
+
+        let record = RunRecord {
+            g_id,
+            s_id: SubjectId::from_u64(commit_s_id),
+            p_id,
+            dt,
+            o_kind: o_kind.as_u8(),
+            op: 1, // assert
+            o_key: o_key.as_u64(),
+            t,
+            lang_id,
+            i: ListIndex::none().as_i32(),
+        };
+        writer
+            .push(record, &mut dicts.languages)
+            .map_err(ResolverError::Io)?;
+
+        Ok(1)
+    }
+
+    /// Resolve a TxnMetaValue to (ObjKind, ObjKey, dt_id, lang_id).
+    fn resolve_txn_meta_value(
+        &mut self,
+        value: &fluree_db_novelty::TxnMetaValue,
+        dicts: &mut GlobalDicts,
+    ) -> Result<(ObjKind, ObjKey, u16, u16), ResolverError> {
+        use fluree_db_novelty::TxnMetaValue;
+
+        match value {
+            TxnMetaValue::String(s) => {
+                let str_id = dicts.strings.get_or_insert(s)?;
+                Ok((
+                    ObjKind::LEX_ID,
+                    ObjKey::encode_u32_id(str_id),
+                    DatatypeDictId::STRING.as_u16(),
+                    0,
+                ))
+            }
+            TxnMetaValue::Long(n) => Ok((
+                ObjKind::NUM_INT,
+                ObjKey::encode_i64(*n),
+                DatatypeDictId::LONG.as_u16(),
+                0,
+            )),
+            TxnMetaValue::Double(n) => {
+                // Defense in depth: reject non-finite doubles even if envelope decode allowed them
+                if !n.is_finite() {
+                    return Err(ResolverError::Resolve(
+                        "txn_meta does not support non-finite double values".into(),
+                    ));
+                }
+                // Always encode as NUM_F64 to avoid NUM_INT + dt DOUBLE edge cases
+                let key = ObjKey::encode_f64(*n)
+                    .map_err(|e| ResolverError::Resolve(format!("txn_meta double: {}", e)))?;
+                Ok((ObjKind::NUM_F64, key, DatatypeDictId::DOUBLE.as_u16(), 0))
+            }
+            TxnMetaValue::Boolean(b) => Ok((
+                ObjKind::BOOL,
+                ObjKey::encode_bool(*b),
+                DatatypeDictId::BOOLEAN.as_u16(),
+                0,
+            )),
+            TxnMetaValue::Ref { ns, name } => {
+                // Resolve ref IRI -> global sid64
+                let prefix = self.ns_prefixes.get(ns).map(|s| s.as_str()).unwrap_or("");
+                self.hasher.reset();
+                self.hasher.update(prefix.as_bytes());
+                self.hasher.update(name.as_bytes());
+                let hash = self.hasher.digest128();
+
+                let sid64 = dicts.subjects.get_or_insert_with_hash(hash, *ns, || {
+                    let mut s = String::with_capacity(prefix.len() + name.len());
+                    s.push_str(prefix);
+                    s.push_str(name);
+                    s
+                })?;
+                Ok((
+                    ObjKind::REF_ID,
+                    ObjKey::encode_sid64(sid64),
+                    DatatypeDictId::ID.as_u16(),
+                    0,
+                ))
+            }
+            TxnMetaValue::LangString { value, lang } => {
+                let str_id = dicts.strings.get_or_insert(value)?;
+                let lang_id = dicts.languages.get_or_insert(Some(lang.as_str()));
+                Ok((
+                    ObjKind::LEX_ID,
+                    ObjKey::encode_u32_id(str_id),
+                    DatatypeDictId::LANG_STRING.as_u16(),
+                    lang_id,
+                ))
+            }
+            TxnMetaValue::TypedLiteral {
+                value,
+                dt_ns,
+                dt_name,
+            } => {
+                // Store the value as a string, with custom datatype
+                let str_id = dicts.strings.get_or_insert(value)?;
+                let dt_prefix = self.lookup_prefix(*dt_ns);
+                let dt_id = dicts.datatypes.get_or_insert_parts(dt_prefix, dt_name);
+                // Match resolve_single_op()'s u8 constraint for format consistency
+                if dt_id > u8::MAX as u32 {
+                    return Err(ResolverError::Resolve(format!(
+                        "txn_meta datatype dict overflow (dt_id={} exceeds u8 max)",
+                        dt_id
+                    )));
+                }
+                Ok((
+                    ObjKind::LEX_ID,
+                    ObjKey::encode_u32_id(str_id),
+                    dt_id as u16,
+                    0,
+                ))
+            }
+        }
     }
 
     /// Resolve a single RawOp into a RunRecord.
@@ -820,6 +977,8 @@ mod tests {
             data: None,
             index: None,
             txn_signature: None,
+            txn_meta: Vec::new(),
+            graph_delta: HashMap::new(),
         };
         let mut envelope_bytes = Vec::new();
         encode_envelope_fields(&envelope, &mut envelope_bytes).unwrap();
@@ -938,10 +1097,10 @@ mod tests {
         };
         let mut writer = RunWriter::new(config);
 
-        let count = resolver
+        let (asserts, retracts) = resolver
             .resolve_commit_ops(&commit_ops, &mut dicts, &mut writer)
             .unwrap();
-        assert_eq!(count, 3);
+        assert_eq!(asserts + retracts, 3);
 
         // Check dictionary state
         assert_eq!(dicts.subjects.len(), 2); // Alice, Bob
@@ -1042,10 +1201,10 @@ mod tests {
         };
         let mut writer = RunWriter::new(config);
 
-        let count = resolver
+        let (asserts, retracts) = resolver
             .resolve_commit_ops(&commit_ops, &mut dicts, &mut writer)
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(asserts + retracts, 1);
 
         let result = writer.finish(&mut dicts.languages).unwrap();
         let (_, _, records) = crate::run_index::read_run_file(&result.run_files[0].path).unwrap();
@@ -1243,20 +1402,24 @@ mod tests {
             data: None,
             index: None,
             txn_signature: None,
+            txn_meta: Vec::new(),
+            graph_delta: HashMap::new(),
         };
 
         let count = resolver
             .emit_txn_meta(
                 &commit_address,
-                "test-ledger",
                 &envelope,
+                1024,
+                8,
+                2,
                 &mut dicts,
                 &mut writer,
             )
             .unwrap();
 
-        // 6 records on commit subject: address, alias, v, time, t, previous
-        assert_eq!(count, 6);
+        // 7 records on commit subject: address, time, t, size, asserts, retracts, previous
+        assert_eq!(count, 7);
 
         // Verify g_id=1 reservation
         let g_id = dicts
@@ -1270,10 +1433,10 @@ mod tests {
 
         // Flush and read back records
         let result = writer.finish(&mut dicts.languages).unwrap();
-        assert_eq!(result.total_records, 6);
+        assert_eq!(result.total_records, 7);
 
         let (_, _, records) = crate::run_index::read_run_file(&result.run_files[0].path).unwrap();
-        assert_eq!(records.len(), 6);
+        assert_eq!(records.len(), 7);
 
         // All records should be in g_id=1
         for rec in &records {
@@ -1370,20 +1533,186 @@ mod tests {
             data: None,
             index: None,
             txn_signature: None,
+            txn_meta: Vec::new(),
+            graph_delta: HashMap::new(),
         };
 
         let count = resolver
             .emit_txn_meta(
                 &commit_address,
-                "test-ledger",
                 &envelope,
+                512,
+                4,
+                1,
                 &mut dicts,
                 &mut writer,
             )
             .unwrap();
 
-        // 4 records: address, alias, v, t (no time, no previous)
-        assert_eq!(count, 4);
+        // 5 records: address, t, size, asserts, retracts (no time, no previous)
+        assert_eq!(count, 5);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_emit_txn_meta_user_entries() {
+        use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
+        use fluree_db_novelty::{TxnMetaEntry, TxnMetaValue};
+
+        let dir = std::env::temp_dir().join("fluree_test_emit_txn_meta_user");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut dicts = GlobalDicts::new_memory();
+        let mut resolver = CommitResolver::new();
+        // Add user namespace for txn_meta predicates
+        resolver
+            .ns_prefixes
+            .insert(100, "http://example.org/".to_string());
+        resolver
+            .ns_prefixes
+            .insert(101, "http://refs.example.org/".to_string());
+
+        let config = RunWriterConfig {
+            buffer_budget_bytes: 1024 * 1024,
+            sort_order: RunSortOrder::Spot,
+            run_dir: dir.clone(),
+        };
+        let mut writer = RunWriter::new(config);
+
+        let hex = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
+        let commit_address = format!("fluree:file://test/main/commit/{}.json", hex);
+
+        let envelope = CommitV2Envelope {
+            t: 5,
+            v: 2,
+            previous_ref: None,
+            namespace_delta: HashMap::new(),
+            txn: None,
+            time: None,
+            data: None,
+            index: None,
+            txn_signature: None,
+            txn_meta: vec![
+                TxnMetaEntry::new(100, "jobId", TxnMetaValue::String("job-123".into())),
+                TxnMetaEntry::new(100, "priority", TxnMetaValue::Long(42)),
+                TxnMetaEntry::new(100, "enabled", TxnMetaValue::Boolean(true)),
+                TxnMetaEntry::new(100, "score", TxnMetaValue::Double(1.23)),
+                TxnMetaEntry::new(
+                    100,
+                    "assignee",
+                    TxnMetaValue::Ref {
+                        ns: 101,
+                        name: "alice".into(),
+                    },
+                ),
+                TxnMetaEntry::new(
+                    100,
+                    "description",
+                    TxnMetaValue::LangString {
+                        value: "bonjour".into(),
+                        lang: "fr".into(),
+                    },
+                ),
+                TxnMetaEntry::new(
+                    100,
+                    "createdAt",
+                    TxnMetaValue::TypedLiteral {
+                        value: "2025-06-15".into(),
+                        dt_ns: 2,
+                        dt_name: "date".into(),
+                    },
+                ),
+            ],
+            graph_delta: HashMap::new(),
+        };
+
+        let count = resolver
+            .emit_txn_meta(
+                &commit_address,
+                &envelope,
+                2048,
+                15,
+                5,
+                &mut dicts,
+                &mut writer,
+            )
+            .unwrap();
+
+        // 5 built-in records (address, t, size, asserts, retracts) + 7 user entries = 12
+        assert_eq!(count, 12);
+
+        // Flush and read back records
+        let result = writer.finish(&mut dicts.languages).unwrap();
+        assert_eq!(result.total_records, 12);
+
+        let (_, lang_dict, records) =
+            crate::run_index::read_run_file(&result.run_files[0].path).unwrap();
+        assert_eq!(records.len(), 12);
+
+        // All records should be in g_id=1
+        for rec in &records {
+            assert_eq!(rec.g_id, 1, "txn-meta records must be in g_id=1");
+        }
+
+        // Verify user predicates were registered
+        let p_job_id = dicts.predicates.get("http://example.org/jobId");
+        let p_priority = dicts.predicates.get("http://example.org/priority");
+        let p_enabled = dicts.predicates.get("http://example.org/enabled");
+        let p_score = dicts.predicates.get("http://example.org/score");
+        let p_assignee = dicts.predicates.get("http://example.org/assignee");
+        let p_description = dicts.predicates.get("http://example.org/description");
+        let p_created_at = dicts.predicates.get("http://example.org/createdAt");
+
+        assert!(p_job_id.is_some(), "jobId predicate missing");
+        assert!(p_priority.is_some(), "priority predicate missing");
+        assert!(p_enabled.is_some(), "enabled predicate missing");
+        assert!(p_score.is_some(), "score predicate missing");
+        assert!(p_assignee.is_some(), "assignee predicate missing");
+        assert!(p_description.is_some(), "description predicate missing");
+        assert!(p_created_at.is_some(), "createdAt predicate missing");
+
+        // Verify priority record is NUM_INT with LONG datatype
+        let priority_pid = p_priority.unwrap();
+        let priority_rec = records.iter().find(|r| r.p_id == priority_pid).unwrap();
+        assert_eq!(priority_rec.o_kind, ObjKind::NUM_INT.as_u8());
+        assert_eq!(priority_rec.dt, DatatypeDictId::LONG.as_u16());
+        assert_eq!(ObjKey::from_u64(priority_rec.o_key).decode_i64(), 42);
+
+        // Verify enabled record is BOOL with BOOLEAN datatype
+        let enabled_pid = p_enabled.unwrap();
+        let enabled_rec = records.iter().find(|r| r.p_id == enabled_pid).unwrap();
+        assert_eq!(enabled_rec.o_kind, ObjKind::BOOL.as_u8());
+        assert_eq!(enabled_rec.dt, DatatypeDictId::BOOLEAN.as_u16());
+
+        // Verify score record is NUM_F64 with DOUBLE datatype (no integer fast path for txn-meta)
+        let score_pid = p_score.unwrap();
+        let score_rec = records.iter().find(|r| r.p_id == score_pid).unwrap();
+        assert_eq!(
+            score_rec.o_kind,
+            ObjKind::NUM_F64.as_u8(),
+            "score must be NUM_F64"
+        );
+        assert_eq!(
+            score_rec.dt,
+            DatatypeDictId::DOUBLE.as_u16(),
+            "score must be DOUBLE datatype"
+        );
+
+        // Verify assignee record is REF_ID with ID datatype
+        let assignee_pid = p_assignee.unwrap();
+        let assignee_rec = records.iter().find(|r| r.p_id == assignee_pid).unwrap();
+        assert_eq!(assignee_rec.o_kind, ObjKind::REF_ID.as_u8());
+        assert_eq!(assignee_rec.dt, DatatypeDictId::ID.as_u16());
+
+        // Verify description has language tag
+        let desc_pid = p_description.unwrap();
+        let desc_rec = records.iter().find(|r| r.p_id == desc_pid).unwrap();
+        assert_eq!(desc_rec.dt, DatatypeDictId::LANG_STRING.as_u16());
+        assert!(desc_rec.lang_id > 0, "description should have lang_id");
+        // Use the language dict from the run file
+        assert_eq!(lang_dict.resolve(desc_rec.lang_id), Some("fr"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

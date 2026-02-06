@@ -394,6 +394,7 @@ fn parse_prefixed_name_or_keyword(input: &mut Input<'_>) -> ModalResult<TokenKin
             "false" => Ok(TokenKind::KwFalse),
             "PREFIX" => Ok(TokenKind::KwSparqlPrefix),
             "BASE" => Ok(TokenKind::KwSparqlBase),
+            "GRAPH" => Ok(TokenKind::KwGraph),
             _ => {
                 input.reset(&start);
                 Err(winnow::error::ErrMode::Backtrack(ContextError::new()))
@@ -831,6 +832,8 @@ fn parse_punctuation(input: &mut Input<'_>) -> ModalResult<TokenKind> {
         ']' => Some(TokenKind::RBracket),
         '(' => Some(TokenKind::LParen),
         ')' => Some(TokenKind::RParen),
+        '{' => Some(TokenKind::LBrace),
+        '}' => Some(TokenKind::RBrace),
         _ => None,
     })
     .parse_next(input)

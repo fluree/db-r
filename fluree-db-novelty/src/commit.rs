@@ -149,6 +149,129 @@ pub struct TxnSignature {
     pub txn_id: Option<String>,
 }
 
+// =============================================================================
+// Transaction Metadata Types
+// =============================================================================
+
+/// Maximum number of txn-meta entries per transaction.
+pub const MAX_TXN_META_ENTRIES: usize = 256;
+
+/// Maximum encoded size of txn-meta in bytes (64KB).
+pub const MAX_TXN_META_BYTES: usize = 65536;
+
+/// A predicate/object pair for user-provided transaction metadata.
+///
+/// Uses ns_code + name (like Sid) for compact encoding and resolver compatibility.
+/// The subject is implicit — always the commit itself (`fluree:commit:sha256:<hex>`).
+///
+/// Stored in the commit envelope for replay-safe persistence, then emitted to
+/// the txn-meta graph (`g_id=1`) during indexing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TxnMetaEntry {
+    /// Predicate namespace code
+    pub predicate_ns: u16,
+    /// Predicate local name
+    pub predicate_name: String,
+    /// Object value
+    pub value: TxnMetaValue,
+}
+
+impl TxnMetaEntry {
+    /// Create a new txn-meta entry
+    pub fn new(predicate_ns: u16, predicate_name: impl Into<String>, value: TxnMetaValue) -> Self {
+        Self {
+            predicate_ns,
+            predicate_name: predicate_name.into(),
+            value,
+        }
+    }
+}
+
+/// Object value for a transaction metadata entry.
+///
+/// Supports the same value types as normal RDF literals and references,
+/// using ns_code + name for compact encoding.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TxnMetaValue {
+    /// Plain string literal (xsd:string)
+    String(String),
+
+    /// Typed literal with explicit datatype (ns_code + name)
+    TypedLiteral {
+        value: String,
+        dt_ns: u16,
+        dt_name: String,
+    },
+
+    /// Language-tagged string (rdf:langString)
+    LangString { value: String, lang: String },
+
+    /// IRI reference (ns_code + name)
+    Ref { ns: u16, name: String },
+
+    /// Integer value (xsd:long)
+    Long(i64),
+
+    /// Double value (xsd:double)
+    ///
+    /// Must be finite — NaN, +Inf, -Inf are rejected at parse time.
+    Double(f64),
+
+    /// Boolean value (xsd:boolean)
+    Boolean(bool),
+}
+
+impl TxnMetaValue {
+    /// Create a string value
+    pub fn string(s: impl Into<String>) -> Self {
+        Self::String(s.into())
+    }
+
+    /// Create an integer value
+    pub fn long(n: i64) -> Self {
+        Self::Long(n)
+    }
+
+    /// Create a boolean value
+    pub fn boolean(b: bool) -> Self {
+        Self::Boolean(b)
+    }
+
+    /// Create an IRI reference value
+    pub fn reference(ns: u16, name: impl Into<String>) -> Self {
+        Self::Ref {
+            ns,
+            name: name.into(),
+        }
+    }
+
+    /// Create a language-tagged string
+    pub fn lang_string(value: impl Into<String>, lang: impl Into<String>) -> Self {
+        Self::LangString {
+            value: value.into(),
+            lang: lang.into(),
+        }
+    }
+
+    /// Create a typed literal
+    pub fn typed_literal(value: impl Into<String>, dt_ns: u16, dt_name: impl Into<String>) -> Self {
+        Self::TypedLiteral {
+            value: value.into(),
+            dt_ns,
+            dt_name: dt_name.into(),
+        }
+    }
+
+    /// Create a double value, returning None if not finite
+    pub fn double(n: f64) -> Option<Self> {
+        if n.is_finite() {
+            Some(Self::Double(n))
+        } else {
+            None
+        }
+    }
+}
+
 /// A commit represents a single transaction in the ledger
 #[derive(Clone, Debug)]
 pub struct Commit {
@@ -196,6 +319,29 @@ pub struct Commit {
 
     /// Commit signatures (cryptographic proof of which node(s) wrote this commit)
     pub commit_signatures: Vec<CommitSignature>,
+
+    /// User-provided transaction metadata (replay-safe).
+    ///
+    /// Stored in the commit envelope and emitted to the txn-meta graph (`g_id=1`)
+    /// during indexing. Each entry becomes a triple with the commit subject.
+    pub txn_meta: Vec<TxnMetaEntry>,
+
+    /// Named graph IRI to g_id mappings introduced by this commit.
+    ///
+    /// When a transaction references named graphs (via TriG GRAPH blocks or
+    /// JSON-LD with graph IRIs), this map stores the g_id assignment for each
+    /// graph IRI introduced in this commit. This is necessary for:
+    ///
+    /// 1. **Replay safety**: Commits must be self-contained so that replaying
+    ///    the commit chain produces the same g_id assignments.
+    /// 2. **Index independence**: g_id assignments in the commit do not depend
+    ///    on the current index state, so re-indexing is deterministic.
+    ///
+    /// Reserved g_ids:
+    /// - `0`: default graph
+    /// - `1`: txn-meta graph (`https://ns.flur.ee/ledger#transactions`)
+    /// - `2+`: user-defined named graphs
+    pub graph_delta: HashMap<u32, String>,
 }
 
 impl Commit {
@@ -215,6 +361,8 @@ impl Commit {
             namespace_delta: HashMap::new(),
             txn_signature: None,
             commit_signatures: Vec::new(),
+            txn_meta: Vec::new(),
+            graph_delta: HashMap::new(),
         }
     }
 
@@ -257,6 +405,12 @@ impl Commit {
     /// Set the transaction signature (audit metadata)
     pub fn with_txn_signature(mut self, sig: TxnSignature) -> Self {
         self.txn_signature = Some(sig);
+        self
+    }
+
+    /// Set the user-provided transaction metadata
+    pub fn with_txn_meta(mut self, txn_meta: Vec<TxnMetaEntry>) -> Self {
+        self.txn_meta = txn_meta;
         self
     }
 
@@ -350,6 +504,9 @@ pub struct CommitEnvelope {
 
     /// New namespace codes introduced by this commit (code → prefix)
     pub namespace_delta: HashMap<u16, String>,
+
+    /// User-provided transaction metadata (replay-safe)
+    pub txn_meta: Vec<TxnMetaEntry>,
 }
 
 impl CommitEnvelope {
@@ -522,6 +679,7 @@ mod tests {
             previous_ref: Some(CommitRef::new("commit-0")),
             index: None,
             namespace_delta: HashMap::from([(100, "ex:".to_string())]),
+            txn_meta: Vec::new(),
         };
 
         assert_eq!(envelope.t, 5);
@@ -538,6 +696,7 @@ mod tests {
             previous_ref: None,
             index: Some(IndexRef::new("index-addr").with_t(10)),
             namespace_delta: HashMap::new(),
+            txn_meta: Vec::new(),
         };
 
         let idx = envelope.index_ref().unwrap();
@@ -554,8 +713,66 @@ mod tests {
             previous_ref: None,
             index: None,
             namespace_delta: HashMap::new(),
+            txn_meta: Vec::new(),
         };
         assert!(envelope.index_ref().is_none());
         assert!(envelope.index_address().is_none());
+    }
+
+    // =========================================================================
+    // TxnMetaEntry / TxnMetaValue tests
+    // =========================================================================
+
+    #[test]
+    fn test_txn_meta_entry_creation() {
+        let entry = TxnMetaEntry::new(100, "machine", TxnMetaValue::string("10.2.3.4"));
+        assert_eq!(entry.predicate_ns, 100);
+        assert_eq!(entry.predicate_name, "machine");
+        assert_eq!(entry.value, TxnMetaValue::String("10.2.3.4".to_string()));
+    }
+
+    #[test]
+    fn test_txn_meta_value_constructors() {
+        assert_eq!(
+            TxnMetaValue::string("hello"),
+            TxnMetaValue::String("hello".to_string())
+        );
+        assert_eq!(TxnMetaValue::long(42), TxnMetaValue::Long(42));
+        assert_eq!(TxnMetaValue::boolean(true), TxnMetaValue::Boolean(true));
+        assert_eq!(
+            TxnMetaValue::reference(50, "Alice"),
+            TxnMetaValue::Ref {
+                ns: 50,
+                name: "Alice".to_string()
+            }
+        );
+        assert_eq!(
+            TxnMetaValue::lang_string("hello", "en"),
+            TxnMetaValue::LangString {
+                value: "hello".to_string(),
+                lang: "en".to_string()
+            }
+        );
+        assert_eq!(
+            TxnMetaValue::typed_literal("2025-01-01", 2, "date"),
+            TxnMetaValue::TypedLiteral {
+                value: "2025-01-01".to_string(),
+                dt_ns: 2,
+                dt_name: "date".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_txn_meta_value_double_finite() {
+        assert_eq!(TxnMetaValue::double(2.72), Some(TxnMetaValue::Double(2.72)));
+        assert_eq!(TxnMetaValue::double(-0.5), Some(TxnMetaValue::Double(-0.5)));
+    }
+
+    #[test]
+    fn test_txn_meta_value_double_non_finite() {
+        assert_eq!(TxnMetaValue::double(f64::NAN), None);
+        assert_eq!(TxnMetaValue::double(f64::INFINITY), None);
+        assert_eq!(TxnMetaValue::double(f64::NEG_INFINITY), None);
     }
 }

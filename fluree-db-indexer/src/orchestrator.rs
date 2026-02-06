@@ -1076,6 +1076,8 @@ mod tests {
                 data: commit.data.clone(),
                 index: commit.index.clone(),
                 txn_signature: None,
+                txn_meta: commit.txn_meta.clone(),
+                graph_delta: commit.graph_delta.clone(),
             };
             let mut envelope_bytes = Vec::new();
             encode_envelope_fields(&envelope, &mut envelope_bytes).unwrap();
@@ -1185,6 +1187,8 @@ mod tests {
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
             commit_signatures: Vec::new(),
+            txn_meta: Vec::new(),
+            graph_delta: HashMap::new(),
         };
         let addr = store_commit(&storage, &commit).await;
         ns.publish_commit("test:main", &addr, 1).await.unwrap();
@@ -1216,6 +1220,8 @@ mod tests {
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
             commit_signatures: Vec::new(),
+            txn_meta: Vec::new(),
+            graph_delta: HashMap::new(),
         };
         let addr = store_commit(&storage, &commit).await;
         ns.publish_commit("test:main", &addr, 1).await.unwrap();
@@ -1253,6 +1259,8 @@ mod tests {
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
             commit_signatures: Vec::new(),
+            txn_meta: Vec::new(),
+            graph_delta: HashMap::new(),
         };
         let addr1 = store_commit(&storage, &commit1).await;
         ns.publish_commit("test:main", &addr1, 1).await.unwrap();
@@ -1277,6 +1285,8 @@ mod tests {
             namespace_delta: HashMap::new(),
             txn_signature: None,
             commit_signatures: Vec::new(),
+            txn_meta: Vec::new(),
+            graph_delta: HashMap::new(),
         };
         let addr2 = store_commit(&storage, &commit2).await;
         ns.publish_commit("test:main", &addr2, 2).await.unwrap();
@@ -1306,6 +1316,8 @@ mod tests {
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
             commit_signatures: Vec::new(),
+            txn_meta: Vec::new(),
+            graph_delta: HashMap::new(),
         };
         let addr = store_commit(&storage, &commit).await;
         ns.publish_commit("test:main", &addr, 1).await.unwrap();
@@ -1339,6 +1351,8 @@ mod tests {
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
             commit_signatures: Vec::new(),
+            txn_meta: Vec::new(),
+            graph_delta: HashMap::new(),
         };
         let addr = store_commit(&storage, &commit).await;
         ns.publish_commit("test:main", &addr, 1).await.unwrap();
@@ -1376,6 +1390,8 @@ mod tests {
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
             commit_signatures: Vec::new(),
+            txn_meta: Vec::new(),
+            graph_delta: HashMap::new(),
         };
         let addr = store_commit(&storage, &commit).await;
         ns.publish_commit("test:main", &addr, 1).await.unwrap();
@@ -1694,6 +1710,8 @@ mod embedded_tests {
             data: commit.data.clone(),
             index: commit.index.clone(),
             txn_signature: None,
+            txn_meta: Vec::new(),
+            graph_delta: HashMap::new(),
         };
         let mut envelope_bytes = Vec::new();
         encode_envelope_fields(&envelope, &mut envelope_bytes).unwrap();
@@ -1829,6 +1847,8 @@ mod embedded_tests {
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
             commit_signatures: Vec::new(),
+            txn_meta: Vec::new(),
+            graph_delta: HashMap::new(),
         };
         let addr = store_commit(&storage, &commit).await;
         ns.publish_commit("test:main", &addr, 1).await.unwrap();
@@ -1880,6 +1900,8 @@ mod embedded_tests {
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
             commit_signatures: Vec::new(),
+            txn_meta: Vec::new(),
+            graph_delta: HashMap::new(),
         };
         let addr = store_commit(&storage, &commit).await;
         ns.publish_commit("test:main", &addr, 1).await.unwrap();

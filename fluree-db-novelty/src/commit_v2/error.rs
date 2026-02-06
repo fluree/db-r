@@ -35,6 +35,8 @@ pub enum CommitV2Error {
     UnsupportedValue(String),
     /// Non-default graph encountered; Phase 1 only supports default graph.
     NonDefaultGraph { ns_code: u16, name_id: u32 },
+    /// Size limit exceeded for envelope data.
+    LimitExceeded(String),
 }
 
 impl fmt::Display for CommitV2Error {
@@ -84,6 +86,9 @@ impl fmt::Display for CommitV2Error {
                     "commit-v2: non-default graph (ns_code={}, name_id={}); Phase 1 only supports default graph",
                     ns_code, name_id
                 )
+            }
+            Self::LimitExceeded(msg) => {
+                write!(f, "commit-v2: limit exceeded: {}", msg)
             }
         }
     }

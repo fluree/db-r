@@ -11,6 +11,7 @@
 //! Only INSERT/DELETE templates are parsed here, which generate flakes rather
 //! than match patterns.
 
+use super::txn_meta::extract_txn_meta;
 use crate::error::{Result, TransactError};
 use crate::ir::{InlineValues, TemplateTerm, TripleTemplate, Txn, TxnOpts, TxnType};
 use crate::namespace::NamespaceRegistry;
@@ -67,6 +68,9 @@ fn parse_insert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     // Parse and merge context
     let context = extract_context(json)?;
 
+    // Extract transaction metadata (only from envelope-form documents with @graph)
+    let txn_meta = extract_txn_meta(json, &context, ns_registry)?;
+
     // Expand the document
     let expanded = expand_with_context(json, &context)?;
 
@@ -81,7 +85,8 @@ fn parse_insert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     Ok(Txn::insert()
         .with_inserts(templates)
         .with_vars(vars)
-        .with_opts(opts))
+        .with_opts(opts)
+        .with_txn_meta(txn_meta))
 }
 
 /// Parse an upsert transaction
@@ -94,6 +99,10 @@ fn parse_upsert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     let mut vars = VarRegistry::new();
 
     let context = extract_context(json)?;
+
+    // Extract transaction metadata (only from envelope-form documents with @graph)
+    let txn_meta = extract_txn_meta(json, &context, ns_registry)?;
+
     let expanded = expand_with_context(json, &context)?;
 
     let templates = parse_expanded_triples(&expanded, &context, &mut vars, ns_registry, false)?;
@@ -107,7 +116,8 @@ fn parse_upsert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     Ok(Txn::upsert()
         .with_inserts(templates)
         .with_vars(vars)
-        .with_opts(opts))
+        .with_opts(opts)
+        .with_txn_meta(txn_meta))
 }
 
 /// Parse an update transaction (SPARQL-style with WHERE/DELETE/INSERT)
@@ -127,6 +137,9 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
 
     // Parse context from the outer document
     let context = extract_context(json)?;
+
+    // Extract transaction metadata (only from envelope-form documents with @graph)
+    let txn_meta = extract_txn_meta(json, &context, ns_registry)?;
 
     let has_where = obj.get("where").is_some();
     let has_values = obj.get("values").is_some();
@@ -213,7 +226,8 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
         .with_deletes(delete_templates)
         .with_inserts(insert_templates)
         .with_vars(vars)
-        .with_opts(opts);
+        .with_opts(opts)
+        .with_txn_meta(txn_meta);
 
     if let Some(values_val) = obj.get("values") {
         let values = parse_inline_values(values_val, &context, &mut txn.vars, ns_registry)?;

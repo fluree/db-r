@@ -218,6 +218,8 @@ fn lower_insert_data(
         values: None,
         opts,
         vars: mem::take(vars),
+        txn_meta: Vec::new(),
+        graph_delta: Default::default(),
     })
 }
 
@@ -243,6 +245,8 @@ fn lower_delete_data(
         values: None,
         opts,
         vars: mem::take(vars),
+        txn_meta: Vec::new(),
+        graph_delta: Default::default(),
     })
 }
 
@@ -274,6 +278,8 @@ fn lower_delete_where(
         values: None,
         opts,
         vars: mem::take(vars),
+        txn_meta: Vec::new(),
+        graph_delta: Default::default(),
     })
 }
 
@@ -329,6 +335,8 @@ fn lower_modify(
         values: None,
         opts,
         vars: mem::take(vars),
+        txn_meta: Vec::new(),
+        graph_delta: Default::default(),
     })
 }
 
@@ -420,6 +428,7 @@ fn lower_triple_to_template(
         datatype,
         language,
         list_index: None, // Always None for SPARQL UPDATE
+        graph_id: None,   // Default graph
     })
 }
 

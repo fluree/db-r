@@ -56,6 +56,7 @@ impl Query {
                         }
                     }
                     Pattern::Graph { patterns, .. } => collect(patterns, out),
+                    Pattern::Service(sp) => collect(&sp.patterns, out),
                     Pattern::Filter(_)
                     | Pattern::Bind { .. }
                     | Pattern::Values { .. }
@@ -822,6 +823,95 @@ impl GraphName {
 }
 
 // ============================================================================
+// Service Pattern
+// ============================================================================
+
+/// A service endpoint - where to execute the inner patterns
+///
+/// SPARQL: `SERVICE <endpoint> { ... }` or `SERVICE ?var { ... }`
+///
+/// For local ledger queries, the endpoint IRI should be in the format:
+/// `fluree:ledger:<alias>` or `fluree:ledger:<alias>:<branch>`
+#[derive(Debug, Clone, PartialEq)]
+pub enum ServiceEndpoint {
+    /// Concrete service endpoint IRI
+    ///
+    /// For local ledger queries: `fluree:ledger:mydb:main`
+    Iri(std::sync::Arc<str>),
+    /// Variable endpoint (iterates all known services if unbound)
+    Var(VarId),
+}
+
+impl ServiceEndpoint {
+    /// Check if this is a variable
+    pub fn is_var(&self) -> bool {
+        matches!(self, ServiceEndpoint::Var(_))
+    }
+
+    /// Get the variable ID if this is a variable
+    pub fn as_var(&self) -> Option<VarId> {
+        match self {
+            ServiceEndpoint::Var(v) => Some(*v),
+            ServiceEndpoint::Iri(_) => None,
+        }
+    }
+
+    /// Get the IRI if this is a concrete endpoint
+    pub fn as_iri(&self) -> Option<&str> {
+        match self {
+            ServiceEndpoint::Iri(iri) => Some(iri),
+            ServiceEndpoint::Var(_) => None,
+        }
+    }
+}
+
+/// Service pattern for executing patterns against external or local services.
+///
+/// SPARQL: `SERVICE <endpoint> { ... }` or `SERVICE SILENT <endpoint> { ... }`
+///
+/// For local Fluree ledger queries, use the `fluree:ledger:` scheme:
+/// - `SERVICE <fluree:ledger:mydb:main> { ?s ?p ?o }`
+///
+/// # Semantics
+///
+/// - If the endpoint is an IRI in the `fluree:ledger:` namespace, patterns are
+///   executed against that ledger from the current dataset
+/// - For external endpoints, the implementation could support SPARQL federation (future)
+/// - If `silent` is true, errors from the service are ignored (empty result)
+/// - Variable endpoints iterate over available services in the dataset
+#[derive(Debug, Clone)]
+pub struct ServicePattern {
+    /// Whether SERVICE SILENT was specified
+    ///
+    /// If true, service errors produce empty results instead of query failure.
+    pub silent: bool,
+    /// The service endpoint (IRI or variable)
+    pub endpoint: ServiceEndpoint,
+    /// The patterns to execute at the service
+    pub patterns: Vec<Pattern>,
+}
+
+impl ServicePattern {
+    /// Create a new SERVICE pattern
+    pub fn new(silent: bool, endpoint: ServiceEndpoint, patterns: Vec<Pattern>) -> Self {
+        Self {
+            silent,
+            endpoint,
+            patterns,
+        }
+    }
+
+    /// Get all variables referenced by this pattern
+    pub fn variables(&self) -> Vec<VarId> {
+        let mut vars: Vec<VarId> = self.patterns.iter().flat_map(|p| p.variables()).collect();
+        if let ServiceEndpoint::Var(v) = &self.endpoint {
+            vars.push(*v);
+        }
+        vars
+    }
+}
+
+// ============================================================================
 // Pattern Enum
 // ============================================================================
 
@@ -904,6 +994,21 @@ pub enum Pattern {
         /// Inner patterns to execute within the graph context
         patterns: Vec<Pattern>,
     },
+
+    /// Service pattern - executes patterns against another ledger or endpoint
+    ///
+    /// SPARQL: `SERVICE <endpoint> { ... }` or `SERVICE SILENT <endpoint> { ... }`
+    ///
+    /// For local Fluree ledger queries, use the `fluree:ledger:` scheme:
+    /// - `SERVICE <fluree:ledger:orders:main> { ?s :order/total ?total }`
+    ///
+    /// # Semantics
+    ///
+    /// - For `fluree:ledger:<alias>` endpoints, patterns are executed against
+    ///   the named ledger from the current dataset
+    /// - Results are joined with the outer query on shared variables
+    /// - If `silent` is true, service errors produce empty results
+    Service(ServicePattern),
 }
 
 impl Pattern {
@@ -954,6 +1059,7 @@ impl Pattern {
                 }
                 vars
             }
+            Pattern::Service(sp) => sp.variables(),
         }
     }
 }

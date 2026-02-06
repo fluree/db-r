@@ -230,6 +230,12 @@ impl<S: Storage + Clone + 'static> FlureeView<S> {
     /// let view = FlureeView::from_historical(&historical);
     /// ```
     pub fn from_historical(view: &HistoricalLedgerView<S>) -> Self {
+        let has_overlay = view.overlay().is_some();
+        tracing::trace!(
+            to_t = view.to_t(),
+            has_overlay,
+            "FlureeView::from_historical"
+        );
         let (overlay, novelty): (Arc<dyn OverlayProvider>, Option<Arc<Novelty>>) =
             match view.overlay() {
                 Some(nov) => (nov.clone() as Arc<dyn OverlayProvider>, Some(nov.clone())),

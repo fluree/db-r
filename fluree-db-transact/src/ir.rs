@@ -18,8 +18,10 @@
 //!   not match patterns.
 
 use fluree_db_core::{FlakeValue, Sid};
+use fluree_db_novelty::TxnMetaEntry;
 use fluree_db_query::parse::UnresolvedPattern;
 use fluree_db_query::{VarId, VarRegistry};
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 /// Type of transaction operation
@@ -87,6 +89,26 @@ pub struct Txn {
 
     /// Variable registry for this transaction
     pub vars: VarRegistry,
+
+    /// User-provided transaction metadata (extracted from envelope-form JSON-LD).
+    ///
+    /// Only populated when the transaction uses envelope form (has `@graph`).
+    /// Each entry becomes a triple in the txn-meta graph (`g_id=1`) with the
+    /// commit as subject.
+    pub txn_meta: Vec<TxnMetaEntry>,
+
+    /// Named graph IRI to g_id mappings introduced by this transaction.
+    ///
+    /// When a transaction references named graphs (via TriG GRAPH blocks or
+    /// JSON-LD @graph with graph IRIs), this map tracks the g_id assignment
+    /// for each graph IRI. These mappings are stored in the commit envelope
+    /// for replay-safe persistence.
+    ///
+    /// Reserved g_ids:
+    /// - `0`: default graph
+    /// - `1`: txn-meta graph (`https://ns.flur.ee/ledger#transactions`)
+    /// - `2+`: user-defined named graphs
+    pub graph_delta: FxHashMap<u32, String>,
 }
 
 impl Txn {
@@ -100,6 +122,8 @@ impl Txn {
             values: None,
             opts: TxnOpts::default(),
             vars: VarRegistry::new(),
+            txn_meta: Vec::new(),
+            graph_delta: FxHashMap::default(),
         }
     }
 
@@ -172,6 +196,12 @@ impl Txn {
         self.values = Some(values);
         self
     }
+
+    /// Set transaction metadata
+    pub fn with_txn_meta(mut self, txn_meta: Vec<TxnMetaEntry>) -> Self {
+        self.txn_meta = txn_meta;
+        self
+    }
 }
 
 /// A triple template with potential variables
@@ -208,6 +238,15 @@ pub struct TripleTemplate {
     /// - `None`: normal triple (unordered multi-value)
     /// - `Some(i)`: list element at position `i`
     pub list_index: Option<i32>,
+
+    /// Graph ID for named graphs (maps to RunRecord.g_id in indexer)
+    ///
+    /// - `0`: default graph
+    /// - `1`: txn-meta graph (reserved)
+    /// - `2+`: user-defined named graphs
+    ///
+    /// If None, defaults to 0 (default graph).
+    pub graph_id: Option<u32>,
 }
 
 impl TripleTemplate {
@@ -220,6 +259,7 @@ impl TripleTemplate {
             datatype: None,
             language: None,
             list_index: None,
+            graph_id: None,
         }
     }
 
@@ -238,6 +278,16 @@ impl TripleTemplate {
     /// Set the list index (for ordered collections / @list support)
     pub fn with_list_index(mut self, index: i32) -> Self {
         self.list_index = Some(index);
+        self
+    }
+
+    /// Set the graph ID (for named graph support)
+    ///
+    /// - `0`: default graph
+    /// - `1`: txn-meta graph (reserved for commit metadata)
+    /// - `2+`: user-defined named graphs
+    pub fn with_graph_id(mut self, graph_id: u32) -> Self {
+        self.graph_id = Some(graph_id);
         self
     }
 }

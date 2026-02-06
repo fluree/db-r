@@ -140,6 +140,21 @@ impl FlureeInstance {
         }
     }
 
+    /// Execute a tracked JSON-LD/FQL query against a connection.
+    ///
+    /// Returns a tracked response body (status/result/time/fuel/policy) that callers can
+    /// forward directly, and optionally translate to tracking headers for Clojure parity.
+    pub async fn query_connection_jsonld_tracked(
+        &self,
+        query_json: &serde_json::Value,
+    ) -> std::result::Result<fluree_db_api::TrackedQueryResponse, fluree_db_api::TrackedErrorResponse>
+    {
+        match self {
+            FlureeInstance::File(f) => f.query_from().jsonld(query_json).execute_tracked().await,
+            FlureeInstance::Proxy(p) => p.query_from().jsonld(query_json).execute_tracked().await,
+        }
+    }
+
     // === Ledger-level query methods (load graph, run query, return JSON) ===
 
     /// Load a graph and execute a JSON-LD query

@@ -21,10 +21,9 @@
 //! readings), this can cause the string dictionary to grow large. Per-predicate
 //! NUM_FLOAT dictionaries with midpoint-splitting ranks are a later optimization.
 
+use fluree_db_core::vec_bi_dict::VecBiDict;
 use rustc_hash::FxHashMap;
 use serde_json;
-use std::borrow::Borrow;
-use std::hash::Hash;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
@@ -305,31 +304,23 @@ impl SubjectDict {
 
 /// Simple string → u32 dictionary for predicates and graphs.
 ///
-/// Uses `FxHashMap<String, u32>` with `&str` lookup via a newtype wrapper
-/// that implements `Borrow<str>`. Appropriate for small cardinality (< 10K).
+/// Backed by `VecBiDict<u32>`: Vec for O(1) forward lookups, HashMap for
+/// reverse lookups, with Arc<str> shared between both (no string duplication).
+/// Appropriate for small cardinality (< 10K).
 pub struct PredicateDict {
-    forward: Vec<String>,
-    reverse: FxHashMap<BorrowableString, u32>,
+    inner: VecBiDict<u32>,
 }
 
 impl PredicateDict {
     pub fn new() -> Self {
         Self {
-            forward: Vec::new(),
-            reverse: FxHashMap::default(),
+            inner: VecBiDict::new(0),
         }
     }
 
     /// Look up or insert a string, returning its sequential u32 ID.
     pub fn get_or_insert(&mut self, s: &str) -> u32 {
-        if let Some(&id) = self.reverse.get(s as &str) {
-            return id;
-        }
-        let id = self.forward.len() as u32;
-        let owned = s.to_string();
-        self.forward.push(owned.clone());
-        self.reverse.insert(BorrowableString(owned), id);
-        id
+        self.inner.assign_or_lookup(s)
     }
 
     /// Look up or insert by prefix + name parts, avoiding heap allocation on hits.
@@ -348,7 +339,7 @@ impl PredicateDict {
             // SAFETY: buf[..total_len] is copied from two valid UTF-8 &str slices.
             let iri = unsafe { std::str::from_utf8_unchecked(&buf[..total_len]) };
 
-            if let Some(&id) = self.reverse.get(iri) {
+            if let Some(id) = self.inner.find(iri) {
                 return id;
             }
         }
@@ -357,33 +348,32 @@ impl PredicateDict {
         let mut full_iri = String::with_capacity(total_len);
         full_iri.push_str(prefix);
         full_iri.push_str(name);
-        self.get_or_insert(&full_iri)
+        self.inner.assign_or_lookup(&full_iri)
     }
 
     /// Look up a string without inserting.
     pub fn get(&self, s: &str) -> Option<u32> {
-        self.reverse.get(s as &str).copied()
+        self.inner.find(s)
     }
 
     /// Get the string for a given ID.
     pub fn resolve(&self, id: u32) -> Option<&str> {
-        self.forward.get(id as usize).map(|s| s.as_str())
+        self.inner.resolve(id)
     }
 
     pub fn len(&self) -> u32 {
-        self.forward.len() as u32
+        self.inner.len() as u32
     }
 
     pub fn is_empty(&self) -> bool {
-        self.forward.is_empty()
+        self.inner.is_empty()
     }
 
     /// Return all entries as (id, value_bytes) pairs. Already in-memory.
     pub fn all_entries(&self) -> Vec<(u64, Vec<u8>)> {
-        self.forward
+        self.inner
             .iter()
-            .enumerate()
-            .map(|(i, s)| (i as u64, s.as_bytes().to_vec()))
+            .map(|(id, s)| (id as u64, s.as_bytes().to_vec()))
             .collect()
     }
 
@@ -395,10 +385,9 @@ impl PredicateDict {
     /// Uses xxh3_128 of the string bytes, sorted by (hash_hi, hash_lo)
     /// for binary search at query time. Mirrors the `subjects.rev` format.
     pub fn write_reverse_index(&self, path: &Path) -> io::Result<()> {
-        let mut entries: Vec<(u64, u64, u32)> = Vec::with_capacity(self.reverse.len());
+        let mut entries: Vec<(u64, u64, u32)> = Vec::with_capacity(self.inner.len());
 
-        for (key, &str_id) in &self.reverse {
-            let s: &str = key.borrow();
+        for (str_id, s) in self.inner.iter() {
             let hash = xxhash_rust::xxh3::xxh3_128(s.as_bytes());
             let hi = (hash >> 64) as u64;
             let lo = hash as u64;
@@ -618,35 +607,27 @@ impl StringValueDict {
 ///
 /// Maps language tags (e.g., "en", "fr") to u16 IDs. ID 0 means "no language
 /// tag". Rebuilt at each run flush — downstream merge renumbers.
+///
+/// Backed by `VecBiDict<u16>` with base_id=1 (1-based IDs; 0 = "no tag").
 #[derive(Clone)]
 pub struct LanguageTagDict {
-    tags: Vec<String>,
-    reverse: FxHashMap<BorrowableString, u16>,
+    inner: VecBiDict<u16>,
 }
 
 impl LanguageTagDict {
     pub fn new() -> Self {
         Self {
-            tags: Vec::new(),
-            reverse: FxHashMap::default(),
+            inner: VecBiDict::new(1),
         }
     }
 
     /// Look up or insert a language tag, returning its u16 ID (>= 1).
     /// Returns 0 if `tag` is None.
     pub fn get_or_insert(&mut self, tag: Option<&str>) -> u16 {
-        let tag = match tag {
-            Some(t) => t,
-            None => return 0,
-        };
-        if let Some(&id) = self.reverse.get(tag as &str) {
-            return id;
+        match tag {
+            Some(t) => self.inner.assign_or_lookup(t),
+            None => 0,
         }
-        let id = (self.tags.len() as u16) + 1; // 1-based
-        let owned = tag.to_string();
-        self.tags.push(owned.clone());
-        self.reverse.insert(BorrowableString(owned), id);
-        id
     }
 
     /// Get the tag string for a given ID.
@@ -654,37 +635,33 @@ impl LanguageTagDict {
         if id == 0 {
             return None;
         }
-        self.tags.get((id - 1) as usize).map(|s| s.as_str())
+        self.inner.resolve(id)
     }
 
     /// Number of distinct language tags (excluding the "none" sentinel).
     pub fn len(&self) -> u16 {
-        self.tags.len() as u16
+        self.inner.len() as u16
     }
 
     pub fn is_empty(&self) -> bool {
-        self.tags.is_empty()
+        self.inner.is_empty()
     }
 
     /// Find the ID for a language tag (reverse lookup).
     ///
     /// Returns `None` if the tag is not in the dictionary.
     pub fn find_id(&self, tag: &str) -> Option<u16> {
-        self.reverse.get(tag as &str).copied()
+        self.inner.find(tag)
     }
 
     /// Iterator over (id, tag) pairs.
     pub fn iter(&self) -> impl Iterator<Item = (u16, &str)> {
-        self.tags
-            .iter()
-            .enumerate()
-            .map(|(i, s)| ((i as u16) + 1, s.as_str()))
+        self.inner.iter()
     }
 
     /// Clear and reset the dictionary (for per-run reuse).
     pub fn clear(&mut self) {
-        self.tags.clear();
-        self.reverse.clear();
+        self.inner = VecBiDict::new(1);
     }
 }
 
@@ -873,36 +850,6 @@ impl GlobalDicts {
         );
 
         Ok(())
-    }
-}
-
-// ============================================================================
-// BorrowableString — enables HashMap<String, _> lookup with &str
-// ============================================================================
-
-/// Wrapper around `String` that implements `Borrow<str>`, `Hash`, and `Eq`
-/// based on the string content. This allows `FxHashMap<BorrowableString, _>`
-/// to be queried with `&str` keys without allocating.
-#[derive(Clone, Debug)]
-struct BorrowableString(String);
-
-impl PartialEq for BorrowableString {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
-    }
-}
-
-impl Eq for BorrowableString {}
-
-impl Hash for BorrowableString {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.0.as_str().hash(state);
-    }
-}
-
-impl Borrow<str> for BorrowableString {
-    fn borrow(&self) -> &str {
-        &self.0
     }
 }
 

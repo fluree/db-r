@@ -1429,11 +1429,17 @@ pub mod ledger {
     /// ledger:t - transaction number (on DB data subject)
     pub const T: &str = "t";
 
-    /// ledger:size - cumulative data size in bytes (on DB data subject)
+    /// ledger:size - data size in bytes (cumulative on DB data, per-commit on txn-meta)
     pub const SIZE: &str = "size";
 
-    /// ledger:flakes - cumulative flake count (on DB data subject)
+    /// ledger:flakes - cumulative flake count (on DB data subject in default graph)
     pub const FLAKES: &str = "flakes";
+
+    /// ledger:asserts - number of assertions in this commit (txn-meta graph)
+    pub const ASSERTS: &str = "asserts";
+
+    /// ledger:retracts - number of retractions in this commit (txn-meta graph)
+    pub const RETRACTS: &str = "retracts";
 
     /// ledger:rule - datalog rule definition
     /// Used to store user-defined reasoning rules with where/insert clauses

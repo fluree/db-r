@@ -187,3 +187,107 @@ async fn policy_inline_denies_restricted_property_in_graph_crawl() {
         ]))
     );
 }
+
+#[tokio::test]
+async fn policy_per_source_override_takes_precedence_over_global() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+
+    seed_people_with_ssn(&fluree, "policy/per-source:main").await;
+
+    // Query with global policy (default-allow: false) but per-source override (default-allow: true).
+    // The per-source policy should take precedence, allowing data visibility.
+    let query = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "from": {
+            "@id": "policy/per-source:main",
+            "policy": {
+                "default-allow": true
+            }
+        },
+        "opts": {
+            "default-allow": false
+        },
+        "select": ["?name"],
+        "where": {
+            "@id": "?s",
+            "@type": "ex:User",
+            "schema:name": "?name"
+        }
+    });
+
+    let result = fluree
+        .query_connection(&query)
+        .await
+        .expect("query_connection");
+    let ledger = fluree
+        .ledger("policy/per-source:main")
+        .await
+        .expect("ledger");
+    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+
+    // Per-source policy (default-allow: true) should allow data visibility
+    assert_eq!(
+        normalize_rows(&jsonld),
+        normalize_rows(&json!(["Alice", "John"]))
+    );
+}
+
+#[tokio::test]
+async fn policy_per_source_override_denies_when_global_allows() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+
+    seed_people_with_ssn(&fluree, "policy/per-source-deny:main").await;
+
+    // Per-source policy with an explicit deny rule for schema:name.
+    // Global policy uses default-allow: true, but per-source has a deny rule.
+    // The per-source policy should take precedence, denying the specific property.
+    let deny_name_policy = json!([{
+        "@id": "ex:nameRestriction",
+        "f:required": true,
+        "f:onProperty": [{"@id": "http://schema.org/name"}],
+        "f:action": "f:view",
+        "f:allow": false
+    }]);
+
+    let query = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/",
+            "f": "https://ns.flur.ee/ledger#"
+        },
+        "from": {
+            "@id": "policy/per-source-deny:main",
+            "policy": {
+                "policy": deny_name_policy,
+                "default-allow": true
+            }
+        },
+        "opts": {
+            "default-allow": true
+        },
+        "select": ["?name"],
+        "where": {
+            "@id": "?s",
+            "@type": "ex:User",
+            "schema:name": "?name"
+        }
+    });
+
+    let result = fluree
+        .query_connection(&query)
+        .await
+        .expect("query_connection");
+    let ledger = fluree
+        .ledger("policy/per-source-deny:main")
+        .await
+        .expect("ledger");
+    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+
+    // Per-source policy denies schema:name, so query returns empty
+    assert_eq!(jsonld, json!([]));
+}

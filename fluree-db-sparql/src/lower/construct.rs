@@ -95,7 +95,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                         self.collect_triples(branch, out);
                     }
                 }
-                // Filters, Binds, Values, PropertyPaths, Subqueries, IndexSearch, and R2rml don't contribute template triples
+                // Filters, Binds, Values, PropertyPaths, Subqueries, IndexSearch, Service, and R2rml don't contribute template triples
                 Pattern::Filter(_)
                 | Pattern::Bind { .. }
                 | Pattern::Values { .. }
@@ -104,6 +104,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 | Pattern::IndexSearch(_)
                 | Pattern::VectorSearch(_)
                 | Pattern::Graph { .. }
+                | Pattern::Service(_)
                 | Pattern::R2rml(_) => {}
             }
         }
