@@ -152,6 +152,8 @@ pub enum RawObject<'a> {
     DurationStr(&'a str),
     /// GeoPoint coordinates (lat, lng) parsed from commit.
     GeoPoint { lat: f64, lng: f64 },
+    /// Vector of f64 elements (embedding).
+    Vector(Vec<f64>),
 }
 
 // ============================================================================
@@ -423,6 +425,20 @@ fn decode_raw_object<'a>(
             let lng = f64::from_le_bytes(data[*pos + 8..*pos + 16].try_into().unwrap());
             *pos += 16;
             Ok(RawObject::GeoPoint { lat, lng })
+        }
+        OTag::Vector => {
+            let len = decode_varint(data, pos)? as usize;
+            let byte_len = len.checked_mul(8).ok_or(CommitV2Error::UnexpectedEof)?;
+            if *pos + byte_len > data.len() {
+                return Err(CommitV2Error::UnexpectedEof);
+            }
+            let mut vec = Vec::with_capacity(len);
+            for _ in 0..len {
+                let element = f64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
+                *pos += 8;
+                vec.push(element);
+            }
+            Ok(RawObject::Vector(vec))
         }
     }
 }

@@ -77,6 +77,7 @@ pub enum OTag {
     DayTimeDuration = 18,
     Duration = 19,
     GeoPoint = 20,
+    Vector = 21,
 }
 
 impl OTag {
@@ -103,6 +104,7 @@ impl OTag {
             18 => Ok(OTag::DayTimeDuration),
             19 => Ok(OTag::Duration),
             20 => Ok(OTag::GeoPoint),
+            21 => Ok(OTag::Vector),
             _ => Err(CommitV2Error::InvalidOpTag(b)),
         }
     }
@@ -522,11 +524,11 @@ mod tests {
 
     #[test]
     fn test_otag_round_trip() {
-        for tag_byte in 0..=20u8 {
+        for tag_byte in 0..=21u8 {
             let tag = OTag::from_u8(tag_byte).unwrap();
             assert_eq!(tag as u8, tag_byte);
         }
-        assert!(OTag::from_u8(21).is_err());
+        assert!(OTag::from_u8(22).is_err());
         assert!(OTag::from_u8(255).is_err());
     }
 }

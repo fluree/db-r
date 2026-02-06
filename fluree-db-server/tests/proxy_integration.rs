@@ -1582,9 +1582,7 @@ fn extract_spot_leaf_address(db_root_json: &serde_json::Value) -> String {
 
     let first_graph = graphs.first().expect("should have at least one graph");
 
-    let orders = first_graph
-        .get("orders")
-        .expect("graph should have orders");
+    let orders = first_graph.get("orders").expect("graph should have orders");
 
     let spot = orders.get("spot").expect("orders should have spot index");
 
