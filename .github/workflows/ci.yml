@@ -21,6 +21,9 @@ jobs:
         with:
           tool: cargo-nextest
 
+      - name: Format
+        run: cargo fmt --all -- --check
+
       - name: Clippy
         run: cargo clippy --all --all-features --all-targets
 
