@@ -8,11 +8,13 @@ use crate::ast::pattern::GraphPattern as SparqlGraphPattern;
 use crate::ast::term::{Term as SparqlTerm, Var};
 
 use fluree_db_query::binding::Binding;
-use fluree_db_query::ir::{GraphName as IrGraphName, Pattern, ServiceEndpoint as IrServiceEndpoint, ServicePattern};
+use fluree_db_query::ir::{
+    GraphName as IrGraphName, Pattern, ServiceEndpoint as IrServiceEndpoint, ServicePattern,
+};
 use fluree_db_query::parse::encode::IriEncoder;
 use fluree_db_query::var_registry::VarId;
 
-use super::{LowerError, LoweringContext, Result};
+use super::{LoweringContext, Result};
 
 impl<'a, E: IriEncoder> LoweringContext<'a, E> {
     pub(super) fn lower_graph_pattern(

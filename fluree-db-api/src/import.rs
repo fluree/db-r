@@ -309,11 +309,13 @@ fn discover_chunks(dir: &Path) -> std::result::Result<Vec<PathBuf>, ImportError>
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| {
-            let is_supported_ext =
-                p.extension().map_or(false, |ext| ext == "ttl" || ext == "trig");
-            let starts_with_chunk = p.file_name()
+            let is_supported_ext = p
+                .extension()
+                .is_some_and(|ext| ext == "ttl" || ext == "trig");
+            let starts_with_chunk = p
+                .file_name()
                 .and_then(|n| n.to_str())
-                .map_or(false, |n| n.starts_with("chunk_"));
+                .is_some_and(|n| n.starts_with("chunk_"));
             is_supported_ext && starts_with_chunk
         })
         .collect();
@@ -597,7 +599,8 @@ where
         RunGenerationResult, RunSortOrder,
     };
     use fluree_db_transact::import::{
-        finalize_parsed_chunk, import_commit, import_trig_commit, parse_chunk, ImportState, ParsedChunk,
+        finalize_parsed_chunk, import_commit, import_trig_commit, parse_chunk, ImportState,
+        ParsedChunk,
     };
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -723,7 +726,7 @@ where
     if !chunks.is_empty() {
         let content = std::fs::read_to_string(&chunks[0])?;
         let size_mb = content.len() as f64 / (1024.0 * 1024.0);
-        let is_trig = chunks[0].extension().map_or(false, |ext| ext == "trig");
+        let is_trig = chunks[0].extension().is_some_and(|ext| ext == "trig");
         tracing::info!(
             chunk = 1,
             total,
@@ -763,7 +766,9 @@ where
     // ---- Phase 2b: Parse remaining chunks in parallel, commit serially ----
     // Note: Parallel parsing only works with pure Turtle files. If any chunks are TriG,
     // we fall back to serial processing (TriG needs parse_trig_phase1 which is different).
-    let has_trig = chunks[1..].iter().any(|p| p.extension().map_or(false, |ext| ext == "trig"));
+    let has_trig = chunks[1..]
+        .iter()
+        .any(|p| p.extension().is_some_and(|ext| ext == "trig"));
     if chunks.len() > 1 && num_threads > 0 && !has_trig {
         let base_registry = state.ns_registry.clone();
         let ledger = alias.to_string();
@@ -889,9 +894,9 @@ where
         }
     } else if chunks.len() > 1 {
         // Serial fallback (0 threads)
-        for i in 1..chunks.len() {
-            let content = std::fs::read_to_string(&chunks[i])?;
-            let is_trig = chunks[i].extension().map_or(false, |ext| ext == "trig");
+        for (i, chunk) in chunks.iter().enumerate().skip(1) {
+            let content = std::fs::read_to_string(chunk)?;
+            let is_trig = chunk.extension().is_some_and(|ext| ext == "trig");
             let result = if is_trig {
                 import_trig_commit(&mut state, &content, storage, alias, compress)
                     .await
@@ -1005,6 +1010,7 @@ struct IndexUploadResult {
     index_t: i64,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn build_and_upload<S, N>(
     storage: &S,
     nameservice: &N,

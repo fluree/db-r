@@ -245,7 +245,7 @@ impl LeafWriter {
             .iter()
             .map(Region3Entry::from_run_record)
             .collect();
-        r3_entries.sort_by(|a, b| b.abs_t().cmp(&a.abs_t()));
+        r3_entries.sort_by_key(|e| std::cmp::Reverse(e.abs_t()));
         let data = self
             .leaflet_encoder
             .encode_leaflet_with_r3(&self.record_buf, &r3_entries);

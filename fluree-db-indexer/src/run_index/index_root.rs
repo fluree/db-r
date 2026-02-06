@@ -225,7 +225,6 @@ pub struct BinaryIndexRootV2 {
     // =========================================================================
     // Cumulative commit statistics
     // =========================================================================
-
     /// Total size of all commit blobs in bytes up to `index_t`.
     #[serde(default)]
     pub total_commit_size: u64,

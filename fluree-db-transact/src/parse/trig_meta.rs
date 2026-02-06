@@ -209,7 +209,9 @@ pub fn resolve_trig_meta(
         // Expand predicate to IRI
         let predicate_iri = match &triple.predicate {
             RawTerm::Iri(iri) => iri.clone(),
-            RawTerm::PrefixedName { prefix, local } => expand_prefixed_name(&raw.prefixes, prefix, local)?,
+            RawTerm::PrefixedName { prefix, local } => {
+                expand_prefixed_name(&raw.prefixes, prefix, local)?
+            }
         };
 
         // Convert predicate to namespace code + name
@@ -236,9 +238,9 @@ fn expand_prefixed_name(
     prefix: &str,
     local: &str,
 ) -> Result<String> {
-    let ns = prefixes.get(prefix).ok_or_else(|| {
-        TransactError::Parse(format!("undefined prefix: {}", prefix))
-    })?;
+    let ns = prefixes
+        .get(prefix)
+        .ok_or_else(|| TransactError::Parse(format!("undefined prefix: {}", prefix)))?;
     Ok(format!("{}{}", ns, local))
 }
 
@@ -380,7 +382,10 @@ struct ParsedTriple {
 #[derive(Clone)]
 enum TermValue {
     Iri(String),
-    PrefixedName { prefix: String, local: String },
+    PrefixedName {
+        prefix: String,
+        local: String,
+    },
     #[allow(dead_code)] // Used for rejection/validation
     BlankNode(String),
 }
@@ -389,15 +394,24 @@ enum TermValue {
 #[derive(Clone)]
 enum ObjectValue {
     Iri(String),
-    PrefixedName { prefix: String, local: String },
+    PrefixedName {
+        prefix: String,
+        local: String,
+    },
     #[allow(dead_code)] // Used for rejection/validation
     BlankNode(String),
     String(String),
     Integer(i64),
     Double(f64),
     Boolean(bool),
-    TypedLiteral { value: String, datatype: String },
-    LangString { value: String, lang: String },
+    TypedLiteral {
+        value: String,
+        datatype: String,
+    },
+    LangString {
+        value: String,
+        lang: String,
+    },
 }
 
 impl<'a> TrigMetaParser<'a> {
@@ -650,10 +664,7 @@ impl<'a> TrigMetaParser<'a> {
         // Handle semicolon-separated predicate-object pairs
         while self.check(&TokenKind::Semicolon) {
             self.advance();
-            if self.check(&TokenKind::Dot)
-                || self.check(&TokenKind::RBrace)
-                || self.is_at_end()
-            {
+            if self.check(&TokenKind::Dot) || self.check(&TokenKind::RBrace) || self.is_at_end() {
                 break;
             }
             let predicate = self.parse_predicate()?;
@@ -790,28 +801,26 @@ impl<'a> TrigMetaParser<'a> {
                 self.advance();
                 Ok(ObjectValue::BlankNode(label.to_string()))
             }
-            TokenKind::String | TokenKind::LongString => {
-                self.parse_string_literal()
-            }
+            TokenKind::String | TokenKind::LongString => self.parse_string_literal(),
             TokenKind::StringEscaped(value) => {
                 let value = value.to_string();
                 self.advance();
                 self.parse_string_literal_suffix(value)
             }
             TokenKind::Integer(n) => {
-                let n = n;
+                let val = n;
                 self.advance();
-                Ok(ObjectValue::Integer(n))
+                Ok(ObjectValue::Integer(val))
             }
             TokenKind::Double(n) => {
-                let n = n;
+                let val = n;
                 self.advance();
-                if !n.is_finite() {
+                if !val.is_finite() {
                     return Err(TransactError::Parse(
                         "txn-meta does not support non-finite double values".to_string(),
                     ));
                 }
-                Ok(ObjectValue::Double(n))
+                Ok(ObjectValue::Double(val))
             }
             TokenKind::Decimal => {
                 // Treat decimal as double for simplicity
@@ -819,9 +828,9 @@ impl<'a> TrigMetaParser<'a> {
                 let e = self.current().end;
                 let text = self.span_text(s, e);
                 self.advance();
-                let n: f64 = text.parse().map_err(|_| {
-                    TransactError::Parse(format!("invalid decimal: {}", text))
-                })?;
+                let n: f64 = text
+                    .parse()
+                    .map_err(|_| TransactError::Parse(format!("invalid decimal: {}", text)))?;
                 Ok(ObjectValue::Double(n))
             }
             TokenKind::KwTrue => {
@@ -1298,9 +1307,7 @@ fn estimate_value_size(value: &TxnMetaValue) -> usize {
         TxnMetaValue::Boolean(_) => 1,
         TxnMetaValue::Ref { name, .. } => 6 + name.len(),
         TxnMetaValue::LangString { value, lang } => 8 + value.len() + lang.len(),
-        TxnMetaValue::TypedLiteral {
-            value, dt_name, ..
-        } => 10 + value.len() + dt_name.len(),
+        TxnMetaValue::TypedLiteral { value, dt_name, .. } => 10 + value.len() + dt_name.len(),
     }
 }
 
@@ -1415,10 +1422,14 @@ GRAPH <http://example.org/orders> {
         assert_eq!(result.named_graphs.len(), 2);
 
         // Find each graph by IRI
-        let products = result.named_graphs.iter()
+        let products = result
+            .named_graphs
+            .iter()
             .find(|g| g.iri == "http://example.org/products")
             .expect("products graph");
-        let orders = result.named_graphs.iter()
+        let orders = result
+            .named_graphs
+            .iter()
             .find(|g| g.iri == "http://example.org/orders")
             .expect("orders graph");
 
@@ -1591,7 +1602,10 @@ GRAPH <https://ns.flur.ee/ledger#transactions> {
 
         let result = extract_trig_txn_meta(input, &mut ns).unwrap();
         assert_eq!(result.txn_meta.len(), 1);
-        assert!(matches!(&result.txn_meta[0].value, TxnMetaValue::Boolean(true)));
+        assert!(matches!(
+            &result.txn_meta[0].value,
+            TxnMetaValue::Boolean(true)
+        ));
     }
 
     #[test]

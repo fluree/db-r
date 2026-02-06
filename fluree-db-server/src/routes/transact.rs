@@ -168,10 +168,7 @@ pub async fn transact(State(state): State<Arc<AppState>>, request: Request) -> R
 }
 
 /// Local implementation of transact (transaction mode only)
-async fn transact_local(
-    state: Arc<AppState>,
-    request: Request,
-) -> Result<Json<TransactResponse>> {
+async fn transact_local(state: Arc<AppState>, request: Request) -> Result<Json<TransactResponse>> {
     // Extract query params before consuming the request
     let query_params = extract_query_params(&request);
     // Extract headers
@@ -199,14 +196,34 @@ async fn transact_local(
 
     // Check if this is a SPARQL UPDATE request
     if credential.is_sparql_update() {
-        tracing::info!(status = "start", format = "sparql-update", "SPARQL UPDATE request received");
-        return execute_sparql_update_request(&state, None, &query_params, &headers, &credential, &span).await;
+        tracing::info!(
+            status = "start",
+            format = "sparql-update",
+            "SPARQL UPDATE request received"
+        );
+        return execute_sparql_update_request(
+            &state,
+            None,
+            &query_params,
+            &headers,
+            &credential,
+            &span,
+        )
+        .await;
     }
 
     // Check if this is a Turtle or TriG request
     if credential.is_turtle_or_trig() {
-        let format = if credential.is_trig() { "trig" } else { "turtle" };
-        tracing::info!(status = "start", format = format, "Turtle/TriG transaction received");
+        let format = if credential.is_trig() {
+            "trig"
+        } else {
+            "turtle"
+        };
+        tracing::info!(
+            status = "start",
+            format = format,
+            "Turtle/TriG transaction received"
+        );
 
         let turtle = match credential.body_string() {
             Ok(s) => s,
@@ -312,15 +329,34 @@ async fn transact_ledger_local(
 
     // Check if this is a SPARQL UPDATE request
     if credential.is_sparql_update() {
-        tracing::info!(status = "start", format = "sparql-update", "SPARQL UPDATE request received");
-        return execute_sparql_update_request(&state, Some(&ledger), &query_params, &headers, &credential, &span)
-            .await;
+        tracing::info!(
+            status = "start",
+            format = "sparql-update",
+            "SPARQL UPDATE request received"
+        );
+        return execute_sparql_update_request(
+            &state,
+            Some(&ledger),
+            &query_params,
+            &headers,
+            &credential,
+            &span,
+        )
+        .await;
     }
 
     // Check if this is a Turtle or TriG request
     if credential.is_turtle_or_trig() {
-        let format = if credential.is_trig() { "trig" } else { "turtle" };
-        tracing::info!(status = "start", format = format, "Turtle/TriG ledger transaction received");
+        let format = if credential.is_trig() {
+            "trig"
+        } else {
+            "turtle"
+        };
+        tracing::info!(
+            status = "start",
+            format = format,
+            "Turtle/TriG ledger transaction received"
+        );
 
         let turtle = match credential.body_string() {
             Ok(s) => s,
@@ -404,8 +440,16 @@ async fn insert_local(state: Arc<AppState>, request: Request) -> Result<Json<Tra
 
     // Check if this is a Turtle or TriG request
     if credential.is_turtle_or_trig() {
-        let format = if credential.is_trig() { "trig" } else { "turtle" };
-        tracing::info!(status = "start", format = format, "insert transaction requested");
+        let format = if credential.is_trig() {
+            "trig"
+        } else {
+            "turtle"
+        };
+        tracing::info!(
+            status = "start",
+            format = format,
+            "insert transaction requested"
+        );
 
         let turtle = match credential.body_string() {
             Ok(s) => s,
@@ -501,8 +545,16 @@ async fn upsert_local(state: Arc<AppState>, request: Request) -> Result<Json<Tra
 
     // Check if this is a Turtle or TriG request
     if credential.is_turtle_or_trig() {
-        let format = if credential.is_trig() { "trig" } else { "turtle" };
-        tracing::info!(status = "start", format = format, "upsert transaction requested");
+        let format = if credential.is_trig() {
+            "trig"
+        } else {
+            "turtle"
+        };
+        tracing::info!(
+            status = "start",
+            format = format,
+            "upsert transaction requested"
+        );
 
         let turtle = match credential.body_string() {
             Ok(s) => s,
@@ -606,8 +658,16 @@ async fn insert_ledger_local(
 
     // Check if this is a Turtle or TriG request
     if credential.is_turtle_or_trig() {
-        let format = if credential.is_trig() { "trig" } else { "turtle" };
-        tracing::info!(status = "start", format = format, "ledger insert transaction requested");
+        let format = if credential.is_trig() {
+            "trig"
+        } else {
+            "turtle"
+        };
+        tracing::info!(
+            status = "start",
+            format = format,
+            "ledger insert transaction requested"
+        );
 
         let turtle = match credential.body_string() {
             Ok(s) => s,
@@ -698,8 +758,16 @@ async fn upsert_ledger_local(
 
     // Check if this is a Turtle or TriG request
     if credential.is_turtle_or_trig() {
-        let format = if credential.is_trig() { "trig" } else { "turtle" };
-        tracing::info!(status = "start", format = format, "ledger upsert transaction requested");
+        let format = if credential.is_trig() {
+            "trig"
+        } else {
+            "turtle"
+        };
+        tracing::info!(
+            status = "start",
+            format = format,
+            "ledger upsert transaction requested"
+        );
 
         let turtle = match credential.body_string() {
             Ok(s) => s,

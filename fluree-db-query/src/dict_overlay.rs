@@ -18,11 +18,11 @@
 
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::flake::FlakeMeta;
+use fluree_db_core::ns_vec_bi_dict::NsVecBiDict;
 use fluree_db_core::sid::Sid;
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value::FlakeValue;
 use fluree_db_core::value_id::{ObjKey, ObjKind};
-use fluree_db_core::ns_vec_bi_dict::NsVecBiDict;
 use fluree_db_core::vec_bi_dict::VecBiDict;
 use fluree_db_core::ListIndex;
 use fluree_db_indexer::run_index::BinaryIndexStore;
@@ -165,7 +165,9 @@ impl DictOverlay {
             }
         }
         // 3. Ephemeral fallback (for range provider path)
-        Ok(self.ext_subjects.assign_or_lookup(sid.namespace_code, sid.name.as_ref()))
+        Ok(self
+            .ext_subjects
+            .assign_or_lookup(sid.namespace_code, sid.name.as_ref()))
     }
 
     /// Resolve a subject ID back to an IRI string.

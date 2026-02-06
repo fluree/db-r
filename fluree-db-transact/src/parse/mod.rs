@@ -10,6 +10,6 @@ pub mod txn_meta;
 pub use jsonld::parse_transaction;
 pub use trig_meta::{
     extract_trig_txn_meta, parse_trig_phase1, resolve_trig_meta, NamedGraphBlock, RawObject,
-    RawTrigMeta, RawTriple, RawTerm, TrigMetaResult, TrigPhase1Result, TXN_META_GRAPH_IRI,
+    RawTerm, RawTrigMeta, RawTriple, TrigMetaResult, TrigPhase1Result, TXN_META_GRAPH_IRI,
 };
 pub use txn_meta::extract_txn_meta;

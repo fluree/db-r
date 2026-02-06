@@ -21,6 +21,7 @@ use fluree_db_query::BinaryRangeProvider;
 // ============================================================================
 
 /// Reference to a named graph, parsed from a fragment but not yet resolved to g_id.
+#[derive(Debug)]
 enum GraphRef {
     /// Default graph (g_id = 0)
     Default,
@@ -78,9 +79,9 @@ where
                 };
 
                 // Exact IRI match only - no prefix guessing
-                store.graph_id_for_iri(&iri).ok_or_else(|| {
-                    ApiError::query(format!("Unknown named graph '#{}'", iri))
-                })
+                store
+                    .graph_id_for_iri(&iri)
+                    .ok_or_else(|| ApiError::query(format!("Unknown named graph '#{}'", iri)))
             }
         }
     }
@@ -91,7 +92,17 @@ where
     /// `Db.range_provider` and sets `view.graph_id` so both range queries
     /// and binary scans use the same graph.
     fn select_graph(mut view: FlureeView<S>, graph_ref: GraphRef) -> Result<FlureeView<S>> {
+        eprintln!(
+            "select_graph: entry graph_ref={:?} to_t={} has_novelty={}",
+            graph_ref,
+            view.to_t,
+            view.novelty.is_some()
+        );
         let graph_id = Self::resolve_graph_ref(&view, graph_ref)?;
+        eprintln!(
+            "select_graph: resolved graph_id={} to_t={}",
+            graph_id, view.to_t
+        );
 
         if graph_id == 0 {
             return Ok(view);
@@ -178,11 +189,7 @@ where
     ///
     /// For named graph queries (e.g., `#txn-meta`), this also loads the binary
     /// index store if available, enabling graph-scoped queries.
-    pub(crate) async fn load_view_at_t(
-        &self,
-        alias: &str,
-        target_t: i64,
-    ) -> Result<FlureeView<S>> {
+    pub(crate) async fn load_view_at_t(&self, alias: &str, target_t: i64) -> Result<FlureeView<S>> {
         let historical = self.ledger_view_at(alias, target_t).await?;
         let mut view = FlureeView::from_historical(&historical);
 
@@ -210,12 +217,9 @@ where
                 if let Ok(root) = serde_json::from_slice::<BinaryIndexRootV2>(&bytes) {
                     if root.version == BINARY_INDEX_ROOT_VERSION_V2 {
                         let cache_dir = std::env::temp_dir().join("fluree-cache");
-                        if let Ok(store) = BinaryIndexStore::load_from_root_default(
-                            storage,
-                            &root,
-                            &cache_dir,
-                        )
-                        .await
+                        if let Ok(store) =
+                            BinaryIndexStore::load_from_root_default(storage, &root, &cache_dir)
+                                .await
                         {
                             // Attach the binary store so `#txn-meta` selection can re-scope
                             // the range provider on demand via `select_graph_id()`.
@@ -298,22 +302,14 @@ where
     }
 
     /// Load a historical snapshot at a specific transaction time.
-    pub async fn view_at_t(
-        &self,
-        alias: &str,
-        target_t: i64,
-    ) -> Result<FlureeView<S>> {
+    pub async fn view_at_t(&self, alias: &str, target_t: i64) -> Result<FlureeView<S>> {
         let (ledger_alias, graph_ref) = Self::parse_graph_ref(alias)?;
         let view = self.load_view_at_t(ledger_alias, target_t).await?;
         Self::select_graph(view, graph_ref)
     }
 
     /// Load a snapshot at a flexible time specification.
-    pub async fn view_at(
-        &self,
-        alias: &str,
-        spec: TimeSpec,
-    ) -> Result<FlureeView<S>> {
+    pub async fn view_at(&self, alias: &str, spec: TimeSpec) -> Result<FlureeView<S>> {
         let (ledger_alias, graph_ref) = Self::parse_graph_ref(alias)?;
         let view = self.load_view_at(ledger_alias, spec).await?;
         Self::select_graph(view, graph_ref)
@@ -330,6 +326,7 @@ where
         view: FlureeView<S>,
         selector: &crate::dataset::GraphSelector,
     ) -> Result<FlureeView<S>> {
+        eprintln!("apply_graph_selector: selector={:?}", selector);
         let graph_ref = match selector {
             crate::dataset::GraphSelector::Default => GraphRef::Default,
             crate::dataset::GraphSelector::TxnMeta => GraphRef::TxnMeta,

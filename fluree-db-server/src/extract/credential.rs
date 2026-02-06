@@ -273,7 +273,7 @@ async fn extract_credential(req: Request<axum::body::Body>) -> Result<MaybeCrede
                 }),
                 body: Bytes::from(result.payload),
                 is_sparql: true,
-                is_sparql_update: is_sparql_update,
+                is_sparql_update,
                 // Note: Signed Turtle/TriG is not currently supported - signed requests
                 // always route through JSON handlers
                 is_turtle: false,
@@ -332,9 +332,9 @@ async fn extract_credential(req: Request<axum::body::Body>) -> Result<MaybeCrede
         credential: None,
         body,
         is_sparql: is_sparql_query,
-        is_sparql_update: is_sparql_update,
-        is_turtle: is_turtle,
-        is_trig: is_trig,
+        is_sparql_update,
+        is_turtle,
+        is_trig,
     })
 }
 

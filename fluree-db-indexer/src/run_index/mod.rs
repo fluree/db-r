@@ -191,7 +191,7 @@ pub fn persist_namespaces(ns_prefixes: &HashMap<u16, String>, run_dir: &Path) ->
 pub async fn generate_runs<S: StorageRead>(
     storage: &S,
     head_commit_address: &str,
-    ledger_alias: &str,
+    _ledger_alias: &str,
     config: RunWriterConfig,
 ) -> Result<RunGenerationResult, RunGenError> {
     let _span = tracing::info_span!("generate_runs", head = %head_commit_address).entered();
@@ -238,8 +238,7 @@ pub async fn generate_runs<S: StorageRead>(
             .await
             .map_err(|e| RunGenError::Storage(format!("read {}: {}", addr, e)))?;
 
-        let resolved =
-            resolver.resolve_blob(&bytes, addr, &mut dicts, &mut writer)?;
+        let resolved = resolver.resolve_blob(&bytes, addr, &mut dicts, &mut writer)?;
 
         // Accumulate totals
         total_commit_size += resolved.size;

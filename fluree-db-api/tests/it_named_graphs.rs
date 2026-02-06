@@ -81,7 +81,10 @@ async fn test_trig_named_graph_basic() {
                 "where": {"@id": "ex:alice", "schema:name": "?name"}
             });
 
-            let results = fluree.query_connection(&query).await.expect("query default");
+            let results = fluree
+                .query_connection(&query)
+                .await
+                .expect("query default");
             let ledger = fluree.ledger(alias).await.expect("load ledger");
             let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
             let arr = results.as_array().expect("array");
@@ -97,7 +100,10 @@ async fn test_trig_named_graph_basic() {
                 "where": {"@id": "ex:event1", "schema:description": "?desc"}
             });
 
-            let results = fluree.query_connection(&query).await.expect("query named graph");
+            let results = fluree
+                .query_connection(&query)
+                .await
+                .expect("query named graph");
             let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
             let arr = results.as_array().expect("array");
             assert!(!arr.is_empty(), "should find event in named graph");
@@ -183,7 +189,10 @@ async fn test_trig_multiple_named_graphs() {
                 "where": {"@id": "ex:prod1", "schema:name": "?name"}
             });
 
-            let results = fluree.query_connection(&query).await.expect("query products");
+            let results = fluree
+                .query_connection(&query)
+                .await
+                .expect("query products");
             let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
             let arr = results.as_array().expect("array");
             assert!(!arr.is_empty(), "should find product");
@@ -301,7 +310,10 @@ async fn test_default_graph_isolation() {
                 "where": {"@id": "ex:secret", "schema:value": "?val"}
             });
 
-            let results = fluree.query_connection(&query).await.expect("query default");
+            let results = fluree
+                .query_connection(&query)
+                .await
+                .expect("query default");
             let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
             let arr = results.as_array().expect("array");
             assert!(
@@ -319,7 +331,10 @@ async fn test_default_graph_isolation() {
                 "where": {"@id": "ex:secret", "schema:value": "?val"}
             });
 
-            let results = fluree.query_connection(&query).await.expect("query private");
+            let results = fluree
+                .query_connection(&query)
+                .await
+                .expect("query private");
             let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
             let arr = results.as_array().expect("array");
             assert!(!arr.is_empty(), "should find secret in named graph");
@@ -392,7 +407,10 @@ async fn test_txn_meta_and_named_graph_coexist() {
                 "where": {"@id": "ex:alice", "schema:name": "?name"}
             });
 
-            let results = fluree.query_connection(&query).await.expect("query default");
+            let results = fluree
+                .query_connection(&query)
+                .await
+                .expect("query default");
             let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
             let arr = results.as_array().expect("array");
             assert!(!arr.is_empty(), "should find Alice in default graph");
@@ -407,7 +425,10 @@ async fn test_txn_meta_and_named_graph_coexist() {
                 "where": {"@id": "?commit", "ex:batchId": "?batch"}
             });
 
-            let results = fluree.query_connection(&query).await.expect("query txn-meta");
+            let results = fluree
+                .query_connection(&query)
+                .await
+                .expect("query txn-meta");
             let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
             let arr = results.as_array().expect("array");
             assert!(!arr.is_empty(), "should find batch in txn-meta");
@@ -528,7 +549,10 @@ async fn test_named_graph_update_and_query_current() {
                 "orderBy": "?item"
             });
 
-            let results = fluree.query_connection(&query).await.expect("query current");
+            let results = fluree
+                .query_connection(&query)
+                .await
+                .expect("query current");
             let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
             let arr = results.as_array().expect("array");
 
@@ -538,7 +562,9 @@ async fn test_named_graph_update_and_query_current() {
             // Check widget has updated stock (75, not 100)
             let widget_row = arr.iter().find(|r| {
                 r.as_array()
-                    .map(|a| a.get(0).and_then(|v| v.as_str()) == Some("http://example.org/widget"))
+                    .map(|a| {
+                        a.first().and_then(|v| v.as_str()) == Some("http://example.org/widget")
+                    })
                     .unwrap_or(false)
             });
             assert!(widget_row.is_some(), "should find widget");
@@ -552,7 +578,7 @@ async fn test_named_graph_update_and_query_current() {
             // Check gizmo exists (added in tx2)
             let gizmo_row = arr.iter().find(|r| {
                 r.as_array()
-                    .map(|a| a.get(0).and_then(|v| v.as_str()) == Some("http://example.org/gizmo"))
+                    .map(|a| a.first().and_then(|v| v.as_str()) == Some("http://example.org/gizmo"))
                     .unwrap_or(false)
             });
             assert!(gizmo_row.is_some(), "should find gizmo (added in tx2)");
@@ -622,6 +648,7 @@ async fn test_named_graph_time_travel() {
                 .await
                 .expect("tx2");
             assert_eq!(result2.receipt.t, 2);
+            eprintln!("DEBUG tx2 flake_count: {}", result2.receipt.flake_count);
 
             let completion = handle.trigger(alias, result2.receipt.t).await;
             match completion.wait().await {
@@ -630,6 +657,46 @@ async fn test_named_graph_time_travel() {
             }
 
             let ledger = fluree.ledger(alias).await.expect("load ledger");
+
+            // Debug: Query current state via graph fragment syntax
+            let query_debug = json!({
+                "@context": {"ex": "http://example.org/"},
+                "from": format!("{}#http://example.org/graphs/pricing", alias),
+                "select": ["?product", "?price"],
+                "where": {"@id": "?product", "ex:price": "?price"},
+                "orderBy": "?product"
+            });
+            let results_debug = fluree
+                .query_connection(&query_debug)
+                .await
+                .expect("query debug");
+            let results_debug = results_debug
+                .to_jsonld(&ledger.db)
+                .expect("to_jsonld debug");
+            eprintln!(
+                "DEBUG current via fragment: {}",
+                serde_json::to_string_pretty(&results_debug).unwrap()
+            );
+
+            // Debug: Query current state via structured from (no t)
+            let query_debug2 = json!({
+                "@context": {"ex": "http://example.org/"},
+                "from": {"@id": alias, "graph": "http://example.org/graphs/pricing"},
+                "select": ["?product", "?price"],
+                "where": {"@id": "?product", "ex:price": "?price"},
+                "orderBy": "?product"
+            });
+            let results_debug2 = fluree
+                .query_connection(&query_debug2)
+                .await
+                .expect("query debug2");
+            let results_debug2 = results_debug2
+                .to_jsonld(&ledger.db)
+                .expect("to_jsonld debug2");
+            eprintln!(
+                "DEBUG current via structured: {}",
+                serde_json::to_string_pretty(&results_debug2).unwrap()
+            );
 
             // Query at t=1 (original prices) using structured from object
             let query_t1 = json!({
@@ -651,9 +718,13 @@ async fn test_named_graph_time_travel() {
             assert_eq!(arr.len(), 2, "should have 2 products at t=1");
 
             // product1 should have original price 100
+            // Note: results may use prefixed form "ex:product1" due to @context in query
             let p1_row = arr.iter().find(|r| {
                 r.as_array()
-                    .map(|a| a.get(0).and_then(|v| v.as_str()) == Some("http://example.org/product1"))
+                    .map(|a| {
+                        let s = a.first().and_then(|v| v.as_str()).unwrap_or("");
+                        s == "http://example.org/product1" || s == "ex:product1"
+                    })
                     .unwrap_or(false)
             });
             let p1_price = p1_row
@@ -677,12 +748,19 @@ async fn test_named_graph_time_travel() {
 
             let results = fluree.query_connection(&query_t2).await.expect("query t=2");
             let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            eprintln!(
+                "DEBUG query_t2 results: {}",
+                serde_json::to_string_pretty(&results).unwrap()
+            );
             let arr = results.as_array().expect("array");
 
             // product1 should have updated price 150
             let p1_row = arr.iter().find(|r| {
                 r.as_array()
-                    .map(|a| a.get(0).and_then(|v| v.as_str()) == Some("http://example.org/product1"))
+                    .map(|a| {
+                        let s = a.first().and_then(|v| v.as_str()).unwrap_or("");
+                        s == "http://example.org/product1" || s == "ex:product1"
+                    })
                     .unwrap_or(false)
             });
             let p1_price = p1_row
@@ -703,13 +781,23 @@ async fn test_named_graph_time_travel() {
                 "orderBy": "?product"
             });
 
-            let results = fluree.query_connection(&query_current).await.expect("query current");
+            let results = fluree
+                .query_connection(&query_current)
+                .await
+                .expect("query current");
             let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
+            eprintln!(
+                "DEBUG query_current results: {}",
+                serde_json::to_string_pretty(&results).unwrap()
+            );
             let arr = results.as_array().expect("array");
 
             let p1_row = arr.iter().find(|r| {
                 r.as_array()
-                    .map(|a| a.get(0).and_then(|v| v.as_str()) == Some("http://example.org/product1"))
+                    .map(|a| {
+                        let s = a.first().and_then(|v| v.as_str()).unwrap_or("");
+                        s == "http://example.org/product1" || s == "ex:product1"
+                    })
                     .unwrap_or(false)
             });
             let p1_price = p1_row
@@ -777,10 +865,7 @@ async fn test_named_graph_retraction() {
             });
 
             let ledger = fluree.ledger(alias).await.expect("load ledger");
-            let result2 = fluree
-                .update(ledger, &delete_tx)
-                .await
-                .expect("tx2");
+            let result2 = fluree.update(ledger, &delete_tx).await.expect("tx2");
             assert_eq!(result2.receipt.t, 2);
 
             let completion = handle.trigger(alias, result2.receipt.t).await;
@@ -801,19 +886,33 @@ async fn test_named_graph_retraction() {
                 "orderBy": "?user"
             });
 
-            let results = fluree.query_connection(&query).await.expect("query current");
+            let results = fluree
+                .query_connection(&query)
+                .await
+                .expect("query current");
             let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
             let arr = results.as_array().expect("array");
 
-            assert_eq!(arr.len(), 2, "should have 2 active users after retraction: {:?}", arr);
+            assert_eq!(
+                arr.len(),
+                2,
+                "should have 2 active users after retraction: {:?}",
+                arr
+            );
 
-            let user_ids: Vec<&str> = arr
-                .iter()
-                .filter_map(|v| v.as_str())
-                .collect();
-            assert!(user_ids.contains(&"http://example.org/alice"), "alice should be active");
-            assert!(user_ids.contains(&"http://example.org/carol"), "carol should be active");
-            assert!(!user_ids.contains(&"http://example.org/bob"), "bob should NOT be active");
+            let user_ids: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+            assert!(
+                user_ids.contains(&"http://example.org/alice"),
+                "alice should be active"
+            );
+            assert!(
+                user_ids.contains(&"http://example.org/carol"),
+                "carol should be active"
+            );
+            assert!(
+                !user_ids.contains(&"http://example.org/bob"),
+                "bob should NOT be active"
+            );
 
             // Query at t=1 - should have all three
             let query_t1 = json!({

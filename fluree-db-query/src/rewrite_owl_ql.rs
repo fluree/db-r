@@ -629,7 +629,13 @@ fn rewrite_owl_ql_single_pattern(
 
         Pattern::Service(sp) => {
             let before = diag.patterns_expanded;
-            let rewritten = rewrite_owl_ql_patterns_internal(&sp.patterns, ontology, ctx, diag, total_expansions);
+            let rewritten = rewrite_owl_ql_patterns_internal(
+                &sp.patterns,
+                ontology,
+                ctx,
+                diag,
+                total_expansions,
+            );
             let changed = diag.patterns_expanded > before;
             if changed {
                 RewriteResult::Expanded(vec![Pattern::Service(crate::ir::ServicePattern::new(

@@ -191,6 +191,7 @@ impl CommitResolver {
     /// - **User metadata**: any `txn_meta` entries from the envelope.
     ///
     /// Returns the number of records emitted.
+    #[allow(clippy::too_many_arguments)]
     pub fn emit_txn_meta<W: RecordSink>(
         &mut self,
         commit_address: &str,
@@ -389,14 +390,7 @@ impl CommitResolver {
 
         // === User-provided txn_meta entries ===
         for entry in &envelope.txn_meta {
-            count += self.emit_txn_meta_entry(
-                commit_s_id,
-                g_id,
-                t,
-                entry,
-                dicts,
-                writer,
-            )?;
+            count += self.emit_txn_meta_entry(commit_s_id, g_id, t, entry, dicts, writer)?;
         }
 
         Ok(count)
@@ -414,7 +408,9 @@ impl CommitResolver {
     ) -> Result<u32, ResolverError> {
         // Resolve predicate using ns_code + name
         let p_prefix = self.lookup_prefix(entry.predicate_ns);
-        let p_id = dicts.predicates.get_or_insert_parts(p_prefix, &entry.predicate_name);
+        let p_id = dicts
+            .predicates
+            .get_or_insert_parts(p_prefix, &entry.predicate_name);
 
         // Resolve value to (o_kind, o_key, dt, lang_id)
         let (o_kind, o_key, dt, lang_id) = self.resolve_txn_meta_value(&entry.value, dicts)?;
@@ -456,14 +452,12 @@ impl CommitResolver {
                     0,
                 ))
             }
-            TxnMetaValue::Long(n) => {
-                Ok((
-                    ObjKind::NUM_INT,
-                    ObjKey::encode_i64(*n),
-                    DatatypeDictId::LONG.as_u16(),
-                    0,
-                ))
-            }
+            TxnMetaValue::Long(n) => Ok((
+                ObjKind::NUM_INT,
+                ObjKey::encode_i64(*n),
+                DatatypeDictId::LONG.as_u16(),
+                0,
+            )),
             TxnMetaValue::Double(n) => {
                 // Defense in depth: reject non-finite doubles even if envelope decode allowed them
                 if !n.is_finite() {
@@ -476,14 +470,12 @@ impl CommitResolver {
                     .map_err(|e| ResolverError::Resolve(format!("txn_meta double: {}", e)))?;
                 Ok((ObjKind::NUM_F64, key, DatatypeDictId::DOUBLE.as_u16(), 0))
             }
-            TxnMetaValue::Boolean(b) => {
-                Ok((
-                    ObjKind::BOOL,
-                    ObjKey::encode_bool(*b),
-                    DatatypeDictId::BOOLEAN.as_u16(),
-                    0,
-                ))
-            }
+            TxnMetaValue::Boolean(b) => Ok((
+                ObjKind::BOOL,
+                ObjKey::encode_bool(*b),
+                DatatypeDictId::BOOLEAN.as_u16(),
+                0,
+            )),
             TxnMetaValue::Ref { ns, name } => {
                 // Resolve ref IRI -> global sid64
                 let prefix = self.ns_prefixes.get(ns).map(|s| s.as_str()).unwrap_or("");
@@ -492,14 +484,12 @@ impl CommitResolver {
                 self.hasher.update(name.as_bytes());
                 let hash = self.hasher.digest128();
 
-                let sid64 = dicts
-                    .subjects
-                    .get_or_insert_with_hash(hash, *ns, || {
-                        let mut s = String::with_capacity(prefix.len() + name.len());
-                        s.push_str(prefix);
-                        s.push_str(name);
-                        s
-                    })?;
+                let sid64 = dicts.subjects.get_or_insert_with_hash(hash, *ns, || {
+                    let mut s = String::with_capacity(prefix.len() + name.len());
+                    s.push_str(prefix);
+                    s.push_str(name);
+                    s
+                })?;
                 Ok((
                     ObjKind::REF_ID,
                     ObjKey::encode_sid64(sid64),
@@ -517,7 +507,11 @@ impl CommitResolver {
                     lang_id,
                 ))
             }
-            TxnMetaValue::TypedLiteral { value, dt_ns, dt_name } => {
+            TxnMetaValue::TypedLiteral {
+                value,
+                dt_ns,
+                dt_name,
+            } => {
                 // Store the value as a string, with custom datatype
                 let str_id = dicts.strings.get_or_insert(value)?;
                 let dt_prefix = self.lookup_prefix(*dt_ns);
@@ -1413,7 +1407,15 @@ mod tests {
         };
 
         let count = resolver
-            .emit_txn_meta(&commit_address, &envelope, 1024, 8, 2, &mut dicts, &mut writer)
+            .emit_txn_meta(
+                &commit_address,
+                &envelope,
+                1024,
+                8,
+                2,
+                &mut dicts,
+                &mut writer,
+            )
             .unwrap();
 
         // 7 records on commit subject: address, time, t, size, asserts, retracts, previous
@@ -1536,7 +1538,15 @@ mod tests {
         };
 
         let count = resolver
-            .emit_txn_meta(&commit_address, &envelope, 512, 4, 1, &mut dicts, &mut writer)
+            .emit_txn_meta(
+                &commit_address,
+                &envelope,
+                512,
+                4,
+                1,
+                &mut dicts,
+                &mut writer,
+            )
             .unwrap();
 
         // 5 records: address, t, size, asserts, retracts (no time, no previous)
@@ -1557,8 +1567,12 @@ mod tests {
         let mut dicts = GlobalDicts::new_memory();
         let mut resolver = CommitResolver::new();
         // Add user namespace for txn_meta predicates
-        resolver.ns_prefixes.insert(100, "http://example.org/".to_string());
-        resolver.ns_prefixes.insert(101, "http://refs.example.org/".to_string());
+        resolver
+            .ns_prefixes
+            .insert(100, "http://example.org/".to_string());
+        resolver
+            .ns_prefixes
+            .insert(101, "http://refs.example.org/".to_string());
 
         let config = RunWriterConfig {
             buffer_budget_bytes: 1024 * 1024,
@@ -1585,25 +1599,45 @@ mod tests {
                 TxnMetaEntry::new(100, "priority", TxnMetaValue::Long(42)),
                 TxnMetaEntry::new(100, "enabled", TxnMetaValue::Boolean(true)),
                 TxnMetaEntry::new(100, "score", TxnMetaValue::Double(1.23)),
-                TxnMetaEntry::new(100, "assignee", TxnMetaValue::Ref {
-                    ns: 101,
-                    name: "alice".into(),
-                }),
-                TxnMetaEntry::new(100, "description", TxnMetaValue::LangString {
-                    value: "bonjour".into(),
-                    lang: "fr".into(),
-                }),
-                TxnMetaEntry::new(100, "createdAt", TxnMetaValue::TypedLiteral {
-                    value: "2025-06-15".into(),
-                    dt_ns: 2,
-                    dt_name: "date".into(),
-                }),
+                TxnMetaEntry::new(
+                    100,
+                    "assignee",
+                    TxnMetaValue::Ref {
+                        ns: 101,
+                        name: "alice".into(),
+                    },
+                ),
+                TxnMetaEntry::new(
+                    100,
+                    "description",
+                    TxnMetaValue::LangString {
+                        value: "bonjour".into(),
+                        lang: "fr".into(),
+                    },
+                ),
+                TxnMetaEntry::new(
+                    100,
+                    "createdAt",
+                    TxnMetaValue::TypedLiteral {
+                        value: "2025-06-15".into(),
+                        dt_ns: 2,
+                        dt_name: "date".into(),
+                    },
+                ),
             ],
             graph_delta: HashMap::new(),
         };
 
         let count = resolver
-            .emit_txn_meta(&commit_address, &envelope, 2048, 15, 5, &mut dicts, &mut writer)
+            .emit_txn_meta(
+                &commit_address,
+                &envelope,
+                2048,
+                15,
+                5,
+                &mut dicts,
+                &mut writer,
+            )
             .unwrap();
 
         // 5 built-in records (address, t, size, asserts, retracts) + 7 user entries = 12
@@ -1613,7 +1647,8 @@ mod tests {
         let result = writer.finish(&mut dicts.languages).unwrap();
         assert_eq!(result.total_records, 12);
 
-        let (_, lang_dict, records) = crate::run_index::read_run_file(&result.run_files[0].path).unwrap();
+        let (_, lang_dict, records) =
+            crate::run_index::read_run_file(&result.run_files[0].path).unwrap();
         assert_eq!(records.len(), 12);
 
         // All records should be in g_id=1
@@ -1654,8 +1689,16 @@ mod tests {
         // Verify score record is NUM_F64 with DOUBLE datatype (no integer fast path for txn-meta)
         let score_pid = p_score.unwrap();
         let score_rec = records.iter().find(|r| r.p_id == score_pid).unwrap();
-        assert_eq!(score_rec.o_kind, ObjKind::NUM_F64.as_u8(), "score must be NUM_F64");
-        assert_eq!(score_rec.dt, DatatypeDictId::DOUBLE.as_u16(), "score must be DOUBLE datatype");
+        assert_eq!(
+            score_rec.o_kind,
+            ObjKind::NUM_F64.as_u8(),
+            "score must be NUM_F64"
+        );
+        assert_eq!(
+            score_rec.dt,
+            DatatypeDictId::DOUBLE.as_u16(),
+            "score must be DOUBLE datatype"
+        );
 
         // Verify assignee record is REF_ID with ID datatype
         let assignee_pid = p_assignee.unwrap();

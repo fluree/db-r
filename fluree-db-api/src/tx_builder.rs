@@ -446,7 +446,8 @@ where
                 track_policy: true,
                 max_fuel: None,
             }));
-            let input = TrackedTransactionInput::new(txn_type, &txn_json, self.core.txn_opts, policy);
+            let input =
+                TrackedTransactionInput::new(txn_type, &txn_json, self.core.txn_opts, policy);
             let stage_result = self
                 .fluree
                 .stage_transaction_tracked_with_policy(
@@ -714,7 +715,12 @@ where
         }
     };
 
-    let StageResult { view, ns_registry, txn_meta, graph_delta } = stage_result;
+    let StageResult {
+        view,
+        ns_registry,
+        txn_meta,
+        graph_delta,
+    } = stage_result;
 
     // Add extracted transaction metadata and graph delta to commit opts
     let commit_opts = commit_opts

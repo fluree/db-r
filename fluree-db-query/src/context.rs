@@ -461,7 +461,10 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
             from_t: self.from_t,
             overlay: Some(graph.overlay),
             batch_size: self.batch_size,
-            policy_enforcer: graph.policy_enforcer.clone().or_else(|| self.policy_enforcer.clone()),
+            policy_enforcer: graph
+                .policy_enforcer
+                .clone()
+                .or_else(|| self.policy_enforcer.clone()),
             bm25_provider: self.bm25_provider,
             bm25_search_provider: self.bm25_search_provider,
             vector_provider: self.vector_provider,

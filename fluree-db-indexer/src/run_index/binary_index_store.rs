@@ -369,9 +369,7 @@ impl BinaryIndexStore {
         let graphs_reverse: HashMap<String, u32> = if graphs_path.exists() {
             let graphs_dict = read_predicate_dict(&graphs_path)?;
             let rev: HashMap<String, u32> = (0..graphs_dict.len())
-                .filter_map(|id| {
-                    graphs_dict.resolve(id).map(|iri| (iri.to_string(), id))
-                })
+                .filter_map(|id| graphs_dict.resolve(id).map(|iri| (iri.to_string(), id)))
                 .collect();
             tracing::info!(graphs = graphs_dict.len(), "loaded graphs dict");
             rev
@@ -625,12 +623,11 @@ impl BinaryIndexStore {
 
         // ---- Load graphs dict (cache-aware) ----
         // Build reverse map: IRI → dict_index (0-based). g_id = dict_index + 1.
-        let graphs_bytes = fetch_cached_bytes(storage, &root.dict_addresses.graphs, cache_dir, "dict").await?;
+        let graphs_bytes =
+            fetch_cached_bytes(storage, &root.dict_addresses.graphs, cache_dir, "dict").await?;
         let graphs_dict = read_predicate_dict_from_bytes(&graphs_bytes)?;
         let graphs_reverse: HashMap<String, u32> = (0..graphs_dict.len())
-            .filter_map(|id| {
-                graphs_dict.resolve(id).map(|iri| (iri.to_string(), id))
-            })
+            .filter_map(|id| graphs_dict.resolve(id).map(|iri| (iri.to_string(), id)))
             .collect();
         tracing::info!(graphs = graphs_dict.len(), "loaded graphs dict");
 

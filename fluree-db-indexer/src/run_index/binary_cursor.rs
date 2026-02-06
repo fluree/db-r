@@ -688,7 +688,8 @@ impl BinaryCursor {
                 } else {
                     None
                 };
-                let overlay_slice = find_overlay_for_leaf(&self.overlay_ops, leaf_entry, next_key, self.order);
+                let overlay_slice =
+                    find_overlay_for_leaf(&self.overlay_ops, leaf_entry, next_key, self.order);
                 tracing::trace!(
                     leaf_idx,
                     leaf_first_key = ?leaf_entry.first_key.s_id,

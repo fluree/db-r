@@ -209,7 +209,11 @@ async fn time_travel_index_current() {
 
             // Time travel queries should work via indexed data
             let names_t1 = query_names_at(&fluree, &format!("{alias}@t:1")).await;
-            assert_eq!(names_t1, vec!["Alice"], "t=1 should have Alice only (indexed)");
+            assert_eq!(
+                names_t1,
+                vec!["Alice"],
+                "t=1 should have Alice only (indexed)"
+            );
 
             let names_t2 = query_names_at(&fluree, &format!("{alias}@t:2")).await;
             assert_eq!(
@@ -356,9 +360,7 @@ async fn time_travel_index_plus_novelty() {
                 .expect("ns record");
             eprintln!(
                 "After tx3: commit_t={}, index_t={}, commit_addr={:?}",
-                ns_record_after.commit_t,
-                ns_record_after.index_t,
-                ns_record_after.commit_address
+                ns_record_after.commit_t, ns_record_after.index_t, ns_record_after.commit_address
             );
 
             // Verify index is at t=2, commits at t=3
@@ -370,7 +372,11 @@ async fn time_travel_index_plus_novelty() {
             // t=1 and t=2 should come from index
             // t=3 should come from index + novelty overlay
             let names_t1 = query_names_at(&fluree, &format!("{alias}@t:1")).await;
-            assert_eq!(names_t1, vec!["Alice"], "t=1 should have Alice only (from index)");
+            assert_eq!(
+                names_t1,
+                vec!["Alice"],
+                "t=1 should have Alice only (from index)"
+            );
 
             let names_t2 = query_names_at(&fluree, &format!("{alias}@t:2")).await;
             assert_eq!(
@@ -591,10 +597,7 @@ async fn time_travel_retraction_across_index_novelty_boundary() {
                 "@context": {"ex": "http://example.org/"},
                 "delete": {"@id": "ex:bob", "@type": "ex:Person", "ex:name": "Bob"}
             });
-            let _result = fluree
-                .update(ledger, &tx2)
-                .await
-                .expect("tx2");
+            let _result = fluree.update(ledger, &tx2).await.expect("tx2");
 
             // Verify index is at t=1, commits at t=2
             let status = fluree.index_status(alias).await.expect("index_status");
@@ -603,7 +606,11 @@ async fn time_travel_retraction_across_index_novelty_boundary() {
 
             // Query at t=1 (from index) - should have both Alice and Bob
             let names_t1 = query_names_at(&fluree, &format!("{alias}@t:1")).await;
-            assert_eq!(names_t1, vec!["Alice", "Bob"], "t=1 should have both (from index)");
+            assert_eq!(
+                names_t1,
+                vec!["Alice", "Bob"],
+                "t=1 should have both (from index)"
+            );
 
             // Query at t=2 (from index + novelty) - should have only Alice
             let names_t2 = query_names_at(&fluree, &format!("{alias}@t:2")).await;
@@ -726,7 +733,7 @@ async fn query_all_person_ages(fluree: &MemoryFluree, from_spec: &str) -> Vec<(S
         .iter()
         .filter_map(|row| {
             let arr = row.as_array()?;
-            let name = arr.get(0)?.as_str()?.to_string();
+            let name = arr.first()?.as_str()?.to_string();
             let age = arr.get(1)?.as_i64()?;
             Some((name, age))
         })
@@ -879,12 +886,7 @@ async fn time_travel_no_duplicate_overlay_emission() {
 
             // Verify person0's age is 99 (the updated value)
             let ages = query_person_age(&fluree, &format!("{alias}@t:2"), "ex:person0").await;
-            assert_eq!(
-                ages,
-                vec![99],
-                "person0 should have age 99, got {:?}",
-                ages
-            );
+            assert_eq!(ages, vec![99], "person0 should have age 99, got {:?}", ages);
         })
         .await;
 }

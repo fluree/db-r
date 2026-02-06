@@ -62,7 +62,10 @@ impl std::fmt::Debug for CommitOpts {
             .field("author", &self.author)
             .field("raw_txn", &self.raw_txn.is_some())
             .field("signing_key", &self.signing_key.is_some())
-            .field("txn_signature", &self.txn_signature.as_ref().map(|s| &s.signer))
+            .field(
+                "txn_signature",
+                &self.txn_signature.as_ref().map(|s| &s.signer),
+            )
             .field("txn_meta_count", &self.txn_meta.len())
             .field("graph_delta_count", &self.graph_delta.len())
             .finish()

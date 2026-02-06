@@ -410,7 +410,11 @@ impl BinaryScanOperator {
                 if is_ephemeral {
                     // Ephemeral subject: resolve now while dict_overlay is available
                     let sid = self.resolve_s_id(s_id)?;
-                    tracing::trace!(?sid, s_id, "binary_scan early-materializing ephemeral subject");
+                    tracing::trace!(
+                        ?sid,
+                        s_id,
+                        "binary_scan early-materializing ephemeral subject"
+                    );
                     columns[col_idx].push(Binding::Sid(sid));
                 } else {
                     tracing::trace!(s_id, "binary_scan emitting EncodedSid for subject");
@@ -432,7 +436,11 @@ impl BinaryScanOperator {
                 if is_ephemeral {
                     // Ephemeral predicate: resolve now while dict_overlay is available
                     let sid = self.resolve_p_id(p_id);
-                    tracing::trace!(?sid, p_id, "binary_scan early-materializing ephemeral predicate");
+                    tracing::trace!(
+                        ?sid,
+                        p_id,
+                        "binary_scan early-materializing ephemeral predicate"
+                    );
                     columns[col_idx].push(Binding::Sid(sid));
                 } else {
                     tracing::trace!(p_id, "binary_scan emitting EncodedPid for predicate");
@@ -466,14 +474,20 @@ impl BinaryScanOperator {
                     Binding::EncodedSid { s_id: o_key }
                 } else if needs_early {
                     // Ephemeral value: materialize now while dict_overlay is available
-                    let val = self.decode_obj(o_kind, o_key, p_id).map_err(|e| {
-                        QueryError::Internal(format!("early materialize: {}", e))
-                    })?;
+                    let val = self
+                        .decode_obj(o_kind, o_key, p_id)
+                        .map_err(|e| QueryError::Internal(format!("early materialize: {}", e)))?;
                     let dt_sid = self
                         .dict_overlay
                         .as_ref()
                         .map(|ov| ov.decode_dt_sid(dt_id))
-                        .unwrap_or_else(|| self.store.dt_sids().get(dt_id as usize).cloned().unwrap_or_else(|| Sid::new(0, "")));
+                        .unwrap_or_else(|| {
+                            self.store
+                                .dt_sids()
+                                .get(dt_id as usize)
+                                .cloned()
+                                .unwrap_or_else(|| Sid::new(0, ""))
+                        });
                     let lang = self
                         .dict_overlay
                         .as_ref()
@@ -640,7 +654,10 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
             )
             .map_err(|e| QueryError::Internal(format!("translate_range: {}", e)))?;
 
-        tracing::trace!(has_bounds = bounds.is_some(), "BinaryScanOperator::open: translate_range");
+        tracing::trace!(
+            has_bounds = bounds.is_some(),
+            "BinaryScanOperator::open: translate_range"
+        );
 
         // If translate_range returned None but we had an object value,
         // the value may be untranslatable (e.g., string literal with no
@@ -693,11 +710,18 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
 
                                 let (min_o_kind, min_o_key, max_o_kind, max_o_key) =
                                     if let Some(ref val) = o_val {
-                                        if let Ok(Some((ok, okey))) = self.store.value_to_obj_pair(val) {
+                                        if let Ok(Some((ok, okey))) =
+                                            self.store.value_to_obj_pair(val)
+                                        {
                                             (ok.as_u8(), okey.as_u64(), ok.as_u8(), okey.as_u64())
                                         } else {
                                             self.bound_o_filter = o_val.clone();
-                                            (ObjKind::MIN.as_u8(), 0u64, ObjKind::MAX.as_u8(), u64::MAX)
+                                            (
+                                                ObjKind::MIN.as_u8(),
+                                                0u64,
+                                                ObjKind::MAX.as_u8(),
+                                                u64::MAX,
+                                            )
                                         }
                                     } else {
                                         (ObjKind::MIN.as_u8(), 0u64, ObjKind::MAX.as_u8(), u64::MAX)
@@ -739,7 +763,9 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
                         None
                     }
                 } else {
-                    tracing::trace!("binary_scan: no dict_overlay available for overlay-only fallback");
+                    tracing::trace!(
+                        "binary_scan: no dict_overlay available for overlay-only fallback"
+                    );
                     None
                 }
             }
@@ -916,6 +942,7 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
 
                 // Propagate time-travel target and overlay state to the cursor.
                 let mut cursor = cursor;
+                eprintln!("BinaryScanOperator::open: setting to_t={} g_id={}", ctx.to_t, self.g_id);
                 cursor.set_to_t(ctx.to_t);
 
                 // Always propagate overlay epoch for cache key correctness.
@@ -1043,7 +1070,12 @@ pub(crate) fn translate_overlay_flakes(
     let mut ops = Vec::new();
     let mut io_error: Option<std::io::Error> = None;
 
-    tracing::trace!(epoch = overlay.epoch(), to_t, g_id, "translate_overlay_flakes: starting");
+    tracing::trace!(
+        epoch = overlay.epoch(),
+        to_t,
+        g_id,
+        "translate_overlay_flakes: starting"
+    );
 
     // Collect all overlay flakes (no boundary filtering — the cursor
     // partitions per-leaf internally via find_overlay_for_leaf).
@@ -1225,7 +1257,10 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
             "ScanOperator::open"
         );
         if let Some(s) = ctx.binary_store.as_ref() {
-            tracing::trace!(base_t = s.base_t(), "ScanOperator::open: binary_store present");
+            tracing::trace!(
+                base_t = s.base_t(),
+                "ScanOperator::open: binary_store present"
+            );
         }
 
         // When the binary path is selected, create a DictOverlay for ephemeral
@@ -1238,8 +1273,13 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
                 Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
             });
             let mut dict_ov = crate::dict_overlay::DictOverlay::new(store, dn);
-            let ops = translate_overlay_flakes(ctx.overlay(), &mut dict_ov, ctx.to_t, ctx.binary_g_id);
-            tracing::trace!(overlay_ops = ops.len(), g_id = ctx.binary_g_id, "ScanOperator::open: translated overlay ops");
+            let ops =
+                translate_overlay_flakes(ctx.overlay(), &mut dict_ov, ctx.to_t, ctx.binary_g_id);
+            tracing::trace!(
+                overlay_ops = ops.len(),
+                g_id = ctx.binary_g_id,
+                "ScanOperator::open: translated overlay ops"
+            );
             let epoch = ctx.overlay().epoch();
             if ops.is_empty() {
                 (None, Some(dict_ov))

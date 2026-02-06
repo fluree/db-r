@@ -358,6 +358,7 @@ impl GraphSource {
     }
 
     /// Create from identifier string
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         Self::new(s)
     }
@@ -413,6 +414,7 @@ impl GraphSelector {
     /// - `"default"` → Default
     /// - `"txn-meta"` → TxnMeta
     /// - anything else → Iri(value)
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s {
             "default" => Self::Default,
@@ -928,7 +930,10 @@ fn parse_graph_sources(
 ///   - `alias`: dataset-local alias (optional)
 ///   - `graph`: graph selector - "default", "txn-meta", or IRI string (optional)
 ///   - `policy`: per-source policy override (optional)
-fn parse_single_graph_source(val: &JsonValue, field_name: &str) -> Result<GraphSource, DatasetParseError> {
+fn parse_single_graph_source(
+    val: &JsonValue,
+    field_name: &str,
+) -> Result<GraphSource, DatasetParseError> {
     match val {
         JsonValue::String(s) => {
             let (identifier, time_spec) = parse_alias_time_travel(s)?;
@@ -996,7 +1001,8 @@ fn parse_single_graph_source(val: &JsonValue, field_name: &str) -> Result<GraphS
                     source.graph_selector = Some(GraphSelector::from_str(graph_str));
                 } else {
                     return Err(DatasetParseError::InvalidGraphSource(
-                        "'graph' must be a string ('default', 'txn-meta', or a graph IRI)".to_string(),
+                        "'graph' must be a string ('default', 'txn-meta', or a graph IRI)"
+                            .to_string(),
                     ));
                 }
             }
@@ -1016,7 +1022,9 @@ fn parse_single_graph_source(val: &JsonValue, field_name: &str) -> Result<GraphS
 }
 
 /// Parse per-source policy override from JSON
-fn parse_source_policy_override(val: &JsonValue) -> Result<SourcePolicyOverride, DatasetParseError> {
+fn parse_source_policy_override(
+    val: &JsonValue,
+) -> Result<SourcePolicyOverride, DatasetParseError> {
     let obj = val.as_object().ok_or_else(|| {
         DatasetParseError::InvalidGraphSource("'policy' must be an object".to_string())
     })?;
@@ -1869,8 +1877,14 @@ mod tests {
 
     #[test]
     fn test_graph_selector_from_str() {
-        assert!(matches!(GraphSelector::from_str("default"), GraphSelector::Default));
-        assert!(matches!(GraphSelector::from_str("txn-meta"), GraphSelector::TxnMeta));
+        assert!(matches!(
+            GraphSelector::from_str("default"),
+            GraphSelector::Default
+        ));
+        assert!(matches!(
+            GraphSelector::from_str("txn-meta"),
+            GraphSelector::TxnMeta
+        ));
         assert!(matches!(
             GraphSelector::from_str("http://example.org/graph"),
             GraphSelector::Iri(ref s) if s == "http://example.org/graph"
@@ -1895,11 +1909,13 @@ mod tests {
 
     #[test]
     fn test_graph_source_with_graph_selector() {
-        let source = GraphSource::new("ledger:main")
-            .with_graph(GraphSelector::TxnMeta);
+        let source = GraphSource::new("ledger:main").with_graph(GraphSelector::TxnMeta);
 
         assert_eq!(source.identifier, "ledger:main");
-        assert!(matches!(source.graph_selector, Some(GraphSelector::TxnMeta)));
+        assert!(matches!(
+            source.graph_selector,
+            Some(GraphSelector::TxnMeta)
+        ));
     }
 
     #[test]
@@ -1912,7 +1928,10 @@ mod tests {
         let spec = DatasetSpec::from_json(&query).unwrap();
         assert_eq!(spec.default_graphs.len(), 1);
         assert_eq!(spec.default_graphs[0].identifier, "ledger:main");
-        assert_eq!(spec.default_graphs[0].source_alias, Some("mydb".to_string()));
+        assert_eq!(
+            spec.default_graphs[0].source_alias,
+            Some("mydb".to_string())
+        );
     }
 
     #[test]
@@ -1940,7 +1959,10 @@ mod tests {
         let spec = DatasetSpec::from_json(&query).unwrap();
         assert_eq!(spec.default_graphs.len(), 1);
         assert_eq!(spec.default_graphs[0].identifier, "ledger:main");
-        assert_eq!(spec.default_graphs[0].source_alias, Some("meta".to_string()));
+        assert_eq!(
+            spec.default_graphs[0].source_alias,
+            Some("meta".to_string())
+        );
         assert!(matches!(
             spec.default_graphs[0].graph_selector,
             Some(GraphSelector::TxnMeta)
@@ -1961,7 +1983,10 @@ mod tests {
         let spec = DatasetSpec::from_json(&query).unwrap();
         assert_eq!(spec.default_graphs.len(), 1);
         assert_eq!(spec.default_graphs[0].identifier, "ledger:main");
-        assert_eq!(spec.default_graphs[0].source_alias, Some("products".to_string()));
+        assert_eq!(
+            spec.default_graphs[0].source_alias,
+            Some("products".to_string())
+        );
         assert!(matches!(
             &spec.default_graphs[0].graph_selector,
             Some(GraphSelector::Iri(ref iri)) if iri == "http://example.org/vocab#products"
@@ -1991,14 +2016,20 @@ mod tests {
         assert_eq!(spec.named_graphs.len(), 2);
 
         assert_eq!(spec.named_graphs[0].identifier, "sales:main");
-        assert_eq!(spec.named_graphs[0].source_alias, Some("salesProducts".to_string()));
+        assert_eq!(
+            spec.named_graphs[0].source_alias,
+            Some("salesProducts".to_string())
+        );
         assert!(matches!(
             &spec.named_graphs[0].graph_selector,
             Some(GraphSelector::Iri(ref iri)) if iri == "http://example.org/vocab#products"
         ));
 
         assert_eq!(spec.named_graphs[1].identifier, "inventory:main");
-        assert_eq!(spec.named_graphs[1].source_alias, Some("inventoryProducts".to_string()));
+        assert_eq!(
+            spec.named_graphs[1].source_alias,
+            Some("inventoryProducts".to_string())
+        );
         assert!(matches!(
             &spec.named_graphs[1].graph_selector,
             Some(GraphSelector::Iri(ref iri)) if iri == "http://example.org/vocab#products"
@@ -2016,8 +2047,14 @@ mod tests {
         let spec = DatasetSpec::from_json(&query).unwrap();
         assert_eq!(spec.default_graphs.len(), 1);
         assert_eq!(spec.default_graphs[0].identifier, "ledger:main");
-        assert!(matches!(spec.default_graphs[0].time_spec, Some(TimeSpec::AtT(5))));
-        assert_eq!(spec.default_graphs[0].source_alias, Some("oldData".to_string()));
+        assert!(matches!(
+            spec.default_graphs[0].time_spec,
+            Some(TimeSpec::AtT(5))
+        ));
+        assert_eq!(
+            spec.default_graphs[0].source_alias,
+            Some("oldData".to_string())
+        );
     }
 
     #[test]
@@ -2071,7 +2108,10 @@ mod tests {
         });
 
         let result = DatasetSpec::from_json(&query);
-        assert!(result.is_err(), "Duplicate aliases across from/from-named should error");
+        assert!(
+            result.is_err(),
+            "Duplicate aliases across from/from-named should error"
+        );
         let err = result.unwrap_err();
         assert!(matches!(err, DatasetParseError::DuplicateAlias(ref a) if a == "shared"));
     }
@@ -2086,7 +2126,10 @@ mod tests {
         });
 
         let result = DatasetSpec::from_json(&query);
-        assert!(result.is_err(), "Alias matching another source's identifier should error");
+        assert!(
+            result.is_err(),
+            "Alias matching another source's identifier should error"
+        );
         let err = result.unwrap_err();
         assert!(matches!(err, DatasetParseError::DuplicateAlias(ref a) if a == "ledger1:main"));
     }
@@ -2100,7 +2143,10 @@ mod tests {
         });
 
         let result = DatasetSpec::from_json(&query);
-        assert!(result.is_err(), "Both fragment and graph field should error");
+        assert!(
+            result.is_err(),
+            "Both fragment and graph field should error"
+        );
         let err = result.unwrap_err();
         assert!(matches!(err, DatasetParseError::AmbiguousGraphSelector(_)));
     }
@@ -2114,8 +2160,14 @@ mod tests {
         });
 
         let result = DatasetSpec::from_json(&query);
-        assert!(result.is_err(), "Fragment and different graph field should error");
-        assert!(matches!(result.unwrap_err(), DatasetParseError::AmbiguousGraphSelector(_)));
+        assert!(
+            result.is_err(),
+            "Fragment and different graph field should error"
+        );
+        assert!(matches!(
+            result.unwrap_err(),
+            DatasetParseError::AmbiguousGraphSelector(_)
+        ));
     }
 
     #[test]
@@ -2168,7 +2220,10 @@ mod tests {
         let spec = DatasetSpec::from_json(&query).unwrap();
         assert_eq!(spec.default_graphs.len(), 1);
         assert_eq!(spec.default_graphs[0].identifier, "ledger:main");
-        assert!(matches!(spec.default_graphs[0].time_spec, Some(TimeSpec::AtT(42))));
+        assert!(matches!(
+            spec.default_graphs[0].time_spec,
+            Some(TimeSpec::AtT(42))
+        ));
         // New fields are None
         assert!(spec.default_graphs[0].source_alias.is_none());
         assert!(spec.default_graphs[0].graph_selector.is_none());

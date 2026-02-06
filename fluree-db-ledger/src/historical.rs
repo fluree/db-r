@@ -127,7 +127,10 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
                     });
                 }
 
-                tracing::trace!(epoch = novelty.epoch, "HistoricalLedgerView: returning with overlay");
+                tracing::trace!(
+                    epoch = novelty.epoch,
+                    "HistoricalLedgerView: returning with overlay"
+                );
                 return Ok(Self {
                     db,
                     overlay: Some(Arc::new(novelty)),
@@ -161,7 +164,12 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
     ) -> Result<(Novelty, std::collections::HashMap<u16, String>)> {
         use std::collections::HashMap;
 
-        tracing::trace!(head_address, index_t, target_t, "load_novelty_range: starting");
+        tracing::trace!(
+            head_address,
+            index_t,
+            target_t,
+            "load_novelty_range: starting"
+        );
 
         let mut novelty = Novelty::new(index_t);
         let mut merged_ns_delta: HashMap<u16, String> = HashMap::new();
@@ -183,7 +191,11 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
 
             // Skip commits beyond target_t
             if commit.t > target_t {
-                tracing::trace!(t = commit.t, target_t, "load_novelty_range: skipping future commit");
+                tracing::trace!(
+                    t = commit.t,
+                    target_t,
+                    "load_novelty_range: skipping future commit"
+                );
                 continue;
             }
 

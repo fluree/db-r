@@ -22,7 +22,9 @@ use support::start_background_indexer_local;
 async fn test_jsonld_txn_meta_basic() {
     // Insert with envelope-form JSON-LD containing top-level metadata,
     // trigger indexing, then query #txn-meta to verify.
-    let fluree = FlureeBuilder::memory().with_ledger_cache_config(LedgerManagerConfig::default()).build_memory();
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
     let alias = "it/txn-meta-basic:main";
 
     let (local, handle) = start_background_indexer_local(
@@ -84,25 +86,25 @@ async fn test_jsonld_txn_meta_basic() {
             // Look for machine property
             let has_machine = arr.iter().any(|row| {
                 row.as_array()
-                    .map(|r| {
-                        r.iter()
-                            .any(|v| v.as_str() == Some("server-01"))
-                    })
+                    .map(|r| r.iter().any(|v| v.as_str() == Some("server-01")))
                     .unwrap_or(false)
             });
 
             // Look for batchId property
             let has_batch_id = arr.iter().any(|row| {
                 row.as_array()
-                    .map(|r| {
-                        r.iter()
-                            .any(|v| v.as_i64() == Some(42))
-                    })
+                    .map(|r| r.iter().any(|v| v.as_i64() == Some(42)))
                     .unwrap_or(false)
             });
 
-            assert!(has_machine, "should find machine metadata in txn-meta graph");
-            assert!(has_batch_id, "should find batchId metadata in txn-meta graph");
+            assert!(
+                has_machine,
+                "should find machine metadata in txn-meta graph"
+            );
+            assert!(
+                has_batch_id,
+                "should find batchId metadata in txn-meta graph"
+            );
         })
         .await;
 }
@@ -110,7 +112,9 @@ async fn test_jsonld_txn_meta_basic() {
 #[tokio::test]
 async fn test_jsonld_single_object_no_meta() {
     // Single-object form (no @graph) should NOT extract metadata
-    let fluree = FlureeBuilder::memory().with_ledger_cache_config(LedgerManagerConfig::default()).build_memory();
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
     let alias = "it/txn-meta-single-obj:main";
 
     let (local, handle) = start_background_indexer_local(
@@ -173,7 +177,10 @@ async fn test_jsonld_single_object_no_meta() {
                 }
             });
 
-            let meta_results = fluree.query_connection(&meta_query).await.expect("meta query");
+            let meta_results = fluree
+                .query_connection(&meta_query)
+                .await
+                .expect("meta query");
             let meta_results = meta_results.to_jsonld(&ledger.db).expect("to_jsonld");
             let meta_arr = meta_results.as_array().expect("array");
             assert!(
@@ -187,7 +194,9 @@ async fn test_jsonld_single_object_no_meta() {
 #[tokio::test]
 async fn test_jsonld_txn_meta_all_value_types() {
     // Test all supported value types in txn-meta
-    let fluree = FlureeBuilder::memory().with_ledger_cache_config(LedgerManagerConfig::default()).build_memory();
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
     let alias = "it/txn-meta-types:main";
 
     let (local, handle) = start_background_indexer_local(
@@ -247,11 +256,8 @@ async fn test_jsonld_txn_meta_all_value_types() {
 
             // Helper to check if a value exists in results
             let has_value = |check: fn(&serde_json::Value) -> bool| {
-                arr.iter().any(|row| {
-                    row.as_array()
-                        .map(|r| r.iter().any(check))
-                        .unwrap_or(false)
-                })
+                arr.iter()
+                    .any(|row| row.as_array().map(|r| r.iter().any(check)).unwrap_or(false))
             };
 
             // String: "hello"
@@ -269,7 +275,9 @@ async fn test_jsonld_txn_meta_all_value_types() {
             // Double: 1.23 (may be formatted as string or number)
             assert!(
                 has_value(|v| {
-                    v.as_f64().map(|f| (f - 1.23).abs() < 0.001).unwrap_or(false)
+                    v.as_f64()
+                        .map(|f| (f - 1.23).abs() < 0.001)
+                        .unwrap_or(false)
                         || v.as_str().map(|s| s.contains("1.23")).unwrap_or(false)
                 }),
                 "should find double value 1.23"
@@ -316,7 +324,9 @@ async fn test_jsonld_txn_meta_all_value_types() {
 #[tokio::test]
 async fn test_jsonld_txn_meta_reject_nested_object() {
     // Nested objects (not @value/@id) should be rejected
-    let fluree = FlureeBuilder::memory().with_ledger_cache_config(LedgerManagerConfig::default()).build_memory();
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
     let alias = "it/txn-meta-nested:main";
 
     let db0 = Db::genesis(fluree.storage().clone(), alias);
@@ -330,7 +340,10 @@ async fn test_jsonld_txn_meta_reject_nested_object() {
     });
 
     let result = fluree.insert(ledger, &tx).await;
-    assert!(result.is_err(), "nested objects in txn-meta should be rejected");
+    assert!(
+        result.is_err(),
+        "nested objects in txn-meta should be rejected"
+    );
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains("nested") || err.contains("@value") || err.contains("@id"),
@@ -341,7 +354,9 @@ async fn test_jsonld_txn_meta_reject_nested_object() {
 #[tokio::test]
 async fn test_jsonld_txn_meta_reject_null() {
     // Null values should be rejected
-    let fluree = FlureeBuilder::memory().with_ledger_cache_config(LedgerManagerConfig::default()).build_memory();
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
     let alias = "it/txn-meta-null:main";
 
     let db0 = Db::genesis(fluree.storage().clone(), alias);
@@ -354,7 +369,10 @@ async fn test_jsonld_txn_meta_reject_null() {
     });
 
     let result = fluree.insert(ledger, &tx).await;
-    assert!(result.is_err(), "null values in txn-meta should be rejected");
+    assert!(
+        result.is_err(),
+        "null values in txn-meta should be rejected"
+    );
     let err = result.unwrap_err().to_string();
     assert!(err.contains("null"), "error should mention null: {err}");
 }
@@ -367,7 +385,9 @@ async fn test_jsonld_txn_meta_reject_null() {
 async fn test_txn_meta_queryable_after_indexing() {
     // Verify user-provided metadata is queryable via #txn-meta after indexing.
     // This confirms the index-only semantics: txn-meta becomes visible only after indexing.
-    let fluree = FlureeBuilder::memory().with_ledger_cache_config(LedgerManagerConfig::default()).build_memory();
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
     let alias = "it/txn-meta-builtin:main";
 
     let (local, handle) = start_background_indexer_local(
@@ -431,7 +451,10 @@ async fn test_txn_meta_queryable_after_indexing() {
             });
 
             assert!(has_marker, "should find marker metadata in txn-meta graph");
-            assert!(has_version, "should find version metadata in txn-meta graph");
+            assert!(
+                has_version,
+                "should find version metadata in txn-meta graph"
+            );
         })
         .await;
 }
@@ -694,8 +717,14 @@ async fn test_txn_meta_multiple_commits() {
                     || row.as_str() == Some("batch-2")
             });
 
-            assert!(has_batch_1, "should find batch-1 metadata from first commit");
-            assert!(has_batch_2, "should find batch-2 metadata from second commit");
+            assert!(
+                has_batch_1,
+                "should find batch-1 metadata from first commit"
+            );
+            assert!(
+                has_batch_2,
+                "should find batch-2 metadata from second commit"
+            );
         })
         .await;
 }
@@ -758,7 +787,10 @@ async fn test_txn_meta_time_travel_syntax() {
                 }
             });
 
-            let results = fluree.query_connection(&query).await.expect("query at t=1 should not error");
+            let results = fluree
+                .query_connection(&query)
+                .await
+                .expect("query at t=1 should not error");
             let ledger = fluree.ledger(alias).await.expect("load");
             let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
             let arr = results.as_array().expect("array");
@@ -771,7 +803,10 @@ async fn test_txn_meta_time_travel_syntax() {
                     || row.as_str() == Some("batch-1")
             });
 
-            assert!(has_batch_1, "should find batch-1 metadata via @t:1#txn-meta");
+            assert!(
+                has_batch_1,
+                "should find batch-1 metadata via @t:1#txn-meta"
+            );
         })
         .await;
 }
@@ -863,12 +898,16 @@ async fn test_sparql_graph_pattern_txn_meta() {
             let has_batch = arr.iter().any(|row| {
                 // Could be flat value or array
                 row.as_str() == Some("sparql-test-batch")
-                    || row.as_array()
+                    || row
+                        .as_array()
                         .map(|r| r.iter().any(|v| v.as_str() == Some("sparql-test-batch")))
                         .unwrap_or(false)
             });
 
-            assert!(has_batch, "SPARQL GRAPH pattern should find batchId metadata");
+            assert!(
+                has_batch,
+                "SPARQL GRAPH pattern should find batchId metadata"
+            );
         })
         .await;
 }
@@ -943,7 +982,10 @@ async fn test_txn_meta_time_travel_filtering() {
             }
 
             // Query at t=1: should only see batch-1
-            let view_t1 = fluree.view_at_t(&format!("{}#txn-meta", alias), 1).await.expect("view at t=1");
+            let view_t1 = fluree
+                .view_at_t(&format!("{}#txn-meta", alias), 1)
+                .await
+                .expect("view at t=1");
 
             let query_t1 = json!({
                 "select": ["?o"],
@@ -953,7 +995,10 @@ async fn test_txn_meta_time_travel_filtering() {
                 }
             });
 
-            let results_t1 = fluree.query_view(&view_t1, &query_t1).await.expect("query at t=1");
+            let results_t1 = fluree
+                .query_view(&view_t1, &query_t1)
+                .await
+                .expect("query at t=1");
             let results_t1 = results_t1.to_jsonld(&view_t1.db).expect("to_jsonld");
             let arr_t1 = results_t1.as_array().expect("array");
 
@@ -971,10 +1016,17 @@ async fn test_txn_meta_time_travel_filtering() {
             });
 
             assert!(has_batch_1_at_t1, "query at t=1 should find batch-1");
-            assert!(!has_batch_2_at_t1, "query at t=1 should NOT find batch-2 (it was added at t=2), results: {:?}", arr_t1);
+            assert!(
+                !has_batch_2_at_t1,
+                "query at t=1 should NOT find batch-2 (it was added at t=2), results: {:?}",
+                arr_t1
+            );
 
             // Query at t=2: should see both batch-1 and batch-2
-            let view_t2 = fluree.view_at_t(&format!("{}#txn-meta", alias), 2).await.expect("view at t=2");
+            let view_t2 = fluree
+                .view_at_t(&format!("{}#txn-meta", alias), 2)
+                .await
+                .expect("view at t=2");
             let query_t2 = json!({
                 "select": ["?o"],
                 "where": {
@@ -983,7 +1035,10 @@ async fn test_txn_meta_time_travel_filtering() {
                 }
             });
 
-            let results_t2 = fluree.query_view(&view_t2, &query_t2).await.expect("query at t=2");
+            let results_t2 = fluree
+                .query_view(&view_t2, &query_t2)
+                .await
+                .expect("query at t=2");
             let results_t2 = results_t2.to_jsonld(&view_t2.db).expect("to_jsonld");
             let arr_t2 = results_t2.as_array().expect("array");
 

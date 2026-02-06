@@ -149,10 +149,20 @@ impl Flake {
         op: bool,
         m: Option<FlakeMeta>,
     ) -> Self {
-        Self { g: None, s, p, o, dt, t, op, m }
+        Self {
+            g: None,
+            s,
+            p,
+            o,
+            dt,
+            t,
+            op,
+            m,
+        }
     }
 
     /// Create a new Flake in a named graph
+    #[allow(clippy::too_many_arguments)]
     pub fn new_in_graph(
         g: Sid,
         s: Sid,
@@ -163,7 +173,16 @@ impl Flake {
         op: bool,
         m: Option<FlakeMeta>,
     ) -> Self {
-        Self { g: Some(g), s, p, o, dt, t, op, m }
+        Self {
+            g: Some(g),
+            s,
+            p,
+            o,
+            dt,
+            t,
+            op,
+            m,
+        }
     }
 
     /// Create a minimum flake for SPOT index range bounds

@@ -147,7 +147,9 @@ impl ParsedQuery {
                             collect(branch, out);
                         }
                     }
-                    Pattern::Graph { patterns: inner, .. } => collect(inner, out),
+                    Pattern::Graph {
+                        patterns: inner, ..
+                    } => collect(inner, out),
                     Pattern::Service(sp) => collect(&sp.patterns, out),
                     Pattern::Filter(_)
                     | Pattern::Bind { .. }

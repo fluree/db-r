@@ -32,7 +32,12 @@ where
         if Self::is_single_ledger_fast_path(&spec) {
             let source = &spec.default_graphs[0];
             let alias = source.identifier.as_str();
-            let view = self.view(alias).await?;
+            let mut view = self.view(alias).await?;
+
+            // Apply graph selector if specified in structured from
+            if let Some(selector) = &source.graph_selector {
+                view = Self::apply_graph_selector(view, selector)?;
+            }
 
             // Apply policy: per-source overrides global
             let view = self
@@ -88,9 +93,16 @@ where
         if Self::is_single_ledger_fast_path(&spec) {
             let source = &spec.default_graphs[0];
             let alias = source.identifier.as_str();
-            let view = self.view(alias).await.map_err(|e| {
+            let mut view = self.view(alias).await.map_err(|e| {
                 crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
             })?;
+
+            // Apply graph selector if specified in structured from
+            if let Some(selector) = &source.graph_selector {
+                view = Self::apply_graph_selector(view, selector).map_err(|e| {
+                    crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
+                })?;
+            }
 
             // Apply policy: per-source overrides global
             let view = self

@@ -109,7 +109,9 @@ fn json_to_txn_meta_values(
             Ok(results)
         }
         _ => Ok(vec![json_to_single_txn_meta_value(
-            value, context, ns_registry,
+            value,
+            context,
+            ns_registry,
         )?]),
     }
 }
@@ -206,9 +208,7 @@ fn parse_value_object(
 
         // Get the string value
         let value_str = val.as_str().ok_or_else(|| {
-            TransactError::Parse(
-                "txn-meta typed literal @value must be a string".to_string(),
-            )
+            TransactError::Parse("txn-meta typed literal @value must be a string".to_string())
         })?;
 
         return Ok(TxnMetaValue::TypedLiteral {
@@ -225,9 +225,7 @@ fn parse_value_object(
         })?;
 
         let value_str = val.as_str().ok_or_else(|| {
-            TransactError::Parse(
-                "txn-meta language-tagged @value must be a string".to_string(),
-            )
+            TransactError::Parse("txn-meta language-tagged @value must be a string".to_string())
         })?;
 
         return Ok(TxnMetaValue::LangString {
@@ -304,9 +302,7 @@ fn estimate_value_size(value: &TxnMetaValue) -> usize {
         TxnMetaValue::Boolean(_) => 1,
         TxnMetaValue::Ref { name, .. } => 6 + name.len(),
         TxnMetaValue::LangString { value, lang } => 8 + value.len() + lang.len(),
-        TxnMetaValue::TypedLiteral {
-            value, dt_name, ..
-        } => 10 + value.len() + dt_name.len(),
+        TxnMetaValue::TypedLiteral { value, dt_name, .. } => 10 + value.len() + dt_name.len(),
     }
 }
 
@@ -353,11 +349,17 @@ mod tests {
         assert_eq!(result.len(), 2);
 
         // Find machine entry
-        let machine = result.iter().find(|e| e.predicate_name == "machine").unwrap();
+        let machine = result
+            .iter()
+            .find(|e| e.predicate_name == "machine")
+            .unwrap();
         assert!(matches!(&machine.value, TxnMetaValue::String(s) if s == "server-01"));
 
         // Find batchId entry
-        let batch = result.iter().find(|e| e.predicate_name == "batchId").unwrap();
+        let batch = result
+            .iter()
+            .find(|e| e.predicate_name == "batchId")
+            .unwrap();
         assert!(matches!(&batch.value, TxnMetaValue::Long(42)));
     }
 

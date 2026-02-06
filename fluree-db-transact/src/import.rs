@@ -16,11 +16,11 @@ mod inner {
     use crate::commit_v2::CommitV2Envelope;
     use crate::commit_v2::StreamingCommitWriter;
     use crate::error::{Result, TransactError};
-    use crate::generate::{infer_datatype, DT_ID, DT_JSON, DT_LANG_STRING};
+    use crate::generate::{infer_datatype, DT_ID, DT_LANG_STRING};
     use crate::import_sink::ImportSink;
     use crate::namespace::NamespaceRegistry;
-    use crate::parse::trig_meta::{parse_trig_phase1, resolve_trig_meta, NamedGraphBlock, RawObject, RawTerm};
-    use crate::value_convert::{convert_native_literal, convert_string_literal};
+    use crate::parse::trig_meta::{parse_trig_phase1, resolve_trig_meta, RawObject, RawTerm};
+    use crate::value_convert::convert_string_literal;
     use fluree_db_core::{ContentAddressedWrite, ContentKind, Flake, FlakeMeta, FlakeValue, Sid};
     use fluree_db_novelty::CommitRef;
     use std::collections::HashMap;
@@ -289,20 +289,32 @@ mod inner {
 
             // Process each triple in this named graph
             for triple in &block.triples {
-                let subject = triple.subject.as_ref()
-                    .ok_or_else(|| TransactError::Parse("named graph triple missing subject".to_string()))?;
+                let subject = triple.subject.as_ref().ok_or_else(|| {
+                    TransactError::Parse("named graph triple missing subject".to_string())
+                })?;
 
                 let s = expand_term(subject, &block.prefixes, &mut state.ns_registry)?;
                 let p = expand_term(&triple.predicate, &block.prefixes, &mut state.ns_registry)?;
 
                 for obj in &triple.objects {
-                    let (o, dt, lang) = expand_object(obj, &block.prefixes, &mut state.ns_registry)?;
+                    let (o, dt, lang) =
+                        expand_object(obj, &block.prefixes, &mut state.ns_registry)?;
 
                     let meta = lang.map(|l| FlakeMeta::with_lang(&l));
-                    let flake = Flake::new_in_graph(graph_sid.clone(), s.clone(), p.clone(), o, dt, new_t, true, meta);
+                    let flake = Flake::new_in_graph(
+                        graph_sid.clone(),
+                        s.clone(),
+                        p.clone(),
+                        o,
+                        dt,
+                        new_t,
+                        true,
+                        meta,
+                    );
 
-                    writer.push_flake(&flake)
-                        .map_err(|e| TransactError::Parse(format!("failed to encode named graph flake: {}", e)))?;
+                    writer.push_flake(&flake).map_err(|e| {
+                        TransactError::Parse(format!("failed to encode named graph flake: {}", e))
+                    })?;
                     op_count += 1;
                 }
             }
@@ -349,7 +361,8 @@ mod inner {
 
         // 7. Finalize blob
         let result = {
-            let _span = tracing::info_span!("import_trig_finish_blob", t = new_t, op_count).entered();
+            let _span =
+                tracing::info_span!("import_trig_finish_blob", t = new_t, op_count).entered();
             writer.finish(&envelope)?
         };
         let commit_id = format!("sha256:{}", &result.content_hash_hex);
@@ -380,8 +393,7 @@ mod inner {
         // 9. Advance state
         state.t = new_t;
         state.previous_ref = Some(
-            CommitRef::new(&write_res.address)
-                .with_id(format!("fluree:commit:{}", commit_id)),
+            CommitRef::new(&write_res.address).with_id(format!("fluree:commit:{}", commit_id)),
         );
 
         Ok(ImportCommitResult {
@@ -402,15 +414,16 @@ mod inner {
     ) -> Result<Sid> {
         match term {
             RawTerm::Iri(iri) => {
-                if iri.starts_with("_:") {
+                if let Some(local) = iri.strip_prefix("_:") {
                     // Blank node - skolemize
-                    Ok(ns_registry.blank_node_sid(&iri[2..]))
+                    Ok(ns_registry.blank_node_sid(local))
                 } else {
                     Ok(ns_registry.sid_for_iri(iri))
                 }
             }
             RawTerm::PrefixedName { prefix, local } => {
-                let ns = prefixes.get(prefix.as_str())
+                let ns = prefixes
+                    .get(prefix.as_str())
                     .ok_or_else(|| TransactError::Parse(format!("undefined prefix: {}", prefix)))?;
                 let iri = format!("{}{}", ns, local);
                 Ok(ns_registry.sid_for_iri(&iri))
@@ -426,35 +439,46 @@ mod inner {
     ) -> Result<(FlakeValue, Sid, Option<String>)> {
         match obj {
             RawObject::Iri(iri) => {
-                let sid = if iri.starts_with("_:") {
-                    ns_registry.blank_node_sid(&iri[2..])
+                let sid = if let Some(local) = iri.strip_prefix("_:") {
+                    ns_registry.blank_node_sid(local)
                 } else {
                     ns_registry.sid_for_iri(iri)
                 };
                 Ok((FlakeValue::Ref(sid), DT_ID.clone(), None))
             }
             RawObject::PrefixedName { prefix, local } => {
-                let ns = prefixes.get(prefix.as_str())
+                let ns = prefixes
+                    .get(prefix.as_str())
                     .ok_or_else(|| TransactError::Parse(format!("undefined prefix: {}", prefix)))?;
                 let iri = format!("{}{}", ns, local);
                 let sid = ns_registry.sid_for_iri(&iri);
                 Ok((FlakeValue::Ref(sid), DT_ID.clone(), None))
             }
-            RawObject::String(s) => {
-                Ok((FlakeValue::String(s.clone()), infer_datatype(&FlakeValue::String(s.clone())), None))
-            }
-            RawObject::Integer(n) => {
-                Ok((FlakeValue::Long(*n), infer_datatype(&FlakeValue::Long(*n)), None))
-            }
-            RawObject::Double(n) => {
-                Ok((FlakeValue::Double(*n), infer_datatype(&FlakeValue::Double(*n)), None))
-            }
-            RawObject::Boolean(b) => {
-                Ok((FlakeValue::Boolean(*b), infer_datatype(&FlakeValue::Boolean(*b)), None))
-            }
-            RawObject::LangString { value, lang } => {
-                Ok((FlakeValue::String(value.clone()), DT_LANG_STRING.clone(), Some(lang.clone())))
-            }
+            RawObject::String(s) => Ok((
+                FlakeValue::String(s.clone()),
+                infer_datatype(&FlakeValue::String(s.clone())),
+                None,
+            )),
+            RawObject::Integer(n) => Ok((
+                FlakeValue::Long(*n),
+                infer_datatype(&FlakeValue::Long(*n)),
+                None,
+            )),
+            RawObject::Double(n) => Ok((
+                FlakeValue::Double(*n),
+                infer_datatype(&FlakeValue::Double(*n)),
+                None,
+            )),
+            RawObject::Boolean(b) => Ok((
+                FlakeValue::Boolean(*b),
+                infer_datatype(&FlakeValue::Boolean(*b)),
+                None,
+            )),
+            RawObject::LangString { value, lang } => Ok((
+                FlakeValue::String(value.clone()),
+                DT_LANG_STRING.clone(),
+                Some(lang.clone()),
+            )),
             RawObject::TypedLiteral { value, datatype } => {
                 let (fv, dt) = convert_string_literal(value, datatype, ns_registry);
                 Ok((fv, dt, None))

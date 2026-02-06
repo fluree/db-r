@@ -291,11 +291,6 @@ pub async fn query_ledger(
     execute_query(&state, &alias, &query_json).await
 }
 
-/// Execute an FQL query and return JSON result with tracking headers
-///
-/// When tracking options are present (via headers or body), returns a tracked response:
-/// - Body: `{status, result, time?, fuel?, policy?}`
-/// - Headers: `x-fdb-time`, `x-fdb-fuel`, `x-fdb-policy` (Clojure parity)
 /// Check if a query requires dataset features (multi-ledger, named graphs, etc.)
 ///
 /// Dataset features that require the connection execution path:
@@ -318,9 +313,7 @@ fn requires_dataset_features(query: &JsonValue) -> bool {
         // Object form with special keys (graph, alias, t, iso, sha, etc.)
         if let Some(obj) = from.as_object() {
             // Any key other than just @id indicates dataset features
-            let has_special_keys = obj.keys().any(|k| {
-                !matches!(k.as_str(), "@id")
-            });
+            let has_special_keys = obj.keys().any(|k| !matches!(k.as_str(), "@id"));
             if has_special_keys {
                 return true;
             }

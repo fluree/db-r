@@ -254,11 +254,7 @@ impl TxnMetaValue {
     }
 
     /// Create a typed literal
-    pub fn typed_literal(
-        value: impl Into<String>,
-        dt_ns: u16,
-        dt_name: impl Into<String>,
-    ) -> Self {
+    pub fn typed_literal(value: impl Into<String>, dt_ns: u16, dt_name: impl Into<String>) -> Self {
         Self::TypedLiteral {
             value: value.into(),
             dt_ns,
@@ -737,16 +733,25 @@ mod tests {
 
     #[test]
     fn test_txn_meta_value_constructors() {
-        assert_eq!(TxnMetaValue::string("hello"), TxnMetaValue::String("hello".to_string()));
+        assert_eq!(
+            TxnMetaValue::string("hello"),
+            TxnMetaValue::String("hello".to_string())
+        );
         assert_eq!(TxnMetaValue::long(42), TxnMetaValue::Long(42));
         assert_eq!(TxnMetaValue::boolean(true), TxnMetaValue::Boolean(true));
         assert_eq!(
             TxnMetaValue::reference(50, "Alice"),
-            TxnMetaValue::Ref { ns: 50, name: "Alice".to_string() }
+            TxnMetaValue::Ref {
+                ns: 50,
+                name: "Alice".to_string()
+            }
         );
         assert_eq!(
             TxnMetaValue::lang_string("hello", "en"),
-            TxnMetaValue::LangString { value: "hello".to_string(), lang: "en".to_string() }
+            TxnMetaValue::LangString {
+                value: "hello".to_string(),
+                lang: "en".to_string()
+            }
         );
         assert_eq!(
             TxnMetaValue::typed_literal("2025-01-01", 2, "date"),

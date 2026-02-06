@@ -168,8 +168,8 @@ pub async fn stage<S: Storage + Clone + 'static>(
         .collect();
 
     // Generate retractions from DELETE templates
-    let mut generator = FlakeGenerator::new(new_t, &mut ns_registry, txn_id)
-        .with_graph_sids(graph_sids);
+    let mut generator =
+        FlakeGenerator::new(new_t, &mut ns_registry, txn_id).with_graph_sids(graph_sids);
     tracing::debug!(
         template_count = txn.delete_templates.len(),
         "generating retractions from DELETE templates"

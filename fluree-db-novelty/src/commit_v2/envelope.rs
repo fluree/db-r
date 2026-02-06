@@ -618,10 +618,7 @@ fn encode_graph_delta(delta: &HashMap<u32, String>, buf: &mut Vec<u8>) {
     }
 }
 
-fn decode_graph_delta(
-    data: &[u8],
-    pos: &mut usize,
-) -> Result<HashMap<u32, String>, CommitV2Error> {
+fn decode_graph_delta(data: &[u8], pos: &mut usize) -> Result<HashMap<u32, String>, CommitV2Error> {
     let count = decode_varint(data, pos)? as usize;
     let mut map = HashMap::with_capacity(count);
     for _ in 0..count {
@@ -670,7 +667,11 @@ fn encode_txn_meta_value(value: &TxnMetaValue, buf: &mut Vec<u8>) -> Result<(), 
             buf.push(TXN_META_TAG_STRING);
             encode_len_str(s, buf);
         }
-        TxnMetaValue::TypedLiteral { value, dt_ns, dt_name } => {
+        TxnMetaValue::TypedLiteral {
+            value,
+            dt_ns,
+            dt_name,
+        } => {
             buf.push(TXN_META_TAG_TYPED_LITERAL);
             encode_len_str(value, buf);
             encode_varint(*dt_ns as u64, buf);
@@ -712,8 +713,7 @@ fn decode_txn_meta(data: &[u8], pos: &mut usize) -> Result<Vec<TxnMetaEntry>, Co
     if count > MAX_TXN_META_ENTRIES {
         return Err(CommitV2Error::EnvelopeDecode(format!(
             "txn_meta entry count {} exceeds maximum {}",
-            count,
-            MAX_TXN_META_ENTRIES
+            count, MAX_TXN_META_ENTRIES
         )));
     }
     let mut entries = Vec::with_capacity(count);
@@ -746,7 +746,11 @@ fn decode_txn_meta_value(data: &[u8], pos: &mut usize) -> Result<TxnMetaValue, C
             let value = decode_len_str(data, pos)?;
             let dt_ns = decode_varint(data, pos)? as u16;
             let dt_name = decode_len_str(data, pos)?;
-            Ok(TxnMetaValue::TypedLiteral { value, dt_ns, dt_name })
+            Ok(TxnMetaValue::TypedLiteral {
+                value,
+                dt_ns,
+                dt_name,
+            })
         }
         TXN_META_TAG_LANG_STRING => {
             let value = decode_len_str(data, pos)?;
@@ -951,8 +955,10 @@ mod tests {
         }
 
         // Truncating just the trailing presence byte should succeed (old format)
-        assert!(decode_envelope(&buf[..required_len]).is_ok(),
-            "should succeed without trailing presence byte");
+        assert!(
+            decode_envelope(&buf[..required_len]).is_ok(),
+            "should succeed without trailing presence byte"
+        );
 
         // Full buffer should succeed
         assert!(decode_envelope(&buf).is_ok());
@@ -1030,16 +1036,31 @@ mod tests {
             TxnMetaEntry::new(100, "boolTrue", TxnMetaValue::Boolean(true)),
             TxnMetaEntry::new(100, "boolFalse", TxnMetaValue::Boolean(false)),
             TxnMetaEntry::new(100, "doubleVal", TxnMetaValue::Double(1.23456)),
-            TxnMetaEntry::new(100, "refVal", TxnMetaValue::Ref { ns: 50, name: "Alice".into() }),
-            TxnMetaEntry::new(100, "langStr", TxnMetaValue::LangString {
-                value: "bonjour".into(),
-                lang: "fr".into(),
-            }),
-            TxnMetaEntry::new(100, "typedLit", TxnMetaValue::TypedLiteral {
-                value: "2025-01-01".into(),
-                dt_ns: 2,
-                dt_name: "date".into(),
-            }),
+            TxnMetaEntry::new(
+                100,
+                "refVal",
+                TxnMetaValue::Ref {
+                    ns: 50,
+                    name: "Alice".into(),
+                },
+            ),
+            TxnMetaEntry::new(
+                100,
+                "langStr",
+                TxnMetaValue::LangString {
+                    value: "bonjour".into(),
+                    lang: "fr".into(),
+                },
+            ),
+            TxnMetaEntry::new(
+                100,
+                "typedLit",
+                TxnMetaValue::TypedLiteral {
+                    value: "2025-01-01".into(),
+                    dt_ns: 2,
+                    dt_name: "date".into(),
+                },
+            ),
         ];
 
         let mut buf = Vec::new();
@@ -1062,16 +1083,28 @@ mod tests {
             panic!("expected Double");
         }
 
-        assert_eq!(d.txn_meta[6].value, TxnMetaValue::Ref { ns: 50, name: "Alice".into() });
-        assert_eq!(d.txn_meta[7].value, TxnMetaValue::LangString {
-            value: "bonjour".into(),
-            lang: "fr".into(),
-        });
-        assert_eq!(d.txn_meta[8].value, TxnMetaValue::TypedLiteral {
-            value: "2025-01-01".into(),
-            dt_ns: 2,
-            dt_name: "date".into(),
-        });
+        assert_eq!(
+            d.txn_meta[6].value,
+            TxnMetaValue::Ref {
+                ns: 50,
+                name: "Alice".into()
+            }
+        );
+        assert_eq!(
+            d.txn_meta[7].value,
+            TxnMetaValue::LangString {
+                value: "bonjour".into(),
+                lang: "fr".into(),
+            }
+        );
+        assert_eq!(
+            d.txn_meta[8].value,
+            TxnMetaValue::TypedLiteral {
+                value: "2025-01-01".into(),
+                dt_ns: 2,
+                dt_name: "date".into(),
+            }
+        );
     }
 
     #[test]
@@ -1084,7 +1117,11 @@ mod tests {
         // buf[0] is v (zigzag varint), buf[1] is flags byte
         // v=2 encodes as zigzag 0x04 (single byte), so flags is at buf[1]
         let flags = buf[1];
-        assert_eq!(flags & FLAG_TXN_META, 0, "FLAG_TXN_META should be unset for empty txn_meta");
+        assert_eq!(
+            flags & FLAG_TXN_META,
+            0,
+            "FLAG_TXN_META should be unset for empty txn_meta"
+        );
 
         // With txn_meta, flag should be set
         let mut commit2 = make_minimal_commit();
@@ -1093,7 +1130,11 @@ mod tests {
         encode_envelope(&commit2, &mut buf2).unwrap();
 
         let flags2 = buf2[1];
-        assert_ne!(flags2 & FLAG_TXN_META, 0, "FLAG_TXN_META should be set for non-empty txn_meta");
+        assert_ne!(
+            flags2 & FLAG_TXN_META,
+            0,
+            "FLAG_TXN_META should be set for non-empty txn_meta"
+        );
 
         // Verify decode works for both
         let d = decode_envelope(&buf).unwrap();
@@ -1108,9 +1149,11 @@ mod tests {
         let mut commit = make_minimal_commit();
         commit.previous_ref = Some(CommitRef::new("prev-addr"));
         commit.time = Some("2025-01-01T00:00:00Z".into());
-        commit.txn_meta = vec![
-            TxnMetaEntry::new(100, "jobId", TxnMetaValue::String("job-123".into())),
-        ];
+        commit.txn_meta = vec![TxnMetaEntry::new(
+            100,
+            "jobId",
+            TxnMetaValue::String("job-123".into()),
+        )];
 
         let mut buf = Vec::new();
         encode_envelope(&commit, &mut buf).unwrap();
@@ -1209,16 +1252,17 @@ mod tests {
     #[test]
     fn test_round_trip_graph_delta_single() {
         let mut commit = make_minimal_commit();
-        commit.graph_delta = HashMap::from([
-            (2, "http://example.org/graph/products".into()),
-        ]);
+        commit.graph_delta = HashMap::from([(2, "http://example.org/graph/products".into())]);
 
         let mut buf = Vec::new();
         encode_envelope(&commit, &mut buf).unwrap();
 
         let d = decode_envelope(&buf).unwrap();
         assert_eq!(d.graph_delta.len(), 1);
-        assert_eq!(d.graph_delta.get(&2), Some(&"http://example.org/graph/products".to_string()));
+        assert_eq!(
+            d.graph_delta.get(&2),
+            Some(&"http://example.org/graph/products".to_string())
+        );
     }
 
     #[test]
@@ -1235,9 +1279,18 @@ mod tests {
 
         let d = decode_envelope(&buf).unwrap();
         assert_eq!(d.graph_delta.len(), 3);
-        assert_eq!(d.graph_delta.get(&2), Some(&"http://example.org/graph/products".to_string()));
-        assert_eq!(d.graph_delta.get(&3), Some(&"http://example.org/graph/orders".to_string()));
-        assert_eq!(d.graph_delta.get(&10), Some(&"http://example.org/graph/customers".to_string()));
+        assert_eq!(
+            d.graph_delta.get(&2),
+            Some(&"http://example.org/graph/products".to_string())
+        );
+        assert_eq!(
+            d.graph_delta.get(&3),
+            Some(&"http://example.org/graph/orders".to_string())
+        );
+        assert_eq!(
+            d.graph_delta.get(&10),
+            Some(&"http://example.org/graph/customers".to_string())
+        );
     }
 
     #[test]
@@ -1246,10 +1299,12 @@ mod tests {
         let mut commit = make_minimal_commit();
         commit.previous_ref = Some(CommitRef::new("prev-addr"));
         commit.namespace_delta = HashMap::from([(100, "ex:".into())]);
-        commit.txn_meta = vec![TxnMetaEntry::new(100, "job", TxnMetaValue::String("j1".into()))];
-        commit.graph_delta = HashMap::from([
-            (5, "http://example.org/named-graph".into()),
-        ]);
+        commit.txn_meta = vec![TxnMetaEntry::new(
+            100,
+            "job",
+            TxnMetaValue::String("j1".into()),
+        )];
+        commit.graph_delta = HashMap::from([(5, "http://example.org/named-graph".into())]);
 
         let mut buf = Vec::new();
         encode_envelope(&commit, &mut buf).unwrap();
@@ -1258,7 +1313,10 @@ mod tests {
         assert_eq!(d.previous_ref.as_ref().unwrap().address, "prev-addr");
         assert_eq!(d.namespace_delta.get(&100), Some(&"ex:".to_string()));
         assert_eq!(d.txn_meta.len(), 1);
-        assert_eq!(d.graph_delta.get(&5), Some(&"http://example.org/named-graph".to_string()));
+        assert_eq!(
+            d.graph_delta.get(&5),
+            Some(&"http://example.org/named-graph".to_string())
+        );
     }
 
     #[test]

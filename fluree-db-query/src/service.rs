@@ -160,7 +160,7 @@ impl<S: Storage + 'static> ServiceOperator<S> {
         endpoint_iri: &str,
     ) -> Result<()> {
         // Look up the ledger in the dataset
-        let graph_ref = if let Some(ref ds) = ctx.dataset {
+        let graph_ref = if let Some(ds) = &ctx.dataset {
             ds.find_by_ledger_alias(full_ledger_ref)
         } else {
             // No dataset - check if alias matches the current db
@@ -427,7 +427,7 @@ impl<S: Storage + 'static> Operator<S> for ServiceOperator<S> {
                             // Binding exists but not a string - skip silently
                         } else {
                             // Variable unbound - iterate all ledgers in dataset
-                            if let Some(ref ds) = ctx.dataset {
+                            if let Some(ds) = &ctx.dataset {
                                 // Iterate all ledgers in dataset
                                 let ledger_aliases: Vec<Arc<str>> = ds
                                     .named_graphs_iter()
@@ -466,7 +466,8 @@ impl<S: Storage + 'static> Operator<S> for ServiceOperator<S> {
                             } else {
                                 // No dataset - use current db as only service
                                 let ledger_alias = &ctx.db.alias;
-                                let endpoint_iri = format!("{}{}", FLUREE_LEDGER_PREFIX, ledger_alias);
+                                let endpoint_iri =
+                                    format!("{}{}", FLUREE_LEDGER_PREFIX, ledger_alias);
                                 self.execute_against_ledger(
                                     ctx,
                                     &parent_batch,
@@ -590,8 +591,10 @@ mod tests {
                 "http://example.org/sparql"
             )
         );
-        assert!(!ServiceOperator::<fluree_db_core::MemoryStorage>::is_fluree_ledger_endpoint(
-            "fluree:other"
-        ));
+        assert!(
+            !ServiceOperator::<fluree_db_core::MemoryStorage>::is_fluree_ledger_endpoint(
+                "fluree:other"
+            )
+        );
     }
 }

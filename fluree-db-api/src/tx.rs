@@ -216,7 +216,6 @@ fn convert_named_graphs_to_templates(
     named_graphs: &[NamedGraphBlock],
     ns_registry: &mut NamespaceRegistry,
 ) -> Result<(Vec<TripleTemplate>, rustc_hash::FxHashMap<u32, String>)> {
-    use fluree_db_core::FlakeValue;
     use fluree_db_transact::{RawObject, RawTerm};
 
     let mut templates = Vec::new();
@@ -244,8 +243,8 @@ fn convert_named_graphs_to_templates(
     ) -> Result<TemplateTerm> {
         match term {
             RawTerm::Iri(iri) => {
-                if iri.starts_with("_:") {
-                    Ok(TemplateTerm::BlankNode(iri[2..].to_string()))
+                if let Some(local) = iri.strip_prefix("_:") {
+                    Ok(TemplateTerm::BlankNode(local.to_string()))
                 } else {
                     Ok(TemplateTerm::Sid(ns_registry.sid_for_iri(iri)))
                 }
@@ -266,8 +265,8 @@ fn convert_named_graphs_to_templates(
         use fluree_db_core::FlakeValue;
         match obj {
             RawObject::Iri(iri) => {
-                if iri.starts_with("_:") {
-                    Ok((TemplateTerm::BlankNode(iri[2..].to_string()), None, None))
+                if let Some(local) = iri.strip_prefix("_:") {
+                    Ok((TemplateTerm::BlankNode(local.to_string()), None, None))
                 } else {
                     Ok((TemplateTerm::Sid(ns_registry.sid_for_iri(iri)), None, None))
                 }
@@ -281,15 +280,9 @@ fn convert_named_graphs_to_templates(
                 None,
                 None,
             )),
-            RawObject::Integer(n) => {
-                Ok((TemplateTerm::Value(FlakeValue::Long(*n)), None, None))
-            }
-            RawObject::Double(n) => {
-                Ok((TemplateTerm::Value(FlakeValue::Double(*n)), None, None))
-            }
-            RawObject::Boolean(b) => {
-                Ok((TemplateTerm::Value(FlakeValue::Boolean(*b)), None, None))
-            }
+            RawObject::Integer(n) => Ok((TemplateTerm::Value(FlakeValue::Long(*n)), None, None)),
+            RawObject::Double(n) => Ok((TemplateTerm::Value(FlakeValue::Double(*n)), None, None)),
+            RawObject::Boolean(b) => Ok((TemplateTerm::Value(FlakeValue::Boolean(*b)), None, None)),
             RawObject::LangString { value, lang } => Ok((
                 TemplateTerm::Value(FlakeValue::String(value.clone())),
                 None,
@@ -390,8 +383,15 @@ where
         txn_opts: TxnOpts,
         index_config: Option<&IndexConfig>,
     ) -> Result<StageResult<S>> {
-        self.stage_transaction_with_trig_meta(ledger, txn_type, txn_json, txn_opts, index_config, None)
-            .await
+        self.stage_transaction_with_trig_meta(
+            ledger,
+            txn_type,
+            txn_json,
+            txn_opts,
+            index_config,
+            None,
+        )
+        .await
     }
 
     /// Stage a transaction with optional TriG transaction metadata.
@@ -426,6 +426,7 @@ where
     /// - JSON-LD transactions (default graph)
     /// - TriG txn-meta (commit metadata)
     /// - TriG named graphs (user-defined graphs with separate g_id)
+    #[allow(clippy::too_many_arguments)]
     pub async fn stage_transaction_with_named_graphs(
         &self,
         ledger: LedgerState<S>,
@@ -500,7 +501,12 @@ where
             }
             stage_txn(ledger, txn, ns_registry, options).await?
         };
-        Ok(StageResult { view, ns_registry, txn_meta, graph_delta })
+        Ok(StageResult {
+            view,
+            ns_registry,
+            txn_meta,
+            graph_delta,
+        })
     }
 
     /// Stage a pre-built transaction IR (bypasses JSON/Turtle parsing).
@@ -540,7 +546,12 @@ where
             };
             stage_txn(ledger, txn, ns_registry, options).await?
         };
-        Ok(StageResult { view, ns_registry, txn_meta, graph_delta })
+        Ok(StageResult {
+            view,
+            ns_registry,
+            txn_meta,
+            graph_delta,
+        })
     }
 
     /// Stage a transaction with policy enforcement + tracking (opts.meta / opts.max-fuel).
@@ -595,7 +606,12 @@ where
             .await
             .map_err(|e| TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally()))?;
 
-        Ok(StageResult { view, ns_registry, txn_meta, graph_delta })
+        Ok(StageResult {
+            view,
+            ns_registry,
+            txn_meta,
+            graph_delta,
+        })
     }
 
     /// Convenience: stage + commit + tracking + policy.
@@ -705,7 +721,12 @@ where
     ) -> Result<TransactResult<S>> {
         let store_raw_txn = txn_opts.store_raw_txn.unwrap_or(false);
 
-        let StageResult { view, ns_registry, txn_meta, graph_delta } = self
+        let StageResult {
+            view,
+            ns_registry,
+            txn_meta,
+            graph_delta,
+        } = self
             .stage_transaction(ledger, txn_type, txn_json, txn_opts, Some(index_config))
             .await?;
 
@@ -778,6 +799,7 @@ where
     ///
     /// This is similar to `transact` but accepts pre-extracted TriG metadata
     /// from Turtle inputs that had GRAPH blocks.
+    #[allow(clippy::too_many_arguments)]
     pub async fn transact_with_trig_meta(
         &self,
         ledger: LedgerState<S>,
@@ -790,7 +812,12 @@ where
     ) -> Result<TransactResult<S>> {
         let store_raw_txn = txn_opts.store_raw_txn.unwrap_or(false);
 
-        let StageResult { view, ns_registry, txn_meta, graph_delta } = self
+        let StageResult {
+            view,
+            ns_registry,
+            txn_meta,
+            graph_delta,
+        } = self
             .stage_transaction_with_trig_meta(
                 ledger,
                 txn_type,
@@ -816,27 +843,26 @@ where
 
         // No-op updates: if WHERE matches nothing (or templates produce no flakes),
         // return success without committing (Clojure parity).
-        let (receipt, ledger) = if !view.has_staged()
-            && matches!(txn_type, TxnType::Update | TxnType::Upsert)
-        {
-            let (base, flakes) = view.into_parts();
-            debug_assert!(
-                flakes.is_empty(),
-                "no-op transaction path requires zero staged flakes"
-            );
-            (
-                CommitReceipt {
-                    address: String::new(),
-                    commit_id: String::new(),
-                    t: base.t(),
-                    flake_count: 0,
-                },
-                base,
-            )
-        } else {
-            self.commit_staged(view, ns_registry, index_config, commit_opts)
-                .await?
-        };
+        let (receipt, ledger) =
+            if !view.has_staged() && matches!(txn_type, TxnType::Update | TxnType::Upsert) {
+                let (base, flakes) = view.into_parts();
+                debug_assert!(
+                    flakes.is_empty(),
+                    "no-op transaction path requires zero staged flakes"
+                );
+                (
+                    CommitReceipt {
+                        address: String::new(),
+                        commit_id: String::new(),
+                        t: base.t(),
+                        flake_count: 0,
+                    },
+                    base,
+                )
+            } else {
+                self.commit_staged(view, ns_registry, index_config, commit_opts)
+                    .await?
+            };
 
         // Compute indexing status AFTER publish_commit succeeds
         let indexing_enabled = self.indexing_mode.is_enabled() && self.defaults_indexing_enabled();
@@ -870,6 +896,7 @@ where
     /// - JSON-LD transactions (default graph)
     /// - TriG txn-meta (commit metadata)
     /// - TriG named graphs (user-defined graphs with separate g_id)
+    #[allow(clippy::too_many_arguments)]
     pub async fn transact_with_named_graphs(
         &self,
         ledger: LedgerState<S>,
@@ -883,7 +910,12 @@ where
     ) -> Result<TransactResult<S>> {
         let store_raw_txn = txn_opts.store_raw_txn.unwrap_or(false);
 
-        let StageResult { view, ns_registry, txn_meta, graph_delta } = self
+        let StageResult {
+            view,
+            ns_registry,
+            txn_meta,
+            graph_delta,
+        } = self
             .stage_transaction_with_named_graphs(
                 ledger,
                 txn_type,
@@ -910,27 +942,26 @@ where
 
         // No-op updates: if WHERE matches nothing (or templates produce no flakes),
         // return success without committing (Clojure parity).
-        let (receipt, ledger) = if !view.has_staged()
-            && matches!(txn_type, TxnType::Update | TxnType::Upsert)
-        {
-            let (base, flakes) = view.into_parts();
-            debug_assert!(
-                flakes.is_empty(),
-                "no-op transaction path requires zero staged flakes"
-            );
-            (
-                CommitReceipt {
-                    address: String::new(),
-                    commit_id: String::new(),
-                    t: base.t(),
-                    flake_count: 0,
-                },
-                base,
-            )
-        } else {
-            self.commit_staged(view, ns_registry, index_config, commit_opts)
-                .await?
-        };
+        let (receipt, ledger) =
+            if !view.has_staged() && matches!(txn_type, TxnType::Update | TxnType::Upsert) {
+                let (base, flakes) = view.into_parts();
+                debug_assert!(
+                    flakes.is_empty(),
+                    "no-op transaction path requires zero staged flakes"
+                );
+                (
+                    CommitReceipt {
+                        address: String::new(),
+                        commit_id: String::new(),
+                        t: base.t(),
+                        flake_count: 0,
+                    },
+                    base,
+                )
+            } else {
+                self.commit_staged(view, ns_registry, index_config, commit_opts)
+                    .await?
+            };
 
         // Compute indexing status AFTER publish_commit succeeds
         let indexing_enabled = self.indexing_mode.is_enabled() && self.defaults_indexing_enabled();
@@ -1049,7 +1080,12 @@ where
             .stage_turtle_insert(ledger, turtle, Some(index_config))
             .await?;
 
-        let StageResult { view, ns_registry, txn_meta, graph_delta } = stage_result;
+        let StageResult {
+            view,
+            ns_registry,
+            txn_meta,
+            graph_delta,
+        } = stage_result;
 
         // Store raw Turtle text when explicitly opted-in (same pattern as JSON path)
         let commit_opts = if commit_opts.raw_txn.is_none() && store_raw_txn {
@@ -1135,7 +1171,12 @@ where
         let view = stage_flakes(ledger, flakes, options).await?;
 
         // Plain Turtle doesn't support named graphs or txn-meta extraction (TriG support handles these)
-        Ok(StageResult { view, ns_registry, txn_meta: Vec::new(), graph_delta: rustc_hash::FxHashMap::default() })
+        Ok(StageResult {
+            view,
+            ns_registry,
+            txn_meta: Vec::new(),
+            graph_delta: rustc_hash::FxHashMap::default(),
+        })
     }
 
     /// Insert new data with options
