@@ -942,7 +942,10 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
 
                 // Propagate time-travel target and overlay state to the cursor.
                 let mut cursor = cursor;
-                eprintln!("BinaryScanOperator::open: setting to_t={} g_id={}", ctx.to_t, self.g_id);
+                eprintln!(
+                    "BinaryScanOperator::open: setting to_t={} g_id={}",
+                    ctx.to_t, self.g_id
+                );
                 cursor.set_to_t(ctx.to_t);
 
                 // Always propagate overlay epoch for cache key correctness.
