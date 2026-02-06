@@ -457,7 +457,7 @@ async fn shacl_node_kind_constraint() {
                 "@context": context.clone(),
                 "@id": "ex:alice",
                 "@type": "ex:User",
-                "schema:homepage": "http://example.org"
+                "schema:homepage": "not a valid IRI"
             }),
         )
         .await
