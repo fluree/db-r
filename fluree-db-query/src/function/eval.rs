@@ -111,15 +111,15 @@ pub fn evaluate_to_binding_with_context_strict<S: Storage>(
             datatypes.xsd_decimal.clone(),
         )),
         ComparableValue::DateTime(dt) => Ok(Binding::lit(
-            FlakeValue::DateTime(dt),
+            FlakeValue::DateTime(Box::new(dt)),
             datatypes.xsd_datetime.clone(),
         )),
         ComparableValue::Date(d) => Ok(Binding::lit(
-            FlakeValue::Date(d),
+            FlakeValue::Date(Box::new(d)),
             datatypes.xsd_date.clone(),
         )),
         ComparableValue::Time(t) => Ok(Binding::lit(
-            FlakeValue::Time(t),
+            FlakeValue::Time(Box::new(t)),
             datatypes.xsd_time.clone(),
         )),
         ComparableValue::GeoPoint(bits) => Ok(Binding::lit(

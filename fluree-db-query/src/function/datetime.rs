@@ -27,7 +27,7 @@ pub fn eval_datetime_function<S: Storage>(
             let formatted = now.to_rfc3339_opts(SecondsFormat::Millis, true);
             let parsed = FlureeDateTime::parse(&formatted)
                 .map_err(|e| QueryError::InvalidFilter(format!("now parse error: {}", e)))?;
-            Ok(Some(ComparableValue::DateTime(Box::new(parsed))))
+            Ok(Some(ComparableValue::DateTime(parsed)))
         }
 
         FunctionName::Year => eval_datetime_component(args, row, "YEAR", |dt| dt.year() as i64),

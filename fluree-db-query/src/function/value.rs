@@ -28,6 +28,47 @@ pub enum ComparableValue {
     // Extended numeric types
     BigInt(Box<BigInt>),
     Decimal(Box<BigDecimal>),
+    // Temporal types
+    DateTime(FlureeDateTime),
+    Date(FlureeDate),
+    Time(FlureeTime),
+    // Geo types
+    GeoPoint(GeoPointBits),
+    // IRI/URI
+    Iri(Arc<str>),
+    // Typed literal with optional datatype IRI and language tag
+    TypedLiteral {
+        val: FlakeValue,
+        dt_iri: Option<Arc<str>>,
+        lang: Option<Arc<str>>,
+    },
+}
+
+impl ComparableValue {
+    /// Compute the Effective Boolean Value (EBV) of this value.
+    ///
+    /// EBV is used in SPARQL FILTER and conditional expressions.
+    /// See: <https://www.w3.org/TR/sparql11-query/#ebv>
+    pub fn ebv(&self) -> bool {
+        match self {
+            ComparableValue::Bool(b) => *b,
+            ComparableValue::String(s) => !s.is_empty(),
+            ComparableValue::Iri(s) => !s.is_empty(),
+            ComparableValue::Long(n) => *n != 0,
+            ComparableValue::Double(d) => !d.is_nan() && *d != 0.0,
+            ComparableValue::BigInt(n) => !n.is_zero(),
+            ComparableValue::Decimal(d) => !d.is_zero(),
+            // Other types: Sid, Vector, DateTime, etc. are truthy if present
+            _ => true,
+        }
+    }
+
+    /// Get a string slice if this value is a String, Iri, or TypedLiteral containing a string.
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            ComparableValue::String(s) => Some(s.as_ref()),
+            ComparableValue::Iri(s) => Some(s.as_ref()),
+            ComparableValue::TypedLiteral {
                 val: FlakeValue::String(s),
                 ..
             } => Some(s.as_str()),
@@ -219,9 +260,9 @@ pub enum ComparableValue {
             FlakeValue::Vector(v) => Some(ComparableValue::Vector(Arc::from(v.as_slice()))),
             FlakeValue::BigInt(n) => Some(ComparableValue::BigInt(n.clone())),
             FlakeValue::Decimal(d) => Some(ComparableValue::Decimal(d.clone())),
-            FlakeValue::DateTime(dt) => Some(ComparableValue::DateTime(dt.clone())),
-            FlakeValue::Date(d) => Some(ComparableValue::Date(d.clone())),
-            FlakeValue::Time(t) => Some(ComparableValue::Time(t.clone())),
+            FlakeValue::DateTime(dt) => Some(ComparableValue::DateTime(dt.as_ref().clone())),
+            FlakeValue::Date(d) => Some(ComparableValue::Date(d.as_ref().clone())),
+            FlakeValue::Time(t) => Some(ComparableValue::Time(t.as_ref().clone())),
             FlakeValue::GeoPoint(bits) => Some(ComparableValue::GeoPoint(*bits)),
             FlakeValue::GYear(_)
             | FlakeValue::GYearMonth(_)
@@ -266,9 +307,9 @@ impl From<&ComparableValue> for FlakeValue {
             ComparableValue::Vector(v) => FlakeValue::Vector(v.to_vec()),
             ComparableValue::BigInt(n) => FlakeValue::BigInt(n.clone()),
             ComparableValue::Decimal(d) => FlakeValue::Decimal(d.clone()),
-            ComparableValue::DateTime(dt) => FlakeValue::DateTime(dt.clone()),
-            ComparableValue::Date(d) => FlakeValue::Date(d.clone()),
-            ComparableValue::Time(t) => FlakeValue::Time(t.clone()),
+            ComparableValue::DateTime(dt) => FlakeValue::DateTime(Box::new(dt.clone())),
+            ComparableValue::Date(d) => FlakeValue::Date(Box::new(d.clone())),
+            ComparableValue::Time(t) => FlakeValue::Time(Box::new(t.clone())),
             ComparableValue::GeoPoint(bits) => FlakeValue::GeoPoint(*bits),
             ComparableValue::Iri(s) => FlakeValue::String(s.to_string()),
             ComparableValue::TypedLiteral { val, .. } => val.clone(),
