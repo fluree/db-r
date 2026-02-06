@@ -27,6 +27,10 @@ use axum::{
 use fluree_db_api::{policy_builder, NameService, QueryConnectionOptions, StorageRead};
 use fluree_db_core::flake::Flake;
 use fluree_db_core::{NoOverlay, OverlayProvider, Tracker};
+use fluree_db_indexer::run_index::leaf::read_leaf_header;
+use fluree_db_indexer::run_index::leaflet::{decode_leaflet, decode_leaflet_region1, LeafletHeader};
+use fluree_db_indexer::run_index::types::DecodedRow;
+use fluree_db_indexer::run_index::{BinaryIndexStore, RunSortOrder};
 use fluree_db_query::QueryPolicyEnforcer;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -196,8 +200,13 @@ pub enum FilterableBlock {
 ///
 /// # Fast paths
 /// - VG addresses return immediately (no parse attempt)
+/// - if the ledger snapshot has no binary store (v2), skip
 /// - octet-stream requests skip this entirely (called from handler)
-fn try_parse_as_leaf(bytes: Vec<u8>, address_context: &AddressContext) -> FilterableBlock {
+fn try_parse_as_leaf(
+    bytes: Vec<u8>,
+    address_context: &AddressContext,
+    binary_store: Option<&BinaryIndexStore>,
+) -> FilterableBlock {
     // Fast path: VG artifacts detected from address pattern
     if matches!(address_context, AddressContext::VgArtifact { .. }) {
         return FilterableBlock::VgArtifact;
@@ -208,15 +217,119 @@ fn try_parse_as_leaf(bytes: Vec<u8>, address_context: &AddressContext) -> Filter
         return FilterableBlock::NotFilterable;
     }
 
-    // Attempt to parse as leaf using existing core parser
-    match fluree_db_core::serde::parse_leaf_node(bytes) {
+    let Some(store) = binary_store else {
+        // v1 / not indexed: can't decode binary leaflets into flakes
+        return FilterableBlock::NotFilterable;
+    };
+
+    // Attempt to parse as a binary leaf (FLI1).
+    //
+    // Note: Leaf blocks are binary (`FLI1`) and contain multiple compressed leaflets.
+    // If this isn't a leaf, decoding will fail and we treat it as NotFilterable.
+    match decode_fli1_leaf_to_flakes(bytes.as_slice(), store) {
         Ok(flakes) => FilterableBlock::Leaf(flakes),
-        Err(_) => {
-            // Parse failed - could be branch, corrupted, or different format
-            // Not an error - just means this block isn't filterable
-            FilterableBlock::NotFilterable
+        Err(_) => FilterableBlock::NotFilterable,
+    }
+}
+
+// ============================================================================
+// Binary leaf decoding (FLI1 → Vec<Flake>)
+// ============================================================================
+
+fn decode_fli1_leaf_to_flakes(
+    leaf_bytes: &[u8],
+    store: &BinaryIndexStore,
+) -> std::io::Result<Vec<Flake>> {
+    // Read leaf header (validates magic/version).
+    let header = read_leaf_header(leaf_bytes)?;
+    if header.leaflet_dir.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Auto-detect sort order by decoding Region 1 of the first leaflet and
+    // validating it against the leaflet header's recorded first row values.
+    let order = detect_leaf_sort_order(leaf_bytes, &header)?;
+
+    let mut out = Vec::with_capacity(header.total_rows as usize);
+
+    for dir_entry in &header.leaflet_dir {
+        let start = dir_entry.offset as usize;
+        let end = start + dir_entry.compressed_len as usize;
+        if end > leaf_bytes.len() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "leaf file: leaflet extends past end",
+            ));
+        }
+
+        let leaflet_bytes = &leaf_bytes[start..end];
+        let decoded = decode_leaflet(leaflet_bytes, header.p_width, header.dt_width, order)?;
+
+        for idx in 0..decoded.row_count {
+            let row = DecodedRow {
+                s_id: decoded.s_ids[idx],
+                p_id: decoded.p_ids[idx],
+                o_kind: decoded.o_kinds[idx],
+                o_key: decoded.o_keys[idx],
+                dt: decoded.dt_values[idx],
+                t: decoded.t_values[idx],
+                lang_id: decoded.lang_ids[idx],
+                i: decoded.i_values[idx],
+            };
+            out.push(store.row_to_flake(&row)?);
         }
     }
+
+    Ok(out)
+}
+
+fn detect_leaf_sort_order(
+    leaf_bytes: &[u8],
+    header: &fluree_db_indexer::run_index::leaf::LeafFileHeader,
+) -> std::io::Result<RunSortOrder> {
+    let first = header
+        .leaflet_dir
+        .first()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "leaf has no leaflets"))?;
+
+    let start = first.offset as usize;
+    let end = start + first.compressed_len as usize;
+    if end > leaf_bytes.len() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "leaf file: first leaflet extends past end",
+        ));
+    }
+    let leaflet_bytes = &leaf_bytes[start..end];
+
+    let lh = LeafletHeader::read_from(leaflet_bytes)?;
+
+    // Try all orders; accept the first that round-trips the first row markers.
+    // The Region 1 byte layout is order-dependent, so "wrong order" decoding
+    // should almost always fail this check.
+    for order in [
+        RunSortOrder::Spot,
+        RunSortOrder::Psot,
+        RunSortOrder::Post,
+        RunSortOrder::Opst,
+    ] {
+        if let Ok((_hdr, s_ids, p_ids, o_kinds, o_keys)) =
+            decode_leaflet_region1(leaflet_bytes, header.p_width, order)
+        {
+            if s_ids.first().copied() == Some(lh.first_s_id)
+                && p_ids.first().copied() == Some(lh.first_p_id)
+                && o_kinds.first().copied() == Some(lh.first_o_kind)
+                && o_keys.first().copied() == Some(lh.first_o_key)
+            {
+                return Ok(order);
+            }
+        }
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "leaf file: could not detect sort order for leaflet decoding",
+    ))
 }
 
 // ============================================================================
@@ -462,7 +575,7 @@ pub async fn get_block(
     let snapshot = handle.snapshot().await;
 
     // Attempt to parse as leaf using actual core parser
-    let parsed = try_parse_as_leaf(bytes, &context);
+    let parsed = try_parse_as_leaf(bytes, &context, snapshot.binary_store.as_deref());
 
     let flakes = match parsed {
         FilterableBlock::Leaf(flakes) => flakes,

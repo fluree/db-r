@@ -26,11 +26,17 @@
 //! ```
 
 use crate::error::{LedgerError, Result};
-use fluree_db_core::{Db, Flake, IndexType, OverlayProvider, Storage};
+use fluree_db_core::storage::extract_hash_from_address;
+use fluree_db_core::{Db, Flake, FlakeMeta, FlakeValue, IndexType, OverlayProvider, Sid, Storage};
 use fluree_db_nameservice::NameService;
 use fluree_db_novelty::{generate_commit_flakes, trace_commits, Novelty};
 use futures::StreamExt;
 use std::sync::Arc;
+use fluree_vocab::namespaces::{FLUREE_COMMIT, FLUREE_LEDGER, JSON_LD, RDF, XSD};
+use fluree_vocab::{rdf_names, xsd_names};
+
+/// Reserved txn-meta named graph IRI local name (`https://ns.flur.ee/ledger#transactions`).
+const TXN_META_GRAPH_LOCAL_NAME: &str = "transactions";
 
 /// Read-only ledger view for time-bounded historical queries
 ///
@@ -89,17 +95,27 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
             return Err(LedgerError::future_time(alias, target_t, record.commit_t));
         }
 
-        // Always use head index if available (indexes are cumulative, contain all historical data)
-        // Fall back to genesis only if no index exists yet
-        let (db, index_t) = if let Some(addr) = &record.index_address {
-            let db = Db::load(storage.clone(), addr).await?;
-            (db, record.index_t)
+        // If the requested time is *before* the latest index_t, we cannot assume the
+        // binary index can answer time-travel purely via the index. Until the index
+        // format guarantees history coverage for all updates, we fall back to an
+        // overlay-only reconstruction (genesis Db + commit replay up to target_t).
+        //
+        // When target_t >= index_t, we can use the head index and only replay commits
+        // after index_t (normal fast path).
+        let use_index = record.index_address.is_some() && target_t >= record.index_t;
+
+        // Base db + baseline index_t for overlay range.
+        let (mut db, index_t) = if use_index {
+            let addr = record.index_address.as_ref().unwrap();
+            (Db::load(storage.clone(), addr).await?, record.index_t)
         } else {
-            let db = Db::genesis(storage.clone(), &record.address);
-            (db, 0)
+            (Db::genesis(storage.clone(), &record.address), 0)
         };
 
-        // Build novelty from commits between index_t and target_t
+        // Build novelty from commits between index_t and target_t.
+        // When we are in overlay-only mode (use_index=false), this replays *all*
+        // commits up to target_t (index_t=0), producing a correct time-travel snapshot
+        // without relying on index history coverage.
         let overlay = if let Some(commit_addr) = &record.commit_address {
             if target_t > index_t {
                 tracing::trace!(target_t, index_t, "HistoricalLedgerView: loading novelty");
@@ -112,43 +128,31 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
                 )
                 .await?;
 
-                // Apply namespace deltas to db (we need a mutable copy)
-                let mut db = db;
+                // Apply namespace deltas to db
                 for (code, prefix) in ns_delta {
                     db.namespace_codes.insert(code, prefix);
                 }
 
                 if novelty.is_empty() {
                     tracing::trace!("HistoricalLedgerView: novelty is empty");
-                    return Ok(Self {
-                        db,
-                        overlay: None,
-                        to_t: target_t,
-                    });
+                    None
+                } else {
+                    tracing::trace!(
+                        epoch = novelty.epoch,
+                        "HistoricalLedgerView: returning with overlay"
+                    );
+                    Some(Arc::new(novelty))
                 }
-
-                tracing::trace!(
-                    epoch = novelty.epoch,
-                    "HistoricalLedgerView: returning with overlay"
-                );
-                return Ok(Self {
-                    db,
-                    overlay: Some(Arc::new(novelty)),
-                    to_t: target_t,
-                });
+            } else {
+                tracing::trace!(target_t, index_t, "HistoricalLedgerView: no novelty needed");
+                None
             }
-            tracing::trace!(target_t, index_t, "HistoricalLedgerView: no novelty needed");
-            None
         } else {
             tracing::trace!("HistoricalLedgerView: no commit_address, no novelty");
             None
         };
 
-        Ok(Self {
-            db,
-            overlay,
-            to_t: target_t,
-        })
+        Ok(Self { db, overlay, to_t: target_t })
     }
 
     /// Load novelty from commits within a specific range
@@ -199,10 +203,80 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
                 continue;
             }
 
+            // Derive a commit subject SID for txn-meta flakes.
+            // Commit blobs are written without `commit.id`, so we derive from the CAS address.
+            let commit_subject = extract_hash_from_address(&commit.address)
+                .map(|hex| Sid::new(FLUREE_COMMIT, hex));
+
+            // Derive user-provided txn-meta entries as flakes in the txn-meta named graph.
+            // These are stored in the commit envelope (not in commit.flakes) and must be
+            // replayed to support historical `ledger#txn-meta` views.
+            let txn_meta_flakes = commit_subject.as_ref().map(|commit_sid| {
+                let txn_meta_graph = Sid::new(FLUREE_LEDGER, TXN_META_GRAPH_LOCAL_NAME);
+                commit
+                    .txn_meta
+                    .iter()
+                    .filter_map(|entry| {
+                        let p = Sid::new(entry.predicate_ns, &entry.predicate_name);
+                        let (o, dt, m) = match &entry.value {
+                            fluree_db_novelty::TxnMetaValue::String(s) => (
+                                FlakeValue::String(s.clone()),
+                                Sid::new(XSD, xsd_names::STRING),
+                                None,
+                            ),
+                            fluree_db_novelty::TxnMetaValue::Long(n) => (
+                                FlakeValue::Long(*n),
+                                Sid::new(XSD, xsd_names::LONG),
+                                None,
+                            ),
+                            fluree_db_novelty::TxnMetaValue::Double(n) => (
+                                FlakeValue::Double(*n),
+                                Sid::new(XSD, xsd_names::DOUBLE),
+                                None,
+                            ),
+                            fluree_db_novelty::TxnMetaValue::Boolean(b) => (
+                                FlakeValue::Boolean(*b),
+                                Sid::new(XSD, xsd_names::BOOLEAN),
+                                None,
+                            ),
+                            fluree_db_novelty::TxnMetaValue::Ref { ns, name } => (
+                                FlakeValue::Ref(Sid::new(*ns, name)),
+                                Sid::new(JSON_LD, "id"),
+                                None,
+                            ),
+                            fluree_db_novelty::TxnMetaValue::LangString { value, lang } => (
+                                FlakeValue::String(value.clone()),
+                                Sid::new(RDF, rdf_names::LANG_STRING),
+                                Some(FlakeMeta::with_lang(lang.clone())),
+                            ),
+                            fluree_db_novelty::TxnMetaValue::TypedLiteral { value, dt_ns, dt_name } => (
+                                FlakeValue::String(value.clone()),
+                                Sid::new(*dt_ns, dt_name),
+                                None,
+                            ),
+                        };
+
+                        Some(Flake::new_in_graph(
+                            txn_meta_graph.clone(),
+                            commit_sid.clone(),
+                            p,
+                            o,
+                            dt,
+                            commit.t,
+                            true,
+                            m,
+                        ))
+                    })
+                    .collect::<Vec<Flake>>()
+            });
+
             let meta_flakes = generate_commit_flakes(&commit, ledger_alias, commit.t);
             let meta_len = meta_flakes.len();
             let mut all_flakes = commit.flakes;
             all_flakes.extend(meta_flakes);
+            if let Some(mut flakes) = txn_meta_flakes {
+                all_flakes.append(&mut flakes);
+            }
             tracing::trace!(
                 total_flakes = all_flakes.len(),
                 meta_flakes = meta_len,

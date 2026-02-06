@@ -27,6 +27,7 @@ use super::helpers::{
     build_regex_with_flags, check_arity, format_datatype_sid, parse_datetime_from_binding,
 };
 use super::value::{comparable_to_str_value, comparable_to_string, ComparableValue};
+use super::vector_math;
 
 // =============================================================================
 // Unified Function Evaluation
@@ -573,33 +574,18 @@ pub fn eval_function<S: Storage>(
         // Vector functions
         // =================================================================
         FunctionName::DotProduct => eval_binary_vector_fn(args, row, ctx, "dotProduct", |a, b| {
-            Some(a.iter().zip(b.iter()).map(|(x, y)| x * y).sum())
+            Some(vector_math::dot_f64(a, b))
         }),
 
         FunctionName::CosineSimilarity => {
             eval_binary_vector_fn(args, row, ctx, "cosineSimilarity", |a, b| {
-                let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-                let mag_a: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
-                let mag_b: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt();
-                if mag_a == 0.0 || mag_b == 0.0 {
-                    None
-                } else {
-                    Some(dot / (mag_a * mag_b))
-                }
+                vector_math::cosine_f64(a, b)
             })
         }
 
         FunctionName::EuclideanDistance => {
             eval_binary_vector_fn(args, row, ctx, "euclideanDistance", |a, b| {
-                let sum_sq: f64 = a
-                    .iter()
-                    .zip(b.iter())
-                    .map(|(x, y)| {
-                        let diff = x - y;
-                        diff * diff
-                    })
-                    .sum();
-                Some(sum_sq.sqrt())
+                Some(vector_math::l2_f64(a, b))
             })
         }
 
@@ -773,6 +759,35 @@ where
     F: Fn(&[f64], &[f64]) -> Option<f64>,
 {
     check_arity(args, 2, fn_name)?;
+
+    // Fast path: most queries bind vectors to variables (e.g. VALUES + ?vec).
+    // Avoid building a ComparableValue sidecar (which would allocate/copy) by
+    // borrowing the underlying Vec directly.
+    if let (FilterExpr::Var(v1), FilterExpr::Var(v2)) = (&args[0], &args[1]) {
+        let a = match row.get(*v1) {
+            Some(Binding::Lit {
+                val: FlakeValue::Vector(v),
+                ..
+            }) => Some(v.as_slice()),
+            _ => None,
+        };
+        let b = match row.get(*v2) {
+            Some(Binding::Lit {
+                val: FlakeValue::Vector(v),
+                ..
+            }) => Some(v.as_slice()),
+            _ => None,
+        };
+
+        if let (Some(a), Some(b)) = (a, b) {
+            if a.len() != b.len() {
+                return Ok(None);
+            }
+            return Ok(compute(a, b).map(ComparableValue::Double));
+        }
+    }
+
+    // Fallback: full evaluation (supports nested expressions, context-aware decoding, etc).
     let v1 = eval_to_comparable_inner(&args[0], row, ctx)?;
     let v2 = eval_to_comparable_inner(&args[1], row, ctx)?;
     match (v1, v2) {

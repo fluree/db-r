@@ -456,16 +456,10 @@ async fn test_txn_meta_and_named_graph_coexist() {
 // Named graph update + time travel tests
 // =============================================================================
 //
-// Note: These tests are marked #[ignore] because the implementation has gaps:
-// - Multi-transaction named graph scenarios have subject resolution issues
-// - Time travel with structured `from` object + `graph` selector needs work
-// - Named graph retraction via JSON-LD `@graph` selector needs investigation
-//
-// The existing tests above (basic, multiple, isolation, coexist) demonstrate
-// that single-transaction named graph workflows work correctly.
+// These tests cover multi-transaction correctness, time travel, and JSON-LD
+// `@graph`-scoped deletes for named graphs.
 
 #[tokio::test]
-#[ignore = "Named graph multi-transaction scenarios need implementation work"]
 async fn test_named_graph_update_and_query_current() {
     // Test multiple updates to a named graph and querying current state.
     let fluree = FlureeBuilder::memory()
@@ -563,7 +557,8 @@ async fn test_named_graph_update_and_query_current() {
             let widget_row = arr.iter().find(|r| {
                 r.as_array()
                     .map(|a| {
-                        a.first().and_then(|v| v.as_str()) == Some("http://example.org/widget")
+                        let s = a.first().and_then(|v| v.as_str()).unwrap_or("");
+                        s == "http://example.org/widget" || s == "ex:widget"
                     })
                     .unwrap_or(false)
             });
@@ -581,13 +576,19 @@ async fn test_named_graph_update_and_query_current() {
                     .map(|a| a.first().and_then(|v| v.as_str()) == Some("http://example.org/gizmo"))
                     .unwrap_or(false)
             });
+            let gizmo_row = gizmo_row.or_else(|| {
+                arr.iter().find(|r| {
+                    r.as_array()
+                        .map(|a| a.first().and_then(|v| v.as_str()) == Some("ex:gizmo"))
+                        .unwrap_or(false)
+                })
+            });
             assert!(gizmo_row.is_some(), "should find gizmo (added in tx2)");
         })
         .await;
 }
 
 #[tokio::test]
-#[ignore = "Named graph time travel with structured from object needs implementation"]
 async fn test_named_graph_time_travel() {
     // Test time travel queries on named graphs.
     let fluree = FlureeBuilder::memory()
@@ -810,7 +811,6 @@ async fn test_named_graph_time_travel() {
 }
 
 #[tokio::test]
-#[ignore = "Named graph retraction via JSON-LD @graph selector needs implementation"]
 async fn test_named_graph_retraction() {
     // Test that retractions work correctly in named graphs.
     let fluree = FlureeBuilder::memory()
@@ -901,16 +901,19 @@ async fn test_named_graph_retraction() {
             );
 
             let user_ids: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+            let has_user = |full: &str, prefixed: &str| {
+                user_ids.contains(&full) || user_ids.contains(&prefixed)
+            };
             assert!(
-                user_ids.contains(&"http://example.org/alice"),
+                has_user("http://example.org/alice", "ex:alice"),
                 "alice should be active"
             );
             assert!(
-                user_ids.contains(&"http://example.org/carol"),
+                has_user("http://example.org/carol", "ex:carol"),
                 "carol should be active"
             );
             assert!(
-                !user_ids.contains(&"http://example.org/bob"),
+                !has_user("http://example.org/bob", "ex:bob"),
                 "bob should NOT be active"
             );
 

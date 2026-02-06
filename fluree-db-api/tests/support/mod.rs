@@ -58,6 +58,39 @@ pub fn genesis_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
 }
 
 // =============================================================================
+// Common seeding helpers
+// =============================================================================
+
+/// Seed a ledger with a user that has a sensitive `schema:ssn` property.
+///
+/// Uses the default graph and returns the updated ledger.
+pub async fn seed_user_with_ssn(
+    fluree: &MemoryFluree,
+    alias: &str,
+    user_id: &str,
+    ssn: &str,
+) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, alias);
+    let txn = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "@graph": [
+            {
+                "@id": user_id,
+                "@type": "ex:User",
+                "schema:name": "Alice",
+                "schema:ssn": ssn,
+                "ex:age": 25
+            }
+        ]
+    });
+
+    fluree.insert(ledger0, &txn).await.expect("seed").ledger
+}
+
+// =============================================================================
 // Background indexing helpers (tests)
 // =============================================================================
 
@@ -166,6 +199,17 @@ pub fn normalize_sparql_bindings(v: &JsonValue) -> Vec<JsonValue> {
     out
 }
 
+/// Normalize single-variable results (flat array) for comparison.
+pub fn normalize_flat_results(v: &JsonValue) -> Vec<JsonValue> {
+    let mut items: Vec<JsonValue> = v.as_array().expect("expected JSON array").to_vec();
+    items.sort_by(|a, b| {
+        serde_json::to_string(a)
+            .unwrap_or_default()
+            .cmp(&serde_json::to_string(b).unwrap_or_default())
+    });
+    items
+}
+
 // =============================================================================
 // Common @context helpers
 // =============================================================================
@@ -232,6 +276,45 @@ pub fn people_data() -> JsonValue {
             "schema:birthDate": {"@value": "2011-09-26", "@type": "xsd:date"}
         }
     ])
+}
+
+/// Seed a small "people" dataset used by policy + query-connection tests.
+///
+/// Includes `schema:ssn` so view-policy behavior can be tested.
+pub async fn seed_people_with_ssn(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, alias);
+
+    let txn = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/",
+            "f": "https://ns.flur.ee/ledger#"
+        },
+        "@graph": [
+            {
+                "@id": "ex:alice",
+                "@type": "ex:User",
+                "schema:name": "Alice",
+                "schema:email": "alice@flur.ee",
+                "schema:birthDate": "2022-08-17",
+                "schema:ssn": "111-11-1111"
+            },
+            {
+                "@id": "ex:john",
+                "@type": "ex:User",
+                "schema:name": "John",
+                "schema:email": "john@flur.ee",
+                "schema:birthDate": "2021-08-17",
+                "schema:ssn": "888-88-8888"
+            }
+        ]
+    });
+
+    fluree
+        .insert(ledger0, &txn)
+        .await
+        .expect("seed should succeed")
+        .ledger
 }
 
 /// Load people test data into a new ledger (matches Clojure `test-utils/load-people`)

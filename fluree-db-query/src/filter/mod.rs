@@ -32,6 +32,7 @@ mod eval;
 mod functions;
 mod helpers;
 mod operator;
+mod vector_math;
 mod value;
 
 // Re-export public API

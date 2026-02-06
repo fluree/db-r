@@ -14,23 +14,13 @@ use fluree_db_api::{DatasetSpec, FlureeBuilder, FlureeDataSetView, FlureeView, G
 use fluree_db_novelty::load_commit;
 use serde_json::json;
 use support::{
-    assert_index_defaults, genesis_ledger, normalize_rows_array, MemoryFluree, MemoryLedger,
+    assert_index_defaults, genesis_ledger, normalize_flat_results, normalize_rows_array,
+    MemoryFluree, MemoryLedger,
 };
 
 // =============================================================================
 // Helper functions
 // =============================================================================
-
-/// Normalize single-variable results (flat array) for comparison
-fn normalize_flat_results(v: &serde_json::Value) -> Vec<serde_json::Value> {
-    let mut items: Vec<serde_json::Value> = v.as_array().expect("expected JSON array").to_vec();
-    items.sort_by(|a, b| {
-        serde_json::to_string(a)
-            .unwrap_or_default()
-            .cmp(&serde_json::to_string(b).unwrap_or_default())
-    });
-    items
-}
 
 // =============================================================================
 // Test data seeding helpers

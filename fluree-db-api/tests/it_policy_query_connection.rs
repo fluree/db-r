@@ -11,49 +11,14 @@ mod support;
 
 use fluree_db_api::FlureeBuilder;
 use serde_json::json;
-use support::{assert_index_defaults, genesis_ledger, normalize_rows, MemoryFluree};
-
-async fn seed_people_with_ssn(fluree: &MemoryFluree, alias: &str) {
-    let ledger0 = genesis_ledger(fluree, alias);
-
-    let txn = json!({
-        "@context": {
-            "ex": "http://example.org/ns/",
-            "schema": "http://schema.org/",
-            "f": "https://ns.flur.ee/ledger#"
-        },
-        "@graph": [
-            {
-                "@id": "ex:alice",
-                "@type": "ex:User",
-                "schema:name": "Alice",
-                "schema:email": "alice@flur.ee",
-                "schema:birthDate": "2022-08-17",
-                "schema:ssn": "111-11-1111"
-            },
-            {
-                "@id": "ex:john",
-                "@type": "ex:User",
-                "schema:name": "John",
-                "schema:email": "john@flur.ee",
-                "schema:birthDate": "2021-08-17",
-                "schema:ssn": "888-88-8888"
-            }
-        ]
-    });
-
-    let _ = fluree
-        .insert(ledger0, &txn)
-        .await
-        .expect("seed should succeed");
-}
+use support::{assert_index_defaults, normalize_rows, seed_people_with_ssn};
 
 #[tokio::test]
 async fn policy_inline_denies_restricted_property_in_direct_select() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
 
-    seed_people_with_ssn(&fluree, "policy/inline:main").await;
+    let _ = seed_people_with_ssn(&fluree, "policy/inline:main").await;
 
     // Inline policy: deny viewing `schema:ssn` for everyone.
     //
@@ -104,7 +69,7 @@ async fn policy_inline_denies_restricted_property_in_graph_crawl() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
 
-    seed_people_with_ssn(&fluree, "policy/inline:main").await;
+    let _ = seed_people_with_ssn(&fluree, "policy/inline:main").await;
 
     // NOTE: Rust `opts.policy` expects **a policy object or array of policy objects**,
     // not a JSON-LD wrapper like `{"@graph":[...]}`.
@@ -193,7 +158,7 @@ async fn policy_per_source_override_takes_precedence_over_global() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
 
-    seed_people_with_ssn(&fluree, "policy/per-source:main").await;
+    let _ = seed_people_with_ssn(&fluree, "policy/per-source:main").await;
 
     // Query with global policy (default-allow: false) but per-source override (default-allow: true).
     // The per-source policy should take precedence, allowing data visibility.

@@ -10,11 +10,17 @@ use crate::view::{FlureeView, ReasoningModePrecedence};
 use crate::{
     time_resolve, ApiError, Fluree, NameService, QueryConnectionOptions, Result, Storage, TimeSpec,
 };
+use fluree_db_core::{DictNovelty, Flake, IndexType, OverlayProvider};
 use fluree_db_indexer::run_index::{
     BinaryIndexRootV2, BinaryIndexStore, BINARY_INDEX_ROOT_VERSION_V2,
 };
 use fluree_db_query::rewrite::ReasoningModes;
 use fluree_db_query::BinaryRangeProvider;
+
+/// Reserved IRI for the built-in txn-meta graph (`g_id = 1`).
+///
+/// This is the graph that stores commit/transaction metadata.
+const TXN_META_GRAPH_IRI: &str = "https://ns.flur.ee/ledger#transactions";
 
 // ============================================================================
 // View Loading
@@ -29,6 +35,75 @@ enum GraphRef {
     TxnMeta,
     /// User-defined named graph by IRI (needs resolution via binary index store)
     Named(String),
+}
+
+// ============================================================================
+// Overlay graph filtering (for overlay-only historical time travel)
+// ============================================================================
+
+#[derive(Clone)]
+struct GraphIriFilteredOverlay {
+    inner: Arc<dyn OverlayProvider>,
+    // namespace_code -> prefix mapping for reconstructing IRIs from Sids
+    namespace_codes: std::collections::HashMap<u16, String>,
+    // Target graph IRI (exact match)
+    target_graph_iri: Arc<str>,
+}
+
+impl GraphIriFilteredOverlay {
+    fn new(
+        inner: Arc<dyn OverlayProvider>,
+        namespace_codes: std::collections::HashMap<u16, String>,
+        target_graph_iri: impl Into<Arc<str>>,
+    ) -> Self {
+        Self {
+            inner,
+            namespace_codes,
+            target_graph_iri: target_graph_iri.into(),
+        }
+    }
+
+    fn flake_in_target_graph(&self, flake: &Flake) -> bool {
+        let Some(g) = flake.g.as_ref() else {
+            return false; // default graph
+        };
+        let Some(prefix) = self.namespace_codes.get(&g.namespace_code) else {
+            return false;
+        };
+        // Compare without allocating: target == prefix + name
+        let target = self.target_graph_iri.as_ref();
+        let name = g.name.as_ref();
+        target.starts_with(prefix) && &target[prefix.len()..] == name
+    }
+}
+
+impl OverlayProvider for GraphIriFilteredOverlay {
+    fn epoch(&self) -> u64 {
+        self.inner.epoch()
+    }
+
+    fn for_each_overlay_flake(
+        &self,
+        index: IndexType,
+        first: Option<&Flake>,
+        rhs: Option<&Flake>,
+        leftmost: bool,
+        to_t: i64,
+        callback: &mut dyn FnMut(&Flake),
+    ) {
+        self.inner.for_each_overlay_flake(
+            index,
+            first,
+            rhs,
+            leftmost,
+            to_t,
+            &mut |flake| {
+                if self.flake_in_target_graph(flake) {
+                    callback(flake);
+                }
+            },
+        )
+    }
 }
 
 impl<S, N> Fluree<S, N>
@@ -92,42 +167,64 @@ where
     /// `Db.range_provider` and sets `view.graph_id` so both range queries
     /// and binary scans use the same graph.
     fn select_graph(mut view: FlureeView<S>, graph_ref: GraphRef) -> Result<FlureeView<S>> {
-        eprintln!(
-            "select_graph: entry graph_ref={:?} to_t={} has_novelty={}",
-            graph_ref,
-            view.to_t,
-            view.novelty.is_some()
-        );
-        let graph_id = Self::resolve_graph_ref(&view, graph_ref)?;
-        eprintln!(
-            "select_graph: resolved graph_id={} to_t={}",
-            graph_id, view.to_t
-        );
-
-        if graph_id == 0 {
-            return Ok(view);
+        match graph_ref {
+            GraphRef::Default => Ok(view),
+            GraphRef::TxnMeta => {
+                // Prefer index-backed graph scoping when we have the binary store.
+                // In overlay-only historical mode, we don't attach a binary store on purpose,
+                // so we fall back to filtering overlay flakes by the txn-meta graph IRI.
+                if view.binary_store.is_some() && view.dict_novelty.is_some() {
+                    let graph_id = Self::resolve_graph_ref(&view, GraphRef::TxnMeta)?;
+                    if graph_id == 0 {
+                        return Ok(view);
+                    }
+                    let store = view.binary_store.clone().unwrap();
+                    let dict_novelty = view.dict_novelty.clone().unwrap();
+                    let provider = BinaryRangeProvider::new(store, dict_novelty, graph_id);
+                    let mut db = (*view.db).clone();
+                    db.range_provider = Some(Arc::new(provider));
+                    view.db = Arc::new(db);
+                    Ok(view.with_graph_id(graph_id))
+                } else {
+                    // Overlay-only historical path: filter overlay flakes to txn-meta graph IRI.
+                    // This enables `ledger#txn-meta` time travel even when we intentionally
+                    // don't attach the binary store (overlay replay path).
+                    let inner = Arc::clone(&view.overlay);
+                    let ns_codes = (*view.db).namespace_codes.clone();
+                    view.overlay = Arc::new(GraphIriFilteredOverlay::new(
+                        inner,
+                        ns_codes,
+                        TXN_META_GRAPH_IRI,
+                    ));
+                    Ok(view.with_graph_id(1))
+                }
+            }
+            GraphRef::Named(iri) => {
+                // Index-backed path: resolve to g_id + rescope provider for graph-aware range queries.
+                if view.binary_store.is_some() && view.dict_novelty.is_some() {
+                    let graph_id = Self::resolve_graph_ref(&view, GraphRef::Named(iri.clone()))?;
+                    if graph_id == 0 {
+                        return Ok(view);
+                    }
+                    let store = view.binary_store.clone().unwrap();
+                    let dict_novelty = view.dict_novelty.clone().unwrap();
+                    let provider = BinaryRangeProvider::new(store, dict_novelty, graph_id);
+                    let mut db = (*view.db).clone();
+                    db.range_provider = Some(Arc::new(provider));
+                    view.db = Arc::new(db);
+                    Ok(view.with_graph_id(graph_id))
+                } else {
+                    // Overlay-only historical path: filter overlay flakes by graph IRI.
+                    // This supports named graph time travel even when the binary index
+                    // cannot answer historical queries (no Region 3 coverage).
+                    let inner = Arc::clone(&view.overlay);
+                    let ns_codes = (*view.db).namespace_codes.clone();
+                    view.overlay =
+                        Arc::new(GraphIriFilteredOverlay::new(inner, ns_codes, iri.clone()));
+                    Ok(view)
+                }
+            }
         }
-
-        let Some(store) = view.binary_store.clone() else {
-            return Err(ApiError::internal(
-                "Named graph queries require a binary index store".to_string(),
-            ));
-        };
-        let Some(dict_novelty) = view.dict_novelty.clone() else {
-            return Err(ApiError::internal(
-                "Named graph queries require dict novelty".to_string(),
-            ));
-        };
-
-        // Re-scope the range provider to the requested graph_id.
-        // This ensures callers of `range_with_overlay()` (planner, policy, etc.)
-        // see the correct graph.
-        let provider = BinaryRangeProvider::new(store, dict_novelty, graph_id);
-        let mut db = (*view.db).clone();
-        db.range_provider = Some(Arc::new(provider));
-        view.db = Arc::new(db);
-
-        Ok(view.with_graph_id(graph_id))
     }
 
     /// Load the current view (immutable snapshot) from a ledger.
@@ -193,43 +290,48 @@ where
         let historical = self.ledger_view_at(alias, target_t).await?;
         let mut view = FlureeView::from_historical(&historical);
 
-        // Load binary index store for named graph support.
-        // We need:
-        // 1. Binary index store from the index_address
-        // 2. Dict novelty for subject/string lookups in binary scans
+        // Attach a dict_novelty derived from the historical Db's watermarks.
+        // This avoids relying on potentially-stale cached handle state and is
+        // sufficient for binary overlay translation when an overlay is present.
+        view.dict_novelty = Some(Arc::new(DictNovelty::with_watermarks(
+            view.db.subject_watermarks.clone(),
+            view.db.string_watermark,
+        )));
+
+        // Load the binary index store (for index-backed historical queries only).
         //
-        // Get these from the current ledger snapshot (cached path).
-        let handle = self.ledger_cached(alias).await?;
-        let snapshot = handle.snapshot().await;
-
-        // Get dict_novelty from the current snapshot
-        view.dict_novelty = Some(snapshot.dict_novelty.clone());
-
-        // Load binary index store if available
-        if let Some(index_addr) = snapshot
-            .ns_record
-            .as_ref()
-            .and_then(|r| r.index_address.as_ref())
-            .cloned()
-        {
-            let storage = self.storage();
-            if let Ok(bytes) = storage.read_bytes(&index_addr).await {
-                if let Ok(root) = serde_json::from_slice::<BinaryIndexRootV2>(&bytes) {
+        // When the historical view is overlay-only (genesis Db + commit replay),
+        // we intentionally skip attaching a binary store so the query engine
+        // takes the overlay/range path instead of the binary scan path.
+        if view.db.t > 0 {
+            // Use nameservice record (not cached handle) to avoid stale index_address.
+            if let Some(record) = self.nameservice.lookup(alias).await? {
+                if let Some(index_addr) = record.index_address.as_ref() {
+                    let storage = self.storage();
+                    let bytes = storage.read_bytes(index_addr).await.map_err(|e| {
+                        ApiError::internal(format!(
+                            "failed to read index root {}: {}",
+                            index_addr, e
+                        ))
+                    })?;
+                    let root: BinaryIndexRootV2 = serde_json::from_slice(&bytes).map_err(|e| {
+                        ApiError::internal(format!(
+                            "failed to parse v2 root {}: {}",
+                            index_addr, e
+                        ))
+                    })?;
                     if root.version == BINARY_INDEX_ROOT_VERSION_V2 {
                         let cache_dir = std::env::temp_dir().join("fluree-cache");
-                        if let Ok(store) =
+                        let store =
                             BinaryIndexStore::load_from_root_default(storage, &root, &cache_dir)
                                 .await
-                        {
-                            // Attach the binary store so `#txn-meta` selection can re-scope
-                            // the range provider on demand via `select_graph_id()`.
-                            //
-                            // Note: We intentionally do *not* override `view.db.range_provider`
-                            // here. Historical views may have time-travel-correct providers;
-                            // forcing a binary provider rooted at the current index would change
-                            // default-graph time-travel semantics.
-                            view.binary_store = Some(Arc::new(store));
-                        }
+                                .map_err(|e| {
+                                    ApiError::internal(format!(
+                                        "load binary index store from {}: {}",
+                                        index_addr, e
+                                    ))
+                                })?;
+                        view.binary_store = Some(Arc::new(store));
                     }
                 }
             }
@@ -326,7 +428,6 @@ where
         view: FlureeView<S>,
         selector: &crate::dataset::GraphSelector,
     ) -> Result<FlureeView<S>> {
-        eprintln!("apply_graph_selector: selector={:?}", selector);
         let graph_ref = match selector {
             crate::dataset::GraphSelector::Default => GraphRef::Default,
             crate::dataset::GraphSelector::TxnMeta => GraphRef::TxnMeta,

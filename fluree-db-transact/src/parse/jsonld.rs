@@ -21,6 +21,43 @@ use fluree_db_query::VarRegistry;
 use fluree_graph_json_ld::{details, expand_with_context, parse_context, ParsedContext};
 use fluree_vocab::rdf::{self, TYPE};
 use serde_json::Value;
+use std::collections::HashMap;
+
+/// Assigns per-transaction graph IDs for JSON-LD `@graph` selectors.
+///
+/// These IDs are scoped to the transaction envelope via `Txn.graph_delta`.
+/// They do not need to be globally stable across commits, as long as the commit
+/// carries the mapping used to encode flakes.
+struct GraphIdAssigner {
+    iri_to_id: HashMap<String, u32>,
+    next_id: u32, // 2+ reserved for user graphs
+}
+
+impl GraphIdAssigner {
+    fn new() -> Self {
+        Self {
+            iri_to_id: HashMap::new(),
+            next_id: 2,
+        }
+    }
+
+    fn get_or_assign(&mut self, iri: &str) -> u32 {
+        if let Some(&id) = self.iri_to_id.get(iri) {
+            return id;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.iri_to_id.insert(iri.to_string(), id);
+        id
+    }
+
+    fn delta(&self) -> rustc_hash::FxHashMap<u32, String> {
+        self.iri_to_id
+            .iter()
+            .map(|(iri, &g_id)| (g_id, iri.clone()))
+            .collect()
+    }
+}
 
 /// Parse a JSON-LD transaction into the Transaction IR
 ///
@@ -64,6 +101,7 @@ pub fn parse_transaction(
 /// Parse an insert transaction
 fn parse_insert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry) -> Result<Txn> {
     let mut vars = VarRegistry::new();
+    let mut graph_ids = GraphIdAssigner::new();
 
     // Parse and merge context
     let context = extract_context(json)?;
@@ -74,7 +112,8 @@ fn parse_insert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     // Expand the document
     let expanded = expand_with_context(json, &context)?;
 
-    let templates = parse_expanded_triples(&expanded, &context, &mut vars, ns_registry, false)?;
+    let templates =
+        parse_expanded_triples(&expanded, &context, &mut vars, ns_registry, false, &mut graph_ids)?;
     if templates.is_empty() {
         return Err(TransactError::Parse(
             "Insert must contain at least one predicate or @type (an object with only @id is not a valid insert)"
@@ -82,11 +121,13 @@ fn parse_insert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
         ));
     }
 
-    Ok(Txn::insert()
+    let mut txn = Txn::insert()
         .with_inserts(templates)
         .with_vars(vars)
         .with_opts(opts)
-        .with_txn_meta(txn_meta))
+        .with_txn_meta(txn_meta);
+    txn.graph_delta = graph_ids.delta();
+    Ok(txn)
 }
 
 /// Parse an upsert transaction
@@ -97,6 +138,7 @@ fn parse_upsert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     // For now, upsert is handled the same as insert at parse time
     // The actual upsert logic (query existing, delete old) happens in stage
     let mut vars = VarRegistry::new();
+    let mut graph_ids = GraphIdAssigner::new();
 
     let context = extract_context(json)?;
 
@@ -105,7 +147,8 @@ fn parse_upsert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
 
     let expanded = expand_with_context(json, &context)?;
 
-    let templates = parse_expanded_triples(&expanded, &context, &mut vars, ns_registry, false)?;
+    let templates =
+        parse_expanded_triples(&expanded, &context, &mut vars, ns_registry, false, &mut graph_ids)?;
     if templates.is_empty() {
         return Err(TransactError::Parse(
             "Upsert must contain at least one predicate or @type (an object with only @id is not a valid upsert)"
@@ -113,11 +156,13 @@ fn parse_upsert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
         ));
     }
 
-    Ok(Txn::upsert()
+    let mut txn = Txn::upsert()
         .with_inserts(templates)
         .with_vars(vars)
         .with_opts(opts)
-        .with_txn_meta(txn_meta))
+        .with_txn_meta(txn_meta);
+    txn.graph_delta = graph_ids.delta();
+    Ok(txn)
 }
 
 /// Parse an update transaction (SPARQL-style with WHERE/DELETE/INSERT)
@@ -134,6 +179,7 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
         .ok_or_else(|| TransactError::Parse("Update transaction must be an object".to_string()))?;
 
     let mut vars = VarRegistry::new();
+    let mut graph_ids = GraphIdAssigner::new();
 
     // Parse context from the outer document
     let context = extract_context(json)?;
@@ -181,6 +227,7 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
             &mut vars,
             ns_registry,
             object_var_parsing,
+            &mut graph_ids,
         )?;
         if templates.is_empty() {
             // Clojure parity: an explicit empty delete (e.g. `"delete": []`) is a no-op.
@@ -209,6 +256,7 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
             &mut vars,
             ns_registry,
             object_var_parsing,
+            &mut graph_ids,
         )?;
         if templates.is_empty() {
             return Err(TransactError::Parse(
@@ -228,6 +276,7 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
         .with_vars(vars)
         .with_opts(opts)
         .with_txn_meta(txn_meta);
+    txn.graph_delta = graph_ids.delta();
 
     if let Some(values_val) = obj.get("values") {
         let values = parse_inline_values(values_val, &context, &mut txn.vars, ns_registry)?;
@@ -466,6 +515,7 @@ fn parse_expanded_triples(
     vars: &mut VarRegistry,
     ns_registry: &mut NamespaceRegistry,
     object_var_parsing: bool,
+    graph_ids: &mut GraphIdAssigner,
 ) -> Result<Vec<TripleTemplate>> {
     match expanded {
         Value::Array(arr) => arr.iter().try_fold(Vec::new(), |mut templates, item| {
@@ -475,11 +525,19 @@ fn parse_expanded_triples(
                 vars,
                 ns_registry,
                 object_var_parsing,
+                graph_ids,
             )?);
             Ok(templates)
         }),
         Value::Object(_) => {
-            parse_expanded_object(expanded, context, vars, ns_registry, object_var_parsing)
+            parse_expanded_object(
+                expanded,
+                context,
+                vars,
+                ns_registry,
+                object_var_parsing,
+                graph_ids,
+            )
         }
         _ => Err(TransactError::Parse(
             "Expected expanded object or array of objects".to_string(),
@@ -494,12 +552,34 @@ fn parse_expanded_object(
     vars: &mut VarRegistry,
     ns_registry: &mut NamespaceRegistry,
     object_var_parsing: bool,
+    graph_ids: &mut GraphIdAssigner,
 ) -> Result<Vec<TripleTemplate>> {
     let obj = expanded
         .as_object()
         .ok_or_else(|| TransactError::Parse("Expected expanded object".to_string()))?;
 
     let mut templates = Vec::new();
+
+    // Optional named-graph selector for this node.
+    //
+    // Transaction JSON-LD supports a non-standard but convenient form:
+    // `{ "@id": "...", "@graph": "<graph iri>", ... }`
+    //
+    // This is distinct from *envelope form* (top-level `@graph: [...]`) used
+    // for txn-meta extraction.
+    let graph_id = obj
+        .get("@graph")
+        .and_then(|v| match v {
+            Value::String(s) => Some(s.as_str()),
+            Value::Object(map) => map.get("@id").and_then(|id| id.as_str()),
+            Value::Array(arr) => arr.first().and_then(|x| match x {
+                Value::String(s) => Some(s.as_str()),
+                Value::Object(map) => map.get("@id").and_then(|id| id.as_str()),
+                _ => None,
+            }),
+            _ => None,
+        })
+        .map(|iri| graph_ids.get_or_assign(iri));
 
     // Get subject from @id (already expanded IRI or variable)
     let subject = if let Some(id) = obj.get("@id") {
@@ -512,7 +592,7 @@ fn parse_expanded_object(
     // Parse each predicate-object pair
     for (key, value) in obj {
         // Skip JSON-LD keywords except @type which becomes rdf:type
-        if key == "@id" || key == "@context" {
+        if key == "@id" || key == "@context" || key == "@graph" {
             continue;
         }
 
@@ -534,11 +614,11 @@ fn parse_expanded_object(
                     } else {
                         TemplateTerm::Sid(ns_registry.sid_for_iri(type_iri))
                     };
-                    templates.push(TripleTemplate::new(
-                        subject.clone(),
-                        predicate.clone(),
-                        object,
-                    ));
+                    let mut t = TripleTemplate::new(subject.clone(), predicate.clone(), object);
+                    if let Some(g_id) = graph_id {
+                        t = t.with_graph_id(g_id);
+                    }
+                    templates.push(t);
                 } else {
                     return Err(TransactError::Parse(format!(
                         "Invalid @type value: expected IRI string, got: {:?}",
@@ -571,11 +651,15 @@ fn parse_expanded_object(
             ns_registry,
             &mut templates,
             object_var_parsing,
+            graph_ids,
         )?;
 
         for parsed_value in parsed_values {
             let mut template =
                 TripleTemplate::new(subject.clone(), predicate.clone(), parsed_value.term);
+            if let Some(g_id) = graph_id {
+                template = template.with_graph_id(g_id);
+            }
             if let Some(dt) = parsed_value.datatype {
                 template = template.with_datatype(dt);
             }
@@ -666,6 +750,7 @@ fn parse_expanded_objects(
     ns_registry: &mut NamespaceRegistry,
     templates: &mut Vec<TripleTemplate>,
     object_var_parsing: bool,
+    graph_ids: &mut GraphIdAssigner,
 ) -> Result<Vec<ParsedValue>> {
     match value {
         Value::Array(arr) => {
@@ -694,6 +779,7 @@ fn parse_expanded_objects(
                     ns_registry,
                     templates,
                     object_var_parsing,
+                    graph_ids,
                 )?);
             }
             Ok(results)
@@ -705,6 +791,7 @@ fn parse_expanded_objects(
             ns_registry,
             templates,
             object_var_parsing,
+            graph_ids,
         )?]),
     }
 }
@@ -724,6 +811,7 @@ fn parse_expanded_value(
     ns_registry: &mut NamespaceRegistry,
     templates: &mut Vec<TripleTemplate>,
     object_var_parsing: bool,
+    graph_ids: &mut GraphIdAssigner,
 ) -> Result<ParsedValue> {
     match value {
         Value::Object(obj) => {
@@ -740,6 +828,7 @@ fn parse_expanded_value(
                         vars,
                         ns_registry,
                         object_var_parsing,
+                        graph_ids,
                     )?;
                     templates.extend(nested_templates);
                 }
@@ -1323,6 +1412,7 @@ mod tests {
         let mut ns_registry = test_registry();
         let mut templates: Vec<TripleTemplate> = Vec::new();
         let ctx = ParsedContext::new();
+        let mut graph_ids = GraphIdAssigner::new();
 
         // @value with @type - should preserve datatype
         let val = json!({"@value": "42", "@type": "http://www.w3.org/2001/XMLSchema#integer"});
@@ -1333,6 +1423,7 @@ mod tests {
             &mut ns_registry,
             &mut templates,
             true,
+            &mut graph_ids,
         )
         .unwrap();
         assert!(matches!(
@@ -1350,6 +1441,7 @@ mod tests {
         let mut ns_registry = test_registry();
         let mut templates: Vec<TripleTemplate> = Vec::new();
         let ctx = ParsedContext::new();
+        let mut graph_ids = GraphIdAssigner::new();
 
         // @value with @language
         let val = json!({"@value": "Hello", "@language": "en"});
@@ -1360,6 +1452,7 @@ mod tests {
             &mut ns_registry,
             &mut templates,
             true,
+            &mut graph_ids,
         )
         .unwrap();
         assert!(matches!(

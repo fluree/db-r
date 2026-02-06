@@ -358,6 +358,8 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
             .await
             .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
         let arc_store = Arc::new(store);
+        let te_store: Arc<dyn std::any::Any + Send + Sync> = arc_store.clone();
+        let te_store = TypeErasedStore(te_store);
         let dn = Arc::new(DictNovelty::new_uninitialized());
         let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);
 
@@ -393,6 +395,7 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
                 .apply_loaded_db(db, index_address)
                 .map_err(|e| ApiError::internal(format!("apply_loaded_db failed: {}", e)))?;
             *self.inner.binary_store.lock().await = Some(arc_store);
+            state.binary_store = Some(te_store);
         }
 
         Ok(())
@@ -548,6 +551,11 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
     let dn = Arc::new(DictNovelty::new_uninitialized());
     let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);
     state.db.range_provider = Some(Arc::new(provider));
+    // Also attach the type-erased store to the state so transaction staging
+    // (which clones LedgerState under the write lock) can construct
+    // graph-scoped BinaryRangeProviders (needed for named-graph upsert deletions).
+        let te_store: Arc<dyn std::any::Any + Send + Sync> = arc_store.clone();
+        state.binary_store = Some(TypeErasedStore(te_store));
     Ok(Some(arc_store))
 }
 

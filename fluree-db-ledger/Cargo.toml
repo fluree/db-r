@@ -9,6 +9,7 @@ license = "Apache-2.0"
 fluree-db-core = { path = "../fluree-db-core" }
 fluree-db-novelty = { path = "../fluree-db-novelty" }
 fluree-db-nameservice = { path = "../fluree-db-nameservice" }
+fluree-vocab = { path = "../fluree-vocab" }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 futures = { workspace = true }

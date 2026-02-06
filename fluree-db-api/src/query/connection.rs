@@ -48,8 +48,13 @@ where
         }
 
         // Single-ledger with time travel: use FlureeView API
-        if let Some(view) = self.try_single_view_from_spec(&spec).await? {
+        if let Some(mut view) = self.try_single_view_from_spec(&spec).await? {
             let source = &spec.default_graphs[0];
+
+            // Apply graph selector if specified in structured from
+            if let Some(selector) = &source.graph_selector {
+                view = Self::apply_graph_selector(view, selector)?;
+            }
 
             // Apply policy: per-source overrides global
             let view = self
@@ -120,8 +125,15 @@ where
             crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
         })?;
 
-        if let Some(view) = single_view {
+        if let Some(mut view) = single_view {
             let source = &spec.default_graphs[0];
+
+            // Apply graph selector if specified in structured from
+            if let Some(selector) = &source.graph_selector {
+                view = Self::apply_graph_selector(view, selector).map_err(|e| {
+                    crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
+                })?;
+            }
 
             // Apply policy: per-source overrides global
             let view = self

@@ -21,7 +21,6 @@ once_cell = { workspace = true }
 parking_lot = "0.12"
 serde = { workspace = true }
 serde_json = { workspace = true }
-simd-json = { workspace = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }
 sha2 = { workspace = true }

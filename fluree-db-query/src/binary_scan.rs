@@ -1250,6 +1250,13 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
                 && ctx.to_t >= s.base_t()
                 && !ctx.history_mode
                 && ctx.from_t.is_none()
+                // Policy enforcement currently operates on materialized flakes.
+                // When a non-root policy is present, fall back to the flake-based
+                // range path (`range_with_overlay`) so policy filtering is applied.
+                && !ctx
+                    .policy_enforcer
+                    .as_ref()
+                    .is_some_and(|enf| !enf.is_root())
         });
 
         tracing::trace!(
