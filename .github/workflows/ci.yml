@@ -11,6 +11,8 @@ concurrency:
 jobs:
   check-and-test:
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: "-C link-arg=-fuse-ld=bfd"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -20,6 +22,9 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
+
+      - name: Format
+        run: cargo fmt --all -- --check
 
       - name: Clippy
         run: cargo clippy --all --all-features --all-targets
