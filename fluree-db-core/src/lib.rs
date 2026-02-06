@@ -38,6 +38,7 @@ pub mod ids;
 pub mod index_schema;
 pub mod index_stats;
 pub mod namespaces;
+pub mod ns_vec_bi_dict;
 pub mod overlay;
 pub mod query_bounds;
 pub mod range;
@@ -52,6 +53,7 @@ pub mod temporal;
 pub mod tracking;
 pub mod value;
 pub mod value_id;
+pub mod vec_bi_dict;
 
 // Re-export main types
 pub use address::{extract_identifier, extract_path, parse_fluree_address, ParsedFlureeAddress};
