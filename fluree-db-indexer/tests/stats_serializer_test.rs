@@ -1,11 +1,11 @@
 mod tests {
-    use fluree_db_core::PropertyStatEntry;
     use fluree_db_core::storage::MemoryStorage;
+    use fluree_db_core::PropertyStatEntry;
+    use fluree_db_core::Sid;
     use fluree_db_core::StorageWrite;
     use fluree_db_indexer::stats::{
         list_hll_sketch_addresses, load_hll_sketches, persist_hll_sketches, PropertyHll,
     };
-    use fluree_db_core::Sid;
 
     #[tokio::test]
     async fn load_hll_sketches_handles_wrong_size_bytes() {
@@ -53,7 +53,10 @@ mod tests {
         let loaded_hll = loaded.get(&sid).expect("property should load");
         assert_eq!(loaded_hll.count, hll.count);
         assert_eq!(loaded_hll.last_modified_t, hll.last_modified_t);
-        assert!(loaded_hll.values_hll.is_empty(), "values sketch should be empty after corruption");
+        assert!(
+            loaded_hll.values_hll.is_empty(),
+            "values sketch should be empty after corruption"
+        );
         assert!(
             !loaded_hll.subjects_hll.is_empty(),
             "subjects sketch should remain intact"

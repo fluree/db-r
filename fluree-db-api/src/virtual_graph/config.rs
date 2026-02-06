@@ -564,9 +564,8 @@ impl IcebergCreateConfig {
 
         // Validate table identifier format
         use fluree_db_iceberg::catalog::parse_table_identifier;
-        parse_table_identifier(&self.table_identifier).map_err(|e| {
-            crate::ApiError::config(format!("Invalid table identifier: {}", e))
-        })?;
+        parse_table_identifier(&self.table_identifier)
+            .map_err(|e| crate::ApiError::config(format!("Invalid table identifier: {}", e)))?;
 
         Ok(())
     }
@@ -645,7 +644,9 @@ impl R2rmlCreateConfig {
         client_id: impl Into<String>,
         client_secret: impl Into<String>,
     ) -> Self {
-        self.iceberg = self.iceberg.with_auth_oauth2(token_url, client_id, client_secret);
+        self.iceberg = self
+            .iceberg
+            .with_auth_oauth2(token_url, client_id, client_secret);
         self
     }
 
@@ -707,7 +708,9 @@ impl R2rmlCreateConfig {
 
         // Validate mapping source
         if self.mapping_source.trim().is_empty() {
-            return Err(crate::ApiError::config("R2RML mapping source cannot be empty"));
+            return Err(crate::ApiError::config(
+                "R2RML mapping source cannot be empty",
+            ));
         }
 
         Ok(())
@@ -773,7 +776,11 @@ mod tests {
     fn test_bm25_config_validation_empty_ledger() {
         let config = Bm25CreateConfig::new("search", "", json!({"select": ["?x"]}));
         assert!(config.validate().is_err());
-        assert!(config.validate().unwrap_err().to_string().contains("ledger"));
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("ledger"));
     }
 
     #[test]

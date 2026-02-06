@@ -165,7 +165,9 @@ impl Tracker {
     /// Clojure parity: allows exactly `limit` items, errors when total becomes `limit + 1`.
     #[inline]
     pub fn consume_fuel_one(&self) -> Result<(), FuelExceededError> {
-        let Some(inner) = &self.0 else { return Ok(()); };
+        let Some(inner) = &self.0 else {
+            return Ok(());
+        };
         if !inner.options.track_fuel {
             return Ok(());
         }
@@ -183,7 +185,9 @@ impl Tracker {
     /// Record a policy evaluation attempt (increments for every policy considered).
     #[inline]
     pub fn policy_executed(&self, policy_id: &str) {
-        let Some(inner) = &self.0 else { return; };
+        let Some(inner) = &self.0 else {
+            return;
+        };
         if !inner.options.track_policy || policy_id.is_empty() {
             return;
         }
@@ -196,7 +200,9 @@ impl Tracker {
     /// Record a policy allow decision (only when that policy grants access).
     #[inline]
     pub fn policy_allowed(&self, policy_id: &str) {
-        let Some(inner) = &self.0 else { return; };
+        let Some(inner) = &self.0 else {
+            return;
+        };
         if !inner.options.track_policy || policy_id.is_empty() {
             return;
         }
@@ -243,4 +249,3 @@ fn format_time_ms(duration: Duration) -> String {
     let ms = duration.as_secs_f64() * 1000.0;
     format!("{:.2}ms", ms)
 }
-

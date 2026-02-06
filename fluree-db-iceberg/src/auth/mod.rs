@@ -56,8 +56,10 @@ pub trait SendCatalogAuth: Debug + Send + Sync {
 /// Configuration for catalog authentication.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Default)]
 pub enum AuthConfig {
     /// No authentication required
+    #[default]
     None,
     /// Static bearer token
     Bearer {
@@ -80,12 +82,6 @@ pub enum AuthConfig {
         #[serde(default)]
         audience: Option<String>,
     },
-}
-
-impl Default for AuthConfig {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 impl AuthConfig {

@@ -10,8 +10,8 @@
 use super::iri::IriCompactor;
 use super::{FormatError, Result};
 use crate::QueryResult;
-use fluree_db_core::Sid;
 use fluree_db_core::FlakeValue;
+use fluree_db_core::Sid;
 use fluree_db_query::binding::Binding;
 use fluree_db_query::parse::ConstructTemplate;
 use fluree_db_query::pattern::Term;
@@ -130,7 +130,7 @@ fn resolve_subject_term(
                 if let Some(bnode_id) = iri.strip_prefix("_:") {
                     Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
                 } else {
-                    Ok(Some(IrTerm::iri(iri.to_string())))
+                    Ok(Some(IrTerm::iri(iri)))
                 }
             }
             Some(Binding::Iri(iri)) => {
@@ -138,7 +138,7 @@ fn resolve_subject_term(
                 if let Some(bnode_id) = iri.strip_prefix("_:") {
                     Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
                 } else {
-                    Ok(Some(IrTerm::iri(iri.to_string())))
+                    Ok(Some(IrTerm::iri(iri)))
                 }
             }
             Some(Binding::Unbound) | Some(Binding::Poisoned) | None => Ok(None),
@@ -158,7 +158,7 @@ fn resolve_subject_term(
             if let Some(bnode_id) = iri.strip_prefix("_:") {
                 Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
             } else {
-                Ok(Some(IrTerm::iri(iri.to_string())))
+                Ok(Some(IrTerm::iri(iri)))
             }
         }
         Term::Value(_) => Ok(None), // Literal constants can't be subjects
@@ -186,7 +186,7 @@ fn resolve_predicate_term(
                 if iri.starts_with("_:") {
                     Ok(None)
                 } else {
-                    Ok(Some(IrTerm::iri(iri.to_string())))
+                    Ok(Some(IrTerm::iri(iri)))
                 }
             }
             Some(Binding::Iri(iri)) => {
@@ -194,7 +194,7 @@ fn resolve_predicate_term(
                 if iri.starts_with("_:") {
                     Ok(None)
                 } else {
-                    Ok(Some(IrTerm::iri(iri.to_string())))
+                    Ok(Some(IrTerm::iri(iri)))
                 }
             }
             Some(Binding::Unbound) | Some(Binding::Poisoned) | None => Ok(None),
@@ -214,7 +214,7 @@ fn resolve_predicate_term(
             if iri.starts_with("_:") {
                 Ok(None)
             } else {
-                Ok(Some(IrTerm::iri(iri.to_string())))
+                Ok(Some(IrTerm::iri(iri)))
             }
         }
         Term::Value(_) => Ok(None), // Literal constants can't be predicates
@@ -246,7 +246,7 @@ fn resolve_object_term(
             if let Some(bnode_id) = iri.strip_prefix("_:") {
                 Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
             } else {
-                Ok(Some(IrTerm::iri(iri.to_string())))
+                Ok(Some(IrTerm::iri(iri)))
             }
         }
         Term::Value(fv) => flake_value_to_ir_term(fv),
@@ -254,7 +254,11 @@ fn resolve_object_term(
 }
 
 /// Convert a Binding to an IR Term
-fn binding_to_ir_term(result: &QueryResult, binding: &Binding, compactor: &IriCompactor) -> Result<Option<IrTerm>> {
+fn binding_to_ir_term(
+    result: &QueryResult,
+    binding: &Binding,
+    compactor: &IriCompactor,
+) -> Result<Option<IrTerm>> {
     match binding {
         Binding::Unbound | Binding::Poisoned => Ok(None),
 
@@ -269,7 +273,7 @@ fn binding_to_ir_term(result: &QueryResult, binding: &Binding, compactor: &IriCo
             if let Some(bnode_id) = iri.strip_prefix("_:") {
                 Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
             } else {
-                Ok(Some(IrTerm::iri(iri.to_string())))
+                Ok(Some(IrTerm::iri(iri)))
             }
         }
 
@@ -278,7 +282,7 @@ fn binding_to_ir_term(result: &QueryResult, binding: &Binding, compactor: &IriCo
             if let Some(bnode_id) = iri.strip_prefix("_:") {
                 Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
             } else {
-                Ok(Some(IrTerm::iri(iri.to_string())))
+                Ok(Some(IrTerm::iri(iri)))
             }
         }
 
@@ -418,8 +422,9 @@ fn binding_to_ir_term(result: &QueryResult, binding: &Binding, compactor: &IriCo
                     "Encountered EncodedLit during CONSTRUCT formatting but QueryResult has no binary_store".to_string(),
                 )
             })?;
-            let materialized = materialize_encoded_lit(binding, store)
-                .map_err(|e| FormatError::InvalidBinding(format!("Failed to materialize EncodedLit: {}", e)))?;
+            let materialized = materialize_encoded_lit(binding, store).map_err(|e| {
+                FormatError::InvalidBinding(format!("Failed to materialize EncodedLit: {}", e))
+            })?;
             binding_to_ir_term(result, &materialized, compactor)
         }
 
@@ -429,8 +434,9 @@ fn binding_to_ir_term(result: &QueryResult, binding: &Binding, compactor: &IriCo
                     "Encountered EncodedSid during CONSTRUCT formatting but QueryResult has no binary_store".to_string(),
                 )
             })?;
-            let iri = store.resolve_subject_iri(*s_id)
-                .map_err(|e| FormatError::InvalidBinding(format!("Failed to resolve subject IRI: {}", e)))?;
+            let iri = store.resolve_subject_iri(*s_id).map_err(|e| {
+                FormatError::InvalidBinding(format!("Failed to resolve subject IRI: {}", e))
+            })?;
             if let Some(bnode_id) = iri.strip_prefix("_:") {
                 Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
             } else {
@@ -445,8 +451,11 @@ fn binding_to_ir_term(result: &QueryResult, binding: &Binding, compactor: &IriCo
                 )
             })?;
             match store.resolve_predicate_iri(*p_id) {
-                Some(iri) => Ok(Some(IrTerm::iri(iri.to_string()))),
-                None => Err(FormatError::InvalidBinding(format!("Unknown predicate ID: {}", p_id))),
+                Some(iri) => Ok(Some(IrTerm::iri(iri))),
+                None => Err(FormatError::InvalidBinding(format!(
+                    "Unknown predicate ID: {}",
+                    p_id
+                ))),
             }
         }
 
@@ -469,7 +478,8 @@ fn materialize_encoded_lit(
         lang_id,
         i_val,
         t,
-    } = binding else {
+    } = binding
+    else {
         return Ok(binding.clone());
     };
     let val = store.decode_value(*o_kind, *o_key, *p_id)?;
@@ -656,7 +666,7 @@ mod tests {
 
     #[test]
     fn test_flake_value_to_ir_term_double() {
-        let result = flake_value_to_ir_term(&FlakeValue::Double(3.14))
+        let result = flake_value_to_ir_term(&FlakeValue::Double(3.13))
             .unwrap()
             .unwrap();
         match result {
@@ -665,7 +675,9 @@ mod tests {
                 datatype,
                 language,
             } => {
-                assert!(matches!(value, LiteralValue::Double(d) if (d - 3.14).abs() < f64::EPSILON));
+                assert!(
+                    matches!(value, LiteralValue::Double(d) if (d - 3.13).abs() < f64::EPSILON)
+                );
                 assert_eq!(datatype.as_iri(), dt_iri::XSD_DOUBLE);
                 assert!(language.is_none());
             }

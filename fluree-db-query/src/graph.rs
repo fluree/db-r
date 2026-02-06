@@ -303,10 +303,16 @@ impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
                     GraphName::Iri(iri) => {
                         // Concrete graph: run inner patterns in that graph
                         // If graph doesn't exist in dataset → empty result (Clojure parity)
-                        if let Some(ref ds) = ctx.dataset {
+                        if let Some(ds) = &ctx.dataset {
                             if ds.has_named_graph(iri) {
-                                self.execute_in_graph(ctx, &parent_batch, row_idx, iri.clone(), None)
-                                    .await?;
+                                self.execute_in_graph(
+                                    ctx,
+                                    &parent_batch,
+                                    row_idx,
+                                    iri.clone(),
+                                    None,
+                                )
+                                .await?;
                             }
                             // else: graph not found → no output for this row
                         } else {
@@ -319,8 +325,14 @@ impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
 
                             // Execute if R2RML VG or if graph name matches db's alias (Clojure parity)
                             if is_r2rml_vg || iri.as_ref() == ctx.db.alias {
-                                self.execute_in_graph(ctx, &parent_batch, row_idx, iri.clone(), None)
-                                    .await?;
+                                self.execute_in_graph(
+                                    ctx,
+                                    &parent_batch,
+                                    row_idx,
+                                    iri.clone(),
+                                    None,
+                                )
+                                .await?;
                             }
                             // else: graph name doesn't match alias and not R2RML VG → no output
                         }
@@ -330,7 +342,7 @@ impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
                         if let Some(binding) = parent_batch.get(row_idx, *var) {
                             if let Some(bound_iri) = Self::extract_graph_iri_from_binding(binding) {
                                 // ?g already bound: use only that graph
-                                if let Some(ref ds) = ctx.dataset {
+                                if let Some(ds) = &ctx.dataset {
                                     if ds.has_named_graph(&bound_iri) {
                                         self.execute_in_graph(
                                             ctx,
@@ -367,7 +379,7 @@ impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
                             // else: binding exists but isn't a string IRI → no output
                         } else {
                             // ?g unbound: iterate ALL named graphs, bind ?g
-                            if let Some(ref ds) = ctx.dataset {
+                            if let Some(ds) = &ctx.dataset {
                                 for iri in ds.named_graph_iris() {
                                     self.execute_in_graph(
                                         ctx,
@@ -447,10 +459,9 @@ mod tests {
     #[test]
     fn test_graph_operator_schema_with_iri() {
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
-        let child: BoxedOperator<fluree_db_core::MemoryStorage> =
-            Box::new(TestChildOperator {
-                schema: child_schema.clone(),
-            });
+        let child: BoxedOperator<fluree_db_core::MemoryStorage> = Box::new(TestChildOperator {
+            schema: child_schema.clone(),
+        });
 
         let patterns = vec![Pattern::Triple(TriplePattern::new(
             Term::Var(VarId(0)),
@@ -473,10 +484,9 @@ mod tests {
     #[test]
     fn test_graph_operator_schema_with_var() {
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
-        let child: BoxedOperator<fluree_db_core::MemoryStorage> =
-            Box::new(TestChildOperator {
-                schema: child_schema,
-            });
+        let child: BoxedOperator<fluree_db_core::MemoryStorage> = Box::new(TestChildOperator {
+            schema: child_schema,
+        });
 
         let patterns = vec![Pattern::Triple(TriplePattern::new(
             Term::Var(VarId(0)),
@@ -503,7 +513,9 @@ mod tests {
             t: None,
             op: None,
         };
-        let iri = GraphOperator::<fluree_db_core::MemoryStorage>::extract_graph_iri_from_binding(&binding);
+        let iri = GraphOperator::<fluree_db_core::MemoryStorage>::extract_graph_iri_from_binding(
+            &binding,
+        );
         assert_eq!(iri, Some(Arc::from("http://example.org/graph1")));
 
         // Non-string binding returns None
@@ -514,11 +526,15 @@ mod tests {
             t: None,
             op: None,
         };
-        let iri = GraphOperator::<fluree_db_core::MemoryStorage>::extract_graph_iri_from_binding(&binding);
+        let iri = GraphOperator::<fluree_db_core::MemoryStorage>::extract_graph_iri_from_binding(
+            &binding,
+        );
         assert_eq!(iri, None);
 
         // Unbound returns None
-        let iri = GraphOperator::<fluree_db_core::MemoryStorage>::extract_graph_iri_from_binding(&Binding::Unbound);
+        let iri = GraphOperator::<fluree_db_core::MemoryStorage>::extract_graph_iri_from_binding(
+            &Binding::Unbound,
+        );
         assert_eq!(iri, None);
     }
 }

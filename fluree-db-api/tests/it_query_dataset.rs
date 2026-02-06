@@ -9,8 +9,8 @@
 
 mod support;
 
-use fluree_db_api::{DatasetSpec, FlureeBuilder, FlureeDataSetView, FlureeView, GraphSource};
 use fluree_db_api::TimeSpec;
+use fluree_db_api::{DatasetSpec, FlureeBuilder, FlureeDataSetView, FlureeView, GraphSource};
 use fluree_db_novelty::load_commit;
 use serde_json::json;
 use support::{
@@ -23,12 +23,7 @@ use support::{
 
 /// Normalize single-variable results (flat array) for comparison
 fn normalize_flat_results(v: &serde_json::Value) -> Vec<serde_json::Value> {
-    let mut items: Vec<serde_json::Value> = v
-        .as_array()
-        .expect("expected JSON array")
-        .iter()
-        .cloned()
-        .collect();
+    let mut items: Vec<serde_json::Value> = v.as_array().expect("expected JSON array").to_vec();
     items.sort_by(|a, b| {
         serde_json::to_string(a)
             .unwrap_or_default()
@@ -70,7 +65,11 @@ async fn seed_authors_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger
             {"@id":"https://www.wikidata.org/wiki/Q173540","@type":"Person","name":"Margaret Mitchell"}
         ]
     });
-    fluree.insert(ledger0, &insert).await.expect("insert authors").ledger
+    fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert authors")
+        .ledger
 }
 
 async fn seed_books_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
@@ -82,7 +81,11 @@ async fn seed_books_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
             {"@id":"https://www.wikidata.org/wiki/Q2870","@type":["Book"],"name":"Gone with the Wind","isbn":"0-582-41805-4","author":{"@id":"https://www.wikidata.org/wiki/Q173540"}}
         ]
     });
-    fluree.insert(ledger0, &insert).await.expect("insert books").ledger
+    fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert books")
+        .ledger
 }
 
 async fn seed_movies_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
@@ -94,7 +97,11 @@ async fn seed_movies_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger 
             {"@id":"https://www.wikidata.org/wiki/Q2875","@type":["Movie"],"name":"Gone with the Wind","isBasedOn":{"@id":"https://www.wikidata.org/wiki/Q2870"}}
         ]
     });
-    fluree.insert(ledger0, &insert).await.expect("insert movies").ledger
+    fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert movies")
+        .ledger
 }
 
 /// Seed a "people" ledger with person data
@@ -122,7 +129,11 @@ async fn seed_people_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger 
         ]
     });
 
-    fluree.insert(ledger0, &insert).await.expect("insert should succeed").ledger
+    fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert should succeed")
+        .ledger
 }
 
 /// Seed an "organizations" ledger with organization data
@@ -148,7 +159,11 @@ async fn seed_orgs_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
         ]
     });
 
-    fluree.insert(ledger0, &insert).await.expect("insert should succeed").ledger
+    fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert should succeed")
+        .ledger
 }
 
 /// Seed a second "people" ledger with different person data (for union tests)
@@ -176,7 +191,11 @@ async fn seed_people2_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger
         ]
     });
 
-    fluree.insert(ledger0, &insert).await.expect("insert should succeed").ledger
+    fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert should succeed")
+        .ledger
 }
 
 // =============================================================================
@@ -332,7 +351,11 @@ async fn dataset_composed_across_connections_selecting_variables() {
         normalize_rows_array(&jsonld),
         normalize_rows_array(&json!([
             ["Gone with the Wind", "0-582-41805-4", "Margaret Mitchell"],
-            ["The Hitchhiker's Guide to the Galaxy", "0-330-25864-8", "Douglas Adams"]
+            [
+                "The Hitchhiker's Guide to the Galaxy",
+                "0-330-25864-8",
+                "Douglas Adams"
+            ]
         ]))
     );
 }
@@ -525,7 +548,10 @@ async fn dataset_from_json_single_string() {
     assert_eq!(spec.default_graphs.len(), 1);
     assert_eq!(spec.default_graphs[0].identifier, "test:main");
 
-    let dataset = fluree.build_dataset_view(&spec).await.expect("build should succeed");
+    let dataset = fluree
+        .build_dataset_view(&spec)
+        .await
+        .expect("build should succeed");
     let result = fluree
         .query_dataset_view(&dataset, &query)
         .await
@@ -565,7 +591,10 @@ async fn dataset_from_json_array() {
     let spec = DatasetSpec::from_json(&query).expect("parse should succeed");
     assert_eq!(spec.num_graphs(), 2);
 
-    let dataset = fluree.build_dataset_view(&spec).await.expect("build should succeed");
+    let dataset = fluree
+        .build_dataset_view(&spec)
+        .await
+        .expect("build should succeed");
     let result = fluree
         .query_dataset_view(&dataset, &query)
         .await
@@ -610,7 +639,10 @@ async fn dataset_from_json_named() {
     assert_eq!(spec.named_graphs.len(), 1);
     assert_eq!(spec.named_graphs[0].identifier, "graph1:main");
 
-    let dataset = fluree.build_dataset_view(&spec).await.expect("build should succeed");
+    let dataset = fluree
+        .build_dataset_view(&spec)
+        .await
+        .expect("build should succeed");
     let result = fluree
         .query_dataset_view(&dataset, &query)
         .await
@@ -639,7 +671,10 @@ async fn dataset_empty_spec_fails() {
     let spec = DatasetSpec::new();
     assert!(spec.is_empty());
 
-    let dataset = fluree.build_dataset_view(&spec).await.expect("build should succeed");
+    let dataset = fluree
+        .build_dataset_view(&spec)
+        .await
+        .expect("build should succeed");
     assert!(dataset.is_empty());
 
     // Query should fail - no primary ledger
@@ -699,7 +734,10 @@ async fn dataset_cross_graph_join_in_union() {
         .with_default(GraphSource::new("employed:main"))
         .with_default(GraphSource::new("companies:main"));
 
-    let dataset = fluree.build_dataset_view(&spec).await.expect("build should succeed");
+    let dataset = fluree
+        .build_dataset_view(&spec)
+        .await
+        .expect("build should succeed");
 
     // Query that joins across the union
     let query = json!({
@@ -752,7 +790,11 @@ async fn sparql_graph_pattern_concrete_iri() {
             }
         ]
     });
-    let _default_ledger = fluree.insert(ledger0, &insert_default).await.unwrap().ledger;
+    let _default_ledger = fluree
+        .insert(ledger0, &insert_default)
+        .await
+        .unwrap()
+        .ledger;
 
     // Create a named graph with people data
     let _people_ledger = seed_people_ledger(&fluree, "people:main").await;
@@ -762,7 +804,10 @@ async fn sparql_graph_pattern_concrete_iri() {
         .with_default(GraphSource::new("default:main"))
         .with_named(GraphSource::new("people:main"));
 
-    let dataset = fluree.build_dataset_view(&spec).await.expect("build should succeed");
+    let dataset = fluree
+        .build_dataset_view(&spec)
+        .await
+        .expect("build should succeed");
 
     // Query using GRAPH pattern with concrete IRI to access named graph
     let sparql = r#"
@@ -804,7 +849,10 @@ async fn sparql_graph_pattern_variable_iteration() {
         .with_named(GraphSource::new("people:main"))
         .with_named(GraphSource::new("orgs:main"));
 
-    let dataset = fluree.build_dataset_view(&spec).await.expect("build should succeed");
+    let dataset = fluree
+        .build_dataset_view(&spec)
+        .await
+        .expect("build should succeed");
 
     // Query using GRAPH ?g to iterate over all named graphs
     let sparql = r#"
@@ -848,10 +896,12 @@ async fn sparql_graph_pattern_nonexistent_graph_returns_empty() {
     let _people_ledger = seed_people_ledger(&fluree, "people:main").await;
 
     // Dataset with only people:main as named
-    let spec = DatasetSpec::new()
-        .with_named(GraphSource::new("people:main"));
+    let spec = DatasetSpec::new().with_named(GraphSource::new("people:main"));
 
-    let dataset = fluree.build_dataset_view(&spec).await.expect("build should succeed");
+    let dataset = fluree
+        .build_dataset_view(&spec)
+        .await
+        .expect("build should succeed");
 
     // Query a graph that doesn't exist in the dataset
     let sparql = r#"
@@ -870,7 +920,10 @@ async fn sparql_graph_pattern_nonexistent_graph_returns_empty() {
         .expect("query should succeed");
 
     // Should return empty results (Clojure parity: missing graph → empty, not error)
-    assert!(result.is_empty(), "nonexistent graph should return empty results");
+    assert!(
+        result.is_empty(),
+        "nonexistent graph should return empty results"
+    );
 }
 
 #[tokio::test]
@@ -889,7 +942,10 @@ async fn sparql_graph_pattern_default_vs_named() {
         .with_default(GraphSource::new("default:main"))
         .with_named(GraphSource::new("orgs:main"));
 
-    let dataset = fluree.build_dataset_view(&spec).await.expect("build should succeed");
+    let dataset = fluree
+        .build_dataset_view(&spec)
+        .await
+        .expect("build should succeed");
 
     // Query default graph (no GRAPH pattern) - should get people
     let sparql_default = r#"
@@ -906,7 +962,9 @@ async fn sparql_graph_pattern_default_vs_named() {
         .expect("query should succeed");
 
     let primary = dataset.primary().unwrap();
-    let jsonld_default = result_default.to_jsonld(primary.db.as_ref()).expect("to_jsonld");
+    let jsonld_default = result_default
+        .to_jsonld(primary.db.as_ref())
+        .expect("to_jsonld");
 
     // Default graph should only have people
     assert_eq!(
@@ -930,7 +988,9 @@ async fn sparql_graph_pattern_default_vs_named() {
         .await
         .expect("query should succeed");
 
-    let jsonld_named = result_named.to_jsonld(primary.db.as_ref()).expect("to_jsonld");
+    let jsonld_named = result_named
+        .to_jsonld(primary.db.as_ref())
+        .expect("to_jsonld");
 
     // Named graph should only have orgs
     assert_eq!(
@@ -954,7 +1014,11 @@ async fn fql_graph_pattern_basic() {
         "@context": {"ex": "http://example.org/ns/", "schema": "http://schema.org/"},
         "@graph": [{"@id": "ex:defaultEntity", "schema:name": "Default Entity"}]
     });
-    let _default = fluree.insert(ledger0, &insert_default).await.unwrap().ledger;
+    let _default = fluree
+        .insert(ledger0, &insert_default)
+        .await
+        .unwrap()
+        .ledger;
     let _people = seed_people_ledger(&fluree, "people:main").await;
 
     // Create dataset
@@ -1012,7 +1076,8 @@ async fn dataset_time_travel_at_t() {
     let _ledger2 = fluree.insert(ledger1, &insert2).await.unwrap().ledger;
 
     // Dataset pinned at t=1 should only see Alice.
-    let spec = DatasetSpec::new().with_default(GraphSource::new("people:main").with_time(TimeSpec::AtT(1)));
+    let spec = DatasetSpec::new()
+        .with_default(GraphSource::new("people:main").with_time(TimeSpec::AtT(1)));
     let dataset = fluree.build_dataset_view(&spec).await.unwrap();
 
     let query = json!({
@@ -1043,7 +1108,9 @@ async fn dataset_time_travel_at_time_iso() {
         "@graph": [{"@id": "ex:alice", "@type": "ex:Person", "schema:name": "Alice"}]
     });
     let tx1 = fluree.insert(ledger0, &insert1).await.unwrap();
-    let commit1 = load_commit(fluree.storage(), &tx1.receipt.address).await.unwrap();
+    let commit1 = load_commit(fluree.storage(), &tx1.receipt.address)
+        .await
+        .unwrap();
     let time1 = commit1.time.expect("commit should have ISO timestamp");
 
     // Small delay to ensure second commit gets a different timestamp
@@ -1059,7 +1126,8 @@ async fn dataset_time_travel_at_time_iso() {
     let _tx2 = fluree.insert(tx1.ledger, &insert2).await.unwrap();
 
     // Dataset pinned at commit1 timestamp should only see Alice (t=1).
-    let spec = DatasetSpec::new().with_default(GraphSource::new("people:main").with_time(TimeSpec::AtTime(time1)));
+    let spec = DatasetSpec::new()
+        .with_default(GraphSource::new("people:main").with_time(TimeSpec::AtTime(time1)));
     let dataset = fluree.build_dataset_view(&spec).await.unwrap();
 
     let query = json!({
@@ -1092,7 +1160,8 @@ async fn dataset_time_travel_future_t_errors() {
     let _ledger1 = fluree.insert(ledger0, &insert1).await.unwrap().ledger;
 
     // Requesting future t should error.
-    let spec = DatasetSpec::new().with_default(GraphSource::new("people:main").with_time(TimeSpec::AtT(999)));
+    let spec = DatasetSpec::new()
+        .with_default(GraphSource::new("people:main").with_time(TimeSpec::AtT(999)));
     let result = fluree.build_dataset_view(&spec).await;
     assert!(result.is_err(), "future t should error");
 }
@@ -1121,7 +1190,11 @@ async fn dataset_time_travel_mixed_graphs() {
         "@context": {"ex": "http://example.org/ns/", "schema": "http://schema.org/"},
         "@graph": [{"@id": "ex:acme", "@type": "ex:Organization", "schema:name": "Acme Corp"}]
     });
-    let _orgs_ledger1 = fluree.insert(orgs_ledger0, &orgs_insert).await.unwrap().ledger;
+    let _orgs_ledger1 = fluree
+        .insert(orgs_ledger0, &orgs_insert)
+        .await
+        .unwrap()
+        .ledger;
 
     // Dataset: people at t=1, orgs at head.
     let spec = DatasetSpec::new()
@@ -1176,7 +1249,10 @@ async fn dataset_time_travel_alias_syntax_at_t() {
 
     let spec = DatasetSpec::from_json(&query).unwrap();
     assert_eq!(spec.default_graphs[0].identifier, "people:main");
-    assert!(matches!(spec.default_graphs[0].time_spec, Some(TimeSpec::AtT(1))));
+    assert!(matches!(
+        spec.default_graphs[0].time_spec,
+        Some(TimeSpec::AtT(1))
+    ));
 
     let dataset = fluree.build_dataset_view(&spec).await.unwrap();
     let result = fluree.query_dataset_view(&dataset, &query).await.unwrap();
@@ -1203,7 +1279,9 @@ async fn dataset_time_travel_at_commit_sha() {
         "@graph": [{"@id": "ex:alice", "@type": "ex:Person", "schema:name": "Alice"}]
     });
     let tx1 = fluree.insert(ledger0, &insert1).await.unwrap();
-    let commit1 = load_commit(fluree.storage(), &tx1.receipt.address).await.unwrap();
+    let commit1 = load_commit(fluree.storage(), &tx1.receipt.address)
+        .await
+        .unwrap();
     let commit_id = commit1.id.expect("commit should have content-address ID");
 
     // Extract just the SHA part (everything after "fluree:commit:sha256:")
@@ -1220,7 +1298,7 @@ async fn dataset_time_travel_at_commit_sha() {
 
     // Dataset pinned at commit1 SHA should only see Alice (t=1).
     let spec = DatasetSpec::new().with_default(
-        GraphSource::new("people:main").with_time(TimeSpec::AtCommit(sha_prefix.to_string()))
+        GraphSource::new("people:main").with_time(TimeSpec::AtCommit(sha_prefix.to_string())),
     );
     let dataset = fluree.build_dataset_view(&spec).await.unwrap();
 
@@ -1252,7 +1330,9 @@ async fn dataset_time_travel_at_commit_sha_short_prefix() {
         "@graph": [{"@id": "ex:alice", "@type": "ex:Person", "schema:name": "Alice"}]
     });
     let tx1 = fluree.insert(ledger0, &insert1).await.unwrap();
-    let commit1 = load_commit(fluree.storage(), &tx1.receipt.address).await.unwrap();
+    let commit1 = load_commit(fluree.storage(), &tx1.receipt.address)
+        .await
+        .unwrap();
     let commit_id = commit1.id.expect("commit should have content-address ID");
 
     // Extract just the first 10 chars of the SHA (after 'b' prefix) for prefix matching
@@ -1271,7 +1351,7 @@ async fn dataset_time_travel_at_commit_sha_short_prefix() {
 
     // Dataset pinned at commit1 SHA prefix should only see Alice (t=1).
     let spec = DatasetSpec::new().with_default(
-        GraphSource::new("people:main").with_time(TimeSpec::AtCommit(sha_prefix.to_string()))
+        GraphSource::new("people:main").with_time(TimeSpec::AtCommit(sha_prefix.to_string())),
     );
     let dataset = fluree.build_dataset_view(&spec).await.unwrap();
 
@@ -1303,7 +1383,9 @@ async fn dataset_time_travel_alias_syntax_sha() {
         "@graph": [{"@id": "ex:alice", "@type": "ex:Person", "schema:name": "Alice"}]
     });
     let tx1 = fluree.insert(ledger0, &insert1).await.unwrap();
-    let commit1 = load_commit(fluree.storage(), &tx1.receipt.address).await.unwrap();
+    let commit1 = load_commit(fluree.storage(), &tx1.receipt.address)
+        .await
+        .unwrap();
     let commit_id = commit1.id.expect("commit should have content-address ID");
 
     // Extract just the SHA part (including 'b' prefix)
@@ -1329,7 +1411,10 @@ async fn dataset_time_travel_alias_syntax_sha() {
 
     let spec = DatasetSpec::from_json(&query).unwrap();
     assert_eq!(spec.default_graphs[0].identifier, "people:main");
-    assert!(matches!(spec.default_graphs[0].time_spec, Some(TimeSpec::AtCommit(_))));
+    assert!(matches!(
+        spec.default_graphs[0].time_spec,
+        Some(TimeSpec::AtCommit(_))
+    ));
 
     let dataset = fluree.build_dataset_view(&spec).await.unwrap();
     let result = fluree.query_dataset_view(&dataset, &query).await.unwrap();
@@ -1359,12 +1444,16 @@ async fn dataset_time_travel_sha_not_found_errors() {
 
     // Request a non-existent SHA - should error
     let spec = DatasetSpec::new().with_default(
-        GraphSource::new("people:main").with_time(TimeSpec::AtCommit("bxxxxxx".to_string()))
+        GraphSource::new("people:main").with_time(TimeSpec::AtCommit("bxxxxxx".to_string())),
     );
     let result = fluree.build_dataset_view(&spec).await;
     assert!(result.is_err(), "non-existent SHA should error");
     let err = result.unwrap_err().to_string();
-    assert!(err.contains("No commit found"), "error should mention no commit found: {}", err);
+    assert!(
+        err.contains("No commit found"),
+        "error should mention no commit found: {}",
+        err
+    );
 }
 
 #[tokio::test]
@@ -1382,12 +1471,16 @@ async fn dataset_time_travel_sha_too_short_errors() {
 
     // SHA too short (less than 6 chars) - should error
     let spec = DatasetSpec::new().with_default(
-        GraphSource::new("people:main").with_time(TimeSpec::AtCommit("babc".to_string()))
+        GraphSource::new("people:main").with_time(TimeSpec::AtCommit("babc".to_string())),
     );
     let result = fluree.build_dataset_view(&spec).await;
     assert!(result.is_err(), "SHA too short should error");
     let err = result.unwrap_err().to_string();
-    assert!(err.contains("at least 6 characters"), "error should mention minimum chars: {}", err);
+    assert!(
+        err.contains("at least 6 characters"),
+        "error should mention minimum chars: {}",
+        err
+    );
 }
 
 // =============================================================================
@@ -1494,7 +1587,11 @@ async fn sparql_single_db_graph_variable_unbound() {
     for row in &normalized {
         // row is Vec<serde_json::Value> which is stored as serde_json::Value::Array
         let first_elem = &row[0];
-        assert_eq!(first_elem, &json!("people:main"), "?g should be bound to db alias");
+        assert_eq!(
+            first_elem,
+            &json!("people:main"),
+            "?g should be bound to db alias"
+        );
     }
 }
 
@@ -1588,9 +1685,15 @@ async fn dataset_multi_ledger_time_travel_parsing() {
 
     // Verify time specs are parsed correctly for multiple ledgers
     assert_eq!(spec.default_graphs[0].identifier, "ledger1:main");
-    assert!(matches!(spec.default_graphs[0].time_spec, Some(TimeSpec::AtT(1))));
+    assert!(matches!(
+        spec.default_graphs[0].time_spec,
+        Some(TimeSpec::AtT(1))
+    ));
     assert_eq!(spec.default_graphs[1].identifier, "ledger2:main");
-    assert!(matches!(spec.default_graphs[1].time_spec, Some(TimeSpec::AtT(2))));
+    assert!(matches!(
+        spec.default_graphs[1].time_spec,
+        Some(TimeSpec::AtT(2))
+    ));
 }
 
 #[tokio::test]

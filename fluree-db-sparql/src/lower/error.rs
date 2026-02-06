@@ -16,9 +16,11 @@ pub enum LowerError {
     UnknownNamespace { iri: String, span: SourceSpan },
 
     /// Full IRI looks like a prefixed name (e.g., <prefix:local> instead of prefix:local)
-    #[error("IRI '<{iri}>' looks like a prefixed name wrapped in angle brackets. \
+    #[error(
+        "IRI '<{iri}>' looks like a prefixed name wrapped in angle brackets. \
              Prefixed names should not be wrapped in <...>. \
-             Either use the full IRI <{expanded}> or remove the angle brackets: {iri}")]
+             Either use the full IRI <{expanded}> or remove the angle brackets: {iri}"
+    )]
     MisusedPrefixSyntax {
         iri: String,
         expanded: String,

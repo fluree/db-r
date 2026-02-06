@@ -58,7 +58,6 @@ impl<S: Storage + 'static> HavingOperator<S> {
             state: OperatorState::Created,
         }
     }
-
 }
 
 #[async_trait]
@@ -108,8 +107,8 @@ impl<S: Storage + 'static> Operator<S> for HavingOperator<S> {
 
                 if passes {
                     // Copy this row to output
-                    for col_idx in 0..self.schema.len() {
-                        output_columns[col_idx].push(batch.get_by_col(row_idx, col_idx).clone());
+                    for (col_idx, output_col) in output_columns.iter_mut().enumerate() {
+                        output_col.push(batch.get_by_col(row_idx, col_idx).clone());
                     }
                     rows_added += 1;
                 }
@@ -315,8 +314,7 @@ mod tests {
             vec![Binding::lit(FlakeValue::Long(3), xsd_long())],
         ];
         let batch = Batch::new(schema.clone(), columns).unwrap();
-        let seed: BoxedOperator<MemoryStorage> =
-            Box::new(SeedOperator::from_batch_row(&batch, 0));
+        let seed: BoxedOperator<MemoryStorage> = Box::new(SeedOperator::from_batch_row(&batch, 0));
 
         // Any expression that passes
         let expr = FilterExpr::Const(FilterValue::Bool(true));

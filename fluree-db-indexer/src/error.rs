@@ -52,7 +52,6 @@ pub enum IndexerError {
     /// Error applying index to ledger state
     #[error("Ledger apply error: {0}")]
     LedgerApply(String),
-
 }
 
 impl From<serde_json::Error> for IndexerError {

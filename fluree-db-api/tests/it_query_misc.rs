@@ -45,7 +45,12 @@ async fn simple_where_select_limit_without_context_returns_full_iri() {
         "limit":  1
     });
 
-    let rows = fluree.query(&ledger, &query).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &query)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(rows, json!(["http://example.org/ns/alice"]));
 }
 
@@ -65,7 +70,12 @@ async fn simple_where_select_limit_with_context_returns_compacted_iri() {
         "limit":  1
     });
 
-    let rows = fluree.query(&ledger, &query).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &query)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(rows, json!(["ex:alice"]));
 }
 
@@ -92,7 +102,12 @@ async fn class_queries_type_and_all_types() {
         "select": ["?class"],
         "where": {"@id":"ex:jane","@type":"?class"}
     });
-    let r1 = fluree.query(&ledger, &q1).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let r1 = fluree
+        .query(&ledger, &q1)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(r1, json!(["ex:User"]));
 
     let q2 = json!({
@@ -100,14 +115,19 @@ async fn class_queries_type_and_all_types() {
         "select": ["?s","?class"],
         "where": {"@id":"?s","@type":"?class"}
     });
-    let r2 = fluree.query(&ledger, &q2).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let r2 = fluree
+        .query(&ledger, &q2)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&r2),
         normalize_rows(&json!([
-            ["ex:alice","ex:User"],
-            ["ex:bob","ex:User"],
-            ["ex:dave","ex:nonUser"],
-            ["ex:jane","ex:User"]
+            ["ex:alice", "ex:User"],
+            ["ex:bob", "ex:User"],
+            ["ex:dave", "ex:nonUser"],
+            ["ex:jane", "ex:User"]
         ]))
     );
 }
@@ -278,9 +298,18 @@ async fn result_formatting_graph_crawl_variants() {
     assert_eq!(canon_ex_over_foo(&r2), json!([{"@id":"ex:dan","ex:x":1}]));
     assert_eq!(canon_ex_over_foo(&r3), json!([{"@id":"ex:dan","ex:x":[1]}]));
     assert_eq!(canon_ex_over_foo(&r4), json!([{"@id":"ex:dan","ex:x":[1]}]));
-    assert_eq!(r5, json!([{"@id":"http://example.org/ns/dan","http://example.org/ns/x":1}]));
-    assert_eq!(r6, json!([{"@id":"http://example.org/ns/dan","http://example.org/ns/x":1}]));
-    assert_eq!(r7, json!([{"@id":"http://example.org/ns/dan","http://example.org/ns/x":1}]));
+    assert_eq!(
+        r5,
+        json!([{"@id":"http://example.org/ns/dan","http://example.org/ns/x":1}])
+    );
+    assert_eq!(
+        r6,
+        json!([{"@id":"http://example.org/ns/dan","http://example.org/ns/x":1}])
+    );
+    assert_eq!(
+        r7,
+        json!([{"@id":"http://example.org/ns/dan","http://example.org/ns/x":1}])
+    );
 }
 
 #[tokio::test]
@@ -305,21 +334,26 @@ async fn s_p_o_full_db_queries_parity() {
         "select": ["?s","?p","?o"],
         "where": {"@id":"?s","?p":"?o"}
     });
-    let r_all = fluree.query(&ledger, &q_all).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let r_all = fluree
+        .query(&ledger, &q_all)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&r_all),
         normalize_rows(&json!([
-            ["ex:alice","rdf:type","ex:User"],
-            ["ex:alice","schema:age",42],
-            ["ex:alice","schema:email","alice@flur.ee"],
-            ["ex:alice","schema:name","Alice"],
-            ["ex:bob","rdf:type","ex:User"],
-            ["ex:bob","schema:age",22],
-            ["ex:bob","schema:name","Bob"],
-            ["ex:jane","rdf:type","ex:User"],
-            ["ex:jane","schema:age",30],
-            ["ex:jane","schema:email","jane@flur.ee"],
-            ["ex:jane","schema:name","Jane"]
+            ["ex:alice", "rdf:type", "ex:User"],
+            ["ex:alice", "schema:age", 42],
+            ["ex:alice", "schema:email", "alice@flur.ee"],
+            ["ex:alice", "schema:name", "Alice"],
+            ["ex:bob", "rdf:type", "ex:User"],
+            ["ex:bob", "schema:age", 22],
+            ["ex:bob", "schema:name", "Bob"],
+            ["ex:jane", "rdf:type", "ex:User"],
+            ["ex:jane", "schema:age", 30],
+            ["ex:jane", "schema:email", "jane@flur.ee"],
+            ["ex:jane", "schema:name", "Jane"]
         ]))
     );
 
@@ -337,9 +371,8 @@ async fn s_p_o_full_db_queries_parity() {
         .unwrap();
 
     let canon_person = |obj: &serde_json::Map<String, serde_json::Value>| {
-        let get_key = |keys: &[&str]| -> Option<&serde_json::Value> {
-            keys.iter().find_map(|k| obj.get(*k))
-        };
+        let get_key =
+            |keys: &[&str]| -> Option<&serde_json::Value> { keys.iter().find_map(|k| obj.get(*k)) };
         let id = get_key(&["@id", "id"])?;
         let typ = get_key(&[
             "@type",
@@ -349,10 +382,16 @@ async fn s_p_o_full_db_queries_parity() {
         let name = get_key(&["schema:name", "http://schema.org/name"])?;
         let age = get_key(&["schema:age", "http://schema.org/age"])?;
         let email = get_key(&["schema:email", "http://schema.org/email"]);
-        Some((id.clone(), typ.clone(), name.clone(), age.clone(), email.cloned()))
+        Some((
+            id.clone(),
+            typ.clone(),
+            name.clone(),
+            age.clone(),
+            email.cloned(),
+        ))
     };
 
-    let expected = vec![
+    let expected = [
         (
             json!("ex:alice"),
             json!("ex:User"),
@@ -409,14 +448,27 @@ async fn commit_db_metadata_spo_queries_parity() {
         "select": ["?c","?alias"],
         "where": {"@id": "?c", "f:alias": "?alias"}
     });
-    let r_commit = fluree.query(&ledger2, &q_commit).await.unwrap().to_jsonld(&ledger2.db).unwrap();
+    let r_commit = fluree
+        .query(&ledger2, &q_commit)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger2.db)
+        .unwrap();
     let rows = r_commit.as_array().expect("commit rows array");
-    assert!(rows.len() >= 2, "expected at least two commits, got: {:?}", r_commit);
+    assert!(
+        rows.len() >= 2,
+        "expected at least two commits, got: {:?}",
+        r_commit
+    );
     for row in rows {
         let arr = row.as_array().expect("commit row array");
         let subject = arr[0].as_str().unwrap_or_default();
         let alias = arr[1].as_str().unwrap_or_default();
-        assert!(subject.starts_with("fluree:commit:"), "unexpected commit subject: {}", subject);
+        assert!(
+            subject.starts_with("fluree:commit:"),
+            "unexpected commit subject: {}",
+            subject
+        );
         assert_eq!(alias, "misc/commit-metadata:main");
     }
 
@@ -425,7 +477,12 @@ async fn commit_db_metadata_spo_queries_parity() {
         "select": ["?c","?t"],
         "where": {"@id": "?c", "f:t": "?t"}
     });
-    let r_db = fluree.query(&ledger2, &q_db).await.unwrap().to_jsonld(&ledger2.db).unwrap();
+    let r_db = fluree
+        .query(&ledger2, &q_db)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger2.db)
+        .unwrap();
     let rows = r_db.as_array().expect("db rows array");
     let mut commit_subjects = std::collections::HashSet::new();
     for row in rows {
@@ -440,11 +497,17 @@ async fn commit_db_metadata_spo_queries_parity() {
         let t_ok = if t_val.is_number() || t_val.is_string() {
             true
         } else if let Some(obj) = t_val.as_object() {
-            obj.get("@value").map(|v| v.is_number() || v.is_string()).unwrap_or(false)
+            obj.get("@value")
+                .map(|v| v.is_number() || v.is_string())
+                .unwrap_or(false)
         } else {
             false
         };
-        assert!(t_ok, "expected t value to be number/string or typed literal, got: {:?}", t_val);
+        assert!(
+            t_ok,
+            "expected t value to be number/string or typed literal, got: {:?}",
+            t_val
+        );
         commit_subjects.insert(subject.to_string());
     }
     assert!(
@@ -671,7 +734,9 @@ async fn load_with_new_connection_placeholder() {
     let temp_dir = TempDir::new().unwrap();
     let storage_path = temp_dir.path().to_str().unwrap();
 
-    let fluree = FlureeBuilder::file(storage_path).build().expect("build file fluree");
+    let fluree = FlureeBuilder::file(storage_path)
+        .build()
+        .expect("build file fluree");
     let ledger_alias = "new3:main";
 
     let ledger0 = fluree.create_ledger(ledger_alias).await.unwrap();
@@ -681,7 +746,9 @@ async fn load_with_new_connection_placeholder() {
     });
     let _ledger1 = fluree.insert(ledger0, &insert).await.unwrap().ledger;
 
-    let fluree2 = FlureeBuilder::file(storage_path).build().expect("build file fluree2");
+    let fluree2 = FlureeBuilder::file(storage_path)
+        .build()
+        .expect("build file fluree2");
     let query = json!({
         "@context": {"ex": "http://example.org/ns/"},
         "from": ledger_alias,
@@ -775,7 +842,7 @@ async fn base_context_parity() {
     };
     assert_eq!(
         normalize_rows(&normalize_type_pred(&r1)),
-        normalize_rows(&json!([["name","Freddy"],["@type","Yeti"]]))
+        normalize_rows(&json!([["name", "Freddy"], ["@type", "Yeti"]]))
     );
 
     let q2 = json!({
@@ -926,7 +993,11 @@ async fn index_range_scans() {
     .await
     .unwrap();
 
-    assert_eq!(alice_flakes.len(), 7, "Slice should return flakes for only Alice");
+    assert_eq!(
+        alice_flakes.len(),
+        7,
+        "Slice should return flakes for only Alice"
+    );
 
     let alice_only_flakes: Vec<_> = alice_flakes
         .into_iter()
@@ -935,7 +1006,10 @@ async fn index_range_scans() {
     assert_eq!(alice_only_flakes.len(), 7);
 
     // Slice for subject + predicate
-    let favnums_pid = ledger.db.encode_iri("http://example.org/ns/favNums").unwrap();
+    let favnums_pid = ledger
+        .db
+        .encode_iri("http://example.org/ns/favNums")
+        .unwrap();
 
     let alice_favnums_flakes = range_with_overlay(
         &ledger.db,
@@ -948,7 +1022,11 @@ async fn index_range_scans() {
     .await
     .unwrap();
 
-    assert_eq!(alice_favnums_flakes.len(), 3, "Should return Alice's favNums");
+    assert_eq!(
+        alice_favnums_flakes.len(),
+        3,
+        "Should return Alice's favNums"
+    );
 
     let values: Vec<_> = alice_favnums_flakes
         .iter()
@@ -969,13 +1047,18 @@ async fn index_range_scans() {
         ledger.novelty.as_ref(),
         IndexType::Spot,
         RangeTest::Eq,
-        RangeMatch::subject_predicate(alice_sid.clone(), favnums_pid.clone()).with_object(FlakeValue::Long(42)),
+        RangeMatch::subject_predicate(alice_sid.clone(), favnums_pid.clone())
+            .with_object(FlakeValue::Long(42)),
         RangeOptions::new().with_to_t(ledger.t()),
     )
     .await
     .unwrap();
 
-    assert_eq!(alice_favnum_42_flakes.len(), 1, "Should return only the specific favNum value");
+    assert_eq!(
+        alice_favnum_42_flakes.len(),
+        1,
+        "Should return only the specific favNum value"
+    );
 
     let flake = &alice_favnum_42_flakes[0];
     assert_eq!(flake.s, alice_sid);
@@ -983,7 +1066,10 @@ async fn index_range_scans() {
     assert_eq!(flake.o, FlakeValue::Long(42));
 
     // Slice for subject + predicate + value + datatype
-    let integer_dt = ledger.db.encode_iri("http://www.w3.org/2001/XMLSchema#integer").unwrap();
+    let integer_dt = ledger
+        .db
+        .encode_iri("http://www.w3.org/2001/XMLSchema#integer")
+        .unwrap();
 
     let alice_favnum_42_typed_flakes = range_with_overlay(
         &ledger.db,
@@ -998,10 +1084,17 @@ async fn index_range_scans() {
     .await
     .unwrap();
 
-    assert_eq!(alice_favnum_42_typed_flakes.len(), 1, "Should return favNum with matching datatype");
+    assert_eq!(
+        alice_favnum_42_typed_flakes.len(),
+        1,
+        "Should return favNum with matching datatype"
+    );
 
     // Slice for subject + predicate + value + mismatch datatype
-    let string_dt = ledger.db.encode_iri("http://www.w3.org/2001/XMLSchema#string").unwrap();
+    let string_dt = ledger
+        .db
+        .encode_iri("http://www.w3.org/2001/XMLSchema#string")
+        .unwrap();
 
     let alice_favnum_42_wrong_type_flakes = range_with_overlay(
         &ledger.db,
@@ -1016,7 +1109,11 @@ async fn index_range_scans() {
     .await
     .unwrap();
 
-    assert_eq!(alice_favnum_42_wrong_type_flakes.len(), 0, "Wrong datatype should return no results");
+    assert_eq!(
+        alice_favnum_42_wrong_type_flakes.len(),
+        0,
+        "Wrong datatype should return no results"
+    );
 }
 
 // =============================================================================
@@ -1161,4 +1258,3 @@ async fn union_passthrough_variables() {
 
     assert_eq!(rows, expected);
 }
-

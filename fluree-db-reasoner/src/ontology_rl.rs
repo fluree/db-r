@@ -7,27 +7,26 @@
 //! - Domain and range declarations
 //! - sameAs assertions
 
+use crate::owl;
+use crate::types::PropertyChain;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::flake::Flake;
 use fluree_db_core::namespaces::{
     is_owl_inverse_of, is_owl_same_as, is_rdf_type, is_rdfs_domain, is_rdfs_range,
 };
-use fluree_vocab::namespaces::{OWL, RDFS};
-use fluree_vocab::owl_names::*;
-use fluree_vocab::predicates::{RDFS_DOMAIN, RDFS_RANGE};
-use crate::owl;
-use crate::types::PropertyChain;
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::storage::Storage;
 use fluree_db_core::value::FlakeValue;
 use fluree_db_core::{Db, Sid};
+use fluree_vocab::namespaces::{OWL, RDFS};
+use fluree_vocab::owl_names::*;
+use fluree_vocab::predicates::{RDFS_DOMAIN, RDFS_RANGE};
 use hashbrown::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::error::Result;
 use crate::rdf_list::{collect_chain_elements, collect_list_elements};
-
 
 /// OWL2-RL specific ontology information
 ///
@@ -341,7 +340,10 @@ impl OntologyRL {
                     // Get all subproperties (descendants) of P2
                     for p1 in hierarchy.subproperties_of(p2) {
                         // P1 is a subproperty of P2, so P2 is a super-property of P1
-                        super_properties.entry(p1.clone()).or_default().push(p2.clone());
+                        super_properties
+                            .entry(p1.clone())
+                            .or_default()
+                            .push(p2.clone());
                     }
                 }
             }
@@ -366,7 +368,10 @@ impl OntologyRL {
                     // For properties without subclasses, this returns empty
                     for c1 in hierarchy.subclasses_of(c2) {
                         // C1 is a subclass of C2, so C2 is a super-class of C1
-                        super_classes.entry(c1.clone()).or_default().push(c2.clone());
+                        super_classes
+                            .entry(c1.clone())
+                            .or_default()
+                            .push(c2.clone());
                     }
                 }
             }
@@ -457,7 +462,8 @@ impl OntologyRL {
             // Object is the head of an RDF list containing chain properties (may include owl:inverseOf blanks)
             if let FlakeValue::Ref(list_head) = &flake.o {
                 // Traverse the RDF list to get chain elements, resolving owl:inverseOf to ChainElements
-                if let Ok(chain_elements) = collect_chain_elements(db, overlay, list_head, to_t).await
+                if let Ok(chain_elements) =
+                    collect_chain_elements(db, overlay, list_head, to_t).await
                 {
                     // Only store chains with at least 2 elements
                     if chain_elements.len() >= 2 {
@@ -553,7 +559,8 @@ impl OntologyRL {
             // Object is the head of an RDF list containing key properties
             if let FlakeValue::Ref(list_head) = &flake.o {
                 // Traverse the RDF list to get key properties
-                if let Ok(key_properties) = collect_list_elements(db, overlay, list_head, to_t).await
+                if let Ok(key_properties) =
+                    collect_list_elements(db, overlay, list_head, to_t).await
                 {
                     // Only store non-empty key lists
                     if !key_properties.is_empty() {
@@ -724,7 +731,10 @@ impl OntologyRL {
 
     /// Get all derived properties that have property chain axioms
     pub fn properties_with_chains(&self) -> impl Iterator<Item = &Sid> {
-        self.inner.property_chains.iter().map(|c| &c.derived_property)
+        self.inner
+            .property_chains
+            .iter()
+            .map(|c| &c.derived_property)
     }
 
     /// Check if there are any property chains

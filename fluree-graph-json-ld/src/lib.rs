@@ -272,7 +272,10 @@ mod tests {
         }))
         .unwrap();
 
-        assert_eq!(expand_iri("schema:Person", &ctx), "http://schema.org/Person");
+        assert_eq!(
+            expand_iri("schema:Person", &ctx),
+            "http://schema.org/Person"
+        );
         assert_eq!(expand_iri("name", &ctx), "http://schema.org/name");
     }
 
@@ -303,10 +306,7 @@ mod tests {
         }))
         .unwrap();
 
-        assert_eq!(
-            compact_iri("http://schema.org/name", &ctx),
-            "schema:name"
-        );
+        assert_eq!(compact_iri("http://schema.org/name", &ctx), "schema:name");
     }
 
     #[test]

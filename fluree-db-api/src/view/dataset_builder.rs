@@ -31,10 +31,7 @@ where
     /// let dataset = fluree.build_dataset_view(&spec).await?;
     /// let result = fluree.query_dataset_view(&dataset, &query).await?;
     /// ```
-    pub async fn build_dataset_view(
-        &self,
-        spec: &DatasetSpec,
-    ) -> Result<FlureeDataSetView<S>> {
+    pub async fn build_dataset_view(&self, spec: &DatasetSpec) -> Result<FlureeDataSetView<S>> {
         // History/changes queries are a Fluree dataset extension.
         // In this mode, the "from" array specifies a (from,to) range on ONE ledger,
         // not two distinct default graphs.
@@ -165,14 +162,12 @@ async fn resolve_history_endpoint_t<S: Storage + Clone + Send + Sync + 'static>(
         dataset::TimeSpec::AtT(t) => Ok(*t),
         dataset::TimeSpec::Latest => Ok(latest_t),
         dataset::TimeSpec::AtTime(iso) => {
-            let dt = DateTime::parse_from_rfc3339(iso)
-                .map_err(|e| {
-                    ApiError::internal(format!(
-                        "Invalid ISO-8601 timestamp for time travel: {} ({})",
-                        iso, e
-                    ))
-                })?
-                ;
+            let dt = DateTime::parse_from_rfc3339(iso).map_err(|e| {
+                ApiError::internal(format!(
+                    "Invalid ISO-8601 timestamp for time travel: {} ({})",
+                    iso, e
+                ))
+            })?;
             // See `Fluree::load_view_at` for rationale: `ledger#time` is epoch-ms and we
             // ceiling sub-ms ISO inputs to avoid truncation off-by-one.
             let mut target_epoch_ms = dt.timestamp_millis();
@@ -255,30 +250,39 @@ mod tests {
         assert!(result.is_some());
 
         // Single default with time spec - should still return Some (single ledger)
-        let spec = DatasetSpec::new().with_default(
-            GraphSource::new("testdb:main").with_time(dataset::TimeSpec::AtT(0)),
-        );
+        let spec = DatasetSpec::new()
+            .with_default(GraphSource::new("testdb:main").with_time(dataset::TimeSpec::AtT(0)));
         let result = fluree.try_single_view_from_spec(&spec).await.unwrap();
         assert!(result.is_some());
     }
 
     #[tokio::test]
     async fn test_is_single_ledger_fast_path() {
-
         // No time spec - fast path
         let spec = DatasetSpec::new().with_default(GraphSource::new("testdb:main"));
-        assert!(Fluree::<crate::MemoryStorage, crate::MemoryNameService>::is_single_ledger_fast_path(&spec));
+        assert!(
+            Fluree::<crate::MemoryStorage, crate::MemoryNameService>::is_single_ledger_fast_path(
+                &spec
+            )
+        );
 
         // With time spec - not fast path (needs time resolution)
-        let spec = DatasetSpec::new().with_default(
-            GraphSource::new("testdb:main").with_time(dataset::TimeSpec::AtT(5)),
+        let spec = DatasetSpec::new()
+            .with_default(GraphSource::new("testdb:main").with_time(dataset::TimeSpec::AtT(5)));
+        assert!(
+            !Fluree::<crate::MemoryStorage, crate::MemoryNameService>::is_single_ledger_fast_path(
+                &spec
+            )
         );
-        assert!(!Fluree::<crate::MemoryStorage, crate::MemoryNameService>::is_single_ledger_fast_path(&spec));
 
         // Multiple graphs - not fast path
         let spec = DatasetSpec::new()
             .with_default(GraphSource::new("db1:main"))
             .with_default(GraphSource::new("db2:main"));
-        assert!(!Fluree::<crate::MemoryStorage, crate::MemoryNameService>::is_single_ledger_fast_path(&spec));
+        assert!(
+            !Fluree::<crate::MemoryStorage, crate::MemoryNameService>::is_single_ledger_fast_path(
+                &spec
+            )
+        );
     }
 }

@@ -57,8 +57,7 @@ pub fn parse_s_expression(s: &str) -> Result<UnresolvedFilterExpr> {
     let (op, rest) = sexpr_tokenize::split_first_token(inner)?;
     let op_lower = op.to_lowercase();
 
-    if op_lower.as_str() == "in" || op_lower.as_str() == "not-in" || op_lower.as_str() == "notin"
-    {
+    if op_lower.as_str() == "in" || op_lower.as_str() == "not-in" || op_lower.as_str() == "notin" {
         let (expr, values) = parse_s_expression_in_args(rest)?;
         return Ok(UnresolvedFilterExpr::In {
             expr: Box::new(expr),
@@ -71,8 +70,7 @@ pub fn parse_s_expression(s: &str) -> Result<UnresolvedFilterExpr> {
     let args = parse_s_expression_args(rest)?;
 
     // Helper closure to clone already-parsed expressions
-    let clone_expr =
-        |e: &UnresolvedFilterExpr| -> Result<UnresolvedFilterExpr> { Ok(e.clone()) };
+    let clone_expr = |e: &UnresolvedFilterExpr| -> Result<UnresolvedFilterExpr> { Ok(e.clone()) };
 
     // Convert to filter expression based on operator
     match op_lower.as_str() {
@@ -335,7 +333,9 @@ mod tests {
     fn test_parse_in_operator() {
         let expr = parse_s_expression("(in ?status [\"active\" \"pending\"])").unwrap();
         match expr {
-            UnresolvedFilterExpr::In { negated, values, .. } => {
+            UnresolvedFilterExpr::In {
+                negated, values, ..
+            } => {
                 assert!(!negated);
                 assert_eq!(values.len(), 2);
             }

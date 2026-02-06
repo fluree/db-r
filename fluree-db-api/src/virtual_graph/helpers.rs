@@ -169,7 +169,10 @@ mod tests {
             expand_prefixed_iri("ex:doc1", &prefix_map),
             Some("http://example.org/doc1".to_string())
         );
-        assert_eq!(expand_prefixed_iri("http://example.org/doc1", &prefix_map), None);
+        assert_eq!(
+            expand_prefixed_iri("http://example.org/doc1", &prefix_map),
+            None
+        );
         assert_eq!(expand_prefixed_iri("unknown:doc1", &prefix_map), None);
     }
 

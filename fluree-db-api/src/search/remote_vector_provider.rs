@@ -12,7 +12,7 @@
 
 use async_trait::async_trait;
 use fluree_db_query::error::{QueryError, Result};
-use fluree_db_query::vector::{DistanceMetric, VectorIndexProvider, VectorSearchHit};
+use fluree_db_query::vector::{VectorIndexProvider, VectorSearchHit, VectorSearchParams};
 use fluree_search_protocol::{ErrorCode, SearchError, SearchRequest, SearchResponse};
 use reqwest::Client;
 use std::fmt;
@@ -67,10 +67,8 @@ impl RemoteVectorSearchProvider {
             QueryError::InvalidQuery("Remote search config missing 'endpoint'".to_string())
         })?;
 
-        let connect_timeout =
-            Duration::from_millis(config.connect_timeout_ms.unwrap_or(5_000));
-        let request_timeout =
-            Duration::from_millis(config.request_timeout_ms.unwrap_or(30_000));
+        let connect_timeout = Duration::from_millis(config.connect_timeout_ms.unwrap_or(5_000));
+        let request_timeout = Duration::from_millis(config.request_timeout_ms.unwrap_or(30_000));
 
         let client = Client::builder()
             .connect_timeout(connect_timeout)
@@ -124,26 +122,26 @@ impl VectorIndexProvider for RemoteVectorSearchProvider {
     async fn search(
         &self,
         vg_alias: &str,
-        query_vector: &[f32],
-        metric: DistanceMetric,
-        limit: usize,
-        as_of_t: Option<i64>,
-        sync: bool,
-        timeout_ms: Option<u64>,
+        params: VectorSearchParams<'_>,
     ) -> Result<Vec<VectorSearchHit>> {
         // Build the search request
-        let mut request = SearchRequest::vector(vg_alias, query_vector.to_vec(), limit);
-        request.as_of_t = as_of_t;
-        request.sync = sync;
-        request.timeout_ms = timeout_ms;
+        let mut request =
+            SearchRequest::vector(vg_alias, params.query_vector.to_vec(), params.limit);
+        request.as_of_t = params.as_of_t;
+        request.sync = params.sync;
+        request.timeout_ms = params.timeout_ms;
 
         // Set the metric on the query variant
-        if let fluree_search_protocol::QueryVariant::Vector { metric: ref mut m, .. } = request.query {
-            *m = Some(metric.to_string());
+        if let fluree_search_protocol::QueryVariant::Vector {
+            metric: ref mut m, ..
+        } = request.query
+        {
+            *m = Some(params.metric.to_string());
         }
 
         // Use the per-request timeout if provided, otherwise use default
-        let timeout = timeout_ms
+        let timeout = params
+            .timeout_ms
             .map(Duration::from_millis)
             .unwrap_or(self.request_timeout);
 
@@ -156,22 +154,15 @@ impl VectorIndexProvider for RemoteVectorSearchProvider {
         }
 
         // Send request
-        let response = http_request
-            .timeout(timeout)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    QueryError::Internal(format!("Vector search request timeout: {}", e))
-                } else if e.is_connect() {
-                    QueryError::Internal(format!(
-                        "Failed to connect to search service: {}",
-                        e
-                    ))
-                } else {
-                    QueryError::Internal(format!("Vector search request failed: {}", e))
-                }
-            })?;
+        let response = http_request.timeout(timeout).send().await.map_err(|e| {
+            if e.is_timeout() {
+                QueryError::Internal(format!("Vector search request timeout: {}", e))
+            } else if e.is_connect() {
+                QueryError::Internal(format!("Failed to connect to search service: {}", e))
+            } else {
+                QueryError::Internal(format!("Vector search request failed: {}", e))
+            }
+        })?;
 
         // Check for HTTP errors
         let status = response.status();
@@ -182,7 +173,9 @@ impl VectorIndexProvider for RemoteVectorSearchProvider {
                 let code = search_error.error.code;
                 let msg = search_error.error.message;
                 return Err(match code {
-                    ErrorCode::VgNotFound | ErrorCode::IndexNotBuilt | ErrorCode::NoSnapshotForAsOfT => {
+                    ErrorCode::VgNotFound
+                    | ErrorCode::IndexNotBuilt
+                    | ErrorCode::NoSnapshotForAsOfT => {
                         QueryError::InvalidQuery(format!("{}: {}", code, msg))
                     }
                     ErrorCode::InvalidRequest => QueryError::InvalidQuery(msg),
@@ -196,9 +189,10 @@ impl VectorIndexProvider for RemoteVectorSearchProvider {
         }
 
         // Parse response
-        let search_response: SearchResponse = response.json().await.map_err(|e| {
-            QueryError::Internal(format!("Failed to parse search response: {}", e))
-        })?;
+        let search_response: SearchResponse = response
+            .json()
+            .await
+            .map_err(|e| QueryError::Internal(format!("Failed to parse search response: {}", e)))?;
 
         // Convert SearchHit -> VectorSearchHit
         let hits = search_response

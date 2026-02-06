@@ -95,10 +95,29 @@ async fn grouping_single_field() {
 
     // Expected grouped results per Clojure test
     let expected = json!([
-        ["Alice", ["alice@example.org", "alice@example.org", "alice@example.org"], [50, 50, 50], [9, 42, 76]],
+        [
+            "Alice",
+            [
+                "alice@example.org",
+                "alice@example.org",
+                "alice@example.org"
+            ],
+            [50, 50, 50],
+            [9, 42, 76]
+        ],
         ["Brian", ["brian@example.org"], [50], [7]],
-        ["Cam", ["cam@example.org", "cam@example.org"], [34, 34], [5, 10]],
-        ["Liam", ["liam@example.org", "liam@example.org"], [13, 13], [11, 42]]
+        [
+            "Cam",
+            ["cam@example.org", "cam@example.org"],
+            [34, 34],
+            [5, 10]
+        ],
+        [
+            "Liam",
+            ["liam@example.org", "liam@example.org"],
+            [13, 13],
+            [11, 42]
+        ]
     ]);
 
     assert_eq!(rows, expected);
@@ -160,11 +179,7 @@ async fn having_count_filter() {
     let rows = result.to_jsonld(&ledger.db).unwrap();
 
     // Expected filtered results per Clojure test
-    let expected = json!([
-        ["Alice", [9, 42, 76]],
-        ["Cam", [5, 10]],
-        ["Liam", [11, 42]]
-    ]);
+    let expected = json!([["Alice", [9, 42, 76]], ["Cam", [5, 10]], ["Liam", [11, 42]]]);
 
     assert_eq!(rows, expected);
 }
@@ -191,10 +206,7 @@ async fn having_avg_filter() {
     let rows = result.to_jsonld(&ledger.db).unwrap();
 
     // Expected filtered results per Clojure test
-    let expected = json!([
-        ["Alice", [9, 42, 76]],
-        ["Liam", [11, 42]]
-    ]);
+    let expected = json!([["Alice", [9, 42, 76]], ["Liam", [11, 42]]]);
 
     assert_eq!(rows, expected);
 }
@@ -381,10 +393,7 @@ async fn select_distinct_with_limit_offset() {
     let rows = result.to_jsonld(&ledger.db).unwrap();
 
     // Expected distinct results with limit/offset per Clojure test
-    let expected = json!([
-        ["Brian", "brian@example.org"],
-        ["Cam", "cam@example.org"]
-    ]);
+    let expected = json!([["Brian", "brian@example.org"], ["Cam", "cam@example.org"]]);
 
     assert_eq!(rows, expected);
 }

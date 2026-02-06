@@ -80,7 +80,8 @@ pub fn eval_function<S: Storage>(
             check_arity(args, 1, "LCASE")?;
             let val = eval_to_comparable_inner(&args[0], row, ctx)?;
             Ok(val.and_then(|v| {
-                comparable_to_string(&v).map(|s| ComparableValue::String(Arc::from(s.to_lowercase())))
+                comparable_to_string(&v)
+                    .map(|s| ComparableValue::String(Arc::from(s.to_lowercase())))
             }))
         }
 
@@ -88,14 +89,17 @@ pub fn eval_function<S: Storage>(
             check_arity(args, 1, "UCASE")?;
             let val = eval_to_comparable_inner(&args[0], row, ctx)?;
             Ok(val.and_then(|v| {
-                comparable_to_string(&v).map(|s| ComparableValue::String(Arc::from(s.to_uppercase())))
+                comparable_to_string(&v)
+                    .map(|s| ComparableValue::String(Arc::from(s.to_uppercase())))
             }))
         }
 
         FunctionName::Strlen => {
             check_arity(args, 1, "STRLEN")?;
             let val = eval_to_comparable_inner(&args[0], row, ctx)?;
-            Ok(val.and_then(|v| comparable_to_string(&v).map(|s| ComparableValue::Long(s.len() as i64))))
+            Ok(val.and_then(|v| {
+                comparable_to_string(&v).map(|s| ComparableValue::Long(s.len() as i64))
+            }))
         }
 
         FunctionName::Contains => {
@@ -248,7 +252,11 @@ pub fn eval_function<S: Storage>(
 
             match (input, start) {
                 (Some(ComparableValue::String(s)), Some(ComparableValue::Long(start_1))) => {
-                    let start_0 = if start_1 < 1 { 0 } else { (start_1 - 1) as usize };
+                    let start_0 = if start_1 < 1 {
+                        0
+                    } else {
+                        (start_1 - 1) as usize
+                    };
                     if start_0 >= s.len() {
                         return Ok(Some(ComparableValue::String(Arc::from(""))));
                     }
@@ -346,15 +354,15 @@ pub fn eval_function<S: Storage>(
         FunctionName::IsIri => {
             check_arity(args, 1, "isIRI")?;
             let val = eval_to_comparable_inner(&args[0], row, ctx)?;
-            Ok(Some(ComparableValue::Bool(
-                val.map_or(false, |v| matches!(v, ComparableValue::Sid(_) | ComparableValue::Iri(_))),
-            )))
+            Ok(Some(ComparableValue::Bool(val.is_some_and(|v| {
+                matches!(v, ComparableValue::Sid(_) | ComparableValue::Iri(_))
+            }))))
         }
 
         FunctionName::IsLiteral => {
             check_arity(args, 1, "isLiteral")?;
             let val = eval_to_comparable_inner(&args[0], row, ctx)?;
-            Ok(Some(ComparableValue::Bool(val.map_or(false, |v| {
+            Ok(Some(ComparableValue::Bool(val.is_some_and(|v| {
                 matches!(
                     v,
                     ComparableValue::Long(_)
@@ -368,7 +376,7 @@ pub fn eval_function<S: Storage>(
         FunctionName::IsNumeric => {
             check_arity(args, 1, "isNumeric")?;
             let val = eval_to_comparable_inner(&args[0], row, ctx)?;
-            Ok(Some(ComparableValue::Bool(val.map_or(false, |v| {
+            Ok(Some(ComparableValue::Bool(val.is_some_and(|v| {
                 matches!(v, ComparableValue::Long(_) | ComparableValue::Double(_))
             }))))
         }
@@ -564,11 +572,9 @@ pub fn eval_function<S: Storage>(
         // =================================================================
         // Vector functions
         // =================================================================
-        FunctionName::DotProduct => {
-            eval_binary_vector_fn(args, row, ctx, "dotProduct", |a, b| {
-                Some(a.iter().zip(b.iter()).map(|(x, y)| x * y).sum())
-            })
-        }
+        FunctionName::DotProduct => eval_binary_vector_fn(args, row, ctx, "dotProduct", |a, b| {
+            Some(a.iter().zip(b.iter()).map(|(x, y)| x * y).sum())
+        }),
 
         FunctionName::CosineSimilarity => {
             eval_binary_vector_fn(args, row, ctx, "cosineSimilarity", |a, b| {
@@ -750,7 +756,9 @@ where
 {
     check_arity(args, 1, fn_name)?;
     let val = eval_to_comparable_inner(&args[0], row, ctx)?;
-    Ok(val.and_then(|v| comparable_to_string(&v).map(|s| ComparableValue::String(Arc::from(hash_fn(s))))))
+    Ok(val.and_then(|v| {
+        comparable_to_string(&v).map(|s| ComparableValue::String(Arc::from(hash_fn(s))))
+    }))
 }
 
 /// Evaluate a binary vector function
@@ -838,7 +846,10 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(result, Some(ComparableValue::String(Arc::from("HELLO WORLD"))));
+        assert_eq!(
+            result,
+            Some(ComparableValue::String(Arc::from("HELLO WORLD")))
+        );
     }
 
     #[test]

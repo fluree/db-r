@@ -5,7 +5,9 @@
 
 use crate::config::ServerConfig;
 use std::env;
-use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Layer};
+#[cfg(feature = "otel")]
+use tracing_subscriber::Layer;
+use tracing_subscriber::{layer::SubscriberExt, EnvFilter};
 
 /// Telemetry configuration
 #[derive(Debug, Clone)]
@@ -69,8 +71,7 @@ impl TelemetryConfig {
         let rust_log = env::var("RUST_LOG").unwrap_or_default();
         let default_level = if rust_log.is_empty() {
             // Fallback to LOG_LEVEL env var, then server config, then "info"
-            env::var("LOG_LEVEL")
-                .unwrap_or_else(|_| server_config.log_level.clone())
+            env::var("LOG_LEVEL").unwrap_or_else(|_| server_config.log_level.clone())
         } else {
             server_config.log_level.clone() // Not used when RUST_LOG is set, but store for consistency
         };
@@ -95,7 +96,6 @@ impl Default for TelemetryConfig {
 
 impl TelemetryConfig {
     fn from_env_with_defaults(default_level: String) -> Self {
-
         Self {
             log_filter: env::var("RUST_LOG").unwrap_or_default(),
             default_level,
@@ -207,7 +207,7 @@ fn init_otel_layer(
             .with_endpoint(config.otel_endpoint.as_ref().unwrap())
             .build()
             .expect("failed to build OTLP HTTP span exporter"),
-        "grpc" | _ => opentelemetry_otlp::SpanExporter::builder()
+        _ => opentelemetry_otlp::SpanExporter::builder()
             .with_tonic()
             .with_endpoint(config.otel_endpoint.as_ref().unwrap())
             .build()
@@ -237,7 +237,10 @@ fn init_otel_layer(
 
     let resource = Resource::builder_empty()
         .with_attributes(vec![
-            KeyValue::new("service.name", config.otel_service_name.as_ref().unwrap().clone()),
+            KeyValue::new(
+                "service.name",
+                config.otel_service_name.as_ref().unwrap().clone(),
+            ),
             KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
         ])
         .build();
@@ -256,7 +259,6 @@ fn init_otel_layer(
     // Create tracing layer
     OpenTelemetryLayer::new(global::tracer("fluree-db"))
 }
-
 
 /// Shutdown telemetry gracefully
 ///
@@ -281,7 +283,10 @@ pub async fn shutdown_tracer() {
 /// 3. x-trace-id (generic)
 ///
 /// Returns None if no request ID found.
-pub fn extract_request_id(headers: &axum::http::HeaderMap, config: &TelemetryConfig) -> Option<String> {
+pub fn extract_request_id(
+    headers: &axum::http::HeaderMap,
+    config: &TelemetryConfig,
+) -> Option<String> {
     // Check configured header first
     if let Some(value) = headers.get(&config.request_id_header) {
         if let Ok(id) = value.to_str() {
@@ -390,7 +395,11 @@ pub fn handle_query_text_logging(
 ) -> (Option<String>, Option<String>, Option<String>) {
     match config.query_text_logging {
         QueryTextLogging::Off => (None, None, None),
-        QueryTextLogging::Full => (None, Some(query_text.to_string()), Some(query_text.to_string())),
+        QueryTextLogging::Full => (
+            None,
+            Some(query_text.to_string()),
+            Some(query_text.to_string()),
+        ),
         QueryTextLogging::Hash => {
             // Log fast non-crypto hash at info level, full text at trace
             use ahash::AHasher;
@@ -413,7 +422,7 @@ pub fn log_query_text(query_text: &str, config: &TelemetryConfig, span: &tracing
     let (info_text, debug_text, trace_text) = handle_query_text_logging(query_text, config);
 
     if let Some(hash) = info_text {
-        span.record("query_hash", &hash.as_str());
+        span.record("query_hash", hash.as_str());
         tracing::info!(query_hash = %hash, "query logged");
     }
 
@@ -444,12 +453,18 @@ mod tests {
 
         // Test configured header
         headers.insert("x-request-id", "test-123".parse().unwrap());
-        assert_eq!(extract_request_id(&headers, &config), Some("test-123".to_string()));
+        assert_eq!(
+            extract_request_id(&headers, &config),
+            Some("test-123".to_string())
+        );
 
         // Test AWS header fallback
         let mut headers = HeaderMap::new();
         headers.insert("x-amzn-trace-id", "aws-456".parse().unwrap());
-        assert_eq!(extract_request_id(&headers, &config), Some("aws-456".to_string()));
+        assert_eq!(
+            extract_request_id(&headers, &config),
+            Some("aws-456".to_string())
+        );
     }
 
     #[test]
@@ -457,19 +472,36 @@ mod tests {
         let mut headers = HeaderMap::new();
 
         // Test traceparent header
-        headers.insert("traceparent", "00-12345678901234567890123456789012-1234567890123456-01".parse().unwrap());
-        assert_eq!(extract_trace_id(&headers), Some("12345678901234567890123456789012".to_string()));
+        headers.insert(
+            "traceparent",
+            "00-12345678901234567890123456789012-1234567890123456-01"
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            extract_trace_id(&headers),
+            Some("12345678901234567890123456789012".to_string())
+        );
     }
 
     #[test]
     fn test_mask_sensitive_data() {
         let data = "secret-password";
 
-        assert_eq!(mask_sensitive_data(data, &SensitiveDataHandling::Off), "secret-password");
-        assert_eq!(mask_sensitive_data(data, &SensitiveDataHandling::Mask), "***************");
+        assert_eq!(
+            mask_sensitive_data(data, &SensitiveDataHandling::Off),
+            "secret-password"
+        );
+        assert_eq!(
+            mask_sensitive_data(data, &SensitiveDataHandling::Mask),
+            "***************"
+        );
         // Hash should be deterministic and different from input
         let hashed = mask_sensitive_data(data, &SensitiveDataHandling::Hash);
         assert_ne!(hashed, "secret-password");
-        assert_eq!(mask_sensitive_data(data, &SensitiveDataHandling::Hash), hashed); // deterministic
+        assert_eq!(
+            mask_sensitive_data(data, &SensitiveDataHandling::Hash),
+            hashed
+        ); // deterministic
     }
 }

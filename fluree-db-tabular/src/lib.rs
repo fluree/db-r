@@ -14,4 +14,4 @@ pub mod batch;
 pub mod error;
 
 pub use batch::{BatchSchema, Column, ColumnBatch, FieldInfo, FieldType};
-pub use error::{TabularError, Result};
+pub use error::{Result, TabularError};

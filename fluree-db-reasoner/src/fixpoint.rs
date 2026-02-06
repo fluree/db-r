@@ -7,27 +7,27 @@ use std::time::Instant;
 
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::flake::Flake;
-use fluree_vocab::jsonld_names::ID as JSONLD_ID;
-use fluree_vocab::namespaces::{JSON_LD, RDF};
-use fluree_vocab::predicates::RDF_TYPE;
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::storage::Storage;
 use fluree_db_core::{Db, Sid};
+use fluree_vocab::jsonld_names::ID as JSONLD_ID;
+use fluree_vocab::namespaces::{JSON_LD, RDF};
+use fluree_vocab::predicates::RDF_TYPE;
 
 use crate::cache::ReasoningBudget;
-use crate::owl;
 use crate::execute::{
     apply_all_values_from_rule, apply_domain_rule, apply_equivalent_class_rule,
     apply_functional_property_rule, apply_has_key_rule, apply_has_value_backward_rule,
-    apply_has_value_forward_rule, apply_intersection_backward_rule, apply_intersection_forward_rule,
-    apply_inverse_functional_property_rule, apply_inverse_rule, apply_max_cardinality_rule,
-    apply_max_qualified_cardinality_rule, apply_one_of_rule, apply_property_chain_rule,
-    apply_range_rule, apply_same_as_rule, apply_some_values_from_rule, apply_sub_property_rule,
-    apply_subclass_rule, apply_symmetric_rule, apply_transitive_rule, apply_union_rule, DeltaSet,
-    DerivedSet,
+    apply_has_value_forward_rule, apply_intersection_backward_rule,
+    apply_intersection_forward_rule, apply_inverse_functional_property_rule, apply_inverse_rule,
+    apply_max_cardinality_rule, apply_max_qualified_cardinality_rule, apply_one_of_rule,
+    apply_property_chain_rule, apply_range_rule, apply_same_as_rule, apply_some_values_from_rule,
+    apply_sub_property_rule, apply_subclass_rule, apply_symmetric_rule, apply_transitive_rule,
+    apply_union_rule, DeltaSet, DerivedSet, IdentityRuleContext, RuleContext,
 };
 use crate::ontology_rl::{load_same_as_assertions, OntologyRL};
+use crate::owl;
 use crate::restrictions::{extract_restrictions, RestrictionIndex};
 use crate::same_as::SameAsTracker;
 use crate::{FrozenSameAs, ReasoningDiagnostics, Result};
@@ -113,22 +113,14 @@ pub async fn run_fixpoint<S: Storage>(
     while !delta.is_empty() {
         // Check budget
         if start.elapsed() > budget.max_duration {
-            diagnostics = ReasoningDiagnostics::capped(
-                "time",
-                iterations,
-                derived.len(),
-                start.elapsed(),
-            );
+            diagnostics =
+                ReasoningDiagnostics::capped("time", iterations, derived.len(), start.elapsed());
             break;
         }
 
         if derived.len() > budget.max_facts {
-            diagnostics = ReasoningDiagnostics::capped(
-                "facts",
-                iterations,
-                derived.len(),
-                start.elapsed(),
-            );
+            diagnostics =
+                ReasoningDiagnostics::capped("facts", iterations, derived.len(), start.elapsed());
             break;
         }
 
@@ -138,293 +130,126 @@ pub async fn run_fixpoint<S: Storage>(
         // Apply rules in order:
         // PHASE A: Process existing sameAs in delta
         // This updates the union-find for any owl:sameAs facts in the current delta
-        let mut same_as_changed =
-            apply_same_as_rule(&delta, &mut same_as_tracker, &owl_same_as_sid, &mut diagnostics);
+        let mut same_as_changed = apply_same_as_rule(
+            &delta,
+            &mut same_as_tracker,
+            &owl_same_as_sid,
+            &mut diagnostics,
+        );
 
         // PHASE B: Apply identity-producing rules (produce owl:sameAs)
         // These rules can derive new sameAs facts: prp-fp, prp-ifp
         // They must run BEFORE non-identity rules to ensure proper canonicalization
 
-        // B.1. Functional property rule (prp-fp):
-        // FunctionalProperty(P), P(x, y1), P(x, y2) → sameAs(y1, y2)
-        // Pass same_as_changed so rule re-evaluates when sameAs merges create new conflicts
-        apply_functional_property_rule(
-            &ontology,
-            &delta,
-            &derived,
-            &mut new_delta,
-            &same_as_tracker,
-            &owl_same_as_sid,
-            reasoning_t,
-            same_as_changed,
-            &mut diagnostics,
-        );
+        // Create IdentityRuleContext for identity-producing rules
+        {
+            let mut identity_ctx = IdentityRuleContext {
+                delta: &delta,
+                derived: &derived,
+                new_delta: &mut new_delta,
+                same_as: &same_as_tracker,
+                owl_same_as_sid: &owl_same_as_sid,
+                rdf_type_sid: &rdf_type_sid,
+                t: reasoning_t,
+                same_as_changed,
+                diagnostics: &mut diagnostics,
+            };
 
-        // B.2. Inverse functional property rule (prp-ifp):
-        // InverseFunctionalProperty(P), P(x1, y), P(x2, y) → sameAs(x1, x2)
-        // Pass same_as_changed so rule re-evaluates when sameAs merges create new conflicts
-        apply_inverse_functional_property_rule(
-            &ontology,
-            &delta,
-            &derived,
-            &mut new_delta,
-            &same_as_tracker,
-            &owl_same_as_sid,
-            reasoning_t,
-            same_as_changed,
-            &mut diagnostics,
-        );
+            // B.1. Functional property rule (prp-fp):
+            // FunctionalProperty(P), P(x, y1), P(x, y2) → sameAs(y1, y2)
+            apply_functional_property_rule(&ontology, &mut identity_ctx);
 
-        // B.3. hasKey rule (prp-key):
-        // hasKey(C, [P1..Pn]), type(x,C), P1(x,z1).., type(y,C), P1(y,z1).. → sameAs(x,y)
-        // Pass same_as_changed so rule re-evaluates when sameAs merges create new key matches
-        apply_has_key_rule(
-            &ontology,
-            &delta,
-            &derived,
-            &mut new_delta,
-            &same_as_tracker,
-            &owl_same_as_sid,
-            &rdf_type_sid,
-            reasoning_t,
-            same_as_changed,
-            &mut diagnostics,
-        );
+            // B.2. Inverse functional property rule (prp-ifp):
+            // InverseFunctionalProperty(P), P(x1, y), P(x2, y) → sameAs(x1, x2)
+            apply_inverse_functional_property_rule(&ontology, &mut identity_ctx);
 
-        // B.4. MaxCardinality=1 rule (cls-maxc2):
-        // P(x, y1), P(x, y2), type(x, C) → sameAs(y1, y2) where C is maxCardinality=1 restriction
-        apply_max_cardinality_rule(
-            &restrictions,
-            &delta,
-            &derived,
-            &mut new_delta,
-            &same_as_tracker,
-            &owl_same_as_sid,
-            &rdf_type_sid,
-            reasoning_t,
-            same_as_changed,
-            &mut diagnostics,
-        );
+            // B.3. hasKey rule (prp-key):
+            // hasKey(C, [P1..Pn]), type(x,C), P1(x,z1).., type(y,C), P1(y,z1).. → sameAs(x,y)
+            apply_has_key_rule(&ontology, &mut identity_ctx);
 
-        // B.5. MaxQualifiedCardinality=1 rule (cls-maxqc3/4):
-        // P(x, y1), P(x, y2), type(x, C), type(y1, D), type(y2, D) → sameAs(y1, y2)
-        apply_max_qualified_cardinality_rule(
-            &restrictions,
-            &delta,
-            &derived,
-            &mut new_delta,
-            &same_as_tracker,
-            &owl_same_as_sid,
-            &rdf_type_sid,
-            reasoning_t,
-            same_as_changed,
-            &mut diagnostics,
-        );
+            // B.4. MaxCardinality=1 rule (cls-maxc2):
+            // P(x, y1), P(x, y2), type(x, C) → sameAs(y1, y2) where C is maxCardinality=1 restriction
+            apply_max_cardinality_rule(&restrictions, &mut identity_ctx);
+
+            // B.5. MaxQualifiedCardinality=1 rule (cls-maxqc3/4):
+            // P(x, y1), P(x, y2), type(x, C), type(y1, D), type(y2, D) → sameAs(y1, y2)
+            apply_max_qualified_cardinality_rule(&restrictions, &mut identity_ctx);
+        }
 
         // B.6. Process any new sameAs facts generated by fp/ifp/hasKey/cardinality rules
         // This ensures the union-find is updated before non-identity rules run
-        let identity_same_as_changed =
-            apply_same_as_rule(&new_delta, &mut same_as_tracker, &owl_same_as_sid, &mut diagnostics);
+        let identity_same_as_changed = apply_same_as_rule(
+            &new_delta,
+            &mut same_as_tracker,
+            &owl_same_as_sid,
+            &mut diagnostics,
+        );
         same_as_changed = same_as_changed || identity_same_as_changed;
 
         // PHASE C: Apply non-identity rules
         // These rules produce property/type facts (not sameAs)
 
+        // Create RuleContext for standard rules
+        let mut ctx = RuleContext {
+            delta: &delta,
+            derived: &derived,
+            new_delta: &mut new_delta,
+            same_as: &same_as_tracker,
+            rdf_type_sid: &rdf_type_sid,
+            t: reasoning_t,
+            diagnostics: &mut diagnostics,
+        };
+
         // C.1. Symmetric property rule (prp-symp)
-        apply_symmetric_rule(
-            &ontology,
-            &delta,
-            &derived,
-            &mut new_delta,
-            reasoning_t,
-            &mut diagnostics,
-        );
+        apply_symmetric_rule(&ontology, &mut ctx);
 
         // C.2. Transitive property rule (prp-trp)
-        apply_transitive_rule(
-            &ontology,
-            &delta,
-            &derived,
-            &mut new_delta,
-            reasoning_t,
-            &mut diagnostics,
-        );
+        apply_transitive_rule(&ontology, &mut ctx);
 
         // C.3. Inverse property rule (prp-inv)
-        apply_inverse_rule(
-            &ontology,
-            &delta,
-            &derived,
-            &mut new_delta,
-            reasoning_t,
-            &mut diagnostics,
-        );
+        apply_inverse_rule(&ontology, &mut ctx);
 
         // C.4. Domain rule (prp-dom): P(x,y), domain(P,C) → type(x,C)
-        apply_domain_rule(
-            &ontology,
-            &delta,
-            &derived,
-            &mut new_delta,
-            &same_as_tracker,
-            &rdf_type_sid,
-            reasoning_t,
-            &mut diagnostics,
-        );
+        apply_domain_rule(&ontology, &mut ctx);
 
         // C.5. Range rule (prp-rng): P(x,y), range(P,C) → type(y,C)
-        apply_range_rule(
-            &ontology,
-            &delta,
-            &derived,
-            &mut new_delta,
-            &same_as_tracker,
-            &rdf_type_sid,
-            reasoning_t,
-            &mut diagnostics,
-        );
+        apply_range_rule(&ontology, &mut ctx);
 
         // C.6. SubPropertyOf rule (prp-spo1): P1(x,y), subPropertyOf(P1,P2) → P2(x,y)
-        apply_sub_property_rule(
-            &ontology,
-            &delta,
-            &derived,
-            &mut new_delta,
-            &same_as_tracker,
-            reasoning_t,
-            &mut diagnostics,
-        );
+        apply_sub_property_rule(&ontology, &mut ctx);
 
         // C.7. PropertyChain rule (prp-spo2): P1(u0,u1), P2(u1,u2) → P(u0,u2)
-        apply_property_chain_rule(
-            &ontology,
-            &delta,
-            &derived,
-            &mut new_delta,
-            &same_as_tracker,
-            reasoning_t,
-            &mut diagnostics,
-        );
+        apply_property_chain_rule(&ontology, &mut ctx);
 
         // C.8. SubClassOf rule (cax-sco): type(x, C1), subClassOf(C1, C2) → type(x, C2)
-        apply_subclass_rule(
-            &ontology,
-            &delta,
-            &derived,
-            &mut new_delta,
-            &same_as_tracker,
-            &rdf_type_sid,
-            reasoning_t,
-            &mut diagnostics,
-        );
+        apply_subclass_rule(&ontology, &mut ctx);
 
         // C.9. EquivalentClass rule (cax-eqc): type(x, C1), equivalentClass(C1, C2) → type(x, C2)
-        apply_equivalent_class_rule(
-            &ontology,
-            &delta,
-            &derived,
-            &mut new_delta,
-            &same_as_tracker,
-            &rdf_type_sid,
-            reasoning_t,
-            &mut diagnostics,
-        );
+        apply_equivalent_class_rule(&ontology, &mut ctx);
 
         // C.10. HasValue backward rule (cls-hv1): type(x, C) where C is hasValue restriction → P(x, v)
-        apply_has_value_backward_rule(
-            &restrictions,
-            &delta,
-            &derived,
-            &mut new_delta,
-            &same_as_tracker,
-            &rdf_type_sid,
-            reasoning_t,
-            &mut diagnostics,
-        );
+        apply_has_value_backward_rule(&restrictions, &mut ctx);
 
         // C.11. HasValue forward rule (cls-hv2): P(x, v) where C is hasValue restriction → type(x, C)
-        apply_has_value_forward_rule(
-            &restrictions,
-            &delta,
-            &derived,
-            &mut new_delta,
-            &same_as_tracker,
-            &rdf_type_sid,
-            reasoning_t,
-            &mut diagnostics,
-        );
+        apply_has_value_forward_rule(&restrictions, &mut ctx);
 
         // C.12. SomeValuesFrom rule (cls-svf1): P(x, y), type(y, D) → type(x, C)
-        apply_some_values_from_rule(
-            &restrictions,
-            &delta,
-            &derived,
-            &mut new_delta,
-            &same_as_tracker,
-            &rdf_type_sid,
-            reasoning_t,
-            &mut diagnostics,
-        );
+        apply_some_values_from_rule(&restrictions, &mut ctx);
 
         // C.13. AllValuesFrom rule (cls-avf): type(x, C), P(x, y) → type(y, D)
-        apply_all_values_from_rule(
-            &restrictions,
-            &delta,
-            &derived,
-            &mut new_delta,
-            &same_as_tracker,
-            &rdf_type_sid,
-            reasoning_t,
-            &mut diagnostics,
-        );
+        apply_all_values_from_rule(&restrictions, &mut ctx);
 
         // C.14. IntersectionOf backward rule (cls-int2): type(x, I) → type(x, Ci)
-        apply_intersection_backward_rule(
-            &restrictions,
-            &delta,
-            &derived,
-            &mut new_delta,
-            &same_as_tracker,
-            &rdf_type_sid,
-            reasoning_t,
-            &mut diagnostics,
-        );
+        apply_intersection_backward_rule(&restrictions, &mut ctx);
 
         // C.15. IntersectionOf forward rule (cls-int1): type(x, C1) ∧ ... → type(x, I)
-        apply_intersection_forward_rule(
-            &restrictions,
-            &delta,
-            &derived,
-            &mut new_delta,
-            &same_as_tracker,
-            &rdf_type_sid,
-            reasoning_t,
-            &mut diagnostics,
-        );
+        apply_intersection_forward_rule(&restrictions, &mut ctx);
 
         // C.16. UnionOf rule (cls-uni): type(x, Ci) → type(x, U)
-        apply_union_rule(
-            &restrictions,
-            &delta,
-            &derived,
-            &mut new_delta,
-            &same_as_tracker,
-            &rdf_type_sid,
-            reasoning_t,
-            &mut diagnostics,
-        );
+        apply_union_rule(&restrictions, &mut ctx);
 
         // C.17. OneOf rule (cls-oo): i ∈ oneOf list → type(i, C)
-        apply_one_of_rule(
-            &restrictions,
-            &delta,
-            &derived,
-            &mut new_delta,
-            &same_as_tracker,
-            &rdf_type_sid,
-            reasoning_t,
-            &mut diagnostics,
-        );
+        apply_one_of_rule(&restrictions, &mut ctx);
 
         // PHASE D: If sameAs changed this iteration, canonicalize both delta and new_delta (eq-rep-s/o)
         // This ensures DerivedSet stays consistently canonical for proper deduplication
@@ -539,7 +364,7 @@ async fn seed_initial_delta<S: Storage>(
     // Stored separately because chain_component_predicates returns owned Sids
     let chain_components = ontology.chain_component_predicates();
     for p in &chain_components {
-        if !predicates_to_query.iter().any(|&q| q == p) {
+        if !predicates_to_query.contains(&p) {
             predicates_to_query.push(p);
         }
     }
@@ -569,7 +394,7 @@ async fn seed_initial_delta<S: Storage>(
     // Stored separately because all_key_properties returns owned Sids
     let key_properties = ontology.all_key_properties();
     for p in &key_properties {
-        if !predicates_to_query.iter().any(|&q| q == p) {
+        if !predicates_to_query.contains(&p) {
             predicates_to_query.push(p);
         }
     }
@@ -578,7 +403,7 @@ async fn seed_initial_delta<S: Storage>(
     // Stored separately because restricted_properties returns owned Sids
     let restricted_props: Vec<Sid> = restrictions.restricted_properties().cloned().collect();
     for p in &restricted_props {
-        if !predicates_to_query.iter().any(|&q| q == p) {
+        if !predicates_to_query.contains(&p) {
             predicates_to_query.push(p);
         }
     }

@@ -5,8 +5,8 @@
 //! `.transact().commit()`).
 
 use crate::dataset::TimeSpec;
-use crate::graph_snapshot::GraphSnapshot;
 use crate::graph_query_builder::GraphQueryBuilder;
+use crate::graph_snapshot::GraphSnapshot;
 use crate::graph_transact_builder::GraphTransactBuilder;
 use crate::{Fluree, NameService, Result, Storage};
 use fluree_db_nameservice::Publisher;
@@ -71,7 +71,10 @@ where
     /// let r2 = snapshot.query().jsonld(&q).execute().await?;
     /// ```
     pub async fn load(&self) -> Result<GraphSnapshot<'a, S, N>> {
-        let view = self.fluree.load_view_at(&self.alias, self.time_spec.clone()).await?;
+        let view = self
+            .fluree
+            .load_view_at(&self.alias, self.time_spec.clone())
+            .await?;
         Ok(GraphSnapshot::new(self.fluree, view))
     }
 

@@ -62,7 +62,7 @@ impl Default for ServiceConfig {
     fn default() -> Self {
         Self {
             max_limit: 1000,
-            max_timeout_ms: 300_000,  // 5 minutes
+            max_timeout_ms: 300_000,    // 5 minutes
             default_timeout_ms: 30_000, // 30 seconds
         }
     }
@@ -97,7 +97,10 @@ impl<B: SearchBackend> SearchService<B> {
     /// This is the main entry point for processing search requests.
     /// It validates the request, routes to the backend, and formats
     /// the response according to the protocol.
-    pub async fn handle_request(&self, request: SearchRequest) -> std::result::Result<SearchResponse, SearchError> {
+    pub async fn handle_request(
+        &self,
+        request: SearchRequest,
+    ) -> std::result::Result<SearchResponse, SearchError> {
         let start = Instant::now();
         let request_id = request.request_id.clone();
 
@@ -152,12 +155,14 @@ impl<B: SearchBackend> SearchService<B> {
                 Some(timeout_ms),
             )
             .await
-            .map_err(|e| SearchError::new(
-                PROTOCOL_VERSION,
-                request_id.clone(),
-                e.error_code(),
-                e.to_string(),
-            ))?;
+            .map_err(|e| {
+                SearchError::new(
+                    PROTOCOL_VERSION,
+                    request_id.clone(),
+                    e.error_code(),
+                    e.to_string(),
+                )
+            })?;
 
         let took_ms = start.elapsed().as_millis() as u64;
 
@@ -177,13 +182,21 @@ impl<B: SearchBackend> SearchService<B> {
         let mut supported_kinds = vec![];
 
         // Check what queries the backend supports
-        if self.backend.supports(&QueryVariant::Bm25 { text: String::new() }) {
+        if self.backend.supports(&QueryVariant::Bm25 {
+            text: String::new(),
+        }) {
             supported_kinds.push("bm25".to_string());
         }
-        if self.backend.supports(&QueryVariant::Vector { vector: vec![], metric: None }) {
+        if self.backend.supports(&QueryVariant::Vector {
+            vector: vec![],
+            metric: None,
+        }) {
             supported_kinds.push("vector".to_string());
         }
-        if self.backend.supports(&QueryVariant::VectorSimilarTo { to_iri: String::new(), metric: None }) {
+        if self.backend.supports(&QueryVariant::VectorSimilarTo {
+            to_iri: String::new(),
+            metric: None,
+        }) {
             supported_kinds.push("vector_similar_to".to_string());
         }
 
@@ -231,13 +244,11 @@ mod tests {
     impl MockBackend {
         fn new() -> Self {
             Self {
-                hits: vec![
-                    SearchHit::new(
-                        "http://example.org/doc1".to_string(),
-                        "ledger:main".to_string(),
-                        1.5,
-                    ),
-                ],
+                hits: vec![SearchHit::new(
+                    "http://example.org/doc1".to_string(),
+                    "ledger:main".to_string(),
+                    1.5,
+                )],
                 index_t: 100,
             }
         }

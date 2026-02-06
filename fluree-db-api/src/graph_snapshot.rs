@@ -35,10 +35,7 @@ where
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Create a new snapshot (called internally by `Graph::load()`).
-    pub(crate) fn new(
-        fluree: &'a Fluree<S, N>,
-        view: FlureeView<S>,
-    ) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<S, N>, view: FlureeView<S>) -> Self {
         Self { fluree, view }
     }
 
@@ -64,4 +61,3 @@ where
         self.view
     }
 }
-

@@ -63,7 +63,11 @@ impl<S: Storage + 'static> BindOperator<S> {
         let (schema, var_position, is_new_var) = match existing_pos {
             Some(pos) => {
                 // Variable exists - schema stays the same
-                (Arc::from(child_schema.to_vec().into_boxed_slice()), pos, false)
+                (
+                    Arc::from(child_schema.to_vec().into_boxed_slice()),
+                    pos,
+                    false,
+                )
             }
             None => {
                 // New variable - add to schema
@@ -84,7 +88,6 @@ impl<S: Storage + 'static> BindOperator<S> {
             state: OperatorState::Created,
         }
     }
-
 }
 
 #[async_trait]
@@ -159,9 +162,11 @@ impl<S: Storage + 'static> Operator<S> for BindOperator<S> {
                 }
 
                 // Copy child columns
-                for col_idx in 0..child_num_cols {
+                for (col_idx, output_col) in
+                    output_columns.iter_mut().enumerate().take(child_num_cols)
+                {
                     let binding = input_batch.get_by_col(row_idx, col_idx).clone();
-                    output_columns[col_idx].push(binding);
+                    output_col.push(binding);
                 }
 
                 // Add bound value
@@ -210,12 +215,13 @@ mod tests {
     use crate::ir::FilterValue;
     use fluree_db_core::MemoryStorage;
 
-
     #[test]
     fn test_bind_operator_new_var_schema() {
         // Child has ?a, BIND adds ?b
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
-        let child = Box::new(TestEmptyWithSchema { schema: child_schema });
+        let child = Box::new(TestEmptyWithSchema {
+            schema: child_schema,
+        });
 
         let expr = FilterExpr::Const(FilterValue::Long(42));
         let op = BindOperator::<MemoryStorage>::new(child, VarId(1), expr);
@@ -231,7 +237,9 @@ mod tests {
     fn test_bind_operator_existing_var_schema() {
         // Child has ?a ?b, BIND to ?a (existing)
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
-        let child = Box::new(TestEmptyWithSchema { schema: child_schema });
+        let child = Box::new(TestEmptyWithSchema {
+            schema: child_schema,
+        });
 
         let expr = FilterExpr::Const(FilterValue::Long(42));
         let op = BindOperator::<MemoryStorage>::new(child, VarId(0), expr);

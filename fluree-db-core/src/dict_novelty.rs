@@ -478,17 +478,11 @@ mod tests {
 
         // local_id <= watermark → persisted
         let persisted = SubjectId::new(2, 50).as_u64();
-        assert!(
-            SubjectId::from_u64(persisted).local_id()
-                <= dn.subjects.watermark_for_ns(2)
-        );
+        assert!(SubjectId::from_u64(persisted).local_id() <= dn.subjects.watermark_for_ns(2));
 
         // local_id > watermark → novel
         let novel = SubjectId::new(2, 101).as_u64();
-        assert!(
-            SubjectId::from_u64(novel).local_id()
-                > dn.subjects.watermark_for_ns(2)
-        );
+        assert!(SubjectId::from_u64(novel).local_id() > dn.subjects.watermark_for_ns(2));
     }
 
     // -----------------------------------------------------------------------
@@ -549,7 +543,9 @@ mod tests {
 
         // Assigning NS_OVERFLOW subjects must NOT resize watermarks/next_local_ids
         // to 65536 entries.
-        let id = dn.subjects.assign_or_lookup(NS_OVERFLOW, "http://example.com/full-iri");
+        let id = dn
+            .subjects
+            .assign_or_lookup(NS_OVERFLOW, "http://example.com/full-iri");
         let sid = SubjectId::from_u64(id);
         assert_eq!(sid.ns_code(), NS_OVERFLOW);
         assert_eq!(sid.local_id(), 1);
@@ -559,14 +555,24 @@ mod tests {
         assert!(dn.subjects.next_local_ids.is_empty());
 
         // Second overflow subject gets next local_id
-        let id2 = dn.subjects.assign_or_lookup(NS_OVERFLOW, "http://other.com/iri");
+        let id2 = dn
+            .subjects
+            .assign_or_lookup(NS_OVERFLOW, "http://other.com/iri");
         assert_eq!(SubjectId::from_u64(id2).local_id(), 2);
 
         // Dedup works
-        assert_eq!(dn.subjects.assign_or_lookup(NS_OVERFLOW, "http://example.com/full-iri"), id);
+        assert_eq!(
+            dn.subjects
+                .assign_or_lookup(NS_OVERFLOW, "http://example.com/full-iri"),
+            id
+        );
 
         // find/resolve work
-        assert_eq!(dn.subjects.find_subject(NS_OVERFLOW, "http://example.com/full-iri"), Some(id));
+        assert_eq!(
+            dn.subjects
+                .find_subject(NS_OVERFLOW, "http://example.com/full-iri"),
+            Some(id)
+        );
         let (ns, suffix) = dn.subjects.resolve_subject(id).unwrap();
         assert_eq!(ns, NS_OVERFLOW);
         assert_eq!(suffix, "http://example.com/full-iri");
@@ -575,10 +581,10 @@ mod tests {
     #[test]
     fn test_overflow_watermark_routing() {
         // With a persisted overflow watermark, new IDs start above it
-        let mut subject_wm = vec![10, 20]; // ns 0 and 1
-        // Simulate an overflow watermark being passed through the root
-        // (in practice this would be a separate field, but with_watermarks
-        // handles the extraction if the vec happens to be long enough)
+        let subject_wm = vec![10, 20]; // ns 0 and 1
+                                       // Simulate an overflow watermark being passed through the root
+                                       // (in practice this would be a separate field, but with_watermarks
+                                       // handles the extraction if the vec happens to be long enough)
         let dn = DictNovelty::with_watermarks(subject_wm.clone(), 0);
         assert_eq!(dn.subjects.watermark_for_ns(0), 10);
         assert_eq!(dn.subjects.watermark_for_ns(1), 20);

@@ -7,12 +7,12 @@
 //! The verified identity (DID) is extracted and used for policy enforcement.
 
 use crate::Result;
-use fluree_db_credential::{
-    verify, verify_jws, CredentialInput, JwsVerified, VerifiedCredential,
-};
+use fluree_db_credential::{verify, verify_jws, CredentialInput, JwsVerified, VerifiedCredential};
 
 // Re-export for API consumers
-pub use fluree_db_credential::{CredentialError, CredentialInput as Input, JwsVerified as JwsResult};
+pub use fluree_db_credential::{
+    CredentialError, CredentialInput as Input, JwsVerified as JwsResult,
+};
 
 /// Verify credential (JWS string or JSON) and extract subject + identity + context
 ///
@@ -66,7 +66,7 @@ mod tests {
 
     fn create_test_jws(payload: &str, signing_key: &SigningKey) -> String {
         let pubkey = signing_key.verifying_key().to_bytes();
-        let pubkey_b64 = URL_SAFE_NO_PAD.encode(&pubkey);
+        let pubkey_b64 = URL_SAFE_NO_PAD.encode(pubkey);
 
         let header = serde_json::json!({
             "alg": "EdDSA",

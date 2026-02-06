@@ -106,13 +106,7 @@ pub trait GraphSink {
     /// List items will be formatted as `{"@list": [...]}` in JSON-LD output.
     ///
     /// Default implementation falls back to `emit_triple` (ignoring index).
-    fn emit_list_item(
-        &mut self,
-        subject: TermId,
-        predicate: TermId,
-        object: TermId,
-        index: i32,
-    ) {
+    fn emit_list_item(&mut self, subject: TermId, predicate: TermId, object: TermId, index: i32) {
         // Default: fall back to regular triple (losing index info)
         // Implementations that support lists should override this
         let _ = index;
@@ -252,13 +246,7 @@ impl GraphSink for GraphCollectorSink {
         self.graph.add(Triple::new(s, p, o));
     }
 
-    fn emit_list_item(
-        &mut self,
-        subject: TermId,
-        predicate: TermId,
-        object: TermId,
-        index: i32,
-    ) {
+    fn emit_list_item(&mut self, subject: TermId, predicate: TermId, object: TermId, index: i32) {
         let s = self.get_term(subject).clone();
         let p = self.get_term(predicate).clone();
         let o = self.get_term(object).clone();
@@ -355,7 +343,8 @@ mod tests {
         let p = sink.term_iri("http://example.org/value");
 
         // Boolean
-        let bool_val = sink.term_literal_value(LiteralValue::Boolean(true), Datatype::xsd_boolean());
+        let bool_val =
+            sink.term_literal_value(LiteralValue::Boolean(true), Datatype::xsd_boolean());
         sink.emit_triple(s, p, bool_val);
 
         // Integer
@@ -363,7 +352,8 @@ mod tests {
         sink.emit_triple(s, p, int_val);
 
         // Double
-        let double_val = sink.term_literal_value(LiteralValue::Double(3.14), Datatype::xsd_double());
+        let double_val =
+            sink.term_literal_value(LiteralValue::Double(3.13), Datatype::xsd_double());
         sink.emit_triple(s, p, double_val);
 
         let graph = sink.finish();

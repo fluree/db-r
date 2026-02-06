@@ -78,9 +78,15 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         // Stub endpoints (not yet implemented)
         .route("/fluree/subscribe", get(stubs::subscribe))
-        .route("/fluree/remote/:path", get(stubs::remote).post(stubs::remote))
+        .route(
+            "/fluree/remote/:path",
+            get(stubs::remote).post(stubs::remote),
+        )
         // Dynamic ledger routes (/{ledger}/query, /{ledger}/transact, etc.)
-        .route("/:ledger/query", get(query::query_ledger).post(query::query_ledger))
+        .route(
+            "/:ledger/query",
+            get(query::query_ledger).post(query::query_ledger),
+        )
         .route("/:ledger/update", post(transact::transact_ledger))
         .route("/:ledger/transact", post(transact::transact_ledger))
         .route("/:ledger/insert", post(transact::insert_ledger))

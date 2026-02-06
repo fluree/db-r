@@ -28,7 +28,7 @@ fn generate_test_flakes(num_flakes: usize) -> Vec<Flake> {
             };
 
             Flake::new(
-                Sid::new(8, &format!("subject-{}", subj_id)),
+                Sid::new(8, format!("subject-{}", subj_id)),
                 Sid::new(8, predicates[pred_id]),
                 value,
                 Sid::new(2, dt_name),
@@ -45,9 +45,9 @@ fn generate_reference_flakes(num_flakes: usize) -> Vec<Flake> {
     (0..num_flakes)
         .map(|i| {
             Flake::new(
-                Sid::new(8, &format!("subject-{}", i)),
+                Sid::new(8, format!("subject-{}", i)),
                 Sid::new(8, "ref"),
-                FlakeValue::Ref(Sid::new(8, &format!("target-{}", i % 10))),
+                FlakeValue::Ref(Sid::new(8, format!("target-{}", i % 10))),
                 Sid::new(1, "id"), // $id datatype
                 (i + 1) as i64,
                 true,
@@ -84,17 +84,27 @@ mod tests {
         let json_value: serde_json::Value = serde_json::from_slice(&serialized_bytes)?;
         assert_eq!(json_value["version"], 2, "Should use version 2 format");
         assert!(json_value["dict"].is_array(), "Should have dictionary key");
-        assert!(json_value["dict"].as_array().unwrap().len() > 0, "Dictionary should not be empty");
+        assert!(
+            !json_value["dict"].as_array().unwrap().is_empty(),
+            "Dictionary should not be empty"
+        );
 
         // Parse back
         let deserialized_flakes = parse_leaf_node(serialized_bytes)?;
 
         // Verify flake count preserved
-        assert_eq!(test_flakes.len(), deserialized_flakes.len(), "Should preserve flake count");
+        assert_eq!(
+            test_flakes.len(),
+            deserialized_flakes.len(),
+            "Should preserve flake count"
+        );
 
         // Verify all flakes are identical after round-trip
         for (original, deserialized) in test_flakes.iter().zip(deserialized_flakes.iter()) {
-            assert!(flakes_equal(original, deserialized), "All flakes should be identical after round-trip");
+            assert!(
+                flakes_equal(original, deserialized),
+                "All flakes should be identical after round-trip"
+            );
         }
 
         Ok(())
@@ -109,11 +119,18 @@ mod tests {
         let deserialized_flakes = parse_leaf_node(serialized_bytes)?;
 
         // Verify flake count preserved
-        assert_eq!(test_flakes.len(), deserialized_flakes.len(), "Should preserve flake count");
+        assert_eq!(
+            test_flakes.len(),
+            deserialized_flakes.len(),
+            "Should preserve flake count"
+        );
 
         // Verify all reference flakes are identical after round-trip
         for (original, deserialized) in test_flakes.iter().zip(deserialized_flakes.iter()) {
-            assert!(flakes_equal(original, deserialized), "Reference flakes should be identical after round-trip");
+            assert!(
+                flakes_equal(original, deserialized),
+                "Reference flakes should be identical after round-trip"
+            );
         }
 
         Ok(())
@@ -130,11 +147,18 @@ mod tests {
         let dict_deserialized = parse_leaf_node(dict_serialized.clone())?;
 
         // In Rust, all serialization is dictionary-based (v2), so we compare round-trip
-        assert_eq!(test_flakes.len(), dict_deserialized.len(), "Both formats should produce same number of flakes");
+        assert_eq!(
+            test_flakes.len(),
+            dict_deserialized.len(),
+            "Both formats should produce same number of flakes"
+        );
 
         // Verify all flakes are identical
         for (original, deserialized) in test_flakes.iter().zip(dict_deserialized.iter()) {
-            assert!(flakes_equal(original, deserialized), "Both formats should produce identical flakes");
+            assert!(
+                flakes_equal(original, deserialized),
+                "Both formats should produce identical flakes"
+            );
         }
 
         // Test size reduction by comparing with a simulated v1 format size
@@ -142,7 +166,10 @@ mod tests {
         let dict_size = dict_serialized.len();
         // A rough estimate: v1 format would be larger due to repeated SIDs
         // We just verify the dictionary format is reasonably sized
-        assert!(dict_size > 0, "Dictionary format should produce valid output");
+        assert!(
+            dict_size > 0,
+            "Dictionary format should produce valid output"
+        );
 
         Ok(())
     }
@@ -161,7 +188,10 @@ mod tests {
         // to get exact size comparison, but the dictionary format should be more compact
 
         // At minimum, verify we get valid output
-        assert!(dict_size > 0, "Dictionary format should produce valid output");
+        assert!(
+            dict_size > 0,
+            "Dictionary format should produce valid output"
+        );
 
         // Verify the JSON is valid
         let _: serde_json::Value = serde_json::from_slice(&dict_serialized)?;
@@ -179,33 +209,44 @@ mod tests {
         // Create a "legacy" format by manually constructing v1 JSON
         // (This simulates what the Clojure v1 format would look like)
         let mut v1_json = serde_json::Map::new();
-        v1_json.insert("flakes".to_string(), serde_json::json!(
-            test_flakes.iter().map(|f| {
-                serde_json::json!([
-                    [f.s.namespace_code, f.s.name.as_ref()],
-                    [f.p.namespace_code, f.p.name.as_ref()],
-                    match &f.o {
-                        FlakeValue::String(s) => serde_json::Value::String(s.clone()),
-                        FlakeValue::Long(n) => serde_json::Value::Number((*n).into()),
-                        _ => serde_json::Value::Null,
-                    },
-                    [f.dt.namespace_code, f.dt.name.as_ref()],
-                    f.t,
-                    f.op,
-                    serde_json::Value::Null
-                ])
-            }).collect::<Vec<_>>()
-        ));
+        v1_json.insert(
+            "flakes".to_string(),
+            serde_json::json!(test_flakes
+                .iter()
+                .map(|f| {
+                    serde_json::json!([
+                        [f.s.namespace_code, f.s.name.as_ref()],
+                        [f.p.namespace_code, f.p.name.as_ref()],
+                        match &f.o {
+                            FlakeValue::String(s) => serde_json::Value::String(s.clone()),
+                            FlakeValue::Long(n) => serde_json::Value::Number((*n).into()),
+                            _ => serde_json::Value::Null,
+                        },
+                        [f.dt.namespace_code, f.dt.name.as_ref()],
+                        f.t,
+                        f.op,
+                        serde_json::Value::Null
+                    ])
+                })
+                .collect::<Vec<_>>()),
+        );
 
         let v1_bytes = serde_json::to_vec(&serde_json::Value::Object(v1_json))?;
         let deserialized_flakes = parse_leaf_node(v1_bytes)?;
 
         // Verify we can read the legacy-like format
-        assert_eq!(test_flakes.len(), deserialized_flakes.len(), "Should read legacy format");
+        assert_eq!(
+            test_flakes.len(),
+            deserialized_flakes.len(),
+            "Should read legacy format"
+        );
 
         // Note: Due to SID interning differences, we can't do exact flake comparison here
         // The important thing is that parsing succeeds and preserves the data
-        assert!(!deserialized_flakes.is_empty(), "Should produce flakes from legacy format");
+        assert!(
+            !deserialized_flakes.is_empty(),
+            "Should produce flakes from legacy format"
+        );
 
         Ok(())
     }
@@ -221,7 +262,10 @@ mod tests {
         // Verify v2 format
         assert_eq!(json_value["version"], 2, "New format should be version 2");
         assert!(json_value["dict"].is_array(), "Version 2 should have dict");
-        assert!(json_value["flakes"].is_array(), "Version 2 should have flakes");
+        assert!(
+            json_value["flakes"].is_array(),
+            "Version 2 should have flakes"
+        );
 
         Ok(())
     }

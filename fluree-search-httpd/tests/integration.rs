@@ -39,23 +39,24 @@ async fn json_body(resp: http::Response<Body>) -> (StatusCode, JsonValue) {
 
 mod http_tests {
     use super::*;
+    use async_trait::async_trait;
     use axum::extract::State;
     use axum::response::IntoResponse;
     use axum::routing::{get, post};
     use axum::{Json, Router};
+    use fluree_db_core::StorageRead;
     use fluree_db_nameservice::VirtualGraphPublisher;
-    use fluree_search_service::backend::{Bm25Backend, Bm25BackendConfig, IndexLoader, SearchBackend};
+    use fluree_db_query::bm25::{deserialize, Bm25Index};
+    use fluree_search_service::backend::{
+        Bm25Backend, Bm25BackendConfig, IndexLoader, SearchBackend,
+    };
     use fluree_search_service::error::{Result as ServiceResult, ServiceError};
     use fluree_search_service::sync::SyncConfig;
-    use fluree_db_query::bm25::{deserialize, Bm25Index};
-    use fluree_db_core::StorageRead;
-    use async_trait::async_trait;
     use std::sync::Arc;
     use tower::ServiceExt;
 
     /// Build the search httpd router for testing.
     fn build_test_router(storage_path: PathBuf, ns_path: PathBuf) -> Router {
-
         // Create index loader
         let loader = TestIndexLoader::new(storage_path, ns_path);
 
@@ -337,7 +338,8 @@ mod http_tests {
         // Should return NOT_FOUND or similar error status
         assert!(
             status == StatusCode::NOT_FOUND || status == StatusCode::INTERNAL_SERVER_ERROR,
-            "Expected 404 or 500 for nonexistent VG, got {}", status
+            "Expected 404 or 500 for nonexistent VG, got {}",
+            status
         );
     }
 
@@ -353,7 +355,10 @@ mod http_tests {
 
         // Create ledger and insert test data
         let ledger_alias = "search/test:main";
-        let ledger = fluree.create_ledger(ledger_alias).await.expect("create ledger");
+        let ledger = fluree
+            .create_ledger(ledger_alias)
+            .await
+            .expect("create ledger");
 
         let tx = json!({
             "@context": { "ex": "http://example.org/" },
@@ -374,7 +379,10 @@ mod http_tests {
         });
 
         let cfg = Bm25CreateConfig::new("search-test", ledger_alias, query);
-        let created = fluree.create_full_text_index(cfg).await.expect("create bm25 index");
+        let created = fluree
+            .create_full_text_index(cfg)
+            .await
+            .expect("create bm25 index");
         let vg_alias = created.vg_alias;
 
         // Build router pointing at same storage (file storage stores both data and ns in same dir)
@@ -398,7 +406,12 @@ mod http_tests {
             .unwrap();
 
         let (status, json) = json_body(resp).await;
-        assert_eq!(status, StatusCode::OK, "Search should succeed, got: {:?}", json);
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "Search should succeed, got: {:?}",
+            json
+        );
 
         // Verify response structure
         assert!(json.get("protocol_version").is_some());
@@ -423,8 +436,15 @@ mod http_tests {
             .collect();
 
         // doc1 and doc2 are about Rust, should be in top results
-        let rust_in_top_2 = iris.iter().take(2).any(|iri| iri.contains("doc1") || iri.contains("doc2"));
-        assert!(rust_in_top_2, "Rust documents should rank in top 2 for 'rust programming', got: {:?}", iris);
+        let rust_in_top_2 = iris
+            .iter()
+            .take(2)
+            .any(|iri| iri.contains("doc1") || iri.contains("doc2"));
+        assert!(
+            rust_in_top_2,
+            "Rust documents should rank in top 2 for 'rust programming', got: {:?}",
+            iris
+        );
     }
 }
 
@@ -441,11 +461,7 @@ mod parity_tests {
     const SCORE_EPSILON: f64 = 1e-9;
 
     /// Compare two search results for parity.
-    fn assert_results_parity(
-        embedded: &[SearchHit],
-        direct: &[SearchHit],
-        context: &str,
-    ) {
+    fn assert_results_parity(embedded: &[SearchHit], direct: &[SearchHit], context: &str) {
         assert_eq!(
             embedded.len(),
             direct.len(),
@@ -472,7 +488,11 @@ mod parity_tests {
             assert!(
                 score_diff < SCORE_EPSILON,
                 "{}: score mismatch at position {} (embedded={}, direct={}, diff={})",
-                context, i, e.score, d.score, score_diff
+                context,
+                i,
+                e.score,
+                d.score,
+                score_diff
             );
         }
     }
@@ -532,7 +552,11 @@ mod parity_tests {
             .unwrap();
 
         // Compare - should be identical
-        assert_results_parity(&embedded_result.hits, &direct_hits, "embedded vs direct scorer");
+        assert_results_parity(
+            &embedded_result.hits,
+            &direct_hits,
+            "embedded vs direct scorer",
+        );
     }
 
     #[tokio::test]
@@ -567,7 +591,10 @@ mod parity_tests {
             .await
             .unwrap();
 
-        assert!(result.hits.is_empty(), "Empty query should return no results");
+        assert!(
+            result.hits.is_empty(),
+            "Empty query should return no results"
+        );
 
         // Stopword-only query
         let result2 = provider
@@ -575,7 +602,10 @@ mod parity_tests {
             .await
             .unwrap();
 
-        assert!(result2.hits.is_empty(), "Stopword-only query should return no results");
+        assert!(
+            result2.hits.is_empty(),
+            "Stopword-only query should return no results"
+        );
     }
 
     #[tokio::test]

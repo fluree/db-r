@@ -20,10 +20,8 @@ use tokio::task::LocalSet;
 // =============================================================================
 
 /// Type alias for memory-backed Fluree instance.
-pub type MemoryFluree = fluree_db_api::Fluree<
-    MemoryStorage,
-    fluree_db_nameservice::memory::MemoryNameService,
->;
+pub type MemoryFluree =
+    fluree_db_api::Fluree<MemoryStorage, fluree_db_nameservice::memory::MemoryNameService>;
 
 /// Type alias for memory-backed ledger state.
 pub type MemoryLedger = LedgerState<MemoryStorage>;
@@ -80,11 +78,8 @@ where
     S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
     N: fluree_db_nameservice::NameService + fluree_db_nameservice::Publisher + Clone + 'static,
 {
-    let (worker, handle) = fluree_db_api::BackgroundIndexerWorker::new(
-        storage,
-        Arc::new(nameservice),
-        config,
-    );
+    let (worker, handle) =
+        fluree_db_api::BackgroundIndexerWorker::new(storage, Arc::new(nameservice), config);
 
     let local = LocalSet::new();
     local.spawn_local(worker.run());
@@ -116,12 +111,7 @@ pub fn assert_index_defaults() {
 /// Sorts rows by their JSON string representation so tests can compare
 /// result sets without relying on a specific order.
 pub fn normalize_rows(v: &JsonValue) -> Vec<JsonValue> {
-    let mut rows = v
-        .as_array()
-        .expect("expected JSON array of rows")
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>();
+    let mut rows = v.as_array().expect("expected JSON array of rows").to_vec();
 
     rows.sort_by(|a, b| {
         serde_json::to_string(a)
@@ -144,7 +134,7 @@ pub fn normalize_rows_array(v: &JsonValue) -> Vec<Vec<JsonValue>> {
             // JSON-LD formatter flattens single-column selects to a flat array of values.
             // Preserve a consistent nested-array shape for callers by wrapping scalars.
             match row.as_array() {
-                Some(arr) => arr.iter().cloned().collect::<Vec<_>>(),
+                Some(arr) => arr.to_vec(),
                 None => vec![row.clone()],
             }
         })
@@ -167,7 +157,7 @@ pub fn normalize_sparql_bindings(v: &JsonValue) -> Vec<JsonValue> {
         .and_then(|r| r.get("bindings"))
         .and_then(|b| b.as_array())
         .expect("SPARQL JSON results.bindings should be an array");
-    let mut out: Vec<JsonValue> = bindings.iter().cloned().collect();
+    let mut out: Vec<JsonValue> = bindings.to_vec();
     out.sort_by(|a, b| {
         serde_json::to_string(a)
             .unwrap()

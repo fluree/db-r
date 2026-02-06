@@ -16,6 +16,7 @@
 //! // result.bytes is the complete v2 blob, result.content_hash_hex is the SHA-256
 //! ```
 
+use fluree_db_core::Flake;
 use fluree_db_novelty::commit_v2::envelope::encode_envelope_fields;
 use fluree_db_novelty::commit_v2::format::{
     CommitV2Footer, CommitV2Header, DictLocation, FLAG_ZSTD, FOOTER_LEN, HASH_LEN, HEADER_LEN,
@@ -23,7 +24,6 @@ use fluree_db_novelty::commit_v2::format::{
 };
 use fluree_db_novelty::commit_v2::op_codec::{encode_op, CommitDicts};
 use fluree_db_novelty::commit_v2::{CommitV2Envelope, CommitV2Error};
-use fluree_db_core::Flake;
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -89,8 +89,7 @@ impl StreamingCommitWriter {
     pub fn new(compress: bool) -> Result<Self, CommitV2Error> {
         let file = tempfile::tempfile().map_err(CommitV2Error::CompressionFailed)?;
         let sink = if compress {
-            let encoder =
-                zstd::Encoder::new(file, 3).map_err(CommitV2Error::CompressionFailed)?;
+            let encoder = zstd::Encoder::new(file, 3).map_err(CommitV2Error::CompressionFailed)?;
             OpsSink::Compressed(encoder)
         } else {
             OpsSink::Raw(file)
@@ -129,8 +128,7 @@ impl StreamingCommitWriter {
         // 1. Finalize the ops sink and read back the spool
         let (mut file, is_compressed) = self.sink.finish()?;
         let ops_section = {
-            let _span =
-                tracing::info_span!("v2_spool_readback", op_count).entered();
+            let _span = tracing::info_span!("v2_spool_readback", op_count).entered();
             file.seek(SeekFrom::Start(0))
                 .map_err(CommitV2Error::CompressionFailed)?;
             let mut buf = Vec::new();
@@ -223,8 +221,7 @@ impl StreamingCommitWriter {
 
         // 10. Compute SHA-256, append as trailing hash
         let hash = {
-            let _span =
-                tracing::info_span!("v2_sha256_hash", blob_bytes = output.len()).entered();
+            let _span = tracing::info_span!("v2_sha256_hash", blob_bytes = output.len()).entered();
             Sha256::digest(&output)
         };
         let hash_bytes: [u8; 32] = hash.into();
@@ -291,10 +288,22 @@ mod tests {
     fn test_streaming_round_trip_basic() {
         let mut writer = StreamingCommitWriter::new(true).unwrap();
         writer
-            .push_flake(&make_flake("Alice", "name", FlakeValue::String("Alice Smith".into()), "string", 1))
+            .push_flake(&make_flake(
+                "Alice",
+                "name",
+                FlakeValue::String("Alice Smith".into()),
+                "string",
+                1,
+            ))
             .unwrap();
         writer
-            .push_flake(&make_flake("Alice", "age", FlakeValue::Long(30), "integer", 1))
+            .push_flake(&make_flake(
+                "Alice",
+                "age",
+                FlakeValue::Long(30),
+                "integer",
+                1,
+            ))
             .unwrap();
 
         assert_eq!(writer.op_count(), 2);
@@ -349,13 +358,19 @@ mod tests {
             } else if i % 3 == 1 {
                 FlakeValue::String(format!("value_{}", i))
             } else {
-                FlakeValue::Ref(Sid::new(101, &format!("ref_{}", i)))
+                FlakeValue::Ref(Sid::new(101, format!("ref_{}", i)))
             };
-            let dt = if i % 3 == 2 { "id" } else if i % 3 == 0 { "integer" } else { "string" };
+            let dt = if i % 3 == 2 {
+                "id"
+            } else if i % 3 == 0 {
+                "integer"
+            } else {
+                "string"
+            };
             writer
                 .push_flake(&Flake::new(
-                    Sid::new(101, &format!("s_{}", i)),
-                    Sid::new(101, &format!("p_{}", i % 10)),
+                    Sid::new(101, format!("s_{}", i)),
+                    Sid::new(101, format!("p_{}", i % 10)),
                     value,
                     Sid::new(if i % 3 == 2 { 1 } else { 2 }, dt),
                     42,
@@ -379,14 +394,47 @@ mod tests {
     fn test_streaming_mixed_value_types() {
         let mut writer = StreamingCommitWriter::new(true).unwrap();
 
-        writer.push_flake(&make_flake("x", "str", FlakeValue::String("hello".into()), "string", 1)).unwrap();
-        writer.push_flake(&make_flake("x", "num", FlakeValue::Long(-42), "long", 1)).unwrap();
-        writer.push_flake(&make_flake("x", "dbl", FlakeValue::Double(3.14), "double", 1)).unwrap();
-        writer.push_flake(&make_flake("x", "flag", FlakeValue::Boolean(true), "boolean", 1)).unwrap();
-        writer.push_flake(&Flake::new(
-            Sid::new(101, "x"), Sid::new(101, "ref"), FlakeValue::Ref(Sid::new(101, "y")),
-            Sid::new(1, "id"), 1, true, None,
-        )).unwrap();
+        writer
+            .push_flake(&make_flake(
+                "x",
+                "str",
+                FlakeValue::String("hello".into()),
+                "string",
+                1,
+            ))
+            .unwrap();
+        writer
+            .push_flake(&make_flake("x", "num", FlakeValue::Long(-42), "long", 1))
+            .unwrap();
+        writer
+            .push_flake(&make_flake(
+                "x",
+                "dbl",
+                FlakeValue::Double(3.13),
+                "double",
+                1,
+            ))
+            .unwrap();
+        writer
+            .push_flake(&make_flake(
+                "x",
+                "flag",
+                FlakeValue::Boolean(true),
+                "boolean",
+                1,
+            ))
+            .unwrap();
+        writer
+            .push_flake(&Flake::new(
+                Sid::new(101, "x"),
+                Sid::new(101, "ref"),
+                FlakeValue::Ref(Sid::new(101, "y")),
+                Sid::new(1, "id"),
+                1,
+                true,
+                None,
+            ))
+            .unwrap();
 
         let result = writer.finish(&make_envelope(1)).unwrap();
         let decoded = read_commit(&result.bytes).unwrap();
@@ -398,30 +446,47 @@ mod tests {
         let mut writer = StreamingCommitWriter::new(true).unwrap();
 
         // Language-tagged literal
-        writer.push_flake(&Flake::new(
-            Sid::new(101, "x"), Sid::new(101, "name"),
-            FlakeValue::String("Alice".into()), Sid::new(3, "langString"),
-            1, true, Some(FlakeMeta::with_lang("en")),
-        )).unwrap();
+        writer
+            .push_flake(&Flake::new(
+                Sid::new(101, "x"),
+                Sid::new(101, "name"),
+                FlakeValue::String("Alice".into()),
+                Sid::new(3, "langString"),
+                1,
+                true,
+                Some(FlakeMeta::with_lang("en")),
+            ))
+            .unwrap();
 
         // List item
-        writer.push_flake(&Flake::new(
-            Sid::new(101, "x"), Sid::new(101, "items"),
-            FlakeValue::Long(42), Sid::new(2, "integer"),
-            1, true, Some(FlakeMeta::with_index(0)),
-        )).unwrap();
+        writer
+            .push_flake(&Flake::new(
+                Sid::new(101, "x"),
+                Sid::new(101, "items"),
+                FlakeValue::Long(42),
+                Sid::new(2, "integer"),
+                1,
+                true,
+                Some(FlakeMeta::with_index(0)),
+            ))
+            .unwrap();
 
         let result = writer.finish(&make_envelope(1)).unwrap();
         let decoded = read_commit(&result.bytes).unwrap();
         assert_eq!(decoded.flakes.len(), 2);
-        assert_eq!(decoded.flakes[0].m.as_ref().unwrap().lang.as_deref(), Some("en"));
+        assert_eq!(
+            decoded.flakes[0].m.as_ref().unwrap().lang.as_deref(),
+            Some("en")
+        );
         assert_eq!(decoded.flakes[1].m.as_ref().unwrap().i, Some(0));
     }
 
     #[test]
     fn test_streaming_envelope_fields() {
         let mut writer = StreamingCommitWriter::new(true).unwrap();
-        writer.push_flake(&make_flake("x", "v", FlakeValue::Long(1), "integer", 5)).unwrap();
+        writer
+            .push_flake(&make_flake("x", "v", FlakeValue::Long(1), "integer", 5))
+            .unwrap();
 
         let envelope = CommitV2Envelope {
             t: 5,

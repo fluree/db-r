@@ -17,29 +17,31 @@
 //! The binary index pipeline (`run_index::index_build`) is the sole indexing path.
 
 pub mod config;
+pub mod dict_tree;
 pub mod error;
 pub mod gc;
 pub mod hll;
-pub mod run_index;
-pub mod dict_tree;
 pub mod orchestrator;
+pub mod run_index;
 pub mod stats;
 
 // Re-export main types
 pub use config::IndexerConfig;
 pub use error::{IndexerError, Result};
-pub use orchestrator::{
-    BackgroundIndexerWorker, IndexCompletion, IndexerHandle, IndexerOrchestrator, IndexOutcome,
-    IndexPhase, IndexStatusSnapshot,
+pub use gc::{
+    clean_garbage, load_garbage_record, write_garbage_record, CleanGarbageConfig,
+    CleanGarbageResult, GarbageRecord, GarbageRef, DEFAULT_MAX_OLD_INDEXES,
+    DEFAULT_MIN_TIME_GARBAGE_MINS,
 };
 #[cfg(feature = "embedded-orchestrator")]
-pub use orchestrator::{maybe_refresh_after_commit, require_refresh_before_commit, PostCommitIndexResult};
-pub use stats::{IndexStatsHook, NoOpStatsHook, StatsArtifacts, StatsSummary};
-pub use gc::{
-    CleanGarbageConfig, CleanGarbageResult, GarbageRecord, GarbageRef,
-    clean_garbage, load_garbage_record, write_garbage_record,
-    DEFAULT_MAX_OLD_INDEXES, DEFAULT_MIN_TIME_GARBAGE_MINS,
+pub use orchestrator::{
+    maybe_refresh_after_commit, require_refresh_before_commit, PostCommitIndexResult,
 };
+pub use orchestrator::{
+    BackgroundIndexerWorker, IndexCompletion, IndexOutcome, IndexPhase, IndexStatusSnapshot,
+    IndexerHandle, IndexerOrchestrator,
+};
+pub use stats::{IndexStatsHook, NoOpStatsHook, StatsArtifacts, StatsSummary};
 
 // Note: The following types/functions are defined in this module and are automatically public:
 // - build_index_for_ledger (nameservice-aware entry point)
@@ -195,7 +197,7 @@ where
     let head_commit_addr = record
         .commit_address
         .clone()
-        .ok_or_else(|| IndexerError::NoCommits)?;
+        .ok_or(IndexerError::NoCommits)?;
 
     // Determine output directory for binary index artifacts
     let data_dir = config
@@ -204,7 +206,10 @@ where
     let alias_path = fluree_db_core::address_path::alias_to_path_prefix(alias)
         .unwrap_or_else(|_| alias.replace(':', "/"));
     let session_id = uuid::Uuid::new_v4().to_string();
-    let run_dir = data_dir.join(&alias_path).join("tmp_import").join(&session_id);
+    let run_dir = data_dir
+        .join(&alias_path)
+        .join("tmp_import")
+        .join(&session_id);
     let index_dir = data_dir.join(&alias_path).join("index");
 
     tracing::info!(
@@ -234,9 +239,7 @@ where
                     let bytes = storage
                         .read_bytes(&addr)
                         .await
-                        .map_err(|e| IndexerError::StorageRead(
-                            format!("read {}: {}", addr, e),
-                        ))?;
+                        .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", addr, e)))?;
                     let envelope = read_commit_envelope(&bytes)
                         .map_err(|e| IndexerError::StorageRead(e.to_string()))?;
                     current = envelope.previous_address().map(String::from);
@@ -271,9 +274,7 @@ where
                 let bytes = storage
                     .read_bytes(addr)
                     .await
-                    .map_err(|e| IndexerError::StorageRead(
-                        format!("read {}: {}", addr, e),
-                    ))?;
+                    .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", addr, e)))?;
 
                 let (op_count, t) = resolver
                     .resolve_blob(&bytes, addr, &alias, &mut dicts, &mut writer)
@@ -292,11 +293,13 @@ where
             let id_stats_hook = resolver.take_stats_hook();
 
             let total_records = writer.total_records();
-            let _writer_results = writer.finish(&mut dicts.languages)
+            let _writer_results = writer
+                .finish(&mut dicts.languages)
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
             // Persist dictionaries for index build
-            dicts.persist(&run_dir)
+            dicts
+                .persist(&run_dir)
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
             // Persist namespace map for query-time IRI encoding
@@ -304,9 +307,13 @@ where
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
             // Persist reverse hash indexes
-            dicts.subjects.write_reverse_index(&run_dir.join("subjects.rev"))
+            dicts
+                .subjects
+                .write_reverse_index(&run_dir.join("subjects.rev"))
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-            dicts.strings.write_reverse_index(&run_dir.join("strings.rev"))
+            dicts
+                .strings
+                .write_reverse_index(&run_dir.join("strings.rev"))
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
             // ---- Phase C: Build per-graph indexes for all sort orders ----
@@ -338,14 +345,17 @@ where
             // D.2: Upload dictionary artifacts to CAS
             let numbig_p_ids: Vec<u32> = dicts.numbigs.keys().copied().collect();
             let dict_addresses = upload_dicts_to_cas(
-                &storage, &alias, &run_dir, &dicts, &numbig_p_ids,
+                &storage,
+                &alias,
+                &run_dir,
+                &dicts,
+                &numbig_p_ids,
                 store.namespace_codes(),
-            ).await?;
+            )
+            .await?;
 
             // D.3: Upload index artifacts (branches + leaves) to CAS
-            let graph_addresses = upload_indexes_to_cas(
-                &storage, &alias, &build_results,
-            ).await?;
+            let graph_addresses = upload_indexes_to_cas(&storage, &alias, &build_results).await?;
 
             // D.4: Build stats JSON for the planner (RawDbRootStats shape).
             //
@@ -460,11 +470,7 @@ where
                         })
                         .collect();
 
-                    let total_flakes: u64 = spot_result
-                        .graphs
-                        .iter()
-                        .map(|g| g.total_rows)
-                        .sum();
+                    let total_flakes: u64 = spot_result.graphs.iter().map(|g| g.total_rows).sum();
 
                     serde_json::json!({
                         "flakes": total_flakes,
@@ -472,7 +478,6 @@ where
                         "graphs": graph_stats
                     })
                 }
-
             };
 
             // D.5: Build v2 root with CAS addresses and stats (initially without GC fields)
@@ -484,22 +489,23 @@ where
             let subject_watermarks = dicts.subjects.subject_watermarks();
             let string_watermark = dicts.strings.len().saturating_sub(1);
 
-            let mut root = run_index::BinaryIndexRootV2::from_cas_artifacts(
-                &alias,
-                store.max_t(),
-                store.base_t(),
-                predicate_sids,
-                store.namespace_codes(),
-                sid_encoding,
-                dict_addresses,
-                graph_addresses,
-                Some(stats_json),
-                None, // schema: requires predicate definitions (future)
-                None, // prev_index: set below after garbage computation
-                None, // garbage: set below after garbage computation
-                subject_watermarks,
-                string_watermark,
-            );
+            let mut root =
+                run_index::BinaryIndexRootV2::from_cas_artifacts(run_index::CasArtifactsConfig {
+                    ledger_alias: &alias,
+                    index_t: store.max_t(),
+                    base_t: store.base_t(),
+                    predicate_sids,
+                    namespace_codes: store.namespace_codes(),
+                    subject_id_encoding: sid_encoding,
+                    dict_addresses,
+                    graph_addresses,
+                    stats: Some(stats_json),
+                    schema: None,     // schema: requires predicate definitions (future)
+                    prev_index: None, // set below after garbage computation
+                    garbage: None,    // set below after garbage computation
+                    subject_watermarks,
+                    string_watermark,
+                });
 
             // D.5.1: Compute garbage and link prev_index for GC chain.
             //
@@ -525,15 +531,11 @@ where
 
                     let garbage_count = garbage_addrs.len();
 
-                    root.garbage = gc::write_garbage_record(
-                        &storage,
-                        &alias,
-                        store.max_t(),
-                        garbage_addrs,
-                    )
-                    .await
-                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?
-                    .map(|r| run_index::BinaryGarbageRef { address: r.address });
+                    root.garbage =
+                        gc::write_garbage_record(&storage, &alias, store.max_t(), garbage_addrs)
+                            .await
+                            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?
+                            .map(|r| run_index::BinaryGarbageRef { address: r.address });
 
                     root.prev_index = Some(run_index::BinaryPrevIndexRef {
                         t: prev.index_t,
@@ -560,11 +562,7 @@ where
                 .to_json_bytes()
                 .map_err(|e| IndexerError::Serialization(e.to_string()))?;
             let write_result = storage
-                .content_write_bytes(
-                    fluree_db_core::ContentKind::IndexRoot,
-                    &alias,
-                    &root_bytes,
-                )
+                .content_write_bytes(fluree_db_core::ContentKind::IndexRoot, &alias, &root_bytes)
                 .await
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
@@ -610,12 +608,12 @@ async fn upload_dicts_to_cas<S: Storage>(
     numbig_p_ids: &[u32],
     namespace_codes: &std::collections::HashMap<u16, String>,
 ) -> Result<run_index::DictAddresses> {
-    use fluree_db_core::{ContentKind, DictKind};
-    use fluree_db_core::subject_id::SubjectId;
-    use std::collections::BTreeMap;
     use dict_tree::builder::{self, TreeBuildResult};
     use dict_tree::forward_leaf::ForwardEntry;
-    use dict_tree::reverse_leaf::{ReverseEntry, subject_reverse_key};
+    use dict_tree::reverse_leaf::{subject_reverse_key, ReverseEntry};
+    use fluree_db_core::subject_id::SubjectId;
+    use fluree_db_core::{ContentKind, DictKind};
+    use std::collections::BTreeMap;
 
     /// Read a file and upload to CAS, returning the address.
     async fn upload_flat<S: Storage>(
@@ -659,9 +657,8 @@ async fn upload_dicts_to_cas<S: Storage>(
         }
 
         // Finalize branch with actual CAS addresses, then upload
-        let (_, branch_bytes, _) =
-            builder::finalize_branch(result.branch, &hash_to_address)
-                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+        let (_, branch_bytes, _) = builder::finalize_branch(result.branch, &hash_to_address)
+            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
         let branch_result = storage
             .content_write_bytes(ContentKind::DictBlob { dict }, alias, &branch_bytes)
             .await
@@ -674,19 +671,42 @@ async fn upload_dicts_to_cas<S: Storage>(
     }
 
     // Small flat dicts
-    let graphs = upload_flat(storage, alias, &run_dir.join("graphs.dict"), DictKind::Graphs).await?;
-    let datatypes = upload_flat(storage, alias, &run_dir.join("datatypes.dict"), DictKind::Datatypes).await?;
-    let languages = upload_flat(storage, alias, &run_dir.join("languages.dict"), DictKind::Languages).await?;
+    let graphs = upload_flat(
+        storage,
+        alias,
+        &run_dir.join("graphs.dict"),
+        DictKind::Graphs,
+    )
+    .await?;
+    let datatypes = upload_flat(
+        storage,
+        alias,
+        &run_dir.join("datatypes.dict"),
+        DictKind::Datatypes,
+    )
+    .await?;
+    let languages = upload_flat(
+        storage,
+        alias,
+        &run_dir.join("languages.dict"),
+        DictKind::Languages,
+    )
+    .await?;
 
     // Subject trees – strip namespace prefix so trees store suffix-only values,
     // matching the format expected by translate_range / find_subject_id lookups.
-    let subject_pairs = dicts.subjects.read_all_entries()
+    let subject_pairs = dicts
+        .subjects
+        .read_all_entries()
         .map_err(|e| IndexerError::StorageRead(format!("read subject entries: {}", e)))?;
 
     let subject_suffix = |sid: u64, iri: &[u8]| -> (u16, Vec<u8>) {
         let iri_str = std::str::from_utf8(iri).unwrap_or("");
         let ns_code = SubjectId::from_u64(sid).ns_code();
-        let prefix = namespace_codes.get(&ns_code).map(|s| s.as_str()).unwrap_or("");
+        let prefix = namespace_codes
+            .get(&ns_code)
+            .map(|s| s.as_str())
+            .unwrap_or("");
         let suffix = if iri_str.starts_with(prefix) && !prefix.is_empty() {
             &iri[prefix.len()..]
         } else {
@@ -695,18 +715,26 @@ async fn upload_dicts_to_cas<S: Storage>(
         (ns_code, suffix.to_vec())
     };
 
-    let mut subj_fwd: Vec<ForwardEntry> = subject_pairs.iter()
+    let mut subj_fwd: Vec<ForwardEntry> = subject_pairs
+        .iter()
         .map(|(sid, iri)| {
             let (_ns, suffix) = subject_suffix(*sid, iri);
-            ForwardEntry { id: *sid, value: suffix }
+            ForwardEntry {
+                id: *sid,
+                value: suffix,
+            }
         })
         .collect();
     subj_fwd.sort_unstable_by_key(|e| e.id);
 
-    let mut subj_rev: Vec<ReverseEntry> = subject_pairs.iter()
+    let mut subj_rev: Vec<ReverseEntry> = subject_pairs
+        .iter()
         .map(|(sid, iri)| {
             let (ns_code, suffix) = subject_suffix(*sid, iri);
-            ReverseEntry { key: subject_reverse_key(ns_code, &suffix), id: *sid }
+            ReverseEntry {
+                key: subject_reverse_key(ns_code, &suffix),
+                id: *sid,
+            }
         })
         .collect();
     subj_rev.sort_unstable_by(|a, b| a.key.cmp(&b.key));
@@ -720,15 +748,22 @@ async fn upload_dicts_to_cas<S: Storage>(
     let subject_reverse = upload_tree(storage, alias, sr_tree, DictKind::SubjectReverse).await?;
 
     // String trees (read from file-backed forward file)
-    let string_pairs = dicts.strings.all_entries()
+    let string_pairs = dicts
+        .strings
+        .all_entries()
         .map_err(|e| IndexerError::StorageWrite(format!("read string entries: {}", e)))?;
 
-    let mut str_fwd: Vec<ForwardEntry> = string_pairs.iter()
-        .map(|(id, val)| ForwardEntry { id: *id, value: val.clone() })
+    let mut str_fwd: Vec<ForwardEntry> = string_pairs
+        .iter()
+        .map(|(id, val)| ForwardEntry {
+            id: *id,
+            value: val.clone(),
+        })
         .collect();
     str_fwd.sort_unstable_by_key(|e| e.id);
 
-    let mut str_rev: Vec<ReverseEntry> = string_pairs.into_iter()
+    let mut str_rev: Vec<ReverseEntry> = string_pairs
+        .into_iter()
         .map(|(id, val)| ReverseEntry { key: val, id })
         .collect();
     str_rev.sort_unstable_by(|a, b| a.key.cmp(&b.key));
@@ -806,10 +841,9 @@ pub async fn upload_indexes_to_cas<S: Storage>(
 
             // Upload branch manifest
             let branch_path = graph_dir.join(format!("{}.fbr", graph_result.branch_hash));
-            let branch_bytes = std::fs::read(&branch_path)
-                .map_err(|e| IndexerError::StorageRead(
-                    format!("read branch {}: {}", branch_path.display(), e),
-                ))?;
+            let branch_bytes = std::fs::read(&branch_path).map_err(|e| {
+                IndexerError::StorageRead(format!("read branch {}: {}", branch_path.display(), e))
+            })?;
             let branch_write = storage
                 .content_write_bytes_with_hash(
                     ContentKind::IndexBranch,
@@ -821,19 +855,26 @@ pub async fn upload_indexes_to_cas<S: Storage>(
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
             // Parse branch manifest to discover leaf files
-            let branch_manifest = run_index::branch::read_branch_manifest(&branch_path)
-                .map_err(|e| IndexerError::StorageRead(
-                    format!("read branch manifest {}: {}", branch_path.display(), e),
-                ))?;
+            let branch_manifest =
+                run_index::branch::read_branch_manifest(&branch_path).map_err(|e| {
+                    IndexerError::StorageRead(format!(
+                        "read branch manifest {}: {}",
+                        branch_path.display(),
+                        e
+                    ))
+                })?;
 
             // Upload each leaf file
             let total_leaves = branch_manifest.leaves.len();
             let mut leaf_addresses = Vec::with_capacity(total_leaves);
             for (leaf_idx, leaf_entry) in branch_manifest.leaves.iter().enumerate() {
-                let leaf_bytes = std::fs::read(&leaf_entry.path)
-                    .map_err(|e| IndexerError::StorageRead(
-                        format!("read leaf {}: {}", leaf_entry.path.display(), e),
-                    ))?;
+                let leaf_bytes = std::fs::read(&leaf_entry.path).map_err(|e| {
+                    IndexerError::StorageRead(format!(
+                        "read leaf {}: {}",
+                        leaf_entry.path.display(),
+                        e
+                    ))
+                })?;
                 let leaf_write = storage
                     .content_write_bytes_with_hash(
                         ContentKind::IndexLeaf,
@@ -864,13 +905,13 @@ pub async fn upload_indexes_to_cas<S: Storage>(
                 "graph/order index uploaded to CAS"
             );
 
-            graph_map
-                .entry(g_id)
-                .or_default()
-                .insert(order_name.clone(), run_index::GraphOrderAddresses {
+            graph_map.entry(g_id).or_default().insert(
+                order_name.clone(),
+                run_index::GraphOrderAddresses {
                     branch: branch_write.address,
                     leaves: leaf_addresses,
-                });
+                },
+            );
         }
     }
 
@@ -928,12 +969,12 @@ pub async fn upload_dicts_from_disk<S: Storage>(
     run_dir: &std::path::Path,
     namespace_codes: &std::collections::HashMap<u16, String>,
 ) -> Result<UploadedDicts> {
-    use fluree_db_core::{ContentKind, DictKind, SubjectIdEncoding};
-    use fluree_db_core::subject_id::SubjectId;
-    use std::collections::BTreeMap;
     use dict_tree::builder::{self, TreeBuildResult};
     use dict_tree::forward_leaf::ForwardEntry;
-    use dict_tree::reverse_leaf::{ReverseEntry, subject_reverse_key};
+    use dict_tree::reverse_leaf::{subject_reverse_key, ReverseEntry};
+    use fluree_db_core::subject_id::SubjectId;
+    use fluree_db_core::{ContentKind, DictKind, SubjectIdEncoding};
+    use std::collections::BTreeMap;
 
     // ---- Inner helpers (same pattern as upload_dicts_to_cas) ----
 
@@ -976,9 +1017,8 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             hash_to_address.insert(leaf.hash.clone(), cas_result.address);
         }
 
-        let (_, branch_bytes, _) =
-            builder::finalize_branch(result.branch, &hash_to_address)
-                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+        let (_, branch_bytes, _) = builder::finalize_branch(result.branch, &hash_to_address)
+            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
         let branch_result = storage
             .content_write_bytes(ContentKind::DictBlob { dict }, alias, &branch_bytes)
             .await
@@ -992,9 +1032,27 @@ pub async fn upload_dicts_from_disk<S: Storage>(
 
     // ---- 1. Upload flat dicts ----
     tracing::info!("uploading flat dictionary artifacts (graphs, datatypes, languages)");
-    let graphs = upload_flat(storage, alias, &run_dir.join("graphs.dict"), DictKind::Graphs).await?;
-    let datatypes = upload_flat(storage, alias, &run_dir.join("datatypes.dict"), DictKind::Datatypes).await?;
-    let languages = upload_flat(storage, alias, &run_dir.join("languages.dict"), DictKind::Languages).await?;
+    let graphs = upload_flat(
+        storage,
+        alias,
+        &run_dir.join("graphs.dict"),
+        DictKind::Graphs,
+    )
+    .await?;
+    let datatypes = upload_flat(
+        storage,
+        alias,
+        &run_dir.join("datatypes.dict"),
+        DictKind::Datatypes,
+    )
+    .await?;
+    let languages = upload_flat(
+        storage,
+        alias,
+        &run_dir.join("languages.dict"),
+        DictKind::Languages,
+    )
+    .await?;
     tracing::info!("flat dicts uploaded");
 
     // ---- 2. Read subjects.fwd + subjects.idx + subjects.sids → build trees ----
@@ -1012,7 +1070,9 @@ pub async fn upload_dicts_from_disk<S: Storage>(
     let (subject_forward, subject_reverse) = {
         let subj_idx_path = run_dir.join("subjects.idx");
         let (subj_offsets, subj_lens) = run_index::dict_io::read_forward_index(&subj_idx_path)
-            .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", subj_idx_path.display(), e)))?;
+            .map_err(|e| {
+                IndexerError::StorageRead(format!("read {}: {}", subj_idx_path.display(), e))
+            })?;
         let subj_fwd_data = std::fs::read(run_dir.join("subjects.fwd"))
             .map_err(|e| IndexerError::StorageRead(format!("read subjects.fwd: {}", e)))?;
         tracing::info!(
@@ -1026,7 +1086,10 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             let iri = &subj_fwd_data[off as usize..(off as usize + len as usize)];
             let iri_str = std::str::from_utf8(iri).unwrap_or("");
             let ns_code = SubjectId::from_u64(sid).ns_code();
-            let prefix = namespace_codes.get(&ns_code).map(|s| s.as_str()).unwrap_or("");
+            let prefix = namespace_codes
+                .get(&ns_code)
+                .map(|s| s.as_str())
+                .unwrap_or("");
             let suffix = if iri_str.starts_with(prefix) && !prefix.is_empty() {
                 &iri[prefix.len()..]
             } else {
@@ -1041,14 +1104,21 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             let mut entries: Vec<ForwardEntry> = Vec::with_capacity(sids.len());
             for (&sid, (&off, &len)) in sids.iter().zip(subj_offsets.iter().zip(subj_lens.iter())) {
                 let (_ns, suffix) = subject_suffix(sid, off, len);
-                entries.push(ForwardEntry { id: sid, value: suffix });
+                entries.push(ForwardEntry {
+                    id: sid,
+                    value: suffix,
+                });
             }
             entries.sort_by_key(|e| e.id);
             builder::build_forward_tree(entries, builder::DEFAULT_TARGET_LEAF_BYTES)
                 .map_err(|e| IndexerError::StorageWrite(format!("build subject fwd tree: {}", e)))?
         }; // entries dropped
-        tracing::info!(leaves = sf_tree.leaves.len(), "uploading subject forward tree to CAS");
-        let subject_forward = upload_tree(storage, alias, sf_tree, DictKind::SubjectForward).await?;
+        tracing::info!(
+            leaves = sf_tree.leaves.len(),
+            "uploading subject forward tree to CAS"
+        );
+        let subject_forward =
+            upload_tree(storage, alias, sf_tree, DictKind::SubjectForward).await?;
 
         // Pass 2: reverse tree (entries sorted by key)
         tracing::info!("building subject reverse tree");
@@ -1065,8 +1135,12 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             builder::build_reverse_tree(entries, builder::DEFAULT_TARGET_LEAF_BYTES)
                 .map_err(|e| IndexerError::StorageWrite(format!("build subject rev tree: {}", e)))?
         }; // entries dropped
-        tracing::info!(leaves = sr_tree.leaves.len(), "uploading subject reverse tree to CAS");
-        let subject_reverse = upload_tree(storage, alias, sr_tree, DictKind::SubjectReverse).await?;
+        tracing::info!(
+            leaves = sr_tree.leaves.len(),
+            "uploading subject reverse tree to CAS"
+        );
+        let subject_reverse =
+            upload_tree(storage, alias, sr_tree, DictKind::SubjectReverse).await?;
 
         tracing::info!("subject CoW trees uploaded");
         (subject_forward, subject_reverse)
@@ -1078,9 +1152,13 @@ pub async fn upload_dicts_from_disk<S: Storage>(
     tracing::info!("reading string dictionary files from disk");
     let str_idx_path = run_dir.join("strings.idx");
     let str_fwd_path = run_dir.join("strings.fwd");
-    let (string_count, string_forward, string_reverse) = if str_idx_path.exists() && str_fwd_path.exists() {
+    let (string_count, string_forward, string_reverse) = if str_idx_path.exists()
+        && str_fwd_path.exists()
+    {
         let (str_offsets, str_lens) = run_index::dict_io::read_forward_index(&str_idx_path)
-            .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", str_idx_path.display(), e)))?;
+            .map_err(|e| {
+                IndexerError::StorageRead(format!("read {}: {}", str_idx_path.display(), e))
+            })?;
         let str_fwd_data = std::fs::read(&str_fwd_path)
             .map_err(|e| IndexerError::StorageRead(format!("read strings.fwd: {}", e)))?;
         let count = str_offsets.len();
@@ -1093,7 +1171,8 @@ pub async fn upload_dicts_from_disk<S: Storage>(
         // Pass 1: forward tree
         tracing::info!("building string forward tree");
         let stf_tree = {
-            let entries: Vec<ForwardEntry> = str_offsets.iter()
+            let entries: Vec<ForwardEntry> = str_offsets
+                .iter()
                 .zip(str_lens.iter())
                 .enumerate()
                 .map(|(i, (&off, &len))| ForwardEntry {
@@ -1104,13 +1183,17 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             builder::build_forward_tree(entries, builder::DEFAULT_TARGET_LEAF_BYTES)
                 .map_err(|e| IndexerError::StorageWrite(format!("build string fwd tree: {}", e)))?
         }; // entries dropped
-        tracing::info!(leaves = stf_tree.leaves.len(), "uploading string forward tree to CAS");
+        tracing::info!(
+            leaves = stf_tree.leaves.len(),
+            "uploading string forward tree to CAS"
+        );
         let sf = upload_tree(storage, alias, stf_tree, DictKind::StringForward).await?;
 
         // Pass 2: reverse tree
         tracing::info!("building string reverse tree");
         let str_tree = {
-            let mut entries: Vec<ReverseEntry> = str_offsets.iter()
+            let mut entries: Vec<ReverseEntry> = str_offsets
+                .iter()
                 .zip(str_lens.iter())
                 .enumerate()
                 .map(|(i, (&off, &len))| ReverseEntry {
@@ -1122,7 +1205,10 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             builder::build_reverse_tree(entries, builder::DEFAULT_TARGET_LEAF_BYTES)
                 .map_err(|e| IndexerError::StorageWrite(format!("build string rev tree: {}", e)))?
         }; // entries dropped
-        tracing::info!(leaves = str_tree.leaves.len(), "uploading string reverse tree to CAS");
+        tracing::info!(
+            leaves = str_tree.leaves.len(),
+            "uploading string reverse tree to CAS"
+        );
         let sr = upload_tree(storage, alias, str_tree, DictKind::StringReverse).await?;
 
         tracing::info!("string CoW trees uploaded");
@@ -1130,9 +1216,13 @@ pub async fn upload_dicts_from_disk<S: Storage>(
     } else {
         // No strings persisted — empty trees
         let empty_fwd = builder::build_forward_tree(vec![], builder::DEFAULT_TARGET_LEAF_BYTES)
-            .map_err(|e| IndexerError::StorageWrite(format!("build empty string fwd tree: {}", e)))?;
+            .map_err(|e| {
+                IndexerError::StorageWrite(format!("build empty string fwd tree: {}", e))
+            })?;
         let empty_rev = builder::build_reverse_tree(vec![], builder::DEFAULT_TARGET_LEAF_BYTES)
-            .map_err(|e| IndexerError::StorageWrite(format!("build empty string rev tree: {}", e)))?;
+            .map_err(|e| {
+                IndexerError::StorageWrite(format!("build empty string rev tree: {}", e))
+            })?;
         let sf = upload_tree(storage, alias, empty_fwd, DictKind::StringForward).await?;
         let sr = upload_tree(storage, alias, empty_rev, DictKind::StringReverse).await?;
         (0, sf, sr)
@@ -1152,7 +1242,9 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             if let Some(rest) = name_str.strip_prefix("p_") {
                 if let Some(id_str) = rest.strip_suffix(".nba") {
                     if let Ok(p_id) = id_str.parse::<u32>() {
-                        let addr = upload_flat(storage, alias, &entry.path(), DictKind::NumBig { p_id }).await?;
+                        let addr =
+                            upload_flat(storage, alias, &entry.path(), DictKind::NumBig { p_id })
+                                .await?;
                         numbig.insert(p_id.to_string(), addr);
                     }
                 }
@@ -1198,13 +1290,21 @@ pub async fn upload_dicts_from_disk<S: Storage>(
     };
 
     // Build watermarks vec: watermarks[i] = max local_id for ns_code i
-    let watermark_len = if watermark_map.is_empty() { 0 } else { max_ns_code as usize + 1 };
+    let watermark_len = if watermark_map.is_empty() {
+        0
+    } else {
+        max_ns_code as usize + 1
+    };
     let mut subject_watermarks: Vec<u64> = vec![0; watermark_len];
     for (&ns_code, &max_local) in &watermark_map {
         subject_watermarks[ns_code as usize] = max_local;
     }
 
-    let string_watermark = if string_count > 0 { (string_count - 1) as u32 } else { 0 };
+    let string_watermark = if string_count > 0 {
+        (string_count - 1) as u32
+    } else {
+        0
+    };
 
     tracing::info!(
         subjects = sids.len(),
@@ -1234,10 +1334,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
 }
 
 /// Publish index result to nameservice
-pub async fn publish_index_result<P: Publisher>(
-    publisher: &P,
-    result: &IndexResult,
-) -> Result<()> {
+pub async fn publish_index_result<P: Publisher>(publisher: &P, result: &IndexResult) -> Result<()> {
     publisher
         .publish_index(&result.alias, &result.root_address, result.index_t)
         .await
@@ -1261,11 +1358,17 @@ mod tests {
     fn test_normalize_alias_for_comparison() {
         // Canonical format passes through
         assert_eq!(normalize_alias_for_comparison("test:main"), "test:main");
-        assert_eq!(normalize_alias_for_comparison("my-ledger:dev"), "my-ledger:dev");
+        assert_eq!(
+            normalize_alias_for_comparison("my-ledger:dev"),
+            "my-ledger:dev"
+        );
 
         // Storage-path format with single slash converts to canonical
         assert_eq!(normalize_alias_for_comparison("test/main"), "test:main");
-        assert_eq!(normalize_alias_for_comparison("my-ledger/dev"), "my-ledger:dev");
+        assert_eq!(
+            normalize_alias_for_comparison("my-ledger/dev"),
+            "my-ledger:dev"
+        );
 
         // Both formats normalize to the same canonical form
         assert_eq!(
@@ -1278,7 +1381,10 @@ mod tests {
 
         // Canonical format with explicit branch takes precedence over slashes in name
         // "org/project:main" - the colon is the branch separator, not the slash
-        assert_eq!(normalize_alias_for_comparison("org/project:main"), "org/project:main");
+        assert_eq!(
+            normalize_alias_for_comparison("org/project:main"),
+            "org/project:main"
+        );
 
         // Multiple slashes without colon - treated as name with default branch
         // (we don't know which slash is the "branch separator")

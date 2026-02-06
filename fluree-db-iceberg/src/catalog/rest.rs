@@ -56,10 +56,7 @@ impl std::fmt::Debug for RestCatalogClient {
 
 impl RestCatalogClient {
     /// Create a new REST catalog client.
-    pub fn new(
-        config: RestCatalogConfig,
-        auth: Arc<dyn SendCatalogAuth>,
-    ) -> Result<Self> {
+    pub fn new(config: RestCatalogConfig, auth: Arc<dyn SendCatalogAuth>) -> Result<Self> {
         let http_client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(config.connect_timeout_secs))
             .timeout(Duration::from_secs(config.request_timeout_secs))
@@ -76,11 +73,7 @@ impl RestCatalogClient {
     /// Make a GET request to the catalog API.
     ///
     /// Handles authentication headers and 401 retry with token refresh.
-    async fn get(
-        &self,
-        path: &str,
-        headers: &[(&str, &str)],
-    ) -> Result<serde_json::Value> {
+    async fn get(&self, path: &str, headers: &[(&str, &str)]) -> Result<serde_json::Value> {
         self.request_with_retry(path, headers, false).await
     }
 
@@ -150,7 +143,10 @@ impl RestCatalogClient {
     fn table_path(&self, table_id: &TableIdentifier) -> String {
         let encoded_ns = encode_namespace_for_rest(&table_id.namespace);
         let base = self.api_prefix();
-        format!("{}/namespaces/{}/tables/{}", base, encoded_ns, table_id.table)
+        format!(
+            "{}/namespaces/{}/tables/{}",
+            base, encoded_ns, table_id.table
+        )
     }
 
     /// Get the API prefix, optionally including the warehouse.
@@ -204,13 +200,16 @@ impl CatalogClient for RestCatalogClient {
         Ok(identifiers
             .iter()
             .filter_map(|id| {
-                let ns = id.get("namespace").and_then(|v| v.as_array()).map(|parts| {
-                    parts
-                        .iter()
-                        .filter_map(|p| p.as_str())
-                        .collect::<Vec<_>>()
-                        .join(".")
-                })?;
+                let ns = id
+                    .get("namespace")
+                    .and_then(|v| v.as_array())
+                    .map(|parts| {
+                        parts
+                            .iter()
+                            .filter_map(|p| p.as_str())
+                            .collect::<Vec<_>>()
+                            .join(".")
+                    })?;
                 let table = id.get("name").and_then(|v| v.as_str())?;
                 Some(format!("{}.{}", ns, table))
             })
@@ -300,13 +299,16 @@ impl super::SendCatalogClient for RestCatalogClient {
         Ok(identifiers
             .iter()
             .filter_map(|id| {
-                let ns = id.get("namespace").and_then(|v| v.as_array()).map(|parts| {
-                    parts
-                        .iter()
-                        .filter_map(|p| p.as_str())
-                        .collect::<Vec<_>>()
-                        .join(".")
-                })?;
+                let ns = id
+                    .get("namespace")
+                    .and_then(|v| v.as_array())
+                    .map(|parts| {
+                        parts
+                            .iter()
+                            .filter_map(|p| p.as_str())
+                            .collect::<Vec<_>>()
+                            .join(".")
+                    })?;
                 let table = id.get("name").and_then(|v| v.as_str())?;
                 Some(format!("{}.{}", ns, table))
             })

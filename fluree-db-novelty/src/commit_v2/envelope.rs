@@ -314,7 +314,11 @@ fn decode_commit_ref(data: &[u8], pos: &mut usize) -> Result<CommitRef, CommitV2
 // CommitData (recursive)
 // =============================================================================
 
-fn encode_commit_data(cd: &CommitData, buf: &mut Vec<u8>, depth: usize) -> Result<(), CommitV2Error> {
+fn encode_commit_data(
+    cd: &CommitData,
+    buf: &mut Vec<u8>,
+    depth: usize,
+) -> Result<(), CommitV2Error> {
     if depth >= MAX_COMMIT_DATA_DEPTH {
         return Err(CommitV2Error::EnvelopeEncode(
             "CommitData recursion too deep".into(),
@@ -500,10 +504,7 @@ fn encode_ns_delta(delta: &HashMap<u16, String>, buf: &mut Vec<u8>) {
     }
 }
 
-fn decode_ns_delta(
-    data: &[u8],
-    pos: &mut usize,
-) -> Result<HashMap<u16, String>, CommitV2Error> {
+fn decode_ns_delta(data: &[u8], pos: &mut usize) -> Result<HashMap<u16, String>, CommitV2Error> {
     let count = decode_varint(data, pos)? as usize;
     let mut map = HashMap::with_capacity(count);
     for _ in 0..count {
@@ -545,8 +546,7 @@ mod tests {
     fn test_round_trip_full() {
         let mut commit = make_minimal_commit();
         commit.v = 3;
-        commit.previous_ref =
-            Some(CommitRef::new("prev-addr").with_id("fluree:commit:sha256:abc"));
+        commit.previous_ref = Some(CommitRef::new("prev-addr").with_id("fluree:commit:sha256:abc"));
         commit.namespace_delta = HashMap::from([(100, "ex:".into()), (200, "schema:".into())]);
         commit.txn = Some("fluree:file://txn/xyz.json".into());
         commit.time = Some("2024-06-15T12:00:00Z".into());
@@ -557,7 +557,11 @@ mod tests {
             size: 128000,
             previous: None,
         });
-        commit.index = Some(IndexRef::new("fluree:file://index/root.json").with_id("fluree:index:sha256:ghi").with_t(8));
+        commit.index = Some(
+            IndexRef::new("fluree:file://index/root.json")
+                .with_id("fluree:index:sha256:ghi")
+                .with_t(8),
+        );
 
         let mut buf = Vec::new();
         encode_envelope(&commit, &mut buf).unwrap();
@@ -618,9 +622,7 @@ mod tests {
     #[test]
     fn test_round_trip_large_namespace_delta() {
         let mut commit = make_minimal_commit();
-        commit.namespace_delta = (0u16..200)
-            .map(|i| (i, format!("ns{}:", i)))
-            .collect();
+        commit.namespace_delta = (0u16..200).map(|i| (i, format!("ns{}:", i))).collect();
 
         let mut buf = Vec::new();
         encode_envelope(&commit, &mut buf).unwrap();
@@ -669,10 +671,13 @@ mod tests {
         assert!(decode_envelope(&buf).is_ok());
     }
 
+    /// A function that mutates a Commit for testing purposes
+    type CommitMutator = Box<dyn Fn(&mut Commit)>;
+
     #[test]
     fn test_individual_flags() {
         // Test each active flag individually (legacy flags not tested here)
-        let test_cases: Vec<Box<dyn Fn(&mut Commit)>> = vec![
+        let test_cases: Vec<CommitMutator> = vec![
             Box::new(|c: &mut Commit| c.previous_ref = Some(CommitRef::new("addr"))),
             Box::new(|c: &mut Commit| {
                 c.namespace_delta = HashMap::from([(1, "ns:".into())]);

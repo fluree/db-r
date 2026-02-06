@@ -24,7 +24,7 @@ use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::range::{ObjectBounds, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::{Flake, IndexType, OverlayProvider, RangeProvider, Sid};
 use fluree_db_indexer::run_index::{
-    BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, sort_overlay_ops,
+    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch,
 };
 use std::io;
 use std::sync::Arc;
@@ -229,7 +229,10 @@ fn decode_batch_to_flakes_filtered(
         }
 
         // dt_id → Sid for datatype
-        let dt = dt_sids.get(dt_id as usize).cloned().unwrap_or_else(Sid::min);
+        let dt = dt_sids
+            .get(dt_id as usize)
+            .cloned()
+            .unwrap_or_else(Sid::min);
 
         // Language tag + list index → FlakeMeta
         let meta = store.decode_meta(lang_id, i_val);
@@ -271,7 +274,11 @@ pub struct BinaryRangeProvider {
 impl BinaryRangeProvider {
     /// Create a new provider for the given store, dict novelty, and default graph.
     pub fn new(store: Arc<BinaryIndexStore>, dict_novelty: Arc<DictNovelty>, g_id: u32) -> Self {
-        Self { store, dict_novelty, g_id }
+        Self {
+            store,
+            dict_novelty,
+            g_id,
+        }
     }
 }
 

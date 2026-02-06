@@ -4,9 +4,9 @@
 //! entire 1 GB run files into memory. Suitable for k-way merge where
 //! 21 concurrent streams would otherwise require 21 GB.
 
+use super::global_dict::LanguageTagDict;
 use super::run_file::{deserialize_lang_dict, RunFileHeader, RUN_HEADER_LEN};
 use super::run_record::{RunRecord, RECORD_WIRE_SIZE};
-use super::global_dict::LanguageTagDict;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
@@ -130,7 +130,8 @@ impl StreamingRunReader {
         self.buffer.reserve(to_read);
         for i in 0..to_read {
             let offset = i * RECORD_WIRE_SIZE;
-            let buf: &[u8; RECORD_WIRE_SIZE] = raw[offset..offset + RECORD_WIRE_SIZE].try_into().unwrap();
+            let buf: &[u8; RECORD_WIRE_SIZE] =
+                raw[offset..offset + RECORD_WIRE_SIZE].try_into().unwrap();
             let mut rec = RunRecord::read_le(buf);
 
             // Apply lang_id remapping
@@ -159,17 +160,24 @@ impl StreamingRunReader {
 mod tests {
     use super::*;
     use crate::run_index::run_file::write_run_file;
-    use crate::run_index::run_record::{RunSortOrder, cmp_spot};
-    use fluree_db_core::DatatypeDictId;
+    use crate::run_index::run_record::{cmp_spot, RunSortOrder};
     use fluree_db_core::subject_id::SubjectId;
-    use fluree_db_core::value_id::{ObjKind, ObjKey};
+    use fluree_db_core::value_id::{ObjKey, ObjKind};
+    use fluree_db_core::DatatypeDictId;
     use std::cmp::Ordering;
 
     fn make_record(s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
         RunRecord::new(
-            0, SubjectId::from_u64(s_id), p_id,
-            ObjKind::NUM_INT, ObjKey::encode_i64(val),
-            t, true, DatatypeDictId::INTEGER.as_u16(), 0, None,
+            0,
+            SubjectId::from_u64(s_id),
+            p_id,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(val),
+            t,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
         )
     }
 
@@ -181,9 +189,8 @@ mod tests {
         let path = dir.join("test.frn");
 
         let lang_dict = LanguageTagDict::new();
-        let mut records: Vec<RunRecord> = (0..100)
-            .map(|i| make_record(i, 1, i as i64, 1))
-            .collect();
+        let mut records: Vec<RunRecord> =
+            (0..100).map(|i| make_record(i, 1, i as i64, 1)).collect();
         records.sort_unstable_by(cmp_spot);
 
         write_run_file(&path, &records, &lang_dict, RunSortOrder::Spot, 1, 1).unwrap();
@@ -250,9 +257,42 @@ mod tests {
         lang_dict.get_or_insert(Some("fr")); // local id 2
 
         let records = vec![
-            RunRecord::new(0, SubjectId::from_u64(1), 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(0), 1, true, DatatypeDictId::LANG_STRING.as_u16(), 1, None),
-            RunRecord::new(0, SubjectId::from_u64(1), 2, ObjKind::LEX_ID, ObjKey::encode_u32_id(1), 1, true, DatatypeDictId::LANG_STRING.as_u16(), 2, None),
-            RunRecord::new(0, SubjectId::from_u64(2), 1, ObjKind::LEX_ID, ObjKey::encode_u32_id(2), 1, true, DatatypeDictId::STRING.as_u16(), 0, None),
+            RunRecord::new(
+                0,
+                SubjectId::from_u64(1),
+                1,
+                ObjKind::LEX_ID,
+                ObjKey::encode_u32_id(0),
+                1,
+                true,
+                DatatypeDictId::LANG_STRING.as_u16(),
+                1,
+                None,
+            ),
+            RunRecord::new(
+                0,
+                SubjectId::from_u64(1),
+                2,
+                ObjKind::LEX_ID,
+                ObjKey::encode_u32_id(1),
+                1,
+                true,
+                DatatypeDictId::LANG_STRING.as_u16(),
+                2,
+                None,
+            ),
+            RunRecord::new(
+                0,
+                SubjectId::from_u64(2),
+                1,
+                ObjKind::LEX_ID,
+                ObjKey::encode_u32_id(2),
+                1,
+                true,
+                DatatypeDictId::STRING.as_u16(),
+                0,
+                None,
+            ),
         ];
 
         write_run_file(&path, &records, &lang_dict, RunSortOrder::Spot, 1, 1).unwrap();

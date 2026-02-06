@@ -78,10 +78,13 @@ impl<S: Storage + 'static> UnionOperator<S> {
         }
 
         // Map each output var to its source column (if present) or Unbound padding
-        let columns: Vec<Vec<Binding>> = self.schema
+        let columns: Vec<Vec<Binding>> = self
+            .schema
             .iter()
             .map(|&var| {
-                batch.schema().iter()
+                batch
+                    .schema()
+                    .iter()
                     .position(|&v| v == var)
                     .and_then(|src_idx| batch.column_by_idx(src_idx))
                     .map(|src_col| src_col.to_vec())
@@ -122,7 +125,11 @@ impl<S: Storage + 'static> Operator<S> for UnionOperator<S> {
             // Ensure we have an input batch to process.
             if self.current_input_batch.is_none()
                 || self.current_input_row
-                    >= self.current_input_batch.as_ref().map(|b| b.len()).unwrap_or(0)
+                    >= self
+                        .current_input_batch
+                        .as_ref()
+                        .map(|b| b.len())
+                        .unwrap_or(0)
             {
                 // Fetch next non-empty batch from child.
                 let next = match self.child.next_batch(ctx).await? {
@@ -152,8 +159,7 @@ impl<S: Storage + 'static> Operator<S> for UnionOperator<S> {
                     if batch.is_empty() {
                         continue;
                     }
-                    self.output_buffer
-                        .push_back(self.normalize_batch(batch)?);
+                    self.output_buffer.push_back(self.normalize_batch(batch)?);
                 }
                 branch_op.close();
             }
@@ -174,7 +180,11 @@ impl<S: Storage + 'static> Operator<S> for UnionOperator<S> {
     }
 }
 
-fn extend_schema_from_patterns(schema: &mut Vec<VarId>, seen: &mut HashSet<VarId>, patterns: &[Pattern]) {
+fn extend_schema_from_patterns(
+    schema: &mut Vec<VarId>,
+    seen: &mut HashSet<VarId>,
+    patterns: &[Pattern],
+) {
     for p in patterns {
         match p {
             Pattern::Triple(tp) => {
@@ -245,7 +255,10 @@ fn extend_schema_from_patterns(schema: &mut Vec<VarId>, seen: &mut HashSet<VarId
                     }
                 }
             }
-            Pattern::Graph { name, patterns: inner } => {
+            Pattern::Graph {
+                name,
+                patterns: inner,
+            } => {
                 // Graph pattern contributes variables from inner patterns and the graph variable (if any)
                 if let crate::ir::GraphName::Var(v) = name {
                     if seen.insert(*v) {
@@ -269,7 +282,9 @@ mod tests {
     fn test_union_operator_schema_computation() {
         // Child schema has ?s, branches introduce ?n and ?e.
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
-        let child: BoxedOperator<MemoryStorage> = Box::new(TestEmptyWithSchema { schema: child_schema });
+        let child: BoxedOperator<MemoryStorage> = Box::new(TestEmptyWithSchema {
+            schema: child_schema,
+        });
 
         let branches = vec![
             vec![Pattern::Triple(crate::pattern::TriplePattern::new(
@@ -292,7 +307,8 @@ mod tests {
     fn test_union_operator_allows_position_0_via_empty_seed_child() {
         // UNION at position 0 should still be able to run using an EmptyOperator child.
         // Here we only validate it constructs; runtime behavior is covered by execute.rs integration tests.
-        let child: BoxedOperator<MemoryStorage> = Box::new(EmptyOperator::new());
+        let empty = EmptyOperator::new();
+        let child: BoxedOperator<MemoryStorage> = Box::new(empty);
         let branches = vec![vec![], vec![]];
         let op = UnionOperator::new(child, branches);
         assert_eq!(op.schema().len(), 0);

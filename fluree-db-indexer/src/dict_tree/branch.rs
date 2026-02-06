@@ -54,12 +54,16 @@ impl DictBranch {
         let offset_table_size = self.leaves.len() * 4;
 
         // Pre-compute total size
-        let entries_size: usize = self.leaves.iter().map(|l| {
-            4 + l.first_key.len()    // first_key_len + bytes
+        let entries_size: usize = self
+            .leaves
+            .iter()
+            .map(|l| {
+                4 + l.first_key.len()    // first_key_len + bytes
             + 4 + l.last_key.len()   // last_key_len + bytes
             + 4                      // entry_count
-            + 2 + l.address.len()    // address_len + bytes
-        }).sum();
+            + 2 + l.address.len() // address_len + bytes
+            })
+            .sum();
 
         let total = HEADER_SIZE + offset_table_size + entries_size;
         let mut buf = Vec::with_capacity(total);
@@ -72,8 +76,7 @@ impl DictBranch {
         let mut offset: u32 = 0;
         for l in &self.leaves {
             buf.extend_from_slice(&offset.to_le_bytes());
-            let entry_size = 4 + l.first_key.len() + 4 + l.last_key.len()
-                + 4 + 2 + l.address.len();
+            let entry_size = 4 + l.first_key.len() + 4 + l.last_key.len() + 4 + 2 + l.address.len();
             offset += entry_size as u32;
         }
 
@@ -120,37 +123,28 @@ impl DictBranch {
         let mut leaves = Vec::with_capacity(leaf_count);
         for i in 0..leaf_count {
             let table_pos = offset_table_start + i * 4;
-            let relative = u32::from_le_bytes(
-                data[table_pos..table_pos + 4].try_into().unwrap(),
-            ) as usize;
+            let relative =
+                u32::from_le_bytes(data[table_pos..table_pos + 4].try_into().unwrap()) as usize;
             let mut pos = data_section_start + relative;
 
             // first_key
-            let fk_len = u32::from_le_bytes(
-                data[pos..pos + 4].try_into().unwrap(),
-            ) as usize;
+            let fk_len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
             pos += 4;
             let first_key = data[pos..pos + fk_len].to_vec();
             pos += fk_len;
 
             // last_key
-            let lk_len = u32::from_le_bytes(
-                data[pos..pos + 4].try_into().unwrap(),
-            ) as usize;
+            let lk_len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
             pos += 4;
             let last_key = data[pos..pos + lk_len].to_vec();
             pos += lk_len;
 
             // entry_count
-            let entry_count = u32::from_le_bytes(
-                data[pos..pos + 4].try_into().unwrap(),
-            );
+            let entry_count = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
             pos += 4;
 
             // address
-            let addr_len = u16::from_le_bytes(
-                data[pos..pos + 2].try_into().unwrap(),
-            ) as usize;
+            let addr_len = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap()) as usize;
             pos += 2;
             let address = String::from_utf8(data[pos..pos + addr_len].to_vec())
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;

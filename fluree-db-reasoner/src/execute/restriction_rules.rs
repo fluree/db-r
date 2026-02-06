@@ -18,11 +18,10 @@ use hashbrown::HashSet;
 use crate::restrictions::{ClassRef, RestrictionIndex, RestrictionType, RestrictionValue};
 use crate::same_as::SameAsTracker;
 use crate::types::PropertyExpression;
-use crate::ReasoningDiagnostics;
 
 use super::delta::DeltaSet;
 use super::derived::DerivedSet;
-use super::util::ref_dt;
+use super::util::{ref_dt, IdentityRuleContext, RuleContext};
 
 // ============================================================================
 // Property value collection helpers
@@ -123,20 +122,11 @@ fn collect_property_values_derived(
 /// - Named property: derive P(x, v)
 /// - Inverse property: derive P(v, x) (reversed)
 /// - Chain property: not supported for backward entailment (chains need intermediate links)
-pub fn apply_has_value_backward_rule(
-    restrictions: &RestrictionIndex,
-    delta: &DeltaSet,
-    derived: &DerivedSet,
-    new_delta: &mut DeltaSet,
-    same_as: &SameAsTracker,
-    rdf_type_sid: &Sid,
-    t: i64,
-    diagnostics: &mut ReasoningDiagnostics,
-) {
+pub fn apply_has_value_backward_rule(restrictions: &RestrictionIndex, ctx: &mut RuleContext<'_>) {
     let ref_dt = ref_dt();
 
     // Process rdf:type facts in delta
-    for flake in delta.get_by_p(rdf_type_sid) {
+    for flake in ctx.delta.get_by_p(ctx.rdf_type_sid) {
         // type(x, C) where C might be a hasValue restriction
         if let FlakeValue::Ref(restriction_class) = &flake.o {
             if let Some(restriction) = restrictions.get(restriction_class) {
@@ -144,8 +134,8 @@ pub fn apply_has_value_backward_rule(
                 {
                     // Restricted form: only Ref values are supported
                     let RestrictionValue::Ref(value_ref) = value;
-                    let x_canonical = same_as.canonical(&flake.s);
-                    let v_canonical = same_as.canonical(value_ref);
+                    let x_canonical = ctx.same_as.canonical(&flake.s);
+                    let v_canonical = ctx.same_as.canonical(value_ref);
 
                     // Handle property expression
                     let derived_flake = match property {
@@ -156,7 +146,7 @@ pub fn apply_has_value_backward_rule(
                                 prop_sid.clone(),
                                 FlakeValue::Ref(v_canonical.clone()),
                                 ref_dt.clone(),
-                                t,
+                                ctx.t,
                                 true,
                                 None,
                             ))
@@ -169,7 +159,7 @@ pub fn apply_has_value_backward_rule(
                                     prop_sid.clone(),
                                     FlakeValue::Ref(x_canonical.clone()),
                                     ref_dt.clone(),
-                                    t,
+                                    ctx.t,
                                     true,
                                     None,
                                 ))
@@ -186,9 +176,9 @@ pub fn apply_has_value_backward_rule(
                     };
 
                     if let Some(df) = derived_flake {
-                        if !derived.contains(&df.s, &df.p, &df.o) {
-                            new_delta.push(df);
-                            diagnostics.record_rule_fired("cls-hv1");
+                        if !ctx.derived.contains(&df.s, &df.p, &df.o) {
+                            ctx.new_delta.push(df);
+                            ctx.diagnostics.record_rule_fired("cls-hv1");
                         }
                     }
                 }
@@ -205,16 +195,7 @@ pub fn apply_has_value_backward_rule(
 ///
 /// **Restricted form**: Only supports Ref values (IRIs/blank nodes).
 /// Literal hasValue restrictions are not yet supported.
-pub fn apply_has_value_forward_rule(
-    restrictions: &RestrictionIndex,
-    delta: &DeltaSet,
-    derived: &DerivedSet,
-    new_delta: &mut DeltaSet,
-    same_as: &SameAsTracker,
-    rdf_type_sid: &Sid,
-    t: i64,
-    diagnostics: &mut ReasoningDiagnostics,
-) {
+pub fn apply_has_value_forward_rule(restrictions: &RestrictionIndex, ctx: &mut RuleContext<'_>) {
     let ref_dt = ref_dt();
 
     // Part 1: Direct properties - P(x, v) -> type(x, C)
@@ -225,13 +206,13 @@ pub fn apply_has_value_forward_rule(
         }
 
         // Get facts with this property from delta
-        for flake in delta.get_by_p(property) {
+        for flake in ctx.delta.get_by_p(property) {
             // Restricted form: only Ref values are supported, so skip literals
             let FlakeValue::Ref(actual_ref) = &flake.o else {
                 continue;
             };
 
-            let x_canonical = same_as.canonical(&flake.s);
+            let x_canonical = ctx.same_as.canonical(&flake.s);
 
             // Check each hasValue restriction on this property
             for restriction_id in restriction_ids {
@@ -241,28 +222,28 @@ pub fn apply_has_value_forward_rule(
                         let RestrictionValue::Ref(required_ref) = value;
 
                         // Compare canonical forms
-                        let matches =
-                            same_as.canonical(required_ref) == same_as.canonical(actual_ref);
+                        let matches = ctx.same_as.canonical(required_ref)
+                            == ctx.same_as.canonical(actual_ref);
 
                         if matches {
                             // Derive type(x, C)
                             let derived_flake = Flake::new(
                                 x_canonical.clone(),
-                                rdf_type_sid.clone(),
+                                ctx.rdf_type_sid.clone(),
                                 FlakeValue::Ref(restriction.restriction_id.clone()),
                                 ref_dt.clone(),
-                                t,
+                                ctx.t,
                                 true,
                                 None,
                             );
 
-                            if !derived.contains(
+                            if !ctx.derived.contains(
                                 &derived_flake.s,
                                 &derived_flake.p,
                                 &derived_flake.o,
                             ) {
-                                new_delta.push(derived_flake);
-                                diagnostics.record_rule_fired("cls-hv2");
+                                ctx.new_delta.push(derived_flake);
+                                ctx.diagnostics.record_rule_fired("cls-hv2");
                             }
                         }
                     }
@@ -281,7 +262,7 @@ pub fn apply_has_value_forward_rule(
 
         // For inverse property, we look for facts where entity x is in the OBJECT position
         // P(v, x) means inverseOf(P)(x, v)
-        for flake in delta.get_by_p(property) {
+        for flake in ctx.delta.get_by_p(property) {
             // x is the object (the entity we want to type)
             let FlakeValue::Ref(x) = &flake.o else {
                 continue;
@@ -289,7 +270,7 @@ pub fn apply_has_value_forward_rule(
             // v is the subject (the required value)
             let actual_value = &flake.s;
 
-            let x_canonical = same_as.canonical(x);
+            let x_canonical = ctx.same_as.canonical(x);
 
             // Check each hasValue restriction with this inverse property
             for restriction_id in restriction_ids {
@@ -298,28 +279,28 @@ pub fn apply_has_value_forward_rule(
                         let RestrictionValue::Ref(required_ref) = value;
 
                         // For inverse: check if actual subject matches required value
-                        let matches =
-                            same_as.canonical(required_ref) == same_as.canonical(actual_value);
+                        let matches = ctx.same_as.canonical(required_ref)
+                            == ctx.same_as.canonical(actual_value);
 
                         if matches {
                             // Derive type(x, C)
                             let derived_flake = Flake::new(
                                 x_canonical.clone(),
-                                rdf_type_sid.clone(),
+                                ctx.rdf_type_sid.clone(),
                                 FlakeValue::Ref(restriction.restriction_id.clone()),
                                 ref_dt.clone(),
-                                t,
+                                ctx.t,
                                 true,
                                 None,
                             );
 
-                            if !derived.contains(
+                            if !ctx.derived.contains(
                                 &derived_flake.s,
                                 &derived_flake.p,
                                 &derived_flake.o,
                             ) {
-                                new_delta.push(derived_flake);
-                                diagnostics.record_rule_fired("cls-hv2");
+                                ctx.new_delta.push(derived_flake);
+                                ctx.diagnostics.record_rule_fired("cls-hv2");
                             }
                         }
                     }
@@ -349,20 +330,16 @@ pub fn apply_has_value_forward_rule(
 /// **Property expressions**:
 /// - Named property: find P(x, y) facts where x is subject, y is object
 /// - Inverse property: find P(y, x) facts where x is object, y is subject
-pub fn apply_some_values_from_rule(
-    restrictions: &RestrictionIndex,
-    delta: &DeltaSet,
-    derived: &DerivedSet,
-    new_delta: &mut DeltaSet,
-    same_as: &SameAsTracker,
-    rdf_type_sid: &Sid,
-    t: i64,
-    diagnostics: &mut ReasoningDiagnostics,
-) {
+pub fn apply_some_values_from_rule(restrictions: &RestrictionIndex, ctx: &mut RuleContext<'_>) {
     let ref_dt = ref_dt();
 
     // Helper to collect types for an entity
-    let collect_types = |entity: &Sid, y_canonical: &Sid| -> HashSet<Sid> {
+    let collect_types = |entity: &Sid,
+                         y_canonical: &Sid,
+                         delta: &DeltaSet,
+                         derived: &DerivedSet,
+                         rdf_type_sid: &Sid|
+     -> HashSet<Sid> {
         let mut types: HashSet<Sid> = HashSet::new();
         // From delta
         for type_flake in delta.get_by_ps(rdf_type_sid, y_canonical) {
@@ -385,43 +362,6 @@ pub fn apply_some_values_from_rule(
         types
     };
 
-    // Helper to check restriction and derive type
-    let check_and_derive = |x_canonical: &Sid,
-                                 y_types: &HashSet<Sid>,
-                                 restriction_ids: &[Sid],
-                                 derived: &DerivedSet,
-                                 new_delta: &mut DeltaSet,
-                                 diagnostics: &mut ReasoningDiagnostics| {
-        for restriction_id in restriction_ids {
-            if let Some(restriction) = restrictions.get(restriction_id) {
-                if let RestrictionType::SomeValuesFrom { target_class, .. } =
-                    &restriction.restriction_type
-                {
-                    if y_types.contains(target_class.sid()) {
-                        let derived_flake = Flake::new(
-                            x_canonical.clone(),
-                            rdf_type_sid.clone(),
-                            FlakeValue::Ref(restriction.restriction_id.clone()),
-                            ref_dt.clone(),
-                            t,
-                            true,
-                            None,
-                        );
-
-                        if !derived.contains(
-                            &derived_flake.s,
-                            &derived_flake.p,
-                            &derived_flake.o,
-                        ) {
-                            new_delta.push(derived_flake);
-                            diagnostics.record_rule_fired("cls-svf1");
-                        }
-                    }
-                }
-            }
-        }
-    };
-
     // Part 1a: Direct properties - P(x, y) -> type(x, C)
     for property in restrictions.restricted_properties() {
         let restriction_ids = restrictions.some_values_from_restrictions_for(property);
@@ -430,21 +370,43 @@ pub fn apply_some_values_from_rule(
         }
 
         // Process property facts P(x, y) from delta
-        for flake in delta.get_by_p(property) {
+        for flake in ctx.delta.get_by_p(property) {
             // y must be a Ref to check its type
             if let FlakeValue::Ref(y) = &flake.o {
-                let x_canonical = same_as.canonical(&flake.s);
-                let y_canonical = same_as.canonical(y);
+                let x_canonical = ctx.same_as.canonical(&flake.s);
+                let y_canonical = ctx.same_as.canonical(y);
 
-                let y_types = collect_types(y, &y_canonical);
-                check_and_derive(
-                    &x_canonical,
-                    &y_types,
-                    restriction_ids,
-                    derived,
-                    new_delta,
-                    diagnostics,
-                );
+                let y_types =
+                    collect_types(y, &y_canonical, ctx.delta, ctx.derived, ctx.rdf_type_sid);
+
+                for restriction_id in restriction_ids {
+                    if let Some(restriction) = restrictions.get(restriction_id) {
+                        if let RestrictionType::SomeValuesFrom { target_class, .. } =
+                            &restriction.restriction_type
+                        {
+                            if y_types.contains(target_class.sid()) {
+                                let derived_flake = Flake::new(
+                                    x_canonical.clone(),
+                                    ctx.rdf_type_sid.clone(),
+                                    FlakeValue::Ref(restriction.restriction_id.clone()),
+                                    ref_dt.clone(),
+                                    ctx.t,
+                                    true,
+                                    None,
+                                );
+
+                                if !ctx.derived.contains(
+                                    &derived_flake.s,
+                                    &derived_flake.p,
+                                    &derived_flake.o,
+                                ) {
+                                    ctx.new_delta.push(derived_flake);
+                                    ctx.diagnostics.record_rule_fired("cls-svf1");
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -458,7 +420,7 @@ pub fn apply_some_values_from_rule(
         }
 
         // For inverse property: P(y, x) where x is the entity to type, y is the value to check
-        for flake in delta.get_by_p(property) {
+        for flake in ctx.delta.get_by_p(property) {
             // x is in the object position (entity to be typed)
             let FlakeValue::Ref(x) = &flake.o else {
                 continue;
@@ -466,26 +428,47 @@ pub fn apply_some_values_from_rule(
             // y is in the subject position (whose type we check)
             let y = &flake.s;
 
-            let x_canonical = same_as.canonical(x);
-            let y_canonical = same_as.canonical(y);
+            let x_canonical = ctx.same_as.canonical(x);
+            let y_canonical = ctx.same_as.canonical(y);
 
-            let y_types = collect_types(y, &y_canonical);
-            check_and_derive(
-                &x_canonical,
-                &y_types,
-                restriction_ids,
-                derived,
-                new_delta,
-                diagnostics,
-            );
+            let y_types = collect_types(y, &y_canonical, ctx.delta, ctx.derived, ctx.rdf_type_sid);
+
+            for restriction_id in restriction_ids {
+                if let Some(restriction) = restrictions.get(restriction_id) {
+                    if let RestrictionType::SomeValuesFrom { target_class, .. } =
+                        &restriction.restriction_type
+                    {
+                        if y_types.contains(target_class.sid()) {
+                            let derived_flake = Flake::new(
+                                x_canonical.clone(),
+                                ctx.rdf_type_sid.clone(),
+                                FlakeValue::Ref(restriction.restriction_id.clone()),
+                                ref_dt.clone(),
+                                ctx.t,
+                                true,
+                                None,
+                            );
+
+                            if !ctx.derived.contains(
+                                &derived_flake.s,
+                                &derived_flake.p,
+                                &derived_flake.o,
+                            ) {
+                                ctx.new_delta.push(derived_flake);
+                                ctx.diagnostics.record_rule_fired("cls-svf1");
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
     // Part 2a: Process when new type facts arrive (type(y, D) in delta)
     // and check if y is already an object of some P(x, y) fact (direct property)
-    for flake in delta.get_by_p(rdf_type_sid) {
+    for flake in ctx.delta.get_by_p(ctx.rdf_type_sid) {
         if let FlakeValue::Ref(d_class) = &flake.o {
-            let y_canonical = same_as.canonical(&flake.s);
+            let y_canonical = ctx.same_as.canonical(&flake.s);
 
             // For each direct property with someValuesFrom restrictions targeting D
             for property in restrictions.restricted_properties() {
@@ -502,26 +485,26 @@ pub fn apply_some_values_from_rule(
                         {
                             if target_class.sid() == d_class {
                                 // Look for P(x, y) facts where y is the object
-                                for prop_flake in derived.get_by_po(property, &y_canonical) {
-                                    let x_canonical = same_as.canonical(&prop_flake.s);
+                                for prop_flake in ctx.derived.get_by_po(property, &y_canonical) {
+                                    let x_canonical = ctx.same_as.canonical(&prop_flake.s);
 
                                     let derived_flake = Flake::new(
                                         x_canonical.clone(),
-                                        rdf_type_sid.clone(),
+                                        ctx.rdf_type_sid.clone(),
                                         FlakeValue::Ref(restriction.restriction_id.clone()),
                                         ref_dt.clone(),
-                                        t,
+                                        ctx.t,
                                         true,
                                         None,
                                     );
 
-                                    if !derived.contains(
+                                    if !ctx.derived.contains(
                                         &derived_flake.s,
                                         &derived_flake.p,
                                         &derived_flake.o,
                                     ) {
-                                        new_delta.push(derived_flake);
-                                        diagnostics.record_rule_fired("cls-svf1");
+                                        ctx.new_delta.push(derived_flake);
+                                        ctx.diagnostics.record_rule_fired("cls-svf1");
                                     }
                                 }
                             }
@@ -532,7 +515,8 @@ pub fn apply_some_values_from_rule(
 
             // Part 2b: Also check inverse properties - P(y, x) where y is now typed
             for property in restrictions.restricted_inverse_properties() {
-                let restriction_ids = restrictions.some_values_from_restrictions_for_inverse(property);
+                let restriction_ids =
+                    restrictions.some_values_from_restrictions_for_inverse(property);
                 if restriction_ids.is_empty() {
                     continue;
                 }
@@ -545,27 +529,27 @@ pub fn apply_some_values_from_rule(
                             if target_class.sid() == d_class {
                                 // For inverse: look for P(y, x) facts where y is the subject
                                 // and x (the object) should be typed
-                                for prop_flake in derived.get_by_ps(property, &y_canonical) {
+                                for prop_flake in ctx.derived.get_by_ps(property, &y_canonical) {
                                     if let FlakeValue::Ref(x) = &prop_flake.o {
-                                        let x_canonical = same_as.canonical(x);
+                                        let x_canonical = ctx.same_as.canonical(x);
 
                                         let derived_flake = Flake::new(
                                             x_canonical.clone(),
-                                            rdf_type_sid.clone(),
+                                            ctx.rdf_type_sid.clone(),
                                             FlakeValue::Ref(restriction.restriction_id.clone()),
                                             ref_dt.clone(),
-                                            t,
+                                            ctx.t,
                                             true,
                                             None,
                                         );
 
-                                        if !derived.contains(
+                                        if !ctx.derived.contains(
                                             &derived_flake.s,
                                             &derived_flake.p,
                                             &derived_flake.o,
                                         ) {
-                                            new_delta.push(derived_flake);
-                                            diagnostics.record_rule_fired("cls-svf1");
+                                            ctx.new_delta.push(derived_flake);
+                                            ctx.diagnostics.record_rule_fired("cls-svf1");
                                         }
                                     }
                                 }
@@ -594,20 +578,11 @@ pub fn apply_some_values_from_rule(
 /// - Named property: find P(x, y) facts
 /// - Inverse property: find P(y, x) facts (y is in subject position)
 /// - Chain property: not yet supported
-pub fn apply_all_values_from_rule(
-    restrictions: &RestrictionIndex,
-    delta: &DeltaSet,
-    derived: &DerivedSet,
-    new_delta: &mut DeltaSet,
-    same_as: &SameAsTracker,
-    rdf_type_sid: &Sid,
-    t: i64,
-    diagnostics: &mut ReasoningDiagnostics,
-) {
+pub fn apply_all_values_from_rule(restrictions: &RestrictionIndex, ctx: &mut RuleContext<'_>) {
     let ref_dt = ref_dt();
 
     // Process type facts in delta: type(x, C) where C is an allValuesFrom restriction
-    for flake in delta.get_by_p(rdf_type_sid) {
+    for flake in ctx.delta.get_by_p(ctx.rdf_type_sid) {
         if let FlakeValue::Ref(restriction_class) = &flake.o {
             if let Some(restriction) = restrictions.get(restriction_class) {
                 if let RestrictionType::AllValuesFrom {
@@ -615,7 +590,7 @@ pub fn apply_all_values_from_rule(
                     target_class,
                 } = &restriction.restriction_type
                 {
-                    let x_canonical = same_as.canonical(&flake.s);
+                    let x_canonical = ctx.same_as.canonical(&flake.s);
                     let target_sid = target_class.sid();
 
                     // Track what we've derived to avoid duplicates
@@ -623,12 +598,27 @@ pub fn apply_all_values_from_rule(
 
                     // Collect property values using the helper function
                     // Check both canonical and original subject for delta
-                    let mut all_values = collect_property_values_delta(property, &x_canonical, delta, same_as);
+                    let mut all_values = collect_property_values_delta(
+                        property,
+                        &x_canonical,
+                        ctx.delta,
+                        ctx.same_as,
+                    );
                     if x_canonical != flake.s {
-                        all_values.extend(collect_property_values_delta(property, &flake.s, delta, same_as));
+                        all_values.extend(collect_property_values_delta(
+                            property,
+                            &flake.s,
+                            ctx.delta,
+                            ctx.same_as,
+                        ));
                     }
                     // Also check derived
-                    all_values.extend(collect_property_values_derived(property, &x_canonical, derived, same_as));
+                    all_values.extend(collect_property_values_derived(
+                        property,
+                        &x_canonical,
+                        ctx.derived,
+                        ctx.same_as,
+                    ));
 
                     for y_canonical in all_values {
                         // Skip if we've already derived this
@@ -638,21 +628,21 @@ pub fn apply_all_values_from_rule(
 
                         let derived_flake = Flake::new(
                             y_canonical.clone(),
-                            rdf_type_sid.clone(),
+                            ctx.rdf_type_sid.clone(),
                             FlakeValue::Ref(target_sid.clone()),
                             ref_dt.clone(),
-                            t,
+                            ctx.t,
                             true,
                             None,
                         );
 
-                        if !derived.contains(
+                        if !ctx.derived.contains(
                             &derived_flake.s,
                             &derived_flake.p,
                             &derived_flake.o,
                         ) {
-                            new_delta.push(derived_flake);
-                            diagnostics.record_rule_fired("cls-avf");
+                            ctx.new_delta.push(derived_flake);
+                            ctx.diagnostics.record_rule_fired("cls-avf");
                         }
                     }
                 }
@@ -671,10 +661,10 @@ pub fn apply_all_values_from_rule(
             continue;
         }
 
-        for flake in delta.get_by_p(property) {
+        for flake in ctx.delta.get_by_p(property) {
             if let FlakeValue::Ref(y) = &flake.o {
-                let x_canonical = same_as.canonical(&flake.s);
-                let y_canonical = same_as.canonical(y);
+                let x_canonical = ctx.same_as.canonical(&flake.s);
+                let y_canonical = ctx.same_as.canonical(y);
 
                 // Check if x has any allValuesFrom restriction type in DERIVED only
                 // (delta-vs-delta is already handled by the first code path)
@@ -684,8 +674,9 @@ pub fn apply_all_values_from_rule(
                             &restriction.restriction_type
                         {
                             // Check if x is of type C (the restriction class) in derived ONLY
-                            let x_has_type_in_derived = derived
-                                .get_by_ps(rdf_type_sid, &x_canonical)
+                            let x_has_type_in_derived = ctx
+                                .derived
+                                .get_by_ps(ctx.rdf_type_sid, &x_canonical)
                                 .any(|f| {
                                     if let FlakeValue::Ref(c) = &f.o {
                                         c == restriction_id
@@ -697,21 +688,21 @@ pub fn apply_all_values_from_rule(
                             if x_has_type_in_derived {
                                 let derived_flake = Flake::new(
                                     y_canonical.clone(),
-                                    rdf_type_sid.clone(),
+                                    ctx.rdf_type_sid.clone(),
                                     FlakeValue::Ref(target_class.sid().clone()),
                                     ref_dt.clone(),
-                                    t,
+                                    ctx.t,
                                     true,
                                     None,
                                 );
 
-                                if !derived.contains(
+                                if !ctx.derived.contains(
                                     &derived_flake.s,
                                     &derived_flake.p,
                                     &derived_flake.o,
                                 ) {
-                                    new_delta.push(derived_flake);
-                                    diagnostics.record_rule_fired("cls-avf");
+                                    ctx.new_delta.push(derived_flake);
+                                    ctx.diagnostics.record_rule_fired("cls-avf");
                                 }
                             }
                         }
@@ -732,7 +723,7 @@ pub fn apply_all_values_from_rule(
 
         // For inverse: P(y, x) means inverseOf(P)(x, y)
         // x is in object position, y is in subject position
-        for flake in delta.get_by_p(property) {
+        for flake in ctx.delta.get_by_p(property) {
             // x is the object (entity with the restriction type)
             let FlakeValue::Ref(x) = &flake.o else {
                 continue;
@@ -740,8 +731,8 @@ pub fn apply_all_values_from_rule(
             // y is the subject (entity to be typed)
             let y = &flake.s;
 
-            let x_canonical = same_as.canonical(x);
-            let y_canonical = same_as.canonical(y);
+            let x_canonical = ctx.same_as.canonical(x);
+            let y_canonical = ctx.same_as.canonical(y);
 
             for restriction_id in restriction_ids {
                 if let Some(restriction) = restrictions.get(restriction_id) {
@@ -749,8 +740,9 @@ pub fn apply_all_values_from_rule(
                         &restriction.restriction_type
                     {
                         // Check if x is of type C (the restriction class) in derived ONLY
-                        let x_has_type_in_derived = derived
-                            .get_by_ps(rdf_type_sid, &x_canonical)
+                        let x_has_type_in_derived = ctx
+                            .derived
+                            .get_by_ps(ctx.rdf_type_sid, &x_canonical)
                             .any(|f| {
                                 if let FlakeValue::Ref(c) = &f.o {
                                     c == restriction_id
@@ -762,21 +754,21 @@ pub fn apply_all_values_from_rule(
                         if x_has_type_in_derived {
                             let derived_flake = Flake::new(
                                 y_canonical.clone(),
-                                rdf_type_sid.clone(),
+                                ctx.rdf_type_sid.clone(),
                                 FlakeValue::Ref(target_class.sid().clone()),
                                 ref_dt.clone(),
-                                t,
+                                ctx.t,
                                 true,
                                 None,
                             );
 
-                            if !derived.contains(
+                            if !ctx.derived.contains(
                                 &derived_flake.s,
                                 &derived_flake.p,
                                 &derived_flake.o,
                             ) {
-                                new_delta.push(derived_flake);
-                                diagnostics.record_rule_fired("cls-avf");
+                                ctx.new_delta.push(derived_flake);
+                                ctx.diagnostics.record_rule_fired("cls-avf");
                             }
                         }
                     }
@@ -801,15 +793,7 @@ pub fn apply_all_values_from_rule(
 /// This is an identity-producing rule and should be applied in Phase B.
 pub fn apply_max_cardinality_rule(
     restrictions: &RestrictionIndex,
-    delta: &DeltaSet,
-    derived: &DerivedSet,
-    new_delta: &mut DeltaSet,
-    same_as: &SameAsTracker,
-    owl_same_as_sid: &Sid,
-    rdf_type_sid: &Sid,
-    t: i64,
-    same_as_changed: bool,
-    diagnostics: &mut ReasoningDiagnostics,
+    ctx: &mut IdentityRuleContext<'_>,
 ) {
     let ref_dt = ref_dt();
 
@@ -821,10 +805,10 @@ pub fn apply_max_cardinality_rule(
         }
 
         // Skip if no relevant facts
-        let delta_has_p = delta.get_by_p(property).next().is_some();
-        let delta_has_type = delta.get_by_p(rdf_type_sid).next().is_some();
-        let derived_has_p = derived.get_by_p(property).next().is_some();
-        if !delta_has_p && !delta_has_type && !(same_as_changed && derived_has_p) {
+        let delta_has_p = ctx.delta.get_by_p(property).next().is_some();
+        let delta_has_type = ctx.delta.get_by_p(ctx.rdf_type_sid).next().is_some();
+        let derived_has_p = ctx.derived.get_by_p(property).next().is_some();
+        if !(delta_has_p || delta_has_type || ctx.same_as_changed && derived_has_p) {
             continue;
         }
 
@@ -833,18 +817,18 @@ pub fn apply_max_cardinality_rule(
 
         for restriction_id in restriction_ids {
             // Find all x such that type(x, C) in delta or derived
-            for type_flake in delta.get_by_p(rdf_type_sid) {
+            for type_flake in ctx.delta.get_by_p(ctx.rdf_type_sid) {
                 if let FlakeValue::Ref(cls) = &type_flake.o {
                     if cls == restriction_id {
-                        let x_canonical = same_as.canonical(&type_flake.s);
+                        let x_canonical = ctx.same_as.canonical(&type_flake.s);
                         restriction_subjects.insert(x_canonical);
                     }
                 }
             }
-            for type_flake in derived.get_by_p(rdf_type_sid) {
+            for type_flake in ctx.derived.get_by_p(ctx.rdf_type_sid) {
                 if let FlakeValue::Ref(cls) = &type_flake.o {
                     if cls == restriction_id {
-                        let x_canonical = same_as.canonical(&type_flake.s);
+                        let x_canonical = ctx.same_as.canonical(&type_flake.s);
                         restriction_subjects.insert(x_canonical);
                     }
                 }
@@ -860,17 +844,17 @@ pub fn apply_max_cardinality_rule(
             let mut objects: Vec<Sid> = Vec::new();
 
             // From delta
-            for prop_flake in delta.get_by_ps(property, x_canonical) {
+            for prop_flake in ctx.delta.get_by_ps(property, x_canonical) {
                 if let FlakeValue::Ref(y) = &prop_flake.o {
-                    let y_canonical = same_as.canonical(y);
+                    let y_canonical = ctx.same_as.canonical(y);
                     objects.push(y_canonical);
                 }
             }
 
             // From derived
-            for prop_flake in derived.get_by_ps(property, x_canonical) {
+            for prop_flake in ctx.derived.get_by_ps(property, x_canonical) {
                 if let FlakeValue::Ref(y) = &prop_flake.o {
-                    let y_canonical = same_as.canonical(y);
+                    let y_canonical = ctx.same_as.canonical(y);
                     objects.push(y_canonical);
                 }
             }
@@ -887,17 +871,20 @@ pub fn apply_max_cardinality_rule(
             for other in &objects_vec[1..] {
                 let same_as_flake = Flake::new(
                     first.clone(),
-                    owl_same_as_sid.clone(),
+                    ctx.owl_same_as_sid.clone(),
                     FlakeValue::Ref(other.clone()),
                     ref_dt.clone(),
-                    t,
+                    ctx.t,
                     true,
                     None,
                 );
 
-                if !derived.contains(&same_as_flake.s, &same_as_flake.p, &same_as_flake.o) {
-                    new_delta.push(same_as_flake);
-                    diagnostics.record_rule_fired("cls-maxc2");
+                if !ctx
+                    .derived
+                    .contains(&same_as_flake.s, &same_as_flake.p, &same_as_flake.o)
+                {
+                    ctx.new_delta.push(same_as_flake);
+                    ctx.diagnostics.record_rule_fired("cls-maxc2");
                 }
             }
         }
@@ -914,15 +901,7 @@ pub fn apply_max_cardinality_rule(
 /// This is an identity-producing rule and should be applied in Phase B.
 pub fn apply_max_qualified_cardinality_rule(
     restrictions: &RestrictionIndex,
-    delta: &DeltaSet,
-    derived: &DerivedSet,
-    new_delta: &mut DeltaSet,
-    same_as: &SameAsTracker,
-    owl_same_as_sid: &Sid,
-    rdf_type_sid: &Sid,
-    t: i64,
-    same_as_changed: bool,
-    diagnostics: &mut ReasoningDiagnostics,
+    ctx: &mut IdentityRuleContext<'_>,
 ) {
     let ref_dt = ref_dt();
 
@@ -934,10 +913,10 @@ pub fn apply_max_qualified_cardinality_rule(
         }
 
         // Skip if no relevant facts
-        let delta_has_p = delta.get_by_p(property).next().is_some();
-        let delta_has_type = delta.get_by_p(rdf_type_sid).next().is_some();
-        let derived_has_p = derived.get_by_p(property).next().is_some();
-        if !delta_has_p && !delta_has_type && !(same_as_changed && derived_has_p) {
+        let delta_has_p = ctx.delta.get_by_p(property).next().is_some();
+        let delta_has_type = ctx.delta.get_by_p(ctx.rdf_type_sid).next().is_some();
+        let derived_has_p = ctx.derived.get_by_p(property).next().is_some();
+        if !(delta_has_p || delta_has_type || ctx.same_as_changed && derived_has_p) {
             continue;
         }
 
@@ -949,18 +928,18 @@ pub fn apply_max_qualified_cardinality_rule(
                     // Find all x such that type(x, C) in delta or derived
                     let mut restriction_subjects: HashSet<Sid> = HashSet::new();
 
-                    for type_flake in delta.get_by_p(rdf_type_sid) {
+                    for type_flake in ctx.delta.get_by_p(ctx.rdf_type_sid) {
                         if let FlakeValue::Ref(cls) = &type_flake.o {
                             if cls == restriction_id {
-                                let x_canonical = same_as.canonical(&type_flake.s);
+                                let x_canonical = ctx.same_as.canonical(&type_flake.s);
                                 restriction_subjects.insert(x_canonical);
                             }
                         }
                     }
-                    for type_flake in derived.get_by_p(rdf_type_sid) {
+                    for type_flake in ctx.derived.get_by_p(ctx.rdf_type_sid) {
                         if let FlakeValue::Ref(cls) = &type_flake.o {
                             if cls == restriction_id {
-                                let x_canonical = same_as.canonical(&type_flake.s);
+                                let x_canonical = ctx.same_as.canonical(&type_flake.s);
                                 restriction_subjects.insert(x_canonical);
                             }
                         }
@@ -970,43 +949,64 @@ pub fn apply_max_qualified_cardinality_rule(
                         continue;
                     }
 
-                    // Helper to check if y is of type D (the on_class)
-                    let y_has_type_d = |y: &Sid| -> bool {
-                        delta.get_by_ps(rdf_type_sid, y).any(|f| {
-                            if let FlakeValue::Ref(cls) = &f.o {
-                                cls == on_class
-                            } else {
-                                false
-                            }
-                        }) || derived.get_by_ps(rdf_type_sid, y).any(|f| {
-                            if let FlakeValue::Ref(cls) = &f.o {
-                                cls == on_class
-                            } else {
-                                false
-                            }
-                        })
-                    };
-
                     // For each subject x that is a restriction instance
                     for x_canonical in &restriction_subjects {
                         let mut qualified_objects: Vec<Sid> = Vec::new();
 
                         // From delta
-                        for prop_flake in delta.get_by_ps(property, x_canonical) {
+                        for prop_flake in ctx.delta.get_by_ps(property, x_canonical) {
                             if let FlakeValue::Ref(y) = &prop_flake.o {
-                                let y_canonical = same_as.canonical(y);
+                                let y_canonical = ctx.same_as.canonical(y);
                                 // Only include if y is of type D
-                                if y_has_type_d(&y_canonical) {
+                                let y_has_type_d = ctx
+                                    .delta
+                                    .get_by_ps(ctx.rdf_type_sid, &y_canonical)
+                                    .any(|f| {
+                                        if let FlakeValue::Ref(cls) = &f.o {
+                                            cls == on_class
+                                        } else {
+                                            false
+                                        }
+                                    })
+                                    || ctx.derived.get_by_ps(ctx.rdf_type_sid, &y_canonical).any(
+                                        |f| {
+                                            if let FlakeValue::Ref(cls) = &f.o {
+                                                cls == on_class
+                                            } else {
+                                                false
+                                            }
+                                        },
+                                    );
+                                if y_has_type_d {
                                     qualified_objects.push(y_canonical);
                                 }
                             }
                         }
 
                         // From derived
-                        for prop_flake in derived.get_by_ps(property, x_canonical) {
+                        for prop_flake in ctx.derived.get_by_ps(property, x_canonical) {
                             if let FlakeValue::Ref(y) = &prop_flake.o {
-                                let y_canonical = same_as.canonical(y);
-                                if y_has_type_d(&y_canonical) {
+                                let y_canonical = ctx.same_as.canonical(y);
+                                let y_has_type_d = ctx
+                                    .delta
+                                    .get_by_ps(ctx.rdf_type_sid, &y_canonical)
+                                    .any(|f| {
+                                        if let FlakeValue::Ref(cls) = &f.o {
+                                            cls == on_class
+                                        } else {
+                                            false
+                                        }
+                                    })
+                                    || ctx.derived.get_by_ps(ctx.rdf_type_sid, &y_canonical).any(
+                                        |f| {
+                                            if let FlakeValue::Ref(cls) = &f.o {
+                                                cls == on_class
+                                            } else {
+                                                false
+                                            }
+                                        },
+                                    );
+                                if y_has_type_d {
                                     qualified_objects.push(y_canonical);
                                 }
                             }
@@ -1024,21 +1024,21 @@ pub fn apply_max_qualified_cardinality_rule(
                         for other in &objects_vec[1..] {
                             let same_as_flake = Flake::new(
                                 first.clone(),
-                                owl_same_as_sid.clone(),
+                                ctx.owl_same_as_sid.clone(),
                                 FlakeValue::Ref(other.clone()),
                                 ref_dt.clone(),
-                                t,
+                                ctx.t,
                                 true,
                                 None,
                             );
 
-                            if !derived.contains(
+                            if !ctx.derived.contains(
                                 &same_as_flake.s,
                                 &same_as_flake.p,
                                 &same_as_flake.o,
                             ) {
-                                new_delta.push(same_as_flake);
-                                diagnostics.record_rule_fired("cls-maxqc");
+                                ctx.new_delta.push(same_as_flake);
+                                ctx.diagnostics.record_rule_fired("cls-maxqc");
                             }
                         }
                     }
@@ -1094,13 +1094,23 @@ fn entity_satisfies_class_ref(
                     RestrictionType::IntersectionOf { members } => {
                         // Entity must satisfy ALL members
                         members.iter().all(|member| {
-                            entity_satisfies_class_ref(entity_types, member, restrictions, depth + 1)
+                            entity_satisfies_class_ref(
+                                entity_types,
+                                member,
+                                restrictions,
+                                depth + 1,
+                            )
                         })
                     }
                     RestrictionType::UnionOf { members } => {
                         // Entity must satisfy ANY member
                         members.iter().any(|member| {
-                            entity_satisfies_class_ref(entity_types, member, restrictions, depth + 1)
+                            entity_satisfies_class_ref(
+                                entity_types,
+                                member,
+                                restrictions,
+                                depth + 1,
+                            )
                         })
                     }
                     _ => {
@@ -1123,16 +1133,7 @@ fn entity_satisfies_class_ref(
 /// where I is owl:intersectionOf [C1, C2, ...]
 ///
 /// If x has all the member types of an intersection class I, then x is of type I.
-pub fn apply_intersection_forward_rule(
-    restrictions: &RestrictionIndex,
-    delta: &DeltaSet,
-    derived: &DerivedSet,
-    new_delta: &mut DeltaSet,
-    same_as: &SameAsTracker,
-    rdf_type_sid: &Sid,
-    t: i64,
-    diagnostics: &mut ReasoningDiagnostics,
-) {
+pub fn apply_intersection_forward_rule(restrictions: &RestrictionIndex, ctx: &mut RuleContext<'_>) {
     let ref_dt = ref_dt();
 
     // Get all intersection restriction IDs
@@ -1143,29 +1144,13 @@ pub fn apply_intersection_forward_rule(
 
     // Collect subjects that have new type facts in delta
     let mut subjects_with_new_types: HashSet<Sid> = HashSet::new();
-    for flake in delta.get_by_p(rdf_type_sid) {
-        subjects_with_new_types.insert(same_as.canonical(&flake.s));
+    for flake in ctx.delta.get_by_p(ctx.rdf_type_sid) {
+        subjects_with_new_types.insert(ctx.same_as.canonical(&flake.s));
     }
 
     if subjects_with_new_types.is_empty() {
         return;
     }
-
-    // Helper to collect all types for a subject
-    let collect_types = |x: &Sid| -> HashSet<Sid> {
-        let mut types: HashSet<Sid> = HashSet::new();
-        for type_flake in delta.get_by_ps(rdf_type_sid, x) {
-            if let FlakeValue::Ref(cls) = &type_flake.o {
-                types.insert(cls.clone());
-            }
-        }
-        for type_flake in derived.get_by_ps(rdf_type_sid, x) {
-            if let FlakeValue::Ref(cls) = &type_flake.o {
-                types.insert(cls.clone());
-            }
-        }
-        types
-    };
 
     // For each intersection restriction
     for intersection_id in intersection_ids {
@@ -1177,7 +1162,18 @@ pub fn apply_intersection_forward_rule(
 
                 // Check each subject with new types
                 for x_canonical in &subjects_with_new_types {
-                    let x_types = collect_types(x_canonical);
+                    // Collect types for this subject
+                    let mut x_types: HashSet<Sid> = HashSet::new();
+                    for type_flake in ctx.delta.get_by_ps(ctx.rdf_type_sid, x_canonical) {
+                        if let FlakeValue::Ref(cls) = &type_flake.o {
+                            x_types.insert(cls.clone());
+                        }
+                    }
+                    for type_flake in ctx.derived.get_by_ps(ctx.rdf_type_sid, x_canonical) {
+                        if let FlakeValue::Ref(cls) = &type_flake.o {
+                            x_types.insert(cls.clone());
+                        }
+                    }
 
                     // Check if x satisfies ALL member class expressions (handles nested unions/intersections)
                     let has_all_members = members.iter().all(|member| {
@@ -1187,17 +1183,21 @@ pub fn apply_intersection_forward_rule(
                     if has_all_members {
                         let derived_flake = Flake::new(
                             x_canonical.clone(),
-                            rdf_type_sid.clone(),
+                            ctx.rdf_type_sid.clone(),
                             FlakeValue::Ref(intersection_id.clone()),
                             ref_dt.clone(),
-                            t,
+                            ctx.t,
                             true,
                             None,
                         );
 
-                        if !derived.contains(&derived_flake.s, &derived_flake.p, &derived_flake.o) {
-                            new_delta.push(derived_flake);
-                            diagnostics.record_rule_fired("cls-int1");
+                        if !ctx.derived.contains(
+                            &derived_flake.s,
+                            &derived_flake.p,
+                            &derived_flake.o,
+                        ) {
+                            ctx.new_delta.push(derived_flake);
+                            ctx.diagnostics.record_rule_fired("cls-int1");
                         }
                     }
                 }
@@ -1214,38 +1214,36 @@ pub fn apply_intersection_forward_rule(
 /// If x is of intersection type I, then x has all the member types.
 pub fn apply_intersection_backward_rule(
     restrictions: &RestrictionIndex,
-    delta: &DeltaSet,
-    derived: &DerivedSet,
-    new_delta: &mut DeltaSet,
-    same_as: &SameAsTracker,
-    rdf_type_sid: &Sid,
-    t: i64,
-    diagnostics: &mut ReasoningDiagnostics,
+    ctx: &mut RuleContext<'_>,
 ) {
     let ref_dt = ref_dt();
 
     // Process type facts in delta where the type is an intersection restriction
-    for flake in delta.get_by_p(rdf_type_sid) {
+    for flake in ctx.delta.get_by_p(ctx.rdf_type_sid) {
         if let FlakeValue::Ref(intersection_class) = &flake.o {
             if let Some(restriction) = restrictions.get(intersection_class) {
                 if let RestrictionType::IntersectionOf { members } = &restriction.restriction_type {
-                    let x_canonical = same_as.canonical(&flake.s);
+                    let x_canonical = ctx.same_as.canonical(&flake.s);
 
                     // Derive type(x, Ci) for each member class Ci
                     for member in members {
                         let derived_flake = Flake::new(
                             x_canonical.clone(),
-                            rdf_type_sid.clone(),
+                            ctx.rdf_type_sid.clone(),
                             FlakeValue::Ref(member.sid().clone()),
                             ref_dt.clone(),
-                            t,
+                            ctx.t,
                             true,
                             None,
                         );
 
-                        if !derived.contains(&derived_flake.s, &derived_flake.p, &derived_flake.o) {
-                            new_delta.push(derived_flake);
-                            diagnostics.record_rule_fired("cls-int2");
+                        if !ctx.derived.contains(
+                            &derived_flake.s,
+                            &derived_flake.p,
+                            &derived_flake.o,
+                        ) {
+                            ctx.new_delta.push(derived_flake);
+                            ctx.diagnostics.record_rule_fired("cls-int2");
                         }
                     }
                 }
@@ -1260,16 +1258,7 @@ pub fn apply_intersection_backward_rule(
 /// where U is owl:unionOf [C1, C2, ...]
 ///
 /// If x is of any member type Ci, then x is of the union type U.
-pub fn apply_union_rule(
-    restrictions: &RestrictionIndex,
-    delta: &DeltaSet,
-    derived: &DerivedSet,
-    new_delta: &mut DeltaSet,
-    same_as: &SameAsTracker,
-    rdf_type_sid: &Sid,
-    t: i64,
-    diagnostics: &mut ReasoningDiagnostics,
-) {
+pub fn apply_union_rule(restrictions: &RestrictionIndex, ctx: &mut RuleContext<'_>) {
     let ref_dt = ref_dt();
 
     // Get all union restriction IDs
@@ -1280,29 +1269,13 @@ pub fn apply_union_rule(
 
     // Collect subjects that have new type facts in delta
     let mut subjects_with_new_types: HashSet<Sid> = HashSet::new();
-    for flake in delta.get_by_p(rdf_type_sid) {
-        subjects_with_new_types.insert(same_as.canonical(&flake.s));
+    for flake in ctx.delta.get_by_p(ctx.rdf_type_sid) {
+        subjects_with_new_types.insert(ctx.same_as.canonical(&flake.s));
     }
 
     if subjects_with_new_types.is_empty() {
         return;
     }
-
-    // Helper to collect all types for a subject
-    let collect_types = |x: &Sid| -> HashSet<Sid> {
-        let mut types: HashSet<Sid> = HashSet::new();
-        for type_flake in delta.get_by_ps(rdf_type_sid, x) {
-            if let FlakeValue::Ref(cls) = &type_flake.o {
-                types.insert(cls.clone());
-            }
-        }
-        for type_flake in derived.get_by_ps(rdf_type_sid, x) {
-            if let FlakeValue::Ref(cls) = &type_flake.o {
-                types.insert(cls.clone());
-            }
-        }
-        types
-    };
 
     // For each union restriction
     for union_id in union_ids {
@@ -1314,7 +1287,18 @@ pub fn apply_union_rule(
 
                 // Check each subject with new types
                 for x_canonical in &subjects_with_new_types {
-                    let x_types = collect_types(x_canonical);
+                    // Collect types for this subject
+                    let mut x_types: HashSet<Sid> = HashSet::new();
+                    for type_flake in ctx.delta.get_by_ps(ctx.rdf_type_sid, x_canonical) {
+                        if let FlakeValue::Ref(cls) = &type_flake.o {
+                            x_types.insert(cls.clone());
+                        }
+                    }
+                    for type_flake in ctx.derived.get_by_ps(ctx.rdf_type_sid, x_canonical) {
+                        if let FlakeValue::Ref(cls) = &type_flake.o {
+                            x_types.insert(cls.clone());
+                        }
+                    }
 
                     // Check if x satisfies ANY member class expression (handles nested unions/intersections)
                     let satisfies_any_member = members.iter().any(|member| {
@@ -1324,21 +1308,21 @@ pub fn apply_union_rule(
                     if satisfies_any_member {
                         let derived_flake = Flake::new(
                             x_canonical.clone(),
-                            rdf_type_sid.clone(),
+                            ctx.rdf_type_sid.clone(),
                             FlakeValue::Ref(union_id.clone()),
                             ref_dt.clone(),
-                            t,
+                            ctx.t,
                             true,
                             None,
                         );
 
-                        if !derived.contains(
+                        if !ctx.derived.contains(
                             &derived_flake.s,
                             &derived_flake.p,
                             &derived_flake.o,
                         ) {
-                            new_delta.push(derived_flake);
-                            diagnostics.record_rule_fired("cls-uni");
+                            ctx.new_delta.push(derived_flake);
+                            ctx.diagnostics.record_rule_fired("cls-uni");
                         }
                     }
                 }
@@ -1358,16 +1342,7 @@ pub fn apply_union_rule(
 /// Each individual in the enumeration is of the oneOf class type.
 /// This is typically applied once when restrictions are loaded, but we
 /// also check delta for completeness.
-pub fn apply_one_of_rule(
-    restrictions: &RestrictionIndex,
-    delta: &DeltaSet,
-    derived: &DerivedSet,
-    new_delta: &mut DeltaSet,
-    same_as: &SameAsTracker,
-    rdf_type_sid: &Sid,
-    t: i64,
-    diagnostics: &mut ReasoningDiagnostics,
-) {
+pub fn apply_one_of_rule(restrictions: &RestrictionIndex, ctx: &mut RuleContext<'_>) {
     let ref_dt = ref_dt();
 
     // Get all oneOf restriction IDs
@@ -1381,25 +1356,28 @@ pub fn apply_one_of_rule(
         if let Some(restriction) = restrictions.get(one_of_id) {
             if let RestrictionType::OneOf { individuals } = &restriction.restriction_type {
                 for individual in individuals {
-                    let i_canonical = same_as.canonical(individual);
+                    let i_canonical = ctx.same_as.canonical(individual);
 
                     let derived_flake = Flake::new(
                         i_canonical.clone(),
-                        rdf_type_sid.clone(),
+                        ctx.rdf_type_sid.clone(),
                         FlakeValue::Ref(one_of_id.clone()),
                         ref_dt.clone(),
-                        t,
+                        ctx.t,
                         true,
                         None,
                     );
 
-                    if !derived.contains(&derived_flake.s, &derived_flake.p, &derived_flake.o)
-                        && !delta
-                            .get_by_ps(rdf_type_sid, &i_canonical)
+                    if !ctx
+                        .derived
+                        .contains(&derived_flake.s, &derived_flake.p, &derived_flake.o)
+                        && !ctx
+                            .delta
+                            .get_by_ps(ctx.rdf_type_sid, &i_canonical)
                             .any(|f| f.o == FlakeValue::Ref(one_of_id.clone()))
                     {
-                        new_delta.push(derived_flake);
-                        diagnostics.record_rule_fired("cls-oo");
+                        ctx.new_delta.push(derived_flake);
+                        ctx.diagnostics.record_rule_fired("cls-oo");
                     }
                 }
             }

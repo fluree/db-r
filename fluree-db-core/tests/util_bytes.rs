@@ -35,10 +35,7 @@ mod tests {
     }
 
     fn string_to_longs(s: &str) -> Vec<i64> {
-        string_to_utf8(s)
-            .chunks(8)
-            .map(|chunk| utf8_to_long(chunk))
-            .collect()
+        string_to_utf8(s).chunks(8).map(utf8_to_long).collect()
     }
 
     fn longs_to_string(longs: &[i64]) -> String {
@@ -83,7 +80,7 @@ mod tests {
             "urn:ietf:rfc:3986",
             "tag:example.com,2023:blog-post",
             // Test edge cases
-            "a:b",  // minimal IRI
+            "a:b", // minimal IRI
             "scheme:path",
             "scheme://host/path?query=value#fragment",
             // Test Unicode characters

@@ -42,7 +42,7 @@ pub mod operator;
 pub mod usearch;
 
 // Re-export commonly used types
-pub use operator::{VectorIndexProvider, VectorSearchOperator, VectorSearchHit};
+pub use operator::{VectorIndexProvider, VectorSearchHit, VectorSearchOperator};
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -65,13 +65,21 @@ pub enum DistanceMetric {
 
 impl DistanceMetric {
     /// Parse from string (case-insensitive)
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "cosine" | "cos" => Some(DistanceMetric::Cosine),
             "dot" | "dotproduct" | "inner" | "ip" => Some(DistanceMetric::Dot),
             "euclidean" | "l2" | "euclid" => Some(DistanceMetric::Euclidean),
             _ => None,
         }
+    }
+}
+
+impl std::str::FromStr for DistanceMetric {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or_else(|| format!("unknown distance metric: {}", s))
     }
 }
 
@@ -82,6 +90,61 @@ impl std::fmt::Display for DistanceMetric {
             DistanceMetric::Dot => write!(f, "dot"),
             DistanceMetric::Euclidean => write!(f, "euclidean"),
         }
+    }
+}
+
+/// Parameters for vector similarity search.
+///
+/// This struct bundles the search parameters to reduce argument count
+/// in the `VectorIndexProvider::search` trait method.
+#[derive(Debug, Clone)]
+pub struct VectorSearchParams<'a> {
+    /// The query vector to find similar vectors for
+    pub query_vector: &'a [f32],
+    /// Distance metric to use
+    pub metric: DistanceMetric,
+    /// Maximum number of results
+    pub limit: usize,
+    /// Target transaction time (for time-travel queries).
+    /// In dataset (multi-ledger) mode, there is no meaningful "dataset t".
+    /// Callers should pass `None` unless the query provides an unambiguous
+    /// as-of anchor (e.g., graph-specific time selection).
+    pub as_of_t: Option<i64>,
+    /// Whether to sync before querying
+    pub sync: bool,
+    /// Query timeout in milliseconds
+    pub timeout_ms: Option<u64>,
+}
+
+impl<'a> VectorSearchParams<'a> {
+    /// Create new search params with required fields and defaults for optional ones.
+    pub fn new(query_vector: &'a [f32], metric: DistanceMetric, limit: usize) -> Self {
+        Self {
+            query_vector,
+            metric,
+            limit,
+            as_of_t: None,
+            sync: false,
+            timeout_ms: None,
+        }
+    }
+
+    /// Set the as-of transaction time.
+    pub fn with_as_of_t(mut self, t: Option<i64>) -> Self {
+        self.as_of_t = t;
+        self
+    }
+
+    /// Set whether to sync before querying.
+    pub fn with_sync(mut self, sync: bool) -> Self {
+        self.sync = sync;
+        self
+    }
+
+    /// Set the query timeout.
+    pub fn with_timeout_ms(mut self, timeout_ms: Option<u64>) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
     }
 }
 
@@ -228,13 +291,25 @@ mod tests {
 
     #[test]
     fn test_distance_metric_from_str() {
-        assert_eq!(DistanceMetric::from_str("cosine"), Some(DistanceMetric::Cosine));
-        assert_eq!(DistanceMetric::from_str("COSINE"), Some(DistanceMetric::Cosine));
-        assert_eq!(DistanceMetric::from_str("dot"), Some(DistanceMetric::Dot));
-        assert_eq!(DistanceMetric::from_str("dotproduct"), Some(DistanceMetric::Dot));
-        assert_eq!(DistanceMetric::from_str("l2"), Some(DistanceMetric::Euclidean));
-        assert_eq!(DistanceMetric::from_str("euclidean"), Some(DistanceMetric::Euclidean));
-        assert_eq!(DistanceMetric::from_str("invalid"), None);
+        assert_eq!(
+            DistanceMetric::parse("cosine"),
+            Some(DistanceMetric::Cosine)
+        );
+        assert_eq!(
+            DistanceMetric::parse("COSINE"),
+            Some(DistanceMetric::Cosine)
+        );
+        assert_eq!(DistanceMetric::parse("dot"), Some(DistanceMetric::Dot));
+        assert_eq!(
+            DistanceMetric::parse("dotproduct"),
+            Some(DistanceMetric::Dot)
+        );
+        assert_eq!(DistanceMetric::parse("l2"), Some(DistanceMetric::Euclidean));
+        assert_eq!(
+            DistanceMetric::parse("euclidean"),
+            Some(DistanceMetric::Euclidean)
+        );
+        assert_eq!(DistanceMetric::parse("invalid"), None);
     }
 
     #[test]

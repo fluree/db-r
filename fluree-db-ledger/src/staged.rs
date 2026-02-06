@@ -111,17 +111,13 @@ impl StagedOverlay {
         let start = if leftmost {
             0
         } else if let Some(f) = first {
-            ids.partition_point(|&id| {
-                index.compare(self.store.get(id), f) != Ordering::Greater
-            })
+            ids.partition_point(|&id| index.compare(self.store.get(id), f) != Ordering::Greater)
         } else {
             0
         };
 
         let end = if let Some(r) = rhs {
-            ids.partition_point(|&id| {
-                index.compare(self.store.get(id), r) != Ordering::Greater
-            })
+            ids.partition_point(|&id| index.compare(self.store.get(id), r) != Ordering::Greater)
         } else {
             ids.len()
         };
@@ -221,7 +217,10 @@ impl<S: Storage> OverlayProvider for LedgerView<S> {
         // Two-way merge of base novelty slice + staged slice
         // Both are sorted, yield in merged order
 
-        let base_slice = self.base.novelty.slice_for_range(index, first, rhs, leftmost);
+        let base_slice = self
+            .base
+            .novelty
+            .slice_for_range(index, first, rhs, leftmost);
         let staged_slice = self.staged.slice_for_range(index, first, rhs, leftmost);
 
         let mut base_iter = base_slice.iter().map(|&id| self.base.novelty.get_flake(id));
@@ -317,10 +316,7 @@ mod tests {
         // Create base novelty with some flakes
         let mut novelty = Novelty::new(0);
         novelty
-            .apply_commit(
-                vec![make_flake(1, 1, 100, 1), make_flake(3, 1, 300, 1)],
-                1,
-            )
+            .apply_commit(vec![make_flake(1, 1, 100, 1), make_flake(3, 1, 300, 1)], 1)
             .unwrap();
 
         let state = LedgerState::new(db, novelty);
@@ -347,7 +343,9 @@ mod tests {
         let db = Db::genesis(storage, "test:main");
 
         let mut novelty = Novelty::new(0);
-        novelty.apply_commit(vec![make_flake(1, 1, 100, 1)], 1).unwrap();
+        novelty
+            .apply_commit(vec![make_flake(1, 1, 100, 1)], 1)
+            .unwrap();
 
         let base_epoch = novelty.epoch;
         let state = LedgerState::new(db, novelty);

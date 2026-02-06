@@ -71,5 +71,8 @@ pub fn is_ws(c: char) -> bool {
 
 /// Check if a character can appear in an IRI (unescaped).
 pub fn is_iri_char(c: char) -> bool {
-    !matches!(c, '<' | '>' | '"' | '{' | '}' | '|' | '^' | '`' | '\\' | '\x00'..='\x20')
+    !matches!(
+        c,
+        '<' | '>' | '"' | '{' | '}' | '|' | '^' | '`' | '\\' | '\x00'..='\x20'
+    )
 }

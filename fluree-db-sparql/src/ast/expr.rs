@@ -187,12 +187,12 @@ pub enum BinaryOp {
     Or,  // ||
 
     // Comparison
-    Eq,  // =
-    Ne,  // !=
-    Lt,  // <
-    Le,  // <=
-    Gt,  // >
-    Ge,  // >=
+    Eq, // =
+    Ne, // !=
+    Lt, // <
+    Le, // <=
+    Gt, // >
+    Ge, // >=
 
     // Arithmetic
     Add, // +
@@ -225,7 +225,12 @@ impl BinaryOp {
         match self {
             BinaryOp::Or => 1,
             BinaryOp::And => 2,
-            BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => 3,
+            BinaryOp::Eq
+            | BinaryOp::Ne
+            | BinaryOp::Lt
+            | BinaryOp::Le
+            | BinaryOp::Gt
+            | BinaryOp::Ge => 3,
             BinaryOp::Add | BinaryOp::Sub => 4,
             BinaryOp::Mul | BinaryOp::Div => 5,
         }
@@ -326,7 +331,7 @@ pub enum FunctionName {
     StrUuid,
 
     // SPARQL 1.1 functions
-    If,      // Handled separately as Expression::If but may appear
+    If,       // Handled separately as Expression::If but may appear
     Coalesce, // Handled separately as Expression::Coalesce but may appear
 
     /// Custom extension function (IRI)
@@ -335,7 +340,7 @@ pub enum FunctionName {
 
 impl FunctionName {
     /// Parse a function name from a string (case-insensitive for built-ins).
-    pub fn from_str(name: &str) -> Option<Self> {
+    pub fn parse(name: &str) -> Option<Self> {
         // Case-insensitive matching for built-in functions
         match name.to_uppercase().as_str() {
             "BOUND" => Some(FunctionName::Bound),
@@ -407,7 +412,7 @@ pub enum AggregateFunction {
 
 impl AggregateFunction {
     /// Parse an aggregate function name.
-    pub fn from_str(name: &str) -> Option<Self> {
+    pub fn parse(name: &str) -> Option<Self> {
         match name.to_uppercase().as_str() {
             "COUNT" => Some(AggregateFunction::Count),
             "SUM" => Some(AggregateFunction::Sum),
@@ -481,24 +486,33 @@ mod tests {
     #[test]
     fn test_function_name_parsing() {
         // Case-insensitive
-        assert_eq!(FunctionName::from_str("BOUND"), Some(FunctionName::Bound));
-        assert_eq!(FunctionName::from_str("bound"), Some(FunctionName::Bound));
-        assert_eq!(FunctionName::from_str("Bound"), Some(FunctionName::Bound));
+        assert_eq!(FunctionName::parse("BOUND"), Some(FunctionName::Bound));
+        assert_eq!(FunctionName::parse("bound"), Some(FunctionName::Bound));
+        assert_eq!(FunctionName::parse("Bound"), Some(FunctionName::Bound));
 
         // Various functions
-        assert_eq!(FunctionName::from_str("STR"), Some(FunctionName::Str));
-        assert_eq!(FunctionName::from_str("STRLEN"), Some(FunctionName::Strlen));
-        assert_eq!(FunctionName::from_str("REGEX"), Some(FunctionName::Regex));
+        assert_eq!(FunctionName::parse("STR"), Some(FunctionName::Str));
+        assert_eq!(FunctionName::parse("STRLEN"), Some(FunctionName::Strlen));
+        assert_eq!(FunctionName::parse("REGEX"), Some(FunctionName::Regex));
 
         // Unknown returns None
-        assert_eq!(FunctionName::from_str("UNKNOWN"), None);
+        assert_eq!(FunctionName::parse("UNKNOWN"), None);
     }
 
     #[test]
     fn test_aggregate_function_parsing() {
-        assert_eq!(AggregateFunction::from_str("COUNT"), Some(AggregateFunction::Count));
-        assert_eq!(AggregateFunction::from_str("count"), Some(AggregateFunction::Count));
-        assert_eq!(AggregateFunction::from_str("GROUP_CONCAT"), Some(AggregateFunction::GroupConcat));
-        assert_eq!(AggregateFunction::from_str("UNKNOWN"), None);
+        assert_eq!(
+            AggregateFunction::parse("COUNT"),
+            Some(AggregateFunction::Count)
+        );
+        assert_eq!(
+            AggregateFunction::parse("count"),
+            Some(AggregateFunction::Count)
+        );
+        assert_eq!(
+            AggregateFunction::parse("GROUP_CONCAT"),
+            Some(AggregateFunction::GroupConcat)
+        );
+        assert_eq!(AggregateFunction::parse("UNKNOWN"), None);
     }
 }

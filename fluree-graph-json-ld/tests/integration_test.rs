@@ -222,10 +222,7 @@ fn test_expand_graph_default() {
 
     assert_eq!(arr.len(), 2);
     assert_eq!(arr[0]["@id"], "http://example.org/library");
-    assert_eq!(
-        arr[0]["@type"],
-        json!(["http://example.org/vocab#Library"])
-    );
+    assert_eq!(arr[0]["@type"], json!(["http://example.org/vocab#Library"]));
     assert_eq!(arr[1]["@id"], "http://example.org/library/the-republic");
 }
 
@@ -317,10 +314,7 @@ fn test_expand_sequential_values_with_maps() {
         .as_array()
         .unwrap();
     assert_eq!(notes.len(), 2);
-    assert_eq!(
-        notes[0]["@type"],
-        "http://www.w3.org/2001/XMLSchema#string"
-    );
+    assert_eq!(notes[0]["@type"], "http://www.w3.org/2001/XMLSchema#string");
     assert_eq!(notes[0]["@value"], "First note");
 }
 
@@ -477,7 +471,10 @@ fn test_compact_fn_usage_tracking() {
     }
 
     // Non-matching IRI
-    assert_eq!(f("http://example.org/ns#blah"), "http://example.org/ns#blah");
+    assert_eq!(
+        f("http://example.org/ns#blah"),
+        "http://example.org/ns#blah"
+    );
     {
         let guard = used.lock().unwrap();
         assert!(!guard.contains_key("http://example.org/ns#blah"));
@@ -510,7 +507,7 @@ fn test_normalize_complex_nested() {
 #[test]
 fn test_normalize_scientific_notation() {
     let data = json!({
-        "numbers": [333333333.33333329, 1E30, 4.50, 2e-3, 0.000000000000000000000000001]
+        "numbers": [333_333_333.333_333_3, 1E30, 4.50, 2e-3, 0.000000000000000000000000001]
     });
 
     let result = normalize_data(&data);

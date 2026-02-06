@@ -53,7 +53,10 @@ impl Sid {
     ///
     /// Use this when you already have an `Arc<str>` from an interner.
     pub fn with_arc(namespace_code: u16, name: Arc<str>) -> Self {
-        Self { namespace_code, name }
+        Self {
+            namespace_code,
+            name,
+        }
     }
 
     /// Minimum possible SID (for range query lower bounds)
@@ -241,9 +244,9 @@ impl SidInterner {
         let hash = Self::hash_key(&names, namespace_code, name);
 
         // Use raw_entry to look up with borrowed key, only allocate on miss
-        let entry = names.raw_entry_mut().from_hash(hash, |k| {
-            k.0 == namespace_code && k.1.as_ref() == name
-        });
+        let entry = names
+            .raw_entry_mut()
+            .from_hash(hash, |k| k.0 == namespace_code && k.1.as_ref() == name);
 
         let arc_name = match entry {
             hashbrown::hash_map::RawEntryMut::Occupied(e) => e.key().1.clone(),
@@ -473,7 +476,7 @@ mod tests {
         #[test]
         fn test_sid_canonical_hash_uniqueness() {
             // Various SIDs should produce unique hashes
-            let sids = vec![
+            let sids = [
                 Sid::new(0, ""),
                 Sid::new(0, "a"),
                 Sid::new(1, ""),
@@ -493,7 +496,11 @@ mod tests {
                 }
                 set.len()
             };
-            assert_eq!(unique_count, hashes.len(), "Hash collision detected in test SIDs");
+            assert_eq!(
+                unique_count,
+                hashes.len(),
+                "Hash collision detected in test SIDs"
+            );
         }
     }
 }

@@ -32,11 +32,8 @@ pub fn resolve_input(file: Option<&Path>, expr: Option<&str>) -> CliResult<Input
 /// Read content from the resolved input source.
 pub fn read_input(source: &InputSource) -> CliResult<String> {
     match source {
-        InputSource::File(path) => {
-            std::fs::read_to_string(path).map_err(|e| {
-                CliError::Input(format!("failed to read {}: {e}", path.display()))
-            })
-        }
+        InputSource::File(path) => std::fs::read_to_string(path)
+            .map_err(|e| CliError::Input(format!("failed to read {}: {e}", path.display()))),
         InputSource::Inline(s) => Ok(s.clone()),
         InputSource::Stdin => {
             let mut buf = String::new();

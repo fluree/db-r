@@ -80,7 +80,11 @@ pub enum LiteralValue {
     /// Timestamp: microseconds since epoch
     Timestamp(i64),
     /// Decimal: (unscaled_value, precision, scale)
-    Decimal { unscaled: i128, precision: u8, scale: i8 },
+    Decimal {
+        unscaled: i128,
+        precision: u8,
+        scale: i8,
+    },
 }
 
 impl LiteralValue {
@@ -96,7 +100,11 @@ impl LiteralValue {
             Self::Bytes(v) => TypedValue::Bytes(v.clone()),
             Self::Date(v) => TypedValue::Date(*v),
             Self::Timestamp(v) => TypedValue::Timestamp(*v),
-            Self::Decimal { unscaled, precision, scale } => TypedValue::Decimal {
+            Self::Decimal {
+                unscaled,
+                precision,
+                scale,
+            } => TypedValue::Decimal {
                 unscaled: *unscaled,
                 precision: *precision,
                 scale: *scale,
@@ -117,7 +125,11 @@ impl LiteralValue {
             TypedValue::Date(v) => Self::Date(*v),
             TypedValue::Timestamp(v) | TypedValue::TimestampTz(v) => Self::Timestamp(*v),
             TypedValue::Uuid(v) => Self::Bytes(v.to_vec()),
-            TypedValue::Decimal { unscaled, precision, scale } => Self::Decimal {
+            TypedValue::Decimal {
+                unscaled,
+                precision,
+                scale,
+            } => Self::Decimal {
                 unscaled: *unscaled,
                 precision: *precision,
                 scale: *scale,
@@ -138,7 +150,9 @@ impl std::fmt::Display for LiteralValue {
             Self::Bytes(v) => write!(f, "bytes[{}]", v.len()),
             Self::Date(v) => write!(f, "date({})", v),
             Self::Timestamp(v) => write!(f, "ts({})", v),
-            Self::Decimal { unscaled, scale, .. } => {
+            Self::Decimal {
+                unscaled, scale, ..
+            } => {
                 write!(f, "decimal({}, {})", unscaled, scale)
             }
         }
@@ -296,7 +310,11 @@ impl Expression {
     }
 
     /// Create a NOT IN list check.
-    pub fn not_in_list(field_id: i32, column: impl Into<String>, values: Vec<LiteralValue>) -> Self {
+    pub fn not_in_list(
+        field_id: i32,
+        column: impl Into<String>,
+        values: Vec<LiteralValue>,
+    ) -> Self {
         Self::NotIn {
             field_id,
             column: column.into(),
@@ -345,7 +363,7 @@ impl Expression {
     }
 
     /// Create a logical NOT.
-    pub fn not(expr: Expression) -> Self {
+    pub fn negate(expr: Expression) -> Self {
         match expr {
             Expression::AlwaysTrue => Expression::AlwaysFalse,
             Expression::AlwaysFalse => Expression::AlwaysTrue,
@@ -409,7 +427,9 @@ impl std::fmt::Display for Expression {
             }
             Expression::IsNull { column, .. } => write!(f, "{} IS NULL", column),
             Expression::IsNotNull { column, .. } => write!(f, "{} IS NOT NULL", column),
-            Expression::Comparison { column, op, value, .. } => {
+            Expression::Comparison {
+                column, op, value, ..
+            } => {
                 write!(f, "{} {} {}", column, op, value)
             }
             Expression::In { column, values, .. } => {
@@ -449,7 +469,7 @@ mod tests {
             }
         ));
 
-        let expr = Expression::gt(2, "value", LiteralValue::Float64(3.14));
+        let expr = Expression::gt(2, "value", LiteralValue::Float64(3.13));
         assert!(matches!(
             expr,
             Expression::Comparison {
@@ -505,16 +525,16 @@ mod tests {
     #[test]
     fn test_expression_not_simplification() {
         // NOT TRUE = FALSE
-        let expr = Expression::not(Expression::AlwaysTrue);
+        let expr = Expression::negate(Expression::AlwaysTrue);
         assert!(matches!(expr, Expression::AlwaysFalse));
 
         // NOT FALSE = TRUE
-        let expr = Expression::not(Expression::AlwaysFalse);
+        let expr = Expression::negate(Expression::AlwaysFalse);
         assert!(matches!(expr, Expression::AlwaysTrue));
 
         // NOT NOT expr = expr
         let inner = Expression::eq(1, "id", LiteralValue::Int32(1));
-        let expr = Expression::not(Expression::not(inner.clone()));
+        let expr = Expression::negate(Expression::negate(inner.clone()));
         // Should be the same comparison
         assert!(matches!(expr, Expression::Comparison { .. }));
     }
@@ -523,7 +543,7 @@ mod tests {
     fn test_referenced_field_ids() {
         let expr = Expression::and(vec![
             Expression::eq(1, "id", LiteralValue::Int32(1)),
-            Expression::gt(2, "value", LiteralValue::Float64(3.14)),
+            Expression::gt(2, "value", LiteralValue::Float64(3.13)),
             Expression::is_not_null(3, "name"),
         ]);
 
@@ -535,12 +555,12 @@ mod tests {
     fn test_expression_display() {
         let expr = Expression::and(vec![
             Expression::eq(1, "id", LiteralValue::Int64(42)),
-            Expression::gt(2, "value", LiteralValue::Float64(3.14)),
+            Expression::gt(2, "value", LiteralValue::Float64(3.13)),
         ]);
 
         let s = expr.to_string();
         assert!(s.contains("id = 42L"));
-        assert!(s.contains("value > 3.14"));
+        assert!(s.contains("value > 3.13"));
         assert!(s.contains("AND"));
     }
 

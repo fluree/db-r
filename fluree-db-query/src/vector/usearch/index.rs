@@ -23,6 +23,9 @@ pub const USEARCH_CRATE_VERSION: &str = "2.16";
 /// Hash IDs have high bit cleared (0..2^63), collision IDs have it set (2^63..2^64).
 const COLLISION_ID_HIGH_BIT: u64 = 1 << 63;
 
+/// Type alias for collision overflow map: (ledger_alias, iri) -> assigned_id
+type CollisionMap = BTreeMap<(Arc<str>, Arc<str>), u64>;
+
 /// Compute stable point ID from ledger alias and IRI.
 ///
 /// Uses SHA-256 truncated to u64 for stability across Rust versions and platforms.
@@ -36,7 +39,9 @@ fn compute_point_id(ledger_alias: &str, iri: &str) -> u64 {
     let hash = hasher.finalize();
 
     // Take first 8 bytes as little-endian u64, then clear high bit
-    let bytes: [u8; 8] = hash[0..8].try_into().expect("SHA-256 produces at least 8 bytes");
+    let bytes: [u8; 8] = hash[0..8]
+        .try_into()
+        .expect("SHA-256 produces at least 8 bytes");
     u64::from_le_bytes(bytes) & !COLLISION_ID_HIGH_BIT
 }
 
@@ -55,7 +60,7 @@ pub struct PointIdAssigner {
     /// Collision overflow: (ledger_alias, iri) -> assigned_id
     /// Uses BTreeMap for deterministic serialization order.
     #[serde(with = "collision_map_serde")]
-    collisions: BTreeMap<(Arc<str>, Arc<str>), u64>,
+    collisions: CollisionMap,
     /// Next collision ID to assign (starts at 2^63, the collision range)
     next_collision_id: u64,
 }
@@ -72,10 +77,7 @@ mod collision_map_serde {
         id: u64,
     }
 
-    pub fn serialize<S>(
-        map: &BTreeMap<(Arc<str>, Arc<str>), u64>,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error>
+    pub fn serialize<S>(map: &CollisionMap, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -91,9 +93,7 @@ mod collision_map_serde {
         entries.serialize(serializer)
     }
 
-    pub fn deserialize<'de, D>(
-        deserializer: D,
-    ) -> std::result::Result<BTreeMap<(Arc<str>, Arc<str>), u64>, D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> std::result::Result<CollisionMap, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -119,7 +119,7 @@ impl PointIdAssigner {
     /// Create from snapshot data.
     pub fn from_snapshot(
         primary: BTreeMap<u64, (Arc<str>, Arc<str>)>,
-        collisions: BTreeMap<(Arc<str>, Arc<str>), u64>,
+        collisions: CollisionMap,
     ) -> Self {
         // Derive next_collision_id from existing overflow IDs
         // If there are existing collisions, continue from max+1
@@ -224,7 +224,7 @@ impl PointIdAssigner {
     }
 
     /// Get the collision map (for serialization).
-    pub fn collision_map(&self) -> &BTreeMap<(Arc<str>, Arc<str>), u64> {
+    pub fn collision_map(&self) -> &CollisionMap {
         &self.collisions
     }
 
@@ -683,11 +683,20 @@ mod tests {
     #[test]
     fn test_point_id_assigner_from_snapshot() {
         let mut primary = BTreeMap::new();
-        primary.insert(123, (Arc::from("ledger:main"), Arc::from("http://example.org/doc1")));
+        primary.insert(
+            123,
+            (
+                Arc::from("ledger:main"),
+                Arc::from("http://example.org/doc1"),
+            ),
+        );
 
         let mut collisions = BTreeMap::new();
         collisions.insert(
-            (Arc::from("ledger:main"), Arc::from("http://example.org/collided")),
+            (
+                Arc::from("ledger:main"),
+                Arc::from("http://example.org/collided"),
+            ),
             COLLISION_ID_HIGH_BIT + 5,
         );
 
@@ -709,7 +718,11 @@ mod tests {
         assert_eq!(id1, id2);
 
         // High bit should always be clear for hash IDs
-        assert_eq!(id1 & COLLISION_ID_HIGH_BIT, 0, "hash ID should have high bit cleared");
+        assert_eq!(
+            id1 & COLLISION_ID_HIGH_BIT,
+            0,
+            "hash ID should have high bit cleared"
+        );
 
         // Different inputs should produce different hashes (with overwhelming probability)
         let id3 = compute_point_id("ledger:main", "http://example.org/doc2");
@@ -728,7 +741,11 @@ mod tests {
         // Insert the original entry
         let id1 = assigner.assign("ledger:main", "http://example.org/original");
         assert_eq!(id1, fake_hash_id);
-        assert_eq!(id1 & COLLISION_ID_HIGH_BIT, 0, "primary ID should have high bit cleared");
+        assert_eq!(
+            id1 & COLLISION_ID_HIGH_BIT,
+            0,
+            "primary ID should have high bit cleared"
+        );
 
         // Now manually create a collision scenario by pre-populating primary with
         // a different entry at a hash we're about to generate
@@ -745,12 +762,27 @@ mod tests {
     #[test]
     fn test_all_entries_includes_collisions() {
         let mut primary = BTreeMap::new();
-        primary.insert(100, (Arc::from("ledger:main"), Arc::from("http://example.org/doc1")));
-        primary.insert(200, (Arc::from("ledger:main"), Arc::from("http://example.org/doc2")));
+        primary.insert(
+            100,
+            (
+                Arc::from("ledger:main"),
+                Arc::from("http://example.org/doc1"),
+            ),
+        );
+        primary.insert(
+            200,
+            (
+                Arc::from("ledger:main"),
+                Arc::from("http://example.org/doc2"),
+            ),
+        );
 
         let mut collisions = BTreeMap::new();
         collisions.insert(
-            (Arc::from("ledger:main"), Arc::from("http://example.org/collided")),
+            (
+                Arc::from("ledger:main"),
+                Arc::from("http://example.org/collided"),
+            ),
             COLLISION_ID_HIGH_BIT,
         );
 
@@ -792,9 +824,19 @@ mod tests {
         let mut index = VectorIndex::new(3, DistanceMetric::Cosine).unwrap();
 
         // Add some vectors
-        index.add("ledger:main", "http://example.org/doc1", &[1.0, 0.0, 0.0]).unwrap();
-        index.add("ledger:main", "http://example.org/doc2", &[0.0, 1.0, 0.0]).unwrap();
-        index.add("ledger:main", "http://example.org/doc3", &[0.707, 0.707, 0.0]).unwrap();
+        index
+            .add("ledger:main", "http://example.org/doc1", &[1.0, 0.0, 0.0])
+            .unwrap();
+        index
+            .add("ledger:main", "http://example.org/doc2", &[0.0, 1.0, 0.0])
+            .unwrap();
+        index
+            .add(
+                "ledger:main",
+                "http://example.org/doc3",
+                &[0.707, 0.707, 0.0],
+            )
+            .unwrap();
 
         assert_eq!(index.len(), 3);
         assert!(index.contains("ledger:main", "http://example.org/doc1"));
@@ -815,39 +857,64 @@ mod tests {
         let mut index = VectorIndex::new(3, DistanceMetric::Cosine).unwrap();
 
         let result = index.add("ledger:main", "http://example.org/doc1", &[1.0, 0.0]);
-        assert!(matches!(result, Err(VectorError::DimensionMismatch { expected: 3, actual: 2 })));
+        assert!(matches!(
+            result,
+            Err(VectorError::DimensionMismatch {
+                expected: 3,
+                actual: 2
+            })
+        ));
 
         // Add a valid vector first
-        index.add("ledger:main", "http://example.org/doc1", &[1.0, 0.0, 0.0]).unwrap();
+        index
+            .add("ledger:main", "http://example.org/doc1", &[1.0, 0.0, 0.0])
+            .unwrap();
 
         // Search with wrong dimensions
         let result = index.search(&[1.0, 0.0], 1);
-        assert!(matches!(result, Err(VectorError::DimensionMismatch { expected: 3, actual: 2 })));
+        assert!(matches!(
+            result,
+            Err(VectorError::DimensionMismatch {
+                expected: 3,
+                actual: 2
+            })
+        ));
     }
 
     #[test]
     fn test_vector_index_remove() {
         let mut index = VectorIndex::new(3, DistanceMetric::Cosine).unwrap();
 
-        index.add("ledger:main", "http://example.org/doc1", &[1.0, 0.0, 0.0]).unwrap();
-        index.add("ledger:main", "http://example.org/doc2", &[0.0, 1.0, 0.0]).unwrap();
+        index
+            .add("ledger:main", "http://example.org/doc1", &[1.0, 0.0, 0.0])
+            .unwrap();
+        index
+            .add("ledger:main", "http://example.org/doc2", &[0.0, 1.0, 0.0])
+            .unwrap();
 
         assert_eq!(index.len(), 2);
 
-        let removed = index.remove("ledger:main", "http://example.org/doc1").unwrap();
+        let removed = index
+            .remove("ledger:main", "http://example.org/doc1")
+            .unwrap();
         assert!(removed);
         assert_eq!(index.len(), 1);
         assert!(!index.contains("ledger:main", "http://example.org/doc1"));
 
         // Remove non-existent
-        let removed = index.remove("ledger:main", "http://example.org/doc1").unwrap();
+        let removed = index
+            .remove("ledger:main", "http://example.org/doc1")
+            .unwrap();
         assert!(!removed);
     }
 
     #[test]
     fn test_vector_property_deps() {
         let deps = VectorPropertyDeps::new("http://example.org/embedding");
-        assert_eq!(deps.embedding_property.as_ref(), "http://example.org/embedding");
+        assert_eq!(
+            deps.embedding_property.as_ref(),
+            "http://example.org/embedding"
+        );
 
         let query = serde_json::json!({
             "@context": {"ex": "http://example.org/"},
@@ -859,9 +926,13 @@ mod tests {
         let props: Vec<_> = deps.all_properties().collect();
 
         // Should include embedding property, rdf:type (from @type), and ex:title
-        assert!(props.iter().any(|p| p.as_ref() == "http://example.org/embedding"));
+        assert!(props
+            .iter()
+            .any(|p| p.as_ref() == "http://example.org/embedding"));
         assert!(props.iter().any(|p| p.as_ref().contains("type")));
-        assert!(props.iter().any(|p| p.as_ref() == "http://example.org/title"));
+        assert!(props
+            .iter()
+            .any(|p| p.as_ref() == "http://example.org/title"));
     }
 
     #[test]
@@ -902,30 +973,66 @@ mod tests {
         // doc2: [0.5, 0.5, 0] -> dot = 0.5
         // doc3: [0, 1, 0]     -> dot = 0.0
         // doc4: [-1, 0, 0]    -> dot = -1.0 (least similar)
-        index.add("ledger:main", "http://example.org/doc1", &[1.0, 0.0, 0.0]).unwrap();
-        index.add("ledger:main", "http://example.org/doc2", &[0.5, 0.5, 0.0]).unwrap();
-        index.add("ledger:main", "http://example.org/doc3", &[0.0, 1.0, 0.0]).unwrap();
-        index.add("ledger:main", "http://example.org/doc4", &[-1.0, 0.0, 0.0]).unwrap();
+        index
+            .add("ledger:main", "http://example.org/doc1", &[1.0, 0.0, 0.0])
+            .unwrap();
+        index
+            .add("ledger:main", "http://example.org/doc2", &[0.5, 0.5, 0.0])
+            .unwrap();
+        index
+            .add("ledger:main", "http://example.org/doc3", &[0.0, 1.0, 0.0])
+            .unwrap();
+        index
+            .add("ledger:main", "http://example.org/doc4", &[-1.0, 0.0, 0.0])
+            .unwrap();
 
         let results = index.search(&[1.0, 0.0, 0.0], 4).unwrap();
 
         // Verify ordering: doc1 (highest dot) should be first
-        assert_eq!(results[0].iri.as_ref(), "http://example.org/doc1",
-            "Expected doc1 (dot=1.0) first, got {}", results[0].iri);
-        assert_eq!(results[1].iri.as_ref(), "http://example.org/doc2",
-            "Expected doc2 (dot=0.5) second, got {}", results[1].iri);
-        assert_eq!(results[2].iri.as_ref(), "http://example.org/doc3",
-            "Expected doc3 (dot=0.0) third, got {}", results[2].iri);
-        assert_eq!(results[3].iri.as_ref(), "http://example.org/doc4",
-            "Expected doc4 (dot=-1.0) last, got {}", results[3].iri);
+        assert_eq!(
+            results[0].iri.as_ref(),
+            "http://example.org/doc1",
+            "Expected doc1 (dot=1.0) first, got {}",
+            results[0].iri
+        );
+        assert_eq!(
+            results[1].iri.as_ref(),
+            "http://example.org/doc2",
+            "Expected doc2 (dot=0.5) second, got {}",
+            results[1].iri
+        );
+        assert_eq!(
+            results[2].iri.as_ref(),
+            "http://example.org/doc3",
+            "Expected doc3 (dot=0.0) third, got {}",
+            results[2].iri
+        );
+        assert_eq!(
+            results[3].iri.as_ref(),
+            "http://example.org/doc4",
+            "Expected doc4 (dot=-1.0) last, got {}",
+            results[3].iri
+        );
 
         // Verify scores are in descending order (CRITICAL: higher score = more similar)
-        assert!(results[0].score >= results[1].score,
-            "Score 0 ({}) should be >= score 1 ({})", results[0].score, results[1].score);
-        assert!(results[1].score >= results[2].score,
-            "Score 1 ({}) should be >= score 2 ({})", results[1].score, results[2].score);
-        assert!(results[2].score >= results[3].score,
-            "Score 2 ({}) should be >= score 3 ({})", results[2].score, results[3].score);
+        assert!(
+            results[0].score >= results[1].score,
+            "Score 0 ({}) should be >= score 1 ({})",
+            results[0].score,
+            results[1].score
+        );
+        assert!(
+            results[1].score >= results[2].score,
+            "Score 1 ({}) should be >= score 2 ({})",
+            results[1].score,
+            results[2].score
+        );
+        assert!(
+            results[2].score >= results[3].score,
+            "Score 2 ({}) should be >= score 3 ({})",
+            results[2].score,
+            results[3].score
+        );
 
         // Verify the relative ordering of scores matches dot product ordering
         // Even if absolute values differ, doc1 should have highest score
@@ -933,7 +1040,9 @@ mod tests {
         // and internal representation, so we verify ordering rather than exact values.
 
         // Print scores for debugging (visible when test fails or run with --nocapture)
-        println!("Dot product scores: doc1={}, doc2={}, doc3={}, doc4={}",
-            results[0].score, results[1].score, results[2].score, results[3].score);
+        println!(
+            "Dot product scores: doc1={}, doc2={}, doc3={}, doc4={}",
+            results[0].score, results[1].score, results[2].score, results[3].score
+        );
     }
 }

@@ -14,7 +14,7 @@ use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{NameService, Publisher, VgType, VirtualGraphPublisher};
 use fluree_db_query::bm25::{Bm25IndexBuilder, PropertyDeps};
 use fluree_db_query::parse::parse_query;
-use fluree_db_query::{execute_with_overlay_at, ExecutableQuery, SelectMode, VarRegistry};
+use fluree_db_query::{execute_with_overlay, DataSource, ExecutableQuery, SelectMode, VarRegistry};
 use serde_json::Value as JsonValue;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -56,7 +56,10 @@ where
     ///
     /// let result = fluree.create_full_text_index(config).await?;
     /// ```
-    pub async fn create_full_text_index(&self, config: Bm25CreateConfig) -> Result<Bm25CreateResult> {
+    pub async fn create_full_text_index(
+        &self,
+        config: Bm25CreateConfig,
+    ) -> Result<Bm25CreateResult> {
         let vg_alias = config.vg_alias();
         info!(
             vg_alias = %vg_alias,
@@ -85,15 +88,18 @@ where
         );
 
         // 2. Execute indexing query
-        let results = self.execute_bm25_indexing_query(&ledger, &config.query).await?;
+        let results = self
+            .execute_bm25_indexing_query(&ledger, &config.query)
+            .await?;
 
-        info!(
-            result_count = results.len(),
-            "Executed indexing query"
-        );
+        info!(result_count = results.len(), "Executed indexing query");
 
         // 2b. Expand prefixed IRIs in @id fields to full IRIs
-        let context = config.query.get("@context").cloned().unwrap_or(serde_json::json!({}));
+        let context = config
+            .query
+            .get("@context")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
         let prefix_map = extract_prefix_map(&context);
         let results = expand_ids_in_results(results, &prefix_map);
 
@@ -141,7 +147,7 @@ where
                 config.effective_branch(),
                 VgType::Bm25,
                 &config_json,
-                &[config.ledger.clone()],
+                std::slice::from_ref(&config.ledger),
             )
             .await?;
 
@@ -193,15 +199,8 @@ where
 
         let executable = ExecutableQuery::simple(parsed_for_exec);
 
-        let batches = execute_with_overlay_at(
-            &ledger.db,
-            ledger.novelty.as_ref(),
-            &vars,
-            &executable,
-            ledger.t(),
-            None,
-        )
-        .await?;
+        let source = DataSource::new(&ledger.db, ledger.novelty.as_ref(), ledger.t());
+        let batches = execute_with_overlay(source, &vars, &executable).await?;
 
         // Format using the standard JSON-LD formatter
         let result = ApiQueryResult {
@@ -246,33 +245,20 @@ where
 
         let executable = ExecutableQuery::simple(parsed_for_exec);
 
-        let batches = if let Some(novelty) = view.overlay() {
-            execute_with_overlay_at(
-                &view.db,
-                novelty.as_ref(),
-                &vars,
-                &executable,
-                view.to_t(),
-                None,
-            )
-            .await?
-        } else {
-            execute_with_overlay_at(
-                &view.db,
-                &fluree_db_core::NoOverlay,
-                &vars,
-                &executable,
-                view.to_t(),
-                None,
-            )
-            .await?
-        };
+        let overlay: &dyn fluree_db_core::OverlayProvider = view
+            .overlay()
+            .map(|n| n.as_ref() as &dyn fluree_db_core::OverlayProvider)
+            .unwrap_or(&fluree_db_core::NoOverlay);
+        let source = DataSource::new(&view.db, overlay, view.to_t());
+        let batches = execute_with_overlay(source, &vars, &executable).await?;
 
         // Format using the standard JSON-LD formatter
         let result = ApiQueryResult {
             vars,
             t: view.to_t(),
-            novelty: view.overlay().map(|n| Arc::clone(n) as Arc<dyn OverlayProvider>),
+            novelty: view
+                .overlay()
+                .map(|n| Arc::clone(n) as Arc<dyn OverlayProvider>),
             context: parsed.context,
             orig_context: parsed.orig_context,
             select: parsed.select,
@@ -308,10 +294,7 @@ where
 
         // Build versioned storage address
         let (name, branch) = core_alias::split_alias(vg_alias).map_err(|e| {
-            crate::ApiError::config(format!(
-                "Invalid virtual graph alias '{}': {}",
-                vg_alias, e
-            ))
+            crate::ApiError::config(format!("Invalid virtual graph alias '{}': {}", vg_alias, e))
         })?;
         let address = format!(
             "fluree:file://virtual-graphs/{}/{}/bm25/t{}/snapshot.bin",
@@ -384,7 +367,10 @@ where
             })?;
 
         // Load from storage
-        let bytes = self.storage().read_bytes(&selection.snapshot_address).await?;
+        let bytes = self
+            .storage()
+            .read_bytes(&selection.snapshot_address)
+            .await?;
 
         // Deserialize
         let index = deserialize(&bytes)?;
@@ -402,16 +388,14 @@ where
         use fluree_db_query::bm25::deserialize;
 
         // Look up VG record
-        let record = self
-            .nameservice
-            .lookup_vg(vg_alias)
-            .await?
-            .ok_or_else(|| crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias)))?;
+        let record = self.nameservice.lookup_vg(vg_alias).await?.ok_or_else(|| {
+            crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias))
+        })?;
 
         // Get index address
-        let index_address = record
-            .index_address
-            .ok_or_else(|| crate::ApiError::NotFound(format!("No index for virtual graph: {}", vg_alias)))?;
+        let index_address = record.index_address.ok_or_else(|| {
+            crate::ApiError::NotFound(format!("No index for virtual graph: {}", vg_alias))
+        })?;
 
         // Load from storage
         let bytes = self.storage().read_bytes(&index_address).await?;
@@ -427,11 +411,9 @@ where
     /// This is a lightweight check that only looks up nameservice records.
     pub async fn check_bm25_staleness(&self, vg_alias: &str) -> Result<Bm25StalenessCheck> {
         // Look up VG record
-        let record = self
-            .nameservice
-            .lookup_vg(vg_alias)
-            .await?
-            .ok_or_else(|| crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias)))?;
+        let record = self.nameservice.lookup_vg(vg_alias).await?.ok_or_else(|| {
+            crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias))
+        })?;
 
         // Get source ledger from dependencies
         let source_ledger = record
@@ -443,11 +425,9 @@ where
         // Check minimum head across all dependencies
         let mut ledger_t: Option<i64> = None;
         for dep in &record.dependencies {
-            let ledger_record = self
-                .nameservice
-                .lookup(dep)
-                .await?
-                .ok_or_else(|| crate::ApiError::NotFound(format!("Source ledger not found: {}", dep)))?;
+            let ledger_record = self.nameservice.lookup(dep).await?.ok_or_else(|| {
+                crate::ApiError::NotFound(format!("Source ledger not found: {}", dep))
+            })?;
             ledger_t = Some(match ledger_t {
                 Some(cur) => cur.min(ledger_record.commit_t),
                 None => ledger_record.commit_t,
@@ -485,17 +465,17 @@ where
     /// falling back to full resync if needed.
     pub async fn sync_bm25_index(&self, vg_alias: &str) -> Result<Bm25SyncResult> {
         use fluree_db_novelty::trace_commits;
-        use fluree_db_query::bm25::{deserialize, serialize, CompiledPropertyDeps, IncrementalUpdater};
+        use fluree_db_query::bm25::{
+            deserialize, serialize, CompiledPropertyDeps, IncrementalUpdater,
+        };
         use futures::StreamExt;
 
         info!(vg_alias = %vg_alias, "Starting BM25 index sync");
 
         // 1. Look up VG record to get config and index address
-        let record = self
-            .nameservice
-            .lookup_vg(vg_alias)
-            .await?
-            .ok_or_else(|| crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias)))?;
+        let record = self.nameservice.lookup_vg(vg_alias).await?.ok_or_else(|| {
+            crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias))
+        })?;
 
         // Check if VG has been dropped
         if record.retracted {
@@ -515,7 +495,10 @@ where
 
         // Parse config to get query
         let config: JsonValue = serde_json::from_str(&record.config)?;
-        let query = config.get("query").cloned().unwrap_or(serde_json::json!({}));
+        let query = config
+            .get("query")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
 
         // Get source ledger alias from dependencies
         let source_ledger_alias = record
@@ -552,9 +535,7 @@ where
             .ns_record
             .as_ref()
             .and_then(|r| r.commit_address.clone())
-            .ok_or_else(|| {
-                crate::ApiError::NotFound("No commit address for ledger".to_string())
-            })?;
+            .ok_or_else(|| crate::ApiError::NotFound("No commit address for ledger".to_string()))?;
 
         // 5. Compile property deps for this ledger's namespace
         let compiled_deps = CompiledPropertyDeps::compile(&index.property_deps, |iri: &str| {
@@ -563,7 +544,11 @@ where
 
         // 6. Trace commits and collect affected subjects
         let mut affected_sids: HashSet<fluree_db_core::Sid> = HashSet::new();
-        let stream = trace_commits(self.storage().clone(), head_commit_address.clone(), old_watermark);
+        let stream = trace_commits(
+            self.storage().clone(),
+            head_commit_address.clone(),
+            old_watermark,
+        );
         futures::pin_mut!(stream);
 
         while let Some(result) = stream.next().await {
@@ -599,7 +584,10 @@ where
         let results = self.execute_bm25_indexing_query(&ledger, &query).await?;
 
         // Expand prefix map for matching
-        let context = query.get("@context").cloned().unwrap_or(serde_json::json!({}));
+        let context = query
+            .get("@context")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
         let prefix_map = extract_prefix_map(&context);
 
         let mut affected_iris_expanded = affected_iris.clone();
@@ -673,11 +661,9 @@ where
         info!(vg_alias = %vg_alias, "Starting BM25 full resync");
 
         // 1. Look up VG record
-        let record = self
-            .nameservice
-            .lookup_vg(vg_alias)
-            .await?
-            .ok_or_else(|| crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias)))?;
+        let record = self.nameservice.lookup_vg(vg_alias).await?.ok_or_else(|| {
+            crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias))
+        })?;
 
         if record.retracted {
             return Err(crate::ApiError::Drop(format!(
@@ -686,12 +672,15 @@ where
             )));
         }
 
-        let index_address = record
-            .index_address
-            .ok_or_else(|| crate::ApiError::NotFound(format!("No index for virtual graph: {}", vg_alias)))?;
+        let index_address = record.index_address.ok_or_else(|| {
+            crate::ApiError::NotFound(format!("No index for virtual graph: {}", vg_alias))
+        })?;
 
         let config: JsonValue = serde_json::from_str(&record.config)?;
-        let query = config.get("query").cloned().unwrap_or(serde_json::json!({}));
+        let query = config
+            .get("query")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
 
         let source_ledger = record
             .dependencies
@@ -768,15 +757,16 @@ where
         &self,
         vg_alias: &str,
         auto_sync: bool,
-    ) -> Result<(Arc<fluree_db_query::bm25::Bm25Index>, Option<Bm25SyncResult>)> {
+    ) -> Result<(
+        Arc<fluree_db_query::bm25::Bm25Index>,
+        Option<Bm25SyncResult>,
+    )> {
         use fluree_db_query::bm25::deserialize;
 
         // Look up VG record
-        let record = self
-            .nameservice
-            .lookup_vg(vg_alias)
-            .await?
-            .ok_or_else(|| crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias)))?;
+        let record = self.nameservice.lookup_vg(vg_alias).await?.ok_or_else(|| {
+            crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias))
+        })?;
 
         // Get source ledger to check staleness
         let source_ledger = record
@@ -790,7 +780,9 @@ where
             .nameservice
             .lookup(&source_ledger)
             .await?
-            .ok_or_else(|| crate::ApiError::NotFound(format!("Source ledger not found: {}", source_ledger)))?;
+            .ok_or_else(|| {
+                crate::ApiError::NotFound(format!("Source ledger not found: {}", source_ledger))
+            })?;
 
         let index_t = record.index_t;
         let ledger_t = ledger_record.commit_t;
@@ -810,15 +802,13 @@ where
         };
 
         // Load the (possibly updated) index
-        let record = self
-            .nameservice
-            .lookup_vg(vg_alias)
-            .await?
-            .ok_or_else(|| crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias)))?;
+        let record = self.nameservice.lookup_vg(vg_alias).await?.ok_or_else(|| {
+            crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias))
+        })?;
 
-        let index_address = record
-            .index_address
-            .ok_or_else(|| crate::ApiError::NotFound(format!("No index for virtual graph: {}", vg_alias)))?;
+        let index_address = record.index_address.ok_or_else(|| {
+            crate::ApiError::NotFound(format!("No index for virtual graph: {}", vg_alias))
+        })?;
 
         let bytes = self.storage().read_bytes(&index_address).await?;
         let index = deserialize(&bytes)?;
@@ -836,7 +826,9 @@ where
         target_t: i64,
         timeout_ms: Option<u64>,
     ) -> Result<Bm25SyncResult> {
-        use fluree_db_query::bm25::{Bm25IndexBuilder, IncrementalUpdater, PropertyDeps, serialize};
+        use fluree_db_query::bm25::{
+            serialize, Bm25IndexBuilder, IncrementalUpdater, PropertyDeps,
+        };
 
         info!(
             vg_alias = %vg_alias,
@@ -848,14 +840,15 @@ where
         let _ = timeout_ms; // Reserved for future timeout support
 
         // 1. Look up VG record to get config
-        let record = self
-            .nameservice
-            .lookup_vg(vg_alias)
-            .await?
-            .ok_or_else(|| crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias)))?;
+        let record = self.nameservice.lookup_vg(vg_alias).await?.ok_or_else(|| {
+            crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias))
+        })?;
 
         let config: JsonValue = serde_json::from_str(&record.config)?;
-        let query = config.get("query").cloned().unwrap_or(serde_json::json!({}));
+        let query = config
+            .get("query")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
         let k1 = config.get("k1").and_then(|v| v.as_f64()).unwrap_or(1.2);
         let b = config.get("b").and_then(|v| v.as_f64()).unwrap_or(0.75);
 
@@ -884,7 +877,9 @@ where
         let view = self.ledger_view_at(&source_ledger, target_t).await?;
 
         // 4. Execute indexing query at target_t
-        let results = self.execute_bm25_indexing_query_historical(&view, &query).await?;
+        let results = self
+            .execute_bm25_indexing_query_historical(&view, &query)
+            .await?;
 
         info!(
             vg_alias = %vg_alias,

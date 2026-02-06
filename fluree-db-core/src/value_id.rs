@@ -207,8 +207,12 @@ impl fmt::Display for ObjKeyError {
         match self {
             Self::NaN => write!(f, "NaN is not allowed in index values"),
             Self::Infinite => write!(f, "infinite values are not allowed in index values"),
-            Self::GeoLatitudeOutOfRange => write!(f, "latitude must be finite and in range [-90, 90]"),
-            Self::GeoLongitudeOutOfRange => write!(f, "longitude must be finite and in range [-180, 180]"),
+            Self::GeoLatitudeOutOfRange => {
+                write!(f, "latitude must be finite and in range [-90, 90]")
+            }
+            Self::GeoLongitudeOutOfRange => {
+                write!(f, "longitude must be finite and in range [-180, 180]")
+            }
         }
     }
 }
@@ -478,11 +482,11 @@ impl ObjKey {
     #[inline]
     pub fn encode_geo_point(lat: f64, lng: f64) -> Result<Self, ObjKeyError> {
         // Validate and canonicalize latitude
-        if !lat.is_finite() || lat < -90.0 || lat > 90.0 {
+        if !lat.is_finite() || !(-90.0..=90.0).contains(&lat) {
             return Err(ObjKeyError::GeoLatitudeOutOfRange);
         }
         // Validate and canonicalize longitude
-        if !lng.is_finite() || lng < -180.0 || lng > 180.0 {
+        if !lng.is_finite() || !(-180.0..=180.0).contains(&lng) {
             return Err(ObjKeyError::GeoLongitudeOutOfRange);
         }
 
@@ -925,7 +929,17 @@ mod tests {
 
     #[test]
     fn test_num_int_round_trip() {
-        for &v in &[0i64, 1, -1, 42, -42, 1000, -1000, i32::MAX as i64, i32::MIN as i64] {
+        for &v in &[
+            0i64,
+            1,
+            -1,
+            42,
+            -42,
+            1000,
+            -1000,
+            i32::MAX as i64,
+            i32::MIN as i64,
+        ] {
             let key = ObjKey::encode_i64(v);
             assert_eq!(key.decode_i64(), v, "round-trip failed for {}", v);
         }
@@ -978,10 +992,15 @@ mod tests {
 
     #[test]
     fn test_num_f64_round_trip() {
-        for &v in &[0.0f64, 1.0, -1.0, 0.5, -0.5, 3.14159, -2.71828, 1e10, -1e10] {
+        for &v in &[0.0f64, 1.0, -1.0, 0.5, -0.5, 3.13, -2.77, 1e10, -1e10] {
             let key = ObjKey::encode_f64(v).unwrap();
             let decoded = key.decode_f64();
-            assert_eq!(decoded.to_bits(), v.to_bits(), "round-trip failed for {}", v);
+            assert_eq!(
+                decoded.to_bits(),
+                v.to_bits(),
+                "round-trip failed for {}",
+                v
+            );
         }
     }
 
@@ -1035,8 +1054,14 @@ mod tests {
 
     #[test]
     fn test_num_f64_reject_infinity() {
-        assert_eq!(ObjKey::encode_f64(f64::INFINITY), Err(ObjKeyError::Infinite));
-        assert_eq!(ObjKey::encode_f64(f64::NEG_INFINITY), Err(ObjKeyError::Infinite));
+        assert_eq!(
+            ObjKey::encode_f64(f64::INFINITY),
+            Err(ObjKeyError::Infinite)
+        );
+        assert_eq!(
+            ObjKey::encode_f64(f64::NEG_INFINITY),
+            Err(ObjKeyError::Infinite)
+        );
     }
 
     #[test]
@@ -1050,7 +1075,10 @@ mod tests {
             s.sort();
             s
         };
-        assert_eq!(keys, sorted, "probability floats should already be in order");
+        assert_eq!(
+            keys, sorted,
+            "probability floats should already be in order"
+        );
 
         // Also verify in randomized order
         keys.reverse();
@@ -1094,7 +1122,12 @@ mod tests {
     fn test_date_round_trip() {
         for &days in &[0i32, 19737, -365, i32::MIN, i32::MAX] {
             let key = ObjKey::encode_date(days);
-            assert_eq!(key.decode_date(), days, "date round-trip failed for {}", days);
+            assert_eq!(
+                key.decode_date(),
+                days,
+                "date round-trip failed for {}",
+                days
+            );
         }
     }
 
@@ -1123,9 +1156,20 @@ mod tests {
 
     #[test]
     fn test_datetime_round_trip() {
-        for &micros in &[0i64, 1_705_312_200_000_000, -86_400_000_000, i64::MIN, i64::MAX] {
+        for &micros in &[
+            0i64,
+            1_705_312_200_000_000,
+            -86_400_000_000,
+            i64::MIN,
+            i64::MAX,
+        ] {
             let key = ObjKey::encode_datetime(micros);
-            assert_eq!(key.decode_datetime(), micros, "datetime round-trip failed for {}", micros);
+            assert_eq!(
+                key.decode_datetime(),
+                micros,
+                "datetime round-trip failed for {}",
+                micros
+            );
         }
     }
 
@@ -1143,16 +1187,16 @@ mod tests {
     #[test]
     fn test_geo_point_round_trip() {
         let cases = [
-            (48.8566, 2.3522),     // Paris
-            (-33.8688, 151.2093),  // Sydney
-            (0.0, 0.0),            // Null Island
-            (-90.0, 0.0),          // South Pole
-            (90.0, 180.0),         // North Pole at dateline
-            (51.5074, -0.1278),    // London (negative lng)
-            (35.6762, 139.6503),   // Tokyo
-            (-22.9068, -43.1729),  // Rio de Janeiro
-            (90.0, -180.0),        // North Pole at antimeridian
-            (-90.0, 180.0),        // South Pole at dateline
+            (48.8566, 2.3522),    // Paris
+            (-33.8688, 151.2093), // Sydney
+            (0.0, 0.0),           // Null Island
+            (-90.0, 0.0),         // South Pole
+            (90.0, 180.0),        // North Pole at dateline
+            (51.5074, -0.1278),   // London (negative lng)
+            (35.6762, 139.6503),  // Tokyo
+            (-22.9068, -43.1729), // Rio de Janeiro
+            (90.0, -180.0),       // North Pole at antimeridian
+            (-90.0, 180.0),       // South Pole at dateline
         ];
         for (lat, lng) in cases {
             let key = ObjKey::encode_geo_point(lat, lng).unwrap();
@@ -1161,12 +1205,16 @@ mod tests {
             assert!(
                 (lat - dec_lat).abs() < 0.0001,
                 "lat round-trip failed for ({}, {}): got {}",
-                lat, lng, dec_lat
+                lat,
+                lng,
+                dec_lat
             );
             assert!(
                 (lng - dec_lng).abs() < 0.0001,
                 "lng round-trip failed for ({}, {}): got {}",
-                lat, lng, dec_lng
+                lat,
+                lng,
+                dec_lng
             );
         }
     }
@@ -1314,68 +1362,200 @@ mod tests {
 
     #[test]
     fn test_datatype_from_xsd() {
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "string"), ValueTypeTag::STRING);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "boolean"), ValueTypeTag::BOOLEAN);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "integer"), ValueTypeTag::INTEGER);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "long"), ValueTypeTag::LONG);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "int"), ValueTypeTag::INT);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "short"), ValueTypeTag::SHORT);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "byte"), ValueTypeTag::BYTE);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "double"), ValueTypeTag::DOUBLE);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "float"), ValueTypeTag::FLOAT);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "decimal"), ValueTypeTag::DECIMAL);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "dateTime"), ValueTypeTag::DATE_TIME);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "date"), ValueTypeTag::DATE);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "time"), ValueTypeTag::TIME);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "anyURI"), ValueTypeTag::ANY_URI);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "unsignedLong"), ValueTypeTag::UNSIGNED_LONG);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "unsignedInt"), ValueTypeTag::UNSIGNED_INT);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "unsignedShort"), ValueTypeTag::UNSIGNED_SHORT);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "unsignedByte"), ValueTypeTag::UNSIGNED_BYTE);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "nonNegativeInteger"), ValueTypeTag::NON_NEGATIVE_INTEGER);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "positiveInteger"), ValueTypeTag::POSITIVE_INTEGER);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "nonPositiveInteger"), ValueTypeTag::NON_POSITIVE_INTEGER);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "negativeInteger"), ValueTypeTag::NEGATIVE_INTEGER);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "normalizedString"), ValueTypeTag::NORMALIZED_STRING);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "token"), ValueTypeTag::TOKEN);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "language"), ValueTypeTag::LANGUAGE);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "duration"), ValueTypeTag::DURATION);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "dayTimeDuration"), ValueTypeTag::DAY_TIME_DURATION);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "yearMonthDuration"), ValueTypeTag::YEAR_MONTH_DURATION);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "base64Binary"), ValueTypeTag::BASE64_BINARY);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "hexBinary"), ValueTypeTag::HEX_BINARY);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "gYear"), ValueTypeTag::G_YEAR);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "gMonth"), ValueTypeTag::G_MONTH);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "gDay"), ValueTypeTag::G_DAY);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "gYearMonth"), ValueTypeTag::G_YEAR_MONTH);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "gMonthDay"), ValueTypeTag::G_MONTH_DAY);
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "string"),
+            ValueTypeTag::STRING
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "boolean"),
+            ValueTypeTag::BOOLEAN
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "integer"),
+            ValueTypeTag::INTEGER
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "long"),
+            ValueTypeTag::LONG
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "int"),
+            ValueTypeTag::INT
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "short"),
+            ValueTypeTag::SHORT
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "byte"),
+            ValueTypeTag::BYTE
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "double"),
+            ValueTypeTag::DOUBLE
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "float"),
+            ValueTypeTag::FLOAT
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "decimal"),
+            ValueTypeTag::DECIMAL
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "dateTime"),
+            ValueTypeTag::DATE_TIME
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "date"),
+            ValueTypeTag::DATE
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "time"),
+            ValueTypeTag::TIME
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "anyURI"),
+            ValueTypeTag::ANY_URI
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "unsignedLong"),
+            ValueTypeTag::UNSIGNED_LONG
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "unsignedInt"),
+            ValueTypeTag::UNSIGNED_INT
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "unsignedShort"),
+            ValueTypeTag::UNSIGNED_SHORT
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "unsignedByte"),
+            ValueTypeTag::UNSIGNED_BYTE
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "nonNegativeInteger"),
+            ValueTypeTag::NON_NEGATIVE_INTEGER
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "positiveInteger"),
+            ValueTypeTag::POSITIVE_INTEGER
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "nonPositiveInteger"),
+            ValueTypeTag::NON_POSITIVE_INTEGER
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "negativeInteger"),
+            ValueTypeTag::NEGATIVE_INTEGER
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "normalizedString"),
+            ValueTypeTag::NORMALIZED_STRING
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "token"),
+            ValueTypeTag::TOKEN
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "language"),
+            ValueTypeTag::LANGUAGE
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "duration"),
+            ValueTypeTag::DURATION
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "dayTimeDuration"),
+            ValueTypeTag::DAY_TIME_DURATION
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "yearMonthDuration"),
+            ValueTypeTag::YEAR_MONTH_DURATION
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "base64Binary"),
+            ValueTypeTag::BASE64_BINARY
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "hexBinary"),
+            ValueTypeTag::HEX_BINARY
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "gYear"),
+            ValueTypeTag::G_YEAR
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "gMonth"),
+            ValueTypeTag::G_MONTH
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "gDay"),
+            ValueTypeTag::G_DAY
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "gYearMonth"),
+            ValueTypeTag::G_YEAR_MONTH
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "gMonthDay"),
+            ValueTypeTag::G_MONTH_DAY
+        );
     }
 
     #[test]
     fn test_datatype_from_rdf() {
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::RDF, "langString"), ValueTypeTag::LANG_STRING);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::RDF, "JSON"), ValueTypeTag::RDF_JSON);
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::RDF, "langString"),
+            ValueTypeTag::LANG_STRING
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::RDF, "JSON"),
+            ValueTypeTag::RDF_JSON
+        );
     }
 
     #[test]
     fn test_datatype_from_jsonld() {
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::JSON_LD, "id"), ValueTypeTag::JSON_LD_ID);
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::JSON_LD, "id"),
+            ValueTypeTag::JSON_LD_ID
+        );
     }
 
     #[test]
     fn test_datatype_unknown() {
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::XSD, "foobar"), ValueTypeTag::UNKNOWN);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::RDF, "foobar"), ValueTypeTag::UNKNOWN);
-        assert_eq!(ValueTypeTag::from_ns_name(namespaces::JSON_LD, "foobar"), ValueTypeTag::UNKNOWN);
-        assert_eq!(ValueTypeTag::from_ns_name(99, "anything"), ValueTypeTag::UNKNOWN);
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::XSD, "foobar"),
+            ValueTypeTag::UNKNOWN
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::RDF, "foobar"),
+            ValueTypeTag::UNKNOWN
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(namespaces::JSON_LD, "foobar"),
+            ValueTypeTag::UNKNOWN
+        );
+        assert_eq!(
+            ValueTypeTag::from_ns_name(99, "anything"),
+            ValueTypeTag::UNKNOWN
+        );
     }
 
     #[test]
     fn test_datatype_as_u8_from_u8_round_trip() {
         for dt in [
-            ValueTypeTag::STRING, ValueTypeTag::BOOLEAN, ValueTypeTag::INTEGER,
-            ValueTypeTag::LONG, ValueTypeTag::DOUBLE, ValueTypeTag::DATE_TIME,
-            ValueTypeTag::LANG_STRING, ValueTypeTag::JSON_LD_ID, ValueTypeTag::UNKNOWN,
+            ValueTypeTag::STRING,
+            ValueTypeTag::BOOLEAN,
+            ValueTypeTag::INTEGER,
+            ValueTypeTag::LONG,
+            ValueTypeTag::DOUBLE,
+            ValueTypeTag::DATE_TIME,
+            ValueTypeTag::LANG_STRING,
+            ValueTypeTag::JSON_LD_ID,
+            ValueTypeTag::UNKNOWN,
         ] {
             let raw = dt.as_u8();
             assert_eq!(ValueTypeTag::from_u8(raw), dt);
@@ -1385,11 +1565,18 @@ mod tests {
     #[test]
     fn test_datatype_integer_type_classification() {
         for dt in [
-            ValueTypeTag::INTEGER, ValueTypeTag::LONG, ValueTypeTag::INT,
-            ValueTypeTag::SHORT, ValueTypeTag::BYTE, ValueTypeTag::UNSIGNED_LONG,
-            ValueTypeTag::UNSIGNED_INT, ValueTypeTag::UNSIGNED_SHORT,
-            ValueTypeTag::UNSIGNED_BYTE, ValueTypeTag::NON_NEGATIVE_INTEGER,
-            ValueTypeTag::POSITIVE_INTEGER, ValueTypeTag::NON_POSITIVE_INTEGER,
+            ValueTypeTag::INTEGER,
+            ValueTypeTag::LONG,
+            ValueTypeTag::INT,
+            ValueTypeTag::SHORT,
+            ValueTypeTag::BYTE,
+            ValueTypeTag::UNSIGNED_LONG,
+            ValueTypeTag::UNSIGNED_INT,
+            ValueTypeTag::UNSIGNED_SHORT,
+            ValueTypeTag::UNSIGNED_BYTE,
+            ValueTypeTag::NON_NEGATIVE_INTEGER,
+            ValueTypeTag::POSITIVE_INTEGER,
+            ValueTypeTag::NON_POSITIVE_INTEGER,
             ValueTypeTag::NEGATIVE_INTEGER,
         ] {
             assert!(dt.is_integer_type(), "{} should be integer type", dt);
@@ -1402,8 +1589,12 @@ mod tests {
         }
 
         for dt in [
-            ValueTypeTag::STRING, ValueTypeTag::BOOLEAN, ValueTypeTag::DATE_TIME,
-            ValueTypeTag::DATE, ValueTypeTag::TIME, ValueTypeTag::LANG_STRING,
+            ValueTypeTag::STRING,
+            ValueTypeTag::BOOLEAN,
+            ValueTypeTag::DATE_TIME,
+            ValueTypeTag::DATE,
+            ValueTypeTag::TIME,
+            ValueTypeTag::LANG_STRING,
         ] {
             assert!(!dt.is_integer_type(), "{} should not be integer type", dt);
             assert!(!dt.is_float_type(), "{} should not be float type", dt);

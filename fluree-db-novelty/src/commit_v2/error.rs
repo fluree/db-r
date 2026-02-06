@@ -45,7 +45,11 @@ impl fmt::Display for CommitV2Error {
                 write!(f, "commit-v2: unsupported version {}", v)
             }
             Self::TooSmall { got, min } => {
-                write!(f, "commit-v2: blob too small ({} bytes, need >= {})", got, min)
+                write!(
+                    f,
+                    "commit-v2: blob too small ({} bytes, need >= {})",
+                    got, min
+                )
             }
             Self::HashMismatch { expected, actual } => {
                 write!(

@@ -43,17 +43,14 @@ impl TriplePattern {
     /// Get all variables referenced in this pattern.
     pub fn variables(&self) -> Vec<&Var> {
         let mut vars = Vec::with_capacity(3);
-        match &self.subject {
-            SubjectTerm::Var(v) => vars.push(v),
-            _ => {}
+        if let SubjectTerm::Var(v) = &self.subject {
+            vars.push(v)
         }
-        match &self.predicate {
-            PredicateTerm::Var(v) => vars.push(v),
-            _ => {}
+        if let PredicateTerm::Var(v) = &self.predicate {
+            vars.push(v)
         }
-        match &self.object {
-            Term::Var(v) => vars.push(v),
-            _ => {}
+        if let Term::Var(v) = &self.object {
+            vars.push(v)
         }
         vars
     }
@@ -382,7 +379,7 @@ mod tests {
 
     #[test]
     fn test_graph_pattern_span() {
-        let patterns = vec![
+        let patterns = [
             GraphPattern::empty_bgp(SourceSpan::new(0, 10)),
             GraphPattern::Optional {
                 pattern: Box::new(GraphPattern::empty_bgp(SourceSpan::new(20, 30))),

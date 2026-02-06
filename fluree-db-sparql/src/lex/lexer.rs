@@ -72,8 +72,7 @@ impl<'a> Lexer<'a> {
 fn skip_ws_and_comments(input: &mut Input<'_>) {
     loop {
         // Skip whitespace
-        let _: ModalResult<&str, ContextError> =
-            take_while(0.., is_ws).parse_next(input);
+        let _: ModalResult<&str, ContextError> = take_while(0.., is_ws).parse_next(input);
 
         // Check for comment
         if input.starts_with('#') {
@@ -233,9 +232,10 @@ fn parse_prefixed_name_or_keyword(input: &mut Input<'_>) -> ModalResult<TokenKin
     let start = input.checkpoint();
 
     // First character determines if this could be a prefixed name
-    let first_char = input.chars().next().ok_or_else(|| {
-        winnow::error::ErrMode::Backtrack(ContextError::new())
-    })?;
+    let first_char = input
+        .chars()
+        .next()
+        .ok_or_else(|| winnow::error::ErrMode::Backtrack(ContextError::new()))?;
 
     let is_valid_prefix_start = is_pn_prefix_start(first_char);
 
@@ -316,9 +316,10 @@ fn parse_prefixed_name_or_keyword(input: &mut Input<'_>) -> ModalResult<TokenKin
 /// Local names can contain '.' but cannot end with it.
 fn parse_pn_local(input: &mut Input<'_>) -> ModalResult<String> {
     // PN_LOCAL can start with PN_CHARS_U, ':', digit, or PLX
-    let first_char = input.chars().next().ok_or_else(|| {
-        winnow::error::ErrMode::Backtrack(ContextError::new())
-    })?;
+    let first_char = input
+        .chars()
+        .next()
+        .ok_or_else(|| winnow::error::ErrMode::Backtrack(ContextError::new()))?;
 
     if !is_pn_local_start(first_char) && first_char != '%' && first_char != '\\' {
         return Err(winnow::error::ErrMode::Backtrack(ContextError::new()));
@@ -328,7 +329,8 @@ fn parse_pn_local(input: &mut Input<'_>) -> ModalResult<String> {
 
     loop {
         // Take regular local name characters (except '.', handle separately)
-        let chunk: &str = take_while(0.., |c: char| is_pn_chars(c) || c == ':').parse_next(input)?;
+        let chunk: &str =
+            take_while(0.., |c: char| is_pn_chars(c) || c == ':').parse_next(input)?;
         result.push_str(chunk);
 
         if input.is_empty() {
@@ -340,7 +342,11 @@ fn parse_pn_local(input: &mut Input<'_>) -> ModalResult<String> {
             // Peek at what comes after the dot
             let rest = &input.as_ref()[1..];
             if let Some(next_char) = rest.chars().next() {
-                if is_pn_chars(next_char) || next_char == ':' || next_char == '%' || next_char == '\\' {
+                if is_pn_chars(next_char)
+                    || next_char == ':'
+                    || next_char == '%'
+                    || next_char == '\\'
+                {
                     // Dot followed by valid local name char - consume the dot
                     '.'.parse_next(input)?;
                     result.push('.');
@@ -369,7 +375,9 @@ fn parse_pn_local(input: &mut Input<'_>) -> ModalResult<String> {
                             // Everything before the colon should be valid prefix chars
                             let potential_prefix = &rest[..colon_pos];
                             !potential_prefix.is_empty()
-                                && potential_prefix.chars().all(|c| is_pn_chars_base(c) || c == '.')
+                                && potential_prefix
+                                    .chars()
+                                    .all(|c| is_pn_chars_base(c) || c == '.')
                         })
                         .unwrap_or(false);
 
@@ -672,9 +680,8 @@ fn parse_escape_char(input: &mut Input<'_>) -> ModalResult<char> {
             }
             let code = u32::from_str_radix(hex, 16)
                 .map_err(|_| winnow::error::ErrMode::Backtrack(ContextError::new()))?;
-            char::from_u32(code).ok_or_else(|| {
-                winnow::error::ErrMode::Backtrack(ContextError::new())
-            })
+            char::from_u32(code)
+                .ok_or_else(|| winnow::error::ErrMode::Backtrack(ContextError::new()))
         }
         'U' => {
             // \UXXXXXXXX
@@ -684,9 +691,8 @@ fn parse_escape_char(input: &mut Input<'_>) -> ModalResult<char> {
             }
             let code = u32::from_str_radix(hex, 16)
                 .map_err(|_| winnow::error::ErrMode::Backtrack(ContextError::new()))?;
-            char::from_u32(code).ok_or_else(|| {
-                winnow::error::ErrMode::Backtrack(ContextError::new())
-            })
+            char::from_u32(code)
+                .ok_or_else(|| winnow::error::ErrMode::Backtrack(ContextError::new()))
         }
         // Invalid escape sequence - reject
         _ => Err(winnow::error::ErrMode::Backtrack(ContextError::new())),
@@ -932,10 +938,7 @@ mod tests {
             }]
         );
 
-        assert_eq!(
-            tok("ex:"),
-            vec![TokenKind::PrefixedNameNs(Arc::from("ex"))]
-        );
+        assert_eq!(tok("ex:"), vec![TokenKind::PrefixedNameNs(Arc::from("ex"))]);
     }
 
     #[test]
@@ -968,10 +971,7 @@ mod tests {
             tok("\"hello\""),
             vec![TokenKind::String(Arc::from("hello"))]
         );
-        assert_eq!(
-            tok("'hello'"),
-            vec![TokenKind::String(Arc::from("hello"))]
-        );
+        assert_eq!(tok("'hello'"), vec![TokenKind::String(Arc::from("hello"))]);
         assert_eq!(
             tok("\"hello\\nworld\""),
             vec![TokenKind::String(Arc::from("hello\nworld"))]
@@ -1077,7 +1077,9 @@ mod tests {
         // When IRI parsing fails, the < will be lexed as Lt
         // and subsequent chars will be lexed individually
         let tokens = tok("<http://example.org/{bad}>");
-        assert!(tokens.iter().any(|t| matches!(t, TokenKind::Lt | TokenKind::Error(_))));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(t, TokenKind::Lt | TokenKind::Error(_))));
     }
 
     #[test]

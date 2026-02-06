@@ -182,9 +182,7 @@ pub async fn init_ledger(
 
     match ns.publish_ledger_init(&alias).await {
         Ok(()) => Ok(Json(InitResponse { created: true })),
-        Err(NameServiceError::LedgerAlreadyExists(_)) => {
-            Ok(Json(InitResponse { created: false }))
-        }
+        Err(NameServiceError::LedgerAlreadyExists(_)) => Ok(Json(InitResponse { created: false })),
         Err(e) => Err(ServerError::internal(format!("Init failed: {}", e))),
     }
 }

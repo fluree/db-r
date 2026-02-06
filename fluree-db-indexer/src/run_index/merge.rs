@@ -38,8 +38,7 @@ impl PartialOrd for HeapEntry {
 
 impl Ord for HeapEntry {
     fn cmp(&self, other: &Self) -> Ordering {
-        (self.cmp_fn)(&self.record, &other.record)
-            .then(self.stream_idx.cmp(&other.stream_idx))
+        (self.cmp_fn)(&self.record, &other.record).then(self.stream_idx.cmp(&other.stream_idx))
     }
 }
 
@@ -69,11 +68,15 @@ impl KWayMerge {
             }
         }
 
-        Ok(Self { heap, streams, cmp_fn })
+        Ok(Self {
+            heap,
+            streams,
+            cmp_fn,
+        })
     }
 
     /// Pop the next record in global SPOT order (no deduplication).
-    pub fn next(&mut self) -> io::Result<Option<RunRecord>> {
+    pub fn next_record(&mut self) -> io::Result<Option<RunRecord>> {
         let entry = match self.heap.pop() {
             Some(Reverse(e)) => e,
             None => return Ok(None),
@@ -106,7 +109,7 @@ impl KWayMerge {
     /// Records are consumed in SPOT order (ascending `t` for same base key),
     /// so the last consumed duplicate has the highest `t`.
     pub fn next_deduped(&mut self) -> io::Result<Option<RunRecord>> {
-        let mut best = match self.next()? {
+        let mut best = match self.next_record()? {
             Some(r) => r,
             None => return Ok(None),
         };
@@ -115,7 +118,7 @@ impl KWayMerge {
         loop {
             match self.heap.peek() {
                 Some(Reverse(entry)) if same_identity(&best, &entry.record) => {
-                    let dup = self.next()?.unwrap();
+                    let dup = self.next_record()?.unwrap();
                     // Keep the record with higher t (for same identity, later t wins)
                     if dup.t > best.t || (dup.t == best.t && dup.op >= best.op) {
                         best = dup;
@@ -144,7 +147,13 @@ impl KWayMerge {
 #[inline]
 fn same_identity(a: &RunRecord, b: &RunRecord) -> bool {
     // Base identity
-    if a.g_id != b.g_id || a.s_id != b.s_id || a.p_id != b.p_id || a.o_kind != b.o_kind || a.o_key != b.o_key || a.dt != b.dt {
+    if a.g_id != b.g_id
+        || a.s_id != b.s_id
+        || a.p_id != b.p_id
+        || a.o_kind != b.o_kind
+        || a.o_key != b.o_key
+        || a.dt != b.dt
+    {
         return false;
     }
 
@@ -169,18 +178,19 @@ fn same_identity(a: &RunRecord, b: &RunRecord) -> bool {
 mod tests {
     use super::*;
     use crate::run_index::global_dict::LanguageTagDict;
-    use crate::run_index::run_record::cmp_spot;
     use crate::run_index::run_file::write_run_file;
+    use crate::run_index::run_record::cmp_spot;
     use crate::run_index::run_record::RunSortOrder;
     use fluree_db_core::subject_id::SubjectId;
-    use fluree_db_core::value_id::{ObjKind, ObjKey};
+    use fluree_db_core::value_id::{ObjKey, ObjKind};
 
     fn make_record(s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
         RunRecord::new(
             0,
             SubjectId::from_u64(s_id),
             p_id,
-            ObjKind::NUM_INT, ObjKey::encode_i64(val),
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(val),
             t,
             true,
             DatatypeDictId::INTEGER.as_u16(),
@@ -194,7 +204,8 @@ mod tests {
             0,
             SubjectId::from_u64(s_id),
             p_id,
-            ObjKind::LEX_ID, ObjKey::encode_u32_id(lex_id),
+            ObjKind::LEX_ID,
+            ObjKey::encode_u32_id(lex_id),
             t,
             true,
             DatatypeDictId::LANG_STRING.as_u16(),
@@ -208,7 +219,8 @@ mod tests {
             0,
             SubjectId::from_u64(s_id),
             p_id,
-            ObjKind::NUM_INT, ObjKey::encode_i64(val),
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(val),
             t,
             true,
             DatatypeDictId::INTEGER.as_u16(),
@@ -218,14 +230,17 @@ mod tests {
     }
 
     /// Write a sorted run file from records (sorts in place).
-    fn write_sorted_run(dir: &std::path::Path, name: &str, mut records: Vec<RunRecord>) -> std::path::PathBuf {
+    fn write_sorted_run(
+        dir: &std::path::Path,
+        name: &str,
+        mut records: Vec<RunRecord>,
+    ) -> std::path::PathBuf {
         records.sort_unstable_by(cmp_spot);
         let path = dir.join(name);
         let lang_dict = LanguageTagDict::new();
-        let (min_t, max_t) = records.iter().fold(
-            (i64::MAX, i64::MIN),
-            |(min, max), r| (min.min(r.t), max.max(r.t)),
-        );
+        let (min_t, max_t) = records.iter().fold((i64::MAX, i64::MIN), |(min, max), r| {
+            (min.min(r.t), max.max(r.t))
+        });
         write_run_file(
             &path,
             &records,
@@ -251,24 +266,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let p0 = write_sorted_run(&dir, "r0.frn", vec![
-            make_record(1, 1, 10, 1),
-            make_record(3, 1, 30, 1),
-            make_record(5, 1, 50, 1),
-        ]);
-        let p1 = write_sorted_run(&dir, "r1.frn", vec![
-            make_record(2, 1, 20, 1),
-            make_record(4, 1, 40, 1),
-        ]);
-        let p2 = write_sorted_run(&dir, "r2.frn", vec![
-            make_record(6, 1, 60, 1),
-        ]);
+        let p0 = write_sorted_run(
+            &dir,
+            "r0.frn",
+            vec![
+                make_record(1, 1, 10, 1),
+                make_record(3, 1, 30, 1),
+                make_record(5, 1, 50, 1),
+            ],
+        );
+        let p1 = write_sorted_run(
+            &dir,
+            "r1.frn",
+            vec![make_record(2, 1, 20, 1), make_record(4, 1, 40, 1)],
+        );
+        let p2 = write_sorted_run(&dir, "r2.frn", vec![make_record(6, 1, 60, 1)]);
 
         let streams = open_streams(&[p0, p1, p2]);
         let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
 
         let mut results = Vec::new();
-        while let Some(rec) = merge.next().unwrap() {
+        while let Some(rec) = merge.next_record().unwrap() {
             results.push(rec);
         }
 
@@ -293,12 +311,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         // Same fact (s=1, p=1, o=10) at t=1 and t=2 in different runs
-        let p0 = write_sorted_run(&dir, "r0.frn", vec![
-            make_record(1, 1, 10, 1),
-        ]);
-        let p1 = write_sorted_run(&dir, "r1.frn", vec![
-            make_record(1, 1, 10, 2),
-        ]);
+        let p0 = write_sorted_run(&dir, "r0.frn", vec![make_record(1, 1, 10, 1)]);
+        let p1 = write_sorted_run(&dir, "r1.frn", vec![make_record(1, 1, 10, 2)]);
 
         let streams = open_streams(&[p0, p1]);
         let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
@@ -322,10 +336,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         // Same (s,p,o,dt=LANG_STRING) but different lang_id → distinct facts
-        let p0 = write_sorted_run(&dir, "r0.frn", vec![
-            make_lang_record(1, 1, 0, 1, 1), // lang_id=1 (e.g., "en")
-            make_lang_record(1, 1, 0, 1, 2), // lang_id=2 (e.g., "fr")
-        ]);
+        let p0 = write_sorted_run(
+            &dir,
+            "r0.frn",
+            vec![
+                make_lang_record(1, 1, 0, 1, 1), // lang_id=1 (e.g., "en")
+                make_lang_record(1, 1, 0, 1, 2), // lang_id=2 (e.g., "fr")
+            ],
+        );
 
         let streams = open_streams(&[p0]);
         let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
@@ -348,10 +366,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         // Same (s,p,o,dt) but different list index → distinct facts
-        let p0 = write_sorted_run(&dir, "r0.frn", vec![
-            make_list_record(1, 1, 10, 1, 0),
-            make_list_record(1, 1, 10, 1, 1),
-        ]);
+        let p0 = write_sorted_run(
+            &dir,
+            "r0.frn",
+            vec![
+                make_list_record(1, 1, 10, 1, 0),
+                make_list_record(1, 1, 10, 1, 1),
+            ],
+        );
 
         let streams = open_streams(&[p0]);
         let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
@@ -374,10 +396,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         // Same (s,p,o,dt) but one has list index and one doesn't → distinct facts
-        let p0 = write_sorted_run(&dir, "r0.frn", vec![
-            make_record(1, 1, 10, 1),            // i = ListIndex::none()
-            make_list_record(1, 1, 10, 1, 0),    // i = 0
-        ]);
+        let p0 = write_sorted_run(
+            &dir,
+            "r0.frn",
+            vec![
+                make_record(1, 1, 10, 1),         // i = ListIndex::none()
+                make_list_record(1, 1, 10, 1, 0), // i = 0
+            ],
+        );
 
         let streams = open_streams(&[p0]);
         let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
@@ -405,9 +431,9 @@ mod tests {
         let streams = open_streams(&[p0, p1]);
         let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
 
-        let rec = merge.next().unwrap().unwrap();
+        let rec = merge.next_record().unwrap().unwrap();
         assert_eq!(rec.s_id, SubjectId::from_u64(1));
-        assert!(merge.next().unwrap().is_none());
+        assert!(merge.next_record().unwrap().is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -419,33 +445,59 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         // Overlapping key ranges across streams
-        let p0 = write_sorted_run(&dir, "r0.frn", vec![
-            make_record(1, 1, 10, 1),
-            make_record(2, 1, 20, 1),
-            make_record(5, 1, 50, 1),
-        ]);
-        let p1 = write_sorted_run(&dir, "r1.frn", vec![
-            make_record(1, 2, 15, 1),
-            make_record(3, 1, 30, 1),
-            make_record(4, 1, 40, 1),
-        ]);
+        let p0 = write_sorted_run(
+            &dir,
+            "r0.frn",
+            vec![
+                make_record(1, 1, 10, 1),
+                make_record(2, 1, 20, 1),
+                make_record(5, 1, 50, 1),
+            ],
+        );
+        let p1 = write_sorted_run(
+            &dir,
+            "r1.frn",
+            vec![
+                make_record(1, 2, 15, 1),
+                make_record(3, 1, 30, 1),
+                make_record(4, 1, 40, 1),
+            ],
+        );
 
         let streams = open_streams(&[p0, p1]);
         let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
 
         let mut results = Vec::new();
-        while let Some(rec) = merge.next().unwrap() {
+        while let Some(rec) = merge.next_record().unwrap() {
             results.push(rec);
         }
 
         assert_eq!(results.len(), 6);
         // Verify SPOT order (s_id primary, p_id secondary)
-        assert_eq!((results[0].s_id, results[0].p_id), (SubjectId::from_u64(1), 1));
-        assert_eq!((results[1].s_id, results[1].p_id), (SubjectId::from_u64(1), 2));
-        assert_eq!((results[2].s_id, results[2].p_id), (SubjectId::from_u64(2), 1));
-        assert_eq!((results[3].s_id, results[3].p_id), (SubjectId::from_u64(3), 1));
-        assert_eq!((results[4].s_id, results[4].p_id), (SubjectId::from_u64(4), 1));
-        assert_eq!((results[5].s_id, results[5].p_id), (SubjectId::from_u64(5), 1));
+        assert_eq!(
+            (results[0].s_id, results[0].p_id),
+            (SubjectId::from_u64(1), 1)
+        );
+        assert_eq!(
+            (results[1].s_id, results[1].p_id),
+            (SubjectId::from_u64(1), 2)
+        );
+        assert_eq!(
+            (results[2].s_id, results[2].p_id),
+            (SubjectId::from_u64(2), 1)
+        );
+        assert_eq!(
+            (results[3].s_id, results[3].p_id),
+            (SubjectId::from_u64(3), 1)
+        );
+        assert_eq!(
+            (results[4].s_id, results[4].p_id),
+            (SubjectId::from_u64(4), 1)
+        );
+        assert_eq!(
+            (results[5].s_id, results[5].p_id),
+            (SubjectId::from_u64(5), 1)
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

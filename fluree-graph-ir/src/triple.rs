@@ -116,8 +116,12 @@ impl Ord for Triple {
     /// This ensures list elements with the same (subject, predicate) appear consecutively
     /// and in list order.
     fn cmp(&self, other: &Self) -> Ordering {
-        (&self.s, &self.p, &self.list_index, &self.o)
-            .cmp(&(&other.s, &other.p, &other.list_index, &other.o))
+        (&self.s, &self.p, &self.list_index, &self.o).cmp(&(
+            &other.s,
+            &other.p,
+            &other.list_index,
+            &other.o,
+        ))
     }
 }
 
@@ -245,7 +249,12 @@ mod tests {
         assert!(list_1 < list_2);
 
         // Sorting should preserve list order
-        let mut triples = vec![list_2.clone(), list_0.clone(), list_1.clone(), normal.clone()];
+        let mut triples = [
+            list_2.clone(),
+            list_0.clone(),
+            list_1.clone(),
+            normal.clone(),
+        ];
         triples.sort();
 
         assert_eq!(triples[0], normal);

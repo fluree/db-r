@@ -8,9 +8,7 @@ mod vended;
 #[cfg(feature = "aws")]
 mod aws_provider;
 
-pub use vended::{
-    CredentialCacheKey, OperationScope, VendedCredentialCache, VendedCredentials,
-};
+pub use vended::{CredentialCacheKey, OperationScope, VendedCredentialCache, VendedCredentials};
 
 #[cfg(feature = "aws")]
 pub use aws_provider::VendedAwsCredentialProvider;

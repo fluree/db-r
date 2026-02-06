@@ -271,7 +271,7 @@ pub fn is_path_start(tokens: &TokenStream) -> bool {
             | TokenKind::KwA
             | TokenKind::Caret      // ^path
             | TokenKind::Bang       // !iri
-            | TokenKind::LParen     // (path)
+            | TokenKind::LParen // (path)
     )
 }
 

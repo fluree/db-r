@@ -56,25 +56,23 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
 
         if let SelectVariables::Explicit(vars) = &select.variables {
             for var in vars {
-                if let SelectVariable::Expr { expr, alias, .. } = var {
-                    if let Expression::Aggregate {
-                        function,
-                        expr: agg_expr,
-                        distinct,
-                        separator,
-                        span,
-                    } = expr
-                    {
-                        let key = self.aggregate_key(
+                if let SelectVariable::Expr {
+                    expr:
+                        Expression::Aggregate {
                             function,
-                            agg_expr,
-                            *distinct,
+                            expr: agg_expr,
+                            distinct,
                             separator,
-                            *span,
-                        )?;
-                        let var_id = self.register_var(alias);
-                        aliases.insert(key, var_id);
-                    }
+                            span,
+                        },
+                    alias,
+                    ..
+                } = var
+                {
+                    let key =
+                        self.aggregate_key(function, agg_expr, *distinct, separator, *span)?;
+                    let var_id = self.register_var(alias);
+                    aliases.insert(key, var_id);
                 }
             }
         }
@@ -139,12 +137,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                         .vars
                         .get_or_insert(&format!("?__having_agg_{}", aliases.len()));
                     let spec = self.aggregate_spec_from_expr(
-                        function,
-                        agg_expr,
-                        *distinct,
-                        separator,
-                        *span,
-                        output_var,
+                        function, agg_expr, *distinct, separator, *span, output_var,
                     )?;
                     aliases.insert(key, output_var);
                     aggregates.push(spec);
@@ -192,11 +185,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         }
     }
 
-    pub(super) fn expr_references_vars(
-        &self,
-        expr: &Expression,
-        vars: &HashSet<Arc<str>>,
-    ) -> bool {
+    pub(super) fn expr_references_vars(&self, expr: &Expression, vars: &HashSet<Arc<str>>) -> bool {
         match expr.unwrap_bracketed() {
             Expression::Var(var) => vars.contains(&var.name),
             Expression::Literal(_) | Expression::Iri(_) => false,
@@ -245,21 +234,24 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
 
         if let SelectVariables::Explicit(vars) = &select.variables {
             for var in vars {
-                if let SelectVariable::Expr { expr, alias, .. } = var {
-                    if let Expression::Aggregate {
-                        function,
-                        expr: agg_expr,
-                        distinct,
-                        separator,
-                        span,
-                    } = expr
-                    {
-                        let output_var = self.register_var(alias);
-                        let spec = self.aggregate_spec_from_expr(
-                            function, agg_expr, *distinct, separator, *span, output_var,
-                        )?;
-                        aggregates.push(spec);
-                    }
+                if let SelectVariable::Expr {
+                    expr:
+                        Expression::Aggregate {
+                            function,
+                            expr: agg_expr,
+                            distinct,
+                            separator,
+                            span,
+                        },
+                    alias,
+                    ..
+                } = var
+                {
+                    let output_var = self.register_var(alias);
+                    let spec = self.aggregate_spec_from_expr(
+                        function, agg_expr, *distinct, separator, *span, output_var,
+                    )?;
+                    aggregates.push(spec);
                 }
             }
         }

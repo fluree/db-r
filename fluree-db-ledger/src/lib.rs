@@ -106,11 +106,7 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
     ///
     /// This is resilient to missing index - if the nameservice has commits
     /// but no index yet, it creates a genesis Db and loads all commits as novelty.
-    pub async fn load<N: NameService>(
-        ns: &N,
-        ledger_address: &str,
-        storage: S,
-    ) -> Result<Self> {
+    pub async fn load<N: NameService>(ns: &N, ledger_address: &str, storage: S) -> Result<Self> {
         let record = ns
             .lookup(ledger_address)
             .await?
@@ -196,10 +192,8 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
 
     /// Create a new ledger state from components
     pub fn new(db: Db<S>, novelty: Novelty) -> Self {
-        let dict_novelty = DictNovelty::with_watermarks(
-            db.subject_watermarks.clone(),
-            db.string_watermark,
-        );
+        let dict_novelty =
+            DictNovelty::with_watermarks(db.subject_watermarks.clone(), db.string_watermark);
         Self {
             db,
             novelty: Arc::new(novelty),
@@ -259,12 +253,7 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
     /// as it includes both the indexed stats and any uncommitted changes
     /// from the novelty layer.
     pub fn current_stats(&self) -> fluree_db_core::IndexStats {
-        let indexed = self
-            .db
-            .stats
-            .as_ref()
-            .cloned()
-            .unwrap_or_default(); // IndexStats::default() for genesis/no-index
+        let indexed = self.db.stats.as_ref().cloned().unwrap_or_default(); // IndexStats::default() for genesis/no-index
         fluree_db_novelty::current_stats(&indexed, self.novelty.as_ref())
     }
 
@@ -284,11 +273,7 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
     /// - `StaleIndex` if the new index is older than the current index
     /// - `Core` errors from loading the index
     pub async fn apply_index(&mut self, index_address: &str) -> Result<()> {
-        let new_db = Db::load(
-            self.db.storage.clone(),
-            index_address,
-        )
-        .await?;
+        let new_db = Db::load(self.db.storage.clone(), index_address).await?;
 
         // Verify alias matches
         if new_db.alias != self.db.alias {
@@ -528,14 +513,11 @@ mod tests {
 
         // Store the commit as v2 binary
         let commit = fluree_db_novelty::Commit::new("commit-1", 1, vec![make_flake(1, 1, 100, 1)]);
-        let storage = storage;
         let blob = fluree_db_novelty::commit_v2::write_commit(&commit, false, None).unwrap();
         storage.insert("commit-1", blob.bytes);
 
         // Load ledger - should use genesis since no index exists
-        let state = LedgerState::load(&ns, "test:main", storage)
-            .await
-            .unwrap();
+        let state = LedgerState::load(&ns, "test:main", storage).await.unwrap();
 
         assert_eq!(state.alias(), "test:main");
         assert_eq!(state.index_t(), 0); // Genesis
@@ -552,8 +534,12 @@ mod tests {
 
         // Create novelty with flakes at t=1 and t=2
         let mut novelty = Novelty::new(0);
-        novelty.apply_commit(vec![make_flake(1, 1, 100, 1)], 1).unwrap();
-        novelty.apply_commit(vec![make_flake(2, 1, 200, 2)], 2).unwrap();
+        novelty
+            .apply_commit(vec![make_flake(1, 1, 100, 1)], 1)
+            .unwrap();
+        novelty
+            .apply_commit(vec![make_flake(2, 1, 200, 2)], 2)
+            .unwrap();
 
         let mut state = LedgerState::new(db, novelty);
         assert_eq!(state.index_t(), 0);
@@ -671,7 +657,10 @@ mod tests {
             "dicts": {},
             "graphs": []
         });
-        storage.insert("index-root-same", serde_json::to_vec(&root_json_same).unwrap());
+        storage.insert(
+            "index-root-same",
+            serde_json::to_vec(&root_json_same).unwrap(),
+        );
 
         // Should succeed as no-op
         let result = state.apply_index("index-root-same").await;

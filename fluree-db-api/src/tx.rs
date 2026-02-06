@@ -4,28 +4,61 @@
 //! indexing triggers into the high-level `fluree-db-api` surface.
 
 use crate::{ApiError, Result};
-use crate::{TrackedErrorResponse, TrackingOptions, TrackingTally, Tracker};
+use crate::{TrackedErrorResponse, Tracker, TrackingOptions, TrackingTally};
 use fluree_db_core::{ContentAddressedWrite, Storage};
 use fluree_db_indexer::IndexerHandle;
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, Publisher};
-use fluree_db_transact::{
-    commit as commit_txn, parse_transaction, stage as stage_txn, CommitOpts, CommitReceipt,
-    NamespaceRegistry, StageOptions, TxnOpts, TxnType,
-};
 #[cfg(feature = "shacl")]
 use fluree_db_shacl::ShaclEngine;
+#[cfg(not(feature = "shacl"))]
+use fluree_db_transact::stage as stage_txn;
 #[cfg(feature = "shacl")]
 use fluree_db_transact::stage_with_shacl;
+use fluree_db_transact::{
+    commit as commit_txn, parse_transaction, CommitOpts, CommitReceipt, NamespaceRegistry,
+    StageOptions, TxnOpts, TxnType,
+};
 use serde_json::Value as JsonValue;
 
 fn ledger_alias_from_txn(txn_json: &JsonValue) -> Result<&str> {
-    let obj = txn_json.as_object().ok_or_else(|| {
-        ApiError::config("Invalid transaction, missing required key: ledger.")
-    })?;
+    let obj = txn_json
+        .as_object()
+        .ok_or_else(|| ApiError::config("Invalid transaction, missing required key: ledger."))?;
     obj.get("ledger")
         .and_then(|v| v.as_str())
         .ok_or_else(|| ApiError::config("Invalid transaction, missing required key: ledger."))
+}
+
+/// Input parameters for tracked transactions with policy enforcement.
+///
+/// Bundles the common transaction parameters to reduce argument count.
+pub struct TrackedTransactionInput<'a> {
+    /// Transaction type (insert, delete, etc.)
+    pub txn_type: TxnType,
+    /// Transaction JSON body
+    pub txn_json: &'a JsonValue,
+    /// Transaction options
+    pub txn_opts: TxnOpts,
+    /// Policy context for access control
+    pub policy: &'a crate::PolicyContext,
+}
+
+impl<'a> TrackedTransactionInput<'a> {
+    /// Create new tracked transaction input.
+    pub fn new(
+        txn_type: TxnType,
+        txn_json: &'a JsonValue,
+        txn_opts: TxnOpts,
+        policy: &'a crate::PolicyContext,
+    ) -> Self {
+        Self {
+            txn_type,
+            txn_json,
+            txn_opts,
+            policy,
+        }
+    }
 }
 
 /// Create a tracker for fuel limits only (no time/policy tracking).
@@ -53,24 +86,19 @@ fn tracker_for_limits(txn_json: &JsonValue) -> Tracker {
 ///
 /// Controls whether transactions trigger background indexing or return hints
 /// for an external indexer (e.g., Lambda).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum IndexingMode {
     /// Disabled mode (Lambda/external indexer)
     ///
     /// Transactions complete without triggering indexing. The `IndexingStatus`
     /// in the result provides hints for external indexers.
+    #[default]
     Disabled,
     /// Background mode with coalescing handle
     ///
     /// Triggers background indexing when `indexing_needed` is true.
     /// Uses a depth-1 coalescing queue (latest wins per ledger).
     Background(IndexerHandle),
-}
-
-impl Default for IndexingMode {
-    fn default() -> Self {
-        IndexingMode::Disabled
-    }
 }
 
 impl IndexingMode {
@@ -195,9 +223,10 @@ where
         #[cfg(feature = "shacl")]
         let (view, ns_registry) = {
             // Use from_db_with_overlay to include novelty flakes (shapes committed but not yet indexed)
-            let engine = ShaclEngine::from_db_with_overlay(&ledger.db, &*ledger.novelty, ledger.alias())
-                .await
-                .map_err(fluree_db_transact::TransactError::from)?;
+            let engine =
+                ShaclEngine::from_db_with_overlay(&ledger.db, &*ledger.novelty, ledger.alias())
+                    .await
+                    .map_err(fluree_db_transact::TransactError::from)?;
             let shacl_cache = engine.cache().clone();
             let mut options = match index_config {
                 Some(cfg) => StageOptions::new().with_index_config(cfg),
@@ -235,9 +264,10 @@ where
         let ns_registry = NamespaceRegistry::from_db(&ledger.db);
         #[cfg(feature = "shacl")]
         let (view, ns_registry) = {
-            let engine = ShaclEngine::from_db_with_overlay(&ledger.db, &*ledger.novelty, ledger.alias())
-                .await
-                .map_err(fluree_db_transact::TransactError::from)?;
+            let engine =
+                ShaclEngine::from_db_with_overlay(&ledger.db, &*ledger.novelty, ledger.alias())
+                    .await
+                    .map_err(fluree_db_transact::TransactError::from)?;
             let shacl_cache = engine.cache().clone();
             let options = match index_config {
                 Some(cfg) => StageOptions::new().with_index_config(cfg),
@@ -262,20 +292,22 @@ where
     pub(crate) async fn stage_transaction_tracked_with_policy(
         &self,
         ledger: LedgerState<S>,
-        txn_type: TxnType,
-        txn_json: &JsonValue,
-        txn_opts: TxnOpts,
+        input: TrackedTransactionInput<'_>,
         index_config: Option<&IndexConfig>,
-        policy: &crate::PolicyContext,
         tracker: &Tracker,
     ) -> std::result::Result<StageResult<S>, TrackedErrorResponse> {
         let mut ns_registry = NamespaceRegistry::from_db(&ledger.db);
-        let txn = parse_transaction(txn_json, txn_type, txn_opts, &mut ns_registry)
-            .map_err(|e| TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally()))?;
+        let txn = parse_transaction(
+            input.txn_json,
+            input.txn_type,
+            input.txn_opts,
+            &mut ns_registry,
+        )
+        .map_err(|e| TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally()))?;
 
         // Build stage options with policy and tracker
         let mut options = StageOptions::new()
-            .with_policy(policy)
+            .with_policy(input.policy)
             .with_tracker(tracker);
         if let Some(cfg) = index_config {
             options = options.with_index_config(cfg);
@@ -284,13 +316,18 @@ where
         #[cfg(feature = "shacl")]
         let (view, ns_registry) = {
             // Use from_db_with_overlay to include novelty flakes (shapes committed but not yet indexed)
-            let engine = ShaclEngine::from_db_with_overlay(&ledger.db, &*ledger.novelty, ledger.alias())
-                .await
-                .map_err(|e| TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally()))?;
+            let engine =
+                ShaclEngine::from_db_with_overlay(&ledger.db, &*ledger.novelty, ledger.alias())
+                    .await
+                    .map_err(|e| {
+                        TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally())
+                    })?;
             let shacl_cache = engine.cache().clone();
             stage_with_shacl(ledger, txn, ns_registry, options, &shacl_cache)
                 .await
-                .map_err(|e| TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally()))?
+                .map_err(|e| {
+                    TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally())
+                })?
         };
         #[cfg(not(feature = "shacl"))]
         let (view, ns_registry) = stage_txn(ledger, txn, ns_registry, options)
@@ -306,34 +343,24 @@ where
     pub async fn transact_tracked_with_policy(
         &self,
         ledger: LedgerState<S>,
-        txn_type: TxnType,
-        txn_json: &JsonValue,
-        txn_opts: TxnOpts,
+        input: TrackedTransactionInput<'_>,
         commit_opts: CommitOpts,
         index_config: &IndexConfig,
-        policy: &crate::PolicyContext,
     ) -> std::result::Result<(TransactResult<S>, Option<TrackingTally>), TrackedErrorResponse> {
-        let store_raw_txn = txn_opts.store_raw_txn.unwrap_or(false);
+        let store_raw_txn = input.txn_opts.store_raw_txn.unwrap_or(false);
+        let txn_json_for_commit = input.txn_json.clone();
 
-        let opts = txn_json.as_object().and_then(|o| o.get("opts"));
+        let opts = input.txn_json.as_object().and_then(|o| o.get("opts"));
         let tracker = Tracker::new(TrackingOptions::from_opts_value(opts));
 
         let StageResult { view, ns_registry } = self
-            .stage_transaction_tracked_with_policy(
-                ledger,
-                txn_type,
-                txn_json,
-                txn_opts,
-                Some(index_config),
-                policy,
-                &tracker,
-            )
+            .stage_transaction_tracked_with_policy(ledger, input, Some(index_config), &tracker)
             .await?;
 
         // Store raw transaction JSON ONLY when explicitly opted-in, or when already provided
         // (e.g., signed credential envelope for provenance).
         let commit_opts = if commit_opts.raw_txn.is_none() && store_raw_txn {
-            commit_opts.with_raw_txn(txn_json.clone())
+            commit_opts.with_raw_txn(txn_json_for_commit)
         } else {
             commit_opts
         };
@@ -424,27 +451,26 @@ where
         //
         // This allows patterns like "delete if exists, then insert" to execute safely when
         // there are no matches, and supports conditional updates.
-        let (receipt, ledger) = if !view.has_staged()
-            && matches!(txn_type, TxnType::Update | TxnType::Upsert)
-        {
-            let (base, flakes) = view.into_parts();
-            debug_assert!(
-                flakes.is_empty(),
-                "no-op transaction path requires zero staged flakes"
-            );
-            (
-                CommitReceipt {
-                    address: String::new(),
-                    commit_id: String::new(),
-                    t: base.t(),
-                    flake_count: 0,
-                },
-                base,
-            )
-        } else {
-            self.commit_staged(view, ns_registry, index_config, commit_opts)
-                .await?
-        };
+        let (receipt, ledger) =
+            if !view.has_staged() && matches!(txn_type, TxnType::Update | TxnType::Upsert) {
+                let (base, flakes) = view.into_parts();
+                debug_assert!(
+                    flakes.is_empty(),
+                    "no-op transaction path requires zero staged flakes"
+                );
+                (
+                    CommitReceipt {
+                        address: String::new(),
+                        commit_id: String::new(),
+                        t: base.t(),
+                        flake_count: 0,
+                    },
+                    base,
+                )
+            } else {
+                self.commit_staged(view, ns_registry, index_config, commit_opts)
+                    .await?
+            };
 
         // Compute indexing status AFTER publish_commit succeeds
         let indexing_enabled = self.indexing_mode.is_enabled() && self.defaults_indexing_enabled();
@@ -659,8 +685,15 @@ where
         commit_opts: CommitOpts,
         index_config: &IndexConfig,
     ) -> Result<TransactResult<S>> {
-        self.transact(ledger, TxnType::Insert, data, txn_opts, commit_opts, index_config)
-            .await
+        self.transact(
+            ledger,
+            TxnType::Insert,
+            data,
+            txn_opts,
+            commit_opts,
+            index_config,
+        )
+        .await
     }
 
     /// Upsert data into the ledger
@@ -760,8 +793,15 @@ where
         commit_opts: CommitOpts,
         index_config: &IndexConfig,
     ) -> Result<TransactResult<S>> {
-        self.transact(ledger, TxnType::Upsert, data, txn_opts, commit_opts, index_config)
-            .await
+        self.transact(
+            ledger,
+            TxnType::Upsert,
+            data,
+            txn_opts,
+            commit_opts,
+            index_config,
+        )
+        .await
     }
 
     /// Update data with WHERE/DELETE/INSERT semantics
@@ -802,7 +842,6 @@ where
         .await
     }
 
-
     /// Update data with options
     ///
     /// Same as `update` but allows custom transaction and commit options.
@@ -816,10 +855,16 @@ where
         commit_opts: CommitOpts,
         index_config: &IndexConfig,
     ) -> Result<TransactResult<S>> {
-        self.transact(ledger, TxnType::Update, update_json, txn_opts, commit_opts, index_config)
-            .await
+        self.transact(
+            ledger,
+            TxnType::Update,
+            update_json,
+            txn_opts,
+            commit_opts,
+            index_config,
+        )
+        .await
     }
-
 
     // ========================================================================
     // CREDENTIALED TRANSACTION METHODS
@@ -876,8 +921,7 @@ where
 
         // Context propagation: inject parent context if subject doesn't have one
         let mut txn_json = verified.subject.clone();
-        if let (Some(parent_ctx), Some(obj)) =
-            (&verified.parent_context, txn_json.as_object_mut())
+        if let (Some(parent_ctx), Some(obj)) = (&verified.parent_context, txn_json.as_object_mut())
         {
             if !obj.contains_key("@context") {
                 obj.insert("@context".to_string(), parent_ctx.clone());
@@ -910,16 +954,14 @@ where
 
         // Use transact_tracked_with_policy and extract result
         let index_config = self.default_index_config();
+        let input = TrackedTransactionInput::new(
+            TxnType::Update, // credential-transact! uses update! internally
+            &txn_json,
+            txn_opts,
+            &policy_ctx,
+        );
         let (result, _tally) = self
-            .transact_tracked_with_policy(
-                ledger,
-                TxnType::Update, // credential-transact! uses update! internally
-                &txn_json,
-                txn_opts,
-                commit_opts,
-                &index_config,
-                &policy_ctx,
-            )
+            .transact_tracked_with_policy(ledger, input, commit_opts, &index_config)
             .await
             .map_err(|e: TrackedErrorResponse| {
                 // Map TrackedErrorResponse to ApiError, preserving HTTP status
@@ -954,19 +996,16 @@ where
     ) -> Result<(TransactResult<S>, Option<TrackingTally>)> {
         let ledger_alias = ledger_alias_from_txn(update_json)?;
         let ledger = self.ledger(ledger_alias).await?;
-        let policy_ctx =
-            crate::PolicyContext::new(fluree_db_policy::PolicyWrapper::root(), None);
+        let policy_ctx = crate::PolicyContext::new(fluree_db_policy::PolicyWrapper::root(), None);
         let index_config = self.default_index_config();
+        let input = TrackedTransactionInput::new(
+            TxnType::Update,
+            update_json,
+            TxnOpts::default(),
+            &policy_ctx,
+        );
         let (result, tally) = self
-            .transact_tracked_with_policy(
-                ledger,
-                TxnType::Update,
-                update_json,
-                TxnOpts::default(),
-                CommitOpts::default(),
-                &index_config,
-                &policy_ctx,
-            )
+            .transact_tracked_with_policy(ledger, input, CommitOpts::default(), &index_config)
             .await
             .map_err(|e| ApiError::http(e.status, e.error))?;
         Ok((result, tally))
@@ -978,4 +1017,3 @@ where
 fn _ensure_error_used(e: ApiError) -> ApiError {
     e
 }
-

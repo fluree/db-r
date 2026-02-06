@@ -22,7 +22,7 @@ use fluree_db_nameservice::{NameService, Publisher, VirtualGraphPublisher};
 use fluree_db_query::bm25::{Bm25Index, Bm25IndexProvider, Bm25SearchProvider, Bm25SearchResult};
 use fluree_db_query::error::{QueryError, Result as QueryResult};
 use std::sync::Arc;
-use tracing::{info, debug};
+use tracing::{debug, info};
 
 use crate::search::{DeploymentMode, EmbeddedBm25SearchProvider, SearchDeploymentConfig};
 
@@ -36,7 +36,7 @@ use crate::search::RemoteBm25SearchProvider;
 use crate::search::RemoteVectorSearchProvider;
 
 #[cfg(feature = "vector")]
-use fluree_db_query::vector::{DistanceMetric, VectorIndexProvider, VectorSearchHit};
+use fluree_db_query::vector::{VectorIndexProvider, VectorSearchHit, VectorSearchParams};
 
 /// BM25 index provider for query execution.
 ///
@@ -69,7 +69,8 @@ impl<'a, S: Storage + 'static, N> FlureeIndexProvider<'a, S, N> {
 
 impl<S: Storage + 'static, N> std::fmt::Debug for FlureeIndexProvider<'_, S, N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FlureeIndexProvider").finish_non_exhaustive()
+        f.debug_struct("FlureeIndexProvider")
+            .finish_non_exhaustive()
     }
 }
 
@@ -320,17 +321,16 @@ fn parse_deployment_from_vg_config(config_json: &str) -> QueryResult<SearchDeplo
     }
 
     // Parse the full config JSON
-    let config: serde_json::Value = serde_json::from_str(config_json).map_err(|e| {
-        QueryError::Internal(format!("Failed to parse VG config JSON: {}", e))
-    })?;
+    let config: serde_json::Value = serde_json::from_str(config_json)
+        .map_err(|e| QueryError::Internal(format!("Failed to parse VG config JSON: {}", e)))?;
 
     // Look for "deployment" field
     if let Some(deployment_value) = config.get("deployment") {
         // Parse deployment config
-        let deployment: SearchDeploymentConfig =
-            serde_json::from_value(deployment_value.clone()).map_err(|e| {
-                QueryError::Internal(format!("Failed to parse deployment config: {}", e))
-            })?;
+        let deployment: SearchDeploymentConfig = serde_json::from_value(deployment_value.clone())
+            .map_err(|e| {
+            QueryError::Internal(format!("Failed to parse deployment config: {}", e))
+        })?;
         return Ok(deployment);
     }
 
@@ -364,21 +364,11 @@ where
     /// # Arguments
     ///
     /// * `vg_alias` - Virtual graph alias (e.g., "embeddings:main")
-    /// * `query_vector` - The query vector to find similar vectors for
-    /// * `metric` - Distance metric (Cosine, Dot, or Euclidean)
-    /// * `limit` - Maximum number of results
-    /// * `as_of_t` - Target transaction time for time-travel queries
-    /// * `sync` - Whether to sync before querying if index is stale
-    /// * `timeout_ms` - Query timeout in milliseconds
+    /// * `params` - Search parameters (query vector, metric, limit, etc.)
     async fn search(
         &self,
         vg_alias: &str,
-        query_vector: &[f32],
-        metric: DistanceMetric,
-        limit: usize,
-        as_of_t: Option<i64>,
-        sync: bool,
-        timeout_ms: Option<u64>,
+        params: VectorSearchParams<'_>,
     ) -> QueryResult<Vec<VectorSearchHit>> {
         // Look up VG record to get deployment configuration
         let deployment_config = self.get_deployment_config(vg_alias).await?;
@@ -386,16 +376,7 @@ where
         match deployment_config.mode {
             DeploymentMode::Embedded => {
                 debug!(vg_alias = %vg_alias, "Using embedded vector search mode");
-                self.search_vector_embedded(
-                    vg_alias,
-                    query_vector,
-                    metric,
-                    limit,
-                    as_of_t,
-                    sync,
-                    timeout_ms,
-                )
-                .await
+                self.search_vector_embedded(vg_alias, &params).await
             }
             #[cfg(feature = "search-remote-client")]
             DeploymentMode::Remote => {
@@ -406,15 +387,7 @@ where
                 );
                 let client = RemoteVectorSearchProvider::from_config(&deployment_config)?;
                 client
-                    .search(
-                        vg_alias,
-                        query_vector,
-                        metric,
-                        limit,
-                        as_of_t,
-                        sync,
-                        timeout_ms,
-                    )
+                    .search(vg_alias, params)
                     .await
             }
             #[cfg(not(feature = "search-remote-client"))]
@@ -453,16 +426,11 @@ where
     async fn search_vector_embedded(
         &self,
         vg_alias: &str,
-        query_vector: &[f32],
-        metric: DistanceMetric,
-        limit: usize,
-        as_of_t: Option<i64>,
-        sync: bool,
-        timeout_ms: Option<u64>,
+        params: &VectorSearchParams<'_>,
     ) -> QueryResult<Vec<VectorSearchHit>> {
         use fluree_db_query::vector::usearch::deserialize;
 
-        let _ = timeout_ms; // Reserved for future use
+        let _ = params.timeout_ms; // Reserved for future use
 
         // Look up snapshot history
         let history = self
@@ -473,7 +441,7 @@ where
             .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?;
 
         // Try to select best snapshot for as_of_t (or latest if None)
-        let selection = match as_of_t {
+        let selection = match params.as_of_t {
             Some(t) => history.select_snapshot(t),
             None => history.head(),
         };
@@ -491,23 +459,23 @@ where
                 .map_err(|e| QueryError::Internal(format!("Deserialize error: {}", e)))?;
 
             // Check metric compatibility
-            if index.metadata.metric != metric {
+            if index.metadata.metric != params.metric {
                 return Err(QueryError::InvalidQuery(format!(
                     "Vector index '{}' uses {:?} metric, but query requested {:?}",
-                    vg_alias, index.metadata.metric, metric
+                    vg_alias, index.metadata.metric, params.metric
                 )));
             }
 
             debug!(
                 vg_alias = %vg_alias,
-                as_of_t = ?as_of_t,
+                as_of_t = ?params.as_of_t,
                 snapshot_t = entry.index_t,
-                limit = limit,
+                limit = params.limit,
                 "Executing vector search"
             );
 
             let results = index
-                .search(query_vector, limit)
+                .search(params.query_vector, params.limit)
                 .map_err(|e| QueryError::Internal(format!("Vector search error: {}", e)))?;
 
             return Ok(results
@@ -517,7 +485,7 @@ where
         }
 
         // No suitable snapshot found. Try to sync if requested.
-        if sync {
+        if params.sync {
             // Sync to head (which will create a new snapshot in history)
             self.fluree
                 .sync_vector_index(vg_alias)
@@ -532,7 +500,7 @@ where
                 .await
                 .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?;
 
-            let selection = match as_of_t {
+            let selection = match params.as_of_t {
                 Some(t) => history.select_snapshot(t),
                 None => history.head(),
             };
@@ -549,23 +517,23 @@ where
                     .map_err(|e| QueryError::Internal(format!("Deserialize error: {}", e)))?;
 
                 // Check metric compatibility
-                if index.metadata.metric != metric {
+                if index.metadata.metric != params.metric {
                     return Err(QueryError::InvalidQuery(format!(
                         "Vector index '{}' uses {:?} metric, but query requested {:?}",
-                        vg_alias, index.metadata.metric, metric
+                        vg_alias, index.metadata.metric, params.metric
                     )));
                 }
 
                 info!(
                     vg_alias = %vg_alias,
-                    as_of_t = ?as_of_t,
+                    as_of_t = ?params.as_of_t,
                     snapshot_t = entry.index_t,
-                    limit = limit,
+                    limit = params.limit,
                     "Executing vector search after sync"
                 );
 
                 let results = index
-                    .search(query_vector, limit)
+                    .search(params.query_vector, params.limit)
                     .map_err(|e| QueryError::Internal(format!("Vector search error: {}", e)))?;
 
                 return Ok(results
@@ -577,7 +545,7 @@ where
             // Still no snapshot - the target_t might be earlier than any snapshot
             return Err(QueryError::InvalidQuery(format!(
                 "No vector snapshot available for {} at t={:?}. The earliest snapshot may be later than requested.",
-                vg_alias, as_of_t
+                vg_alias, params.as_of_t
             )));
         }
 
@@ -595,7 +563,7 @@ where
 
         Err(QueryError::InvalidQuery(format!(
             "No vector snapshot available for {} at t={:?}.{}",
-            vg_alias, as_of_t, available
+            vg_alias, params.as_of_t, available
         )))
     }
 }

@@ -37,8 +37,7 @@ use crate::pattern::Term;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::{
-    range_with_overlay, FlakeValue, IndexType, RangeMatch, RangeOptions, RangeTest, Sid,
-    Storage,
+    range_with_overlay, FlakeValue, IndexType, RangeMatch, RangeOptions, RangeTest, Sid, Storage,
 };
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
@@ -431,9 +430,7 @@ impl<S: Storage + 'static> PropertyPathOperator<S> {
                     .map(|subj| (subj, obj.clone()))
                     .collect()
             }
-            (Term::Var(_), Term::Var(_)) => {
-                self.compute_closure(ctx).await?
-            }
+            (Term::Var(_), Term::Var(_)) => self.compute_closure(ctx).await?,
             (Term::Sid(_), Term::Sid(_)) => {
                 // Both constants: reachability check (0/1 rows). We use a dummy pair to indicate 1 row.
                 let subj = match &self.pattern.subject {
@@ -614,17 +611,15 @@ impl<S: Storage + 'static> PropertyPathOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S>
-    for PropertyPathOperator<S>
-{
+impl<S: Storage + 'static> Operator<S> for PropertyPathOperator<S> {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
-        if self.child.is_some() {
+        if let Some(child) = &mut self.child {
             // Correlated mode: open child
-            self.child.as_mut().unwrap().open(ctx).await?;
+            child.open(ctx).await?;
         } else {
             // Unseeded mode: execute traversal now
             self.execute_unseeded(ctx).await?;
@@ -640,9 +635,10 @@ impl<S: Storage + 'static> Operator<S>
 
         if self.child.is_none() {
             // Unseeded mode: return buffered results
-            let results = self.results_buffer.as_ref().ok_or_else(|| {
-                QueryError::OperatorNotOpened
-            })?;
+            let results = self
+                .results_buffer
+                .as_ref()
+                .ok_or_else(|| QueryError::OperatorNotOpened)?;
 
             if self.results_idx >= results.len() {
                 self.state = OperatorState::Exhausted;
@@ -774,7 +770,12 @@ mod tests {
     use crate::pattern::Term;
     use fluree_db_core::Sid;
 
-    fn make_pattern(subj: Term, pred: Sid, modifier: PathModifier, obj: Term) -> PropertyPathPattern {
+    fn make_pattern(
+        subj: Term,
+        pred: Sid,
+        modifier: PathModifier,
+        obj: Term,
+    ) -> PropertyPathPattern {
         PropertyPathPattern::new(subj, pred, modifier, obj)
     }
 

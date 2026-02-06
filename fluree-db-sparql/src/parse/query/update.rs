@@ -121,7 +121,9 @@ impl<'a> super::Parser<'a> {
         let pattern = self.parse_quad_pattern()?;
 
         let span = start.union(self.stream.previous_span());
-        Some(UpdateOperation::DeleteWhere(DeleteWhere::new(pattern, span)))
+        Some(UpdateOperation::DeleteWhere(DeleteWhere::new(
+            pattern, span,
+        )))
     }
 
     /// Parse INSERT { ... } [USING ...] WHERE { ... }
@@ -148,7 +150,7 @@ impl<'a> super::Parser<'a> {
             modify = modify.with_using(u);
         }
 
-        Some(UpdateOperation::Modify(modify))
+        Some(UpdateOperation::Modify(Box::new(modify)))
     }
 
     /// Parse DELETE { ... } [INSERT { ... }] [USING ...] WHERE { ... }
@@ -183,7 +185,7 @@ impl<'a> super::Parser<'a> {
             modify = modify.with_using(u);
         }
 
-        Some(UpdateOperation::Modify(modify))
+        Some(UpdateOperation::Modify(Box::new(modify)))
     }
 
     /// Parse quad data (ground triples for INSERT DATA / DELETE DATA).
@@ -206,7 +208,8 @@ impl<'a> super::Parser<'a> {
                     if self.stream.check(&TokenKind::RBrace) {
                         break;
                     }
-                    self.stream.error_at_current("expected subject in quad data");
+                    self.stream
+                        .error_at_current("expected subject in quad data");
                     return None;
                 }
             };
@@ -234,7 +237,8 @@ impl<'a> super::Parser<'a> {
 
         // Expect opening brace
         if !self.stream.match_token(&TokenKind::LBrace) {
-            self.stream.error_at_current("expected '{' for quad pattern");
+            self.stream
+                .error_at_current("expected '{' for quad pattern");
             return None;
         }
 
@@ -284,7 +288,8 @@ impl<'a> super::Parser<'a> {
 
         // Expect opening brace
         if !self.stream.match_token(&TokenKind::LBrace) {
-            self.stream.error_at_current("expected '{' for WHERE clause");
+            self.stream
+                .error_at_current("expected '{' for WHERE clause");
             return None;
         }
 

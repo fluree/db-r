@@ -83,10 +83,7 @@ impl DateTime {
 
         // Try with explicit timezone offset formats not covered by RFC3339
         // e.g., "2024-01-15T10:30:00+0500" (no colon in offset)
-        for fmt in &[
-            "%Y-%m-%dT%H:%M:%S%.f%z",
-            "%Y-%m-%dT%H:%M:%S%z",
-        ] {
+        for fmt in &["%Y-%m-%dT%H:%M:%S%.f%z", "%Y-%m-%dT%H:%M:%S%z"] {
             if let Ok(dt) = ChronoDateTime::parse_from_str(s, fmt) {
                 return Ok(Self {
                     instant: dt.with_timezone(&Utc),
@@ -244,8 +241,7 @@ impl Date {
         }
 
         // Try parsing with timezone suffix
-        if s.ends_with('Z') {
-            let date_part = &s[..s.len() - 1];
+        if let Some(date_part) = s.strip_suffix('Z') {
             if let Ok(date) = NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
                 return Ok(Self {
                     date,
@@ -256,18 +252,20 @@ impl Date {
         }
 
         // Try parsing with explicit offset (e.g., +05:00 or -05:00)
-        if let Some(offset_start) = s.rfind(|c| c == '+' || c == '-') {
+        if let Some(offset_start) = s.rfind(['+', '-']) {
             // Make sure this is actually a timezone, not just a negative year
             if offset_start > 0 && s[offset_start..].contains(':') {
                 let date_part = &s[..offset_start];
                 let offset_part = &s[offset_start..];
-                
+
                 if let Ok(date) = NaiveDate::parse_from_str(date_part, "%Y-%m-%d") {
                     // Parse the offset
                     let sign = if offset_part.starts_with('-') { -1 } else { 1 };
                     let offset_str = &offset_part[1..];
                     if let Some((hours_str, mins_str)) = offset_str.split_once(':') {
-                        if let (Ok(hours), Ok(mins)) = (hours_str.parse::<i32>(), mins_str.parse::<i32>()) {
+                        if let (Ok(hours), Ok(mins)) =
+                            (hours_str.parse::<i32>(), mins_str.parse::<i32>())
+                        {
                             let total_secs = sign * (hours * 3600 + mins * 60);
                             if let Some(offset) = FixedOffset::east_opt(total_secs) {
                                 return Ok(Self {
@@ -421,8 +419,7 @@ impl Time {
         }
 
         // Try parsing with Z suffix
-        if s.ends_with('Z') {
-            let time_part = &s[..s.len() - 1];
+        if let Some(time_part) = s.strip_suffix('Z') {
             for fmt in &["%H:%M:%S%.f", "%H:%M:%S"] {
                 if let Ok(time) = NaiveTime::parse_from_str(time_part, fmt) {
                     return Ok(Self {
@@ -435,7 +432,7 @@ impl Time {
         }
 
         // Try parsing with explicit offset
-        if let Some(offset_start) = s.rfind(|c| c == '+' || c == '-') {
+        if let Some(offset_start) = s.rfind(['+', '-']) {
             if s[offset_start..].contains(':') {
                 let time_part = &s[..offset_start];
                 let offset_part = &s[offset_start..];
@@ -445,7 +442,9 @@ impl Time {
                         let sign = if offset_part.starts_with('-') { -1 } else { 1 };
                         let offset_str = &offset_part[1..];
                         if let Some((hours_str, mins_str)) = offset_str.split_once(':') {
-                            if let (Ok(hours), Ok(mins)) = (hours_str.parse::<i32>(), mins_str.parse::<i32>()) {
+                            if let (Ok(hours), Ok(mins)) =
+                                (hours_str.parse::<i32>(), mins_str.parse::<i32>())
+                            {
                                 let total_secs = sign * (hours * 3600 + mins * 60);
                                 if let Some(offset) = FixedOffset::east_opt(total_secs) {
                                     return Ok(Self {
@@ -496,8 +495,11 @@ impl Time {
             Some(offset) => {
                 let secs = self.time.num_seconds_from_midnight() as i32 - offset.local_minus_utc();
                 let normalized_secs = secs.rem_euclid(86400) as u32;
-                NaiveTime::from_num_seconds_from_midnight_opt(normalized_secs, self.time.nanosecond())
-                    .unwrap_or(self.time)
+                NaiveTime::from_num_seconds_from_midnight_opt(
+                    normalized_secs,
+                    self.time.nanosecond(),
+                )
+                .unwrap_or(self.time)
             }
             None => self.time,
         }
@@ -540,9 +542,9 @@ impl Time {
 }
 
 fn is_strict_date_lexical(s: &str) -> bool {
-    let (date_part, tz_part) = if s.ends_with('Z') {
-        (&s[..s.len() - 1], Some("Z"))
-    } else if let Some(idx) = s.rfind(|c| c == '+' || c == '-') {
+    let (date_part, tz_part) = if let Some(stripped) = s.strip_suffix('Z') {
+        (stripped, Some("Z"))
+    } else if let Some(idx) = s.rfind(['+', '-']) {
         if idx == 10 {
             (&s[..idx], Some(&s[idx..]))
         } else {
@@ -585,8 +587,8 @@ fn is_strict_date_lexical(s: &str) -> bool {
 }
 
 fn is_strict_time_lexical(s: &str) -> bool {
-    let (time_part, tz_part) = if s.ends_with('Z') {
-        (&s[..s.len() - 1], Some("Z"))
+    let (time_part, tz_part) = if let Some(stripped) = s.strip_suffix('Z') {
+        (stripped, Some("Z"))
     } else if s.len() >= 6 {
         let tail = &s[s.len() - 6..];
         if (tail.starts_with('+') || tail.starts_with('-')) && tail.as_bytes()[3] == b':' {
@@ -685,8 +687,8 @@ impl fmt::Display for Time {
 /// Parse an optional timezone suffix from the end of a string.
 /// Returns (value_part, optional_timezone_offset).
 fn parse_tz_suffix(s: &str) -> (&str, Option<FixedOffset>) {
-    if s.ends_with('Z') {
-        (&s[..s.len() - 1], Some(FixedOffset::east_opt(0).unwrap()))
+    if let Some(stripped) = s.strip_suffix('Z') {
+        (stripped, Some(FixedOffset::east_opt(0).unwrap()))
     } else if s.len() >= 6 {
         let tail = &s[s.len() - 6..];
         if (tail.starts_with('+') || tail.starts_with('-')) && tail.as_bytes()[3] == b':' {
@@ -851,9 +853,9 @@ impl GYearMonth {
         // Handle negative years. The format is YYYY-MM or -YYYY-MM.
         // For negative years, the string starts with '-', so we need to find
         // the separator '-' that is NOT the leading negative sign.
-        let (year, month) = if value.starts_with('-') {
+        let (year, month) = if let Some(rest) = value.strip_prefix('-') {
             // Negative year: find the '-' separator after position 0
-            let rest = &value[1..]; // skip leading '-'
+            // skip leading '-'
             let dash_pos = rest
                 .rfind('-')
                 .ok_or_else(|| format!("Cannot parse gYearMonth: {}", s))?;
@@ -1280,20 +1282,11 @@ impl YearMonthDuration {
     ///
     /// No day (`D`) or time (`T`) components are allowed.
     pub fn parse(s: &str) -> Result<Self, String> {
-        let (negative, rest) = if s.starts_with('-') {
-            (true, &s[1..])
-        } else {
-            (false, s)
-        };
+        let (negative, rest) = s.strip_prefix('-').map(|r| (true, r)).unwrap_or((false, s));
 
-        if !rest.starts_with('P') {
-            return Err(format!(
-                "yearMonthDuration must start with 'P' (or '-P'): {}",
-                s
-            ));
-        }
-
-        let body = &rest[1..]; // after 'P'
+        let body = rest
+            .strip_prefix('P')
+            .ok_or_else(|| format!("yearMonthDuration must start with 'P' (or '-P'): {}", s))?;
 
         // Reject if it contains 'D' or 'T' — those are day/time components
         if body.contains('D') || body.contains('T') {
@@ -1341,7 +1334,11 @@ impl YearMonthDuration {
         }
 
         let total_months = years * 12 + months_part;
-        let total_months = if negative { -total_months } else { total_months };
+        let total_months = if negative {
+            -total_months
+        } else {
+            total_months
+        };
 
         Ok(Self {
             months: total_months,
@@ -1444,20 +1441,11 @@ impl DayTimeDuration {
     ///
     /// No year (`Y`) or month (`M` before `T`) components are allowed.
     pub fn parse(s: &str) -> Result<Self, String> {
-        let (negative, rest) = if s.starts_with('-') {
-            (true, &s[1..])
-        } else {
-            (false, s)
-        };
+        let (negative, rest) = s.strip_prefix('-').map(|r| (true, r)).unwrap_or((false, s));
 
-        if !rest.starts_with('P') {
-            return Err(format!(
-                "dayTimeDuration must start with 'P' (or '-P'): {}",
-                s
-            ));
-        }
-
-        let body = &rest[1..]; // after 'P'
+        let body = rest
+            .strip_prefix('P')
+            .ok_or_else(|| format!("dayTimeDuration must start with 'P' (or '-P'): {}", s))?;
 
         // Reject year component
         if body.contains('Y') {
@@ -1488,9 +1476,9 @@ impl DayTimeDuration {
         // Parse optional nD from date part
         if !date_part.is_empty() {
             if let Some(d_pos) = date_part.find('D') {
-                let days: i64 = date_part[..d_pos].parse().map_err(|_| {
-                    format!("Invalid day component in dayTimeDuration: {}", s)
-                })?;
+                let days: i64 = date_part[..d_pos]
+                    .parse()
+                    .map_err(|_| format!("Invalid day component in dayTimeDuration: {}", s))?;
                 total_micros += days * 86_400_000_000;
                 found_any = true;
 
@@ -1522,9 +1510,9 @@ impl DayTimeDuration {
 
             // Parse optional nH
             if let Some(h_pos) = remaining.find('H') {
-                let hours: i64 = remaining[..h_pos].parse().map_err(|_| {
-                    format!("Invalid hour component in dayTimeDuration: {}", s)
-                })?;
+                let hours: i64 = remaining[..h_pos]
+                    .parse()
+                    .map_err(|_| format!("Invalid hour component in dayTimeDuration: {}", s))?;
                 total_micros += hours * 3_600_000_000;
                 remaining = &remaining[h_pos + 1..];
                 found_any = true;
@@ -1532,9 +1520,9 @@ impl DayTimeDuration {
 
             // Parse optional nM (minutes, since we are in the T section)
             if let Some(m_pos) = remaining.find('M') {
-                let minutes: i64 = remaining[..m_pos].parse().map_err(|_| {
-                    format!("Invalid minute component in dayTimeDuration: {}", s)
-                })?;
+                let minutes: i64 = remaining[..m_pos]
+                    .parse()
+                    .map_err(|_| format!("Invalid minute component in dayTimeDuration: {}", s))?;
                 total_micros += minutes * 60_000_000;
                 remaining = &remaining[m_pos + 1..];
                 found_any = true;
@@ -1543,9 +1531,8 @@ impl DayTimeDuration {
             // Parse optional n.nS
             if let Some(s_pos) = remaining.find('S') {
                 let sec_str = &remaining[..s_pos];
-                let sec_micros = parse_seconds_to_micros(sec_str).map_err(|e| {
-                    format!("Invalid seconds in dayTimeDuration '{}': {}", s, e)
-                })?;
+                let sec_micros = parse_seconds_to_micros(sec_str)
+                    .map_err(|e| format!("Invalid seconds in dayTimeDuration '{}': {}", s, e))?;
                 total_micros += sec_micros;
                 remaining = &remaining[s_pos + 1..];
                 found_any = true;
@@ -1721,17 +1708,11 @@ impl Duration {
     ///
     /// Accepts: `"P1Y2M3DT4H5M6S"`, `"P1Y"`, `"PT1H"`, `"-P1Y2M3DT4H5M6.789S"`
     pub fn parse(s: &str) -> Result<Self, String> {
-        let (negative, rest) = if s.starts_with('-') {
-            (true, &s[1..])
-        } else {
-            (false, s)
-        };
+        let (negative, rest) = s.strip_prefix('-').map(|r| (true, r)).unwrap_or((false, s));
 
-        if !rest.starts_with('P') {
-            return Err(format!("Duration must start with 'P' (or '-P'): {}", s));
-        }
-
-        let body = &rest[1..]; // after 'P'
+        let body = rest
+            .strip_prefix('P')
+            .ok_or_else(|| format!("Duration must start with 'P' (or '-P'): {}", s))?;
 
         // Split on 'T' to separate date-part from time-part
         let (date_part, time_part) = if let Some(t_pos) = body.find('T') {
@@ -1811,9 +1792,8 @@ impl Duration {
 
             if let Some(s_pos) = remaining.find('S') {
                 let sec_str = &remaining[..s_pos];
-                let sec_micros = parse_seconds_to_micros(sec_str).map_err(|e| {
-                    format!("Invalid seconds in duration '{}': {}", s, e)
-                })?;
+                let sec_micros = parse_seconds_to_micros(sec_str)
+                    .map_err(|e| format!("Invalid seconds in duration '{}': {}", s, e))?;
                 total_micros += sec_micros;
                 remaining = &remaining[s_pos + 1..];
                 found_any = true;
@@ -1947,6 +1927,7 @@ impl PartialEq for Duration {
 
 impl Eq for Duration {}
 
+#[allow(clippy::non_canonical_partial_ord_impl)]
 impl PartialOrd for Duration {
     /// Partial ordering for durations.
     ///
@@ -2019,13 +2000,10 @@ fn parse_seconds_to_micros(s: &str) -> Result<i64, String> {
 
         Ok(whole * 1_000_000 + frac_micros)
     } else {
-        let whole: i64 = s
-            .parse()
-            .map_err(|_| format!("Invalid seconds: {}", s))?;
+        let whole: i64 = s.parse().map_err(|_| format!("Invalid seconds: {}", s))?;
         Ok(whole * 1_000_000)
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -2621,28 +2599,22 @@ mod tests {
     #[test]
     fn test_dtd_parse_full() {
         let d = DayTimeDuration::parse("P3DT4H5M6S").unwrap();
-        let expected = 3 * 86_400_000_000_i64
-            + 4 * 3_600_000_000
-            + 5 * 60_000_000
-            + 6 * 1_000_000;
+        let expected = 3 * 86_400_000_000_i64 + 4 * 3_600_000_000 + 5 * 60_000_000 + 6 * 1_000_000;
         assert_eq!(d.micros(), expected);
     }
 
     #[test]
     fn test_dtd_parse_fractional_seconds() {
         let d = DayTimeDuration::parse("P3DT4H5M6.789S").unwrap();
-        let expected = 3 * 86_400_000_000_i64
-            + 4 * 3_600_000_000
-            + 5 * 60_000_000
-            + 6 * 1_000_000
-            + 789_000;
+        let expected =
+            3 * 86_400_000_000_i64 + 4 * 3_600_000_000 + 5 * 60_000_000 + 6 * 1_000_000 + 789_000;
         assert_eq!(d.micros(), expected);
     }
 
     #[test]
     fn test_dtd_parse_hours_minutes() {
         let d = DayTimeDuration::parse("PT1H30M").unwrap();
-        assert_eq!(d.micros(), 1 * 3_600_000_000_i64 + 30 * 60_000_000);
+        assert_eq!(d.micros(), 3_600_000_000_i64 + 30 * 60_000_000);
     }
 
     #[test]
@@ -2754,10 +2726,8 @@ mod tests {
     fn test_duration_parse_full() {
         let d = Duration::parse("P1Y2M3DT4H5M6S").unwrap();
         assert_eq!(d.months(), 14);
-        let expected_micros = 3 * 86_400_000_000_i64
-            + 4 * 3_600_000_000
-            + 5 * 60_000_000
-            + 6 * 1_000_000;
+        let expected_micros =
+            3 * 86_400_000_000_i64 + 4 * 3_600_000_000 + 5 * 60_000_000 + 6 * 1_000_000;
         assert_eq!(d.micros(), expected_micros);
     }
 
@@ -3080,10 +3050,8 @@ mod tests {
     fn test_duration_negative_full() {
         let d = Duration::parse("-P1Y2M3DT4H5M6S").unwrap();
         assert_eq!(d.months(), -14);
-        let expected = -(3 * 86_400_000_000_i64
-            + 4 * 3_600_000_000
-            + 5 * 60_000_000
-            + 6 * 1_000_000);
+        let expected =
+            -(3 * 86_400_000_000_i64 + 4 * 3_600_000_000 + 5 * 60_000_000 + 6 * 1_000_000);
         assert_eq!(d.micros(), expected);
     }
 
@@ -3099,4 +3067,3 @@ mod tests {
         assert_eq!(d.to_canonical_string(), "P1Y2M3DT4H5M6.789S");
     }
 }
-

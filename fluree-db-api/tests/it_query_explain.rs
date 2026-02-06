@@ -63,11 +63,13 @@ async fn explain_sparql_no_stats_reports_none_and_reason() {
 
     let sparql = "PREFIX ex: <http://example.org/>\nSELECT ?person WHERE { ?person ex:name ?name }";
 
-    let resp = fluree.explain_sparql(&ledger, sparql).await.expect("explain_sparql");
+    let resp = fluree
+        .explain_sparql(&ledger, sparql)
+        .await
+        .expect("explain_sparql");
     assert_eq!(resp["plan"]["optimization"], "none");
     assert_eq!(resp["plan"]["reason"], "No statistics available");
     assert!(resp.get("query").is_some());
     // SPARQL explain does not include where-clause (that's a JSON-LD concept)
     assert!(resp["plan"].get("where-clause").is_none());
 }
-

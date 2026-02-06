@@ -45,7 +45,13 @@ async fn compound_two_tuple_select_with_crawl_and_values() {
         }
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld_async(&ledger.db).await.unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld_async(&ledger.db)
+        .await
+        .unwrap();
     assert_eq!(
         normalize_rows(&rows),
         normalize_rows(&json!([
@@ -63,7 +69,13 @@ async fn compound_two_tuple_select_with_crawl_and_values() {
             "ex:friend": {"@id":"?f", "schema:age":"?age"}
         }
     });
-    let rows2 = fluree.query(&ledger, &q2).await.unwrap().to_jsonld_async(&ledger.db).await.unwrap();
+    let rows2 = fluree
+        .query(&ledger, &q2)
+        .await
+        .unwrap()
+        .to_jsonld_async(&ledger.db)
+        .await
+        .unwrap();
     assert_eq!(normalize_rows(&rows2), normalize_rows(&rows));
 }
 
@@ -82,7 +94,13 @@ async fn compound_two_tuple_select_with_crawl_scalar_plus_object() {
             "ex:friend": {"@id":"?f", "schema:age":"?age"}
         }
     });
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld_async(&ledger.db).await.unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld_async(&ledger.db)
+        .await
+        .unwrap();
 
     let expected = json!([
         [50, {"@id":"ex:alice","@type":"ex:User","schema:age":50,"schema:email":"alice@example.org","schema:name":"Alice","ex:favNums":[9,42,76]}],
@@ -99,7 +117,13 @@ async fn compound_two_tuple_select_with_crawl_scalar_plus_object() {
             "ex:friend": {"@id":"?f", "schema:age":"?age"}
         }
     });
-    let rows2 = fluree.query(&ledger, &q2).await.unwrap().to_jsonld_async(&ledger.db).await.unwrap();
+    let rows2 = fluree
+        .query(&ledger, &q2)
+        .await
+        .unwrap()
+        .to_jsonld_async(&ledger.db)
+        .await
+        .unwrap();
     assert_eq!(normalize_rows(&rows2), normalize_rows(&expected));
 }
 
@@ -117,7 +141,12 @@ async fn compound_passthrough_variables_and_select_one() {
             "ex:friend": {"schema:name":"?name","schema:age":"?age","schema:email":"?email"}
         }
     });
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&rows),
         normalize_rows(&json!([
@@ -134,9 +163,17 @@ async fn compound_passthrough_variables_and_select_one() {
             "ex:friend": {"schema:name":"?name","schema:age":"?age","schema:email":"?email"}
         }
     });
-    let one = fluree.query(&ledger, &q_one).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let one = fluree
+        .query(&ledger, &q_one)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     // SelectOne returns the first row (order not defined); assert it is one of the expected rows.
-    assert!(one == json!(["Alice", 50, "alice@example.org"]) || one == json!(["Brian", 50, "brian@example.org"]));
+    assert!(
+        one == json!(["Alice", 50, "alice@example.org"])
+            || one == json!(["Brian", 50, "brian@example.org"])
+    );
 }
 
 #[tokio::test]
@@ -150,13 +187,21 @@ async fn compound_multicard_duplicates_and_ordering() {
         "select": ["?name","?favNums"],
         "where": {"schema:name":"?name","ex:favNums":"?favNums"}
     });
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&rows),
         normalize_rows(&json!([
-            ["Alice", 9], ["Alice", 42], ["Alice", 76],
+            ["Alice", 9],
+            ["Alice", 42],
+            ["Alice", 76],
             ["Brian", 7],
-            ["Cam", 5], ["Cam", 10]
+            ["Cam", 5],
+            ["Cam", 10]
         ]))
     );
 
@@ -166,11 +211,21 @@ async fn compound_multicard_duplicates_and_ordering() {
         "where": {"schema:name":"?name","ex:favNums":"?favNums"},
         "orderBy": "?favNums"
     });
-    let asc = fluree.query(&ledger, &q_asc).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let asc = fluree
+        .query(&ledger, &q_asc)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         asc,
         json!([
-            ["Cam", 5], ["Brian", 7], ["Alice", 9], ["Cam", 10], ["Alice", 42], ["Alice", 76]
+            ["Cam", 5],
+            ["Brian", 7],
+            ["Alice", 9],
+            ["Cam", 10],
+            ["Alice", 42],
+            ["Alice", 76]
         ])
     );
 
@@ -180,11 +235,21 @@ async fn compound_multicard_duplicates_and_ordering() {
         "where": {"schema:name":"?name","ex:favNums":"?favNums"},
         "orderBy": "(desc ?favNums)"
     });
-    let desc = fluree.query(&ledger, &q_desc).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let desc = fluree
+        .query(&ledger, &q_desc)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         desc,
         json!([
-            ["Alice", 76], ["Alice", 42], ["Cam", 10], ["Alice", 9], ["Brian", 7], ["Cam", 5]
+            ["Alice", 76],
+            ["Alice", 42],
+            ["Cam", 10],
+            ["Alice", 9],
+            ["Brian", 7],
+            ["Cam", 5]
         ])
     );
 
@@ -194,11 +259,21 @@ async fn compound_multicard_duplicates_and_ordering() {
         "where": {"schema:name":"?name","ex:favNums":"?favNums"},
         "orderBy": ["?name", "(desc ?favNums)"]
     });
-    let multi = fluree.query(&ledger, &q_multi).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let multi = fluree
+        .query(&ledger, &q_multi)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         multi,
         json!([
-            ["Alice", 76], ["Alice", 42], ["Alice", 9], ["Brian", 7], ["Cam", 10], ["Cam", 5]
+            ["Alice", 76],
+            ["Alice", 42],
+            ["Alice", 9],
+            ["Brian", 7],
+            ["Cam", 10],
+            ["Cam", 5]
         ])
     );
 }
@@ -217,14 +292,15 @@ async fn compound_group_by_multicard_without_aggregate() {
         "orderBy": "?name"
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         rows,
-        json!([
-            ["Alice", [9, 42, 76]],
-            ["Brian", [7]],
-            ["Cam", [5, 10]]
-        ])
+        json!([["Alice", [9, 42, 76]], ["Brian", [7]], ["Cam", [5, 10]]])
     );
 }
 
@@ -239,19 +315,28 @@ async fn compound_s_p_o_and_object_subject_joins_with_graph_crawl() {
         "select": ["?s","?p","?o"],
         "where": {"@id":"?s","schema:age":34,"?p":"?o"}
     });
-    let spo = fluree.query(&ledger, &q_spo).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let spo = fluree
+        .query(&ledger, &q_spo)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&spo),
         normalize_rows(&json!([
             // When predicate is a variable, rdf:type compacts to its full IRI (not "@type").
-            ["ex:cam","http://www.w3.org/1999/02/22-rdf-syntax-ns#type","ex:User"],
-            ["ex:cam","schema:age",34],
-            ["ex:cam","schema:email","cam@example.org"],
-            ["ex:cam","schema:name","Cam"],
-            ["ex:cam","ex:favNums",5],
-            ["ex:cam","ex:favNums",10],
-            ["ex:cam","ex:friend","ex:alice"],
-            ["ex:cam","ex:friend","ex:brian"]
+            [
+                "ex:cam",
+                "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+                "ex:User"
+            ],
+            ["ex:cam", "schema:age", 34],
+            ["ex:cam", "schema:email", "cam@example.org"],
+            ["ex:cam", "schema:name", "Cam"],
+            ["ex:cam", "ex:favNums", 5],
+            ["ex:cam", "ex:favNums", 10],
+            ["ex:cam", "ex:friend", "ex:alice"],
+            ["ex:cam", "ex:friend", "ex:brian"]
         ]))
     );
 
@@ -260,7 +345,13 @@ async fn compound_s_p_o_and_object_subject_joins_with_graph_crawl() {
         "select": {"?s": ["*", {"ex:friend": ["*"]}]},
         "where": {"@id":"?s","ex:friend":{"schema:name":"Alice"}}
     });
-    let joined = fluree.query(&ledger, &q_join).await.unwrap().to_jsonld_async(&ledger.db).await.unwrap();
+    let joined = fluree
+        .query(&ledger, &q_join)
+        .await
+        .unwrap()
+        .to_jsonld_async(&ledger.db)
+        .await
+        .unwrap();
 
     // Result should include Cam + expanded friends (order-insensitive).
     assert_eq!(
@@ -279,4 +370,3 @@ async fn compound_s_p_o_and_object_subject_joins_with_graph_crawl() {
         }]))
     );
 }
-

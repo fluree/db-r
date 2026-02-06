@@ -20,8 +20,8 @@
 // on specific index types.
 
 use crate::sid::Sid;
-use fluree_vocab::namespaces::JSON_LD;
 use crate::value::FlakeValue;
+use fluree_vocab::namespaces::JSON_LD;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -74,11 +74,19 @@ impl FlakeMeta {
             i: Some(i32::MAX),
         }
     }
+}
 
+impl PartialOrd for FlakeMeta {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(std::cmp::Ord::cmp(self, other))
+    }
+}
+
+impl Ord for FlakeMeta {
     /// Compare metadata for ordering
     ///
     /// Compares by list index, then by presence/absence of fields.
-    pub fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Compare by i (list index) - primary discriminator
         match (&self.i, &other.i) {
             (Some(a), Some(b)) => a.cmp(b),
@@ -94,18 +102,6 @@ impl FlakeMeta {
                 }
             }
         }
-    }
-}
-
-impl PartialOrd for FlakeMeta {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for FlakeMeta {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        FlakeMeta::cmp(self, other)
     }
 }
 
@@ -148,7 +144,15 @@ impl Flake {
         op: bool,
         m: Option<FlakeMeta>,
     ) -> Self {
-        Self { s, p, o, dt, t, op, m }
+        Self {
+            s,
+            p,
+            o,
+            dt,
+            t,
+            op,
+            m,
+        }
     }
 
     /// Create a minimum flake for SPOT index range bounds
@@ -301,7 +305,8 @@ impl Flake {
     /// Used for cache size estimation.
     pub fn size_bytes(&self) -> usize {
         // Base: struct overhead + s, p, dt SIDs
-        let base = 16 + (8 + self.s.name.len()) + (8 + self.p.name.len()) + (8 + self.dt.name.len());
+        let base =
+            16 + (8 + self.s.name.len()) + (8 + self.p.name.len()) + (8 + self.dt.name.len());
 
         // Object size depends on type
         let o_size = match &self.o {
@@ -330,9 +335,10 @@ impl Flake {
         };
 
         // Metadata size
-        let m_size = self.m.as_ref().map_or(0, |m| {
-            8 + m.lang.as_ref().map_or(0, |l| l.len()) + 4
-        });
+        let m_size = self
+            .m
+            .as_ref()
+            .map_or(0, |m| 8 + m.lang.as_ref().map_or(0, |l| l.len()) + 4);
 
         // t (8) + op (1)
         base + o_size + m_size + 9
@@ -480,7 +486,7 @@ mod tests {
             Sid::new(2, "p"),
             FlakeValue::Long(42),
             Sid::new(3, "long"),
-            2, // Different t
+            2,     // Different t
             false, // Different op
             None,
         );
@@ -538,9 +544,18 @@ mod tests {
 
     #[test]
     fn test_flake_meta_ordering() {
-        let m1 = FlakeMeta { lang: None, i: Some(1) };
-        let m2 = FlakeMeta { lang: None, i: Some(2) };
-        let m3 = FlakeMeta { lang: None, i: None };
+        let m1 = FlakeMeta {
+            lang: None,
+            i: Some(1),
+        };
+        let m2 = FlakeMeta {
+            lang: None,
+            i: Some(2),
+        };
+        let m3 = FlakeMeta {
+            lang: None,
+            i: None,
+        };
 
         assert!(m1 < m2);
         assert!(m3 < m1); // None < Some for i

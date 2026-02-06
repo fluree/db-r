@@ -65,7 +65,7 @@ pub type PolicyQueryFut<'a> = Pin<Box<dyn Future<Output = Result<bool>> + 'a>>;
 /// filtering to avoid recursion), and return `true` if any results are found.
 ///
 /// # Platform Support
-/// 
+///
 /// On native targets, the trait requires `Send + Sync` for multi-threaded runtimes.
 /// On WASM, these bounds are removed since WASM is single-threaded.
 #[cfg(not(target_arch = "wasm32"))]
@@ -120,4 +120,3 @@ impl PolicyQueryExecutor for NoOpQueryExecutor {
         })
     }
 }
-

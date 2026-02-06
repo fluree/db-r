@@ -71,10 +71,10 @@ pub fn try_extract_point(wkt: &str) -> Option<(f64, f64)> {
     if !lat.is_finite() || !lng.is_finite() {
         return None;
     }
-    if lat < -90.0 || lat > 90.0 {
+    if !(-90.0..=90.0).contains(&lat) {
         return None;
     }
-    if lng < -180.0 || lng > 180.0 {
+    if !(-180.0..=180.0).contains(&lng) {
         return None;
     }
 
@@ -112,8 +112,7 @@ pub fn haversine_distance(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
     let dlat = (lat2 - lat1).to_radians();
     let dlng = (lng2 - lng1).to_radians();
 
-    let a = (dlat / 2.0).sin().powi(2)
-        + lat1_r.cos() * lat2_r.cos() * (dlng / 2.0).sin().powi(2);
+    let a = (dlat / 2.0).sin().powi(2) + lat1_r.cos() * lat2_r.cos() * (dlng / 2.0).sin().powi(2);
 
     EARTH_RADIUS_M * 2.0 * a.sqrt().asin()
 }
@@ -137,11 +136,7 @@ pub fn haversine_distance(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
 /// # Returns
 ///
 /// Vector of `(min_key, max_key)` ranges for POST scan.
-pub fn geo_proximity_bounds(
-    center_lat: f64,
-    center_lng: f64,
-    radius_m: f64,
-) -> Vec<(u64, u64)> {
+pub fn geo_proximity_bounds(center_lat: f64, center_lng: f64, radius_m: f64) -> Vec<(u64, u64)> {
     use crate::value_id::ObjKey;
 
     // Approximate meters per degree at equator
@@ -218,13 +213,22 @@ mod tests {
     #[test]
     fn test_try_extract_point_valid() {
         // Standard WKT POINT
-        assert_eq!(try_extract_point("POINT(2.3522 48.8566)"), Some((48.8566, 2.3522)));
+        assert_eq!(
+            try_extract_point("POINT(2.3522 48.8566)"),
+            Some((48.8566, 2.3522))
+        );
 
         // With extra whitespace
-        assert_eq!(try_extract_point("  POINT( 2.3522  48.8566 )  "), Some((48.8566, 2.3522)));
+        assert_eq!(
+            try_extract_point("  POINT( 2.3522  48.8566 )  "),
+            Some((48.8566, 2.3522))
+        );
 
         // Negative coordinates
-        assert_eq!(try_extract_point("POINT(-0.1278 51.5074)"), Some((51.5074, -0.1278)));
+        assert_eq!(
+            try_extract_point("POINT(-0.1278 51.5074)"),
+            Some((51.5074, -0.1278))
+        );
 
         // Boundary values
         assert_eq!(try_extract_point("POINT(180 90)"), Some((90.0, 180.0)));
@@ -293,6 +297,6 @@ mod tests {
         // Crossing antimeridian near Japan
         let bounds = geo_proximity_bounds(35.0, 179.0, 500_000.0);
         // Should produce 2 ranges
-        assert!(bounds.len() >= 1);
+        assert!(!bounds.is_empty());
     }
 }

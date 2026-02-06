@@ -10,13 +10,17 @@ use super::iri::IriCompactor;
 use super::{FormatError, Result};
 use crate::QueryResult;
 use fluree_db_core::FlakeValue;
-use fluree_db_query::binding::Binding;
 use fluree_db_core::Sid;
+use fluree_db_query::binding::Binding;
 use fluree_vocab::rdf;
 use serde_json::{json, Map, Value as JsonValue};
 
 /// Format query results in JSON-LD Query format
-pub fn format(result: &QueryResult, compactor: &IriCompactor, config: &FormatterConfig) -> Result<JsonValue> {
+pub fn format(
+    result: &QueryResult,
+    compactor: &IriCompactor,
+    config: &FormatterConfig,
+) -> Result<JsonValue> {
     let mut rows = Vec::new();
 
     for batch in &result.batches {
@@ -32,9 +36,14 @@ pub fn format(result: &QueryResult, compactor: &IriCompactor, config: &Formatter
                         JsonLdRowShape::Array => {
                             format_row_array(result, batch, row_idx, &result.select, compactor)?
                         }
-                        JsonLdRowShape::Object => {
-                            format_row_object(result, batch, row_idx, &result.select, &result.vars, compactor)?
-                        }
+                        JsonLdRowShape::Object => format_row_object(
+                            result,
+                            batch,
+                            row_idx,
+                            &result.select,
+                            &result.vars,
+                            compactor,
+                        )?,
                     }
                 }
             };
@@ -101,8 +110,12 @@ pub(crate) fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Res
                 return match val {
                     FlakeValue::Json(json_str) => {
                         // Deserialize the JSON string back to a JSON value
-                        serde_json::from_str(json_str)
-                            .map_err(|e| FormatError::InvalidBinding(format!("Invalid JSON in @json value: {}", e)))
+                        serde_json::from_str(json_str).map_err(|e| {
+                            FormatError::InvalidBinding(format!(
+                                "Invalid JSON in @json value: {}",
+                                e
+                            ))
+                        })
                     }
                     _ => Err(FormatError::InvalidBinding(
                         "@json datatype must have FlakeValue::Json".to_string(),
@@ -146,9 +159,9 @@ pub(crate) fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Res
                         }
                     }
                     FlakeValue::Boolean(b) => Ok(json!(b)),
-                    FlakeValue::Vector(v) => Ok(JsonValue::Array(
-                        v.iter().map(|f| json!(f)).collect()
-                    )),
+                    FlakeValue::Vector(v) => {
+                        Ok(JsonValue::Array(v.iter().map(|f| json!(f)).collect()))
+                    }
                     FlakeValue::Json(_) => Err(FormatError::InvalidBinding(
                         "@json should have been handled above".to_string(),
                     )),
@@ -236,13 +249,19 @@ pub(crate) fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Res
         )),
 
         // Encoded IRI types (late materialization) - require QueryResult for decoding.
-        Binding::EncodedSid { .. } | Binding::EncodedPid { .. } => Err(FormatError::InvalidBinding(
-            "Internal error: format_binding called without QueryResult for encoded IRI binding".to_string(),
-        )),
+        Binding::EncodedSid { .. } | Binding::EncodedPid { .. } => {
+            Err(FormatError::InvalidBinding(
+                "Internal error: format_binding called without QueryResult for encoded IRI binding"
+                    .to_string(),
+            ))
+        }
 
         // Grouped values (from GROUP BY without aggregation)
         Binding::Grouped(values) => {
-            let arr: Result<Vec<_>> = values.iter().map(|v| format_binding(v, compactor)).collect();
+            let arr: Result<Vec<_>> = values
+                .iter()
+                .map(|v| format_binding(v, compactor))
+                .collect();
             Ok(JsonValue::Array(arr?))
         }
     }
@@ -261,29 +280,36 @@ pub(crate) fn format_binding_with_result(
                         .to_string(),
                 )
             })?;
-            let materialized = materialize_encoded_lit(binding, store)
-                .map_err(|e| FormatError::InvalidBinding(format!("Failed to materialize EncodedLit: {}", e)))?;
+            let materialized = materialize_encoded_lit(binding, store).map_err(|e| {
+                FormatError::InvalidBinding(format!("Failed to materialize EncodedLit: {}", e))
+            })?;
             format_binding_with_result(result, &materialized, compactor)
         }
         Binding::EncodedSid { s_id } => {
             let store = result.binary_store.as_ref().ok_or_else(|| {
                 FormatError::InvalidBinding(
-                    "Encountered EncodedSid during formatting but QueryResult has no binary_store".to_string(),
+                    "Encountered EncodedSid during formatting but QueryResult has no binary_store"
+                        .to_string(),
                 )
             })?;
-            let iri = store.resolve_subject_iri(*s_id)
-                .map_err(|e| FormatError::InvalidBinding(format!("Failed to resolve subject IRI: {}", e)))?;
+            let iri = store.resolve_subject_iri(*s_id).map_err(|e| {
+                FormatError::InvalidBinding(format!("Failed to resolve subject IRI: {}", e))
+            })?;
             Ok(JsonValue::String(compactor.compact_iri(&iri)?))
         }
         Binding::EncodedPid { p_id } => {
             let store = result.binary_store.as_ref().ok_or_else(|| {
                 FormatError::InvalidBinding(
-                    "Encountered EncodedPid during formatting but QueryResult has no binary_store".to_string(),
+                    "Encountered EncodedPid during formatting but QueryResult has no binary_store"
+                        .to_string(),
                 )
             })?;
             match store.resolve_predicate_iri(*p_id) {
                 Some(iri) => Ok(JsonValue::String(compactor.compact_iri(iri)?)),
-                None => Err(FormatError::InvalidBinding(format!("Unknown predicate ID: {}", p_id))),
+                None => Err(FormatError::InvalidBinding(format!(
+                    "Unknown predicate ID: {}",
+                    p_id
+                ))),
             }
         }
         _ => format_binding(binding, compactor),
@@ -302,7 +328,8 @@ fn materialize_encoded_lit(
         lang_id,
         i_val,
         t,
-    } = binding else {
+    } = binding
+    else {
         return Ok(binding.clone());
     };
     let val = store.decode_value(*o_kind, *o_key, *p_id)?;
@@ -431,7 +458,10 @@ mod tests {
     #[test]
     fn test_format_binding_string() {
         let compactor = make_test_compactor();
-        let binding = Binding::lit(FlakeValue::String("Alice".to_string()), Sid::new(2, "string"));
+        let binding = Binding::lit(
+            FlakeValue::String("Alice".to_string()),
+            Sid::new(2, "string"),
+        );
         let result = format_binding(&binding, &compactor).unwrap();
         assert_eq!(result, json!("Alice"));
     }
@@ -447,9 +477,9 @@ mod tests {
     #[test]
     fn test_format_binding_double() {
         let compactor = make_test_compactor();
-        let binding = Binding::lit(FlakeValue::Double(3.14), Sid::new(2, "double"));
+        let binding = Binding::lit(FlakeValue::Double(3.13), Sid::new(2, "double"));
         let result = format_binding(&binding, &compactor).unwrap();
-        assert_eq!(result, json!(3.14));
+        assert_eq!(result, json!(3.13));
     }
 
     #[test]

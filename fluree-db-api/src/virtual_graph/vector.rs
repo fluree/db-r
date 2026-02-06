@@ -16,7 +16,7 @@ use crate::virtual_graph::result::{
 #[cfg(feature = "vector")]
 use crate::{QueryResult as ApiQueryResult, Result};
 #[cfg(feature = "vector")]
-use fluree_db_core::{alias as core_alias, OverlayProvider, Storage, StorageWrite};
+use fluree_db_core::{alias as core_alias, Storage, StorageWrite};
 #[cfg(feature = "vector")]
 use fluree_db_ledger::LedgerState;
 #[cfg(feature = "vector")]
@@ -28,7 +28,7 @@ use fluree_db_query::vector::usearch::{
     IncrementalVectorUpdater, VectorIndex, VectorIndexBuilder, VectorPropertyDeps,
 };
 #[cfg(feature = "vector")]
-use fluree_db_query::{execute_with_overlay_at, ExecutableQuery, SelectMode, VarRegistry};
+use fluree_db_query::{execute_with_overlay, DataSource, ExecutableQuery, SelectMode, VarRegistry};
 #[cfg(feature = "vector")]
 use serde_json::Value as JsonValue;
 #[cfg(feature = "vector")]
@@ -85,7 +85,10 @@ where
     ///
     /// let result = fluree.create_vector_index(config).await?;
     /// ```
-    pub async fn create_vector_index(&self, config: VectorCreateConfig) -> Result<VectorCreateResult> {
+    pub async fn create_vector_index(
+        &self,
+        config: VectorCreateConfig,
+    ) -> Result<VectorCreateResult> {
         let vg_alias = config.vg_alias();
         info!(
             vg_alias = %vg_alias,
@@ -115,15 +118,18 @@ where
         );
 
         // 2. Execute indexing query
-        let results = self.execute_vector_indexing_query(&ledger, &config.query).await?;
+        let results = self
+            .execute_vector_indexing_query(&ledger, &config.query)
+            .await?;
 
-        info!(
-            result_count = results.len(),
-            "Executed indexing query"
-        );
+        info!(result_count = results.len(), "Executed indexing query");
 
         // 2b. Expand prefixed IRIs in @id fields and property names to full IRIs
-        let context = config.query.get("@context").cloned().unwrap_or(serde_json::json!({}));
+        let context = config
+            .query
+            .get("@context")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
         let prefix_map = extract_prefix_map(&context);
         let results = expand_ids_in_results(results, &prefix_map);
         let results = expand_properties_in_results(results, &prefix_map);
@@ -134,12 +140,15 @@ where
 
         // 3. Build vector index
         let property_deps = VectorPropertyDeps::from_query(&embedding_property, &config.query);
-        let metric = config.metric.unwrap_or(fluree_db_query::vector::DistanceMetric::Cosine);
+        let metric = config
+            .metric
+            .unwrap_or(fluree_db_query::vector::DistanceMetric::Cosine);
 
-        let mut builder = VectorIndexBuilder::new(config.ledger.as_str(), config.dimensions, metric)?
-            .with_embedding_property(&embedding_property)
-            .with_property_deps(property_deps)
-            .with_watermark(source_t);
+        let mut builder =
+            VectorIndexBuilder::new(config.ledger.as_str(), config.dimensions, metric)?
+                .with_embedding_property(&embedding_property)
+                .with_property_deps(property_deps)
+                .with_watermark(source_t);
 
         // Reserve capacity if we know the result count
         if !results.is_empty() {
@@ -191,7 +200,7 @@ where
                 config.effective_branch(),
                 VgType::Vector,
                 &config_json,
-                &[config.ledger.clone()],
+                std::slice::from_ref(&config.ledger),
             )
             .await?;
 
@@ -244,15 +253,8 @@ where
 
         let executable = ExecutableQuery::simple(parsed_for_exec);
 
-        let batches = execute_with_overlay_at(
-            &ledger.db,
-            ledger.novelty.as_ref(),
-            &vars,
-            &executable,
-            ledger.t(),
-            None,
-        )
-        .await?;
+        let source = DataSource::new(&ledger.db, ledger.novelty.as_ref(), ledger.t());
+        let batches = execute_with_overlay(source, &vars, &executable).await?;
 
         // Format using the standard JSON-LD formatter
         let result = ApiQueryResult {
@@ -294,10 +296,7 @@ where
 
         // Build versioned storage address
         let (name, branch) = core_alias::split_alias(vg_alias).map_err(|e| {
-            crate::ApiError::config(format!(
-                "Invalid virtual graph alias '{}': {}",
-                vg_alias, e
-            ))
+            crate::ApiError::config(format!("Invalid virtual graph alias '{}': {}", vg_alias, e))
         })?;
         let address = format!(
             "fluree:file://virtual-graphs/{}/{}/vector/t{}/snapshot.bin",
@@ -363,16 +362,14 @@ where
         use fluree_db_query::vector::usearch::deserialize;
 
         // Look up VG record
-        let record = self
-            .nameservice
-            .lookup_vg(vg_alias)
-            .await?
-            .ok_or_else(|| crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias)))?;
+        let record = self.nameservice.lookup_vg(vg_alias).await?.ok_or_else(|| {
+            crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias))
+        })?;
 
         // Get index address
-        let index_address = record
-            .index_address
-            .ok_or_else(|| crate::ApiError::NotFound(format!("No index for virtual graph: {}", vg_alias)))?;
+        let index_address = record.index_address.ok_or_else(|| {
+            crate::ApiError::NotFound(format!("No index for virtual graph: {}", vg_alias))
+        })?;
 
         // Load from storage
         let bytes = self.storage().read_bytes(&index_address).await?;
@@ -388,11 +385,9 @@ where
     /// This is a lightweight check that only looks up nameservice records.
     pub async fn check_vector_staleness(&self, vg_alias: &str) -> Result<VectorStalenessCheck> {
         // Look up VG record
-        let record = self
-            .nameservice
-            .lookup_vg(vg_alias)
-            .await?
-            .ok_or_else(|| crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias)))?;
+        let record = self.nameservice.lookup_vg(vg_alias).await?.ok_or_else(|| {
+            crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias))
+        })?;
 
         // Get source ledger from dependencies
         let source_ledger = record
@@ -404,11 +399,9 @@ where
         // Check minimum head across all dependencies
         let mut ledger_t: Option<i64> = None;
         for dep in &record.dependencies {
-            let ledger_record = self
-                .nameservice
-                .lookup(dep)
-                .await?
-                .ok_or_else(|| crate::ApiError::NotFound(format!("Source ledger not found: {}", dep)))?;
+            let ledger_record = self.nameservice.lookup(dep).await?.ok_or_else(|| {
+                crate::ApiError::NotFound(format!("Source ledger not found: {}", dep))
+            })?;
             ledger_t = Some(match ledger_t {
                 Some(cur) => cur.min(ledger_record.commit_t),
                 None => ledger_record.commit_t,
@@ -454,11 +447,9 @@ where
         info!(vg_alias = %vg_alias, "Starting vector index sync");
 
         // 1. Look up VG record to get config and index address
-        let record = self
-            .nameservice
-            .lookup_vg(vg_alias)
-            .await?
-            .ok_or_else(|| crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias)))?;
+        let record = self.nameservice.lookup_vg(vg_alias).await?.ok_or_else(|| {
+            crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias))
+        })?;
 
         // Check if VG has been dropped
         if record.retracted {
@@ -478,7 +469,10 @@ where
 
         // Parse config to get query
         let config: JsonValue = serde_json::from_str(&record.config)?;
-        let query = config.get("query").cloned().unwrap_or(serde_json::json!({}));
+        let query = config
+            .get("query")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
 
         // Get source ledger alias from dependencies
         let source_ledger_alias = record
@@ -515,9 +509,7 @@ where
             .ns_record
             .as_ref()
             .and_then(|r| r.commit_address.clone())
-            .ok_or_else(|| {
-                crate::ApiError::NotFound("No commit address for ledger".to_string())
-            })?;
+            .ok_or_else(|| crate::ApiError::NotFound("No commit address for ledger".to_string()))?;
 
         // 5. Compile property deps for this ledger's namespace
         // Convert VectorPropertyDeps to PropertyDeps for compilation
@@ -528,7 +520,11 @@ where
 
         // 6. Trace commits and collect affected subjects
         let mut affected_sids: HashSet<fluree_db_core::Sid> = HashSet::new();
-        let stream = trace_commits(self.storage().clone(), head_commit_address.clone(), old_watermark);
+        let stream = trace_commits(
+            self.storage().clone(),
+            head_commit_address.clone(),
+            old_watermark,
+        );
         futures::pin_mut!(stream);
 
         while let Some(result) = stream.next().await {
@@ -564,7 +560,10 @@ where
         let results = self.execute_vector_indexing_query(&ledger, &query).await?;
 
         // Expand prefix map for @id fields and property names
-        let context = query.get("@context").cloned().unwrap_or(serde_json::json!({}));
+        let context = query
+            .get("@context")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
         let prefix_map = extract_prefix_map(&context);
         let results = expand_ids_in_results(results, &prefix_map);
         let results = expand_properties_in_results(results, &prefix_map);
@@ -640,11 +639,9 @@ where
         info!(vg_alias = %vg_alias, "Starting full vector index resync");
 
         // 1. Look up VG record
-        let record = self
-            .nameservice
-            .lookup_vg(vg_alias)
-            .await?
-            .ok_or_else(|| crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias)))?;
+        let record = self.nameservice.lookup_vg(vg_alias).await?.ok_or_else(|| {
+            crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias))
+        })?;
 
         if record.retracted {
             return Err(crate::ApiError::Drop(format!(
@@ -655,15 +652,21 @@ where
 
         // Parse config
         let config: JsonValue = serde_json::from_str(&record.config)?;
-        let query = config.get("query").cloned().unwrap_or(serde_json::json!({}));
+        let query = config
+            .get("query")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
         let embedding_property = config
             .get("embedding_property")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| crate::ApiError::Config("Missing embedding_property in VG config".to_string()))?;
+            .ok_or_else(|| {
+                crate::ApiError::Config("Missing embedding_property in VG config".to_string())
+            })?;
         let dimensions = config
             .get("dimensions")
             .and_then(|v| v.as_u64())
-            .ok_or_else(|| crate::ApiError::Config("Missing dimensions in VG config".to_string()))? as usize;
+            .ok_or_else(|| crate::ApiError::Config("Missing dimensions in VG config".to_string()))?
+            as usize;
 
         // Get source ledger
         let source_ledger_alias = record
@@ -689,7 +692,10 @@ where
         let results = self.execute_vector_indexing_query(&ledger, &query).await?;
 
         // Expand prefix map for @id fields and property names
-        let context = query.get("@context").cloned().unwrap_or(serde_json::json!({}));
+        let context = query
+            .get("@context")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
         let prefix_map = extract_prefix_map(&context);
         let results = expand_ids_in_results(results, &prefix_map);
         let results = expand_properties_in_results(results, &prefix_map);
@@ -712,10 +718,11 @@ where
             _ => fluree_db_query::vector::DistanceMetric::Cosine,
         };
 
-        let mut builder = VectorIndexBuilder::new(source_ledger_alias.as_str(), dimensions, metric)?
-            .with_embedding_property(&embedding_property_expanded)
-            .with_property_deps(property_deps)
-            .with_watermark(ledger_t);
+        let mut builder =
+            VectorIndexBuilder::new(source_ledger_alias.as_str(), dimensions, metric)?
+                .with_embedding_property(&embedding_property_expanded)
+                .with_property_deps(property_deps)
+                .with_watermark(ledger_t);
 
         if !results.is_empty() {
             builder = builder.with_capacity(results.len())?;
@@ -783,11 +790,9 @@ where
         info!(vg_alias = %vg_alias, "Dropping vector index");
 
         // Look up VG record
-        let record = self
-            .nameservice
-            .lookup_vg(vg_alias)
-            .await?
-            .ok_or_else(|| crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias)))?;
+        let record = self.nameservice.lookup_vg(vg_alias).await?.ok_or_else(|| {
+            crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias))
+        })?;
 
         if record.retracted {
             return Ok(VectorDropResult {

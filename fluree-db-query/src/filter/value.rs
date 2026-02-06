@@ -5,7 +5,9 @@
 
 use crate::ir::FilterValue;
 use bigdecimal::BigDecimal;
-use fluree_db_core::temporal::{Date as FlureeDate, DateTime as FlureeDateTime, Time as FlureeTime};
+use fluree_db_core::temporal::{
+    Date as FlureeDate, DateTime as FlureeDateTime, Time as FlureeTime,
+};
 use fluree_db_core::{FlakeValue, GeoPointBits};
 use num_bigint::BigInt;
 use num_traits::Zero;
@@ -146,10 +148,10 @@ pub fn comparable_to_string(val: &ComparableValue) -> Option<&str> {
     match val {
         ComparableValue::String(s) => Some(s.as_ref()),
         ComparableValue::Iri(s) => Some(s.as_ref()),
-        ComparableValue::TypedLiteral { val, .. } => match val {
-            FlakeValue::String(s) => Some(s.as_str()),
-            _ => None,
-        },
+        ComparableValue::TypedLiteral {
+            val: FlakeValue::String(s),
+            ..
+        } => Some(s.as_str()),
         _ => None,
     }
 }
@@ -255,12 +257,16 @@ pub fn eval_arithmetic(
         }
         // Mixed numeric types -> promote to higher precision
         // Long <-> Double -> Double
-        (ComparableValue::Long(a), ComparableValue::Double(b)) => {
-            eval_arithmetic(op, ComparableValue::Double(a as f64), ComparableValue::Double(b))
-        }
-        (ComparableValue::Double(a), ComparableValue::Long(b)) => {
-            eval_arithmetic(op, ComparableValue::Double(a), ComparableValue::Double(b as f64))
-        }
+        (ComparableValue::Long(a), ComparableValue::Double(b)) => eval_arithmetic(
+            op,
+            ComparableValue::Double(a as f64),
+            ComparableValue::Double(b),
+        ),
+        (ComparableValue::Double(a), ComparableValue::Long(b)) => eval_arithmetic(
+            op,
+            ComparableValue::Double(a),
+            ComparableValue::Double(b as f64),
+        ),
         // Long <-> BigInt -> BigInt
         (ComparableValue::Long(a), ComparableValue::BigInt(b)) => eval_arithmetic(
             op,

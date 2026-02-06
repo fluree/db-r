@@ -42,12 +42,8 @@ pub async fn run(
     let content = input::read_input(&source)?;
 
     // Detect query format
-    let query_format = detect::detect_query_format(
-        file_path.as_deref(),
-        &content,
-        sparql_flag,
-        fql_flag,
-    )?;
+    let query_format =
+        detect::detect_query_format(file_path.as_deref(), &content, sparql_flag, fql_flag)?;
 
     // Parse output format
     let output_format = match format_str.to_lowercase().as_str() {
@@ -75,21 +71,13 @@ pub async fn run(
 
     let (result, formatted_json) = match query_format {
         detect::QueryFormat::Sparql => {
-            let result = graph
-                .query()
-                .sparql(&content)
-                .execute()
-                .await?;
+            let result = graph.query().sparql(&content).execute().await?;
             let json = result.to_sparql_json(&ledger.db)?;
             (query_format, json)
         }
         detect::QueryFormat::Fql => {
             let json_query: serde_json::Value = serde_json::from_str(&content)?;
-            let result = graph
-                .query()
-                .jsonld(&json_query)
-                .execute()
-                .await?;
+            let result = graph.query().jsonld(&json_query).execute().await?;
             let json = result.to_jsonld(&ledger.db)?;
             (query_format, json)
         }

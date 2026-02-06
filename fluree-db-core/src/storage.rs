@@ -366,7 +366,6 @@ pub fn extract_hash_from_address(address: &str) -> Option<String> {
     Some(filename[..dot_pos].to_string())
 }
 
-
 /// Decode JSON from bytes
 ///
 /// Helper function for storage implementations.
@@ -467,10 +466,7 @@ impl StorageWrite for MemoryStorage {
 
     async fn delete(&self, address: &str) -> Result<()> {
         // Idempotent: ok even if not found
-        self.data
-            .write()
-            .expect("RwLock poisoned")
-            .remove(address);
+        self.data.write().expect("RwLock poisoned").remove(address);
         Ok(())
     }
 }
@@ -563,7 +559,12 @@ impl FileStorage {
 
         // Disallow absolute paths and path traversal.
         if p.is_absolute()
-            || p.components().any(|c| matches!(c, Component::ParentDir | Component::RootDir | Component::Prefix(_)))
+            || p.components().any(|c| {
+                matches!(
+                    c,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            })
         {
             return Err(crate::error::Error::storage(format!(
                 "Invalid storage path '{}': must be a relative path without '..'",
@@ -591,7 +592,11 @@ impl StorageRead for FileStorage {
 
     fn resolve_local_path(&self, address: &str) -> Option<std::path::PathBuf> {
         let path = self.resolve_path(address).ok()?;
-        if path.exists() { Some(path) } else { None }
+        if path.exists() {
+            Some(path)
+        } else {
+            None
+        }
     }
 
     async fn exists(&self, address: &str) -> Result<bool> {
@@ -618,7 +623,8 @@ impl StorageRead for FileStorage {
         } else {
             // The prefix might be a partial filename, so list the parent
             let parent = full_path.parent().unwrap_or(&self.base_path);
-            let file_part = full_path.file_name()
+            let file_part = full_path
+                .file_name()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
             (parent.to_path_buf(), file_part)
@@ -791,13 +797,19 @@ mod tests {
         let storage = MemoryStorage::new();
 
         // Test StorageWrite trait
-        storage.write_bytes("write/test", b"written data").await.unwrap();
+        storage
+            .write_bytes("write/test", b"written data")
+            .await
+            .unwrap();
 
         let bytes = storage.read_bytes("write/test").await.unwrap();
         assert_eq!(bytes, b"written data");
 
         // Test idempotency - writing same content again should succeed
-        storage.write_bytes("write/test", b"overwritten").await.unwrap();
+        storage
+            .write_bytes("write/test", b"overwritten")
+            .await
+            .unwrap();
         let bytes = storage.read_bytes("write/test").await.unwrap();
         assert_eq!(bytes, b"overwritten");
     }

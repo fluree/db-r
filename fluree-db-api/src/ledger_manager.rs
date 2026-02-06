@@ -26,13 +26,13 @@ use std::time::{Duration, Instant};
 
 use std::path::PathBuf;
 
+use fluree_db_core::db::{Db, DbMetadata};
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::{alias as core_alias, Storage};
 use fluree_db_indexer::run_index::{BinaryIndexStore, LeafletCache};
 use fluree_db_ledger::{LedgerState, TypeErasedStore};
 use fluree_db_nameservice::{NameService, NsRecord};
 use fluree_db_novelty::Novelty;
-use fluree_db_core::db::Db;
 use tokio::sync::{oneshot, Mutex, RwLock};
 
 use crate::error::{ApiError, Result};
@@ -311,7 +311,10 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
         (
             state.t(),
             state.index_t(),
-            state.ns_record.as_ref().and_then(|r| r.index_address.clone()),
+            state
+                .ns_record
+                .as_ref()
+                .and_then(|r| r.index_address.clone()),
         )
     }
 
@@ -370,16 +373,16 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
             .as_ref()
             .and_then(|s| serde_json::from_value::<RawDbRootSchema>(s.clone()).ok())
             .map(|raw| raw_schema_to_index_schema(&raw));
-        let mut db = Db::new_meta(
-            root.ledger_alias,
-            root.index_t,
-            ns_codes,
+        let meta = DbMetadata {
+            alias: root.ledger_alias,
+            t: root.index_t,
+            namespace_codes: ns_codes,
             stats,
             schema,
-            root.subject_watermarks,
-            root.string_watermark,
-            storage.clone(),
-        );
+            subject_watermarks: root.subject_watermarks,
+            string_watermark: root.string_watermark,
+        };
+        let mut db = Db::new_meta(meta, storage.clone());
         db.range_provider = Some(Arc::new(provider));
 
         // Brief lock: swap state + binary_store atomically.
@@ -601,8 +604,8 @@ where
     pub async fn get_or_load(&self, alias: &str) -> Result<LedgerHandle<S>> {
         // Normalize alias to canonical form for consistent cache keys
         // This ensures "mydb" and "mydb:main" use the same cache entry
-        let canonical_alias = core_alias::normalize_alias(alias)
-            .unwrap_or_else(|_| alias.to_string());
+        let canonical_alias =
+            core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
 
         // Fast path: already loaded
         {
@@ -664,13 +667,9 @@ where
         // We're the loader - do the I/O without holding manager lock
         // Note: We pass the original alias to nameservice (it handles resolution),
         // but cache under the canonical alias for consistent lookup
-        let result = LedgerState::load(
-            &self.nameservice,
-            alias,
-            self.storage.clone(),
-        )
-        .await
-        .map_err(ApiError::from); // Convert LedgerError to ApiError
+        let result = LedgerState::load(&self.nameservice, alias, self.storage.clone())
+            .await
+            .map_err(ApiError::from); // Convert LedgerError to ApiError
 
         // Publish result to waiters
         let mut entries = self.entries.write().await;
@@ -699,8 +698,7 @@ where
                     }
                 };
 
-                let handle =
-                    LedgerHandle::new(canonical_alias.clone(), state, binary_store);
+                let handle = LedgerHandle::new(canonical_alias.clone(), state, binary_store);
 
                 // Notify waiters
                 if let Some(LoadState::Loading(waiters)) = entries.remove(&canonical_alias) {
@@ -719,8 +717,7 @@ where
                 // Capture error with status code for waiters before consuming the error
                 // Note: Waiters receive an Http error (preserving status code);
                 // the leader (first caller) gets the original error type preserved.
-                let error_for_waiters =
-                    Arc::new(ApiError::http(e.status_code(), e.to_string()));
+                let error_for_waiters = Arc::new(ApiError::http(e.status_code(), e.to_string()));
 
                 // Notify waiters of failure
                 if let Some(LoadState::Loading(waiters)) = entries.remove(&canonical_alias) {
@@ -741,8 +738,8 @@ where
     /// cancellation errors. This is acceptable - disconnect is a "force evict."
     pub async fn disconnect(&self, alias: &str) {
         // Normalize alias to match cache key format
-        let canonical_alias = core_alias::normalize_alias(alias)
-            .unwrap_or_else(|_| alias.to_string());
+        let canonical_alias =
+            core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
 
         let mut entries = self.entries.write().await;
         // Removal will drop any pending oneshot senders, causing waiters to get RecvError
@@ -780,8 +777,8 @@ where
     /// - None → Ok(()) (not loaded, nothing to reload)
     pub async fn reload(&self, alias: &str) -> Result<()> {
         // Normalize alias to match cache key format
-        let canonical_alias = core_alias::normalize_alias(alias)
-            .unwrap_or_else(|_| alias.to_string());
+        let canonical_alias =
+            core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
 
         enum ReloadAction<S> {
             BecomeLeader(LedgerHandle<S>),
@@ -860,13 +857,9 @@ where
                 // We're the reload leader - do I/O without manager lock
                 let mut write_guard = handle.lock_for_write().await;
 
-                let result = LedgerState::load(
-                    &self.nameservice,
-                    alias,
-                    self.storage.clone(),
-                )
-                .await
-                .map_err(ApiError::from); // Convert LedgerError to ApiError
+                let result = LedgerState::load(&self.nameservice, alias, self.storage.clone())
+                    .await
+                    .map_err(ApiError::from); // Convert LedgerError to ApiError
 
                 // Publish result under lock
                 let mut entries = self.entries.write().await;
@@ -1075,7 +1068,9 @@ impl UpdatePlan {
         if ns.commit_t == local_t {
             // Commits are in sync - check if index advanced
             match (&ns.index_address, local_index_address) {
-                (Some(ns_idx), Some(local_idx)) if ns_idx != local_idx && ns.index_t > local_index_t => {
+                (Some(ns_idx), Some(local_idx))
+                    if ns_idx != local_idx && ns.index_t > local_index_t =>
+                {
                     // Index advanced, same commit_t
                     UpdatePlan::IndexOnly {
                         index_address: ns_idx.clone(),
@@ -1205,7 +1200,10 @@ where
         match plan {
             UpdatePlan::Noop => Ok(NotifyResult::Current),
 
-            UpdatePlan::IndexOnly { index_address, index_t } => {
+            UpdatePlan::IndexOnly {
+                index_address,
+                index_t,
+            } => {
                 // v1: Fall back to full reload
                 // Future: reload index root at index_address, rebuild novelty for commits > index_t
                 tracing::debug!(
@@ -1218,7 +1216,10 @@ where
                 Ok(NotifyResult::IndexUpdated)
             }
 
-            UpdatePlan::CommitNext { commit_address, commit_t } => {
+            UpdatePlan::CommitNext {
+                commit_address,
+                commit_t,
+            } => {
                 // v1: Fall back to full reload
                 // Future: load single commit at commit_address, apply to novelty
                 tracing::debug!(
@@ -1299,7 +1300,12 @@ mod tests {
     // UpdatePlan::plan() tests - Clojure parity scenarios
     // ========================================================================
 
-    fn make_ns_record(commit_t: i64, index_t: i64, commit_addr: Option<&str>, index_addr: Option<&str>) -> NsRecord {
+    fn make_ns_record(
+        commit_t: i64,
+        index_t: i64,
+        commit_addr: Option<&str>,
+        index_addr: Option<&str>,
+    ) -> NsRecord {
         NsRecord {
             address: "test:main".to_string(),
             alias: "test:main".to_string(),
@@ -1483,7 +1489,10 @@ mod tests {
             // The shutdown guard in get_or_load checks is_shutdown() before inserting.
             // Verify the flag is set so the guard would skip insertion.
             if !mgr.shutdown.load(Ordering::Acquire) {
-                entries.insert("should_not_appear:main".to_string(), LoadState::Loading(Vec::new()));
+                entries.insert(
+                    "should_not_appear:main".to_string(),
+                    LoadState::Loading(Vec::new()),
+                );
             }
         }
 

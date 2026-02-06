@@ -11,8 +11,8 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use super::branch::DictBranch;
 use super::forward_leaf::ForwardLeaf;
@@ -50,7 +50,13 @@ pub struct DictTreeReader {
 impl DictTreeReader {
     /// Create a reader from a decoded branch and leaf source.
     pub fn new(branch: DictBranch, leaf_source: LeafSource) -> Self {
-        Self { branch, leaf_source, global_cache: None, disk_reads: AtomicU64::new(0), cache_hits: AtomicU64::new(0) }
+        Self {
+            branch,
+            leaf_source,
+            global_cache: None,
+            disk_reads: AtomicU64::new(0),
+            cache_hits: AtomicU64::new(0),
+        }
     }
 
     /// Create a reader backed by the global leaflet cache.
@@ -115,9 +121,8 @@ impl DictTreeReader {
     pub fn forward_lookup_str(&self, id: u64) -> io::Result<Option<String>> {
         match self.forward_lookup(id)? {
             Some(bytes) => {
-                let s = String::from_utf8(bytes).map_err(|e| {
-                    io::Error::new(io::ErrorKind::InvalidData, e)
-                })?;
+                let s = String::from_utf8(bytes)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                 Ok(Some(s))
             }
             None => Ok(None),
@@ -157,16 +162,18 @@ impl DictTreeReader {
                     let cache_key = xxhash_rust::xxh3::xxh3_128(address.as_bytes());
                     let path = path.clone();
                     let disk_reads = &self.disk_reads;
-                    let cache_hits = &self.cache_hits;
-                    cache.try_get_or_load_dict_leaf(cache_key, || {
-                        disk_reads.fetch_add(1, Ordering::Relaxed);
-                        let bytes = std::fs::read(&path)?;
-                        Ok(Arc::from(bytes.into_boxed_slice()))
-                    }).inspect(|_| {
-                        // If we didn't hit the loader closure, it was a cache hit.
-                        // We can't distinguish perfectly since try_get_or_load_dict_leaf
-                        // doesn't report hit/miss. Track total calls instead.
-                    })
+                    let _cache_hits = &self.cache_hits;
+                    cache
+                        .try_get_or_load_dict_leaf(cache_key, || {
+                            disk_reads.fetch_add(1, Ordering::Relaxed);
+                            let bytes = std::fs::read(&path)?;
+                            Ok(Arc::from(bytes.into_boxed_slice()))
+                        })
+                        .inspect(|_| {
+                            // If we didn't hit the loader closure, it was a cache hit.
+                            // We can't distinguish perfectly since try_get_or_load_dict_leaf
+                            // doesn't report hit/miss. Track total calls instead.
+                        })
                 } else {
                     self.disk_reads.fetch_add(1, Ordering::Relaxed);
                     let bytes = std::fs::read(path)?;
@@ -220,39 +227,25 @@ mod tests {
     use crate::dict_tree::forward_leaf::ForwardEntry;
     use crate::dict_tree::reverse_leaf::ReverseEntry;
 
-    fn build_forward_reader(
-        entries: Vec<ForwardEntry>,
-    ) -> DictTreeReader {
-        let result = builder::build_forward_tree(
-            entries,
-            builder::DEFAULT_TARGET_LEAF_BYTES,
-        )
-        .unwrap();
+    fn build_forward_reader(entries: Vec<ForwardEntry>) -> DictTreeReader {
+        let result =
+            builder::build_forward_tree(entries, builder::DEFAULT_TARGET_LEAF_BYTES).unwrap();
 
         // Simulate CAS: use pending hash as the address key
         let mut leaf_map = HashMap::new();
-        for (leaf_artifact, branch_leaf) in
-            result.leaves.iter().zip(result.branch.leaves.iter())
-        {
+        for (leaf_artifact, branch_leaf) in result.leaves.iter().zip(result.branch.leaves.iter()) {
             leaf_map.insert(branch_leaf.address.clone(), leaf_artifact.bytes.clone());
         }
 
         DictTreeReader::from_memory(result.branch, leaf_map)
     }
 
-    fn build_reverse_reader(
-        entries: Vec<ReverseEntry>,
-    ) -> DictTreeReader {
-        let result = builder::build_reverse_tree(
-            entries,
-            builder::DEFAULT_TARGET_LEAF_BYTES,
-        )
-        .unwrap();
+    fn build_reverse_reader(entries: Vec<ReverseEntry>) -> DictTreeReader {
+        let result =
+            builder::build_reverse_tree(entries, builder::DEFAULT_TARGET_LEAF_BYTES).unwrap();
 
         let mut leaf_map = HashMap::new();
-        for (leaf_artifact, branch_leaf) in
-            result.leaves.iter().zip(result.branch.leaves.iter())
-        {
+        for (leaf_artifact, branch_leaf) in result.leaves.iter().zip(result.branch.leaves.iter()) {
             leaf_map.insert(branch_leaf.address.clone(), leaf_artifact.bytes.clone());
         }
 
@@ -293,14 +286,8 @@ mod tests {
 
         let reader = build_reverse_reader(entries);
 
-        assert_eq!(
-            reader.reverse_lookup(b"key_0050").unwrap(),
-            Some(50)
-        );
-        assert_eq!(
-            reader.reverse_lookup(b"nonexistent").unwrap(),
-            None
-        );
+        assert_eq!(reader.reverse_lookup(b"key_0050").unwrap(), Some(50));
+        assert_eq!(reader.reverse_lookup(b"nonexistent").unwrap(), None);
     }
 
     #[test]

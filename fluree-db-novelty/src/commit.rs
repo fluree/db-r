@@ -59,7 +59,7 @@ impl CommitRef {
 ///
 /// Records the cumulative state of the database at this commit point.
 /// This is NOT the flake count of the commit itself, but the total DB state.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct CommitData {
     /// Content-address IRI (legacy / optional).
     ///
@@ -84,18 +84,6 @@ pub struct CommitData {
     /// Previous DB reference (if any)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous: Option<Box<CommitData>>,
-}
-
-impl Default for CommitData {
-    fn default() -> Self {
-        Self {
-            id: None,
-            address: None,
-            flakes: 0,
-            size: 0,
-            previous: None,
-        }
-    }
 }
 
 /// Index reference embedded in a commit
@@ -386,14 +374,17 @@ impl CommitEnvelope {
 /// More memory-efficient than `load_commit` when you only need metadata
 /// for scanning commit history. Only reads the header + envelope section
 /// of the v2 binary blob.
-pub async fn load_commit_envelope<S: Storage>(storage: &S, address: &str) -> Result<CommitEnvelope> {
-    let data = storage
-        .read_bytes(address)
-        .await
-        .map_err(|e| NoveltyError::storage(format!("Failed to read commit envelope {}: {}", address, e)))?;
+pub async fn load_commit_envelope<S: Storage>(
+    storage: &S,
+    address: &str,
+) -> Result<CommitEnvelope> {
+    let data = storage.read_bytes(address).await.map_err(|e| {
+        NoveltyError::storage(format!("Failed to read commit envelope {}: {}", address, e))
+    })?;
 
     let envelope = {
-        let _span = tracing::debug_span!("load_commit_envelope_v2", blob_bytes = data.len()).entered();
+        let _span =
+            tracing::debug_span!("load_commit_envelope_v2", blob_bytes = data.len()).entered();
         crate::commit_v2::read_commit_envelope(&data)
             .map_err(|e| NoveltyError::invalid_commit(e.to_string()))?
     };
@@ -509,10 +500,10 @@ mod tests {
     #[tokio::test]
     async fn test_commit_chain() {
         let commit1 = Commit::new("commit-1", 1, vec![]);
-        let commit2 = Commit::new("commit-2", 2, vec![])
-            .with_previous_ref(CommitRef::new("commit-1"));
-        let commit3 = Commit::new("commit-3", 3, vec![])
-            .with_previous_ref(CommitRef::new("commit-2"));
+        let commit2 =
+            Commit::new("commit-2", 2, vec![]).with_previous_ref(CommitRef::new("commit-1"));
+        let commit3 =
+            Commit::new("commit-3", 3, vec![]).with_previous_ref(CommitRef::new("commit-2"));
 
         assert!(commit1.previous_address().is_none());
         assert_eq!(commit2.previous_address(), Some("commit-1"));

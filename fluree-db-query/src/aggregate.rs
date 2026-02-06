@@ -143,7 +143,11 @@ impl<S: Storage + 'static> AggregateOperator<S> {
         // If no regular aggregates found a Grouped column, find any non-key column
         // (In practice, GROUP BY always produces at least one Grouped column unless
         // all columns are keys, in which case group size is always 1)
-        if group_size_col.is_none() && extra_specs.iter().any(|(_, input_col, _)| input_col.is_none()) {
+        if group_size_col.is_none()
+            && extra_specs
+                .iter()
+                .any(|(_, input_col, _)| input_col.is_none())
+        {
             // Use the first column as fallback - it might be a group key (size=1)
             // or the batch might be empty
             group_size_col = Some(0);
@@ -162,7 +166,6 @@ impl<S: Storage + 'static> AggregateOperator<S> {
             child_col_count,
         }
     }
-
 }
 
 #[async_trait]
@@ -203,7 +206,7 @@ impl<S: Storage + 'static> Operator<S> for AggregateOperator<S> {
             return Ok(Some(Batch::empty(self.schema.clone())?));
         }
 
-        span.record("rows_in", &(batch.len() as u64));
+        span.record("rows_in", batch.len() as u64);
 
         let num_cols = self.schema.len();
         let mut output_columns: Vec<Vec<Binding>> = Vec::with_capacity(num_cols);
@@ -278,7 +281,7 @@ impl<S: Storage + 'static> Operator<S> for AggregateOperator<S> {
         }
 
         let out = Batch::new(self.schema.clone(), output_columns)?;
-        span.record("ms", &((start.elapsed().as_secs_f64() * 1000.0) as u64));
+        span.record("ms", (start.elapsed().as_secs_f64() * 1000.0) as u64);
         Ok(Some(out))
     }
 
@@ -391,7 +394,12 @@ fn agg_avg(values: &[Binding]) -> Binding {
 fn agg_min(values: &[Binding]) -> Binding {
     values
         .iter()
-        .filter(|b| !matches!(b, Binding::Unbound | Binding::Poisoned | Binding::Grouped(_)))
+        .filter(|b| {
+            !matches!(
+                b,
+                Binding::Unbound | Binding::Poisoned | Binding::Grouped(_)
+            )
+        })
         .min_by(|a, b| crate::sort::compare_bindings(a, b))
         .cloned()
         .unwrap_or(Binding::Unbound)
@@ -401,7 +409,12 @@ fn agg_min(values: &[Binding]) -> Binding {
 fn agg_max(values: &[Binding]) -> Binding {
     values
         .iter()
-        .filter(|b| !matches!(b, Binding::Unbound | Binding::Poisoned | Binding::Grouped(_)))
+        .filter(|b| {
+            !matches!(
+                b,
+                Binding::Unbound | Binding::Poisoned | Binding::Grouped(_)
+            )
+        })
         .max_by(|a, b| crate::sort::compare_bindings(a, b))
         .cloned()
         .unwrap_or(Binding::Unbound)
@@ -417,7 +430,7 @@ fn agg_median(values: &[Binding]) -> Binding {
     numbers.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     let len = numbers.len();
-    let median = if len % 2 == 0 {
+    let median = if len.is_multiple_of(2) {
         (numbers[len / 2 - 1] + numbers[len / 2]) / 2.0
     } else {
         numbers[len / 2]

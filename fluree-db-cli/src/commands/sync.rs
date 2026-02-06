@@ -85,11 +85,7 @@ fn print_fetch_result(result: &FetchResult) {
     if !result.updated.is_empty() {
         println!("{}", "Updated:".green().bold());
         for (alias, tracking) in &result.updated {
-            let t = tracking
-                .commit_ref
-                .as_ref()
-                .map(|r| r.t)
-                .unwrap_or(0);
+            let t = tracking.commit_ref.as_ref().map(|r| r.t).unwrap_or(0);
             println!("  {} -> t={}", alias, t);
         }
     }
@@ -181,11 +177,7 @@ fn print_pull_result(result: &PullResult) {
             );
         }
         PullResult::NoUpstream { alias } => {
-            println!(
-                "{} '{}' has no upstream configured",
-                "✗".red(),
-                alias
-            );
+            println!("{} '{}' has no upstream configured", "✗".red(), alias);
         }
         PullResult::NoTracking { alias } => {
             println!(
@@ -243,7 +235,12 @@ pub async fn run_push(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
 fn print_push_result(result: &PushResult) {
     match result {
         PushResult::Pushed { alias, value } => {
-            println!("{} '{}' pushed successfully (t={})", "✓".green(), alias, value.t);
+            println!(
+                "{} '{}' pushed successfully (t={})",
+                "✓".green(),
+                alias,
+                value.t
+            );
         }
         PushResult::Rejected {
             alias,
@@ -263,11 +260,7 @@ fn print_push_result(result: &PushResult) {
             );
         }
         PushResult::NoUpstream { alias } => {
-            println!(
-                "{} '{}' has no upstream configured",
-                "✗".red(),
-                alias
-            );
+            println!("{} '{}' has no upstream configured", "✗".red(), alias);
         }
     }
 }

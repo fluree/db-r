@@ -96,7 +96,10 @@ pub enum ClaimsError {
 
     /// Issuer claim doesn't match signing key's did:key
     #[error("issuer mismatch: token iss={token_iss}, signing key={signing_did}")]
-    IssuerMismatch { token_iss: String, signing_did: String },
+    IssuerMismatch {
+        token_iss: String,
+        signing_did: String,
+    },
 
     /// Issuer is not a valid did:key format
     #[error("invalid issuer format: must be valid did:key")]
@@ -189,11 +192,8 @@ impl EventsTokenPayload {
     /// Note: If events_all is true, ledgers/vgs lists are irrelevant.
     pub fn has_permissions(&self) -> bool {
         self.events_all.unwrap_or(false)
-            || self
-                .events_ledgers
-                .as_ref()
-                .map_or(false, |l| !l.is_empty())
-            || self.events_vgs.as_ref().map_or(false, |v| !v.is_empty())
+            || self.events_ledgers.as_ref().is_some_and(|l| !l.is_empty())
+            || self.events_vgs.as_ref().is_some_and(|v| !v.is_empty())
     }
 
     /// Check if token grants storage proxy permissions.
@@ -201,10 +201,7 @@ impl EventsTokenPayload {
     /// Note: If storage_all is true, ledgers list is irrelevant.
     pub fn has_storage_permissions(&self) -> bool {
         self.storage_all.unwrap_or(false)
-            || self
-                .storage_ledgers
-                .as_ref()
-                .map_or(false, |l| !l.is_empty())
+            || self.storage_ledgers.as_ref().is_some_and(|l| !l.is_empty())
     }
 
     /// Resolve identity: fluree.identity takes precedence, then sub.
@@ -339,7 +336,9 @@ mod tests {
         let mut payload = valid_payload(&did);
         payload.aud = Some(vec!["expected-audience".to_string()]);
 
-        assert!(payload.validate(Some("expected-audience"), &did, false).is_ok());
+        assert!(payload
+            .validate(Some("expected-audience"), &did, false)
+            .is_ok());
     }
 
     #[test]
@@ -351,7 +350,9 @@ mod tests {
             "expected-audience".to_string(),
         ]);
 
-        assert!(payload.validate(Some("expected-audience"), &did, false).is_ok());
+        assert!(payload
+            .validate(Some("expected-audience"), &did, false)
+            .is_ok());
     }
 
     #[test]

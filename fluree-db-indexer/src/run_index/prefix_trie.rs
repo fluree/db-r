@@ -33,6 +33,12 @@ pub struct PrefixTrie {
     nodes: Vec<TrieNode>,
 }
 
+impl Default for PrefixTrie {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PrefixTrie {
     pub fn new() -> Self {
         Self {

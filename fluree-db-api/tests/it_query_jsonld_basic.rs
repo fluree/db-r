@@ -21,7 +21,13 @@ fn ctx() -> JsonValue {
     })
 }
 
-async fn seed_movie_graph() -> (fluree_db_api::Fluree<fluree_db_core::MemoryStorage, fluree_db_nameservice::memory::MemoryNameService>, LedgerState<fluree_db_core::MemoryStorage>) {
+async fn seed_movie_graph() -> (
+    fluree_db_api::Fluree<
+        fluree_db_core::MemoryStorage,
+        fluree_db_nameservice::memory::MemoryNameService,
+    >,
+    LedgerState<fluree_db_core::MemoryStorage>,
+) {
     let fluree = FlureeBuilder::memory().build_memory();
     let alias = "it/jsonld-basic:movie";
 
@@ -55,7 +61,10 @@ async fn seed_movie_graph() -> (fluree_db_api::Fluree<fluree_db_core::MemoryStor
         ]
     });
 
-    let committed = fluree.insert(ledger0, &tx).await.expect("insert movie graph");
+    let committed = fluree
+        .insert(ledger0, &tx)
+        .await
+        .expect("insert movie graph");
     (fluree, committed.ledger)
 }
 
@@ -98,7 +107,13 @@ fn normalize_object_arrays(value: &mut JsonValue) {
     }
 }
 
-async fn seed_simple_subject_crawl() -> (fluree_db_api::Fluree<fluree_db_core::MemoryStorage, fluree_db_nameservice::memory::MemoryNameService>, LedgerState<fluree_db_core::MemoryStorage>) {
+async fn seed_simple_subject_crawl() -> (
+    fluree_db_api::Fluree<
+        fluree_db_core::MemoryStorage,
+        fluree_db_nameservice::memory::MemoryNameService,
+    >,
+    LedgerState<fluree_db_core::MemoryStorage>,
+) {
     let fluree = FlureeBuilder::memory().build_memory();
     let alias = "it/jsonld-basic:ssc";
     let db0 = Db::genesis(fluree.storage().clone(), alias);
@@ -165,7 +180,10 @@ async fn jsonld_basic_wildcard_single_subject_query() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json = result.to_jsonld_async(&ledger.db).await.expect("to_jsonld_async");
+    let json = result
+        .to_jsonld_async(&ledger.db)
+        .await
+        .expect("to_jsonld_async");
 
     let arr = json.as_array().expect("array result");
     assert_eq!(arr.len(), 1);
@@ -189,7 +207,10 @@ async fn jsonld_basic_single_subject_query_explicit_fields() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json = result.to_jsonld_async(&ledger.db).await.expect("to_jsonld_async");
+    let json = result
+        .to_jsonld_async(&ledger.db)
+        .await
+        .expect("to_jsonld_async");
 
     let arr = json.as_array().expect("array result");
     assert_eq!(arr.len(), 1);
@@ -212,7 +233,10 @@ async fn jsonld_basic_single_subject_query_select_one() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json = result.to_jsonld_async(&ledger.db).await.expect("to_jsonld_async");
+    let json = result
+        .to_jsonld_async(&ledger.db)
+        .await
+        .expect("to_jsonld_async");
     let obj = json.as_object().expect("object result");
 
     assert_eq!(obj.get("@id").and_then(|v| v.as_str()), Some("wiki:Qmovie"));
@@ -232,7 +256,10 @@ async fn jsonld_basic_single_subject_query_graph_crawl() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json = result.to_jsonld_async(&ledger.db).await.expect("to_jsonld_async");
+    let json = result
+        .to_jsonld_async(&ledger.db)
+        .await
+        .expect("to_jsonld_async");
 
     let expected = json!({
         "@id": "wiki:Qmovie",
@@ -265,10 +292,16 @@ async fn jsonld_basic_single_subject_graph_crawl_with_depth() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json = result.to_jsonld_async(&ledger.db).await.expect("to_jsonld_async");
+    let json = result
+        .to_jsonld_async(&ledger.db)
+        .await
+        .expect("to_jsonld_async");
 
     let movie = json.as_object().expect("movie object");
-    assert_eq!(movie.get("@id").and_then(|v| v.as_str()), Some("wiki:Qmovie"));
+    assert_eq!(
+        movie.get("@id").and_then(|v| v.as_str()),
+        Some("wiki:Qmovie")
+    );
 
     // isBasedOn should be an expanded object (depth expansion)
     let book = movie
@@ -299,7 +332,10 @@ async fn jsonld_basic_single_subject_graph_crawl_with_depth_and_subselection() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json = result.to_jsonld_async(&ledger.db).await.expect("to_jsonld_async");
+    let json = result
+        .to_jsonld_async(&ledger.db)
+        .await
+        .expect("to_jsonld_async");
 
     let expected = json!({
         "@id": "wiki:Qmovie",
@@ -354,14 +390,8 @@ async fn jsonld_query_with_faux_compact_iri_ids() {
     let r1 = fluree.query(&loaded, &q1).await.expect("query select");
     let mut rows = r1.to_jsonld(&loaded.db).expect("to_jsonld");
     let arr = rows.as_array_mut().expect("rows array");
-    arr.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
-    assert_eq!(
-        rows,
-        json!([
-            ["foaf:bar","Bar"],
-            ["foo","Foo"]
-        ])
-    );
+    arr.sort_by_key(|a| a.to_string());
+    assert_eq!(rows, json!([["foaf:bar", "Bar"], ["foo", "Foo"]]));
 
     // Subject crawl SELECT
     let q2 = json!({
@@ -369,7 +399,10 @@ async fn jsonld_query_with_faux_compact_iri_ids() {
         "select": {"foo": ["*"]}
     });
     let r2 = fluree.query(&loaded, &q2).await.expect("query crawl");
-    let json2 = r2.to_jsonld_async(&loaded.db).await.expect("to_jsonld_async");
+    let json2 = r2
+        .to_jsonld_async(&loaded.db)
+        .await
+        .expect("to_jsonld_async");
     let arr2 = json2.as_array().expect("array result");
     assert_eq!(arr2.len(), 1);
     let obj = arr2[0].as_object().expect("object");
@@ -389,8 +422,14 @@ async fn jsonld_expanding_literal_nodes_wildcard() {
         }
     });
 
-    let result = fluree.query(&ledger, &q).await.expect("query expanding literal");
-    let json_result = result.to_jsonld_async(&ledger.db).await.expect("to_jsonld_async");
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .expect("query expanding literal");
+    let json_result = result
+        .to_jsonld_async(&ledger.db)
+        .await
+        .expect("to_jsonld_async");
 
     // Expected result with expanded literal node
     let expected = json!({
@@ -423,16 +462,28 @@ async fn jsonld_rdf_type_query_analytical() {
     });
 
     let result = fluree.query(&ledger, &q).await.expect("query rdf type");
-    let json_result = result.to_jsonld_async(&ledger.db).await.expect("to_jsonld_async");
+    let json_result = result
+        .to_jsonld_async(&ledger.db)
+        .await
+        .expect("to_jsonld_async");
 
     // Should return the movie with its properties
     let arr = json_result.as_array().expect("array result");
     assert_eq!(arr.len(), 1);
 
     let movie = &arr[0];
-    assert_eq!(movie.get("@id").and_then(|v| v.as_str()), Some("wiki:Qmovie"));
-    assert_eq!(movie.get("@type").and_then(|v| v.as_str()), Some("schema:Movie"));
-    assert_eq!(movie.get("schema:name").and_then(|v| v.as_str()), Some("The Hitchhiker's Guide to the Galaxy"));
+    assert_eq!(
+        movie.get("@id").and_then(|v| v.as_str()),
+        Some("wiki:Qmovie")
+    );
+    assert_eq!(
+        movie.get("@type").and_then(|v| v.as_str()),
+        Some("schema:Movie")
+    );
+    assert_eq!(
+        movie.get("schema:name").and_then(|v| v.as_str()),
+        Some("The Hitchhiker's Guide to the Galaxy")
+    );
 }
 
 #[tokio::test]
@@ -453,7 +504,10 @@ async fn jsonld_list_order_preservation_context_container() {
         ]
     });
 
-    let committed = fluree.insert(ledger0, &tx).await.expect("insert list container");
+    let committed = fluree
+        .insert(ledger0, &tx)
+        .await
+        .expect("insert list container");
     let query = json!({
         "@context": {
             "ex": "http://example.org/ns/",
@@ -463,8 +517,14 @@ async fn jsonld_list_order_preservation_context_container() {
         "selectOne": { "list-test": ["*"] }
     });
 
-    let result = fluree.query(&committed.ledger, &query).await.expect("query list container");
-    let json_result = result.to_jsonld_async(&committed.ledger.db).await.expect("to_jsonld_async");
+    let result = fluree
+        .query(&committed.ledger, &query)
+        .await
+        .expect("query list container");
+    let json_result = result
+        .to_jsonld_async(&committed.ledger.db)
+        .await
+        .expect("to_jsonld_async");
     assert_eq!(
         json_result,
         json!({"@id": "list-test", "ex:list": [42, 2, 88, 1]})
@@ -497,8 +557,14 @@ async fn jsonld_list_order_preservation_explicit_list() {
         "selectOne": { "list-test2": ["*"] }
     });
 
-    let result = fluree.query(&committed.ledger, &query).await.expect("query list");
-    let json_result = result.to_jsonld_async(&committed.ledger.db).await.expect("to_jsonld_async");
+    let result = fluree
+        .query(&committed.ledger, &query)
+        .await
+        .expect("query list");
+    let json_result = result
+        .to_jsonld_async(&committed.ledger.db)
+        .await
+        .expect("to_jsonld_async");
     assert_eq!(
         json_result,
         json!({"@id": "list-test2", "ex:list": [42, 2, 88, 1]})
@@ -515,7 +581,10 @@ async fn jsonld_simple_subject_crawl_direct_id() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json_result = result.to_jsonld_async(&ledger.db).await.expect("to_jsonld_async");
+    let json_result = result
+        .to_jsonld_async(&ledger.db)
+        .await
+        .expect("to_jsonld_async");
 
     assert_eq!(
         json_result,
@@ -543,7 +612,10 @@ async fn jsonld_simple_subject_crawl_where_type() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let mut json_result = result.to_jsonld_async(&ledger.db).await.expect("to_jsonld_async");
+    let mut json_result = result
+        .to_jsonld_async(&ledger.db)
+        .await
+        .expect("to_jsonld_async");
     normalize_object_arrays(&mut json_result);
 
     let mut expected = json!([
@@ -605,7 +677,10 @@ async fn jsonld_simple_subject_crawl_tuple_name() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let mut json_result = result.to_jsonld_async(&ledger.db).await.expect("to_jsonld_async");
+    let mut json_result = result
+        .to_jsonld_async(&ledger.db)
+        .await
+        .expect("to_jsonld_async");
 
     let mut expected = json!([{
         "@id": "ex:alice",
@@ -634,7 +709,10 @@ async fn jsonld_simple_subject_crawl_tuple_fav_color() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let mut json_result = result.to_jsonld_async(&ledger.db).await.expect("to_jsonld_async");
+    let mut json_result = result
+        .to_jsonld_async(&ledger.db)
+        .await
+        .expect("to_jsonld_async");
     normalize_object_arrays(&mut json_result);
 
     let mut expected = json!([
@@ -688,7 +766,10 @@ async fn jsonld_simple_subject_crawl_limit_two() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let mut json_result = result.to_jsonld_async(&ledger.db).await.expect("to_jsonld_async");
+    let mut json_result = result
+        .to_jsonld_async(&ledger.db)
+        .await
+        .expect("to_jsonld_async");
     normalize_object_arrays(&mut json_result);
 
     let mut expected = json!([
@@ -729,7 +810,10 @@ async fn jsonld_simple_subject_crawl_age_and_fav_color() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let mut json_result = result.to_jsonld_async(&ledger.db).await.expect("to_jsonld_async");
+    let mut json_result = result
+        .to_jsonld_async(&ledger.db)
+        .await
+        .expect("to_jsonld_async");
     normalize_object_arrays(&mut json_result);
 
     let mut expected = json!([{
@@ -758,7 +842,10 @@ async fn jsonld_simple_subject_crawl_age_only() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let mut json_result = result.to_jsonld_async(&ledger.db).await.expect("to_jsonld_async");
+    let mut json_result = result
+        .to_jsonld_async(&ledger.db)
+        .await
+        .expect("to_jsonld_async");
     normalize_object_arrays(&mut json_result);
 
     let mut expected = json!([{
@@ -788,8 +875,14 @@ async fn jsonld_expanding_literal_nodes_specific_properties() {
         }
     });
 
-    let result = fluree.query(&ledger, &q).await.expect("query expanding literal specific");
-    let json_result = result.to_jsonld_async(&ledger.db).await.expect("to_jsonld_async");
+    let result = fluree
+        .query(&ledger, &q)
+        .await
+        .expect("query expanding literal specific");
+    let json_result = result
+        .to_jsonld_async(&ledger.db)
+        .await
+        .expect("to_jsonld_async");
 
     // Expected result with only @type from the expanded literal
     let expected = json!({
@@ -803,4 +896,3 @@ async fn jsonld_expanding_literal_nodes_specific_properties() {
 
     assert_eq!(json_result, expected);
 }
-

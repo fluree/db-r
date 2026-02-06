@@ -6,7 +6,10 @@
 
 mod support;
 
-use fluree_db_api::{Fluree, FlureeBuilder, IndexConfig, IndexingMode, LedgerState, Novelty, ReindexOptions, TriggerIndexOptions};
+use fluree_db_api::{
+    Fluree, FlureeBuilder, IndexConfig, IndexingMode, LedgerState, Novelty, ReindexOptions,
+    TriggerIndexOptions,
+};
 use fluree_db_core::Db;
 use fluree_db_nameservice::NameService;
 use fluree_db_transact::{CommitOpts, TxnOpts};
@@ -33,7 +36,10 @@ async fn indexing_disabled_transaction_exposes_indexing_status_hints() {
     let result = fluree.insert(ledger0, &tx).await.expect("insert");
 
     assert_eq!(result.receipt.t, 1);
-    assert!(!result.indexing.enabled, "indexing should be disabled by default");
+    assert!(
+        !result.indexing.enabled,
+        "indexing should be disabled by default"
+    );
     assert!(
         !result.indexing.needed,
         "small novelty should not exceed default reindex_min_bytes"
@@ -82,9 +88,10 @@ async fn manual_indexing_disabled_mode_then_trigger_updates_nameservice_and_load
             let db0 = Db::genesis(fluree.storage().clone(), alias);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
-            let mut index_cfg = IndexConfig::default();
-            index_cfg.reindex_min_bytes = 0;
-            index_cfg.reindex_max_bytes = 10_000_000;
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
 
             for i in 0..10 {
                 let tx = json!({
@@ -116,7 +123,10 @@ async fn manual_indexing_disabled_mode_then_trigger_updates_nameservice_and_load
                 .await
                 .expect("nameservice lookup")
                 .expect("ns record");
-            assert!(record.index_address.is_none(), "expected no index before manual trigger");
+            assert!(
+                record.index_address.is_none(),
+                "expected no index before manual trigger"
+            );
             assert_eq!(record.commit_t, 10);
 
             let completion = handle.trigger(alias, record.commit_t).await;
@@ -132,8 +142,14 @@ async fn manual_indexing_disabled_mode_then_trigger_updates_nameservice_and_load
                 .await
                 .expect("nameservice lookup")
                 .expect("ns record");
-            assert!(record2.index_address.is_some(), "expected index address after trigger");
-            assert!(record2.index_t >= record2.commit_t, "index_t should catch up");
+            assert!(
+                record2.index_address.is_some(),
+                "expected index address after trigger"
+            );
+            assert!(
+                record2.index_t >= record2.commit_t,
+                "index_t should catch up"
+            );
 
             let loaded = fluree.ledger(alias).await.expect("load ledger");
             assert_eq!(loaded.db.t, 10, "loaded db should be at latest t");
@@ -155,7 +171,9 @@ async fn indexing_coalesces_multiple_commits_and_latest_root_is_queryable() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
 
-    let mut fluree = FlureeBuilder::file(path).build().expect("build file fluree");
+    let mut fluree = FlureeBuilder::file(path)
+        .build()
+        .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -170,9 +188,10 @@ async fn indexing_coalesces_multiple_commits_and_latest_root_is_queryable() {
             let db0 = Db::genesis(fluree.storage().clone(), alias);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
-            let mut index_cfg = IndexConfig::default();
-            index_cfg.reindex_min_bytes = 0;
-            index_cfg.reindex_max_bytes = 10_000_000;
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
 
             let tx1 = json!({
                 "@context": { "ex":"http://example.org/" },
@@ -237,7 +256,10 @@ async fn indexing_coalesces_multiple_commits_and_latest_root_is_queryable() {
 
             // Load via fluree.ledger() which attaches BinaryRangeProvider
             let ledger_loaded = fluree.ledger(alias).await.expect("ledger load");
-            assert!(ledger_loaded.t() >= index_t2, "loaded db.t should be >= indexed t");
+            assert!(
+                ledger_loaded.t() >= index_t2,
+                "loaded db.t should be >= indexed t"
+            );
 
             let query = json!({
                 "@context": { "ex":"http://example.org/" },
@@ -250,7 +272,7 @@ async fn indexing_coalesces_multiple_commits_and_latest_root_is_queryable() {
 
             assert_eq!(
                 normalize_rows(&json_rows),
-                normalize_rows(&json!(["Person 0","Person 1"]))
+                normalize_rows(&json!(["Person 0", "Person 1"]))
             );
         })
         .await;
@@ -262,7 +284,9 @@ async fn file_based_indexing_then_new_connection_loads_and_queries() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
 
-    let fluree = FlureeBuilder::file(path.clone()).build().expect("build file fluree");
+    let fluree = FlureeBuilder::file(path.clone())
+        .build()
+        .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -276,9 +300,10 @@ async fn file_based_indexing_then_new_connection_loads_and_queries() {
             let db0 = Db::genesis(fluree.storage().clone(), alias);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
-            let mut index_cfg = IndexConfig::default();
-            index_cfg.reindex_min_bytes = 0;
-            index_cfg.reindex_max_bytes = 10_000_000;
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
 
             for i in 0..20 {
                 let tx = json!({
@@ -308,7 +333,9 @@ async fn file_based_indexing_then_new_connection_loads_and_queries() {
                 fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
             }
 
-            let fluree2 = FlureeBuilder::file(path).build().expect("build file fluree2");
+            let fluree2 = FlureeBuilder::file(path)
+                .build()
+                .expect("build file fluree2");
             let loaded = fluree2.ledger(alias).await.expect("load ledger");
             assert_eq!(loaded.db.t, 20);
 
@@ -355,7 +382,10 @@ async fn automatic_indexing_disabled_mode_allows_novelty_to_accumulate_without_i
     // Verify state after multiple transactions
     // Note: ledger.t() returns max(novelty.t, db.t) - db.t stays at 0 until indexing
     assert_eq!(ledger.t(), 5, "Should be at t=5 after 5 transactions");
-    assert!(ledger.novelty.size > 500, "Should have accumulated significant novelty");
+    assert!(
+        ledger.novelty.size > 500,
+        "Should have accumulated significant novelty"
+    );
     // Note: In memory storage, stats may not be persisted the same way as file storage
     // The key test is that novelty accumulates without automatic indexing
 }
@@ -369,16 +399,20 @@ fn admin_alias(name: &str) -> String {
 }
 
 async fn seed_some_commits(
-    fluree: &Fluree<fluree_db_core::MemoryStorage, fluree_db_nameservice::memory::MemoryNameService>,
+    fluree: &Fluree<
+        fluree_db_core::MemoryStorage,
+        fluree_db_nameservice::memory::MemoryNameService,
+    >,
     alias: &str,
     n: usize,
 ) -> LedgerState<fluree_db_core::MemoryStorage> {
     let db0 = Db::genesis(fluree.storage().clone(), alias);
     let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
-    let mut idx_cfg = IndexConfig::default();
-    idx_cfg.reindex_min_bytes = 0;
-    idx_cfg.reindex_max_bytes = 10_000_000;
+    let idx_cfg = IndexConfig {
+        reindex_min_bytes: 0,
+        reindex_max_bytes: 10_000_000,
+    };
 
     for i in 0..n {
         let tx = json!({
@@ -388,7 +422,13 @@ async fn seed_some_commits(
             "ex:name": format!("Person {i}")
         });
         ledger = fluree
-            .insert_with_opts(ledger, &tx, Default::default(), Default::default(), &idx_cfg)
+            .insert_with_opts(
+                ledger,
+                &tx,
+                Default::default(),
+                Default::default(),
+                &idx_cfg,
+            )
             .await
             .expect("insert_with_opts")
             .ledger;
@@ -423,7 +463,10 @@ async fn trigger_index_errors_when_indexing_disabled() {
         .await
         .unwrap_err()
         .to_string();
-    assert!(err.contains("Indexing is disabled") || err.contains("IndexingDisabled"), "got: {err}");
+    assert!(
+        err.contains("Indexing is disabled") || err.contains("IndexingDisabled"),
+        "got: {err}"
+    );
 }
 
 #[tokio::test]
@@ -441,11 +484,17 @@ async fn trigger_index_no_commit_ledger_returns_index_t_zero() {
 
     local
         .run_until(async move {
-            let ledger = fluree.create_ledger("it/admin-indexing:no-commits").await.expect("create_ledger");
+            let ledger = fluree
+                .create_ledger("it/admin-indexing:no-commits")
+                .await
+                .expect("create_ledger");
             assert_eq!(ledger.t(), 0);
 
             let r = fluree
-                .trigger_index("it/admin-indexing:no-commits", TriggerIndexOptions::default())
+                .trigger_index(
+                    "it/admin-indexing:no-commits",
+                    TriggerIndexOptions::default(),
+                )
                 .await
                 .expect("trigger_index");
             assert_eq!(r.index_t, 0);
@@ -563,9 +612,10 @@ async fn reindex_populates_statistics() {
     let db0 = Db::genesis(fluree.storage().clone(), &a);
     let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
-    let mut idx_cfg = IndexConfig::default();
-    idx_cfg.reindex_min_bytes = 0;
-    idx_cfg.reindex_max_bytes = 10_000_000;
+    let idx_cfg = IndexConfig {
+        reindex_min_bytes: 0,
+        reindex_max_bytes: 10_000_000,
+    };
 
     // Insert people with types
     let tx1 = json!({
@@ -586,7 +636,13 @@ async fn reindex_populates_statistics() {
         ]
     });
     ledger = fluree
-        .insert_with_opts(ledger, &tx1, Default::default(), Default::default(), &idx_cfg)
+        .insert_with_opts(
+            ledger,
+            &tx1,
+            Default::default(),
+            Default::default(),
+            &idx_cfg,
+        )
         .await
         .expect("insert tx1")
         .ledger;
@@ -600,7 +656,13 @@ async fn reindex_populates_statistics() {
         "ex:age": 35
     });
     ledger = fluree
-        .insert_with_opts(ledger, &tx2, Default::default(), Default::default(), &idx_cfg)
+        .insert_with_opts(
+            ledger,
+            &tx2,
+            Default::default(),
+            Default::default(),
+            &idx_cfg,
+        )
         .await
         .expect("insert tx2")
         .ledger;
@@ -620,7 +682,11 @@ async fn reindex_populates_statistics() {
 
     // After reindex: load the db and verify stats exist
     let loaded = fluree.ledger(&a).await.expect("ledger load");
-    let stats = loaded.db.stats.as_ref().expect("db.stats should be Some after reindex");
+    let stats = loaded
+        .db
+        .stats
+        .as_ref()
+        .expect("db.stats should be Some after reindex");
 
     // Verify per-graph property stats exist (produced by IdStatsHook)
     assert!(stats.graphs.is_some(), "Should have per-graph statistics");
@@ -628,7 +694,11 @@ async fn reindex_populates_statistics() {
     assert!(!graphs.is_empty(), "Should have non-empty graph statistics");
     // Each graph entry should have property stats
     for g in graphs {
-        assert!(!g.properties.is_empty(), "Graph {} should have property stats", g.g_id);
+        assert!(
+            !g.properties.is_empty(),
+            "Graph {} should have property stats",
+            g.g_id
+        );
     }
 
     // Query should still work
@@ -639,7 +709,11 @@ async fn reindex_populates_statistics() {
     });
     let result = fluree.query(&loaded, &q).await.expect("query");
     let jsonld = result.to_jsonld(&loaded.db).expect("to_jsonld");
-    assert_eq!(jsonld.as_array().expect("array").len(), 3, "Should return 3 people");
+    assert_eq!(
+        jsonld.as_array().expect("array").len(),
+        3,
+        "Should return 3 people"
+    );
 }
 
 /// Clojure parity: reindex-with-existing-index-test
@@ -688,7 +762,10 @@ async fn reindex_with_existing_index_completes_successfully() {
                 .await
                 .expect("reindex");
             assert_eq!(reindexed.index_t, 3, "Reindex should still be at t=3");
-            assert!(!reindexed.root_address.is_empty(), "Should have reindexed address");
+            assert!(
+                !reindexed.root_address.is_empty(),
+                "Should have reindexed address"
+            );
 
             // NOTE: Content-addressed storage means identical data produces identical hashes.
             // This is an intentional divergence from Clojure - in Rust, identical indices
@@ -696,7 +773,10 @@ async fn reindex_with_existing_index_completes_successfully() {
             // The key verification is that reindex completed successfully.
 
             // Verify the nameservice record reflects the reindex
-            let status_after = fluree.index_status(&a).await.expect("index_status after reindex");
+            let status_after = fluree
+                .index_status(&a)
+                .await
+                .expect("index_status after reindex");
             assert_eq!(status_after.index_t, 3);
 
             // Query should work with the index
@@ -728,9 +808,10 @@ async fn reindex_preserves_filter_queries() {
     let db0 = Db::genesis(fluree.storage().clone(), &a);
     let ledger = LedgerState::new(db0, Novelty::new(0));
 
-    let mut idx_cfg = IndexConfig::default();
-    idx_cfg.reindex_min_bytes = 0;
-    idx_cfg.reindex_max_bytes = 10_000_000;
+    let idx_cfg = IndexConfig {
+        reindex_min_bytes: 0,
+        reindex_max_bytes: 10_000_000,
+    };
 
     let tx = json!({
         "@context": { "ex": "http://example.org/" },
@@ -750,7 +831,13 @@ async fn reindex_preserves_filter_queries() {
         ]
     });
     let _ledger = fluree
-        .insert_with_opts(ledger, &tx, Default::default(), Default::default(), &idx_cfg)
+        .insert_with_opts(
+            ledger,
+            &tx,
+            Default::default(),
+            Default::default(),
+            &idx_cfg,
+        )
         .await
         .expect("insert")
         .ledger;
@@ -772,7 +859,11 @@ async fn reindex_preserves_filter_queries() {
     });
     let result1 = fluree.query(&loaded, &q1).await.expect("query");
     let jsonld1 = result1.to_jsonld(&loaded.db).expect("to_jsonld");
-    assert_eq!(jsonld1.as_array().expect("array").len(), 2, "Should return 2 employees");
+    assert_eq!(
+        jsonld1.as_array().expect("array").len(),
+        2,
+        "Should return 2 employees"
+    );
 
     // Query with filter (salary > 70000)
     // Note: Rust filter syntax uses ["filter", "(expr)"] array form
@@ -804,9 +895,10 @@ async fn reindex_uses_provided_indexer_config() {
     let db0 = Db::genesis(fluree.storage().clone(), &a);
     let ledger = LedgerState::new(db0, Novelty::new(0));
 
-    let mut idx_cfg = IndexConfig::default();
-    idx_cfg.reindex_min_bytes = 0;
-    idx_cfg.reindex_max_bytes = 10_000_000;
+    let idx_cfg = IndexConfig {
+        reindex_min_bytes: 0,
+        reindex_max_bytes: 10_000_000,
+    };
 
     // Insert some data
     let tx = json!({
@@ -818,7 +910,13 @@ async fn reindex_uses_provided_indexer_config() {
         ]
     });
     let _ledger = fluree
-        .insert_with_opts(ledger, &tx, Default::default(), Default::default(), &idx_cfg)
+        .insert_with_opts(
+            ledger,
+            &tx,
+            Default::default(),
+            Default::default(),
+            &idx_cfg,
+        )
         .await
         .expect("insert")
         .ledger;
@@ -826,7 +924,10 @@ async fn reindex_uses_provided_indexer_config() {
     // Reindex with custom IndexerConfig (using small() preset)
     let custom_config = fluree_db_indexer::IndexerConfig::small();
     let r = fluree
-        .reindex(&a, ReindexOptions::default().with_indexer_config(custom_config))
+        .reindex(
+            &a,
+            ReindexOptions::default().with_indexer_config(custom_config),
+        )
         .await
         .expect("reindex with custom config");
 
@@ -845,7 +946,11 @@ async fn reindex_uses_provided_indexer_config() {
     });
     let result = fluree.query(&loaded, &q).await.expect("query");
     let jsonld = result.to_jsonld(&loaded.db).expect("to_jsonld");
-    assert_eq!(jsonld.as_array().expect("array").len(), 3, "Should return 3 things");
+    assert_eq!(
+        jsonld.as_array().expect("array").len(),
+        3,
+        "Should return 3 things"
+    );
 }
 
 /// Clojure parity: reindex-from-t-test
@@ -859,9 +964,10 @@ async fn reindex_default_from_t_includes_all_data() {
     let db0 = Db::genesis(fluree.storage().clone(), &a);
     let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
-    let mut idx_cfg = IndexConfig::default();
-    idx_cfg.reindex_min_bytes = 0;
-    idx_cfg.reindex_max_bytes = 10_000_000;
+    let idx_cfg = IndexConfig {
+        reindex_min_bytes: 0,
+        reindex_max_bytes: 10_000_000,
+    };
 
     // Insert 3 transactions
     for i in 0..3 {
@@ -872,9 +978,15 @@ async fn reindex_default_from_t_includes_all_data() {
             "ex:label": format!("Item {}", i)
         });
         ledger = fluree
-            .insert_with_opts(ledger, &tx, Default::default(), Default::default(), &idx_cfg)
+            .insert_with_opts(
+                ledger,
+                &tx,
+                Default::default(),
+                Default::default(),
+                &idx_cfg,
+            )
             .await
-            .expect(&format!("insert tx{}", i))
+            .unwrap_or_else(|_| panic!("insert tx{}", i))
             .ledger;
     }
     assert_eq!(ledger.t(), 3, "Should be at t=3 after 3 transactions");
@@ -895,5 +1007,9 @@ async fn reindex_default_from_t_includes_all_data() {
     });
     let result = fluree.query(&loaded, &q).await.expect("query");
     let jsonld = result.to_jsonld(&loaded.db).expect("to_jsonld");
-    assert_eq!(jsonld.as_array().expect("array").len(), 3, "Should have all 3 items");
+    assert_eq!(
+        jsonld.as_array().expect("array").len(),
+        3,
+        "Should have all 3 items"
+    );
 }

@@ -36,9 +36,7 @@ impl VendedCredentials {
     /// - `s3.region`
     /// - `s3.path-style-access`
     /// - `expiration-time` or `s3.session-token-expires-at-ms`
-    pub fn from_config_map(
-        config: &HashMap<String, serde_json::Value>,
-    ) -> Result<Option<Self>> {
+    pub fn from_config_map(config: &HashMap<String, serde_json::Value>) -> Result<Option<Self>> {
         let access_key = config
             .get("s3.access-key-id")
             .and_then(|v| v.as_str())
@@ -262,7 +260,9 @@ mod tests {
             serde_json::json!("true"),
         );
 
-        let creds = VendedCredentials::from_config_map(&config).unwrap().unwrap();
+        let creds = VendedCredentials::from_config_map(&config)
+            .unwrap()
+            .unwrap();
         assert_eq!(creds.access_key_id, "AKIATEST");
         assert_eq!(creds.secret_access_key, "secret123");
         assert_eq!(creds.session_token, Some("session456".to_string()));

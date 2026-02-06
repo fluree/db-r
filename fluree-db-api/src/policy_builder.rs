@@ -48,7 +48,6 @@ const IRI_QUERY: &str = "https://ns.flur.ee/ledger#query";
 const IRI_REQUIRED: &str = "https://ns.flur.ee/ledger#required";
 const IRI_EX_MESSAGE: &str = "https://ns.flur.ee/ledger#exMessage";
 
-
 // ============================================================================
 // Public API
 // ============================================================================
@@ -106,9 +105,9 @@ pub async fn build_policy_context_from_opts<S: Storage + Clone + 'static>(
     // Priority follows Clojure semantics: identity > policy_class > policy
     // If identity is present, it triggers f:policyClass lookup AND binds ?$identity.
     // For inline policies with identity binding, use policy_values["?$identity"] instead.
-    let restrictions = if opts.identity.is_some() {
+    let restrictions = if let Some(identity) = &opts.identity {
         // Identity-based: query for policies via f:policyClass (highest priority)
-        load_policies_by_identity(db, overlay, to_t, opts.identity.as_ref().unwrap()).await?
+        load_policies_by_identity(db, overlay, to_t, identity).await?
     } else if let Some(classes) = &opts.policy_class {
         // Class-based: query for policies of given types
         load_policies_by_class(db, overlay, to_t, classes).await?
@@ -189,8 +188,7 @@ async fn load_policies_by_identity<S: Storage + Clone + 'static>(
         Term::Var(class_var),
     );
 
-    let batches =
-        execute_pattern_with_overlay_at(db, overlay, &vars, pattern, to_t, None).await?;
+    let batches = execute_pattern_with_overlay_at(db, overlay, &vars, pattern, to_t, None).await?;
 
     // Collect class SIDs
     let mut class_sids: Vec<Sid> = Vec::new();
@@ -324,7 +322,11 @@ async fn load_policy_restriction<S: Storage + Clone + 'static>(
     if let Ok(allow_sid) = resolve_iri_to_sid(db, IRI_ALLOW) {
         let bindings = query_predicate(db, overlay, to_t, policy_sid, &allow_sid).await?;
         for binding in bindings {
-            if let Binding::Lit { val: FlakeValue::Boolean(b), .. } = binding {
+            if let Binding::Lit {
+                val: FlakeValue::Boolean(b),
+                ..
+            } = binding
+            {
                 allow = Some(b);
                 break;
             }
@@ -407,7 +409,11 @@ async fn load_policy_restriction<S: Storage + Clone + 'static>(
     if let Ok(pred_sid) = resolve_iri_to_sid(db, IRI_REQUIRED) {
         let bindings = query_predicate(db, overlay, to_t, policy_sid, &pred_sid).await?;
         for binding in bindings {
-            if let Binding::Lit { val: FlakeValue::Boolean(b), .. } = binding {
+            if let Binding::Lit {
+                val: FlakeValue::Boolean(b),
+                ..
+            } = binding
+            {
                 required = b;
                 break;
             }
@@ -418,7 +424,11 @@ async fn load_policy_restriction<S: Storage + Clone + 'static>(
     if let Ok(pred_sid) = resolve_iri_to_sid(db, IRI_EX_MESSAGE) {
         let bindings = query_predicate(db, overlay, to_t, policy_sid, &pred_sid).await?;
         for binding in bindings {
-            if let Binding::Lit { val: FlakeValue::String(s), .. } = binding {
+            if let Binding::Lit {
+                val: FlakeValue::String(s),
+                ..
+            } = binding
+            {
                 message = Some(s.clone());
                 break;
             }
@@ -430,11 +440,17 @@ async fn load_policy_restriction<S: Storage + Clone + 'static>(
         let bindings = query_predicate(db, overlay, to_t, policy_sid, &pred_sid).await?;
         for binding in bindings {
             match binding {
-                Binding::Lit { val: FlakeValue::Json(s), .. } => {
+                Binding::Lit {
+                    val: FlakeValue::Json(s),
+                    ..
+                } => {
                     policy_query_json = Some(s.clone());
                     break;
                 }
-                Binding::Lit { val: FlakeValue::String(s), .. } => {
+                Binding::Lit {
+                    val: FlakeValue::String(s),
+                    ..
+                } => {
                     policy_query_json = Some(s.clone());
                     break;
                 }
@@ -476,7 +492,8 @@ async fn load_policy_restriction<S: Storage + Clone + 'static>(
                     Err(e) => {
                         tracing::warn!(
                             "Policy '{}': failed to parse f:query JSON, defaulting to deny: {}",
-                            policy_id, e
+                            policy_id,
+                            e
                         );
                         PolicyValue::Deny // Fall back to deny on parse error
                     }
@@ -539,8 +556,7 @@ async fn query_predicate<S: Storage + Clone + 'static>(
         Term::Var(obj_var),
     );
 
-    let batches =
-        execute_pattern_with_overlay_at(db, overlay, &vars, pattern, to_t, None).await?;
+    let batches = execute_pattern_with_overlay_at(db, overlay, &vars, pattern, to_t, None).await?;
 
     let mut results = Vec::new();
     for batch in &batches {
@@ -599,7 +615,7 @@ fn parse_inline_policy<S: Storage>(
         // Extract f:query (optional). For inline policies we accept:
         // - String: JSON query string
         // - Object: {"@type":"@json","@value":{...}} where @value is serialized to JSON string
-        // 
+        //
         // Clojure parity: @json values can have object @value (not just string).
         let policy_query_json: Option<String> = obj
             .get("f:query")

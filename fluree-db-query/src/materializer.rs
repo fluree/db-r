@@ -144,9 +144,7 @@ impl PartialEq for JoinKey<'_> {
                     dt_id: d2,
                     lang_id: l2,
                 },
-            ) => {
-                k1 == k2 && ok1 == ok2 && p1 == p2 && d1 == d2 && l1 == l2
-            }
+            ) => k1 == k2 && ok1 == ok2 && p1 == p2 && d1 == d2 && l1 == l2,
             (JoinKey::MaterializedSid(ns1, n1), JoinKey::MaterializedSid(ns2, n2)) => {
                 ns1 == ns2 && n1 == n2
             }
@@ -371,19 +369,24 @@ impl Materializer {
                 lang: lang.clone(),
             }),
 
-            Binding::EncodedLit { o_kind, o_key, p_id, dt_id, lang_id, .. } => {
-                JoinKey::Lit {
-                    o_kind: *o_kind,
-                    o_key: *o_key,
-                    p_id_for_numbig: if *o_kind == fluree_db_core::ObjKind::NUM_BIG.as_u8() {
-                        Some(*p_id)
-                    } else {
-                        None
-                    },
-                    dt_id: *dt_id,
-                    lang_id: *lang_id,
-                }
-            }
+            Binding::EncodedLit {
+                o_kind,
+                o_key,
+                p_id,
+                dt_id,
+                lang_id,
+                ..
+            } => JoinKey::Lit {
+                o_kind: *o_kind,
+                o_key: *o_key,
+                p_id_for_numbig: if *o_kind == fluree_db_core::ObjKind::NUM_BIG.as_u8() {
+                    Some(*p_id)
+                } else {
+                    None
+                },
+                dt_id: *dt_id,
+                lang_id: *lang_id,
+            },
 
             Binding::Grouped(_) => {
                 // Grouped bindings shouldn't appear in join key contexts
@@ -416,22 +419,22 @@ impl Materializer {
                 Some(ComparableValue::Iri(iri))
             }
 
-            Binding::EncodedPid { p_id } => {
-                if let Some(iri) = self.store.resolve_predicate_iri(*p_id) {
-                    Some(ComparableValue::Iri(Arc::from(iri)))
-                } else {
-                    None
-                }
-            }
+            Binding::EncodedPid { p_id } => self
+                .store
+                .resolve_predicate_iri(*p_id)
+                .map(|iri| ComparableValue::Iri(Arc::from(iri))),
 
             Binding::Lit { val, .. } => flake_value_to_comparable(val),
 
-            Binding::EncodedLit { o_kind, o_key, p_id, .. } => {
-                match self.store.decode_value(*o_kind, *o_key, *p_id) {
-                    Ok(val) => flake_value_to_comparable(&val),
-                    Err(_) => None,
-                }
-            }
+            Binding::EncodedLit {
+                o_kind,
+                o_key,
+                p_id,
+                ..
+            } => match self.store.decode_value(*o_kind, *o_key, *p_id) {
+                Ok(val) => flake_value_to_comparable(&val),
+                Err(_) => None,
+            },
 
             Binding::Grouped(_) => None,
         }
@@ -461,17 +464,20 @@ impl Materializer {
 
             Binding::EncodedSid { s_id } => Some(self.resolve_iri(*s_id)),
 
-            Binding::EncodedPid { p_id } => {
-                self.store.resolve_predicate_iri(*p_id).map(Arc::from)
-            }
+            Binding::EncodedPid { p_id } => self.store.resolve_predicate_iri(*p_id).map(Arc::from),
 
             Binding::Lit { val, .. } => Some(Arc::from(val.to_string())),
 
-            Binding::EncodedLit { o_kind, o_key, p_id, .. } => {
-                self.store.decode_value(*o_kind, *o_key, *p_id)
-                    .ok()
-                    .map(|v| Arc::from(v.to_string()))
-            }
+            Binding::EncodedLit {
+                o_kind,
+                o_key,
+                p_id,
+                ..
+            } => self
+                .store
+                .decode_value(*o_kind, *o_key, *p_id)
+                .ok()
+                .map(|v| Arc::from(v.to_string())),
 
             Binding::Grouped(_) => None,
         }
@@ -491,9 +497,13 @@ impl Materializer {
     pub fn to_term(&mut self, binding: &Binding) -> Binding {
         match binding {
             // Already materialized
-            Binding::Unbound | Binding::Poisoned | Binding::Sid(_) |
-            Binding::IriMatch { .. } | Binding::Iri(_) | Binding::Lit { .. } |
-            Binding::Grouped(_) => binding.clone(),
+            Binding::Unbound
+            | Binding::Poisoned
+            | Binding::Sid(_)
+            | Binding::IriMatch { .. }
+            | Binding::Iri(_)
+            | Binding::Lit { .. }
+            | Binding::Grouped(_) => binding.clone(),
 
             Binding::EncodedSid { s_id } => {
                 let sid = self.resolve_sid(*s_id);
@@ -505,27 +515,34 @@ impl Materializer {
                 Binding::Sid(sid)
             }
 
-            Binding::EncodedLit { o_kind, o_key, p_id, dt_id, lang_id, i_val, t } => {
-                match self.store.decode_value(*o_kind, *o_key, *p_id) {
-                    Ok(FlakeValue::Ref(sid)) => Binding::Sid(sid),
-                    Ok(val) => {
-                        let dt_sid = self.store
-                            .dt_sids()
-                            .get(*dt_id as usize)
-                            .cloned()
-                            .unwrap_or_else(|| Sid::new(0, ""));
-                        let meta = self.store.decode_meta(*lang_id, *i_val);
-                        Binding::Lit {
-                            val,
-                            dt: dt_sid,
-                            lang: meta.and_then(|m| m.lang.map(Arc::from)),
-                            t: Some(*t),
-                            op: None,
-                        }
+            Binding::EncodedLit {
+                o_kind,
+                o_key,
+                p_id,
+                dt_id,
+                lang_id,
+                i_val,
+                t,
+            } => match self.store.decode_value(*o_kind, *o_key, *p_id) {
+                Ok(FlakeValue::Ref(sid)) => Binding::Sid(sid),
+                Ok(val) => {
+                    let dt_sid = self
+                        .store
+                        .dt_sids()
+                        .get(*dt_id as usize)
+                        .cloned()
+                        .unwrap_or_else(|| Sid::new(0, ""));
+                    let meta = self.store.decode_meta(*lang_id, *i_val);
+                    Binding::Lit {
+                        val,
+                        dt: dt_sid,
+                        lang: meta.and_then(|m| m.lang.map(Arc::from)),
+                        t: Some(*t),
+                        op: None,
                     }
-                    Err(_) => Binding::Unbound,
                 }
-            }
+                Err(_) => Binding::Unbound,
+            },
         }
     }
 
@@ -588,7 +605,9 @@ fn flake_value_to_comparable(val: &FlakeValue) -> Option<ComparableValue> {
         FlakeValue::Boolean(b) => Some(ComparableValue::Bool(*b)),
         FlakeValue::DateTime(dt) => Some(ComparableValue::DateTime(dt.epoch_millis())),
         FlakeValue::Date(d) => Some(ComparableValue::Date(d.date().num_days_from_ce())),
-        FlakeValue::Time(t) => Some(ComparableValue::Time(t.time().num_seconds_from_midnight() as i64)),
+        FlakeValue::Time(t) => Some(ComparableValue::Time(
+            t.time().num_seconds_from_midnight() as i64
+        )),
         FlakeValue::BigInt(n) => Some(ComparableValue::BigInt(Arc::from(n.to_string()))),
         FlakeValue::Decimal(d) => Some(ComparableValue::Decimal(Arc::from(d.to_string()))),
         FlakeValue::Ref(sid) => Some(ComparableValue::Sid(sid.clone())),
@@ -647,8 +666,8 @@ mod tests {
         assert_eq!(long_val.as_f64(), Some(42.0));
         assert_eq!(long_val.as_i64(), Some(42));
 
-        let double_val = ComparableValue::Double(3.14);
-        assert_eq!(double_val.as_f64(), Some(3.14));
+        let double_val = ComparableValue::Double(3.5);
+        assert_eq!(double_val.as_f64(), Some(3.5));
         assert_eq!(double_val.as_i64(), None); // Has fractional part
     }
 }

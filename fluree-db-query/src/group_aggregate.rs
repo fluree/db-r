@@ -182,7 +182,10 @@ impl AggState {
                     seen.insert(key);
                 }
             }
-            AggState::Sum { total, has_int_only } => {
+            AggState::Sum {
+                total,
+                has_int_only,
+            } => {
                 if let Some(num) = extract_number(binding) {
                     *total += num;
                     if !is_int_binding(binding) {
@@ -256,7 +259,10 @@ impl AggState {
             AggState::CountDistinct { seen } => {
                 Binding::lit(FlakeValue::Long(seen.len() as i64), xsd_long())
             }
-            AggState::Sum { total, has_int_only } => {
+            AggState::Sum {
+                total,
+                has_int_only,
+            } => {
                 if has_int_only && total.fract() == 0.0 {
                     Binding::lit(FlakeValue::Long(total as i64), xsd_long())
                 } else {
@@ -377,11 +383,7 @@ fn binding_to_group_key_owned(binding: &Binding) -> GroupKeyOwned {
     }
 }
 
-fn flake_value_to_key(
-    val: &FlakeValue,
-    dt: &Sid,
-    lang: Option<&Arc<str>>,
-) -> MaterializedLitKey {
+fn flake_value_to_key(val: &FlakeValue, dt: &Sid, lang: Option<&Arc<str>>) -> MaterializedLitKey {
     // Convert Sid to (namespace_code, name) tuple for dt
     let dt_key = Some((dt.namespace_code, dt.name.clone()));
     // Clone language tag
@@ -617,14 +619,12 @@ impl<S: Storage + 'static> Operator<S> for GroupAggregateOperator<S> {
                     let agg_specs_ref = &self.agg_specs;
 
                     // Get or create group state
-                    let group_state = self.groups.entry(group_key).or_insert_with(|| {
-                        GroupState {
-                            key_bindings,
-                            agg_states: agg_specs_ref
-                                .iter()
-                                .map(|spec| AggState::new(&spec.function))
-                                .collect(),
-                        }
+                    let group_state = self.groups.entry(group_key).or_insert_with(|| GroupState {
+                        key_bindings,
+                        agg_states: agg_specs_ref
+                            .iter()
+                            .map(|spec| AggState::new(&spec.function))
+                            .collect(),
                     });
 
                     // Update each aggregate with this row's values
@@ -644,12 +644,12 @@ impl<S: Storage + 'static> Operator<S> for GroupAggregateOperator<S> {
                 }
             }
 
-            span.record("input_batches", &input_batches);
-            span.record("input_rows", &input_rows);
-            span.record("groups", &(self.groups.len() as u64));
+            span.record("input_batches", input_batches);
+            span.record("input_rows", input_rows);
+            span.record("groups", self.groups.len() as u64);
             span.record(
                 "drain_ms",
-                &((drain_start.elapsed().as_secs_f64() * 1000.0) as u64),
+                (drain_start.elapsed().as_secs_f64() * 1000.0) as u64,
             );
 
             // Prepare iterator for emission
@@ -670,7 +670,8 @@ impl<S: Storage + 'static> Operator<S> for GroupAggregateOperator<S> {
                 match iter.next() {
                     Some((_composite_key, group_state)) => {
                         // Output group key columns
-                        for (col_idx, key_binding) in group_state.key_bindings.into_iter().enumerate()
+                        for (col_idx, key_binding) in
+                            group_state.key_bindings.into_iter().enumerate()
                         {
                             output_columns[col_idx].push(key_binding);
                         }
@@ -740,7 +741,11 @@ fn extract_number(binding: &Binding) -> Option<f64> {
             } else if *o_kind == ObjKind::NUM_F64.as_u8() {
                 // f64 encoded in o_key via order-preserving bit transform
                 let decoded = ObjKey::from_u64(*o_key).decode_f64();
-                if decoded.is_nan() { None } else { Some(decoded) }
+                if decoded.is_nan() {
+                    None
+                } else {
+                    Some(decoded)
+                }
             } else {
                 None
             }
@@ -847,10 +852,12 @@ mod tests {
             for row_idx in 0..batch.len() {
                 let venue = batch.get_by_col(row_idx, 0).clone();
                 let count = batch.get_by_col(row_idx, 1);
-                if let Binding::Lit { val, .. } = count {
-                    if let FlakeValue::Long(n) = val {
-                        results.push((venue, *n));
-                    }
+                if let Binding::Lit {
+                    val: FlakeValue::Long(n),
+                    ..
+                } = count
+                {
+                    results.push((venue, *n));
                 }
             }
         }
@@ -995,7 +1002,7 @@ mod tests {
         use crate::context::ExecutionContext;
         use crate::var_registry::VarRegistry;
         use fluree_db_core::subject_id::SubjectId;
-        use fluree_db_core::value_id::{ObjKind, ObjKey};
+        use fluree_db_core::value_id::{ObjKey, ObjKind};
         use fluree_db_core::DatatypeDictId;
         use fluree_db_indexer::run_index::dict_io::{
             write_language_dict, write_predicate_dict, write_subject_index,
@@ -1029,7 +1036,7 @@ mod tests {
             .map(|p_id| pred_dict.resolve(p_id).unwrap_or(""))
             .collect();
         std::fs::write(
-            &run_dir.join("predicates.json"),
+            run_dir.join("predicates.json"),
             serde_json::to_vec(&preds_by_id).unwrap(),
         )
         .unwrap();
@@ -1086,7 +1093,7 @@ mod tests {
                 .collect();
             ns_entries.push(serde_json::json!({"code": ns, "prefix": "http://example.com/"}));
             std::fs::write(
-                &run_dir.join("namespaces.json"),
+                run_dir.join("namespaces.json"),
                 serde_json::to_vec(&ns_entries).unwrap(),
             )
             .unwrap();
@@ -1186,7 +1193,11 @@ mod tests {
 
         let mut op = GroupAggregateOperator::new(child, vec![], agg_specs, None);
         op.open(&ctx).await.unwrap();
-        let out = op.next_batch(&ctx).await.unwrap().expect("expected output batch");
+        let out = op
+            .next_batch(&ctx)
+            .await
+            .unwrap()
+            .expect("expected output batch");
         assert_eq!(out.len(), 1);
         assert_eq!(out.schema().len(), 1);
 

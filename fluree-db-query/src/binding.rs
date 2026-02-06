@@ -248,7 +248,13 @@ impl Binding {
     ///
     /// This is used for history mode queries where both the transaction time and
     /// operation type (assert/retract) need to be captured.
-    pub fn from_object_with_t_op(val: FlakeValue, dt: Sid, meta: Option<FlakeMeta>, t: i64, op: bool) -> Self {
+    pub fn from_object_with_t_op(
+        val: FlakeValue,
+        dt: Sid,
+        meta: Option<FlakeMeta>,
+        t: i64,
+        op: bool,
+    ) -> Self {
         match val {
             FlakeValue::Ref(sid) => Binding::Sid(sid),
             other => Binding::Lit {
@@ -445,14 +451,6 @@ impl Binding {
     pub fn as_lit(&self) -> Option<(&FlakeValue, &Sid, Option<&Arc<str>>)> {
         match self {
             Binding::Lit { val, dt, lang, .. } => Some((val, dt, lang.as_ref())),
-            _ => None,
-        }
-    }
-
-    /// Try to get literal value with full metadata including transaction time
-    pub fn as_lit_full(&self) -> Option<(&FlakeValue, &Sid, Option<&Arc<str>>, Option<i64>)> {
-        match self {
-            Binding::Lit { val, dt, lang, t, .. } => Some((val, dt, lang.as_ref(), *t)),
             _ => None,
         }
     }
@@ -1342,9 +1340,7 @@ mod tests {
             Binding::lit(FlakeValue::Long(1), xsd_long()),
             Binding::lit(FlakeValue::Long(2), xsd_long()),
         ]);
-        let g3 = Binding::Grouped(vec![
-            Binding::lit(FlakeValue::Long(1), xsd_long()),
-        ]);
+        let g3 = Binding::Grouped(vec![Binding::lit(FlakeValue::Long(1), xsd_long())]);
 
         assert_eq!(g1, g2);
         assert_ne!(g1, g3);
@@ -1355,12 +1351,8 @@ mod tests {
     fn test_binding_grouped_hash() {
         use std::collections::HashSet;
 
-        let g1 = Binding::Grouped(vec![
-            Binding::lit(FlakeValue::Long(1), xsd_long()),
-        ]);
-        let g2 = Binding::Grouped(vec![
-            Binding::lit(FlakeValue::Long(1), xsd_long()),
-        ]);
+        let g1 = Binding::Grouped(vec![Binding::lit(FlakeValue::Long(1), xsd_long())]);
+        let g2 = Binding::Grouped(vec![Binding::lit(FlakeValue::Long(1), xsd_long())]);
 
         let mut set = HashSet::new();
         set.insert(g1.clone());
@@ -1369,9 +1361,7 @@ mod tests {
         assert!(set.contains(&g2));
 
         // Different Grouped should not match
-        let g3 = Binding::Grouped(vec![
-            Binding::lit(FlakeValue::Long(2), xsd_long()),
-        ]);
+        let g3 = Binding::Grouped(vec![Binding::lit(FlakeValue::Long(2), xsd_long())]);
         assert!(!set.contains(&g3));
     }
 

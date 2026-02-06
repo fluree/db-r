@@ -28,7 +28,7 @@ pub enum FileFormat {
 
 impl FileFormat {
     /// Parse from string.
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s.to_uppercase().as_str() {
             "PARQUET" => Self::Parquet,
             "ORC" => Self::Orc,
@@ -133,7 +133,10 @@ impl DataFile {
 
     /// Get null count for a column by field ID.
     pub fn null_count(&self, field_id: i32) -> Option<i64> {
-        self.null_value_counts.as_ref().and_then(|m| m.get(&field_id)).copied()
+        self.null_value_counts
+            .as_ref()
+            .and_then(|m| m.get(&field_id))
+            .copied()
     }
 
     /// Check if a column might contain non-null values.
@@ -142,7 +145,8 @@ impl DataFile {
         let null_count = self.null_count(field_id).unwrap_or(0);
 
         // If we don't have value counts, assume it might have values
-        let value_count = self.value_counts
+        let value_count = self
+            .value_counts
             .as_ref()
             .and_then(|m| m.get(&field_id))
             .copied()
@@ -188,7 +192,10 @@ pub fn parse_manifest(data: &Bytes) -> Result<Vec<ManifestEntry>> {
 }
 
 /// Parse a manifest file, optionally including deleted entries.
-pub fn parse_manifest_with_deleted(data: &Bytes, include_deleted: bool) -> Result<Vec<ManifestEntry>> {
+pub fn parse_manifest_with_deleted(
+    data: &Bytes,
+    include_deleted: bool,
+) -> Result<Vec<ManifestEntry>> {
     let reader = apache_avro::Reader::new(&data[..])
         .map_err(|e| IcebergError::Manifest(format!("Failed to create Avro reader: {}", e)))?;
 
@@ -311,7 +318,7 @@ fn parse_data_file(value: &AvroValue) -> Result<DataFile> {
     };
 
     let file_format = match get_field("file_format") {
-        Some(AvroValue::String(s)) => FileFormat::from_str(s),
+        Some(AvroValue::String(s)) => FileFormat::parse(s),
         _ => FileFormat::Parquet,
     };
 
@@ -538,11 +545,11 @@ mod tests {
 
     #[test]
     fn test_file_format_parsing() {
-        assert_eq!(FileFormat::from_str("PARQUET"), FileFormat::Parquet);
-        assert_eq!(FileFormat::from_str("parquet"), FileFormat::Parquet);
-        assert_eq!(FileFormat::from_str("ORC"), FileFormat::Orc);
-        assert_eq!(FileFormat::from_str("AVRO"), FileFormat::Avro);
-        assert_eq!(FileFormat::from_str("unknown"), FileFormat::Parquet);
+        assert_eq!(FileFormat::parse("PARQUET"), FileFormat::Parquet);
+        assert_eq!(FileFormat::parse("parquet"), FileFormat::Parquet);
+        assert_eq!(FileFormat::parse("ORC"), FileFormat::Orc);
+        assert_eq!(FileFormat::parse("AVRO"), FileFormat::Avro);
+        assert_eq!(FileFormat::parse("unknown"), FileFormat::Parquet);
     }
 
     #[test]
@@ -554,9 +561,18 @@ mod tests {
 
     #[test]
     fn test_manifest_entry_status() {
-        assert_eq!(ManifestEntryStatus::from_avro(0), ManifestEntryStatus::Existing);
-        assert_eq!(ManifestEntryStatus::from_avro(1), ManifestEntryStatus::Added);
-        assert_eq!(ManifestEntryStatus::from_avro(2), ManifestEntryStatus::Deleted);
+        assert_eq!(
+            ManifestEntryStatus::from_avro(0),
+            ManifestEntryStatus::Existing
+        );
+        assert_eq!(
+            ManifestEntryStatus::from_avro(1),
+            ManifestEntryStatus::Added
+        );
+        assert_eq!(
+            ManifestEntryStatus::from_avro(2),
+            ManifestEntryStatus::Deleted
+        );
 
         assert!(ManifestEntryStatus::Existing.is_active());
         assert!(ManifestEntryStatus::Added.is_active());

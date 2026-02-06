@@ -6,8 +6,8 @@ mod headers;
 mod storage_proxy;
 mod tracking;
 
-pub use bearer::{EventsPrincipal, MaybeBearer};
 pub(crate) use bearer::extract_bearer_token;
+pub use bearer::{EventsPrincipal, MaybeBearer};
 pub use credential::{CredentialPayload, ExtractedCredential, MaybeCredential};
 pub use headers::FlureeHeaders;
 pub use storage_proxy::{StorageProxyBearer, StorageProxyPrincipal};

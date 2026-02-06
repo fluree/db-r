@@ -85,12 +85,19 @@ impl SearchRequest {
             as_of_t: None,
             sync: false,
             timeout_ms: None,
-            query: QueryVariant::Vector { vector, metric: None },
+            query: QueryVariant::Vector {
+                vector,
+                metric: None,
+            },
         }
     }
 
     /// Create a vector-similar-to search request.
-    pub fn vector_similar_to(vg_alias: impl Into<String>, to_iri: impl Into<String>, limit: usize) -> Self {
+    pub fn vector_similar_to(
+        vg_alias: impl Into<String>,
+        to_iri: impl Into<String>,
+        limit: usize,
+    ) -> Self {
         Self {
             protocol_version: crate::PROTOCOL_VERSION.to_string(),
             request_id: None,
@@ -99,7 +106,10 @@ impl SearchRequest {
             as_of_t: None,
             sync: false,
             timeout_ms: None,
-            query: QueryVariant::VectorSimilarTo { to_iri: to_iri.into(), metric: None },
+            query: QueryVariant::VectorSimilarTo {
+                to_iri: to_iri.into(),
+                metric: None,
+            },
         }
     }
 

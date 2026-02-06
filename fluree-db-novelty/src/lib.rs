@@ -31,13 +31,13 @@ mod error;
 mod stats;
 
 pub use commit::{
-    load_commit, load_commit_envelope, trace_commit_envelopes, trace_commits,
-    Commit, CommitData, CommitEnvelope, CommitRef, IndexRef, TxnSignature,
+    load_commit, load_commit_envelope, trace_commit_envelopes, trace_commits, Commit, CommitData,
+    CommitEnvelope, CommitRef, IndexRef, TxnSignature,
 };
-pub use commit_v2::format::{CommitSignature, ALGO_ED25519};
-pub use fluree_db_credential::SigningKey;
 pub use commit_flakes::generate_commit_flakes;
+pub use commit_v2::format::{CommitSignature, ALGO_ED25519};
 pub use error::{NoveltyError, Result};
+pub use fluree_db_credential::SigningKey;
 pub use stats::current_stats;
 
 use fluree_db_core::{Flake, IndexType};
@@ -260,10 +260,10 @@ impl Novelty {
         let mut alive = vec![false; n];
         let mut new_size = 0usize;
 
-        for i in 0..n {
+        for (i, is_alive) in alive.iter_mut().enumerate() {
             let flake = self.store.get(i as FlakeId);
             if flake.t > cutoff_t {
-                alive[i] = true;
+                *is_alive = true;
                 new_size += self.store.size(i as FlakeId);
             }
         }
@@ -311,9 +311,7 @@ impl Novelty {
             0
         } else if let Some(f) = first {
             // Exclusive: find first element > first
-            ids.partition_point(|&id| {
-                index.compare(self.store.get(id), f) != Ordering::Greater
-            })
+            ids.partition_point(|&id| index.compare(self.store.get(id), f) != Ordering::Greater)
         } else {
             0
         };
@@ -321,9 +319,7 @@ impl Novelty {
         // Find end index
         let end = if let Some(r) = rhs {
             // Inclusive: find first element > rhs
-            ids.partition_point(|&id| {
-                index.compare(self.store.get(id), r) != Ordering::Greater
-            })
+            ids.partition_point(|&id| index.compare(self.store.get(id), r) != Ordering::Greater)
         } else {
             ids.len()
         };
@@ -441,7 +437,11 @@ fn merge_batch_into_index(
 }
 
 /// Merge only reference flakes into OPST index.
-fn merge_batch_into_opst_refs_only(store: &FlakeStore, opst: &mut Vec<FlakeId>, batch_ids: &[FlakeId]) {
+fn merge_batch_into_opst_refs_only(
+    store: &FlakeStore,
+    opst: &mut Vec<FlakeId>,
+    batch_ids: &[FlakeId],
+) {
     use rayon::prelude::*;
 
     // Filter to refs only
@@ -618,10 +618,10 @@ mod tests {
 
         // Add mixed flakes - refs and non-refs
         let flakes = vec![
-            make_flake(1, 1, 100, 1, true),     // not a ref
-            make_ref_flake(2, 1, 10, 1),         // ref
-            make_flake(3, 1, 200, 1, true),     // not a ref
-            make_ref_flake(4, 1, 5, 1),          // ref
+            make_flake(1, 1, 100, 1, true), // not a ref
+            make_ref_flake(2, 1, 10, 1),    // ref
+            make_flake(3, 1, 200, 1, true), // not a ref
+            make_ref_flake(4, 1, 5, 1),     // ref
         ];
 
         novelty.apply_commit(flakes, 1).unwrap();
@@ -750,7 +750,12 @@ mod tests {
                 novelty.get_flake(spot_ids[i]),
                 novelty.get_flake(spot_ids[i + 1]),
             );
-            assert_ne!(cmp, Ordering::Greater, "SPOT index not sorted at position {}", i);
+            assert_ne!(
+                cmp,
+                Ordering::Greater,
+                "SPOT index not sorted at position {}",
+                i
+            );
         }
     }
 

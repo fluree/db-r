@@ -29,7 +29,8 @@ pub enum UpdateOperation {
     /// DELETE WHERE { pattern }
     DeleteWhere(DeleteWhere),
     /// INSERT/DELETE with WHERE clause (Modify operation)
-    Modify(Modify),
+    /// Boxed to reduce enum size (Modify is ~288 bytes vs ~56 for others)
+    Modify(Box<Modify>),
 }
 
 /// INSERT DATA operation.

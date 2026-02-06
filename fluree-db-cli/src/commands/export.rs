@@ -30,7 +30,10 @@ pub async fn run(
                 .execute()
                 .await?;
             let json = result.to_construct(&ledger.db)?;
-            println!("{}", serde_json::to_string_pretty(&json).unwrap_or_else(|_| json.to_string()));
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json).unwrap_or_else(|_| json.to_string())
+            );
         }
         "turtle" | "ttl" => {
             // SELECT all triples and format as N-Triples

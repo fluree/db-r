@@ -21,4 +21,3 @@ pub fn alias_to_path_prefix(alias: &str) -> Result<String, AliasParseError> {
     let (name, branch) = split_alias(alias)?;
     Ok(format!("{}/{}", name, branch))
 }
-

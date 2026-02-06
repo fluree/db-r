@@ -6,13 +6,13 @@
 
 use super::envelope;
 use super::format::{
-    CommitSignature, CommitV2Footer, CommitV2Header, DictLocation, FLAG_HAS_COMMIT_SIG, FLAG_ZSTD,
-    FOOTER_LEN, HASH_LEN, HEADER_LEN, VERSION, encode_sig_block, sig_block_size,
+    encode_sig_block, sig_block_size, CommitSignature, CommitV2Footer, CommitV2Header,
+    DictLocation, FLAG_HAS_COMMIT_SIG, FLAG_ZSTD, FOOTER_LEN, HASH_LEN, HEADER_LEN, VERSION,
 };
 use super::op_codec::{encode_op, CommitDicts};
 use super::CommitV2Error;
 use crate::Commit;
-use fluree_db_credential::{SigningKey, did_from_pubkey, sign_commit_digest};
+use fluree_db_credential::{did_from_pubkey, sign_commit_digest, SigningKey};
 use sha2::{Digest, Sha256};
 
 /// Result of writing a v2 commit blob.
@@ -82,8 +82,8 @@ pub fn write_commit(
     // 4. Optionally compress ops
     let (ops_section, is_compressed) = if compress && !ops_raw.is_empty() {
         let _span = tracing::debug_span!("v2_compress_ops", raw_bytes = ops_raw.len()).entered();
-        let compressed = zstd::encode_all(ops_raw.as_slice(), 3)
-            .map_err(CommitV2Error::CompressionFailed)?;
+        let compressed =
+            zstd::encode_all(ops_raw.as_slice(), 3).map_err(CommitV2Error::CompressionFailed)?;
         // Only use compressed if it's actually smaller
         if compressed.len() < ops_raw.len() {
             tracing::debug!(

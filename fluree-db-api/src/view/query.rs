@@ -5,14 +5,15 @@
 
 use crate::query::helpers::{
     build_query_result, parse_and_validate_sparql, parse_jsonld_query, parse_sparql_to_ir,
-    prepare_for_execution, status_for_query_error, tracker_for_limits, tracker_for_tracked_endpoint,
+    prepare_for_execution, status_for_query_error, tracker_for_limits,
+    tracker_for_tracked_endpoint,
 };
 use crate::view::{FlureeView, QueryInput};
 use crate::{
-    ApiError, ExecutableQuery, Fluree, NameService, QueryResult, Result,
-    Storage, Tracker, TrackingOptions,
+    ApiError, DataSource, ExecutableQuery, Fluree, NameService, QueryResult, Result, Storage,
+    Tracker, TrackingOptions,
 };
-use fluree_db_query::execute::{ContextConfig, execute_prepared, prepare_execution};
+use fluree_db_query::execute::{execute_prepared, prepare_execution, ContextConfig};
 
 // ============================================================================
 // Query Execution
@@ -145,11 +146,9 @@ where
         };
 
         // Build executable with reasoning
-        let executable = self
-            .build_executable_for_view(view, &parsed)
-            .map_err(|e| {
-                crate::query::TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally())
-            })?;
+        let executable = self.build_executable_for_view(view, &parsed).map_err(|e| {
+            crate::query::TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally())
+        })?;
 
         // Execute with tracking (use tracked variant for policy)
         let batches = self
@@ -284,17 +283,15 @@ where
             ..Default::default()
         };
 
-        execute_prepared(
-            &view.db,
-            vars,
-            view.overlay.as_ref(),
-            prepared,
-            view.to_t,
-            None,
-            config,
-        )
-        .await
-        .map_err(query_error_to_api_error)
+        let source = DataSource {
+            db: &view.db,
+            overlay: view.overlay.as_ref(),
+            to_t: view.to_t,
+            from_t: None,
+        };
+        execute_prepared(source, vars, prepared, config)
+            .await
+            .map_err(query_error_to_api_error)
     }
 
     /// Execute against view with policy awareness (tracked variant).
@@ -307,8 +304,8 @@ where
         executable: &ExecutableQuery,
         tracker: &Tracker,
     ) -> std::result::Result<Vec<crate::Batch>, fluree_db_query::QueryError> {
-        let prepared = prepare_execution(&view.db, view.overlay.as_ref(), executable, view.to_t)
-            .await?;
+        let prepared =
+            prepare_execution(&view.db, view.overlay.as_ref(), executable, view.to_t).await?;
 
         let config = ContextConfig {
             tracker: Some(tracker),
@@ -320,16 +317,13 @@ where
             ..Default::default()
         };
 
-        execute_prepared(
-            &view.db,
-            vars,
-            view.overlay.as_ref(),
-            prepared,
-            view.to_t,
-            None,
-            config,
-        )
-        .await
+        let source = DataSource {
+            db: &view.db,
+            overlay: view.overlay.as_ref(),
+            to_t: view.to_t,
+            from_t: None,
+        };
+        execute_prepared(source, vars, prepared, config).await
     }
 }
 
@@ -348,7 +342,7 @@ fn query_error_to_status(err: &fluree_db_query::QueryError) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    
+
     use crate::FlureeBuilder;
     use serde_json::json;
 
@@ -444,7 +438,12 @@ mod tests {
             "where": {"@id": "http://example.org/alice", "http://example.org/name": "?name"}
         });
 
-        let result = view.query(&fluree).jsonld(&query).execute_formatted().await.unwrap();
+        let result = view
+            .query(&fluree)
+            .jsonld(&query)
+            .execute_formatted()
+            .await
+            .unwrap();
 
         // Should be JSON-LD formatted
         assert!(result.is_array() || result.is_object());
@@ -471,7 +470,7 @@ mod tests {
             "where": {"@id": "http://example.org/alice", "http://example.org/name": "?name"}
         });
         let result = fluree.query_view(&view, &query).await.unwrap();
-        assert!(result.batches.is_empty() || result.batches[0].len() == 0);
+        assert!(result.batches.is_empty() || result.batches[0].is_empty());
 
         // Query at t=1 (after insert)
         let view = fluree.view_at_t("testdb:main", 1).await.unwrap();

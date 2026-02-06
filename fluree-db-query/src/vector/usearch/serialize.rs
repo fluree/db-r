@@ -308,7 +308,10 @@ mod tests {
         // Verify metadata
         assert_eq!(restored.metadata.dimensions, original.metadata.dimensions);
         assert_eq!(restored.metadata.metric, original.metadata.metric);
-        assert_eq!(restored.metadata.vector_count, original.metadata.vector_count);
+        assert_eq!(
+            restored.metadata.vector_count,
+            original.metadata.vector_count
+        );
 
         // Verify watermarks
         assert_eq!(
@@ -360,7 +363,10 @@ mod tests {
         data.extend_from_slice(&[0, 0, 0, 0]); // Zero length
 
         let result = deserialize(&data);
-        assert!(matches!(result, Err(VectorError::UnsupportedVersion { .. })));
+        assert!(matches!(
+            result,
+            Err(VectorError::UnsupportedVersion { .. })
+        ));
     }
 
     #[test]
@@ -429,9 +435,15 @@ mod tests {
             let mut index = VectorIndex::new(3, DistanceMetric::Cosine).unwrap();
 
             // Add vectors in a specific order
-            index.add("ledger:main", "http://example.org/aaa", &[1.0, 0.0, 0.0]).unwrap();
-            index.add("ledger:main", "http://example.org/bbb", &[0.0, 1.0, 0.0]).unwrap();
-            index.add("ledger:main", "http://example.org/ccc", &[0.0, 0.0, 1.0]).unwrap();
+            index
+                .add("ledger:main", "http://example.org/aaa", &[1.0, 0.0, 0.0])
+                .unwrap();
+            index
+                .add("ledger:main", "http://example.org/bbb", &[0.0, 1.0, 0.0])
+                .unwrap();
+            index
+                .add("ledger:main", "http://example.org/ccc", &[0.0, 0.0, 1.0])
+                .unwrap();
 
             // Set watermark
             index.watermark.update("ledger:main", 100);
@@ -450,9 +462,11 @@ mod tests {
 
         // The serialized bytes should be IDENTICAL
         assert_eq!(
-            bytes1.len(), bytes2.len(),
+            bytes1.len(),
+            bytes2.len(),
             "Serialized lengths differ: {} vs {}",
-            bytes1.len(), bytes2.len()
+            bytes1.len(),
+            bytes2.len()
         );
 
         // Compare bytes (excluding usearch portion which may have internal non-determinism)
@@ -465,19 +479,21 @@ mod tests {
             let mut offset = 5;
 
             // Metadata section
-            let meta_len = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap()) as usize;
+            let meta_len =
+                u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
             offset += 4 + meta_len;
 
             // IRI section
-            let iri_len = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap()) as usize;
+            let iri_len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
             offset += 4 + iri_len;
 
             // Watermark section
-            let wm_len = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap()) as usize;
+            let wm_len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
             offset += 4 + wm_len;
 
             // Deps section
-            let deps_len = u32::from_le_bytes(data[offset..offset+4].try_into().unwrap()) as usize;
+            let deps_len =
+                u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
             offset += 4 + deps_len;
 
             (offset, meta_len, iri_len, deps_len)

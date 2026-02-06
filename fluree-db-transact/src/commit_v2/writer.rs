@@ -28,7 +28,10 @@ mod tests {
         assert_eq!(a.s.name.as_ref(), b.s.name.as_ref(), "s name");
         assert_eq!(a.p.namespace_code, b.p.namespace_code, "p namespace_code");
         assert_eq!(a.p.name.as_ref(), b.p.name.as_ref(), "p name");
-        assert_eq!(a.dt.namespace_code, b.dt.namespace_code, "dt namespace_code");
+        assert_eq!(
+            a.dt.namespace_code, b.dt.namespace_code,
+            "dt namespace_code"
+        );
         assert_eq!(a.dt.name.as_ref(), b.dt.name.as_ref(), "dt name");
         assert_eq!(a.o, b.o, "object value");
         assert_eq!(a.op, b.op, "op flag");
@@ -51,14 +54,18 @@ mod tests {
                 Sid::new(101, "name"),
                 FlakeValue::String("Alice Smith".to_string()),
                 Sid::new(2, "string"),
-                1, true, None,
+                1,
+                true,
+                None,
             ),
             Flake::new(
                 Sid::new(101, "Alice"),
                 Sid::new(101, "age"),
                 FlakeValue::Long(30),
                 Sid::new(2, "integer"),
-                1, true, None,
+                1,
+                true,
+                None,
             ),
         ];
 
@@ -80,11 +87,13 @@ mod tests {
         let flakes: Vec<Flake> = (0..100)
             .map(|i| {
                 Flake::new(
-                    Sid::new(101, &format!("node{}", i)),
+                    Sid::new(101, format!("node{}", i)),
                     Sid::new(101, "value"),
                     FlakeValue::Long(i),
                     Sid::new(2, "integer"),
-                    5, true, None,
+                    5,
+                    true,
+                    None,
                 )
             })
             .collect();
@@ -117,7 +126,9 @@ mod tests {
             Sid::new(101, "knows"),
             FlakeValue::Ref(Sid::new(101, "Bob")),
             Sid::new(1, "id"),
-            1, true, None,
+            1,
+            true,
+            None,
         )];
 
         let commit = make_test_commit(flakes, 1);
@@ -136,11 +147,51 @@ mod tests {
     #[test]
     fn test_round_trip_mixed_value_types() {
         let flakes = vec![
-            Flake::new(Sid::new(101, "x"), Sid::new(101, "str"), FlakeValue::String("hello".into()), Sid::new(2, "string"), 1, true, None),
-            Flake::new(Sid::new(101, "x"), Sid::new(101, "num"), FlakeValue::Long(-42), Sid::new(2, "long"), 1, true, None),
-            Flake::new(Sid::new(101, "x"), Sid::new(101, "dbl"), FlakeValue::Double(3.14), Sid::new(2, "double"), 1, true, None),
-            Flake::new(Sid::new(101, "x"), Sid::new(101, "flag"), FlakeValue::Boolean(true), Sid::new(2, "boolean"), 1, true, None),
-            Flake::new(Sid::new(101, "x"), Sid::new(101, "empty"), FlakeValue::Null, Sid::new(2, "string"), 1, false, None),
+            Flake::new(
+                Sid::new(101, "x"),
+                Sid::new(101, "str"),
+                FlakeValue::String("hello".into()),
+                Sid::new(2, "string"),
+                1,
+                true,
+                None,
+            ),
+            Flake::new(
+                Sid::new(101, "x"),
+                Sid::new(101, "num"),
+                FlakeValue::Long(-42),
+                Sid::new(2, "long"),
+                1,
+                true,
+                None,
+            ),
+            Flake::new(
+                Sid::new(101, "x"),
+                Sid::new(101, "dbl"),
+                FlakeValue::Double(3.13),
+                Sid::new(2, "double"),
+                1,
+                true,
+                None,
+            ),
+            Flake::new(
+                Sid::new(101, "x"),
+                Sid::new(101, "flag"),
+                FlakeValue::Boolean(true),
+                Sid::new(2, "boolean"),
+                1,
+                true,
+                None,
+            ),
+            Flake::new(
+                Sid::new(101, "x"),
+                Sid::new(101, "empty"),
+                FlakeValue::Null,
+                Sid::new(2, "string"),
+                1,
+                false,
+                None,
+            ),
         ];
 
         let commit = make_test_commit(flakes, 1);
@@ -156,9 +207,36 @@ mod tests {
     #[test]
     fn test_round_trip_with_metadata() {
         let flakes = vec![
-            Flake::new(Sid::new(101, "x"), Sid::new(101, "name"), FlakeValue::String("Alice".into()), Sid::new(3, "langString"), 1, true, Some(FlakeMeta::with_lang("en"))),
-            Flake::new(Sid::new(101, "x"), Sid::new(101, "items"), FlakeValue::Long(42), Sid::new(2, "integer"), 1, true, Some(FlakeMeta::with_index(0))),
-            Flake::new(Sid::new(101, "x"), Sid::new(101, "items"), FlakeValue::Long(99), Sid::new(2, "integer"), 1, true, Some(FlakeMeta { lang: Some("de".into()), i: Some(1) })),
+            Flake::new(
+                Sid::new(101, "x"),
+                Sid::new(101, "name"),
+                FlakeValue::String("Alice".into()),
+                Sid::new(3, "langString"),
+                1,
+                true,
+                Some(FlakeMeta::with_lang("en")),
+            ),
+            Flake::new(
+                Sid::new(101, "x"),
+                Sid::new(101, "items"),
+                FlakeValue::Long(42),
+                Sid::new(2, "integer"),
+                1,
+                true,
+                Some(FlakeMeta::with_index(0)),
+            ),
+            Flake::new(
+                Sid::new(101, "x"),
+                Sid::new(101, "items"),
+                FlakeValue::Long(99),
+                Sid::new(2, "integer"),
+                1,
+                true,
+                Some(FlakeMeta {
+                    lang: Some("de".into()),
+                    i: Some(1),
+                }),
+            ),
         ];
 
         let commit = make_test_commit(flakes, 1);
@@ -174,7 +252,15 @@ mod tests {
     #[test]
     fn test_envelope_only_read() {
         let mut commit = make_test_commit(
-            vec![Flake::new(Sid::new(101, "x"), Sid::new(101, "v"), FlakeValue::Long(1), Sid::new(2, "integer"), 5, true, None)],
+            vec![Flake::new(
+                Sid::new(101, "x"),
+                Sid::new(101, "v"),
+                FlakeValue::Long(1),
+                Sid::new(2, "integer"),
+                5,
+                true,
+                None,
+            )],
             5,
         );
         commit.previous_ref = Some(CommitRef::new("prev-addr").with_id("fluree:commit:sha256:abc"));
@@ -190,7 +276,15 @@ mod tests {
 
     #[test]
     fn test_hash_integrity() {
-        let flakes = vec![Flake::new(Sid::new(101, "x"), Sid::new(101, "v"), FlakeValue::Long(1), Sid::new(2, "integer"), 1, true, None)];
+        let flakes = vec![Flake::new(
+            Sid::new(101, "x"),
+            Sid::new(101, "v"),
+            FlakeValue::Long(1),
+            Sid::new(2, "integer"),
+            1,
+            true,
+            None,
+        )];
 
         let commit = make_test_commit(flakes, 1);
         let mut result = write_commit(&commit, false, None).unwrap();
@@ -199,7 +293,10 @@ mod tests {
         result.bytes[mid] ^= 0xFF;
 
         let read_result = read_commit(&result.bytes);
-        assert!(read_result.is_err(), "corrupted blob should fail hash check");
+        assert!(
+            read_result.is_err(),
+            "corrupted blob should fail hash check"
+        );
     }
 
     #[test]
@@ -210,7 +307,15 @@ mod tests {
         commit.txn = Some("fluree:file://txn/abc123.json".into());
         commit.index = Some(IndexRef::new("fluree:file://index/xyz").with_t(8));
 
-        commit.flakes.push(Flake::new(Sid::new(101, "x"), Sid::new(101, "v"), FlakeValue::Long(1), Sid::new(2, "integer"), 10, true, None));
+        commit.flakes.push(Flake::new(
+            Sid::new(101, "x"),
+            Sid::new(101, "v"),
+            FlakeValue::Long(1),
+            Sid::new(2, "integer"),
+            10,
+            true,
+            None,
+        ));
 
         let result = write_commit(&commit, false, None).unwrap();
         let decoded = read_commit(&result.bytes).unwrap();
@@ -218,8 +323,14 @@ mod tests {
         assert_eq!(decoded.t, 10);
         assert_eq!(decoded.v, 2);
         assert_eq!(decoded.time.as_deref(), Some("2024-01-01T00:00:00Z"));
-        assert_eq!(decoded.txn.as_deref(), Some("fluree:file://txn/abc123.json"));
-        assert_eq!(decoded.index.as_ref().unwrap().address, "fluree:file://index/xyz");
+        assert_eq!(
+            decoded.txn.as_deref(),
+            Some("fluree:file://txn/abc123.json")
+        );
+        assert_eq!(
+            decoded.index.as_ref().unwrap().address,
+            "fluree:file://index/xyz"
+        );
         assert_eq!(decoded.index.as_ref().unwrap().t, Some(8));
     }
 
@@ -227,9 +338,29 @@ mod tests {
     fn test_large_commit() {
         let flakes: Vec<Flake> = (0..1000)
             .map(|i| {
-                let value = if i % 3 == 0 { FlakeValue::Long(i) } else if i % 3 == 1 { FlakeValue::String(format!("value_{}", i)) } else { FlakeValue::Ref(Sid::new(101, &format!("ref_{}", i))) };
-                let dt = if i % 3 == 2 { Sid::new(1, "id") } else if i % 3 == 0 { Sid::new(2, "integer") } else { Sid::new(2, "string") };
-                Flake::new(Sid::new(101, &format!("s_{}", i)), Sid::new(101, &format!("p_{}", i % 10)), value, dt, 42, i % 5 != 0, None)
+                let value = if i % 3 == 0 {
+                    FlakeValue::Long(i)
+                } else if i % 3 == 1 {
+                    FlakeValue::String(format!("value_{}", i))
+                } else {
+                    FlakeValue::Ref(Sid::new(101, format!("ref_{}", i)))
+                };
+                let dt = if i % 3 == 2 {
+                    Sid::new(1, "id")
+                } else if i % 3 == 0 {
+                    Sid::new(2, "integer")
+                } else {
+                    Sid::new(2, "string")
+                };
+                Flake::new(
+                    Sid::new(101, format!("s_{}", i)),
+                    Sid::new(101, format!("p_{}", i % 10)),
+                    value,
+                    dt,
+                    42,
+                    i % 5 != 0,
+                    None,
+                )
             })
             .collect();
 

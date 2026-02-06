@@ -16,7 +16,7 @@ pub fn run(action: ConfigAction, fluree_dir: &Path) -> CliResult<()> {
 
             match lookup_key(&doc, &key) {
                 Some(val) => {
-                    println!("{}", format_toml_value(&val));
+                    println!("{}", format_toml_value(val));
                     Ok(())
                 }
                 None => Err(CliError::NotFound(format!("config key '{key}' not set"))),
@@ -25,15 +25,15 @@ pub fn run(action: ConfigAction, fluree_dir: &Path) -> CliResult<()> {
 
         ConfigAction::Set { key, value } => {
             let content = std::fs::read_to_string(&config_path).unwrap_or_default();
-            let mut doc: toml_edit::DocumentMut = content.parse().map_err(|e: toml_edit::TomlError| {
-                CliError::Config(format!("failed to parse config: {e}"))
-            })?;
+            let mut doc: toml_edit::DocumentMut =
+                content.parse().map_err(|e: toml_edit::TomlError| {
+                    CliError::Config(format!("failed to parse config: {e}"))
+                })?;
 
             set_key(&mut doc, &key, &value)?;
 
-            std::fs::write(&config_path, doc.to_string()).map_err(|e| {
-                CliError::Config(format!("failed to write config: {e}"))
-            })?;
+            std::fs::write(&config_path, doc.to_string())
+                .map_err(|e| CliError::Config(format!("failed to write config: {e}")))?;
 
             println!("Set '{key}' = '{value}'");
             Ok(())
@@ -83,9 +83,7 @@ fn set_key(doc: &mut toml_edit::DocumentMut, key: &str, value: &str) -> CliResul
         table = table
             .get_mut(part)
             .and_then(|item| item.as_table_mut())
-            .ok_or_else(|| {
-                CliError::Config(format!("key component '{part}' is not a table"))
-            })?;
+            .ok_or_else(|| CliError::Config(format!("key component '{part}' is not a table")))?;
     }
 
     let leaf = parts.last().unwrap();

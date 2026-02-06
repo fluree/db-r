@@ -49,19 +49,16 @@ pub fn write_numeric_shapes(
         })
         .collect();
 
-    let json = serde_json::to_string_pretty(&map)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let json = serde_json::to_string_pretty(&map).map_err(io::Error::other)?;
     std::fs::write(path, json)?;
     Ok(())
 }
 
 /// Read per-predicate numeric shapes from JSON.
-pub fn read_numeric_shapes(
-    path: &std::path::Path,
-) -> io::Result<HashMap<u32, NumericShape>> {
+pub fn read_numeric_shapes(path: &std::path::Path) -> io::Result<HashMap<u32, NumericShape>> {
     let json = std::fs::read_to_string(path)?;
-    let map: HashMap<String, String> = serde_json::from_str(&json)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let map: HashMap<String, String> =
+        serde_json::from_str(&json).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     let mut shapes = HashMap::with_capacity(map.len());
     for (key, val) in map {

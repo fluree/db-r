@@ -38,7 +38,10 @@ pub fn apply_cancellation(flakes: Vec<Flake>) -> Vec<Flake> {
     }
 
     // Collect remaining flakes
-    let mut result: Vec<Flake> = assertions.into_values().chain(retractions.into_values()).collect();
+    let mut result: Vec<Flake> = assertions
+        .into_values()
+        .chain(retractions.into_values())
+        .collect();
 
     // Sort for deterministic output
     result.sort_by(|a, b| IndexType::Spot.compare(a, b));

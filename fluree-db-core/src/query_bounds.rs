@@ -230,12 +230,12 @@ impl ObjectBounds {
             (FlakeValue::GYear(g), FlakeValue::String(s)) => {
                 temporal::GYear::parse(s).ok().map(|p| g.as_ref().cmp(&p))
             }
-            (FlakeValue::String(s), FlakeValue::GYearMonth(g)) => {
-                temporal::GYearMonth::parse(s).ok().map(|p| p.cmp(g.as_ref()))
-            }
-            (FlakeValue::GYearMonth(g), FlakeValue::String(s)) => {
-                temporal::GYearMonth::parse(s).ok().map(|p| g.as_ref().cmp(&p))
-            }
+            (FlakeValue::String(s), FlakeValue::GYearMonth(g)) => temporal::GYearMonth::parse(s)
+                .ok()
+                .map(|p| p.cmp(g.as_ref())),
+            (FlakeValue::GYearMonth(g), FlakeValue::String(s)) => temporal::GYearMonth::parse(s)
+                .ok()
+                .map(|p| g.as_ref().cmp(&p)),
             (FlakeValue::String(s), FlakeValue::GMonth(g)) => {
                 temporal::GMonth::parse(s).ok().map(|p| p.cmp(g.as_ref()))
             }
@@ -248,18 +248,18 @@ impl ObjectBounds {
             (FlakeValue::GDay(g), FlakeValue::String(s)) => {
                 temporal::GDay::parse(s).ok().map(|p| g.as_ref().cmp(&p))
             }
-            (FlakeValue::String(s), FlakeValue::GMonthDay(g)) => {
-                temporal::GMonthDay::parse(s).ok().map(|p| p.cmp(g.as_ref()))
-            }
-            (FlakeValue::GMonthDay(g), FlakeValue::String(s)) => {
-                temporal::GMonthDay::parse(s).ok().map(|p| g.as_ref().cmp(&p))
-            }
+            (FlakeValue::String(s), FlakeValue::GMonthDay(g)) => temporal::GMonthDay::parse(s)
+                .ok()
+                .map(|p| p.cmp(g.as_ref())),
+            (FlakeValue::GMonthDay(g), FlakeValue::String(s)) => temporal::GMonthDay::parse(s)
+                .ok()
+                .map(|p| g.as_ref().cmp(&p)),
             (FlakeValue::String(s), FlakeValue::DateTime(d)) => {
                 temporal::DateTime::parse(s).ok().map(|p| p.cmp(d.as_ref()))
             }
-            (FlakeValue::DateTime(d), FlakeValue::String(s)) => {
-                temporal::DateTime::parse(s).ok().map(|p| d.as_ref().cmp(&p))
-            }
+            (FlakeValue::DateTime(d), FlakeValue::String(s)) => temporal::DateTime::parse(s)
+                .ok()
+                .map(|p| d.as_ref().cmp(&p)),
             (FlakeValue::String(s), FlakeValue::Date(d)) => {
                 temporal::Date::parse(s).ok().map(|p| p.cmp(d.as_ref()))
             }

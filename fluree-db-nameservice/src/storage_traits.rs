@@ -257,7 +257,10 @@ mod tests {
 
     #[test]
     fn test_storage_ext_error_constructors() {
-        assert!(matches!(StorageExtError::io("test"), StorageExtError::Io(_)));
+        assert!(matches!(
+            StorageExtError::io("test"),
+            StorageExtError::Io(_)
+        ));
         assert!(matches!(
             StorageExtError::not_found("test"),
             StorageExtError::NotFound(_)

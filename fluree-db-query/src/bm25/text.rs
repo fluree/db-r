@@ -93,8 +93,8 @@ mod tests {
         let value = json!(42);
         assert_eq!(extract_text(&value), "42");
 
-        let value = json!(3.14);
-        assert_eq!(extract_text(&value), "3.14");
+        let value = json!(3.13);
+        assert_eq!(extract_text(&value), "3.13");
     }
 
     #[test]

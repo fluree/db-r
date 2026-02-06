@@ -68,38 +68,47 @@ pub fn evaluate_to_binding_with_context_strict<S: Storage>(
     // Convert ComparableValue to Binding
     let datatypes = &*WELL_KNOWN_DATATYPES;
     match comparable {
-        ComparableValue::Long(n) => Ok(Binding::lit(FlakeValue::Long(n), datatypes.xsd_long.clone())),
-        ComparableValue::Double(d) => {
-            Ok(Binding::lit(FlakeValue::Double(d), datatypes.xsd_double.clone()))
-        }
+        ComparableValue::Long(n) => Ok(Binding::lit(
+            FlakeValue::Long(n),
+            datatypes.xsd_long.clone(),
+        )),
+        ComparableValue::Double(d) => Ok(Binding::lit(
+            FlakeValue::Double(d),
+            datatypes.xsd_double.clone(),
+        )),
         ComparableValue::String(s) => Ok(Binding::lit(
             FlakeValue::String(s.to_string()),
             datatypes.xsd_string.clone(),
         )),
-        ComparableValue::Bool(b) => {
-            Ok(Binding::lit(FlakeValue::Boolean(b), datatypes.xsd_boolean.clone()))
-        }
+        ComparableValue::Bool(b) => Ok(Binding::lit(
+            FlakeValue::Boolean(b),
+            datatypes.xsd_boolean.clone(),
+        )),
         ComparableValue::Sid(sid) => Ok(Binding::Sid(sid)),
         ComparableValue::Vector(v) => Ok(Binding::lit(
             FlakeValue::Vector(v.to_vec()),
             datatypes.fluree_vector.clone(),
         )),
-        ComparableValue::BigInt(n) => {
-            Ok(Binding::lit(FlakeValue::BigInt(n), datatypes.xsd_integer.clone()))
-        }
-        ComparableValue::Decimal(d) => {
-            Ok(Binding::lit(FlakeValue::Decimal(d), datatypes.xsd_decimal.clone()))
-        }
+        ComparableValue::BigInt(n) => Ok(Binding::lit(
+            FlakeValue::BigInt(n),
+            datatypes.xsd_integer.clone(),
+        )),
+        ComparableValue::Decimal(d) => Ok(Binding::lit(
+            FlakeValue::Decimal(d),
+            datatypes.xsd_decimal.clone(),
+        )),
         ComparableValue::DateTime(dt) => Ok(Binding::lit(
             FlakeValue::DateTime(dt),
             datatypes.xsd_datetime.clone(),
         )),
-        ComparableValue::Date(d) => {
-            Ok(Binding::lit(FlakeValue::Date(d), datatypes.xsd_date.clone()))
-        }
-        ComparableValue::Time(t) => {
-            Ok(Binding::lit(FlakeValue::Time(t), datatypes.xsd_time.clone()))
-        }
+        ComparableValue::Date(d) => Ok(Binding::lit(
+            FlakeValue::Date(d),
+            datatypes.xsd_date.clone(),
+        )),
+        ComparableValue::Time(t) => Ok(Binding::lit(
+            FlakeValue::Time(t),
+            datatypes.xsd_time.clone(),
+        )),
         ComparableValue::GeoPoint(bits) => Ok(Binding::lit(
             FlakeValue::GeoPoint(bits),
             datatypes.geo_wkt_literal.clone(),
@@ -430,10 +439,19 @@ mod tests {
         ];
 
         let name_col = vec![
-            Binding::lit(FlakeValue::String("Alice".to_string()), Sid::new(2, "string")),
+            Binding::lit(
+                FlakeValue::String("Alice".to_string()),
+                Sid::new(2, "string"),
+            ),
             Binding::lit(FlakeValue::String("Bob".to_string()), Sid::new(2, "string")),
-            Binding::lit(FlakeValue::String("Carol".to_string()), Sid::new(2, "string")),
-            Binding::lit(FlakeValue::String("Dave".to_string()), Sid::new(2, "string")),
+            Binding::lit(
+                FlakeValue::String("Carol".to_string()),
+                Sid::new(2, "string"),
+            ),
+            Binding::lit(
+                FlakeValue::String("Dave".to_string()),
+                Sid::new(2, "string"),
+            ),
         ];
 
         Batch::new(schema, vec![age_col, name_col]).unwrap()

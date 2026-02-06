@@ -1,6 +1,6 @@
 use crate::detect::QueryFormat;
 use crate::error::CliResult;
-use comfy_table::{Table, ContentArrangement};
+use comfy_table::{ContentArrangement, Table};
 
 /// Output format for query results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,9 +70,7 @@ fn format_sparql_table(json: &serde_json::Value) -> CliResult<String> {
 
     table.set_header(&vars);
 
-    let bindings = json
-        .pointer("/results/bindings")
-        .and_then(|v| v.as_array());
+    let bindings = json.pointer("/results/bindings").and_then(|v| v.as_array());
 
     if let Some(rows) = bindings {
         for row in rows {
@@ -154,18 +152,22 @@ fn format_sparql_csv(json: &serde_json::Value) -> CliResult<String> {
     }
 
     let mut lines = Vec::new();
-    lines.push(vars.iter().map(|v| csv_escape(v)).collect::<Vec<_>>().join(","));
+    lines.push(
+        vars.iter()
+            .map(|v| csv_escape(v))
+            .collect::<Vec<_>>()
+            .join(","),
+    );
 
-    let bindings = json
-        .pointer("/results/bindings")
-        .and_then(|v| v.as_array());
+    let bindings = json.pointer("/results/bindings").and_then(|v| v.as_array());
 
     if let Some(rows) = bindings {
         for row in rows {
             let cells: Vec<String> = vars
                 .iter()
                 .map(|var| {
-                    let val = row.get(var)
+                    let val = row
+                        .get(var)
                         .and_then(|b| b.get("value"))
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
@@ -202,13 +204,20 @@ fn format_fql_csv(json: &serde_json::Value) -> CliResult<String> {
     }
 
     let mut lines = Vec::new();
-    lines.push(columns.iter().map(|c| csv_escape(c)).collect::<Vec<_>>().join(","));
+    lines.push(
+        columns
+            .iter()
+            .map(|c| csv_escape(c))
+            .collect::<Vec<_>>()
+            .join(","),
+    );
 
     for obj in arr {
         let cells: Vec<String> = columns
             .iter()
             .map(|col| {
-                let val = obj.get(col)
+                let val = obj
+                    .get(col)
                     .map(|v| match v {
                         serde_json::Value::String(s) => s.clone(),
                         other => other.to_string(),

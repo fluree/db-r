@@ -79,8 +79,10 @@ impl FlureeHeaders {
 
     /// Parse headers from a HeaderMap
     pub fn from_headers(headers: &HeaderMap) -> Result<Self> {
-        let mut fluree_headers = Self::default();
-        fluree_headers.raw = headers.clone();
+        let mut fluree_headers = Self {
+            raw: headers.clone(),
+            ..Default::default()
+        };
 
         // String headers
         if let Some(val) = get_header_str(headers, Self::LEDGER) {
@@ -103,14 +105,13 @@ impl FlureeHeaders {
         }
 
         if let Some(val) = get_header_str(headers, Self::POLICY_VALUES) {
-            fluree_headers.policy_values =
-                Some(serde_json::from_str(val).map_err(|e| {
-                    ServerError::invalid_header(format!(
-                        "{} is not valid JSON: {}",
-                        Self::POLICY_VALUES,
-                        e
-                    ))
-                })?);
+            fluree_headers.policy_values = Some(serde_json::from_str(val).map_err(|e| {
+                ServerError::invalid_header(format!(
+                    "{} is not valid JSON: {}",
+                    Self::POLICY_VALUES,
+                    e
+                ))
+            })?);
         }
 
         // Boolean headers (presence or "true" value)
@@ -169,14 +170,14 @@ impl FlureeHeaders {
     /// Convert policy_values to a HashMap for credential API
     ///
     /// Returns None if no policy values are set, or an error if they're not a valid JSON object.
-    pub fn policy_values_map(&self) -> Result<Option<std::collections::HashMap<String, JsonValue>>> {
+    pub fn policy_values_map(
+        &self,
+    ) -> Result<Option<std::collections::HashMap<String, JsonValue>>> {
         match &self.policy_values {
             None => Ok(None),
             Some(JsonValue::Object(obj)) => {
-                let map: std::collections::HashMap<String, JsonValue> = obj
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
+                let map: std::collections::HashMap<String, JsonValue> =
+                    obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                 Ok(Some(map))
             }
             Some(_) => Err(ServerError::invalid_header(
@@ -215,11 +216,10 @@ impl FlureeHeaders {
             );
         }
 
-        if self.max_fuel.is_some() && !opts.contains_key("max-fuel") {
-            opts.insert(
-                "max-fuel".to_string(),
-                JsonValue::Number(self.max_fuel.unwrap().into()),
-            );
+        if let Some(max_fuel) = self.max_fuel {
+            if !opts.contains_key("max-fuel") {
+                opts.insert("max-fuel".to_string(), JsonValue::Number(max_fuel.into()));
+            }
         }
 
         // Inject tracking options into meta if any tracking is enabled via headers

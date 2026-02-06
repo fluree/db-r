@@ -59,23 +59,15 @@ impl<'a> OverlayProvider for ReasoningOverlay<'a> {
         let mut base_flakes: Vec<Flake> = Vec::new();
         let mut derived_flakes: Vec<Flake> = Vec::new();
 
-        self.base.for_each_overlay_flake(
-            index,
-            first,
-            rhs,
-            leftmost,
-            to_t,
-            &mut |f| base_flakes.push(f.clone()),
-        );
+        self.base
+            .for_each_overlay_flake(index, first, rhs, leftmost, to_t, &mut |f| {
+                base_flakes.push(f.clone())
+            });
 
-        self.derived.for_each_overlay_flake(
-            index,
-            first,
-            rhs,
-            leftmost,
-            to_t,
-            &mut |f| derived_flakes.push(f.clone()),
-        );
+        self.derived
+            .for_each_overlay_flake(index, first, rhs, leftmost, to_t, &mut |f| {
+                derived_flakes.push(f.clone())
+            });
 
         // Linear merge of two sorted sequences - O(n) instead of O(n log n)
         //
@@ -89,16 +81,14 @@ impl<'a> OverlayProvider for ReasoningOverlay<'a> {
 
         loop {
             match (base_iter.peek(), derived_iter.peek()) {
-                (Some(base), Some(derived)) => {
-                    match index.compare(base, derived) {
-                        std::cmp::Ordering::Less | std::cmp::Ordering::Equal => {
-                            callback(base_iter.next().unwrap());
-                        }
-                        std::cmp::Ordering::Greater => {
-                            callback(derived_iter.next().unwrap());
-                        }
+                (Some(base), Some(derived)) => match index.compare(base, derived) {
+                    std::cmp::Ordering::Less | std::cmp::Ordering::Equal => {
+                        callback(base_iter.next().unwrap());
                     }
-                }
+                    std::cmp::Ordering::Greater => {
+                        callback(derived_iter.next().unwrap());
+                    }
+                },
                 (Some(_), None) => {
                     callback(base_iter.next().unwrap());
                 }

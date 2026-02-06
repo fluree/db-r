@@ -137,8 +137,8 @@ impl ShaclCache {
 mod tests {
     use super::*;
     use crate::compile::{Severity, TargetType};
-    use fluree_db_core::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};
     use fluree_db_core::SidInterner;
+    use fluree_db_core::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};
 
     fn make_test_shape(id_name: &str, target_class: Sid) -> CompiledShape {
         let interner = SidInterner::new();
@@ -155,9 +155,10 @@ mod tests {
         }
     }
 
-    fn make_hierarchy(
-        entries: Vec<(u16, &str, Vec<(u16, &str)>)>,
-    ) -> (SchemaHierarchy, SidInterner) {
+    /// A hierarchy entry tuple: (namespace, name, subclass_of entries)
+    type HierarchyEntry<'a> = (u16, &'a str, Vec<(u16, &'a str)>);
+
+    fn make_hierarchy(entries: Vec<HierarchyEntry<'_>>) -> (SchemaHierarchy, SidInterner) {
         let interner = SidInterner::new();
         let vals: Vec<SchemaPredicateInfo> = entries
             .into_iter()

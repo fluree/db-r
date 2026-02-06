@@ -32,7 +32,10 @@ async fn bm25_create_full_text_index_indexes_docs_and_is_loadable() {
     let cfg = Bm25CreateConfig::new("bm25-search", alias, query);
     let created = fluree.create_full_text_index(cfg).await.unwrap();
     assert!(created.doc_count > 0, "expected index to include documents");
-    assert!(created.index_address.is_some(), "expected persisted index address");
+    assert!(
+        created.index_address.is_some(),
+        "expected persisted index address"
+    );
 
     // Load the index back via nameservice+storage
     let idx = fluree.load_bm25_index(&created.vg_alias).await.unwrap();
@@ -83,7 +86,10 @@ async fn bm25_search_returns_scored_results() {
 
     // Rust documents (doc1, doc2) should rank higher than Python (doc3)
     // because they match "rust" in addition to "programming"
-    let ids: Vec<_> = results.iter().map(|(doc_key, _score)| doc_key.subject_iri.as_ref()).collect();
+    let ids: Vec<_> = results
+        .iter()
+        .map(|(doc_key, _score)| doc_key.subject_iri.as_ref())
+        .collect();
 
     // Find positions of each document
     let doc1_pos = ids.iter().position(|id| id.contains("doc1"));
@@ -91,12 +97,19 @@ async fn bm25_search_returns_scored_results() {
     let doc3_pos = ids.iter().position(|id| id.contains("doc3"));
 
     // Verify rust docs (doc1, doc2) rank before python doc (doc3)
-    assert!(doc1_pos.is_some() && doc2_pos.is_some() && doc3_pos.is_some(),
-        "expected all docs in results, got: {:?}", ids);
-    assert!(doc1_pos.unwrap() < doc3_pos.unwrap(),
-        "expected doc1 to rank before doc3 (rust before python)");
-    assert!(doc2_pos.unwrap() < doc3_pos.unwrap(),
-        "expected doc2 to rank before doc3 (rust before python)");
+    assert!(
+        doc1_pos.is_some() && doc2_pos.is_some() && doc3_pos.is_some(),
+        "expected all docs in results, got: {:?}",
+        ids
+    );
+    assert!(
+        doc1_pos.unwrap() < doc3_pos.unwrap(),
+        "expected doc1 to rank before doc3 (rust before python)"
+    );
+    assert!(
+        doc2_pos.unwrap() < doc3_pos.unwrap(),
+        "expected doc2 to rank before doc3 (rust before python)"
+    );
 }
 
 /// Test BM25 sync indexes new documents after initial creation
@@ -187,12 +200,18 @@ async fn bm25_snapshot_history_tracks_versions() {
     assert!(synced.was_full_resync || synced.new_watermark >= synced.old_watermark);
 
     // Load at t1 should get 1 doc (returns tuple of (index, actual_t))
-    let (idx_t1, actual_t1) = fluree.load_bm25_index_at(&created.vg_alias, t1).await.unwrap();
+    let (idx_t1, actual_t1) = fluree
+        .load_bm25_index_at(&created.vg_alias, t1)
+        .await
+        .unwrap();
     assert_eq!(idx_t1.num_docs(), 1, "expected 1 doc at t1");
     assert_eq!(actual_t1, t1, "expected snapshot at exactly t1");
 
     // Load at t2 should get 2 docs
-    let (idx_t2, actual_t2) = fluree.load_bm25_index_at(&created.vg_alias, t2).await.unwrap();
+    let (idx_t2, actual_t2) = fluree
+        .load_bm25_index_at(&created.vg_alias, t2)
+        .await
+        .unwrap();
     assert_eq!(idx_t2.num_docs(), 2, "expected 2 docs at t2");
     assert_eq!(actual_t2, t2, "expected snapshot at exactly t2");
 }
@@ -229,10 +248,16 @@ async fn bm25_drop_full_text_index_cleans_up() {
     assert_eq!(idx.num_docs(), 1);
 
     // Drop the index
-    let drop_result = fluree.drop_full_text_index(&created.vg_alias).await.unwrap();
+    let drop_result = fluree
+        .drop_full_text_index(&created.vg_alias)
+        .await
+        .unwrap();
     assert_eq!(drop_result.vg_alias, created.vg_alias);
     assert!(!drop_result.was_already_retracted);
-    assert!(drop_result.deleted_snapshots >= 1, "expected at least 1 deleted snapshot");
+    assert!(
+        drop_result.deleted_snapshots >= 1,
+        "expected at least 1 deleted snapshot"
+    );
 
     // Sync should now fail
     let sync_result = fluree.sync_bm25_index(&created.vg_alias).await;
@@ -249,10 +274,16 @@ async fn bm25_drop_full_text_index_cleans_up() {
 
     // Sync should still fail
     let sync_result2 = fluree.sync_bm25_index(&created.vg_alias).await;
-    assert!(sync_result2.is_err(), "sync should still fail after ledger update");
+    assert!(
+        sync_result2.is_err(),
+        "sync should still fail after ledger update"
+    );
 
     // Drop again should be idempotent (was_already_retracted = true)
-    let drop_result2 = fluree.drop_full_text_index(&created.vg_alias).await.unwrap();
+    let drop_result2 = fluree
+        .drop_full_text_index(&created.vg_alias)
+        .await
+        .unwrap();
     assert!(drop_result2.was_already_retracted);
     assert_eq!(drop_result2.deleted_snapshots, 0);
 }
@@ -298,7 +329,10 @@ async fn bm25_recreate_after_drop() {
     assert_eq!(results.len(), 2, "search should find 2 original docs");
 
     // Drop the index
-    let drop_result = fluree.drop_full_text_index(&created.vg_alias).await.unwrap();
+    let drop_result = fluree
+        .drop_full_text_index(&created.vg_alias)
+        .await
+        .unwrap();
     assert!(!drop_result.was_already_retracted);
 
     // Add new documents to ledger with a distinctive term
@@ -316,7 +350,10 @@ async fn bm25_recreate_after_drop() {
 
     // New index should see all 3 documents
     assert_eq!(created2.doc_count, 3, "recreated index should have 3 docs");
-    assert_eq!(created2.vg_alias, created.vg_alias, "should have same alias");
+    assert_eq!(
+        created2.vg_alias, created.vg_alias,
+        "should have same alias"
+    );
 
     // Verify search works on new index
     let idx2 = fluree.load_bm25_index(&created2.vg_alias).await.unwrap();
@@ -326,14 +363,22 @@ async fn bm25_recreate_after_drop() {
     let term_refs2: Vec<&str> = terms2.iter().map(|s| s.as_str()).collect();
     let scorer2 = Bm25Scorer::new(&idx2, &term_refs2);
     let results2 = scorer2.top_k(10);
-    assert_eq!(results2.len(), 1, "search should find 1 new doc with 'additional'");
+    assert_eq!(
+        results2.len(),
+        1,
+        "search should find 1 new doc with 'additional'"
+    );
 
     // Also verify "original" still finds 2 docs
     let terms3 = analyzer.analyze_to_strings("original");
     let term_refs3: Vec<&str> = terms3.iter().map(|s| s.as_str()).collect();
     let scorer3 = Bm25Scorer::new(&idx2, &term_refs3);
     let results3 = scorer3.top_k(10);
-    assert_eq!(results3.len(), 2, "search should still find 2 original docs");
+    assert_eq!(
+        results3.len(),
+        2,
+        "search should still find 2 original docs"
+    );
 }
 
 /// Test BM25 federated query: FlureeIndexProvider loads index and search works
@@ -475,16 +520,25 @@ async fn bm25_file_backed_storage() {
     });
 
     let cfg = Bm25CreateConfig::new("article-search", alias, query);
-    let created = fluree.create_full_text_index(cfg).await.expect("create index");
+    let created = fluree
+        .create_full_text_index(cfg)
+        .await
+        .expect("create index");
     assert_eq!(created.doc_count, 3, "expected 3 indexed docs");
-    assert!(created.index_address.is_some(), "expected persisted index address");
+    assert!(
+        created.index_address.is_some(),
+        "expected persisted index address"
+    );
 
     // Verify virtual-graphs directory exists
     let vg_dir = std::path::Path::new(&storage_path).join("virtual-graphs");
     assert!(vg_dir.exists(), "virtual-graphs directory should exist");
 
     // Load and search using file-backed index
-    let idx = fluree.load_bm25_index(&created.vg_alias).await.expect("load index");
+    let idx = fluree
+        .load_bm25_index(&created.vg_alias)
+        .await
+        .expect("load index");
     assert_eq!(idx.num_docs(), 3, "loaded index should have 3 docs");
 
     let analyzer = Analyzer::clojure_parity_english();
@@ -498,7 +552,10 @@ async fn bm25_file_backed_storage() {
 
     // Verify scores are numeric and in descending order
     let scores: Vec<f64> = results.iter().map(|(_, score)| *score).collect();
-    assert!(scores[0] >= scores[1], "scores should be in descending order");
+    assert!(
+        scores[0] >= scores[1],
+        "scores should be in descending order"
+    );
 
     // Search for python should find 1 result
     let terms2 = analyzer.analyze_to_strings("python");
@@ -515,8 +572,10 @@ async fn bm25_file_backed_storage() {
         "select": ["?title"]
     });
     let query_result = fluree.query(&ledger, &doc_query).await.expect("doc query");
-    assert!(!query_result.batches.is_empty() && !query_result.batches[0].is_empty(),
-        "should be able to query ledger for BM25 result doc");
+    assert!(
+        !query_result.batches.is_empty() && !query_result.batches[0].is_empty(),
+        "should be able to query ledger for BM25 result doc"
+    );
 
     // tmp directory will be cleaned up when `tmp` goes out of scope
 }
@@ -553,7 +612,10 @@ async fn bm25_query_connection_with_idx_pattern() {
     });
 
     let cfg = Bm25CreateConfig::new("qc-search", alias, index_query);
-    let created = fluree.create_full_text_index(cfg).await.expect("create index failed");
+    let created = fluree
+        .create_full_text_index(cfg)
+        .await
+        .expect("create index failed");
     assert_eq!(created.doc_count, 3, "expected 3 indexed docs");
 
     // Test 1: Regular query via query_connection_with_bm25
@@ -564,7 +626,9 @@ async fn bm25_query_connection_with_idx_pattern() {
         "select": ["?doc", "?author"]
     });
 
-    let result = fluree.query_connection_with_bm25(&regular_query).await
+    let result = fluree
+        .query_connection_with_bm25(&regular_query)
+        .await
         .expect("query_connection_with_bm25 failed for regular query");
     let total_results: usize = result.batches.iter().map(|b| b.len()).sum();
     assert_eq!(total_results, 3, "expected 3 results from regular query");
@@ -592,16 +656,25 @@ async fn bm25_query_connection_with_idx_pattern() {
         "select": ["?doc", "?score", "?author"]
     });
 
-    let idx_result = fluree.query_connection_with_bm25(&idx_query).await
+    let idx_result = fluree
+        .query_connection_with_bm25(&idx_query)
+        .await
         .expect("query_connection_with_bm25 failed for idx:* query");
 
     // Should have results (2 rust docs)
     let idx_total: usize = idx_result.batches.iter().map(|b| b.len()).sum();
-    assert!(idx_total >= 2, "expected at least 2 rust docs in idx:* query results, got {}", idx_total);
+    assert!(
+        idx_total >= 2,
+        "expected at least 2 rust docs in idx:* query results, got {}",
+        idx_total
+    );
 
     // Verify scores are present (VarRegistry uses "?score" with the ? prefix)
     let score_var_id = idx_result.vars.get("?score");
-    assert!(score_var_id.is_some(), "expected ?score variable in results");
+    assert!(
+        score_var_id.is_some(),
+        "expected ?score variable in results"
+    );
 
     // Test 3: Verify FlureeIndexProvider can load the index directly
     let provider = FlureeIndexProvider::new(&fluree);
@@ -617,7 +690,11 @@ async fn bm25_query_connection_with_idx_pattern() {
     let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
     let scorer = Bm25Scorer::new(&idx, &term_refs);
     let search_results = scorer.top_k(10);
-    assert_eq!(search_results.len(), 2, "expected 2 rust docs via direct search");
+    assert_eq!(
+        search_results.len(),
+        2,
+        "expected 2 rust docs via direct search"
+    );
 }
 
 /// Test BM25 federated query with aggregation: search + join + groupBy/count
@@ -661,7 +738,11 @@ async fn bm25_federated_query_with_aggregation() {
     let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
     let scorer = Bm25Scorer::new(&idx, &term_refs);
     let search_results = scorer.top_k(10);
-    assert_eq!(search_results.len(), 3, "expected 3 rust books in search results");
+    assert_eq!(
+        search_results.len(),
+        3,
+        "expected 3 rust books in search results"
+    );
 
     // For each search result, query ledger for year to simulate aggregation
     // This mimics what a federated query with groupBy would do
@@ -681,12 +762,12 @@ async fn bm25_federated_query_with_aggregation() {
         if !result.batches.is_empty() && !result.batches[0].is_empty() {
             // Extract year from result
             let batch = &result.batches[0];
-            if let Some(binding) = batch.column_by_idx(0).and_then(|col| col.first()) {
-                if let fluree_db_query::binding::Binding::Lit { val, .. } = binding {
-                    if let fluree_db_core::FlakeValue::Long(year) = val {
-                        *year_counts.entry(*year).or_insert(0) += 1;
-                    }
-                }
+            if let Some(fluree_db_query::binding::Binding::Lit {
+                val: fluree_db_core::FlakeValue::Long(year),
+                ..
+            }) = batch.column_by_idx(0).and_then(|col| col.first())
+            {
+                *year_counts.entry(*year).or_insert(0) += 1;
             }
         }
     }
@@ -694,8 +775,18 @@ async fn bm25_federated_query_with_aggregation() {
     // Verify aggregation results: Rust books by year
     // - 2020: 1 book (Rust Systems Programming)
     // - 2021: 2 books (Learning Rust, Advanced Rust Patterns)
-    assert_eq!(year_counts.get(&2020), Some(&1), "expected 1 rust book in 2020");
-    assert_eq!(year_counts.get(&2021), Some(&2), "expected 2 rust books in 2021");
-    assert!(year_counts.get(&2019).is_none(), "expected no rust books in 2019");
+    assert_eq!(
+        year_counts.get(&2020),
+        Some(&1),
+        "expected 1 rust book in 2020"
+    );
+    assert_eq!(
+        year_counts.get(&2021),
+        Some(&2),
+        "expected 2 rust books in 2021"
+    );
+    assert!(
+        !year_counts.contains_key(&2019),
+        "expected no rust books in 2019"
+    );
 }
-

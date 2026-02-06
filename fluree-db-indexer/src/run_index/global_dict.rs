@@ -22,11 +22,11 @@
 //! NUM_FLOAT dictionaries with midpoint-splitting ranks are a later optimization.
 
 use rustc_hash::FxHashMap;
+use serde_json;
 use std::borrow::Borrow;
 use std::hash::Hash;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use serde_json;
 
 // ============================================================================
 // SubjectDict (xxh3_128 reverse map, file-backed forward map)
@@ -141,13 +141,10 @@ impl SubjectDict {
         }
         let local_id = self.next_local_ids[ns_idx];
         if local_id > Self::MAX_LOCAL_ID {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "SubjectDict: local_id overflow for ns_code {} (exceeded 2^48)",
-                    ns_code
-                ),
-            ));
+            return Err(io::Error::other(format!(
+                "SubjectDict: local_id overflow for ns_code {} (exceeded 2^48)",
+                ns_code
+            )));
         }
         self.next_local_ids[ns_idx] = local_id + 1;
 
@@ -710,27 +707,27 @@ impl Default for LanguageTagDict {
 /// Type is `u16` to match `RunRecord.dt` — most datasets use ≤255 types
 /// (encoded as u8 in leaf Region 2), but u16 supports up to 65535 distinct
 /// datatype IRIs in a single import.
-
+///
 /// Create a new datatype dict with reserved entries pre-inserted.
 ///
 /// Order matters: `get_or_insert` returns sequential IDs starting at 0.
 /// Only types with special encoding/coercion rules are reserved.
 pub(crate) fn new_datatype_dict() -> PredicateDict {
     let mut d = PredicateDict::new();
-    d.get_or_insert("@id");                                       // 0
-    d.get_or_insert(fluree_vocab::xsd::STRING);                   // 1
-    d.get_or_insert(fluree_vocab::xsd::BOOLEAN);                  // 2
-    d.get_or_insert(fluree_vocab::xsd::INTEGER);                  // 3
-    d.get_or_insert(fluree_vocab::xsd::LONG);                     // 4
-    d.get_or_insert(fluree_vocab::xsd::DECIMAL);                  // 5
-    d.get_or_insert(fluree_vocab::xsd::DOUBLE);                   // 6
-    d.get_or_insert(fluree_vocab::xsd::FLOAT);                    // 7
-    d.get_or_insert(fluree_vocab::xsd::DATE_TIME);                // 8
-    d.get_or_insert(fluree_vocab::xsd::DATE);                     // 9
-    d.get_or_insert(fluree_vocab::xsd::TIME);                     // 10
-    d.get_or_insert(fluree_vocab::rdf::LANG_STRING);              // 11
-    d.get_or_insert("@json");                                     // 12
-    d.get_or_insert("@vector");                                   // 13
+    d.get_or_insert("@id"); // 0
+    d.get_or_insert(fluree_vocab::xsd::STRING); // 1
+    d.get_or_insert(fluree_vocab::xsd::BOOLEAN); // 2
+    d.get_or_insert(fluree_vocab::xsd::INTEGER); // 3
+    d.get_or_insert(fluree_vocab::xsd::LONG); // 4
+    d.get_or_insert(fluree_vocab::xsd::DECIMAL); // 5
+    d.get_or_insert(fluree_vocab::xsd::DOUBLE); // 6
+    d.get_or_insert(fluree_vocab::xsd::FLOAT); // 7
+    d.get_or_insert(fluree_vocab::xsd::DATE_TIME); // 8
+    d.get_or_insert(fluree_vocab::xsd::DATE); // 9
+    d.get_or_insert(fluree_vocab::xsd::TIME); // 10
+    d.get_or_insert(fluree_vocab::rdf::LANG_STRING); // 11
+    d.get_or_insert("@json"); // 12
+    d.get_or_insert("@vector"); // 13
     debug_assert_eq!(d.len(), 14);
     d
 }
@@ -771,10 +768,9 @@ impl GlobalDicts {
             numbigs: FxHashMap::default(),
         };
         // Reserve g_id=1 for txn-meta: graphs dict returns 0-based, +1 = g_id 1.
-        dicts.graphs.get_or_insert_parts(
-            fluree_vocab::fluree::LEDGER,
-            "transactions",
-        );
+        dicts
+            .graphs
+            .get_or_insert_parts(fluree_vocab::fluree::LEDGER, "transactions");
         Ok(dicts)
     }
 
@@ -793,10 +789,9 @@ impl GlobalDicts {
             numbigs: FxHashMap::default(),
         };
         // Reserve g_id=1 for txn-meta: graphs dict returns 0-based, +1 = g_id 1.
-        dicts.graphs.get_or_insert_parts(
-            fluree_vocab::fluree::LEDGER,
-            "transactions",
-        );
+        dicts
+            .graphs
+            .get_or_insert_parts(fluree_vocab::fluree::LEDGER, "transactions");
         dicts
     }
 
@@ -809,8 +804,7 @@ impl GlobalDicts {
     /// - `graphs.dict` — graph dictionary
     /// - `predicates.json` — predicate id→IRI table (for index-build p_width + tooling)
     pub fn persist(&mut self, run_dir: &Path) -> io::Result<()> {
-        use super::dict_io::{write_predicate_dict, write_subject_index,
-                             write_subject_sid_map};
+        use super::dict_io::{write_predicate_dict, write_subject_index, write_subject_sid_map};
 
         // Flush subject forward file
         self.subjects.flush()?;
@@ -823,10 +817,7 @@ impl GlobalDicts {
         )?;
 
         // Write sid64 mapping (sequential index → sid64)
-        write_subject_sid_map(
-            &run_dir.join("subjects.sids"),
-            self.subjects.forward_sids(),
-        )?;
+        write_subject_sid_map(&run_dir.join("subjects.sids"), self.subjects.forward_sids())?;
 
         // Flush string forward file and write index.
         // The forward file (strings.fwd) is written incrementally during import;
@@ -845,7 +836,8 @@ impl GlobalDicts {
             .collect();
         std::fs::write(
             run_dir.join("predicates.json"),
-            serde_json::to_vec(&preds).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
+            serde_json::to_vec(&preds)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
         )?;
 
         // Write graph dict
@@ -973,7 +965,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(id1, id2);
-        assert!(!called, "iri_builder should not be called for existing entry");
+        assert!(
+            !called,
+            "iri_builder should not be called for existing entry"
+        );
     }
 
     #[test]
@@ -1008,8 +1003,8 @@ mod tests {
         let id_a1 = dict.get_or_insert("http://a.org/z", ns_a).unwrap();
 
         // Each namespace has its own local_id counter
-        assert_eq!(id_a0, (10u64 << 48) | 0); // ns_a, local_id=0
-        assert_eq!(id_b0, (20u64 << 48) | 0); // ns_b, local_id=0
+        assert_eq!(id_a0, 10u64 << 48); // ns_a, local_id=0
+        assert_eq!(id_b0, 20u64 << 48); // ns_b, local_id=0
         assert_eq!(id_a1, (10u64 << 48) | 1); // ns_a, local_id=1
 
         assert_eq!(dict.len(), 3);
@@ -1035,8 +1030,12 @@ mod tests {
         // has local_id=65535 which equals u16::MAX. We inserted u16::MAX+1 subjects,
         // so the last one (65536th) has local_id=65535. Not yet wide.
         // Let's insert one more to actually trigger it.
-        dict.get_or_insert("http://example.org/entity/overflow", ns).unwrap();
-        assert!(dict.needs_wide(), "should need wide after exceeding u16::MAX local_id");
+        dict.get_or_insert("http://example.org/entity/overflow", ns)
+            .unwrap();
+        assert!(
+            dict.needs_wide(),
+            "should need wide after exceeding u16::MAX local_id"
+        );
     }
 
     // ---- PredicateDict tests ----
@@ -1126,7 +1125,10 @@ mod tests {
     #[test]
     fn test_global_dicts_memory() {
         let mut dicts = GlobalDicts::new_memory();
-        dicts.subjects.get_or_insert("http://example.org/Alice", 100).unwrap();
+        dicts
+            .subjects
+            .get_or_insert("http://example.org/Alice", 100)
+            .unwrap();
         dicts.predicates.get_or_insert("http://example.org/name");
         dicts.strings.get_or_insert("Alice").unwrap();
         dicts.languages.get_or_insert(Some("en"));
@@ -1201,19 +1203,55 @@ mod tests {
 
         // Verify reserved positions match DatatypeDictId constants
         assert_eq!(d.get("@id"), Some(DatatypeDictId::ID.as_u16() as u32));
-        assert_eq!(d.get(fluree_vocab::xsd::STRING), Some(DatatypeDictId::STRING.as_u16() as u32));
-        assert_eq!(d.get(fluree_vocab::xsd::BOOLEAN), Some(DatatypeDictId::BOOLEAN.as_u16() as u32));
-        assert_eq!(d.get(fluree_vocab::xsd::INTEGER), Some(DatatypeDictId::INTEGER.as_u16() as u32));
-        assert_eq!(d.get(fluree_vocab::xsd::LONG), Some(DatatypeDictId::LONG.as_u16() as u32));
-        assert_eq!(d.get(fluree_vocab::xsd::DECIMAL), Some(DatatypeDictId::DECIMAL.as_u16() as u32));
-        assert_eq!(d.get(fluree_vocab::xsd::DOUBLE), Some(DatatypeDictId::DOUBLE.as_u16() as u32));
-        assert_eq!(d.get(fluree_vocab::xsd::FLOAT), Some(DatatypeDictId::FLOAT.as_u16() as u32));
-        assert_eq!(d.get(fluree_vocab::xsd::DATE_TIME), Some(DatatypeDictId::DATE_TIME.as_u16() as u32));
-        assert_eq!(d.get(fluree_vocab::xsd::DATE), Some(DatatypeDictId::DATE.as_u16() as u32));
-        assert_eq!(d.get(fluree_vocab::xsd::TIME), Some(DatatypeDictId::TIME.as_u16() as u32));
-        assert_eq!(d.get(fluree_vocab::rdf::LANG_STRING), Some(DatatypeDictId::LANG_STRING.as_u16() as u32));
+        assert_eq!(
+            d.get(fluree_vocab::xsd::STRING),
+            Some(DatatypeDictId::STRING.as_u16() as u32)
+        );
+        assert_eq!(
+            d.get(fluree_vocab::xsd::BOOLEAN),
+            Some(DatatypeDictId::BOOLEAN.as_u16() as u32)
+        );
+        assert_eq!(
+            d.get(fluree_vocab::xsd::INTEGER),
+            Some(DatatypeDictId::INTEGER.as_u16() as u32)
+        );
+        assert_eq!(
+            d.get(fluree_vocab::xsd::LONG),
+            Some(DatatypeDictId::LONG.as_u16() as u32)
+        );
+        assert_eq!(
+            d.get(fluree_vocab::xsd::DECIMAL),
+            Some(DatatypeDictId::DECIMAL.as_u16() as u32)
+        );
+        assert_eq!(
+            d.get(fluree_vocab::xsd::DOUBLE),
+            Some(DatatypeDictId::DOUBLE.as_u16() as u32)
+        );
+        assert_eq!(
+            d.get(fluree_vocab::xsd::FLOAT),
+            Some(DatatypeDictId::FLOAT.as_u16() as u32)
+        );
+        assert_eq!(
+            d.get(fluree_vocab::xsd::DATE_TIME),
+            Some(DatatypeDictId::DATE_TIME.as_u16() as u32)
+        );
+        assert_eq!(
+            d.get(fluree_vocab::xsd::DATE),
+            Some(DatatypeDictId::DATE.as_u16() as u32)
+        );
+        assert_eq!(
+            d.get(fluree_vocab::xsd::TIME),
+            Some(DatatypeDictId::TIME.as_u16() as u32)
+        );
+        assert_eq!(
+            d.get(fluree_vocab::rdf::LANG_STRING),
+            Some(DatatypeDictId::LANG_STRING.as_u16() as u32)
+        );
         assert_eq!(d.get("@json"), Some(DatatypeDictId::JSON.as_u16() as u32));
-        assert_eq!(d.get("@vector"), Some(DatatypeDictId::VECTOR.as_u16() as u32));
+        assert_eq!(
+            d.get("@vector"),
+            Some(DatatypeDictId::VECTOR.as_u16() as u32)
+        );
     }
 
     #[test]
@@ -1221,7 +1259,10 @@ mod tests {
         let mut d = new_datatype_dict();
         // Re-inserting a reserved type returns the same ID
         assert_eq!(d.get_or_insert("@id"), DatatypeDictId::ID.as_u16() as u32);
-        assert_eq!(d.get_or_insert(fluree_vocab::xsd::STRING), DatatypeDictId::STRING.as_u16() as u32);
+        assert_eq!(
+            d.get_or_insert(fluree_vocab::xsd::STRING),
+            DatatypeDictId::STRING.as_u16() as u32
+        );
         assert_eq!(d.len(), 14); // no new entries
     }
 
@@ -1236,7 +1277,10 @@ mod tests {
         assert_eq!(d.len(), 16);
 
         // Re-insert returns same ID
-        assert_eq!(d.get_or_insert("http://www.w3.org/2001/XMLSchema#gYear"), g_year_id);
+        assert_eq!(
+            d.get_or_insert("http://www.w3.org/2001/XMLSchema#gYear"),
+            g_year_id
+        );
     }
 
     // ---- String reverse index tests ----
@@ -1283,13 +1327,19 @@ mod tests {
                     std::cmp::Ordering::Less => lo = mid + 1,
                     std::cmp::Ordering::Greater => hi = mid,
                     std::cmp::Ordering::Equal => {
-                        let str_id = u32::from_le_bytes(record_data[off + 16..off + 20].try_into().unwrap());
+                        let str_id =
+                            u32::from_le_bytes(record_data[off + 16..off + 20].try_into().unwrap());
                         found = Some(str_id);
                         break;
                     }
                 }
             }
-            assert_eq!(found, Some(*expected_id), "failed to find {} in reverse index", expected_str);
+            assert_eq!(
+                found,
+                Some(*expected_id),
+                "failed to find {} in reverse index",
+                expected_str
+            );
         }
 
         let _ = std::fs::remove_dir_all(&dir);

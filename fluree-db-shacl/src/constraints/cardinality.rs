@@ -4,10 +4,7 @@ use super::{Constraint, ConstraintViolation};
 use fluree_db_core::FlakeValue;
 
 /// Validate sh:minCount constraint
-pub fn validate_min_count(
-    values: &[FlakeValue],
-    min: usize,
-) -> Option<ConstraintViolation> {
+pub fn validate_min_count(values: &[FlakeValue], min: usize) -> Option<ConstraintViolation> {
     if values.len() < min {
         Some(ConstraintViolation {
             constraint: Constraint::MinCount(min),
@@ -24,10 +21,7 @@ pub fn validate_min_count(
 }
 
 /// Validate sh:maxCount constraint
-pub fn validate_max_count(
-    values: &[FlakeValue],
-    max: usize,
-) -> Option<ConstraintViolation> {
+pub fn validate_max_count(values: &[FlakeValue], max: usize) -> Option<ConstraintViolation> {
     if values.len() > max {
         Some(ConstraintViolation {
             constraint: Constraint::MaxCount(max),

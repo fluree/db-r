@@ -31,9 +31,9 @@ impl<'a> Bm25Scorer<'a> {
         for term in query_terms {
             if let Some(entry) = index.get_term(term) {
                 // Only insert if not already present (first occurrence wins, though IDF is same)
-                term_map.entry(entry.idx).or_insert_with(|| {
-                    compute_idf(index.stats.num_docs, entry.doc_freq)
-                });
+                term_map
+                    .entry(entry.idx)
+                    .or_insert_with(|| compute_idf(index.stats.num_docs, entry.doc_freq));
             }
         }
 

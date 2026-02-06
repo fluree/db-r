@@ -21,8 +21,8 @@ use crate::seed::{EmptyOperator, SeedOperator};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::{StatsView, Storage};
-use std::sync::Arc;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 /// EXISTS operator - keeps rows where subquery has at least one match
 ///
@@ -69,10 +69,8 @@ impl<S: Storage + 'static> ExistsOperator<S> {
         // Detect correlation: if no vars in patterns intersect the input schema,
         // EXISTS/NOT EXISTS reduces to a global boolean (evaluate once).
         let input_vars: HashSet<VarId> = schema.iter().copied().collect();
-        let pattern_vars: HashSet<VarId> = exists_patterns
-            .iter()
-            .flat_map(|p| p.variables())
-            .collect();
+        let pattern_vars: HashSet<VarId> =
+            exists_patterns.iter().flat_map(|p| p.variables()).collect();
         let uncorrelated = pattern_vars.is_disjoint(&input_vars);
 
         Self {
@@ -88,7 +86,11 @@ impl<S: Storage + 'static> ExistsOperator<S> {
     }
 
     /// Create a NOT EXISTS operator (convenience constructor)
-    pub fn not_exists(child: BoxedOperator<S>, patterns: Vec<Pattern>, stats: Option<Arc<StatsView>>) -> Self {
+    pub fn not_exists(
+        child: BoxedOperator<S>,
+        patterns: Vec<Pattern>,
+        stats: Option<Arc<StatsView>>,
+    ) -> Self {
         Self::new(child, patterns, true, stats)
     }
 
@@ -106,7 +108,11 @@ impl<S: Storage + 'static> ExistsOperator<S> {
 
         // Seed with current row bindings (correlated subquery)
         let seed = SeedOperator::from_batch_row(input_batch, row_idx);
-        let mut exists_op = build_where_operators_seeded(Some(Box::new(seed)), &self.exists_patterns, self.stats.clone())?;
+        let mut exists_op = build_where_operators_seeded(
+            Some(Box::new(seed)),
+            &self.exists_patterns,
+            self.stats.clone(),
+        )?;
 
         exists_op.open(ctx).await?;
 
@@ -133,8 +139,13 @@ impl<S: Storage + 'static> Operator<S> for ExistsOperator<S> {
     async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
         if self.uncorrelated {
             // Evaluate once with an empty seed (fresh scope).
+            #[allow(clippy::box_default)]
             let seed: BoxedOperator<S> = Box::new(EmptyOperator::new());
-            let mut exists_op = build_where_operators_seeded(Some(seed), &self.exists_patterns, self.stats.clone())?;
+            let mut exists_op = build_where_operators_seeded(
+                Some(seed),
+                &self.exists_patterns,
+                self.stats.clone(),
+            )?;
             exists_op.open(ctx).await?;
             let has_result = loop {
                 match exists_op.next_batch(ctx).await? {
@@ -231,8 +242,9 @@ mod tests {
     #[test]
     fn test_exists_schema_preserved() {
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
-        let child: BoxedOperator<fluree_db_core::MemoryStorage> =
-            Box::new(TestEmptyWithSchema { schema: child_schema.clone() });
+        let child: BoxedOperator<fluree_db_core::MemoryStorage> = Box::new(TestEmptyWithSchema {
+            schema: child_schema.clone(),
+        });
 
         let op = ExistsOperator::new(child, vec![], false, None);
 
@@ -243,8 +255,9 @@ mod tests {
     #[test]
     fn test_not_exists_constructor() {
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
-        let child: BoxedOperator<fluree_db_core::MemoryStorage> =
-            Box::new(TestEmptyWithSchema { schema: child_schema });
+        let child: BoxedOperator<fluree_db_core::MemoryStorage> = Box::new(TestEmptyWithSchema {
+            schema: child_schema,
+        });
 
         let patterns = vec![Pattern::Triple(TriplePattern::new(
             Term::Var(VarId(0)),

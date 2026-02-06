@@ -84,9 +84,7 @@ impl Bm25IndexBuilder {
 
     /// Set the initial watermark for the ledger.
     pub fn with_watermark(mut self, t: i64) -> Self {
-        self.index
-            .watermark
-            .update(self.ledger_alias.as_ref(), t);
+        self.index.watermark.update(self.ledger_alias.as_ref(), t);
         self
     }
 
@@ -295,7 +293,10 @@ impl MultiBm25IndexBuilder {
             count += 1;
         }
 
-        *self.ledger_counts.entry(ledger_alias.to_string()).or_default() += count;
+        *self
+            .ledger_counts
+            .entry(ledger_alias.to_string())
+            .or_default() += count;
         Ok(count)
     }
 
@@ -395,7 +396,7 @@ impl<'a> IncrementalUpdater<'a> {
     ///
     /// * `results` - Query results for affected subjects (re-run of indexing query)
     /// * `affected_iris` - Set of subject IRIs that were affected by the commit.
-    ///                     Any IRI in this set that is NOT in results will be removed.
+    ///   Any IRI in this set that is NOT in results will be removed.
     /// * `new_t` - The new watermark (commit t) after this update
     ///
     /// # Returns
@@ -443,7 +444,9 @@ impl<'a> IncrementalUpdater<'a> {
         }
 
         // Update watermark
-        self.index.watermark.update(self.ledger_alias.as_ref(), new_t);
+        self.index
+            .watermark
+            .update(self.ledger_alias.as_ref(), new_t);
 
         result
     }
@@ -494,15 +497,15 @@ impl<'a> IncrementalUpdater<'a> {
 
         // Remove documents not in results
         for key in existing_keys {
-            if !seen_iris.contains(&key.subject_iri) {
-                if self.index.remove_document(&key) {
-                    result.removed += 1;
-                }
+            if !seen_iris.contains(&key.subject_iri) && self.index.remove_document(&key) {
+                result.removed += 1;
             }
         }
 
         // Update watermark
-        self.index.watermark.update(self.ledger_alias.as_ref(), new_t);
+        self.index
+            .watermark
+            .update(self.ledger_alias.as_ref(), new_t);
 
         result
     }
@@ -661,8 +664,8 @@ mod tests {
 
     #[test]
     fn test_builder_with_watermark() {
-        let builder = Bm25IndexBuilder::new("ledger:main", Bm25Config::default())
-            .with_watermark(42);
+        let builder =
+            Bm25IndexBuilder::new("ledger:main", Bm25Config::default()).with_watermark(42);
 
         let index = builder.build();
         assert_eq!(index.watermark.get("ledger:main"), Some(42));
@@ -674,12 +677,14 @@ mod tests {
         deps.add("http://schema.org/name");
         deps.add("http://schema.org/description");
 
-        let builder = Bm25IndexBuilder::new("ledger:main", Bm25Config::default())
-            .with_property_deps(deps);
+        let builder =
+            Bm25IndexBuilder::new("ledger:main", Bm25Config::default()).with_property_deps(deps);
 
         let index = builder.build();
         assert!(index.property_deps.contains("http://schema.org/name"));
-        assert!(index.property_deps.contains("http://schema.org/description"));
+        assert!(index
+            .property_deps
+            .contains("http://schema.org/description"));
     }
 
     #[test]
@@ -687,16 +692,20 @@ mod tests {
         let mut builder = Bm25IndexBuilder::new("ledger:main", Bm25Config::default());
 
         // First version
-        builder.add_result(&json!({
-            "@id": "http://example.org/doc1",
-            "title": "Original Title"
-        })).unwrap();
+        builder
+            .add_result(&json!({
+                "@id": "http://example.org/doc1",
+                "title": "Original Title"
+            }))
+            .unwrap();
 
         // Updated version (same ID)
-        builder.add_result(&json!({
-            "@id": "http://example.org/doc1",
-            "title": "Updated Title"
-        })).unwrap();
+        builder
+            .add_result(&json!({
+                "@id": "http://example.org/doc1",
+                "title": "Updated Title"
+            }))
+            .unwrap();
 
         // Should still be 1 document (upserted)
         let index = builder.build();
@@ -712,12 +721,14 @@ mod tests {
             json!({"@id": "http://example.org/doc2", "title": "Doc 2"}),
         ];
 
-        let ledger2_results = vec![
-            json!({"@id": "http://example.org/doc3", "title": "Doc 3"}),
-        ];
+        let ledger2_results = vec![json!({"@id": "http://example.org/doc3", "title": "Doc 3"})];
 
-        builder.add_ledger_results("ledger1:main", &ledger1_results).unwrap();
-        builder.add_ledger_results("ledger2:main", &ledger2_results).unwrap();
+        builder
+            .add_ledger_results("ledger1:main", &ledger1_results)
+            .unwrap();
+        builder
+            .add_ledger_results("ledger2:main", &ledger2_results)
+            .unwrap();
 
         assert_eq!(builder.ledger_count("ledger1:main"), 2);
         assert_eq!(builder.ledger_count("ledger2:main"), 1);
@@ -736,13 +747,19 @@ mod tests {
         let mut builder = MultiBm25IndexBuilder::new(Bm25Config::default());
 
         // Same IRI in different ledgers
-        builder.add_ledger_results("ledger1:main", &[
-            json!({"@id": "http://example.org/shared", "title": "Ledger 1 version"})
-        ]).unwrap();
+        builder
+            .add_ledger_results(
+                "ledger1:main",
+                &[json!({"@id": "http://example.org/shared", "title": "Ledger 1 version"})],
+            )
+            .unwrap();
 
-        builder.add_ledger_results("ledger2:main", &[
-            json!({"@id": "http://example.org/shared", "title": "Ledger 2 version"})
-        ]).unwrap();
+        builder
+            .add_ledger_results(
+                "ledger2:main",
+                &[json!({"@id": "http://example.org/shared", "title": "Ledger 2 version"})],
+            )
+            .unwrap();
 
         let index = builder.build();
 
@@ -773,13 +790,15 @@ mod tests {
     fn test_incremental_update_upsert() {
         // Build initial index
         // Note: Using non-stopword terms to ensure documents get indexed
-        let mut builder = Bm25IndexBuilder::new("ledger:main", Bm25Config::default())
-            .with_watermark(1);
+        let mut builder =
+            Bm25IndexBuilder::new("ledger:main", Bm25Config::default()).with_watermark(1);
 
-        builder.add_results(&[
-            json!({"@id": "http://example.org/doc1", "title": "Original Widget"}),
-            json!({"@id": "http://example.org/doc2", "title": "Database Server"}),
-        ]).unwrap();
+        builder
+            .add_results(&[
+                json!({"@id": "http://example.org/doc1", "title": "Original Widget"}),
+                json!({"@id": "http://example.org/doc2", "title": "Database Server"}),
+            ])
+            .unwrap();
 
         let mut index = builder.build();
         assert_eq!(index.num_docs(), 2);
@@ -788,7 +807,9 @@ mod tests {
         let affected_iris: HashSet<Arc<str>> = [
             Arc::from("http://example.org/doc1"),
             Arc::from("http://example.org/doc3"),
-        ].into_iter().collect();
+        ]
+        .into_iter()
+        .collect();
 
         let results = vec![
             json!({"@id": "http://example.org/doc1", "title": "Updated Widget"}),
@@ -816,22 +837,23 @@ mod tests {
     fn test_incremental_update_remove() {
         // Build initial index
         // Note: Using non-stopword terms like "widget", "server", "database"
-        let mut builder = Bm25IndexBuilder::new("ledger:main", Bm25Config::default())
-            .with_watermark(1);
+        let mut builder =
+            Bm25IndexBuilder::new("ledger:main", Bm25Config::default()).with_watermark(1);
 
-        builder.add_results(&[
-            json!({"@id": "http://example.org/doc1", "title": "Widget Alpha"}),
-            json!({"@id": "http://example.org/doc2", "title": "Server Beta"}),
-            json!({"@id": "http://example.org/doc3", "title": "Database Gamma"}),
-        ]).unwrap();
+        builder
+            .add_results(&[
+                json!({"@id": "http://example.org/doc1", "title": "Widget Alpha"}),
+                json!({"@id": "http://example.org/doc2", "title": "Server Beta"}),
+                json!({"@id": "http://example.org/doc3", "title": "Database Gamma"}),
+            ])
+            .unwrap();
 
         let mut index = builder.build();
         assert_eq!(index.num_docs(), 3);
 
         // Apply incremental update: doc2 was deleted (affected but not in results)
-        let affected_iris: HashSet<Arc<str>> = [
-            Arc::from("http://example.org/doc2"),
-        ].into_iter().collect();
+        let affected_iris: HashSet<Arc<str>> =
+            [Arc::from("http://example.org/doc2")].into_iter().collect();
 
         // Empty results for the affected subject = it was deleted
         let results: Vec<Value> = vec![];
@@ -854,8 +876,8 @@ mod tests {
     fn test_incremental_update_type_change() {
         // Build initial index (only indexes type=Article)
         // Note: Using non-stopword terms
-        let mut builder = Bm25IndexBuilder::new("ledger:main", Bm25Config::default())
-            .with_watermark(1);
+        let mut builder =
+            Bm25IndexBuilder::new("ledger:main", Bm25Config::default()).with_watermark(1);
 
         builder.add_results(&[
             json!({"@id": "http://example.org/doc1", "@type": "Article", "title": "Widget Alpha"}),
@@ -867,9 +889,8 @@ mod tests {
 
         // doc1's type changed from Article to something else (no longer matches query)
         // The query results won't include doc1 anymore
-        let affected_iris: HashSet<Arc<str>> = [
-            Arc::from("http://example.org/doc1"),
-        ].into_iter().collect();
+        let affected_iris: HashSet<Arc<str>> =
+            [Arc::from("http://example.org/doc1")].into_iter().collect();
 
         // doc1 not in results = removed from index
         let results: Vec<Value> = vec![];
@@ -887,13 +908,15 @@ mod tests {
     fn test_incremental_update_mixed_operations() {
         // Build initial index
         // Note: Using non-stopword terms
-        let mut builder = Bm25IndexBuilder::new("ledger:main", Bm25Config::default())
-            .with_watermark(1);
+        let mut builder =
+            Bm25IndexBuilder::new("ledger:main", Bm25Config::default()).with_watermark(1);
 
-        builder.add_results(&[
-            json!({"@id": "http://example.org/doc1", "title": "Widget Alpha"}),
-            json!({"@id": "http://example.org/doc2", "title": "Server Beta"}),
-        ]).unwrap();
+        builder
+            .add_results(&[
+                json!({"@id": "http://example.org/doc1", "title": "Widget Alpha"}),
+                json!({"@id": "http://example.org/doc2", "title": "Server Beta"}),
+            ])
+            .unwrap();
 
         let mut index = builder.build();
 
@@ -902,7 +925,9 @@ mod tests {
             Arc::from("http://example.org/doc1"),
             Arc::from("http://example.org/doc2"),
             Arc::from("http://example.org/doc3"),
-        ].into_iter().collect();
+        ]
+        .into_iter()
+        .collect();
 
         let results = vec![
             json!({"@id": "http://example.org/doc1", "title": "Updated Widget"}),
@@ -914,7 +939,7 @@ mod tests {
         let result = updater.apply_update(&results, &affected_iris, 2);
 
         assert_eq!(result.upserted, 2); // doc1 updated, doc3 added
-        assert_eq!(result.removed, 1);  // doc2 deleted
+        assert_eq!(result.removed, 1); // doc2 deleted
 
         assert_eq!(index.num_docs(), 2);
         assert!(index.contains_doc(&DocKey::new("ledger:main", "http://example.org/doc1")));
@@ -926,19 +951,18 @@ mod tests {
     fn test_incremental_update_ignores_unaffected() {
         // Build initial index
         // Note: Using non-stopword terms
-        let mut builder = Bm25IndexBuilder::new("ledger:main", Bm25Config::default())
-            .with_watermark(1);
+        let mut builder =
+            Bm25IndexBuilder::new("ledger:main", Bm25Config::default()).with_watermark(1);
 
-        builder.add_results(&[
-            json!({"@id": "http://example.org/doc1", "title": "Widget Alpha"}),
-        ]).unwrap();
+        builder
+            .add_results(&[json!({"@id": "http://example.org/doc1", "title": "Widget Alpha"})])
+            .unwrap();
 
         let mut index = builder.build();
 
         // Only doc2 is affected, but results include doc1 and doc2
-        let affected_iris: HashSet<Arc<str>> = [
-            Arc::from("http://example.org/doc2"),
-        ].into_iter().collect();
+        let affected_iris: HashSet<Arc<str>> =
+            [Arc::from("http://example.org/doc2")].into_iter().collect();
 
         let results = vec![
             json!({"@id": "http://example.org/doc1", "title": "Widget Alpha Unchanged"}),
@@ -957,14 +981,16 @@ mod tests {
     fn test_full_sync() {
         // Build initial index
         // Note: Using non-stopword terms
-        let mut builder = Bm25IndexBuilder::new("ledger:main", Bm25Config::default())
-            .with_watermark(1);
+        let mut builder =
+            Bm25IndexBuilder::new("ledger:main", Bm25Config::default()).with_watermark(1);
 
-        builder.add_results(&[
-            json!({"@id": "http://example.org/doc1", "title": "Widget Alpha"}),
-            json!({"@id": "http://example.org/doc2", "title": "Server Beta"}),
-            json!({"@id": "http://example.org/doc3", "title": "Database Gamma"}),
-        ]).unwrap();
+        builder
+            .add_results(&[
+                json!({"@id": "http://example.org/doc1", "title": "Widget Alpha"}),
+                json!({"@id": "http://example.org/doc2", "title": "Server Beta"}),
+                json!({"@id": "http://example.org/doc3", "title": "Database Gamma"}),
+            ])
+            .unwrap();
 
         let mut index = builder.build();
         assert_eq!(index.num_docs(), 3);
@@ -979,8 +1005,8 @@ mod tests {
         let mut updater = IncrementalUpdater::new("ledger:main", &mut index);
         let result = updater.apply_full_sync(&results, 10);
 
-        assert_eq!(result.upserted, 2);   // doc1 updated, doc4 added
-        assert_eq!(result.removed, 2);    // doc2 and doc3 removed
+        assert_eq!(result.upserted, 2); // doc1 updated, doc4 added
+        assert_eq!(result.removed, 2); // doc2 and doc3 removed
         assert_eq!(result.new_watermark, 10);
 
         assert_eq!(index.num_docs(), 2);
@@ -1000,21 +1026,25 @@ mod tests {
             .with_watermark("ledger1:main", 1)
             .with_watermark("ledger2:main", 1);
 
-        builder.add_ledger_results("ledger1:main", &[
-            json!({"@id": "http://example.org/doc1", "title": "Widget Alpha"}),
-        ]).unwrap();
+        builder
+            .add_ledger_results(
+                "ledger1:main",
+                &[json!({"@id": "http://example.org/doc1", "title": "Widget Alpha"})],
+            )
+            .unwrap();
 
-        builder.add_ledger_results("ledger2:main", &[
-            json!({"@id": "http://example.org/doc2", "title": "Server Beta"}),
-        ]).unwrap();
+        builder
+            .add_ledger_results(
+                "ledger2:main",
+                &[json!({"@id": "http://example.org/doc2", "title": "Server Beta"})],
+            )
+            .unwrap();
 
         let mut index = builder.build();
         assert_eq!(index.num_docs(), 2);
 
         // Full sync only ledger1
-        let results = vec![
-            json!({"@id": "http://example.org/doc3", "title": "Database Gamma"}),
-        ];
+        let results = vec![json!({"@id": "http://example.org/doc3", "title": "Database Gamma"})];
 
         let mut updater = IncrementalUpdater::new("ledger1:main", &mut index);
         updater.apply_full_sync(&results, 5);

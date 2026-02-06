@@ -47,6 +47,12 @@ mod inner {
         }
     }
 
+    impl Default for ImportState {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     /// Result of importing a single TTL chunk.
     pub struct ImportCommitResult {
         /// Storage address of the committed blob.
@@ -107,7 +113,8 @@ mod inner {
         // 2. Retrieve writer, get namespace delta, build envelope
         let (writer, op_count, envelope) = {
             let _span = tracing::info_span!("import_build_envelope", t = new_t).entered();
-            let writer = sink.finish()
+            let writer = sink
+                .finish()
                 .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
             let op_count = writer.op_count();
             let ns_delta = state.ns_registry.take_delta();
@@ -124,16 +131,16 @@ mod inner {
             state.cumulative_flakes += op_count as u64;
 
             let envelope = CommitV2Envelope {
-            t: new_t,
-            v: 2,
-            previous_ref: state.previous_ref.clone(),
-            namespace_delta: ns_delta,
-            txn: None,
-            time: Some(state.import_time.clone()),
-            data: None, // DB stats not maintained during import
-            index: None,
-            txn_signature: None,
-        };
+                t: new_t,
+                v: 2,
+                previous_ref: state.previous_ref.clone(),
+                namespace_delta: ns_delta,
+                txn: None,
+                time: Some(state.import_time.clone()),
+                data: None, // DB stats not maintained during import
+                index: None,
+                txn_signature: None,
+            };
 
             (writer, op_count, envelope)
         };
@@ -170,8 +177,7 @@ mod inner {
         // 8. Advance state
         state.t = new_t;
         state.previous_ref = Some(
-            CommitRef::new(&write_res.address)
-                .with_id(format!("fluree:commit:{}", commit_id)),
+            CommitRef::new(&write_res.address).with_id(format!("fluree:commit:{}", commit_id)),
         );
 
         Ok(ImportCommitResult {
@@ -219,12 +225,7 @@ mod inner {
     ) -> Result<ParsedChunk> {
         let txn_id = format!("{}-{}", ledger_alias, t);
 
-        let _parse_span = tracing::info_span!(
-            "parse_chunk",
-            t,
-            ttl_bytes = ttl.len(),
-        )
-        .entered();
+        let _parse_span = tracing::info_span!("parse_chunk", t, ttl_bytes = ttl.len(),).entered();
 
         let mut sink = ImportSink::new(&mut ns_registry, t, txn_id, compress)
             .map_err(|e| TransactError::Parse(format!("failed to create import sink: {}", e)))?;
@@ -309,8 +310,7 @@ mod inner {
 
         state.t = new_t;
         state.previous_ref = Some(
-            CommitRef::new(&write_res.address)
-                .with_id(format!("fluree:commit:{}", commit_id)),
+            CommitRef::new(&write_res.address).with_id(format!("fluree:commit:{}", commit_id)),
         );
 
         Ok(ImportCommitResult {

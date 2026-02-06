@@ -10,7 +10,7 @@
 use async_trait::async_trait;
 use fluree_db_query::bm25::{Bm25SearchProvider, Bm25SearchResult};
 use fluree_db_query::error::{QueryError, Result};
-use fluree_search_protocol::{ErrorCode, QueryVariant, SearchError, SearchRequest, SearchResponse};
+use fluree_search_protocol::{ErrorCode, SearchError, SearchRequest, SearchResponse};
 use reqwest::Client;
 use std::fmt;
 use std::time::Duration;
@@ -59,10 +59,8 @@ impl RemoteBm25SearchProvider {
             QueryError::InvalidQuery("Remote search config missing 'endpoint'".to_string())
         })?;
 
-        let connect_timeout =
-            Duration::from_millis(config.connect_timeout_ms.unwrap_or(5_000));
-        let request_timeout =
-            Duration::from_millis(config.request_timeout_ms.unwrap_or(30_000));
+        let connect_timeout = Duration::from_millis(config.connect_timeout_ms.unwrap_or(5_000));
+        let request_timeout = Duration::from_millis(config.request_timeout_ms.unwrap_or(30_000));
 
         let client = Client::builder()
             .connect_timeout(connect_timeout)
@@ -142,19 +140,15 @@ impl Bm25SearchProvider for RemoteBm25SearchProvider {
         }
 
         // Send request
-        let response = http_request
-            .timeout(timeout)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    QueryError::Internal(format!("Search request timeout: {}", e))
-                } else if e.is_connect() {
-                    QueryError::Internal(format!("Failed to connect to search service: {}", e))
-                } else {
-                    QueryError::Internal(format!("Search request failed: {}", e))
-                }
-            })?;
+        let response = http_request.timeout(timeout).send().await.map_err(|e| {
+            if e.is_timeout() {
+                QueryError::Internal(format!("Search request timeout: {}", e))
+            } else if e.is_connect() {
+                QueryError::Internal(format!("Failed to connect to search service: {}", e))
+            } else {
+                QueryError::Internal(format!("Search request failed: {}", e))
+            }
+        })?;
 
         // Check for HTTP errors
         let status = response.status();
@@ -165,7 +159,9 @@ impl Bm25SearchProvider for RemoteBm25SearchProvider {
                 let code = search_error.error.code;
                 let msg = search_error.error.message;
                 return Err(match code {
-                    ErrorCode::VgNotFound | ErrorCode::IndexNotBuilt | ErrorCode::NoSnapshotForAsOfT => {
+                    ErrorCode::VgNotFound
+                    | ErrorCode::IndexNotBuilt
+                    | ErrorCode::NoSnapshotForAsOfT => {
                         QueryError::InvalidQuery(format!("{}: {}", code, msg))
                     }
                     ErrorCode::InvalidRequest => QueryError::InvalidQuery(msg),
@@ -179,9 +175,10 @@ impl Bm25SearchProvider for RemoteBm25SearchProvider {
         }
 
         // Parse response
-        let search_response: SearchResponse = response.json().await.map_err(|e| {
-            QueryError::Internal(format!("Failed to parse search response: {}", e))
-        })?;
+        let search_response: SearchResponse = response
+            .json()
+            .await
+            .map_err(|e| QueryError::Internal(format!("Failed to parse search response: {}", e)))?;
 
         Ok(Bm25SearchResult::new(
             search_response.index_t,
@@ -231,8 +228,8 @@ mod tests {
 
     #[test]
     fn test_debug_hides_token() {
-        let provider = RemoteBm25SearchProvider::new("http://localhost:9090")
-            .with_auth_token("secret-token");
+        let provider =
+            RemoteBm25SearchProvider::new("http://localhost:9090").with_auth_token("secret-token");
 
         let debug_output = format!("{:?}", provider);
         assert!(debug_output.contains("has_auth_token: true"));

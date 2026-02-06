@@ -139,7 +139,9 @@ impl ConfigGraph {
             .filter(|node| {
                 node.get("@type")
                     .and_then(|t| match t {
-                        JsonValue::Array(arr) => Some(arr.iter().any(|v| v.as_str() == Some(type_iri))),
+                        JsonValue::Array(arr) => {
+                            Some(arr.iter().any(|v| v.as_str() == Some(type_iri)))
+                        }
                         JsonValue::String(s) => Some(s.as_str() == type_iri),
                         _ => None,
                     })
@@ -147,7 +149,6 @@ impl ConfigGraph {
             })
             .collect()
     }
-
 }
 
 /// Test helper methods for ConfigGraph
@@ -216,10 +217,7 @@ mod tests {
 
         let resolved = graph.resolve_first(storage_ref);
         assert!(resolved.is_some());
-        assert!(resolved
-            .unwrap()
-            .get("https://example.org/path")
-            .is_some());
+        assert!(resolved.unwrap().get("https://example.org/path").is_some());
     }
 
     #[test]
@@ -262,7 +260,9 @@ mod tests {
 
     #[test]
     fn test_is_ref() {
-        assert!(ConfigGraph::is_ref(&json!({"@id": "https://example.org/x"})));
+        assert!(ConfigGraph::is_ref(
+            &json!({"@id": "https://example.org/x"})
+        ));
         assert!(!ConfigGraph::is_ref(
             &json!({"@id": "x", "@type": ["Storage"]})
         ));

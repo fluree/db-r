@@ -35,9 +35,7 @@ pub struct SparqlQueryRequest {
     pub ledger: String,
 
     /// The SPARQL query to execute
-    #[schemars(
-        description = "The SPARQL query to execute. Must be a valid SPARQL SELECT query."
-    )]
+    #[schemars(description = "The SPARQL query to execute. Must be a valid SPARQL SELECT query.")]
     pub query: String,
 }
 
@@ -45,7 +43,9 @@ pub struct SparqlQueryRequest {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct GetDataModelRequest {
     /// The ledger alias to get the data model for
-    #[schemars(description = "The ledger alias to get the data model for (e.g., 'mydb' or 'mydb:main')")]
+    #[schemars(
+        description = "The ledger alias to get the data model for (e.g., 'mydb' or 'mydb:main')"
+    )]
     pub ledger: String,
 }
 

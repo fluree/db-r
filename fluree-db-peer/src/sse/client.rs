@@ -10,9 +10,7 @@ use tokio::sync::mpsc;
 
 use crate::config::PeerConfig;
 use crate::error::SseError;
-use crate::sse::events::{
-    LedgerRecord, NsRecordEvent, NsRetractedEvent, SseClientEvent, VgRecord,
-};
+use crate::sse::events::{LedgerRecord, NsRecordEvent, NsRetractedEvent, SseClientEvent, VgRecord};
 use fluree_sse::SseParser;
 
 /// SSE client that handles connection, reconnect, and event parsing
@@ -30,7 +28,10 @@ impl SseClient {
             .build()
             .expect("Failed to create HTTP client");
 
-        Self { config, http_client }
+        Self {
+            config,
+            http_client,
+        }
     }
 
     /// Start the SSE client, returning a channel of events

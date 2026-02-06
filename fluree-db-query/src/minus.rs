@@ -50,7 +50,11 @@ impl<S: Storage + 'static> MinusOperator<S> {
     /// * `child` - Input solutions operator
     /// * `minus_patterns` - Patterns to execute for anti-join matching
     /// * `stats` - Optional stats for nested query optimization (Arc for cheap cloning)
-    pub fn new(child: BoxedOperator<S>, minus_patterns: Vec<Pattern>, stats: Option<Arc<StatsView>>) -> Self {
+    pub fn new(
+        child: BoxedOperator<S>,
+        minus_patterns: Vec<Pattern>,
+        stats: Option<Arc<StatsView>>,
+    ) -> Self {
         let schema: Arc<[VarId]> = Arc::from(child.schema().to_vec().into_boxed_slice());
         let child_vars: HashSet<VarId> = child.schema().iter().copied().collect();
 
@@ -59,10 +63,7 @@ impl<S: Storage + 'static> MinusOperator<S> {
         collect_vars_from_patterns(&minus_patterns, &mut minus_vars);
 
         // Shared vars are the intersection
-        let shared_vars: Vec<VarId> = child_vars
-            .intersection(&minus_vars)
-            .copied()
-            .collect();
+        let shared_vars: Vec<VarId> = child_vars.intersection(&minus_vars).copied().collect();
 
         Self {
             child,
@@ -75,7 +76,13 @@ impl<S: Storage + 'static> MinusOperator<S> {
     }
 
     /// Check if an input row matches a MINUS result row on shared variables
-    fn rows_match(&self, input_batch: &Batch, input_row_idx: usize, minus_batch: &Batch, minus_row_idx: usize) -> bool {
+    fn rows_match(
+        &self,
+        input_batch: &Batch,
+        input_row_idx: usize,
+        minus_batch: &Batch,
+        minus_row_idx: usize,
+    ) -> bool {
         self.shared_vars.iter().all(|&var| {
             let input_binding = input_batch.column(var).map(|col| &col[input_row_idx]);
             let minus_binding = minus_batch.column(var).map(|col| &col[minus_row_idx]);
@@ -127,10 +134,16 @@ impl<S: Storage + 'static> Operator<S> for MinusOperator<S> {
             // For each input row, check if it should be kept
             let mut keep_rows: Vec<bool> = vec![true; input_batch.len()];
 
+            #[allow(clippy::needless_range_loop)]
             for row_idx in 0..input_batch.len() {
                 // Execute MINUS patterns with empty seed (fresh scope)
+                #[allow(clippy::box_default)]
                 let seed: BoxedOperator<S> = Box::new(EmptyOperator::new());
-                let mut minus_op = build_where_operators_seeded(Some(seed), &self.minus_patterns, self.stats.clone())?;
+                let mut minus_op = build_where_operators_seeded(
+                    Some(seed),
+                    &self.minus_patterns,
+                    self.stats.clone(),
+                )?;
 
                 minus_op.open(ctx).await?;
 
@@ -172,9 +185,9 @@ impl<S: Storage + 'static> Operator<S> for MinusOperator<S> {
 
             for (row_idx, keep) in keep_rows.iter().enumerate() {
                 if *keep {
-                    for (col_idx, var) in self.schema.iter().enumerate() {
-                        if let Some(col) = input_batch.column(*var) {
-                            columns[col_idx].push(col[row_idx].clone());
+                    for (col, var) in columns.iter_mut().zip(self.schema.iter()) {
+                        if let Some(input_col) = input_batch.column(*var) {
+                            col.push(input_col[row_idx].clone());
                         }
                     }
                 }
@@ -214,12 +227,13 @@ mod tests {
     fn test_shared_vars_computation() {
         // Create a child with schema [?s, ?name]
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
-        let child: BoxedOperator<fluree_db_core::MemoryStorage> =
-            Box::new(TestEmptyWithSchema { schema: child_schema });
+        let child: BoxedOperator<fluree_db_core::MemoryStorage> = Box::new(TestEmptyWithSchema {
+            schema: child_schema,
+        });
 
         // MINUS pattern references ?s and ?age
         let minus_patterns = vec![Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),  // ?s - shared
+            Term::Var(VarId(0)), // ?s - shared
             Term::Sid(Sid::new(100, "age")),
             Term::Var(VarId(2)), // ?age - not shared
         ))];
@@ -234,8 +248,9 @@ mod tests {
     #[test]
     fn test_minus_schema_preserved() {
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
-        let child: BoxedOperator<fluree_db_core::MemoryStorage> =
-            Box::new(TestEmptyWithSchema { schema: child_schema.clone() });
+        let child: BoxedOperator<fluree_db_core::MemoryStorage> = Box::new(TestEmptyWithSchema {
+            schema: child_schema.clone(),
+        });
 
         let op = MinusOperator::new(child, vec![], None);
 

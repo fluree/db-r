@@ -8,11 +8,11 @@ use serde_json::Value as JsonValue;
 use crate::error::BuilderErrors;
 use crate::graph::Graph;
 use crate::graph_query_builder::GraphSnapshotQueryBuilder;
-use crate::tx_builder::{TransactCore, TransactOperation, Staged, commit_with_handle};
+use crate::tx_builder::{commit_with_handle, Staged, TransactCore, TransactOperation};
 use crate::view::FlureeView;
 use crate::{
-    ApiError, Fluree, NameService, PolicyContext, Result, Storage,
-    Tracker, TrackedErrorResponse, TrackingOptions, TransactResultRef,
+    ApiError, Fluree, NameService, PolicyContext, Result, Storage, TrackedErrorResponse,
+    TrackedTransactionInput, Tracker, TrackingOptions, TransactResultRef,
 };
 use fluree_db_core::ContentAddressedWrite;
 use fluree_db_ledger::IndexConfig;
@@ -86,13 +86,15 @@ where
 
     /// Set the operation to insert Turtle data.
     pub fn insert_turtle(mut self, turtle: &'g str) -> Self {
-        self.core.set_operation(TransactOperation::InsertTurtle(turtle));
+        self.core
+            .set_operation(TransactOperation::InsertTurtle(turtle));
         self
     }
 
     /// Set the operation to upsert Turtle data.
     pub fn upsert_turtle(mut self, turtle: &'g str) -> Self {
-        self.core.set_operation(TransactOperation::UpsertTurtle(turtle));
+        self.core
+            .set_operation(TransactOperation::UpsertTurtle(turtle));
         self
     }
 
@@ -172,7 +174,7 @@ where
     /// let preview = staged.query().jsonld(&q).execute().await?;
     /// ```
     pub async fn stage(self) -> Result<StagedGraph<'a, S, N>> {
-        self.core.validate().map_err(|e| ApiError::Builder(e))?;
+        self.core.validate().map_err(ApiError::Builder)?;
 
         let op = self.core.operation.unwrap();
         let txn_type = op.txn_type();
@@ -184,28 +186,27 @@ where
 
         // Stage
         let stage_result = if let Some(policy) = &self.core.policy {
-            let tracker = Tracker::new(
-                self.core.tracking.unwrap_or_else(|| TrackingOptions {
-                    track_time: true,
-                    track_fuel: true,
-                    track_policy: true,
-                    max_fuel: None,
-                }),
-            );
-            self.graph.fluree
+            let tracker = Tracker::new(self.core.tracking.unwrap_or(TrackingOptions {
+                track_time: true,
+                track_fuel: true,
+                track_policy: true,
+                max_fuel: None,
+            }));
+            let input =
+                TrackedTransactionInput::new(txn_type, &txn_json_cow, self.core.txn_opts, policy);
+            self.graph
+                .fluree
                 .stage_transaction_tracked_with_policy(
                     ledger_state,
-                    txn_type,
-                    &txn_json_cow,
-                    self.core.txn_opts,
+                    input,
                     Some(&index_config),
-                    policy,
                     &tracker,
                 )
                 .await
                 .map_err(|e: TrackedErrorResponse| ApiError::http(e.status, e.error))?
         } else {
-            self.graph.fluree
+            self.graph
+                .fluree
                 .stage_transaction(
                     ledger_state,
                     txn_type,

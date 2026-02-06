@@ -23,6 +23,14 @@ use std::sync::Arc;
 
 use super::{LowerError, LoweringContext, Result};
 
+/// Result of lowering SELECT expression binds.
+pub(super) struct SelectBinds {
+    /// BIND patterns to apply before grouping/aggregation
+    pub pre: Vec<Pattern>,
+    /// Post-aggregation binds (var, expr) to apply after GROUP BY
+    pub post: Vec<(VarId, FilterExpr)>,
+}
+
 impl<'a, E: IriEncoder> LoweringContext<'a, E> {
     /// Lower SELECT clause to a list of VarIds.
     pub(super) fn lower_select_clause(&mut self, clause: &SelectClause) -> Result<Vec<VarId>> {
@@ -51,10 +59,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         }
     }
 
-    pub(super) fn collect_aggregate_alias_names(
-        &self,
-        clause: &SelectClause,
-    ) -> HashSet<Arc<str>> {
+    pub(super) fn collect_aggregate_alias_names(&self, clause: &SelectClause) -> HashSet<Arc<str>> {
         let mut names = HashSet::new();
         if let SelectVariables::Explicit(vars) = &clause.variables {
             for var in vars {
@@ -73,7 +78,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         &mut self,
         clause: &SelectClause,
         aggregate_aliases: &HashSet<Arc<str>>,
-    ) -> Result<(Vec<Pattern>, Vec<(VarId, FilterExpr)>)> {
+    ) -> Result<SelectBinds> {
         let mut pre_binds = Vec::new();
         let mut post_binds = Vec::new();
 
@@ -97,7 +102,10 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             }
         }
 
-        Ok((pre_binds, post_binds))
+        Ok(SelectBinds {
+            pre: pre_binds,
+            post: post_binds,
+        })
     }
 
     /// Lower solution modifiers (DISTINCT, LIMIT, OFFSET, ORDER BY, GROUP BY, HAVING)
@@ -106,10 +114,10 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         modifiers: &SolutionModifiers,
         select: &SelectClause,
     ) -> Result<QueryOptions> {
-        let mut options = QueryOptions::default();
-
-        // DISTINCT from SelectClause modifier
-        options.distinct = select.modifier == Some(SelectModifier::Distinct);
+        let mut options = QueryOptions {
+            distinct: select.modifier == Some(SelectModifier::Distinct),
+            ..Default::default()
+        };
 
         // LIMIT, OFFSET, ORDER BY
         self.lower_base_modifiers(modifiers, &mut options)?;

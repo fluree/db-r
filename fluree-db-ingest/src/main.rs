@@ -2,8 +2,8 @@ use clap::Parser;
 use mimalloc::MiMalloc;
 use std::path::PathBuf;
 use std::time::Instant;
-use tracing::{error, info};
 use tracing::Instrument;
+use tracing::{error, info};
 
 use fluree_db_api::{FlureeBuilder, IndexConfig};
 
@@ -11,13 +11,16 @@ use fluree_db_api::{FlureeBuilder, IndexConfig};
 static GLOBAL: MiMalloc = MiMalloc;
 
 fn alias_prefix(alias: &str) -> String {
-    fluree_db_core::address_path::alias_to_path_prefix(alias).unwrap_or_else(|_| alias.replace(':', "/"))
+    fluree_db_core::address_path::alias_to_path_prefix(alias)
+        .unwrap_or_else(|_| alias.replace(':', "/"))
 }
 
 fn default_run_dir(args: &Args) -> PathBuf {
-    args.run_dir
-        .clone()
-        .unwrap_or_else(|| args.db_dir.join(alias_prefix(&args.ledger)).join("tmp_import"))
+    args.run_dir.clone().unwrap_or_else(|| {
+        args.db_dir
+            .join(alias_prefix(&args.ledger))
+            .join("tmp_import")
+    })
 }
 
 fn default_index_dir(args: &Args) -> PathBuf {
@@ -67,8 +70,7 @@ static OTEL_PROVIDER: std::sync::OnceLock<opentelemetry_sdk::trace::SdkTracerPro
     std::sync::OnceLock::new();
 
 #[cfg(feature = "otel")]
-fn init_otel_layer(
-) -> impl tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync {
+fn init_otel_layer() -> impl tracing_subscriber::Layer<tracing_subscriber::Registry> + Send + Sync {
     use opentelemetry::{global, KeyValue};
     use opentelemetry_otlp::WithExportConfig;
     use opentelemetry_sdk::runtime;
@@ -92,7 +94,7 @@ fn init_otel_layer(
             .with_endpoint(endpoint)
             .build()
             .expect("failed to build OTLP HTTP span exporter"),
-        "grpc" | _ => opentelemetry_otlp::SpanExporter::builder()
+        _ => opentelemetry_otlp::SpanExporter::builder()
             .with_tonic()
             .with_endpoint(endpoint)
             .build()
@@ -154,10 +156,10 @@ fn discover_chunks(dir: &std::path::Path) -> Result<Vec<PathBuf>, std::io::Error
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| {
-            p.extension().map_or(false, |ext| ext == "ttl")
+            p.extension().is_some_and(|ext| ext == "ttl")
                 && p.file_name()
                     .and_then(|n| n.to_str())
-                    .map_or(false, |n| n.starts_with("chunk_"))
+                    .is_some_and(|n| n.starts_with("chunk_"))
         })
         .collect();
     chunks.sort();
@@ -273,10 +275,7 @@ async fn run_build_index(args: &Args) -> Result<(), Box<dyn std::error::Error>> 
     );
 
     let results = build_all_indexes(
-        &run_dir,
-        &index_dir,
-        orders,
-        25000, // leaflet_rows
+        &run_dir, &index_dir, orders, 25000, // leaflet_rows
         10,    // leaflets_per_leaf
         1,     // zstd_level
     )?;
@@ -304,19 +303,18 @@ async fn run_build_index(args: &Args) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-
 fn run_query(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     use fluree_db_indexer::run_index::BinaryIndexStore;
 
     let run_dir = default_run_dir(args);
     let index_dir = default_index_dir(args);
 
-    info!("Loading BinaryIndexStore from {:?} + {:?}", run_dir, index_dir);
-    let store = BinaryIndexStore::load(&run_dir, &index_dir)?;
     info!(
-        "Index loaded: graph(s) {:?}",
-        store.graph_ids(),
+        "Loading BinaryIndexStore from {:?} + {:?}",
+        run_dir, index_dir
     );
+    let store = BinaryIndexStore::load(&run_dir, &index_dir)?;
+    info!("Index loaded: graph(s) {:?}", store.graph_ids(),);
 
     if let Some(ref iri) = args.query_subject {
         info!("Querying subject by IRI: {}", iri);
@@ -330,7 +328,10 @@ fn run_query(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
                     // Try txn-meta graph
                     let txn_flakes = store.query_subject_flakes(1, id)?;
                     if !txn_flakes.is_empty() {
-                        info!("{} flakes found in txn-meta graph (g_id=1):", txn_flakes.len());
+                        info!(
+                            "{} flakes found in txn-meta graph (g_id=1):",
+                            txn_flakes.len()
+                        );
                         for f in &txn_flakes {
                             print_flake(f, &store);
                         }
@@ -412,7 +413,11 @@ fn print_flake(f: &fluree_db_core::Flake, store: &fluree_db_indexer::run_index::
             if let Some(i) = m.i {
                 parts.push(format!("[{}]", i));
             }
-            if parts.is_empty() { String::new() } else { parts.join(" ") }
+            if parts.is_empty() {
+                String::new()
+            } else {
+                parts.join(" ")
+            }
         }
         None => String::new(),
     };
@@ -424,7 +429,10 @@ fn print_flake(f: &fluree_db_core::Flake, store: &fluree_db_indexer::run_index::
 }
 
 fn format_sid(sid: &fluree_db_core::Sid, ns: &std::collections::HashMap<u16, String>) -> String {
-    let prefix = ns.get(&sid.namespace_code).map(|s| s.as_str()).unwrap_or("");
+    let prefix = ns
+        .get(&sid.namespace_code)
+        .map(|s| s.as_str())
+        .unwrap_or("");
     format!("{}{}", prefix, sid.name)
 }
 
@@ -455,7 +463,11 @@ async fn run_sparql(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let elapsed = start.elapsed();
 
     let total_rows: usize = result.batches.iter().map(|b| b.len()).sum();
-    info!("Query: {} rows in {:.3}s", total_rows, elapsed.as_secs_f64());
+    info!(
+        "Query: {} rows in {:.3}s",
+        total_rows,
+        elapsed.as_secs_f64()
+    );
 
     // Log dict tree I/O stats
     if let Some(store) = view.binary_store() {
@@ -541,7 +553,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         println!("<pre-index-stats.json is not valid UTF-8>");
                     }
-                } else if let Ok(graphs) = fluree_db_api::ledger_info::parse_pre_index_manifest(&bytes) {
+                } else if let Ok(graphs) =
+                    fluree_db_api::ledger_info::parse_pre_index_manifest(&bytes)
+                {
                     let prop_count: usize = graphs.iter().map(|g| g.properties.len()).sum();
                     info!(
                         manifest_addr = %manifest_addr,
@@ -627,8 +641,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         std::fs::create_dir_all(&args.db_dir)?;
         let fluree = FlureeBuilder::file(args.db_dir.to_string_lossy()).build()?;
-        let mut builder = fluree.create(&args.ledger)
-            .import(chunks_dir);
+        let mut builder = fluree.create(&args.ledger).import(chunks_dir);
 
         if args.parse_threads > 0 {
             builder = builder.threads(args.parse_threads);
@@ -638,7 +651,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .compress(!args.no_compress)
             .publish_every(args.publish_every);
 
-        let result = builder.execute().await
+        let result = builder
+            .execute()
+            .await
             .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
 
         total_flakes = result.flake_count;
@@ -687,10 +702,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ---- Standard staging pipeline ----
-    let chunks_dir = args
-        .chunks_dir
-        .as_ref()
-        .ok_or("--chunks-dir is required")?;
+    let chunks_dir = args.chunks_dir.as_ref().ok_or("--chunks-dir is required")?;
     let chunks = discover_chunks(chunks_dir)?;
 
     if chunks.is_empty() {
@@ -700,10 +712,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let total = chunks.len();
-    info!(
-        "Found {} chunks in {:?}",
-        total, chunks_dir
-    );
+    info!("Found {} chunks in {:?}", total, chunks_dir);
 
     // Build Fluree connection with file-backed storage
     std::fs::create_dir_all(&args.db_dir)?;
@@ -752,7 +761,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Index thresholds: soft={} MB, hard={} MB{}",
         index_config.reindex_min_bytes / (1024 * 1024),
         index_config.reindex_max_bytes / (1024 * 1024),
-        if args.enable_indexing { " (indexing enabled)" } else { "" },
+        if args.enable_indexing {
+            " (indexing enabled)"
+        } else {
+            ""
+        },
     );
 
     let mut current_ledger = ledger;

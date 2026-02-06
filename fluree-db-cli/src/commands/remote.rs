@@ -92,10 +92,7 @@ async fn run_list(store: &TomlSyncConfigStore) -> CliResult<()> {
 
     if remotes.is_empty() {
         println!("No remotes configured.");
-        println!(
-            "  {} fluree remote add <name> <url>",
-            "hint:".cyan().bold()
-        );
+        println!("  {} fluree remote add <name> <url>", "hint:".cyan().bold());
         return Ok(());
     }
 

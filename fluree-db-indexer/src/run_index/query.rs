@@ -9,12 +9,12 @@ use super::global_dict::PredicateDict;
 use super::leaf::read_leaf_header;
 use super::leaflet::decode_leaflet;
 use super::run_record::RunSortOrder;
+use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::ListIndex;
-use fluree_db_core::value_id::{ObjKind, ObjKey};
+use serde_json;
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
-use serde_json;
 
 // ============================================================================
 // FactRow: human-readable query result
@@ -173,7 +173,12 @@ impl SpotQuery {
             for dir_entry in &header.leaflet_dir {
                 let leaflet_data = &leaf_data[dir_entry.offset as usize
                     ..dir_entry.offset as usize + dir_entry.compressed_len as usize];
-                let decoded = decode_leaflet(leaflet_data, header.p_width, header.dt_width, RunSortOrder::Spot)?;
+                let decoded = decode_leaflet(
+                    leaflet_data,
+                    header.p_width,
+                    header.dt_width,
+                    RunSortOrder::Spot,
+                )?;
 
                 for row in 0..decoded.row_count {
                     if decoded.s_ids[row] == s_id {
@@ -254,7 +259,11 @@ impl SpotQuery {
             ObjKind::MIN => "MIN".to_string(),
             ObjKind::NULL => "null".to_string(),
             ObjKind::BOOL => {
-                if o_key == 0 { "false".to_string() } else { "true".to_string() }
+                if o_key == 0 {
+                    "false".to_string()
+                } else {
+                    "true".to_string()
+                }
             }
             ObjKind::NUM_INT => {
                 format!("{}", key.decode_i64())
@@ -304,7 +313,11 @@ impl SpotQuery {
         if idx >= self.subject_offsets.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("s_id {} out of range (max {})", s_id, self.subject_offsets.len()),
+                format!(
+                    "s_id {} out of range (max {})",
+                    s_id,
+                    self.subject_offsets.len()
+                ),
             ));
         }
 

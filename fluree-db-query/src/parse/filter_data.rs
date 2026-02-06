@@ -101,9 +101,9 @@ pub fn parse_filter_array(arr: &[JsonValue]) -> Result<UnresolvedFilterExpr> {
     }
 
     // First element must be the operator/function name
-    let op_name = arr[0].as_str().ok_or_else(|| {
-        ParseError::InvalidFilter("filter operator must be a string".to_string())
-    })?;
+    let op_name = arr[0]
+        .as_str()
+        .ok_or_else(|| ParseError::InvalidFilter("filter operator must be a string".to_string()))?;
 
     let op_lower = op_name.to_lowercase();
     let args = &arr[1..];
@@ -263,7 +263,9 @@ mod tests {
         let json_val = json!(["in", "?status", ["active", "pending"]]);
         let expr = parse_filter_expr(&json_val).unwrap();
         match expr {
-            UnresolvedFilterExpr::In { negated, values, .. } => {
+            UnresolvedFilterExpr::In {
+                negated, values, ..
+            } => {
                 assert!(!negated);
                 assert_eq!(values.len(), 2);
             }

@@ -100,8 +100,12 @@ fn parse_ns_retracted(data: &str) -> Result<Option<RemoteEvent>, ServerSseParseE
     let payload: NsRetractedEnvelope = serde_json::from_str(data)?;
 
     match payload.kind.as_str() {
-        "ledger" => Ok(Some(RemoteEvent::LedgerRetracted { alias: payload.alias })),
-        "virtual-graph" => Ok(Some(RemoteEvent::VgRetracted { alias: payload.alias })),
+        "ledger" => Ok(Some(RemoteEvent::LedgerRetracted {
+            alias: payload.alias,
+        })),
+        "virtual-graph" => Ok(Some(RemoteEvent::VgRetracted {
+            alias: payload.alias,
+        })),
         _ => Ok(None),
     }
 }
@@ -264,4 +268,3 @@ mod tests {
         assert!(parse_server_sse_event(&event).unwrap().is_none());
     }
 }
-

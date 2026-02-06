@@ -4,20 +4,40 @@
 //! It is generic over storage and cache implementations.
 
 use crate::error::{Error, Result};
+use crate::index_schema::IndexSchema;
+use crate::index_stats::IndexStats;
+use crate::namespaces::default_namespace_codes;
 use crate::range_provider::RangeProvider;
 use crate::schema_hierarchy::SchemaHierarchy;
-use crate::index_stats::IndexStats;
-use crate::index_schema::IndexSchema;
 use crate::serde::json::{
-    raw_schema_to_index_schema, raw_stats_to_index_stats,
-    RawDbRootSchema, RawDbRootStats,
+    raw_schema_to_index_schema, raw_stats_to_index_stats, RawDbRootSchema, RawDbRootStats,
 };
 use crate::sid::Sid;
 use crate::storage::Storage;
-use crate::namespaces::default_namespace_codes;
 use once_cell::sync::OnceCell;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Metadata for creating a database from its index root.
+///
+/// Bundles all the metadata fields extracted from a v2 BinaryIndexRootV2
+/// for constructing a metadata-only `Db`.
+pub struct DbMetadata {
+    /// Ledger alias (e.g., "mydb/main")
+    pub alias: String,
+    /// Current transaction time
+    pub t: i64,
+    /// Namespace code -> IRI prefix mapping
+    pub namespace_codes: HashMap<u16, String>,
+    /// Index statistics (flakes count, total size)
+    pub stats: Option<IndexStats>,
+    /// Schema (class/property hierarchy)
+    pub schema: Option<IndexSchema>,
+    /// Per-namespace max local_id watermarks from the index root
+    pub subject_watermarks: Vec<u64>,
+    /// Max assigned string_id from the index root
+    pub string_watermark: u32,
+}
 
 /// Database value at a specific point in time
 ///
@@ -87,7 +107,10 @@ impl<S: std::fmt::Debug> std::fmt::Debug for Db<S> {
             .field("alias", &self.alias)
             .field("t", &self.t)
             .field("version", &self.version)
-            .field("range_provider", &self.range_provider.as_ref().map(|_| "..."))
+            .field(
+                "range_provider",
+                &self.range_provider.as_ref().map(|_| "..."),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -121,26 +144,17 @@ impl<S: Storage> Db<S> {
     /// The Db carries namespace codes, stats, and schema for callers
     /// that need ledger metadata, while all actual range queries go
     /// through `BinaryIndexStore` / `BinaryScanOperator`.
-    pub fn new_meta(
-        alias: String,
-        t: i64,
-        namespace_codes: HashMap<u16, String>,
-        stats: Option<IndexStats>,
-        schema: Option<IndexSchema>,
-        subject_watermarks: Vec<u64>,
-        string_watermark: u32,
-        storage: S,
-    ) -> Self {
+    pub fn new_meta(meta: DbMetadata, storage: S) -> Self {
         Self {
-            alias,
-            t,
+            alias: meta.alias,
+            t: meta.t,
             version: 2,
-            namespace_codes,
-            stats,
-            schema,
+            namespace_codes: meta.namespace_codes,
+            stats: meta.stats,
+            schema: meta.schema,
             schema_hierarchy_cache: OnceCell::new(),
-            subject_watermarks,
-            string_watermark,
+            subject_watermarks: meta.subject_watermarks,
+            string_watermark: meta.string_watermark,
             range_provider: None,
             storage,
         }
@@ -212,7 +226,16 @@ impl<S: Storage> Db<S> {
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as u32;
 
-        Ok(Self::new_meta(alias, t, namespace_codes, stats, schema, subject_watermarks, string_watermark, storage))
+        let meta = DbMetadata {
+            alias,
+            t,
+            namespace_codes,
+            stats,
+            schema,
+            subject_watermarks,
+            string_watermark,
+        };
+        Ok(Self::new_meta(meta, storage))
     }
 
     /// Attach a range provider for binary index queries.

@@ -4,7 +4,9 @@ use crate::{
     ApiError, Fluree, HistoricalLedgerView, LedgerState, NameService, Result, Storage,
     TypeErasedStore,
 };
-use fluree_db_indexer::run_index::{BinaryIndexRootV2, BinaryIndexStore, BINARY_INDEX_ROOT_VERSION_V2};
+use fluree_db_indexer::run_index::{
+    BinaryIndexRootV2, BinaryIndexStore, BINARY_INDEX_ROOT_VERSION_V2,
+};
 use fluree_db_nameservice::{NameServiceError, Publisher};
 use fluree_db_query::BinaryRangeProvider;
 
@@ -189,7 +191,11 @@ where
                     "Ambiguous SHA prefix: {}. Multiple commits match: {:?}{}",
                     sha_normalized,
                     commit_ids,
-                    if matching_commits.len() > 5 { " ..." } else { "" }
+                    if matching_commits.len() > 5 {
+                        " ..."
+                    } else {
+                        ""
+                    }
                 )))
             }
         }
@@ -200,12 +206,8 @@ where
     /// This loads the ledger state using the connection-wide cache.
     /// The ledger state combines the indexed database with any uncommitted novelty transactions.
     pub async fn ledger(&self, alias: &str) -> Result<LedgerState<S>> {
-        let mut state = LedgerState::load(
-            &self.nameservice,
-            alias,
-            self.connection.storage().clone(),
-        )
-        .await?;
+        let mut state =
+            LedgerState::load(&self.nameservice, alias, self.connection.storage().clone()).await?;
 
         // If nameservice has an index address, require that the binary index root is
         // readable and loadable. This ensures `fluree.ledger()` always returns a
@@ -221,15 +223,12 @@ where
         {
             if state.db.range_provider.is_none() || state.binary_store.is_none() {
                 let storage = self.connection.storage();
-                let bytes = storage
-                    .read_bytes(&index_addr)
-                    .await
-                    .map_err(|e| {
-                        ApiError::internal(format!(
-                            "failed to read binary index root at {}: {}",
-                            index_addr, e
-                        ))
-                    })?;
+                let bytes = storage.read_bytes(&index_addr).await.map_err(|e| {
+                    ApiError::internal(format!(
+                        "failed to read binary index root at {}: {}",
+                        index_addr, e
+                    ))
+                })?;
 
                 let root = serde_json::from_slice::<BinaryIndexRootV2>(&bytes).map_err(|e| {
                     ApiError::internal(format!(
@@ -245,15 +244,14 @@ where
                 }
 
                 let cache_dir = std::env::temp_dir().join("fluree-cache");
-                let store =
-                    BinaryIndexStore::load_from_root_default(storage, &root, &cache_dir)
-                        .await
-                        .map_err(|e| {
-                            ApiError::internal(format!(
-                                "failed to load binary index store from {}: {}",
-                                index_addr, e
-                            ))
-                        })?;
+                let store = BinaryIndexStore::load_from_root_default(storage, &root, &cache_dir)
+                    .await
+                    .map_err(|e| {
+                        ApiError::internal(format!(
+                            "failed to load binary index store from {}: {}",
+                            index_addr, e
+                        ))
+                    })?;
 
                 let arc_store = Arc::new(store);
                 if state.db.range_provider.is_none() {

@@ -10,8 +10,8 @@ use chrono::Utc;
 use fluree_db_core::{ContentAddressedWrite, ContentKind, DictNovelty, Flake, FlakeValue, Storage};
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, Publisher};
-use fluree_db_novelty::{Commit, CommitData, CommitRef, SigningKey, TxnSignature};
 use fluree_db_novelty::generate_commit_flakes;
+use fluree_db_novelty::{Commit, CommitData, CommitRef, SigningKey, TxnSignature};
 use std::sync::Arc;
 
 /// Receipt returned after a successful commit
@@ -52,7 +52,10 @@ impl std::fmt::Debug for CommitOpts {
             .field("author", &self.author)
             .field("raw_txn", &self.raw_txn.is_some())
             .field("signing_key", &self.signing_key.is_some())
-            .field("txn_signature", &self.txn_signature.as_ref().map(|s| &s.signer))
+            .field(
+                "txn_signature",
+                &self.txn_signature.as_ref().map(|s| &s.signer),
+            )
             .finish()
     }
 }
@@ -198,6 +201,10 @@ where
     }
 
     // Generate ISO 8601 timestamp
+    // TODO: Refactor to accept an optional timestamp via CommitOpts instead of calling
+    // Utc::now() directly. This would enable deterministic commit hashes for testing
+    // (see fluree-db-api/tests/it_stable_hashes.rs) and allow callers to provide
+    // externally-sourced timestamps when needed.
     let timestamp = Utc::now().to_rfc3339();
 
     // Store original transaction JSON if provided (Clojure parity)
@@ -249,15 +256,21 @@ where
     // Build cumulative DB metadata
     // Get current stats if available, otherwise use defaults
     let (cumulative_flakes, cumulative_size) = if let Some(stats) = &base.db.stats {
-        (stats.flakes + flake_count as u64, stats.size + delta_bytes as u64)
+        (
+            stats.flakes + flake_count as u64,
+            stats.size + delta_bytes as u64,
+        )
     } else {
         // No indexed stats yet - use novelty as baseline
         let novelty_flakes = base.novelty.len() as u64;
-        (novelty_flakes + flake_count as u64, (base.novelty_size() + delta_bytes) as u64)
+        (
+            novelty_flakes + flake_count as u64,
+            (base.novelty_size() + delta_bytes) as u64,
+        )
     };
 
     let commit_data = CommitData {
-        id: None, // Will be set after content-addressing
+        id: None,      // Will be set after content-addressing
         address: None, // DB address not tracked separately in Rust yet
         flakes: cumulative_flakes,
         size: cumulative_size,
@@ -275,9 +288,10 @@ where
     let (commit_id, commit_hash_hex, bytes) = {
         let span = tracing::info_span!("commit_write_commit_blob");
         let _g = span.enter();
-        let signing = opts.signing_key.as_ref().map(|key| {
-            (key.as_ref(), base.alias())
-        });
+        let signing = opts
+            .signing_key
+            .as_ref()
+            .map(|key| (key.as_ref(), base.alias()));
         let result = crate::commit_v2::write_commit(&commit_record, true, signing)?;
         let commit_id = format!("sha256:{}", &result.content_hash_hex);
         (commit_id, result.content_hash_hex, result.bytes)
@@ -478,7 +492,9 @@ mod tests {
         ));
 
         let ns_registry = NamespaceRegistry::from_db(&ledger.db);
-        let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default()).await.unwrap();
+        let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default())
+            .await
+            .unwrap();
 
         // Commit
         let config = IndexConfig::default();
@@ -512,7 +528,9 @@ mod tests {
         // Stage an empty transaction (no inserts)
         let txn = Txn::insert();
         let ns_registry = NamespaceRegistry::from_db(&ledger.db);
-        let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default()).await.unwrap();
+        let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default())
+            .await
+            .unwrap();
 
         // Commit should fail
         let config = IndexConfig::default();
@@ -547,7 +565,9 @@ mod tests {
         ));
 
         let ns_registry = NamespaceRegistry::from_db(&ledger.db);
-        let (view1, ns_registry1) = stage(ledger, txn1, ns_registry, StageOptions::default()).await.unwrap();
+        let (view1, ns_registry1) = stage(ledger, txn1, ns_registry, StageOptions::default())
+            .await
+            .unwrap();
         let (receipt1, state1) = commit(
             view1,
             ns_registry1,
@@ -569,7 +589,9 @@ mod tests {
         ));
 
         let ns_registry2 = NamespaceRegistry::from_db(&state1.db);
-        let (view2, ns_registry2) = stage(state1, txn2, ns_registry2, StageOptions::default()).await.unwrap();
+        let (view2, ns_registry2) = stage(state1, txn2, ns_registry2, StageOptions::default())
+            .await
+            .unwrap();
         let (receipt2, state2) = commit(
             view2,
             ns_registry2,
@@ -585,7 +607,10 @@ mod tests {
         assert_eq!(state2.t(), 2);
         // Novelty includes transaction flakes + commit metadata flakes
         // 2 txn flakes + 8 metadata (commit 1, no previous) + 9 metadata (commit 2, has previous) = 19
-        assert!(state2.novelty.len() >= 2, "novelty should include at least 2 transaction flakes");
+        assert!(
+            state2.novelty.len() >= 2,
+            "novelty should include at least 2 transaction flakes"
+        );
     }
 
     #[tokio::test]
@@ -606,7 +631,9 @@ mod tests {
         ));
 
         let ns_registry = NamespaceRegistry::from_db(&ledger.db);
-        let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default()).await.unwrap();
+        let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default())
+            .await
+            .unwrap();
 
         // Use a very small max to trigger predictive sizing error
         let config = IndexConfig {

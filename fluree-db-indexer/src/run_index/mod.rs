@@ -10,7 +10,7 @@
 //! - [`global_dict`]: Global dictionaries (subject, predicate, string value)
 //! - [`run_writer`]: Memory-bounded buffer + flush to sorted run files
 //! - [`run_file`]: Run file binary format (header + lang dict + records)
-//! - [`resolver`]: CommitResolver (RawOp → RunRecord)
+//! - [`resolver`][]: CommitResolver (RawOp → RunRecord)
 
 pub mod global_dict;
 pub mod resolver;
@@ -18,52 +18,55 @@ pub mod run_file;
 pub mod run_record;
 pub mod run_writer;
 
-pub mod streaming_reader;
-pub mod lang_remap;
-pub mod merge;
-pub mod dict_io;
-pub mod numfloat_dict;
-pub mod numbig_dict;
-pub mod prefix_trie;
-pub mod types;
-pub mod binary_index_store;
-pub mod spot_cursor;
 pub mod binary_cursor;
+pub mod binary_index_store;
+pub mod branch;
+pub mod dict_io;
+pub mod index_build;
+pub mod index_root;
+pub mod lang_remap;
+pub mod leaf;
 pub mod leaflet;
 pub mod leaflet_cache;
-pub mod leaf;
-pub mod branch;
-pub mod index_build;
+pub mod merge;
 pub mod novelty_merge;
-pub mod replay;
+pub mod numbig_dict;
+pub mod numfloat_dict;
+pub mod prefix_trie;
 pub mod query;
-pub mod index_root;
+pub mod replay;
+pub mod spot_cursor;
+pub mod streaming_reader;
+pub mod types;
 
-pub use global_dict::{GlobalDicts, LanguageTagDict, PredicateDict, StringValueDict, SubjectDict};
-pub use resolver::{CommitResolver, ResolverError};
-pub use run_file::{RunFileInfo, write_run_file, read_run_file};
-pub use run_record::{RunRecord, RunSortOrder, cmp_spot, cmp_for_order};
-pub use run_writer::{RunWriter, RunWriterConfig, RunWriterResult, RecordSink, MultiOrderRunWriter, MultiOrderConfig};
-pub use streaming_reader::StreamingRunReader;
-pub use lang_remap::build_lang_remap;
-pub use merge::KWayMerge;
-pub use index_build::{IndexBuildConfig, IndexBuildResult, build_spot_index, build_index, build_all_indexes, precompute_language_dict};
-pub use query::SpotQuery;
-pub use binary_index_store::BinaryIndexStore;
-pub use spot_cursor::SpotCursor;
-pub use types::{OverlayOp, sort_overlay_ops};
 pub use binary_cursor::{BinaryCursor, BinaryFilter, DecodedBatch};
-pub use prefix_trie::PrefixTrie;
-pub use leaflet_cache::{LeafletCache, LeafletCacheKey, CachedRegion1, CachedRegion2};
-pub use novelty_merge::{merge_novelty, MergeInput, MergeOutput};
-pub use replay::{replay_leaflet, ReplayedLeaflet};
+pub use binary_index_store::BinaryIndexStore;
+pub use global_dict::{GlobalDicts, LanguageTagDict, PredicateDict, StringValueDict, SubjectDict};
+pub use index_build::{
+    build_all_indexes, build_index, build_spot_index, precompute_language_dict, IndexBuildConfig,
+    IndexBuildResult,
+};
 pub use index_root::{
-    BinaryIndexRootV2, GraphEntryV2,
-    GraphOrderAddresses, GraphAddresses,
-    DictAddresses, DictTreeAddresses,
-    BinaryPrevIndexRef, BinaryGarbageRef,
+    BinaryGarbageRef, BinaryIndexRootV2, BinaryPrevIndexRef, CasArtifactsConfig, DictAddresses,
+    DictTreeAddresses, GraphAddresses, GraphEntryV2, GraphOrderAddresses,
     BINARY_INDEX_ROOT_VERSION_V2,
 };
+pub use lang_remap::build_lang_remap;
+pub use leaflet_cache::{CachedRegion1, CachedRegion2, LeafletCache, LeafletCacheKey};
+pub use merge::KWayMerge;
+pub use novelty_merge::{merge_novelty, MergeInput, MergeOutput};
+pub use prefix_trie::PrefixTrie;
+pub use query::SpotQuery;
+pub use replay::{replay_leaflet, ReplayedLeaflet};
+pub use resolver::{CommitResolver, ResolverError};
+pub use run_file::{read_run_file, write_run_file, RunFileInfo};
+pub use run_record::{cmp_for_order, cmp_spot, RunRecord, RunSortOrder};
+pub use run_writer::{
+    MultiOrderConfig, MultiOrderRunWriter, RecordSink, RunWriter, RunWriterConfig, RunWriterResult,
+};
+pub use spot_cursor::SpotCursor;
+pub use streaming_reader::StreamingRunReader;
+pub use types::{sort_overlay_ops, OverlayOp};
 
 use fluree_db_core::StorageRead;
 use fluree_db_novelty::commit_v2::{read_commit_envelope, CommitV2Error};
@@ -145,26 +148,24 @@ impl std::error::Error for RunGenError {}
 /// ```json
 /// [{"code": 0, "prefix": ""}, {"code": 3, "prefix": "http://..."}]
 /// ```
-pub fn persist_namespaces(
-    ns_prefixes: &HashMap<u16, String>,
-    run_dir: &Path,
-) -> io::Result<()> {
+pub fn persist_namespaces(ns_prefixes: &HashMap<u16, String>, run_dir: &Path) -> io::Result<()> {
     let mut entries: Vec<_> = ns_prefixes.iter().collect();
     entries.sort_by_key(|(&code, _)| code);
 
     let json_array: Vec<serde_json::Value> = entries
         .into_iter()
-        .map(|(&code, prefix)| {
-            serde_json::json!({ "code": code, "prefix": prefix })
-        })
+        .map(|(&code, prefix)| serde_json::json!({ "code": code, "prefix": prefix }))
         .collect();
 
-    let json_str = serde_json::to_string_pretty(&json_array)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let json_str = serde_json::to_string_pretty(&json_array).map_err(io::Error::other)?;
 
     let path = run_dir.join("namespaces.json");
     std::fs::write(&path, json_str)?;
-    tracing::info!(?path, entries = ns_prefixes.len(), "namespace map persisted");
+    tracing::info!(
+        ?path,
+        entries = ns_prefixes.len(),
+        "namespace map persisted"
+    );
     Ok(())
 }
 
@@ -249,10 +250,14 @@ pub async fn generate_runs<S: StorageRead>(
     persist_namespaces(resolver.ns_prefixes(), &run_dir)?;
 
     // Persist subject reverse hash index for O(log N) IRI → s_id lookup
-    dicts.subjects.write_reverse_index(&run_dir.join("subjects.rev"))?;
+    dicts
+        .subjects
+        .write_reverse_index(&run_dir.join("subjects.rev"))?;
 
     // Persist string reverse hash index for O(log N) string → str_id lookup
-    dicts.strings.write_reverse_index(&run_dir.join("strings.rev"))?;
+    dicts
+        .strings
+        .write_reverse_index(&run_dir.join("strings.rev"))?;
 
     let result = RunGenerationResult {
         run_files: writer_result.run_files,

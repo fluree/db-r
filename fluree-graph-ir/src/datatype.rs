@@ -11,21 +11,13 @@ use std::sync::Arc;
 
 /// Common XSD and RDF datatype IRIs (re-exported from vocab crate)
 pub mod iri {
-    pub use fluree_vocab::xsd::{
-        STRING as XSD_STRING,
-        BOOLEAN as XSD_BOOLEAN,
-        INTEGER as XSD_INTEGER,
-        LONG as XSD_LONG,
-        DOUBLE as XSD_DOUBLE,
-        DECIMAL as XSD_DECIMAL,
-        DATE as XSD_DATE,
-        DATE_TIME as XSD_DATE_TIME,
-        ANY_URI as XSD_ANY_URI,
-    };
     pub use fluree_vocab::rdf::{
-        LANG_STRING as RDF_LANG_STRING,
-        JSON as RDF_JSON,
-        TYPE as RDF_TYPE,
+        JSON as RDF_JSON, LANG_STRING as RDF_LANG_STRING, TYPE as RDF_TYPE,
+    };
+    pub use fluree_vocab::xsd::{
+        ANY_URI as XSD_ANY_URI, BOOLEAN as XSD_BOOLEAN, DATE as XSD_DATE,
+        DATE_TIME as XSD_DATE_TIME, DECIMAL as XSD_DECIMAL, DOUBLE as XSD_DOUBLE,
+        INTEGER as XSD_INTEGER, LONG as XSD_LONG, STRING as XSD_STRING,
     };
 }
 

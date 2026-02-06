@@ -4,8 +4,8 @@
 //! from the database. This is needed for f:onClass policy enforcement.
 
 use fluree_db_core::{
-    range_with_overlay, Db, FlakeValue, OverlayProvider, RangeMatch, RangeOptions,
-    RangeTest, Sid, Storage,
+    range_with_overlay, Db, FlakeValue, OverlayProvider, RangeMatch, RangeOptions, RangeTest, Sid,
+    Storage,
 };
 use fluree_vocab::namespaces::RDF;
 use fluree_vocab::predicates::RDF_TYPE;

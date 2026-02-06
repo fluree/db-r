@@ -14,6 +14,7 @@
 //! }
 //! ```
 
+use crate::reasoning::ReasoningOverlay;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::flake::Flake;
 use fluree_db_core::overlay::OverlayProvider;
@@ -25,7 +26,6 @@ use fluree_db_reasoner::{
     BindingValue, Bindings, CompareOp, DatalogRule, DatalogRuleSet, DerivedFactsBuilder,
     FrozenSameAs, RuleFilter, RuleTerm, RuleTriplePattern, RuleValue,
 };
-use crate::reasoning::ReasoningOverlay;
 use fluree_vocab::namespaces::FLUREE_LEDGER;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -90,16 +90,14 @@ pub async fn extract_datalog_rules<S: Storage>(
         // The rule value should be a JSON string
         if let FlakeValue::Json(json_str) = &flake.o {
             match serde_json::from_str::<JsonValue>(json_str) {
-                Ok(rule_json) => {
-                    match parse_rule_definition(&rule_id, &rule_json, db) {
-                        Ok(rule) => {
-                            rule_set.add_rule(rule);
-                        }
-                        Err(e) => {
-                            tracing::warn!(?rule_id, %e, "Failed to parse datalog rule definition");
-                        }
+                Ok(rule_json) => match parse_rule_definition(&rule_id, &rule_json, db) {
+                    Ok(rule) => {
+                        rule_set.add_rule(rule);
                     }
-                }
+                    Err(e) => {
+                        tracing::warn!(?rule_id, %e, "Failed to parse datalog rule definition");
+                    }
+                },
                 Err(e) => {
                     tracing::warn!(?rule_id, %e, "Failed to parse datalog rule JSON");
                 }
@@ -121,7 +119,10 @@ fn parse_query_time_rule<S: Storage>(
     index: usize,
 ) -> Result<DatalogRule> {
     // Check if this is a stored rule format with f:rule wrapper
-    if let Some(f_rule) = json.get("f:rule").or_else(|| json.get("https://ns.flur.ee/ledger#rule")) {
+    if let Some(f_rule) = json
+        .get("f:rule")
+        .or_else(|| json.get("https://ns.flur.ee/ledger#rule"))
+    {
         // Extract the actual rule from the @value wrapper
         let rule_value = if let Some(value) = f_rule.get("@value") {
             value
@@ -133,7 +134,7 @@ fn parse_query_time_rule<S: Storage>(
         let rule_id = if let Some(id_str) = json.get("@id").and_then(|v| v.as_str()) {
             Sid::new(0, id_str)
         } else {
-            Sid::new(0, &format!("_:query_rule_{}", index))
+            Sid::new(0, format!("_:query_rule_{}", index))
         };
 
         return parse_rule_definition(&rule_id, rule_value, db);
@@ -141,7 +142,7 @@ fn parse_query_time_rule<S: Storage>(
 
     // Direct rule format
     // Generate a synthetic rule ID
-    let rule_id = Sid::new(0, &format!("_:query_rule_{}", index));
+    let rule_id = Sid::new(0, format!("_:query_rule_{}", index));
     parse_rule_definition(&rule_id, json, db)
 }
 
@@ -355,7 +356,8 @@ fn parse_node_pattern<S: Storage>(
         match value {
             JsonValue::Array(arr) => {
                 for item in arr {
-                    let obj = parse_object_value(item, context, db, patterns, &subject, &predicate_sid)?;
+                    let obj =
+                        parse_object_value(item, context, db, patterns, &subject, &predicate_sid)?;
                     patterns.push(RuleTriplePattern {
                         subject: subject.clone(),
                         predicate: RuleTerm::Sid(predicate_sid.clone()),
@@ -385,7 +387,8 @@ fn parse_node_pattern<S: Storage>(
                     // Create a new map with the nested subject as @id
                     let mut nested_with_id = nested.clone();
                     if let RuleTerm::Var(var) = &nested_subject {
-                        nested_with_id.insert("@id".to_string(), JsonValue::String(var.to_string()));
+                        nested_with_id
+                            .insert("@id".to_string(), JsonValue::String(var.to_string()));
                     }
                     parse_node_pattern(&nested_with_id, context, db, patterns)?;
                 }
@@ -435,11 +438,7 @@ fn parse_object_value<S: Storage>(
 }
 
 /// Parse a JSON value into a RuleTerm
-fn parse_term<S: Storage>(
-    value: &JsonValue,
-    context: &JsonValue,
-    db: &Db<S>,
-) -> Result<RuleTerm> {
+fn parse_term<S: Storage>(value: &JsonValue, context: &JsonValue, db: &Db<S>) -> Result<RuleTerm> {
     match value {
         JsonValue::String(s) => {
             if s.starts_with('?') {
@@ -560,7 +559,14 @@ pub async fn execute_rule_matching<S: Storage>(
 
         let mut new_bindings = Vec::new();
         for existing_bindings in &binding_rows {
-            let extended = match_pattern(pattern, db, overlay, to_t, &[existing_bindings.clone()]).await?;
+            let extended = match_pattern(
+                pattern,
+                db,
+                overlay,
+                to_t,
+                std::slice::from_ref(existing_bindings),
+            )
+            .await?;
             new_bindings.extend(extended);
         }
         binding_rows = new_bindings;
@@ -569,7 +575,9 @@ pub async fn execute_rule_matching<S: Storage>(
     // Apply filters to eliminate non-matching bindings
     if !rule.filters.is_empty() {
         binding_rows.retain(|bindings| {
-            rule.filters.iter().all(|filter| evaluate_filter(filter, bindings))
+            rule.filters
+                .iter()
+                .all(|filter| evaluate_filter(filter, bindings))
         });
     }
 
@@ -597,15 +605,13 @@ fn evaluate_filter(filter: &RuleFilter, bindings: &Bindings) -> bool {
 /// Resolve a filter term to a comparable value
 fn resolve_filter_term(term: &RuleTerm, bindings: &Bindings) -> Option<FilterValue> {
     match term {
-        RuleTerm::Var(name) => {
-            bindings.get(name.as_ref()).map(|bv| match bv {
-                BindingValue::Long(n) => FilterValue::Long(*n),
-                BindingValue::Double(d) => FilterValue::Double(*d),
-                BindingValue::String(s) => FilterValue::String(s.clone()),
-                BindingValue::Boolean(b) => FilterValue::Boolean(*b),
-                BindingValue::Sid(sid) => FilterValue::String(sid.name.to_string()),
-            })
-        }
+        RuleTerm::Var(name) => bindings.get(name.as_ref()).map(|bv| match bv {
+            BindingValue::Long(n) => FilterValue::Long(*n),
+            BindingValue::Double(d) => FilterValue::Double(*d),
+            BindingValue::String(s) => FilterValue::String(s.clone()),
+            BindingValue::Boolean(b) => FilterValue::Boolean(*b),
+            BindingValue::Sid(sid) => FilterValue::String(sid.name.to_string()),
+        }),
         RuleTerm::Value(val) => Some(match val {
             RuleValue::Long(n) => FilterValue::Long(*n),
             RuleValue::Double(d) => FilterValue::Double(*d),
@@ -689,13 +695,15 @@ async fn match_pattern<S: Storage>(
     // If we have existing bindings, extend each one
     if !existing_bindings.is_empty() {
         for bindings in existing_bindings {
-            let extended = match_pattern_with_bindings(pattern, db, overlay, to_t, bindings).await?;
+            let extended =
+                match_pattern_with_bindings(pattern, db, overlay, to_t, bindings).await?;
             results.extend(extended);
         }
     } else {
         // No existing bindings - match freely
         let empty_bindings = Bindings::new();
-        let extended = match_pattern_with_bindings(pattern, db, overlay, to_t, &empty_bindings).await?;
+        let extended =
+            match_pattern_with_bindings(pattern, db, overlay, to_t, &empty_bindings).await?;
         results.extend(extended);
     }
 
@@ -728,23 +736,30 @@ async fn match_pattern_with_bindings<S: Storage>(
     };
 
     // Query the index
-    let flakes: Vec<Flake> = range_with_overlay(db, overlay, index_type, RangeTest::Eq, range_match, opts)
-        .await
-        .map_err(|e| QueryError::Internal(format!("Pattern matching failed: {}", e)))?
-        .into_iter()
-        .filter(|f| {
-            if !f.op { return false; } // Only active assertions
-            // Post-filter: range provider may return a superset; ensure
-            // subject and predicate actually match the requested pattern.
-            if let Some(ref s) = subject_sid {
-                if &f.s != s { return false; }
-            }
-            if let Some(ref p) = predicate_sid {
-                if &f.p != p { return false; }
-            }
-            true
-        })
-        .collect();
+    let flakes: Vec<Flake> =
+        range_with_overlay(db, overlay, index_type, RangeTest::Eq, range_match, opts)
+            .await
+            .map_err(|e| QueryError::Internal(format!("Pattern matching failed: {}", e)))?
+            .into_iter()
+            .filter(|f| {
+                if !f.op {
+                    return false;
+                } // Only active assertions
+                  // Post-filter: range provider may return a superset; ensure
+                  // subject and predicate actually match the requested pattern.
+                if let Some(ref s) = subject_sid {
+                    if &f.s != s {
+                        return false;
+                    }
+                }
+                if let Some(ref p) = predicate_sid {
+                    if &f.p != p {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect();
 
     // Build binding rows from results
     let mut results = Vec::new();
@@ -953,11 +968,7 @@ fn choose_index_and_match(
 }
 
 /// Try to bind a variable, or check if it matches an existing binding
-fn try_bind_or_check(
-    bindings: &mut Bindings,
-    var: Arc<str>,
-    value: BindingValue,
-) -> Result<bool> {
+fn try_bind_or_check(bindings: &mut Bindings, var: Arc<str>, value: BindingValue) -> Result<bool> {
     if let Some(existing) = bindings.get(var.as_ref()) {
         // Variable already bound - check if values match
         Ok(bindings_equal(existing, &value))
@@ -1042,11 +1053,7 @@ pub async fn execute_datalog_rules_with_query_rules<S: Storage>(
                 rule_set.add_rule(rule);
             }
             Err(e) => {
-                tracing::warn!(
-                    "Failed to parse query-time rule {}: {}",
-                    idx,
-                    e
-                );
+                tracing::warn!("Failed to parse query-time rule {}: {}", idx, e);
             }
         }
     }
@@ -1065,8 +1072,16 @@ pub async fn execute_datalog_rules_with_query_rules<S: Storage>(
     //
     // IMPORTANT: `m` (metadata) carries JSON-LD language tags and list indices,
     // so flakes are not truly equal unless `m` is also equal.
-    let mut all_derived: HashMap<(Sid, Sid, String, Sid, Option<fluree_db_core::flake::FlakeMeta>), Flake> =
-        HashMap::new();
+    let mut all_derived: HashMap<
+        (
+            Sid,
+            Sid,
+            String,
+            Sid,
+            Option<fluree_db_core::flake::FlakeMeta>,
+        ),
+        Flake,
+    > = HashMap::new();
     let mut iterations = 0;
     let mut rules_executed = 0;
 
@@ -1084,9 +1099,7 @@ pub async fn execute_datalog_rules_with_query_rules<S: Storage>(
         // Build combined overlay: base + derived facts from previous iterations
         // This enables recursive rules to match against their own derived facts
         let effective_overlay: Box<dyn OverlayProvider + '_> = match &derived_overlay {
-            Some(derived) => {
-                Box::new(ReasoningOverlay::new(overlay, derived.clone()))
-            }
+            Some(derived) => Box::new(ReasoningOverlay::new(overlay, derived.clone())),
             None => {
                 // First iteration: use base overlay directly
                 // We wrap in a trivial struct that implements OverlayProvider
@@ -1100,26 +1113,28 @@ pub async fn execute_datalog_rules_with_query_rules<S: Storage>(
 
             // Find all bindings matching the where patterns
             // Use effective_overlay which includes derived facts from previous iterations
-            let binding_rows = execute_rule_matching(rule, db, effective_overlay.as_ref(), to_t).await?;
+            let binding_rows =
+                execute_rule_matching(rule, db, effective_overlay.as_ref(), to_t).await?;
 
             if binding_rows.is_empty() {
                 continue;
             }
 
             // Generate flakes from bindings
-            let flakes = fluree_db_reasoner::execute_rule_with_bindings(rule, binding_rows, derived_t);
+            let flakes =
+                fluree_db_reasoner::execute_rule_with_bindings(rule, binding_rows, derived_t);
 
-                // Add new flakes (deduplicating by s, p, o, dt, m)
+            // Add new flakes (deduplicating by s, p, o, dt, m)
             for flake in flakes {
                 let key = (
                     flake.s.clone(),
                     flake.p.clone(),
                     format!("{:?}", flake.o),
                     flake.dt.clone(),
-                        flake.m.clone(),
+                    flake.m.clone(),
                 );
-                if !all_derived.contains_key(&key) {
-                    all_derived.insert(key, flake);
+                if let std::collections::hash_map::Entry::Vacant(e) = all_derived.entry(key) {
+                    e.insert(flake);
                     new_facts_this_round += 1;
                 }
             }
@@ -1141,7 +1156,9 @@ pub async fn execute_datalog_rules_with_query_rules<S: Storage>(
         // This allows subsequent iterations to match against facts derived so far
         let mut builder = DerivedFactsBuilder::with_capacity(all_derived.len());
         builder.extend(all_derived.values().cloned());
-        derived_overlay = Some(Arc::new(builder.build(FrozenSameAs::empty(), overlay.epoch())));
+        derived_overlay = Some(Arc::new(
+            builder.build(FrozenSameAs::empty(), overlay.epoch()),
+        ));
     }
 
     Ok(DatalogExecutionResult {
@@ -1168,7 +1185,8 @@ impl<'a> OverlayProvider for OverlayRef<'a> {
         to_t: i64,
         callback: &mut dyn FnMut(&Flake),
     ) {
-        self.0.for_each_overlay_flake(index, first, rhs, leftmost, to_t, callback)
+        self.0
+            .for_each_overlay_flake(index, first, rhs, leftmost, to_t, callback)
     }
 }
 

@@ -55,7 +55,7 @@ const ALG_LEN: usize = 1;
 const KEY_ID_OFFSET: usize = ALG_OFFSET + ALG_LEN; // 6
 const KEY_ID_LEN: usize = 4;
 const NONCE_OFFSET: usize = KEY_ID_OFFSET + KEY_ID_LEN; // 10
-// NONCE_LEN = 12
+                                                        // NONCE_LEN = 12
 
 /// Total header length (magic + version + alg + key_id + nonce).
 pub const HEADER_LEN: usize = NONCE_OFFSET + NONCE_LEN; // 22

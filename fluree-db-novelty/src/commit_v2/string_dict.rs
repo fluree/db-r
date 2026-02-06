@@ -50,6 +50,11 @@ impl StringDictBuilder {
         self.entries.len()
     }
 
+    /// Returns true if the dictionary contains no strings.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     /// Serialize the dictionary to bytes.
     ///
     /// Format: `[count: varint][len: varint, utf8_bytes...]*`
@@ -115,16 +120,13 @@ impl StringDict {
             ));
         }
         let idx = (local_id - 1) as usize;
-        self.entries
-            .get(idx)
-            .map(|s| s.as_str())
-            .ok_or_else(|| {
-                CommitV2Error::InvalidDictionary(format!(
-                    "local_id {} out of range (dict has {} entries)",
-                    local_id,
-                    self.entries.len()
-                ))
-            })
+        self.entries.get(idx).map(|s| s.as_str()).ok_or_else(|| {
+            CommitV2Error::InvalidDictionary(format!(
+                "local_id {} out of range (dict has {} entries)",
+                local_id,
+                self.entries.len()
+            ))
+        })
     }
 
     /// Number of entries in the dictionary.
@@ -182,7 +184,12 @@ mod tests {
     #[test]
     fn test_round_trip_multiple() {
         let mut builder = StringDictBuilder::new();
-        let names = ["Alice", "name", "string", "z6MkqtpqKGs4Et8mqBLBBAitDC1DPBiTJEbu26AcBX75B5rR"];
+        let names = [
+            "Alice",
+            "name",
+            "string",
+            "z6MkqtpqKGs4Et8mqBLBBAitDC1DPBiTJEbu26AcBX75B5rR",
+        ];
         for name in &names {
             builder.insert(name);
         }

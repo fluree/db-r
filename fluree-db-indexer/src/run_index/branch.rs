@@ -27,7 +27,7 @@
 
 use super::leaf::LeafInfo;
 use super::run_record::{cmp_spot, RunRecord, RECORD_WIRE_SIZE};
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::io;
 use std::ops::Range;
@@ -126,15 +126,15 @@ impl BranchManifest {
 
         // Start: first leaf whose last_key >= min_key
         // (skip leaves that end before our range starts)
-        let start = self.leaves.partition_point(|entry| {
-            cmp(&entry.last_key, min_key) == Ordering::Less
-        });
+        let start = self
+            .leaves
+            .partition_point(|entry| cmp(&entry.last_key, min_key) == Ordering::Less);
 
         // End: first leaf whose first_key > max_key
         // (include leaves that start within or before our range)
-        let end = self.leaves.partition_point(|entry| {
-            cmp(&entry.first_key, max_key) != Ordering::Greater
-        });
+        let end = self
+            .leaves
+            .partition_point(|entry| cmp(&entry.first_key, max_key) != Ordering::Greater);
 
         start..end
     }
@@ -253,7 +253,7 @@ pub fn find_branch_file(dir: &Path) -> io::Result<PathBuf> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().map_or(false, |ext| ext == "fbr") {
+        if path.extension().is_some_and(|ext| ext == "fbr") {
             return Ok(path);
         }
     }
@@ -323,11 +323,11 @@ pub fn read_branch_manifest_from_bytes(
         }
         let relative_path = std::str::from_utf8(&path_table[path_offset..path_offset + path_len])
             .map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("branch manifest: invalid path UTF-8: {}", e),
-                )
-            })?;
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("branch manifest: invalid path UTF-8: {}", e),
+            )
+        })?;
 
         let full_path = match base_dir {
             Some(dir) => dir.join(relative_path),
@@ -360,15 +360,22 @@ pub fn read_branch_manifest_from_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::DatatypeDictId;
     use fluree_db_core::subject_id::SubjectId;
-    use fluree_db_core::value_id::{ObjKind, ObjKey};
+    use fluree_db_core::value_id::{ObjKey, ObjKind};
+    use fluree_db_core::DatatypeDictId;
 
     fn make_record(g_id: u32, s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
         RunRecord::new(
-            g_id, SubjectId::from_u64(s_id), p_id,
-            ObjKind::NUM_INT, ObjKey::encode_i64(val),
-            t, true, DatatypeDictId::INTEGER.as_u16(), 0, None,
+            g_id,
+            SubjectId::from_u64(s_id),
+            p_id,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(val),
+            t,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
         )
     }
 
@@ -399,19 +406,22 @@ mod tests {
 
         let infos = vec![
             make_leaf_info(
-                &dir, 0,
+                &dir,
+                0,
                 make_record(0, 1, 1, 0, 1),
                 make_record(0, 100, 5, 99, 1),
                 5000,
             ),
             make_leaf_info(
-                &dir, 1,
+                &dir,
+                1,
                 make_record(0, 101, 1, 0, 1),
                 make_record(0, 200, 10, 50, 1),
                 5000,
             ),
             make_leaf_info(
-                &dir, 2,
+                &dir,
+                2,
                 make_record(0, 201, 1, 0, 1),
                 make_record(0, 300, 3, 0, 2),
                 3000,
@@ -443,13 +453,15 @@ mod tests {
 
         let infos = vec![
             make_leaf_info(
-                &dir, 0,
+                &dir,
+                0,
                 make_record(0, 1, 1, 0, 1),
                 make_record(0, 100, 5, 99, 1),
                 5000,
             ),
             make_leaf_info(
-                &dir, 1,
+                &dir,
+                1,
                 make_record(0, 101, 1, 0, 1),
                 make_record(0, 200, 10, 50, 1),
                 5000,
@@ -490,19 +502,22 @@ mod tests {
         // Subject 100 spans leaves 0 and 1
         let infos = vec![
             make_leaf_info(
-                &dir, 0,
+                &dir,
+                0,
                 make_record(0, 1, 1, 0, 1),
                 make_record(0, 100, 3, 0, 1),
                 5000,
             ),
             make_leaf_info(
-                &dir, 1,
+                &dir,
+                1,
                 make_record(0, 100, 4, 0, 1),
                 make_record(0, 200, 10, 0, 1),
                 5000,
             ),
             make_leaf_info(
-                &dir, 2,
+                &dir,
+                2,
                 make_record(0, 201, 1, 0, 1),
                 make_record(0, 300, 5, 0, 1),
                 3000,

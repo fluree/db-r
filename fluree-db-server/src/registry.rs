@@ -199,9 +199,7 @@ impl LedgerRegistry {
                     }
                 }
             }
-            NameServiceEvent::LedgerIndexPublished {
-                alias, index_t, ..
-            } => {
+            NameServiceEvent::LedgerIndexPublished { alias, index_t, .. } => {
                 if let Ok(entries) = self.entries.read() {
                     if let Some(handle) = entries.get(alias) {
                         handle.update_index_t(*index_t);

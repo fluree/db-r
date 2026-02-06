@@ -20,8 +20,8 @@ use super::iri::IriCompactor;
 use super::{FormatError, Result};
 use crate::QueryResult;
 use fluree_db_core::FlakeValue;
-use fluree_db_query::binding::Binding;
 use fluree_db_core::Sid;
+use fluree_db_query::binding::Binding;
 use serde_json::{json, Map, Value as JsonValue};
 
 /// Format query results in TypedJson format
@@ -39,7 +39,14 @@ pub fn format(
                     // Wildcard: use batch schema, return all bound vars as object
                     format_row_wildcard(batch, row_idx, &result.vars, compactor, result)?
                 }
-                _ => format_row(batch, row_idx, &result.select, &result.vars, compactor, result)?,
+                _ => format_row(
+                    batch,
+                    row_idx,
+                    &result.select,
+                    &result.vars,
+                    compactor,
+                    result,
+                )?,
             };
             rows.push(row);
 
@@ -61,16 +68,22 @@ pub fn format(
 }
 
 /// Format a single binding to TypedJson
-fn format_binding(result: &QueryResult, binding: &Binding, compactor: &IriCompactor) -> Result<JsonValue> {
+fn format_binding(
+    result: &QueryResult,
+    binding: &Binding,
+    compactor: &IriCompactor,
+) -> Result<JsonValue> {
     // Late materialization for encoded bindings.
     if binding.is_encoded() {
         let store = result.binary_store.as_ref().ok_or_else(|| {
             FormatError::InvalidBinding(
-                "Encountered encoded binding during formatting but QueryResult has no binary_store".to_string(),
+                "Encountered encoded binding during formatting but QueryResult has no binary_store"
+                    .to_string(),
             )
         })?;
-        let materialized = materialize_encoded_binding(binding, store)
-            .map_err(|e| FormatError::InvalidBinding(format!("Failed to materialize encoded binding: {}", e)))?;
+        let materialized = materialize_encoded_binding(binding, store).map_err(|e| {
+            FormatError::InvalidBinding(format!("Failed to materialize encoded binding: {}", e))
+        })?;
         return format_binding(result, &materialized, compactor);
     }
 
@@ -90,9 +103,7 @@ fn format_binding(result: &QueryResult, binding: &Binding, compactor: &IriCompac
         }
 
         // Raw IRI string (from virtual graph, not in namespace table)
-        Binding::Iri(iri) => {
-            Ok(json!({"@id": iri.as_ref()}))
-        }
+        Binding::Iri(iri) => Ok(json!({"@id": iri.as_ref()})),
 
         // Literal value - always include @type (except language-tagged)
         Binding::Lit { val, dt, lang, .. } => {
@@ -113,12 +124,10 @@ fn format_binding(result: &QueryResult, binding: &Binding, compactor: &IriCompac
                         }))
                     }
                 }
-                FlakeValue::Long(n) => {
-                    Ok(json!({
-                        "@value": n,
-                        "@type": dt_iri
-                    }))
-                }
+                FlakeValue::Long(n) => Ok(json!({
+                    "@value": n,
+                    "@type": dt_iri
+                })),
                 FlakeValue::Double(d) => {
                     // Handle special float values
                     if d.is_nan() || d.is_infinite() {
@@ -140,22 +149,19 @@ fn format_binding(result: &QueryResult, binding: &Binding, compactor: &IriCompac
                         }))
                     }
                 }
-                FlakeValue::Boolean(b) => {
-                    Ok(json!({
-                        "@value": b,
-                        "@type": dt_iri
-                    }))
-                }
-                FlakeValue::Vector(v) => {
-                    Ok(json!({
-                        "@value": v,
-                        "@type": dt_iri
-                    }))
-                }
+                FlakeValue::Boolean(b) => Ok(json!({
+                    "@value": b,
+                    "@type": dt_iri
+                })),
+                FlakeValue::Vector(v) => Ok(json!({
+                    "@value": v,
+                    "@type": dt_iri
+                })),
                 FlakeValue::Json(json_str) => {
                     // @json datatype: deserialize for output
-                    let json_val: JsonValue = serde_json::from_str(json_str)
-                        .map_err(|e| FormatError::InvalidBinding(format!("Invalid JSON in @json value: {}", e)))?;
+                    let json_val: JsonValue = serde_json::from_str(json_str).map_err(|e| {
+                        FormatError::InvalidBinding(format!("Invalid JSON in @json value: {}", e))
+                    })?;
                     Ok(json!({
                         "@value": json_val,
                         "@type": "@json"
@@ -169,97 +175,71 @@ fn format_binding(result: &QueryResult, binding: &Binding, compactor: &IriCompac
                     ))
                 }
                 // Extended numeric types - serialize as string with datatype
-                FlakeValue::BigInt(n) => {
-                    Ok(json!({
-                        "@value": n.to_string(),
-                        "@type": dt_iri
-                    }))
-                }
-                FlakeValue::Decimal(d) => {
-                    Ok(json!({
-                        "@value": d.to_string(),
-                        "@type": dt_iri
-                    }))
-                }
+                FlakeValue::BigInt(n) => Ok(json!({
+                    "@value": n.to_string(),
+                    "@type": dt_iri
+                })),
+                FlakeValue::Decimal(d) => Ok(json!({
+                    "@value": d.to_string(),
+                    "@type": dt_iri
+                })),
                 // Temporal types - serialize as original string with datatype
-                FlakeValue::DateTime(dt) => {
-                    Ok(json!({
-                        "@value": dt.to_string(),
-                        "@type": dt_iri
-                    }))
-                }
-                FlakeValue::Date(d) => {
-                    Ok(json!({
-                        "@value": d.to_string(),
-                        "@type": dt_iri
-                    }))
-                }
-                FlakeValue::Time(t) => {
-                    Ok(json!({
-                        "@value": t.to_string(),
-                        "@type": dt_iri
-                    }))
-                }
+                FlakeValue::DateTime(dt) => Ok(json!({
+                    "@value": dt.to_string(),
+                    "@type": dt_iri
+                })),
+                FlakeValue::Date(d) => Ok(json!({
+                    "@value": d.to_string(),
+                    "@type": dt_iri
+                })),
+                FlakeValue::Time(t) => Ok(json!({
+                    "@value": t.to_string(),
+                    "@type": dt_iri
+                })),
                 // Additional temporal types - serialize as original string with datatype
-                FlakeValue::GYear(v) => {
-                    Ok(json!({
-                        "@value": v.to_string(),
-                        "@type": dt_iri
-                    }))
-                }
-                FlakeValue::GYearMonth(v) => {
-                    Ok(json!({
-                        "@value": v.to_string(),
-                        "@type": dt_iri
-                    }))
-                }
-                FlakeValue::GMonth(v) => {
-                    Ok(json!({
-                        "@value": v.to_string(),
-                        "@type": dt_iri
-                    }))
-                }
-                FlakeValue::GDay(v) => {
-                    Ok(json!({
-                        "@value": v.to_string(),
-                        "@type": dt_iri
-                    }))
-                }
-                FlakeValue::GMonthDay(v) => {
-                    Ok(json!({
-                        "@value": v.to_string(),
-                        "@type": dt_iri
-                    }))
-                }
-                FlakeValue::YearMonthDuration(v) => {
-                    Ok(json!({
-                        "@value": v.to_string(),
-                        "@type": dt_iri
-                    }))
-                }
-                FlakeValue::DayTimeDuration(v) => {
-                    Ok(json!({
-                        "@value": v.to_string(),
-                        "@type": dt_iri
-                    }))
-                }
-                FlakeValue::Duration(v) => {
-                    Ok(json!({
-                        "@value": v.to_string(),
-                        "@type": dt_iri
-                    }))
-                }
-                FlakeValue::GeoPoint(v) => {
-                    Ok(json!({
-                        "@value": v.to_string(),
-                        "@type": dt_iri
-                    }))
-                }
+                FlakeValue::GYear(v) => Ok(json!({
+                    "@value": v.to_string(),
+                    "@type": dt_iri
+                })),
+                FlakeValue::GYearMonth(v) => Ok(json!({
+                    "@value": v.to_string(),
+                    "@type": dt_iri
+                })),
+                FlakeValue::GMonth(v) => Ok(json!({
+                    "@value": v.to_string(),
+                    "@type": dt_iri
+                })),
+                FlakeValue::GDay(v) => Ok(json!({
+                    "@value": v.to_string(),
+                    "@type": dt_iri
+                })),
+                FlakeValue::GMonthDay(v) => Ok(json!({
+                    "@value": v.to_string(),
+                    "@type": dt_iri
+                })),
+                FlakeValue::YearMonthDuration(v) => Ok(json!({
+                    "@value": v.to_string(),
+                    "@type": dt_iri
+                })),
+                FlakeValue::DayTimeDuration(v) => Ok(json!({
+                    "@value": v.to_string(),
+                    "@type": dt_iri
+                })),
+                FlakeValue::Duration(v) => Ok(json!({
+                    "@value": v.to_string(),
+                    "@type": dt_iri
+                })),
+                FlakeValue::GeoPoint(v) => Ok(json!({
+                    "@value": v.to_string(),
+                    "@type": dt_iri
+                })),
             }
         }
 
         Binding::EncodedLit { .. } | Binding::EncodedSid { .. } | Binding::EncodedPid { .. } => {
-            unreachable!("Encoded bindings should have been materialized before TypedJson formatting")
+            unreachable!(
+                "Encoded bindings should have been materialized before TypedJson formatting"
+            )
         }
 
         // Grouped values - format as array of typed values
@@ -284,15 +264,13 @@ fn materialize_encoded_binding(
             let sid = store.encode_iri(&iri);
             Ok(Binding::Sid(sid))
         }
-        Binding::EncodedPid { p_id } => {
-            match store.resolve_predicate_iri(*p_id) {
-                Some(iri) => Ok(Binding::Sid(store.encode_iri(iri))),
-                None => Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("Unknown predicate ID: {}", p_id),
-                )),
-            }
-        }
+        Binding::EncodedPid { p_id } => match store.resolve_predicate_iri(*p_id) {
+            Some(iri) => Ok(Binding::Sid(store.encode_iri(iri))),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Unknown predicate ID: {}", p_id),
+            )),
+        },
         Binding::EncodedLit { .. } => materialize_encoded_lit(binding, store),
         _ => Ok(binding.clone()),
     }
@@ -310,7 +288,8 @@ fn materialize_encoded_lit(
         lang_id,
         i_val,
         t,
-    } = binding else {
+    } = binding
+    else {
         return Ok(binding.clone());
     };
     let val = store.decode_value(*o_kind, *o_key, *p_id)?;
@@ -462,11 +441,11 @@ mod tests {
     fn test_format_binding_double() {
         let compactor = make_test_compactor();
         let result = make_test_result();
-        let binding = Binding::lit(FlakeValue::Double(3.14), Sid::new(2, "double"));
+        let binding = Binding::lit(FlakeValue::Double(3.5), Sid::new(2, "double"));
         let formatted = format_binding(&result, &binding, &compactor).unwrap();
         assert_eq!(
             formatted,
-            json!({"@value": 3.14, "@type": "http://www.w3.org/2001/XMLSchema#double"})
+            json!({"@value": 3.5, "@type": "http://www.w3.org/2001/XMLSchema#double"})
         );
     }
 

@@ -24,7 +24,7 @@ fn test_value_codec_roundtrip_all_types() {
         ("long", TypedValue::Int64(i64::MAX)),
         ("long", TypedValue::Int64(i64::MIN)),
         ("float", TypedValue::Float32(0.0)),
-        ("float", TypedValue::Float32(3.14159)),
+        ("float", TypedValue::Float32(3.13159)),
         ("float", TypedValue::Float32(-273.15)),
         ("double", TypedValue::Float64(0.0)),
         ("double", TypedValue::Float64(std::f64::consts::PI)),
@@ -37,17 +37,18 @@ fn test_value_codec_roundtrip_all_types() {
         ("timestamptz", TypedValue::TimestampTz(1640000000000000)),
         ("string", TypedValue::String("".to_string())),
         ("string", TypedValue::String("hello".to_string())),
-        ("string", TypedValue::String("unicode: 你好世界 🌍".to_string())),
+        (
+            "string",
+            TypedValue::String("unicode: 你好世界 🌍".to_string()),
+        ),
         ("binary", TypedValue::Bytes(vec![])),
         ("binary", TypedValue::Bytes(vec![0, 1, 2, 255])),
     ];
 
     for (type_str, original) in test_cases {
         let encoded = encode_value(&original);
-        let decoded = decode_by_type_string(&encoded, Some(type_str)).expect(&format!(
-            "decoding {} bytes {:?}",
-            type_str, encoded
-        ));
+        let decoded = decode_by_type_string(&encoded, Some(type_str))
+            .unwrap_or_else(|_| panic!("decoding {} bytes {:?}", type_str, encoded));
 
         // Handle timestamptz specially - it decodes to TimestampTz variant
         let matches = match (&original, &decoded) {
@@ -67,15 +68,7 @@ fn test_value_codec_roundtrip_all_types() {
 #[test]
 fn test_integer_boundaries() {
     // INT32 boundaries
-    let int_tests = vec![
-        i32::MIN,
-        i32::MIN + 1,
-        -1,
-        0,
-        1,
-        i32::MAX - 1,
-        i32::MAX,
-    ];
+    let int_tests = vec![i32::MIN, i32::MIN + 1, -1, 0, 1, i32::MAX - 1, i32::MAX];
 
     for val in int_tests {
         let original = TypedValue::Int32(val);
@@ -106,16 +99,7 @@ fn test_integer_boundaries() {
 /// Test string ordering is preserved.
 #[test]
 fn test_string_ordering() {
-    let strings = vec![
-        "",
-        "A",
-        "B",
-        "a",
-        "apple",
-        "banana",
-        "cherry",
-        "z",
-    ];
+    let strings = ["", "A", "B", "a", "apple", "banana", "cherry", "z"];
 
     let typed_values: Vec<TypedValue> = strings
         .iter()
@@ -148,10 +132,10 @@ fn test_string_ordering() {
 #[test]
 fn test_timestamp_encoding() {
     let timestamps = vec![
-        0i64,                      // Epoch
-        1_000_000i64,              // 1 second after epoch
-        1_640_000_000_000_000i64,  // 2021-12-20
-        -86_400_000_000i64,        // 1 day before epoch
+        0i64,                     // Epoch
+        1_000_000i64,             // 1 second after epoch
+        1_640_000_000_000_000i64, // 2021-12-20
+        -86_400_000_000i64,       // 1 day before epoch
     ];
 
     for ts in timestamps {
@@ -176,10 +160,10 @@ fn test_timestamp_encoding() {
 #[test]
 fn test_date_encoding() {
     let dates = vec![
-        0i32,      // 1970-01-01
-        19000i32,  // ~2022
-        -365i32,   // 1969-01-01
-        36500i32,  // ~2069
+        0i32,     // 1970-01-01
+        19000i32, // ~2022
+        -365i32,  // 1969-01-01
+        36500i32, // ~2069
     ];
 
     for d in dates {
@@ -195,9 +179,9 @@ fn test_date_encoding() {
 fn test_decimal_encoding() {
     // Test with precision 10, scale 2
     let decimals = vec![
-        (12345i128, 10, 2),   // 123.45
-        (-12345i128, 10, 2),  // -123.45
-        (0i128, 10, 2),       // 0.00
+        (12345i128, 10, 2),    // 123.45
+        (-12345i128, 10, 2),   // -123.45
+        (0i128, 10, 2),        // 0.00
         (99999999i128, 10, 2), // 999999.99
     ];
 
@@ -215,12 +199,10 @@ fn test_decimal_encoding() {
 
         // Note: decimal decoding may not preserve exact unscaled value
         // if the byte representation differs, but ordering should be preserved
-        if let TypedValue::Decimal { unscaled: u, .. } = decoded {
-            // Just verify it decoded to a decimal
-            assert!(true, "Decoded decimal with unscaled value {}", u);
-        } else {
-            panic!("Expected Decimal type");
-        }
+        assert!(
+            matches!(decoded, TypedValue::Decimal { .. }),
+            "Expected Decimal type"
+        );
     }
 }
 
@@ -228,8 +210,8 @@ fn test_decimal_encoding() {
 #[test]
 fn test_uuid_encoding() {
     let uuid_bytes = [
-        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-        0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x10,
     ];
 
     let original = TypedValue::Uuid(uuid_bytes);

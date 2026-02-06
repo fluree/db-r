@@ -270,7 +270,8 @@ pub fn decode_sig_block(data: &[u8]) -> Result<Vec<CommitSignature>, CommitV2Err
     if pos != data.len() {
         return Err(CommitV2Error::EnvelopeDecode(format!(
             "signature block: consumed {} of {} bytes",
-            pos, data.len()
+            pos,
+            data.len()
         )));
     }
 
@@ -282,11 +283,11 @@ pub fn sig_block_size(sigs: &[CommitSignature]) -> usize {
     let mut size = 2; // sig_count: u16
     for sig in sigs {
         size += 2; // signer_len: u16
-        size += sig.signer.as_bytes().len();
-        size += 1;  // algo: u8
+        size += sig.signer.len();
+        size += 1; // algo: u8
         size += 64; // signature
-        size += 8;  // timestamp: i64
-        size += 2;  // meta_len: u16
+        size += 8; // timestamp: i64
+        size += 2; // meta_len: u16
         if let Some(meta) = &sig.metadata {
             size += meta.len();
         }
@@ -485,11 +486,26 @@ mod tests {
     fn test_footer_round_trip() {
         let footer = CommitV2Footer {
             dicts: [
-                DictLocation { offset: 100, len: 50 },
-                DictLocation { offset: 150, len: 200 },
-                DictLocation { offset: 350, len: 100 },
-                DictLocation { offset: 450, len: 80 },
-                DictLocation { offset: 530, len: 120 },
+                DictLocation {
+                    offset: 100,
+                    len: 50,
+                },
+                DictLocation {
+                    offset: 150,
+                    len: 200,
+                },
+                DictLocation {
+                    offset: 350,
+                    len: 100,
+                },
+                DictLocation {
+                    offset: 450,
+                    len: 80,
+                },
+                DictLocation {
+                    offset: 530,
+                    len: 120,
+                },
             ],
             ops_section_len: 9999,
         };

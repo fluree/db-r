@@ -165,8 +165,8 @@ fn escape_string(s: &str) -> String {
             '\n' => result.push_str("\\n"),
             '\r' => result.push_str("\\r"),
             '\t' => result.push_str("\\t"),
-            '\u{0008}' => result.push_str("\\b"),  // backspace
-            '\u{000C}' => result.push_str("\\f"),  // form feed
+            '\u{0008}' => result.push_str("\\b"), // backspace
+            '\u{000C}' => result.push_str("\\f"), // form feed
             c if c < '\u{0020}' => {
                 // Other control characters as \uXXXX
                 result.push_str(&format!("\\u{:04x}", c as u32));
@@ -227,7 +227,7 @@ mod tests {
     #[test]
     fn test_normalize_numbers_and_literals() {
         let data = json!({
-            "numbers": [333333333.33333329, 1E30, 4.50, 2e-3, 0.000000000000000000000000001],
+            "numbers": [333_333_333.333_333_3, 1E30, 4.50, 2e-3, 0.000000000000000000000000001],
             "literals": [null, true, false]
         });
 

@@ -40,18 +40,16 @@ pub fn validate_node_kind(
         NodeKind::BlankNode => matches!(actual_kind, Some(NodeKind::BlankNode)),
         NodeKind::IRI => matches!(actual_kind, Some(NodeKind::IRI)),
         NodeKind::Literal => matches!(actual_kind, Some(NodeKind::Literal)),
-        NodeKind::BlankNodeOrIRI => matches!(
-            actual_kind,
-            Some(NodeKind::BlankNode) | Some(NodeKind::IRI)
-        ),
+        NodeKind::BlankNodeOrIRI => {
+            matches!(actual_kind, Some(NodeKind::BlankNode) | Some(NodeKind::IRI))
+        }
         NodeKind::BlankNodeOrLiteral => matches!(
             actual_kind,
             Some(NodeKind::BlankNode) | Some(NodeKind::Literal)
         ),
-        NodeKind::IRIOrLiteral => matches!(
-            actual_kind,
-            Some(NodeKind::IRI) | Some(NodeKind::Literal)
-        ),
+        NodeKind::IRIOrLiteral => {
+            matches!(actual_kind, Some(NodeKind::IRI) | Some(NodeKind::Literal))
+        }
     };
 
     if !matches {

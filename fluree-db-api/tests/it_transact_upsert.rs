@@ -27,9 +27,12 @@ async fn upsert_parsing() {
     // Clojure parity: transactions with OPTIONAL patterns in WHERE clause.
     // The key behavior is that OPTIONAL allows "delete if exists" semantics
     // without failing when the data doesn't exist.
-    
+
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger0 = fluree.create_ledger("tx/upsert-parsing:main").await.unwrap();
+    let ledger0 = fluree
+        .create_ledger("tx/upsert-parsing:main")
+        .await
+        .unwrap();
 
     // Insert initial data - only alice has both name and age
     let initial_txn = json!({
@@ -59,8 +62,12 @@ async fn upsert_parsing() {
 
     // This should succeed - OPTIONAL allows missing patterns
     let result = fluree.update(ledger1, &update_txn).await;
-    assert!(result.is_ok(), "Update with OPTIONAL should succeed: {:?}", result.err());
-    
+    assert!(
+        result.is_ok(),
+        "Update with OPTIONAL should succeed: {:?}",
+        result.err()
+    );
+
     let ledger2 = result.unwrap().ledger;
 
     // Query to verify the update worked
@@ -72,7 +79,7 @@ async fn upsert_parsing() {
 
     let result = fluree.query(&ledger2, &query).await.unwrap();
     let jsonld = result.to_jsonld_async(&ledger2.db).await.unwrap();
-    
+
     let alice = &jsonld[0];
     // Name should be updated
     assert_eq!(alice["schema:name"], json!("Alice Updated"));
@@ -125,7 +132,10 @@ async fn upsert_data() {
     // Should have 3 users with updated data
     assert_eq!(jsonld.as_array().unwrap().len(), 3);
 
-    let mut users: Vec<_> = jsonld.as_array().unwrap().iter()
+    let mut users: Vec<_> = jsonld
+        .as_array()
+        .unwrap()
+        .iter()
         .map(|user| {
             let obj = user.as_object().unwrap();
             let id = obj["@id"].as_str().unwrap();
@@ -165,7 +175,11 @@ async fn upsert_no_changes() {
             {"@id": "ex:bob", "@type": "ex:User", "schema:name": "Bob", "ex:nums": [1, 2, 3], "schema:age": 22}
         ]
     });
-    let ledger1 = fluree.insert(ledger0, &sample_insert_txn).await.unwrap().ledger;
+    let ledger1 = fluree
+        .insert(ledger0, &sample_insert_txn)
+        .await
+        .unwrap()
+        .ledger;
 
     let query = json!({
         "@context": ctx(),
@@ -175,11 +189,19 @@ async fn upsert_no_changes() {
     let result1 = fluree.query(&ledger1, &query).await.unwrap();
     let jsonld1 = result1.to_jsonld_async(&ledger1.db).await.unwrap();
 
-    let ledger2 = fluree.upsert(ledger1, &sample_insert_txn).await.unwrap().ledger;
+    let ledger2 = fluree
+        .upsert(ledger1, &sample_insert_txn)
+        .await
+        .unwrap()
+        .ledger;
     let result2 = fluree.query(&ledger2, &query).await.unwrap();
     let jsonld2 = result2.to_jsonld_async(&ledger2.db).await.unwrap();
 
-    let ledger3 = fluree.upsert(ledger2, &sample_insert_txn).await.unwrap().ledger;
+    let ledger3 = fluree
+        .upsert(ledger2, &sample_insert_txn)
+        .await
+        .unwrap()
+        .ledger;
     let result3 = fluree.query(&ledger3, &query).await.unwrap();
     let jsonld3 = result3.to_jsonld_async(&ledger3.db).await.unwrap();
 
@@ -240,7 +262,10 @@ async fn upsert_multicardinal_data() {
 #[tokio::test]
 async fn upsert_cancels_identical_pairs_in_novelty() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger0 = fluree.create_ledger("tx/upsert-cancel-pairs:main").await.unwrap();
+    let ledger0 = fluree
+        .create_ledger("tx/upsert-cancel-pairs:main")
+        .await
+        .unwrap();
 
     let ctx = json!({
         "ex": "http://example.org/ns/",
@@ -316,7 +341,11 @@ async fn upsert_and_commit() {
             {"@id": "ex:bob", "@type": "ex:User", "schema:name": "Bob", "ex:nums": [1, 2, 3], "schema:age": 22}
         ]
     });
-    let ledger1 = fluree.insert(ledger0, &sample_insert_txn).await.unwrap().ledger;
+    let ledger1 = fluree
+        .insert(ledger0, &sample_insert_txn)
+        .await
+        .unwrap()
+        .ledger;
 
     let sample_upsert_txn = json!({
         "@context": ctx(),
@@ -326,7 +355,11 @@ async fn upsert_and_commit() {
             {"@id": "ex:jane", "ex:nums": [4, 5, 6], "schema:name": "Jane2"}
         ]
     });
-    let ledger2 = fluree.upsert(ledger1, &sample_upsert_txn).await.unwrap().ledger;
+    let ledger2 = fluree
+        .upsert(ledger1, &sample_upsert_txn)
+        .await
+        .unwrap()
+        .ledger;
 
     let query = json!({
         "@context": ctx(),

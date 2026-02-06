@@ -38,6 +38,12 @@ pub struct CommitDicts {
     pub object_ref: StringDictBuilder,
 }
 
+impl Default for CommitDicts {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CommitDicts {
     pub fn new() -> Self {
         Self {
@@ -70,7 +76,11 @@ pub struct ReadDicts {
 ///
 /// Returns an error if the flake contains a value type not supported
 /// by the v2 format (e.g. `FlakeValue::Vector`).
-pub fn encode_op(flake: &Flake, dicts: &mut CommitDicts, buf: &mut Vec<u8>) -> Result<(), CommitV2Error> {
+pub fn encode_op(
+    flake: &Flake,
+    dicts: &mut CommitDicts,
+    buf: &mut Vec<u8>,
+) -> Result<(), CommitV2Error> {
     // Graph: always (0, 0) = default graph in Phase 1
     encode_varint(0, buf); // g_ns_code
     encode_varint(0, buf); // g_name_id = 0 means default graph
@@ -123,7 +133,11 @@ pub fn encode_op(flake: &Flake, dicts: &mut CommitDicts, buf: &mut Vec<u8>) -> R
     Ok(())
 }
 
-fn encode_object(value: &FlakeValue, dicts: &mut CommitDicts, buf: &mut Vec<u8>) -> Result<(), CommitV2Error> {
+fn encode_object(
+    value: &FlakeValue,
+    dicts: &mut CommitDicts,
+    buf: &mut Vec<u8>,
+) -> Result<(), CommitV2Error> {
     match value {
         FlakeValue::Ref(sid) => {
             buf.push(OTag::Ref as u8);
@@ -237,9 +251,8 @@ fn encode_len_prefixed_str(s: &str, buf: &mut Vec<u8>) {
 /// exceeds `u16::MAX`.
 fn decode_ns_code(data: &[u8], pos: &mut usize) -> Result<u16, CommitV2Error> {
     let raw = decode_varint(data, pos)?;
-    u16::try_from(raw).map_err(|_| {
-        CommitV2Error::InvalidOp(format!("namespace code {} exceeds u16::MAX", raw))
-    })
+    u16::try_from(raw)
+        .map_err(|_| CommitV2Error::InvalidOp(format!("namespace code {} exceeds u16::MAX", raw)))
 }
 
 /// Decode a single op from `data` starting at `*pos`, returning a `Flake`.
@@ -256,7 +269,10 @@ pub fn decode_op(
     let g_ns_code = decode_ns_code(data, pos)?;
     let g_name_id = decode_varint(data, pos)? as u32;
     if g_ns_code != 0 || g_name_id != 0 {
-        return Err(CommitV2Error::NonDefaultGraph { ns_code: g_ns_code, name_id: g_name_id });
+        return Err(CommitV2Error::NonDefaultGraph {
+            ns_code: g_ns_code,
+            name_id: g_name_id,
+        });
     }
 
     // Subject
@@ -450,7 +466,9 @@ fn decode_object(
             *pos += 16;
             GeoPointBits::new(lat, lng)
                 .map(FlakeValue::GeoPoint)
-                .ok_or_else(|| CommitV2Error::InvalidOp(format!("bad geo point: ({}, {})", lat, lng)))
+                .ok_or_else(|| {
+                    CommitV2Error::InvalidOp(format!("bad geo point: ({}, {})", lat, lng))
+                })
         }
     }
 }
@@ -474,7 +492,14 @@ fn decode_len_prefixed_str(data: &[u8], pos: &mut usize) -> Result<String, Commi
 mod tests {
     use super::*;
 
-    fn make_flake_long(s_code: u16, s_name: &str, p_code: u16, p_name: &str, val: i64, t: i64) -> Flake {
+    fn make_flake_long(
+        s_code: u16,
+        s_name: &str,
+        p_code: u16,
+        p_name: &str,
+        val: i64,
+        t: i64,
+    ) -> Flake {
         Flake::new(
             Sid::new(s_code, s_name),
             Sid::new(p_code, p_name),
@@ -628,7 +653,7 @@ mod tests {
         let flake = Flake::new(
             Sid::new(101, "x"),
             Sid::new(101, "val"),
-            FlakeValue::Double(3.14159),
+            FlakeValue::Double(3.13159),
             Sid::new(2, "double"),
             1,
             true,
@@ -643,7 +668,7 @@ mod tests {
         let mut pos = 0;
         let decoded = decode_op(&buf, &mut pos, &read_dicts, 1).unwrap();
         match decoded.o {
-            FlakeValue::Double(d) => assert!((d - 3.14159).abs() < f64::EPSILON),
+            FlakeValue::Double(d) => assert!((d - 3.13159).abs() < f64::EPSILON),
             _ => panic!("expected Double"),
         }
     }

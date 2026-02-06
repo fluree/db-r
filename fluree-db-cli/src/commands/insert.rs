@@ -41,11 +41,7 @@ pub async fn run(
     let content = input::read_input(&source)?;
 
     // Detect format
-    let data_format = detect::detect_data_format(
-        file_path.as_deref(),
-        &content,
-        format_flag,
-    )?;
+    let data_format = detect::detect_data_format(file_path.as_deref(), &content, format_flag)?;
 
     // Build commit options
     let commit_opts = CommitOpts {

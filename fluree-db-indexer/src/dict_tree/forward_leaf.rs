@@ -121,17 +121,14 @@ impl<'a> ForwardLeaf<'a> {
     #[inline]
     fn id_at(&self, index: usize) -> u64 {
         let offset = self.entry_offset(index);
-        u64::from_le_bytes(
-            self.data[offset..offset + 8].try_into().unwrap(),
-        )
+        u64::from_le_bytes(self.data[offset..offset + 8].try_into().unwrap())
     }
 
     /// Read the value bytes at the given index.
     fn value_at(&self, index: usize) -> &'a [u8] {
         let offset = self.entry_offset(index);
-        let value_len = u32::from_le_bytes(
-            self.data[offset + 8..offset + 12].try_into().unwrap(),
-        ) as usize;
+        let value_len =
+            u32::from_le_bytes(self.data[offset + 8..offset + 12].try_into().unwrap()) as usize;
         &self.data[offset + 12..offset + 12 + value_len]
     }
 
@@ -139,9 +136,8 @@ impl<'a> ForwardLeaf<'a> {
     #[inline]
     fn entry_offset(&self, index: usize) -> usize {
         let table_pos = self.offset_table_start + index * 4;
-        let relative = u32::from_le_bytes(
-            self.data[table_pos..table_pos + 4].try_into().unwrap(),
-        ) as usize;
+        let relative =
+            u32::from_le_bytes(self.data[table_pos..table_pos + 4].try_into().unwrap()) as usize;
         self.data_section_start + relative
     }
 
@@ -189,7 +185,10 @@ impl<'a> ForwardLeaf<'a> {
 
     /// Iterate all entries in order.
     pub fn iter(&'a self) -> ForwardLeafIter<'a> {
-        ForwardLeafIter { leaf: self, index: 0 }
+        ForwardLeafIter {
+            leaf: self,
+            index: 0,
+        }
     }
 }
 
@@ -285,7 +284,7 @@ mod tests {
         // Simulate sid64 keys: (ns_code << 48) | local_id
         let entries = vec![
             ForwardEntry {
-                id: (2u64 << 48) | 0,
+                id: 2u64 << 48,
                 value: b"http://a.org/x".to_vec(),
             },
             ForwardEntry {
@@ -293,7 +292,7 @@ mod tests {
                 value: b"http://a.org/y".to_vec(),
             },
             ForwardEntry {
-                id: (3u64 << 48) | 0,
+                id: 3u64 << 48,
                 value: b"http://b.org/z".to_vec(),
             },
         ];
@@ -304,10 +303,7 @@ mod tests {
             leaf.lookup((2u64 << 48) | 1),
             Some(b"http://a.org/y".as_slice())
         );
-        assert_eq!(
-            leaf.lookup((3u64 << 48) | 0),
-            Some(b"http://b.org/z".as_slice())
-        );
+        assert_eq!(leaf.lookup(3u64 << 48), Some(b"http://b.org/z".as_slice()));
         assert!(leaf.lookup((3u64 << 48) | 1).is_none());
     }
 

@@ -8,12 +8,13 @@ use chrono::DateTime;
 
 use crate::view::{FlureeView, ReasoningModePrecedence};
 use crate::{
-    time_resolve, ApiError, Fluree, NameService, QueryConnectionOptions, Result,
-    Storage, TimeSpec,
+    time_resolve, ApiError, Fluree, NameService, QueryConnectionOptions, Result, Storage, TimeSpec,
 };
-use fluree_db_indexer::run_index::{BinaryIndexRootV2, BinaryIndexStore, BINARY_INDEX_ROOT_VERSION_V2};
-use fluree_db_query::BinaryRangeProvider;
+use fluree_db_indexer::run_index::{
+    BinaryIndexRootV2, BinaryIndexStore, BINARY_INDEX_ROOT_VERSION_V2,
+};
 use fluree_db_query::rewrite::ReasoningModes;
+use fluree_db_query::BinaryRangeProvider;
 
 // ============================================================================
 // View Loading
@@ -111,19 +112,15 @@ where
                 if let Ok(root) = serde_json::from_slice::<BinaryIndexRootV2>(&bytes) {
                     if root.version == BINARY_INDEX_ROOT_VERSION_V2 {
                         let cache_dir = std::env::temp_dir().join("fluree-cache");
-                        let store = BinaryIndexStore::load_from_root_default(
-                            storage,
-                            &root,
-                            &cache_dir,
-                        )
-                        .await
-                        .map_err(|e| {
-                            ApiError::internal(format!("load binary index: {}", e))
-                        })?;
+                        let store =
+                            BinaryIndexStore::load_from_root_default(storage, &root, &cache_dir)
+                                .await
+                                .map_err(|e| {
+                                    ApiError::internal(format!("load binary index: {}", e))
+                                })?;
                         let arc_store = Arc::new(store);
                         let dn = snapshot.dict_novelty.clone();
-                        let provider =
-                            BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);
+                        let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);
                         snapshot.db.range_provider = Some(Arc::new(provider));
                         snapshot.binary_store = Some(arc_store);
                     }
@@ -141,11 +138,7 @@ where
     }
 
     /// Load a historical view at a specific transaction time.
-    pub(crate) async fn load_view_at_t(
-        &self,
-        alias: &str,
-        target_t: i64,
-    ) -> Result<FlureeView<S>> {
+    pub(crate) async fn load_view_at_t(&self, alias: &str, target_t: i64) -> Result<FlureeView<S>> {
         let historical = self.ledger_view_at(alias, target_t).await?;
         Ok(FlureeView::from_historical(&historical))
     }
@@ -153,11 +146,7 @@ where
     /// Load a view at a flexible time specification.
     ///
     /// Resolves `@t:`, `@iso:`, `@sha:`, or `latest` time specifications.
-    pub(crate) async fn load_view_at(
-        &self,
-        alias: &str,
-        spec: TimeSpec,
-    ) -> Result<FlureeView<S>> {
+    pub(crate) async fn load_view_at(&self, alias: &str, spec: TimeSpec) -> Result<FlureeView<S>> {
         match spec {
             TimeSpec::Latest => self.load_view(alias).await,
             TimeSpec::AtT(t) => self.load_view_at_t(alias, t).await,
@@ -166,14 +155,12 @@ where
                 let snapshot = handle.snapshot().await;
                 let ledger = snapshot.to_ledger_state();
                 let current_t = ledger.t();
-                let dt = DateTime::parse_from_rfc3339(&iso)
-                    .map_err(|e| {
-                        ApiError::internal(format!(
-                            "Invalid ISO-8601 timestamp for time travel: {} ({})",
-                            iso, e
-                        ))
-                    })?
-                    ;
+                let dt = DateTime::parse_from_rfc3339(&iso).map_err(|e| {
+                    ApiError::internal(format!(
+                        "Invalid ISO-8601 timestamp for time travel: {} ({})",
+                        iso, e
+                    ))
+                })?;
                 // `ledger#time` flakes store epoch milliseconds. If the ISO timestamp includes
                 // sub-millisecond precision, `timestamp_millis()` truncates, which can push the
                 // target *slightly before* the intended instant. To avoid off-by-one-ms
@@ -220,22 +207,14 @@ where
     }
 
     /// Load a historical snapshot at a specific transaction time.
-    pub async fn view_at_t(
-        &self,
-        alias: &str,
-        target_t: i64,
-    ) -> Result<FlureeView<S>> {
+    pub async fn view_at_t(&self, alias: &str, target_t: i64) -> Result<FlureeView<S>> {
         let (ledger_alias, graph_id) = Self::parse_graph_ref(alias)?;
         let view = self.load_view_at_t(ledger_alias, target_t).await?;
         Self::select_graph_id(view, graph_id)
     }
 
     /// Load a snapshot at a flexible time specification.
-    pub async fn view_at(
-        &self,
-        alias: &str,
-        spec: TimeSpec,
-    ) -> Result<FlureeView<S>> {
+    pub async fn view_at(&self, alias: &str, spec: TimeSpec) -> Result<FlureeView<S>> {
         let (ledger_alias, graph_id) = Self::parse_graph_ref(alias)?;
         let view = self.load_view_at(ledger_alias, spec).await?;
         Self::select_graph_id(view, graph_id)
@@ -322,11 +301,7 @@ where
     ///
     /// This is a pure function (no async) since it just attaches metadata.
     /// Uses `DefaultUnlessQueryOverrides` precedence.
-    pub fn wrap_reasoning(
-        &self,
-        view: FlureeView<S>,
-        modes: ReasoningModes,
-    ) -> FlureeView<S> {
+    pub fn wrap_reasoning(&self, view: FlureeView<S>, modes: ReasoningModes) -> FlureeView<S> {
         view.with_reasoning(modes)
     }
 

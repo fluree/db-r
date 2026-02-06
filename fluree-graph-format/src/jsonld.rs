@@ -9,6 +9,9 @@ use serde_json::{json, Map, Value as JsonValue};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
+/// Type alias for IRI compaction functions used in JSON-LD formatting.
+type IriCompactor = Arc<dyn Fn(&str) -> String + Send + Sync>;
+
 /// Configuration for JSON-LD formatting
 #[derive(Clone, Default)]
 pub struct JsonLdFormatConfig {
@@ -36,12 +39,12 @@ pub struct JsonLdFormatConfig {
     /// Optional IRI compaction function for vocab positions (predicates and @type values)
     ///
     /// If None, IRIs are output in expanded form.
-    compactor_vocab: Option<Arc<dyn Fn(&str) -> String + Send + Sync>>,
+    compactor_vocab: Option<IriCompactor>,
 
     /// Optional IRI compaction function for `@id` positions (node identifiers)
     ///
     /// If None, falls back to `compactor_vocab` when present; otherwise expanded IRIs.
-    compactor_id: Option<Arc<dyn Fn(&str) -> String + Send + Sync>>,
+    compactor_id: Option<IriCompactor>,
 }
 
 impl std::fmt::Debug for JsonLdFormatConfig {
@@ -52,7 +55,10 @@ impl std::fmt::Debug for JsonLdFormatConfig {
             .field("type_handling", &self.type_handling)
             .field("multicardinal_arrays", &self.multicardinal_arrays)
             .field("dedupe_values", &self.dedupe_values)
-            .field("compactor_vocab", &self.compactor_vocab.as_ref().map(|_| "<fn>"))
+            .field(
+                "compactor_vocab",
+                &self.compactor_vocab.as_ref().map(|_| "<fn>"),
+            )
             .field("compactor_id", &self.compactor_id.as_ref().map(|_| "<fn>"))
             .finish()
     }
@@ -280,9 +286,9 @@ pub fn format_jsonld(graph: &Graph, config: &JsonLdFormatConfig) -> JsonValue {
     for triple in graph.iter() {
         let subj_key = term_to_subject_key(&triple.s, config, &mut bnode_renamer);
 
-        let subj_data = subjects.entry(subj_key.clone()).or_insert_with(|| {
-            SubjectData::new(subj_key.clone())
-        });
+        let subj_data = subjects
+            .entry(subj_key.clone())
+            .or_insert_with(|| SubjectData::new(subj_key.clone()));
 
         subj_data.add_triple(triple);
     }
@@ -291,7 +297,7 @@ pub fn format_jsonld(graph: &Graph, config: &JsonLdFormatConfig) -> JsonValue {
     let mut nodes: BTreeMap<String, Map<String, JsonValue>> = BTreeMap::new();
 
     for (subj_key, subj_data) in subjects {
-        let node = subj_data.to_jsonld_node(config, &mut bnode_renamer);
+        let node = subj_data.into_jsonld_node(config, &mut bnode_renamer);
         nodes.insert(subj_key, node);
     }
 
@@ -339,7 +345,7 @@ impl SubjectData {
             .push((triple.list_index, triple.clone()));
     }
 
-    fn to_jsonld_node(
+    fn into_jsonld_node(
         self,
         config: &JsonLdFormatConfig,
         bnode_renamer: &mut BlankNodeRenamer,
@@ -570,10 +576,8 @@ fn add_type_value(
             // Single value: convert to array if different
             let prev = existing.as_str().unwrap_or_default().to_string();
             if prev != type_iri {
-                *existing = JsonValue::Array(vec![
-                    JsonValue::String(prev),
-                    JsonValue::String(type_iri),
-                ]);
+                *existing =
+                    JsonValue::Array(vec![JsonValue::String(prev), JsonValue::String(type_iri)]);
             }
         }
     }
@@ -1118,7 +1122,10 @@ mod tests {
 
         // Should have @list with items in order
         let favorites = &node["http://example.org/favorites"];
-        assert!(favorites.get("@list").is_some(), "Should have @list container");
+        assert!(
+            favorites.get("@list").is_some(),
+            "Should have @list container"
+        );
 
         let list = favorites["@list"].as_array().unwrap();
         assert_eq!(list.len(), 3);
@@ -1190,7 +1197,11 @@ mod tests {
         let node = &result["@graph"][0];
 
         let list = node["http://example.org/p"]["@list"].as_array().unwrap();
-        assert_eq!(list.len(), 3, "List should preserve all items including duplicates");
+        assert_eq!(
+            list.len(),
+            3,
+            "List should preserve all items including duplicates"
+        );
         assert_eq!(list[0], "repeat");
         assert_eq!(list[1], "middle");
         assert_eq!(list[2], "repeat");
@@ -1229,7 +1240,9 @@ mod tests {
         let result = format_jsonld(&graph, &config);
         let node = &result["@graph"][0];
 
-        let list = node["http://example.org/numbers"]["@list"].as_array().unwrap();
+        let list = node["http://example.org/numbers"]["@list"]
+            .as_array()
+            .unwrap();
         assert_eq!(list.len(), 2);
         assert_eq!(list[0], 42);
         assert_eq!(list[1], 100);

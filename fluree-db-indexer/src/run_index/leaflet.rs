@@ -13,6 +13,15 @@ use super::run_record::{RunRecord, RunSortOrder};
 use fluree_db_core::ListIndex;
 use std::io;
 
+/// Decoded Region 1 columns: (s_ids, p_ids, o_kinds, o_keys)
+pub type Region1Columns = (Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>);
+
+/// Decoded Region 1 with header: (header, s_ids, p_ids, o_kinds, o_keys)
+pub type Region1WithHeader = (LeafletHeader, Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>);
+
+/// Decoded Region 2 columns: (dt_values, t_values, lang_values, i_values)
+pub type Region2Columns = (Vec<u32>, Vec<i64>, Vec<u16>, Vec<i32>);
+
 /// Size of the leaflet header in bytes.
 pub const LEAFLET_HEADER_LEN: usize = 61;
 
@@ -102,33 +111,57 @@ pub struct LeafletEncoder {
 
 impl LeafletEncoder {
     pub fn new(zstd_level: i32) -> Self {
-        Self { zstd_level, p_width: 2, dt_width: 1, sort_order: RunSortOrder::Spot }
+        Self {
+            zstd_level,
+            p_width: 2,
+            dt_width: 1,
+            sort_order: RunSortOrder::Spot,
+        }
     }
 
     /// Create an encoder with explicit field widths.
     pub fn with_widths(zstd_level: i32, p_width: u8, dt_width: u8) -> Self {
         debug_assert!(
             p_width == 2 || p_width == 4,
-            "p_width must be 2 or 4, got {}", p_width
+            "p_width must be 2 or 4, got {}",
+            p_width
         );
         debug_assert!(
             dt_width == 1 || dt_width == 2,
-            "dt_width must be 1 or 2, got {}", dt_width
+            "dt_width must be 1 or 2, got {}",
+            dt_width
         );
-        Self { zstd_level, p_width, dt_width, sort_order: RunSortOrder::Spot }
+        Self {
+            zstd_level,
+            p_width,
+            dt_width,
+            sort_order: RunSortOrder::Spot,
+        }
     }
 
     /// Create an encoder with explicit field widths and sort order.
-    pub fn with_widths_and_order(zstd_level: i32, p_width: u8, dt_width: u8, sort_order: RunSortOrder) -> Self {
+    pub fn with_widths_and_order(
+        zstd_level: i32,
+        p_width: u8,
+        dt_width: u8,
+        sort_order: RunSortOrder,
+    ) -> Self {
         debug_assert!(
             p_width == 2 || p_width == 4,
-            "p_width must be 2 or 4, got {}", p_width
+            "p_width must be 2 or 4, got {}",
+            p_width
         );
         debug_assert!(
             dt_width == 1 || dt_width == 2,
-            "dt_width must be 1 or 2, got {}", dt_width
+            "dt_width must be 1 or 2, got {}",
+            dt_width
         );
-        Self { zstd_level, p_width, dt_width, sort_order }
+        Self {
+            zstd_level,
+            p_width,
+            dt_width,
+            sort_order,
+        }
     }
 
     /// Encode a batch of sorted records into a compressed leaflet.
@@ -141,13 +174,13 @@ impl LeafletEncoder {
 
         // ---- Build Region 1 (uncompressed) ----
         let r1_raw = encode_region1(records, self.p_width, self.sort_order);
-        let r1_compressed = zstd::bulk::compress(&r1_raw, self.zstd_level)
-            .expect("zstd compress region 1");
+        let r1_compressed =
+            zstd::bulk::compress(&r1_raw, self.zstd_level).expect("zstd compress region 1");
 
         // ---- Build Region 2 (uncompressed) ----
         let r2_raw = encode_region2(records, self.dt_width);
-        let r2_compressed = zstd::bulk::compress(&r2_raw, self.zstd_level)
-            .expect("zstd compress region 2");
+        let r2_compressed =
+            zstd::bulk::compress(&r2_raw, self.zstd_level).expect("zstd compress region 2");
 
         // ---- Compute offsets ----
         let region1_offset = LEAFLET_HEADER_LEN as u32;
@@ -176,10 +209,8 @@ impl LeafletEncoder {
         let total_len = region3_offset as usize; // region3 is 0 bytes
         let mut out = vec![0u8; total_len];
         header.write_to(&mut out[..LEAFLET_HEADER_LEN]);
-        out[region1_offset as usize..region2_offset as usize]
-            .copy_from_slice(&r1_compressed);
-        out[region2_offset as usize..region3_offset as usize]
-            .copy_from_slice(&r2_compressed);
+        out[region1_offset as usize..region2_offset as usize].copy_from_slice(&r1_compressed);
+        out[region2_offset as usize..region3_offset as usize].copy_from_slice(&r2_compressed);
 
         out
     }
@@ -188,19 +219,23 @@ impl LeafletEncoder {
     ///
     /// Region 3 entries must be pre-sorted in reverse chronological order
     /// (newest first). Pass an empty slice for leaflets with no history.
-    pub fn encode_leaflet_with_r3(&self, records: &[RunRecord], region3: &[Region3Entry]) -> Vec<u8> {
+    pub fn encode_leaflet_with_r3(
+        &self,
+        records: &[RunRecord],
+        region3: &[Region3Entry],
+    ) -> Vec<u8> {
         assert!(!records.is_empty(), "cannot encode empty leaflet");
         let row_count = records.len();
 
         // ---- Build Region 1 (uncompressed) ----
         let r1_raw = encode_region1(records, self.p_width, self.sort_order);
-        let r1_compressed = zstd::bulk::compress(&r1_raw, self.zstd_level)
-            .expect("zstd compress region 1");
+        let r1_compressed =
+            zstd::bulk::compress(&r1_raw, self.zstd_level).expect("zstd compress region 1");
 
         // ---- Build Region 2 (uncompressed) ----
         let r2_raw = encode_region2(records, self.dt_width);
-        let r2_compressed = zstd::bulk::compress(&r2_raw, self.zstd_level)
-            .expect("zstd compress region 2");
+        let r2_compressed =
+            zstd::bulk::compress(&r2_raw, self.zstd_level).expect("zstd compress region 2");
 
         // ---- Build Region 3 (uncompressed → compressed) ----
         let (r3_compressed, r3_uncompressed_len) = if region3.is_empty() {
@@ -208,8 +243,8 @@ impl LeafletEncoder {
         } else {
             let r3_raw = encode_region3(region3);
             let r3_uncomp_len = r3_raw.len() as u32;
-            let r3_comp = zstd::bulk::compress(&r3_raw, self.zstd_level)
-                .expect("zstd compress region 3");
+            let r3_comp =
+                zstd::bulk::compress(&r3_raw, self.zstd_level).expect("zstd compress region 3");
             (r3_comp, r3_uncomp_len)
         };
 
@@ -240,13 +275,10 @@ impl LeafletEncoder {
         let total_len = region3_offset as usize + r3_compressed.len();
         let mut out = vec![0u8; total_len];
         header.write_to(&mut out[..LEAFLET_HEADER_LEN]);
-        out[region1_offset as usize..region2_offset as usize]
-            .copy_from_slice(&r1_compressed);
-        out[region2_offset as usize..region3_offset as usize]
-            .copy_from_slice(&r2_compressed);
+        out[region1_offset as usize..region2_offset as usize].copy_from_slice(&r1_compressed);
+        out[region2_offset as usize..region3_offset as usize].copy_from_slice(&r2_compressed);
         if !r3_compressed.is_empty() {
-            out[region3_offset as usize..total_len]
-                .copy_from_slice(&r3_compressed);
+            out[region3_offset as usize..total_len].copy_from_slice(&r3_compressed);
         }
 
         out
@@ -261,21 +293,33 @@ impl Default for LeafletEncoder {
 
 /// Determine the minimum byte width needed to represent a value.
 pub fn width_for_max(max_val: u32) -> u8 {
-    if max_val <= 0xFF { 1 }
-    else if max_val <= 0xFFFF { 2 }
-    else { 4 }
+    if max_val <= 0xFF {
+        1
+    } else if max_val <= 0xFFFF {
+        2
+    } else {
+        4
+    }
 }
 
 /// Determine p_width: 2 (u16) or 4 (u32).
 pub fn p_width_for_max(max_p_id: u32) -> u8 {
-    if max_p_id <= 0xFFFF { 2 } else { 4 }
+    if max_p_id <= 0xFFFF {
+        2
+    } else {
+        4
+    }
 }
 
 /// Determine dt_width: 1 (u8), 2 (u16), or 4 (u32).
 pub fn dt_width_for_max(max_dt: u32) -> u8 {
     // Datatypes widen from u8 → u16 when needed.
     // (dt is only a tie-break key; most datasets remain within u8.)
-    if max_dt <= 0xFF { 1 } else { 2 }
+    if max_dt <= 0xFF {
+        1
+    } else {
+        2
+    }
 }
 
 // ============================================================================
@@ -373,6 +417,7 @@ fn write_col_p_id(buf: &mut Vec<u8>, records: &[RunRecord], p_width: u8) {
 }
 
 /// Write a fixed u32 column.
+#[allow(dead_code)]
 fn write_col_u32(buf: &mut Vec<u8>, records: &[RunRecord], field_fn: fn(&RunRecord) -> u32) {
     for r in records {
         buf.extend_from_slice(&field_fn(r).to_le_bytes());
@@ -399,7 +444,7 @@ fn write_col_u64(buf: &mut Vec<u8>, records: &[RunRecord], field_fn: fn(&RunReco
 fn encode_region1_spot(records: &[RunRecord], p_width: u8) -> Vec<u8> {
     let rle = build_rle_u64(records, |r| r.s_id.as_u64());
     let row_count = records.len();
-    let buf_size = 4 + rle.len() * 12 + row_count * (p_width as usize) + row_count * 1 + row_count * 8;
+    let buf_size = 4 + rle.len() * 12 + row_count * (p_width as usize) + row_count + row_count * 8;
     let mut buf = Vec::with_capacity(buf_size);
     write_rle_u64(&mut buf, &rle);
     write_col_p_id(&mut buf, records, p_width);
@@ -412,7 +457,7 @@ fn encode_region1_spot(records: &[RunRecord], p_width: u8) -> Vec<u8> {
 fn encode_region1_psot(records: &[RunRecord]) -> Vec<u8> {
     let rle = build_rle_u32(records, |r| r.p_id);
     let row_count = records.len();
-    let buf_size = 4 + rle.len() * 8 + row_count * 8 + row_count * 1 + row_count * 8;
+    let buf_size = 4 + rle.len() * 8 + row_count * 8 + row_count + row_count * 8;
     let mut buf = Vec::with_capacity(buf_size);
     write_rle_u32(&mut buf, &rle);
     write_col_u64(&mut buf, records, |r| r.s_id.as_u64());
@@ -425,7 +470,7 @@ fn encode_region1_psot(records: &[RunRecord]) -> Vec<u8> {
 fn encode_region1_post(records: &[RunRecord]) -> Vec<u8> {
     let rle = build_rle_u32(records, |r| r.p_id);
     let row_count = records.len();
-    let buf_size = 4 + rle.len() * 8 + row_count * 1 + row_count * 8 + row_count * 8;
+    let buf_size = 4 + rle.len() * 8 + row_count + row_count * 8 + row_count * 8;
     let mut buf = Vec::with_capacity(buf_size);
     write_rle_u32(&mut buf, &rle);
     write_col_u8(&mut buf, records, |r| r.o_kind);
@@ -461,7 +506,7 @@ fn encode_region1_opst(records: &[RunRecord], p_width: u8) -> Vec<u8> {
 /// `dt_width` controls the byte width of each dt value: 1 (u8), 2 (u16), or 4 (u32).
 fn encode_region2(records: &[RunRecord], dt_width: u8) -> Vec<u8> {
     let row_count = records.len();
-    let bitmap_bytes = (row_count + 7) / 8;
+    let bitmap_bytes = row_count.div_ceil(8);
 
     // Pre-count sparse entries
     let lang_count = records.iter().filter(|r| r.lang_id != 0).count();
@@ -470,7 +515,12 @@ fn encode_region2(records: &[RunRecord], dt_width: u8) -> Vec<u8> {
         .filter(|r| r.i != ListIndex::none().as_i32())
         .count();
 
-    let buf_size = row_count * (dt_width as usize) + row_count * 8 + bitmap_bytes + lang_count * 2 + bitmap_bytes + i_count * 4;
+    let buf_size = row_count * (dt_width as usize)
+        + row_count * 8
+        + bitmap_bytes
+        + lang_count * 2
+        + bitmap_bytes
+        + i_count * 4;
     let mut buf = Vec::with_capacity(buf_size);
 
     // dt array (variable width: u8 or u16)
@@ -558,7 +608,7 @@ pub struct Region3Entry {
     pub t_signed: i64, // positive = assert, negative = retract
     pub dt: u16,
     pub lang_id: u16,
-    pub i: i32,        // ListIndex::none() = i32::MIN if none
+    pub i: i32, // ListIndex::none() = i32::MIN if none
 }
 
 impl Region3Entry {
@@ -647,7 +697,16 @@ fn decode_region3(data: &[u8]) -> io::Result<Vec<Region3Entry>> {
         let dt = u16::from_le_bytes(data[pos + 29..pos + 31].try_into().unwrap());
         let lang_id = u16::from_le_bytes(data[pos + 31..pos + 33].try_into().unwrap());
         let i = i32::from_le_bytes(data[pos + 33..pos + 37].try_into().unwrap());
-        entries.push(Region3Entry { s_id, p_id, o_kind, o_key, t_signed, dt, lang_id, i });
+        entries.push(Region3Entry {
+            s_id,
+            p_id,
+            o_kind,
+            o_key,
+            t_signed,
+            dt,
+            lang_id,
+            i,
+        });
         pos += REGION3_ENTRY_BYTES;
     }
 
@@ -685,7 +744,12 @@ pub fn decode_leaflet_region3(
         &data[r3_start..r3_end],
         header.region3_uncompressed_len as usize,
     )
-    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("zstd decompress r3: {}", e)))?;
+    .map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zstd decompress r3: {}", e),
+        )
+    })?;
 
     decode_region3(&r3_raw)
 }
@@ -721,7 +785,7 @@ pub fn decode_leaflet_region1(
     data: &[u8],
     p_width: u8,
     sort_order: RunSortOrder,
-) -> io::Result<(LeafletHeader, Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
+) -> io::Result<Region1WithHeader> {
     // New format: no "legacy width=0" defaults.
     if p_width != 2 && p_width != 4 {
         return Err(io::Error::new(
@@ -746,7 +810,12 @@ pub fn decode_leaflet_region1(
         &data[r1_start..r1_end],
         header.region1_uncompressed_len as usize,
     )
-    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("zstd decompress r1: {}", e)))?;
+    .map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zstd decompress r1: {}", e),
+        )
+    })?;
 
     // ---- Decode Region 1 ----
     let (s_ids, p_ids, o_kinds, o_keys) = decode_region1(&r1_raw, row_count, p_width, sort_order)?;
@@ -761,7 +830,7 @@ pub fn decode_leaflet_region2(
     data: &[u8],
     header: &LeafletHeader,
     dt_width: u8,
-) -> io::Result<(Vec<u32>, Vec<i64>, Vec<u16>, Vec<i32>)> {
+) -> io::Result<Region2Columns> {
     // dt widens from u8 → u16; Region 2 must match the leaf header's dt_width.
     if dt_width != 1 && dt_width != 2 {
         return Err(io::Error::new(
@@ -784,7 +853,12 @@ pub fn decode_leaflet_region2(
         &data[r2_start..r2_end],
         header.region2_uncompressed_len as usize,
     )
-    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("zstd decompress r2: {}", e)))?;
+    .map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("zstd decompress r2: {}", e),
+        )
+    })?;
 
     decode_region2(&r2_raw, row_count, dt_width)
 }
@@ -800,8 +874,10 @@ pub fn decode_leaflet(
     dt_width: u8,
     sort_order: RunSortOrder,
 ) -> io::Result<DecodedLeaflet> {
-    let (header, s_ids, p_ids, o_kinds, o_keys) = decode_leaflet_region1(data, p_width, sort_order)?;
-    let (dt_values, t_values, lang_ids, i_values) = decode_leaflet_region2(data, &header, dt_width)?;
+    let (header, s_ids, p_ids, o_kinds, o_keys) =
+        decode_leaflet_region1(data, p_width, sort_order)?;
+    let (dt_values, t_values, lang_ids, i_values) =
+        decode_leaflet_region2(data, &header, dt_width)?;
 
     Ok(DecodedLeaflet {
         row_count: header.row_count as usize,
@@ -828,7 +904,7 @@ fn decode_region1(
     row_count: usize,
     p_width: u8,
     order: RunSortOrder,
-) -> io::Result<(Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
+) -> io::Result<Region1Columns> {
     match order {
         RunSortOrder::Spot => decode_region1_spot(data, row_count, p_width),
         RunSortOrder::Psot => decode_region1_psot(data, row_count),
@@ -843,7 +919,10 @@ fn decode_region1(
 /// Returns the expanded Vec and updated position.
 fn decode_rle_u32(data: &[u8], pos: &mut usize, row_count: usize) -> io::Result<Vec<u32>> {
     if *pos + 4 > data.len() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "region 1: RLE header truncated"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "region 1: RLE header truncated",
+        ));
     }
     let rle_count = u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap()) as usize;
     *pos += 4;
@@ -851,7 +930,10 @@ fn decode_rle_u32(data: &[u8], pos: &mut usize, row_count: usize) -> io::Result<
     let mut vals = Vec::with_capacity(row_count);
     for _ in 0..rle_count {
         if *pos + 8 > data.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "region 1: u32 RLE truncated"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "region 1: u32 RLE truncated",
+            ));
         }
         let key = u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap());
         *pos += 4;
@@ -864,7 +946,11 @@ fn decode_rle_u32(data: &[u8], pos: &mut usize, row_count: usize) -> io::Result<
     if vals.len() != row_count {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("region 1: u32 RLE expanded to {} rows, expected {}", vals.len(), row_count),
+            format!(
+                "region 1: u32 RLE expanded to {} rows, expected {}",
+                vals.len(),
+                row_count
+            ),
         ));
     }
     Ok(vals)
@@ -874,7 +960,10 @@ fn decode_rle_u32(data: &[u8], pos: &mut usize, row_count: usize) -> io::Result<
 /// Each entry is 12 bytes (8-byte key + 4-byte count).
 fn decode_rle_u64(data: &[u8], pos: &mut usize, row_count: usize) -> io::Result<Vec<u64>> {
     if *pos + 4 > data.len() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "region 1: RLE header truncated"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "region 1: RLE header truncated",
+        ));
     }
     let rle_count = u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap()) as usize;
     *pos += 4;
@@ -882,7 +971,10 @@ fn decode_rle_u64(data: &[u8], pos: &mut usize, row_count: usize) -> io::Result<
     let mut vals = Vec::with_capacity(row_count);
     for _ in 0..rle_count {
         if *pos + 12 > data.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "region 1: u64 RLE truncated"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "region 1: u64 RLE truncated",
+            ));
         }
         let key = u64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
         *pos += 8;
@@ -895,27 +987,41 @@ fn decode_rle_u64(data: &[u8], pos: &mut usize, row_count: usize) -> io::Result<
     if vals.len() != row_count {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("region 1: u64 RLE expanded to {} rows, expected {}", vals.len(), row_count),
+            format!(
+                "region 1: u64 RLE expanded to {} rows, expected {}",
+                vals.len(),
+                row_count
+            ),
         ));
     }
     Ok(vals)
 }
 
 /// Read a variable-width p_id column.
-fn read_col_p_id(data: &[u8], pos: &mut usize, row_count: usize, p_width: u8) -> io::Result<Vec<u32>> {
+fn read_col_p_id(
+    data: &[u8],
+    pos: &mut usize,
+    row_count: usize,
+    p_width: u8,
+) -> io::Result<Vec<u32>> {
     let pw = p_width as usize;
     let mut vals = Vec::with_capacity(row_count);
     for _ in 0..row_count {
         if *pos + pw > data.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "region 1: p_id truncated"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "region 1: p_id truncated",
+            ));
         }
         let val = match p_width {
             2 => u16::from_le_bytes(data[*pos..*pos + 2].try_into().unwrap()) as u32,
             4 => u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap()),
-            _ => return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("region 1: unsupported p_width {}", p_width),
-            )),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("region 1: unsupported p_width {}", p_width),
+                ))
+            }
         };
         vals.push(val);
         *pos += pw;
@@ -926,7 +1032,10 @@ fn read_col_p_id(data: &[u8], pos: &mut usize, row_count: usize, p_width: u8) ->
 /// Read a fixed u8 column.
 fn read_col_u8(data: &[u8], pos: &mut usize, row_count: usize) -> io::Result<Vec<u8>> {
     if *pos + row_count > data.len() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "region 1: u8 col truncated"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "region 1: u8 col truncated",
+        ));
     }
     let vals = data[*pos..*pos + row_count].to_vec();
     *pos += row_count;
@@ -934,11 +1043,15 @@ fn read_col_u8(data: &[u8], pos: &mut usize, row_count: usize) -> io::Result<Vec
 }
 
 /// Read a fixed u32 column.
+#[allow(dead_code)]
 fn read_col_u32(data: &[u8], pos: &mut usize, row_count: usize) -> io::Result<Vec<u32>> {
     let mut vals = Vec::with_capacity(row_count);
     for _ in 0..row_count {
         if *pos + 4 > data.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "region 1: u32 col truncated"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "region 1: u32 col truncated",
+            ));
         }
         vals.push(u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap()));
         *pos += 4;
@@ -951,7 +1064,10 @@ fn read_col_u64(data: &[u8], pos: &mut usize, row_count: usize) -> io::Result<Ve
     let mut vals = Vec::with_capacity(row_count);
     for _ in 0..row_count {
         if *pos + 8 > data.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "region 1: u64 col truncated"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "region 1: u64 col truncated",
+            ));
         }
         vals.push(u64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap()));
         *pos += 8;
@@ -962,7 +1078,7 @@ fn read_col_u64(data: &[u8], pos: &mut usize, row_count: usize) -> io::Result<Ve
 // ---- Per-order decode functions ----
 
 /// SPOT: RLE(s_id:u64), p_id[pw], o_kind[u8], o_key[u64]
-fn decode_region1_spot(data: &[u8], row_count: usize, p_width: u8) -> io::Result<(Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
+fn decode_region1_spot(data: &[u8], row_count: usize, p_width: u8) -> io::Result<Region1Columns> {
     let mut pos = 0;
     let s_ids = decode_rle_u64(data, &mut pos, row_count)?;
     let p_ids = read_col_p_id(data, &mut pos, row_count, p_width)?;
@@ -972,7 +1088,7 @@ fn decode_region1_spot(data: &[u8], row_count: usize, p_width: u8) -> io::Result
 }
 
 /// PSOT: RLE(p_id:u32), s_id[u64], o_kind[u8], o_key[u64]
-fn decode_region1_psot(data: &[u8], row_count: usize) -> io::Result<(Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
+fn decode_region1_psot(data: &[u8], row_count: usize) -> io::Result<Region1Columns> {
     let mut pos = 0;
     let p_ids = decode_rle_u32(data, &mut pos, row_count)?;
     let s_ids = read_col_u64(data, &mut pos, row_count)?;
@@ -982,7 +1098,7 @@ fn decode_region1_psot(data: &[u8], row_count: usize) -> io::Result<(Vec<u64>, V
 }
 
 /// POST: RLE(p_id:u32), o_kind[u8], o_key[u64], s_id[u64]
-fn decode_region1_post(data: &[u8], row_count: usize) -> io::Result<(Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
+fn decode_region1_post(data: &[u8], row_count: usize) -> io::Result<Region1Columns> {
     let mut pos = 0;
     let p_ids = decode_rle_u32(data, &mut pos, row_count)?;
     let o_kinds = read_col_u8(data, &mut pos, row_count)?;
@@ -992,7 +1108,7 @@ fn decode_region1_post(data: &[u8], row_count: usize) -> io::Result<(Vec<u64>, V
 }
 
 /// OPST: o_kind[u8], RLE(o_key:u64), p_id[pw], s_id[u64]
-fn decode_region1_opst(data: &[u8], row_count: usize, p_width: u8) -> io::Result<(Vec<u64>, Vec<u32>, Vec<u8>, Vec<u64>)> {
+fn decode_region1_opst(data: &[u8], row_count: usize, p_width: u8) -> io::Result<Region1Columns> {
     let mut pos = 0;
     let o_kinds = read_col_u8(data, &mut pos, row_count)?;
     let o_keys = decode_rle_u64(data, &mut pos, row_count)?;
@@ -1004,19 +1120,18 @@ fn decode_region1_opst(data: &[u8], row_count: usize, p_width: u8) -> io::Result
 /// Decode Region 2: dt[] + t[] + lang bitmap + i bitmap.
 ///
 /// `dt_width`: byte width of each dt value (1, 2, or 4).
-fn decode_region2(
-    data: &[u8],
-    row_count: usize,
-    dt_width: u8,
-) -> io::Result<(Vec<u32>, Vec<i64>, Vec<u16>, Vec<i32>)> {
+fn decode_region2(data: &[u8], row_count: usize, dt_width: u8) -> io::Result<Region2Columns> {
     if dt_width != 1 && dt_width != 2 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("region 2: unsupported dt_width {} (expected 1 or 2)", dt_width),
+            format!(
+                "region 2: unsupported dt_width {} (expected 1 or 2)",
+                dt_width
+            ),
         ));
     }
     let dw = dt_width as usize;
-    let bitmap_bytes = (row_count + 7) / 8;
+    let bitmap_bytes = row_count.div_ceil(8);
     let mut pos = 0;
 
     // dt array (u8/u16, zero-extended to u32)
@@ -1134,15 +1249,22 @@ fn decode_region2(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::DatatypeDictId;
     use fluree_db_core::subject_id::SubjectId;
-    use fluree_db_core::value_id::{ObjKind, ObjKey};
+    use fluree_db_core::value_id::{ObjKey, ObjKind};
+    use fluree_db_core::DatatypeDictId;
 
     fn make_record(s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
         RunRecord::new(
-            0, SubjectId::from_u64(s_id), p_id,
-            ObjKind::NUM_INT, ObjKey::encode_i64(val),
-            t, true, DatatypeDictId::INTEGER.as_u16(), 0, None,
+            0,
+            SubjectId::from_u64(s_id),
+            p_id,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(val),
+            t,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
         )
     }
 
@@ -1166,7 +1288,10 @@ mod tests {
         assert_eq!(decoded.o_keys[0], ObjKey::encode_i64(10).as_u64());
         assert_eq!(decoded.o_keys[1], ObjKey::encode_i64(20).as_u64());
         assert_eq!(decoded.t_values, vec![1, 1, 2, 2]);
-        assert_eq!(decoded.dt_values, vec![DatatypeDictId::INTEGER.as_u16() as u32; 4]);
+        assert_eq!(
+            decoded.dt_values,
+            vec![DatatypeDictId::INTEGER.as_u16() as u32; 4]
+        );
     }
 
     #[test]
@@ -1195,18 +1320,42 @@ mod tests {
             make_record(1, 1, 10, 1),
             // Lang string
             RunRecord::new(
-                0, SubjectId::from_u64(1), 2, ObjKind::LEX_ID, ObjKey::encode_u32_id(5), 1, true,
-                DatatypeDictId::LANG_STRING.as_u16(), 3, None,
+                0,
+                SubjectId::from_u64(1),
+                2,
+                ObjKind::LEX_ID,
+                ObjKey::encode_u32_id(5),
+                1,
+                true,
+                DatatypeDictId::LANG_STRING.as_u16(),
+                3,
+                None,
             ),
             // List entry
             RunRecord::new(
-                0, SubjectId::from_u64(2), 1, ObjKind::NUM_INT, ObjKey::encode_i64(42), 1, true,
-                DatatypeDictId::INTEGER.as_u16(), 0, Some(7),
+                0,
+                SubjectId::from_u64(2),
+                1,
+                ObjKind::NUM_INT,
+                ObjKey::encode_i64(42),
+                1,
+                true,
+                DatatypeDictId::INTEGER.as_u16(),
+                0,
+                Some(7),
             ),
             // Both lang and list index
             RunRecord::new(
-                0, SubjectId::from_u64(2), 2, ObjKind::LEX_ID, ObjKey::encode_u32_id(8), 1, true,
-                DatatypeDictId::LANG_STRING.as_u16(), 2, Some(3),
+                0,
+                SubjectId::from_u64(2),
+                2,
+                ObjKind::LEX_ID,
+                ObjKey::encode_u32_id(8),
+                1,
+                true,
+                DatatypeDictId::LANG_STRING.as_u16(),
+                2,
+                Some(3),
             ),
         ];
 
@@ -1226,10 +1375,7 @@ mod tests {
 
     #[test]
     fn test_header_fields() {
-        let records = vec![
-            make_record(5, 3, 100, 1),
-            make_record(5, 4, 200, 2),
-        ];
+        let records = vec![make_record(5, 3, 100, 1), make_record(5, 4, 200, 2)];
 
         let encoder = LeafletEncoder::new(1);
         let encoded = encoder.encode_leaflet(&records);
@@ -1261,25 +1407,78 @@ mod tests {
     fn make_records_for_order_tests() -> Vec<RunRecord> {
         vec![
             // s=1, p=5, o=100
-            RunRecord::new(0, SubjectId::from_u64(1), 5, ObjKind::NUM_INT, ObjKey::encode_i64(100), 1, true, DatatypeDictId::INTEGER.as_u16(), 0, None),
+            RunRecord::new(
+                0,
+                SubjectId::from_u64(1),
+                5,
+                ObjKind::NUM_INT,
+                ObjKey::encode_i64(100),
+                1,
+                true,
+                DatatypeDictId::INTEGER.as_u16(),
+                0,
+                None,
+            ),
             // s=1, p=5, o=200
-            RunRecord::new(0, SubjectId::from_u64(1), 5, ObjKind::NUM_INT, ObjKey::encode_i64(200), 2, true, DatatypeDictId::INTEGER.as_u16(), 0, None),
+            RunRecord::new(
+                0,
+                SubjectId::from_u64(1),
+                5,
+                ObjKind::NUM_INT,
+                ObjKey::encode_i64(200),
+                2,
+                true,
+                DatatypeDictId::INTEGER.as_u16(),
+                0,
+                None,
+            ),
             // s=2, p=3, o=50
-            RunRecord::new(0, SubjectId::from_u64(2), 3, ObjKind::NUM_INT, ObjKey::encode_i64(50), 1, true, DatatypeDictId::INTEGER.as_u16(), 0, None),
+            RunRecord::new(
+                0,
+                SubjectId::from_u64(2),
+                3,
+                ObjKind::NUM_INT,
+                ObjKey::encode_i64(50),
+                1,
+                true,
+                DatatypeDictId::INTEGER.as_u16(),
+                0,
+                None,
+            ),
             // s=3, p=5, o=100
-            RunRecord::new(0, SubjectId::from_u64(3), 5, ObjKind::NUM_INT, ObjKey::encode_i64(100), 3, true, DatatypeDictId::INTEGER.as_u16(), 0, None),
+            RunRecord::new(
+                0,
+                SubjectId::from_u64(3),
+                5,
+                ObjKind::NUM_INT,
+                ObjKey::encode_i64(100),
+                3,
+                true,
+                DatatypeDictId::INTEGER.as_u16(),
+                0,
+                None,
+            ),
         ]
     }
 
     fn assert_round_trip(records: &[RunRecord], decoded: &DecodedLeaflet) {
         assert_eq!(decoded.row_count, records.len());
         for (i, r) in records.iter().enumerate() {
-            assert_eq!(decoded.s_ids[i], r.s_id.as_u64(), "s_id mismatch at row {}", i);
+            assert_eq!(
+                decoded.s_ids[i],
+                r.s_id.as_u64(),
+                "s_id mismatch at row {}",
+                i
+            );
             assert_eq!(decoded.p_ids[i], r.p_id, "p_id mismatch at row {}", i);
             assert_eq!(decoded.o_kinds[i], r.o_kind, "o_kind mismatch at row {}", i);
             assert_eq!(decoded.o_keys[i], r.o_key, "o_key mismatch at row {}", i);
             assert_eq!(decoded.t_values[i], r.t, "t mismatch at row {}", i);
-            assert_eq!(decoded.dt_values[i], r.dt as u32, "dt mismatch at row {}", i);
+            assert_eq!(
+                decoded.dt_values[i], r.dt as u32,
+                "dt mismatch at row {}",
+                i
+            );
         }
     }
 
@@ -1305,9 +1504,42 @@ mod tests {
     fn test_opst_encode_decode_round_trip() {
         // OPST uses u64 RLE on o_key values
         let records = vec![
-            RunRecord::new(0, SubjectId::from_u64(1), 5, ObjKind::REF_ID, ObjKey::encode_u32_id(10), 1, true, DatatypeDictId::ID.as_u16(), 0, None),
-            RunRecord::new(0, SubjectId::from_u64(2), 5, ObjKind::REF_ID, ObjKey::encode_u32_id(10), 2, true, DatatypeDictId::ID.as_u16(), 0, None),
-            RunRecord::new(0, SubjectId::from_u64(3), 3, ObjKind::REF_ID, ObjKey::encode_u32_id(20), 1, true, DatatypeDictId::ID.as_u16(), 0, None),
+            RunRecord::new(
+                0,
+                SubjectId::from_u64(1),
+                5,
+                ObjKind::REF_ID,
+                ObjKey::encode_u32_id(10),
+                1,
+                true,
+                DatatypeDictId::ID.as_u16(),
+                0,
+                None,
+            ),
+            RunRecord::new(
+                0,
+                SubjectId::from_u64(2),
+                5,
+                ObjKind::REF_ID,
+                ObjKey::encode_u32_id(10),
+                2,
+                true,
+                DatatypeDictId::ID.as_u16(),
+                0,
+                None,
+            ),
+            RunRecord::new(
+                0,
+                SubjectId::from_u64(3),
+                3,
+                ObjKind::REF_ID,
+                ObjKey::encode_u32_id(20),
+                1,
+                true,
+                DatatypeDictId::ID.as_u16(),
+                0,
+                None,
+            ),
         ];
         let encoder = LeafletEncoder::with_widths_and_order(1, 2, 1, RunSortOrder::Opst);
         let encoded = encoder.encode_leaflet(&records);
@@ -1317,9 +1549,18 @@ mod tests {
 
     #[test]
     fn test_opst_single_record() {
-        let records = vec![
-            RunRecord::new(0, SubjectId::from_u64(1), 5, ObjKind::REF_ID, ObjKey::encode_u32_id(42), 1, true, DatatypeDictId::ID.as_u16(), 0, None),
-        ];
+        let records = vec![RunRecord::new(
+            0,
+            SubjectId::from_u64(1),
+            5,
+            ObjKind::REF_ID,
+            ObjKey::encode_u32_id(42),
+            1,
+            true,
+            DatatypeDictId::ID.as_u16(),
+            0,
+            None,
+        )];
         let encoder = LeafletEncoder::with_widths_and_order(1, 2, 1, RunSortOrder::Opst);
         let encoded = encoder.encode_leaflet(&records);
         let decoded = decode_leaflet(&encoded, 2, 1, RunSortOrder::Opst).unwrap();
@@ -1332,10 +1573,54 @@ mod tests {
         let o_kind = ObjKind::REF_ID;
         let o_key = ObjKey::encode_u32_id(99);
         let records = vec![
-            RunRecord::new(0, SubjectId::from_u64(1), 1, o_kind, o_key, 1, true, DatatypeDictId::ID.as_u16(), 0, None),
-            RunRecord::new(0, SubjectId::from_u64(2), 1, o_kind, o_key, 1, true, DatatypeDictId::ID.as_u16(), 0, None),
-            RunRecord::new(0, SubjectId::from_u64(3), 2, o_kind, o_key, 1, true, DatatypeDictId::ID.as_u16(), 0, None),
-            RunRecord::new(0, SubjectId::from_u64(4), 2, o_kind, o_key, 1, true, DatatypeDictId::ID.as_u16(), 0, None),
+            RunRecord::new(
+                0,
+                SubjectId::from_u64(1),
+                1,
+                o_kind,
+                o_key,
+                1,
+                true,
+                DatatypeDictId::ID.as_u16(),
+                0,
+                None,
+            ),
+            RunRecord::new(
+                0,
+                SubjectId::from_u64(2),
+                1,
+                o_kind,
+                o_key,
+                1,
+                true,
+                DatatypeDictId::ID.as_u16(),
+                0,
+                None,
+            ),
+            RunRecord::new(
+                0,
+                SubjectId::from_u64(3),
+                2,
+                o_kind,
+                o_key,
+                1,
+                true,
+                DatatypeDictId::ID.as_u16(),
+                0,
+                None,
+            ),
+            RunRecord::new(
+                0,
+                SubjectId::from_u64(4),
+                2,
+                o_kind,
+                o_key,
+                1,
+                true,
+                DatatypeDictId::ID.as_u16(),
+                0,
+                None,
+            ),
         ];
         let encoder = LeafletEncoder::with_widths_and_order(1, 2, 1, RunSortOrder::Opst);
         let encoded = encoder.encode_leaflet(&records);
@@ -1347,9 +1632,42 @@ mod tests {
     fn test_opst_alternating_objects() {
         // Worst case for RLE: every record has a different o
         let records = vec![
-            RunRecord::new(0, SubjectId::from_u64(1), 1, ObjKind::REF_ID, ObjKey::encode_u32_id(1), 1, true, DatatypeDictId::ID.as_u16(), 0, None),
-            RunRecord::new(0, SubjectId::from_u64(2), 1, ObjKind::REF_ID, ObjKey::encode_u32_id(2), 1, true, DatatypeDictId::ID.as_u16(), 0, None),
-            RunRecord::new(0, SubjectId::from_u64(3), 1, ObjKind::REF_ID, ObjKey::encode_u32_id(3), 1, true, DatatypeDictId::ID.as_u16(), 0, None),
+            RunRecord::new(
+                0,
+                SubjectId::from_u64(1),
+                1,
+                ObjKind::REF_ID,
+                ObjKey::encode_u32_id(1),
+                1,
+                true,
+                DatatypeDictId::ID.as_u16(),
+                0,
+                None,
+            ),
+            RunRecord::new(
+                0,
+                SubjectId::from_u64(2),
+                1,
+                ObjKind::REF_ID,
+                ObjKey::encode_u32_id(2),
+                1,
+                true,
+                DatatypeDictId::ID.as_u16(),
+                0,
+                None,
+            ),
+            RunRecord::new(
+                0,
+                SubjectId::from_u64(3),
+                1,
+                ObjKind::REF_ID,
+                ObjKey::encode_u32_id(3),
+                1,
+                true,
+                DatatypeDictId::ID.as_u16(),
+                0,
+                None,
+            ),
         ];
         let encoder = LeafletEncoder::with_widths_and_order(1, 2, 1, RunSortOrder::Opst);
         let encoded = encoder.encode_leaflet(&records);
@@ -1387,19 +1705,34 @@ mod tests {
     fn test_region3_multi_entry_round_trip() {
         let entries = vec![
             Region3Entry {
-                s_id: 10, p_id: 5, o_kind: ObjKind::NUM_INT.as_u8(),
+                s_id: 10,
+                p_id: 5,
+                o_kind: ObjKind::NUM_INT.as_u8(),
                 o_key: ObjKey::encode_i64(100).as_u64(),
-                t_signed: 42, dt: DatatypeDictId::INTEGER.as_u16(), lang_id: 0, i: ListIndex::none().as_i32(),
+                t_signed: 42,
+                dt: DatatypeDictId::INTEGER.as_u16(),
+                lang_id: 0,
+                i: ListIndex::none().as_i32(),
             },
             Region3Entry {
-                s_id: 10, p_id: 5, o_kind: ObjKind::NUM_INT.as_u8(),
+                s_id: 10,
+                p_id: 5,
+                o_kind: ObjKind::NUM_INT.as_u8(),
                 o_key: ObjKey::encode_i64(100).as_u64(),
-                t_signed: -40, dt: DatatypeDictId::INTEGER.as_u16(), lang_id: 0, i: ListIndex::none().as_i32(),
+                t_signed: -40,
+                dt: DatatypeDictId::INTEGER.as_u16(),
+                lang_id: 0,
+                i: ListIndex::none().as_i32(),
             },
             Region3Entry {
-                s_id: 7, p_id: 3, o_kind: ObjKind::LEX_ID.as_u8(),
+                s_id: 7,
+                p_id: 3,
+                o_kind: ObjKind::LEX_ID.as_u8(),
                 o_key: ObjKey::encode_u32_id(99).as_u64(),
-                t_signed: 38, dt: DatatypeDictId::LANG_STRING.as_u16(), lang_id: 2, i: 5,
+                t_signed: 38,
+                dt: DatatypeDictId::LANG_STRING.as_u16(),
+                lang_id: 2,
+                i: 5,
             },
         ];
         let encoded = encode_region3(&entries);
@@ -1412,8 +1745,16 @@ mod tests {
     fn test_region3_signed_t_encoding() {
         // Assert: op=1 → positive t_signed
         let assert_rec = RunRecord::new(
-            0, SubjectId::from_u64(1), 2, ObjKind::NUM_INT, ObjKey::encode_i64(10), 42, true,
-            DatatypeDictId::INTEGER.as_u16(), 0, None,
+            0,
+            SubjectId::from_u64(1),
+            2,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(10),
+            42,
+            true,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
         );
         let e = Region3Entry::from_run_record(&assert_rec);
         assert_eq!(e.t_signed, 42);
@@ -1422,8 +1763,16 @@ mod tests {
 
         // Retract: op=0 → negative t_signed
         let retract_rec = RunRecord::new(
-            0, SubjectId::from_u64(1), 2, ObjKind::NUM_INT, ObjKey::encode_i64(10), 42, false,
-            DatatypeDictId::INTEGER.as_u16(), 0, None,
+            0,
+            SubjectId::from_u64(1),
+            2,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(10),
+            42,
+            false,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
         );
         let e = Region3Entry::from_run_record(&retract_rec);
         assert_eq!(e.t_signed, -42);
@@ -1434,10 +1783,7 @@ mod tests {
     #[test]
     fn test_encode_leaflet_with_r3_empty_region3() {
         // encode_leaflet_with_r3 with empty R3 should produce same result as encode_leaflet
-        let records = vec![
-            make_record(1, 1, 10, 1),
-            make_record(1, 2, 20, 1),
-        ];
+        let records = vec![make_record(1, 1, 10, 1), make_record(1, 2, 20, 1)];
         let encoder = LeafletEncoder::new(1);
 
         let without_r3 = encoder.encode_leaflet(&records);
@@ -1461,14 +1807,24 @@ mod tests {
 
         let r3_entries = vec![
             Region3Entry {
-                s_id: 1, p_id: 2, o_kind: ObjKind::NUM_INT.as_u8(),
+                s_id: 1,
+                p_id: 2,
+                o_kind: ObjKind::NUM_INT.as_u8(),
                 o_key: ObjKey::encode_i64(20).as_u64(),
-                t_signed: 5, dt: DatatypeDictId::INTEGER.as_u16(), lang_id: 0, i: ListIndex::none().as_i32(),
+                t_signed: 5,
+                dt: DatatypeDictId::INTEGER.as_u16(),
+                lang_id: 0,
+                i: ListIndex::none().as_i32(),
             },
             Region3Entry {
-                s_id: 1, p_id: 2, o_kind: ObjKind::NUM_INT.as_u8(),
+                s_id: 1,
+                p_id: 2,
+                o_kind: ObjKind::NUM_INT.as_u8(),
                 o_key: ObjKey::encode_i64(15).as_u64(),
-                t_signed: -4, dt: DatatypeDictId::INTEGER.as_u16(), lang_id: 0, i: ListIndex::none().as_i32(),
+                t_signed: -4,
+                dt: DatatypeDictId::INTEGER.as_u16(),
+                lang_id: 0,
+                i: ListIndex::none().as_i32(),
             },
         ];
 

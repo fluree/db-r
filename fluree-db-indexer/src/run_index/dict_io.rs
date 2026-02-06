@@ -105,11 +105,7 @@ pub fn read_predicate_dict(path: &Path) -> io::Result<PredicateDict> {
 
 /// Write a `StringValueDict` (aliased as `PredicateDict`) as a forward file
 /// (concatenated raw bytes) + index file (offsets + lengths).
-pub fn write_string_dict(
-    fwd_path: &Path,
-    idx_path: &Path,
-    dict: &PredicateDict,
-) -> io::Result<()> {
+pub fn write_string_dict(fwd_path: &Path, idx_path: &Path, dict: &PredicateDict) -> io::Result<()> {
     let mut fwd_file = io::BufWriter::new(std::fs::File::create(fwd_path)?);
     let count = dict.len();
     let mut offsets = Vec::with_capacity(count as usize);
@@ -187,7 +183,9 @@ pub fn read_subject_sid_map_from_bytes(data: &[u8]) -> io::Result<Vec<u64>> {
             io::ErrorKind::InvalidData,
             format!(
                 "subject sid map truncated: {} < {} (count={})",
-                data.len(), expected_len, count
+                data.len(),
+                expected_len,
+                count
             ),
         ));
     }
@@ -361,11 +359,7 @@ pub fn read_language_dict(path: &Path) -> io::Result<LanguageTagDict> {
 ///
 /// Returns `Err` if the range is out of bounds. Uses `debug_assert` for
 /// UTF-8 validation (we wrote the data — corruption is a debug concern).
-pub fn read_forward_entry<'a>(
-    forward_mmap: &'a memmap2::Mmap,
-    offset: u64,
-    len: u32,
-) -> io::Result<&'a str> {
+pub fn read_forward_entry(forward_mmap: &memmap2::Mmap, offset: u64, len: u32) -> io::Result<&str> {
     let start = offset as usize;
     let end = start + len as usize;
     if end > forward_mmap.len() {
@@ -418,14 +412,8 @@ mod tests {
             restored.resolve(0),
             Some("http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
         );
-        assert_eq!(
-            restored.resolve(1),
-            Some("http://purl.org/dc/terms/title")
-        );
-        assert_eq!(
-            restored.resolve(2),
-            Some("http://xmlns.com/foaf/0.1/name")
-        );
+        assert_eq!(restored.resolve(1), Some("http://purl.org/dc/terms/title"));
+        assert_eq!(restored.resolve(2), Some("http://xmlns.com/foaf/0.1/name"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

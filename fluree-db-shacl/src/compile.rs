@@ -6,14 +6,14 @@
 use crate::constraints::{Constraint, NestedShape, NodeConstraint};
 use crate::error::Result;
 use crate::predicates;
-use std::sync::Arc;
 use fluree_db_core::{
-    range_with_overlay, Db, Flake, FlakeValue, IndexType, OverlayProvider, RangeMatch, RangeOptions, RangeTest, Sid,
-    Storage,
+    range_with_overlay, Db, Flake, FlakeValue, IndexType, OverlayProvider, RangeMatch,
+    RangeOptions, RangeTest, Sid, Storage,
 };
 use fluree_vocab::namespaces::{RDF, SHACL};
 use fluree_vocab::rdf_names;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// Unique identifier for a shape
 pub type ShapeId = Sid;
@@ -277,7 +277,8 @@ impl ShapeCompiler {
 
         // Expand RDF list references
         for (ps_id, list_head) in in_list_expansions {
-            let values = traverse_rdf_list(db, overlay, &list_head, &rdf_first, &rdf_rest, &rdf_nil).await?;
+            let values =
+                traverse_rdf_list(db, overlay, &list_head, &rdf_first, &rdf_rest, &rdf_nil).await?;
             if !values.is_empty() {
                 if let Some(ps_data) = self.property_shapes.get_mut(&ps_id) {
                     // Replace the single Ref with the expanded values
@@ -305,7 +306,8 @@ impl ShapeCompiler {
 
         // Expand sh:and lists
         for (shape_id, list_head) in and_lists {
-            let values = traverse_rdf_list(db, overlay, &list_head, &rdf_first, &rdf_rest, &rdf_nil).await?;
+            let values =
+                traverse_rdf_list(db, overlay, &list_head, &rdf_first, &rdf_rest, &rdf_nil).await?;
             let shape_refs: Vec<Sid> = values
                 .into_iter()
                 .filter_map(|v| {
@@ -323,7 +325,8 @@ impl ShapeCompiler {
 
         // Expand sh:or lists
         for (shape_id, list_head) in or_lists {
-            let values = traverse_rdf_list(db, overlay, &list_head, &rdf_first, &rdf_rest, &rdf_nil).await?;
+            let values =
+                traverse_rdf_list(db, overlay, &list_head, &rdf_first, &rdf_rest, &rdf_nil).await?;
             let shape_refs: Vec<Sid> = values
                 .into_iter()
                 .filter_map(|v| {
@@ -341,7 +344,8 @@ impl ShapeCompiler {
 
         // Expand sh:xone lists
         for (shape_id, list_head) in xone_lists {
-            let values = traverse_rdf_list(db, overlay, &list_head, &rdf_first, &rdf_rest, &rdf_nil).await?;
+            let values =
+                traverse_rdf_list(db, overlay, &list_head, &rdf_first, &rdf_rest, &rdf_nil).await?;
             let shape_refs: Vec<Sid> = values
                 .into_iter()
                 .filter_map(|v| {
@@ -570,19 +574,25 @@ impl ShapeCompiler {
             name if name == predicates::AND => {
                 // Accumulate shape references directly (JSON-LD @list expands to individual flakes)
                 if let FlakeValue::Ref(shape_ref) = &flake.o {
-                    self.get_or_create_shape(&flake.s).and_shapes.push(shape_ref.clone());
+                    self.get_or_create_shape(&flake.s)
+                        .and_shapes
+                        .push(shape_ref.clone());
                 }
             }
             name if name == predicates::OR => {
                 // Accumulate shape references directly (JSON-LD @list expands to individual flakes)
                 if let FlakeValue::Ref(shape_ref) = &flake.o {
-                    self.get_or_create_shape(&flake.s).or_shapes.push(shape_ref.clone());
+                    self.get_or_create_shape(&flake.s)
+                        .or_shapes
+                        .push(shape_ref.clone());
                 }
             }
             name if name == predicates::XONE => {
                 // Accumulate shape references directly (JSON-LD @list expands to individual flakes)
                 if let FlakeValue::Ref(shape_ref) = &flake.o {
-                    self.get_or_create_shape(&flake.s).xone_shapes.push(shape_ref.clone());
+                    self.get_or_create_shape(&flake.s)
+                        .xone_shapes
+                        .push(shape_ref.clone());
                 }
             }
 

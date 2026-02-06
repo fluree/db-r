@@ -10,15 +10,8 @@
 //! available on read-only storage.
 
 use crate::{error::ApiError, tx::IndexingMode, Result};
-use fluree_db_core::{
-    address_path::alias_to_path_prefix,
-    alias as core_alias,
-    Storage,
-};
-use fluree_db_indexer::{
-    CleanGarbageConfig,
-    build_binary_index, clean_garbage,
-};
+use fluree_db_core::{address_path::alias_to_path_prefix, alias as core_alias, Storage};
+use fluree_db_indexer::{build_binary_index, clean_garbage, CleanGarbageConfig};
 use fluree_db_nameservice::{AdminPublisher, NameService, Publisher, VirtualGraphPublisher};
 use std::time::Duration;
 use tracing::{info, warn};
@@ -50,20 +43,15 @@ pub enum DropMode {
 /// NOTE: This reflects the **nameservice state at lookup time**, not deletion success.
 /// Deletion success is reported via `index_files_deleted`, `commit_files_deleted`,
 /// and `warnings` fields in `DropReport`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DropStatus {
     /// Record existed and was not retracted at lookup time
     Dropped,
     /// Record was already marked as retracted
     AlreadyRetracted,
     /// No record found for this alias
+    #[default]
     NotFound,
-}
-
-impl Default for DropStatus {
-    fn default() -> Self {
-        DropStatus::NotFound
-    }
 }
 
 // =============================================================================
@@ -407,9 +395,10 @@ where
             // TODO: Call vg_artifact_prefix() from VG indexer crate once it exists
             // For now, skip deletion and report a warning
             if record.is_some() {
-                report
-                    .warnings
-                    .push("VG artifact deletion not yet implemented - prefix not standardized".to_string());
+                report.warnings.push(
+                    "VG artifact deletion not yet implemented - prefix not standardized"
+                        .to_string(),
+                );
             }
         }
 
@@ -443,21 +432,23 @@ where
         let alias = normalize_alias(alias);
 
         // Get nameservice record
-        let record = self.nameservice.lookup(&alias).await?
+        let record = self
+            .nameservice
+            .lookup(&alias)
+            .await?
             .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {}", alias)))?;
 
         // Get indexer status if available
-        let (indexing_enabled, phase, pending_min_t, last_error) =
-            match &self.indexing_mode {
-                IndexingMode::Background(handle) => {
-                    if let Some(status) = handle.status(&alias).await {
-                        (true, status.phase, status.pending_min_t, status.last_error)
-                    } else {
-                        (true, IndexPhase::Idle, None, None)
-                    }
+        let (indexing_enabled, phase, pending_min_t, last_error) = match &self.indexing_mode {
+            IndexingMode::Background(handle) => {
+                if let Some(status) = handle.status(&alias).await {
+                    (true, status.phase, status.pending_min_t, status.last_error)
+                } else {
+                    (true, IndexPhase::Idle, None, None)
                 }
-                IndexingMode::Disabled => (false, IndexPhase::Idle, None, None),
-            };
+            }
+            IndexingMode::Disabled => (false, IndexPhase::Idle, None, None),
+        };
 
         Ok(IndexStatusResult {
             alias,
@@ -502,11 +493,17 @@ where
         };
 
         // Look up current state
-        let record = self.nameservice.lookup(&alias).await?
+        let record = self
+            .nameservice
+            .lookup(&alias)
+            .await?
             .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {}", alias)))?;
 
         if record.retracted {
-            return Err(ApiError::NotFound(format!("Ledger is retracted: {}", alias)));
+            return Err(ApiError::NotFound(format!(
+                "Ledger is retracted: {}",
+                alias
+            )));
         }
 
         // Handle no-commit ledgers (nothing to index)
@@ -524,14 +521,17 @@ where
         let completion = handle.trigger(alias.clone(), min_t).await;
 
         // Wait with timeout
-        let timeout_ms = opts.timeout_ms.unwrap_or(TriggerIndexOptions::DEFAULT_TIMEOUT_MS);
-        let result = tokio::time::timeout(
-            Duration::from_millis(timeout_ms),
-            completion.wait()
-        ).await;
+        let timeout_ms = opts
+            .timeout_ms
+            .unwrap_or(TriggerIndexOptions::DEFAULT_TIMEOUT_MS);
+        let result =
+            tokio::time::timeout(Duration::from_millis(timeout_ms), completion.wait()).await;
 
         match result {
-            Ok(IndexOutcome::Completed { index_t, root_address }) => {
+            Ok(IndexOutcome::Completed {
+                index_t,
+                root_address,
+            }) => {
                 info!(alias = %alias, index_t = index_t, "Indexing completed");
                 Ok(TriggerIndexResult {
                     alias,
@@ -542,9 +542,7 @@ where
             Ok(IndexOutcome::Failed(msg)) => {
                 Err(ApiError::internal(format!("Indexing failed: {}", msg)))
             }
-            Ok(IndexOutcome::Cancelled) => {
-                Err(ApiError::internal("Indexing was cancelled"))
-            }
+            Ok(IndexOutcome::Cancelled) => Err(ApiError::internal("Indexing was cancelled")),
             Err(_) => {
                 warn!(alias = %alias, timeout_ms = timeout_ms, "Index trigger timed out");
                 Err(ApiError::IndexTimeout(timeout_ms))
@@ -573,20 +571,22 @@ where
     /// # Errors
     /// - `NotFound` if ledger doesn't exist or has no commits
     /// - `ReindexConflict` (409) if ledger advanced during rebuild
-    pub async fn reindex(
-        &self,
-        alias: &str,
-        opts: ReindexOptions,
-    ) -> Result<ReindexResult> {
+    pub async fn reindex(&self, alias: &str, opts: ReindexOptions) -> Result<ReindexResult> {
         let alias = normalize_alias(alias);
         info!(alias = %alias, "Starting reindex");
 
         // 1. Look up current state and capture commit_t for conflict detection
-        let record = self.nameservice.lookup(&alias).await?
+        let record = self
+            .nameservice
+            .lookup(&alias)
+            .await?
             .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {}", alias)))?;
 
         if record.retracted {
-            return Err(ApiError::NotFound(format!("Ledger is retracted: {}", alias)));
+            return Err(ApiError::NotFound(format!(
+                "Ledger is retracted: {}",
+                alias
+            )));
         }
 
         let initial_commit_t = record.commit_t;
@@ -606,12 +606,8 @@ where
         let gc_max_old_indexes = indexer_config.gc_max_old_indexes;
         let gc_min_time_mins = indexer_config.gc_min_time_mins;
 
-        let index_result = build_binary_index(
-            self.storage(),
-            &alias,
-            &record,
-            indexer_config,
-        ).await?;
+        let index_result =
+            build_binary_index(self.storage(), &alias, &record, indexer_config).await?;
 
         info!(
             alias = %alias,
@@ -620,10 +616,9 @@ where
         );
 
         // 4. Conflict detection: check if ledger advanced during rebuild
-        let final_record = self.nameservice.lookup(&alias).await?
-            .ok_or_else(|| ApiError::NotFound(
-                format!("Ledger disappeared during reindex: {}", alias)
-            ))?;
+        let final_record = self.nameservice.lookup(&alias).await?.ok_or_else(|| {
+            ApiError::NotFound(format!("Ledger disappeared during reindex: {}", alias))
+        })?;
 
         if final_record.commit_t != initial_commit_t {
             return Err(ApiError::ReindexConflict {

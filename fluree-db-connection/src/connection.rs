@@ -2,9 +2,9 @@
 
 use crate::config::ConnectionConfig;
 use crate::error::Result;
-use fluree_db_core::{Db, MemoryStorage, Storage};
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 use fluree_db_core::FileStorage;
+use fluree_db_core::{Db, MemoryStorage, Storage};
 
 /// A Fluree database connection
 ///
@@ -19,10 +19,7 @@ pub struct Connection<S> {
 impl<S: Storage> Connection<S> {
     /// Create a new connection with provided storage
     pub fn new(config: ConnectionConfig, storage: S) -> Self {
-        Self {
-            config,
-            storage,
-        }
+        Self { config, storage }
     }
 
     /// Get the connection configuration
@@ -60,11 +57,8 @@ impl FileConnection {
     ///
     /// Creates a new cache for the returned Db. For shared caching,
     /// use a custom Connection with your own cache type.
-    pub async fn load_db_fresh_cache(
-        &self,
-        root_address: &str,
-    ) -> Result<Db<FileStorage>> {
-        let storage = FileStorage::new(&self.storage.base_path());
+    pub async fn load_db_fresh_cache(&self, root_address: &str) -> Result<Db<FileStorage>> {
+        let storage = FileStorage::new(self.storage.base_path());
         Ok(Db::load(storage, root_address).await?)
     }
 }

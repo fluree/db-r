@@ -33,18 +33,17 @@
 
 pub mod admin;
 pub mod bm25_worker;
-#[cfg(feature = "vector")]
-pub mod vector_worker;
 #[cfg(feature = "credential")]
 pub mod credential;
 pub mod dataset;
-pub mod explain;
 mod error;
+pub mod explain;
 pub mod format;
 pub mod graph;
-pub mod graph_snapshot;
 pub mod graph_query_builder;
+pub mod graph_snapshot;
 pub mod graph_transact_builder;
+pub mod import;
 mod ledger;
 pub mod ledger_info;
 pub mod nameservice_query;
@@ -53,9 +52,10 @@ pub mod policy_builder;
 pub mod policy_view;
 mod query;
 mod time_resolve;
-pub mod import;
 pub mod tx;
 pub mod tx_builder;
+#[cfg(feature = "vector")]
+pub mod vector_worker;
 pub mod view;
 pub mod virtual_graph;
 
@@ -66,32 +66,45 @@ pub mod ledger_manager;
 pub mod search;
 
 pub use admin::{
-    DropMode, DropReport, DropStatus, VgDropReport,
+    DropMode,
+    DropReport,
+    DropStatus,
     // Index maintenance
-    IndexStatusResult, ReindexOptions, ReindexResult, TriggerIndexOptions, TriggerIndexResult,
+    IndexStatusResult,
+    ReindexOptions,
+    ReindexResult,
+    TriggerIndexOptions,
+    TriggerIndexResult,
+    VgDropReport,
 };
-pub use dataset::{
-    DatasetParseError, DatasetSpec, GraphSource, QueryConnectionOptions, TimeSpec,
-};
+pub use dataset::{DatasetParseError, DatasetSpec, GraphSource, QueryConnectionOptions, TimeSpec};
 pub use error::{ApiError, BuilderError, BuilderErrors, Result};
-pub use format::{FormatterConfig, FormatError, JsonLdRowShape, OutputFormat, SelectMode};
-pub use query::{QueryResult, TrackedErrorResponse, TrackedQueryResponse};
-pub use policy_view::{PolicyWrappedView, wrap_policy_view, wrap_policy_view_historical, build_policy_context, wrap_identity_policy_view};
-pub use view::{FlureeDataSetView, FlureeView, QueryInput, ReasoningModePrecedence};
+pub use format::{FormatError, FormatterConfig, JsonLdRowShape, OutputFormat, SelectMode};
 pub use graph::Graph;
-pub use graph_snapshot::GraphSnapshot;
 pub use graph_query_builder::{GraphQueryBuilder, GraphSnapshotQueryBuilder};
+pub use graph_snapshot::GraphSnapshot;
 pub use graph_transact_builder::{GraphTransactBuilder, StagedGraph};
-pub use query::builder::{ViewQueryBuilder, DatasetQueryBuilder, FromQueryBuilder, VirtualGraphMode};
-pub use query::nameservice_builder::NameserviceQueryBuilder;
-pub use import::{ImportBuilder, ImportConfig, ImportError, ImportResult, CreateBuilder};
-pub use tx::{IndexingMode, IndexingStatus, StageResult, TransactResult, TransactResultRef};
-pub use tx_builder::{OwnedTransactBuilder, RefTransactBuilder, Staged};
+pub use import::{CreateBuilder, ImportBuilder, ImportConfig, ImportError, ImportResult};
 pub use ledger_info::LedgerInfoBuilder;
 pub use ledger_manager::{
     FreshnessCheck, FreshnessSource, LedgerHandle, LedgerManager, LedgerManagerConfig,
     LedgerSnapshot, LedgerWriteGuard, NotifyResult, NsNotify, RemoteWatermark, UpdatePlan,
 };
+pub use policy_view::{
+    build_policy_context, wrap_identity_policy_view, wrap_policy_view, wrap_policy_view_historical,
+    PolicyWrappedView,
+};
+pub use query::builder::{
+    DatasetQueryBuilder, FromQueryBuilder, ViewQueryBuilder, VirtualGraphMode,
+};
+pub use query::nameservice_builder::NameserviceQueryBuilder;
+pub use query::{QueryResult, TrackedErrorResponse, TrackedQueryResponse};
+pub use tx::{
+    IndexingMode, IndexingStatus, StageResult, TrackedTransactionInput, TransactResult,
+    TransactResultRef,
+};
+pub use tx_builder::{OwnedTransactBuilder, RefTransactBuilder, Staged};
+pub use view::{FlureeDataSetView, FlureeView, QueryInput, ReasoningModePrecedence};
 pub use virtual_graph::{
     Bm25CreateConfig, Bm25CreateResult, Bm25DropResult, Bm25StalenessCheck, Bm25SyncResult,
     FlureeIndexProvider, SnapshotSelection,
@@ -109,12 +122,14 @@ pub use bm25_worker::{
 
 #[cfg(feature = "vector")]
 pub use vector_worker::{
-    VectorMaintenanceWorker, VectorWorkerConfig, VectorWorkerHandle, VectorWorkerState, VectorWorkerStats,
+    VectorMaintenanceWorker, VectorWorkerConfig, VectorWorkerHandle, VectorWorkerState,
+    VectorWorkerStats,
 };
 
 #[cfg(feature = "vector")]
 pub use virtual_graph::{
-    VectorCreateConfig, VectorCreateResult, VectorDropResult, VectorStalenessCheck, VectorSyncResult,
+    VectorCreateConfig, VectorCreateResult, VectorDropResult, VectorStalenessCheck,
+    VectorSyncResult,
 };
 
 // Re-export search provider adapter
@@ -128,21 +143,23 @@ pub use fluree_db_indexer::{
 
 // Re-export commonly used types from child crates
 pub use fluree_db_connection::{ConnectionConfig, StorageType};
-pub use fluree_db_core::{
-    ContentAddressedWrite, ContentKind, ContentWriteResult, MemoryStorage,
-    OverlayProvider, Storage, StorageRead, StorageWrite,
-};
 #[cfg(feature = "native")]
 pub use fluree_db_core::FileStorage;
-pub use fluree_db_ledger::{HistoricalLedgerView, IndexConfig, LedgerState, LedgerView, TypeErasedStore};
+pub use fluree_db_core::{
+    ContentAddressedWrite, ContentKind, ContentWriteResult, MemoryStorage, OverlayProvider,
+    Storage, StorageRead, StorageWrite,
+};
+pub use fluree_db_ledger::{
+    HistoricalLedgerView, IndexConfig, LedgerState, LedgerView, TypeErasedStore,
+};
 pub use fluree_db_nameservice::{NameService, NsRecord, Publisher, VirtualGraphPublisher};
 pub use fluree_db_novelty::Novelty;
 pub use fluree_db_query::{
     execute_pattern, execute_pattern_with_overlay, execute_pattern_with_overlay_at,
     execute_with_dataset_and_bm25, execute_with_dataset_and_policy_and_bm25,
     execute_with_dataset_and_policy_and_providers, execute_with_dataset_and_providers,
-    execute_with_overlay_at, execute_with_overlay_at_tracked, execute_with_r2rml, Batch,
-    ExecutableQuery, NoOpR2rmlProvider, Pattern, QueryOptions, VarRegistry,
+    execute_with_overlay, execute_with_overlay_tracked, execute_with_r2rml, Batch, DataSource,
+    ExecutableQuery, NoOpR2rmlProvider, Pattern, QueryContextParams, QueryOptions, VarRegistry,
 };
 // Re-export for lower-level pattern-based queries (internal/advanced use)
 pub use fluree_db_query::{Term, TriplePattern};
@@ -155,32 +172,30 @@ pub use fluree_db_transact::{
 
 // Re-export SPARQL types (product feature; always enabled)
 pub use fluree_db_sparql::{
-    parse_sparql, validate as validate_sparql, lower_sparql, Capabilities as SparqlCapabilities,
-    Diagnostic as SparqlDiagnostic, LowerError as SparqlLowerError, ParseOutput as SparqlParseOutput,
-    Prologue as SparqlPrologue, QueryBody as SparqlQueryBody, Severity as SparqlSeverity,
-    SourceSpan as SparqlSourceSpan, SparqlAst, UpdateOperation as SparqlUpdateOperation,
+    lower_sparql, parse_sparql, validate as validate_sparql, Capabilities as SparqlCapabilities,
+    Diagnostic as SparqlDiagnostic, LowerError as SparqlLowerError,
+    ParseOutput as SparqlParseOutput, Prologue as SparqlPrologue, QueryBody as SparqlQueryBody,
+    Severity as SparqlSeverity, SourceSpan as SparqlSourceSpan, SparqlAst,
+    UpdateOperation as SparqlUpdateOperation,
 };
 
 // Re-export policy types for access control
 pub use fluree_db_policy::{
-    PolicyContext, PolicyWrapper, PolicySet, PolicyRestriction, PolicyValue, PolicyAction,
-    TargetMode, PolicyQuery,
-    PolicyError, PolicyQueryExecutor, NoOpQueryExecutor,
-    build_policy_set, is_schema_flake, filter_by_required, build_policy_values_clause,
+    build_policy_set, build_policy_values_clause, filter_by_required, is_schema_flake,
+    NoOpQueryExecutor, PolicyAction, PolicyContext, PolicyError, PolicyQuery, PolicyQueryExecutor,
+    PolicyRestriction, PolicySet, PolicyValue, PolicyWrapper, TargetMode,
 };
 
 // Re-export tracking types for query/transaction metrics
-pub use fluree_db_core::{
-    FuelExceededError, PolicyStats, Tracker, TrackingOptions, TrackingTally,
-};
+pub use fluree_db_core::{FuelExceededError, PolicyStats, Tracker, TrackingOptions, TrackingTally};
 
+use async_trait::async_trait;
 use fluree_db_connection::Connection;
 #[cfg(feature = "native")]
 use fluree_db_nameservice::file::FileNameService;
 use fluree_db_nameservice::memory::MemoryNameService;
 #[cfg(feature = "aws")]
 use fluree_db_nameservice::StorageNameService;
-use async_trait::async_trait;
 use std::sync::Arc;
 
 // Re-export encryption types for convenient access
@@ -214,7 +229,10 @@ impl AnyStorage {
 
 #[async_trait]
 impl StorageRead for AnyStorage {
-    async fn read_bytes(&self, address: &str) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
+    async fn read_bytes(
+        &self,
+        address: &str,
+    ) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
         self.0.read_bytes(address).await
     }
 
@@ -230,7 +248,10 @@ impl StorageRead for AnyStorage {
         self.0.exists(address).await
     }
 
-    async fn list_prefix(&self, prefix: &str) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
+    async fn list_prefix(
+        &self,
+        prefix: &str,
+    ) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
         self.0.list_prefix(prefix).await
     }
 
@@ -241,7 +262,11 @@ impl StorageRead for AnyStorage {
 
 #[async_trait]
 impl StorageWrite for AnyStorage {
-    async fn write_bytes(&self, address: &str, bytes: &[u8]) -> std::result::Result<(), fluree_db_core::Error> {
+    async fn write_bytes(
+        &self,
+        address: &str,
+        bytes: &[u8],
+    ) -> std::result::Result<(), fluree_db_core::Error> {
         self.0.write_bytes(address, bytes).await
     }
 
@@ -301,34 +326,64 @@ impl AnyNameService {
 
 #[async_trait]
 impl fluree_db_nameservice::NameService for AnyNameService {
-    async fn lookup(&self, ledger_address: &str) -> std::result::Result<Option<fluree_db_nameservice::NsRecord>, fluree_db_nameservice::NameServiceError> {
+    async fn lookup(
+        &self,
+        ledger_address: &str,
+    ) -> std::result::Result<
+        Option<fluree_db_nameservice::NsRecord>,
+        fluree_db_nameservice::NameServiceError,
+    > {
         self.0.lookup(ledger_address).await
     }
 
-    async fn alias(&self, ledger_address: &str) -> std::result::Result<Option<String>, fluree_db_nameservice::NameServiceError> {
+    async fn alias(
+        &self,
+        ledger_address: &str,
+    ) -> std::result::Result<Option<String>, fluree_db_nameservice::NameServiceError> {
         self.0.alias(ledger_address).await
     }
 
-    async fn all_records(&self) -> std::result::Result<Vec<fluree_db_nameservice::NsRecord>, fluree_db_nameservice::NameServiceError> {
+    async fn all_records(
+        &self,
+    ) -> std::result::Result<
+        Vec<fluree_db_nameservice::NsRecord>,
+        fluree_db_nameservice::NameServiceError,
+    > {
         self.0.all_records().await
     }
 }
 
 #[async_trait]
 impl fluree_db_nameservice::Publisher for AnyNameService {
-    async fn publish_ledger_init(&self, alias: &str) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+    async fn publish_ledger_init(
+        &self,
+        alias: &str,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
         self.0.publish_ledger_init(alias).await
     }
 
-    async fn publish_commit(&self, alias: &str, commit_addr: &str, commit_t: i64) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+    async fn publish_commit(
+        &self,
+        alias: &str,
+        commit_addr: &str,
+        commit_t: i64,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
         self.0.publish_commit(alias, commit_addr, commit_t).await
     }
 
-    async fn publish_index(&self, alias: &str, index_addr: &str, index_t: i64) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+    async fn publish_index(
+        &self,
+        alias: &str,
+        index_addr: &str,
+        index_t: i64,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
         self.0.publish_index(alias, index_addr, index_t).await
     }
 
-    async fn retract(&self, alias: &str) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+    async fn retract(
+        &self,
+        alias: &str,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
         self.0.retract(alias).await
     }
 
@@ -378,7 +433,9 @@ impl<N> AddressRewritingNameService<N> {
     }
 
     fn rewrite(address: &str, id: &Option<String>, method: &'static str) -> String {
-        let Some(id) = id else { return address.to_string(); };
+        let Some(id) = id else {
+            return address.to_string();
+        };
         // If already has this identifier, preserve.
         if address.starts_with(&format!("fluree:{}:", id)) {
             return address.to_string();
@@ -391,12 +448,19 @@ impl<N> AddressRewritingNameService<N> {
 #[async_trait::async_trait]
 impl<N> fluree_db_nameservice::NameService for AddressRewritingNameService<N>
 where
-    N: fluree_db_nameservice::NameService + fluree_db_nameservice::Publisher + std::fmt::Debug + Send + Sync,
+    N: fluree_db_nameservice::NameService
+        + fluree_db_nameservice::Publisher
+        + std::fmt::Debug
+        + Send
+        + Sync,
 {
     async fn lookup(
         &self,
         ledger_address: &str,
-    ) -> std::result::Result<Option<fluree_db_nameservice::NsRecord>, fluree_db_nameservice::NameServiceError> {
+    ) -> std::result::Result<
+        Option<fluree_db_nameservice::NsRecord>,
+        fluree_db_nameservice::NameServiceError,
+    > {
         self.inner.lookup(ledger_address).await
     }
 
@@ -409,7 +473,10 @@ where
 
     async fn all_records(
         &self,
-    ) -> std::result::Result<Vec<fluree_db_nameservice::NsRecord>, fluree_db_nameservice::NameServiceError> {
+    ) -> std::result::Result<
+        Vec<fluree_db_nameservice::NsRecord>,
+        fluree_db_nameservice::NameServiceError,
+    > {
         self.inner.all_records().await
     }
 }
@@ -417,7 +484,11 @@ where
 #[async_trait::async_trait]
 impl<N> fluree_db_nameservice::Publisher for AddressRewritingNameService<N>
 where
-    N: fluree_db_nameservice::NameService + fluree_db_nameservice::Publisher + std::fmt::Debug + Send + Sync,
+    N: fluree_db_nameservice::NameService
+        + fluree_db_nameservice::Publisher
+        + std::fmt::Debug
+        + Send
+        + Sync,
 {
     async fn publish_ledger_init(
         &self,
@@ -476,10 +547,7 @@ impl<S> TieredStorage<S> {
 
     fn route_to_commit(address: &str) -> bool {
         // Extract the path portion after :// if present (fluree:*://path)
-        let path = address
-            .split("://")
-            .nth(1)
-            .unwrap_or(address);
+        let path = address.split("://").nth(1).unwrap_or(address);
 
         // Clojure parity: commit blobs + txn blobs go to commit storage.
         path.contains("/commit/") || path.contains("/txn/")
@@ -491,7 +559,10 @@ impl<S> StorageRead for TieredStorage<S>
 where
     S: Storage + Clone + Send + Sync,
 {
-    async fn read_bytes(&self, address: &str) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
+    async fn read_bytes(
+        &self,
+        address: &str,
+    ) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
         if Self::route_to_commit(address) {
             self.commit.read_bytes(address).await
         } else {
@@ -519,7 +590,10 @@ where
         }
     }
 
-    async fn list_prefix(&self, prefix: &str) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
+    async fn list_prefix(
+        &self,
+        prefix: &str,
+    ) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
         // Route based on prefix - commit/txn prefixes go to commit storage
         if Self::route_to_commit(prefix) {
             self.commit.list_prefix(prefix).await
@@ -534,7 +608,11 @@ impl<S> StorageWrite for TieredStorage<S>
 where
     S: Storage + Clone + Send + Sync,
 {
-    async fn write_bytes(&self, address: &str, bytes: &[u8]) -> std::result::Result<(), fluree_db_core::Error> {
+    async fn write_bytes(
+        &self,
+        address: &str,
+        bytes: &[u8],
+    ) -> std::result::Result<(), fluree_db_core::Error> {
         if Self::route_to_commit(address) {
             self.commit.write_bytes(address, bytes).await
         } else {
@@ -587,9 +665,15 @@ where
         // Clojure parity: commit blobs + txn blobs go to commit storage.
         match kind {
             ContentKind::Commit | ContentKind::Txn => {
-                self.commit.content_write_bytes(kind, ledger_alias, bytes).await
+                self.commit
+                    .content_write_bytes(kind, ledger_alias, bytes)
+                    .await
             }
-            _ => self.index.content_write_bytes(kind, ledger_alias, bytes).await,
+            _ => {
+                self.index
+                    .content_write_bytes(kind, ledger_alias, bytes)
+                    .await
+            }
         }
     }
 }
@@ -656,7 +740,10 @@ impl AddressIdentifierResolverStorage {
 
 #[async_trait]
 impl StorageRead for AddressIdentifierResolverStorage {
-    async fn read_bytes(&self, address: &str) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
+    async fn read_bytes(
+        &self,
+        address: &str,
+    ) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
         self.route(address).read_bytes(address).await
     }
 
@@ -673,7 +760,10 @@ impl StorageRead for AddressIdentifierResolverStorage {
     }
 
     /// List always uses the default storage
-    async fn list_prefix(&self, prefix: &str) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
+    async fn list_prefix(
+        &self,
+        prefix: &str,
+    ) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
         self.default.list_prefix(prefix).await
     }
 
@@ -775,14 +865,15 @@ async fn build_s3_storage_from_config(
         // Use the maximum to avoid unexpectedly shortening slower operations.
         timeout_ms: {
             let mut max_ms: Option<u64> = None;
-            for v in [
+            for ms in [
                 s3_config.read_timeout_ms,
                 s3_config.write_timeout_ms,
                 s3_config.list_timeout_ms,
-            ] {
-                if let Some(ms) = v {
-                    max_ms = Some(max_ms.map(|cur| cur.max(ms)).unwrap_or(ms));
-                }
+            ]
+            .into_iter()
+            .flatten()
+            {
+                max_ms = Some(max_ms.map(|cur| cur.max(ms)).unwrap_or(ms));
             }
             max_ms
         },
@@ -938,21 +1029,20 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
     if matches!(parsed.index_storage.storage_type, StorageType::S3(_)) {
         let handle = fluree_db_connection::connect_async(config).await?;
         let fluree_db_connection::ConnectionHandle::Aws(aws_handle) = handle else {
-            return Err(ApiError::config("Expected AWS connection handle for S3 config"));
+            return Err(ApiError::config(
+                "Expected AWS connection handle for S3 config",
+            ));
         };
-
-        let cache = Arc::new(aws_handle.cache().clone());
 
         // Decide whether to use tiered commit/index routing.
         let index = aws_handle.index_storage().clone();
         let commit = aws_handle.commit_storage().clone();
-        let base_storage: Arc<dyn Storage> = if index.bucket() != commit.bucket()
-            || index.prefix() != commit.prefix()
-        {
-            Arc::new(TieredStorage::new(commit, index))
-        } else {
-            Arc::new(index)
-        };
+        let base_storage: Arc<dyn Storage> =
+            if index.bucket() != commit.bucket() || index.prefix() != commit.prefix() {
+                Arc::new(TieredStorage::new(commit, index))
+            } else {
+                Arc::new(index)
+            };
 
         // Build address identifier resolver if configured
         let storage: AnyStorage = if let Some(addr_ids) = &aws_handle.config().address_identifiers {
@@ -972,14 +1062,20 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
             AnyStorage::new(base_storage)
         };
 
-        let connection = Connection::new(aws_handle.config().clone(), storage, Arc::clone(&cache));
+        let connection = Connection::new(aws_handle.config().clone(), storage);
 
         let commit_id = aws_handle
             .config()
             .commit_storage
             .as_ref()
             .and_then(|s| s.address_identifier.as_ref())
-            .or_else(|| aws_handle.config().index_storage.address_identifier.as_ref())
+            .or_else(|| {
+                aws_handle
+                    .config()
+                    .index_storage
+                    .address_identifier
+                    .as_ref()
+            })
             .map(|s| s.to_string());
         let index_id = aws_handle
             .config()
@@ -989,13 +1085,8 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
             .map(|s| s.to_string());
 
         let nameservice_inner = aws_handle.nameservice().clone();
-        let nameservice_wrapped = AddressRewritingNameService::new(
-            nameservice_inner,
-            commit_id,
-            "s3",
-            index_id,
-            "s3",
-        );
+        let nameservice_wrapped =
+            AddressRewritingNameService::new(nameservice_inner, commit_id, "s3", index_id, "s3");
         let nameservice = AnyNameService::new(Arc::new(nameservice_wrapped));
 
         // Start background indexing if enabled in config
@@ -1068,7 +1159,9 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
         StorageType::File => {
             #[cfg(not(feature = "native"))]
             {
-                Err(ApiError::config("Filesystem storage requires the 'native' feature"))
+                Err(ApiError::config(
+                    "Filesystem storage requires the 'native' feature",
+                ))
             }
             #[cfg(feature = "native")]
             {
@@ -1078,18 +1171,17 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
                     .clone()
                     .ok_or_else(|| ApiError::config("File storage requires filePath"))?;
                 let file_storage = FileStorage::new(path.as_ref());
-                let base_storage: Arc<dyn Storage> = if let Some(key_str) =
-                    parsed.index_storage.aes256_key.as_ref()
-                {
-                    // Note: This encrypts storage reads/writes (index/commit blobs). The file-based
-                    // nameservice remains plaintext, matching the existing builder behavior.
-                    let key = decode_encryption_key_base64(key_str.as_ref())?;
-                    let encryption_key = EncryptionKey::new(key, 0);
-                    let key_provider = StaticKeyProvider::new(encryption_key);
-                    Arc::new(EncryptedStorage::new(file_storage, key_provider))
-                } else {
-                    Arc::new(file_storage)
-                };
+                let base_storage: Arc<dyn Storage> =
+                    if let Some(key_str) = parsed.index_storage.aes256_key.as_ref() {
+                        // Note: This encrypts storage reads/writes (index/commit blobs). The file-based
+                        // nameservice remains plaintext, matching the existing builder behavior.
+                        let key = decode_encryption_key_base64(key_str.as_ref())?;
+                        let encryption_key = EncryptionKey::new(key, 0);
+                        let key_provider = StaticKeyProvider::new(encryption_key);
+                        Arc::new(EncryptedStorage::new(file_storage, key_provider))
+                    } else {
+                        Arc::new(file_storage)
+                    };
 
                 // Build address identifier resolver if configured
                 let storage: AnyStorage = if let Some(addr_ids) = &parsed.address_identifiers {
@@ -1138,11 +1230,9 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
                 })
             }
         }
-        StorageType::S3(_) => {
-            Err(ApiError::config(
-                "S3 storage requires the 'aws' feature on fluree-db-api",
-            ))
-        }
+        StorageType::S3(_) => Err(ApiError::config(
+            "S3 storage requires the 'aws' feature on fluree-db-api",
+        )),
         StorageType::Unsupported { type_iri, .. } => Err(ApiError::config(format!(
             "Unsupported storage type in JSON-LD config: {}",
             type_iri
@@ -1204,7 +1294,10 @@ pub async fn connect_filesystem(path: impl AsRef<str>) -> Result<FlureeClient> {
 ///   provided endpoint and omits `s3Endpoint` in the generated JSON-LD to avoid
 ///   signature/endpoint issues.
 #[cfg(feature = "aws")]
-pub async fn connect_s3(bucket: impl AsRef<str>, endpoint: impl AsRef<str>) -> Result<FlureeClient> {
+pub async fn connect_s3(
+    bucket: impl AsRef<str>,
+    endpoint: impl AsRef<str>,
+) -> Result<FlureeClient> {
     let bucket = bucket.as_ref();
     // S3 Express directory buckets should not be configured with a manual endpoint.
     // The AWS SDK handles directory bucket endpoints and session auth automatically.
@@ -1235,7 +1328,7 @@ pub async fn connect_s3(bucket: impl AsRef<str>, endpoint: impl AsRef<str>) -> R
 /// Builder for creating Fluree instances
 ///
 /// Provides a fluent API for configuring storage, cache, and nameservice options.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct FlureeBuilder {
     config: ConnectionConfig,
     #[cfg(feature = "native")]
@@ -1244,18 +1337,6 @@ pub struct FlureeBuilder {
     encryption_key: Option<[u8; 32]>,
     /// Optional ledger cache configuration (enables LedgerManager)
     ledger_cache_config: Option<LedgerManagerConfig>,
-}
-
-impl Default for FlureeBuilder {
-    fn default() -> Self {
-        Self {
-            config: ConnectionConfig::default(),
-            #[cfg(feature = "native")]
-            storage_path: None,
-            encryption_key: None,
-            ledger_cache_config: None,
-        }
-    }
 }
 
 impl FlureeBuilder {
@@ -1335,10 +1416,12 @@ impl FlureeBuilder {
             },
         };
 
-        let mut config = ConnectionConfig::default();
-        config.index_storage = storage;
-        config.commit_storage = None;
-        config.primary_publisher = Some(publisher);
+        let config = ConnectionConfig {
+            index_storage: storage,
+            commit_storage: None,
+            primary_publisher: Some(publisher),
+            ..Default::default()
+        };
 
         Self {
             config,
@@ -1591,13 +1674,9 @@ impl FlureeBuilder {
         let nameservice = FileNameService::new(&path);
 
         // Create LedgerManager if caching is enabled
-        let ledger_manager = self.ledger_cache_config.map(|config| {
-            Arc::new(LedgerManager::new(
-                storage,
-                nameservice.clone(),
-                config,
-            ))
-        });
+        let ledger_manager = self
+            .ledger_cache_config
+            .map(|config| Arc::new(LedgerManager::new(storage, nameservice.clone(), config)));
 
         Ok(Fluree {
             connection,
@@ -1640,12 +1719,7 @@ impl FlureeBuilder {
     pub fn build_encrypted(
         self,
         key: [u8; 32],
-    ) -> Result<
-        Fluree<
-            EncryptedStorage<FileStorage, StaticKeyProvider>,
-            FileNameService,
-        >,
-    > {
+    ) -> Result<Fluree<EncryptedStorage<FileStorage, StaticKeyProvider>, FileNameService>> {
         // Always use the explicitly provided key
         self.build_encrypted_internal(key)
     }
@@ -1680,12 +1754,7 @@ impl FlureeBuilder {
     #[cfg(feature = "native")]
     pub fn build_encrypted_from_config(
         self,
-    ) -> Result<
-        Fluree<
-            EncryptedStorage<FileStorage, StaticKeyProvider>,
-            FileNameService,
-        >,
-    > {
+    ) -> Result<Fluree<EncryptedStorage<FileStorage, StaticKeyProvider>, FileNameService>> {
         let key = self.encryption_key.ok_or_else(|| {
             ApiError::config("No encryption key configured. Set via with_encryption_key(), with_encryption_key_base64(), or AES256Key in JSON-LD config")
         })?;
@@ -1697,12 +1766,7 @@ impl FlureeBuilder {
     fn build_encrypted_internal(
         self,
         key: [u8; 32],
-    ) -> Result<
-        Fluree<
-            EncryptedStorage<FileStorage, StaticKeyProvider>,
-            FileNameService,
-        >,
-    > {
+    ) -> Result<Fluree<EncryptedStorage<FileStorage, StaticKeyProvider>, FileNameService>> {
         let path = self
             .storage_path
             .ok_or_else(|| ApiError::config("File storage requires a path"))?;
@@ -1741,13 +1805,9 @@ impl FlureeBuilder {
         let nameservice = MemoryNameService::new();
 
         // Create LedgerManager if caching is enabled
-        let ledger_manager = self.ledger_cache_config.map(|config| {
-            Arc::new(LedgerManager::new(
-                storage,
-                nameservice.clone(),
-                config,
-            ))
-        });
+        let ledger_manager = self
+            .ledger_cache_config
+            .map(|config| Arc::new(LedgerManager::new(storage, nameservice.clone(), config)));
 
         Fluree {
             connection,
@@ -1768,10 +1828,7 @@ impl FlureeBuilder {
     pub fn build_memory_encrypted(
         self,
         key: [u8; 32],
-    ) -> Fluree<
-        EncryptedStorage<MemoryStorage, StaticKeyProvider>,
-        MemoryNameService,
-    > {
+    ) -> Fluree<EncryptedStorage<MemoryStorage, StaticKeyProvider>, MemoryNameService> {
         let mem_storage = MemoryStorage::new();
         let encryption_key = EncryptionKey::new(key, 0);
         let key_provider = StaticKeyProvider::new(encryption_key);
@@ -1801,7 +1858,12 @@ impl FlureeBuilder {
     #[cfg(feature = "aws")]
     pub async fn build_s3(
         self,
-    ) -> Result<Fluree<fluree_db_storage_aws::S3Storage, StorageNameService<fluree_db_storage_aws::S3Storage>>> {
+    ) -> Result<
+        Fluree<
+            fluree_db_storage_aws::S3Storage,
+            StorageNameService<fluree_db_storage_aws::S3Storage>,
+        >,
+    > {
         use fluree_db_connection::aws;
         use fluree_db_connection::config::S3StorageConfig;
         use fluree_db_storage_aws::{S3Config, S3Storage};
@@ -1873,7 +1935,9 @@ impl FlureeBuilder {
     ) -> Result<
         Fluree<
             EncryptedStorage<fluree_db_storage_aws::S3Storage, StaticKeyProvider>,
-            StorageNameService<EncryptedStorage<fluree_db_storage_aws::S3Storage, StaticKeyProvider>>,
+            StorageNameService<
+                EncryptedStorage<fluree_db_storage_aws::S3Storage, StaticKeyProvider>,
+            >,
         >,
     > {
         use fluree_db_connection::aws;
@@ -1882,11 +1946,9 @@ impl FlureeBuilder {
 
         let s3_cfg: &S3StorageConfig = match &self.config.index_storage.storage_type {
             StorageType::S3(s3) => s3,
-            _ => {
-                return Err(ApiError::config(
-                    "build_s3_encrypted requires FlureeBuilder::s3(...) or an S3 indexStorage config",
-                ))
-            }
+            _ => return Err(ApiError::config(
+                "build_s3_encrypted requires FlureeBuilder::s3(...) or an S3 indexStorage config",
+            )),
         };
 
         let timeout_ms = s3_cfg
@@ -2127,10 +2189,7 @@ where
     ///     .insert(&data)
     ///     .execute().await?;
     /// ```
-    pub fn stage<'a>(
-        &'a self,
-        handle: &'a LedgerHandle<S>,
-    ) -> RefTransactBuilder<'a, S, N>
+    pub fn stage<'a>(&'a self, handle: &'a LedgerHandle<S>) -> RefTransactBuilder<'a, S, N>
     where
         S: ContentAddressedWrite,
         N: Publisher,
@@ -2241,11 +2300,7 @@ where
         let storage = self.connection.storage().clone();
         let nameservice = self.nameservice.clone();
 
-        self.ledger_manager = Some(Arc::new(LedgerManager::new(
-            storage,
-            nameservice,
-            config,
-        )));
+        self.ledger_manager = Some(Arc::new(LedgerManager::new(storage, nameservice, config)));
 
         self
     }
@@ -2421,19 +2476,19 @@ where
     /// Should be called once after building Fluree.
     /// Returns None if caching is not enabled.
     pub fn spawn_maintenance(&self) -> Option<tokio::task::JoinHandle<()>> {
-        self.ledger_manager.as_ref().map(|mgr| mgr.spawn_maintenance())
+        self.ledger_manager
+            .as_ref()
+            .map(|mgr| mgr.spawn_maintenance())
     }
 }
 
 /// Convenience functions for common configurations
-
+///
 /// Create a file-backed Fluree instance
 ///
 /// This is the most common configuration for production use.
 #[cfg(feature = "native")]
-pub fn fluree_file(
-    path: impl Into<String>,
-) -> Result<Fluree<FileStorage, FileNameService>> {
+pub fn fluree_file(path: impl Into<String>) -> Result<Fluree<FileStorage, FileNameService>> {
     FlureeBuilder::file(path).build()
 }
 
@@ -2450,7 +2505,9 @@ mod tests {
 
     #[test]
     fn test_fluree_builder_memory() {
-        let fluree = FlureeBuilder::memory().cache_max_entries(500).build_memory();
+        let fluree = FlureeBuilder::memory()
+            .cache_max_entries(500)
+            .build_memory();
 
         assert_eq!(fluree.connection.config().cache.max_entries, 500);
     }
@@ -2547,8 +2604,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_refresh_current_when_up_to_date() {
-        
-
         let fluree = FlureeBuilder::memory().with_ledger_caching().build_memory();
 
         // Create a ledger (this publishes to NS and returns state)
@@ -2587,16 +2642,14 @@ mod tests {
         let txn = json!({
             "insert": [{"@id": "ex:test", "ex:name": "test"}]
         });
-        let _result = fluree
-            .stage(&handle)
-            .update(&txn)
-            .execute()
-            .await
-            .unwrap();
+        let _result = fluree.stage(&handle).update(&txn).execute().await.unwrap();
 
         // The handle should now reflect the new t
         let snapshot_after = handle.snapshot().await;
-        assert_eq!(snapshot_after.t, 1, "Ledger should be at t=1 after transaction");
+        assert_eq!(
+            snapshot_after.t, 1,
+            "Ledger should be at t=1 after transaction"
+        );
 
         // Refresh should return Current (cache is up to date with NS)
         let result = fluree.refresh("txdb:main").await.unwrap();
@@ -2654,7 +2707,10 @@ mod tests {
         let commit_storage = MemoryStorage::new();
         // When routing via identifier, the full address is passed to the storage
         commit_storage
-            .write_bytes("fluree:commit-store:memory://mydb/main/commit/abc.json", b"commit-data")
+            .write_bytes(
+                "fluree:commit-store:memory://mydb/main/commit/abc.json",
+                b"commit-data",
+            )
             .await
             .unwrap();
 
@@ -2760,7 +2816,10 @@ mod tests {
 
         // read_bytes_hint should work same as read_bytes
         let bytes = resolver
-            .read_bytes_hint("fluree:memory://data.json", fluree_db_core::ReadHint::AnyBytes)
+            .read_bytes_hint(
+                "fluree:memory://data.json",
+                fluree_db_core::ReadHint::AnyBytes,
+            )
             .await
             .unwrap();
         assert_eq!(bytes, b"hint-test");

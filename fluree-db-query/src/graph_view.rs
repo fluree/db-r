@@ -118,9 +118,7 @@ impl<'a, S: Storage> ResolvedGraphView<'a, S> {
 
     /// Check if this view has an active (non-root) policy
     pub fn has_policy(&self) -> bool {
-        self.policy_enforcer
-            .map(|e| !e.is_root())
-            .unwrap_or(false)
+        self.policy_enforcer.map(|e| !e.is_root()).unwrap_or(false)
     }
 }
 
@@ -381,7 +379,7 @@ mod tests {
         // This test just verifies that the wrapper composition types compile
         // and the trait bounds are correct.
         fn _assert_graph_view<V: GraphView<fluree_db_core::MemoryStorage>>(_: &V) {}
-        
+
         // Object-safety check (doesn't run, just compiles)
         fn _check_dyn<S: Storage + 'static>(v: &dyn GraphView<S>) {
             let _resolved = v.resolve();

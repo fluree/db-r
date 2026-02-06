@@ -4,8 +4,8 @@
 //! for determining formatting behavior based on datatype.
 
 // Re-export vocabulary constants from the vocab crate for convenience
-pub use fluree_vocab::xsd;
 pub use fluree_vocab::rdf;
+pub use fluree_vocab::xsd;
 
 /// JSON-LD internal types
 pub mod jsonld {
@@ -26,12 +26,7 @@ pub mod jsonld {
 pub fn is_inferable_datatype(dt_iri: &str) -> bool {
     matches!(
         dt_iri,
-        xsd::STRING
-            | xsd::LONG
-            | xsd::INTEGER
-            | xsd::DOUBLE
-            | xsd::BOOLEAN
-            | xsd::DECIMAL
+        xsd::STRING | xsd::LONG | xsd::INTEGER | xsd::DOUBLE | xsd::BOOLEAN | xsd::DECIMAL
     )
 }
 

@@ -119,9 +119,7 @@ mod inner {
 
         fn resolve_object(&self, id: TermId) -> Option<(FlakeValue, Sid, Option<String>)> {
             match &self.terms[id.index() as usize] {
-                ResolvedTerm::Sid(sid) => {
-                    Some((FlakeValue::Ref(sid.clone()), DT_ID.clone(), None))
-                }
+                ResolvedTerm::Sid(sid) => Some((FlakeValue::Ref(sid.clone()), DT_ID.clone(), None)),
                 ResolvedTerm::Literal {
                     value,
                     dt_sid,
@@ -327,7 +325,7 @@ mod inner {
 
             // Double
             let p = sink.term_iri("http://example.org/dbl");
-            let o = sink.term_literal_value(LiteralValue::Double(3.14), Datatype::xsd_double());
+            let o = sink.term_literal_value(LiteralValue::Double(3.13), Datatype::xsd_double());
             sink.emit_triple(s, p, o);
 
             // Boolean

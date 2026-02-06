@@ -24,10 +24,7 @@ pub fn validate_has_value(
 /// Validate sh:in constraint
 ///
 /// Checks that a value is in the allowed set.
-pub fn validate_in(
-    value: &FlakeValue,
-    allowed: &[FlakeValue],
-) -> Option<ConstraintViolation> {
+pub fn validate_in(value: &FlakeValue, allowed: &[FlakeValue]) -> Option<ConstraintViolation> {
     if allowed.contains(value) {
         None
     } else {
@@ -44,10 +41,7 @@ pub fn validate_in(
 }
 
 /// Validate sh:minInclusive constraint
-pub fn validate_min_inclusive(
-    value: &FlakeValue,
-    min: &FlakeValue,
-) -> Option<ConstraintViolation> {
+pub fn validate_min_inclusive(value: &FlakeValue, min: &FlakeValue) -> Option<ConstraintViolation> {
     match compare_values(value, min) {
         Some(ord) if ord >= std::cmp::Ordering::Equal => None,
         _ => Some(ConstraintViolation {
@@ -59,10 +53,7 @@ pub fn validate_min_inclusive(
 }
 
 /// Validate sh:maxInclusive constraint
-pub fn validate_max_inclusive(
-    value: &FlakeValue,
-    max: &FlakeValue,
-) -> Option<ConstraintViolation> {
+pub fn validate_max_inclusive(value: &FlakeValue, max: &FlakeValue) -> Option<ConstraintViolation> {
     match compare_values(value, max) {
         Some(ord) if ord <= std::cmp::Ordering::Equal => None,
         _ => Some(ConstraintViolation {
@@ -74,28 +65,19 @@ pub fn validate_max_inclusive(
 }
 
 /// Validate sh:minExclusive constraint
-pub fn validate_min_exclusive(
-    value: &FlakeValue,
-    min: &FlakeValue,
-) -> Option<ConstraintViolation> {
+pub fn validate_min_exclusive(value: &FlakeValue, min: &FlakeValue) -> Option<ConstraintViolation> {
     match compare_values(value, min) {
         Some(std::cmp::Ordering::Greater) => None,
         _ => Some(ConstraintViolation {
             constraint: Constraint::MinExclusive(min.clone()),
             value: Some(value.clone()),
-            message: format!(
-                "Value {:?} must be greater than {:?}",
-                value, min
-            ),
+            message: format!("Value {:?} must be greater than {:?}", value, min),
         }),
     }
 }
 
 /// Validate sh:maxExclusive constraint
-pub fn validate_max_exclusive(
-    value: &FlakeValue,
-    max: &FlakeValue,
-) -> Option<ConstraintViolation> {
+pub fn validate_max_exclusive(value: &FlakeValue, max: &FlakeValue) -> Option<ConstraintViolation> {
     match compare_values(value, max) {
         Some(std::cmp::Ordering::Less) => None,
         _ => Some(ConstraintViolation {
@@ -145,14 +127,22 @@ mod tests {
     #[test]
     fn test_in_valid() {
         let value = FlakeValue::Long(2);
-        let allowed = vec![FlakeValue::Long(1), FlakeValue::Long(2), FlakeValue::Long(3)];
+        let allowed = vec![
+            FlakeValue::Long(1),
+            FlakeValue::Long(2),
+            FlakeValue::Long(3),
+        ];
         assert!(validate_in(&value, &allowed).is_none());
     }
 
     #[test]
     fn test_in_invalid() {
         let value = FlakeValue::Long(4);
-        let allowed = vec![FlakeValue::Long(1), FlakeValue::Long(2), FlakeValue::Long(3)];
+        let allowed = vec![
+            FlakeValue::Long(1),
+            FlakeValue::Long(2),
+            FlakeValue::Long(3),
+        ];
         assert!(validate_in(&value, &allowed).is_some());
     }
 
@@ -193,9 +183,15 @@ mod tests {
         // Long vs Double comparison
         let long = FlakeValue::Long(5);
         let double = FlakeValue::Double(5.0);
-        assert_eq!(compare_values(&long, &double), Some(std::cmp::Ordering::Equal));
+        assert_eq!(
+            compare_values(&long, &double),
+            Some(std::cmp::Ordering::Equal)
+        );
 
         let double_higher = FlakeValue::Double(5.5);
-        assert_eq!(compare_values(&long, &double_higher), Some(std::cmp::Ordering::Less));
+        assert_eq!(
+            compare_values(&long, &double_higher),
+            Some(std::cmp::Ordering::Less)
+        );
     }
 }

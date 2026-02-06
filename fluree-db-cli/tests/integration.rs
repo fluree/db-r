@@ -1,5 +1,5 @@
-use assert_cmd::Command;
 use assert_cmd::cargo_bin_cmd;
+use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
@@ -215,7 +215,10 @@ fn use_command_switches_active_ledger() {
 fn insert_with_commit_message() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();
-    fluree_cmd(&tmp).args(["create", "msgdb"]).assert().success();
+    fluree_cmd(&tmp)
+        .args(["create", "msgdb"])
+        .assert()
+        .success();
 
     fluree_cmd(&tmp)
         .args([
@@ -291,14 +294,10 @@ fn query_no_input_errors() {
 
     // In test context, stdin is piped (not a TTY), so empty stdin is read
     // and format detection fails. Either error message is acceptable.
-    fluree_cmd(&tmp)
-        .arg("query")
-        .assert()
-        .failure()
-        .stderr(
-            predicate::str::contains("no input provided")
-                .or(predicate::str::contains("could not detect query format")),
-        );
+    fluree_cmd(&tmp).arg("query").assert().failure().stderr(
+        predicate::str::contains("no input provided")
+            .or(predicate::str::contains("could not detect query format")),
+    );
 }
 
 #[test]
@@ -308,7 +307,13 @@ fn sparql_fql_conflict() {
     fluree_cmd(&tmp).args(["create", "db"]).assert().success();
 
     fluree_cmd(&tmp)
-        .args(["query", "--sparql", "--fql", "-e", "SELECT * WHERE { ?s ?p ?o }"])
+        .args([
+            "query",
+            "--sparql",
+            "--fql",
+            "-e",
+            "SELECT * WHERE { ?s ?p ?o }",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("cannot be used with"));
@@ -456,7 +461,10 @@ fn upsert_turtle() {
 fn query_csv_output() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();
-    fluree_cmd(&tmp).args(["create", "csvdb"]).assert().success();
+    fluree_cmd(&tmp)
+        .args(["create", "csvdb"])
+        .assert()
+        .success();
 
     fluree_cmd(&tmp)
         .args([
@@ -539,7 +547,10 @@ fn query_at_time_travel() {
 fn export_jsonld() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();
-    fluree_cmd(&tmp).args(["create", "expdb"]).assert().success();
+    fluree_cmd(&tmp)
+        .args(["create", "expdb"])
+        .assert()
+        .success();
 
     fluree_cmd(&tmp)
         .args([
@@ -561,7 +572,10 @@ fn export_jsonld() {
 fn export_turtle() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();
-    fluree_cmd(&tmp).args(["create", "expdb2"]).assert().success();
+    fluree_cmd(&tmp)
+        .args(["create", "expdb2"])
+        .assert()
+        .success();
 
     fluree_cmd(&tmp)
         .args([
@@ -759,7 +773,10 @@ fn prefix_remove_nonexistent() {
 fn history_shows_changes() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();
-    fluree_cmd(&tmp).args(["create", "histdb"]).assert().success();
+    fluree_cmd(&tmp)
+        .args(["create", "histdb"])
+        .assert()
+        .success();
 
     // Add prefix for convenience
     fluree_cmd(&tmp)
@@ -800,7 +817,10 @@ fn history_shows_changes() {
 fn history_with_full_iri() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();
-    fluree_cmd(&tmp).args(["create", "histdb2"]).assert().success();
+    fluree_cmd(&tmp)
+        .args(["create", "histdb2"])
+        .assert()
+        .success();
 
     // Insert data
     fluree_cmd(&tmp)

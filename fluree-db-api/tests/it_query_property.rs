@@ -68,10 +68,19 @@ async fn subjects_as_predicates_variable_predicate_scan() {
         "where": {"@id":"ex:subject-as-predicate","?p":"?o"}
     });
 
-    let rows = fluree.query(&ledger, &q).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows = fluree
+        .query(&ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&rows),
-        normalize_rows(&json!(["ex:labeled-pred","ex:new-pred","ex:unlabeled-pred"]))
+        normalize_rows(&json!([
+            "ex:labeled-pred",
+            "ex:new-pred",
+            "ex:unlabeled-pred"
+        ]))
     );
 }
 
@@ -157,10 +166,15 @@ async fn equivalent_properties_equivalent_symmetric_transitive_and_graph_crawl()
         "where": {"vocab2:firstName":"?name"},
         "reasoning": "owl2ql"
     });
-    let rows1 = fluree.query(&ledger, &q1).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows1 = fluree
+        .query(&ledger, &q1)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&rows1),
-        normalize_rows(&json!(["Ben","Brian","Francois"]))
+        normalize_rows(&json!(["Ben", "Brian", "Francois"]))
     );
 
     // Querying for the symmetric property.
@@ -170,10 +184,15 @@ async fn equivalent_properties_equivalent_symmetric_transitive_and_graph_crawl()
         "where": {"vocab1:givenName":"?name"},
         "reasoning": "owl2ql"
     });
-    let rows2 = fluree.query(&ledger, &q2).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows2 = fluree
+        .query(&ledger, &q2)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&rows2),
-        normalize_rows(&json!(["Ben","Brian","Francois"]))
+        normalize_rows(&json!(["Ben", "Brian", "Francois"]))
     );
 
     // Querying for the transitive properties.
@@ -183,10 +202,15 @@ async fn equivalent_properties_equivalent_symmetric_transitive_and_graph_crawl()
         "where": {"vocab3:prenom":"?name"},
         "reasoning": "owl2ql"
     });
-    let rows3 = fluree.query(&ledger, &q3).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows3 = fluree
+        .query(&ledger, &q3)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&rows3),
-        normalize_rows(&json!(["Ben","Brian","Francois"]))
+        normalize_rows(&json!(["Ben", "Brian", "Francois"]))
     );
 
     // Querying with graph crawl.
@@ -286,10 +310,15 @@ async fn rdfs_subpropertyof_expansion() {
         "where": {"@id":"ex:bob","ex:biologicalParent":"?parent"}
         // relies on default auto-RDFS (hierarchy exists)
     });
-    let rows1 = fluree.query(&ledger, &q1).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows1 = fluree
+        .query(&ledger, &q1)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&rows1),
-        normalize_rows(&json!(["ex:alice","ex:george"]))
+        normalize_rows(&json!(["ex:alice", "ex:george"]))
     );
 
     // Querying the top-level property which includes equivalent property stepDad.
@@ -300,10 +329,21 @@ async fn rdfs_subpropertyof_expansion() {
         "where": {"@id":"ex:bob","ex:parent":"?parent"},
         "reasoning": "owl2ql"
     });
-    let rows2 = fluree.query(&ledger, &q2).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows2 = fluree
+        .query(&ledger, &q2)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(
         normalize_rows(&rows2),
-        normalize_rows(&json!(["ex:alice","ex:george","ex:jerry","ex:john","ex:mary"]))
+        normalize_rows(&json!([
+            "ex:alice",
+            "ex:george",
+            "ex:jerry",
+            "ex:john",
+            "ex:mary"
+        ]))
     );
 
     // Sanity: explicit "none" disables auto-RDFS (so parent expansion disappears).
@@ -313,9 +353,13 @@ async fn rdfs_subpropertyof_expansion() {
         "where": {"@id":"ex:bob","ex:parent":"?parent"},
         "reasoning": "none"
     });
-    let rows3 = fluree.query(&ledger, &q3).await.unwrap().to_jsonld(&ledger.db).unwrap();
+    let rows3 = fluree
+        .query(&ledger, &q3)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger.db)
+        .unwrap();
     assert_eq!(rows3, json!([]));
 }
 
 // owl:equivalentProperty behavior is covered in owl reasoning tests, not here.
-

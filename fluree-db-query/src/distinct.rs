@@ -124,8 +124,8 @@ impl<S: Storage + 'static> Operator<S> for DistinctOperator<S> {
                 .collect();
 
             for row_idx in keep_indices {
-                for col_idx in 0..num_cols {
-                    columns[col_idx].push(batch.get_by_col(row_idx, col_idx).clone());
+                for (col_idx, col) in columns.iter_mut().enumerate() {
+                    col.push(batch.get_by_col(row_idx, col_idx).clone());
                 }
             }
 

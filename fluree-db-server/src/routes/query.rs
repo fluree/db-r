@@ -156,7 +156,11 @@ pub async fn query(
         // Ledger-scoped SPARQL without FROM is supported via the /:ledger/query route.
         match state.fluree.query_connection_sparql_jsonld(&sparql).await {
             Ok(result) => {
-                tracing::info!(status = "success", query_kind = "sparql", result_count = result.as_array().map(|a| a.len()).unwrap_or(0));
+                tracing::info!(
+                    status = "success",
+                    query_kind = "sparql",
+                    result_count = result.as_array().map(|a| a.len()).unwrap_or(0)
+                );
                 Ok((HeaderMap::new(), Json(result)))
             }
             Err(e) => {
@@ -180,7 +184,7 @@ pub async fn query(
         // Get ledger alias
         let alias = match get_ledger_alias(None, &headers, &query_json) {
             Ok(alias) => {
-                span.record("ledger_alias", &alias.as_str());
+                span.record("ledger_alias", alias.as_str());
                 alias
             }
             Err(e) => {
@@ -266,7 +270,7 @@ pub async fn query_ledger(
     // Get ledger alias (path takes precedence)
     let alias = match get_ledger_alias(Some(&ledger), &headers, &query_json) {
         Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
+            span.record("ledger_alias", alias.as_str());
             alias
         }
         Err(e) => {
@@ -320,11 +324,17 @@ async fn execute_query(
     // Check if tracking is requested
     if has_tracking_opts(query_json) {
         // Execute tracked query via builder
-        let response = match graph.query(fluree.as_ref()).jsonld(query_json).execute_tracked().await {
+        let response = match graph
+            .query(fluree.as_ref())
+            .jsonld(query_json)
+            .execute_tracked()
+            .await
+        {
             Ok(response) => response,
             Err(e) => {
                 // TrackedErrorResponse has status and error fields
-                let server_error = ServerError::Api(fluree_db_api::ApiError::http(e.status, e.error));
+                let server_error =
+                    ServerError::Api(fluree_db_api::ApiError::http(e.status, e.error));
                 set_span_error_code(&span, "error:InvalidQuery");
                 tracing::error!(error = %server_error, "tracked query failed");
                 return Err(server_error);
@@ -343,7 +353,8 @@ async fn execute_query(
         let json = match serde_json::to_value(&response) {
             Ok(json) => json,
             Err(e) => {
-                let server_error = ServerError::internal(format!("Failed to serialize response: {}", e));
+                let server_error =
+                    ServerError::internal(format!("Failed to serialize response: {}", e));
                 set_span_error_code(&span, "error:InternalError");
                 tracing::error!(error = %server_error, "response serialization failed");
                 return Err(server_error);
@@ -355,9 +366,18 @@ async fn execute_query(
     }
 
     // Execute query via builder - formatted JSON-LD output
-    let result = match graph.query(fluree.as_ref()).jsonld(query_json).execute_formatted().await {
+    let result = match graph
+        .query(fluree.as_ref())
+        .jsonld(query_json)
+        .execute_formatted()
+        .await
+    {
         Ok(result) => {
-            tracing::info!(status = "success", tracked = false, result_count = result.as_array().map(|a| a.len()).unwrap_or(0));
+            tracing::info!(
+                status = "success",
+                tracked = false,
+                result_count = result.as_array().map(|a| a.len()).unwrap_or(0)
+            );
             result
         }
         Err(e) => {
@@ -383,7 +403,8 @@ async fn execute_query_proxy(
         let response = match state.fluree.query_ledger_tracked(alias, query_json).await {
             Ok(response) => response,
             Err(e) => {
-                let server_error = ServerError::Api(fluree_db_api::ApiError::http(e.status, e.error));
+                let server_error =
+                    ServerError::Api(fluree_db_api::ApiError::http(e.status, e.error));
                 set_span_error_code(span, "error:InvalidQuery");
                 tracing::error!(error = %server_error, "tracked query failed (proxy)");
                 return Err(server_error);
@@ -402,7 +423,8 @@ async fn execute_query_proxy(
         let json = match serde_json::to_value(&response) {
             Ok(json) => json,
             Err(e) => {
-                let server_error = ServerError::internal(format!("Failed to serialize response: {}", e));
+                let server_error =
+                    ServerError::internal(format!("Failed to serialize response: {}", e));
                 set_span_error_code(span, "error:InternalError");
                 tracing::error!(error = %server_error, "response serialization failed");
                 return Err(server_error);
@@ -416,7 +438,11 @@ async fn execute_query_proxy(
     // Execute query via FlureeInstance wrapper
     let result = match state.fluree.query_ledger_jsonld(alias, query_json).await {
         Ok(result) => {
-            tracing::info!(status = "success", tracked = false, result_count = result.as_array().map(|a| a.len()).unwrap_or(0));
+            tracing::info!(
+                status = "success",
+                tracked = false,
+                result_count = result.as_array().map(|a| a.len()).unwrap_or(0)
+            );
             result
         }
         Err(e) => {
@@ -441,7 +467,10 @@ async fn execute_sparql_ledger(
 
     // In proxy mode, use the unified FlureeInstance method
     if state.config.is_proxy_storage_mode() {
-        let result = state.fluree.query_ledger_sparql_jsonld(alias, sparql).await?;
+        let result = state
+            .fluree
+            .query_ledger_sparql_jsonld(alias, sparql)
+            .await?;
         return Ok((HeaderMap::new(), Json(result)));
     }
 
@@ -452,7 +481,11 @@ async fn execute_sparql_ledger(
 
     // Execute SPARQL query via builder
     // Note: SPARQL tracking not yet implemented - returns empty headers
-    let result = graph.query(fluree.as_ref()).sparql(sparql).execute_formatted().await?;
+    let result = graph
+        .query(fluree.as_ref())
+        .sparql(sparql)
+        .execute_formatted()
+        .await?;
     Ok((HeaderMap::new(), Json(result)))
 }
 
@@ -503,7 +536,7 @@ pub async fn explain(
     // Get ledger alias
     let alias = match get_ledger_alias(None, &headers, &query_json) {
         Ok(alias) => {
-            span.record("ledger_alias", &alias.as_str());
+            span.record("ledger_alias", alias.as_str());
             alias
         }
         Err(e) => {
@@ -607,7 +640,7 @@ pub(crate) async fn load_ledger_for_query(
                 );
 
                 if let Some(mgr) = fluree.ledger_manager() {
-                    mgr.reload(alias).await.map_err(|e| ServerError::Api(e))?;
+                    mgr.reload(alias).await.map_err(ServerError::Api)?;
                     state.refresh_counter.fetch_add(1, Ordering::Relaxed);
                 }
             }

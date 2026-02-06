@@ -350,7 +350,10 @@ fn parse_value_object(
     let mut obj = Map::new();
 
     if type_iri.as_deref() == Some("@id") {
-        let iri_val = val.as_str().map(|s| iri(s, context, false)).unwrap_or_default();
+        let iri_val = val
+            .as_str()
+            .map(|s| iri(s, context, false))
+            .unwrap_or_default();
         obj.insert("@id".to_string(), json!(iri_val));
     } else {
         obj.insert("@value".to_string(), val.clone());
@@ -496,7 +499,8 @@ fn expand_node_internal(
                 }
 
                 // Expand value
-                let expanded_values = parse_node_value(v, entry.as_ref(), &context_with_types, &key_idx)?;
+                let expanded_values =
+                    parse_node_value(v, entry.as_ref(), &context_with_types, &key_idx)?;
 
                 if !expanded_values.is_empty() {
                     // Check for @reverse

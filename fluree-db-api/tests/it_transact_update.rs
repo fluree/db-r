@@ -31,7 +31,10 @@ fn ctx_ex() -> JsonValue {
 async fn seed_users(
     alias: &str,
 ) -> (
-    fluree_db_api::Fluree<fluree_db_core::MemoryStorage, fluree_db_nameservice::memory::MemoryNameService>,
+    fluree_db_api::Fluree<
+        fluree_db_core::MemoryStorage,
+        fluree_db_nameservice::memory::MemoryNameService,
+    >,
     LedgerState<fluree_db_core::MemoryStorage>,
 ) {
     let fluree = FlureeBuilder::memory().build_memory();
@@ -60,7 +63,10 @@ async fn seed_users(
 }
 
 async fn query_names(
-    fluree: &fluree_db_api::Fluree<fluree_db_core::MemoryStorage, fluree_db_nameservice::memory::MemoryNameService>,
+    fluree: &fluree_db_api::Fluree<
+        fluree_db_core::MemoryStorage,
+        fluree_db_nameservice::memory::MemoryNameService,
+    >,
     ledger: &LedgerState<fluree_db_core::MemoryStorage>,
 ) -> Vec<String> {
     let q = json!({
@@ -123,7 +129,10 @@ async fn update_delete_bob_age_only() {
         .to_jsonld_async(&out.ledger.db)
         .await
         .expect("to_jsonld_async");
-    assert_eq!(bob, json!({"@id":"ex:bob","@type":"ex:User","schema:name":"Bob"}));
+    assert_eq!(
+        bob,
+        json!({"@id":"ex:bob","@type":"ex:User","schema:name":"Bob"})
+    );
 }
 
 #[tokio::test]
@@ -161,7 +170,10 @@ async fn update_delete_all_subjects_where_age_equals_30() {
         .await
         .expect("delete by age=30");
 
-    assert_eq!(query_names(&fluree, &out.ledger).await, vec!["Alice", "Bob"]);
+    assert_eq!(
+        query_names(&fluree, &out.ledger).await,
+        vec!["Alice", "Bob"]
+    );
 }
 
 #[tokio::test]
@@ -182,7 +194,10 @@ async fn update_bob_age_when_match() {
         .expect("update bob age when match");
 
     let bob = fluree
-        .query(&out.ledger, &json!({"@context": ctx_ex_schema(), "selectOne": {"ex:bob": ["*"]}}))
+        .query(
+            &out.ledger,
+            &json!({"@context": ctx_ex_schema(), "selectOne": {"ex:bob": ["*"]}}),
+        )
         .await
         .expect("query bob")
         .to_jsonld_async(&out.ledger.db)
@@ -215,7 +230,10 @@ async fn update_no_match_is_noop_success_and_does_not_bump_t() {
     assert_eq!(out.ledger.t(), t_before);
 
     let bob = fluree
-        .query(&out.ledger, &json!({"@context": ctx_ex_schema(), "selectOne": {"ex:bob": ["*"]}}))
+        .query(
+            &out.ledger,
+            &json!({"@context": ctx_ex_schema(), "selectOne": {"ex:bob": ["*"]}}),
+        )
         .await
         .expect("query bob")
         .to_jsonld_async(&out.ledger.db)
@@ -245,7 +263,10 @@ async fn update_replace_jane_age() {
         .expect("update jane age");
 
     let jane = fluree
-        .query(&out.ledger, &json!({"@context": ctx_ex_schema(), "selectOne": {"ex:jane": ["*"]}}))
+        .query(
+            &out.ledger,
+            &json!({"@context": ctx_ex_schema(), "selectOne": {"ex:jane": ["*"]}}),
+        )
         .await
         .expect("query jane")
         .to_jsonld_async(&out.ledger.db)
@@ -262,7 +283,6 @@ async fn update_where_bind_hash_functions() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-
         "it/transact-update:hash-functions",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -327,7 +347,6 @@ async fn update_where_bind_datetime_functions() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-
         "it/transact-update:datetime-functions",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -437,7 +456,6 @@ async fn update_where_bind_numeric_and_math_functions() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-
         "it/transact-update:numeric-functions",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -544,7 +562,6 @@ async fn update_where_bind_string_functions() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-
         "it/transact-update:string-functions",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -641,7 +658,6 @@ async fn update_where_bind_functional_forms() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-
         "it/transact-update:functional-forms",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -728,7 +744,6 @@ async fn update_where_bind_rdf_term_functions() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-
         "it/transact-update:rdf-term-functions",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -806,17 +821,11 @@ async fn update_where_bind_rdf_term_functions() {
     let bnode_id = bnode.get("@id").and_then(|v| v.as_str()).unwrap_or("");
     assert!(bnode_id.starts_with("_:"));
 
-    assert_eq!(
-        result.get("ex:IRI"),
-        Some(&json!({"@id": "ex:Abcdefg"}))
-    );
+    assert_eq!(result.get("ex:IRI"), Some(&json!({"@id": "ex:Abcdefg"})));
     assert_eq!(result.get("ex:isIRI"), Some(&json!(true)));
     assert_eq!(result.get("ex:isLiteral"), Some(&json!(true)));
     assert_eq!(result.get("ex:lang"), Some(&json!("es")));
-    assert_eq!(
-        result.get("ex:datatype"),
-        Some(&json!("rdf:langString"))
-    );
+    assert_eq!(result.get("ex:datatype"), Some(&json!("rdf:langString")));
     assert_eq!(
         result.get("ex:strdt"),
         Some(&json!({"@value": "Abcdefg", "@type": "ex:mystring"}))
@@ -833,7 +842,6 @@ async fn update_where_bind_error_handling_unknown_function() {
 
     let db0 = Db::genesis(
         fluree.storage().clone(),
-
         "it/transact-update:error-handling-parse",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -868,7 +876,10 @@ async fn update_where_bind_error_handling_unknown_function() {
         )
         .await;
 
-    assert!(parse_err.is_err(), "expected parse error for unknown function");
+    assert!(
+        parse_err.is_err(),
+        "expected parse error for unknown function"
+    );
     if let Err(err) = parse_err {
         assert!(
             err.to_string().contains("Unknown function: foo"),
@@ -879,7 +890,6 @@ async fn update_where_bind_error_handling_unknown_function() {
 
     let db0 = Db::genesis(
         fluree.storage().clone(),
-
         "it/transact-update:error-handling-query",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -913,7 +923,10 @@ async fn update_where_bind_error_handling_unknown_function() {
         )
         .await;
 
-    assert!(query_err.is_err(), "expected query parse error for unknown function");
+    assert!(
+        query_err.is_err(),
+        "expected query parse error for unknown function"
+    );
     if let Err(err) = query_err {
         assert!(
             err.to_string().contains("Unknown function: foo"),
@@ -926,11 +939,7 @@ async fn update_where_bind_error_handling_unknown_function() {
 #[tokio::test]
 async fn update_where_bind_error_handling_runtime_type_mismatch() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let db0 = Db::genesis(
-        fluree.storage().clone(),
-
-        "it/transact-update:error-runtime",
-    );
+    let db0 = Db::genesis(fluree.storage().clone(), "it/transact-update:error-runtime");
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
     let seeded = fluree
@@ -979,7 +988,6 @@ async fn update_where_bind_error_handling_invalid_iri() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-
         "it/transact-update:error-invalid-iri",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -1018,7 +1026,8 @@ async fn update_where_bind_error_handling_invalid_iri() {
     assert!(run_err.is_err(), "expected runtime bind error");
     if let Err(err) = run_err {
         assert!(
-            err.to_string().contains("Unknown IRI") || err.to_string().contains("Unknown IRI or namespace"),
+            err.to_string().contains("Unknown IRI")
+                || err.to_string().contains("Unknown IRI or namespace"),
             "unexpected error: {}",
             err
         );
@@ -1030,7 +1039,6 @@ async fn update_where_bind_error_handling_invalid_datatype_iri() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-
         "it/transact-update:error-invalid-dt-iri",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -1081,7 +1089,6 @@ async fn update_where_bind_error_handling_invalid_iri_type() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-
         "it/transact-update:error-iri-type",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -1120,7 +1127,8 @@ async fn update_where_bind_error_handling_invalid_iri_type() {
     assert!(run_err.is_err(), "expected runtime bind error");
     if let Err(err) = run_err {
         assert!(
-            err.to_string().contains("IRI requires a string or IRI argument"),
+            err.to_string()
+                .contains("IRI requires a string or IRI argument"),
             "unexpected error: {}",
             err
         );
@@ -1132,7 +1140,6 @@ async fn update_where_bind_error_handling_strdt_non_string() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-
         "it/transact-update:error-strdt-non-string",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -1171,7 +1178,8 @@ async fn update_where_bind_error_handling_strdt_non_string() {
     assert!(run_err.is_err(), "expected runtime bind error");
     if let Err(err) = run_err {
         assert!(
-            err.to_string().contains("STRDT requires a string lexical form"),
+            err.to_string()
+                .contains("STRDT requires a string lexical form"),
             "unexpected error: {}",
             err
         );
@@ -1183,7 +1191,6 @@ async fn update_where_bind_error_handling_bnode_arity() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-
         "it/transact-update:error-bnode-arity",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -1234,7 +1241,6 @@ async fn update_where_bind_error_handling_strlang_non_string() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-
         "it/transact-update:error-strlang-non-string",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -1273,7 +1279,8 @@ async fn update_where_bind_error_handling_strlang_non_string() {
     assert!(run_err.is_err(), "expected runtime bind error");
     if let Err(err) = run_err {
         assert!(
-            err.to_string().contains("STRLANG requires a string lexical form"),
+            err.to_string()
+                .contains("STRLANG requires a string lexical form"),
             "unexpected error: {}",
             err
         );
@@ -1285,7 +1292,6 @@ async fn update_where_bind_error_handling_iri_arity() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-
         "it/transact-update:error-iri-arity",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -1336,7 +1342,6 @@ async fn update_where_bind_error_handling_strdt_arity() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-
         "it/transact-update:error-strdt-arity",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -1375,7 +1380,8 @@ async fn update_where_bind_error_handling_strdt_arity() {
     assert!(run_err.is_err(), "expected runtime bind error");
     if let Err(err) = run_err {
         assert!(
-            err.to_string().contains("STRDT requires exactly 2 arguments"),
+            err.to_string()
+                .contains("STRDT requires exactly 2 arguments"),
             "unexpected error: {}",
             err
         );
@@ -1387,7 +1393,6 @@ async fn update_where_bind_error_handling_strlang_arity() {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = Db::genesis(
         fluree.storage().clone(),
-
         "it/transact-update:error-strlang-arity",
     );
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -1426,7 +1431,8 @@ async fn update_where_bind_error_handling_strlang_arity() {
     assert!(run_err.is_err(), "expected runtime bind error");
     if let Err(err) = run_err {
         assert!(
-            err.to_string().contains("STRLANG requires exactly 2 arguments"),
+            err.to_string()
+                .contains("STRLANG requires exactly 2 arguments"),
             "unexpected error: {}",
             err
         );
@@ -1436,11 +1442,7 @@ async fn update_where_bind_error_handling_strlang_arity() {
 #[tokio::test]
 async fn update_where_bind_error_handling_in_requires_list() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let db0 = Db::genesis(
-        fluree.storage().clone(),
-
-        "it/transact-update:error-in-list",
-    );
+    let db0 = Db::genesis(fluree.storage().clone(), "it/transact-update:error-in-list");
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
     let seeded = fluree
@@ -1483,4 +1485,3 @@ async fn update_where_bind_error_handling_in_requires_list() {
         );
     }
 }
-

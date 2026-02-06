@@ -240,13 +240,7 @@ impl<'a> GraphSink for FlakeSink<'a> {
         }
     }
 
-    fn emit_list_item(
-        &mut self,
-        subject: TermId,
-        predicate: TermId,
-        object: TermId,
-        index: i32,
-    ) {
+    fn emit_list_item(&mut self, subject: TermId, predicate: TermId, object: TermId, index: i32) {
         if let Some(flake) = self.build_flake(subject, predicate, object, Some(index)) {
             self.flakes.push(flake);
         }
@@ -310,12 +304,12 @@ mod tests {
 
         let s = sink.term_iri("http://example.org/x");
         let p = sink.term_iri("http://example.org/val");
-        let o = sink.term_literal_value(LiteralValue::Double(3.14), Datatype::xsd_double());
+        let o = sink.term_literal_value(LiteralValue::Double(3.13), Datatype::xsd_double());
         sink.emit_triple(s, p, o);
 
         let flakes = sink.finish();
         assert_eq!(flakes.len(), 1);
-        assert!(matches!(&flakes[0].o, FlakeValue::Double(d) if (*d - 3.14).abs() < f64::EPSILON));
+        assert!(matches!(&flakes[0].o, FlakeValue::Double(d) if (*d - 3.13).abs() < f64::EPSILON));
     }
 
     #[test]

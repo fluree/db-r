@@ -140,7 +140,10 @@ mod tests {
             ],
         );
         assert_eq!(rom.join_conditions.len(), 2);
-        assert_eq!(rom.child_columns(), vec!["origin_airport", "destination_airport"]);
+        assert_eq!(
+            rom.child_columns(),
+            vec!["origin_airport", "destination_airport"]
+        );
         assert_eq!(rom.parent_columns(), vec!["code", "code"]);
     }
 

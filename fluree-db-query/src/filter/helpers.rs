@@ -107,24 +107,6 @@ pub fn check_arity(args: &[FilterExpr], expected: usize, fn_name: &str) -> Resul
     }
 }
 
-/// Check that a function has arguments within a range
-#[inline]
-pub fn check_arity_range(
-    args: &[FilterExpr],
-    min: usize,
-    max: usize,
-    fn_name: &str,
-) -> Result<()> {
-    if args.len() < min || args.len() > max {
-        Err(QueryError::InvalidFilter(format!(
-            "{} requires {}-{} arguments",
-            fn_name, min, max
-        )))
-    } else {
-        Ok(())
-    }
-}
-
 // =============================================================================
 // DateTime Parsing
 // =============================================================================
@@ -139,8 +121,9 @@ pub fn parse_datetime_from_binding(binding: &Binding) -> Option<DateTime<FixedOf
     match binding {
         Binding::Lit { val, dt, .. } => {
             // Check datatype is datetime/date/time using known Sids (no IRI decoding)
-            let is_datetime_type =
-                *dt == datatypes.xsd_datetime || *dt == datatypes.xsd_date || *dt == datatypes.xsd_time;
+            let is_datetime_type = *dt == datatypes.xsd_datetime
+                || *dt == datatypes.xsd_date
+                || *dt == datatypes.xsd_time;
 
             if !is_datetime_type {
                 return None;

@@ -4,8 +4,8 @@
 //! SSE (real-time) or polling (fallback).
 
 use fluree_db_nameservice::{NsRecord, VgNsRecord};
-use std::fmt::Debug;
 use futures::Stream;
+use std::fmt::Debug;
 use std::pin::Pin;
 
 /// An event from a remote watch

@@ -21,7 +21,14 @@ pub async fn run(
     let predicate_iri = predicate.map(|p| config::expand_iri(fluree_dir, p));
 
     // Build the history query
-    let query = build_history_query(&alias, &entity_iri, from, to, predicate_iri.as_deref(), fluree_dir);
+    let query = build_history_query(
+        &alias,
+        &entity_iri,
+        from,
+        to,
+        predicate_iri.as_deref(),
+        fluree_dir,
+    );
 
     // Parse output format
     let output_format = match format_str.to_lowercase().as_str() {
@@ -112,10 +119,7 @@ fn format_time_spec(alias: &str, spec: &str) -> String {
 }
 
 /// Format history results for display.
-fn format_history_result(
-    json: &serde_json::Value,
-    format: OutputFormatKind,
-) -> CliResult<String> {
+fn format_history_result(json: &serde_json::Value, format: OutputFormatKind) -> CliResult<String> {
     match format {
         OutputFormatKind::Json => {
             Ok(serde_json::to_string_pretty(json).unwrap_or_else(|_| json.to_string()))
@@ -126,7 +130,7 @@ fn format_history_result(
 }
 
 fn format_history_table(json: &serde_json::Value) -> CliResult<String> {
-    use comfy_table::{Table, ContentArrangement};
+    use comfy_table::{ContentArrangement, Table};
 
     let arr = match json.as_array() {
         Some(a) => a,
@@ -150,8 +154,16 @@ fn format_history_table(json: &serde_json::Value) -> CliResult<String> {
     }
 
     for row in arr {
-        let t = row.get("?t").and_then(|v| v.as_i64()).map(|n| n.to_string()).unwrap_or_default();
-        let op = row.get("?op").and_then(|v| v.as_bool()).map(|b| if b { "+" } else { "-" }).unwrap_or("?");
+        let t = row
+            .get("?t")
+            .and_then(|v| v.as_i64())
+            .map(|n| n.to_string())
+            .unwrap_or_default();
+        let op = row
+            .get("?op")
+            .and_then(|v| v.as_bool())
+            .map(|b| if b { "+" } else { "-" })
+            .unwrap_or("?");
         let val = format_value(row.get("?v"));
 
         if has_predicate {
@@ -187,8 +199,16 @@ fn format_history_csv(json: &serde_json::Value) -> CliResult<String> {
     }
 
     for row in arr {
-        let t = row.get("?t").and_then(|v| v.as_i64()).map(|n| n.to_string()).unwrap_or_default();
-        let op = row.get("?op").and_then(|v| v.as_bool()).map(|b| if b { "+" } else { "-" }).unwrap_or("?");
+        let t = row
+            .get("?t")
+            .and_then(|v| v.as_i64())
+            .map(|n| n.to_string())
+            .unwrap_or_default();
+        let op = row
+            .get("?op")
+            .and_then(|v| v.as_bool())
+            .map(|b| if b { "+" } else { "-" })
+            .unwrap_or("?");
         let val = csv_escape(&format_value(row.get("?v")));
 
         if has_predicate {
