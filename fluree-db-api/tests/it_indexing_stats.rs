@@ -12,11 +12,67 @@
 
 mod support;
 
+use std::sync::Arc;
+
 use fluree_db_api::{FlureeBuilder, IndexConfig, LedgerState, Novelty};
-use fluree_db_core::{Db, Storage};
+use fluree_db_core::serde::json::{
+    raw_schema_to_index_schema, raw_stats_to_index_stats, RawDbRootSchema, RawDbRootStats,
+};
+use fluree_db_core::{Db, DbMetadata, DictNovelty, Storage};
+use fluree_db_indexer::run_index::{BinaryIndexRootV2, BinaryIndexStore};
+use fluree_db_query::BinaryRangeProvider;
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::{json, Value as JsonValue};
 use support::start_background_indexer_local;
+
+/// Apply a v2 binary index root to a ledger, loading the full BinaryIndexStore
+/// and attaching a BinaryRangeProvider so subsequent queries work correctly.
+async fn apply_index_v2<S: Storage + Clone + 'static>(
+    ledger: &mut LedgerState<S>,
+    root_address: &str,
+    storage: &S,
+    cache_dir: &std::path::Path,
+) {
+    let bytes = storage
+        .read_bytes(root_address)
+        .await
+        .expect("read index root");
+    let root: BinaryIndexRootV2 = serde_json::from_slice(&bytes).expect("parse v2 root");
+
+    let store = BinaryIndexStore::load_from_root(storage, &root, cache_dir, None)
+        .await
+        .expect("load binary index");
+    let arc_store = Arc::new(store);
+    let dn = Arc::new(DictNovelty::new_uninitialized());
+    let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);
+
+    let ns_codes = root.namespace_codes.into_iter().collect();
+    let stats = root
+        .stats
+        .as_ref()
+        .and_then(|s| serde_json::from_value::<RawDbRootStats>(s.clone()).ok())
+        .and_then(|raw| raw_stats_to_index_stats(&raw));
+    let schema = root
+        .schema
+        .as_ref()
+        .and_then(|s| serde_json::from_value::<RawDbRootSchema>(s.clone()).ok())
+        .map(|raw| raw_schema_to_index_schema(&raw));
+    let meta = DbMetadata {
+        alias: root.ledger_alias,
+        t: root.index_t,
+        namespace_codes: ns_codes,
+        stats,
+        schema,
+        subject_watermarks: root.subject_watermarks,
+        string_watermark: root.string_watermark,
+    };
+    let mut db = Db::new_meta(meta, storage.clone());
+    db.range_provider = Some(Arc::new(provider));
+
+    ledger
+        .apply_loaded_db(db, root_address)
+        .expect("apply_loaded_db");
+}
 
 fn property_count<S: Storage>(db: &Db<S>, iri: &str) -> Option<u64> {
     let stats = db.stats.as_ref()?;
@@ -1262,6 +1318,7 @@ async fn large_dataset_statistics_accuracy() {
 
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
+    let cache_dir = tmp.path().to_path_buf();
 
     let mut fluree = FlureeBuilder::file(path)
         .build()
@@ -1335,10 +1392,8 @@ async fn large_dataset_statistics_accuracy() {
                             index_t >= commit_t,
                             "index_t ({index_t}) should be >= commit_t ({commit_t})"
                         );
-                        ledger
-                            .apply_index(&root_address)
-                            .await
-                            .expect("apply_index(root_address)");
+                        apply_index_v2(&mut ledger, &root_address, fluree.storage(), &cache_dir)
+                            .await;
                     }
                     fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
                     fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),

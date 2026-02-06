@@ -4,6 +4,7 @@
 //! for determining formatting behavior based on datatype.
 
 // Re-export vocabulary constants from the vocab crate for convenience
+pub use fluree_vocab::fluree;
 pub use fluree_vocab::rdf;
 pub use fluree_vocab::xsd;
 
@@ -21,12 +22,19 @@ pub mod jsonld {
 /// - xsd:integer/xsd:long - whole number in JSON
 /// - xsd:double/xsd:decimal - floating point in JSON
 /// - xsd:boolean - true/false in JSON
+/// - fluree:vector - JSON array of floats (Clojure parity)
 ///
 /// These types are automatically inferred by JSON parsers.
 pub fn is_inferable_datatype(dt_iri: &str) -> bool {
     matches!(
         dt_iri,
-        xsd::STRING | xsd::LONG | xsd::INTEGER | xsd::DOUBLE | xsd::BOOLEAN | xsd::DECIMAL
+        xsd::STRING
+            | xsd::LONG
+            | xsd::INTEGER
+            | xsd::DOUBLE
+            | xsd::BOOLEAN
+            | xsd::DECIMAL
+            | fluree::VECTOR
     )
 }
 
@@ -47,6 +55,8 @@ mod tests {
         assert!(is_inferable_datatype(xsd::DOUBLE));
         assert!(is_inferable_datatype(xsd::BOOLEAN));
         assert!(is_inferable_datatype(xsd::DECIMAL));
+
+        assert!(is_inferable_datatype(fluree::VECTOR));
 
         // Non-inferable types
         assert!(!is_inferable_datatype(xsd::DATE_TIME));
