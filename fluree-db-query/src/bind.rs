@@ -15,7 +15,7 @@
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::function::{evaluate_to_binding_with_context, evaluate_to_binding_with_context_strict};
+use crate::function::{evaluate_to_binding, evaluate_to_binding_strict};
 use crate::ir::Expression;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
@@ -135,9 +135,9 @@ impl<S: Storage + 'static> Operator<S> for BindOperator<S> {
 
                 // Evaluate expression (errors become Unbound)
                 let computed = if ctx.strict_bind_errors {
-                    evaluate_to_binding_with_context_strict(&self.expr, &row_view, Some(ctx))?
+                    evaluate_to_binding_strict(&self.expr, &row_view, Some(ctx))?
                 } else {
-                    evaluate_to_binding_with_context(&self.expr, &row_view, Some(ctx))
+                    evaluate_to_binding(&self.expr, &row_view, Some(ctx))
                 };
 
                 // Check clobber prevention if variable already exists

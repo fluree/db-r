@@ -21,35 +21,36 @@ use super::value::ComparableValue;
 // Public API: evaluate_to_binding
 // =============================================================================
 
-/// Evaluate a filter expression and return a Binding value
+/// Evaluate a filter expression and return a Binding value.
 ///
 /// This is used by BIND operator to compute values for binding to variables.
 /// Returns `Binding::Unbound` on evaluation errors (type mismatches, unbound vars, etc.)
 /// rather than `Binding::Poisoned` - Poisoned is reserved for OPTIONAL semantics.
-pub fn evaluate_to_binding(expr: &Expression, row: &RowView) -> Binding {
-    evaluate_to_binding_with_context::<fluree_db_core::MemoryStorage>(expr, row, None)
-}
-
-/// Evaluate to binding with execution context (for EncodedLit support)
-pub fn evaluate_to_binding_with_context<S: Storage>(
+///
+/// The `ctx` parameter provides access to the execution context for resolving
+/// `Binding::EncodedLit` values (late materialization).
+pub fn evaluate_to_binding<S: Storage>(
     expr: &Expression,
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Binding {
-    match evaluate_to_binding_with_context_strict(expr, row, ctx) {
+    match evaluate_to_binding_strict(expr, row, ctx) {
         Ok(binding) => binding,
         Err(_) => Binding::Unbound,
     }
 }
 
-/// Evaluate to binding with strict error handling
-pub fn evaluate_to_binding_with_context_strict<S: Storage>(
+/// Evaluate to binding with strict error handling.
+///
+/// Unlike [`evaluate_to_binding`], this returns errors rather than converting
+/// them to `Binding::Unbound`.
+pub fn evaluate_to_binding_strict<S: Storage>(
     expr: &Expression,
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Binding> {
     // Evaluate to comparable value
-    let comparable = match eval_to_comparable_inner(expr, row, ctx) {
+    let comparable = match eval_to_comparable(expr, row, ctx) {
         Ok(Some(val)) => val,
         Ok(None) => {
             if has_unbound_vars(expr, row) {
@@ -170,29 +171,15 @@ pub fn evaluate_to_binding_with_context_strict<S: Storage>(
 // Public API: evaluate (boolean)
 // =============================================================================
 
-/// Evaluate a filter expression against a row
+/// Evaluate a filter expression against a row.
 ///
 /// Returns `true` if the row passes the filter, `false` otherwise.
 /// Type mismatches and unbound variables result in `false`.
-pub fn evaluate(expr: &Expression, row: &RowView) -> Result<bool> {
-    evaluate_inner::<fluree_db_core::MemoryStorage>(expr, row, None)
-}
-
-/// Evaluate a filter expression with access to execution context.
 ///
-/// This is required for correct evaluation when a row contains
-/// `Binding::EncodedLit` (late materialization), e.g. for `REGEX`, `STR`,
-/// and comparisons.
-pub fn evaluate_with_context<S: Storage>(
-    expr: &Expression,
-    row: &RowView,
-    ctx: &ExecutionContext<'_, S>,
-) -> Result<bool> {
-    evaluate_inner(expr, row, Some(ctx))
-}
-
-/// Core boolean evaluation (internal)
-pub(crate) fn evaluate_inner<S: Storage>(
+/// The `ctx` parameter provides access to the execution context for resolving
+/// `Binding::EncodedLit` values (late materialization). Pass `None` if no
+/// context is available (e.g., in tests).
+pub fn evaluate<S: Storage>(
     expr: &Expression,
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
@@ -228,8 +215,8 @@ pub(crate) fn evaluate_inner<S: Storage>(
         }
 
         Expression::Compare { op, left, right } => {
-            let left_val = eval_to_comparable_inner(left, row, ctx)?;
-            let right_val = eval_to_comparable_inner(right, row, ctx)?;
+            let left_val = eval_to_comparable(left, row, ctx)?;
+            let right_val = eval_to_comparable(right, row, ctx)?;
 
             match (left_val, right_val) {
                 (Some(l), Some(r)) => Ok(compare_values(&l, &r, *op)),
@@ -240,7 +227,7 @@ pub(crate) fn evaluate_inner<S: Storage>(
 
         Expression::And(exprs) => {
             for e in exprs {
-                if !evaluate_inner(e, row, ctx)? {
+                if !evaluate(e, row, ctx)? {
                     return Ok(false);
                 }
             }
@@ -249,18 +236,18 @@ pub(crate) fn evaluate_inner<S: Storage>(
 
         Expression::Or(exprs) => {
             for e in exprs {
-                if evaluate_inner(e, row, ctx)? {
+                if evaluate(e, row, ctx)? {
                     return Ok(true);
                 }
             }
             Ok(false)
         }
 
-        Expression::Not(inner) => Ok(!evaluate_inner(inner, row, ctx)?),
+        Expression::Not(inner) => Ok(!evaluate(inner, row, ctx)?),
 
         Expression::Arithmetic { .. } => {
             // Arithmetic as boolean: check if result is truthy (non-zero)
-            match eval_to_comparable_inner(expr, row, ctx)? {
+            match eval_to_comparable(expr, row, ctx)? {
                 Some(ComparableValue::Long(n)) => Ok(n != 0),
                 Some(ComparableValue::Double(d)) => Ok(d != 0.0),
                 Some(ComparableValue::Bool(b)) => Ok(b),
@@ -270,7 +257,7 @@ pub(crate) fn evaluate_inner<S: Storage>(
 
         Expression::Negate(_) => {
             // Negation as boolean: check if result is truthy (non-zero)
-            match eval_to_comparable_inner(expr, row, ctx)? {
+            match eval_to_comparable(expr, row, ctx)? {
                 Some(ComparableValue::Long(n)) => Ok(n != 0),
                 Some(ComparableValue::Double(d)) => Ok(d != 0.0),
                 _ => Ok(false),
@@ -282,11 +269,11 @@ pub(crate) fn evaluate_inner<S: Storage>(
             then_expr,
             else_expr,
         } => {
-            let cond = evaluate_inner(condition, row, ctx)?;
+            let cond = evaluate(condition, row, ctx)?;
             if cond {
-                evaluate_inner(then_expr, row, ctx)
+                evaluate(then_expr, row, ctx)
             } else {
-                evaluate_inner(else_expr, row, ctx)
+                evaluate(else_expr, row, ctx)
             }
         }
 
@@ -295,11 +282,11 @@ pub(crate) fn evaluate_inner<S: Storage>(
             values,
             negated,
         } => {
-            let test_val = eval_to_comparable_inner(test_expr, row, ctx)?;
+            let test_val = eval_to_comparable(test_expr, row, ctx)?;
             match test_val {
                 Some(tv) => {
                     let found = values.iter().any(|v| {
-                        eval_to_comparable_inner(v, row, ctx)
+                        eval_to_comparable(v, row, ctx)
                             .ok()
                             .flatten()
                             .map(|cv| cv == tv)
@@ -319,15 +306,12 @@ pub(crate) fn evaluate_inner<S: Storage>(
 // Value Evaluation: eval_to_comparable
 // =============================================================================
 
-/// Evaluate expression to a comparable value (contextless).
+/// Evaluate expression to a comparable value.
 ///
-/// Prefer [`eval_to_comparable_inner`] when `Binding::EncodedLit` may appear.
-pub fn eval_to_comparable(expr: &Expression, row: &RowView) -> Result<Option<ComparableValue>> {
-    eval_to_comparable_inner::<fluree_db_core::MemoryStorage>(expr, row, None)
-}
-
-/// Evaluate expression to a comparable value with context (for EncodedLit support)
-pub fn eval_to_comparable_inner<S: Storage>(
+/// The `ctx` parameter provides access to the execution context for resolving
+/// `Binding::EncodedLit` values (late materialization). Pass `None` if no
+/// context is available.
+pub fn eval_to_comparable<S: Storage>(
     expr: &Expression,
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
@@ -384,19 +368,19 @@ pub fn eval_to_comparable_inner<S: Storage>(
 
         Expression::Compare { .. } => {
             // Comparison result is boolean
-            Ok(Some(ComparableValue::Bool(evaluate_inner(expr, row, ctx)?)))
+            Ok(Some(ComparableValue::Bool(evaluate(expr, row, ctx)?)))
         }
 
         Expression::Arithmetic { op, left, right } => {
-            let l = eval_to_comparable_inner(left, row, ctx)?;
-            let r = eval_to_comparable_inner(right, row, ctx)?;
+            let l = eval_to_comparable(left, row, ctx)?;
+            let r = eval_to_comparable(right, row, ctx)?;
             match (l, r) {
                 (Some(lv), Some(rv)) => Ok(Some(op.apply(lv, rv)?)),
                 _ => Ok(None),
             }
         }
 
-        Expression::Negate(inner) => match eval_to_comparable_inner(inner, row, ctx)? {
+        Expression::Negate(inner) => match eval_to_comparable(inner, row, ctx)? {
             Some(ComparableValue::Long(n)) => Ok(Some(ComparableValue::Long(-n))),
             Some(ComparableValue::Double(d)) => Ok(Some(ComparableValue::Double(-d))),
             Some(ComparableValue::BigInt(n)) => Ok(Some(ComparableValue::BigInt(Box::new(-(*n))))),
@@ -407,7 +391,7 @@ pub fn eval_to_comparable_inner<S: Storage>(
         },
 
         Expression::And(_) | Expression::Or(_) | Expression::Not(_) => {
-            Ok(Some(ComparableValue::Bool(evaluate_inner(expr, row, ctx)?)))
+            Ok(Some(ComparableValue::Bool(evaluate(expr, row, ctx)?)))
         }
 
         Expression::If {
@@ -415,17 +399,17 @@ pub fn eval_to_comparable_inner<S: Storage>(
             then_expr,
             else_expr,
         } => {
-            let cond = evaluate_inner(condition, row, ctx)?;
+            let cond = evaluate(condition, row, ctx)?;
             if cond {
-                eval_to_comparable_inner(then_expr, row, ctx)
+                eval_to_comparable(then_expr, row, ctx)
             } else {
-                eval_to_comparable_inner(else_expr, row, ctx)
+                eval_to_comparable(else_expr, row, ctx)
             }
         }
 
         Expression::In { .. } => {
             // IN expression evaluates to boolean
-            Ok(Some(ComparableValue::Bool(evaluate_inner(expr, row, ctx)?)))
+            Ok(Some(ComparableValue::Bool(evaluate(expr, row, ctx)?)))
         }
 
         Expression::Function { name, args } => eval_function(name, args, row, ctx),
@@ -438,7 +422,7 @@ mod tests {
     use crate::binding::Batch;
     use crate::ir::CompareOp;
     use crate::var_registry::VarId;
-    use fluree_db_core::Sid;
+    use fluree_db_core::{MemoryStorage, Sid};
 
     fn make_test_batch() -> Batch {
         let schema: Arc<[crate::var_registry::VarId]> =
@@ -483,15 +467,15 @@ mod tests {
 
         // Row 0: age=25 > 20 → true
         let row0 = batch.row_view(0).unwrap();
-        assert!(evaluate(&expr, &row0).unwrap());
+        assert!(evaluate::<MemoryStorage>(&expr, &row0, None).unwrap());
 
         // Row 2: age=18 > 20 → false
         let row2 = batch.row_view(2).unwrap();
-        assert!(!evaluate(&expr, &row2).unwrap());
+        assert!(!evaluate::<MemoryStorage>(&expr, &row2, None).unwrap());
 
         // Row 3: age=Unbound → false
         let row3 = batch.row_view(3).unwrap();
-        assert!(!evaluate(&expr, &row3).unwrap());
+        assert!(!evaluate::<MemoryStorage>(&expr, &row3, None).unwrap());
     }
 
     #[test]
@@ -514,11 +498,11 @@ mod tests {
 
         // Row 0: age=25 → true (25 > 20 AND 25 < 28)
         let row0 = batch.row_view(0).unwrap();
-        assert!(evaluate(&expr, &row0).unwrap());
+        assert!(evaluate::<MemoryStorage>(&expr, &row0, None).unwrap());
 
         // Row 1: age=30 → false (30 > 20 but 30 < 28 is false)
         let row1 = batch.row_view(1).unwrap();
-        assert!(!evaluate(&expr, &row1).unwrap());
+        assert!(!evaluate::<MemoryStorage>(&expr, &row1, None).unwrap());
     }
 
     #[test]
@@ -541,15 +525,15 @@ mod tests {
 
         // Row 0: age=25 → false
         let row0 = batch.row_view(0).unwrap();
-        assert!(!evaluate(&expr, &row0).unwrap());
+        assert!(!evaluate::<MemoryStorage>(&expr, &row0, None).unwrap());
 
         // Row 1: age=30 → true (30 > 28)
         let row1 = batch.row_view(1).unwrap();
-        assert!(evaluate(&expr, &row1).unwrap());
+        assert!(evaluate::<MemoryStorage>(&expr, &row1, None).unwrap());
 
         // Row 2: age=18 → true (18 < 20)
         let row2 = batch.row_view(2).unwrap();
-        assert!(evaluate(&expr, &row2).unwrap());
+        assert!(evaluate::<MemoryStorage>(&expr, &row2, None).unwrap());
     }
 
     #[test]
@@ -565,10 +549,10 @@ mod tests {
 
         // Row 0: age=25 → NOT(25 > 25) = NOT(false) = true
         let row0 = batch.row_view(0).unwrap();
-        assert!(evaluate(&expr, &row0).unwrap());
+        assert!(evaluate::<MemoryStorage>(&expr, &row0, None).unwrap());
 
         // Row 1: age=30 → NOT(30 > 25) = NOT(true) = false
         let row1 = batch.row_view(1).unwrap();
-        assert!(!evaluate(&expr, &row1).unwrap());
+        assert!(!evaluate::<MemoryStorage>(&expr, &row1, None).unwrap());
     }
 }

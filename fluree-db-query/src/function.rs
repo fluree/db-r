@@ -32,9 +32,5 @@ mod value;
 mod vector;
 
 // Re-export public API
-pub use eval::{
-    eval_to_comparable, eval_to_comparable_inner, evaluate, evaluate_to_binding,
-    evaluate_to_binding_with_context, evaluate_to_binding_with_context_strict,
-    evaluate_with_context,
-};
+pub use eval::{eval_to_comparable, evaluate, evaluate_to_binding, evaluate_to_binding_strict};
 pub use value::{ArithmeticError, ComparableValue, NullValueError};

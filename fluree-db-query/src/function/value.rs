@@ -114,12 +114,14 @@ impl ArithmeticOp {
             }
             // Mixed numeric types -> promote to higher precision
             // Long <-> Double -> Double
-            (ComparableValue::Long(a), ComparableValue::Double(b)) => {
-                self.apply(ComparableValue::Double(a as f64), ComparableValue::Double(b))
-            }
-            (ComparableValue::Double(a), ComparableValue::Long(b)) => {
-                self.apply(ComparableValue::Double(a), ComparableValue::Double(b as f64))
-            }
+            (ComparableValue::Long(a), ComparableValue::Double(b)) => self.apply(
+                ComparableValue::Double(a as f64),
+                ComparableValue::Double(b),
+            ),
+            (ComparableValue::Double(a), ComparableValue::Long(b)) => self.apply(
+                ComparableValue::Double(a),
+                ComparableValue::Double(b as f64),
+            ),
             // Long <-> BigInt -> BigInt
             (ComparableValue::Long(a), ComparableValue::BigInt(b)) => self.apply(
                 ComparableValue::BigInt(Box::new(BigInt::from(a))),
@@ -277,7 +279,6 @@ impl ComparableValue {
             },
         }
     }
-
 }
 
 // =============================================================================
@@ -517,10 +518,7 @@ mod tests {
             ArithmeticOp::Mul.apply(a.clone(), b.clone()),
             Ok(ComparableValue::Long(30))
         );
-        assert_eq!(
-            ArithmeticOp::Div.apply(a, b),
-            Ok(ComparableValue::Long(3))
-        );
+        assert_eq!(ArithmeticOp::Div.apply(a, b), Ok(ComparableValue::Long(3)));
     }
 
     #[test]

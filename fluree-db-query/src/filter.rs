@@ -27,7 +27,7 @@ use async_trait::async_trait;
 use fluree_db_core::Storage;
 use std::sync::Arc;
 
-use crate::function::evaluate_with_context;
+use crate::function::evaluate;
 
 /// Filter operator - applies a predicate to each row from child
 ///
@@ -96,7 +96,7 @@ impl<S: Storage + 'static> Operator<S> for FilterOperator<S> {
             let keep_indices: Vec<usize> = (0..batch.len())
                 .filter_map(|row_idx| {
                     let row = batch.row_view(row_idx)?;
-                    evaluate_with_context(&self.expr, &row, ctx)
+                    evaluate(&self.expr, &row, Some(ctx))
                         .ok()
                         .filter(|&pass| pass)
                         .map(|_| row_idx)

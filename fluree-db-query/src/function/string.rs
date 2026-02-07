@@ -12,7 +12,7 @@ use fluree_db_core::{FlakeValue, Storage};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use std::sync::Arc;
 
-use super::eval::eval_to_comparable_inner;
+use super::eval::eval_to_comparable;
 use super::helpers::{build_regex_with_flags, check_arity};
 use super::value::ComparableValue;
 
@@ -26,7 +26,7 @@ pub fn eval_string_function<S: Storage>(
     match name {
         FunctionName::Str => {
             check_arity(args, 1, "STR")?;
-            let val = eval_to_comparable_inner(&args[0], row, ctx)?;
+            let val = eval_to_comparable(&args[0], row, ctx)?;
             Ok(val.and_then(|v| v.into_string_value()))
         }
 
@@ -56,7 +56,7 @@ pub fn eval_string_function<S: Storage>(
 
         FunctionName::Lcase => {
             check_arity(args, 1, "LCASE")?;
-            let val = eval_to_comparable_inner(&args[0], row, ctx)?;
+            let val = eval_to_comparable(&args[0], row, ctx)?;
             Ok(val.and_then(|v| {
                 v.as_str()
                     .map(|s| ComparableValue::String(Arc::from(s.to_lowercase())))
@@ -65,7 +65,7 @@ pub fn eval_string_function<S: Storage>(
 
         FunctionName::Ucase => {
             check_arity(args, 1, "UCASE")?;
-            let val = eval_to_comparable_inner(&args[0], row, ctx)?;
+            let val = eval_to_comparable(&args[0], row, ctx)?;
             Ok(val.and_then(|v| {
                 v.as_str()
                     .map(|s| ComparableValue::String(Arc::from(s.to_uppercase())))
@@ -74,16 +74,14 @@ pub fn eval_string_function<S: Storage>(
 
         FunctionName::Strlen => {
             check_arity(args, 1, "STRLEN")?;
-            let val = eval_to_comparable_inner(&args[0], row, ctx)?;
-            Ok(val.and_then(|v| {
-                v.as_str().map(|s| ComparableValue::Long(s.len() as i64))
-            }))
+            let val = eval_to_comparable(&args[0], row, ctx)?;
+            Ok(val.and_then(|v| v.as_str().map(|s| ComparableValue::Long(s.len() as i64))))
         }
 
         FunctionName::Contains => {
             check_arity(args, 2, "CONTAINS")?;
-            let haystack = eval_to_comparable_inner(&args[0], row, ctx)?;
-            let needle = eval_to_comparable_inner(&args[1], row, ctx)?;
+            let haystack = eval_to_comparable(&args[0], row, ctx)?;
+            let needle = eval_to_comparable(&args[1], row, ctx)?;
             Ok(Some(ComparableValue::Bool(match (haystack, needle) {
                 (Some(ComparableValue::String(h)), Some(ComparableValue::String(n))) => {
                     h.contains(n.as_ref())
@@ -94,8 +92,8 @@ pub fn eval_string_function<S: Storage>(
 
         FunctionName::StrStarts => {
             check_arity(args, 2, "STRSTARTS")?;
-            let haystack = eval_to_comparable_inner(&args[0], row, ctx)?;
-            let prefix = eval_to_comparable_inner(&args[1], row, ctx)?;
+            let haystack = eval_to_comparable(&args[0], row, ctx)?;
+            let prefix = eval_to_comparable(&args[1], row, ctx)?;
             Ok(Some(ComparableValue::Bool(match (haystack, prefix) {
                 (Some(ComparableValue::String(h)), Some(ComparableValue::String(p))) => {
                     h.starts_with(p.as_ref())
@@ -106,8 +104,8 @@ pub fn eval_string_function<S: Storage>(
 
         FunctionName::StrEnds => {
             check_arity(args, 2, "STRENDS")?;
-            let haystack = eval_to_comparable_inner(&args[0], row, ctx)?;
-            let suffix = eval_to_comparable_inner(&args[1], row, ctx)?;
+            let haystack = eval_to_comparable(&args[0], row, ctx)?;
+            let suffix = eval_to_comparable(&args[1], row, ctx)?;
             Ok(Some(ComparableValue::Bool(match (haystack, suffix) {
                 (Some(ComparableValue::String(h)), Some(ComparableValue::String(s))) => {
                     h.ends_with(s.as_ref())
@@ -122,10 +120,10 @@ pub fn eval_string_function<S: Storage>(
                     "REGEX requires 2-3 arguments".to_string(),
                 ));
             }
-            let text = eval_to_comparable_inner(&args[0], row, ctx)?;
-            let pattern = eval_to_comparable_inner(&args[1], row, ctx)?;
+            let text = eval_to_comparable(&args[0], row, ctx)?;
+            let pattern = eval_to_comparable(&args[1], row, ctx)?;
             let flags = if args.len() > 2 {
-                eval_to_comparable_inner(&args[2], row, ctx)?
+                eval_to_comparable(&args[2], row, ctx)?
                     .and_then(|v| v.as_str().map(|s| s.to_string()))
                     .unwrap_or_default()
             } else {
@@ -144,7 +142,7 @@ pub fn eval_string_function<S: Storage>(
         FunctionName::Concat => {
             let mut result = String::new();
             for arg in args {
-                if let Some(val) = eval_to_comparable_inner(arg, row, ctx)? {
+                if let Some(val) = eval_to_comparable(arg, row, ctx)? {
                     if let Some(s) = val.as_str() {
                         result.push_str(s);
                     }
@@ -155,8 +153,8 @@ pub fn eval_string_function<S: Storage>(
 
         FunctionName::StrBefore => {
             check_arity(args, 2, "STRBEFORE")?;
-            let arg1 = eval_to_comparable_inner(&args[0], row, ctx)?;
-            let arg2 = eval_to_comparable_inner(&args[1], row, ctx)?;
+            let arg1 = eval_to_comparable(&args[0], row, ctx)?;
+            let arg2 = eval_to_comparable(&args[1], row, ctx)?;
             Ok(match (arg1, arg2) {
                 (Some(ComparableValue::String(s)), Some(ComparableValue::String(d))) => {
                     let result = s.find(d.as_ref()).map(|pos| &s[..pos]).unwrap_or("");
@@ -168,8 +166,8 @@ pub fn eval_string_function<S: Storage>(
 
         FunctionName::StrAfter => {
             check_arity(args, 2, "STRAFTER")?;
-            let arg1 = eval_to_comparable_inner(&args[0], row, ctx)?;
-            let arg2 = eval_to_comparable_inner(&args[1], row, ctx)?;
+            let arg1 = eval_to_comparable(&args[0], row, ctx)?;
+            let arg2 = eval_to_comparable(&args[1], row, ctx)?;
             Ok(match (arg1, arg2) {
                 (Some(ComparableValue::String(s)), Some(ComparableValue::String(d))) => {
                     let result = s
@@ -188,11 +186,11 @@ pub fn eval_string_function<S: Storage>(
                     "REPLACE requires 3-4 arguments".to_string(),
                 ));
             }
-            let input = eval_to_comparable_inner(&args[0], row, ctx)?;
-            let pattern = eval_to_comparable_inner(&args[1], row, ctx)?;
-            let replacement = eval_to_comparable_inner(&args[2], row, ctx)?;
+            let input = eval_to_comparable(&args[0], row, ctx)?;
+            let pattern = eval_to_comparable(&args[1], row, ctx)?;
+            let replacement = eval_to_comparable(&args[2], row, ctx)?;
             let flags = if args.len() > 3 {
-                eval_to_comparable_inner(&args[3], row, ctx)?
+                eval_to_comparable(&args[3], row, ctx)?
                     .and_then(|v| v.as_str().map(|s| s.to_string()))
                     .unwrap_or_default()
             } else {
@@ -220,10 +218,10 @@ pub fn eval_string_function<S: Storage>(
                     "SUBSTR requires 2-3 arguments".to_string(),
                 ));
             }
-            let input = eval_to_comparable_inner(&args[0], row, ctx)?;
-            let start = eval_to_comparable_inner(&args[1], row, ctx)?;
+            let input = eval_to_comparable(&args[0], row, ctx)?;
+            let start = eval_to_comparable(&args[1], row, ctx)?;
             let length = if args.len() > 2 {
-                eval_to_comparable_inner(&args[2], row, ctx)?
+                eval_to_comparable(&args[2], row, ctx)?
             } else {
                 None
             };
@@ -255,7 +253,7 @@ pub fn eval_string_function<S: Storage>(
 
         FunctionName::EncodeForUri => {
             check_arity(args, 1, "ENCODE_FOR_URI")?;
-            let val = eval_to_comparable_inner(&args[0], row, ctx)?;
+            let val = eval_to_comparable(&args[0], row, ctx)?;
             Ok(val.and_then(|v| {
                 v.as_str().map(|s| {
                     ComparableValue::String(Arc::from(
@@ -267,8 +265,8 @@ pub fn eval_string_function<S: Storage>(
 
         FunctionName::StrDt => {
             check_arity(args, 2, "STRDT")?;
-            let val = eval_to_comparable_inner(&args[0], row, ctx)?;
-            let dt = eval_to_comparable_inner(&args[1], row, ctx)?;
+            let val = eval_to_comparable(&args[0], row, ctx)?;
+            let dt = eval_to_comparable(&args[1], row, ctx)?;
             match (val, dt) {
                 (Some(ComparableValue::String(s)), Some(dt_val)) => {
                     Ok(Some(ComparableValue::TypedLiteral {
@@ -286,8 +284,8 @@ pub fn eval_string_function<S: Storage>(
 
         FunctionName::StrLang => {
             check_arity(args, 2, "STRLANG")?;
-            let val = eval_to_comparable_inner(&args[0], row, ctx)?;
-            let lang = eval_to_comparable_inner(&args[1], row, ctx)?;
+            let val = eval_to_comparable(&args[0], row, ctx)?;
+            let lang = eval_to_comparable(&args[1], row, ctx)?;
             match (val, lang) {
                 (Some(ComparableValue::String(s)), Some(lang_val)) => {
                     Ok(Some(ComparableValue::TypedLiteral {

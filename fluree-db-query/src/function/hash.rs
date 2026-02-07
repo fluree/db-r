@@ -12,7 +12,7 @@ use sha1::Sha1;
 use sha2::{Sha256, Sha384, Sha512};
 use std::sync::Arc;
 
-use super::eval::eval_to_comparable_inner;
+use super::eval::eval_to_comparable;
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
@@ -70,7 +70,7 @@ where
     F: Fn(&str) -> String,
 {
     check_arity(args, 1, fn_name)?;
-    let val = eval_to_comparable_inner(&args[0], row, ctx)?;
+    let val = eval_to_comparable(&args[0], row, ctx)?;
     Ok(val.and_then(|v| {
         v.as_str()
             .map(|s| ComparableValue::String(Arc::from(hash_fn(s))))
