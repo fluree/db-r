@@ -28,6 +28,8 @@ pub mod stats;
 // Re-export main types
 pub use config::IndexerConfig;
 pub use error::{IndexerError, Result};
+
+use tracing::Instrument;
 pub use gc::{
     clean_garbage, load_garbage_record, write_garbage_record, CleanGarbageConfig,
     CleanGarbageResult, GarbageRecord, GarbageRef, DEFAULT_MAX_OLD_INDEXES,
@@ -143,28 +145,31 @@ where
     N: NameService,
 {
     let span = tracing::info_span!("index_build", ledger_alias = alias);
-    let _guard = span.enter();
 
-    // Look up the ledger record
-    let record = nameservice
-        .lookup(alias)
-        .await
-        .map_err(|e| IndexerError::NameService(e.to_string()))?
-        .ok_or_else(|| IndexerError::LedgerNotFound(alias.to_string()))?;
+    async {
+        // Look up the ledger record
+        let record = nameservice
+            .lookup(alias)
+            .await
+            .map_err(|e| IndexerError::NameService(e.to_string()))?
+            .ok_or_else(|| IndexerError::LedgerNotFound(alias.to_string()))?;
 
-    // If index is already current, return it
-    if let Some(ref index_addr) = record.index_address {
-        if record.index_t >= record.commit_t {
-            return Ok(IndexResult {
-                root_address: index_addr.clone(),
-                index_t: record.index_t,
-                alias: alias.to_string(),
-                stats: IndexStats::default(),
-            });
+        // If index is already current, return it
+        if let Some(ref index_addr) = record.index_address {
+            if record.index_t >= record.commit_t {
+                return Ok(IndexResult {
+                    root_address: index_addr.clone(),
+                    index_t: record.index_t,
+                    alias: alias.to_string(),
+                    stats: IndexStats::default(),
+                });
+            }
         }
-    }
 
-    build_binary_index(storage, alias, &record, config).await
+        build_binary_index(storage, alias, &record, config).await
+    }
+    .instrument(span)
+    .await
 }
 
 /// Build a binary index from an existing nameservice record.
@@ -224,8 +229,10 @@ where
     let alias = alias.to_string();
     let prev_root_address = record.index_address.clone();
     let handle = tokio::runtime::Handle::current();
+    let parent_span = tracing::Span::current();
 
     tokio::task::spawn_blocking(move || {
+        let _guard = parent_span.enter();
         handle.block_on(async {
             std::fs::create_dir_all(&run_dir)
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
