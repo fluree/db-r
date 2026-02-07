@@ -23,6 +23,9 @@ PROPS      ?= 6
 INDEXING   ?= true
 PARSE_THREADS ?= 4
 
+STRESS_PRODUCTS ?= 50000
+STRESS_BATCH    ?= 500
+
 RUST_LOG   ?= info,fluree_db_query=debug,fluree_db_transact=debug,fluree_db_indexer=debug
 
 # ── Infrastructure lifecycle ─────────────────────────────────────────────────
@@ -100,7 +103,7 @@ server-logs: ## Tail server stdout/stderr
 
 # ── Scenarios ────────────────────────────────────────────────────────────────
 
-.PHONY: transact query index firehose smoke cycle
+.PHONY: transact query index firehose smoke cycle stress
 
 transact: ## Minimal transaction scenarios (insert, upsert, update, turtle, SPARQL UPDATE)
 	./scripts/transact-smoke.sh $(BASE_URL) $(LEDGER)
@@ -118,6 +121,9 @@ firehose: generate ## Generate large dataset, bulk import via fluree-ingest
 smoke: ## Full cycle: seed, transact, query, index — end-to-end span waterfall
 	./scripts/seed-ledger.sh $(BASE_URL) $(LEDGER)
 	./scripts/full-cycle.sh $(BASE_URL) $(LEDGER)
+
+stress: ## High-volume stress test: 50K inserts with backpressure + expensive queries
+	./scripts/stress-test.sh $(BASE_URL) $(LEDGER) $(STRESS_PRODUCTS) $(STRESS_BATCH)
 
 cycle: ## Sustained transact + query workload triggering multiple index cycles
 	@echo "Running 3 full cycles to trigger multiple index rebuilds..."

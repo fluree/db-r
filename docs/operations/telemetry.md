@@ -256,7 +256,7 @@ The OTEL exporter uses its own `Targets` filter **independent of `RUST_LOG`**. T
 ```
 
 - **Console layer:** Respects `RUST_LOG` as-is (all crates)
-- **OTEL layer:** Exports only `fluree_*` crate targets at DEBUG level
+- **OTEL layer:** Exports only `fluree_*` crate targets at DEBUG level (TRACE for `fluree_db_query` to include all operator spans)
 
 This means `RUST_LOG=debug` produces verbose console output, but the OTEL exporter only receives Fluree spans -- no hyper/tonic/tower noise.
 
@@ -301,9 +301,9 @@ RUST_LOG=info,fluree_db_query=debug,fluree_db_transact=debug,fluree_db_indexer=d
 ```
 
 Additional spans:
-- **Query:** `query_prepare` > [`reasoning_prep`, `pattern_rewrite`, `plan`], `parse`, `format`, `policy_eval`
+- **Query:** `query_prepare` > [`reasoning_prep`, `pattern_rewrite`, `plan`], `parse`, `format`, `policy_eval`, core operators: `scan`, `join`, `filter`, `project`, `sort`
 - **Transaction:** `txn_stage` > [`where_exec`, `delete_gen`, `insert_gen`, `cancellation`, `policy_enforce`]
-- **Indexer:** `resolve_commit`, `index_gc`
+- **Indexer:** `resolve_commit`, `index_gc` > [`gc_walk_chain`, `gc_delete_entries`]
 
 #### Tier 3: TRACE (maximum detail)
 
@@ -313,7 +313,7 @@ Per-operator detail for deep performance analysis:
 RUST_LOG=info,fluree_db_query=trace
 ```
 
-Additional spans: `scan`, `join`, `property_join`, `sort`, `group_by`, `aggregate`, `group_aggregate`, `distinct`, `limit`, `offset`, `project`, `filter`, `union`, `optional`, `subquery`, `having`
+Additional spans: `property_join`, `group_by`, `aggregate`, `group_aggregate`, `distinct`, `limit`, `offset`, `union`, `optional`, `subquery`, `having`
 
 #### Span Tree (Query)
 
@@ -323,9 +323,11 @@ query_prepare (debug)
 ├── pattern_rewrite (debug)
 └── plan (debug)
 query_run (info)
-├── scan (trace)
-├── join (trace)
-├── project (trace)
+├── scan (debug)
+├── join (debug)
+├── filter (debug)
+├── project (debug)
+├── sort (debug)
 ├── sort_blocking (info)
 └── ...
 format (debug)
@@ -365,6 +367,8 @@ index_build (info)
 ├── walk_commit_chain (info)
 │   └── resolve_commit (debug)
 └── index_gc (debug)
+    ├── gc_walk_chain (debug)
+    └── gc_delete_entries (debug)
 ```
 
 ### Tracker-to-Span Bridge

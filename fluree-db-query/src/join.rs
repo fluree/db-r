@@ -571,7 +571,7 @@ impl<S: Storage + 'static> Operator<S> for NestedLoopJoinOperator<S> {
             self.state = OperatorState::Open;
             Ok(())
         }
-        .instrument(tracing::trace_span!(
+        .instrument(tracing::debug_span!(
             "join",
             batched = self.batched_eligible
         ))

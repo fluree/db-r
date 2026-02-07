@@ -165,7 +165,7 @@ pub fn init_logging(config: &TelemetryConfig) {
             let otel_targets = Targets::new()
                 .with_target("fluree_db_server", tracing::Level::DEBUG)
                 .with_target("fluree_db_api", tracing::Level::DEBUG)
-                .with_target("fluree_db_query", tracing::Level::DEBUG)
+                .with_target("fluree_db_query", tracing::Level::TRACE)
                 .with_target("fluree_db_transact", tracing::Level::DEBUG)
                 .with_target("fluree_db_indexer", tracing::Level::DEBUG)
                 .with_target("fluree_db_core", tracing::Level::DEBUG)

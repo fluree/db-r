@@ -1233,7 +1233,7 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
-        let span = tracing::trace_span!("scan");
+        let span = tracing::debug_span!("scan");
         async {
             if !self.state.can_open() {
                 if self.state.is_closed() {

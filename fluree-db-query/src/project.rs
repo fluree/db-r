@@ -52,7 +52,7 @@ impl<S: Storage + 'static> Operator<S> for ProjectOperator<S> {
             self.state = OperatorState::Open;
             Ok(())
         }
-        .instrument(tracing::trace_span!("project"))
+        .instrument(tracing::debug_span!("project"))
         .await
     }
 

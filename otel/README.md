@@ -50,6 +50,7 @@ make ui
 | `make index` | 500-entity burst to trigger background indexing | `index_build` > `build_all_indexes` > `build_index` |
 | `make firehose` | Bulk import 100K+ entities via fluree-ingest | Ingest spans, commit spans, indexing spans |
 | `make smoke` | Full cycle: seed + transact + query + index | End-to-end span waterfall |
+| `make stress` | 50K inserts with backpressure + expensive query battery | Operator bottlenecks, `index_gc` with child spans, backpressure retries |
 | `make cycle` | 3x full cycle — triggers multiple index rebuilds | Sustained trace patterns |
 
 ### Data & Cleanup
@@ -79,6 +80,7 @@ make generate ENTITIES=500000      # More data for firehose
 make server INDEXING=false         # Disable background indexing
 make firehose PARSE_THREADS=8     # More parallel parse threads
 make server RUST_LOG=info,fluree_db_query=trace  # Custom log level
+make stress STRESS_PRODUCTS=10000 STRESS_BATCH=200  # Smaller stress test
 ```
 
 ## RUST_LOG Patterns
@@ -108,6 +110,7 @@ otel/
 │   ├── query-smoke.sh      # Query scenario
 │   ├── index-smoke.sh      # Indexing scenario
 │   ├── firehose.sh         # High-volume ingest
+│   ├── stress-test.sh      # 50K inserts + backpressure + query battery
 │   └── full-cycle.sh       # Combined scenario
 └── _data/                  # gitignored; created at runtime
     ├── storage/            # File-backed Fluree storage
@@ -177,6 +180,37 @@ index_build
        ├─ build_index (POST)
        └─ build_index (OPST)
 ```
+
+## Stress Test
+
+The `make stress` target exercises high-volume insert throughput and expensive queries. It's designed to trigger multiple index cycles, backpressure retries, and generate traces with meaningful durations.
+
+### What it does
+
+1. **Seeds 20 categories** via a single insert
+2. **Inserts 50,000 products** (configurable) in batches of 500, with exponential backoff on novelty-at-max backpressure (HTTP 400 with "Novelty at maximum size")
+3. **Waits for indexing to settle**, then fires 2 additional bursts of 5,000 products each
+4. **Runs 6 expensive SPARQL queries** (3 iterations each) exercising sort, join, filter, GROUP BY, OPTIONAL, and subqueries
+
+### Backpressure behavior
+
+When the server's novelty buffer fills (default 1MB), transactions are rejected with HTTP 400. The stress script detects this and retries with exponential backoff (2s, 4s, 8s... capped at 30s). This is normal and expected -- it means indexing is working to drain the buffer.
+
+### Configuration
+
+```bash
+make stress STRESS_PRODUCTS=10000   # Fewer products (faster)
+make stress STRESS_BATCH=200        # Smaller batches
+make stress STRESS_PRODUCTS=100000  # More products (triggers more index cycles)
+```
+
+### What to look for in Jaeger
+
+- **Backpressure visibility**: Script output shows retry counts and wait times
+- **index_build** traces with `gc_walk_chain` + `gc_delete_entries` child spans under `index_gc`
+- **query:sparql** traces with `scan`, `join`, `filter`, `project`, `sort` operator spans under `query_run`
+- **Query durations >100ms** indicating meaningful operator work on large datasets
+- **Multiple index_build traces** showing sustained indexing activity
 
 ## Troubleshooting
 

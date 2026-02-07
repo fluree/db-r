@@ -29,7 +29,6 @@ pub mod stats;
 pub use config::IndexerConfig;
 pub use error::{IndexerError, Result};
 
-use tracing::Instrument;
 pub use gc::{
     clean_garbage, load_garbage_record, write_garbage_record, CleanGarbageConfig,
     CleanGarbageResult, GarbageRecord, GarbageRef, DEFAULT_MAX_OLD_INDEXES,
@@ -44,6 +43,7 @@ pub use orchestrator::{
     IndexerHandle, IndexerOrchestrator,
 };
 pub use stats::{IndexStatsHook, NoOpStatsHook, StatsArtifacts, StatsSummary};
+use tracing::Instrument;
 
 // Note: The following types/functions are defined in this module and are automatically public:
 // - build_index_for_ledger (nameservice-aware entry point)

@@ -366,7 +366,7 @@ impl<S: Storage + 'static> Operator<S> for SortOperator<S> {
             self.state = OperatorState::Open;
             Ok(())
         }
-        .instrument(tracing::trace_span!(
+        .instrument(tracing::debug_span!(
             "sort",
             sort_keys = self.sort_specs.len()
         ))

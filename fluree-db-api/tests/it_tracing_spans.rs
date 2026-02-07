@@ -196,7 +196,7 @@ async fn ac1_query_view_emits_parse_and_format_spans() {
 }
 
 // =============================================================================
-// AC-3: Operator trace spans (light check)
+// AC-3: Core operator debug spans (scan, join, filter, project, sort)
 // =============================================================================
 
 #[tokio::test]
@@ -213,20 +213,20 @@ async fn ac3_query_emits_operator_trace_spans() {
     "#;
     let _result = fluree.query_sparql(&ledger, sparql).await.expect("query");
 
-    // At least one operator trace span should appear (scan is the base operator)
-    let trace_spans = store.trace_spans();
-    let trace_names: Vec<&str> = trace_spans.iter().map(|s| s.name).collect();
+    // Core operators are debug-level spans (promoted from trace for visibility)
+    let debug_spans = store.debug_spans();
+    let debug_names: Vec<&str> = debug_spans.iter().map(|s| s.name).collect();
 
     // A simple SELECT with one pattern should produce at least scan + project
     assert!(
-        trace_names.contains(&"scan"),
-        "expected scan trace span; got trace spans: {:?}",
-        trace_names
+        debug_names.contains(&"scan"),
+        "expected scan debug span; got debug spans: {:?}",
+        debug_names
     );
     assert!(
-        trace_names.contains(&"project"),
-        "expected project trace span; got trace spans: {:?}",
-        trace_names
+        debug_names.contains(&"project"),
+        "expected project debug span; got debug spans: {:?}",
+        debug_names
     );
 }
 

@@ -160,149 +160,182 @@ pub async fn clean_garbage<S>(
 where
     S: Storage,
 {
+    use tracing::Instrument;
+
     let span = tracing::debug_span!(
         "index_gc",
         root_address = current_root_address,
         indexes_cleaned = tracing::field::Empty,
         nodes_deleted = tracing::field::Empty,
     );
-    let _guard = span.enter();
 
-    let max_old_indexes = config.max_old_indexes.unwrap_or(DEFAULT_MAX_OLD_INDEXES) as usize;
-    let min_age_mins = config
-        .min_time_garbage_mins
-        .unwrap_or(DEFAULT_MIN_TIME_GARBAGE_MINS);
-    let min_age_ms = min_age_mins as i64 * 60 * 1000;
-    let now_ms = current_timestamp_ms();
+    async {
+        let max_old_indexes =
+            config.max_old_indexes.unwrap_or(DEFAULT_MAX_OLD_INDEXES) as usize;
+        let min_age_mins = config
+            .min_time_garbage_mins
+            .unwrap_or(DEFAULT_MIN_TIME_GARBAGE_MINS);
+        let min_age_ms = min_age_mins as i64 * 60 * 1000;
+        let now_ms = current_timestamp_ms();
 
-    // 1. Walk prev_index chain to collect all index versions (tolerant of missing roots)
-    let index_chain = walk_prev_index_chain(storage, current_root_address).await?;
-
-    // Retention: keep current + max_old_indexes
-    // With max_old_indexes=5, keep_count=6 (indices 0..5)
-    let keep_count = 1 + max_old_indexes;
-
-    if index_chain.len() <= keep_count {
-        // Not enough indexes to trigger GC
-        return Ok(CleanGarbageResult::default());
-    }
-
-    // 2. Process ALL gc-eligible entries from oldest to newest.
-    //
-    // Chain is newest-first. Indices 0..keep_count are retained.
-    // Indices keep_count..len are gc-eligible.
-    //
-    // For each gc-eligible entry at index i, the manifest at index i-1 (the
-    // newer entry) lists nodes from entry i that were replaced. We use that
-    // manifest to delete those nodes, then delete the entry's own garbage
-    // manifest and root.
-    //
-    // Oldest-first processing (reversed range) is crash-safe: if interrupted,
-    // remaining gc-eligible entries are still reachable via prev_index chain
-    // from the retained set. Newest-first would truncate the chain at the
-    // retention boundary, orphaning everything beyond.
-    //
-    // We break (not continue) on any failure because skipping an entry and
-    // deleting a newer one would orphan the skipped entry and everything
-    // older than it.
-
-    let mut deleted_count = 0;
-    let mut indexes_cleaned = 0;
-
-    for i in (keep_count..index_chain.len()).rev() {
-        let manifest_entry = &index_chain[i - 1];
-        let entry_to_delete = &index_chain[i];
-
-        // Manifest from the newer entry lists nodes from entry_to_delete
-        // that were replaced when manifest_entry was built.
-        let garbage_addr = match &manifest_entry.garbage_address {
-            Some(addr) => addr,
-            None => {
-                tracing::debug!(
-                    t = manifest_entry.t,
-                    "No garbage manifest in index, stopping GC"
-                );
-                break;
+        // 1. Walk prev_index chain to collect all index versions (tolerant of missing roots)
+        let index_chain: Vec<IndexChainEntry> = {
+            let walk_span = tracing::debug_span!(
+                "gc_walk_chain",
+                chain_length = tracing::field::Empty,
+            );
+            async {
+                let chain = walk_prev_index_chain(storage, current_root_address).await?;
+                tracing::Span::current()
+                    .record("chain_length", chain.len() as u64);
+                Ok::<_, crate::error::IndexerError>(chain)
             }
+            .instrument(walk_span)
+            .await?
         };
 
-        // Load the garbage record to check age
-        let record = match load_garbage_record(storage, garbage_addr).await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::debug!(
-                    t = manifest_entry.t,
-                    error = %e,
-                    "Failed to load garbage record (may already be deleted), stopping GC"
-                );
-                break;
+        // Retention: keep current + max_old_indexes
+        // With max_old_indexes=5, keep_count=6 (indices 0..5)
+        let keep_count = 1 + max_old_indexes;
+
+        if index_chain.len() <= keep_count {
+            // Not enough indexes to trigger GC
+            return Ok(CleanGarbageResult::default());
+        }
+
+        // 2. Process ALL gc-eligible entries from oldest to newest.
+        //
+        // Chain is newest-first. Indices 0..keep_count are retained.
+        // Indices keep_count..len are gc-eligible.
+        //
+        // For each gc-eligible entry at index i, the manifest at index i-1 (the
+        // newer entry) lists nodes from entry i that were replaced. We use that
+        // manifest to delete those nodes, then delete the entry's own garbage
+        // manifest and root.
+        //
+        // Oldest-first processing (reversed range) is crash-safe: if interrupted,
+        // remaining gc-eligible entries are still reachable via prev_index chain
+        // from the retained set. Newest-first would truncate the chain at the
+        // retention boundary, orphaning everything beyond.
+        //
+        // We break (not continue) on any failure because skipping an entry and
+        // deleting a newer one would orphan the skipped entry and everything
+        // older than it.
+
+        let candidates = index_chain.len() - keep_count;
+        let (deleted_count, indexes_cleaned) = {
+            let delete_span = tracing::debug_span!(
+                "gc_delete_entries",
+                candidates = candidates as u64,
+            );
+            async {
+                let mut deleted_count: usize = 0;
+                let mut indexes_cleaned: usize = 0;
+
+                for i in (keep_count..index_chain.len()).rev() {
+                    let manifest_entry = &index_chain[i - 1];
+                    let entry_to_delete = &index_chain[i];
+
+                    // Manifest from the newer entry lists nodes from entry_to_delete
+                    // that were replaced when manifest_entry was built.
+                    let garbage_addr = match &manifest_entry.garbage_address {
+                        Some(addr) => addr,
+                        None => {
+                            tracing::debug!(
+                                t = manifest_entry.t,
+                                "No garbage manifest in index, stopping GC"
+                            );
+                            break;
+                        }
+                    };
+
+                    // Load the garbage record to check age
+                    let record = match load_garbage_record(storage, garbage_addr).await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            tracing::debug!(
+                                t = manifest_entry.t,
+                                error = %e,
+                                "Failed to load garbage record (may already be deleted), stopping GC"
+                            );
+                            break;
+                        }
+                    };
+
+                    // Check age: if created_at_ms is 0 (old format) or too recent, stop.
+                    // Newer manifests will be even more recent, so break is correct.
+                    if record.created_at_ms == 0 || now_ms - record.created_at_ms < min_age_ms {
+                        tracing::debug!(
+                            t = manifest_entry.t,
+                            age_mins = (now_ms - record.created_at_ms) / 60000,
+                            min_age_mins = min_age_mins,
+                            "Garbage record too recent, stopping GC"
+                        );
+                        break;
+                    }
+
+                    // Delete the garbage nodes (from entry_to_delete's tree)
+                    for addr in &record.garbage {
+                        if let Err(e) = storage.delete(addr).await {
+                            tracing::debug!(
+                                address = %addr,
+                                error = %e,
+                                "Failed to delete garbage node (may already be deleted)"
+                            );
+                        } else {
+                            deleted_count += 1;
+                        }
+                    }
+
+                    // Delete entry_to_delete's own garbage manifest
+                    if let Some(old_garbage_addr) = &entry_to_delete.garbage_address {
+                        if let Err(e) = storage.delete(old_garbage_addr).await {
+                            tracing::debug!(
+                                address = %old_garbage_addr,
+                                error = %e,
+                                "Failed to delete old garbage manifest (may already be deleted)"
+                            );
+                        }
+                    }
+
+                    // Delete the old db-root
+                    if let Err(e) = storage.delete(&entry_to_delete.address).await {
+                        tracing::debug!(
+                            address = %entry_to_delete.address,
+                            error = %e,
+                            "Failed to delete old db-root (may already be deleted)"
+                        );
+                    } else {
+                        indexes_cleaned += 1;
+                    }
+                }
+
+                (deleted_count, indexes_cleaned)
             }
+            .instrument(delete_span)
+            .await
         };
 
-        // Check age: if created_at_ms is 0 (old format) or too recent, stop.
-        // Newer manifests will be even more recent, so break is correct.
-        if record.created_at_ms == 0 || now_ms - record.created_at_ms < min_age_ms {
-            tracing::debug!(
-                t = manifest_entry.t,
-                age_mins = (now_ms - record.created_at_ms) / 60000,
-                min_age_mins = min_age_mins,
-                "Garbage record too recent, stopping GC"
+        let current_span = tracing::Span::current();
+        current_span.record("indexes_cleaned", indexes_cleaned as u64);
+        current_span.record("nodes_deleted", deleted_count as u64);
+
+        if indexes_cleaned > 0 || deleted_count > 0 {
+            tracing::info!(
+                indexes_cleaned = indexes_cleaned,
+                nodes_deleted = deleted_count,
+                retained_count = keep_count,
+                "Garbage collection complete"
             );
-            break;
         }
 
-        // Delete the garbage nodes (from entry_to_delete's tree)
-        for addr in &record.garbage {
-            if let Err(e) = storage.delete(addr).await {
-                tracing::debug!(
-                    address = %addr,
-                    error = %e,
-                    "Failed to delete garbage node (may already be deleted)"
-                );
-            } else {
-                deleted_count += 1;
-            }
-        }
-
-        // Delete entry_to_delete's own garbage manifest
-        if let Some(ref old_garbage_addr) = entry_to_delete.garbage_address {
-            if let Err(e) = storage.delete(old_garbage_addr).await {
-                tracing::debug!(
-                    address = %old_garbage_addr,
-                    error = %e,
-                    "Failed to delete old garbage manifest (may already be deleted)"
-                );
-            }
-        }
-
-        // Delete the old db-root
-        if let Err(e) = storage.delete(&entry_to_delete.address).await {
-            tracing::debug!(
-                address = %entry_to_delete.address,
-                error = %e,
-                "Failed to delete old db-root (may already be deleted)"
-            );
-        } else {
-            indexes_cleaned += 1;
-        }
+        Ok(CleanGarbageResult {
+            indexes_cleaned,
+            nodes_deleted: deleted_count,
+        })
     }
-
-    span.record("indexes_cleaned", indexes_cleaned as u64);
-    span.record("nodes_deleted", deleted_count as u64);
-
-    if indexes_cleaned > 0 || deleted_count > 0 {
-        tracing::info!(
-            indexes_cleaned = indexes_cleaned,
-            nodes_deleted = deleted_count,
-            retained_count = keep_count,
-            "Garbage collection complete"
-        );
-    }
-
-    Ok(CleanGarbageResult {
-        indexes_cleaned,
-        nodes_deleted: deleted_count,
-    })
+    .instrument(span)
+    .await
 }
 
 #[cfg(test)]

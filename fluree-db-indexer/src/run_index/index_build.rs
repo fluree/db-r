@@ -493,7 +493,12 @@ pub fn build_all_indexes(
         precompute_language_dict(base_run_dir)?;
     }
 
-    // Spawn one thread per order
+    // Spawn one thread per order.
+    // Capture the current span (build_all_indexes) so child threads inherit it
+    // as their parent — std::thread::scope threads do NOT inherit tracing context
+    // from thread-local storage automatically.
+    let parent_span = tracing::Span::current();
+
     let results = std::thread::scope(|s| {
         let handles: Vec<_> = orders
             .iter()
@@ -514,8 +519,10 @@ pub fn build_all_indexes(
 
                 let base = base_run_dir.to_path_buf();
                 let idx_dir = index_dir.to_path_buf();
+                let thread_span = parent_span.clone();
 
                 Some((order, s.spawn(move || {
+                    let _guard = thread_span.enter();
                     let config = IndexBuildConfig {
                         run_dir,
                         dicts_dir: base,

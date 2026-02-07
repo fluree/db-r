@@ -60,7 +60,7 @@ impl<S: Storage + 'static> Operator<S> for FilterOperator<S> {
             self.state = OperatorState::Open;
             Ok(())
         }
-        .instrument(tracing::trace_span!("filter"))
+        .instrument(tracing::debug_span!("filter"))
         .await
     }
 

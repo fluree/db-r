@@ -26,7 +26,8 @@ Per-operator, per-item, or per-iteration spans. Visible at `RUST_LOG=info,fluree
 |-------------------|-----------|---------|
 | New top-level operation (HTTP handler, background task) | `info_span!` | `sparql_execute` |
 | New phase within an existing operation | `debug_span!` | `reasoning_prep`, `format` |
-| Per-item or per-iteration detail in a hot path | `trace_span!` | `scan`, `filter`, `resolve_commit` |
+| Core query operator (structural, always useful for debugging) | `debug_span!` | `scan`, `join`, `filter`, `project`, `sort` |
+| Detail operator or per-iteration instrumentation | `trace_span!` | `group_by`, `distinct`, `resolve_commit` |
 
 ## Code Patterns
 
@@ -121,6 +122,26 @@ tokio::task::spawn_blocking(move || {
 }).await
 ```
 
+### std::thread::scope (parallel OS threads)
+
+`std::thread::scope` spawned threads do NOT inherit `tracing` span context from the parent thread. Capture the current span before spawning and enter it inside each closure:
+
+```rust
+let parent_span = tracing::Span::current();
+
+std::thread::scope(|s| {
+    for item in &work_items {
+        let thread_span = parent_span.clone();
+        s.spawn(move || {
+            let _guard = thread_span.enter();
+            // ... work that creates child spans ...
+        });
+    }
+});
+```
+
+This is safe because scoped threads are pure sync (no `.await`). The same pattern applies to any OS thread spawning (`std::thread::spawn`, `rayon`, etc.).
+
 ### Lightweight operators (hot path)
 
 For simple operators that just need a span marker, use the terse `.entered()` pattern:
@@ -200,9 +221,10 @@ If you add a new phase to query execution (e.g., a new optimization pass):
 
 If you add a new query operator:
 
-1. Add a `trace_span!` in the operator's `open()` method
-2. If it's a blocking/buffering operator (like sort), add an info-level timing span in `next_batch()`
-3. Add a test verifying the span emits at trace level
+1. For core structural operators (scan, join, filter, project, sort), use `debug_span!` in `open()`
+2. For detail operators (group_by, distinct, limit, offset, etc.), use `trace_span!` in `open()`
+3. If it's a blocking/buffering operator (like sort), add an info-level timing span in `next_batch()`
+4. Add a test verifying the span emits at the correct level
 
 ### New transaction phase
 
@@ -285,6 +307,7 @@ Without this, spans from the new crate will appear in console logs but not in Ja
 
 - [ ] Chose the right span level (info / debug / trace)
 - [ ] Used `span.enter()` only in sync code, `.instrument(span)` for async
+- [ ] Propagated span context into spawned threads (`spawn_blocking`, `std::thread::scope`, etc.)
 - [ ] Added deferred fields for values computed after span creation
 - [ ] Tested span emission with `SpanCaptureLayer`
 - [ ] Verified zero-noise at INFO level (debug/trace spans don't appear)
@@ -299,6 +322,7 @@ Without this, spans from the new crate will appear in console logs but not in Ja
 4. **Tower-HTTP duplicate `request` span** -- tower-http's `TraceLayer` creates its own `request` span at DEBUG level. We've configured it to use TRACE level to avoid collision with Fluree's `request` info_span.
 5. **`set_global_default` in tests** -- can only be called once per process. Use `set_default()` which returns a guard scoped to the test.
 6. **Compiler won't catch `span.enter()` across `.await`** -- Unlike what the tracing docs suggest, `Entered` may actually be `Send` (since `&Span` is `Send` when `Span: Sync`). The code compiles fine but produces incorrect traces at runtime. The only way to detect this is visual inspection in Jaeger. Grep for `span.enter()` in async functions as part of code review.
+7. **`std::thread::scope` / `std::thread::spawn` drops span context** -- New OS threads start with empty thread-local span context, so any spans created on them become orphaned root traces. You must capture `Span::current()` and `.enter()` it inside the thread closure. This same issue applies to `tokio::task::spawn_blocking`, `rayon`, and any other thread-spawning API.
 
 ## Related Documentation
 
