@@ -1013,3 +1013,121 @@ async fn reindex_default_from_t_includes_all_data() {
         "Should have all 3 items"
     );
 }
+
+/// Graph crawl select (`{"?s": ["*"]}`) must work against an indexed ledger.
+///
+/// Binary scan operators produce `EncodedSid` bindings for late materialization.
+/// The graph crawl formatter must materialize these before subject property
+/// lookup, otherwise every row is silently skipped and the result is `[]`.
+#[tokio::test]
+async fn graph_crawl_select_works_after_indexing() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let alias = "it/graph-crawl-indexed:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
+            let mut ledger = LedgerState::new(db0, Novelty::new(0));
+
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            // Insert a few entities
+            for i in 0..3 {
+                let tx = json!({
+                    "@context": { "ex":"http://example.org/" },
+                    "@id": format!("ex:person{i}"),
+                    "@type": "ex:Person",
+                    "ex:name": format!("Person {i}"),
+                    "ex:age": 20 + i
+                });
+
+                let r = fluree
+                    .insert_with_opts(
+                        ledger,
+                        &tx,
+                        TxnOpts::default(),
+                        CommitOpts::default(),
+                        &index_cfg,
+                    )
+                    .await
+                    .expect("insert_with_opts");
+                ledger = r.ledger;
+            }
+
+            // Trigger indexing
+            let record = fluree
+                .nameservice()
+                .lookup(alias)
+                .await
+                .expect("ns lookup")
+                .expect("ns record");
+            let completion = handle.trigger(alias, record.commit_t).await;
+            match completion.wait().await {
+                fluree_db_api::IndexOutcome::Completed { .. } => {}
+                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
+                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
+            }
+
+            // Load indexed ledger
+            let loaded = fluree.ledger(alias).await.expect("load ledger");
+            assert!(
+                loaded.binary_store.is_some(),
+                "loaded ledger should have binary index store"
+            );
+
+            // Graph crawl select: {"?s": ["*"]}
+            let query = json!({
+                "@context": { "ex":"http://example.org/" },
+                "select": {"?s": ["*"]},
+                "where": { "@id": "?s", "@type": "ex:Person" }
+            });
+            let result = fluree.query(&loaded, &query).await.expect("query");
+            let json_rows = result.to_jsonld_async(&loaded.db).await.expect("jsonld");
+            let rows = json_rows.as_array().expect("should be array");
+
+            assert_eq!(
+                rows.len(),
+                3,
+                "graph crawl should return 3 persons, got: {json_rows}"
+            );
+
+            // Each row should be a JSON object with @id and properties
+            for row in rows {
+                assert!(row.is_object(), "each row should be a JSON object");
+                assert!(row.get("@id").is_some(), "each row should have @id: {row}");
+            }
+
+            // Also test explicit property select: {"?s": ["@id", "ex:name"]}
+            let query2 = json!({
+                "@context": { "ex":"http://example.org/" },
+                "select": {"?s": ["@id", "ex:name"]},
+                "where": { "@id": "?s", "@type": "ex:Person" }
+            });
+            let result2 = fluree.query(&loaded, &query2).await.expect("query2");
+            let json_rows2 = result2.to_jsonld_async(&loaded.db).await.expect("jsonld2");
+            let rows2 = json_rows2.as_array().expect("should be array");
+
+            assert_eq!(
+                rows2.len(),
+                3,
+                "explicit property select should return 3 persons, got: {json_rows2}"
+            );
+
+            for row in rows2 {
+                assert!(row.is_object(), "each row should be a JSON object");
+                assert!(row.get("@id").is_some(), "should have @id: {row}");
+                assert!(row.get("ex:name").is_some(), "should have ex:name: {row}");
+            }
+        })
+        .await;
+}
