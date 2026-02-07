@@ -22,7 +22,7 @@
 //! # Configuration
 //!
 //! Use [`SearchDeploymentConfig`] to configure the search deployment mode for a
-//! virtual graph. This determines whether search is performed locally (embedded)
+//! graph source. This determines whether search is performed locally (embedded)
 //! or delegated to a remote service.
 //!
 //! [`Bm25IndexProvider`]: fluree_db_query::bm25::Bm25IndexProvider

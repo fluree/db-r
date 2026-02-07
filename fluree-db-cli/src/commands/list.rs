@@ -23,14 +23,14 @@ pub async fn run(fluree_dir: &Path) -> CliResult<()> {
     table.set_header(vec!["", "LEDGER", "BRANCH", "T"]);
 
     for record in &active_records {
-        let marker = if active.as_deref() == Some(&record.alias) {
+        let marker = if active.as_deref() == Some(&record.name) {
             "*"
         } else {
             " "
         };
         table.add_row(vec![
             marker.to_string(),
-            record.alias.clone(),
+            record.name.clone(),
             record.branch.clone(),
             record.commit_t.to_string(),
         ]);

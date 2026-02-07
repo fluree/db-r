@@ -375,12 +375,14 @@ async fn ledger_info_api_returns_expected_structure() {
                 reindex_max_bytes: 10_000_000,
             };
 
-            // Insert test data (like Clojure test)
+            // Insert test data (like Clojure test), including a ref property so we can
+            // validate class→property ref target stats in ledger_info.
             let txn = json!({
                 "@context": { "ex": "http://example.org/" },
                 "@graph": [
-                    {"@id": "ex:alice", "@type": "ex:Person", "ex:name": "Alice"},
-                    {"@id": "ex:bob", "@type": "ex:Person", "ex:name": "Bob"}
+                    {"@id": "ex:acme", "@type": "ex:Organization", "ex:name": "Acme"},
+                    {"@id": "ex:alice", "@type": "ex:Person", "ex:name": "Alice", "ex:worksFor": {"@id":"ex:acme"}},
+                    {"@id": "ex:bob", "@type": "ex:Person", "ex:name": "Bob", "ex:worksFor": {"@id":"ex:acme"}}
                 ]
             });
 
@@ -530,8 +532,8 @@ async fn ledger_info_api_returns_expected_structure() {
                     "selectivity-value should be integer"
                 );
 
-                // ex:name has count 2 (Alice and Bob)
-                assert_eq!(name_stats["count"], 2, "ex:name count should be 2");
+                // ex:name has count 3 (Alice, Bob, and Acme)
+                assert_eq!(name_stats["count"], 3, "ex:name count should be 3");
             } else {
                 panic!("stats.properties should contain http://example.org/name");
             }
@@ -552,22 +554,27 @@ async fn ledger_info_api_returns_expected_structure() {
                 );
                 assert_eq!(person_stats["count"], 2, "ex:Person count should be 2");
 
-                // Class properties HAVE types/ref-classes/langs (unlike top-level properties)
+                // Class properties are a map keyed by property IRI.
                 if let Some(class_props) = person_stats.get("properties") {
-                    if let Some(name_in_class) = class_props.get("http://example.org/name") {
-                        assert!(
-                            name_in_class.get("types").is_some(),
-                            "class property should have types"
-                        );
-                        assert!(
-                            name_in_class.get("ref-classes").is_some(),
-                            "class property should have ref-classes"
-                        );
-                        assert!(
-                            name_in_class.get("langs").is_some(),
-                            "class property should have langs"
-                        );
-                    }
+                    assert!(class_props.is_object(), "class properties should be an object map");
+                    assert!(
+                        class_props.get("http://example.org/name").is_some(),
+                        "Person should have ex:name property"
+                    );
+                    // Validate ref stats for worksFor: Person -> Organization count 2
+                    let works_for = class_props
+                        .get("http://example.org/worksFor")
+                        .expect("Person should have ex:worksFor property");
+                    let refs = works_for
+                        .get("refs")
+                        .or_else(|| works_for.get("ref-classes"))
+                        .and_then(|v| v.as_object())
+                        .expect("worksFor should have refs/ref-classes map");
+                    assert_eq!(
+                        refs.get("http://example.org/Organization"),
+                        Some(&json!(2)),
+                        "worksFor should point to Organization twice"
+                    );
                 }
             } else {
                 panic!("stats.classes should contain http://example.org/Person");
@@ -681,13 +688,20 @@ async fn ledger_info_api_with_context_compacts_stats_iris() {
             // Verify class properties are also compacted
             if let Some(person_stats) = classes.get("ex:Person") {
                 if let Some(class_props) = person_stats.get("properties") {
-                    let arr = class_props
-                        .as_array()
-                        .expect("class properties should be an array of compacted property IRIs");
                     assert!(
-                        arr.iter().any(|v| v.as_str() == Some("ex:name")),
-                        "Class property should be compacted to ex:name"
+                        class_props.get("ex:name").is_some(),
+                        "Class property key should be compacted to ex:name"
                     );
+                    // property-list should also be present (array) for convenience.
+                    if let Some(list) = person_stats.get("property-list") {
+                        let arr = list
+                            .as_array()
+                            .expect("property-list should be an array of compacted property IRIs");
+                        assert!(
+                            arr.iter().any(|v| v.as_str() == Some("ex:name")),
+                            "property-list should include ex:name"
+                        );
+                    }
                 }
             }
 
@@ -1142,8 +1156,10 @@ async fn multi_class_entities_tracked_correctly() {
 
 #[tokio::test]
 async fn class_property_type_distribution_tracked() {
-    // Tests that property types (datatypes) are tracked within class statistics.
-    // Clojure parity: types, ref-classes, langs in class property stats.
+    // Tests that class→property presence is tracked in class statistics.
+    //
+    // NOTE: DB-R no longer tracks per-class datatype distributions / langs.
+    // Ref target counts are tracked separately for ref-valued properties.
 
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
@@ -1228,48 +1244,27 @@ async fn class_property_type_distribution_tracked() {
                 .get("http://example.org/Person")
                 .expect("Person class should exist");
 
-            // Verify class properties have type distributions
+            // Verify class properties contain the expected properties
             let class_props = person_stats
                 .get("properties")
                 .expect("Person should have properties");
 
-            // ex:name should have xsd:string type
-            if let Some(name_prop) = class_props.get("http://example.org/name") {
-                let types = name_prop.get("types").expect("should have types");
-                assert!(
-                    types
-                        .get("http://www.w3.org/2001/XMLSchema#string")
-                        .is_some(),
-                    "ex:name should have xsd:string type. Got types: {:?}",
-                    types
-                );
-            }
-
-            // ex:age should have xsd:long or xsd:integer type
-            if let Some(age_prop) = class_props.get("http://example.org/age") {
-                let types = age_prop.get("types").expect("should have types");
-                let has_integer_type = types.get("http://www.w3.org/2001/XMLSchema#long").is_some()
-                    || types
-                        .get("http://www.w3.org/2001/XMLSchema#integer")
-                        .is_some();
-                assert!(
-                    has_integer_type,
-                    "ex:age should have integer type. Got types: {:?}",
-                    types
-                );
-            }
-
-            // ex:active should have xsd:boolean type
-            if let Some(active_prop) = class_props.get("http://example.org/active") {
-                let types = active_prop.get("types").expect("should have types");
-                assert!(
-                    types
-                        .get("http://www.w3.org/2001/XMLSchema#boolean")
-                        .is_some(),
-                    "ex:active should have xsd:boolean type. Got types: {:?}",
-                    types
-                );
-            }
+            assert!(
+                class_props.get("http://example.org/name").is_some(),
+                "Person should include ex:name in class properties"
+            );
+            assert!(
+                class_props.get("http://example.org/age").is_some(),
+                "Person should include ex:age in class properties"
+            );
+            assert!(
+                class_props.get("http://example.org/salary").is_some(),
+                "Person should include ex:salary in class properties"
+            );
+            assert!(
+                class_props.get("http://example.org/active").is_some(),
+                "Person should include ex:active in class properties"
+            );
         })
         .await;
 }

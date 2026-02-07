@@ -1,4 +1,4 @@
-# Graph Sources (Virtual Graphs)
+# Graph Sources
 
 **Differentiator**: Graph sources are one of Fluree's most powerful features, enabling seamless integration of specialized indexes and external data sources directly into graph queries. Unlike traditional databases that require separate systems for full-text search, vector similarity, or data lake access, Fluree makes these capabilities first-class citizens in the query language.
 
@@ -8,8 +8,6 @@ A **graph source** is anything you can address by a graph name/IRI in Fluree que
 - **Ledger graphs** (default graph and named graphs stored as RDF triples)
 - **Index graph sources** (BM25 and vector/HNSW indexes)
 - **Mapped graph sources** (R2RML and Iceberg-backed mappings)
-
-In code and some docs you will see the term **virtual graph** for non-ledger graph sources. In this documentation, we prefer **graph source** as the umbrella term.
 
 ### Key Characteristics
 
@@ -72,7 +70,7 @@ See the [Vector Search documentation](../indexing-and-search/vector-search.md) f
 
 ### Apache Iceberg Integration
 
-**Differentiator**: Query Apache Iceberg tables and Parquet files directly as virtual graphs, enabling seamless integration with data lake architectures.
+**Differentiator**: Query Apache Iceberg tables and Parquet files directly as graph sources, enabling seamless integration with data lake architectures.
 
 **Use Cases:**
 - Query data lake formats without ETL
@@ -83,7 +81,7 @@ See the [Vector Search documentation](../indexing-and-search/vector-search.md) f
 **Example:**
 
 ```sparql
-# Query Iceberg table as virtual graph
+# Query Iceberg table as graph source
 SELECT ?customer ?order ?amount
 FROM <iceberg:sales:main>
 WHERE {
@@ -99,7 +97,7 @@ WHERE {
 - R2RML mapping for relational data
 - Time-travel via Iceberg snapshots
 
-See the [Iceberg documentation](../virtual-graphs/iceberg.md) for details.
+See the [Iceberg documentation](../graph-sources/iceberg.md) for details.
 
 ### R2RML Relational Mapping
 
@@ -129,19 +127,19 @@ WHERE {
 - Read-only access to source databases
 - Support for complex joins and transformations
 
-See the [R2RML documentation](../virtual-graphs/r2rml.md) for details.
+See the [R2RML documentation](../graph-sources/r2rml.md) for details.
 
-## Virtual Graph Lifecycle
+## Graph Source Lifecycle
 
 ### Creation
 
-Virtual graphs are created through administrative operations, specifying:
+Graph sources are created through administrative operations, specifying:
 - **Type**: BM25, Vector, Iceberg, or R2RML
 - **Configuration**: Type-specific settings
 - **Dependencies**: Source ledgers or data sources
-- **Branch**: Virtual graphs support branching like ledgers
+- **Branch**: Graph sources support branching like ledgers
 
-**Example BM25 Virtual Graph Creation:**
+**Example BM25 Graph Source Creation:**
 
 ```json
 {
@@ -159,7 +157,7 @@ Virtual graphs are created through administrative operations, specifying:
 
 ### Indexing
 
-Virtual graphs maintain their own indexes:
+Graph sources maintain their own indexes:
 - **BM25**: Full-text indexes are built from source ledger data
 - **Vector**: Embeddings stored in HNSW indexes (embedded or remote)
 - **Iceberg**: Metadata is cached for efficient querying
@@ -167,14 +165,14 @@ Virtual graphs maintain their own indexes:
 
 ### Querying
 
-Virtual graphs are queried like regular ledgers:
+Graph sources are queried like regular ledgers:
 
 ```sparql
-# Query any virtual graph
+# Query any graph source
 SELECT ?result
-FROM <virtual-graph-name:branch>
+FROM <graph-source-name:branch>
 WHERE {
-  # Query patterns specific to virtual graph type
+  # Query patterns specific to graph source type
 }
 ```
 
@@ -205,30 +203,30 @@ Vector search is **head-only** in v1. If a query requests an `@t:` (or otherwise
 
 Iceberg time travel (when used) is handled by **Iceberg’s own snapshot/metadata model**, not by nameservice-managed snapshot history.
 
-## Virtual Graph Architecture
+## Graph Source Architecture
 
 ### Nameservice Integration
 
-Virtual graphs are tracked in the nameservice alongside ledgers:
+Graph sources are tracked in the nameservice alongside ledgers:
 
-- **Discovery**: List all virtual graphs via nameservice
+- **Discovery**: List all graph sources via nameservice
 - **Metadata**: Configuration and status stored in nameservice
 - **Coordination**: Index state tracked separately from source ledgers
 
-**Important**: for virtual graphs, the nameservice stores only **configuration** and a **head pointer** to the graph-source’s latest index root/manifest. Snapshot history (if any) lives in graph-source-owned manifests in storage.
+**Important**: for graph sources, the nameservice stores only **configuration** and a **head pointer** to the graph source's latest index root/manifest. Snapshot history (if any) lives in graph-source-owned manifests in storage.
 
 ### Query Execution
 
-When querying a virtual graph:
+When querying a graph source:
 
-1. **Resolution**: Query engine resolves virtual graph from nameservice
-2. **Type Detection**: Determines virtual graph type (BM25, Vector, etc.)
+1. **Resolution**: Query engine resolves graph source from nameservice
+2. **Type Detection**: Determines graph source type (BM25, Vector, etc.)
 3. **Specialized Execution**: Routes to type-specific query handler
 4. **Result Integration**: Results integrated with regular graph queries
 
 ### Performance Characteristics
 
-Each virtual graph type has different performance characteristics:
+Each graph source type has different performance characteristics:
 
 - **BM25**: Fast keyword search, relevance scoring
 - **Vector**: Approximate similarity search, configurable accuracy/speed tradeoff
@@ -244,8 +242,8 @@ Combine full-text search, vector similarity, and graph queries:
 ```sparql
 SELECT ?product ?textScore ?vectorScore
 FROM <products:main>
-FROM <products-search:main>  # BM25 virtual graph
-FROM <products-vector:main>  # Vector virtual graph
+FROM <products-search:main>  # BM25 graph source
+FROM <products-vector:main>  # Vector graph source
 WHERE {
   # Graph query
   ?product ex:category "electronics" .
@@ -272,7 +270,7 @@ Query both graph and tabular data:
 ```sparql
 SELECT ?customer ?graphData ?lakeData
 FROM <customers:main>           # Graph ledger
-FROM <iceberg:sales:main>        # Iceberg virtual graph
+FROM <iceberg:sales:main>        # Iceberg graph source
 WHERE {
   # Graph data
   ?customer ex:preferences ?graphData .
@@ -291,8 +289,8 @@ Combine semantic and keyword search:
 
 ```sparql
 SELECT ?document
-FROM <documents-search:main>     # BM25 virtual graph
-FROM <documents-vector:main>     # Vector virtual graph
+FROM <documents-search:main>     # BM25 graph source
+FROM <documents-vector:main>     # Vector graph source
 WHERE {
   {
     # Keyword match
@@ -312,15 +310,15 @@ WHERE {
 
 ## Best Practices
 
-### Virtual Graph Design
+### Graph Source Design
 
-1. **Choose Appropriate Type**: Match virtual graph type to query patterns
+1. **Choose Appropriate Type**: Match graph source type to query patterns
    - Keyword search → BM25
    - Semantic search → Vector
    - Analytics → Iceberg
    - SQL integration → R2RML
 
-2. **Configuration Tuning**: Optimize virtual graph parameters
+2. **Configuration Tuning**: Optimize graph source parameters
    - BM25: Tune k1 and b for relevance
    - Vector: Choose appropriate distance metric
    - Iceberg: Optimize partition strategy
@@ -332,34 +330,34 @@ WHERE {
 
 ### Performance Optimization
 
-1. **Index Maintenance**: Keep virtual graph indexes up-to-date
+1. **Index Maintenance**: Keep graph source indexes up-to-date
    - Monitor indexing lag
    - Tune indexing frequency
    - Handle large data volumes
 
-2. **Query Planning**: Optimize queries using virtual graphs
-   - Use virtual graphs for appropriate query patterns
+2. **Query Planning**: Optimize queries using graph sources
+   - Use graph sources for appropriate query patterns
    - Combine with graph queries efficiently
-   - Consider cost of virtual graph queries
+   - Consider cost of graph source queries
 
-3. **Caching**: Cache frequently accessed virtual graph results
+3. **Caching**: Cache frequently accessed graph source results
    - Cache query results when appropriate
-   - Consider virtual graph snapshot caching
+   - Consider graph source snapshot caching
    - Balance freshness vs performance
 
 ### Operational Considerations
 
-1. **Monitoring**: Track virtual graph health
+1. **Monitoring**: Track graph source health
    - Index build status
    - Query performance
    - Storage usage
 
-2. **Backup**: Include virtual graphs in backup strategy
+2. **Backup**: Include graph sources in backup strategy
    - BM25 indexes can be rebuilt (or restored from stored snapshots/manifests, depending on configuration)
    - Vector indexes are stored as head snapshots (time-travel not supported in v1)
    - Iceberg metadata in nameservice
 
-3. **Scaling**: Plan for virtual graph scaling
+3. **Scaling**: Plan for graph source scaling
    - BM25: Scale with source ledger size
    - Vector: Scale with embedding count
    - Iceberg: Leverage Iceberg partitioning
@@ -382,15 +380,15 @@ Application
 - Different query languages
 - Separate authentication/authorization
 
-### Fluree Virtual Graph Architecture
+### Fluree Graph Source Architecture
 
 ```
 Application
     └── Fluree
         ├── Graph Ledgers
-        ├── BM25 Virtual Graphs (built-in)
-        ├── Vector Virtual Graphs
-        └── Iceberg Virtual Graphs
+        ├── BM25 Graph Sources (built-in)
+        ├── Vector Graph Sources
+        └── Iceberg Graph Sources
 ```
 
 **Benefits:**
@@ -399,4 +397,4 @@ Application
 - Consistent time-travel across all data
 - Simplified operations and deployment
 
-Virtual graphs make Fluree a unified platform for graph, search, vector, and data lake queries, eliminating the complexity of managing multiple specialized systems.
+Graph sources make Fluree a unified platform for graph, search, vector, and data lake queries, eliminating the complexity of managing multiple specialized systems.

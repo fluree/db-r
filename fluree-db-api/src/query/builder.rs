@@ -26,13 +26,13 @@ use crate::{
 };
 
 // ============================================================================
-// VirtualGraphMode
+// GraphSourceMode
 // ============================================================================
 
-/// Virtual graph integration mode for query builders.
+/// Graph source integration mode for query builders.
 #[derive(Debug, Clone, Default)]
-pub enum VirtualGraphMode {
-    /// No virtual graph integration (default).
+pub enum GraphSourceMode {
+    /// No graph source integration (default).
     #[default]
     None,
     /// Enable BM25/Vector index providers.
@@ -53,7 +53,7 @@ pub(crate) struct QueryCore<'a> {
     pub(crate) input: Option<QueryInput<'a>>,
     pub(crate) tracking: Option<TrackingOptions>,
     pub(crate) format: Option<FormatterConfig>,
-    pub(crate) virtual_graphs: VirtualGraphMode,
+    pub(crate) graph_sources: GraphSourceMode,
     errors: Vec<BuilderError>,
 }
 
@@ -63,7 +63,7 @@ impl<'a> QueryCore<'a> {
             input: None,
             tracking: None,
             format: None,
-            virtual_graphs: VirtualGraphMode::None,
+            graph_sources: GraphSourceMode::None,
             errors: Vec::new(),
         }
     }
@@ -108,12 +108,12 @@ impl<'a> QueryCore<'a> {
     }
 
     pub(crate) fn set_index_providers(&mut self) {
-        self.virtual_graphs = VirtualGraphMode::IndexProviders;
+        self.graph_sources = GraphSourceMode::IndexProviders;
     }
 
     #[cfg(feature = "iceberg")]
     pub(crate) fn set_r2rml(&mut self) {
-        self.virtual_graphs = VirtualGraphMode::R2rml;
+        self.graph_sources = GraphSourceMode::R2rml;
     }
 
     /// Validate that required fields are set. Returns accumulated errors.
@@ -125,10 +125,10 @@ impl<'a> QueryCore<'a> {
                 hint: "call .jsonld(&query) or .sparql(\"SELECT ...\")",
             });
         }
-        if !matches!(self.virtual_graphs, VirtualGraphMode::None) {
+        if !matches!(self.graph_sources, GraphSourceMode::None) {
             errs.push(BuilderError::Invalid {
-                field: "virtual_graphs",
-                message: "Virtual graph modes (.with_index_providers(), .with_r2rml()) are not yet supported by query builders; use the direct query methods instead".into(),
+                field: "graph_sources",
+                message: "Graph source modes (.with_index_providers(), .with_r2rml()) are not yet supported by query builders; use the direct query methods instead".into(),
             });
         }
         errs
@@ -211,7 +211,7 @@ where
         self
     }
 
-    /// Enable BM25/Vector index providers for virtual graph queries.
+    /// Enable BM25/Vector index providers for graph source queries.
     pub fn with_index_providers(mut self) -> Self {
         self.core.set_index_providers();
         self

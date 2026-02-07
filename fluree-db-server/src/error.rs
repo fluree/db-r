@@ -63,9 +63,9 @@ impl ServerError {
 
             // Not Found
             ServerError::Api(ApiError::NotFound(msg)) => {
-                // Distinguish virtual graph not found from ledger not found
-                if msg.contains("Virtual graph") || msg.contains("virtual graph") {
-                    errors::VIRTUAL_GRAPH_NOT_FOUND
+                // Distinguish graph source not found from ledger not found
+                if msg.contains("Graph source") || msg.contains("graph source") {
+                    errors::GRAPH_SOURCE_NOT_FOUND
                 } else {
                     errors::LEDGER_NOT_FOUND
                 }

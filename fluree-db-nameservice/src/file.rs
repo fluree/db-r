@@ -27,10 +27,10 @@
 
 use crate::{
     parse_alias, AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher,
-    ConfigValue, NameService, NameServiceError, NameServiceEvent, NsLookupResult, NsRecord,
-    Publication, Publisher, RefKind, RefPublisher, RefValue, Result, StatusCasResult,
-    StatusPayload, StatusPublisher, StatusValue, Subscription, VgNsRecord, VgType,
-    VirtualGraphPublisher,
+    ConfigValue, GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService,
+    NameServiceError, NameServiceEvent, NsLookupResult, NsRecord, Publication, Publisher, RefKind,
+    RefPublisher, RefValue, Result, StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
+    Subscription,
 };
 use async_trait::async_trait;
 use fluree_db_core::alias as core_alias;
@@ -149,14 +149,14 @@ struct IndexRef {
     t: i64,
 }
 
-/// JSON structure for VG ns@v2 config record file
+/// JSON structure for graph source ns@v2 config record file
 ///
-/// VG records use the same ns@v2 path pattern but have different fields:
-/// - `@type` includes "f:VirtualGraphDatabase" and a VG-specific type (fidx:BM25, etc.)
-/// - `fidx:config` contains the VG configuration as a JSON string
+/// Graph source records use the same ns@v2 path pattern but have different fields:
+/// - `@type` includes "f:GraphSource" and a source-specific type (fidx:BM25, etc.)
+/// - `fidx:config` contains the graph source configuration as a JSON string
 /// - `fidx:dependencies` lists dependent ledger aliases
 #[derive(Debug, Serialize, Deserialize)]
-struct VgNsFileV2 {
+struct GraphSourceNsFileV2 {
     /// Context includes both f: (ledger) and fidx: (index) namespaces
     #[serde(rename = "@context")]
     context: serde_json::Value,
@@ -164,11 +164,11 @@ struct VgNsFileV2 {
     #[serde(rename = "@id")]
     id: String,
 
-    /// Type array includes "f:VirtualGraphDatabase" and VG-specific type
+    /// Type array includes "f:GraphSource" and source-specific type
     #[serde(rename = "@type")]
     record_type: Vec<String>,
 
-    /// Base name of the VG
+    /// Base name of the graph source
     #[serde(rename = "f:name")]
     name: String,
 
@@ -176,7 +176,7 @@ struct VgNsFileV2 {
     #[serde(rename = "f:branch")]
     branch: String,
 
-    /// VG configuration as JSON string
+    /// Graph source configuration as JSON string
     #[serde(rename = "fidx:config")]
     config: ConfigRef,
 
@@ -196,9 +196,9 @@ struct ConfigRef {
     value: String,
 }
 
-/// Reference to a VG index address
+/// Reference to a graph source index address
 #[derive(Debug, Serialize, Deserialize)]
-struct VgIndexRef {
+struct GraphSourceIndexRef {
     #[serde(rename = "@type")]
     ref_type: String,
 
@@ -206,13 +206,13 @@ struct VgIndexRef {
     address: String,
 }
 
-/// JSON structure for VG index record (separate from config)
+/// JSON structure for graph source index record (separate from config)
 ///
-/// Stored at `ns@v2/{vg-name}/{branch}.index.json` to avoid contention
+/// Stored at `ns@v2/{graph-source-name}/{branch}.index.json` to avoid contention
 /// between config updates and index updates. Uses monotonic update rule:
 /// only write if new index_t > existing index_t.
 #[derive(Debug, Serialize, Deserialize)]
-struct VgIndexFileV2WithT {
+struct GraphSourceIndexFileV2WithT {
     #[serde(rename = "@context")]
     context: serde_json::Value,
 
@@ -220,7 +220,7 @@ struct VgIndexFileV2WithT {
     id: String,
 
     #[serde(rename = "fidx:index")]
-    index: VgIndexRef,
+    index: GraphSourceIndexRef,
 
     #[serde(rename = "fidx:indexT")]
     index_t: i64,
@@ -236,8 +236,8 @@ fn ns_context() -> serde_json::Value {
     serde_json::json!({"f": NS_CONTEXT_IRI})
 }
 
-/// Create VG ns@v2 context including both f: and fidx: namespaces
-fn vg_context() -> serde_json::Value {
+/// Create graph source ns@v2 context including both f: and fidx: namespaces
+fn graph_source_context() -> serde_json::Value {
     serde_json::json!({
         "f": NS_CONTEXT_IRI,
         "fidx": FIDX_CONTEXT_IRI
@@ -452,7 +452,7 @@ impl FileNameService {
         // Convert to NsRecord
         let mut record = NsRecord {
             address: core_alias::format_alias(ledger_name, branch),
-            alias: main.ledger.id.clone(),
+            name: main.ledger.id.clone(),
             branch: main.branch,
             commit_address: main.commit.map(|c| c.id),
             commit_t: main.t,
@@ -473,9 +473,9 @@ impl FileNameService {
         Ok(Some(record))
     }
 
-    /// Check if a record file is a VG record (based on @type).
-    /// Uses exact match for "f:VirtualGraphDatabase" or full IRI.
-    async fn is_vg_record(&self, name: &str, branch: &str) -> Result<bool> {
+    /// Check if a record file is a graph source record (based on @type).
+    /// Uses exact match for "f:GraphSource" or full IRI.
+    async fn is_graph_source_record(&self, name: &str, branch: &str) -> Result<bool> {
         let main_path = self.ns_path(name, branch);
         if !main_path.exists() {
             return Ok(false);
@@ -487,18 +487,16 @@ impl FileNameService {
 
         // Parse just enough to check @type
         let parsed: serde_json::Value = serde_json::from_str(&content)?;
-        Ok(Self::is_vg_from_json(&parsed))
+        Ok(Self::is_graph_source_from_json(&parsed))
     }
 
-    /// Check if parsed JSON represents a VG record (exact match).
-    fn is_vg_from_json(parsed: &serde_json::Value) -> bool {
+    /// Check if parsed JSON represents a graph source record (exact match).
+    fn is_graph_source_from_json(parsed: &serde_json::Value) -> bool {
         if let Some(types) = parsed.get("@type").and_then(|t| t.as_array()) {
             for t in types {
                 if let Some(s) = t.as_str() {
                     // Exact match: either prefixed or full IRI
-                    if s == "f:VirtualGraphDatabase"
-                        || s == "https://ns.flur.ee/ledger#VirtualGraphDatabase"
-                    {
+                    if s == "f:GraphSource" || s == "https://ns.flur.ee/ledger#GraphSource" {
                         return true;
                     }
                 }
@@ -507,35 +505,36 @@ impl FileNameService {
         false
     }
 
-    /// Load a VG config record and merge with index file
-    async fn load_vg_record(&self, name: &str, branch: &str) -> Result<Option<VgNsRecord>> {
+    /// Load a graph source config record and merge with index file
+    async fn load_graph_source_record(
+        &self,
+        name: &str,
+        branch: &str,
+    ) -> Result<Option<GraphSourceRecord>> {
         let main_path = self.ns_path(name, branch);
         let index_path = self.index_path(name, branch);
 
         // Read main record
-        let main_file: Option<VgNsFileV2> = self.read_json(&main_path).await?;
+        let main_file: Option<GraphSourceNsFileV2> = self.read_json(&main_path).await?;
 
         let Some(main) = main_file else {
             return Ok(None);
         };
 
-        // Determine VG type from @type array (exact match, excluding VirtualGraphDatabase)
-        let vg_type = main
+        // Determine graph source type from @type array (exact match, excluding GraphSource)
+        let source_type = main
             .record_type
             .iter()
-            .find(|t| {
-                *t != "f:VirtualGraphDatabase"
-                    && *t != "https://ns.flur.ee/ledger#VirtualGraphDatabase"
-            })
-            .map(|t| VgType::from_type_string(t))
-            .unwrap_or(VgType::Unknown("unknown".to_string()));
+            .find(|t| *t != "f:GraphSource" && *t != "https://ns.flur.ee/ledger#GraphSource")
+            .map(|t| GraphSourceType::from_type_string(t))
+            .unwrap_or(GraphSourceType::Unknown("unknown".to_string()));
 
-        // Convert to VgNsRecord
-        let mut record = VgNsRecord {
+        // Convert to GraphSourceRecord
+        let mut record = GraphSourceRecord {
             address: core_alias::format_alias(name, branch),
             name: main.name,
             branch: main.branch,
-            vg_type,
+            source_type,
             config: main.config.value,
             dependencies: main.dependencies,
             index_address: None,
@@ -543,8 +542,8 @@ impl FileNameService {
             retracted: main.status == "retracted",
         };
 
-        // Read and merge VG index file (if exists)
-        let index_file: Option<VgIndexFileV2WithT> = self.read_json(&index_path).await?;
+        // Read and merge graph source index file (if exists)
+        let index_file: Option<GraphSourceIndexFileV2WithT> = self.read_json(&index_path).await?;
         if let Some(index_data) = index_file {
             if index_data.index_t > record.index_t {
                 record.index_address = Some(index_data.index.address);
@@ -565,7 +564,7 @@ impl FileNameService {
             id: record.address.clone(),
             record_type: vec!["f:Database".to_string(), "f:PhysicalDatabase".to_string()],
             ledger: LedgerRef {
-                id: record.alias.clone(),
+                id: record.name.clone(),
             },
             branch: record.branch.clone(),
             commit: record
@@ -600,10 +599,6 @@ impl NameService for FileNameService {
     async fn lookup(&self, ledger_address: &str) -> Result<Option<NsRecord>> {
         let (ledger_name, branch) = parse_alias(ledger_address)?;
         self.load_record(&ledger_name, &branch).await
-    }
-
-    async fn alias(&self, ledger_address: &str) -> Result<Option<String>> {
-        Ok(self.lookup(ledger_address).await?.map(|r| r.alias))
     }
 
     async fn all_records(&self) -> Result<Vec<NsRecord>> {
@@ -665,8 +660,8 @@ impl NameService for FileNameService {
                     continue;
                 }
 
-                // Exclude virtual graph records from ledger records.
-                if self.is_vg_record(&parent, branch).await? {
+                // Exclude graph source records from ledger records.
+                if self.is_graph_source_record(&parent, branch).await? {
                     continue;
                 }
 
@@ -857,7 +852,7 @@ impl Publisher for FileNameService {
             } else {
                 let record = NsRecord {
                     address: core_alias::format_alias(&ledger_name, &branch),
-                    alias: ledger_name.clone(),
+                    name: ledger_name.clone(),
                     branch: branch.clone(),
                     commit_address: Some(commit_addr.to_string()),
                     commit_t,
@@ -1101,12 +1096,12 @@ impl AdminPublisher for FileNameService {
 }
 
 #[async_trait]
-impl VirtualGraphPublisher for FileNameService {
-    async fn publish_vg(
+impl GraphSourcePublisher for FileNameService {
+    async fn publish_graph_source(
         &self,
         name: &str,
         branch: &str,
-        vg_type: VgType,
+        source_type: GraphSourceType,
         config: &str,
         dependencies: &[String],
     ) -> Result<()> {
@@ -1120,8 +1115,8 @@ impl VirtualGraphPublisher for FileNameService {
             let config = config.to_string();
             let dependencies_for_file = dependencies.to_vec();
             let dependencies_for_event = dependencies_for_file.clone();
-            let vg_type_for_event = vg_type.clone();
-            let vg_type_str = vg_type.to_type_string();
+            let source_type_for_event = source_type.clone();
+            let source_type_str = source_type.to_type_string();
             let name_for_file = name.clone();
             let branch_for_file = branch.clone();
             let alias_for_event = core_alias::format_alias(&name, &branch);
@@ -1130,8 +1125,8 @@ impl VirtualGraphPublisher for FileNameService {
             let did_update2 = did_update.clone();
 
             let res = self
-                .swap_json_locked::<VgNsFileV2, _>(path, move |existing| {
-                    // For VG config, we always update (config changes are allowed)
+                .swap_json_locked::<GraphSourceNsFileV2, _>(path, move |existing| {
+                    // For graph source config, we always update (config changes are allowed)
                     // Only preserve retracted status if already set
                     let status = existing
                         .as_ref()
@@ -1139,10 +1134,10 @@ impl VirtualGraphPublisher for FileNameService {
                         .filter(|s| s == "retracted")
                         .unwrap_or_else(|| "ready".to_string());
 
-                    let file = VgNsFileV2 {
-                        context: vg_context(),
+                    let file = GraphSourceNsFileV2 {
+                        context: graph_source_context(),
                         id: core_alias::format_alias(&name_for_file, &branch_for_file),
-                        record_type: vec!["f:VirtualGraphDatabase".to_string(), vg_type_str],
+                        record_type: vec!["f:GraphSource".to_string(), source_type_str],
                         name: name_for_file,
                         branch: branch_for_file,
                         config: ConfigRef { value: config },
@@ -1155,11 +1150,13 @@ impl VirtualGraphPublisher for FileNameService {
                 .await;
 
             if res.is_ok() && did_update.load(Ordering::SeqCst) {
-                let _ = self.event_tx.send(NameServiceEvent::VgConfigPublished {
-                    alias: alias_for_event,
-                    vg_type: vg_type_for_event,
-                    dependencies: dependencies_for_event,
-                });
+                let _ = self
+                    .event_tx
+                    .send(NameServiceEvent::GraphSourceConfigPublished {
+                        alias: alias_for_event,
+                        source_type: source_type_for_event,
+                        dependencies: dependencies_for_event,
+                    });
             }
 
             return res;
@@ -1167,13 +1164,10 @@ impl VirtualGraphPublisher for FileNameService {
 
         #[cfg(not(all(feature = "native", unix)))]
         {
-            let file = VgNsFileV2 {
-                context: vg_context(),
+            let file = GraphSourceNsFileV2 {
+                context: graph_source_context(),
                 id: core_alias::format_alias(&name, &branch),
-                record_type: vec![
-                    "f:VirtualGraphDatabase".to_string(),
-                    vg_type.to_type_string(),
-                ],
+                record_type: vec!["f:GraphSource".to_string(), source_type.to_type_string()],
                 name: name.to_string(),
                 branch: branch.to_string(),
                 config: ConfigRef {
@@ -1183,16 +1177,18 @@ impl VirtualGraphPublisher for FileNameService {
                 status: "ready".to_string(),
             };
             self.write_json_atomic(&main_path, &file).await?;
-            let _ = self.event_tx.send(NameServiceEvent::VgConfigPublished {
-                alias: core_alias::format_alias(&name, &branch),
-                vg_type,
-                dependencies: dependencies.to_vec(),
-            });
+            let _ = self
+                .event_tx
+                .send(NameServiceEvent::GraphSourceConfigPublished {
+                    alias: core_alias::format_alias(&name, &branch),
+                    source_type,
+                    dependencies: dependencies.to_vec(),
+                });
             Ok(())
         }
     }
 
-    async fn publish_vg_index(
+    async fn publish_graph_source_index(
         &self,
         name: &str,
         branch: &str,
@@ -1213,7 +1209,7 @@ impl VirtualGraphPublisher for FileNameService {
             let did_update2 = did_update.clone();
 
             let res = self
-                .swap_json_locked::<VgIndexFileV2WithT, _>(path, move |existing| {
+                .swap_json_locked::<GraphSourceIndexFileV2WithT, _>(path, move |existing| {
                     // Strictly monotonic: only update if new_t > existing_t
                     if let Some(existing_file) = &existing {
                         if index_t <= existing_file.index_t {
@@ -1221,10 +1217,10 @@ impl VirtualGraphPublisher for FileNameService {
                         }
                     }
 
-                    let file = VgIndexFileV2WithT {
-                        context: vg_context(),
+                    let file = GraphSourceIndexFileV2WithT {
+                        context: graph_source_context(),
                         id: core_alias::format_alias(&name, &branch),
-                        index: VgIndexRef {
+                        index: GraphSourceIndexRef {
                             ref_type: "f:Address".to_string(),
                             address: index_addr,
                         },
@@ -1236,11 +1232,13 @@ impl VirtualGraphPublisher for FileNameService {
                 .await;
 
             if res.is_ok() && did_update.load(Ordering::SeqCst) {
-                let _ = self.event_tx.send(NameServiceEvent::VgIndexPublished {
-                    alias: alias_for_event,
-                    index_address: index_addr_for_event,
-                    index_t,
-                });
+                let _ = self
+                    .event_tx
+                    .send(NameServiceEvent::GraphSourceIndexPublished {
+                        alias: alias_for_event,
+                        index_address: index_addr_for_event,
+                        index_t,
+                    });
             }
 
             return res;
@@ -1248,33 +1246,35 @@ impl VirtualGraphPublisher for FileNameService {
 
         #[cfg(not(all(feature = "native", unix)))]
         {
-            let existing: Option<VgIndexFileV2WithT> = self.read_json(&index_path).await?;
+            let existing: Option<GraphSourceIndexFileV2WithT> = self.read_json(&index_path).await?;
             if let Some(existing_file) = &existing {
                 if index_t <= existing_file.index_t {
                     return Ok(());
                 }
             }
 
-            let file = VgIndexFileV2WithT {
-                context: vg_context(),
+            let file = GraphSourceIndexFileV2WithT {
+                context: graph_source_context(),
                 id: core_alias::format_alias(&name, &branch),
-                index: VgIndexRef {
+                index: GraphSourceIndexRef {
                     ref_type: "f:Address".to_string(),
                     address: index_addr.to_string(),
                 },
                 index_t,
             };
             self.write_json_atomic(&index_path, &file).await?;
-            let _ = self.event_tx.send(NameServiceEvent::VgIndexPublished {
-                alias: core_alias::format_alias(&name, &branch),
-                index_address: index_addr.to_string(),
-                index_t,
-            });
+            let _ = self
+                .event_tx
+                .send(NameServiceEvent::GraphSourceIndexPublished {
+                    alias: core_alias::format_alias(&name, &branch),
+                    index_address: index_addr.to_string(),
+                    index_t,
+                });
             Ok(())
         }
     }
 
-    async fn retract_vg(&self, name: &str, branch: &str) -> Result<()> {
+    async fn retract_graph_source(&self, name: &str, branch: &str) -> Result<()> {
         let main_path = self.ns_path(name, branch);
 
         #[cfg(all(feature = "native", unix))]
@@ -1285,7 +1285,7 @@ impl VirtualGraphPublisher for FileNameService {
             let did_update2 = did_update.clone();
 
             let res = self
-                .swap_json_locked::<VgNsFileV2, _>(path, move |existing| {
+                .swap_json_locked::<GraphSourceNsFileV2, _>(path, move |existing| {
                     let mut file = match existing {
                         Some(f) => f,
                         None => return Ok(None),
@@ -1300,7 +1300,7 @@ impl VirtualGraphPublisher for FileNameService {
                 .await;
 
             if res.is_ok() && did_update.load(Ordering::SeqCst) {
-                let _ = self.event_tx.send(NameServiceEvent::VgRetracted {
+                let _ = self.event_tx.send(NameServiceEvent::GraphSourceRetracted {
                     alias: alias_for_event,
                 });
             }
@@ -1310,11 +1310,11 @@ impl VirtualGraphPublisher for FileNameService {
 
         #[cfg(not(all(feature = "native", unix)))]
         {
-            let existing: Option<VgNsFileV2> = self.read_json(&main_path).await?;
+            let existing: Option<GraphSourceNsFileV2> = self.read_json(&main_path).await?;
             if let Some(mut file) = existing {
                 file.status = "retracted".to_string();
                 self.write_json_atomic(&main_path, &file).await?;
-                let _ = self.event_tx.send(NameServiceEvent::VgRetracted {
+                let _ = self.event_tx.send(NameServiceEvent::GraphSourceRetracted {
                     alias: core_alias::format_alias(&name, &branch),
                 });
             }
@@ -1322,15 +1322,15 @@ impl VirtualGraphPublisher for FileNameService {
         }
     }
 
-    async fn lookup_vg(&self, alias: &str) -> Result<Option<VgNsRecord>> {
+    async fn lookup_graph_source(&self, alias: &str) -> Result<Option<GraphSourceRecord>> {
         let (name, branch) = parse_alias(alias)?;
 
-        // First check if it's a VG record
-        if !self.is_vg_record(&name, &branch).await? {
+        // First check if it's a graph source record
+        if !self.is_graph_source_record(&name, &branch).await? {
             return Ok(None);
         }
 
-        self.load_vg_record(&name, &branch).await
+        self.load_graph_source_record(&name, &branch).await
     }
 
     async fn lookup_any(&self, alias: &str) -> Result<NsLookupResult> {
@@ -1341,10 +1341,10 @@ impl VirtualGraphPublisher for FileNameService {
             return Ok(NsLookupResult::NotFound);
         }
 
-        // Check if it's a VG record
-        if self.is_vg_record(&name, &branch).await? {
-            match self.load_vg_record(&name, &branch).await? {
-                Some(record) => Ok(NsLookupResult::VirtualGraph(record)),
+        // Check if it's a graph source record
+        if self.is_graph_source_record(&name, &branch).await? {
+            match self.load_graph_source_record(&name, &branch).await? {
+                Some(record) => Ok(NsLookupResult::GraphSource(record)),
                 None => Ok(NsLookupResult::NotFound),
             }
         } else {
@@ -1356,7 +1356,7 @@ impl VirtualGraphPublisher for FileNameService {
         }
     }
 
-    async fn all_vg_records(&self) -> Result<Vec<VgNsRecord>> {
+    async fn all_graph_source_records(&self) -> Result<Vec<GraphSourceRecord>> {
         let ns_dir = self.base_path.join(NS_VERSION);
 
         if !ns_dir.exists() {
@@ -1398,16 +1398,17 @@ impl VirtualGraphPublisher for FileNameService {
                         // Path structure: ns@v2/{name}/{branch}.json or ns@v2/{name}/{subdir}/.../{branch}.json
                         let ns_dir_base = self.base_path.join(NS_VERSION);
                         if let Ok(relative_path) = path.strip_prefix(&ns_dir_base) {
-                            // relative_path is like "vg-name/main.json" or "tenant/vg/main.json"
+                            // relative_path is like "gs-name/main.json" or "tenant/gs/main.json"
                             let parent = relative_path
                                 .parent()
                                 .map(|p| p.to_string_lossy().to_string())
                                 .unwrap_or_default();
                             let branch = file_name.trim_end_matches(".json");
 
-                            // Check if this is a VG record
-                            if self.is_vg_record(&parent, branch).await? {
-                                if let Ok(Some(record)) = self.load_vg_record(&parent, branch).await
+                            // Check if this is a graph source record
+                            if self.is_graph_source_record(&parent, branch).await? {
+                                if let Ok(Some(record)) =
+                                    self.load_graph_source_record(&parent, branch).await
                                 {
                                     records.push(record);
                                 }
@@ -2163,27 +2164,31 @@ mod tests {
             .unwrap();
 
         let record = ns.lookup("tenant/customers:main").await.unwrap().unwrap();
-        assert_eq!(record.alias, "tenant/customers");
+        assert_eq!(record.name, "tenant/customers");
         assert_eq!(record.branch, "main");
     }
 
-    // ========== Virtual Graph Tests ==========
+    // ========== Graph Source Tests ==========
 
     #[tokio::test]
-    async fn test_vg_publish_and_lookup() {
+    async fn test_graph_source_publish_and_lookup() {
         let (_temp, ns) = setup().await;
 
         let config = r#"{"k1":1.2,"b":0.75}"#;
         let deps = vec!["source-ledger:main".to_string()];
 
-        ns.publish_vg("my-search", "main", VgType::Bm25, config, &deps)
+        ns.publish_graph_source("my-search", "main", GraphSourceType::Bm25, config, &deps)
             .await
             .unwrap();
 
-        let record = ns.lookup_vg("my-search:main").await.unwrap().unwrap();
+        let record = ns
+            .lookup_graph_source("my-search:main")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(record.name, "my-search");
         assert_eq!(record.branch, "main");
-        assert_eq!(record.vg_type, VgType::Bm25);
+        assert_eq!(record.source_type, GraphSourceType::Bm25);
         assert_eq!(record.config, config);
         assert_eq!(record.dependencies, deps);
         assert_eq!(record.index_address, None);
@@ -2192,24 +2197,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_vg_publish_index_merge() {
+    async fn test_graph_source_publish_index_merge() {
         let (_temp, ns) = setup().await;
 
         let config = r#"{"k1":1.2}"#;
         let deps = vec!["source:main".to_string()];
 
-        // Publish VG config
-        ns.publish_vg("my-vg", "main", VgType::Bm25, config, &deps)
+        // Publish graph source config
+        ns.publish_graph_source("my-gs", "main", GraphSourceType::Bm25, config, &deps)
             .await
             .unwrap();
 
-        // Publish VG index
-        ns.publish_vg_index("my-vg", "main", "fluree:file://index/snapshot.bin", 42)
+        // Publish graph source index
+        ns.publish_graph_source_index("my-gs", "main", "fluree:file://index/snapshot.bin", 42)
             .await
             .unwrap();
 
         // Lookup should merge config + index
-        let record = ns.lookup_vg("my-vg:main").await.unwrap().unwrap();
+        let record = ns.lookup_graph_source("my-gs:main").await.unwrap().unwrap();
         assert_eq!(record.config, config);
         assert_eq!(
             record.index_address,
@@ -2219,65 +2224,65 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_vg_index_monotonic_update() {
+    async fn test_graph_source_index_monotonic_update() {
         let (_temp, ns) = setup().await;
 
         let config = r#"{}"#;
-        ns.publish_vg("vg", "main", VgType::Bm25, config, &[])
+        ns.publish_graph_source("gs", "main", GraphSourceType::Bm25, config, &[])
             .await
             .unwrap();
 
         // First index publish
-        ns.publish_vg_index("vg", "main", "index-v1", 10)
+        ns.publish_graph_source_index("gs", "main", "index-v1", 10)
             .await
             .unwrap();
 
         // Higher t should update
-        ns.publish_vg_index("vg", "main", "index-v2", 20)
+        ns.publish_graph_source_index("gs", "main", "index-v2", 20)
             .await
             .unwrap();
 
-        let record = ns.lookup_vg("vg:main").await.unwrap().unwrap();
+        let record = ns.lookup_graph_source("gs:main").await.unwrap().unwrap();
         assert_eq!(record.index_address, Some("index-v2".to_string()));
         assert_eq!(record.index_t, 20);
 
         // Lower t should be ignored (monotonic rule)
-        ns.publish_vg_index("vg", "main", "index-old", 15)
+        ns.publish_graph_source_index("gs", "main", "index-old", 15)
             .await
             .unwrap();
 
-        let record = ns.lookup_vg("vg:main").await.unwrap().unwrap();
+        let record = ns.lookup_graph_source("gs:main").await.unwrap().unwrap();
         assert_eq!(record.index_address, Some("index-v2".to_string()));
         assert_eq!(record.index_t, 20);
 
         // Equal t should also be ignored
-        ns.publish_vg_index("vg", "main", "index-same", 20)
+        ns.publish_graph_source_index("gs", "main", "index-same", 20)
             .await
             .unwrap();
 
-        let record = ns.lookup_vg("vg:main").await.unwrap().unwrap();
+        let record = ns.lookup_graph_source("gs:main").await.unwrap().unwrap();
         assert_eq!(record.index_address, Some("index-v2".to_string()));
     }
 
     #[tokio::test]
-    async fn test_vg_retract() {
+    async fn test_graph_source_retract() {
         let (_temp, ns) = setup().await;
 
-        ns.publish_vg("vg", "main", VgType::Bm25, "{}", &[])
+        ns.publish_graph_source("gs", "main", GraphSourceType::Bm25, "{}", &[])
             .await
             .unwrap();
 
-        let record = ns.lookup_vg("vg:main").await.unwrap().unwrap();
+        let record = ns.lookup_graph_source("gs:main").await.unwrap().unwrap();
         assert!(!record.retracted);
 
-        ns.retract_vg("vg", "main").await.unwrap();
+        ns.retract_graph_source("gs", "main").await.unwrap();
 
-        let record = ns.lookup_vg("vg:main").await.unwrap().unwrap();
+        let record = ns.lookup_graph_source("gs:main").await.unwrap().unwrap();
         assert!(record.retracted);
     }
 
     #[tokio::test]
-    async fn test_vg_lookup_any_distinguishes_types() {
+    async fn test_graph_source_lookup_any_distinguishes_types() {
         let (_temp, ns) = setup().await;
 
         // Create a regular ledger
@@ -2285,20 +2290,20 @@ mod tests {
             .await
             .unwrap();
 
-        // Create a VG
-        ns.publish_vg("vg", "main", VgType::Bm25, "{}", &[])
+        // Create a graph source
+        ns.publish_graph_source("gs", "main", GraphSourceType::Bm25, "{}", &[])
             .await
             .unwrap();
 
         // lookup_any should return correct type
         match ns.lookup_any("ledger:main").await.unwrap() {
-            NsLookupResult::Ledger(r) => assert_eq!(r.alias, "ledger"),
+            NsLookupResult::Ledger(r) => assert_eq!(r.name, "ledger"),
             other => panic!("Expected Ledger, got {:?}", other),
         }
 
-        match ns.lookup_any("vg:main").await.unwrap() {
-            NsLookupResult::VirtualGraph(r) => assert_eq!(r.name, "vg"),
-            other => panic!("Expected VirtualGraph, got {:?}", other),
+        match ns.lookup_any("gs:main").await.unwrap() {
+            NsLookupResult::GraphSource(r) => assert_eq!(r.name, "gs"),
+            other => panic!("Expected GraphSource, got {:?}", other),
         }
 
         // Non-existent should return NotFound
@@ -2309,7 +2314,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_vg_lookup_returns_none_for_ledger() {
+    async fn test_graph_source_lookup_returns_none_for_ledger() {
         let (_temp, ns) = setup().await;
 
         // Create a regular ledger
@@ -2317,31 +2322,31 @@ mod tests {
             .await
             .unwrap();
 
-        // lookup_vg should return None for a ledger
-        let result = ns.lookup_vg("ledger:main").await.unwrap();
+        // lookup_graph_source should return None for a ledger
+        let result = ns.lookup_graph_source("ledger:main").await.unwrap();
         assert!(result.is_none());
     }
 
     #[tokio::test]
-    async fn test_vg_config_update_preserves_index() {
+    async fn test_graph_source_config_update_preserves_index() {
         let (_temp, ns) = setup().await;
 
         // Publish initial config
-        ns.publish_vg("vg", "main", VgType::Bm25, r#"{"v":1}"#, &[])
+        ns.publish_graph_source("gs", "main", GraphSourceType::Bm25, r#"{"v":1}"#, &[])
             .await
             .unwrap();
 
         // Publish index
-        ns.publish_vg_index("vg", "main", "index-1", 10)
+        ns.publish_graph_source_index("gs", "main", "index-1", 10)
             .await
             .unwrap();
 
         // Update config (should not affect index)
-        ns.publish_vg("vg", "main", VgType::Bm25, r#"{"v":2}"#, &[])
+        ns.publish_graph_source("gs", "main", GraphSourceType::Bm25, r#"{"v":2}"#, &[])
             .await
             .unwrap();
 
-        let record = ns.lookup_vg("vg:main").await.unwrap().unwrap();
+        let record = ns.lookup_graph_source("gs:main").await.unwrap().unwrap();
         assert_eq!(record.config, r#"{"v":2}"#);
         // Index should still be present (from separate file)
         assert_eq!(record.index_address, Some("index-1".to_string()));
@@ -2349,23 +2354,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_vg_type_variants() {
+    async fn test_graph_source_type_variants() {
         let (_temp, ns) = setup().await;
 
-        // Test different VG types
-        ns.publish_vg("bm25-vg", "main", VgType::Bm25, "{}", &[])
+        // Test different graph source types
+        ns.publish_graph_source("bm25-gs", "main", GraphSourceType::Bm25, "{}", &[])
             .await
             .unwrap();
-        ns.publish_vg("r2rml-vg", "main", VgType::R2rml, "{}", &[])
+        ns.publish_graph_source("r2rml-gs", "main", GraphSourceType::R2rml, "{}", &[])
             .await
             .unwrap();
-        ns.publish_vg("iceberg-vg", "main", VgType::Iceberg, "{}", &[])
+        ns.publish_graph_source("iceberg-gs", "main", GraphSourceType::Iceberg, "{}", &[])
             .await
             .unwrap();
-        ns.publish_vg(
-            "custom-vg",
+        ns.publish_graph_source(
+            "custom-gs",
             "main",
-            VgType::Unknown("fidx:CustomType".to_string()),
+            GraphSourceType::Unknown("fidx:CustomType".to_string()),
             "{}",
             &[],
         )
@@ -2373,32 +2378,36 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            ns.lookup_vg("bm25-vg:main").await.unwrap().unwrap().vg_type,
-            VgType::Bm25
-        );
-        assert_eq!(
-            ns.lookup_vg("r2rml-vg:main")
+            ns.lookup_graph_source("bm25-gs:main")
                 .await
                 .unwrap()
                 .unwrap()
-                .vg_type,
-            VgType::R2rml
+                .source_type,
+            GraphSourceType::Bm25
         );
         assert_eq!(
-            ns.lookup_vg("iceberg-vg:main")
+            ns.lookup_graph_source("r2rml-gs:main")
                 .await
                 .unwrap()
                 .unwrap()
-                .vg_type,
-            VgType::Iceberg
+                .source_type,
+            GraphSourceType::R2rml
         );
         assert_eq!(
-            ns.lookup_vg("custom-vg:main")
+            ns.lookup_graph_source("iceberg-gs:main")
                 .await
                 .unwrap()
                 .unwrap()
-                .vg_type,
-            VgType::Unknown("fidx:CustomType".to_string())
+                .source_type,
+            GraphSourceType::Iceberg
+        );
+        assert_eq!(
+            ns.lookup_graph_source("custom-gs:main")
+                .await
+                .unwrap()
+                .unwrap()
+                .source_type,
+            GraphSourceType::Unknown("fidx:CustomType".to_string())
         );
     }
 

@@ -19,9 +19,9 @@ pub struct RemoteLedgerWatermark {
     pub last_updated: Instant,
 }
 
-/// Remote watermark state for a virtual graph (from SSE)
+/// Remote watermark state for a graph source (from SSE)
 #[derive(Debug, Clone)]
-pub struct RemoteVgWatermark {
+pub struct RemoteGraphSourceWatermark {
     pub alias: String,
     pub index_t: i64,
     pub config_hash: String,
@@ -36,8 +36,8 @@ pub struct RemoteVgWatermark {
 pub struct PeerState {
     /// Remote ledger watermarks from SSE
     ledgers: RwLock<HashMap<String, RemoteLedgerWatermark>>,
-    /// Remote VG watermarks from SSE
-    vgs: RwLock<HashMap<String, RemoteVgWatermark>>,
+    /// Remote graph source watermarks from SSE
+    graph_sources: RwLock<HashMap<String, RemoteGraphSourceWatermark>>,
     /// Whether SSE connection is active
     connected: RwLock<bool>,
 }
@@ -46,7 +46,7 @@ impl PeerState {
     pub fn new() -> Self {
         Self {
             ledgers: RwLock::new(HashMap::new()),
-            vgs: RwLock::new(HashMap::new()),
+            graph_sources: RwLock::new(HashMap::new()),
             connected: RwLock::new(false),
         }
     }
@@ -77,28 +77,28 @@ impl PeerState {
         }
     }
 
-    /// Check if a VG needs refresh based on local vs remote state.
-    pub async fn check_vg_freshness(
+    /// Check if a graph source needs refresh based on local vs remote state.
+    pub async fn check_graph_source_freshness(
         &self,
         alias: &str,
         local_index_t: i64,
         local_config_hash: &str,
-    ) -> VgNeedsRefresh {
-        match self.vgs.read().await.get(alias) {
+    ) -> GraphSourceNeedsRefresh {
+        match self.graph_sources.read().await.get(alias) {
             Some(remote) => {
                 if remote.index_t > local_index_t {
-                    VgNeedsRefresh::IndexAdvanced {
+                    GraphSourceNeedsRefresh::IndexAdvanced {
                         remote_index_t: remote.index_t,
                     }
                 } else if remote.config_hash != local_config_hash {
-                    VgNeedsRefresh::ConfigChanged {
+                    GraphSourceNeedsRefresh::ConfigChanged {
                         remote_config_hash: remote.config_hash.clone(),
                     }
                 } else {
-                    VgNeedsRefresh::No
+                    GraphSourceNeedsRefresh::No
                 }
             }
-            None => VgNeedsRefresh::Unknown,
+            None => GraphSourceNeedsRefresh::Unknown,
         }
     }
 
@@ -145,25 +145,25 @@ impl PeerState {
         self.ledgers.write().await.remove(alias);
     }
 
-    /// Update VG watermark from SSE event (returns true if changed)
-    pub async fn update_vg(
+    /// Update graph source watermark from SSE event (returns true if changed)
+    pub async fn update_graph_source(
         &self,
         alias: &str,
         index_t: i64,
         config_hash: String,
         index_address: Option<String>,
     ) -> bool {
-        let mut vgs = self.vgs.write().await;
+        let mut graph_sources = self.graph_sources.write().await;
 
-        let changed = match vgs.get(alias) {
+        let changed = match graph_sources.get(alias) {
             Some(existing) => index_t > existing.index_t || config_hash != existing.config_hash,
             None => true,
         };
 
         if changed {
-            vgs.insert(
+            graph_sources.insert(
                 alias.to_string(),
-                RemoteVgWatermark {
+                RemoteGraphSourceWatermark {
                     alias: alias.to_string(),
                     index_t,
                     config_hash,
@@ -176,15 +176,15 @@ impl PeerState {
         changed
     }
 
-    /// Remove VG (on retraction)
-    pub async fn remove_vg(&self, alias: &str) {
-        self.vgs.write().await.remove(alias);
+    /// Remove graph source (on retraction)
+    pub async fn remove_graph_source(&self, alias: &str) {
+        self.graph_sources.write().await.remove(alias);
     }
 
     /// Clear all state (on reconnect, before new snapshot)
     pub async fn clear(&self) {
         self.ledgers.write().await.clear();
-        self.vgs.write().await.clear();
+        self.graph_sources.write().await.clear();
     }
 
     /// Mark connected/disconnected
@@ -201,9 +201,9 @@ impl PeerState {
         self.ledgers.read().await.keys().cloned().collect()
     }
 
-    /// Get all known VG aliases (for introspection/health)
-    pub async fn known_vgs(&self) -> Vec<String> {
-        self.vgs.read().await.keys().cloned().collect()
+    /// Get all known graph source aliases (for introspection/health)
+    pub async fn known_graph_sources(&self) -> Vec<String> {
+        self.graph_sources.read().await.keys().cloned().collect()
     }
 
     /// Get ledger count
@@ -211,9 +211,9 @@ impl PeerState {
         self.ledgers.read().await.len()
     }
 
-    /// Get VG count
-    pub async fn vg_count(&self) -> usize {
-        self.vgs.read().await.len()
+    /// Get graph source count
+    pub async fn graph_source_count(&self) -> usize {
+        self.graph_sources.read().await.len()
     }
 }
 
@@ -239,16 +239,16 @@ pub enum NeedsRefresh {
     Unknown,
 }
 
-/// Result of checking if a VG needs refresh
+/// Result of checking if a graph source needs refresh
 #[derive(Debug, Clone)]
-pub enum VgNeedsRefresh {
+pub enum GraphSourceNeedsRefresh {
     /// Local state is up-to-date
     No,
     /// Remote has newer index
     IndexAdvanced { remote_index_t: i64 },
     /// Config changed (requires rebuild)
     ConfigChanged { remote_config_hash: String },
-    /// SSE hasn't reported this VG yet
+    /// SSE hasn't reported this graph source yet
     Unknown,
 }
 
@@ -390,58 +390,64 @@ mod tests {
         let state = PeerState::new();
         state.update_ledger("books:main", 5, 3, None, None).await;
         state
-            .update_vg("search:main", 2, "abc123".to_string(), None)
+            .update_graph_source("search:main", 2, "abc123".to_string(), None)
             .await;
 
         assert_eq!(state.ledger_count().await, 1);
-        assert_eq!(state.vg_count().await, 1);
+        assert_eq!(state.graph_source_count().await, 1);
 
         state.clear().await;
 
         assert_eq!(state.ledger_count().await, 0);
-        assert_eq!(state.vg_count().await, 0);
+        assert_eq!(state.graph_source_count().await, 0);
     }
 
     #[tokio::test]
-    async fn test_vg_freshness_no() {
+    async fn test_graph_source_freshness_no() {
         let state = PeerState::new();
         state
-            .update_vg("search:main", 2, "abc123".to_string(), None)
+            .update_graph_source("search:main", 2, "abc123".to_string(), None)
             .await;
 
-        let result = state.check_vg_freshness("search:main", 2, "abc123").await;
-        assert!(matches!(result, VgNeedsRefresh::No));
+        let result = state
+            .check_graph_source_freshness("search:main", 2, "abc123")
+            .await;
+        assert!(matches!(result, GraphSourceNeedsRefresh::No));
     }
 
     #[tokio::test]
-    async fn test_vg_freshness_index_advanced() {
+    async fn test_graph_source_freshness_index_advanced() {
         let state = PeerState::new();
         state
-            .update_vg("search:main", 5, "abc123".to_string(), None)
+            .update_graph_source("search:main", 5, "abc123".to_string(), None)
             .await;
 
-        let result = state.check_vg_freshness("search:main", 2, "abc123").await;
+        let result = state
+            .check_graph_source_freshness("search:main", 2, "abc123")
+            .await;
         match result {
-            VgNeedsRefresh::IndexAdvanced { remote_index_t } => {
+            GraphSourceNeedsRefresh::IndexAdvanced { remote_index_t } => {
                 assert_eq!(remote_index_t, 5);
             }
-            _ => panic!("Expected VgNeedsRefresh::IndexAdvanced"),
+            _ => panic!("Expected GraphSourceNeedsRefresh::IndexAdvanced"),
         }
     }
 
     #[tokio::test]
-    async fn test_vg_freshness_config_changed() {
+    async fn test_graph_source_freshness_config_changed() {
         let state = PeerState::new();
         state
-            .update_vg("search:main", 2, "def456".to_string(), None)
+            .update_graph_source("search:main", 2, "def456".to_string(), None)
             .await;
 
-        let result = state.check_vg_freshness("search:main", 2, "abc123").await;
+        let result = state
+            .check_graph_source_freshness("search:main", 2, "abc123")
+            .await;
         match result {
-            VgNeedsRefresh::ConfigChanged { remote_config_hash } => {
+            GraphSourceNeedsRefresh::ConfigChanged { remote_config_hash } => {
                 assert_eq!(remote_config_hash, "def456");
             }
-            _ => panic!("Expected VgNeedsRefresh::ConfigChanged"),
+            _ => panic!("Expected GraphSourceNeedsRefresh::ConfigChanged"),
         }
     }
 

@@ -1501,17 +1501,17 @@ pub mod index {
     /// fidx:vector - vector property for similarity search
     pub const VECTOR: &str = "vector";
 
-    /// Virtual graph configuration properties
+    /// Graph source configuration properties
     ///
-    /// fidx:config - VG configuration JSON (stored in nameservice)
+    /// fidx:config - graph source configuration JSON (stored in nameservice)
     pub const CONFIG: &str = "config";
 
-    /// fidx:dependencies - VG dependency ledger aliases
+    /// fidx:dependencies - graph source dependency ledger aliases
     pub const DEPENDENCIES: &str = "dependencies";
 
-    /// fidx:index - VG index address
+    /// fidx:index - Graph source index address
     pub const INDEX: &str = "index";
 
-    /// fidx:indexT - VG index watermark (commit t value)
+    /// fidx:indexT - Graph source index watermark (commit t value)
     pub const INDEX_T: &str = "indexT";
 }

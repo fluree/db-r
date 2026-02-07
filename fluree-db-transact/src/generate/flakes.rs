@@ -244,7 +244,7 @@ impl<'a> FlakeGenerator<'a> {
                             "Subject must be a Sid; EncodedPid cannot be used as subject".to_string(),
                         )),
                         Binding::Iri(_) => Err(TransactError::InvalidTerm(
-                            "Raw IRI from virtual graph cannot be used as subject for flake generation".to_string(),
+                            "Raw IRI from graph source cannot be used as subject for flake generation".to_string(),
                         )),
                     }
                 } else {
@@ -295,7 +295,7 @@ impl<'a> FlakeGenerator<'a> {
                             "Predicate must be a Sid; EncodedPid must be materialized before flake generation".to_string(),
                         )),
                         Binding::Iri(_) => Err(TransactError::InvalidTerm(
-                            "Raw IRI from virtual graph cannot be used as predicate for flake generation".to_string(),
+                            "Raw IRI from graph source cannot be used as predicate for flake generation".to_string(),
                         )),
                     }
                 } else {
@@ -355,7 +355,7 @@ impl<'a> FlakeGenerator<'a> {
                             "Object cannot be a grouped value (GROUP BY output)".to_string(),
                         )),
                         Binding::Iri(_) => Err(TransactError::InvalidTerm(
-                            "Raw IRI from virtual graph cannot be used as object for flake generation".to_string(),
+                            "Raw IRI from graph source cannot be used as object for flake generation".to_string(),
                         )),
                     }
                 } else {

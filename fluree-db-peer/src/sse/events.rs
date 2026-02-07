@@ -18,16 +18,16 @@ pub struct LedgerRecord {
     pub retracted: bool,
 }
 
-/// Virtual graph record from SSE ns-record event
+/// Graph source record from SSE ns-record event
 #[derive(Debug, Clone, Deserialize)]
-pub struct VgRecord {
+pub struct GraphSourceRecord {
     pub alias: String,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
     pub branch: Option<String>,
     #[serde(default)]
-    pub vg_type: Option<String>,
+    pub source_type: Option<String>,
     #[serde(default)]
     pub config: Option<String>,
     #[serde(default)]
@@ -79,8 +79,8 @@ pub enum SseClientEvent {
     SnapshotComplete { hash: String },
     /// Ledger record received
     LedgerRecord(LedgerRecord),
-    /// VG record received
-    VgRecord(VgRecord),
+    /// Graph source record received
+    GraphSourceRecord(GraphSourceRecord),
     /// Resource retracted
     Retracted { kind: String, alias: String },
     /// Connection lost (will reconnect)
@@ -97,11 +97,11 @@ impl LedgerRecord {
     }
 }
 
-impl VgRecord {
+impl GraphSourceRecord {
     /// Compute a config hash for change detection.
     ///
     /// Uses SHA-256 truncated to 8 hex chars (4 bytes) to match
-    /// the server's VG SSE event ID format.
+    /// the server's graph source SSE event ID format.
     pub fn config_hash(&self) -> String {
         use sha2::{Digest, Sha256};
 
@@ -135,20 +135,20 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_vg_record() {
+    fn test_parse_graph_source_record() {
         let json = r#"{
             "alias": "search:main",
             "name": "search",
             "branch": "main",
-            "vg_type": "fulltext",
+            "source_type": "fulltext",
             "config": "{\"analyzer\": \"standard\"}",
             "dependencies": ["books:main"],
-            "index_address": "fluree:file://vg/search",
+            "index_address": "fluree:file://gs/search",
             "index_t": 2,
             "retracted": false
         }"#;
 
-        let record: VgRecord = serde_json::from_str(json).unwrap();
+        let record: GraphSourceRecord = serde_json::from_str(json).unwrap();
         assert_eq!(record.alias, "search:main");
         assert_eq!(record.index_t, 2);
         assert_eq!(record.dependencies, vec!["books:main"]);
@@ -184,14 +184,14 @@ mod tests {
     }
 
     #[test]
-    fn test_vg_config_hash_sha256() {
+    fn test_graph_source_config_hash_sha256() {
         // Test that config_hash produces SHA-256 truncated to 8 hex chars
         // This should match the server's sha256_short function
-        let record = VgRecord {
+        let record = GraphSourceRecord {
             alias: "test:main".to_string(),
             name: None,
             branch: None,
-            vg_type: None,
+            source_type: None,
             config: Some("test config".to_string()),
             dependencies: vec![],
             index_address: None,
@@ -207,13 +207,13 @@ mod tests {
     }
 
     #[test]
-    fn test_vg_config_hash_empty() {
+    fn test_graph_source_config_hash_empty() {
         // Empty config should still produce valid hash
-        let record = VgRecord {
+        let record = GraphSourceRecord {
             alias: "test:main".to_string(),
             name: None,
             branch: None,
-            vg_type: None,
+            source_type: None,
             config: None, // None config
             dependencies: vec![],
             index_address: None,

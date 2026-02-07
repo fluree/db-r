@@ -1,6 +1,7 @@
 mod support;
 
 use fluree_db_api::{Bm25CreateConfig, FlureeBuilder, FlureeIndexProvider};
+use fluree_db_nameservice::STORAGE_SEGMENT_GRAPH_SOURCES;
 use fluree_db_query::bm25::{Analyzer, Bm25IndexProvider, Bm25Scorer};
 use serde_json::json;
 
@@ -38,7 +39,10 @@ async fn bm25_create_full_text_index_indexes_docs_and_is_loadable() {
     );
 
     // Load the index back via nameservice+storage
-    let idx = fluree.load_bm25_index(&created.vg_alias).await.unwrap();
+    let idx = fluree
+        .load_bm25_index(&created.graph_source_address)
+        .await
+        .unwrap();
     assert!(idx.num_docs() > 0, "loaded index should include documents");
 }
 
@@ -71,7 +75,10 @@ async fn bm25_search_returns_scored_results() {
     let created = fluree.create_full_text_index(cfg).await.unwrap();
 
     // Load and search using Bm25Scorer
-    let idx = fluree.load_bm25_index(&created.vg_alias).await.unwrap();
+    let idx = fluree
+        .load_bm25_index(&created.graph_source_address)
+        .await
+        .unwrap();
 
     // Analyze query and score
     let analyzer = Analyzer::clojure_parity_english();
@@ -150,12 +157,18 @@ async fn bm25_sync_indexes_new_documents() {
     let _ledger2 = fluree.insert(ledger1, &tx2).await.unwrap().ledger;
 
     // Sync the index (uses sync_bm25_index which does a full resync when stale)
-    let synced = fluree.sync_bm25_index(&created.vg_alias).await.unwrap();
+    let synced = fluree
+        .sync_bm25_index(&created.graph_source_address)
+        .await
+        .unwrap();
     // Verify sync was successful - new watermark should be > old
     assert!(synced.was_full_resync || synced.new_watermark >= synced.old_watermark);
 
     // Verify by loading the index and checking doc count
-    let idx = fluree.load_bm25_index(&created.vg_alias).await.unwrap();
+    let idx = fluree
+        .load_bm25_index(&created.graph_source_address)
+        .await
+        .unwrap();
     assert_eq!(idx.num_docs(), 3, "loaded index should have 3 docs");
 }
 
@@ -196,12 +209,15 @@ async fn bm25_snapshot_history_tracks_versions() {
     let ledger2 = fluree.insert(ledger1, &tx2).await.unwrap().ledger;
     let t2 = ledger2.t();
 
-    let synced = fluree.sync_bm25_index(&created.vg_alias).await.unwrap();
+    let synced = fluree
+        .sync_bm25_index(&created.graph_source_address)
+        .await
+        .unwrap();
     assert!(synced.was_full_resync || synced.new_watermark >= synced.old_watermark);
 
     // Load at t1 should get 1 doc (returns tuple of (index, actual_t))
     let (idx_t1, actual_t1) = fluree
-        .load_bm25_index_at(&created.vg_alias, t1)
+        .load_bm25_index_at(&created.graph_source_address, t1)
         .await
         .unwrap();
     assert_eq!(idx_t1.num_docs(), 1, "expected 1 doc at t1");
@@ -209,7 +225,7 @@ async fn bm25_snapshot_history_tracks_versions() {
 
     // Load at t2 should get 2 docs
     let (idx_t2, actual_t2) = fluree
-        .load_bm25_index_at(&created.vg_alias, t2)
+        .load_bm25_index_at(&created.graph_source_address, t2)
         .await
         .unwrap();
     assert_eq!(idx_t2.num_docs(), 2, "expected 2 docs at t2");
@@ -244,15 +260,21 @@ async fn bm25_drop_full_text_index_cleans_up() {
     assert!(created.doc_count > 0);
 
     // Verify we can load it
-    let idx = fluree.load_bm25_index(&created.vg_alias).await.unwrap();
+    let idx = fluree
+        .load_bm25_index(&created.graph_source_address)
+        .await
+        .unwrap();
     assert_eq!(idx.num_docs(), 1);
 
     // Drop the index
     let drop_result = fluree
-        .drop_full_text_index(&created.vg_alias)
+        .drop_full_text_index(&created.graph_source_address)
         .await
         .unwrap();
-    assert_eq!(drop_result.vg_alias, created.vg_alias);
+    assert_eq!(
+        drop_result.graph_source_address,
+        created.graph_source_address
+    );
     assert!(!drop_result.was_already_retracted);
     assert!(
         drop_result.deleted_snapshots >= 1,
@@ -260,8 +282,11 @@ async fn bm25_drop_full_text_index_cleans_up() {
     );
 
     // Sync should now fail
-    let sync_result = fluree.sync_bm25_index(&created.vg_alias).await;
-    assert!(sync_result.is_err(), "sync should fail for dropped VG");
+    let sync_result = fluree.sync_bm25_index(&created.graph_source_address).await;
+    assert!(
+        sync_result.is_err(),
+        "sync should fail for dropped graph source"
+    );
 
     // Add another doc to ledger
     let tx2 = json!({
@@ -273,7 +298,7 @@ async fn bm25_drop_full_text_index_cleans_up() {
     let _ledger2 = fluree.insert(ledger1, &tx2).await.unwrap().ledger;
 
     // Sync should still fail
-    let sync_result2 = fluree.sync_bm25_index(&created.vg_alias).await;
+    let sync_result2 = fluree.sync_bm25_index(&created.graph_source_address).await;
     assert!(
         sync_result2.is_err(),
         "sync should still fail after ledger update"
@@ -281,7 +306,7 @@ async fn bm25_drop_full_text_index_cleans_up() {
 
     // Drop again should be idempotent (was_already_retracted = true)
     let drop_result2 = fluree
-        .drop_full_text_index(&created.vg_alias)
+        .drop_full_text_index(&created.graph_source_address)
         .await
         .unwrap();
     assert!(drop_result2.was_already_retracted);
@@ -290,7 +315,7 @@ async fn bm25_drop_full_text_index_cleans_up() {
 
 /// Test BM25 recreate index after drop: can create a new index with the same name after dropping
 ///
-/// This is Clojure parity for `bm25_drop_test.clj` scenario where you drop a VG
+/// This is Clojure parity for `bm25_drop_test.clj` scenario where you drop a graph source
 /// and then recreate it with the same name.
 #[tokio::test]
 async fn bm25_recreate_after_drop() {
@@ -320,7 +345,10 @@ async fn bm25_recreate_after_drop() {
     assert_eq!(created.doc_count, 2, "initial index should have 2 docs");
 
     // Verify search works
-    let idx = fluree.load_bm25_index(&created.vg_alias).await.unwrap();
+    let idx = fluree
+        .load_bm25_index(&created.graph_source_address)
+        .await
+        .unwrap();
     let analyzer = Analyzer::clojure_parity_english();
     let terms = analyzer.analyze_to_strings("original");
     let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
@@ -330,7 +358,7 @@ async fn bm25_recreate_after_drop() {
 
     // Drop the index
     let drop_result = fluree
-        .drop_full_text_index(&created.vg_alias)
+        .drop_full_text_index(&created.graph_source_address)
         .await
         .unwrap();
     assert!(!drop_result.was_already_retracted);
@@ -351,12 +379,15 @@ async fn bm25_recreate_after_drop() {
     // New index should see all 3 documents
     assert_eq!(created2.doc_count, 3, "recreated index should have 3 docs");
     assert_eq!(
-        created2.vg_alias, created.vg_alias,
+        created2.graph_source_address, created.graph_source_address,
         "should have same alias"
     );
 
     // Verify search works on new index
-    let idx2 = fluree.load_bm25_index(&created2.vg_alias).await.unwrap();
+    let idx2 = fluree
+        .load_bm25_index(&created2.graph_source_address)
+        .await
+        .unwrap();
 
     // Search for "additional" which only appears in the new doc
     let terms2 = analyzer.analyze_to_strings("additional");
@@ -418,7 +449,7 @@ async fn bm25_federated_query_via_provider() {
     // Test 1: FlureeIndexProvider can load the index
     let provider = FlureeIndexProvider::new(&fluree);
     let idx = provider
-        .bm25_index(&created.vg_alias, Some(ledger.t()), false, None)
+        .bm25_index(&created.graph_source_address, Some(ledger.t()), false, None)
         .await
         .expect("provider should load BM25 index");
 
@@ -486,7 +517,7 @@ async fn bm25_federated_query_via_provider() {
 ///
 /// This is Clojure parity for `bm25_filesystem_test.clj` which verifies:
 /// - Index creation works with file storage
-/// - Virtual graph directory exists on disk
+/// - Graph source directory exists on disk
 /// - Search works with persisted index
 #[tokio::test]
 async fn bm25_file_backed_storage() {
@@ -530,13 +561,13 @@ async fn bm25_file_backed_storage() {
         "expected persisted index address"
     );
 
-    // Verify virtual-graphs directory exists
-    let vg_dir = std::path::Path::new(&storage_path).join("virtual-graphs");
-    assert!(vg_dir.exists(), "virtual-graphs directory should exist");
+    // Verify graph-sources directory exists
+    let gs_dir = std::path::Path::new(&storage_path).join(STORAGE_SEGMENT_GRAPH_SOURCES);
+    assert!(gs_dir.exists(), "graph-sources directory should exist");
 
     // Load and search using file-backed index
     let idx = fluree
-        .load_bm25_index(&created.vg_alias)
+        .load_bm25_index(&created.graph_source_address)
         .await
         .expect("load index");
     assert_eq!(idx.num_docs(), 3, "loaded index should have 3 docs");
@@ -584,7 +615,7 @@ async fn bm25_file_backed_storage() {
 ///
 /// This test verifies the full end-to-end integration:
 /// - `query_connection_with_bm25` correctly wires the FlureeIndexProvider
-/// - `idx:*` patterns in where clauses resolve against BM25 virtual graph indexes
+/// - `idx:*` patterns in where clauses resolve against BM25 graph source indexes
 /// - Search results include document IRIs and scores
 /// - Results can be joined with ledger data (via IriMatch bindings)
 #[tokio::test]
@@ -645,7 +676,7 @@ async fn bm25_query_connection_with_idx_pattern() {
         "where": [
             // Search the BM25 index for "rust" FIRST - produces initial bindings
             {
-                "graph": &created.vg_alias,
+                "graph": &created.graph_source_address,
                 "idx:target": "rust",
                 "idx:limit": 10,
                 "idx:result": {"idx:id": "?doc", "idx:score": "?score"}
@@ -679,7 +710,7 @@ async fn bm25_query_connection_with_idx_pattern() {
     // Test 3: Verify FlureeIndexProvider can load the index directly
     let provider = FlureeIndexProvider::new(&fluree);
     let idx = provider
-        .bm25_index(&created.vg_alias, Some(1), false, None)
+        .bm25_index(&created.graph_source_address, Some(1), false, None)
         .await
         .expect("FlureeIndexProvider should load BM25 index");
     assert_eq!(idx.num_docs(), 3, "index should have 3 docs");
@@ -732,7 +763,10 @@ async fn bm25_federated_query_with_aggregation() {
     assert_eq!(created.doc_count, 5, "expected 5 indexed books");
 
     // Load index and search for "rust" (should find 3 books)
-    let idx = fluree.load_bm25_index(&created.vg_alias).await.unwrap();
+    let idx = fluree
+        .load_bm25_index(&created.graph_source_address)
+        .await
+        .unwrap();
     let analyzer = Analyzer::clojure_parity_english();
     let terms = analyzer.analyze_to_strings("rust");
     let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();

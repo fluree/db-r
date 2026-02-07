@@ -1,6 +1,6 @@
 # R2RML (Relational to RDF Mapping)
 
-R2RML (RDB to RDF Mapping Language) is a W3C standard for mapping relational databases to RDF. Fluree uses R2RML to create virtual graphs over SQL databases, enabling you to query relational data using SPARQL or JSON-LD Query.
+R2RML (RDB to RDF Mapping Language) is a W3C standard for mapping relational databases to RDF. Fluree uses R2RML to create graph sources over SQL databases, enabling you to query relational data using SPARQL or JSON-LD Query.
 
 ## What is R2RML?
 
@@ -14,10 +14,10 @@ This enables querying existing relational databases as if they were RDF graphs.
 
 ## Configuration
 
-### Create R2RML Virtual Graph
+### Create R2RML Graph Source
 
 ```bash
-curl -X POST http://localhost:8090/virtual-graph \
+curl -X POST http://localhost:8090/graph-source \
   -H "Content-Type: application/json" \
   -d '{
     "name": "sql-customers",
@@ -178,7 +178,7 @@ Use SQL views for complex mappings:
   ] .
 ```
 
-## Querying R2RML Virtual Graphs
+## Querying R2RML Graph Sources
 
 ### Basic Query
 
@@ -437,7 +437,7 @@ Report across multiple databases:
 
 ## Limitations
 
-1. **Read-Only:** R2RML virtual graphs are read-only (no writes)
+1. **Read-Only:** R2RML graph sources are read-only (no writes)
 2. **SQL Compatibility:** Advanced SQL features may not map cleanly to RDF
 3. **Performance:** Complex joins across Fluree + SQL may be slow
 4. **Schema Changes:** Requires mapping update when schema changes
@@ -489,6 +489,6 @@ Report across multiple databases:
 
 ## Related Documentation
 
-- [Virtual Graphs Overview](overview.md) - Virtual graph concepts
+- [Graph Sources Overview](overview.md) - Graph source concepts
 - [Iceberg](iceberg.md) - Data lake integration
 - [Query Datasets](../query/datasets.md) - Multi-graph queries

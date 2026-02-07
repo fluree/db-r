@@ -63,7 +63,7 @@ Fluree maintains multiple index types for different query patterns:
 - OPST: Object-Predicate-Subject-Time
 - PSOT: Predicate-Subject-Object-Time
 
-**Virtual Indexes (explicit):**
+**Graph Source Indexes (explicit):**
 - BM25: Full-text search indexes
 - Vector: Embedding similarity indexes
 - R2RML: Relational database views
@@ -157,11 +157,11 @@ fluree.create_vector_index(config).await?;
 
 See [Vector Search](vector-search.md) for details.
 
-## Index as Virtual Graphs
+## Index as Graph Sources
 
-Search indexes are exposed as virtual graphs:
+Search indexes are exposed as graph sources:
 
-**Virtual Graph Names:**
+**Graph Source Names:**
 - `products-search:main` - BM25 index
 - `products-vector:main` - Vector index
 
@@ -433,5 +433,5 @@ Limit results for performance:
 - [Background Indexing](background-indexing.md) - Core index details
 - [BM25](bm25.md) - Full-text search
 - [Vector Search](vector-search.md) - Similarity search
-- [Virtual Graphs](../virtual-graphs/README.md) - Virtual graph concepts
+- [Graph Sources](../graph-sources/README.md) - Graph source concepts
 - [Query](../query/README.md) - Query syntax

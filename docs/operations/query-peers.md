@@ -20,13 +20,13 @@ This guide is written from an **operator / end-user** standpoint: what to deploy
 
 ## Events stream (SSE): `GET /fluree/events`
 
-The transaction server exposes a Server-Sent Events (SSE) stream that emits **nameservice changes** for ledgers and virtual graphs. Query peers use this stream to stay up to date.
+The transaction server exposes a Server-Sent Events (SSE) stream that emits **nameservice changes** for ledgers and graph sources. Query peers use this stream to stay up to date.
 
 ### Query parameters
 
-- **`all=true`**: subscribe to all ledgers and VGs
+- **`all=true`**: subscribe to all ledgers and graph sources
 - **`ledger=<alias>`**: subscribe to a ledger alias (repeatable)
-- **`vg=<alias>`**: subscribe to a virtual graph alias (repeatable)
+- **`graph-source=<alias>`**: subscribe to a graph source alias (repeatable)
 
 ### Authentication and authorization
 
@@ -57,7 +57,7 @@ In peer mode:
 - **`--peer-events-token <token-or-@file>`** (optional; Bearer token for `/fluree/events`)
 - Subscribe scope:
   - **`--peer-subscribe-all`** or
-  - **`--peer-ledger <alias>`** (repeatable) and/or **`--peer-vg <alias>`** (repeatable)
+  - **`--peer-ledger <alias>`** (repeatable) and/or **`--peer-graph-source <alias>`** (repeatable)
 
 ### Peer storage access modes
 
@@ -95,7 +95,7 @@ Storage proxy endpoints are disabled by default. Enable them on the transaction 
 
 Storage proxy endpoints require a Bearer token that grants storage proxy permissions:
 
-- **`fluree.storage.all: true`**: access all ledgers (VG artifacts are denied in v1)
+- **`fluree.storage.all: true`**: access all ledgers (graph source artifacts are denied in v1)
 - **`fluree.storage.ledgers: ["books:main", ...]`**: access specific ledgers
 - **`fluree.identity: "ex:PeerServiceAccount"`** (optional): identity used for policy evaluation in policy-filtered read mode
 
@@ -132,7 +132,7 @@ When a flakes format is requested and the block is a ledger leaf:
 ### Security notes and limitations
 
 - **Branch/commit leakage (v1 limitation)**: filtering leaves without rewriting branches/commits can leak structure/existence information to the peer identity. This is currently an accepted v1 limitation.
-- **VG artifacts (v1)**: storage proxy denies virtual-graph artifacts by returning 404 even when `fluree.storage.all` is present.
+- **Graph source artifacts (v1)**: storage proxy denies graph-source artifacts by returning 404 even when `fluree.storage.all` is present.
 
 ## Deployment examples
 

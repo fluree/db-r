@@ -36,7 +36,7 @@ Available feature flags:
 - `aws` - AWS-backed storage support (S3, storage-backed nameservice). Enables `connect_s3` and `connect_json_ld` configs that use S3.
 - `vector` - Embedded vector similarity search (HNSW indexes via usearch)
 - `credential` - DID/JWS/VerifiableCredential support for signed queries and transactions (pulls in crypto dependencies like `ed25519-dalek`, `bs58`). Off by default to reduce compile times.
-- `iceberg` - Apache Iceberg/R2RML virtual graph support (pulls in AWS SDK + native deps)
+- `iceberg` - Apache Iceberg/R2RML graph source support (pulls in AWS SDK + native deps)
 - `shacl` - SHACL validation support (requires fluree-db-transact + fluree-db-shacl)
 - `search-remote-client` - Remote search service client (HTTP client for remote BM25 and vector search services)
 - `aws-testcontainers` - Opt-in LocalStack-backed S3/DynamoDB tests (auto-start via testcontainers)
@@ -1559,9 +1559,25 @@ The response includes:
 | `stats` | Flake counts, size, property/class statistics with selectivity |
 | `index` | Index metadata (`t`, address, index ID) |
 
+#### Stats freshness (real-time vs indexed)
+
+The `stats` section mixes **real-time** values (indexed + novelty deltas) with values that are only available **as-of the last index**.
+
+- **Real-time (includes novelty)**:
+  - `stats.flakes`, `stats.size`
+  - `stats.properties[*].count` (but not NDV)
+  - `stats.classes[*].count`
+  - `stats.classes[*].property-list` and `stats.classes[*].properties` (property presence)
+
+- **As-of last index**:
+  - `stats.indexed` (the index \(t\))
+  - `stats.properties[*].ndv-values`, `stats.properties[*].ndv-subjects`
+  - Any selectivity derived from NDV values
+  - `stats.classes[*].properties[*].refs` (ref target class counts), which are computed during indexing
+
 ## Nameservice Query API
 
-Query metadata about all ledgers and virtual graphs using the `nameservice_query()` builder:
+Query metadata about all ledgers and graph sources using the `nameservice_query()` builder:
 
 ```rust
 use fluree_db_api::{FlureeBuilder, Result};
@@ -1615,11 +1631,11 @@ async fn main() -> Result<()> {
 | `f:commit` | Reference to latest commit address |
 | `f:index` | Index info with `@id` and `f:t` |
 
-**Virtual Graph Records** (`@type: "f:VirtualGraphDatabase"`):
+**Graph Source Records** (`@type: "f:GraphSourceDatabase"`):
 
 | Property | Description |
 |----------|-------------|
-| `f:name` | Virtual graph name |
+| `f:name` | Graph source name |
 | `f:branch` | Branch name |
 | `fidx:config` | Configuration JSON |
 | `fidx:dependencies` | Source ledger dependencies |
@@ -1648,11 +1664,11 @@ let query = json!({
     "filter": ["(> ?t 100)"]
 });
 
-// Find all BM25 virtual graphs
+// Find all BM25 graph sources
 let query = json!({
     "@context": {"f": "https://ns.flur.ee/ledger#", "fidx": "https://ns.flur.ee/index#"},
     "select": ["?name", "?deps"],
-    "where": [{"@id": "?vg", "@type": "fidx:BM25", "f:name": "?name", "fidx:dependencies": "?deps"}]
+    "where": [{"@id": "?gs", "@type": "fidx:BM25", "f:name": "?name", "fidx:dependencies": "?deps"}]
 });
 ```
 

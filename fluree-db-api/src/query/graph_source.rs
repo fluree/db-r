@@ -3,19 +3,19 @@ use serde_json::Value as JsonValue;
 use crate::query::helpers::{build_query_result, parse_jsonld_query, parse_sparql_to_ir};
 use crate::query::nameservice_builder::NameserviceQueryBuilder;
 use crate::{
-    DataSource, ExecutableQuery, Fluree, LedgerState, QueryResult, Result, Storage,
-    VirtualGraphPublisher,
+    DataSource, ExecutableQuery, Fluree, GraphSourcePublisher, LedgerState, QueryResult, Result,
+    Storage,
 };
 
 impl<S, N> Fluree<S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
-    N: crate::NameService + VirtualGraphPublisher + Clone + Send + Sync + 'static,
+    N: crate::NameService + GraphSourcePublisher + Clone + Send + Sync + 'static,
 {
     /// Create a builder for querying nameservice metadata.
     ///
     /// Returns a [`NameserviceQueryBuilder`] for fluent query construction
-    /// against all ledger and virtual graph records in the nameservice.
+    /// against all ledger and graph source records in the nameservice.
     ///
     /// # Example
     ///
@@ -43,8 +43,8 @@ where
     /// - `f:commit` - Commit address
     /// - `f:index` - Index info
     ///
-    /// Virtual graph records (`@type: "f:VirtualGraphDatabase"`):
-    /// - `f:name` - VG name
+    /// Graph source records (`@type: "f:GraphSource"`):
+    /// - `f:name` - Graph source name
     /// - `f:branch` - Branch name
     /// - `fidx:config` - Configuration
     /// - `fidx:dependencies` - Source ledgers
@@ -67,8 +67,8 @@ where
         crate::nameservice_query::query_nameservice(&self.nameservice, query_json).await
     }
 
-    /// Execute a JSON-LD query with R2RML virtual graph support.
-    pub async fn query_vg(
+    /// Execute a JSON-LD query with R2RML graph source support.
+    pub async fn query_graph_source(
         &self,
         ledger: &LedgerState<S>,
         query_json: &JsonValue,
@@ -99,8 +99,12 @@ where
         ))
     }
 
-    /// Execute a SPARQL query with R2RML virtual graph support.
-    pub async fn sparql_vg(&self, ledger: &LedgerState<S>, sparql: &str) -> Result<QueryResult> {
+    /// Execute a SPARQL query with R2RML graph source support.
+    pub async fn sparql_graph_source(
+        &self,
+        ledger: &LedgerState<S>,
+        sparql: &str,
+    ) -> Result<QueryResult> {
         let (vars, parsed) = parse_sparql_to_ir(sparql, &ledger.db)?;
         let executable = ExecutableQuery::simple(parsed.clone());
 

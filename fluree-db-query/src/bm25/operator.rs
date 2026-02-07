@@ -1,6 +1,6 @@
 //! BM25 Search Operator (Pattern::IndexSearch)
 //!
-//! This operator executes BM25 full-text search against a loaded BM25 virtual-graph index
+//! This operator executes BM25 full-text search against a loaded BM25 graph source index
 //! and emits bindings for:
 //! - idx:id      -> `Binding::IriMatch` (canonical IRI with ledger provenance for cross-ledger joins)
 //!   or `Binding::Iri` (if IRI cannot be encoded to SID)
@@ -10,7 +10,7 @@
 //! # Multi-Ledger Support
 //!
 //! BM25 search works in both single-ledger and multi-ledger (dataset) contexts. The operator
-//! doesn't scan graphs directly - it consults the BM25 index provider by virtual graph alias.
+//! doesn't scan graphs directly - it consults the BM25 index provider by graph source alias.
 //! Results are emitted as `IriMatch` bindings with ledger provenance, enabling correct
 //! cross-ledger joins (same pattern as VectorSearchOperator).
 //!
@@ -38,17 +38,17 @@ use std::sync::Arc;
 // Re-export SearchHit from protocol for unified hit type across all layers
 pub use fluree_search_protocol::SearchHit;
 
-/// Provider for BM25 indexes keyed by virtual-graph alias.
+/// Provider for BM25 indexes keyed by graph source alias.
 ///
 /// This is the lower-level provider that returns the raw index for local scoring.
-/// Higher layers (API/connection) implement this by consulting nameservice VG records
+/// Higher layers (API/connection) implement this by consulting nameservice graph source records
 /// and loading the snapshot from storage, possibly with sync-to-t semantics.
 ///
 /// For remote search scenarios, use [`Bm25SearchProvider`] instead, which returns
 /// search results directly without requiring a local index.
 #[async_trait]
 pub trait Bm25IndexProvider: std::fmt::Debug + Send + Sync {
-    /// Return the BM25 index for a virtual graph alias.
+    /// Return the BM25 index for a graph source alias.
     ///
     /// # `as_of_t`
     ///
@@ -58,7 +58,7 @@ pub trait Bm25IndexProvider: std::fmt::Debug + Send + Sync {
     ///   the query itself provides an unambiguous as-of anchor.
     async fn bm25_index(
         &self,
-        vg_alias: &str,
+        graph_source_address: &str,
         as_of_t: Option<i64>,
         sync: bool,
         timeout_ms: Option<u64>,
@@ -123,7 +123,7 @@ pub trait Bm25SearchProvider: std::fmt::Debug + Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `vg_alias` - Virtual graph alias (e.g., "products-search:main")
+    /// * `graph_source_address` - Graph source alias (e.g., "products-search:main")
     /// * `query_text` - The search query text
     /// * `limit` - Maximum number of hits to return
     /// * `as_of_t` - Target transaction time for time-travel queries (None = latest)
@@ -131,7 +131,7 @@ pub trait Bm25SearchProvider: std::fmt::Debug + Send + Sync {
     /// * `timeout_ms` - Timeout for the entire operation
     async fn search_bm25(
         &self,
-        vg_alias: &str,
+        graph_source_address: &str,
         query_text: &str,
         limit: usize,
         as_of_t: Option<i64>,
@@ -262,7 +262,7 @@ impl<S: Storage + 'static> Bm25SearchOperator<S> {
                     Ok(Some(iri.to_string()))
                 }
                 Some(Binding::Iri(iri)) => {
-                    // Raw IRI from VG - use as search string
+                    // Raw IRI from graph source - use as search string
                     Ok(Some(iri.to_string()))
                 }
                 Some(Binding::Grouped(_)) => Ok(None),
@@ -312,7 +312,7 @@ impl<S: Storage + 'static> Operator<S> for Bm25SearchOperator<S> {
 
         // BM25 search works in both single-ledger and multi-ledger (dataset) contexts.
         // Unlike graph scanning operators, BM25 doesn't iterate active graphs - it consults
-        // the BM25 index/search provider directly by virtual graph alias. Results are emitted as
+        // the BM25 index/search provider directly by graph source alias. Results are emitted as
         // IriMatch bindings with ledger provenance for correct cross-ledger joins.
 
         // Prefer bm25_search_provider (new unified path) over bm25_provider (legacy)
@@ -333,7 +333,7 @@ impl<S: Storage + 'static> Operator<S> for Bm25SearchOperator<S> {
                 let limit = self.pattern.limit.unwrap_or(usize::MAX);
                 let result = search_provider
                     .search_bm25(
-                        &self.pattern.vg_alias,
+                        &self.pattern.graph_source_address,
                         query_text,
                         limit,
                         as_of_t,
@@ -357,7 +357,7 @@ impl<S: Storage + 'static> Operator<S> for Bm25SearchOperator<S> {
 
             let idx = index_provider
                 .bm25_index(
-                    &self.pattern.vg_alias,
+                    &self.pattern.graph_source_address,
                     as_of_t,
                     self.pattern.sync,
                     self.pattern.timeout,
@@ -462,7 +462,7 @@ impl<S: Storage + 'static> Operator<S> for Bm25SearchOperator<S> {
 
                     let result = search_provider
                         .search_bm25(
-                            &self.pattern.vg_alias,
+                            &self.pattern.graph_source_address,
                             &target,
                             limit,
                             as_of_t,
@@ -633,13 +633,16 @@ mod tests {
     impl Bm25IndexProvider for TestProvider {
         async fn bm25_index(
             &self,
-            vg_alias: &str,
+            graph_source_address: &str,
             _as_of_t: Option<i64>,
             _sync: bool,
             _timeout_ms: Option<u64>,
         ) -> Result<Arc<Bm25Index>> {
-            self.map.get(vg_alias).cloned().ok_or_else(|| {
-                QueryError::InvalidQuery(format!("No BM25 index for vg alias {}", vg_alias))
+            self.map.get(graph_source_address).cloned().ok_or_else(|| {
+                QueryError::InvalidQuery(format!(
+                    "No BM25 index for graph source alias {}",
+                    graph_source_address
+                ))
             })
         }
     }

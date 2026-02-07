@@ -7,7 +7,7 @@
 //!
 //! [`FlureeIndexProvider`] implements both [`Bm25IndexProvider`] (for legacy index access)
 //! and [`Bm25SearchProvider`] (for search results). The search provider implementation
-//! routes between embedded and remote modes based on VG deployment configuration.
+//! routes between embedded and remote modes based on graph source deployment configuration.
 //!
 //! # Deployment Modes
 //!
@@ -18,7 +18,7 @@
 
 use async_trait::async_trait;
 use fluree_db_core::{Storage, StorageWrite};
-use fluree_db_nameservice::{NameService, Publisher, VirtualGraphPublisher};
+use fluree_db_nameservice::{GraphSourcePublisher, NameService, Publisher};
 use fluree_db_query::bm25::{Bm25Index, Bm25IndexProvider, Bm25SearchProvider, Bm25SearchResult};
 use fluree_db_query::error::{QueryError, Result as QueryResult};
 use std::sync::Arc;
@@ -78,7 +78,7 @@ impl<S: Storage + 'static, N> std::fmt::Debug for FlureeIndexProvider<'_, S, N> 
 impl<S, N> Bm25IndexProvider for FlureeIndexProvider<'_, S, N>
 where
     S: Storage + StorageWrite + Clone + 'static,
-    N: NameService + Publisher + VirtualGraphPublisher,
+    N: NameService + Publisher + GraphSourcePublisher,
 {
     /// Load a BM25 index for query execution with time-travel support.
     ///
@@ -91,13 +91,13 @@ where
     ///
     /// # Arguments
     ///
-    /// * `vg_alias` - Virtual graph alias (e.g., "my-search:main")
+    /// * `graph_source_address` - Graph source alias (e.g., "my-search:main")
     /// * `as_of_t` - Target transaction time for time-travel query
     /// * `sync` - Whether to sync if no suitable snapshot exists
     /// * `timeout_ms` - Optional timeout for sync operations
     async fn bm25_index(
         &self,
-        vg_alias: &str,
+        graph_source_address: &str,
         as_of_t: Option<i64>,
         sync: bool,
         timeout_ms: Option<u64>,
@@ -107,7 +107,7 @@ where
         // Load BM25 manifest from CAS
         let manifest = self
             .fluree
-            .load_or_create_bm25_manifest(vg_alias)
+            .load_or_create_bm25_manifest(graph_source_address)
             .await
             .map_err(|e| QueryError::Internal(format!("Manifest load error: {}", e)))?;
 
@@ -134,7 +134,7 @@ where
                 .map_err(|e| QueryError::Internal(format!("Deserialize error: {}", e)))?;
 
             info!(
-                vg_alias = %vg_alias,
+                graph_source_address = %graph_source_address,
                 as_of_t = effective_as_of_t,
                 snapshot_t = entry.index_t,
                 "Loaded BM25 snapshot for time-travel query"
@@ -149,14 +149,14 @@ where
 
             // Sync to head (which will create a new snapshot in the manifest)
             self.fluree
-                .sync_bm25_index(vg_alias)
+                .sync_bm25_index(graph_source_address)
                 .await
                 .map_err(|e| QueryError::Internal(format!("Sync error: {}", e)))?;
 
             // Re-load manifest after sync
             let manifest = self
                 .fluree
-                .load_or_create_bm25_manifest(vg_alias)
+                .load_or_create_bm25_manifest(graph_source_address)
                 .await
                 .map_err(|e| QueryError::Internal(format!("Manifest load error: {}", e)))?;
 
@@ -174,7 +174,7 @@ where
                     .map_err(|e| QueryError::Internal(format!("Deserialize error: {}", e)))?;
 
                 info!(
-                    vg_alias = %vg_alias,
+                    graph_source_address = %graph_source_address,
                     as_of_t = %as_of_label,
                     snapshot_t = entry.index_t,
                     "Loaded BM25 snapshot after sync"
@@ -185,7 +185,7 @@ where
 
             return Err(QueryError::InvalidQuery(format!(
                 "No BM25 snapshot available for {} at t={}. The earliest snapshot may be later than requested.",
-                vg_alias, as_of_label
+                graph_source_address, as_of_label
             )));
         }
 
@@ -202,7 +202,7 @@ where
 
         Err(QueryError::InvalidQuery(format!(
             "No BM25 snapshot available for {} at t={}.{}",
-            vg_alias, as_of_label, available
+            graph_source_address, as_of_label, available
         )))
     }
 }
@@ -211,12 +211,12 @@ where
 impl<S, N> Bm25SearchProvider for FlureeIndexProvider<'_, S, N>
 where
     S: Storage + StorageWrite + Clone + 'static,
-    N: NameService + Publisher + VirtualGraphPublisher,
+    N: NameService + Publisher + GraphSourcePublisher,
 {
     /// Execute a BM25 search with time-travel support.
     ///
     /// This implementation routes between embedded and remote modes based on
-    /// the VG's deployment configuration stored in the nameservice.
+    /// the graph source's deployment configuration stored in the nameservice.
     ///
     /// # Deployment Modes
     ///
@@ -227,7 +227,7 @@ where
     ///
     /// # Arguments
     ///
-    /// * `vg_alias` - Virtual graph alias (e.g., "products-search:main")
+    /// * `graph_source_address` - Graph source alias (e.g., "products-search:main")
     /// * `query_text` - The search query text
     /// * `limit` - Maximum number of results to return
     /// * `as_of_t` - Target transaction time for time-travel (None = latest)
@@ -235,41 +235,41 @@ where
     /// * `timeout_ms` - Optional timeout for the operation
     async fn search_bm25(
         &self,
-        vg_alias: &str,
+        graph_source_address: &str,
         query_text: &str,
         limit: usize,
         as_of_t: Option<i64>,
         sync: bool,
         timeout_ms: Option<u64>,
     ) -> QueryResult<Bm25SearchResult> {
-        // Look up VG record to get deployment configuration
-        let deployment_config = self.get_deployment_config(vg_alias).await?;
+        // Look up graph source record to get deployment configuration
+        let deployment_config = self.get_deployment_config(graph_source_address).await?;
 
         match deployment_config.mode {
             DeploymentMode::Embedded => {
-                debug!(vg_alias = %vg_alias, "Using embedded search mode");
+                debug!(graph_source_address = %graph_source_address, "Using embedded search mode");
                 let adapter = EmbeddedBm25SearchProvider::new(self);
                 adapter
-                    .search_bm25(vg_alias, query_text, limit, as_of_t, sync, timeout_ms)
+                    .search_bm25(graph_source_address, query_text, limit, as_of_t, sync, timeout_ms)
                     .await
             }
             #[cfg(feature = "search-remote-client")]
             DeploymentMode::Remote => {
                 debug!(
-                    vg_alias = %vg_alias,
+                    graph_source_address = %graph_source_address,
                     endpoint = ?deployment_config.endpoint,
                     "Using remote search mode"
                 );
                 let client = RemoteBm25SearchProvider::from_config(&deployment_config)?;
                 client
-                    .search_bm25(vg_alias, query_text, limit, as_of_t, sync, timeout_ms)
+                    .search_bm25(graph_source_address, query_text, limit, as_of_t, sync, timeout_ms)
                     .await
             }
             #[cfg(not(feature = "search-remote-client"))]
             DeploymentMode::Remote => {
                 Err(QueryError::InvalidQuery(format!(
-                    "Remote search mode not available for VG '{}': 'search-remote-client' feature not enabled",
-                    vg_alias
+                    "Remote search mode not available for graph source '{}': 'search-remote-client' feature not enabled",
+                    graph_source_address
                 )))
             }
         }
@@ -279,46 +279,50 @@ where
 impl<'a, S, N> FlureeIndexProvider<'a, S, N>
 where
     S: Storage + Clone + 'static,
-    N: NameService + Publisher + VirtualGraphPublisher,
+    N: NameService + Publisher + GraphSourcePublisher,
 {
-    /// Get deployment configuration for a virtual graph.
+    /// Get deployment configuration for a graph source.
     ///
-    /// Looks up the VG record from nameservice and parses the deployment
+    /// Looks up the graph source record from nameservice and parses the deployment
     /// configuration from its JSON config. Defaults to embedded mode if
     /// no deployment config is specified.
-    async fn get_deployment_config(&self, vg_alias: &str) -> QueryResult<SearchDeploymentConfig> {
-        // Look up VG record from nameservice
-        let vg_record = self
+    async fn get_deployment_config(
+        &self,
+        graph_source_address: &str,
+    ) -> QueryResult<SearchDeploymentConfig> {
+        // Look up graph source record from nameservice
+        let gs_record = self
             .fluree
             .nameservice()
-            .lookup_vg(vg_alias)
+            .lookup_graph_source(graph_source_address)
             .await
             .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?;
 
-        let Some(record) = vg_record else {
-            // VG not found - return default embedded mode
+        let Some(record) = gs_record else {
+            // Graph source not found - return default embedded mode
             // The actual search will fail later with a more specific error
             return Ok(SearchDeploymentConfig::default());
         };
 
-        // Try to parse deployment config from the VG's JSON config
-        parse_deployment_from_vg_config(&record.config)
+        // Try to parse deployment config from the graph source's JSON config
+        parse_deployment_from_gs_config(&record.config)
     }
 }
 
-/// Parse deployment configuration from a VG's JSON config string.
+/// Parse deployment configuration from a graph source's JSON config string.
 ///
 /// Looks for a "deployment" object in the config. If not present or
 /// parsing fails, returns default (embedded mode).
-fn parse_deployment_from_vg_config(config_json: &str) -> QueryResult<SearchDeploymentConfig> {
+fn parse_deployment_from_gs_config(config_json: &str) -> QueryResult<SearchDeploymentConfig> {
     // Empty config means embedded mode
     if config_json.trim().is_empty() {
         return Ok(SearchDeploymentConfig::default());
     }
 
     // Parse the full config JSON
-    let config: serde_json::Value = serde_json::from_str(config_json)
-        .map_err(|e| QueryError::Internal(format!("Failed to parse VG config JSON: {}", e)))?;
+    let config: serde_json::Value = serde_json::from_str(config_json).map_err(|e| {
+        QueryError::Internal(format!("Failed to parse graph source config JSON: {}", e))
+    })?;
 
     // Look for "deployment" field
     if let Some(deployment_value) = config.get("deployment") {
@@ -343,12 +347,12 @@ fn parse_deployment_from_vg_config(config_json: &str) -> QueryResult<SearchDeplo
 impl<S, N> VectorIndexProvider for FlureeIndexProvider<'_, S, N>
 where
     S: Storage + StorageWrite + Clone + Send + Sync + 'static,
-    N: NameService + Publisher + VirtualGraphPublisher + Send + Sync,
+    N: NameService + Publisher + GraphSourcePublisher + Send + Sync,
 {
     /// Execute a vector similarity search with deployment routing and time-travel support.
     ///
     /// This implementation routes between embedded and remote modes based on
-    /// the VG's deployment configuration stored in the nameservice.
+    /// the graph source's deployment configuration stored in the nameservice.
     ///
     /// # Deployment Modes
     ///
@@ -359,49 +363,49 @@ where
     ///
     /// # Arguments
     ///
-    /// * `vg_alias` - Virtual graph alias (e.g., "embeddings:main")
+    /// * `graph_source_address` - Graph source alias (e.g., "embeddings:main")
     /// * `params` - Search parameters (query vector, metric, limit, etc.)
     async fn search(
         &self,
-        vg_alias: &str,
+        graph_source_address: &str,
         params: VectorSearchParams<'_>,
     ) -> QueryResult<Vec<VectorSearchHit>> {
-        // Look up VG record to get deployment configuration
-        let deployment_config = self.get_deployment_config(vg_alias).await?;
+        // Look up graph source record to get deployment configuration
+        let deployment_config = self.get_deployment_config(graph_source_address).await?;
 
         match deployment_config.mode {
             DeploymentMode::Embedded => {
-                debug!(vg_alias = %vg_alias, "Using embedded vector search mode");
-                self.search_vector_embedded(vg_alias, &params).await
+                debug!(graph_source_address = %graph_source_address, "Using embedded vector search mode");
+                self.search_vector_embedded(graph_source_address, &params).await
             }
             #[cfg(feature = "search-remote-client")]
             DeploymentMode::Remote => {
                 debug!(
-                    vg_alias = %vg_alias,
+                    graph_source_address = %graph_source_address,
                     endpoint = ?deployment_config.endpoint,
                     "Using remote vector search mode"
                 );
                 let client = RemoteVectorSearchProvider::from_config(&deployment_config)?;
                 client
-                    .search(vg_alias, params)
+                    .search(graph_source_address, params)
                     .await
             }
             #[cfg(not(feature = "search-remote-client"))]
             DeploymentMode::Remote => {
                 Err(QueryError::InvalidQuery(format!(
-                    "Remote search mode not available for VG '{}': 'search-remote-client' feature not enabled",
-                    vg_alias
+                    "Remote search mode not available for graph source '{}': 'search-remote-client' feature not enabled",
+                    graph_source_address
                 )))
             }
         }
     }
 
-    /// Check if a vector index collection exists for the given VG alias.
-    async fn collection_exists(&self, vg_alias: &str) -> QueryResult<bool> {
+    /// Check if a vector index collection exists for the given graph source alias.
+    async fn collection_exists(&self, graph_source_address: &str) -> QueryResult<bool> {
         let record = self
             .fluree
             .nameservice()
-            .lookup_vg(vg_alias)
+            .lookup_graph_source(graph_source_address)
             .await
             .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?;
 
@@ -413,7 +417,7 @@ where
 impl<'a, S, N> FlureeIndexProvider<'a, S, N>
 where
     S: Storage + StorageWrite + Clone + Send + Sync + 'static,
-    N: NameService + Publisher + VirtualGraphPublisher + Send + Sync,
+    N: NameService + Publisher + GraphSourcePublisher + Send + Sync,
 {
     /// Embedded vector search implementation (head-only).
     ///
@@ -421,19 +425,19 @@ where
     /// from nameservice and performs similarity search in-process.
     async fn search_vector_embedded(
         &self,
-        vg_alias: &str,
+        graph_source_address: &str,
         params: &VectorSearchParams<'_>,
     ) -> QueryResult<Vec<VectorSearchHit>> {
         use fluree_db_query::vector::usearch::deserialize;
 
         let _ = params.timeout_ms; // Reserved for future use
 
-        // Vector indexes are head-only — reject as_of_t requests
+        // Vector indexes are head-only -- reject as_of_t requests
         if params.as_of_t.is_some() {
             return Err(QueryError::InvalidQuery(format!(
                 "Vector index '{}' does not support time-travel queries (as_of_t). \
                  Only the latest snapshot is available.",
-                vg_alias
+                graph_source_address
             )));
         }
 
@@ -441,21 +445,21 @@ where
         let record = self
             .fluree
             .nameservice()
-            .lookup_vg(vg_alias)
+            .lookup_graph_source(graph_source_address)
             .await
             .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?;
 
         let record = record.ok_or_else(|| {
-            QueryError::InvalidQuery(format!("Virtual graph not found: {}", vg_alias))
+            QueryError::InvalidQuery(format!("Graph source not found: {}", graph_source_address))
         })?;
 
         let index_address = match &record.index_address {
             Some(addr) => addr.clone(),
             None => {
-                // No index yet — try to sync if requested
+                // No index yet -- try to sync if requested
                 if params.sync {
                     self.fluree
-                        .sync_vector_index(vg_alias)
+                        .sync_vector_index(graph_source_address)
                         .await
                         .map_err(|e| QueryError::Internal(format!("Sync error: {}", e)))?;
 
@@ -463,23 +467,26 @@ where
                     let record = self
                         .fluree
                         .nameservice()
-                        .lookup_vg(vg_alias)
+                        .lookup_graph_source(graph_source_address)
                         .await
                         .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?
                         .ok_or_else(|| {
-                            QueryError::Internal(format!("VG disappeared after sync: {}", vg_alias))
+                            QueryError::Internal(format!(
+                                "Graph source disappeared after sync: {}",
+                                graph_source_address
+                            ))
                         })?;
 
                     record.index_address.ok_or_else(|| {
                         QueryError::InvalidQuery(format!(
                             "No vector index available for {} after sync",
-                            vg_alias
+                            graph_source_address
                         ))
                     })?
                 } else {
                     return Err(QueryError::InvalidQuery(format!(
                         "No vector index available for {}. Try syncing first.",
-                        vg_alias
+                        graph_source_address
                     )));
                 }
             }
@@ -500,12 +507,12 @@ where
         if index.metadata.metric != params.metric {
             return Err(QueryError::InvalidQuery(format!(
                 "Vector index '{}' uses {:?} metric, but query requested {:?}",
-                vg_alias, index.metadata.metric, params.metric
+                graph_source_address, index.metadata.metric, params.metric
             )));
         }
 
         debug!(
-            vg_alias = %vg_alias,
+            graph_source_address = %graph_source_address,
             index_t = record.index_t,
             limit = params.limit,
             "Executing vector search (head-only)"

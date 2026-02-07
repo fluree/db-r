@@ -374,7 +374,7 @@ where
             // flake counts only.
             let stats_json = {
                 if let Some(hook) = id_stats_hook {
-                    let (id_result, agg_props, class_counts, class_properties) =
+                    let (id_result, agg_props, class_counts, class_properties, class_ref_targets) =
                         hook.finalize_with_aggregate_properties();
 
                     let graphs_json: Vec<serde_json::Value> = id_result
@@ -441,7 +441,43 @@ where
                                         .iter()
                                         .filter_map(|&pid| {
                                             let psid = predicate_sids.get(pid as usize)?;
-                                            Some(serde_json::json!([[psid.0, psid.1]]))
+                                            // Optional ref target class counts for this (class, property) pair.
+                                            //
+                                            // Raw format: `[[property_sid], {"ref-classes": [[[class_sid], count], ...]}]`
+                                            let refs_obj = class_ref_targets
+                                                .get(&class_sid64)
+                                                .and_then(|m| m.get(&pid))
+                                                .and_then(|targets| {
+                                                    let mut entries: Vec<(u64, i64)> =
+                                                        targets.iter().map(|(&c, &d)| (c, d)).collect();
+                                                    entries.sort_by_key(|(c, _)| *c);
+                                                    let ref_arr: Vec<serde_json::Value> = entries
+                                                        .into_iter()
+                                                        .filter_map(|(target_sid64, d)| {
+                                                            let c = d.max(0) as u64;
+                                                            if c == 0 {
+                                                                return None;
+                                                            }
+                                                            let iri =
+                                                                store.resolve_subject_iri(target_sid64).ok()?;
+                                                            let sid = store.encode_iri(&iri);
+                                                            Some(serde_json::json!([
+                                                                [sid.namespace_code, sid.name.as_ref()],
+                                                                c
+                                                            ]))
+                                                        })
+                                                        .collect();
+                                                    if ref_arr.is_empty() {
+                                                        None
+                                                    } else {
+                                                        Some(serde_json::json!({ "ref-classes": ref_arr }))
+                                                    }
+                                                });
+
+                                            match refs_obj {
+                                                Some(obj) => Some(serde_json::json!([[psid.0, psid.1], obj])),
+                                                None => Some(serde_json::json!([[psid.0, psid.1]])),
+                                            }
                                         })
                                         .collect()
                                 })

@@ -20,9 +20,9 @@
 use crate::storage_traits::{StorageCas, StorageExtError, StorageList};
 use crate::{
     parse_alias, AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher,
-    ConfigValue, NameService, NameServiceError, NsLookupResult, NsRecord, Publisher, RefKind,
-    RefPublisher, RefValue, Result, StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
-    VgNsRecord, VgType, VirtualGraphPublisher,
+    ConfigValue, GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService,
+    NameServiceError, NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher, RefValue, Result,
+    StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
 };
 use async_trait::async_trait;
 use fluree_db_core::alias as core_alias;
@@ -136,12 +136,12 @@ const NS_VERSION: &str = "ns@v2";
 const MAX_CAS_RETRIES: u32 = 5;
 
 // =============================================================================
-// Virtual Graph File Structures (ns@v2 format)
+// Graph Source File Structures (ns@v2 format)
 // =============================================================================
 
-/// JSON structure for VG main config file
+/// JSON structure for graph source main config file
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct VgNsFileV2 {
+struct GraphSourceNsFileV2 {
     #[serde(rename = "@context")]
     context: serde_json::Value,
 
@@ -158,7 +158,7 @@ struct VgNsFileV2 {
     branch: String,
 
     #[serde(rename = "fidx:config")]
-    config: VgConfigRef,
+    config: GraphSourceConfigRef,
 
     #[serde(rename = "fidx:dependencies")]
     dependencies: Vec<String>,
@@ -168,14 +168,14 @@ struct VgNsFileV2 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct VgConfigRef {
+struct GraphSourceConfigRef {
     #[serde(rename = "@value")]
     value: String,
 }
 
-/// JSON structure for VG index file
+/// JSON structure for graph source index file
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct VgIndexFileV2 {
+struct GraphSourceIndexFileV2 {
     #[serde(rename = "@context")]
     context: serde_json::Value,
 
@@ -183,14 +183,14 @@ struct VgIndexFileV2 {
     id: String,
 
     #[serde(rename = "fidx:index")]
-    index: VgIndexRef,
+    index: GraphSourceIndexRef,
 
     #[serde(rename = "fidx:indexT")]
     index_t: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct VgIndexRef {
+struct GraphSourceIndexRef {
     #[serde(rename = "@type")]
     ref_type: String,
 
@@ -203,8 +203,8 @@ fn ns_context() -> serde_json::Value {
     serde_json::json!({"f": NS_CONTEXT_IRI})
 }
 
-/// Create VG ns@v2 context including both f: and fidx: namespaces
-fn vg_context() -> serde_json::Value {
+/// Create graph source ns@v2 context including both f: and fidx: namespaces
+fn graph_source_context() -> serde_json::Value {
     serde_json::json!({
         "f": NS_CONTEXT_IRI,
         "fidx": FIDX_CONTEXT_IRI
@@ -288,13 +288,13 @@ where
         }
     }
 
-    /// Check if a record is a VG by reading and checking @type.
-    /// Uses exact match for "f:VirtualGraphDatabase".
-    async fn is_vg_record(&self, name: &str, branch: &str) -> Result<bool> {
+    /// Check if a record is a graph source by reading and checking @type.
+    /// Uses exact match for "f:GraphSource".
+    async fn is_graph_source_record(&self, name: &str, branch: &str) -> Result<bool> {
         let key = self.ns_key(name, branch);
 
         match self.storage.read_bytes(&key).await {
-            Ok(bytes) => Ok(Self::is_vg_from_bytes(&bytes)),
+            Ok(bytes) => Ok(Self::is_graph_source_from_bytes(&bytes)),
             Err(CoreError::NotFound(_)) => Ok(false),
             Err(e) => Err(NameServiceError::storage(format!(
                 "Failed to read {}: {}",
@@ -303,23 +303,21 @@ where
         }
     }
 
-    /// Check if raw JSON bytes represent a VG record (exact match).
-    fn is_vg_from_bytes(bytes: &[u8]) -> bool {
+    /// Check if raw JSON bytes represent a graph source record (exact match).
+    fn is_graph_source_from_bytes(bytes: &[u8]) -> bool {
         let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(bytes) else {
             return false;
         };
-        Self::is_vg_from_json(&parsed)
+        Self::is_graph_source_from_json(&parsed)
     }
 
-    /// Check if parsed JSON represents a VG record (exact match for "f:VirtualGraphDatabase").
-    fn is_vg_from_json(parsed: &serde_json::Value) -> bool {
+    /// Check if parsed JSON represents a graph source record (exact match for "f:GraphSource").
+    fn is_graph_source_from_json(parsed: &serde_json::Value) -> bool {
         if let Some(types) = parsed.get("@type").and_then(|t| t.as_array()) {
             for t in types {
                 if let Some(s) = t.as_str() {
                     // Exact match: either prefixed or full IRI
-                    if s == "f:VirtualGraphDatabase"
-                        || s == "https://ns.flur.ee/ledger#VirtualGraphDatabase"
-                    {
+                    if s == "f:GraphSource" || s == "https://ns.flur.ee/ledger#GraphSource" {
                         return true;
                     }
                 }
@@ -328,47 +326,48 @@ where
         false
     }
 
-    /// Load a VG record and merge with index file
-    async fn load_vg_record(&self, name: &str, branch: &str) -> Result<Option<VgNsRecord>> {
+    /// Load a graph source record and merge with index file
+    async fn load_graph_source_record(
+        &self,
+        name: &str,
+        branch: &str,
+    ) -> Result<Option<GraphSourceRecord>> {
         let main_key = self.ns_key(name, branch);
 
         // Read main record
-        let main_file: Option<VgNsFileV2> = self.read_json(&main_key).await?;
+        let main_file: Option<GraphSourceNsFileV2> = self.read_json(&main_key).await?;
 
         let Some(main) = main_file else {
             return Ok(None);
         };
 
-        self.vg_file_to_record(main, name, branch).await
+        self.graph_source_file_to_record(main, name, branch).await
     }
 
-    /// Convert already-parsed VgNsFileV2 to VgNsRecord, merging with index file.
+    /// Convert already-parsed GraphSourceNsFileV2 to GraphSourceRecord, merging with index file.
     /// This avoids re-reading the main file when we've already parsed it.
-    async fn vg_file_to_record(
+    async fn graph_source_file_to_record(
         &self,
-        main: VgNsFileV2,
+        main: GraphSourceNsFileV2,
         name: &str,
         branch: &str,
-    ) -> Result<Option<VgNsRecord>> {
+    ) -> Result<Option<GraphSourceRecord>> {
         let index_key = self.index_key(name, branch);
 
-        // Determine VG type from @type array (exact match, excluding VirtualGraphDatabase)
-        let vg_type = main
+        // Determine graph source type from @type array (exact match, excluding GraphSource)
+        let source_type = main
             .record_type
             .iter()
-            .find(|t| {
-                *t != "f:VirtualGraphDatabase"
-                    && *t != "https://ns.flur.ee/ledger#VirtualGraphDatabase"
-            })
-            .map(|t| VgType::from_type_string(t))
-            .unwrap_or(VgType::Unknown("unknown".to_string()));
+            .find(|t| *t != "f:GraphSource" && *t != "https://ns.flur.ee/ledger#GraphSource")
+            .map(|t| GraphSourceType::from_type_string(t))
+            .unwrap_or(GraphSourceType::Unknown("unknown".to_string()));
 
-        // Convert to VgNsRecord
-        let mut record = VgNsRecord {
+        // Convert to GraphSourceRecord
+        let mut record = GraphSourceRecord {
             address: core_alias::format_alias(name, branch),
             name: main.name,
             branch: main.branch,
-            vg_type,
+            source_type,
             config: main.config.value,
             dependencies: main.dependencies,
             index_address: None,
@@ -377,7 +376,7 @@ where
         };
 
         // Read index file (if exists) and merge
-        let index_file: Option<VgIndexFileV2> = self.read_json(&index_key).await?;
+        let index_file: Option<GraphSourceIndexFileV2> = self.read_json(&index_key).await?;
         if let Some(idx) = index_file {
             record.index_address = Some(idx.index.address);
             record.index_t = idx.index_t;
@@ -419,7 +418,7 @@ where
         // Convert to NsRecord
         let mut record = NsRecord {
             address: core_alias::format_alias(ledger_name, branch),
-            alias: main.ledger.id.clone(),
+            name: main.ledger.id.clone(),
             branch: main.branch,
             commit_address: main.commit.map(|c| c.id),
             commit_t: main.t,
@@ -622,10 +621,6 @@ where
     async fn lookup(&self, ledger_address: &str) -> Result<Option<NsRecord>> {
         let (ledger_name, branch) = parse_alias(ledger_address)?;
         self.load_record(&ledger_name, &branch).await
-    }
-
-    async fn alias(&self, ledger_address: &str) -> Result<Option<String>> {
-        Ok(self.lookup(ledger_address).await?.map(|r| r.alias))
     }
 
     async fn all_records(&self) -> Result<Vec<NsRecord>> {
@@ -1059,15 +1054,15 @@ where
 }
 
 #[async_trait]
-impl<S> VirtualGraphPublisher for StorageNameService<S>
+impl<S> GraphSourcePublisher for StorageNameService<S>
 where
     S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
 {
-    async fn publish_vg(
+    async fn publish_graph_source(
         &self,
         name: &str,
         branch: &str,
-        vg_type: VgType,
+        source_type: GraphSourceType,
         config: &str,
         dependencies: &[String],
     ) -> Result<()> {
@@ -1077,17 +1072,17 @@ where
         let branch = branch.to_string();
         let config = config.to_string();
         let dependencies = dependencies.to_vec();
-        let vg_type_str = vg_type.to_type_string();
+        let source_type_str = source_type.to_type_string();
 
-        self.cas_update::<VgNsFileV2, _>(&key, move |existing| {
+        self.cas_update::<GraphSourceNsFileV2, _>(&key, move |existing| {
             // Clone captured values so closure is Fn (can be called multiple times for retry)
             let name = name.clone();
             let branch = branch.clone();
             let config = config.clone();
             let dependencies = dependencies.clone();
-            let vg_type_str = vg_type_str.clone();
+            let source_type_str = source_type_str.clone();
 
-            // For VG config, we always update (config changes are allowed)
+            // For graph source config, we always update (config changes are allowed)
             // Only preserve retracted status if already set
             let status = existing
                 .as_ref()
@@ -1095,13 +1090,13 @@ where
                 .filter(|s| s == "retracted")
                 .unwrap_or_else(|| "ready".to_string());
 
-            Some(VgNsFileV2 {
-                context: vg_context(),
+            Some(GraphSourceNsFileV2 {
+                context: graph_source_context(),
                 id: core_alias::format_alias(&name, &branch),
-                record_type: vec!["f:VirtualGraphDatabase".to_string(), vg_type_str],
+                record_type: vec!["f:GraphSource".to_string(), source_type_str],
                 name,
                 branch,
-                config: VgConfigRef { value: config },
+                config: GraphSourceConfigRef { value: config },
                 dependencies,
                 status,
             })
@@ -1109,7 +1104,7 @@ where
         .await
     }
 
-    async fn publish_vg_index(
+    async fn publish_graph_source_index(
         &self,
         name: &str,
         branch: &str,
@@ -1122,7 +1117,7 @@ where
         let branch = branch.to_string();
         let index_addr = index_addr.to_string();
 
-        self.cas_update::<VgIndexFileV2, _>(&key, move |existing| {
+        self.cas_update::<GraphSourceIndexFileV2, _>(&key, move |existing| {
             // Clone captured values so closure is Fn (can be called multiple times for retry)
             let name = name.clone();
             let branch = branch.clone();
@@ -1135,10 +1130,10 @@ where
                 }
             }
 
-            Some(VgIndexFileV2 {
-                context: vg_context(),
+            Some(GraphSourceIndexFileV2 {
+                context: graph_source_context(),
                 id: core_alias::format_alias(&name, &branch),
-                index: VgIndexRef {
+                index: GraphSourceIndexRef {
                     ref_type: "f:Address".to_string(),
                     address: index_addr,
                 },
@@ -1148,10 +1143,10 @@ where
         .await
     }
 
-    async fn retract_vg(&self, name: &str, branch: &str) -> Result<()> {
+    async fn retract_graph_source(&self, name: &str, branch: &str) -> Result<()> {
         let key = self.ns_key(name, branch);
 
-        self.cas_update::<VgNsFileV2, _>(&key, |existing| {
+        self.cas_update::<GraphSourceNsFileV2, _>(&key, |existing| {
             let mut file = existing?;
             if file.status == "retracted" {
                 return None;
@@ -1162,15 +1157,15 @@ where
         .await
     }
 
-    async fn lookup_vg(&self, alias: &str) -> Result<Option<VgNsRecord>> {
+    async fn lookup_graph_source(&self, alias: &str) -> Result<Option<GraphSourceRecord>> {
         let (name, branch) = parse_alias(alias)?;
 
-        // First check if it's a VG record
-        if !self.is_vg_record(&name, &branch).await? {
+        // First check if it's a graph source record
+        if !self.is_graph_source_record(&name, &branch).await? {
             return Ok(None);
         }
 
-        self.load_vg_record(&name, &branch).await
+        self.load_graph_source_record(&name, &branch).await
     }
 
     async fn lookup_any(&self, alias: &str) -> Result<NsLookupResult> {
@@ -1189,10 +1184,10 @@ where
             }
         }
 
-        // Check if it's a VG record
-        if self.is_vg_record(&name, &branch).await? {
-            match self.load_vg_record(&name, &branch).await? {
-                Some(record) => Ok(NsLookupResult::VirtualGraph(record)),
+        // Check if it's a graph source record
+        if self.is_graph_source_record(&name, &branch).await? {
+            match self.load_graph_source_record(&name, &branch).await? {
+                Some(record) => Ok(NsLookupResult::GraphSource(record)),
                 None => Ok(NsLookupResult::NotFound),
             }
         } else {
@@ -1204,7 +1199,7 @@ where
         }
     }
 
-    async fn all_vg_records(&self) -> Result<Vec<VgNsRecord>> {
+    async fn all_graph_source_records(&self) -> Result<Vec<GraphSourceRecord>> {
         let prefix = if self.prefix.is_empty() {
             NS_VERSION.to_string()
         } else {
@@ -1246,7 +1241,7 @@ where
             let name = &path[..slash_pos];
             let branch = path[slash_pos + 1..].trim_end_matches(".json");
 
-            // Single read: fetch bytes, check type, and convert if VG
+            // Single read: fetch bytes, check type, and convert if graph source
             // This avoids 2-3 reads per record on S3.
             let bytes = match self.storage.read_bytes(&key).await {
                 Ok(b) => b,
@@ -1257,28 +1252,28 @@ where
                 }
             };
 
-            // Check if VG from raw bytes (avoids full parse if not VG)
-            if !Self::is_vg_from_bytes(&bytes) {
+            // Check if graph source from raw bytes (avoids full parse if not graph source)
+            if !Self::is_graph_source_from_bytes(&bytes) {
                 continue;
             }
 
-            // Parse as VgNsFileV2
-            let main: VgNsFileV2 = match serde_json::from_slice(&bytes) {
+            // Parse as GraphSourceNsFileV2
+            let main: GraphSourceNsFileV2 = match serde_json::from_slice(&bytes) {
                 Ok(f) => f,
                 Err(e) => {
-                    tracing::warn!(key = %key, error = %e, "Failed to parse VG record, skipping");
+                    tracing::warn!(key = %key, error = %e, "Failed to parse graph source record, skipping");
                     continue;
                 }
             };
 
-            // Convert to VgNsRecord (reads index file if exists)
-            match self.vg_file_to_record(main, name, branch).await {
+            // Convert to GraphSourceRecord (reads index file if exists)
+            match self.graph_source_file_to_record(main, name, branch).await {
                 Ok(Some(record)) => records.push(record),
                 Ok(None) => {}
                 Err(e) => {
                     tracing::warn!(
                         name = %name, branch = %branch, error = %e,
-                        "Failed to load VG record, skipping"
+                        "Failed to load graph source record, skipping"
                     );
                 }
             }

@@ -42,6 +42,7 @@ pub mod format;
 pub mod graph;
 pub mod graph_query_builder;
 pub mod graph_snapshot;
+pub mod graph_source;
 pub mod graph_transact_builder;
 pub mod import;
 mod ledger;
@@ -57,7 +58,6 @@ pub mod tx_builder;
 #[cfg(feature = "vector")]
 pub mod vector_worker;
 pub mod view;
-pub mod virtual_graph;
 
 // Ledger caching and management
 pub mod ledger_manager;
@@ -69,13 +69,13 @@ pub use admin::{
     DropMode,
     DropReport,
     DropStatus,
+    GraphSourceDropReport,
     // Index maintenance
     IndexStatusResult,
     ReindexOptions,
     ReindexResult,
     TriggerIndexOptions,
     TriggerIndexResult,
-    VgDropReport,
 };
 pub use dataset::{DatasetParseError, DatasetSpec, GraphSource, QueryConnectionOptions, TimeSpec};
 pub use error::{ApiError, BuilderError, BuilderErrors, Result};
@@ -83,6 +83,10 @@ pub use format::{FormatError, FormatterConfig, JsonLdRowShape, OutputFormat, Sel
 pub use graph::Graph;
 pub use graph_query_builder::{GraphQueryBuilder, GraphSnapshotQueryBuilder};
 pub use graph_snapshot::GraphSnapshot;
+pub use graph_source::{
+    Bm25CreateConfig, Bm25CreateResult, Bm25DropResult, Bm25StalenessCheck, Bm25SyncResult,
+    FlureeIndexProvider, SnapshotSelection,
+};
 pub use graph_transact_builder::{GraphTransactBuilder, StagedGraph};
 pub use import::{CreateBuilder, ImportBuilder, ImportConfig, ImportError, ImportResult};
 pub use ledger_info::LedgerInfoBuilder;
@@ -95,7 +99,7 @@ pub use policy_view::{
     PolicyWrappedView,
 };
 pub use query::builder::{
-    DatasetQueryBuilder, FromQueryBuilder, ViewQueryBuilder, VirtualGraphMode,
+    DatasetQueryBuilder, FromQueryBuilder, GraphSourceMode, ViewQueryBuilder,
 };
 pub use query::nameservice_builder::NameserviceQueryBuilder;
 pub use query::{QueryResult, TrackedErrorResponse, TrackedQueryResponse};
@@ -105,13 +109,9 @@ pub use tx::{
 };
 pub use tx_builder::{OwnedTransactBuilder, RefTransactBuilder, Staged};
 pub use view::{FlureeDataSetView, FlureeView, QueryInput, ReasoningModePrecedence};
-pub use virtual_graph::{
-    Bm25CreateConfig, Bm25CreateResult, Bm25DropResult, Bm25StalenessCheck, Bm25SyncResult,
-    FlureeIndexProvider, SnapshotSelection,
-};
 
 #[cfg(feature = "iceberg")]
-pub use virtual_graph::{
+pub use graph_source::{
     FlureeR2rmlProvider, IcebergCreateConfig, IcebergCreateResult, R2rmlCreateConfig,
     R2rmlCreateResult,
 };
@@ -127,7 +127,7 @@ pub use vector_worker::{
 };
 
 #[cfg(feature = "vector")]
-pub use virtual_graph::{
+pub use graph_source::{
     VectorCreateConfig, VectorCreateResult, VectorDropResult, VectorStalenessCheck,
     VectorSyncResult,
 };
@@ -152,7 +152,7 @@ pub use fluree_db_core::{
 pub use fluree_db_ledger::{
     HistoricalLedgerView, IndexConfig, LedgerState, LedgerView, TypeErasedStore,
 };
-pub use fluree_db_nameservice::{NameService, NsRecord, Publisher, VirtualGraphPublisher};
+pub use fluree_db_nameservice::{GraphSourcePublisher, NameService, NsRecord, Publisher};
 pub use fluree_db_novelty::Novelty;
 pub use fluree_db_query::{
     execute_pattern, execute_pattern_with_overlay, execute_pattern_with_overlay_at,
@@ -336,13 +336,6 @@ impl fluree_db_nameservice::NameService for AnyNameService {
         self.0.lookup(ledger_address).await
     }
 
-    async fn alias(
-        &self,
-        ledger_address: &str,
-    ) -> std::result::Result<Option<String>, fluree_db_nameservice::NameServiceError> {
-        self.0.alias(ledger_address).await
-    }
-
     async fn all_records(
         &self,
     ) -> std::result::Result<
@@ -462,13 +455,6 @@ where
         fluree_db_nameservice::NameServiceError,
     > {
         self.inner.lookup(ledger_address).await
-    }
-
-    async fn alias(
-        &self,
-        ledger_address: &str,
-    ) -> std::result::Result<Option<String>, fluree_db_nameservice::NameServiceError> {
-        self.inner.alias(ledger_address).await
     }
 
     async fn all_records(
@@ -1100,7 +1086,7 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
             connection,
             nameservice,
             indexing_mode,
-            r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
+            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager: None,
         });
     }
@@ -1152,7 +1138,7 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
                 connection,
                 nameservice,
                 indexing_mode,
-                r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
+                r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
                 ledger_manager: None,
             })
         }
@@ -1225,7 +1211,7 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
                     connection,
                     nameservice,
                     indexing_mode,
-                    r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
+                    r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
                     ledger_manager: None,
                 })
             }
@@ -1682,7 +1668,7 @@ impl FlureeBuilder {
             connection,
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
-            r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
+            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager,
         })
     }
@@ -1785,7 +1771,7 @@ impl FlureeBuilder {
             connection,
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
-            r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
+            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager: None,
         })
     }
@@ -1813,7 +1799,7 @@ impl FlureeBuilder {
             connection,
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
-            r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
+            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager,
         }
     }
@@ -1842,7 +1828,7 @@ impl FlureeBuilder {
             connection,
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
-            r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
+            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager: None,
         }
     }
@@ -1910,7 +1896,7 @@ impl FlureeBuilder {
             connection,
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
-            r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
+            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager: None,
         })
     }
@@ -1989,7 +1975,7 @@ impl FlureeBuilder {
             connection,
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
-            r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
+            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager: None,
         })
     }
@@ -2011,7 +1997,7 @@ pub struct Fluree<S: Storage + 'static, N> {
     /// Indexing mode (disabled or background with handle)
     pub indexing_mode: tx::IndexingMode,
     /// R2RML cache for compiled mappings and table metadata
-    r2rml_cache: std::sync::Arc<virtual_graph::R2rmlCache>,
+    r2rml_cache: std::sync::Arc<graph_source::R2rmlCache>,
     /// Optional ledger manager for connection-level caching
     ///
     /// When enabled via `FlureeBuilder::with_ledger_caching()`, loaded ledgers
@@ -2032,7 +2018,7 @@ where
             connection,
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
-            r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
+            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager: None,
         }
     }
@@ -2047,7 +2033,7 @@ where
             connection,
             nameservice,
             indexing_mode,
-            r2rml_cache: std::sync::Arc::new(virtual_graph::R2rmlCache::with_defaults()),
+            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager: None,
         }
     }
@@ -2073,7 +2059,7 @@ where
     }
 
     /// Get a reference to the R2RML cache
-    pub fn r2rml_cache(&self) -> &std::sync::Arc<virtual_graph::R2rmlCache> {
+    pub fn r2rml_cache(&self) -> &std::sync::Arc<graph_source::R2rmlCache> {
         &self.r2rml_cache
     }
 
@@ -2456,7 +2442,7 @@ where
 
         // Step C: Use NsRecord.address as the cache key
         // The address field contains the canonical form (e.g., "testdb:main")
-        // Note: NsRecord.alias field only contains the name without branch, despite docs
+        // Note: NsRecord.name field only contains the name without branch, despite docs
         let canonical_alias = &ns_record.address;
 
         // Step D: Delegate to notify with the fresh record

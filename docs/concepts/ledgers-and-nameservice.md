@@ -224,11 +224,11 @@ curl -X POST http://localhost:8090/nameservice/query \
 | `f:index` | Index info object with `@id` (address) and `f:t` |
 | `f:defaultContext` | Default JSON-LD context address (if set) |
 
-**Virtual Graph Records** (`@type: "f:VirtualGraphDatabase"`):
+**Graph Source Records** (`@type: "f:GraphSource"`):
 
 | Property | Description |
 |----------|-------------|
-| `f:name` | Virtual graph name |
+| `f:name` | Graph source name |
 | `f:branch` | Branch name |
 | `f:status` | Status: "ready" or "retracted" |
 | `fidx:config` | Configuration JSON |
@@ -262,7 +262,7 @@ curl -X POST http://localhost:8090/nameservice/query \
 }
 ```
 
-**Find all BM25 virtual graphs:**
+**Find all BM25 graph sources:**
 ```json
 {
   "@context": {
@@ -271,7 +271,7 @@ curl -X POST http://localhost:8090/nameservice/query \
   },
   "select": ["?name", "?deps"],
   "where": [
-    {"@id": "?vg", "@type": "fidx:BM25", "f:name": "?name", "fidx:dependencies": "?deps"}
+    {"@id": "?gs", "@type": "fidx:BM25", "f:name": "?name", "fidx:dependencies": "?deps"}
   ]
 }
 ```
@@ -318,16 +318,16 @@ The nameservice can be backed by various storage systems, each suited for differ
 - **Format**: No persistence
 - **Characteristics**: Fast, ephemeral, process-local
 
-### Virtual Graphs
+### Graph Sources
 
-The nameservice also tracks **virtual graphs**—specialized indexes and integrations:
+The nameservice also tracks **graph sources**—specialized indexes and integrations:
 
 - **BM25**: Full-text search indexes
 - **Vector**: Vector similarity search
 - **R2RML**: Relational database mappings
 - **Iceberg**: Apache Iceberg table integrations
 
-Virtual graphs have their own nameservice records (`VgNsRecord`) with similar metadata but different semantics. See the [Virtual Graphs](../virtual-graphs/overview.md) documentation for details.
+Graph sources have their own nameservice records (`GraphSourceRecord`) with similar metadata but different semantics. See the [Graph Sources](graph-sources.md) documentation for details.
 
 ## Example Usage
 

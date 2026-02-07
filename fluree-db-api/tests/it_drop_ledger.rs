@@ -2,7 +2,7 @@
 //!
 //! Tests the `drop_ledger` API with feature parity to Clojure's drop-ledger behavior.
 //!
-//! Note: `drop_virtual_graph` exists in Rust (`fluree-db-api/src/admin.rs`) but does not
+//! Note: `drop_graph_source` exists in Rust (`fluree-db-api/src/admin.rs`) but does not
 //! yet have integration-test coverage here.
 
 #![cfg(feature = "native")]

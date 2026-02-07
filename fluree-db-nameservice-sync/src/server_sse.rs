@@ -1,12 +1,13 @@
 //! Adapter for Fluree server `/fluree/events` SSE payloads.
 //!
 //! The server's SSE payload schema is intentionally stable and independent from
-//! internal `NsRecord` / `VgNsRecord` serialization. This module parses the
+//! internal `NsRecord` / `GraphSourceRecord` serialization. This module parses the
 //! server-emitted JSON and converts it into canonical `fluree-db-nameservice`
 //! types used by the sync layer.
 
 use crate::watch::RemoteEvent;
-use fluree_db_nameservice::{NsRecord, VgNsRecord, VgType};
+use fluree_db_nameservice::{GraphSourceRecord, GraphSourceType, NsRecord};
+use fluree_sse::{SSE_KIND_GRAPH_SOURCE, SSE_KIND_LEDGER};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServerSseParseError {
@@ -63,13 +64,13 @@ struct LedgerSseRecord {
 }
 
 #[derive(Debug, serde::Deserialize)]
-struct VgSseRecord {
+struct GraphSourceSseRecord {
     /// Canonical alias, e.g. "search:main"
     alias: String,
     name: String,
     branch: String,
-    /// String form of VG type, e.g. "fidx:BM25"
-    vg_type: String,
+    /// String form of graph source type, e.g. "fidx:BM25"
+    source_type: String,
     config: String,
     dependencies: Vec<String>,
     index_address: Option<String>,
@@ -81,15 +82,17 @@ fn parse_ns_record(data: &str) -> Result<Option<RemoteEvent>, ServerSseParseErro
     let payload: NsRecordEnvelope = serde_json::from_str(data)?;
 
     match payload.kind.as_str() {
-        "ledger" => {
+        SSE_KIND_LEDGER => {
             let record: LedgerSseRecord = serde_json::from_value(payload.record)?;
             Ok(Some(RemoteEvent::LedgerUpdated(ledger_sse_to_ns_record(
                 record,
             ))))
         }
-        "virtual-graph" => {
-            let record: VgSseRecord = serde_json::from_value(payload.record)?;
-            Ok(Some(RemoteEvent::VgUpdated(vg_sse_to_vg_ns_record(record))))
+        SSE_KIND_GRAPH_SOURCE => {
+            let record: GraphSourceSseRecord = serde_json::from_value(payload.record)?;
+            Ok(Some(RemoteEvent::GraphSourceUpdated(
+                gs_sse_to_graph_source_record(record),
+            )))
         }
         // Unknown kind is not an error; ignore for forwards compatibility.
         _ => Ok(None),
@@ -100,10 +103,10 @@ fn parse_ns_retracted(data: &str) -> Result<Option<RemoteEvent>, ServerSseParseE
     let payload: NsRetractedEnvelope = serde_json::from_str(data)?;
 
     match payload.kind.as_str() {
-        "ledger" => Ok(Some(RemoteEvent::LedgerRetracted {
+        SSE_KIND_LEDGER => Ok(Some(RemoteEvent::LedgerRetracted {
             alias: payload.alias,
         })),
-        "virtual-graph" => Ok(Some(RemoteEvent::VgRetracted {
+        SSE_KIND_GRAPH_SOURCE => Ok(Some(RemoteEvent::GraphSourceRetracted {
             alias: payload.alias,
         })),
         _ => Ok(None),
@@ -111,10 +114,10 @@ fn parse_ns_retracted(data: &str) -> Result<Option<RemoteEvent>, ServerSseParseE
 }
 
 fn ledger_sse_to_ns_record(record: LedgerSseRecord) -> NsRecord {
-    let (alias_name, branch) = split_alias_or_fallback(&record.alias, &record.branch);
+    let (ledger_name, branch) = split_alias_or_fallback(&record.alias, &record.branch);
     NsRecord {
         address: record.alias.clone(),
-        alias: alias_name,
+        name: ledger_name,
         branch,
         commit_address: record.commit_address,
         commit_t: record.commit_t,
@@ -125,12 +128,12 @@ fn ledger_sse_to_ns_record(record: LedgerSseRecord) -> NsRecord {
     }
 }
 
-fn vg_sse_to_vg_ns_record(record: VgSseRecord) -> VgNsRecord {
-    VgNsRecord {
+fn gs_sse_to_graph_source_record(record: GraphSourceSseRecord) -> GraphSourceRecord {
+    GraphSourceRecord {
         address: record.alias,
         name: record.name,
         branch: record.branch,
-        vg_type: VgType::from_type_string(&record.vg_type),
+        source_type: GraphSourceType::from_type_string(&record.source_type),
         config: record.config,
         dependencies: record.dependencies,
         index_address: record.index_address,
@@ -183,7 +186,7 @@ mod tests {
             Some(RemoteEvent::LedgerUpdated(record)) => {
                 assert_eq!(record.commit_t, 5);
                 assert_eq!(record.address, "mydb:main");
-                assert_eq!(record.alias, "mydb");
+                assert_eq!(record.name, "mydb");
                 assert_eq!(record.branch, "main");
             }
             other => panic!("expected LedgerUpdated, got {:?}", other),
@@ -211,18 +214,18 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_virtual_graph_ns_record_event() {
+    fn test_parse_graph_source_ns_record_event() {
         let event = SseEvent {
             event_type: Some("ns-record".to_string()),
             data: r#"{
                 "action": "ns-record",
-                "kind": "virtual-graph",
+                "kind": "graph-source",
                 "alias": "search:main",
                 "record": {
                     "alias": "search:main",
                     "name": "search",
                     "branch": "main",
-                    "vg_type": "fidx:BM25",
+                    "source_type": "fidx:BM25",
                     "config": "{\"k1\":1.2}",
                     "dependencies": ["books:main"],
                     "index_address": null,
@@ -236,13 +239,13 @@ mod tests {
         };
 
         match parse_server_sse_event(&event).unwrap() {
-            Some(RemoteEvent::VgUpdated(record)) => {
+            Some(RemoteEvent::GraphSourceUpdated(record)) => {
                 assert_eq!(record.address, "search:main");
                 assert_eq!(record.name, "search");
                 assert_eq!(record.branch, "main");
                 assert_eq!(record.index_t, 0);
             }
-            other => panic!("expected VgUpdated, got {:?}", other),
+            other => panic!("expected GraphSourceUpdated, got {:?}", other),
         }
     }
 

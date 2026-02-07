@@ -34,7 +34,7 @@ fluree token create --private-key <KEY> [OPTIONS]
 | `--all` | Grant access to all ledgers (`fluree.events.all=true`, `fluree.storage.all=true`) |
 | `--events-ledger <ALIAS>` | Grant events access to specific ledger (repeatable) |
 | `--storage-ledger <ALIAS>` | Grant storage access to specific ledger (repeatable) |
-| `--vg <ALIAS>` | Grant access to specific virtual graph (repeatable) |
+| `--graph-source <ALIAS>` | Grant access to specific graph source (repeatable) |
 | `--output <FMT>` | Output format: `token`, `json`, or `curl` (default: `token`) |
 | `--print-claims` | Print decoded claims to stderr |
 

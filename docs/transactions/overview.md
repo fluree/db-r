@@ -106,7 +106,7 @@ Nameservice is updated with new commit:
 Background process indexes the transaction:
 - Flakes added to index structures (SPOT, POST, OPST, PSOT)
 - Query-optimized data structures built
-- Virtual graphs updated (if applicable)
+- Graph sources updated (if applicable)
 
 ### 9. Index Publication
 

@@ -13,7 +13,7 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-/// Cache key: (vg_alias, index_t)
+/// Cache key: (graph_source_address, index_t)
 pub type CacheKey = (String, i64);
 
 /// Cache entry with timestamp for TTL expiration.

@@ -25,6 +25,9 @@ Under the hood, this “graph snapshot” corresponds to the same semantic idea 
 - **Ledger**: A durable data product with a commit chain, identified by a *ledger address* like `mydb:main`.
   - A ledger is what users create/manage.
   - A ledger can contain multiple graphs (default graph + named graphs).
+- **Graph Source Address**: A canonical `name:branch` identifier used in APIs/CLI/config to refer to a graph source, e.g. `products-search:main`.
+  - This is an *alias-style* identifier (not a full IRI).
+  - In SPARQL contexts it may appear inside `<…>` and can be resolved against a configured base into a canonical Graph IRI.
 - **Graph**: A query scope (SPARQL term).
   - In a query, a “graph” is identified by an IRI and used to scope patterns (`GRAPH <iri> { … }`).
 - **Graph Snapshot**: An immutable point-in-time view of a graph that can be queried repeatedly.
@@ -128,10 +131,6 @@ Graph sources differ in capabilities:
 - **Index Graph Sources**: persisted indexes queried through graph-integrated patterns (BM25, Vector/HNSW).
 - **Mapped Graph Sources**: non-ledger data mapped into an RDF-shaped graph (R2RML, Iceberg).
 
-### Term: “Virtual Graph”
-Some internal APIs use **Virtual Graph (VG)** for “non-ledger graph sources”.
-Prefer “graph source” in user-facing docs and examples.
-
 ---
 
 ## Internal naming (Rust implementation guidance)
@@ -157,6 +156,7 @@ This repo currently mixes `alias`, `address`, and `ledger_alias` in ways that ca
 
 Practical guidelines:
 - If a string is used to load/cache/lookup a ledger, call it **`ledger_address`** (not `ledger_alias`).
+- If a string is used to load/cache/lookup a graph source by `name:branch`, call it **`graph_source_address`** (not `gs_alias`, not `graph_source_alias`).
 - If a string is used to identify a graph in SPARQL (`FROM`, `GRAPH`), call it **`graph_iri`** (canonical) or **`graph_ref`** (user input).
 - Avoid having two different meanings for the same field name across crates. Prefer longer, explicit names.
 
@@ -172,7 +172,7 @@ Related: for non-ledger graph sources (e.g., BM25/vector/spatial), nameservice o
 
 Concretely it contains:
 - **Identity & time**
-  - `alias` (ledger identifier; recommended internal rename: `ledger_address`)
+  - `ledger_address` (canonical ledger identifier, `name:branch`)
   - `t` (index transaction time; i.e., `index_t` / “how far the indexed snapshot covers”)
   - `version`
 - **Index roots** (e.g., SPOT/PSOT/POST/OPST/TSPO), optional
@@ -224,45 +224,6 @@ For product-facing APIs and docs, prefer “federation”, but internally:
 - It is reasonable to keep `DataSet` as the SPARQL-aligned term.
 - Add docstrings that explicitly say **“federated / multi-graph execution”**.
 
-### Suggested internal renames (incremental, low risk)
-These can be done gradually (aliases first, then struct renames if desired):
-- `Db.alias` → `ledger_address` (or document it as such everywhere).
-- `ledger_alias` fields used as graph identifiers → `graph_name` or `graph_ref_name` (depending on stage).
-- Reserve **`alias`** for “human-friendly base name” only (like `NsRecord.alias`), and prefer **`address`** for canonical `name:branch` identifiers (like `NsRecord.address`).
-- `LedgerSnapshot` (read-only view) → `LedgerReadView` (to reduce “snapshot” ambiguity vs other snapshots).
-- Keep `GraphSnapshot` as the user-facing “loaded graph snapshot” type; disambiguate other “snapshot” types instead (Ledger read view, Iceberg snapshot, etc.).
-
-### Ideal end state (recommended shape)
-To keep responsibilities clear as storage/index backends evolve, the clean long-term direction is:
-
-- **Snapshot metadata** (pure value):
-  - identity (ledger address / graph identity)
-  - time (`t`)
-  - namespaces
-  - stats/config/schema
-  - index root pointers *or* provider configuration needed to resolve data
-
-- **Execution services** (handles):
-  - storage handle(s)
-  - cache handle(s)
-  - range provider / graph source resolver hooks
-
-This can be represented either as:
-- a split type (`DbMeta` + `DbServices`, held by a `Db` wrapper), or
-- a single `Db` struct with a clearly-named nested field (e.g., `services: DbServices<S,C>`) to group runtime handles.
-
-### Future-proof abstraction: Graph Source Registry
-To avoid threading many optional providers through execution context:
-- Introduce a `GraphSourceRegistry` (internal) that resolves a `GraphIri` to a concrete graph source:
-  - ledger graph (default/named graph within a ledger)
-  - BM25/vector index source
-  - R2RML/Iceberg mapped source
-
-This centralizes:
-- “does this graph exist?”
-- “what capabilities does it support?” (triple patterns vs search patterns vs mapped scans)
-- time pinning rules (`@t`, `@iso`, `@sha`) per source type (including “not supported” cases)
-
 ---
 
 ## Conventions and examples
@@ -305,6 +266,6 @@ WHERE {
 ## Related docs
 - `docs/concepts/time-travel.md` (time pinning syntax)
 - `docs/concepts/datasets-and-named-graphs.md` (SPARQL dataset semantics)
-- `docs/virtual-graphs/overview.md` and `docs/concepts/virtual-graphs.md` (virtual graph overview)
+- `docs/graph-sources/overview.md` and `docs/concepts/graph-sources.md` (graph source overview)
 - `docs/reference/glossary.md` (terms glossary)
 

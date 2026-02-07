@@ -350,7 +350,7 @@ pub async fn execute_with_policy_tracked<S: Storage + 'static>(
     execute_prepared_with_policy(source, vars, prepared, policy, Some(tracker)).await
 }
 
-/// Execute a query with R2RML providers (for virtual graph support).
+/// Execute a query with R2RML providers (for graph source support).
 pub async fn execute_with_r2rml<'a, 'b, S: Storage + 'static>(
     source: DataSource<'a, S>,
     vars: &VarRegistry,
@@ -432,11 +432,11 @@ pub async fn execute_with_dataset_and_policy_tracked<'a, S: Storage + 'static>(
         .await
 }
 
-/// Execute a query against a dataset with BM25 provider (for virtual graph BM25 queries)
+/// Execute a query against a dataset with BM25 provider (for graph source BM25 queries)
 ///
 /// This combines dataset execution (multiple default/named graphs) with BM25 index
 /// provider support, enabling `idx:*` patterns in queries to resolve against
-/// virtual graph BM25 indexes.
+/// graph source BM25 indexes.
 pub async fn execute_with_dataset_and_bm25<'a, S: Storage + 'static>(
     source: DataSource<'a, S>,
     vars: &VarRegistry,
@@ -477,7 +477,7 @@ pub async fn execute_with_dataset_and_policy_and_bm25<'a, S: Storage + 'static>(
     .await
 }
 
-/// Execute a query against a dataset with both BM25 and vector providers (for virtual graph queries)
+/// Execute a query against a dataset with both BM25 and vector providers (for graph source queries)
 ///
 /// This combines dataset execution (multiple default/named graphs) with both BM25 and
 /// vector index provider support, enabling both `idx:search` and `idx:vector` patterns

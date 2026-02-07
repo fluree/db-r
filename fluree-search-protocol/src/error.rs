@@ -45,8 +45,8 @@ pub struct ErrorDetail {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
-    /// Virtual graph not found.
-    VgNotFound,
+    /// Graph source not found.
+    GraphSourceNotFound,
 
     /// Invalid request format or parameters.
     InvalidRequest,
@@ -115,7 +115,7 @@ impl ErrorCode {
     /// Returns the HTTP status code typically associated with this error.
     pub fn http_status(self) -> u16 {
         match self {
-            ErrorCode::VgNotFound => 404,
+            ErrorCode::GraphSourceNotFound => 404,
             ErrorCode::InvalidRequest => 400,
             ErrorCode::UnsupportedProtocolVersion => 400,
             ErrorCode::Timeout => 504,
@@ -132,7 +132,7 @@ impl ErrorCode {
 impl std::fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ErrorCode::VgNotFound => write!(f, "VG_NOT_FOUND"),
+            ErrorCode::GraphSourceNotFound => write!(f, "GRAPH_SOURCE_NOT_FOUND"),
             ErrorCode::InvalidRequest => write!(f, "INVALID_REQUEST"),
             ErrorCode::UnsupportedProtocolVersion => write!(f, "UNSUPPORTED_PROTOCOL_VERSION"),
             ErrorCode::Timeout => write!(f, "TIMEOUT"),
@@ -163,16 +163,16 @@ mod tests {
         let error = SearchError::new(
             "1.0",
             Some("req-123".to_string()),
-            ErrorCode::VgNotFound,
-            "Virtual graph 'test:main' not found",
+            ErrorCode::GraphSourceNotFound,
+            "Graph source 'test:main' not found",
         );
 
         let json = serde_json::to_string_pretty(&error).unwrap();
-        assert!(json.contains("VG_NOT_FOUND"));
-        assert!(json.contains("Virtual graph"));
+        assert!(json.contains("GRAPH_SOURCE_NOT_FOUND"));
+        assert!(json.contains("Graph source"));
 
         let parsed: SearchError = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.error.code, ErrorCode::VgNotFound);
+        assert_eq!(parsed.error.code, ErrorCode::GraphSourceNotFound);
         assert!(!parsed.error.retryable);
     }
 
@@ -195,14 +195,14 @@ mod tests {
         assert!(ErrorCode::SyncTimeout.is_retryable());
         assert!(ErrorCode::Internal.is_retryable());
 
-        assert!(!ErrorCode::VgNotFound.is_retryable());
+        assert!(!ErrorCode::GraphSourceNotFound.is_retryable());
         assert!(!ErrorCode::InvalidRequest.is_retryable());
         assert!(!ErrorCode::Unauthorized.is_retryable());
     }
 
     #[test]
     fn test_http_status_codes() {
-        assert_eq!(ErrorCode::VgNotFound.http_status(), 404);
+        assert_eq!(ErrorCode::GraphSourceNotFound.http_status(), 404);
         assert_eq!(ErrorCode::InvalidRequest.http_status(), 400);
         assert_eq!(ErrorCode::Timeout.http_status(), 504);
         assert_eq!(ErrorCode::Unauthorized.http_status(), 401);
@@ -211,7 +211,10 @@ mod tests {
 
     #[test]
     fn test_error_code_display() {
-        assert_eq!(ErrorCode::VgNotFound.to_string(), "VG_NOT_FOUND");
+        assert_eq!(
+            ErrorCode::GraphSourceNotFound.to_string(),
+            "GRAPH_SOURCE_NOT_FOUND"
+        );
         assert_eq!(
             ErrorCode::NoSnapshotForAsOfT.to_string(),
             "NO_SNAPSHOT_FOR_AS_OF_T"

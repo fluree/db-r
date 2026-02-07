@@ -43,8 +43,8 @@ pub struct SearchHit {
 
     /// The ledger alias where this entity resides.
     ///
-    /// For single-ledger VGs, this is always the source ledger.
-    /// For multi-ledger VGs (datasets), this identifies which ledger
+    /// For single-ledger graph sources, this is always the source ledger.
+    /// For multi-ledger graph sources (datasets), this identifies which ledger
     /// the entity came from.
     pub ledger_alias: String,
 

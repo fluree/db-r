@@ -106,9 +106,9 @@ impl<S: Storage + Clone + 'static> LedgerSnapshot<S> {
     /// Returns the base ledger name (e.g., "mydb"), NOT the canonical form (e.g., "mydb:main").
     /// For the canonical ledger:branch address, use `address()` instead.
     ///
-    /// Note: This matches Clojure's `NsRecord.alias` semantics where "alias" is the base name.
+    /// Note: This matches Clojure's `NsRecord.name` semantics where "name" is the base name.
     pub fn alias(&self) -> Option<&str> {
-        self.ns_record.as_ref().map(|r| r.alias.as_str())
+        self.ns_record.as_ref().map(|r| r.name.as_str())
     }
 
     /// Get the canonical ledger address (with branch suffix)
@@ -1316,7 +1316,7 @@ mod tests {
     ) -> NsRecord {
         NsRecord {
             address: "test:main".to_string(),
-            alias: "test:main".to_string(),
+            name: "test:main".to_string(),
             branch: "main".to_string(),
             commit_address: commit_addr.map(String::from),
             commit_t,

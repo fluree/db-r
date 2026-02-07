@@ -25,7 +25,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use fluree_db_api::{NameService, Publisher, VirtualGraphPublisher};
+use fluree_db_api::{GraphSourcePublisher, NameService, Publisher};
 use fluree_db_nameservice::{CasResult, NameServiceError, RefKind, RefPublisher, RefValue};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -69,7 +69,7 @@ pub struct InitResponse {
 #[derive(Debug, Serialize)]
 pub struct SnapshotResponse {
     pub ledgers: Vec<fluree_db_nameservice::NsRecord>,
-    pub vgs: Vec<fluree_db_nameservice::VgNsRecord>,
+    pub graph_sources: Vec<fluree_db_nameservice::GraphSourceRecord>,
 }
 
 // ============================================================================
@@ -189,10 +189,10 @@ pub async fn init_ledger(
 
 /// GET /fluree/nameservice/snapshot
 ///
-/// Returns a full snapshot of all ledger and virtual graph records.
+/// Returns a full snapshot of all ledger and graph source records.
 /// Results are filtered to the principal's authorized scope:
 /// - `storage_all`: returns all records
-/// - Otherwise: filters ledgers to `storage_ledgers`, excludes VGs
+/// - Otherwise: filters ledgers to `storage_ledgers`, excludes graph sources
 pub async fn snapshot(
     State(state): State<Arc<AppState>>,
     StorageProxyBearer(principal): StorageProxyBearer,
@@ -209,17 +209,17 @@ pub async fn snapshot(
 
     if principal.storage_all {
         // Full access: return everything
-        let vgs = ns
-            .all_vg_records()
+        let graph_sources = ns
+            .all_graph_source_records()
             .await
-            .map_err(|e| ServerError::internal(format!("Failed to list VGs: {}", e)))?;
+            .map_err(|e| ServerError::internal(format!("Failed to list graph sources: {}", e)))?;
 
         Ok(Json(SnapshotResponse {
             ledgers: all_ledgers,
-            vgs,
+            graph_sources,
         }))
     } else {
-        // Scoped access: filter ledgers to authorized set, no VGs
+        // Scoped access: filter ledgers to authorized set, no graph sources
         let ledgers = all_ledgers
             .into_iter()
             .filter(|r| principal.is_authorized_for_ledger(&r.address))
@@ -227,7 +227,7 @@ pub async fn snapshot(
 
         Ok(Json(SnapshotResponse {
             ledgers,
-            vgs: vec![],
+            graph_sources: vec![],
         }))
     }
 }

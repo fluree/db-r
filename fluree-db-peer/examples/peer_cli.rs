@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         storage_path = ?config.storage_path,
         all = config.all,
         ledgers = ?config.ledgers,
-        vgs = ?config.vgs,
+        graph_sources = ?config.graph_sources,
         "Starting Fluree query peer"
     );
 

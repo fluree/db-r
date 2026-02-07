@@ -73,8 +73,8 @@ pub use flake::{Flake, FlakeMeta};
 pub use ids::{DatatypeDictId, GraphId, LangId, ListIndex, PredicateId, StringId, TxnT};
 pub use index_schema::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};
 pub use index_stats::{
-    ClassPropertyUsage, ClassStatEntry, GraphPropertyStatEntry, GraphStatsEntry, IndexStats,
-    PropertyStatEntry,
+    ClassPropertyUsage, ClassRefCount, ClassStatEntry, GraphPropertyStatEntry, GraphStatsEntry,
+    IndexStats, PropertyStatEntry,
 };
 pub use namespaces::{
     default_namespace_codes, is_owl_equivalent_class, is_owl_equivalent_property,

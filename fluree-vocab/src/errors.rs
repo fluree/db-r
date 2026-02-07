@@ -61,11 +61,11 @@ pub const COMMIT_CONFLICT: &str = "err:db/CommitConflict";
 /// Empty transaction (no flakes)
 pub const EMPTY_TRANSACTION: &str = "err:db/EmptyTransaction";
 
-/// Virtual graph not found
-pub const VIRTUAL_GRAPH_NOT_FOUND: &str = "err:db/VirtualGraphNotFound";
+/// Graph source not found
+pub const GRAPH_SOURCE_NOT_FOUND: &str = "err:db/GraphSourceNotFound";
 
-/// Virtual graph index stale
-pub const VIRTUAL_GRAPH_STALE: &str = "err:db/VirtualGraphStale";
+/// Graph source index stale
+pub const GRAPH_SOURCE_STALE: &str = "err:db/GraphSourceStale";
 
 // =============================================================================
 // API Errors (api)

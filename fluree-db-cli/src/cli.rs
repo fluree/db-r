@@ -325,9 +325,9 @@ pub enum TokenAction {
         #[arg(long = "storage-ledger")]
         storage_ledgers: Vec<String>,
 
-        /// Grant access to specific virtual graph (repeatable)
-        #[arg(long = "vg")]
-        vgs: Vec<String>,
+        /// Grant access to specific graph source (repeatable)
+        #[arg(long = "graph-source")]
+        graph_sources: Vec<String>,
 
         /// Output format
         #[arg(long, default_value = "token", value_enum)]

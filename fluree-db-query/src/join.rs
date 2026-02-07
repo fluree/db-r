@@ -358,7 +358,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                     )
                 }
                 PatternPosition::Object => {
-                    // Raw IRIs from virtual graphs can't match native object values
+                    // Raw IRIs from graph sources can't match native object values
                     // (they're not in the namespace table and can't be compared to Sids)
                     // Note: IriMatch is OK because it carries a SID.
                     // EncodedSid (refs) and EncodedLit (literals) are also valid.
@@ -479,7 +479,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                             // Predicate as object is unusual - leave as variable
                         }
                         Binding::Iri(_) => {
-                            // Raw IRI from VG can't be converted to native Term
+                            // Raw IRI from graph source can't be converted to native Term
                             // This case should not be reached due to has_invalid_binding_type check,
                             // but leave as variable defensively (row will produce no matches)
                         }

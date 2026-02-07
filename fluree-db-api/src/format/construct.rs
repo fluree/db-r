@@ -134,7 +134,7 @@ fn resolve_subject_term(
                 }
             }
             Some(Binding::Iri(iri)) => {
-                // Raw IRI from virtual graph - check for blank node prefix
+                // Raw IRI from graph source - check for blank node prefix
                 if let Some(bnode_id) = iri.strip_prefix("_:") {
                     Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
                 } else {
@@ -190,7 +190,7 @@ fn resolve_predicate_term(
                 }
             }
             Some(Binding::Iri(iri)) => {
-                // Raw IRI from virtual graph - blank nodes not allowed as predicates
+                // Raw IRI from graph source - blank nodes not allowed as predicates
                 if iri.starts_with("_:") {
                     Ok(None)
                 } else {
@@ -277,7 +277,7 @@ fn binding_to_ir_term(
             }
         }
 
-        // Raw IRI from virtual graph - check for blank node prefix
+        // Raw IRI from graph source - check for blank node prefix
         Binding::Iri(iri) => {
             if let Some(bnode_id) = iri.strip_prefix("_:") {
                 Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))

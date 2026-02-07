@@ -370,6 +370,11 @@ impl<'de> serde::Deserialize<'de> for RawClassStatEntry {
 pub struct RawClassPropertyUsage {
     /// Property SID as (namespace_code, name)
     pub property_sid: (u16, String),
+    /// Optional ref target classes (class SID -> count).
+    ///
+    /// This is emitted by DB-R when available. We also accept legacy Clojure
+    /// formats where this data may appear nested in a different structure.
+    pub ref_classes: Vec<((u16, String), u64)>,
 }
 
 impl<'de> serde::Deserialize<'de> for RawClassPropertyUsage {
@@ -399,10 +404,51 @@ impl<'de> serde::Deserialize<'de> for RawClassPropertyUsage {
                     .next_element()?
                     .ok_or_else(|| de::Error::invalid_length(0, &self))?;
 
-                // Optional second element: legacy detailed structure. Ignore if present.
-                let _ignored: Option<serde_json::Value> = seq.next_element()?;
+                // Optional second element: may include ref-class counts.
+                //
+                // Accepted shapes:
+                // - legacy Clojure: [[property_sid], [[types], [ref_classes], [langs]]]
+                // - DB-R extended:  [[property_sid], {"ref-classes": [[[class_sid], count], ...]}]
+                let details: Option<serde_json::Value> = seq.next_element()?;
+                let mut ref_classes: Vec<((u16, String), u64)> = Vec::new();
+                if let Some(v) = details {
+                    // DB-R extended object
+                    if let Some(obj) = v.as_object() {
+                        if let Some(arr) = obj.get("ref-classes").and_then(|x| x.as_array()) {
+                            for entry in arr {
+                                let Some(pair) = entry.as_array() else {
+                                    continue;
+                                };
+                                if pair.len() != 2 {
+                                    continue;
+                                }
+                                let Some(class_sid_arr) = pair[0].as_array() else {
+                                    continue;
+                                };
+                                if class_sid_arr.len() != 2 {
+                                    continue;
+                                }
+                                let (Some(ns_u64), Some(name)) = (
+                                    class_sid_arr[0].as_u64(),
+                                    class_sid_arr[1].as_str(),
+                                ) else {
+                                    continue;
+                                };
+                                let class_sid: (u16, String) = (ns_u64 as u16, name.to_string());
+                                let count = pair[1].as_u64().unwrap_or(0);
+                                if count > 0 {
+                                    ref_classes.push((class_sid, count));
+                                }
+                            }
+                        }
+                    }
+                    // Legacy nested arrays are intentionally not fully decoded here.
+                }
 
-                Ok(RawClassPropertyUsage { property_sid })
+                Ok(RawClassPropertyUsage {
+                    property_sid,
+                    ref_classes,
+                })
             }
         }
 
@@ -426,6 +472,7 @@ pub struct GarbageRef {
 // === Index Schema (JSON parsing) ===
 
 use crate::index_schema::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};
+use crate::index_stats::ClassRefCount;
 
 /// Raw schema predicates as it appears in JSON
 #[derive(Debug, Deserialize)]
@@ -485,7 +532,19 @@ pub fn raw_stats_to_index_stats(s: &RawDbRootStats) -> Option<IndexStats> {
                                 .map(|p| {
                                     let property_sid =
                                         Sid::new(p.property_sid.0, &p.property_sid.1);
-                                    ClassPropertyUsage { property_sid }
+                                    let mut ref_classes: Vec<ClassRefCount> = p
+                                        .ref_classes
+                                        .iter()
+                                        .map(|(sid, count)| ClassRefCount {
+                                            class_sid: Sid::new(sid.0, &sid.1),
+                                            count: *count,
+                                        })
+                                        .collect();
+                                    ref_classes.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
+                                    ClassPropertyUsage {
+                                        property_sid,
+                                        ref_classes,
+                                    }
                                 })
                                 .collect()
                         })

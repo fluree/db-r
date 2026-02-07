@@ -339,13 +339,13 @@ pub struct ContextConfig<'a, 'b, S: Storage + 'static> {
         &'b dyn crate::r2rml::R2rmlProvider,
         &'b dyn crate::r2rml::R2rmlTableProvider,
     )>,
-    /// BM25 index provider for `Pattern::IndexSearch` (virtual graph BM25 queries).
+    /// BM25 index provider for `Pattern::IndexSearch` (graph source BM25 queries).
     ///
-    /// When set, BM25 search operators can load indexes from virtual graphs.
+    /// When set, BM25 search operators can load indexes from graph sources.
     pub bm25_provider: Option<&'b dyn crate::bm25::Bm25IndexProvider>,
-    /// Vector index provider for `Pattern::VectorSearch` (virtual graph vector queries).
+    /// Vector index provider for `Pattern::VectorSearch` (graph source vector queries).
     ///
-    /// When set, vector search operators can load indexes from virtual graphs.
+    /// When set, vector search operators can load indexes from graph sources.
     pub vector_provider: Option<&'b dyn crate::vector::VectorIndexProvider>,
     /// Enable history mode - captures op metadata in bindings for @op support
     pub history_mode: bool,
@@ -659,7 +659,7 @@ pub async fn execute_prepared_with_dataset_and_policy_history<'a, S: Storage + '
     .await
 }
 
-/// Execute with dataset and BM25 provider (for virtual graph BM25 queries)
+/// Execute with dataset and BM25 provider (for graph source BM25 queries)
 pub async fn execute_prepared_with_dataset_and_bm25<'a, S: Storage + 'static>(
     source: DataSource<'a, S>,
     vars: &VarRegistry,
@@ -683,7 +683,7 @@ pub async fn execute_prepared_with_dataset_and_bm25<'a, S: Storage + 'static>(
     .await
 }
 
-/// Execute with dataset, policy, and BM25 provider (for virtual graph BM25 queries with policy)
+/// Execute with dataset, policy, and BM25 provider (for graph source BM25 queries with policy)
 pub async fn execute_prepared_with_dataset_and_policy_and_bm25<'a, S: Storage + 'static>(
     source: DataSource<'a, S>,
     vars: &VarRegistry,
@@ -714,7 +714,7 @@ pub async fn execute_prepared_with_dataset_and_policy_and_bm25<'a, S: Storage + 
     .await
 }
 
-/// Execute with dataset and both BM25 and vector providers (for virtual graph queries)
+/// Execute with dataset and both BM25 and vector providers (for graph source queries)
 pub async fn execute_prepared_with_dataset_and_providers<'a, 'b, S: Storage + 'static>(
     source: DataSource<'a, S>,
     vars: &VarRegistry,

@@ -11,7 +11,7 @@ default = ["native"]
 native = ["fluree-db-nameservice/native", "fluree-db-core/native", "fluree-db-query/native"]
 # Enable AWS-backed storage support (S3, storage-backed nameservice).
 aws = ["fluree-db-connection/aws", "dep:fluree-db-storage-aws"]
-# Iceberg / R2RML virtual graph support (pulls in AWS SDK + native deps)
+# Iceberg / R2RML graph source support (pulls in AWS SDK + native deps)
 iceberg = ["dep:fluree-db-iceberg", "fluree-db-iceberg/aws"]
 # Opt-in LocalStack-backed S3/DynamoDB tests (auto-start via testcontainers)
 aws-testcontainers = [
@@ -95,8 +95,8 @@ num-bigdecimal = { package = "bigdecimal", version = "0.4" }
 ed25519-dalek = "2.1"
 
 [[test]]
-name = "it_virtual_graph_r2rml"
-path = "tests/it_virtual_graph_r2rml.rs"
+name = "it_graph_source_r2rml"
+path = "tests/it_graph_source_r2rml.rs"
 required-features = ["iceberg"]
 
 [[test]]

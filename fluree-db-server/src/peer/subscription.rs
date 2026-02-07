@@ -15,8 +15,8 @@ use crate::state::FlureeInstance;
 use fluree_db_api::{NotifyResult, NsNotify};
 use fluree_db_core::alias;
 use fluree_db_nameservice::NsRecord;
-use fluree_db_peer::{LedgerRecord, VgRecord};
-use fluree_sse::{SseEvent, SseParser};
+use fluree_db_peer::{GraphSourceRecord, LedgerRecord};
+use fluree_sse::{SseEvent, SseParser, SSE_KIND_GRAPH_SOURCE, SSE_KIND_LEDGER};
 
 /// Background task that maintains SSE subscription to transaction server
 pub struct PeerSubscriptionTask {
@@ -154,7 +154,7 @@ impl PeerSubscriptionTask {
                 let data: NsRecordData = serde_json::from_str(&event.data)?;
 
                 match data.kind.as_str() {
-                    "ledger" => {
+                    SSE_KIND_LEDGER => {
                         let record: LedgerRecord = serde_json::from_value(data.record)?;
                         let changed = self
                             .peer_state
@@ -180,11 +180,11 @@ impl PeerSubscriptionTask {
                         // nameservice update to the library-level cache (reload if stale).
                         self.refresh_cached_ledger_from_record(&record).await;
                     }
-                    "virtual-graph" => {
-                        let record: VgRecord = serde_json::from_value(data.record)?;
+                    SSE_KIND_GRAPH_SOURCE => {
+                        let record: GraphSourceRecord = serde_json::from_value(data.record)?;
                         let changed = self
                             .peer_state
-                            .update_vg(
+                            .update_graph_source(
                                 &record.alias,
                                 record.index_t,
                                 record.config_hash(),
@@ -196,7 +196,7 @@ impl PeerSubscriptionTask {
                             tracing::info!(
                                 alias = %record.alias,
                                 index_t = record.index_t,
-                                "Remote VG watermark updated"
+                                "Remote graph source watermark updated"
                             );
                         }
                     }
@@ -209,16 +209,16 @@ impl PeerSubscriptionTask {
                 let data: NsRetractedData = serde_json::from_str(&event.data)?;
 
                 match data.kind.as_str() {
-                    "ledger" => {
+                    SSE_KIND_LEDGER => {
                         self.peer_state.remove_ledger(&data.alias).await;
                         tracing::info!(alias = %data.alias, "Ledger retracted from remote");
 
                         // Evict any cached state for the ledger (no-op if not cached).
                         self.disconnect_cached_ledger(&data.alias).await;
                     }
-                    "virtual-graph" => {
-                        self.peer_state.remove_vg(&data.alias).await;
-                        tracing::info!(alias = %data.alias, "VG retracted from remote");
+                    SSE_KIND_GRAPH_SOURCE => {
+                        self.peer_state.remove_graph_source(&data.alias).await;
+                        tracing::info!(alias = %data.alias, "Graph source retracted from remote");
                     }
                     _ => {
                         tracing::debug!(kind = %data.kind, "Unknown retraction kind");
@@ -338,8 +338,8 @@ impl PeerSubscriptionTask {
             for l in &sub.ledgers {
                 params.push(format!("ledger={}", urlencoding::encode(l)));
             }
-            for v in &sub.vgs {
-                params.push(format!("vg={}", urlencoding::encode(v)));
+            for gs in &sub.graph_sources {
+                params.push(format!("graph-source={}", urlencoding::encode(gs)));
             }
         }
 
@@ -358,7 +358,7 @@ fn ledger_record_to_ns_record(record: &LedgerRecord) -> Result<NsRecord, String>
 
     Ok(NsRecord {
         address: record.alias.clone(),
-        alias: name,
+        name,
         branch,
         commit_address: record.commit_address.clone(),
         commit_t: record.commit_t,

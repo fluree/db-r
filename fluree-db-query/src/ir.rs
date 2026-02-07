@@ -423,7 +423,7 @@ impl SubqueryPattern {
 
 /// Index search pattern for BM25 full-text queries.
 ///
-/// Represents a search against a virtual graph (e.g., BM25 index) with
+/// Represents a search against a graph source (e.g., BM25 index) with
 /// result bindings for document ID, score, and optional ledger alias.
 ///
 /// # Example Query Syntax
@@ -452,8 +452,8 @@ impl SubqueryPattern {
 /// ```
 #[derive(Debug, Clone)]
 pub struct IndexSearchPattern {
-    /// Virtual graph alias (e.g., "my-search:main")
-    pub vg_alias: String,
+    /// Graph source alias (e.g., "my-search:main")
+    pub graph_source_address: String,
 
     /// Search query target - can be a constant string or variable
     pub target: IndexSearchTarget,
@@ -488,9 +488,13 @@ pub enum IndexSearchTarget {
 
 impl IndexSearchPattern {
     /// Create a new index search pattern with just ID binding
-    pub fn new(vg_alias: impl Into<String>, target: IndexSearchTarget, id_var: VarId) -> Self {
+    pub fn new(
+        graph_source_address: impl Into<String>,
+        target: IndexSearchTarget,
+        id_var: VarId,
+    ) -> Self {
         Self {
-            vg_alias: vg_alias.into(),
+            graph_source_address: graph_source_address.into(),
             target,
             limit: None,
             id_var,
@@ -555,7 +559,7 @@ impl IndexSearchPattern {
 // Vector Search Pattern
 // ============================================================================
 
-/// Vector similarity search pattern for querying vector virtual graphs.
+/// Vector similarity search pattern for querying vector graph sources.
 ///
 /// # Example
 ///
@@ -584,8 +588,8 @@ impl IndexSearchPattern {
 /// ```
 #[derive(Debug, Clone)]
 pub struct VectorSearchPattern {
-    /// Virtual graph alias (e.g., "embeddings:main")
-    pub vg_alias: String,
+    /// Graph source alias (e.g., "embeddings:main")
+    pub graph_source_address: String,
 
     /// Search target - can be a constant vector or variable
     pub target: VectorSearchTarget,
@@ -623,9 +627,13 @@ pub enum VectorSearchTarget {
 
 impl VectorSearchPattern {
     /// Create a new vector search pattern with just ID binding
-    pub fn new(vg_alias: impl Into<String>, target: VectorSearchTarget, id_var: VarId) -> Self {
+    pub fn new(
+        graph_source_address: impl Into<String>,
+        target: VectorSearchTarget,
+        id_var: VarId,
+    ) -> Self {
         Self {
-            vg_alias: vg_alias.into(),
+            graph_source_address: graph_source_address.into(),
             target,
             metric: crate::vector::DistanceMetric::default(),
             limit: None,
@@ -697,7 +705,7 @@ impl VectorSearchPattern {
 // R2RML Pattern
 // ============================================================================
 
-/// R2RML scan pattern for querying Iceberg virtual graphs via R2RML mappings.
+/// R2RML scan pattern for querying Iceberg graph sources via R2RML mappings.
 ///
 /// This pattern scans an Iceberg table through R2RML term maps and produces
 /// RDF term bindings for subject and optional object variables.
@@ -714,8 +722,8 @@ impl VectorSearchPattern {
 /// - R2rmlPattern with subject_var=?person, object_var=?name, predicate ex:name
 #[derive(Debug, Clone)]
 pub struct R2rmlPattern {
-    /// Virtual graph alias (e.g., "airlines-vg:main")
-    pub vg_alias: String,
+    /// Graph source alias (e.g., "airlines-r2rml:main")
+    pub graph_source_address: String,
 
     /// Variable to bind the subject IRI
     pub subject_var: VarId,
@@ -744,9 +752,13 @@ pub struct R2rmlPattern {
 
 impl R2rmlPattern {
     /// Create a new R2RML pattern with subject and object variables.
-    pub fn new(vg_alias: impl Into<String>, subject_var: VarId, object_var: Option<VarId>) -> Self {
+    pub fn new(
+        graph_source_address: impl Into<String>,
+        subject_var: VarId,
+        object_var: Option<VarId>,
+    ) -> Self {
         Self {
-            vg_alias: vg_alias.into(),
+            graph_source_address: graph_source_address.into(),
             subject_var,
             object_var,
             triples_map_iri: None,
@@ -963,17 +975,17 @@ pub enum Pattern {
     /// Shared variables are correlated (joined on matching values).
     Subquery(SubqueryPattern),
 
-    /// Index search pattern - BM25 full-text search against a virtual graph
+    /// Index search pattern - BM25 full-text search against a graph source
     ///
-    /// Queries a virtual graph (e.g., BM25 index) and produces result bindings.
+    /// Queries a graph source (e.g., BM25 index) and produces result bindings.
     IndexSearch(IndexSearchPattern),
 
-    /// Vector search pattern - similarity search against a vector virtual graph
+    /// Vector search pattern - similarity search against a vector graph source
     ///
     /// Queries a vector index and produces result bindings.
     VectorSearch(VectorSearchPattern),
 
-    /// R2RML scan pattern - queries Iceberg virtual graph via R2RML mappings
+    /// R2RML scan pattern - queries Iceberg graph source via R2RML mappings
     ///
     /// Scans Iceberg tables through R2RML term maps and produces RDF bindings.
     R2rml(R2rmlPattern),

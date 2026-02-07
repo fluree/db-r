@@ -1,6 +1,6 @@
 # Query
 
-Fluree supports two powerful query languages for querying graph data: **JSON-LD Query** (Fluree's native query language) and **SPARQL** (the W3C standard). Both languages provide access to Fluree's unique features including time travel, virtual graphs, and policy enforcement.
+Fluree supports two powerful query languages for querying graph data: **JSON-LD Query** (Fluree's native query language) and **SPARQL** (the W3C standard). Both languages provide access to Fluree's unique features including time travel, graph sources, and policy enforcement.
 
 ## Query Languages
 
@@ -11,7 +11,7 @@ Fluree's native query language that uses JSON-LD syntax. JSON-LD Query provides 
 **Key Features:**
 - JSON-based syntax (no string parsing)
 - Full support for time travel (`@t:`, `@iso:`, `@sha:`)
-- Virtual graph integration
+- Graph source integration
 - Policy enforcement
 - History queries
 
@@ -73,7 +73,7 @@ Monitor and control query execution:
 
 ### Nameservice Queries
 
-Query metadata about all ledgers and virtual graphs in the system. The nameservice stores information about every database including commit state, index state, and configuration.
+Query metadata about all ledgers and graph sources in the system. The nameservice stores information about every database including commit state, index state, and configuration.
 
 **JSON-LD Query:**
 ```json
@@ -115,9 +115,9 @@ ledger:main@sha:abc123def456
 
 See the [Time Travel](../concepts/time-travel.md) concept documentation for details.
 
-## Virtual Graph Queries
+## Graph Source Queries
 
-Query virtual graphs (BM25, Vector, Iceberg, R2RML) using the same syntax as regular ledgers:
+Query graph sources (BM25, Vector, Iceberg, R2RML) using the same syntax as regular ledgers:
 
 ```json
 {
@@ -129,7 +129,7 @@ Query virtual graphs (BM25, Vector, Iceberg, R2RML) using the same syntax as reg
 }
 ```
 
-See the [Virtual Graphs](../concepts/virtual-graphs.md) concept documentation for details.
+See the [Graph Sources](../concepts/graph-sources.md) concept documentation for details.
 
 ## Policy Enforcement
 
@@ -192,11 +192,11 @@ Fluree's query engine is optimized for:
 1. **Use Appropriate Indexes**: Structure queries to leverage indexes
 2. **Limit Result Sets**: Use LIMIT clauses for large result sets
 3. **Time Travel Efficiency**: Use `@t:` when transaction numbers are known
-4. **Virtual Graph Selection**: Choose appropriate virtual graphs for query patterns
+4. **Graph Source Selection**: Choose appropriate graph sources for query patterns
 5. **Policy Awareness**: Understand how policies affect query results
 
 ## Related Documentation
 
-- [Concepts](../concepts/README.md): Core concepts including time travel, virtual graphs, and policy
+- [Concepts](../concepts/README.md): Core concepts including time travel, graph sources, and policy
 - [Transactions](../transactions/README.md): Writing data to Fluree
 - [Security and Policy](../security/README.md): Policy configuration and management

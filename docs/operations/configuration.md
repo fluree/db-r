@@ -201,9 +201,9 @@ Configure what the peer subscribes to:
 
 | Flag | Description |
 |------|-------------|
-| `--peer-subscribe-all` | Subscribe to all ledgers and VGs |
+| `--peer-subscribe-all` | Subscribe to all ledgers and graph sources |
 | `--peer-ledger <alias>` | Subscribe to specific ledger (repeatable) |
-| `--peer-vg <alias>` | Subscribe to specific VG (repeatable) |
+| `--peer-graph-source <alias>` | Subscribe to specific graph source (repeatable) |
 
 ```bash
 fluree-server \

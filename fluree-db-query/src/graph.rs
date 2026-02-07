@@ -141,30 +141,30 @@ impl<S: Storage + 'static> GraphOperator<S> {
         let graph_ctx = ctx.with_active_graph(graph_iri.clone());
 
         // Check if this graph is backed by an R2RML mapping
-        // The graph IRI could be a virtual graph alias (e.g., "airlines-vg:main")
-        let is_r2rml_vg = if let Some(provider) = ctx.r2rml_provider {
+        // The graph IRI could be a graph source alias (e.g., "airlines-gs:main")
+        let is_r2rml_gs = if let Some(provider) = ctx.r2rml_provider {
             provider.has_r2rml_mapping(&graph_iri).await
         } else {
             false
         };
 
         // Determine which patterns to use (rewritten for R2RML or original)
-        let patterns_to_execute: std::borrow::Cow<'_, [Pattern]> = if is_r2rml_vg {
+        let patterns_to_execute: std::borrow::Cow<'_, [Pattern]> = if is_r2rml_gs {
             // Rewrite triple patterns to R2RML patterns
             let rewrite_result =
                 rewrite_patterns_for_r2rml(&self.inner_patterns, &graph_iri, ctx.db);
 
-            // If there are unconverted patterns in an R2RML virtual graph, return an error.
-            // R2RML virtual graphs don't have ledger-backed indexes, so unconverted patterns
+            // If there are unconverted patterns in an R2RML graph source, return an error.
+            // R2RML graph sources don't have ledger-backed indexes, so unconverted patterns
             // (e.g., bound subject or bound object constraints) would silently return empty
             // results instead of the expected matches. Fail explicitly so users know their
             // query contains unsupported patterns.
             if rewrite_result.unconverted_count > 0 {
                 return Err(crate::error::QueryError::InvalidQuery(format!(
-                    "R2RML virtual graph '{}' contains {} pattern(s) that cannot be converted \
+                    "R2RML graph source '{}' contains {} pattern(s) that cannot be converted \
                      to R2RML scans. Patterns with bound subjects (e.g., <iri> ex:name ?o) or \
                      bound objects (e.g., ?s ex:name \"value\") are not yet supported in R2RML \
-                     virtual graphs.",
+                     graph sources.",
                     graph_iri, rewrite_result.unconverted_count
                 )));
             }
@@ -316,15 +316,15 @@ impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
                             }
                             // else: graph not found → no output for this row
                         } else {
-                            // No dataset - check if this is an R2RML virtual graph first
-                            let is_r2rml_vg = if let Some(provider) = ctx.r2rml_provider {
+                            // No dataset - check if this is an R2RML graph source first
+                            let is_r2rml_gs = if let Some(provider) = ctx.r2rml_provider {
                                 provider.has_r2rml_mapping(iri).await
                             } else {
                                 false
                             };
 
-                            // Execute if R2RML VG or if graph name matches db's alias (Clojure parity)
-                            if is_r2rml_vg || iri.as_ref() == ctx.db.alias {
+                            // Execute if R2RML graph source or if graph name matches db's alias (Clojure parity)
+                            if is_r2rml_gs || iri.as_ref() == ctx.db.alias {
                                 self.execute_in_graph(
                                     ctx,
                                     &parent_batch,
@@ -334,7 +334,7 @@ impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
                                 )
                                 .await?;
                             }
-                            // else: graph name doesn't match alias and not R2RML VG → no output
+                            // else: graph name doesn't match alias and not R2RML graph source → no output
                         }
                     }
                     GraphName::Var(var) => {
@@ -355,15 +355,15 @@ impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
                                     }
                                     // else: graph not found → no output
                                 } else {
-                                    // No dataset - check if this is an R2RML virtual graph first
-                                    let is_r2rml_vg = if let Some(provider) = ctx.r2rml_provider {
+                                    // No dataset - check if this is an R2RML graph source first
+                                    let is_r2rml_gs = if let Some(provider) = ctx.r2rml_provider {
                                         provider.has_r2rml_mapping(&bound_iri).await
                                     } else {
                                         false
                                     };
 
-                                    // Execute if R2RML VG or alias match (Clojure parity)
-                                    if is_r2rml_vg || bound_iri.as_ref() == ctx.db.alias {
+                                    // Execute if R2RML graph source or alias match (Clojure parity)
+                                    if is_r2rml_gs || bound_iri.as_ref() == ctx.db.alias {
                                         self.execute_in_graph(
                                             ctx,
                                             &parent_batch,
@@ -373,7 +373,7 @@ impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
                                         )
                                         .await?;
                                     }
-                                    // else: bound IRI doesn't match alias and not R2RML VG → no output
+                                    // else: bound IRI doesn't match alias and not R2RML graph source → no output
                                 }
                             }
                             // else: binding exists but isn't a string IRI → no output

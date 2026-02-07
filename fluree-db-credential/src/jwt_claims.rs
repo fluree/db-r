@@ -14,7 +14,7 @@
 //! # Fluree-specific Claims (Events)
 //! - `fluree.events.all` - Grant access to all events
 //! - `fluree.events.ledgers` - Grant access to specific ledgers
-//! - `fluree.events.vgs` - Grant access to specific virtual graphs
+//! - `fluree.events.vgs` - Grant access to specific graph sources
 //!
 //! # Fluree-specific Claims (Storage Proxy)
 //! - `fluree.storage.all` - Grant access to all ledgers via storage proxy
@@ -57,9 +57,10 @@ pub struct EventsTokenPayload {
     /// Grant access to specific ledgers
     #[serde(rename = "fluree.events.ledgers")]
     pub events_ledgers: Option<Vec<String>>,
-    /// Grant access to specific virtual graphs
+    /// Grant access to specific graph sources
+    /// Wire format: "fluree.events.vgs" (kept for backward compatibility)
     #[serde(rename = "fluree.events.vgs")]
-    pub events_vgs: Option<Vec<String>>,
+    pub events_graph_sources: Option<Vec<String>>,
 
     // Fluree-specific claims (Storage Proxy)
     /// Grant access to all ledgers via storage proxy
@@ -189,11 +190,14 @@ impl EventsTokenPayload {
 
     /// Check if token grants any events permissions.
     ///
-    /// Note: If events_all is true, ledgers/vgs lists are irrelevant.
+    /// Note: If events_all is true, ledgers/graph_sources lists are irrelevant.
     pub fn has_permissions(&self) -> bool {
         self.events_all.unwrap_or(false)
             || self.events_ledgers.as_ref().is_some_and(|l| !l.is_empty())
-            || self.events_vgs.as_ref().is_some_and(|v| !v.is_empty())
+            || self
+                .events_graph_sources
+                .as_ref()
+                .is_some_and(|v| !v.is_empty())
     }
 
     /// Check if token grants storage proxy permissions.
@@ -258,7 +262,7 @@ mod tests {
             nbf: None,
             events_all: Some(true),
             events_ledgers: None,
-            events_vgs: None,
+            events_graph_sources: None,
             storage_all: None,
             storage_ledgers: None,
             fluree_identity: None,
@@ -429,7 +433,7 @@ mod tests {
         let mut payload = valid_payload(&did);
         payload.events_all = Some(true);
         payload.events_ledgers = None;
-        payload.events_vgs = None;
+        payload.events_graph_sources = None;
 
         assert!(payload.has_permissions());
     }
@@ -440,18 +444,18 @@ mod tests {
         let mut payload = valid_payload(&did);
         payload.events_all = None;
         payload.events_ledgers = Some(vec!["books:main".to_string()]);
-        payload.events_vgs = None;
+        payload.events_graph_sources = None;
 
         assert!(payload.has_permissions());
     }
 
     #[test]
-    fn test_has_permissions_vgs() {
+    fn test_has_permissions_graph_sources() {
         let did = test_did();
         let mut payload = valid_payload(&did);
         payload.events_all = None;
         payload.events_ledgers = None;
-        payload.events_vgs = Some(vec!["search:main".to_string()]);
+        payload.events_graph_sources = Some(vec!["search:main".to_string()]);
 
         assert!(payload.has_permissions());
     }
@@ -462,7 +466,7 @@ mod tests {
         let mut payload = valid_payload(&did);
         payload.events_all = None;
         payload.events_ledgers = None;
-        payload.events_vgs = None;
+        payload.events_graph_sources = None;
 
         assert!(!payload.has_permissions());
     }
@@ -473,7 +477,7 @@ mod tests {
         let mut payload = valid_payload(&did);
         payload.events_all = Some(false);
         payload.events_ledgers = Some(vec![]);
-        payload.events_vgs = Some(vec![]);
+        payload.events_graph_sources = Some(vec![]);
 
         assert!(!payload.has_permissions());
     }
@@ -519,7 +523,10 @@ mod tests {
             payload.events_ledgers,
             Some(vec!["books:main".to_string(), "users:main".to_string()])
         );
-        assert_eq!(payload.events_vgs, Some(vec!["search:main".to_string()]));
+        assert_eq!(
+            payload.events_graph_sources,
+            Some(vec!["search:main".to_string()])
+        );
         assert_eq!(
             payload.fluree_identity,
             Some("did:fluree:user123".to_string())

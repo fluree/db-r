@@ -216,7 +216,7 @@ See [Storage Encryption](../security/encryption.md) for full documentation.
 ├── index/                    # Index snapshots
 │   ├── mydb-main-t100.idx
 │   └── mydb-main-t150.idx
-└── virtual-graphs/           # Virtual graphs (graph sources)
+└── graph-sources/            # Graph sources
     └── products-search/
         └── main/
             └── bm25/
@@ -272,7 +272,7 @@ s3://fluree-prod-data/
 ├── index/
 │   ├── mydb-main-t100.idx
 │   └── mydb-main-t150.idx
-└── virtual-graphs/
+└── graph-sources/
     └── products-search/
         └── main/
             └── bm25/

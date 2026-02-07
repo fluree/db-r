@@ -1,7 +1,7 @@
 //! Nameservice Query API
 //!
 //! This module provides the `query_nameservice` function that creates a temporary
-//! in-memory database from all nameservice records (ledgers and virtual graphs)
+//! in-memory database from all nameservice records (ledgers and graph sources)
 //! and executes a query against it.
 //!
 //! This is the Rust parity implementation of Clojure's `query-nameservice` API.
@@ -23,17 +23,17 @@
 //! {"select": ["?ledger", "?t"], "where": [{"@id": "?ns", "f:ledger": "?ledger", "f:t": "?t"}]}
 //! ```
 
-use crate::ledger_info::{ns_record_to_jsonld, vg_record_to_jsonld};
+use crate::ledger_info::{gs_record_to_jsonld, ns_record_to_jsonld};
 use crate::{ApiError, FlureeBuilder, Result};
 use fluree_db_ledger::IndexConfig;
-use fluree_db_nameservice::{NameService, VirtualGraphPublisher};
+use fluree_db_nameservice::{GraphSourcePublisher, NameService};
 use fluree_db_transact::{CommitOpts, TxnOpts, TxnType};
 use serde_json::{json, Value as JsonValue};
 
 /// Execute a query against all nameservice records.
 ///
 /// Creates a temporary in-memory database from all nameservice records
-/// (both ledgers and virtual graphs) and executes the query against it.
+/// (both ledgers and graph sources) and executes the query against it.
 ///
 /// This is useful for ledger discovery, finding branches, or querying
 /// metadata across all managed databases.
@@ -59,18 +59,18 @@ use serde_json::{json, Value as JsonValue};
 /// ```
 pub async fn query_nameservice<N>(nameservice: &N, query_json: &JsonValue) -> Result<JsonValue>
 where
-    N: NameService + VirtualGraphPublisher,
+    N: NameService + GraphSourcePublisher,
 {
     // 1. Get all ledger records
     let ledger_records = nameservice.all_records().await?;
 
-    // 2. Get all VG records
-    let vg_records = nameservice.all_vg_records().await?;
+    // 2. Get all graph source records
+    let gs_records = nameservice.all_graph_source_records().await?;
 
     // 3. Convert to JSON-LD
     let mut all_records: Vec<JsonValue> = ledger_records.iter().map(ns_record_to_jsonld).collect();
 
-    all_records.extend(vg_records.iter().map(vg_record_to_jsonld));
+    all_records.extend(gs_records.iter().map(gs_record_to_jsonld));
 
     // 4. If no records, return empty result immediately
     if all_records.is_empty() {
@@ -115,7 +115,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_nameservice::{memory::MemoryNameService, Publisher, VgType};
+    use fluree_db_nameservice::{memory::MemoryNameService, GraphSourceType, Publisher};
 
     async fn setup_ns_with_records() -> MemoryNameService {
         let ns = MemoryNameService::new();
@@ -125,11 +125,11 @@ mod tests {
         ns.publish_commit("db1:dev", "commit-2", 5).await.unwrap();
         ns.publish_commit("db2:main", "commit-3", 20).await.unwrap();
 
-        // Create a VG record
-        ns.publish_vg(
+        // Create a graph source record
+        ns.publish_graph_source(
             "my-search",
             "main",
-            VgType::Bm25,
+            GraphSourceType::Bm25,
             r#"{"k1":1.2}"#,
             &["db1:main".to_string()],
         )
@@ -174,7 +174,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_query_virtual_graphs() {
+    async fn test_query_graph_sources() {
         let ns = setup_ns_with_records().await;
 
         let query = json!({
@@ -183,13 +183,13 @@ mod tests {
                 "fidx": "https://ns.flur.ee/index#"
             },
             "select": ["?name"],
-            "where": [{"@id": "?vg", "@type": "f:VirtualGraphDatabase", "f:name": "?name"}]
+            "where": [{"@id": "?gs", "@type": "f:GraphSource", "f:name": "?name"}]
         });
 
         let result = query_nameservice(&ns, &query).await.unwrap();
         let arr = result.as_array().expect("Expected array result");
 
-        // Should have 1 VG (my-search)
+        // Should have 1 graph source (my-search)
         assert_eq!(arr.len(), 1);
     }
 

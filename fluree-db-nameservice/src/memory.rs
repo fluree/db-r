@@ -6,9 +6,9 @@
 
 use crate::{
     parse_alias, AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue,
-    NameService, NameServiceEvent, NsLookupResult, NsRecord, Publication, Publisher, RefKind,
-    RefPublisher, RefValue, Result, StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
-    Subscription, VgNsRecord, VgType, VirtualGraphPublisher,
+    GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService, NameServiceEvent,
+    NsLookupResult, NsRecord, Publication, Publisher, RefKind, RefPublisher, RefValue, Result,
+    StatusCasResult, StatusPayload, StatusPublisher, StatusValue, Subscription,
 };
 use async_trait::async_trait;
 use fluree_db_core::alias as core_alias;
@@ -24,10 +24,10 @@ use tokio::sync::broadcast;
 /// This implementation is thread-safe and suitable for multi-threaded runtimes.
 #[derive(Clone)]
 pub struct MemoryNameService {
-    /// Ledger records keyed by canonical alias (e.g., "mydb:main")
+    /// Ledger records keyed by canonical address (e.g., "mydb:main")
     records: Arc<RwLock<HashMap<String, NsRecord>>>,
-    /// Virtual graph records keyed by canonical alias (e.g., "my-search:main")
-    vg_records: Arc<RwLock<HashMap<String, VgNsRecord>>>,
+    /// Graph source records keyed by canonical address (e.g., "my-search:main")
+    graph_source_records: Arc<RwLock<HashMap<String, GraphSourceRecord>>>,
     /// Status values keyed by canonical alias (v2 extension)
     status_values: Arc<RwLock<HashMap<String, StatusValue>>>,
     /// Config values keyed by canonical alias (v2 extension)
@@ -42,7 +42,7 @@ impl Default for MemoryNameService {
         let (event_tx, _event_rx) = broadcast::channel(128);
         Self {
             records: Arc::new(RwLock::new(HashMap::new())),
-            vg_records: Arc::new(RwLock::new(HashMap::new())),
+            graph_source_records: Arc::new(RwLock::new(HashMap::new())),
             status_values: Arc::new(RwLock::new(HashMap::new())),
             config_values: Arc::new(RwLock::new(HashMap::new())),
             event_tx,
@@ -53,12 +53,12 @@ impl Default for MemoryNameService {
 impl Debug for MemoryNameService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let records = self.records.read();
-        let vg_records = self.vg_records.read();
+        let graph_source_records = self.graph_source_records.read();
         let status_values = self.status_values.read();
         let config_values = self.config_values.read();
         f.debug_struct("MemoryNameService")
             .field("record_count", &records.len())
-            .field("vg_record_count", &vg_records.len())
+            .field("graph_source_record_count", &graph_source_records.len())
             .field("status_count", &status_values.len())
             .field("config_count", &config_values.len())
             .finish()
@@ -107,10 +107,6 @@ impl MemoryNameService {
 impl NameService for MemoryNameService {
     async fn lookup(&self, ledger_address: &str) -> Result<Option<NsRecord>> {
         Ok(self.get_record(ledger_address))
-    }
-
-    async fn alias(&self, ledger_address: &str) -> Result<Option<String>> {
-        Ok(self.get_record(ledger_address).map(|r| r.alias))
     }
 
     async fn all_records(&self) -> Result<Vec<NsRecord>> {
@@ -460,39 +456,46 @@ impl Publication for MemoryNameService {
 }
 
 #[async_trait]
-impl VirtualGraphPublisher for MemoryNameService {
-    async fn publish_vg(
+impl GraphSourcePublisher for MemoryNameService {
+    async fn publish_graph_source(
         &self,
         name: &str,
         branch: &str,
-        vg_type: VgType,
+        source_type: GraphSourceType,
         config: &str,
         dependencies: &[String],
     ) -> Result<()> {
         let key = core_alias::format_alias(name, branch);
-        let mut vg_records = self.vg_records.write();
+        let mut graph_source_records = self.graph_source_records.write();
 
-        if let Some(record) = vg_records.get_mut(&key) {
+        if let Some(record) = graph_source_records.get_mut(&key) {
             // Update config but preserve retracted status if already set
-            record.vg_type = vg_type.clone();
+            record.source_type = source_type.clone();
             record.config = config.to_string();
             record.dependencies = dependencies.to_vec();
         } else {
-            // Create new VG record
-            let record =
-                VgNsRecord::new(name, branch, vg_type.clone(), config, dependencies.to_vec());
-            vg_records.insert(key, record);
+            // Create new graph source record
+            let record = GraphSourceRecord::new(
+                name,
+                branch,
+                source_type.clone(),
+                config,
+                dependencies.to_vec(),
+            );
+            graph_source_records.insert(key, record);
         }
 
-        let _ = self.event_tx.send(NameServiceEvent::VgConfigPublished {
-            alias: core_alias::format_alias(name, branch),
-            vg_type,
-            dependencies: dependencies.to_vec(),
-        });
+        let _ = self
+            .event_tx
+            .send(NameServiceEvent::GraphSourceConfigPublished {
+                alias: core_alias::format_alias(name, branch),
+                source_type,
+                dependencies: dependencies.to_vec(),
+            });
         Ok(())
     }
 
-    async fn publish_vg_index(
+    async fn publish_graph_source_index(
         &self,
         name: &str,
         branch: &str,
@@ -500,10 +503,10 @@ impl VirtualGraphPublisher for MemoryNameService {
         index_t: i64,
     ) -> Result<()> {
         let key = core_alias::format_alias(name, branch);
-        let mut vg_records = self.vg_records.write();
+        let mut graph_source_records = self.graph_source_records.write();
         let mut did_update = false;
 
-        if let Some(record) = vg_records.get_mut(&key) {
+        if let Some(record) = graph_source_records.get_mut(&key) {
             // Strictly monotonic: only update if new_t > existing_t
             if index_t > record.index_t {
                 record.index_address = Some(index_addr.to_string());
@@ -511,24 +514,26 @@ impl VirtualGraphPublisher for MemoryNameService {
                 did_update = true;
             }
         }
-        // If VG doesn't exist, silently ignore (index requires config first)
+        // If graph source doesn't exist, silently ignore (index requires config first)
 
         if did_update {
-            let _ = self.event_tx.send(NameServiceEvent::VgIndexPublished {
-                alias: key,
-                index_address: index_addr.to_string(),
-                index_t,
-            });
+            let _ = self
+                .event_tx
+                .send(NameServiceEvent::GraphSourceIndexPublished {
+                    alias: key,
+                    index_address: index_addr.to_string(),
+                    index_t,
+                });
         }
         Ok(())
     }
 
-    async fn retract_vg(&self, name: &str, branch: &str) -> Result<()> {
+    async fn retract_graph_source(&self, name: &str, branch: &str) -> Result<()> {
         let key = core_alias::format_alias(name, branch);
-        let mut vg_records = self.vg_records.write();
+        let mut graph_source_records = self.graph_source_records.write();
         let mut did_update = false;
 
-        if let Some(record) = vg_records.get_mut(&key) {
+        if let Some(record) = graph_source_records.get_mut(&key) {
             if !record.retracted {
                 record.retracted = true;
                 did_update = true;
@@ -538,22 +543,22 @@ impl VirtualGraphPublisher for MemoryNameService {
         if did_update {
             let _ = self
                 .event_tx
-                .send(NameServiceEvent::VgRetracted { alias: key });
+                .send(NameServiceEvent::GraphSourceRetracted { alias: key });
         }
         Ok(())
     }
 
-    async fn lookup_vg(&self, alias: &str) -> Result<Option<VgNsRecord>> {
+    async fn lookup_graph_source(&self, alias: &str) -> Result<Option<GraphSourceRecord>> {
         let key = self.normalize_alias(alias);
-        Ok(self.vg_records.read().get(&key).cloned())
+        Ok(self.graph_source_records.read().get(&key).cloned())
     }
 
     async fn lookup_any(&self, alias: &str) -> Result<NsLookupResult> {
         let key = self.normalize_alias(alias);
 
-        // Check VG records first
-        if let Some(record) = self.vg_records.read().get(&key).cloned() {
-            return Ok(NsLookupResult::VirtualGraph(record));
+        // Check graph source records first
+        if let Some(record) = self.graph_source_records.read().get(&key).cloned() {
+            return Ok(NsLookupResult::GraphSource(record));
         }
 
         // Then check ledger records
@@ -564,8 +569,8 @@ impl VirtualGraphPublisher for MemoryNameService {
         Ok(NsLookupResult::NotFound)
     }
 
-    async fn all_vg_records(&self) -> Result<Vec<VgNsRecord>> {
-        Ok(self.vg_records.read().values().cloned().collect())
+    async fn all_graph_source_records(&self) -> Result<Vec<GraphSourceRecord>> {
+        Ok(self.graph_source_records.read().values().cloned().collect())
     }
 }
 
@@ -872,93 +877,97 @@ mod tests {
         assert!(matches!(sub.receiver.try_recv(), Err(TryRecvError::Empty)));
     }
 
-    // ========== Virtual Graph Tests ==========
+    // ========== Graph Source Tests ==========
 
     #[tokio::test]
-    async fn test_memory_vg_publish_and_lookup() {
+    async fn test_memory_graph_source_publish_and_lookup() {
         let ns = MemoryNameService::new();
 
-        ns.publish_vg(
+        ns.publish_graph_source(
             "my-search",
             "main",
-            VgType::Bm25,
+            GraphSourceType::Bm25,
             r#"{"k1":1.2}"#,
             &["source:main".to_string()],
         )
         .await
         .unwrap();
 
-        let record = ns.lookup_vg("my-search:main").await.unwrap().unwrap();
+        let record = ns
+            .lookup_graph_source("my-search:main")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(record.name, "my-search");
         assert_eq!(record.branch, "main");
-        assert_eq!(record.vg_type, VgType::Bm25);
+        assert_eq!(record.source_type, GraphSourceType::Bm25);
         assert_eq!(record.config, r#"{"k1":1.2}"#);
         assert!(!record.retracted);
     }
 
     #[tokio::test]
-    async fn test_memory_vg_index_monotonic() {
+    async fn test_memory_graph_source_index_monotonic() {
         let ns = MemoryNameService::new();
 
-        ns.publish_vg("vg", "main", VgType::Bm25, "{}", &[])
+        ns.publish_graph_source("gs", "main", GraphSourceType::Bm25, "{}", &[])
             .await
             .unwrap();
 
-        ns.publish_vg_index("vg", "main", "index-v1", 10)
+        ns.publish_graph_source_index("gs", "main", "index-v1", 10)
             .await
             .unwrap();
 
-        ns.publish_vg_index("vg", "main", "index-v2", 20)
+        ns.publish_graph_source_index("gs", "main", "index-v2", 20)
             .await
             .unwrap();
 
-        let record = ns.lookup_vg("vg:main").await.unwrap().unwrap();
+        let record = ns.lookup_graph_source("gs:main").await.unwrap().unwrap();
         assert_eq!(record.index_address, Some("index-v2".to_string()));
         assert_eq!(record.index_t, 20);
 
         // Lower t should be ignored
-        ns.publish_vg_index("vg", "main", "index-old", 15)
+        ns.publish_graph_source_index("gs", "main", "index-old", 15)
             .await
             .unwrap();
 
-        let record = ns.lookup_vg("vg:main").await.unwrap().unwrap();
+        let record = ns.lookup_graph_source("gs:main").await.unwrap().unwrap();
         assert_eq!(record.index_address, Some("index-v2".to_string()));
         assert_eq!(record.index_t, 20);
     }
 
     #[tokio::test]
-    async fn test_memory_vg_retract() {
+    async fn test_memory_graph_source_retract() {
         let ns = MemoryNameService::new();
 
-        ns.publish_vg("vg", "main", VgType::Bm25, "{}", &[])
+        ns.publish_graph_source("gs", "main", GraphSourceType::Bm25, "{}", &[])
             .await
             .unwrap();
 
-        ns.retract_vg("vg", "main").await.unwrap();
+        ns.retract_graph_source("gs", "main").await.unwrap();
 
-        let record = ns.lookup_vg("vg:main").await.unwrap().unwrap();
+        let record = ns.lookup_graph_source("gs:main").await.unwrap().unwrap();
         assert!(record.retracted);
     }
 
     #[tokio::test]
-    async fn test_memory_vg_lookup_any() {
+    async fn test_memory_graph_source_lookup_any() {
         let ns = MemoryNameService::new();
 
         ns.publish_commit("ledger:main", "commit-1", 1)
             .await
             .unwrap();
-        ns.publish_vg("vg", "main", VgType::Bm25, "{}", &[])
+        ns.publish_graph_source("gs", "main", GraphSourceType::Bm25, "{}", &[])
             .await
             .unwrap();
 
         match ns.lookup_any("ledger:main").await.unwrap() {
-            NsLookupResult::Ledger(r) => assert_eq!(r.alias, "ledger"),
+            NsLookupResult::Ledger(r) => assert_eq!(r.name, "ledger"),
             other => panic!("Expected Ledger, got {:?}", other),
         }
 
-        match ns.lookup_any("vg:main").await.unwrap() {
-            NsLookupResult::VirtualGraph(r) => assert_eq!(r.name, "vg"),
-            other => panic!("Expected VirtualGraph, got {:?}", other),
+        match ns.lookup_any("gs:main").await.unwrap() {
+            NsLookupResult::GraphSource(r) => assert_eq!(r.name, "gs"),
+            other => panic!("Expected GraphSource, got {:?}", other),
         }
 
         match ns.lookup_any("nonexistent:main").await.unwrap() {

@@ -613,7 +613,7 @@ pub fn build_where_operators_seeded<S: Storage + 'static>(
             }
 
             Pattern::IndexSearch(isp) => {
-                // BM25 full-text search against a virtual graph
+                // BM25 full-text search against a graph source
                 // If no child operator, use EmptyOperator as seed (allows IndexSearch at position 0)
                 let child = get_or_empty_seed(operator.take());
                 operator = Some(Box::new(Bm25SearchOperator::new(child, isp.clone())));
@@ -621,7 +621,7 @@ pub fn build_where_operators_seeded<S: Storage + 'static>(
             }
 
             Pattern::VectorSearch(vsp) => {
-                // Vector similarity search against a vector virtual graph
+                // Vector similarity search against a vector graph source
                 // If no child operator, use EmptyOperator as seed (allows VectorSearch at position 0)
                 let child = get_or_empty_seed(operator.take());
                 operator = Some(Box::new(crate::vector::VectorSearchOperator::new(
@@ -632,7 +632,7 @@ pub fn build_where_operators_seeded<S: Storage + 'static>(
             }
 
             Pattern::R2rml(r2rml_pattern) => {
-                // R2RML scan against an Iceberg virtual graph
+                // R2RML scan against an Iceberg graph source
                 let child = require_child(operator, "R2RML pattern")?;
                 operator = Some(Box::new(crate::r2rml::R2rmlScanOperator::new(
                     child,

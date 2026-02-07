@@ -1,12 +1,12 @@
-//! Virtual Graph Operations
+//! Graph Source Operations
 //!
-//! This module provides APIs for creating, managing, and querying virtual graphs.
-//! Virtual graphs are derived indexes built from ledger data, such as BM25 full-text
+//! This module provides APIs for creating, managing, and querying graph sources.
+//! Graph sources are derived indexes built from ledger data, such as BM25 full-text
 //! search indexes.
 //!
 //! # Key Concepts
 //!
-//! - **Virtual Graph (VG)**: A derived index built from one or more source ledgers
+//! - **Graph Source**: A derived index built from one or more source ledgers
 //! - **BM25 Index**: A full-text search index using the BM25 scoring algorithm
 //! - **Watermark**: The transaction time (`t`) up to which the index has been synced
 //! - **Property Dependencies**: IRIs of properties that trigger reindexing when changed
@@ -20,7 +20,7 @@
 //! use serde_json::json;
 //!
 //! let config = Bm25CreateConfig::new(
-//!     "my-search",  // VG name
+//!     "my-search",  // Graph source name
 //!     "docs:main",  // Source ledger
 //!     json!({
 //!         "@context": {"ex": "http://example.org/"},

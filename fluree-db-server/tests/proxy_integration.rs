@@ -626,9 +626,9 @@ async fn test_storage_proxy_block_authorization() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
-/// Test that VG addresses are rejected in v1
+/// Test that graph source artifact addresses are rejected in v1
 #[tokio::test]
-async fn test_storage_proxy_rejects_vg_addresses() {
+async fn test_storage_proxy_rejects_graph_source_addresses() {
     let (_tmp, state) = tx_server_state();
     let app = build_router(state);
 
@@ -637,9 +637,9 @@ async fn test_storage_proxy_rejects_vg_addresses() {
     let signing_key = SigningKey::from_bytes(&secret);
     let token = create_storage_proxy_token(&signing_key, true);
 
-    // Try to fetch a VG artifact
+    // Try to fetch a graph source artifact
     let block_body = serde_json::json!({
-        "address": "fluree:file://virtual-graphs/search/main/snapshot.bin"
+        "address": "fluree:file://graph-sources/search/main/snapshot.bin"
     });
     let resp = app
         .oneshot(
@@ -654,7 +654,7 @@ async fn test_storage_proxy_rejects_vg_addresses() {
         .await
         .unwrap();
 
-    // VG addresses are not authorized in v1
+    // Graph source artifact addresses are not authorized in v1
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 

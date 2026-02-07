@@ -1,13 +1,13 @@
-//! R2RML virtual graph operations and provider.
+//! R2RML graph source operations and provider.
 //!
-//! This module provides APIs for creating R2RML virtual graphs and implements
+//! This module provides APIs for creating R2RML graph sources and implements
 //! the R2RML provider traits for query execution against Iceberg tables.
 //!
 //! This module is only available with the `iceberg` feature.
 
-use crate::virtual_graph::cache::R2rmlCache;
-use crate::virtual_graph::config::{IcebergCreateConfig, R2rmlCreateConfig};
-use crate::virtual_graph::result::{IcebergCreateResult, R2rmlCreateResult};
+use crate::graph_source::cache::R2rmlCache;
+use crate::graph_source::config::{IcebergCreateConfig, R2rmlCreateConfig};
+use crate::graph_source::result::{IcebergCreateResult, R2rmlCreateResult};
 use crate::Result;
 use async_trait::async_trait;
 use fluree_db_core::Storage;
@@ -16,9 +16,9 @@ use fluree_db_iceberg::{
     io::{ColumnBatch, S3IcebergStorage, SendIcebergStorage, SendParquetReader},
     metadata::TableMetadata,
     scan::{ScanConfig, SendScanPlanner},
-    IcebergVgConfig,
+    IcebergGsConfig,
 };
-use fluree_db_nameservice::{NameService, Publisher, VgType, VirtualGraphPublisher};
+use fluree_db_nameservice::{GraphSourcePublisher, GraphSourceType, NameService, Publisher};
 use fluree_db_query::error::{QueryError, Result as QueryResult};
 use fluree_db_query::r2rml::{R2rmlProvider, R2rmlTableProvider};
 use fluree_db_r2rml::mapping::CompiledR2rmlMapping;
@@ -26,30 +26,30 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 // =============================================================================
-// Iceberg/R2RML VG Creation
+// Iceberg/R2RML Graph Source Creation
 // =============================================================================
 
 impl<S, N> crate::Fluree<S, N>
 where
     S: Storage + fluree_db_core::StorageWrite + Clone + 'static,
-    N: NameService + Publisher + VirtualGraphPublisher,
+    N: NameService + Publisher + GraphSourcePublisher,
 {
-    /// Create an Iceberg virtual graph.
+    /// Create an Iceberg graph source.
     ///
     /// This operation:
     /// 1. Validates the configuration
     /// 2. Optionally tests the catalog connection
-    /// 3. Publishes the VG record to the nameservice
-    pub async fn create_iceberg_vg(
+    /// 3. Publishes the graph source record to the nameservice
+    pub async fn create_iceberg_graph_source(
         &self,
         config: IcebergCreateConfig,
     ) -> Result<IcebergCreateResult> {
-        let vg_alias = config.vg_alias();
+        let graph_source_address = config.graph_source_address();
         info!(
-            vg_alias = %vg_alias,
+            graph_source_address = %graph_source_address,
             catalog_uri = %config.catalog_uri,
             table = %config.table_identifier,
-            "Creating Iceberg virtual graph"
+            "Creating Iceberg graph source"
         );
 
         // 1. Validate configuration
@@ -59,57 +59,60 @@ where
         let connection_tested = self.test_iceberg_connection(&config).await.is_ok();
         if !connection_tested {
             warn!(
-                vg_alias = %vg_alias,
-                "Could not verify catalog connection - VG will be created but may fail at query time"
+                graph_source_address = %graph_source_address,
+                "Could not verify catalog connection - graph source will be created but may fail at query time"
             );
         }
 
         // 3. Convert config to storage format
-        let iceberg_config = config.to_iceberg_vg_config();
+        let iceberg_config = config.to_iceberg_gs_config();
         let config_json = iceberg_config
             .to_json()
             .map_err(|e| crate::ApiError::Config(format!("Failed to serialize config: {}", e)))?;
 
-        // 4. Publish VG record to nameservice
+        // 4. Publish graph source record to nameservice
         self.nameservice
-            .publish_vg(
+            .publish_graph_source(
                 &config.name,
                 config.effective_branch(),
-                VgType::Iceberg,
+                GraphSourceType::Iceberg,
                 &config_json,
-                &[], // No ledger dependencies for Iceberg VGs
+                &[], // No ledger dependencies for Iceberg graph sources
             )
             .await?;
 
         info!(
-            vg_alias = %vg_alias,
+            graph_source_address = %graph_source_address,
             connection_tested = connection_tested,
-            "Created Iceberg virtual graph"
+            "Created Iceberg graph source"
         );
 
         Ok(IcebergCreateResult {
-            vg_alias,
+            graph_source_address,
             table_identifier: config.table_identifier.clone(),
             catalog_uri: config.catalog_uri.clone(),
             connection_tested,
         })
     }
 
-    /// Create an R2RML virtual graph (Iceberg table with R2RML mapping).
+    /// Create an R2RML graph source (Iceberg table with R2RML mapping).
     ///
     /// This operation:
     /// 1. Validates the configuration
     /// 2. Loads and validates the R2RML mapping
     /// 3. Optionally tests the catalog connection
-    /// 4. Publishes the VG record to the nameservice
-    pub async fn create_r2rml_vg(&self, config: R2rmlCreateConfig) -> Result<R2rmlCreateResult> {
-        let vg_alias = config.vg_alias();
+    /// 4. Publishes the graph source record to the nameservice
+    pub async fn create_r2rml_graph_source(
+        &self,
+        config: R2rmlCreateConfig,
+    ) -> Result<R2rmlCreateResult> {
+        let graph_source_address = config.graph_source_address();
         info!(
-            vg_alias = %vg_alias,
+            graph_source_address = %graph_source_address,
             catalog_uri = %config.iceberg.catalog_uri,
             table = %config.iceberg.table_identifier,
             mapping = %config.mapping_source,
-            "Creating R2RML virtual graph"
+            "Creating R2RML graph source"
         );
 
         // 1. Validate configuration
@@ -122,9 +125,9 @@ where
             .map(|count| (count, true))
             .unwrap_or_else(|e| {
                 warn!(
-                    vg_alias = %vg_alias,
+                    graph_source_address = %graph_source_address,
                     error = %e,
-                    "Could not validate R2RML mapping - VG will be created but may fail at query time"
+                    "Could not validate R2RML mapping - graph source will be created but may fail at query time"
                 );
                 (0, false)
             });
@@ -133,38 +136,38 @@ where
         let connection_tested = self.test_iceberg_connection(&config.iceberg).await.is_ok();
         if !connection_tested {
             warn!(
-                vg_alias = %vg_alias,
-                "Could not verify catalog connection - VG will be created but may fail at query time"
+                graph_source_address = %graph_source_address,
+                "Could not verify catalog connection - graph source will be created but may fail at query time"
             );
         }
 
         // 4. Convert config to storage format
-        let iceberg_config = config.to_iceberg_vg_config();
+        let iceberg_config = config.to_iceberg_gs_config();
         let config_json = iceberg_config
             .to_json()
             .map_err(|e| crate::ApiError::Config(format!("Failed to serialize config: {}", e)))?;
 
-        // 5. Publish VG record to nameservice
+        // 5. Publish graph source record to nameservice
         self.nameservice
-            .publish_vg(
+            .publish_graph_source(
                 &config.iceberg.name,
                 config.iceberg.effective_branch(),
-                VgType::Iceberg,
+                GraphSourceType::Iceberg,
                 &config_json,
-                &[], // No ledger dependencies for Iceberg/R2RML VGs
+                &[], // No ledger dependencies for Iceberg/R2RML graph sources
             )
             .await?;
 
         info!(
-            vg_alias = %vg_alias,
+            graph_source_address = %graph_source_address,
             triples_map_count = triples_map_count,
             connection_tested = connection_tested,
             mapping_validated = mapping_validated,
-            "Created R2RML virtual graph"
+            "Created R2RML graph source"
         );
 
         Ok(R2rmlCreateResult {
-            vg_alias,
+            graph_source_address,
             table_identifier: config.iceberg.table_identifier.clone(),
             catalog_uri: config.iceberg.catalog_uri.clone(),
             mapping_source: config.mapping_source.clone(),
@@ -266,7 +269,7 @@ where
 // R2RML Provider Implementation
 // =============================================================================
 
-/// Provider for R2RML virtual graph query integration.
+/// Provider for R2RML graph source query integration.
 ///
 /// This provider implements the `R2rmlProvider` and `R2rmlTableProvider` traits
 /// required by the query engine to execute R2RML-backed queries against
@@ -303,19 +306,27 @@ impl<S: Storage + 'static, N> std::fmt::Debug for FlureeR2rmlProvider<'_, S, N> 
 impl<S, N> R2rmlProvider for FlureeR2rmlProvider<'_, S, N>
 where
     S: Storage + Clone + 'static,
-    N: NameService + VirtualGraphPublisher,
+    N: NameService + GraphSourcePublisher,
 {
-    /// Check if a virtual graph has an R2RML mapping.
-    async fn has_r2rml_mapping(&self, vg_alias: &str) -> bool {
-        match self.fluree.nameservice().lookup_vg(vg_alias).await {
+    /// Check if a graph source has an R2RML mapping.
+    async fn has_r2rml_mapping(&self, graph_source_address: &str) -> bool {
+        match self
+            .fluree
+            .nameservice()
+            .lookup_graph_source(graph_source_address)
+            .await
+        {
             Ok(Some(record)) => {
-                // First check if this is an R2RML or Iceberg VG type
-                if !matches!(record.vg_type, VgType::R2rml | VgType::Iceberg) {
+                // First check if this is an R2RML or Iceberg graph source type
+                if !matches!(
+                    record.source_type,
+                    GraphSourceType::R2rml | GraphSourceType::Iceberg
+                ) {
                     return false;
                 }
 
                 // Parse into typed config to stay aligned with real config schema
-                if let Ok(config) = IcebergVgConfig::from_json(&record.config) {
+                if let Ok(config) = IcebergGsConfig::from_json(&record.config) {
                     config.mapping.is_some()
                 } else {
                     false
@@ -326,45 +337,51 @@ where
         }
     }
 
-    /// Get the compiled R2RML mapping for a virtual graph.
+    /// Get the compiled R2RML mapping for a graph source.
     ///
     /// This method uses the R2RML cache to avoid repeated parsing and compilation.
     async fn compiled_mapping(
         &self,
-        vg_alias: &str,
+        graph_source_address: &str,
         _as_of_t: Option<i64>,
     ) -> QueryResult<Arc<CompiledR2rmlMapping>> {
-        // Look up the VG record
+        // Look up the graph source record
         let record = self
             .fluree
             .nameservice()
-            .lookup_vg(vg_alias)
+            .lookup_graph_source(graph_source_address)
             .await
             .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?
             .ok_or_else(|| {
-                QueryError::InvalidQuery(format!("Virtual graph '{}' not found", vg_alias))
+                QueryError::InvalidQuery(format!(
+                    "Graph source '{}' not found",
+                    graph_source_address
+                ))
             })?;
 
-        // Verify it's an R2RML or Iceberg VG
-        if !matches!(record.vg_type, VgType::R2rml | VgType::Iceberg) {
+        // Verify it's an R2RML or Iceberg graph source
+        if !matches!(
+            record.source_type,
+            GraphSourceType::R2rml | GraphSourceType::Iceberg
+        ) {
             return Err(QueryError::InvalidQuery(format!(
-                "Virtual graph '{}' is not an R2RML virtual graph (type: {:?})",
-                vg_alias, record.vg_type
+                "Graph source '{}' is not an R2RML graph source (type: {:?})",
+                graph_source_address, record.source_type
             )));
         }
 
         // Parse into typed config
-        let iceberg_config = IcebergVgConfig::from_json(&record.config).map_err(|e| {
+        let iceberg_config = IcebergGsConfig::from_json(&record.config).map_err(|e| {
             QueryError::Internal(format!(
-                "Failed to parse VG config for '{}': {}",
-                vg_alias, e
+                "Failed to parse graph source config for '{}': {}",
+                graph_source_address, e
             ))
         })?;
 
         let mapping_config = iceberg_config.mapping.as_ref().ok_or_else(|| {
             QueryError::InvalidQuery(format!(
-                "Virtual graph '{}' is missing 'mapping' in config",
-                vg_alias
+                "Graph source '{}' is missing 'mapping' in config",
+                graph_source_address
             ))
         })?;
 
@@ -373,11 +390,12 @@ where
 
         // Check cache first
         let cache = self.fluree.r2rml_cache();
-        let cache_key = R2rmlCache::mapping_cache_key(vg_alias, mapping_source, media_type);
+        let cache_key =
+            R2rmlCache::mapping_cache_key(graph_source_address, mapping_source, media_type);
 
         if let Some(cached) = cache.get_mapping(&cache_key).await {
             debug!(
-                vg_alias = %vg_alias,
+                graph_source_address = %graph_source_address,
                 cache_key = %cache_key,
                 "R2RML mapping cache hit"
             );
@@ -385,7 +403,7 @@ where
         }
 
         debug!(
-            vg_alias = %vg_alias,
+            graph_source_address = %graph_source_address,
             cache_key = %cache_key,
             "R2RML mapping cache miss - loading from storage"
         );
@@ -437,7 +455,7 @@ where
             return Err(QueryError::InvalidQuery(format!(
                 "R2RML mapping for '{}' uses JSON-LD format, which is not yet supported. \
                  Please use Turtle format (.ttl).",
-                vg_alias
+                graph_source_address
             )));
         };
 
@@ -449,7 +467,7 @@ where
             .await;
 
         info!(
-            vg_alias = %vg_alias,
+            graph_source_address = %graph_source_address,
             cache_key = %cache_key,
             triples_maps = compiled.triples_maps.len(),
             "Loaded, compiled, and cached R2RML mapping"
@@ -463,7 +481,7 @@ where
 impl<S, N> R2rmlTableProvider for FlureeR2rmlProvider<'_, S, N>
 where
     S: Storage + Clone + 'static,
-    N: NameService + VirtualGraphPublisher,
+    N: NameService + GraphSourcePublisher,
 {
     /// Scan an Iceberg table and return column batches.
     ///
@@ -471,40 +489,43 @@ where
     /// the specified projection, and returns the results as column batches.
     async fn scan_table(
         &self,
-        vg_alias: &str,
+        graph_source_address: &str,
         table_name: &str,
         projection: &[String],
         _as_of_t: Option<i64>,
     ) -> QueryResult<Vec<ColumnBatch>> {
-        // Look up the VG record to get Iceberg connection info
+        // Look up the graph source record to get Iceberg connection info
         let record = self
             .fluree
             .nameservice()
-            .lookup_vg(vg_alias)
+            .lookup_graph_source(graph_source_address)
             .await
             .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?
             .ok_or_else(|| {
-                QueryError::InvalidQuery(format!("Virtual graph '{}' not found", vg_alias))
+                QueryError::InvalidQuery(format!(
+                    "Graph source '{}' not found",
+                    graph_source_address
+                ))
             })?;
 
-        // Parse the Iceberg VG config
-        let iceberg_config = IcebergVgConfig::from_json(&record.config).map_err(|e| {
+        // Parse the Iceberg graph source config
+        let iceberg_config = IcebergGsConfig::from_json(&record.config).map_err(|e| {
             QueryError::Internal(format!(
-                "Failed to parse Iceberg VG config for '{}': {}",
-                vg_alias, e
+                "Failed to parse Iceberg graph source config for '{}': {}",
+                graph_source_address, e
             ))
         })?;
 
         // Validate the config
         iceberg_config.validate().map_err(|e| {
             QueryError::InvalidQuery(format!(
-                "Invalid Iceberg VG config for '{}': {}",
-                vg_alias, e
+                "Invalid Iceberg graph source config for '{}': {}",
+                graph_source_address, e
             ))
         })?;
 
         info!(
-            vg_alias = %vg_alias,
+            graph_source_address = %graph_source_address,
             table_name = %table_name,
             catalog_uri = %iceberg_config.catalog.uri,
             projection = ?projection,

@@ -13,7 +13,7 @@ where
     S: Storage + StorageWrite + Clone + Send + Sync + 'static,
     N: crate::NameService
         + crate::Publisher
-        + crate::VirtualGraphPublisher
+        + crate::GraphSourcePublisher
         + Clone
         + Send
         + Sync
@@ -22,7 +22,7 @@ where
     /// Execute a query against a loaded dataset with BM25 and vector index provider support.
     ///
     /// This enables both `idx:search` (BM25) and `idx:vector` (similarity search) patterns
-    /// in queries against virtual graphs.
+    /// in queries against graph sources.
     pub async fn query_dataset_with_bm25(
         &self,
         dataset: &FlureeDataSetView<S>,
@@ -44,7 +44,7 @@ where
         // Build executable query
         let executable = ExecutableQuery::simple(parsed.clone());
 
-        // Create index provider for virtual graph support (implements both BM25 and Vector)
+        // Create index provider for graph source support (implements both BM25 and Vector)
         let provider = FlureeIndexProvider::new(self);
 
         // Execute with dataset and BM25 provider.
@@ -112,9 +112,9 @@ where
     ///
     /// This method enables both `idx:search` (BM25 full-text search) and `idx:vector`
     /// (similarity search) patterns in queries. Despite the name (kept for backwards
-    /// compatibility), it supports all virtual graph index types.
+    /// compatibility), it supports all graph source index types.
     ///
-    /// For queries that don't use virtual graph patterns, prefer `query_connection()`
+    /// For queries that don't use graph source patterns, prefer `query_connection()`
     /// as it may take faster code paths for simple single-ledger queries.
     pub async fn query_connection_with_bm25(&self, query_json: &JsonValue) -> Result<QueryResult> {
         let (spec, qc_opts) = parse_dataset_spec(query_json)?;

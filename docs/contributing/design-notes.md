@@ -24,13 +24,13 @@ Design documents are located in the `/docs/design/` directory and various planni
 - Location: `/BM25_INDEXING_IMPLEMENTATION_PLAN.md`
 - Covers: Full-text search implementation, BM25 algorithm, index structure
 
-**Virtual Graph Index Manifests (VG-owned history):**
-- Location: `/docs/design/virtual-graph-index-manifests.md`
-- Covers: Nameservice pointers only, VG-owned manifests, BM25 time travel, vector head-only
+**Graph Source Index Manifests (graph-source-owned history):**
+- Location: `/docs/design/graph-source-index-manifests.md`
+- Covers: Nameservice pointers only, graph-source-owned manifests, BM25 time travel, vector head-only
 
 **Iceberg/Polaris R2RML:**
 - Location: `/ICEBERG_POLARIS_R2RML_IMPLEMENTATION_PLAN.md`
-- Covers: Virtual graph integration, Iceberg support, R2RML mapping
+- Covers: Graph source integration, Iceberg support, R2RML mapping
 
 **Reasoning and Rules:**
 - Location: `/REASONING_AND_RULES_IMPLEMENTATION_PLAN.md`

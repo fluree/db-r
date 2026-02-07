@@ -16,7 +16,7 @@
 //! IRI mapping: postcard-serialized PointIdAssigner
 //!
 //! Watermark length: 4 bytes (little-endian u32)
-//! Watermark: postcard-serialized VgWatermark
+//! Watermark: postcard-serialized GraphSourceWatermark
 //!
 //! Property deps length: 4 bytes (little-endian u32)
 //! Property deps: postcard-serialized VectorPropertyDeps
@@ -29,7 +29,7 @@ use std::io::{Read, Write};
 
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
 
-use crate::bm25::index::VgWatermark;
+use crate::bm25::index::GraphSourceWatermark;
 
 use super::super::DistanceMetric;
 use super::error::{Result, VectorError};
@@ -132,7 +132,7 @@ pub fn deserialize(data: &[u8]) -> Result<VectorIndex> {
     // Read watermark
     let (watermark_bytes, new_cursor) = read_length_prefixed(data, cursor)?;
     cursor = new_cursor;
-    let watermark: VgWatermark = postcard::from_bytes(watermark_bytes)?;
+    let watermark: GraphSourceWatermark = postcard::from_bytes(watermark_bytes)?;
 
     // Read property deps
     let (deps_bytes, new_cursor) = read_length_prefixed(data, cursor)?;

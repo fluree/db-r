@@ -99,10 +99,47 @@ curl http://localhost:8090/fluree/ledger-info \
   },
   "stats": {
     "flakes": 12345,
-    "size_bytes": 1048576
+    "size": 1048576,
+    "indexed": 145,
+    "properties": {
+      "ex:name": {
+        "count": 3,
+        "ndv-values": 3,
+        "ndv-subjects": 3,
+        "last-modified-t": 150,
+        "selectivity-value": 1,
+        "selectivity-subject": 1
+      }
+    },
+    "classes": {
+      "ex:Person": {
+        "count": 2,
+        "properties": {
+          "ex:worksFor": {
+            "count": 2,
+            "refs": { "ex:Organization": 2 },
+            "ref-classes": { "ex:Organization": 2 }
+          },
+          "ex:name": {}
+        },
+        "property-list": ["ex:name", "ex:worksFor"]
+      }
+    }
   }
 }
 ```
+
+#### Stats freshness (real-time vs indexed)
+
+- **Real-time (includes novelty)**:
+  - `commit` and top-level `t` reflect the latest committed head.
+  - `stats.flakes` and `stats.size` are derived from the current ledger stats view (indexed + novelty deltas).
+  - `stats.classes[*].properties` / `property-list` will include properties introduced in novelty, even when the update does not restate `@type`.
+
+- **As-of last index**:
+  - `stats.indexed` is the last index \(t\). If `commit.t > indexed`, the index is behind the head.
+  - NDV-related fields in `stats.properties[*]` (`ndv-values`, `ndv-subjects`) and selectivity derived from them are only as current as the last index refresh.
+  - Class property ref-edge counts (`stats.classes[*].properties[*].refs`) are computed during indexing and represent the last indexed view (not novelty-adjusted).
 
 ### GET /fluree/exists
 

@@ -4,13 +4,13 @@
 //! embedded vector similarity search indexes.
 
 #[cfg(feature = "vector")]
-use crate::virtual_graph::config::VectorCreateConfig;
+use crate::graph_source::config::VectorCreateConfig;
 #[cfg(feature = "vector")]
-use crate::virtual_graph::helpers::{
+use crate::graph_source::helpers::{
     expand_ids_in_results, expand_prefixed_iri, expand_properties_in_results, extract_prefix_map,
 };
 #[cfg(feature = "vector")]
-use crate::virtual_graph::result::{
+use crate::graph_source::result::{
     VectorCreateResult, VectorDropResult, VectorStalenessCheck, VectorSyncResult,
 };
 #[cfg(feature = "vector")]
@@ -20,7 +20,9 @@ use fluree_db_core::{alias as core_alias, Storage, StorageWrite};
 #[cfg(feature = "vector")]
 use fluree_db_ledger::LedgerState;
 #[cfg(feature = "vector")]
-use fluree_db_nameservice::{NameService, Publisher, VgType, VirtualGraphPublisher};
+use fluree_db_nameservice::{
+    GraphSourcePublisher, GraphSourceType, NameService, Publisher, STORAGE_SEGMENT_GRAPH_SOURCES,
+};
 #[cfg(feature = "vector")]
 use fluree_db_query::parse::parse_query;
 #[cfg(feature = "vector")]
@@ -46,7 +48,7 @@ use tracing::{info, warn};
 impl<S, N> crate::Fluree<S, N>
 where
     S: Storage + StorageWrite + Clone + 'static,
-    N: NameService + Publisher + VirtualGraphPublisher,
+    N: NameService + Publisher + GraphSourcePublisher,
 {
     /// Create a vector similarity search index.
     ///
@@ -56,7 +58,7 @@ where
     /// 3. Extracts embedding vectors from each document
     /// 4. Builds the vector index using usearch HNSW
     /// 5. Persists the index snapshot to storage
-    /// 6. Publishes the VG record to the nameservice
+    /// 6. Publishes the graph source record to the nameservice
     ///
     /// # Arguments
     ///
@@ -89,20 +91,24 @@ where
         &self,
         config: VectorCreateConfig,
     ) -> Result<VectorCreateResult> {
-        let vg_alias = config.vg_alias();
+        let graph_source_address = config.graph_source_address();
         info!(
-            vg_alias = %vg_alias,
+            graph_source_address = %graph_source_address,
             ledger = %config.ledger,
             dimensions = config.dimensions,
             "Creating vector similarity search index"
         );
 
-        // Check if VG already exists (prevent duplicates)
-        if let Some(existing) = self.nameservice.lookup_vg(&vg_alias).await? {
+        // Check if graph source already exists (prevent duplicates)
+        if let Some(existing) = self
+            .nameservice
+            .lookup_graph_source(&graph_source_address)
+            .await?
+        {
             if !existing.retracted {
                 return Err(crate::ApiError::Config(format!(
-                    "Virtual graph '{}' already exists",
-                    vg_alias
+                    "Graph source '{}' already exists",
+                    graph_source_address
                 )));
             }
         }
@@ -172,7 +178,7 @@ where
 
         // 4. Persist index snapshot
         let index_address = self
-            .write_vector_snapshot_blob(&vg_alias, &index, source_t)
+            .write_vector_snapshot_blob(&graph_source_address, &index, source_t)
             .await?;
 
         info!(
@@ -181,7 +187,7 @@ where
             "Persisted versioned index snapshot"
         );
 
-        // 5. Publish VG record to nameservice
+        // 5. Publish graph source record to nameservice
         let config_json = serde_json::to_string(&serde_json::json!({
             "embedding_property": config.embedding_property,
             "dimensions": config.dimensions,
@@ -195,10 +201,10 @@ where
         }))?;
 
         self.nameservice
-            .publish_vg(
+            .publish_graph_source(
                 &config.name,
                 config.effective_branch(),
-                VgType::Vector,
+                GraphSourceType::Vector,
                 &config_json,
                 std::slice::from_ref(&config.ledger),
             )
@@ -206,7 +212,7 @@ where
 
         // Publish index location and watermark
         self.nameservice
-            .publish_vg_index(
+            .publish_graph_source_index(
                 &config.name,
                 config.effective_branch(),
                 &index_address,
@@ -215,14 +221,14 @@ where
             .await?;
 
         info!(
-            vg_alias = %vg_alias,
+            graph_source_address = %graph_source_address,
             vector_count = vector_count,
             index_t = source_t,
             "Created vector similarity search index"
         );
 
         Ok(VectorCreateResult {
-            vg_alias,
+            graph_source_address,
             vector_count,
             skipped_count,
             dimensions: config.dimensions,
@@ -281,12 +287,12 @@ where
 
     /// Write a vector index snapshot blob to storage.
     ///
-    /// Creates a snapshot at `virtual-graphs/{name}/{branch}/vector/t{index_t}/snapshot.bin`.
+    /// Creates a snapshot at `graph-sources/{name}/{branch}/vector/t{index_t}/snapshot.bin`.
     /// Returns the storage address. Caller is responsible for publishing
     /// the head pointer via nameservice.
     pub(crate) async fn write_vector_snapshot_blob(
         &self,
-        vg_alias: &str,
+        graph_source_address: &str,
         index: &VectorIndex,
         index_t: i64,
     ) -> Result<String> {
@@ -296,11 +302,14 @@ where
         let bytes = serialize(index)?;
 
         // Build versioned storage address
-        let (name, branch) = core_alias::split_alias(vg_alias).map_err(|e| {
-            crate::ApiError::config(format!("Invalid virtual graph alias '{}': {}", vg_alias, e))
+        let (name, branch) = core_alias::split_alias(graph_source_address).map_err(|e| {
+            crate::ApiError::config(format!(
+                "Invalid graph source alias '{}': {}",
+                graph_source_address, e
+            ))
         })?;
         let address = format!(
-            "fluree:file://virtual-graphs/{}/{}/vector/t{}/snapshot.bin",
+            "fluree:file://{STORAGE_SEGMENT_GRAPH_SOURCES}/{}/{}/vector/t{}/snapshot.bin",
             name, branch, index_t
         );
 
@@ -319,22 +328,32 @@ where
 impl<S, N> crate::Fluree<S, N>
 where
     S: Storage + Clone + 'static,
-    N: NameService + VirtualGraphPublisher,
+    N: NameService + GraphSourcePublisher,
 {
     /// Load a vector index from storage (head snapshot).
     ///
     /// Vector indexes are head-only and do not support time-travel queries.
-    pub async fn load_vector_index(&self, vg_alias: &str) -> Result<Arc<VectorIndex>> {
+    pub async fn load_vector_index(&self, graph_source_address: &str) -> Result<Arc<VectorIndex>> {
         use fluree_db_query::vector::usearch::deserialize;
 
-        // Look up VG record
-        let record = self.nameservice.lookup_vg(vg_alias).await?.ok_or_else(|| {
-            crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias))
-        })?;
+        // Look up graph source record
+        let record = self
+            .nameservice
+            .lookup_graph_source(graph_source_address)
+            .await?
+            .ok_or_else(|| {
+                crate::ApiError::NotFound(format!(
+                    "Graph source not found: {}",
+                    graph_source_address
+                ))
+            })?;
 
         // Get index address
         let index_address = record.index_address.ok_or_else(|| {
-            crate::ApiError::NotFound(format!("No index for virtual graph: {}", vg_alias))
+            crate::ApiError::NotFound(format!(
+                "No index for graph source: {}",
+                graph_source_address
+            ))
         })?;
 
         // Load from storage
@@ -349,17 +368,29 @@ where
     /// Check if a vector index is stale relative to its source ledger.
     ///
     /// This is a lightweight check that only looks up nameservice records.
-    pub async fn check_vector_staleness(&self, vg_alias: &str) -> Result<VectorStalenessCheck> {
-        // Look up VG record
-        let record = self.nameservice.lookup_vg(vg_alias).await?.ok_or_else(|| {
-            crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias))
-        })?;
+    pub async fn check_vector_staleness(
+        &self,
+        graph_source_address: &str,
+    ) -> Result<VectorStalenessCheck> {
+        // Look up graph source record
+        let record = self
+            .nameservice
+            .lookup_graph_source(graph_source_address)
+            .await?
+            .ok_or_else(|| {
+                crate::ApiError::NotFound(format!(
+                    "Graph source not found: {}",
+                    graph_source_address
+                ))
+            })?;
 
         // Get source ledger from dependencies
         let source_ledger = record
             .dependencies
             .first()
-            .ok_or_else(|| crate::ApiError::Config("VG has no source ledger".to_string()))?
+            .ok_or_else(|| {
+                crate::ApiError::Config("Graph source has no source ledger".to_string())
+            })?
             .clone();
 
         // Check minimum head across all dependencies
@@ -380,7 +411,7 @@ where
         let lag = ledger_t - index_t;
 
         Ok(VectorStalenessCheck {
-            vg_alias: vg_alias.to_string(),
+            graph_source_address: graph_source_address.to_string(),
             source_ledger,
             index_t,
             ledger_t,
@@ -398,30 +429,37 @@ where
 impl<S, N> crate::Fluree<S, N>
 where
     S: Storage + StorageWrite + Clone + 'static,
-    N: NameService + Publisher + VirtualGraphPublisher,
+    N: NameService + Publisher + GraphSourcePublisher,
 {
     /// Sync a vector index to catch up with ledger updates.
     ///
     /// This operation performs incremental updates when possible,
     /// falling back to full resync if needed.
-    pub async fn sync_vector_index(&self, vg_alias: &str) -> Result<VectorSyncResult> {
+    pub async fn sync_vector_index(&self, graph_source_address: &str) -> Result<VectorSyncResult> {
         use fluree_db_novelty::trace_commits;
         use fluree_db_query::bm25::CompiledPropertyDeps;
         use fluree_db_query::vector::usearch::deserialize;
         use futures::StreamExt;
 
-        info!(vg_alias = %vg_alias, "Starting vector index sync");
+        info!(graph_source_address = %graph_source_address, "Starting vector index sync");
 
-        // 1. Look up VG record to get config and index address
-        let record = self.nameservice.lookup_vg(vg_alias).await?.ok_or_else(|| {
-            crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias))
-        })?;
+        // 1. Look up graph source record to get config and index address
+        let record = self
+            .nameservice
+            .lookup_graph_source(graph_source_address)
+            .await?
+            .ok_or_else(|| {
+                crate::ApiError::NotFound(format!(
+                    "Graph source not found: {}",
+                    graph_source_address
+                ))
+            })?;
 
-        // Check if VG has been dropped
+        // Check if graph source has been dropped
         if record.retracted {
             return Err(crate::ApiError::Drop(format!(
-                "Cannot sync retracted virtual graph: {}",
-                vg_alias
+                "Cannot sync retracted graph source: {}",
+                graph_source_address
             )));
         }
 
@@ -429,7 +467,7 @@ where
             Some(addr) => addr.clone(),
             None => {
                 // No index yet - need full resync
-                return self.resync_vector_index(vg_alias).await;
+                return self.resync_vector_index(graph_source_address).await;
             }
         };
 
@@ -444,7 +482,9 @@ where
         let source_ledger_alias = record
             .dependencies
             .first()
-            .ok_or_else(|| crate::ApiError::Config("VG has no source ledger".to_string()))?
+            .ok_or_else(|| {
+                crate::ApiError::Config("Graph source has no source ledger".to_string())
+            })?
             .clone();
 
         // 2. Load source ledger to get current state
@@ -458,9 +498,9 @@ where
 
         // Already up to date?
         if ledger_t <= old_watermark {
-            info!(vg_alias = %vg_alias, ledger_t = ledger_t, "Index already up to date");
+            info!(graph_source_address = %graph_source_address, ledger_t = ledger_t, "Index already up to date");
             return Ok(VectorSyncResult {
-                vg_alias: vg_alias.to_string(),
+                graph_source_address: graph_source_address.to_string(),
                 upserted: 0,
                 removed: 0,
                 skipped: 0,
@@ -502,12 +542,12 @@ where
         // If no subjects affected, fall back to full resync
         if affected_sids.is_empty() {
             warn!(
-                vg_alias = %vg_alias,
+                graph_source_address = %graph_source_address,
                 old_watermark = old_watermark,
                 ledger_t = ledger_t,
                 "No affected subjects detected, falling back to full resync"
             );
-            return self.resync_vector_index(vg_alias).await;
+            return self.resync_vector_index(graph_source_address).await;
         }
 
         // 7. Convert affected Sids to IRIs
@@ -517,7 +557,7 @@ where
             .collect();
 
         info!(
-            vg_alias = %vg_alias,
+            graph_source_address = %graph_source_address,
             affected_count = affected_iris.len(),
             "Found affected subjects for incremental update"
         );
@@ -550,7 +590,7 @@ where
         let update_result = updater.apply_update(&results, &affected_iris_expanded, ledger_t);
 
         info!(
-            vg_alias = %vg_alias,
+            graph_source_address = %graph_source_address,
             upserted = update_result.upserted,
             removed = update_result.removed,
             skipped = update_result.skipped,
@@ -559,27 +599,30 @@ where
 
         // 10. Persist updated index and update head pointer
         let new_address = self
-            .write_vector_snapshot_blob(vg_alias, &index, ledger_t)
+            .write_vector_snapshot_blob(graph_source_address, &index, ledger_t)
             .await?;
 
-        let (name, branch) = core_alias::split_alias(vg_alias).map_err(|e| {
-            crate::ApiError::config(format!("Invalid virtual graph alias '{}': {}", vg_alias, e))
+        let (name, branch) = core_alias::split_alias(graph_source_address).map_err(|e| {
+            crate::ApiError::config(format!(
+                "Invalid graph source alias '{}': {}",
+                graph_source_address, e
+            ))
         })?;
 
-        // 11. Update VG index record (head pointer)
+        // 11. Update graph source index record (head pointer)
         self.nameservice
-            .publish_vg_index(&name, &branch, &new_address, ledger_t)
+            .publish_graph_source_index(&name, &branch, &new_address, ledger_t)
             .await?;
 
         info!(
-            vg_alias = %vg_alias,
+            graph_source_address = %graph_source_address,
             new_address = %new_address,
             ledger_t = ledger_t,
             "Persisted synced vector index"
         );
 
         Ok(VectorSyncResult {
-            vg_alias: vg_alias.to_string(),
+            graph_source_address: graph_source_address.to_string(),
             upserted: update_result.upserted,
             removed: update_result.removed,
             skipped: update_result.skipped,
@@ -592,20 +635,30 @@ where
     /// Full resync of a vector index.
     ///
     /// Rebuilds the entire index from scratch by re-running the indexing query.
-    pub async fn resync_vector_index(&self, vg_alias: &str) -> Result<VectorSyncResult> {
+    pub async fn resync_vector_index(
+        &self,
+        graph_source_address: &str,
+    ) -> Result<VectorSyncResult> {
         use fluree_db_query::vector::usearch::deserialize;
 
-        info!(vg_alias = %vg_alias, "Starting full vector index resync");
+        info!(graph_source_address = %graph_source_address, "Starting full vector index resync");
 
-        // 1. Look up VG record
-        let record = self.nameservice.lookup_vg(vg_alias).await?.ok_or_else(|| {
-            crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias))
-        })?;
+        // 1. Look up graph source record
+        let record = self
+            .nameservice
+            .lookup_graph_source(graph_source_address)
+            .await?
+            .ok_or_else(|| {
+                crate::ApiError::NotFound(format!(
+                    "Graph source not found: {}",
+                    graph_source_address
+                ))
+            })?;
 
         if record.retracted {
             return Err(crate::ApiError::Drop(format!(
-                "Cannot resync retracted virtual graph: {}",
-                vg_alias
+                "Cannot resync retracted graph source: {}",
+                graph_source_address
             )));
         }
 
@@ -619,19 +672,24 @@ where
             .get("embedding_property")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
-                crate::ApiError::Config("Missing embedding_property in VG config".to_string())
+                crate::ApiError::Config(
+                    "Missing embedding_property in graph source config".to_string(),
+                )
             })?;
         let dimensions = config
             .get("dimensions")
             .and_then(|v| v.as_u64())
-            .ok_or_else(|| crate::ApiError::Config("Missing dimensions in VG config".to_string()))?
-            as usize;
+            .ok_or_else(|| {
+                crate::ApiError::Config("Missing dimensions in graph source config".to_string())
+            })? as usize;
 
         // Get source ledger
         let source_ledger_alias = record
             .dependencies
             .first()
-            .ok_or_else(|| crate::ApiError::Config("VG has no source ledger".to_string()))?
+            .ok_or_else(|| {
+                crate::ApiError::Config("Graph source has no source ledger".to_string())
+            })?
             .clone();
 
         // 2. Load source ledger
@@ -696,7 +754,7 @@ where
         let index = builder.build();
 
         info!(
-            vg_alias = %vg_alias,
+            graph_source_address = %graph_source_address,
             upserted = upserted,
             skipped = skipped,
             "Built new vector index"
@@ -704,27 +762,30 @@ where
 
         // 6. Persist new index and update head pointer
         let new_address = self
-            .write_vector_snapshot_blob(vg_alias, &index, ledger_t)
+            .write_vector_snapshot_blob(graph_source_address, &index, ledger_t)
             .await?;
 
-        let (name, branch) = core_alias::split_alias(vg_alias).map_err(|e| {
-            crate::ApiError::config(format!("Invalid virtual graph alias '{}': {}", vg_alias, e))
+        let (name, branch) = core_alias::split_alias(graph_source_address).map_err(|e| {
+            crate::ApiError::config(format!(
+                "Invalid graph source alias '{}': {}",
+                graph_source_address, e
+            ))
         })?;
 
-        // 7. Update VG index record (head pointer)
+        // 7. Update graph source index record (head pointer)
         self.nameservice
-            .publish_vg_index(&name, &branch, &new_address, ledger_t)
+            .publish_graph_source_index(&name, &branch, &new_address, ledger_t)
             .await?;
 
         info!(
-            vg_alias = %vg_alias,
+            graph_source_address = %graph_source_address,
             new_address = %new_address,
             ledger_t = ledger_t,
             "Completed full vector index resync"
         );
 
         Ok(VectorSyncResult {
-            vg_alias: vg_alias.to_string(),
+            graph_source_address: graph_source_address.to_string(),
             upserted,
             removed: 0, // Full resync doesn't track removals
             skipped,
@@ -736,35 +797,47 @@ where
 
     /// Drop a vector index.
     ///
-    /// This marks the VG as retracted in the nameservice but does not
+    /// This marks the graph source as retracted in the nameservice but does not
     /// immediately delete snapshot files (they may be needed for time-travel).
-    pub async fn drop_vector_index(&self, vg_alias: &str) -> Result<VectorDropResult> {
-        info!(vg_alias = %vg_alias, "Dropping vector index");
+    pub async fn drop_vector_index(&self, graph_source_address: &str) -> Result<VectorDropResult> {
+        info!(graph_source_address = %graph_source_address, "Dropping vector index");
 
-        // Look up VG record
-        let record = self.nameservice.lookup_vg(vg_alias).await?.ok_or_else(|| {
-            crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias))
-        })?;
+        // Look up graph source record
+        let record = self
+            .nameservice
+            .lookup_graph_source(graph_source_address)
+            .await?
+            .ok_or_else(|| {
+                crate::ApiError::NotFound(format!(
+                    "Graph source not found: {}",
+                    graph_source_address
+                ))
+            })?;
 
         if record.retracted {
             return Ok(VectorDropResult {
-                vg_alias: vg_alias.to_string(),
+                graph_source_address: graph_source_address.to_string(),
                 deleted_snapshots: 0,
                 was_already_retracted: true,
             });
         }
 
         // Mark as retracted
-        let (name, branch) = core_alias::split_alias(vg_alias).map_err(|e| {
-            crate::ApiError::config(format!("Invalid virtual graph alias '{}': {}", vg_alias, e))
+        let (name, branch) = core_alias::split_alias(graph_source_address).map_err(|e| {
+            crate::ApiError::config(format!(
+                "Invalid graph source alias '{}': {}",
+                graph_source_address, e
+            ))
         })?;
 
-        self.nameservice.retract_vg(&name, &branch).await?;
+        self.nameservice
+            .retract_graph_source(&name, &branch)
+            .await?;
 
-        info!(vg_alias = %vg_alias, "Marked vector index as retracted");
+        info!(graph_source_address = %graph_source_address, "Marked vector index as retracted");
 
         Ok(VectorDropResult {
-            vg_alias: vg_alias.to_string(),
+            graph_source_address: graph_source_address.to_string(),
             deleted_snapshots: 0,
             was_already_retracted: false,
         })

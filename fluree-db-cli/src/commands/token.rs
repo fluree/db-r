@@ -30,8 +30,8 @@ struct TokenPermissions<'a> {
     events_ledgers: &'a [String],
     /// Ledgers for storage access.
     storage_ledgers: &'a [String],
-    /// Virtual graphs for access.
-    vgs: &'a [String],
+    /// Graph sources for access.
+    graph_sources: &'a [String],
 }
 
 pub fn run(action: TokenAction) -> CliResult<()> {
@@ -45,7 +45,7 @@ pub fn run(action: TokenAction) -> CliResult<()> {
             all,
             events_ledgers,
             storage_ledgers,
-            vgs,
+            graph_sources,
             output,
             print_claims,
         } => {
@@ -58,7 +58,7 @@ pub fn run(action: TokenAction) -> CliResult<()> {
                 all,
                 events_ledgers: &events_ledgers,
                 storage_ledgers: &storage_ledgers,
-                vgs: &vgs,
+                graph_sources: &graph_sources,
             };
             run_create(
                 &private_key,
@@ -90,10 +90,10 @@ fn run_create(
     if !permissions.all
         && permissions.events_ledgers.is_empty()
         && permissions.storage_ledgers.is_empty()
-        && permissions.vgs.is_empty()
+        && permissions.graph_sources.is_empty()
     {
         return Err(CliError::Usage(
-            "no permissions granted; use --all, --events-ledger, --storage-ledger, or --vg".into(),
+            "no permissions granted; use --all, --events-ledger, --storage-ledger, or --graph-source".into(),
         ));
     }
 
@@ -157,8 +157,8 @@ fn run_create(
         claims["fluree.storage.ledgers"] = json!(permissions.storage_ledgers);
     }
 
-    if !permissions.vgs.is_empty() {
-        claims["fluree.events.vgs"] = json!(permissions.vgs);
+    if !permissions.graph_sources.is_empty() {
+        claims["fluree.events.vgs"] = json!(permissions.graph_sources);
     }
 
     // Create JWS
@@ -187,8 +187,11 @@ fn run_create(
             println!("{}", serde_json::to_string_pretty(&output)?);
         }
         TokenOutputFormat::Curl => {
-            let params =
-                build_curl_params(permissions.all, permissions.events_ledgers, permissions.vgs);
+            let params = build_curl_params(
+                permissions.all,
+                permissions.events_ledgers,
+                permissions.graph_sources,
+            );
             println!(
                 r#"curl -N -H "Authorization: Bearer {}" "http://localhost:8090/fluree/events?{}""#,
                 token, params
@@ -516,7 +519,7 @@ fn create_jws(claims: &serde_json::Value, signing_key: &SigningKey) -> CliResult
 }
 
 /// Build URL params for curl output
-fn build_curl_params(all: bool, ledgers: &[String], vgs: &[String]) -> String {
+fn build_curl_params(all: bool, ledgers: &[String], graph_sources: &[String]) -> String {
     let mut params = String::new();
     if all {
         params.push_str("all=true");
@@ -527,11 +530,11 @@ fn build_curl_params(all: bool, ledgers: &[String], vgs: &[String]) -> String {
             }
             params.push_str(&format!("ledger={}", url_encode(l)));
         }
-        for v in vgs {
+        for gs in graph_sources {
             if !params.is_empty() {
                 params.push('&');
             }
-            params.push_str(&format!("vg={}", url_encode(v)));
+            params.push_str(&format!("graph-source={}", url_encode(gs)));
         }
     }
     params
@@ -645,8 +648,8 @@ fn print_pretty_inspect(
         println!("Events ledgers: {}", ledgers);
     }
 
-    if let Some(vgs) = payload.get("fluree.events.vgs") {
-        println!("Events VGs:     {}", vgs);
+    if let Some(gs) = payload.get("fluree.events.vgs") {
+        println!("Graph sources:  {}", gs);
     }
 
     // Storage permissions

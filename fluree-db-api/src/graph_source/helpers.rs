@@ -1,4 +1,4 @@
-//! Shared helper functions for virtual graph operations.
+//! Shared helper functions for graph source operations.
 //!
 //! These utilities handle common tasks like IRI expansion and prefix mapping.
 

@@ -84,12 +84,12 @@ impl PeerSyncTask {
                 RemoteEvent::LedgerRetracted { alias } => {
                     self.handle_ledger_retracted(&alias).await;
                 }
-                RemoteEvent::VgUpdated(record) => {
-                    let alias = record.alias();
-                    let config_hash = vg_config_hash(&record.config);
+                RemoteEvent::GraphSourceUpdated(record) => {
+                    let alias = record.address.clone();
+                    let config_hash = graph_source_config_hash(&record.config);
                     let changed = self
                         .peer_state
-                        .update_vg(
+                        .update_graph_source(
                             &alias,
                             record.index_t,
                             config_hash,
@@ -101,13 +101,13 @@ impl PeerSyncTask {
                         tracing::info!(
                             alias = %alias,
                             index_t = record.index_t,
-                            "Remote VG watermark updated"
+                            "Remote graph source watermark updated"
                         );
                     }
                 }
-                RemoteEvent::VgRetracted { alias } => {
-                    self.peer_state.remove_vg(&alias).await;
-                    tracing::info!(alias = %alias, "VG retracted from remote");
+                RemoteEvent::GraphSourceRetracted { alias } => {
+                    self.peer_state.remove_graph_source(&alias).await;
+                    tracing::info!(alias = %alias, "Graph source retracted from remote");
                 }
             }
         }
@@ -364,11 +364,11 @@ impl PeerSyncTask {
     }
 }
 
-/// Compute a config hash for VG change detection.
+/// Compute a config hash for graph source change detection.
 ///
-/// Uses SHA-256 truncated to 8 hex chars (4 bytes) to match the server's VG SSE
-/// event ID format. Same algorithm as `VgRecord::config_hash()` in `fluree-db-peer`.
-fn vg_config_hash(config: &str) -> String {
+/// Uses SHA-256 truncated to 8 hex chars (4 bytes) to match the server's graph source SSE
+/// event ID format. Same algorithm as `GraphSourceRecord::config_hash()` in `fluree-db-peer`.
+fn graph_source_config_hash(config: &str) -> String {
     use sha2::{Digest, Sha256};
 
     let hash = Sha256::digest(config.as_bytes());

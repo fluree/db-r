@@ -1,5 +1,5 @@
 #![cfg(feature = "vector")]
-//! Integration tests for vector similarity search virtual graphs.
+//! Integration tests for vector similarity search graph sources.
 //!
 //! These tests verify the end-to-end vector index lifecycle:
 //! - create_vector_index
@@ -68,7 +68,10 @@ async fn vector_create_index_indexes_docs_and_is_loadable() {
     );
 
     // Load the index back via nameservice+storage
-    let idx = fluree.load_vector_index(&created.vg_alias).await.unwrap();
+    let idx = fluree
+        .load_vector_index(&created.graph_source_address)
+        .await
+        .unwrap();
     assert_eq!(idx.len(), 2, "loaded index should include 2 vectors");
 }
 
@@ -124,7 +127,10 @@ async fn vector_search_returns_scored_results() {
     assert_eq!(created.vector_count, 3);
 
     // Load and search - query vector similar to doc1/doc2
-    let idx = fluree.load_vector_index(&created.vg_alias).await.unwrap();
+    let idx = fluree
+        .load_vector_index(&created.graph_source_address)
+        .await
+        .unwrap();
     let query_vector = [0.85, 0.15, 0.05];
     let results = idx.search(&query_vector, 10).unwrap();
 
@@ -211,7 +217,7 @@ async fn vector_sync_indexes_new_documents() {
 
     // Check staleness
     let staleness = fluree
-        .check_vector_staleness(&created.vg_alias)
+        .check_vector_staleness(&created.graph_source_address)
         .await
         .unwrap();
     assert!(
@@ -221,14 +227,20 @@ async fn vector_sync_indexes_new_documents() {
     assert!(staleness.lag > 0, "staleness lag should be > 0");
 
     // Sync the index
-    let synced = fluree.sync_vector_index(&created.vg_alias).await.unwrap();
+    let synced = fluree
+        .sync_vector_index(&created.graph_source_address)
+        .await
+        .unwrap();
     assert!(
         synced.was_full_resync || synced.new_watermark >= synced.old_watermark,
         "sync should update watermark"
     );
 
     // Verify by loading the index and checking vector count
-    let idx = fluree.load_vector_index(&created.vg_alias).await.unwrap();
+    let idx = fluree
+        .load_vector_index(&created.graph_source_address)
+        .await
+        .unwrap();
     assert_eq!(idx.len(), 3, "loaded index should have 3 vectors");
 }
 
@@ -270,7 +282,10 @@ async fn vector_sync_updates_head_snapshot() {
     assert_eq!(created.index_t, t1);
 
     // Load head — should have 1 vector
-    let idx = fluree.load_vector_index(&created.vg_alias).await.unwrap();
+    let idx = fluree
+        .load_vector_index(&created.graph_source_address)
+        .await
+        .unwrap();
     assert_eq!(idx.len(), 1, "head index should have 1 vector after create");
 
     // Add more documents
@@ -291,15 +306,21 @@ async fn vector_sync_updates_head_snapshot() {
     let t2 = ledger2.t();
 
     // Sync to update head
-    let synced = fluree.sync_vector_index(&created.vg_alias).await.unwrap();
+    let synced = fluree
+        .sync_vector_index(&created.graph_source_address)
+        .await
+        .unwrap();
     assert_eq!(synced.new_watermark, t2);
 
     // Load head again — should now have 2 vectors
-    let idx = fluree.load_vector_index(&created.vg_alias).await.unwrap();
+    let idx = fluree
+        .load_vector_index(&created.graph_source_address)
+        .await
+        .unwrap();
     assert_eq!(idx.len(), 2, "head index should have 2 vectors after sync");
 }
 
-/// Test drop_vector_index marks VG as retracted
+/// Test drop_vector_index marks graph source as retracted
 #[tokio::test]
 async fn vector_drop_index_marks_as_retracted() {
     let fluree = FlureeBuilder::memory().build_memory();
@@ -333,15 +354,23 @@ async fn vector_drop_index_marks_as_retracted() {
     let created = fluree.create_vector_index(cfg).await.unwrap();
 
     // Drop the index
-    let dropped = fluree.drop_vector_index(&created.vg_alias).await.unwrap();
+    let dropped = fluree
+        .drop_vector_index(&created.graph_source_address)
+        .await
+        .unwrap();
     assert!(!dropped.was_already_retracted);
 
     // Trying to sync should fail
-    let sync_result = fluree.sync_vector_index(&created.vg_alias).await;
+    let sync_result = fluree
+        .sync_vector_index(&created.graph_source_address)
+        .await;
     assert!(sync_result.is_err(), "sync should fail on dropped index");
 
     // Dropping again should indicate already retracted
-    let dropped_again = fluree.drop_vector_index(&created.vg_alias).await.unwrap();
+    let dropped_again = fluree
+        .drop_vector_index(&created.graph_source_address)
+        .await
+        .unwrap();
     assert!(dropped_again.was_already_retracted);
 }
 
@@ -437,7 +466,10 @@ async fn vector_supports_different_metrics() {
     let created = fluree.create_vector_index(cfg).await.unwrap();
     assert_eq!(created.vector_count, 2);
 
-    let idx = fluree.load_vector_index(&created.vg_alias).await.unwrap();
+    let idx = fluree
+        .load_vector_index(&created.graph_source_address)
+        .await
+        .unwrap();
     assert_eq!(idx.metadata.metric, DistanceMetric::Dot);
 
     // Test with Euclidean metric
@@ -447,7 +479,10 @@ async fn vector_supports_different_metrics() {
     let created2 = fluree.create_vector_index(cfg2).await.unwrap();
     assert_eq!(created2.vector_count, 2);
 
-    let idx2 = fluree.load_vector_index(&created2.vg_alias).await.unwrap();
+    let idx2 = fluree
+        .load_vector_index(&created2.graph_source_address)
+        .await
+        .unwrap();
     assert_eq!(idx2.metadata.metric, DistanceMetric::Euclidean);
 }
 
@@ -499,7 +534,10 @@ async fn vector_provider_integration() {
     // Vector indexes are head-only (no time-travel), so as_of_t must be None
     let params = VectorSearchParams::new(&query_vector, DistanceMetric::Cosine, 10);
 
-    let results = provider.search(&created.vg_alias, params).await.unwrap();
+    let results = provider
+        .search(&created.graph_source_address, params)
+        .await
+        .unwrap();
 
     assert_eq!(results.len(), 2);
     // doc1 should rank first (more similar to query)
@@ -548,7 +586,10 @@ async fn vector_collection_exists() {
     let provider = FlureeIndexProvider::new(&fluree);
 
     // Should exist
-    let exists = provider.collection_exists(&created.vg_alias).await.unwrap();
+    let exists = provider
+        .collection_exists(&created.graph_source_address)
+        .await
+        .unwrap();
     assert!(exists, "collection should exist");
 
     // Non-existent should return false
@@ -559,8 +600,14 @@ async fn vector_collection_exists() {
     assert!(!not_exists, "non-existent collection should not exist");
 
     // Drop and check again
-    fluree.drop_vector_index(&created.vg_alias).await.unwrap();
-    let after_drop = provider.collection_exists(&created.vg_alias).await.unwrap();
+    fluree
+        .drop_vector_index(&created.graph_source_address)
+        .await
+        .unwrap();
+    let after_drop = provider
+        .collection_exists(&created.graph_source_address)
+        .await
+        .unwrap();
     assert!(!after_drop, "dropped collection should not exist");
 }
 
@@ -624,7 +671,7 @@ async fn vector_idx_query_syntax_e2e() {
         "from": alias,
         "where": [
             {
-                "idx:graph": created.vg_alias,
+                "idx:graph": created.graph_source_address,
                 "idx:vector": [0.85, 0.1, 0.05],
                 "idx:metric": "cosine",
                 "idx:limit": 10,

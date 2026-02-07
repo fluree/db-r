@@ -36,7 +36,7 @@ impl Bm25SnapshotEntry {
 /// (idempotent reindex).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bm25Manifest {
-    /// VG alias this manifest belongs to (e.g., "my-search:main").
+    /// Graph source alias this manifest belongs to (e.g., "my-search:main").
     pub alias: String,
     /// Ordered list of snapshots (ascending by `index_t`).
     pub snapshots: Vec<Bm25SnapshotEntry>,
@@ -196,11 +196,11 @@ mod tests {
         let mut m = Bm25Manifest::new("my-search:main");
         m.append(Bm25SnapshotEntry::new(
             5,
-            "fluree:file://vg/search/main/bm25/t5/snapshot.bin",
+            "fluree:file://graph-sources/search/main/bm25/t5/snapshot.bin",
         ));
         m.append(Bm25SnapshotEntry::new(
             10,
-            "fluree:file://vg/search/main/bm25/t10/snapshot.bin",
+            "fluree:file://graph-sources/search/main/bm25/t10/snapshot.bin",
         ));
 
         let json = serde_json::to_string(&m).unwrap();

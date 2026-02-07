@@ -119,21 +119,21 @@ impl<S: Storage + 'static> R2rmlScanOperator<S> {
     /// This is where we bridge R2RML materialized terms to the query engine's
     /// binding representation.
     ///
-    /// # Virtual Graph IRI Handling
+    /// # Graph Source IRI Handling
     ///
     /// IRIs generated from R2RML templates are kept as raw strings (`Binding::Iri`)
     /// rather than being encoded to SIDs. This is because:
     ///
-    /// 1. VG IRIs are dynamically generated and may not exist in any Fluree ledger
+    /// 1. Graph source IRIs are dynamically generated and may not exist in any Fluree ledger
     /// 2. Cross-ledger SIDs don't match anyway (different namespace codes)
     /// 3. Encoding would silently drop rows for IRIs not in namespace table
     ///
-    /// This matches the Clojure implementation which uses `match-iri` for VG results.
+    /// This matches the Clojure implementation which uses `match-iri` for graph source results.
     fn term_to_binding(&self, term: &RdfTerm, ctx: &ExecutionContext<'_, S>) -> Result<Binding> {
         match term {
             RdfTerm::Iri(iri) => {
                 // Keep IRI as raw string - don't try to encode to SID
-                // VG IRIs are independent of Fluree's namespace table
+                // Graph source IRIs are independent of Fluree's namespace table
                 Ok(Binding::iri(iri.as_str()))
             }
             RdfTerm::BlankNode(id) => {
@@ -268,7 +268,7 @@ impl<S: Storage + 'static> Operator<S> for R2rmlScanOperator<S> {
             Some(ctx.to_t)
         };
         let mapping = provider
-            .compiled_mapping(&self.pattern.vg_alias, as_of_t)
+            .compiled_mapping(&self.pattern.graph_source_address, as_of_t)
             .await?;
 
         self.mapping = Some(mapping);
@@ -407,7 +407,12 @@ impl<S: Storage + 'static> Operator<S> for R2rmlScanOperator<S> {
                     Some(ctx.to_t)
                 };
                 let batches = table_provider
-                    .scan_table(&self.pattern.vg_alias, table_name, &projection, as_of_t)
+                    .scan_table(
+                        &self.pattern.graph_source_address,
+                        table_name,
+                        &projection,
+                        as_of_t,
+                    )
                     .await?;
 
                 // Build parent lookup tables for RefObjectMap POMs that match predicate_filter
@@ -490,7 +495,7 @@ impl<S: Storage + 'static> Operator<S> for R2rmlScanOperator<S> {
                         };
                         let parent_batches = table_provider
                             .scan_table(
-                                &self.pattern.vg_alias,
+                                &self.pattern.graph_source_address,
                                 parent_table,
                                 &parent_projection,
                                 as_of_t,

@@ -170,7 +170,7 @@ fn format_binding(
             }
         }
 
-        // Raw IRI string (from virtual graph, not in namespace table)
+        // Raw IRI string (from graph source, not in namespace table)
         Binding::Iri(iri) => {
             // Check if it's a blank node (starts with _:)
             if iri.starts_with("_:") {

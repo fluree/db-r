@@ -208,8 +208,8 @@ fn parse_index_search_pattern(
     map: &serde_json::Map<String, JsonValue>,
     query: &mut UnresolvedQuery,
 ) -> Result<()> {
-    // Extract "graph" - the virtual graph alias (required)
-    let vg_alias = map.get("graph").and_then(|v| v.as_str()).ok_or_else(|| {
+    // Extract "graph" - the graph source alias (required)
+    let graph_source_address = map.get("graph").and_then(|v| v.as_str()).ok_or_else(|| {
         ParseError::InvalidWhere("index search: 'graph' must be a string".to_string())
     })?;
 
@@ -249,7 +249,8 @@ fn parse_index_search_pattern(
     // Extract "idx:timeout" (optional)
     let timeout = map.get("idx:timeout").and_then(|v| v.as_u64());
 
-    let mut pattern = UnresolvedIndexSearchPattern::new(vg_alias, target, result_vars.id.as_ref());
+    let mut pattern =
+        UnresolvedIndexSearchPattern::new(graph_source_address, target, result_vars.id.as_ref());
 
     if let Some(limit) = limit {
         pattern = pattern.with_limit(limit);
@@ -298,7 +299,7 @@ fn parse_vector_search_pattern(
     query: &mut UnresolvedQuery,
 ) -> Result<()> {
     // Extract graph alias (required) - support both "idx:graph" and "graph"
-    let vg_alias = map
+    let graph_source_address = map
         .get("idx:graph")
         .or_else(|| map.get("graph"))
         .and_then(|v| v.as_str())
@@ -362,8 +363,12 @@ fn parse_vector_search_pattern(
     // Extract "idx:timeout" (optional)
     let timeout = map.get("idx:timeout").and_then(|v| v.as_u64());
 
-    let mut pattern =
-        UnresolvedVectorSearchPattern::new(vg_alias, target, metric, result_vars.id.as_ref());
+    let mut pattern = UnresolvedVectorSearchPattern::new(
+        graph_source_address,
+        target,
+        metric,
+        result_vars.id.as_ref(),
+    );
 
     if let Some(limit) = limit {
         pattern = pattern.with_limit(limit);

@@ -446,6 +446,19 @@ pub struct IdStatsHook {
     subject_props: HashMap<u64, HashSet<u32>>,
     /// Class → set of property p_ids used by instances of that class
     class_properties: HashMap<u64, HashSet<u32>>,
+    /// Class → property → target class → signed delta count (ref-valued properties only).
+    ///
+    /// Keys are sid64 for classes (subjects and rdf:type objects).
+    class_ref_targets: HashMap<u64, HashMap<u32, HashMap<u64, i64>>>,
+    /// Per-subject ref history: subject sid64 → property → object sid64 → signed delta count.
+    ///
+    /// Used to retroactively attribute ref edges when rdf:type appears after refs (or when
+    /// additional rdf:type values are asserted).
+    subject_ref_history: HashMap<u64, HashMap<u32, HashMap<u64, i64>>>,
+    /// Pending incoming ref edges for objects that are not yet typed at the time we see the edge.
+    ///
+    /// object sid64 → (subject sid64, p_id) → signed delta count
+    pending_refs_by_object: HashMap<u64, HashMap<(u64, u32), i64>>,
 }
 
 impl IdStatsHook {
@@ -513,6 +526,63 @@ impl IdStatsHook {
                             class_entry.insert(pid);
                         }
                     }
+
+                    // Retroactively attribute reference edges already seen for this subject
+                    // to the newly asserted class (rec.o_key).
+                    if let Some(per_prop) = self.subject_ref_history.get(&rec.s_id) {
+                        for (&p_id, objs) in per_prop {
+                            for (&obj_sid64, &edge_delta) in objs {
+                                if edge_delta == 0 {
+                                    continue;
+                                }
+                                if let Some(obj_classes) = self.subject_classes.get(&obj_sid64) {
+                                    for &obj_class_sid64 in obj_classes {
+                                        *self
+                                            .class_ref_targets
+                                            .entry(rec.o_key)
+                                            .or_default()
+                                            .entry(p_id)
+                                            .or_default()
+                                            .entry(obj_class_sid64)
+                                            .or_insert(0) += edge_delta;
+                                    }
+                                } else {
+                                    *self
+                                        .pending_refs_by_object
+                                        .entry(obj_sid64)
+                                        .or_default()
+                                        .entry((rec.s_id, p_id))
+                                        .or_insert(0) += edge_delta;
+                                }
+                            }
+                        }
+                    }
+
+                    // If this subject is an object that previously had pending incoming refs
+                    // (because it was untyped), attribute those refs to this newly asserted class.
+                    //
+                    // Note: This only covers "first typing after refs". If a subject gains
+                    // additional classes later, refs that were already processed won't be
+                    // retro-attributed to those additional classes (by design, to bound memory).
+                    if let Some(pending) = self.pending_refs_by_object.get(&rec.s_id) {
+                        for (&(subj_sid64, p_id), &edge_delta) in pending {
+                            if edge_delta == 0 {
+                                continue;
+                            }
+                            if let Some(subj_classes) = self.subject_classes.get(&subj_sid64) {
+                                for &subj_class_sid64 in subj_classes {
+                                    *self
+                                        .class_ref_targets
+                                        .entry(subj_class_sid64)
+                                        .or_default()
+                                        .entry(p_id)
+                                        .or_default()
+                                        .entry(rec.o_key)
+                                        .or_insert(0) += edge_delta;
+                                }
+                            }
+                        }
+                    }
                 }
             } else if rec.op {
                 // Non-rdf:type property assertion: track per-subject and per-class
@@ -528,6 +598,49 @@ impl IdStatsHook {
                             .or_default()
                             .insert(rec.p_id);
                     }
+                }
+            }
+
+            // Track reference-valued properties for class→property ref target stats.
+            //
+            // We track both assertions and retractions via signed deltas.
+            // Only applies to ref objects (ObjKind::REF_ID).
+            if rec.p_id != rdf_type_pid && rec.o_kind == 0x05 {
+                // Record per-subject ref history (for retroactive attribution on rdf:type)
+                *self
+                    .subject_ref_history
+                    .entry(rec.s_id)
+                    .or_default()
+                    .entry(rec.p_id)
+                    .or_default()
+                    .entry(rec.o_key)
+                    .or_insert(0) += delta;
+
+                // If both subject and object are already typed, attribute immediately.
+                if let (Some(subj_classes), Some(obj_classes)) = (
+                    self.subject_classes.get(&rec.s_id),
+                    self.subject_classes.get(&rec.o_key),
+                ) {
+                    for &subj_class_sid64 in subj_classes {
+                        for &obj_class_sid64 in obj_classes {
+                            *self
+                                .class_ref_targets
+                                .entry(subj_class_sid64)
+                                .or_default()
+                                .entry(rec.p_id)
+                                .or_default()
+                                .entry(obj_class_sid64)
+                                .or_insert(0) += delta;
+                        }
+                    }
+                } else if self.subject_classes.get(&rec.o_key).is_none() {
+                    // Object not yet typed: queue for attribution when/if the object becomes typed.
+                    *self
+                        .pending_refs_by_object
+                        .entry(rec.o_key)
+                        .or_default()
+                        .entry((rec.s_id, rec.p_id))
+                        .or_insert(0) += delta;
                 }
             }
         }
@@ -571,6 +684,33 @@ impl IdStatsHook {
                 .entry(class_sid)
                 .or_default()
                 .extend(props);
+        }
+
+        // Merge class ref target counts.
+        for (class_sid64, prop_map) in other.class_ref_targets {
+            let entry = self.class_ref_targets.entry(class_sid64).or_default();
+            for (p_id, targets) in prop_map {
+                let t_entry = entry.entry(p_id).or_default();
+                for (target_class_sid64, delta) in targets {
+                    *t_entry.entry(target_class_sid64).or_insert(0) += delta;
+                }
+            }
+        }
+        // Merge per-subject ref history and pending incoming refs.
+        for (subj, per_prop) in other.subject_ref_history {
+            let entry = self.subject_ref_history.entry(subj).or_default();
+            for (p_id, objs) in per_prop {
+                let o_entry = entry.entry(p_id).or_default();
+                for (obj, d) in objs {
+                    *o_entry.entry(obj).or_insert(0) += d;
+                }
+            }
+        }
+        for (obj, pending) in other.pending_refs_by_object {
+            let entry = self.pending_refs_by_object.entry(obj).or_default();
+            for (k, d) in pending {
+                *entry.entry(k).or_insert(0) += d;
+            }
         }
     }
 
@@ -674,6 +814,7 @@ impl IdStatsHook {
         Vec<GraphPropertyStatEntry>,
         Vec<(u64, u64)>,
         HashMap<u64, HashSet<u32>>,
+        HashMap<u64, HashMap<u32, HashMap<u64, i64>>>,
     ) {
         // Aggregate by p_id across all graphs (excluding txn-meta g_id=1)
         let mut agg: HashMap<u32, IdPropertyHll> = HashMap::new();
@@ -720,11 +861,12 @@ impl IdStatsHook {
             .collect();
         class_counts.sort_by_key(|(sid64, _)| *sid64);
 
-        // Take class_properties before finalize consumes self
+        // Take class_properties + class_ref_targets before finalize consumes self
         let class_properties = self.class_properties.clone();
+        let class_ref_targets = self.class_ref_targets.clone();
 
         let graphs = self.finalize();
-        (graphs, properties, class_counts, class_properties)
+        (graphs, properties, class_counts, class_properties, class_ref_targets)
     }
 }
 
@@ -2160,7 +2302,10 @@ impl ClassPropertyExtractor {
                     .properties
                     .into_iter()
                     .filter(|(_, prop_data)| prop_data.count_delta > 0)
-                    .map(|(property_sid, _prop_data)| ClassPropertyUsage { property_sid })
+                    .map(|(property_sid, _prop_data)| ClassPropertyUsage {
+                        property_sid,
+                        ref_classes: Vec::new(),
+                    })
                     .collect();
 
                 // Sort properties by SID for determinism
@@ -2238,22 +2383,55 @@ where
         return Ok(std::collections::HashMap::new());
     }
 
-    // Query PSOT for rdf:type predicate
+    // Query PSOT for rdf:type predicate.
+    //
+    // Prefer an index-native batched predicate+subject lookup when available to avoid
+    // scanning the full rdf:type predicate partition.
     let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
+
+    if let Some(provider) = db.range_provider.as_ref() {
+        let subj_vec: Vec<Sid> = subjects.iter().cloned().collect();
+        let opts = RangeOptions::new().with_to_t(db.t);
+        let no_overlay = fluree_db_core::overlay::NoOverlay;
+        match provider.lookup_subject_predicate_refs_batched(
+            IndexType::Psot,
+            &rdf_type_sid,
+            &subj_vec,
+            &opts,
+            &no_overlay,
+        ) {
+            Ok(map) => {
+                let mut out: std::collections::HashMap<Sid, HashSet<Sid>> =
+                    std::collections::HashMap::with_capacity(map.len());
+                for (s, classes) in map {
+                    out.insert(s, classes.into_iter().collect());
+                }
+                return Ok(out);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {
+                // Fall through to full predicate scan.
+            }
+            Err(e) => {
+                return Err(crate::error::IndexerError::InvalidConfig(format!(
+                    "batched class lookup failed: {}",
+                    e
+                )));
+            }
+        }
+    }
+
+    // Fallback: full predicate scan (correct but potentially expensive).
     let match_val = RangeMatch::predicate(rdf_type_sid);
     let opts = RangeOptions::default();
-
     let flakes = range(db, IndexType::Psot, RangeTest::Eq, match_val, opts)
         .await
         .map_err(|e| {
             crate::error::IndexerError::InvalidConfig(format!("PSOT range query failed: {}", e))
         })?;
 
-    // Filter to subjects we care about and build mapping
     let mut result: std::collections::HashMap<Sid, HashSet<Sid>> = std::collections::HashMap::new();
     for flake in flakes {
         if subjects.contains(&flake.s) && flake.op {
-            // Only assertions (op=true) count
             if let FlakeValue::Ref(class_sid) = &flake.o {
                 result
                     .entry(flake.s.clone())

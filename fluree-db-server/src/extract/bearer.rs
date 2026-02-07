@@ -35,8 +35,8 @@ pub struct EventsPrincipal {
     pub allowed_all: bool,
     /// fluree.events.ledgers claim (HashSet for O(1) lookup)
     pub allowed_ledgers: HashSet<String>,
-    /// fluree.events.vgs claim (HashSet for O(1) lookup)
-    pub allowed_vgs: HashSet<String>,
+    /// fluree.events.vgs claim — graph sources (HashSet for O(1) lookup)
+    pub allowed_graph_sources: HashSet<String>,
 
     // Storage proxy permissions
     /// fluree.storage.all claim
@@ -158,7 +158,11 @@ fn verify_token(token: &str, config: &EventsAuthConfig) -> Result<MaybeBearer, S
             .unwrap_or_default()
             .into_iter()
             .collect(),
-        allowed_vgs: payload.events_vgs.unwrap_or_default().into_iter().collect(),
+        allowed_graph_sources: payload
+            .events_graph_sources
+            .unwrap_or_default()
+            .into_iter()
+            .collect(),
         // Storage proxy permissions
         storage_all: payload.storage_all.unwrap_or(false),
         storage_ledgers: payload
@@ -290,14 +294,14 @@ mod tests {
             identity: Some("user@example.com".to_string()),
             allowed_all: false,
             allowed_ledgers: vec!["books:main".to_string()].into_iter().collect(),
-            allowed_vgs: HashSet::new(),
+            allowed_graph_sources: HashSet::new(),
             storage_all: false,
             storage_ledgers: HashSet::new(),
         };
 
         assert!(!principal.allowed_all);
         assert!(principal.allowed_ledgers.contains("books:main"));
-        assert!(!principal.allowed_vgs.contains("search:main"));
+        assert!(!principal.allowed_graph_sources.contains("search:main"));
     }
 
     #[test]
@@ -308,7 +312,7 @@ mod tests {
             identity: Some("ex:PeerServiceAccount".to_string()),
             allowed_all: false,
             allowed_ledgers: HashSet::new(),
-            allowed_vgs: HashSet::new(),
+            allowed_graph_sources: HashSet::new(),
             storage_all: false,
             storage_ledgers: vec!["books:main".to_string(), "users:main".to_string()]
                 .into_iter()
@@ -329,7 +333,7 @@ mod tests {
             identity: None,
             allowed_all: false,
             allowed_ledgers: HashSet::new(),
-            allowed_vgs: HashSet::new(),
+            allowed_graph_sources: HashSet::new(),
             storage_all: true,
             storage_ledgers: HashSet::new(),
         };

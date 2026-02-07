@@ -5,7 +5,7 @@
 
 use crate::error::{Result, SyncError};
 use async_trait::async_trait;
-use fluree_db_nameservice::{CasResult, NsRecord, RefKind, RefValue, VgNsRecord};
+use fluree_db_nameservice::{CasResult, GraphSourceRecord, NsRecord, RefKind, RefValue};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
@@ -14,7 +14,7 @@ use std::fmt::Debug;
 pub struct RemoteSnapshot {
     pub ledgers: Vec<NsRecord>,
     #[serde(default)]
-    pub vgs: Vec<VgNsRecord>,
+    pub graph_sources: Vec<GraphSourceRecord>,
 }
 
 /// Request body for CAS push
@@ -46,7 +46,7 @@ pub trait RemoteNameserviceClient: Debug + Send + Sync {
     /// Look up a single ledger record on the remote
     async fn lookup(&self, alias: &str) -> Result<Option<NsRecord>>;
 
-    /// Get a full snapshot of all remote records (ledgers + VGs)
+    /// Get a full snapshot of all remote records (ledgers + graph sources)
     async fn snapshot(&self) -> Result<RemoteSnapshot>;
 
     /// CAS push for a ref on the remote
@@ -193,7 +193,7 @@ mod tests {
             "ledgers": [
                 {
                     "address": "mydb:main",
-                    "alias": "mydb",
+                    "name": "mydb",
                     "branch": "main",
                     "commit_address": "fluree:file://commit/abc",
                     "commit_t": 5,
@@ -202,24 +202,24 @@ mod tests {
                     "retracted": false
                 }
             ],
-            "vgs": []
+            "graph_sources": []
         }"#;
 
         let snapshot: RemoteSnapshot = serde_json::from_str(json).unwrap();
         assert_eq!(snapshot.ledgers.len(), 1);
         assert_eq!(snapshot.ledgers[0].commit_t, 5);
-        assert!(snapshot.vgs.is_empty());
+        assert!(snapshot.graph_sources.is_empty());
     }
 
     #[test]
-    fn test_snapshot_missing_vgs_field() {
-        // vgs field is optional (default empty)
+    fn test_snapshot_missing_graph_sources_field() {
+        // graph_sources field is optional (default empty)
         let json = r#"{
             "ledgers": []
         }"#;
 
         let snapshot: RemoteSnapshot = serde_json::from_str(json).unwrap();
         assert!(snapshot.ledgers.is_empty());
-        assert!(snapshot.vgs.is_empty());
+        assert!(snapshot.graph_sources.is_empty());
     }
 }

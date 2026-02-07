@@ -55,7 +55,7 @@ Fluree is a temporal graph database that stores data as RDF triples with built-i
 - **Vector Search**: Approximate nearest neighbor (ANN) queries
 - **Policy Enforcement**: Fine-grained, data-level access control
 - **Verifiable Data**: Cryptographically signed transactions
-- **Virtual Graphs**: Integration with external data sources (Iceberg, R2RML)
+- **Graph Sources**: Integration with external data sources (Iceberg, R2RML)
 
 ## Learning Path
 

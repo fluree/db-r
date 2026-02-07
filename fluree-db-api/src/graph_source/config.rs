@@ -1,14 +1,14 @@
-//! Configuration types for virtual graph creation.
+//! Configuration types for graph source creation.
 //!
 //! This module contains builder-style configuration structs for creating
-//! different types of virtual graphs (BM25, Vector, Iceberg, R2RML).
+//! different types of graph sources (BM25, Vector, Iceberg, R2RML).
 
 use fluree_db_core::alias as core_alias;
 use fluree_db_query::bm25::Bm25Config;
 use serde_json::Value as JsonValue;
 
 #[cfg(feature = "iceberg")]
-use fluree_db_iceberg::IcebergVgConfig;
+use fluree_db_iceberg::IcebergGsConfig;
 
 #[cfg(feature = "vector")]
 use crate::search::SearchDeploymentConfig;
@@ -22,7 +22,7 @@ use fluree_db_query::vector::DistanceMetric;
 /// Configuration for creating a BM25 full-text search index.
 #[derive(Debug, Clone)]
 pub struct Bm25CreateConfig {
-    /// Name for the virtual graph (e.g., "my-search")
+    /// Name for the graph source (e.g., "my-search")
     pub name: String,
 
     /// Branch name (defaults to "main")
@@ -90,8 +90,8 @@ impl Bm25CreateConfig {
         self.branch.as_deref().unwrap_or(core_alias::DEFAULT_BRANCH)
     }
 
-    /// Get the virtual graph alias (name:branch).
-    pub fn vg_alias(&self) -> String {
+    /// Get the graph source alias (name:branch).
+    pub fn graph_source_address(&self) -> String {
         format!("{}:{}", self.name, self.effective_branch())
     }
 
@@ -114,13 +114,13 @@ impl Bm25CreateConfig {
     pub fn validate(&self) -> crate::Result<()> {
         // Validate name
         if self.name.trim().is_empty() {
-            return Err(crate::ApiError::config("VG name cannot be empty"));
+            return Err(crate::ApiError::config("Graph source name cannot be empty"));
         }
 
         // Validate name format (no colons allowed - reserved for alias)
         if self.name.contains(':') {
             return Err(crate::ApiError::config(
-                "VG name cannot contain ':' (use branch for versioning)",
+                "Graph source name cannot contain ':' (use branch for versioning)",
             ));
         }
 
@@ -170,7 +170,7 @@ impl Bm25CreateConfig {
 
 /// Configuration for creating a vector similarity search index.
 ///
-/// Vector VGs provide approximate nearest neighbor search using embedding vectors.
+/// Vector graph sources provide approximate nearest neighbor search using embedding vectors.
 /// The index is built using HNSW and supports cosine, dot product,
 /// and Euclidean distance metrics.
 ///
@@ -198,7 +198,7 @@ impl Bm25CreateConfig {
 #[cfg(feature = "vector")]
 #[derive(Debug, Clone)]
 pub struct VectorCreateConfig {
-    /// Name for the virtual graph (e.g., "embeddings")
+    /// Name for the graph source (e.g., "embeddings")
     pub name: String,
 
     /// Branch name (defaults to "main")
@@ -307,8 +307,8 @@ impl VectorCreateConfig {
         self.branch.as_deref().unwrap_or(core_alias::DEFAULT_BRANCH)
     }
 
-    /// Get the virtual graph alias (name:branch).
-    pub fn vg_alias(&self) -> String {
+    /// Get the graph source alias (name:branch).
+    pub fn graph_source_address(&self) -> String {
         format!("{}:{}", self.name, self.effective_branch())
     }
 
@@ -330,12 +330,12 @@ impl VectorCreateConfig {
     pub fn validate(&self) -> crate::Result<()> {
         // Validate name
         if self.name.trim().is_empty() {
-            return Err(crate::ApiError::config("VG name cannot be empty"));
+            return Err(crate::ApiError::config("Graph source name cannot be empty"));
         }
 
         if self.name.contains(':') {
             return Err(crate::ApiError::config(
-                "VG name cannot contain ':' (use branch for versioning)",
+                "Graph source name cannot contain ':' (use branch for versioning)",
             ));
         }
 
@@ -373,9 +373,9 @@ impl VectorCreateConfig {
 // Iceberg Configuration
 // =============================================================================
 
-/// Configuration for creating an Iceberg virtual graph.
+/// Configuration for creating an Iceberg graph source.
 ///
-/// Iceberg VGs provide access to Apache Iceberg tables stored in data lakes
+/// Iceberg graph sources provide access to Apache Iceberg tables stored in data lakes
 /// (S3, GCS, etc.) via REST catalogs like Apache Polaris.
 ///
 /// # Example
@@ -384,19 +384,19 @@ impl VectorCreateConfig {
 /// use fluree_db_api::IcebergCreateConfig;
 ///
 /// let config = IcebergCreateConfig::new(
-///     "openflights-vg",
+///     "openflights-gs",
 ///     "https://polaris.example.com",
 ///     "openflights.airlines",
 /// )
 /// .with_auth_bearer("my-token")
 /// .with_warehouse("my-warehouse");
 ///
-/// let result = fluree.create_iceberg_vg(config).await?;
+/// let result = fluree.create_iceberg_graph_source(config).await?;
 /// ```
 #[cfg(feature = "iceberg")]
 #[derive(Debug, Clone)]
 pub struct IcebergCreateConfig {
-    /// Name for the virtual graph (e.g., "openflights-vg")
+    /// Name for the graph source (e.g., "openflights-gs")
     pub name: String,
 
     /// Branch name (defaults to "main")
@@ -429,7 +429,7 @@ pub struct IcebergCreateConfig {
 
 #[cfg(feature = "iceberg")]
 impl IcebergCreateConfig {
-    /// Create a new Iceberg VG config with minimal required fields.
+    /// Create a new Iceberg graph source config with minimal required fields.
     pub fn new(
         name: impl Into<String>,
         catalog_uri: impl Into<String>,
@@ -515,16 +515,16 @@ impl IcebergCreateConfig {
         self.branch.as_deref().unwrap_or("main")
     }
 
-    /// Get the virtual graph alias (name:branch).
-    pub fn vg_alias(&self) -> String {
+    /// Get the graph source alias (name:branch).
+    pub fn graph_source_address(&self) -> String {
         format!("{}:{}", self.name, self.effective_branch())
     }
 
-    /// Convert to the internal IcebergVgConfig structure for storage.
-    pub fn to_iceberg_vg_config(&self) -> IcebergVgConfig {
+    /// Convert to the internal IcebergGsConfig structure for storage.
+    pub fn to_iceberg_gs_config(&self) -> IcebergGsConfig {
         use fluree_db_iceberg::config::{CatalogConfig, IoConfig, TableConfig};
 
-        IcebergVgConfig {
+        IcebergGsConfig {
             catalog: CatalogConfig {
                 catalog_type: "polaris".to_string(),
                 uri: self.catalog_uri.clone(),
@@ -545,12 +545,12 @@ impl IcebergCreateConfig {
     /// Validate the configuration.
     pub fn validate(&self) -> crate::Result<()> {
         if self.name.trim().is_empty() {
-            return Err(crate::ApiError::config("VG name cannot be empty"));
+            return Err(crate::ApiError::config("Graph source name cannot be empty"));
         }
 
         if self.name.contains(':') {
             return Err(crate::ApiError::config(
-                "VG name cannot contain ':' (use branch for versioning)",
+                "Graph source name cannot contain ':' (use branch for versioning)",
             ));
         }
 
@@ -575,9 +575,9 @@ impl IcebergCreateConfig {
 // R2RML Configuration
 // =============================================================================
 
-/// Configuration for creating an R2RML virtual graph.
+/// Configuration for creating an R2RML graph source.
 ///
-/// R2RML VGs combine Iceberg table access with R2RML mappings to expose
+/// R2RML graph sources combine Iceberg table access with R2RML mappings to expose
 /// relational data as RDF triples. The R2RML mapping defines how table
 /// rows are transformed into triples.
 ///
@@ -594,7 +594,7 @@ impl IcebergCreateConfig {
 /// )
 /// .with_auth_bearer("my-token");
 ///
-/// let result = fluree.create_r2rml_vg(config).await?;
+/// let result = fluree.create_r2rml_graph_source(config).await?;
 /// ```
 #[cfg(feature = "iceberg")]
 #[derive(Debug, Clone)]
@@ -611,7 +611,7 @@ pub struct R2rmlCreateConfig {
 
 #[cfg(feature = "iceberg")]
 impl R2rmlCreateConfig {
-    /// Create a new R2RML VG config with minimal required fields.
+    /// Create a new R2RML graph source config with minimal required fields.
     pub fn new(
         name: impl Into<String>,
         catalog_uri: impl Into<String>,
@@ -686,14 +686,14 @@ impl R2rmlCreateConfig {
         self
     }
 
-    /// Get the virtual graph alias (name:branch).
-    pub fn vg_alias(&self) -> String {
-        self.iceberg.vg_alias()
+    /// Get the graph source alias (name:branch).
+    pub fn graph_source_address(&self) -> String {
+        self.iceberg.graph_source_address()
     }
 
-    /// Convert to the internal IcebergVgConfig structure with mapping for storage.
-    pub fn to_iceberg_vg_config(&self) -> IcebergVgConfig {
-        let mut config = self.iceberg.to_iceberg_vg_config();
+    /// Convert to the internal IcebergGsConfig structure with mapping for storage.
+    pub fn to_iceberg_gs_config(&self) -> IcebergGsConfig {
+        let mut config = self.iceberg.to_iceberg_gs_config();
         config.mapping = Some(fluree_db_iceberg::config::MappingSource {
             source: self.mapping_source.clone(),
             media_type: self.mapping_media_type.clone(),
@@ -729,7 +729,7 @@ mod tests {
         assert_eq!(config.name, "search");
         assert_eq!(config.ledger, "docs:main");
         assert_eq!(config.effective_branch(), "main");
-        assert_eq!(config.vg_alias(), "search:main");
+        assert_eq!(config.graph_source_address(), "search:main");
 
         let bm25 = config.bm25_config();
         assert!((bm25.k1 - 1.2).abs() < 0.001);
@@ -744,7 +744,7 @@ mod tests {
             .with_b(0.5);
 
         assert_eq!(config.effective_branch(), "dev");
-        assert_eq!(config.vg_alias(), "search:dev");
+        assert_eq!(config.graph_source_address(), "search:dev");
 
         let bm25 = config.bm25_config();
         assert!((bm25.k1 - 1.5).abs() < 0.001);

@@ -84,7 +84,7 @@ where
         self
     }
 
-    /// Enable BM25/Vector index providers for virtual graph queries.
+    /// Enable BM25/Vector index providers for graph source queries.
     pub fn with_index_providers(mut self) -> Self {
         self.core.set_index_providers();
         self
@@ -242,7 +242,7 @@ where
         self
     }
 
-    /// Enable BM25/Vector index providers for virtual graph queries.
+    /// Enable BM25/Vector index providers for graph source queries.
     pub fn with_index_providers(mut self) -> Self {
         self.core.set_index_providers();
         self

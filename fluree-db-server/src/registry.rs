@@ -212,7 +212,7 @@ impl LedgerRegistry {
                     entries.remove(alias);
                 }
             }
-            // VG events are not tracked in the ledger registry
+            // Graph source events are not tracked in the ledger registry
             _ => {}
         }
     }

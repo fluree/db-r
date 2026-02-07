@@ -441,7 +441,7 @@ ORDER BY ?t'
 
 ### POST /nameservice/query
 
-Query metadata about all ledgers and virtual graphs in the nameservice.
+Query metadata about all ledgers and graph sources in the nameservice.
 
 **URL:**
 ```
@@ -529,8 +529,8 @@ Ledger records (`@type: "f:PhysicalDatabase"`):
 - `f:commit` - Commit address reference
 - `f:index` - Index info with address and t
 
-Virtual graph records (`@type: "f:VirtualGraphDatabase"`):
-- `f:name` - Virtual graph name
+Graph source records (`@type: "f:GraphSourceDatabase"`):
+- `f:name` - Graph source name
 - `f:branch` - Branch name
 - `fidx:config` - Configuration JSON
 - `fidx:dependencies` - Source ledger dependencies
@@ -554,13 +554,13 @@ curl -X POST http://localhost:8090/nameservice/query \
     "where": [{"@id": "?ns", "f:ledger": "?ledger", "f:branch": "main"}]
   }'
 
-# Find all virtual graphs
+# Find all graph sources
 curl -X POST http://localhost:8090/nameservice/query \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {"f": "https://ns.flur.ee/ledger#", "fidx": "https://ns.flur.ee/index#"},
     "select": ["?name", "?type"],
-    "where": [{"@id": "?vg", "@type": "f:VirtualGraphDatabase", "f:name": "?name"}]
+    "where": [{"@id": "?gs", "@type": "f:GraphSourceDatabase", "f:name": "?name"}]
   }'
 ```
 
@@ -1005,7 +1005,7 @@ GET /version
 curl http://localhost:8090/version
 ```
 
-## Virtual Graph Endpoints
+## Graph Source Endpoints
 
 ### POST /index/bm25
 

@@ -69,7 +69,7 @@ impl<P: Bm25IndexProvider> fmt::Debug for EmbeddedBm25SearchProvider<'_, P> {
 impl<P: Bm25IndexProvider> Bm25SearchProvider for EmbeddedBm25SearchProvider<'_, P> {
     async fn search_bm25(
         &self,
-        vg_alias: &str,
+        graph_source_address: &str,
         query_text: &str,
         limit: usize,
         as_of_t: Option<i64>,
@@ -79,7 +79,7 @@ impl<P: Bm25IndexProvider> Bm25SearchProvider for EmbeddedBm25SearchProvider<'_,
         // Load the index via the underlying provider
         let index = self
             .index_provider
-            .bm25_index(vg_alias, as_of_t, sync, timeout_ms)
+            .bm25_index(graph_source_address, as_of_t, sync, timeout_ms)
             .await?;
 
         // Get the effective watermark from the loaded index
@@ -130,17 +130,20 @@ mod tests {
     impl Bm25IndexProvider for MockIndexProvider {
         async fn bm25_index(
             &self,
-            vg_alias: &str,
+            graph_source_address: &str,
             _as_of_t: Option<i64>,
             _sync: bool,
             _timeout_ms: Option<u64>,
         ) -> Result<Arc<Bm25Index>> {
-            self.indexes.get(vg_alias).cloned().ok_or_else(|| {
-                fluree_db_query::error::QueryError::InvalidQuery(format!(
-                    "No index for {}",
-                    vg_alias
-                ))
-            })
+            self.indexes
+                .get(graph_source_address)
+                .cloned()
+                .ok_or_else(|| {
+                    fluree_db_query::error::QueryError::InvalidQuery(format!(
+                        "No index for {}",
+                        graph_source_address
+                    ))
+                })
         }
     }
 

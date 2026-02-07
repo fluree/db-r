@@ -15,7 +15,7 @@
 //!
 //! # Security
 //! - Unauthorized requests return 404 (no existence leak)
-//! - VG artifacts return 404 in v1 (ledger-only scope)
+//! - Graph source artifacts return 404 in v1 (ledger-only scope)
 
 use axum::{
     body::Body,
@@ -33,6 +33,7 @@ use fluree_db_indexer::run_index::leaflet::{
 };
 use fluree_db_indexer::run_index::types::DecodedRow;
 use fluree_db_indexer::run_index::{BinaryIndexStore, RunSortOrder};
+use fluree_db_nameservice::STORAGE_SEGMENT_GRAPH_SOURCES;
 use fluree_db_query::QueryPolicyEnforcer;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -51,15 +52,15 @@ use fluree_db_core::serde::flakes_transport::{encode_flakes, TransportFlake};
 /// Addresses encode their context in the path structure:
 /// - Commits: `fluree:file://{alias}/commit/...`
 /// - Indexes: `fluree:file://{ledger}/{branch}/index/...`
-/// - VG artifacts: `fluree:file://virtual-graphs/{name}/{branch}/...`
+/// - Graph source artifacts: `fluree:file://graph-sources/{name}/{branch}/...`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AddressContext {
     /// Ledger commit: `fluree:file://{alias}/commit/...`
     LedgerCommit { alias: String },
     /// Ledger index: `fluree:file://{ledger}/{branch}/index/...`
     LedgerIndex { ledger: String, branch: String },
-    /// VG artifact: `fluree:file://virtual-graphs/{name}/{branch}/...`
-    VgArtifact { name: String, branch: String },
+    /// Graph source artifact: `fluree:file://graph-sources/{name}/{branch}/...`
+    GraphSourceArtifact { name: String, branch: String },
     /// Unknown format
     Unknown,
 }
@@ -76,16 +77,16 @@ impl AddressContext {
         }
     }
 
-    /// Check if this is a VG artifact address
+    /// Check if this is a graph source artifact address
     #[cfg(test)]
-    pub fn is_vg(&self) -> bool {
-        matches!(self, AddressContext::VgArtifact { .. })
+    pub fn is_graph_source(&self) -> bool {
+        matches!(self, AddressContext::GraphSourceArtifact { .. })
     }
 }
 
 /// Parse address to determine context and authorization scope.
 ///
-/// This function is security-critical: it determines what ledger/VG
+/// This function is security-critical: it determines what ledger/graph source
 /// an address belongs to for authorization decisions.
 ///
 /// # Examples
@@ -96,19 +97,20 @@ impl AddressContext {
 /// parse_address_context("fluree:file://books/main/index/abc.json")
 ///     // => LedgerIndex { ledger: "books", branch: "main" }
 ///
-/// parse_address_context("fluree:file://virtual-graphs/search/main/snapshot.bin")
-///     // => VgArtifact { name: "search", branch: "main" }
+/// parse_address_context("fluree:file://graph-sources/search/main/snapshot.bin")
+///     // => GraphSourceArtifact { name: "search", branch: "main" }
 /// ```
 pub fn parse_address_context(address: &str) -> AddressContext {
     let Some(path) = address.strip_prefix("fluree:file://") else {
         return AddressContext::Unknown;
     };
 
-    // VG format: virtual-graphs/{name}/{branch}/...
-    if let Some(vg_path) = path.strip_prefix("virtual-graphs/") {
-        let parts: Vec<&str> = vg_path.splitn(3, '/').collect();
+    // Graph source format: graph-sources/{name}/{branch}/...
+    let gs_prefix = format!("{STORAGE_SEGMENT_GRAPH_SOURCES}/");
+    if let Some(gs_path) = path.strip_prefix(gs_prefix.as_str()) {
+        let parts: Vec<&str> = gs_path.splitn(3, '/').collect();
         if parts.len() >= 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-            return AddressContext::VgArtifact {
+            return AddressContext::GraphSourceArtifact {
                 name: parts[0].to_string(),
                 branch: parts[1].to_string(),
             };
@@ -168,9 +170,9 @@ fn authorize_address(principal: &StorageProxyPrincipal, context: &AddressContext
             let alias = format!("{}:{}", ledger, branch);
             principal.is_authorized_for_ledger(&alias)
         }
-        AddressContext::VgArtifact { .. } => {
-            // VG artifacts not authorized in v1 (ledger-only scope)
-            // Add fluree.storage.vgs claim in v2 if needed
+        AddressContext::GraphSourceArtifact { .. } => {
+            // Graph source artifacts not authorized in v1 (ledger-only scope)
+            // Add fluree.storage.graph_sources claim in v2 if needed
             false
         }
         AddressContext::Unknown => {
@@ -189,8 +191,8 @@ fn authorize_address(principal: &StorageProxyPrincipal, context: &AddressContext
 pub enum FilterableBlock {
     /// Successfully parsed as leaf - contains the flakes
     Leaf(Vec<Flake>),
-    /// VG artifact (detected from address context)
-    VgArtifact,
+    /// Graph source artifact (detected from address context)
+    GraphSourceArtifact,
     /// Not a filterable leaf (branch, unknown, or parse failed)
     NotFilterable,
 }
@@ -201,7 +203,7 @@ pub enum FilterableBlock {
 /// the block is filterable. This avoids having to guess JSON structure.
 ///
 /// # Fast paths
-/// - VG addresses return immediately (no parse attempt)
+/// - Graph source addresses return immediately (no parse attempt)
 /// - if the ledger snapshot has no binary store (v2), skip
 /// - octet-stream requests skip this entirely (called from handler)
 fn try_parse_as_leaf(
@@ -209,9 +211,9 @@ fn try_parse_as_leaf(
     address_context: &AddressContext,
     binary_store: Option<&BinaryIndexStore>,
 ) -> FilterableBlock {
-    // Fast path: VG artifacts detected from address pattern
-    if matches!(address_context, AddressContext::VgArtifact { .. }) {
-        return FilterableBlock::VgArtifact;
+    // Fast path: graph source artifacts detected from address pattern
+    if matches!(address_context, AddressContext::GraphSourceArtifact { .. }) {
+        return FilterableBlock::GraphSourceArtifact;
     }
 
     // Only ledger addresses (commit or index) are candidates for filtering
@@ -493,7 +495,7 @@ pub async fn get_ns_record(
         .ok_or_else(|| ServerError::not_found("Ledger not found"))?;
 
     Ok(Json(NsRecordResponse {
-        alias: ns_record.alias.clone(),
+        alias: ns_record.name.clone(),
         branch: ns_record.branch.clone(),
         commit_address: ns_record.commit_address.clone(),
         commit_t: ns_record.commit_t,
@@ -561,7 +563,7 @@ pub async fn get_block(
     // For flakes formats, we need to parse the leaf block
     // Get ledger alias for loading the interner
     let alias = context.ledger_alias().ok_or_else(|| {
-        // Non-ledger address (VG or unknown) with flakes format = 406
+        // Non-ledger address (graph source or unknown) with flakes format = 406
         ServerError::not_acceptable("Flakes format only available for ledger blocks")
     })?;
 
@@ -580,7 +582,7 @@ pub async fn get_block(
 
     let flakes = match parsed {
         FilterableBlock::Leaf(flakes) => flakes,
-        FilterableBlock::VgArtifact | FilterableBlock::NotFilterable => {
+        FilterableBlock::GraphSourceArtifact | FilterableBlock::NotFilterable => {
             return Err(ServerError::not_acceptable(
                 "Flakes format only available for ledger leaf blocks",
             ));
@@ -723,17 +725,17 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_vg_address() {
-        let addr = "fluree:file://virtual-graphs/search/main/snapshot.bin";
+    fn test_parse_graph_source_address() {
+        let addr = "fluree:file://graph-sources/search/main/snapshot.bin";
         let ctx = parse_address_context(addr);
         assert_eq!(
             ctx,
-            AddressContext::VgArtifact {
+            AddressContext::GraphSourceArtifact {
                 name: "search".to_string(),
                 branch: "main".to_string()
             }
         );
-        assert!(ctx.is_vg());
+        assert!(ctx.is_graph_source());
         assert_eq!(ctx.ledger_alias(), None);
     }
 
@@ -803,10 +805,10 @@ mod tests {
     }
 
     #[test]
-    fn test_authorize_vg_denied_v1() {
-        // VG artifacts are not authorized in v1, even with storage_all
+    fn test_authorize_graph_source_denied_v1() {
+        // Graph source artifacts are not authorized in v1, even with storage_all
         let principal = make_principal(true, vec![]);
-        let ctx = AddressContext::VgArtifact {
+        let ctx = AddressContext::GraphSourceArtifact {
             name: "search".to_string(),
             branch: "main".to_string(),
         };

@@ -217,7 +217,7 @@ pub enum UnresolvedIndexSearchTarget {
 
 /// Unresolved index search pattern for BM25 full-text queries.
 ///
-/// Represents a search against a virtual graph (e.g., BM25 index) with
+/// Represents a search against a graph source (e.g., BM25 index) with
 /// result bindings for document ID, score, and optional ledger alias.
 ///
 /// # Example Query Syntax
@@ -246,8 +246,8 @@ pub enum UnresolvedIndexSearchTarget {
 /// ```
 #[derive(Debug, Clone)]
 pub struct UnresolvedIndexSearchPattern {
-    /// Virtual graph alias (e.g., "my-search:main")
-    pub vg_alias: Arc<str>,
+    /// Graph source alias (e.g., "my-search:main")
+    pub graph_source_address: Arc<str>,
 
     /// Search query target - can be a constant string or variable
     pub target: UnresolvedIndexSearchTarget,
@@ -274,12 +274,12 @@ pub struct UnresolvedIndexSearchPattern {
 impl UnresolvedIndexSearchPattern {
     /// Create a new index search pattern with just ID binding
     pub fn new(
-        vg_alias: impl AsRef<str>,
+        graph_source_address: impl AsRef<str>,
         target: UnresolvedIndexSearchTarget,
         id_var: impl AsRef<str>,
     ) -> Self {
         Self {
-            vg_alias: Arc::from(vg_alias.as_ref()),
+            graph_source_address: Arc::from(graph_source_address.as_ref()),
             target,
             limit: None,
             id_var: Arc::from(id_var.as_ref()),
@@ -332,7 +332,7 @@ pub enum UnresolvedVectorSearchTarget {
 
 /// Unresolved vector search pattern - before variable resolution
 ///
-/// Used for vector similarity search against a vector virtual graph.
+/// Used for vector similarity search against a vector graph source.
 ///
 /// # Example
 ///
@@ -347,8 +347,8 @@ pub enum UnresolvedVectorSearchTarget {
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnresolvedVectorSearchPattern {
-    /// Virtual graph alias (e.g., "embeddings:main")
-    pub vg_alias: Arc<str>,
+    /// Graph source alias (e.g., "embeddings:main")
+    pub graph_source_address: Arc<str>,
 
     /// Search target - can be a constant vector or variable
     pub target: UnresolvedVectorSearchTarget,
@@ -378,13 +378,13 @@ pub struct UnresolvedVectorSearchPattern {
 impl UnresolvedVectorSearchPattern {
     /// Create a new vector search pattern with just ID binding
     pub fn new(
-        vg_alias: impl AsRef<str>,
+        graph_source_address: impl AsRef<str>,
         target: UnresolvedVectorSearchTarget,
         metric: impl AsRef<str>,
         id_var: impl AsRef<str>,
     ) -> Self {
         Self {
-            vg_alias: Arc::from(vg_alias.as_ref()),
+            graph_source_address: Arc::from(graph_source_address.as_ref()),
             target,
             metric: Arc::from(metric.as_ref()),
             limit: None,
@@ -871,7 +871,7 @@ pub enum UnresolvedPattern {
     /// The subquery's select list determines which variables are returned.
     Subquery(Box<UnresolvedQuery>),
 
-    /// Index search pattern - BM25 full-text search against a virtual graph
+    /// Index search pattern - BM25 full-text search against a graph source
     ///
     /// Syntax:
     /// ```json
@@ -883,7 +883,7 @@ pub enum UnresolvedPattern {
     /// ```
     IndexSearch(UnresolvedIndexSearchPattern),
 
-    /// Vector search pattern - similarity search against a vector virtual graph
+    /// Vector search pattern - similarity search against a vector graph source
     ///
     /// Syntax:
     /// ```json

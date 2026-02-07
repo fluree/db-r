@@ -661,3 +661,170 @@ async fn policy_onclass_and_onproperty_combined() {
         "f:onClass + f:onProperty should deny SSN only for User instances"
     );
 }
+
+/// Regression: f:onClass policy must apply to properties introduced in novelty
+/// even when updated subjects do NOT restate `@type`.
+///
+/// This specifically exercises the policy-build-time class→property indexing:
+/// - txn1: create `ex:alice a ex:User` with `schema:name` (no `schema:ssn`)
+/// - index refresh runs, clearing novelty (rdf:type now lives in the indexed snapshot)
+/// - txn2: update `ex:alice` to add `schema:ssn` WITHOUT restating `@type`
+/// - policy: deny `f:onClass ex:User` with default-allow true
+/// - query: selecting `schema:ssn` should return empty (deny applies)
+///
+/// Without novelty-aware class→property augmentation, the deny policy may not be indexed
+/// under `schema:ssn` and the SSN value can leak via default-allow.
+#[cfg(feature = "native")]
+#[tokio::test]
+async fn policy_onclass_applies_to_novelty_properties_without_type_restated() {
+    use fluree_db_api::{build_policy_context, CommitOpts, FlureeView, IndexConfig, TxnOpts};
+    use fluree_db_api::dataset::QueryConnectionOptions;
+    use std::sync::Arc;
+
+    assert_index_defaults();
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path = tmp.path().to_string_lossy().to_string();
+
+    let mut fluree = FlureeBuilder::file(path).build().expect("build file fluree");
+
+    let (local, handle) = support::start_background_indexer_local(
+        fluree.storage().clone(),
+        fluree.nameservice().clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+    fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));
+
+    local
+        .run_until(async move {
+            let alias = "policy/onclass-novelty-prop:main";
+            let ledger0 = support::genesis_ledger_for_fluree(&fluree, alias);
+
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            // txn1: create typed user with name only (no ssn)
+            let txn1 = json!({
+                "@context": {
+                    "ex": "http://example.org/ns/",
+                    "schema": "http://schema.org/"
+                },
+                "@graph": [{
+                    "@id": "ex:alice",
+                    "@type": "ex:User",
+                    "schema:name": "Alice"
+                }]
+            });
+
+            let r1 = fluree
+                .insert_with_opts(
+                    ledger0,
+                    &txn1,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("insert txn1");
+
+            // Force index refresh so rdf:type is in the indexed snapshot (not novelty).
+            let outcome =
+                support::trigger_index_and_wait_outcome(&handle, r1.ledger.alias(), r1.receipt.t)
+                    .await;
+            let fluree_db_api::IndexOutcome::Completed { root_address, .. } = outcome else {
+                unreachable!("helper only returns Completed")
+            };
+
+            // Reload via `fluree.ledger()` so the returned state has a queryable
+            // binary range provider + binary store attached when an index exists.
+            let ledger1 = fluree.ledger(alias).await.expect("fluree.ledger after indexing");
+            let _ = root_address; // keep for debugging parity
+
+            // txn2: update existing user, add SSN WITHOUT restating @type
+            let txn2 = json!({
+                "@context": {
+                    "ex": "http://example.org/ns/",
+                    "schema": "http://schema.org/"
+                },
+                "@graph": [{
+                    "@id": "ex:alice",
+                    "schema:ssn": "111-11-1111"
+                }]
+            });
+
+            let r2 = fluree
+                .insert_with_opts(
+                    ledger1,
+                    &txn2,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("insert txn2");
+            let ledger2 = r2.ledger;
+
+            // Policy: deny Users, default allow true.
+            // The deny must be indexed under *schema:ssn* based on class→property stats.
+            let policy = json!([
+                {
+                    "@id": "ex:denyUsers",
+                    "@type": "f:AccessPolicy",
+                    "f:action": "f:view",
+                    "f:onClass": [{"@id": "http://example.org/ns/User"}],
+                    "f:allow": false
+                },
+                {
+                    "@id": "ex:allowAll",
+                    "@type": "f:AccessPolicy",
+                    "f:action": "f:view",
+                    "f:allow": true
+                }
+            ]);
+
+            let opts = QueryConnectionOptions {
+                policy: Some(policy),
+                default_allow: true,
+                ..Default::default()
+            };
+
+            let policy_ctx = build_policy_context(
+                &ledger2.db,
+                ledger2.novelty.as_ref(),
+                Some(ledger2.novelty.as_ref()),
+                ledger2.t(),
+                &opts,
+            )
+            .await
+            .expect("build_policy_context");
+
+            let view = FlureeView::from_ledger_state(&ledger2).with_policy(Arc::new(policy_ctx));
+
+            // Query for ssn — should be denied (empty), despite default-allow true.
+            let query_ssn = json!({
+                "@context": {
+                    "ex": "http://example.org/ns/",
+                    "schema": "http://schema.org/"
+                },
+                "select": "?ssn",
+                "where": {
+                    "@id": "ex:alice",
+                    "schema:ssn": "?ssn"
+                }
+            });
+
+            let result = fluree
+                .query_view(&view, &query_ssn)
+                .await
+                .expect("query_view");
+            let jsonld = result.to_jsonld(&ledger2.db).expect("to_jsonld");
+
+            assert_eq!(
+                normalize_rows(&jsonld),
+                normalize_rows(&json!([])),
+                "f:onClass deny must apply to properties introduced in novelty without @type restated"
+            );
+        })
+        .await;
+}

@@ -20,9 +20,9 @@ use aws_smithy_types::timeout::TimeoutConfig;
 use fluree_db_core::alias::{self as core_alias, DEFAULT_BRANCH};
 use fluree_db_nameservice::{
     AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue,
-    NameService, NameServiceError, NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher,
-    RefValue, StatusCasResult, StatusPayload, StatusPublisher, StatusValue, VgNsRecord, VgType,
-    VirtualGraphPublisher,
+    GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService, NameServiceError,
+    NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher, RefValue, StatusCasResult,
+    StatusPayload, StatusPublisher, StatusValue,
 };
 use schema::*;
 use std::collections::HashMap;
@@ -192,7 +192,7 @@ impl DynamoDbNameService {
 
         Some(NsRecord {
             address: pk.to_string(),
-            alias: name,
+            name,
             branch,
             commit_address,
             commit_t,
@@ -203,15 +203,15 @@ impl DynamoDbNameService {
         })
     }
 
-    /// Assemble a VgNsRecord from concern items (requires kind=graph_source).
-    fn items_to_vg_record(pk: &str, items: &[Item]) -> Option<VgNsRecord> {
+    /// Assemble a GraphSourceRecord from concern items (requires kind=graph_source).
+    fn items_to_gs_record(pk: &str, items: &[Item]) -> Option<GraphSourceRecord> {
         let meta = Self::find_item_by_sk(items, SK_META)?;
         let kind = meta.get(ATTR_KIND)?.as_s().ok()?;
         if kind != KIND_GRAPH_SOURCE {
             return None;
         }
 
-        Self::vg_record_from_meta(
+        Self::gs_record_from_meta(
             pk,
             meta,
             Self::find_item_by_sk(items, SK_CONFIG),
@@ -219,13 +219,13 @@ impl DynamoDbNameService {
         )
     }
 
-    /// Build a VgNsRecord from separate meta / config / index items.
-    fn vg_record_from_meta(
+    /// Build a GraphSourceRecord from separate meta / config / index items.
+    fn gs_record_from_meta(
         pk: &str,
         meta: &Item,
         config_item: Option<&Item>,
         index_item: Option<&Item>,
-    ) -> Option<VgNsRecord> {
+    ) -> Option<GraphSourceRecord> {
         let name = meta.get(ATTR_NAME).and_then(|v| v.as_s().ok()).cloned()?;
         let branch = meta.get(ATTR_BRANCH).and_then(|v| v.as_s().ok()).cloned()?;
         let retracted = meta
@@ -238,7 +238,7 @@ impl DynamoDbNameService {
             .and_then(|v| v.as_s().ok())
             .cloned()
             .unwrap_or_default();
-        let vg_type = VgType::from_type_string(&source_type_str);
+        let source_type = GraphSourceType::from_type_string(&source_type_str);
         let dependencies: Vec<String> = meta
             .get(ATTR_DEPENDENCIES)
             .and_then(|v| v.as_l().ok())
@@ -261,11 +261,11 @@ impl DynamoDbNameService {
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
 
-        Some(VgNsRecord {
+        Some(GraphSourceRecord {
             address: pk.to_string(),
             name,
             branch,
-            vg_type,
+            source_type,
             config,
             dependencies,
             index_address,
@@ -485,13 +485,6 @@ impl NameService for DynamoDbNameService {
         let pk = Self::normalize(ledger_address);
         let items = self.query_all_items(&pk).await?;
         Ok(Self::items_to_ns_record(&pk, &items))
-    }
-
-    async fn alias(
-        &self,
-        ledger_address: &str,
-    ) -> std::result::Result<Option<String>, NameServiceError> {
-        Ok(self.lookup(ledger_address).await?.map(|r| r.alias))
     }
 
     async fn all_records(&self) -> std::result::Result<Vec<NsRecord>, NameServiceError> {
@@ -1088,15 +1081,15 @@ impl RefPublisher for DynamoDbNameService {
     }
 }
 
-// ─── VirtualGraphPublisher ──────────────────────────────────────────────────
+// ─── GraphSourcePublisher ───────────────────────────────────────────────────
 
 #[async_trait]
-impl VirtualGraphPublisher for DynamoDbNameService {
-    async fn publish_vg(
+impl GraphSourcePublisher for DynamoDbNameService {
+    async fn publish_graph_source(
         &self,
         name: &str,
         branch: &str,
-        vg_type: VgType,
+        source_type: GraphSourceType,
         config: &str,
         dependencies: &[String],
     ) -> std::result::Result<(), NameServiceError> {
@@ -1130,7 +1123,10 @@ impl VirtualGraphPublisher for DynamoDbNameService {
             .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
             .expression_attribute_names("#schema", ATTR_SCHEMA)
             .expression_attribute_values(":gs", AttributeValue::S(KIND_GRAPH_SOURCE.to_string()))
-            .expression_attribute_values(":src_type", AttributeValue::S(vg_type.to_type_string()))
+            .expression_attribute_values(
+                ":src_type",
+                AttributeValue::S(source_type.to_type_string()),
+            )
             .expression_attribute_values(":name", AttributeValue::S(name.to_string()))
             .expression_attribute_values(":branch", AttributeValue::S(branch.to_string()))
             .expression_attribute_values(":deps", deps_av)
@@ -1205,7 +1201,7 @@ impl VirtualGraphPublisher for DynamoDbNameService {
         Ok(())
     }
 
-    async fn publish_vg_index(
+    async fn publish_graph_source_index(
         &self,
         name: &str,
         branch: &str,
@@ -1241,7 +1237,7 @@ impl VirtualGraphPublisher for DynamoDbNameService {
         }
     }
 
-    async fn retract_vg(
+    async fn retract_graph_source(
         &self,
         name: &str,
         branch: &str,
@@ -1266,13 +1262,13 @@ impl VirtualGraphPublisher for DynamoDbNameService {
         Ok(())
     }
 
-    async fn lookup_vg(
+    async fn lookup_graph_source(
         &self,
         alias: &str,
-    ) -> std::result::Result<Option<VgNsRecord>, NameServiceError> {
+    ) -> std::result::Result<Option<GraphSourceRecord>, NameServiceError> {
         let pk = Self::normalize(alias);
         let items = self.query_all_items(&pk).await?;
-        Ok(Self::items_to_vg_record(&pk, &items))
+        Ok(Self::items_to_gs_record(&pk, &items))
     }
 
     async fn lookup_any(
@@ -1295,8 +1291,8 @@ impl VirtualGraphPublisher for DynamoDbNameService {
                 }
             }
             Some(k) if k == KIND_GRAPH_SOURCE => {
-                if let Some(record) = Self::items_to_vg_record(&pk, &items) {
-                    return Ok(NsLookupResult::VirtualGraph(record));
+                if let Some(record) = Self::items_to_gs_record(&pk, &items) {
+                    return Ok(NsLookupResult::GraphSource(record));
                 }
             }
             _ => {}
@@ -1305,7 +1301,9 @@ impl VirtualGraphPublisher for DynamoDbNameService {
         Ok(NsLookupResult::NotFound)
     }
 
-    async fn all_vg_records(&self) -> std::result::Result<Vec<VgNsRecord>, NameServiceError> {
+    async fn all_graph_source_records(
+        &self,
+    ) -> std::result::Result<Vec<GraphSourceRecord>, NameServiceError> {
         // 1. Query GSI1 for all graph_source meta items
         let meta_items = self.query_gsi_by_kind(KIND_GRAPH_SOURCE).await?;
         if meta_items.is_empty() {
@@ -1396,7 +1394,7 @@ impl VirtualGraphPublisher for DynamoDbNameService {
             }
         }
 
-        // 4. Assemble VgNsRecords from GSI meta items + BatchGet config/index
+        // 4. Assemble GraphSourceRecords from GSI meta items + BatchGet config/index
         let mut records = Vec::with_capacity(meta_items.len());
         for meta in &meta_items {
             let Some(pk) = meta.get(ATTR_PK).and_then(|v| v.as_s().ok()) else {
@@ -1415,7 +1413,7 @@ impl VirtualGraphPublisher for DynamoDbNameService {
                 })
             });
 
-            if let Some(record) = Self::vg_record_from_meta(pk, meta, config_item, index_item) {
+            if let Some(record) = Self::gs_record_from_meta(pk, meta, config_item, index_item) {
                 records.push(record);
             }
         }
@@ -1550,7 +1548,7 @@ impl StatusPublisher for DynamoDbNameService {
 // ─── ConfigPublisher (ledger configs only) ──────────────────────────────────
 //
 // ConfigPublisher handles ledger configs (ConfigPayload with default_context +
-// extra). Graph-source config lives under VirtualGraphPublisher as raw
+// extra). Graph-source config lives under GraphSourcePublisher as raw
 // config_json. Calling get_config/push_config on a graph-source alias returns
 // None / Conflict to prevent cross-contamination of the config_v watermark.
 
@@ -1562,7 +1560,7 @@ impl ConfigPublisher for DynamoDbNameService {
     ) -> std::result::Result<Option<ConfigValue>, NameServiceError> {
         let pk = Self::normalize(alias);
 
-        // Gate: only ledger configs — graph sources use VirtualGraphPublisher.
+        // Gate: only ledger configs — graph sources use GraphSourcePublisher.
         match self.meta_kind(&pk).await? {
             Some(ref k) if k == KIND_GRAPH_SOURCE => return Ok(None),
             None => return Ok(None),
@@ -1956,7 +1954,7 @@ mod tests {
 
         let record = DynamoDbNameService::items_to_ns_record(pk, &items).unwrap();
         assert_eq!(record.address, "mydb:main");
-        assert_eq!(record.alias, "mydb");
+        assert_eq!(record.name, "mydb");
         assert_eq!(record.branch, "main");
         assert_eq!(record.commit_address, Some("commit-abc".to_string()));
         assert_eq!(record.commit_t, 10);
@@ -2000,10 +1998,10 @@ mod tests {
         assert!(DynamoDbNameService::items_to_ns_record(pk, &items).is_none());
     }
 
-    // ── items_to_vg_record tests ────────────────────────────────────────
+    // ── items_to_gs_record tests ────────────────────────────────────────
 
     #[test]
-    fn test_items_to_vg_record_full() {
+    fn test_items_to_gs_record_full() {
         let pk = "search:main";
         let items = vec![
             make_meta_gs(pk, "search", "main", "fidx:BM25"),
@@ -2011,11 +2009,11 @@ mod tests {
             make_index(pk, Some("snap-001"), 42),
         ];
 
-        let record = DynamoDbNameService::items_to_vg_record(pk, &items).unwrap();
+        let record = DynamoDbNameService::items_to_gs_record(pk, &items).unwrap();
         assert_eq!(record.address, "search:main");
         assert_eq!(record.name, "search");
         assert_eq!(record.branch, "main");
-        assert_eq!(record.vg_type, VgType::Bm25);
+        assert_eq!(record.source_type, GraphSourceType::Bm25);
         assert_eq!(record.config, r#"{"k1":1.2}"#);
         assert_eq!(record.dependencies, vec!["source:main".to_string()]);
         assert_eq!(record.index_address, Some("snap-001".to_string()));
@@ -2024,7 +2022,7 @@ mod tests {
     }
 
     #[test]
-    fn test_items_to_vg_record_unborn_index() {
+    fn test_items_to_gs_record_unborn_index() {
         let pk = "search:main";
         let items = vec![
             make_meta_gs(pk, "search", "main", "fidx:BM25"),
@@ -2032,7 +2030,7 @@ mod tests {
             make_index(pk, None, 0),
         ];
 
-        let record = DynamoDbNameService::items_to_vg_record(pk, &items).unwrap();
+        let record = DynamoDbNameService::items_to_gs_record(pk, &items).unwrap();
         assert_eq!(record.index_address, None);
         assert_eq!(record.index_t, 0);
     }

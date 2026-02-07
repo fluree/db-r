@@ -1,7 +1,7 @@
-//! Integration tests for R2RML virtual graphs.
+//! Integration tests for R2RML graph sources.
 //!
 //! These tests verify that GRAPH patterns correctly execute against R2RML
-//! virtual graphs backed by Iceberg tables.
+//! graph sources backed by Iceberg tables.
 //!
 //! Test categories:
 //! - Unit tests: R2RML parsing, compilation, term materialization
@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 // Additional imports for engine-level E2E tests
 use fluree_db_api::{
-    execute_with_r2rml, DataSource, ExecutableQuery, FlureeBuilder, ParsedContext, Pattern,
-    StorageWrite, VarRegistry, VirtualGraphPublisher,
+    execute_with_r2rml, DataSource, ExecutableQuery, FlureeBuilder, GraphSourcePublisher,
+    ParsedContext, Pattern, StorageWrite, VarRegistry,
 };
 use fluree_db_core::{NoOverlay, Tracker};
 use fluree_db_query::ir::GraphName;
@@ -56,13 +56,13 @@ impl MockR2rmlProvider {
 
 #[async_trait]
 impl R2rmlProvider for MockR2rmlProvider {
-    async fn has_r2rml_mapping(&self, _vg_alias: &str) -> bool {
+    async fn has_r2rml_mapping(&self, _graph_source_address: &str) -> bool {
         true
     }
 
     async fn compiled_mapping(
         &self,
-        _vg_alias: &str,
+        _graph_source_address: &str,
         _as_of_t: Option<i64>,
     ) -> QueryResult<Arc<CompiledR2rmlMapping>> {
         Ok(Arc::clone(&self.mapping))
@@ -73,7 +73,7 @@ impl R2rmlProvider for MockR2rmlProvider {
 impl R2rmlTableProvider for MockR2rmlProvider {
     async fn scan_table(
         &self,
-        _vg_alias: &str,
+        _graph_source_address: &str,
         _table_name: &str,
         _projection: &[String],
         _as_of_t: Option<i64>,
@@ -199,18 +199,18 @@ async fn test_mock_r2rml_provider() {
     let provider = MockR2rmlProvider::new(mapping, vec![batch]);
 
     // Test has_r2rml_mapping
-    assert!(provider.has_r2rml_mapping("test-vg:main").await);
+    assert!(provider.has_r2rml_mapping("test-gs:main").await);
 
     // Test compiled_mapping
     let loaded = provider
-        .compiled_mapping("test-vg:main", Some(0))
+        .compiled_mapping("test-gs:main", Some(0))
         .await
         .unwrap();
     assert_eq!(loaded.triples_maps.len(), 1);
 
     // Test scan_table
     let batches = provider
-        .scan_table("test-vg:main", "openflights.airlines", &[], Some(0))
+        .scan_table("test-gs:main", "openflights.airlines", &[], Some(0))
         .await
         .unwrap();
     assert_eq!(batches.len(), 1);
@@ -222,8 +222,8 @@ async fn test_mock_r2rml_provider() {
 // =============================================================================
 
 // Note: Full GRAPH query integration tests require the nameservice to be
-// configured with an Iceberg VG. These tests are marked as ignored until
-// we have proper test infrastructure for registering mock VGs.
+// configured with an Iceberg graph source. These tests are marked as ignored until
+// we have proper test infrastructure for registering mock graph sources.
 
 /// Test that R2RML materialization produces correct RDF terms.
 #[test]
@@ -398,7 +398,7 @@ async fn e2e_r2rml_query_iceberg_table() {
         .namespace_codes
         .insert(9_999, "http://example.org/".to_string());
 
-    // Build query: SELECT ?airline ?name ?country WHERE { GRAPH <vg:main> { ?airline ex:name ?name ; ex:country ?country } }
+    // Build query: SELECT ?airline ?name ?country WHERE { GRAPH <gs:main> { ?airline ex:name ?name ; ex:country ?country } }
     let mut vars = VarRegistry::new();
     let airline_var = vars.get_or_insert("?airline");
     let name_var = vars.get_or_insert("?name");
@@ -428,7 +428,7 @@ async fn e2e_r2rml_query_iceberg_table() {
     ];
 
     let graph_pattern = Pattern::Graph {
-        name: GraphName::Iri("airlines-vg:main".into()),
+        name: GraphName::Iri("airlines-gs:main".into()),
         patterns: inner_patterns,
     };
 
@@ -505,8 +505,8 @@ async fn e2e_r2rml_query_iceberg_table() {
 ///
 /// This test exercises the complete production flow:
 /// 1. Store R2RML mapping in Fluree storage
-/// 2. Create VG using `create_r2rml_vg()` which registers in nameservice
-/// 3. Query using `query_vg()` which uses `FlureeR2rmlProvider`
+/// 2. Create graph source using `create_r2rml_graph_source()` which registers in nameservice
+/// 3. Query using `query_graph_source()` which uses `FlureeR2rmlProvider`
 ///
 /// This test requires:
 /// - Polaris REST catalog (default: localhost:8182)
@@ -589,8 +589,8 @@ async fn e2e_fluree_r2rml_provider_full_flow() {
         .expect("Failed to store mapping");
     eprintln!("  Mapping stored at: {}", mapping_address);
 
-    // Step 2: Create VG using create_r2rml_vg()
-    eprintln!("Step 2: Creating R2RML VG...");
+    // Step 2: Create graph source using create_r2rml_graph_source()
+    eprintln!("Step 2: Creating R2RML graph source...");
 
     // Parse OAuth2 credentials
     let parts: Vec<&str> = oauth2_credential.split(':').collect();
@@ -612,22 +612,22 @@ async fn e2e_fluree_r2rml_provider_full_flow() {
         config = config.with_auth_oauth2(&token_url, parts[0], parts[1]);
     }
 
-    let vg_result = fluree.create_r2rml_vg(config).await;
-    match &vg_result {
+    let gs_result = fluree.create_r2rml_graph_source(config).await;
+    match &gs_result {
         Ok(result) => {
-            eprintln!("  VG created: {}", result.vg_alias);
+            eprintln!("  Graph source created: {}", result.graph_source_address);
             eprintln!("  Connection tested: {}", result.connection_tested);
             eprintln!("  Mapping validated: {}", result.mapping_validated);
             eprintln!("  TriplesMap count: {}", result.triples_map_count);
         }
         Err(e) => {
-            eprintln!("  VG creation failed: {}", e);
+            eprintln!("  Graph source creation failed: {}", e);
             let is_connection_error =
                 e.to_string().contains("connection") || e.to_string().contains("Connection");
 
             if strict_mode {
                 // In strict mode, fail hard on any error
-                panic!("VG creation failed (strict mode): {}", e);
+                panic!("Graph source creation failed (strict mode): {}", e);
             } else if is_connection_error {
                 // In lenient mode, skip on connection errors
                 eprintln!("WARNING: Could not connect to Iceberg catalog - skipping test");
@@ -636,13 +636,13 @@ async fn e2e_fluree_r2rml_provider_full_flow() {
         }
     }
 
-    // VG should be created even if connection test fails
-    let vg_result = vg_result.expect("VG creation should succeed");
-    assert!(vg_result.mapping_validated, "Mapping should be validated");
-    assert_eq!(vg_result.triples_map_count, 1, "Should have 1 TriplesMap");
+    // Graph source should be created even if connection test fails
+    let gs_result = gs_result.expect("Graph source creation should succeed");
+    assert!(gs_result.mapping_validated, "Mapping should be validated");
+    assert_eq!(gs_result.triples_map_count, 1, "Should have 1 TriplesMap");
 
-    // Step 3: Query using query_vg() which uses FlureeR2rmlProvider
-    eprintln!("Step 3: Querying VG...");
+    // Step 3: Query using query_graph_source() which uses FlureeR2rmlProvider
+    eprintln!("Step 3: Querying graph source...");
 
     let query = serde_json::json!({
         "@context": {"ex": "http://example.org/"},
@@ -655,8 +655,8 @@ async fn e2e_fluree_r2rml_provider_full_flow() {
         }
     });
 
-    // Execute query via query_vg - this exercises the full FlureeR2rmlProvider path
-    let result = fluree.query_vg(&ledger, &query).await;
+    // Execute query via query_graph_source - this exercises the full FlureeR2rmlProvider path
+    let result = fluree.query_graph_source(&ledger, &query).await;
 
     match result {
         Ok(query_result) => {
@@ -708,7 +708,7 @@ async fn e2e_fluree_r2rml_provider_full_flow() {
     }
 }
 
-/// Provider that queries Iceberg directly (without nameservice VG registration).
+/// Provider that queries Iceberg directly (without nameservice graph source registration).
 #[derive(Debug)]
 struct IcebergDirectProvider {
     mapping: Arc<CompiledR2rmlMapping>,
@@ -723,13 +723,13 @@ struct IcebergDirectProvider {
 
 #[async_trait]
 impl R2rmlProvider for IcebergDirectProvider {
-    async fn has_r2rml_mapping(&self, _vg_alias: &str) -> bool {
+    async fn has_r2rml_mapping(&self, _graph_source_address: &str) -> bool {
         true
     }
 
     async fn compiled_mapping(
         &self,
-        _vg_alias: &str,
+        _graph_source_address: &str,
         _as_of_t: Option<i64>,
     ) -> QueryResult<Arc<CompiledR2rmlMapping>> {
         Ok(Arc::clone(&self.mapping))
@@ -740,7 +740,7 @@ impl R2rmlProvider for IcebergDirectProvider {
 impl R2rmlTableProvider for IcebergDirectProvider {
     async fn scan_table(
         &self,
-        _vg_alias: &str,
+        _graph_source_address: &str,
         table_name: &str,
         projection: &[String],
         _as_of_t: Option<i64>,
@@ -1029,13 +1029,13 @@ fn test_ref_object_map_compilation() {
 // =============================================================================
 //
 // These tests exercise the full query execution pipeline with GRAPH patterns:
-// 1. GraphOperator detects R2RML VG and rewrites triple patterns
+// 1. GraphOperator detects R2RML graph source and rewrites triple patterns
 // 2. R2rmlScanOperator loads mapping, scans tables, materializes terms
 // 3. Variable binding/unification works end-to-end
 //
 // Uses MockR2rmlProvider to return test data without external infrastructure.
 
-/// Engine-level E2E test: Execute GRAPH pattern query against R2RML VG.
+/// Engine-level E2E test: Execute GRAPH pattern query against R2RML graph source.
 ///
 /// This test verifies:
 /// - Pattern::Graph with concrete IRI triggers R2RML rewriting
@@ -1061,8 +1061,8 @@ async fn engine_e2e_graph_pattern_r2rml_scan() {
     let batch = sample_airline_batch();
     let provider = MockR2rmlProvider::new(mapping, vec![batch]);
 
-    // Build a query with Pattern::Graph targeting our VG
-    // Equivalent SPARQL: SELECT ?s ?name WHERE { GRAPH <airlines-vg:main> { ?s ex:name ?name } }
+    // Build a query with Pattern::Graph targeting our graph source
+    // Equivalent SPARQL: SELECT ?s ?name WHERE { GRAPH <airlines-gs:main> { ?s ex:name ?name } }
     let mut vars = VarRegistry::new();
     let subject_var = vars.get_or_insert("?s");
     let name_var = vars.get_or_insert("?name");
@@ -1081,7 +1081,7 @@ async fn engine_e2e_graph_pattern_r2rml_scan() {
     ))];
 
     let graph_pattern = Pattern::Graph {
-        name: GraphName::Iri("airlines-vg:main".into()),
+        name: GraphName::Iri("airlines-gs:main".into()),
         patterns: inner_patterns,
     };
 
@@ -1148,18 +1148,18 @@ async fn engine_e2e_provider_method_calls() {
 
     #[async_trait]
     impl R2rmlProvider for TrackingProvider {
-        async fn has_r2rml_mapping(&self, vg_alias: &str) -> bool {
-            eprintln!("has_r2rml_mapping called for: {}", vg_alias);
+        async fn has_r2rml_mapping(&self, graph_source_address: &str) -> bool {
+            eprintln!("has_r2rml_mapping called for: {}", graph_source_address);
             self.has_mapping_called.store(true, Ordering::SeqCst);
-            vg_alias == "airlines-vg:main"
+            graph_source_address == "airlines-gs:main"
         }
 
         async fn compiled_mapping(
             &self,
-            vg_alias: &str,
+            graph_source_address: &str,
             _as_of_t: Option<i64>,
         ) -> QueryResult<Arc<CompiledR2rmlMapping>> {
-            eprintln!("compiled_mapping called for: {}", vg_alias);
+            eprintln!("compiled_mapping called for: {}", graph_source_address);
             self.compiled_mapping_called.fetch_add(1, Ordering::SeqCst);
             Ok(Arc::clone(&self.mapping))
         }
@@ -1169,14 +1169,14 @@ async fn engine_e2e_provider_method_calls() {
     impl R2rmlTableProvider for TrackingProvider {
         async fn scan_table(
             &self,
-            vg_alias: &str,
+            graph_source_address: &str,
             table_name: &str,
             projection: &[String],
             _as_of_t: Option<i64>,
         ) -> QueryResult<Vec<ColumnBatch>> {
             eprintln!(
-                "scan_table called: vg={}, table={}, projection={:?}",
-                vg_alias, table_name, projection
+                "scan_table called: gs={}, table={}, projection={:?}",
+                graph_source_address, table_name, projection
             );
             self.scan_table_called.fetch_add(1, Ordering::SeqCst);
             Ok(self.batches.clone())
@@ -1203,7 +1203,7 @@ async fn engine_e2e_provider_method_calls() {
     let subject_var = vars.get_or_insert("?s");
 
     let graph_pattern = Pattern::Graph {
-        name: GraphName::Iri("airlines-vg:main".into()),
+        name: GraphName::Iri("airlines-gs:main".into()),
         patterns: vec![Pattern::Triple(TriplePattern::new(
             Term::Var(subject_var),
             Term::Var(vars.get_or_insert("?p")),
@@ -1248,7 +1248,7 @@ async fn engine_e2e_provider_method_calls() {
         "has_r2rml_mapping should have been called for the GRAPH pattern"
     );
 
-    // Once R2RML VG is detected, compiled_mapping and scan_table should be called
+    // Once R2RML graph source is detected, compiled_mapping and scan_table should be called
     assert!(
         provider.compiled_mapping_called.load(Ordering::SeqCst) > 0,
         "compiled_mapping should have been called to load the R2RML mapping"
@@ -1268,7 +1268,7 @@ async fn engine_e2e_provider_method_calls() {
 }
 
 // =============================================================================
-// VG Creation API Tests
+// Graph Source Creation API Tests
 // =============================================================================
 
 use fluree_db_api::{IcebergCreateConfig, R2rmlCreateConfig};
@@ -1277,7 +1277,7 @@ use fluree_db_api::{IcebergCreateConfig, R2rmlCreateConfig};
 #[test]
 fn test_iceberg_create_config_validation_valid() {
     let config = IcebergCreateConfig::new(
-        "my-iceberg-vg",
+        "my-iceberg-gs",
         "https://polaris.example.com",
         "openflights.airlines",
     );
@@ -1291,7 +1291,7 @@ fn test_iceberg_create_config_validation_valid() {
     );
 
     // Check alias
-    assert_eq!(config.vg_alias(), "my-iceberg-vg:main");
+    assert_eq!(config.graph_source_address(), "my-iceberg-gs:main");
 }
 
 /// Test IcebergCreateConfig validation - empty name.
@@ -1312,7 +1312,7 @@ fn test_iceberg_create_config_validation_empty_name() {
 #[test]
 fn test_iceberg_create_config_validation_name_with_colon() {
     let config = IcebergCreateConfig::new(
-        "my:vg",
+        "my:gs",
         "https://polaris.example.com",
         "openflights.airlines",
     );
@@ -1324,7 +1324,7 @@ fn test_iceberg_create_config_validation_name_with_colon() {
 /// Test IcebergCreateConfig validation - empty catalog URI.
 #[test]
 fn test_iceberg_create_config_validation_empty_uri() {
-    let config = IcebergCreateConfig::new("my-vg", "", "openflights.airlines");
+    let config = IcebergCreateConfig::new("my-gs", "", "openflights.airlines");
 
     let result = config.validate();
     assert!(result.is_err(), "Empty catalog URI should fail validation");
@@ -1334,7 +1334,7 @@ fn test_iceberg_create_config_validation_empty_uri() {
 #[test]
 fn test_iceberg_create_config_validation_invalid_table() {
     let config = IcebergCreateConfig::new(
-        "my-vg",
+        "my-gs",
         "https://polaris.example.com",
         "invalid_table", // Missing namespace
     );
@@ -1349,7 +1349,7 @@ fn test_iceberg_create_config_validation_invalid_table() {
 /// Test IcebergCreateConfig builder methods.
 #[test]
 fn test_iceberg_create_config_builder() {
-    let config = IcebergCreateConfig::new("my-vg", "https://polaris.example.com", "ns.table")
+    let config = IcebergCreateConfig::new("my-gs", "https://polaris.example.com", "ns.table")
         .with_branch("dev")
         .with_warehouse("my-warehouse")
         .with_auth_bearer("my-token")
@@ -1358,7 +1358,7 @@ fn test_iceberg_create_config_builder() {
         .with_s3_endpoint("http://localhost:9000")
         .with_s3_path_style(true);
 
-    assert_eq!(config.vg_alias(), "my-vg:dev");
+    assert_eq!(config.graph_source_address(), "my-gs:dev");
     assert_eq!(config.warehouse, Some("my-warehouse".to_string()));
     assert!(!config.vended_credentials);
     assert_eq!(config.s3_region, Some("us-west-2".to_string()));
@@ -1376,7 +1376,7 @@ fn test_iceberg_create_config_builder() {
 #[test]
 fn test_r2rml_create_config_validation_valid() {
     let config = R2rmlCreateConfig::new(
-        "my-r2rml-vg",
+        "my-r2rml-gs",
         "https://polaris.example.com",
         "openflights.airlines",
         "fluree:file://mappings/airlines.ttl",
@@ -1389,14 +1389,14 @@ fn test_r2rml_create_config_validation_valid() {
         result.err()
     );
 
-    assert_eq!(config.vg_alias(), "my-r2rml-vg:main");
+    assert_eq!(config.graph_source_address(), "my-r2rml-gs:main");
 }
 
 /// Test R2rmlCreateConfig validation - empty mapping source.
 #[test]
 fn test_r2rml_create_config_validation_empty_mapping() {
     let config = R2rmlCreateConfig::new(
-        "my-vg",
+        "my-gs",
         "https://polaris.example.com",
         "openflights.airlines",
         "", // Empty mapping source
@@ -1427,7 +1427,7 @@ fn test_r2rml_create_config_builder() {
     .with_auth_bearer("token123")
     .with_warehouse("analytics");
 
-    assert_eq!(config.vg_alias(), "airlines-rdf:staging");
+    assert_eq!(config.graph_source_address(), "airlines-rdf:staging");
     assert_eq!(config.mapping_source, "s3://bucket/mappings/airlines.ttl");
     assert_eq!(config.mapping_media_type, Some("text/turtle".to_string()));
     assert_eq!(config.iceberg.warehouse, Some("analytics".to_string()));
@@ -1436,15 +1436,15 @@ fn test_r2rml_create_config_builder() {
     assert!(config.validate().is_ok());
 }
 
-/// Test IcebergVgConfig serialization roundtrip.
+/// Test IcebergGsConfig serialization roundtrip.
 #[test]
-fn test_iceberg_vg_config_serialization() {
-    let config = IcebergCreateConfig::new("test-vg", "https://polaris.example.com", "ns.table")
+fn test_iceberg_graph_source_config_serialization() {
+    let config = IcebergCreateConfig::new("test-gs", "https://polaris.example.com", "ns.table")
         .with_warehouse("my-warehouse")
         .with_vended_credentials(true);
 
-    // Convert to IcebergVgConfig for storage
-    let iceberg_config = config.to_iceberg_vg_config();
+    // Convert to IcebergGsConfig for storage
+    let iceberg_config = config.to_iceberg_gs_config();
 
     // Serialize to JSON
     let json = iceberg_config
@@ -1452,8 +1452,8 @@ fn test_iceberg_vg_config_serialization() {
         .expect("serialization should succeed");
 
     // Parse back
-    use fluree_db_iceberg::IcebergVgConfig;
-    let parsed = IcebergVgConfig::from_json(&json).expect("parsing should succeed");
+    use fluree_db_iceberg::IcebergGsConfig;
+    let parsed = IcebergGsConfig::from_json(&json).expect("parsing should succeed");
 
     assert_eq!(parsed.catalog.uri, "https://polaris.example.com");
     assert_eq!(parsed.table.identifier(), "ns.table");
@@ -1462,19 +1462,19 @@ fn test_iceberg_vg_config_serialization() {
     assert!(parsed.mapping.is_none());
 }
 
-/// Test R2rmlVgConfig serialization with mapping.
+/// Test R2rmlGsConfig serialization with mapping.
 #[test]
-fn test_r2rml_vg_config_serialization() {
+fn test_r2rml_graph_source_config_serialization() {
     let config = R2rmlCreateConfig::new(
-        "test-vg",
+        "test-gs",
         "https://polaris.example.com",
         "ns.table",
         "fluree:file://mapping.ttl",
     )
     .with_mapping_media_type("text/turtle");
 
-    // Convert to IcebergVgConfig for storage
-    let iceberg_config = config.to_iceberg_vg_config();
+    // Convert to IcebergGsConfig for storage
+    let iceberg_config = config.to_iceberg_gs_config();
 
     // Serialize to JSON
     let json = iceberg_config
@@ -1482,8 +1482,8 @@ fn test_r2rml_vg_config_serialization() {
         .expect("serialization should succeed");
 
     // Parse back
-    use fluree_db_iceberg::IcebergVgConfig;
-    let parsed = IcebergVgConfig::from_json(&json).expect("parsing should succeed");
+    use fluree_db_iceberg::IcebergGsConfig;
+    let parsed = IcebergGsConfig::from_json(&json).expect("parsing should succeed");
 
     // Should have mapping
     assert!(parsed.mapping.is_some(), "Mapping should be present");
@@ -1492,49 +1492,55 @@ fn test_r2rml_vg_config_serialization() {
     assert_eq!(mapping.media_type, Some("text/turtle".to_string()));
 }
 
-/// Integration test: Create Iceberg VG via Fluree API.
+/// Integration test: Create Iceberg graph source via Fluree API.
 ///
-/// This tests the full VG creation flow with an in-memory nameservice.
+/// This tests the full graph source creation flow with an in-memory nameservice.
 /// The catalog connection test will fail (no real Polaris) but the
-/// VG record should still be created.
+/// graph source record should still be created.
 #[tokio::test]
-async fn integration_create_iceberg_vg() {
+async fn integration_create_iceberg_graph_source() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     let config =
-        IcebergCreateConfig::new("test-iceberg-vg", "https://polaris.example.com", "ns.table");
+        IcebergCreateConfig::new("test-iceberg-gs", "https://polaris.example.com", "ns.table");
 
-    // Create the VG - connection test will fail but VG should be registered
-    let result = fluree.create_iceberg_vg(config).await;
+    // Create the graph source - connection test will fail but it should be registered
+    let result = fluree.create_iceberg_graph_source(config).await;
 
     // Should succeed (connection_tested will be false due to no real catalog)
     assert!(
         result.is_ok(),
-        "VG creation should succeed: {:?}",
+        "Graph source creation should succeed: {:?}",
         result.err()
     );
 
     let create_result = result.unwrap();
-    assert_eq!(create_result.vg_alias, "test-iceberg-vg:main");
+    assert_eq!(create_result.graph_source_address, "test-iceberg-gs:main");
     assert!(
         !create_result.connection_tested,
         "Connection test should fail without real catalog"
     );
 
-    // Verify VG is registered in nameservice
-    let vg_record = fluree.nameservice().lookup_vg("test-iceberg-vg:main").await;
-    assert!(vg_record.is_ok(), "Nameservice lookup should succeed");
-    let record = vg_record.unwrap();
-    assert!(record.is_some(), "VG record should exist");
+    // Verify graph source is registered in nameservice
+    let gs_record = fluree
+        .nameservice()
+        .lookup_graph_source("test-iceberg-gs:main")
+        .await;
+    assert!(gs_record.is_ok(), "Nameservice lookup should succeed");
+    let record = gs_record.unwrap();
+    assert!(record.is_some(), "Graph source record should exist");
     let record = record.unwrap();
-    assert_eq!(record.vg_type, fluree_db_nameservice::VgType::Iceberg);
+    assert_eq!(
+        record.source_type,
+        fluree_db_nameservice::GraphSourceType::Iceberg
+    );
 }
 
-/// Integration test: Create R2RML VG with mapping validation.
+/// Integration test: Create R2RML graph source with mapping validation.
 ///
 /// This test stores a real mapping file and validates the creation flow.
 #[tokio::test]
-async fn integration_create_r2rml_vg_with_mapping() {
+async fn integration_create_r2rml_graph_source_with_mapping() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // First, store the mapping file
@@ -1545,7 +1551,7 @@ async fn integration_create_r2rml_vg_with_mapping() {
         .await
         .expect("Failed to store mapping");
 
-    // Create R2RML VG config
+    // Create R2RML graph source config
     let config = R2rmlCreateConfig::new(
         "airlines-rdf",
         "https://polaris.example.com",
@@ -1554,17 +1560,17 @@ async fn integration_create_r2rml_vg_with_mapping() {
     )
     .with_mapping_media_type("text/turtle");
 
-    // Create the VG
-    let result = fluree.create_r2rml_vg(config).await;
+    // Create the graph source
+    let result = fluree.create_r2rml_graph_source(config).await;
 
     assert!(
         result.is_ok(),
-        "VG creation should succeed: {:?}",
+        "Graph source creation should succeed: {:?}",
         result.err()
     );
 
     let create_result = result.unwrap();
-    assert_eq!(create_result.vg_alias, "airlines-rdf:main");
+    assert_eq!(create_result.graph_source_address, "airlines-rdf:main");
     assert_eq!(create_result.mapping_source, mapping_address);
     assert!(
         create_result.mapping_validated,
@@ -1579,16 +1585,16 @@ async fn integration_create_r2rml_vg_with_mapping() {
         "Connection test should fail without real catalog"
     );
 
-    // Verify VG is registered in nameservice
-    let vg_record = fluree
+    // Verify graph source is registered in nameservice
+    let gs_record = fluree
         .nameservice()
-        .lookup_vg("airlines-rdf:main")
+        .lookup_graph_source("airlines-rdf:main")
         .await
         .expect("Lookup should succeed");
-    assert!(vg_record.is_some(), "VG record should exist");
+    assert!(gs_record.is_some(), "Graph source record should exist");
 
     // The config JSON should contain the mapping
-    let record = vg_record.unwrap();
+    let record = gs_record.unwrap();
     let config_json: serde_json::Value = serde_json::from_str(&record.config).unwrap();
     assert!(
         config_json.get("mapping").is_some(),
@@ -1597,15 +1603,15 @@ async fn integration_create_r2rml_vg_with_mapping() {
 }
 
 // =============================================================================
-// query_vg API Tests (VirtualGraphPublisher impl)
+// query_graph_source API Tests (GraphSourcePublisher impl)
 // =============================================================================
 
-/// Test that query_vg method properly wires FlureeR2rmlProvider.
+/// Test that query_graph_source method properly wires FlureeR2rmlProvider.
 ///
-/// This test verifies the new query_vg API path uses the real R2RML provider
-/// when the nameservice implements VirtualGraphPublisher.
+/// This test verifies the query_graph_source API path uses the real R2RML provider
+/// when the nameservice implements GraphSourcePublisher.
 #[tokio::test]
-async fn integration_query_vg_provider_wiring() {
+async fn integration_query_graph_source_provider_wiring() {
     use serde_json::json;
 
     let fluree = FlureeBuilder::memory().build_memory();
@@ -1618,7 +1624,7 @@ async fn integration_query_vg_provider_wiring() {
         .await
         .expect("Failed to store mapping");
 
-    // Create R2RML VG
+    // Create R2RML graph source
     let config = R2rmlCreateConfig::new(
         "airlines-query-test",
         "https://polaris.example.com",
@@ -1627,26 +1633,26 @@ async fn integration_query_vg_provider_wiring() {
     )
     .with_mapping_media_type("text/turtle");
 
-    let vg_result = fluree.create_r2rml_vg(config).await;
+    let gs_result = fluree.create_r2rml_graph_source(config).await;
     assert!(
-        vg_result.is_ok(),
-        "VG creation should succeed: {:?}",
-        vg_result.err()
+        gs_result.is_ok(),
+        "Graph source creation should succeed: {:?}",
+        gs_result.err()
     );
 
-    let vg_alias = vg_result.unwrap().vg_alias;
+    let graph_source_address = gs_result.unwrap().graph_source_address;
 
     // Create a basic ledger to query against
-    let ledger = genesis_ledger(&fluree, "query-vg-test:main");
+    let ledger = genesis_ledger(&fluree, "query-gs-test:main");
 
-    // Build a simple query with GRAPH pattern targeting our VG
+    // Build a simple query with GRAPH pattern targeting our graph source
     // SELECT ?s WHERE { GRAPH <airlines-query-test:main> { ?s a ex:Airline } }
     let query = json!({
         "@context": {"ex": "http://example.org/"},
         "select": ["?s"],
         "where": [
             {
-                "graph": vg_alias,
+                "graph": graph_source_address,
                 "where": [
                     ["?s", "a", "ex:Airline"]
                 ]
@@ -1654,10 +1660,10 @@ async fn integration_query_vg_provider_wiring() {
         ]
     });
 
-    // Execute query via query_vg - this exercises the FlureeR2rmlProvider path
+    // Execute query via query_graph_source - this exercises the FlureeR2rmlProvider path
     // The query will fail at scan_table level (no real Iceberg catalog) but
     // should get far enough to exercise the provider lookup
-    let result = fluree.query_vg(&ledger, &query).await;
+    let result = fluree.query_graph_source(&ledger, &query).await;
 
     // We expect an error because there's no real Iceberg catalog,
     // but the error should come from the R2RML provider trying to connect,
@@ -1666,11 +1672,11 @@ async fn integration_query_vg_provider_wiring() {
         Ok(_) => panic!("Query should fail without real catalog"),
         Err(e) => {
             let error_msg = e.to_string();
-            eprintln!("Expected error from query_vg: {}", error_msg);
+            eprintln!("Expected error from query_graph_source: {}", error_msg);
 
             // Verify it's NOT a "not supported" error from NoOpR2rmlProvider
             assert!(
-                !error_msg.contains("R2RML virtual graphs are not supported"),
+                !error_msg.contains("R2RML graph sources are not supported"),
                 "Should use FlureeR2rmlProvider, not NoOpR2rmlProvider. Got: {}",
                 error_msg
             );
@@ -1754,13 +1760,13 @@ struct MultiTableMockProvider {
 
 #[async_trait]
 impl R2rmlProvider for MultiTableMockProvider {
-    async fn has_r2rml_mapping(&self, _vg_alias: &str) -> bool {
+    async fn has_r2rml_mapping(&self, _graph_source_address: &str) -> bool {
         true
     }
 
     async fn compiled_mapping(
         &self,
-        _vg_alias: &str,
+        _graph_source_address: &str,
         _as_of_t: Option<i64>,
     ) -> QueryResult<Arc<CompiledR2rmlMapping>> {
         Ok(Arc::clone(&self.mapping))
@@ -1771,7 +1777,7 @@ impl R2rmlProvider for MultiTableMockProvider {
 impl R2rmlTableProvider for MultiTableMockProvider {
     async fn scan_table(
         &self,
-        _vg_alias: &str,
+        _graph_source_address: &str,
         table_name: &str,
         _projection: &[String],
         _as_of_t: Option<i64>,
@@ -1822,7 +1828,7 @@ async fn engine_e2e_ref_object_map_join_execution() {
         .namespace_codes
         .insert(9_999, "http://example.org/".to_string());
 
-    // Build query: SELECT ?route ?airline WHERE { GRAPH <vg:main> { ?route ex:operatedBy ?airline } }
+    // Build query: SELECT ?route ?airline WHERE { GRAPH <gs:main> { ?route ex:operatedBy ?airline } }
     let mut vars = VarRegistry::new();
     let route_var = vars.get_or_insert("?route");
     let airline_var = vars.get_or_insert("?airline");
@@ -1840,7 +1846,7 @@ async fn engine_e2e_ref_object_map_join_execution() {
     ))];
 
     let graph_pattern = Pattern::Graph {
-        name: GraphName::Iri("routes-vg:main".into()),
+        name: GraphName::Iri("routes-gs:main".into()),
         patterns: inner_patterns,
     };
 

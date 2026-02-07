@@ -1,7 +1,7 @@
 //! Administrative operations for Fluree DB
 //!
 //! This module provides admin-level operations like `drop_ledger` and
-//! `drop_virtual_graph` that are separate from normal CRUD operations.
+//! `drop_graph_source` that are separate from normal CRUD operations.
 //!
 //! # Note
 //!
@@ -12,7 +12,7 @@
 use crate::{error::ApiError, tx::IndexingMode, Result};
 use fluree_db_core::{address_path::alias_to_path_prefix, alias as core_alias, Storage};
 use fluree_db_indexer::{build_binary_index, clean_garbage, CleanGarbageConfig};
-use fluree_db_nameservice::{AdminPublisher, NameService, Publisher, VirtualGraphPublisher};
+use fluree_db_nameservice::{AdminPublisher, GraphSourcePublisher, NameService, Publisher};
 use std::time::Duration;
 use tracing::{info, warn};
 
@@ -73,12 +73,12 @@ pub struct DropReport {
     pub warnings: Vec<String>,
 }
 
-/// Report of what was deleted/retracted for a virtual graph
+/// Report of what was deleted/retracted for a graph source
 #[derive(Debug, Clone, Default)]
-pub struct VgDropReport {
-    /// Name of the virtual graph
+pub struct GraphSourceDropReport {
+    /// Name of the graph source
     pub name: String,
-    /// Branch of the virtual graph
+    /// Branch of the graph source
     pub branch: String,
     /// Status based on nameservice state at lookup time
     pub status: DropStatus,
@@ -339,50 +339,50 @@ where
 }
 
 // =============================================================================
-// Virtual Graph Drop Implementation
+// Graph Source Drop Implementation
 // =============================================================================
 
 impl<S, N> crate::Fluree<S, N>
 where
     S: Storage + Clone + 'static,
-    N: NameService + Publisher + VirtualGraphPublisher,
+    N: NameService + Publisher + GraphSourcePublisher,
 {
-    /// Drop a virtual graph
+    /// Drop a graph source
     ///
     /// This operation:
-    /// 1. Looks up the VG record in the nameservice
-    /// 2. In Hard mode: deletes VG index files (if prefix is defined)
+    /// 1. Looks up the graph source record in the nameservice
+    /// 2. In Hard mode: deletes graph source index files (if prefix is defined)
     /// 3. Retracts from nameservice
     ///
     /// # Arguments
     ///
-    /// * `name` - Virtual graph name (e.g., "my-search")
+    /// * `name` - Graph source name (e.g., "my-search")
     /// * `branch` - Branch name (defaults to "main" if None)
     /// * `mode` - `Soft` (retract only) or `Hard` (retract + delete files)
     ///
     /// # Note
     ///
-    /// VG artifact deletion requires a canonical storage prefix defined in the
-    /// VG indexer crate. Until that exists, Hard mode may skip artifact deletion
+    /// Graph source artifact deletion requires a canonical storage prefix defined in the
+    /// indexer crate. Until that exists, Hard mode may skip artifact deletion
     /// and report a warning.
-    pub async fn drop_virtual_graph(
+    pub async fn drop_graph_source(
         &self,
         name: &str,
         branch: Option<&str>,
         mode: DropMode,
-    ) -> Result<VgDropReport> {
+    ) -> Result<GraphSourceDropReport> {
         let branch = branch.unwrap_or("main");
         let alias = format!("{}:{}", name, branch);
-        info!(name = %name, branch = %branch, mode = ?mode, "Dropping virtual graph");
+        info!(name = %name, branch = %branch, mode = ?mode, "Dropping graph source");
 
-        let mut report = VgDropReport {
+        let mut report = GraphSourceDropReport {
             name: name.to_string(),
             branch: branch.to_string(),
             ..Default::default()
         };
 
-        // 1. Lookup VG record (for status)
-        let record = self.nameservice.lookup_vg(&alias).await?;
+        // 1. Lookup graph source record (for status)
+        let record = self.nameservice.lookup_graph_source(&alias).await?;
         let status = match &record {
             None => DropStatus::NotFound,
             Some(r) if r.retracted => DropStatus::AlreadyRetracted,
@@ -390,25 +390,25 @@ where
         };
         report.status = status;
 
-        // 2. Delete VG index files (Hard mode)
+        // 2. Delete graph source index files (Hard mode)
         if matches!(mode, DropMode::Hard) {
-            // TODO: Call vg_artifact_prefix() from VG indexer crate once it exists
+            // TODO: Call graph_source_artifact_prefix() from indexer crate once it exists
             // For now, skip deletion and report a warning
             if record.is_some() {
                 report.warnings.push(
-                    "VG artifact deletion not yet implemented - prefix not standardized"
+                    "Graph source artifact deletion not yet implemented - prefix not standardized"
                         .to_string(),
                 );
             }
         }
 
         // 3. Retract from nameservice (always attempt, idempotent)
-        if let Err(e) = self.nameservice.retract_vg(name, branch).await {
-            warn!(name = %name, branch = %branch, error = %e, "Nameservice VG retract warning");
+        if let Err(e) = self.nameservice.retract_graph_source(name, branch).await {
+            warn!(name = %name, branch = %branch, error = %e, "Nameservice graph source retract warning");
             report.warnings.push(format!("Nameservice retract: {}", e));
         }
 
-        info!(name = %name, branch = %branch, status = ?report.status, "Virtual graph dropped");
+        info!(name = %name, branch = %branch, status = ?report.status, "Graph source dropped");
         Ok(report)
     }
 }

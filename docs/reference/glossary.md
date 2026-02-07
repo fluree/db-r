@@ -184,7 +184,7 @@ A SPARQL query form that generates RDF triples rather than variable bindings.
 
 Following relationships recursively to explore connected entities.
 
-## Virtual Graph Terms
+## Graph Source Terms
 
 ### Graph Source
 
@@ -195,11 +195,9 @@ Graph sources include:
 - Index graph sources (BM25 and vector/HNSW indexes)
 - Mapped graph sources (R2RML and Iceberg-backed graph mappings)
 
-### Virtual Graph
+### Graph Source (Non-Ledger)
 
-In code and some docs, “virtual graph” refers to a non-ledger graph source: a queryable data source that appears in graph queries but is backed by specialized storage (BM25 index, vector index, Iceberg table, SQL database).
-
-This documentation prefers the umbrella term **Graph Source**.
+A non-ledger graph source is a queryable data source that appears in graph queries but is backed by specialized storage (BM25 index, vector index, Iceberg table, SQL database).
 
 Example: `products-search:main`, `products-vector:main`
 

@@ -9,8 +9,8 @@ use fluree_db_connection::{connect_async, ConnectionHandle};
 use fluree_db_core::{StorageRead, StorageWrite};
 use fluree_db_nameservice::{
     AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue,
-    NameService, NsLookupResult, Publisher, RefKind, RefPublisher, RefValue, StatusCasResult,
-    StatusPayload, StatusPublisher, StatusValue, VgType, VirtualGraphPublisher,
+    GraphSourcePublisher, GraphSourceType, NameService, NsLookupResult, Publisher, RefKind,
+    RefPublisher, RefValue, StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
 };
 use fluree_db_storage_aws::DynamoDbNameService;
 use serde_json::json;
@@ -291,7 +291,10 @@ async fn nameservice_ledger_lifecycle() {
     // Lookup returns record with unborn head/index
     let rec = ns.lookup(alias).await.unwrap().expect("exists after init");
     assert_eq!(rec.address, alias, "address should be the full alias");
-    assert_eq!(rec.alias, "lifecycle-test", "alias is the name-only part");
+    assert_eq!(
+        rec.name, "lifecycle-test",
+        "name is the ledger-name-only part"
+    );
     assert_eq!(rec.branch, "main");
     assert!(rec.commit_address.is_none());
     assert!(rec.index_address.is_none());
@@ -329,11 +332,6 @@ async fn nameservice_ledger_lifecycle() {
     assert_eq!(rec.commit_address.as_deref(), Some("commit:2"));
     assert_eq!(rec.index_address.as_deref(), Some("index:2"));
     assert_eq!(rec.index_t, 2);
-
-    // ── alias() — returns the name-only part ────────────────────────────
-    let a = ns.alias(alias).await.unwrap();
-    assert_eq!(a, Some("lifecycle-test".to_string()));
-    assert!(ns.alias("nonexistent:main").await.unwrap().is_none());
 
     // ── all_records() ──────────────────────────────────────────────────────
     let recs = ns.all_records().await.unwrap();
@@ -605,71 +603,87 @@ async fn nameservice_config_publisher() {
     }
 
     // ── ConfigPublisher gated to ledgers: graph source returns None ─────
-    ns.publish_vg(
-        "config-gate-vg",
+    ns.publish_graph_source(
+        "config-gate-gs",
         "main",
-        VgType::Bm25,
+        GraphSourceType::Bm25,
         r#"{"foo":"bar"}"#,
         &[],
     )
     .await
     .unwrap();
-    let vg_config = ns.get_config("config-gate-vg:main").await.unwrap();
+    let gs_config = ns.get_config("config-gate-gs:main").await.unwrap();
     assert!(
-        vg_config.is_none(),
+        gs_config.is_none(),
         "get_config on graph source should return None"
     );
 }
 
 #[tokio::test]
-async fn nameservice_virtual_graph_publisher() {
+async fn nameservice_graph_source_publisher() {
     let (_container, ns) = setup_localstack_ns().await;
 
-    let vg_alias = "search-bm25:main";
+    let graph_source_address = "search-bm25:main";
 
-    // lookup_vg before publish → None
-    assert!(ns.lookup_vg(vg_alias).await.unwrap().is_none());
+    // lookup_graph_source before publish → None
+    assert!(ns
+        .lookup_graph_source(graph_source_address)
+        .await
+        .unwrap()
+        .is_none());
 
-    // publish_vg
-    ns.publish_vg(
+    // publish_graph_source
+    ns.publish_graph_source(
         "search-bm25",
         "main",
-        VgType::Bm25,
+        GraphSourceType::Bm25,
         r#"{"analyzer":"english"}"#,
         &["source-ledger:main".to_string()],
     )
     .await
     .unwrap();
 
-    // lookup_vg
-    let vg = ns.lookup_vg(vg_alias).await.unwrap().expect("exists");
-    assert_eq!(vg.name, "search-bm25");
-    assert_eq!(vg.branch, "main");
-    assert!(matches!(vg.vg_type, VgType::Bm25));
-    assert_eq!(vg.config, r#"{"analyzer":"english"}"#);
-    assert_eq!(vg.dependencies, vec!["source-ledger:main".to_string()]);
-    assert!(vg.index_address.is_none());
-    assert_eq!(vg.index_t, 0);
+    // lookup_graph_source
+    let gs = ns
+        .lookup_graph_source(graph_source_address)
+        .await
+        .unwrap()
+        .expect("exists");
+    assert_eq!(gs.name, "search-bm25");
+    assert_eq!(gs.branch, "main");
+    assert!(matches!(gs.source_type, GraphSourceType::Bm25));
+    assert_eq!(gs.config, r#"{"analyzer":"english"}"#);
+    assert_eq!(gs.dependencies, vec!["source-ledger:main".to_string()]);
+    assert!(gs.index_address.is_none());
+    assert_eq!(gs.index_t, 0);
 
-    // publish_vg_index
-    ns.publish_vg_index("search-bm25", "main", "vg-index:1", 1)
+    // publish_graph_source_index
+    ns.publish_graph_source_index("search-bm25", "main", "gs-index:1", 1)
         .await
         .unwrap();
-    let vg = ns.lookup_vg(vg_alias).await.unwrap().unwrap();
-    assert_eq!(vg.index_address.as_deref(), Some("vg-index:1"));
-    assert_eq!(vg.index_t, 1);
+    let gs = ns
+        .lookup_graph_source(graph_source_address)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(gs.index_address.as_deref(), Some("gs-index:1"));
+    assert_eq!(gs.index_t, 1);
 
     // Monotonic: stale index ignored
-    ns.publish_vg_index("search-bm25", "main", "stale:0", 0)
+    ns.publish_graph_source_index("search-bm25", "main", "stale:0", 0)
         .await
         .unwrap();
-    let vg = ns.lookup_vg(vg_alias).await.unwrap().unwrap();
-    assert_eq!(vg.index_address.as_deref(), Some("vg-index:1"));
+    let gs = ns
+        .lookup_graph_source(graph_source_address)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(gs.index_address.as_deref(), Some("gs-index:1"));
 
-    // lookup_any → ledger or vg
-    let any = ns.lookup_any(vg_alias).await.unwrap();
+    // lookup_any → ledger or graph source
+    let any = ns.lookup_any(graph_source_address).await.unwrap();
     match any {
-        NsLookupResult::VirtualGraph(ref r) => assert_eq!(r.name, "search-bm25"),
+        NsLookupResult::GraphSource(ref r) => assert_eq!(r.name, "search-bm25"),
         _ => panic!("expected GraphSource, got {any:?}"),
     }
 
@@ -685,30 +699,39 @@ async fn nameservice_virtual_graph_publisher() {
     let any = ns.lookup_any("nonexistent:main").await.unwrap();
     assert!(matches!(any, NsLookupResult::NotFound));
 
-    // all_vg_records
-    let vgs = ns.all_vg_records().await.unwrap();
+    // all_graph_source_records
+    let records = ns.all_graph_source_records().await.unwrap();
     assert!(
-        vgs.iter().any(|r| r.name == "search-bm25"),
-        "all_vg_records should contain our VG"
+        records.iter().any(|r| r.name == "search-bm25"),
+        "all_graph_source_records should contain our graph source"
     );
 
-    // retract_vg
-    ns.retract_vg("search-bm25", "main").await.unwrap();
-    let vg = ns.lookup_vg(vg_alias).await.unwrap();
-    assert!(vg.is_some(), "retracted VG still visible via lookup_vg");
+    // retract_graph_source
+    ns.retract_graph_source("search-bm25", "main")
+        .await
+        .unwrap();
+    let gs = ns.lookup_graph_source(graph_source_address).await.unwrap();
+    assert!(
+        gs.is_some(),
+        "retracted graph source still visible via lookup_graph_source"
+    );
 
     // Re-publish after retract should work (preserves retracted or re-creates)
-    ns.publish_vg(
+    ns.publish_graph_source(
         "search-bm25",
         "main",
-        VgType::Bm25,
+        GraphSourceType::Bm25,
         r#"{"analyzer":"english_v2"}"#,
         &["source-ledger:main".to_string()],
     )
     .await
     .unwrap();
-    let vg = ns.lookup_vg(vg_alias).await.unwrap().unwrap();
-    assert_eq!(vg.config, r#"{"analyzer":"english_v2"}"#);
+    let gs = ns
+        .lookup_graph_source(graph_source_address)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(gs.config, r#"{"analyzer":"english_v2"}"#);
     // Index should be preserved from before retraction
-    assert_eq!(vg.index_address.as_deref(), Some("vg-index:1"));
+    assert_eq!(gs.index_address.as_deref(), Some("gs-index:1"));
 }

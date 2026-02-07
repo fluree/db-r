@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use crate::config::PeerConfig;
 use crate::error::PeerError;
 use crate::sse::{SseClient, SseClientEvent};
-use crate::state::{LedgerState, PeerState, VgState};
+use crate::state::{GraphSourceState, LedgerState, PeerState};
 
 /// Callback trait for peer events
 ///
@@ -30,8 +30,8 @@ pub trait PeerCallbacks: Send + Sync {
     /// Called when a ledger is created or updated
     async fn on_ledger_updated(&self, _alias: &str, _state: &LedgerState) {}
 
-    /// Called when a virtual graph is created or updated
-    async fn on_vg_updated(&self, _alias: &str, _state: &VgState) {}
+    /// Called when a graph source is created or updated
+    async fn on_graph_source_updated(&self, _alias: &str, _state: &GraphSourceState) {}
 
     /// Called when a resource is retracted
     async fn on_retracted(&self, _kind: &str, _alias: &str) {}
@@ -63,12 +63,12 @@ impl PeerCallbacks for LoggingCallbacks {
         );
     }
 
-    async fn on_vg_updated(&self, alias: &str, state: &VgState) {
+    async fn on_graph_source_updated(&self, alias: &str, state: &GraphSourceState) {
         tracing::info!(
             alias,
             index_t = state.index_t,
             config_hash = %state.config_hash,
-            "Virtual graph updated"
+            "Graph source updated"
         );
     }
 
@@ -147,11 +147,13 @@ impl<C: PeerCallbacks + 'static> PeerRuntime<C> {
                 }
             }
 
-            SseClientEvent::VgRecord(record) => {
-                let changed = self.state.handle_vg_record(&record).await;
+            SseClientEvent::GraphSourceRecord(record) => {
+                let changed = self.state.handle_graph_source_record(&record).await;
                 if changed {
-                    if let Some(state) = self.state.get_vg(&record.alias).await {
-                        self.callbacks.on_vg_updated(&record.alias, &state).await;
+                    if let Some(state) = self.state.get_graph_source(&record.alias).await {
+                        self.callbacks
+                            .on_graph_source_updated(&record.alias, &state)
+                            .await;
                     }
                 }
             }
@@ -180,7 +182,7 @@ mod tests {
     struct CountingCallbacks {
         connected: AtomicUsize,
         ledger_updates: AtomicUsize,
-        vg_updates: AtomicUsize,
+        graph_source_updates: AtomicUsize,
         retractions: AtomicUsize,
     }
 
@@ -189,7 +191,7 @@ mod tests {
             Self {
                 connected: AtomicUsize::new(0),
                 ledger_updates: AtomicUsize::new(0),
-                vg_updates: AtomicUsize::new(0),
+                graph_source_updates: AtomicUsize::new(0),
                 retractions: AtomicUsize::new(0),
             }
         }
@@ -205,8 +207,8 @@ mod tests {
             self.ledger_updates.fetch_add(1, Ordering::SeqCst);
         }
 
-        async fn on_vg_updated(&self, _alias: &str, _state: &VgState) {
-            self.vg_updates.fetch_add(1, Ordering::SeqCst);
+        async fn on_graph_source_updated(&self, _alias: &str, _state: &GraphSourceState) {
+            self.graph_source_updates.fetch_add(1, Ordering::SeqCst);
         }
 
         async fn on_retracted(&self, _kind: &str, _alias: &str) {

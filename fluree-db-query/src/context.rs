@@ -240,7 +240,7 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
     /// Attach R2RML providers to this context (for R2rml patterns).
     ///
     /// Both providers are required for R2RML scans:
-    /// - `mapping_provider`: Loads compiled R2RML mappings for virtual graphs
+    /// - `mapping_provider`: Loads compiled R2RML mappings for graph sources
     /// - `table_provider`: Executes Iceberg table scans
     pub fn with_r2rml_providers(
         mut self,

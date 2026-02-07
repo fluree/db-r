@@ -27,8 +27,8 @@ pub struct SearchRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
 
-    /// Virtual graph alias (e.g., "products-search:main").
-    pub vg_alias: String,
+    /// Graph source alias (e.g., "products-search:main").
+    pub graph_source_address: String,
 
     /// Maximum number of hits to return.
     #[serde(default = "default_limit")]
@@ -64,11 +64,15 @@ fn default_limit() -> usize {
 
 impl SearchRequest {
     /// Create a BM25 search request.
-    pub fn bm25(vg_alias: impl Into<String>, text: impl Into<String>, limit: usize) -> Self {
+    pub fn bm25(
+        graph_source_address: impl Into<String>,
+        text: impl Into<String>,
+        limit: usize,
+    ) -> Self {
         Self {
             protocol_version: crate::PROTOCOL_VERSION.to_string(),
             request_id: None,
-            vg_alias: vg_alias.into(),
+            graph_source_address: graph_source_address.into(),
             limit,
             as_of_t: None,
             sync: false,
@@ -78,11 +82,11 @@ impl SearchRequest {
     }
 
     /// Create a vector search request.
-    pub fn vector(vg_alias: impl Into<String>, vector: Vec<f32>, limit: usize) -> Self {
+    pub fn vector(graph_source_address: impl Into<String>, vector: Vec<f32>, limit: usize) -> Self {
         Self {
             protocol_version: crate::PROTOCOL_VERSION.to_string(),
             request_id: None,
-            vg_alias: vg_alias.into(),
+            graph_source_address: graph_source_address.into(),
             limit,
             as_of_t: None,
             sync: false,
@@ -96,14 +100,14 @@ impl SearchRequest {
 
     /// Create a vector-similar-to search request.
     pub fn vector_similar_to(
-        vg_alias: impl Into<String>,
+        graph_source_address: impl Into<String>,
         to_iri: impl Into<String>,
         limit: usize,
     ) -> Self {
         Self {
             protocol_version: crate::PROTOCOL_VERSION.to_string(),
             request_id: None,
-            vg_alias: vg_alias.into(),
+            graph_source_address: graph_source_address.into(),
             limit,
             as_of_t: None,
             sync: false,
@@ -157,7 +161,7 @@ pub enum QueryVariant {
         /// The query embedding vector.
         vector: Vec<f32>,
 
-        /// Distance metric (optional; must match VG config if provided).
+        /// Distance metric (optional; must match graph source config if provided).
         #[serde(skip_serializing_if = "Option::is_none")]
         metric: Option<String>,
     },
@@ -165,13 +169,13 @@ pub enum QueryVariant {
     /// Vector similarity search by entity IRI.
     ///
     /// The server resolves the entity's embedding and searches for similar vectors.
-    /// This requires the VG to have access to the source ledger.
+    /// This requires the graph source to have access to the source ledger.
     #[serde(rename = "vector_similar_to")]
     VectorSimilarTo {
         /// The IRI of the entity to find similar items to.
         to_iri: String,
 
-        /// Distance metric (optional; must match VG config if provided).
+        /// Distance metric (optional; must match graph source config if provided).
         #[serde(skip_serializing_if = "Option::is_none")]
         metric: Option<String>,
     },
@@ -186,7 +190,7 @@ mod tests {
         let request = SearchRequest {
             protocol_version: "1.0".to_string(),
             request_id: Some("test-123".to_string()),
-            vg_alias: "products:main".to_string(),
+            graph_source_address: "products:main".to_string(),
             limit: 20,
             as_of_t: Some(100),
             sync: true,
@@ -200,7 +204,7 @@ mod tests {
         let parsed: SearchRequest = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed.protocol_version, "1.0");
-        assert_eq!(parsed.vg_alias, "products:main");
+        assert_eq!(parsed.graph_source_address, "products:main");
         assert_eq!(parsed.limit, 20);
         assert_eq!(parsed.as_of_t, Some(100));
         assert!(parsed.sync);
@@ -216,7 +220,7 @@ mod tests {
         let request = SearchRequest {
             protocol_version: "1.0".to_string(),
             request_id: None,
-            vg_alias: "embeddings:main".to_string(),
+            graph_source_address: "embeddings:main".to_string(),
             limit: 10,
             as_of_t: None,
             sync: false,
@@ -243,7 +247,7 @@ mod tests {
     fn test_default_limit() {
         let json = r#"{
             "protocol_version": "1.0",
-            "vg_alias": "test:main",
+            "graph_source_address": "test:main",
             "query": { "kind": "bm25", "text": "test" }
         }"#;
 

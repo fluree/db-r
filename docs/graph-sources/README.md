@@ -1,17 +1,17 @@
-# Virtual Graphs and Integrations
+# Graph Sources and Integrations
 
-Virtual graphs extend Fluree's query capabilities by integrating specialized indexes and external data sources. Virtual graphs appear as queryable ledgers but are backed by different storage and indexing systems.
+Graph sources extend Fluree's query capabilities by integrating specialized indexes and external data sources. Graph sources appear as queryable ledgers but are backed by different storage and indexing systems.
 
-## Virtual Graph Types
+## Graph Source Types
 
 ### [Overview](overview.md)
 
-Introduction to virtual graphs:
-- What are virtual graphs
+Introduction to graph sources:
+- What are graph sources
 - Architecture and design
 - Use cases
 - Performance characteristics
-- Creating and managing virtual graphs
+- Creating and managing graph sources
 
 ### [Iceberg / Parquet](iceberg.md)
 
@@ -31,24 +31,24 @@ Relational database mapping:
 - Join optimization
 - Supported databases (PostgreSQL, MySQL, etc.)
 
-### [BM25 Virtual Graph](bm25-virtual-graph.md)
+### [BM25 Graph Source](bm25.md)
 
-Full-text search as virtual graph:
+Full-text search as graph source:
 - BM25 index as queryable ledger
 - Search predicates
 - Combining with structured queries
 - Real-time index updates
 
-## What are Virtual Graphs?
+## What are Graph Sources?
 
-Virtual graphs are queryable data sources that appear as Fluree ledgers but are backed by specialized storage:
+Graph sources are queryable data sources that appear as Fluree ledgers but are backed by specialized storage:
 
 **Standard Ledger:**
 ```text
 mydb:main → RDF triple store → SPOT/POST/OPST/PSOT indexes
 ```
 
-**Virtual Graph:**
+**Graph Source:**
 ```text
 products-search:main → BM25 index → Inverted text index
 products-vector:main → HNSW → Vector similarity index
@@ -58,7 +58,7 @@ sql-db:main → R2RML → PostgreSQL tables
 
 ## Query Transparency
 
-Virtual graphs are queried like regular ledgers:
+Graph sources are queried like regular ledgers:
 
 ```json
 {
@@ -84,7 +84,7 @@ WHERE {
 
 ## Multi-Graph Queries
 
-Combine regular ledgers with virtual graphs:
+Combine regular ledgers with graph sources:
 
 ```json
 {
@@ -102,9 +102,9 @@ Combine regular ledgers with virtual graphs:
 
 Joins structured data from products:main with search results from products-search:main.
 
-## Virtual Graph Lifecycle
+## Graph Source Lifecycle
 
-### 1. Create Virtual Graph
+### 1. Create Graph Source
 
 Define mapping/configuration:
 
@@ -125,18 +125,18 @@ Build index from source data:
 
 Keep synchronized with source:
 - Monitor source ledger for changes
-- Update virtual graph incrementally
+- Update graph source incrementally
 - Maintain consistency
 
 ### 4. Query Execution
 
-Execute queries against virtual graph:
+Execute queries against graph source:
 - Parse query
 - Route to appropriate backend
 - Execute specialized query
 - Return results
 
-## Supported Virtual Graphs
+## Supported Graph Sources
 
 ### BM25 Full-Text Search
 
@@ -159,7 +159,7 @@ Execute queries against virtual graph:
 }
 ```
 
-See [BM25 Virtual Graph](bm25-virtual-graph.md) and [BM25 Indexing](../indexing-and-search/bm25.md).
+See [BM25 Graph Source](bm25.md) and [BM25 Indexing](../indexing-and-search/bm25.md).
 
 ### Vector Similarity Search
 
@@ -228,9 +228,9 @@ See [R2RML](r2rml.md).
 
 ## Architecture
 
-### Virtual Graph Registry
+### Graph Source Registry
 
-Virtual graphs registered in nameservice:
+Graph sources registered in nameservice:
 
 ```json
 {
@@ -260,7 +260,7 @@ Return results
 
 ### Result Integration
 
-Results from virtual graphs join with regular graphs:
+Results from graph sources join with regular graphs:
 
 ```text
 FROM <products:main>, <products-search:main>
@@ -277,21 +277,21 @@ Return combined results
 
 ### Query Planning
 
-Virtual graphs affect query optimization:
+Graph sources affect query optimization:
 - Specialized indexes enable efficient filtering
-- Push filters down to virtual graph when possible
+- Push filters down to graph source when possible
 - Minimize data transfer between graphs
 
 ### Data Transfer
 
 Minimize data movement:
-- Filter in virtual graph before joining
+- Filter in graph source before joining
 - Use selective projections
-- Leverage virtual graph's native capabilities
+- Leverage graph source's native capabilities
 
 ### Caching
 
-Some virtual graph backends support caching:
+Some graph source backends support caching:
 - BM25: Results cacheable
 - Vector: Similar queries share computation
 - Iceberg: Parquet file caching
@@ -299,9 +299,9 @@ Some virtual graph backends support caching:
 
 ## Best Practices
 
-### 1. Choose Appropriate Virtual Graph Type
+### 1. Choose Appropriate Graph Source Type
 
-Match virtual graph to use case:
+Match graph source to use case:
 - Keyword search → BM25
 - Semantic search → Vector
 - Analytics → Iceberg
@@ -309,7 +309,7 @@ Match virtual graph to use case:
 
 ### 2. Filter Early
 
-Push filters to virtual graphs:
+Push filters to graph sources:
 
 Good:
 ```json
@@ -323,7 +323,7 @@ Good:
 }
 ```
 
-### 3. Monitor Virtual Graph Lag
+### 3. Monitor Graph Source Lag
 
 Check synchronization status:
 
@@ -333,7 +333,7 @@ curl http://localhost:8090/index/status/products-search:main
 
 ### 4. Use Appropriate Limits
 
-Limit results from virtual graphs:
+Limit results from graph sources:
 
 ```json
 {
@@ -346,7 +346,7 @@ Limit results from virtual graphs:
 
 ### 5. Test Performance
 
-Profile queries combining virtual graphs:
+Profile queries combining graph sources:
 
 ```bash
 curl -X POST http://localhost:8090/query \
@@ -356,20 +356,20 @@ curl -X POST http://localhost:8090/query \
 
 ## Troubleshooting
 
-### Virtual Graph Not Found
+### Graph Source Not Found
 
 ```json
 {
-  "error": "VirtualGraphNotFound",
-  "message": "Virtual graph not found: products-search:main"
+  "error": "GraphSourceNotFound",
+  "message": "Graph source not found: products-search:main"
 }
 ```
 
-**Solution:** Create virtual graph or check name spelling.
+**Solution:** Create graph source or check name spelling.
 
 ### Synchronization Lag
 
-Virtual graph out of sync with source:
+Graph source out of sync with source:
 
 ```bash
 # Check status
@@ -381,7 +381,7 @@ curl -X POST http://localhost:8090/index/rebuild/products-search:main
 
 ### Poor Performance
 
-Query combining virtual graphs is slow:
+Query combining graph sources is slow:
 
 1. Check explain plan
 2. Add filters to reduce result set
@@ -390,8 +390,8 @@ Query combining virtual graphs is slow:
 
 ## Related Documentation
 
-- [Overview](overview.md) - Virtual graph concepts
-- [BM25](bm25-virtual-graph.md) - Full-text search
+- [Overview](overview.md) - Graph source concepts
+- [BM25](bm25.md) - Full-text search
 - [Vector Search](../indexing-and-search/vector-search.md) - Similarity search
 - [Iceberg](iceberg.md) - Data lake integration
 - [R2RML](r2rml.md) - Relational mapping

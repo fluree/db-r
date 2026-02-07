@@ -41,7 +41,7 @@ fluree-db/
 ├── Reasoning
 │   └── fluree-db-reasoner/        # OWL2-RL reasoning engine
 │
-├── Virtual Graphs
+├── Graph Sources
 │   ├── fluree-db-tabular/         # Tabular column batch types
 │   ├── fluree-db-iceberg/         # Apache Iceberg integration
 │   └── fluree-db-r2rml/           # R2RML mapping support
@@ -386,7 +386,7 @@ fluree-db/
 - fluree-db-core
 - fluree-vocab
 
-## Virtual Graph Crates
+## Graph Source Crates
 
 ### fluree-db-tabular
 
@@ -394,9 +394,9 @@ fluree-db/
 
 **Responsibilities:**
 - Arrow-compatible column batches
-- Virtual graph data abstraction
+- Graph source data abstraction
 
-**Dependencies:** None (foundation for virtual graphs)
+**Dependencies:** None (foundation for graph sources)
 
 ### fluree-db-iceberg
 
@@ -418,7 +418,7 @@ fluree-db/
 **Responsibilities:**
 - R2RML mapping parsing
 - Relational-to-RDF mapping
-- Virtual graph generation
+- Graph source generation
 
 **Dependencies:**
 - fluree-graph-ir

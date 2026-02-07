@@ -76,7 +76,7 @@ WHERE {
 
 In SPARQL, `FROM NAMED` identifies **named graphs in the dataset**. In Fluree, these are often *graph sources* such as:
 - another ledger (federation / multi-ledger queries), or
-- a virtual graph (search, tabular mapping, etc.).
+- a graph source (search, tabular mapping, etc.).
 
 Query across multiple named graph sources:
 

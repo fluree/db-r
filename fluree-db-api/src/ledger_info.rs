@@ -20,7 +20,7 @@ use fluree_db_core::{
 };
 use fluree_db_core::{Sid, Storage};
 use fluree_db_ledger::LedgerState;
-use fluree_db_nameservice::{parse_alias, NsRecord, VgNsRecord};
+use fluree_db_nameservice::{parse_alias, GraphSourceRecord, NsRecord};
 use fluree_db_novelty::load_commit;
 use fluree_graph_json_ld::ParsedContext;
 use serde_json::{json, Map, Value as JsonValue};
@@ -291,9 +291,9 @@ async fn build_commit_jsonld<S: Storage>(
 /// `query-nameservice` temporary ledger population.
 pub fn ns_record_to_jsonld(record: &NsRecord) -> JsonValue {
     // Use parse_alias for ledger name extraction (avoids edge cases)
-    let ledger_name = parse_alias(&record.alias)
+    let ledger_name = parse_alias(&record.name)
         .map(|(ledger, _branch)| ledger)
-        .unwrap_or_else(|_| record.alias.clone());
+        .unwrap_or_else(|_| record.name.clone());
 
     // Use canonical form for @id: "{ledger_name}:{branch}"
     let canonical_id = core_alias::format_alias(&ledger_name, &record.branch);
@@ -331,11 +331,11 @@ pub fn ns_record_to_jsonld(record: &NsRecord) -> JsonValue {
     obj
 }
 
-/// Convert VgNsRecord to JSON-LD format for nameservice queries.
+/// Convert GraphSourceRecord to JSON-LD format for nameservice queries.
 ///
 /// Uses standard JSON-LD keywords with both `f:` (ledger) and `fidx:` (index) namespaces.
 /// Includes `f:status` field that reflects retracted state.
-pub fn vg_record_to_jsonld(record: &VgNsRecord) -> JsonValue {
+pub fn gs_record_to_jsonld(record: &GraphSourceRecord) -> JsonValue {
     // Use canonical form for @id: "{name}:{branch}"
     let canonical_id = core_alias::format_alias(&record.name, &record.branch);
 
@@ -352,7 +352,7 @@ pub fn vg_record_to_jsonld(record: &VgNsRecord) -> JsonValue {
             "fidx": "https://ns.flur.ee/index#"
         },
         "@id": &canonical_id,
-        "@type": ["f:VirtualGraphDatabase", record.vg_type.to_type_string()],
+        "@type": ["f:GraphSource", record.source_type.to_type_string()],
         "f:name": &record.name,
         "f:branch": &record.branch,
         "f:status": status,
@@ -516,8 +516,14 @@ fn decode_class_stats(
             }
         }
 
-        // Decode class→property list (no per-property breakdowns here; those live in graph stats)
-        let mut props_arr: Vec<JsonValue> = Vec::new();
+        // Decode class→property stats (map keyed by property IRI).
+        //
+        // This is used by:
+        // - f:onClass policy indexing (class→property presence)
+        // - Ontology/graph visualization (ref target class counts)
+        let mut props_map = Map::new();
+        let mut props_list: Vec<JsonValue> = Vec::new();
+
         for usage in &entry.properties {
             let prop_iri = compactor
                 .decode_sid(&usage.property_sid)
@@ -528,9 +534,38 @@ fn decode_class_stats(
                     _ => LedgerInfoError::Storage(e.to_string()),
                 })?;
             let prop_compacted = compactor.compact_vocab_iri(&prop_iri);
-            props_arr.push(json!(prop_compacted));
+            props_list.push(json!(prop_compacted.clone()));
+
+            let mut prop_obj = Map::new();
+
+            if !usage.ref_classes.is_empty() {
+                let mut refs_obj = Map::new();
+                let mut total: u64 = 0;
+                for rc in &usage.ref_classes {
+                    let class_iri = compactor
+                        .decode_sid(&rc.class_sid)
+                        .map_err(|e| match e {
+                            crate::format::FormatError::UnknownNamespace(code) => {
+                                LedgerInfoError::UnknownNamespace(code)
+                            }
+                            _ => LedgerInfoError::Storage(e.to_string()),
+                        })?;
+                    let class_compacted = compactor.compact_vocab_iri(&class_iri);
+                    refs_obj.insert(class_compacted, json!(rc.count));
+                    total = total.saturating_add(rc.count);
+                }
+                // Primary key (new): `refs`
+                prop_obj.insert("refs".to_string(), JsonValue::Object(refs_obj.clone()));
+                // Compatibility key: `ref-classes`
+                prop_obj.insert("ref-classes".to_string(), JsonValue::Object(refs_obj));
+                prop_obj.insert("count".to_string(), json!(total));
+            }
+
+            props_map.insert(prop_compacted, JsonValue::Object(prop_obj));
         }
-        class_obj.insert("properties".to_string(), JsonValue::Array(props_arr));
+
+        class_obj.insert("properties".to_string(), JsonValue::Object(props_map));
+        class_obj.insert("property-list".to_string(), JsonValue::Array(props_list));
 
         result.insert(compacted, JsonValue::Object(class_obj));
     }
@@ -775,7 +810,7 @@ mod tests {
     fn test_ns_record_to_jsonld() {
         let record = NsRecord {
             address: "mydb:main".to_string(),
-            alias: "mydb:main".to_string(),
+            name: "mydb:main".to_string(),
             branch: "main".to_string(),
             commit_address: Some("fluree:file://mydb/main/commit/abc.json".to_string()),
             commit_t: 42,
@@ -804,7 +839,7 @@ mod tests {
     fn test_ns_record_to_jsonld_retracted() {
         let record = NsRecord {
             address: "mydb:main".to_string(),
-            alias: "mydb:main".to_string(),
+            name: "mydb:main".to_string(),
             branch: "main".to_string(),
             commit_address: Some("commit-addr".to_string()),
             commit_t: 10,
@@ -819,32 +854,32 @@ mod tests {
     }
 
     #[test]
-    fn test_vg_record_to_jsonld() {
-        let record = VgNsRecord {
+    fn test_gs_record_to_jsonld() {
+        let record = GraphSourceRecord {
             address: "my-search:main".to_string(),
             name: "my-search".to_string(),
             branch: "main".to_string(),
-            vg_type: fluree_db_nameservice::VgType::Bm25,
+            source_type: fluree_db_nameservice::GraphSourceType::Bm25,
             config: r#"{"k1":1.2,"b":0.75}"#.to_string(),
             dependencies: vec!["source-ledger:main".to_string()],
-            index_address: Some("fluree:file://vg/snapshot.bin".to_string()),
+            index_address: Some("fluree:file://graph-sources/snapshot.bin".to_string()),
             index_t: 42,
             retracted: false,
         };
 
-        let json = vg_record_to_jsonld(&record);
+        let json = gs_record_to_jsonld(&record);
 
         assert_eq!(json["@id"], "my-search:main");
-        assert_eq!(
-            json["@type"],
-            json!(["f:VirtualGraphDatabase", "fidx:BM25"])
-        );
+        assert_eq!(json["@type"], json!(["f:GraphSource", "fidx:BM25"]));
         assert_eq!(json["f:name"], "my-search");
         assert_eq!(json["f:branch"], "main");
         assert_eq!(json["f:status"], "ready");
         assert_eq!(json["fidx:config"]["@value"], r#"{"k1":1.2,"b":0.75}"#);
         assert_eq!(json["fidx:dependencies"], json!(["source-ledger:main"]));
-        assert_eq!(json["fidx:indexAddress"], "fluree:file://vg/snapshot.bin");
+        assert_eq!(
+            json["fidx:indexAddress"],
+            "fluree:file://graph-sources/snapshot.bin"
+        );
         assert_eq!(json["fidx:indexT"], 42);
     }
 }

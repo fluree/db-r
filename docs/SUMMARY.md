@@ -28,7 +28,7 @@
 
 - [Concepts](concepts/README.md)
   - [Ledgers and the nameservice](concepts/ledgers-and-nameservice.md)
-  - [Graph sources (virtual graphs)](concepts/virtual-graphs.md)
+  - [Graph sources](concepts/graph-sources.md)
   - [IRIs, namespaces, and JSON-LD @context](concepts/iri-and-context.md)
   - [Datatypes and typed values](concepts/datatypes.md)
   - [Datasets and named graphs](concepts/datasets-and-named-graphs.md)
@@ -36,7 +36,7 @@
 
 - [Design](design/README.md)
   - [Nameservice schema v2](design/nameservice-schema-v2.md)
-  - [Virtual graph index manifests](design/virtual-graph-index-manifests.md)
+  - [Graph source index manifests](design/graph-source-index-manifests.md)
   - [Index format](design/index-format.md)
   - [Storage traits](design/storage-traits.md)
 
@@ -83,11 +83,11 @@
   - [Vector search](indexing-and-search/vector-search.md)
   - [Geospatial](indexing-and-search/geospatial.md)
 
-- [Virtual graphs and integrations](virtual-graphs/README.md)
-  - [Overview](virtual-graphs/overview.md)
-  - [Iceberg / Parquet](virtual-graphs/iceberg.md)
-  - [R2RML](virtual-graphs/r2rml.md)
-  - [BM25 virtual graph](virtual-graphs/bm25-virtual-graph.md)
+- [Graph sources and integrations](graph-sources/README.md)
+  - [Overview](graph-sources/overview.md)
+  - [Iceberg / Parquet](graph-sources/iceberg.md)
+  - [R2RML](graph-sources/r2rml.md)
+  - [BM25 graph source](graph-sources/bm25.md)
 
 - [Operations](operations/README.md)
   - [Configuration](operations/configuration.md)

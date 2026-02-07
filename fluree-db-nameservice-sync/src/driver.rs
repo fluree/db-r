@@ -391,7 +391,7 @@ mod tests {
                 .map_err(SyncError::Nameservice)?;
             Ok(RemoteSnapshot {
                 ledgers: records,
-                vgs: vec![],
+                graph_sources: vec![],
             })
         }
 

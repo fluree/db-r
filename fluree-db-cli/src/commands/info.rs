@@ -14,7 +14,7 @@ pub async fn run(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> {
         .await?
         .ok_or_else(|| CliError::NotFound(format!("ledger '{}' not found", alias)))?;
 
-    println!("Ledger:         {}", record.alias);
+    println!("Ledger:         {}", record.name);
     println!("Branch:         {}", record.branch);
     println!("Address:        {}", record.address);
     println!("Commit t:       {}", record.commit_t);

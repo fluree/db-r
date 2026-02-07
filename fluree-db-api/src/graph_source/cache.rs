@@ -1,4 +1,4 @@
-//! Caching infrastructure for virtual graph operations.
+//! Caching infrastructure for graph source operations.
 //!
 //! Provides caches for R2RML compiled mappings and Iceberg table metadata
 //! to avoid repeated expensive operations.
@@ -21,8 +21,8 @@ use fluree_db_iceberg::metadata::TableMetadata;
 ///
 /// # Cache Keys
 ///
-/// - **Compiled mappings**: Keyed by `(vg_alias, mapping_source)` - invalidated when
-///   VG config changes or mapping file is updated.
+/// - **Compiled mappings**: Keyed by `(graph_source_address, mapping_source)` - invalidated when
+///   graph source config changes or mapping file is updated.
 /// - **Table metadata**: Keyed by `metadata_location` - the S3 path is a content hash,
 ///   so different snapshots have different keys.
 ///
@@ -32,7 +32,7 @@ use fluree_db_iceberg::metadata::TableMetadata;
 #[derive(Debug)]
 pub struct R2rmlCache {
     /// Cache for compiled R2RML mappings.
-    /// Key: `(vg_alias, mapping_source_hash)`
+    /// Key: `(graph_source_address, mapping_source_hash)`
     /// Value: Compiled mapping
     compiled_mappings: RwLock<LruCache<String, Arc<CompiledR2rmlMapping>>>,
 
@@ -150,18 +150,18 @@ impl R2rmlCache {
 
     /// Generate a cache key for a compiled mapping.
     ///
-    /// Uses `vg_alias` + hash of `mapping_source` to handle both VG identity
+    /// Uses `graph_source_address` + hash of `mapping_source` to handle both graph source identity
     /// and mapping file updates.
     ///
     /// The key includes:
-    /// - `vg_alias` - ensures different VGs don't share mappings
+    /// - `graph_source_address` - ensures different graph sources don't share mappings
     /// - `mapping_source` - the storage path/address
     /// - `media_type` - distinguishes same source parsed as different formats
     ///
     /// Note: This does NOT detect content changes at the same path.
     /// Use `r2rml_cache().clear()` to invalidate after updating mapping files.
     pub fn mapping_cache_key(
-        vg_alias: &str,
+        graph_source_address: &str,
         mapping_source: &str,
         media_type: Option<&str>,
     ) -> String {
@@ -173,7 +173,7 @@ impl R2rmlCache {
         media_type.hash(&mut hasher);
         let combined_hash = hasher.finish();
 
-        format!("{}:{:016x}", vg_alias, combined_hash)
+        format!("{}:{:016x}", graph_source_address, combined_hash)
     }
 }
 

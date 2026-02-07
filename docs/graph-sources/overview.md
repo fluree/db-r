@@ -1,4 +1,4 @@
-# Graph Sources Overview (Virtual Graphs)
+# Graph Sources Overview
 
 Graph sources enable querying specialized indexes and external data sources using the same query interface as regular Fluree ledgers. This document provides a comprehensive overview of graph source architecture and capabilities.
 
@@ -11,7 +11,7 @@ A **graph source** is anything you can address by a graph name/IRI and query as 
 - Indexed with SPOT, POST, OPST, PSOT
 - Optimized for graph traversal
 
-**Non-ledger Graph Source (“virtual graph” in some code/docs):**
+**Non-ledger Graph Source:**
 - Stored in specialized format
 - Custom indexing for specific queries
 - Optimized for particular use cases
@@ -30,8 +30,8 @@ Both are queried using the same SPARQL or JSON-LD Query syntax.
       ┌───────────┴──────────┐
       │                      │
 ┌─────▼──────┐      ┌───────▼────────┐
-│  Regular   │      │    Virtual     │
-│  Ledgers   │      │    Graphs      │
+│  Regular   │      │    Graph       │
+│  Ledgers   │      │    Sources     │
 └─────┬──────┘      └───────┬────────┘
       │                     │
       │             ┌───────┴────────┐
@@ -44,12 +44,12 @@ Both are queried using the same SPARQL or JSON-LD Query syntax.
 
 ### Graph Source Registry (Nameservice)
 
-Non-ledger graph sources (sometimes called “virtual graphs”) are registered in nameservice:
+Non-ledger graph sources are registered in nameservice:
 
 ```json
 {
   "alias": "products-search:main",
-  "type": "virtual-graph",
+  "type": "graph-source",
   "backend": "bm25",
   "source": "products:main",
   "config": {
@@ -60,7 +60,7 @@ Non-ledger graph sources (sometimes called “virtual graphs”) are registered 
 }
 ```
 
-## Virtual Graph Types
+## Graph Source Types
 
 ### 1. BM25 Full-Text Search
 
@@ -187,12 +187,12 @@ Non-ledger graph sources (sometimes called “virtual graphs”) are registered 
 }
 ```
 
-## Creating Virtual Graphs
+## Creating Graph Sources
 
 ### Via HTTP API
 
 ```bash
-curl -X POST http://localhost:8090/virtual-graph \
+curl -X POST http://localhost:8090/graph-source \
   -H "Content-Type: application/json" \
   -d '{
     "name": "products-search",
@@ -206,14 +206,14 @@ curl -X POST http://localhost:8090/virtual-graph \
 
 ### Via Transaction
 
-Define virtual graph as RDF:
+Define graph source as RDF:
 
 ```json
 {
   "@graph": [
     {
-      "@id": "vg:products-search",
-      "@type": "f:VirtualGraph",
+      "@id": "gs:products-search",
+      "@type": "f:GraphSource",
       "f:type": "bm25",
       "f:source": "products:main",
       "f:config": {
@@ -224,11 +224,11 @@ Define virtual graph as RDF:
 }
 ```
 
-## Querying Virtual Graphs
+## Querying Graph Sources
 
-### Single Virtual Graph
+### Single Graph Source
 
-Query one virtual graph:
+Query one graph source:
 
 ```json
 {
@@ -240,9 +240,9 @@ Query one virtual graph:
 }
 ```
 
-### Multiple Virtual Graphs
+### Multiple Graph Sources
 
-Combine multiple virtual graphs:
+Combine multiple graph sources:
 
 ```json
 {
@@ -257,9 +257,9 @@ Combine multiple virtual graphs:
 }
 ```
 
-### Virtual + Regular Graphs
+### Graph Sources + Regular Graphs
 
-Combine virtual and regular ledgers:
+Combine graph sources and regular ledgers:
 
 ```json
 {
@@ -278,11 +278,11 @@ Combine virtual and regular ledgers:
 
 ### Source Tracking
 
-Virtual graphs track their source ledger:
+Graph sources track their source ledger:
 
 ```text
 Source: products:main @ t=150
-Virtual Graph: products-search:main @ source_t=150
+Graph Source: products-search:main @ source_t=150
 ```
 
 ### Update Modes
@@ -305,7 +305,7 @@ Virtual Graph: products-search:main @ source_t=150
 ### Checking Sync Status
 
 ```bash
-curl http://localhost:8090/virtual-graph/products-search:main/status
+curl http://localhost:8090/graph-source/products-search:main/status
 ```
 
 Response:
@@ -314,7 +314,7 @@ Response:
   "name": "products-search:main",
   "source": "products:main",
   "source_t": 150,
-  "virtual_t": 148,
+  "index_t": 148,
   "lag": 2,
   "last_sync": "2024-01-22T10:30:00Z",
   "status": "syncing"
@@ -325,7 +325,7 @@ Response:
 
 ### Query Planning
 
-Query planner handles virtual graphs:
+Query planner handles graph sources:
 
 1. **Parse Query:** Extract graph patterns
 2. **Route Subqueries:** Identify which graphs handle which patterns
@@ -367,28 +367,28 @@ Execution Plan:
 
 ## Performance Characteristics
 
-### BM25 Virtual Graphs
+### BM25 Graph Sources
 
 - **Index Build:** O(n × avg_doc_length)
 - **Query:** O(log n) with inverted index
 - **Space:** 2-3× source data
 - **Update:** Incremental, O(doc_size)
 
-### Vector Virtual Graphs
+### Vector Graph Sources
 
 - **Index Build:** O(n log n) for HNSW
 - **Query:** O(log n) approximate
 - **Space:** 1.5× embedding size
 - **Update:** Incremental, O(1)
 
-### Iceberg Virtual Graphs
+### Iceberg Graph Sources
 
 - **Index Build:** No index (direct file access)
 - **Query:** O(partitions scanned)
 - **Space:** Zero overhead (uses Parquet files)
 - **Update:** Batch-oriented
 
-### R2RML Virtual Graphs
+### R2RML Graph Sources
 
 - **Index Build:** No index (SQL queries)
 - **Query:** O(SQL complexity)
@@ -399,7 +399,7 @@ Execution Plan:
 
 ### 1. Choose Appropriate Type
 
-Match virtual graph type to use case:
+Match graph source type to use case:
 - **Keyword search** → BM25
 - **Semantic search** → Vector
 - **Analytics** → Iceberg
@@ -411,16 +411,16 @@ Check sync lag regularly:
 
 ```javascript
 setInterval(async () => {
-  const status = await getVirtualGraphStatus('products-search:main');
+  const status = await getGraphSourceStatus('products-search:main');
   if (status.lag > 10) {
-    console.warn(`Virtual graph lag: ${status.lag} transactions`);
+    console.warn(`Graph source lag: ${status.lag} transactions`);
   }
 }, 60000);
 ```
 
-### 3. Filter in Virtual Graphs
+### 3. Filter in Graph Sources
 
-Push filters to virtual graphs when possible:
+Push filters to graph sources when possible:
 
 Good:
 ```json
@@ -456,7 +456,7 @@ curl -X POST http://localhost:8090/query \
 
 ### 5. Limit Results
 
-Always use LIMIT with virtual graphs:
+Always use LIMIT with graph sources:
 
 ```json
 {
@@ -473,7 +473,7 @@ Always use LIMIT with virtual graphs:
 
 **Causes:**
 - Source ledger write rate too high
-- Virtual graph indexing too slow
+- Graph source indexing too slow
 - Resource constraints
 
 **Solutions:**
@@ -483,12 +483,12 @@ Always use LIMIT with virtual graphs:
 
 ### Query Performance Issues
 
-**Symptom:** Slow queries combining virtual graphs
+**Symptom:** Slow queries combining graph sources
 
 **Solutions:**
 1. Check explain plan
 2. Add filters to reduce intermediate results
-3. Ensure virtual graph is synced
+3. Ensure graph source is synced
 4. Consider query rewrite
 
 ### Missing Results
@@ -496,7 +496,7 @@ Always use LIMIT with virtual graphs:
 **Symptom:** Expected results not returned
 
 **Causes:**
-- Virtual graph not synced
+- Graph source not synced
 - Mapping misconfiguration
 - Filter too restrictive
 
@@ -507,7 +507,7 @@ Always use LIMIT with virtual graphs:
 
 ## Related Documentation
 
-- [BM25 Virtual Graph](bm25-virtual-graph.md) - Full-text search
+- [BM25 Graph Source](bm25.md) - Full-text search
 - [Iceberg](iceberg.md) - Data lake integration
 - [R2RML](r2rml.md) - Relational mapping
 - [BM25 Indexing](../indexing-and-search/bm25.md) - BM25 details

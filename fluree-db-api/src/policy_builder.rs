@@ -14,8 +14,8 @@
 
 use crate::dataset::QueryConnectionOptions;
 use crate::error::{ApiError, Result};
-use fluree_db_core::IndexStats;
-use fluree_db_core::{Db, FlakeValue, Sid, Storage};
+use fluree_db_core::{is_rdf_type, ClassPropertyUsage, ClassStatEntry, IndexStats};
+use fluree_db_core::{Db, FlakeValue, IndexType, Sid, Storage};
 use fluree_db_novelty::Novelty;
 use fluree_db_policy::{
     build_policy_set, PolicyAction, PolicyContext, PolicyQuery, PolicyRestriction, PolicyValue,
@@ -25,6 +25,91 @@ use fluree_db_query::{execute_pattern_with_overlay_at, Binding, Term, TriplePatt
 use fluree_vocab::rdf::TYPE as RDF_TYPE_IRI;
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
+
+async fn augment_class_property_stats_from_novelty<S: Storage + Clone + 'static>(
+    db: &Db<S>,
+    overlay: &dyn fluree_db_core::OverlayProvider,
+    to_t: i64,
+    mut stats: IndexStats,
+    novelty: &Novelty,
+) -> Result<IndexStats> {
+    // Collect per-subject property usage from novelty (ignore rdf:type itself).
+    let mut subject_props: HashMap<Sid, HashSet<Sid>> = HashMap::new();
+    for flake_id in novelty.iter_index(IndexType::Post) {
+        let flake = novelty.get_flake(flake_id);
+        if is_rdf_type(&flake.p) {
+            continue;
+        }
+        subject_props
+            .entry(flake.s.clone())
+            .or_default()
+            .insert(flake.p.clone());
+    }
+
+    if subject_props.is_empty() {
+        return Ok(stats);
+    }
+
+    // Look up each subject's current classes as-of (db + overlay, to_t).
+    let subjects: Vec<Sid> = subject_props.keys().cloned().collect();
+    let subject_classes = fluree_db_policy::lookup_subject_classes(&subjects, db, overlay, to_t)
+        .await
+        .map_err(|e| ApiError::Internal(format!("policy class lookup failed: {}", e)))?;
+
+    // Build mutable class -> (count, properties set) view.
+    let mut class_map: HashMap<Sid, (u64, HashSet<Sid>)> = HashMap::new();
+    if let Some(ref classes) = stats.classes {
+        for c in classes {
+            let props: HashSet<Sid> = c
+                .properties
+                .iter()
+                .map(|u| u.property_sid.clone())
+                .collect();
+            class_map.insert(c.class_sid.clone(), (c.count, props));
+        }
+    }
+
+    // Attribute novelty properties to the subject's current classes.
+    for (subject, props) in subject_props {
+        let Some(classes) = subject_classes.get(&subject) else {
+            continue;
+        };
+        for class_sid in classes {
+            let entry = class_map
+                .entry(class_sid.clone())
+                .or_insert_with(|| (0, HashSet::new()));
+            entry.1.extend(props.iter().cloned());
+        }
+    }
+
+    // Convert back to deterministic `ClassStatEntry` list.
+    let mut out_classes: Vec<ClassStatEntry> = class_map
+        .into_iter()
+        .map(|(class_sid, (count, props))| {
+            let mut props_vec: Vec<ClassPropertyUsage> = props
+                .into_iter()
+                .map(|property_sid| ClassPropertyUsage {
+                    property_sid,
+                    ref_classes: Vec::new(),
+                })
+                .collect();
+            props_vec.sort_by(|a, b| a.property_sid.cmp(&b.property_sid));
+            ClassStatEntry {
+                class_sid,
+                count,
+                properties: props_vec,
+            }
+        })
+        .collect();
+    out_classes.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
+    stats.classes = if out_classes.is_empty() {
+        None
+    } else {
+        Some(out_classes)
+    };
+
+    Ok(stats)
+}
 
 // ============================================================================
 // Constants - Fluree policy vocabulary IRIs
@@ -119,6 +204,8 @@ pub async fn build_policy_context_from_opts<S: Storage + Clone + 'static>(
         vec![]
     };
 
+    let has_class_policies = restrictions.iter().any(|r| r.class_policy);
+
     // Build policy sets (view and modify)
     //
     // Stats are critical for f:onClass policies - they need class→property relationships
@@ -127,12 +214,24 @@ pub async fn build_policy_context_from_opts<S: Storage + Clone + 'static>(
     //
     // We use current_stats() which merges indexed stats with novelty updates.
     // This ensures class→property relationships from uncommitted transactions are included.
-    let stats: Option<IndexStats> = if let Some(novelty) = novelty_for_stats {
+    let mut stats: Option<IndexStats> = if let Some(novelty) = novelty_for_stats {
         let indexed = db.stats.as_ref().cloned().unwrap_or_default();
         Some(fluree_db_novelty::current_stats(&indexed, novelty))
     } else {
         db.stats.clone()
     };
+
+    // Ensure class→property mappings include novelty property usage even when rdf:type
+    // is not restated for updated subjects. Without this, f:onClass policies may fail
+    // to be indexed under newly introduced properties and can be skipped entirely.
+    if has_class_policies {
+        if let (Some(novelty), Some(current)) = (novelty_for_stats, stats.take()) {
+            stats = Some(
+                augment_class_property_stats_from_novelty(db, overlay, to_t, current, novelty)
+                    .await?,
+            );
+        }
+    }
 
     let view_set = build_policy_set(restrictions.clone(), stats.as_ref(), PolicyAction::View);
     let modify_set = build_policy_set(restrictions, stats.as_ref(), PolicyAction::Modify);

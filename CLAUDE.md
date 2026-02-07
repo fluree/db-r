@@ -44,7 +44,7 @@ Generic over `S: Storage + 'static` and `N: NameService`. See `docs/reference/cr
 | `aws` | S3 + DynamoDB storage backends | api, connection, storage-aws, iceberg |
 | `credential` | JWS / VerifiableCredential verification | api, server, novelty |
 | `shacl` | SHACL constraint validation | api, transact |
-| `iceberg` | Iceberg REST catalog virtual graphs | api |
+| `iceberg` | Iceberg REST catalog graph sources | api |
 | `vector` | Embedded HNSW vector search (usearch) | api, query |
 | `import` | Turtle bulk import support | transact |
 | `otel` | OpenTelemetry tracing export | server, ingest |

@@ -274,7 +274,7 @@ Only `meta` items carry the `kind` attribute and project into the GSI.
 **All concern items are created atomically at initialization time.** This is a key structural decision:
 
 - `publish_ledger_init` creates all 5 items (`meta`, `head`, `index`, `config`, `status`) via `TransactWriteItems`
-- `publish_vg` creates all 4 items (`meta`, `config`, `index`, `status`) via `TransactWriteItems`
+- `publish_graph_source` creates all 4 items (`meta`, `config`, `index`, `status`) via `TransactWriteItems`
 
 All subsequent writes (`publish_commit`, `publish_index`, `push_status`, `push_config`) are plain `UpdateItem` operations — they never create new items, only update existing ones. This eliminates orphan-item problems and simplifies conditional logic.
 
@@ -343,9 +343,9 @@ The DynamoDB nameservice implements all seven nameservice traits:
 | `RefPublisher` | Compare-and-set on commit/index refs |
 | `StatusPublisher` | CAS-based status updates |
 | `ConfigPublisher` | CAS-based config updates (ledgers only) |
-| `VirtualGraphPublisher` | Graph source lifecycle: create, index, retract, list |
+| `GraphSourcePublisher` | Graph source lifecycle: create, index, retract, list |
 
-**Note:** `ConfigPublisher` is scoped to ledgers only. Graph source configuration is managed through `VirtualGraphPublisher`, which stores config as an opaque JSON string (`config_json`).
+**Note:** `ConfigPublisher` is scoped to ledgers only. Graph source configuration is managed through `GraphSourcePublisher`, which stores config as an opaque JSON string (`config_json`).
 
 ## Configuration
 
@@ -474,7 +474,7 @@ If you also use `ensure_table()` for automated table creation (development/testi
 }
 ```
 
-Minimal permissions (if not using `all_records`, `all_vg_records`, or graph sources):
+Minimal permissions (if not using `all_records`, `all_graph_source_records`, or graph sources):
 
 ```json
 {

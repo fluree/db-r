@@ -27,12 +27,12 @@ pub enum StorageAccessMode {
 /// Peer subscription configuration
 #[derive(Debug, Clone, Default)]
 pub struct PeerSubscription {
-    /// Subscribe to all ledgers and VGs
+    /// Subscribe to all ledgers and graph sources
     pub all: bool,
     /// Specific ledger aliases
     pub ledgers: Vec<String>,
-    /// Specific virtual graph aliases
-    pub vgs: Vec<String>,
+    /// Specific graph source aliases
+    pub graph_sources: Vec<String>,
 }
 
 /// Authentication mode for the events endpoint
@@ -378,7 +378,7 @@ pub struct ServerConfig {
     #[arg(long, env = "FLUREE_PEER_EVENTS_TOKEN")]
     pub peer_events_token: Option<String>,
 
-    /// Subscribe to all ledgers and VGs on transaction server (peer mode)
+    /// Subscribe to all ledgers and graph sources on transaction server (peer mode)
     #[arg(long)]
     pub peer_subscribe_all: bool,
 
@@ -386,9 +386,9 @@ pub struct ServerConfig {
     #[arg(long = "peer-ledger")]
     pub peer_ledgers: Vec<String>,
 
-    /// Subscribe to specific VGs in peer mode (repeatable)
-    #[arg(long = "peer-vg")]
-    pub peer_vgs: Vec<String>,
+    /// Subscribe to specific graph sources in peer mode (repeatable)
+    #[arg(long = "peer-graph-source")]
+    pub peer_graph_sources: Vec<String>,
 
     /// Initial reconnect delay in ms for peer SSE subscription
     #[arg(long, default_value = "1000")]
@@ -511,7 +511,7 @@ impl Default for ServerConfig {
             peer_events_token: None,
             peer_subscribe_all: false,
             peer_ledgers: Vec::new(),
-            peer_vgs: Vec::new(),
+            peer_graph_sources: Vec::new(),
             peer_reconnect_initial_ms: 1000,
             peer_reconnect_max_ms: 30000,
             peer_reconnect_multiplier: 2.0,
@@ -658,10 +658,12 @@ impl ServerConfig {
             }
 
             // Require subscription scope
-            if !self.peer_subscribe_all && self.peer_ledgers.is_empty() && self.peer_vgs.is_empty()
+            if !self.peer_subscribe_all
+                && self.peer_ledgers.is_empty()
+                && self.peer_graph_sources.is_empty()
             {
                 return Err(
-                    "server_role=peer requires --peer-subscribe-all or at least one --peer-ledger/--peer-vg"
+                    "server_role=peer requires --peer-subscribe-all or at least one --peer-ledger/--peer-graph-source"
                         .to_string(),
                 );
             }
@@ -710,7 +712,7 @@ impl ServerConfig {
         PeerSubscription {
             all: self.peer_subscribe_all,
             ledgers: self.peer_ledgers.clone(),
-            vgs: self.peer_vgs.clone(),
+            graph_sources: self.peer_graph_sources.clone(),
         }
     }
 

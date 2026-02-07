@@ -257,7 +257,7 @@ impl<S: Storage + 'static> PatternOptionalBuilder<S> {
                             // Late materialized IRI: no decode context here; leave unbound.
                         }
                         Binding::Iri(_) => {
-                            // Raw IRI from VG can't be converted to native Term.
+                            // Raw IRI from graph source can't be converted to native Term.
                             // Leave as variable - unify_check will compare Iri vs Sid and
                             // correctly fail, treating this as "no optional match".
                         }

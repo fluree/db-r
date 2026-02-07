@@ -359,9 +359,9 @@ async function waitForIndexing() {
 }
 ```
 
-## Virtual Graph Indexing
+## Graph Source Indexing
 
-Virtual graphs have their own indexing processes:
+Graph sources have their own indexing processes:
 
 ### BM25 Indexing
 

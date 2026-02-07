@@ -360,7 +360,7 @@ The remote search service uses a JSON-based protocol. Vector queries use the `"v
 ```json
 {
   "protocol_version": "1.0",
-  "vg_alias": "doc-embeddings:main",
+  "graph_source_alias": "doc-embeddings:main",
   "query": {
     "kind": "vector",
     "vector": [0.1, 0.2, 0.3, ...],
@@ -466,5 +466,5 @@ let results = fluree.query_from()
 
 - [BM25](bm25.md) - Full-text search
 - [Background Indexing](background-indexing.md) - Core indexing
-- [Virtual Graphs](../virtual-graphs/README.md) - Virtual graph concepts
+- [Graph Sources](../graph-sources/README.md) - Graph source concepts
 - [Search Service Protocol](../design/SEARCH_SERVICE_PROTOCOL.md) - Protocol specification

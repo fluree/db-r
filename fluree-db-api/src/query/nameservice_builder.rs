@@ -1,6 +1,6 @@
 //! Nameservice query builder: fluent API for querying nameservice metadata.
 //!
-//! The nameservice stores metadata about all ledgers and virtual graphs.
+//! The nameservice stores metadata about all ledgers and graph sources.
 //! This builder provides a consistent API matching other query builders
 //! ([`ViewQueryBuilder`], [`DatasetQueryBuilder`], [`FromQueryBuilder`]).
 //!
@@ -22,7 +22,7 @@
 //!
 //! # How It Works
 //!
-//! 1. Fetches all `NsRecord` and `VgNsRecord` from the nameservice
+//! 1. Fetches all `NsRecord` and `GraphSourceRecord` from the nameservice
 //! 2. Converts them to JSON-LD format
 //! 3. Creates a temporary in-memory Fluree instance
 //! 4. Inserts all records as a `@graph` transaction
@@ -33,10 +33,10 @@ use serde_json::Value as JsonValue;
 
 use crate::error::{BuilderError, BuilderErrors};
 use crate::format::FormatterConfig;
-use crate::ledger_info::{ns_record_to_jsonld, vg_record_to_jsonld};
+use crate::ledger_info::{gs_record_to_jsonld, ns_record_to_jsonld};
 use crate::query::builder::QueryCore;
 use crate::view::QueryInput;
-use crate::{ApiError, Fluree, NameService, Result, Storage, VirtualGraphPublisher};
+use crate::{ApiError, Fluree, GraphSourcePublisher, NameService, Result, Storage};
 use fluree_db_ledger::IndexConfig;
 use fluree_db_transact::{CommitOpts, TxnOpts, TxnType};
 use serde_json::json;
@@ -49,7 +49,7 @@ use serde_json::json;
 ///
 /// Created via [`Fluree::nameservice_query()`].
 ///
-/// Queries all ledger and virtual graph records stored in the nameservice.
+/// Queries all ledger and graph source records stored in the nameservice.
 /// Uses standard FQL/SPARQL syntax against an ephemeral in-memory database
 /// populated with nameservice records.
 ///
@@ -79,8 +79,8 @@ use serde_json::json;
 /// - `f:commit` - Commit address reference
 /// - `f:index` - Index info with `@id` and `f:t`
 ///
-/// Virtual graph records (`@type: "f:VirtualGraphDatabase"`):
-/// - `f:name` - Virtual graph name
+/// Graph source records (`@type: "f:GraphSource"`):
+/// - `f:name` - Graph source name
 /// - `f:branch` - Branch name
 /// - `f:status` - Status
 /// - `fidx:config` - Configuration JSON
@@ -95,7 +95,7 @@ pub struct NameserviceQueryBuilder<'a, S: Storage + 'static, N> {
 impl<'a, S, N> NameserviceQueryBuilder<'a, S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
-    N: NameService + VirtualGraphPublisher + Clone + Send + Sync + 'static,
+    N: NameService + GraphSourcePublisher + Clone + Send + Sync + 'static,
 {
     /// Create a new builder (called by `Fluree::nameservice_query()`).
     pub(crate) fn new(fluree: &'a Fluree<S, N>) -> Self {
@@ -165,7 +165,7 @@ where
         }
     }
 
-    /// Internal validation (doesn't check virtual_graphs since we don't support them here)
+    /// Internal validation (doesn't check graph_sources since we don't support them here)
     fn validate_core(&self) -> Vec<BuilderError> {
         let mut errs = Vec::new();
         if self.core.input.is_none() {
@@ -244,13 +244,13 @@ where
         // 1. Get all ledger records
         let ledger_records = self.fluree.nameservice.all_records().await?;
 
-        // 2. Get all VG records
-        let vg_records = self.fluree.nameservice.all_vg_records().await?;
+        // 2. Get all graph source records
+        let gs_records = self.fluree.nameservice.all_graph_source_records().await?;
 
         // 3. Convert to JSON-LD
         let mut all_records: Vec<JsonValue> =
             ledger_records.iter().map(ns_record_to_jsonld).collect();
-        all_records.extend(vg_records.iter().map(vg_record_to_jsonld));
+        all_records.extend(gs_records.iter().map(gs_record_to_jsonld));
 
         // 4. If no records, return empty result immediately
         if all_records.is_empty() {
@@ -328,7 +328,7 @@ where
 mod tests {
     use super::*;
     use crate::FlureeBuilder;
-    use fluree_db_nameservice::{memory::MemoryNameService, Publisher, VgType};
+    use fluree_db_nameservice::{memory::MemoryNameService, GraphSourceType, Publisher};
 
     async fn setup_ns_with_records() -> Fluree<fluree_db_core::MemoryStorage, MemoryNameService> {
         let fluree = FlureeBuilder::memory().build_memory();
@@ -350,13 +350,13 @@ mod tests {
             .await
             .unwrap();
 
-        // Create a VG record
+        // Create a graph source record
         fluree
             .nameservice
-            .publish_vg(
+            .publish_graph_source(
                 "my-search",
                 "main",
-                VgType::Bm25,
+                GraphSourceType::Bm25,
                 r#"{"k1":1.2}"#,
                 &["db1:main".to_string()],
             )
@@ -445,7 +445,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_builder_execute_virtual_graphs() {
+    async fn test_builder_execute_graph_sources() {
         let fluree = setup_ns_with_records().await;
 
         let query = json!({
@@ -454,7 +454,7 @@ mod tests {
                 "fidx": "https://ns.flur.ee/index#"
             },
             "select": ["?name"],
-            "where": [{"@id": "?vg", "@type": "f:VirtualGraphDatabase", "f:name": "?name"}]
+            "where": [{"@id": "?gs", "@type": "f:GraphSource", "f:name": "?name"}]
         });
 
         let result = fluree
@@ -465,7 +465,7 @@ mod tests {
             .unwrap();
 
         let arr = result.as_array().expect("Expected array result");
-        assert_eq!(arr.len(), 1, "Should have 1 VG record");
+        assert_eq!(arr.len(), 1, "Should have 1 graph source record");
     }
 
     #[tokio::test]

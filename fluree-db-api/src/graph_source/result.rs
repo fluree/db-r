@@ -1,6 +1,6 @@
-//! Result types for virtual graph operations.
+//! Result types for graph source operations.
 //!
-//! These structs represent the outcome of creating, syncing, and managing virtual graphs.
+//! These structs represent the outcome of creating, syncing, and managing graph sources.
 
 // =============================================================================
 // BM25 Results
@@ -9,8 +9,8 @@
 /// Result of creating a BM25 full-text index.
 #[derive(Debug, Clone)]
 pub struct Bm25CreateResult {
-    /// Virtual graph alias (name:branch)
-    pub vg_alias: String,
+    /// Graph source alias (name:branch)
+    pub graph_source_address: String,
 
     /// Number of documents indexed
     pub doc_count: usize,
@@ -28,8 +28,8 @@ pub struct Bm25CreateResult {
 /// Result of a sync operation.
 #[derive(Debug, Clone)]
 pub struct Bm25SyncResult {
-    /// Virtual graph alias
-    pub vg_alias: String,
+    /// Graph source alias
+    pub graph_source_address: String,
 
     /// Number of documents upserted
     pub upserted: usize,
@@ -53,8 +53,8 @@ pub struct Bm25SyncResult {
 /// Staleness check result for a BM25 index.
 #[derive(Debug, Clone)]
 pub struct Bm25StalenessCheck {
-    /// Virtual graph alias
-    pub vg_alias: String,
+    /// Graph source alias
+    pub graph_source_address: String,
 
     /// Source ledger alias
     pub source_ledger: String,
@@ -75,21 +75,21 @@ pub struct Bm25StalenessCheck {
 /// Result of dropping a BM25 full-text index.
 #[derive(Debug, Clone)]
 pub struct Bm25DropResult {
-    /// Virtual graph alias that was dropped
-    pub vg_alias: String,
+    /// Graph source alias that was dropped
+    pub graph_source_address: String,
 
     /// Number of snapshot files deleted from storage
     pub deleted_snapshots: usize,
 
-    /// Whether the VG was already retracted (no-op drop)
+    /// Whether the graph source was already retracted (no-op drop)
     pub was_already_retracted: bool,
 }
 
 /// Result of selecting a snapshot for time-travel.
 #[derive(Debug, Clone)]
 pub struct SnapshotSelection {
-    /// Virtual graph alias
-    pub vg_alias: String,
+    /// Graph source alias
+    pub graph_source_address: String,
 
     /// The snapshot's index time (watermark)
     pub snapshot_t: i64,
@@ -106,8 +106,8 @@ pub struct SnapshotSelection {
 #[cfg(feature = "vector")]
 #[derive(Debug, Clone)]
 pub struct VectorCreateResult {
-    /// Virtual graph alias (name:branch)
-    pub vg_alias: String,
+    /// Graph source alias (name:branch)
+    pub graph_source_address: String,
 
     /// Number of vectors indexed
     pub vector_count: usize,
@@ -129,8 +129,8 @@ pub struct VectorCreateResult {
 #[cfg(feature = "vector")]
 #[derive(Debug, Clone)]
 pub struct VectorSyncResult {
-    /// Virtual graph alias
-    pub vg_alias: String,
+    /// Graph source alias
+    pub graph_source_address: String,
 
     /// Number of vectors upserted
     pub upserted: usize,
@@ -155,8 +155,8 @@ pub struct VectorSyncResult {
 #[cfg(feature = "vector")]
 #[derive(Debug, Clone)]
 pub struct VectorStalenessCheck {
-    /// Virtual graph alias
-    pub vg_alias: String,
+    /// Graph source alias
+    pub graph_source_address: String,
 
     /// Source ledger alias
     pub source_ledger: String,
@@ -178,13 +178,13 @@ pub struct VectorStalenessCheck {
 #[cfg(feature = "vector")]
 #[derive(Debug, Clone)]
 pub struct VectorDropResult {
-    /// Virtual graph alias that was dropped
-    pub vg_alias: String,
+    /// Graph source alias that was dropped
+    pub graph_source_address: String,
 
     /// Number of snapshot files deleted from storage
     pub deleted_snapshots: usize,
 
-    /// Whether the VG was already retracted (no-op drop)
+    /// Whether the graph source was already retracted (no-op drop)
     pub was_already_retracted: bool,
 }
 
@@ -192,12 +192,12 @@ pub struct VectorDropResult {
 // Iceberg/R2RML Results
 // =============================================================================
 
-/// Result of creating an Iceberg virtual graph.
+/// Result of creating an Iceberg graph source.
 #[cfg(feature = "iceberg")]
 #[derive(Debug, Clone)]
 pub struct IcebergCreateResult {
-    /// Virtual graph alias (name:branch)
-    pub vg_alias: String,
+    /// Graph source alias (name:branch)
+    pub graph_source_address: String,
 
     /// Table identifier that was registered
     pub table_identifier: String,
@@ -209,12 +209,12 @@ pub struct IcebergCreateResult {
     pub connection_tested: bool,
 }
 
-/// Result of creating an R2RML virtual graph.
+/// Result of creating an R2RML graph source.
 #[cfg(feature = "iceberg")]
 #[derive(Debug, Clone)]
 pub struct R2rmlCreateResult {
-    /// Virtual graph alias (name:branch)
-    pub vg_alias: String,
+    /// Graph source alias (name:branch)
+    pub graph_source_address: String,
 
     /// Table identifier that was registered
     pub table_identifier: String,

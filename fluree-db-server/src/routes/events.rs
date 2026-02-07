@@ -5,16 +5,16 @@
 //!
 //! ## Endpoint
 //! ```text
-//! GET /fluree/events?ledger=books:main&ledger=people:main&vg=my-vg:main
+//! GET /fluree/events?ledger=books:main&ledger=people:main&graph-source=my-gs:main
 //! GET /fluree/events?all=true
 //! ```
 //!
 //! ## Query Parameter Precedence
-//! - `all=true` overrides any `ledger=` or `vg=` params
+//! - `all=true` overrides any `ledger=` or `graph-source=` params
 //! - Otherwise, filter to explicitly provided aliases
 //!
 //! ## Event Types
-//! - `ns-record` - Record published/updated (ledger or VG)
+//! - `ns-record` - Record published/updated (ledger or graph source)
 //! - `ns-retracted` - Record retracted/deleted
 
 use axum::{
@@ -23,9 +23,10 @@ use axum::{
 };
 use chrono::Utc;
 use fluree_db_nameservice::{
-    NameService, NameServiceEvent, NsRecord, Publication, SubscriptionScope, VgNsRecord,
-    VirtualGraphPublisher,
+    GraphSourcePublisher, GraphSourceRecord, NameService, NameServiceEvent, NsRecord, Publication,
+    SubscriptionScope,
 };
+use fluree_sse::{SSE_KIND_GRAPH_SOURCE, SSE_KIND_LEDGER};
 use futures::stream::{self, Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -40,7 +41,7 @@ use crate::state::AppState;
 /// Query parameters for the events endpoint
 #[derive(Debug, Clone, Deserialize)]
 pub struct EventsQuery {
-    /// Subscribe to all ledgers and VGs
+    /// Subscribe to all ledgers and graph sources
     #[serde(default)]
     pub all: bool,
 
@@ -48,9 +49,9 @@ pub struct EventsQuery {
     #[serde(default, rename = "ledger")]
     pub ledgers: Vec<String>,
 
-    /// Specific virtual graph aliases to subscribe to
-    #[serde(default, rename = "vg")]
-    pub vgs: Vec<String>,
+    /// Specific graph source aliases to subscribe to
+    #[serde(default, rename = "graph-source")]
+    pub graph_sources: Vec<String>,
 }
 
 impl EventsQuery {
@@ -61,8 +62,8 @@ impl EventsQuery {
             return true;
         }
         match kind {
-            "ledger" => self.ledgers.iter().any(|l| l == alias),
-            "virtual-graph" => self.vgs.iter().any(|v| v == alias),
+            SSE_KIND_LEDGER => self.ledgers.iter().any(|l| l == alias),
+            SSE_KIND_GRAPH_SOURCE => self.graph_sources.iter().any(|v| v == alias),
             _ => false,
         }
     }
@@ -92,14 +93,11 @@ fn ledger_event_id(alias: &str, record: &NsRecord) -> String {
     format!("ledger:{}:{}:{}", alias, record.commit_t, record.index_t)
 }
 
-/// Compute the SSE event ID for a VG record
-fn vg_event_id(alias: &str, record: &VgNsRecord) -> String {
+/// Compute the SSE event ID for a graph source record
+fn graph_source_event_id(alias: &str, record: &GraphSourceRecord) -> String {
     // Use index_t + 8-char truncated SHA-256 of config
     let config_hash = sha256_short(&record.config);
-    format!(
-        "virtual-graph:{}:{}:{}",
-        alias, record.index_t, &config_hash
-    )
+    format!("graph-source:{}:{}:{}", alias, record.index_t, &config_hash)
 }
 
 /// Compute the SSE event ID for a retraction
@@ -125,12 +123,12 @@ fn now_iso8601() -> String {
 
 /// Convert a ledger NsRecord to an SSE Event
 fn ledger_to_sse_event(record: &NsRecord) -> Event {
-    let alias = format!("{}:{}", record.alias, record.branch);
+    let alias = format!("{}:{}", record.name, record.branch);
     let event_id = ledger_event_id(&alias, record);
 
     let data = NsRecordData {
         action: "ns-record",
-        kind: "ledger",
+        kind: SSE_KIND_LEDGER,
         alias: alias.clone(),
         record: serde_json::json!({
             "alias": alias,
@@ -151,20 +149,20 @@ fn ledger_to_sse_event(record: &NsRecord) -> Event {
         .unwrap_or_else(|_| Event::default().comment("serialization error"))
 }
 
-/// Convert a VG record to an SSE Event
-fn vg_to_sse_event(record: &VgNsRecord) -> Event {
-    let alias = record.alias();
-    let event_id = vg_event_id(&alias, record);
+/// Convert a graph source record to an SSE Event
+fn graph_source_to_sse_event(record: &GraphSourceRecord) -> Event {
+    let alias = record.address.clone();
+    let event_id = graph_source_event_id(&alias, record);
 
     let data = NsRecordData {
         action: "ns-record",
-        kind: "virtual-graph",
+        kind: SSE_KIND_GRAPH_SOURCE,
         alias: alias.clone(),
         record: serde_json::json!({
             "alias": alias,
             "name": record.name,
             "branch": record.branch,
-            "vg_type": record.vg_type.to_type_string(),
+            "source_type": record.source_type.to_type_string(),
             "config": record.config,
             "dependencies": record.dependencies,
             "index_address": record.index_address,
@@ -202,16 +200,16 @@ fn retracted_sse_event(kind: &'static str, alias: &str) -> Event {
 /// Build the initial snapshot of records on connection
 async fn build_initial_snapshot<N>(ns: &N, params: &EventsQuery) -> Vec<Event>
 where
-    N: NameService + VirtualGraphPublisher,
+    N: NameService + GraphSourcePublisher,
 {
     let mut events = Vec::new();
 
     if params.all {
-        // All ledger records (sorted by alias)
+        // All ledger records (sorted by name)
         if let Ok(mut records) = ns.all_records().await {
             records.sort_by(|a, b| {
-                let a_alias = format!("{}:{}", a.alias, a.branch);
-                let b_alias = format!("{}:{}", b.alias, b.branch);
+                let a_alias = format!("{}:{}", a.name, a.branch);
+                let b_alias = format!("{}:{}", b.name, b.branch);
                 a_alias.cmp(&b_alias)
             });
             for r in records {
@@ -220,12 +218,12 @@ where
                 }
             }
         }
-        // All VG records (sorted by alias)
-        if let Ok(mut records) = ns.all_vg_records().await {
-            records.sort_by_key(|a| a.alias());
+        // All graph source records (sorted by address)
+        if let Ok(mut records) = ns.all_graph_source_records().await {
+            records.sort_by_key(|a| a.address.clone());
             for r in records {
                 if !r.retracted {
-                    events.push(vg_to_sse_event(&r));
+                    events.push(graph_source_to_sse_event(&r));
                 }
             }
         }
@@ -242,14 +240,14 @@ where
             }
         }
 
-        // Requested VGs (skip missing, sorted, deduped)
-        let mut vg_aliases: Vec<_> = params.vgs.iter().collect();
-        vg_aliases.sort();
-        vg_aliases.dedup();
-        for alias in vg_aliases {
-            if let Ok(Some(r)) = ns.lookup_vg(alias).await {
+        // Requested graph sources (skip missing, sorted, deduped)
+        let mut graph_source_addresses: Vec<_> = params.graph_sources.iter().collect();
+        graph_source_addresses.sort();
+        graph_source_addresses.dedup();
+        for alias in graph_source_addresses {
+            if let Ok(Some(r)) = ns.lookup_graph_source(alias).await {
                 if !r.retracted {
-                    events.push(vg_to_sse_event(&r));
+                    events.push(graph_source_to_sse_event(&r));
                 }
             }
         }
@@ -264,28 +262,28 @@ fn event_alias(event: &NameServiceEvent) -> &str {
         NameServiceEvent::LedgerCommitPublished { alias, .. } => alias,
         NameServiceEvent::LedgerIndexPublished { alias, .. } => alias,
         NameServiceEvent::LedgerRetracted { alias } => alias,
-        NameServiceEvent::VgConfigPublished { alias, .. } => alias,
-        NameServiceEvent::VgIndexPublished { alias, .. } => alias,
-        NameServiceEvent::VgRetracted { alias } => alias,
+        NameServiceEvent::GraphSourceConfigPublished { alias, .. } => alias,
+        NameServiceEvent::GraphSourceIndexPublished { alias, .. } => alias,
+        NameServiceEvent::GraphSourceRetracted { alias } => alias,
     }
 }
 
-/// Get the kind (ledger/virtual-graph) from a NameServiceEvent
+/// Get the kind (ledger/graph-source) from a NameServiceEvent
 fn event_kind(event: &NameServiceEvent) -> &'static str {
     match event {
         NameServiceEvent::LedgerCommitPublished { .. }
         | NameServiceEvent::LedgerIndexPublished { .. }
-        | NameServiceEvent::LedgerRetracted { .. } => "ledger",
-        NameServiceEvent::VgConfigPublished { .. }
-        | NameServiceEvent::VgIndexPublished { .. }
-        | NameServiceEvent::VgRetracted { .. } => "virtual-graph",
+        | NameServiceEvent::LedgerRetracted { .. } => SSE_KIND_LEDGER,
+        NameServiceEvent::GraphSourceConfigPublished { .. }
+        | NameServiceEvent::GraphSourceIndexPublished { .. }
+        | NameServiceEvent::GraphSourceRetracted { .. } => SSE_KIND_GRAPH_SOURCE,
     }
 }
 
 /// Transform a nameservice event to an SSE Event, fetching the current record
 async fn transform_event<N>(ns: &N, event: NameServiceEvent) -> Option<Event>
 where
-    N: NameService + VirtualGraphPublisher,
+    N: NameService + GraphSourcePublisher,
 {
     let alias = event_alias(&event).to_string();
 
@@ -295,13 +293,16 @@ where
             let record = ns.lookup(&alias).await.ok()??;
             Some(ledger_to_sse_event(&record))
         }
-        NameServiceEvent::LedgerRetracted { alias } => Some(retracted_sse_event("ledger", &alias)),
-        NameServiceEvent::VgConfigPublished { .. } | NameServiceEvent::VgIndexPublished { .. } => {
-            let record = ns.lookup_vg(&alias).await.ok()??;
-            Some(vg_to_sse_event(&record))
+        NameServiceEvent::LedgerRetracted { alias } => {
+            Some(retracted_sse_event(SSE_KIND_LEDGER, &alias))
         }
-        NameServiceEvent::VgRetracted { alias } => {
-            Some(retracted_sse_event("virtual-graph", &alias))
+        NameServiceEvent::GraphSourceConfigPublished { .. }
+        | NameServiceEvent::GraphSourceIndexPublished { .. } => {
+            let record = ns.lookup_graph_source(&alias).await.ok()??;
+            Some(graph_source_to_sse_event(&record))
+        }
+        NameServiceEvent::GraphSourceRetracted { alias } => {
+            Some(retracted_sse_event(SSE_KIND_GRAPH_SOURCE, &alias))
         }
     }
 }
@@ -337,7 +338,7 @@ fn authorize_request(
 /// Returns sorted, deduped lists for deterministic behavior.
 /// Silently removes disallowed items (no 403, no existence leak).
 fn filter_to_allowed(params: &EventsQuery, principal: &EventsPrincipal) -> EventsQuery {
-    // If allowed_all is true, ledgers/vgs lists are irrelevant
+    // If allowed_all is true, ledgers/graph_sources lists are irrelevant
     if principal.allowed_all {
         // Token grants full access, pass through
         return params.clone();
@@ -356,13 +357,13 @@ fn filter_to_allowed(params: &EventsQuery, principal: &EventsPrincipal) -> Event
             .collect()
     };
 
-    let mut vgs: Vec<String> = if params.all {
-        principal.allowed_vgs.iter().cloned().collect()
+    let mut graph_sources: Vec<String> = if params.all {
+        principal.allowed_graph_sources.iter().cloned().collect()
     } else {
         params
-            .vgs
+            .graph_sources
             .iter()
-            .filter(|v| principal.allowed_vgs.contains(*v))
+            .filter(|v| principal.allowed_graph_sources.contains(*v))
             .cloned()
             .collect()
     };
@@ -370,13 +371,13 @@ fn filter_to_allowed(params: &EventsQuery, principal: &EventsPrincipal) -> Event
     // Sort and dedup for deterministic snapshots
     ledgers.sort();
     ledgers.dedup();
-    vgs.sort();
-    vgs.dedup();
+    graph_sources.sort();
+    graph_sources.dedup();
 
     EventsQuery {
         all: false, // Never pass all=true if token restricts
         ledgers,
-        vgs,
+        graph_sources,
     }
 }
 
@@ -449,8 +450,10 @@ pub async fn events(
                             true
                         } else {
                             match kind {
-                                "ledger" => params.ledgers.iter().any(|l| l == alias),
-                                "virtual-graph" => params.vgs.iter().any(|v| v == alias),
+                                SSE_KIND_LEDGER => params.ledgers.iter().any(|l| l == alias),
+                                SSE_KIND_GRAPH_SOURCE => {
+                                    params.graph_sources.iter().any(|v| v == alias)
+                                }
                                 _ => false,
                             }
                         };
@@ -506,7 +509,7 @@ mod tests {
     fn test_ledger_event_id() {
         let record = NsRecord {
             address: "test:main".to_string(),
-            alias: "test".to_string(),
+            name: "test".to_string(),
             branch: "main".to_string(),
             commit_address: Some("commit-addr".to_string()),
             commit_t: 42,
@@ -530,14 +533,14 @@ mod tests {
         let query = EventsQuery {
             all: false,
             ledgers: vec!["books:main".to_string(), "users:main".to_string()],
-            vgs: vec!["search:main".to_string()],
+            graph_sources: vec!["search:main".to_string()],
         };
 
         assert!(query.matches("books:main", "ledger"));
         assert!(query.matches("users:main", "ledger"));
         assert!(!query.matches("other:main", "ledger"));
-        assert!(query.matches("search:main", "virtual-graph"));
-        assert!(!query.matches("books:main", "virtual-graph"));
+        assert!(query.matches("search:main", "graph-source"));
+        assert!(!query.matches("books:main", "graph-source"));
     }
 
     #[test]
@@ -545,10 +548,10 @@ mod tests {
         let query = EventsQuery {
             all: true,
             ledgers: vec![],
-            vgs: vec![],
+            graph_sources: vec![],
         };
 
         assert!(query.matches("any:main", "ledger"));
-        assert!(query.matches("any:main", "virtual-graph"));
+        assert!(query.matches("any:main", "graph-source"));
     }
 }

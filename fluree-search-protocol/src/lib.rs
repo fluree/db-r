@@ -25,7 +25,7 @@
 //! let request = SearchRequest {
 //!     protocol_version: PROTOCOL_VERSION.to_string(),
 //!     request_id: Some("req-123".to_string()),
-//!     vg_alias: "products-search:main".to_string(),
+//!     graph_source_address: "products-search:main".to_string(),
 //!     limit: 10,
 //!     as_of_t: None,
 //!     sync: false,

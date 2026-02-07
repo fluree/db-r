@@ -1,6 +1,6 @@
 # Iceberg / Parquet
 
-Fluree integrates with Apache Iceberg to query data lake tables as virtual graphs. This enables querying large-scale analytical data stored in Parquet format using the same RDF query interface.
+Fluree integrates with Apache Iceberg to query data lake tables as graph sources. This enables querying large-scale analytical data stored in Parquet format using the same RDF query interface.
 
 **Note:** Requires the `iceberg` feature flag. See [Compatibility and Feature Flags](../reference/compatibility.md#fluree-db-api-features).
 
@@ -15,10 +15,10 @@ Apache Iceberg is an open table format for huge analytical datasets. It provides
 
 ## Configuration
 
-### Create Iceberg Virtual Graph
+### Create Iceberg Graph Source
 
 ```bash
-curl -X POST http://localhost:8090/virtual-graph \
+curl -X POST http://localhost:8090/graph-source \
   -H "Content-Type: application/json" \
   -d '{
     "name": "warehouse-orders",
@@ -276,10 +276,10 @@ Iceberg optimizations:
 
 ## Schema Evolution
 
-Iceberg supports schema evolution. Update virtual graph when schema changes:
+Iceberg supports schema evolution. Update graph source when schema changes:
 
 ```bash
-curl -X POST http://localhost:8090/virtual-graph/warehouse-orders:main/refresh-schema
+curl -X POST http://localhost:8090/graph-source/warehouse-orders:main/refresh-schema
 ```
 
 Fluree will reload Iceberg schema and update mapping.
@@ -296,7 +296,7 @@ export AWS_SECRET_ACCESS_KEY=your-secret
 export AWS_REGION=us-east-1
 ```
 
-Or configure in virtual graph:
+Or configure in graph source:
 
 ```json
 {
@@ -378,7 +378,7 @@ ORDER BY DESC(?total)
 
 ## Limitations
 
-1. **Read-Only:** Iceberg virtual graphs are read-only (no writes via Fluree)
+1. **Read-Only:** Iceberg graph sources are read-only (no writes via Fluree)
 2. **Eventual Consistency:** May lag behind Iceberg table updates
 3. **Complex Joins:** Large joins between Fluree and Iceberg may be slow
 4. **No Full-Text Search:** Use Fluree's BM25 for text search
@@ -409,7 +409,7 @@ ORDER BY DESC(?total)
 ```
 
 **Solutions:**
-- Refresh schema: `POST /virtual-graph/.../refresh-schema`
+- Refresh schema: `POST /graph-source/.../refresh-schema`
 - Update mapping configuration
 - Verify table name and catalog
 
@@ -428,6 +428,6 @@ ORDER BY DESC(?total)
 
 ## Related Documentation
 
-- [Virtual Graphs Overview](overview.md) - Virtual graph concepts
+- [Graph Sources Overview](overview.md) - Graph source concepts
 - [R2RML](r2rml.md) - Relational database mapping
 - [Query Datasets](../query/datasets.md) - Multi-graph queries

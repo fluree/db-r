@@ -1,7 +1,7 @@
-//! Configuration schemas for Iceberg virtual graphs.
+//! Configuration schemas for Iceberg graph sources.
 //!
 //! This module defines the JSON-serializable configuration structures
-//! stored in `VgNsRecord.config` for Iceberg virtual graphs.
+//! stored in `GraphSourceRecord.config` for Iceberg graph sources.
 
 use crate::auth::AuthConfig;
 use crate::catalog::parse_table_identifier;
@@ -9,9 +9,10 @@ use crate::catalog::TableIdentifier;
 use crate::error::{IcebergError, Result};
 use serde::{Deserialize, Serialize};
 
-/// Configuration for an Iceberg virtual graph.
+/// Configuration for an Iceberg graph source.
 ///
-/// This is stored as JSON in `VgNsRecord.config` for VGs with type `VgType::Iceberg`.
+/// This is stored as JSON in `GraphSourceRecord.config` for graph sources with
+/// type `GraphSourceType::Iceberg`.
 ///
 /// # Example JSON
 ///
@@ -31,7 +32,7 @@ use serde::{Deserialize, Serialize};
 /// }
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct IcebergVgConfig {
+pub struct IcebergGsConfig {
     /// Catalog configuration
     pub catalog: CatalogConfig,
     /// Table identifier
@@ -44,11 +45,15 @@ pub struct IcebergVgConfig {
     pub mapping: Option<MappingSource>,
 }
 
-impl IcebergVgConfig {
-    /// Parse from JSON string (stored in VgNsRecord.config).
+impl IcebergGsConfig {
+    /// Parse from JSON string (stored in GraphSourceRecord.config).
     pub fn from_json(json: &str) -> Result<Self> {
-        serde_json::from_str(json)
-            .map_err(|e| IcebergError::Config(format!("Failed to parse Iceberg VG config: {}", e)))
+        serde_json::from_str(json).map_err(|e| {
+            IcebergError::Config(format!(
+                "Failed to parse Iceberg graph source config: {}",
+                e
+            ))
+        })
     }
 
     /// Serialize to JSON string.
@@ -180,7 +185,7 @@ mod tests {
             "table": "openflights.airlines"
         }"#;
 
-        let config: IcebergVgConfig = serde_json::from_str(json).unwrap();
+        let config: IcebergGsConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.catalog.uri, "https://polaris.example.com");
         assert_eq!(config.catalog.catalog_type, "polaris");
         assert_eq!(config.table.identifier(), "openflights.airlines");
@@ -215,7 +220,7 @@ mod tests {
             }
         }"#;
 
-        let config: IcebergVgConfig = serde_json::from_str(json).unwrap();
+        let config: IcebergGsConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.catalog.catalog_type, "rest");
         assert_eq!(config.catalog.warehouse, Some("my-warehouse".to_string()));
         assert_eq!(config.table.identifier(), "db.schema.events");
@@ -236,7 +241,7 @@ mod tests {
             "table": "ns.table"
         }"#;
 
-        let config: IcebergVgConfig = serde_json::from_str(json).unwrap();
+        let config: IcebergGsConfig = serde_json::from_str(json).unwrap();
         let result = config.validate();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("uri"));
@@ -251,14 +256,14 @@ mod tests {
             "table": "invalid"
         }"#;
 
-        let config: IcebergVgConfig = serde_json::from_str(json).unwrap();
+        let config: IcebergGsConfig = serde_json::from_str(json).unwrap();
         let result = config.validate();
         assert!(result.is_err());
     }
 
     #[test]
     fn test_roundtrip_serialization() {
-        let original = IcebergVgConfig {
+        let original = IcebergGsConfig {
             catalog: CatalogConfig {
                 catalog_type: "polaris".to_string(),
                 uri: "https://polaris.example.com".to_string(),
@@ -271,7 +276,7 @@ mod tests {
         };
 
         let json = original.to_json().unwrap();
-        let parsed = IcebergVgConfig::from_json(&json).unwrap();
+        let parsed = IcebergGsConfig::from_json(&json).unwrap();
 
         assert_eq!(parsed.catalog.uri, original.catalog.uri);
         assert_eq!(parsed.table.identifier(), original.table.identifier());

@@ -14,7 +14,7 @@ This document describes the design for a unified nameservice schema that support
 
 Terminology:
 - Prefer **graph source** in docs and user-facing API descriptions.
-- Some internal Rust APIs may still use “Virtual Graph / VG” to mean “non-ledger graph source”.
+- Non-ledger data sources (BM25, vector, Iceberg, R2RML) are called **graph sources**.
 
 ## Design Goals
 
@@ -78,7 +78,7 @@ The `meta` item carries the record discriminator:
 - `kind`: `ledger` | `graph_source`
 - `source_type` (graph sources only): a type string (e.g., `fidx:BM25`, `fidx:Vector`, `fidx:Iceberg`, `fidx:R2RML`, `fidx:JDBC`)
 
-Avoid encoding “virtual graph” into persistent identifiers (no `vg:*` prefixes in `pk` or types).
+Avoid `vg:*` prefixes in `pk` or types — use `graph_source` naming consistently.
 
 ---
 
@@ -186,7 +186,7 @@ For graph sources with index state (e.g., BM25, vector, spatial, Iceberg, etc.),
 
 For graph sources with no index concept (e.g., JDBC mappings): `null`.
 
-**Design note**: Snapshot history (if any) is stored in **graph-source-owned manifests in storage**, not in nameservice. See `docs/design/virtual-graph-index-manifests.md`.
+**Design note**: Snapshot history (if any) is stored in **graph-source-owned manifests in storage**, not in nameservice. See `docs/design/graph-source-index-manifests.md`.
 
 ### status
 
@@ -210,7 +210,7 @@ For graph sources with no index concept (e.g., JDBC mappings): `null`.
 | `ready` | Normal operating state (default initial state) | `queue_depth`, `last_commit_ms` |
 | `indexing` | Background indexing in progress | `index_lock` |
 | `reindexing` | Full reindex in progress | `reindex_lock`, `progress` |
-| `syncing` | VG syncing from source | `progress`, `source_t`, `synced_t` |
+| `syncing` | Graph source syncing from source | `progress`, `source_t`, `synced_t` |
 | `maintenance` | Administrative maintenance in progress | `maintenance_lock` |
 | `retracted` | Soft-deleted | `retracted_at`, `reason` |
 | `error` | Error state | `error`, `error_at` |

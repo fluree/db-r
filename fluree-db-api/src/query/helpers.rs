@@ -130,7 +130,7 @@ pub(crate) fn build_sparql_result(
 /// This replaces the repetitive pattern:
 /// ```ignore
 /// #[cfg(feature = "iceberg")]
-/// let r2rml_provider = crate::virtual_graph::FlureeR2rmlProvider::new(self);
+/// let r2rml_provider = crate::graph_source::FlureeR2rmlProvider::new(self);
 /// #[cfg(not(feature = "iceberg"))]
 /// let r2rml_provider = NoOpR2rmlProvider::new();
 /// ```
@@ -139,7 +139,7 @@ macro_rules! r2rml_provider {
     ($fluree:expr) => {{
         #[cfg(feature = "iceberg")]
         {
-            $crate::virtual_graph::FlureeR2rmlProvider::new($fluree)
+            $crate::graph_source::FlureeR2rmlProvider::new($fluree)
         }
         #[cfg(not(feature = "iceberg"))]
         {

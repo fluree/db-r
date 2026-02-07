@@ -102,7 +102,7 @@ fn format_binding(
             Ok(json!({"@id": compacted}))
         }
 
-        // Raw IRI string (from virtual graph, not in namespace table)
+        // Raw IRI string (from graph source, not in namespace table)
         Binding::Iri(iri) => Ok(json!({"@id": iri.as_ref()})),
 
         // Literal value - always include @type (except language-tagged)

@@ -803,9 +803,9 @@ Use `@t` and `@op` annotations on value objects to capture metadata:
 }
 ```
 
-## Virtual Graph Queries
+## Graph Source Queries
 
-Query virtual graphs using the same syntax:
+Query graph sources using the same syntax:
 
 **BM25 Search:**
 
@@ -908,11 +908,11 @@ Query virtual graphs using the same syntax:
 3. **Limit Result Sets**: Use `limit` for large result sets
 4. **Optimize Filters**: Place filters early in `where` clauses
 5. **Use Time Specifiers**: Use `@t:` when transaction numbers are known (fastest)
-6. **Virtual Graph Selection**: Choose appropriate virtual graphs for query patterns
+6. **Graph Source Selection**: Choose appropriate graph sources for query patterns
 
 ## Related Documentation
 
 - [SPARQL](sparql.md): SPARQL query language
 - [Time Travel](../concepts/time-travel.md): Historical queries
-- [Virtual Graphs](../concepts/virtual-graphs.md): Virtual graph queries
+- [Graph Sources](../concepts/graph-sources.md): Graph source queries
 - [Output Formats](output-formats.md): Query result formats

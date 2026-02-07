@@ -47,9 +47,9 @@ impl NsRecordResponse {
     /// Convert to NsRecord, using the original lookup key as the address
     fn into_ns_record(self, lookup_key: &str) -> NsRecord {
         NsRecord {
-            // address is the key used for lookup (may differ from alias)
+            // address is the key used for lookup (may differ from name)
             address: lookup_key.to_string(),
-            alias: self.alias,
+            name: self.alias,
             branch: self.branch,
             commit_address: self.commit_address,
             commit_t: self.commit_t,
@@ -132,13 +132,6 @@ impl NameService for ProxyNameService {
                 status, ledger_address
             ))),
         }
-    }
-
-    async fn alias(&self, ledger_address: &str) -> Result<Option<String>> {
-        // Delegate to lookup
-        self.lookup(ledger_address)
-            .await
-            .map(|opt| opt.map(|r| r.alias))
     }
 
     async fn all_records(&self) -> Result<Vec<NsRecord>> {
@@ -230,7 +223,7 @@ mod tests {
         let record = response.into_ns_record("books");
         // address should be the lookup key, not the alias
         assert_eq!(record.address, "books");
-        assert_eq!(record.alias, "books:main");
+        assert_eq!(record.name, "books:main");
         assert_eq!(record.branch, "main");
         assert_eq!(record.commit_t, 42);
         assert_eq!(record.index_t, 40);

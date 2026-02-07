@@ -94,7 +94,7 @@ pub(crate) fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Res
         // IriMatch: use canonical IRI, then compact (multi-ledger mode)
         Binding::IriMatch { iri, .. } => Ok(JsonValue::String(compactor.compact_iri(iri)?)),
 
-        // Raw IRI string (from virtual graph, not in namespace table)
+        // Raw IRI string (from graph source, not in namespace table)
         // Output as-is without compaction (no namespace mapping available)
         Binding::Iri(iri) => Ok(JsonValue::String(iri.to_string())),
 

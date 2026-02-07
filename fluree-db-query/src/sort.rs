@@ -125,7 +125,7 @@ impl SortSpec {
 /// 1. Type class ordering: Unbound < Poisoned < Sid < IriMatch < Iri < Lit < Grouped
 /// 2. Within Sid: compare by (namespace_code, name)
 /// 3. Within IriMatch: compare by canonical IRI string (for cross-ledger consistency)
-/// 4. Within Iri: compare by string value (raw IRIs from virtual graphs)
+/// 4. Within Iri: compare by string value (raw IRIs from graph sources)
 /// 5. Within Lit: compare values with type-aware logic
 ///    - Numeric promotion: Long and Double are comparable
 ///    - NaN is sorted last within doubles

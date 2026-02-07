@@ -3,10 +3,10 @@ pub mod builder;
 mod connection;
 #[cfg(feature = "credential")]
 mod credential;
+mod graph_source;
 pub(crate) mod helpers;
 mod ledger;
 pub mod nameservice_builder;
-mod virtual_graph;
 
 use serde_json::Value as JsonValue;
 

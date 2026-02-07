@@ -2,13 +2,13 @@
 //!
 //! This module provides a background worker that automatically syncs vector indexes
 //! when their source ledgers are updated. It subscribes to nameservice events and
-//! triggers sync operations for dependent virtual graphs.
+//! triggers sync operations for dependent graph sources.
 //!
 //! # Architecture
 //!
-//! The worker maintains a reverse dependency map (ledger -> VGs) and subscribes
+//! The worker maintains a reverse dependency map (ledger -> graph sources) and subscribes
 //! to nameservice events. When a `LedgerCommitPublished` event is received, it
-//! enqueues sync tasks for all dependent vector VGs.
+//! enqueues sync tasks for all dependent vector graph sources.
 //!
 //! # Example
 //!
@@ -21,8 +21,8 @@
 //! let worker = VectorMaintenanceWorker::new(&fluree);
 //! let handle = worker.handle();
 //!
-//! // Register a VG for automatic sync
-//! handle.register_vg(&fluree.nameservice(), "embeddings:main").await?;
+//! // Register a graph source for automatic sync
+//! handle.register_graph_source(&fluree.nameservice(), "embeddings:main").await?;
 //!
 //! // Stop the worker when done
 //! handle.stop();
@@ -34,7 +34,7 @@ use crate::{ApiError, Result};
 use fluree_db_core::{Storage, StorageWrite};
 #[cfg(feature = "vector")]
 use fluree_db_nameservice::{
-    NameService, NameServiceEvent, Publication, Publisher, VirtualGraphPublisher,
+    GraphSourcePublisher, NameService, NameServiceEvent, Publication, Publisher,
 };
 #[cfg(feature = "vector")]
 use futures::StreamExt;
@@ -55,7 +55,7 @@ use tracing::{debug, error, info, warn};
 pub struct VectorWorkerConfig {
     /// Maximum number of concurrent sync operations.
     pub max_concurrent_syncs: usize,
-    /// Whether to auto-register VGs on creation.
+    /// Whether to auto-register graph sources on creation.
     pub auto_register: bool,
     /// Debounce interval in milliseconds (delay sync to batch rapid commits).
     pub debounce_ms: u64,
@@ -82,8 +82,8 @@ pub struct VectorWorkerStats {
     pub syncs_failed: u64,
     /// Number of events received.
     pub events_received: u64,
-    /// Number of registered VGs.
-    pub registered_vgs: usize,
+    /// Number of registered graph sources.
+    pub registered_graph_sources: usize,
 }
 
 /// State for the Vector maintenance worker (single-threaded).
@@ -91,10 +91,10 @@ pub struct VectorWorkerStats {
 /// Uses `RefCell` for interior mutability to work in single-threaded contexts.
 #[cfg(feature = "vector")]
 pub struct VectorWorkerState {
-    /// Reverse dependency map: ledger_alias -> set of vg_aliases.
-    ledger_to_vgs: HashMap<String, HashSet<String>>,
-    /// Forward map: vg_alias -> set of ledger_aliases (for unregistration).
-    vg_to_ledgers: HashMap<String, HashSet<String>>,
+    /// Reverse dependency map: ledger_alias -> set of graph source aliases.
+    ledger_to_graph_sources: HashMap<String, HashSet<String>>,
+    /// Forward map: graph_source_address -> set of ledger_aliases (for unregistration).
+    gs_to_ledgers: HashMap<String, HashSet<String>>,
     /// Statistics.
     stats: VectorWorkerStats,
 }
@@ -104,69 +104,72 @@ impl VectorWorkerState {
     /// Create a new empty worker state.
     pub fn new() -> Self {
         Self {
-            ledger_to_vgs: HashMap::new(),
-            vg_to_ledgers: HashMap::new(),
+            ledger_to_graph_sources: HashMap::new(),
+            gs_to_ledgers: HashMap::new(),
             stats: VectorWorkerStats::default(),
         }
     }
 
-    /// Register a VG with its dependencies.
-    pub fn register_vg(&mut self, vg_alias: &str, dependencies: &[String]) {
+    /// Register a graph source with its dependencies.
+    pub fn register_graph_source(&mut self, graph_source_address: &str, dependencies: &[String]) {
         let deps_set: HashSet<String> = dependencies.iter().cloned().collect();
 
         // Update forward map
-        self.vg_to_ledgers
-            .insert(vg_alias.to_string(), deps_set.clone());
+        self.gs_to_ledgers
+            .insert(graph_source_address.to_string(), deps_set.clone());
 
         // Update reverse map
         for ledger in &deps_set {
-            self.ledger_to_vgs
+            self.ledger_to_graph_sources
                 .entry(ledger.clone())
                 .or_default()
-                .insert(vg_alias.to_string());
+                .insert(graph_source_address.to_string());
         }
 
-        self.stats.registered_vgs = self.vg_to_ledgers.len();
+        self.stats.registered_graph_sources = self.gs_to_ledgers.len();
         debug!(
-            vg_alias,
+            graph_source_address,
             ?dependencies,
-            "Registered vector VG for maintenance"
+            "Registered vector graph source for maintenance"
         );
     }
 
-    /// Unregister a VG.
-    pub fn unregister_vg(&mut self, vg_alias: &str) {
-        if let Some(ledgers) = self.vg_to_ledgers.remove(vg_alias) {
+    /// Unregister a graph source.
+    pub fn unregister_graph_source(&mut self, graph_source_address: &str) {
+        if let Some(ledgers) = self.gs_to_ledgers.remove(graph_source_address) {
             // Remove from reverse map
             for ledger in ledgers {
-                if let Some(vgs) = self.ledger_to_vgs.get_mut(&ledger) {
-                    vgs.remove(vg_alias);
-                    if vgs.is_empty() {
-                        self.ledger_to_vgs.remove(&ledger);
+                if let Some(graph_sources) = self.ledger_to_graph_sources.get_mut(&ledger) {
+                    graph_sources.remove(graph_source_address);
+                    if graph_sources.is_empty() {
+                        self.ledger_to_graph_sources.remove(&ledger);
                     }
                 }
             }
         }
-        self.stats.registered_vgs = self.vg_to_ledgers.len();
-        debug!(vg_alias, "Unregistered vector VG from maintenance");
+        self.stats.registered_graph_sources = self.gs_to_ledgers.len();
+        debug!(
+            graph_source_address,
+            "Unregistered vector graph source from maintenance"
+        );
     }
 
-    /// Get VGs that depend on a ledger.
-    pub fn vgs_for_ledger(&self, ledger_alias: &str) -> Vec<String> {
-        self.ledger_to_vgs
+    /// Get graph sources that depend on a ledger.
+    pub fn graph_sources_for_ledger(&self, ledger_alias: &str) -> Vec<String> {
+        self.ledger_to_graph_sources
             .get(ledger_alias)
             .map(|s| s.iter().cloned().collect())
             .unwrap_or_default()
     }
 
-    /// Get all registered VGs.
-    pub fn registered_vgs(&self) -> Vec<String> {
-        self.vg_to_ledgers.keys().cloned().collect()
+    /// Get all registered graph sources.
+    pub fn registered_graph_sources(&self) -> Vec<String> {
+        self.gs_to_ledgers.keys().cloned().collect()
     }
 
     /// Get all watched ledgers.
     pub fn watched_ledgers(&self) -> Vec<String> {
-        self.ledger_to_vgs.keys().cloned().collect()
+        self.ledger_to_graph_sources.keys().cloned().collect()
     }
 
     /// Record a sync operation.
@@ -197,7 +200,7 @@ impl Default for VectorWorkerState {
 
 /// Handle to interact with a running Vector maintenance worker.
 ///
-/// This handle allows registering/unregistering VGs and stopping the worker.
+/// This handle allows registering/unregistering graph sources and stopping the worker.
 #[cfg(feature = "vector")]
 pub struct VectorWorkerHandle {
     state: Rc<RefCell<VectorWorkerState>>,
@@ -207,34 +210,44 @@ pub struct VectorWorkerHandle {
 
 #[cfg(feature = "vector")]
 impl VectorWorkerHandle {
-    /// Register a VG for automatic maintenance.
+    /// Register a graph source for automatic maintenance.
     ///
-    /// The worker will sync this VG whenever any of its source ledgers are updated.
-    pub async fn register_vg<N: NameService + VirtualGraphPublisher>(
+    /// The worker will sync this graph source whenever any of its source ledgers are updated.
+    pub async fn register_graph_source<N: NameService + GraphSourcePublisher>(
         &self,
         ns: &N,
-        vg_alias: &str,
+        graph_source_address: &str,
     ) -> Result<()> {
-        // Look up VG to get its dependencies
+        // Look up graph source to get its dependencies
         let record = ns
-            .lookup_vg(vg_alias)
+            .lookup_graph_source(graph_source_address)
             .await?
-            .ok_or_else(|| ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias)))?;
+            .ok_or_else(|| {
+                ApiError::NotFound(format!("Graph source not found: {}", graph_source_address))
+            })?;
 
         self.state
             .borrow_mut()
-            .register_vg(vg_alias, &record.dependencies);
+            .register_graph_source(graph_source_address, &record.dependencies);
         Ok(())
     }
 
-    /// Register a VG with explicit dependencies (no nameservice lookup).
-    pub fn register_vg_with_deps(&self, vg_alias: &str, dependencies: &[String]) {
-        self.state.borrow_mut().register_vg(vg_alias, dependencies);
+    /// Register a graph source with explicit dependencies (no nameservice lookup).
+    pub fn register_graph_source_with_deps(
+        &self,
+        graph_source_address: &str,
+        dependencies: &[String],
+    ) {
+        self.state
+            .borrow_mut()
+            .register_graph_source(graph_source_address, dependencies);
     }
 
-    /// Unregister a VG from automatic maintenance.
-    pub fn unregister_vg(&self, vg_alias: &str) {
-        self.state.borrow_mut().unregister_vg(vg_alias);
+    /// Unregister a graph source from automatic maintenance.
+    pub fn unregister_graph_source(&self, graph_source_address: &str) {
+        self.state
+            .borrow_mut()
+            .unregister_graph_source(graph_source_address);
     }
 
     /// Get current worker statistics.
@@ -242,9 +255,9 @@ impl VectorWorkerHandle {
         self.state.borrow().stats().clone()
     }
 
-    /// Get all registered VGs.
-    pub fn registered_vgs(&self) -> Vec<String> {
-        self.state.borrow().registered_vgs()
+    /// Get all registered graph sources.
+    pub fn registered_graph_sources(&self) -> Vec<String> {
+        self.state.borrow().registered_graph_sources()
     }
 
     /// Request the worker to stop.
@@ -275,7 +288,7 @@ pub struct VectorMaintenanceWorker<'a, S: Storage + 'static, N> {
 impl<'a, S, N> VectorMaintenanceWorker<'a, S, N>
 where
     S: Storage + StorageWrite + Clone + 'static,
-    N: NameService + Publisher + VirtualGraphPublisher + Publication,
+    N: NameService + Publisher + GraphSourcePublisher + Publication,
 {
     /// Create a new maintenance worker.
     pub fn new(fluree: &'a crate::Fluree<S, N>) -> Self {
@@ -307,7 +320,7 @@ where
 
     /// Process a single nameservice event.
     ///
-    /// Returns the list of VG aliases that need syncing.
+    /// Returns the list of graph source aliases that need syncing.
     pub fn process_event(&self, event: &NameServiceEvent) -> Vec<String> {
         self.state.borrow_mut().record_event();
 
@@ -315,65 +328,69 @@ where
             NameServiceEvent::LedgerCommitPublished {
                 alias, commit_t, ..
             } => {
-                let vgs = self.state.borrow().vgs_for_ledger(alias);
-                if !vgs.is_empty() {
+                let graph_sources = self.state.borrow().graph_sources_for_ledger(alias);
+                if !graph_sources.is_empty() {
                     info!(
                         ledger = %alias,
                         commit_t,
-                        vg_count = vgs.len(),
-                        "Ledger commit triggers vector VG sync"
+                        gs_count = graph_sources.len(),
+                        "Ledger commit triggers vector graph source sync"
                     );
                 }
-                vgs
+                graph_sources
             }
             NameServiceEvent::LedgerIndexPublished { alias, index_t, .. } => {
-                // Index updates don't require VG sync (commit already triggered it)
-                debug!(ledger = %alias, index_t, "Ledger index published (no vector VG sync needed)");
+                // Index updates don't require graph source sync (commit already triggered it)
+                debug!(ledger = %alias, index_t, "Ledger index published (no vector graph source sync needed)");
                 vec![]
             }
-            NameServiceEvent::VgConfigPublished {
+            NameServiceEvent::GraphSourceConfigPublished {
                 alias,
-                vg_type,
+                source_type,
                 dependencies,
                 ..
             } => {
-                // Only auto-register Vector VGs
-                if self.config.auto_register && *vg_type == fluree_db_nameservice::VgType::Vector {
-                    self.state.borrow_mut().register_vg(alias, dependencies);
-                    info!(vg = %alias, "Auto-registered vector VG for maintenance");
+                // Only auto-register Vector graph sources
+                if self.config.auto_register
+                    && *source_type == fluree_db_nameservice::GraphSourceType::Vector
+                {
+                    self.state
+                        .borrow_mut()
+                        .register_graph_source(alias, dependencies);
+                    info!(graph_source = %alias, "Auto-registered vector graph source for maintenance");
                 }
                 vec![]
             }
-            NameServiceEvent::VgRetracted { alias } => {
-                // Unregister retracted VG
-                self.state.borrow_mut().unregister_vg(alias);
-                info!(vg = %alias, "Unregistered retracted vector VG");
+            NameServiceEvent::GraphSourceRetracted { alias } => {
+                // Unregister retracted graph source
+                self.state.borrow_mut().unregister_graph_source(alias);
+                info!(graph_source = %alias, "Unregistered retracted vector graph source");
                 vec![]
             }
             _ => vec![], // Other events don't trigger sync
         }
     }
 
-    /// Sync a single VG (called by the event loop).
-    pub async fn sync_vg(&self, vg_alias: &str) -> Result<()> {
-        debug!(vg = %vg_alias, "Syncing vector VG");
+    /// Sync a single graph source (called by the event loop).
+    pub async fn sync_graph_source(&self, graph_source_address: &str) -> Result<()> {
+        debug!(graph_source = %graph_source_address, "Syncing vector graph source");
 
-        match self.fluree.sync_vector_index(vg_alias).await {
+        match self.fluree.sync_vector_index(graph_source_address).await {
             Ok(result) => {
                 self.state.borrow_mut().record_sync(true);
                 info!(
-                    vg = %vg_alias,
+                    graph_source = %graph_source_address,
                     upserted = result.upserted,
                     removed = result.removed,
                     skipped = result.skipped,
                     new_watermark = result.new_watermark,
-                    "Vector VG sync completed"
+                    "Vector graph source sync completed"
                 );
                 Ok(())
             }
             Err(e) => {
                 self.state.borrow_mut().record_sync(false);
-                error!(vg = %vg_alias, error = %e, "Vector VG sync failed");
+                error!(graph_source = %graph_source_address, error = %e, "Vector graph source sync failed");
                 Err(e)
             }
         }
@@ -387,14 +404,14 @@ where
     pub async fn run(&self) -> Result<()> {
         info!("Starting vector maintenance worker");
 
-        // Subscribe to all nameservice events (ledger and VG changes).
+        // Subscribe to all nameservice events (ledger and graph source changes).
         let mut subscription = self
             .fluree
             .nameservice()
             .subscribe(fluree_db_nameservice::SubscriptionScope::All)
             .await?;
 
-        // Debounced batching: we accumulate VGs to sync and flush them after `debounce_ms`.
+        // Debounced batching: we accumulate graph sources to sync and flush them after `debounce_ms`.
         let mut pending: HashSet<String> = HashSet::new();
         let mut next_flush: Option<Instant> = None;
 
@@ -416,15 +433,15 @@ where
             let can_flush = next_flush.map(|t| now >= t).unwrap_or(false);
             if can_flush {
                 while in_flight.len() < self.config.max_concurrent_syncs {
-                    let Some(vg_alias) = pending.iter().next().cloned() else {
+                    let Some(graph_source_address) = pending.iter().next().cloned() else {
                         break;
                     };
-                    pending.remove(&vg_alias);
+                    pending.remove(&graph_source_address);
 
                     // Spawn a non-Send future into our in-flight set (polled on this task).
                     let fut = async move {
-                        let res = self.sync_vg(&vg_alias).await;
-                        (vg_alias, res)
+                        let res = self.sync_graph_source(&graph_source_address).await;
+                        (graph_source_address, res)
                     };
                     in_flight.push(Box::pin(fut));
                 }
@@ -451,10 +468,10 @@ where
                 res = subscription.receiver.recv() => {
                     match res {
                         Ok(event) => {
-                            let vgs_to_sync = self.process_event(&event);
-                            if !vgs_to_sync.is_empty() {
-                                for vg in vgs_to_sync {
-                                    pending.insert(vg);
+                            let sources_to_sync = self.process_event(&event);
+                            if !sources_to_sync.is_empty() {
+                                for gs in sources_to_sync {
+                                    pending.insert(gs);
                                 }
                                 next_flush = Some(Instant::now() + Duration::from_millis(self.config.debounce_ms));
                             }
@@ -472,9 +489,9 @@ where
                 }
 
                 // Complete one in-flight sync.
-                Some((vg_alias, res)) = in_flight.next() => {
+                Some((graph_source_address, res)) = in_flight.next() => {
                     if let Err(e) = res {
-                        warn!(vg = %vg_alias, error = %e, "Failed to sync vector VG");
+                        warn!(graph_source = %graph_source_address, error = %e, "Failed to sync vector graph source");
                     }
                 }
 
@@ -493,15 +510,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_worker_state_register_vg() {
+    fn test_worker_state_register_graph_source() {
         let mut state = VectorWorkerState::new();
 
-        state.register_vg(
+        state.register_graph_source(
             "embeddings:main",
             &["ledger1:main".to_string(), "ledger2:main".to_string()],
         );
 
-        assert_eq!(state.registered_vgs(), vec!["embeddings:main"]);
+        assert_eq!(state.registered_graph_sources(), vec!["embeddings:main"]);
         assert!(state
             .watched_ledgers()
             .contains(&"ledger1:main".to_string()));
@@ -509,50 +526,56 @@ mod tests {
             .watched_ledgers()
             .contains(&"ledger2:main".to_string()));
 
-        // VGs for ledger
+        // Graph sources for ledger
         assert_eq!(
-            state.vgs_for_ledger("ledger1:main"),
+            state.graph_sources_for_ledger("ledger1:main"),
             vec!["embeddings:main"]
         );
-        assert_eq!(state.vgs_for_ledger("unknown:main"), Vec::<String>::new());
+        assert_eq!(
+            state.graph_sources_for_ledger("unknown:main"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
-    fn test_worker_state_unregister_vg() {
+    fn test_worker_state_unregister_graph_source() {
         let mut state = VectorWorkerState::new();
 
-        state.register_vg("embeddings:main", &["ledger:main".to_string()]);
-        assert_eq!(state.registered_vgs().len(), 1);
+        state.register_graph_source("embeddings:main", &["ledger:main".to_string()]);
+        assert_eq!(state.registered_graph_sources().len(), 1);
 
-        state.unregister_vg("embeddings:main");
-        assert_eq!(state.registered_vgs().len(), 0);
+        state.unregister_graph_source("embeddings:main");
+        assert_eq!(state.registered_graph_sources().len(), 0);
         assert_eq!(state.watched_ledgers().len(), 0);
     }
 
     #[test]
-    fn test_worker_state_multiple_vgs() {
+    fn test_worker_state_multiple_graph_sources() {
         let mut state = VectorWorkerState::new();
 
-        state.register_vg("vg1:main", &["ledger:main".to_string()]);
-        state.register_vg("vg2:main", &["ledger:main".to_string()]);
-        state.register_vg("vg3:main", &["other:main".to_string()]);
+        state.register_graph_source("gs1:main", &["ledger:main".to_string()]);
+        state.register_graph_source("gs2:main", &["ledger:main".to_string()]);
+        state.register_graph_source("gs3:main", &["other:main".to_string()]);
 
-        // Both VG1 and VG2 depend on ledger:main
-        let vgs = state.vgs_for_ledger("ledger:main");
-        assert_eq!(vgs.len(), 2);
-        assert!(vgs.contains(&"vg1:main".to_string()));
-        assert!(vgs.contains(&"vg2:main".to_string()));
+        // Both gs1 and gs2 depend on ledger:main
+        let graph_sources = state.graph_sources_for_ledger("ledger:main");
+        assert_eq!(graph_sources.len(), 2);
+        assert!(graph_sources.contains(&"gs1:main".to_string()));
+        assert!(graph_sources.contains(&"gs2:main".to_string()));
 
-        // Only VG3 depends on other:main
-        assert_eq!(state.vgs_for_ledger("other:main"), vec!["vg3:main"]);
+        // Only gs3 depends on other:main
+        assert_eq!(
+            state.graph_sources_for_ledger("other:main"),
+            vec!["gs3:main"]
+        );
     }
 
     #[test]
     fn test_worker_state_stats() {
         let mut state = VectorWorkerState::new();
 
-        state.register_vg("vg:main", &["ledger:main".to_string()]);
-        assert_eq!(state.stats().registered_vgs, 1);
+        state.register_graph_source("gs:main", &["ledger:main".to_string()]);
+        assert_eq!(state.stats().registered_graph_sources, 1);
 
         state.record_event();
         state.record_event();

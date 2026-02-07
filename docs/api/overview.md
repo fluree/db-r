@@ -91,7 +91,7 @@ Response format determined by `Accept` header:
 - Supports history queries via time range in `from` clause (see [Time Travel](../concepts/time-travel.md))
 
 **POST /nameservice/query**
-- Query metadata about all ledgers and virtual graphs
+- Query metadata about all ledgers and graph sources
 - Parameters: None (query in request body)
 - Returns: Query results over nameservice records
 

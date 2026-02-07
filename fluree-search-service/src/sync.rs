@@ -37,7 +37,7 @@ impl Default for SyncConfig {
 ///
 /// # Arguments
 ///
-/// * `get_head` - Async closure that returns the current index head for the VG
+/// * `get_head` - Async closure that returns the current index head for the graph source
 /// * `target_t` - Target transaction number to wait for (None = any head is acceptable)
 /// * `timeout` - Maximum time to wait
 /// * `config` - Sync polling configuration

@@ -67,10 +67,10 @@ use crate::error::{ConnectionError, Result};
 use async_trait::async_trait;
 use fluree_db_core::Db;
 use fluree_db_nameservice::{
-    AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue, NameService,
-    NameServiceError, NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher, RefValue,
-    StatusCasResult, StatusPublisher, StatusValue, StorageNameService, VgNsRecord, VgType,
-    VirtualGraphPublisher,
+    AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue, GraphSourcePublisher,
+    GraphSourceRecord, GraphSourceType, NameService, NameServiceError, NsLookupResult, NsRecord,
+    Publisher, RefKind, RefPublisher, RefValue, StatusCasResult, StatusPublisher, StatusValue,
+    StorageNameService,
 };
 use fluree_db_storage_aws::{
     DynamoDbConfig as RawDynamoDbConfig, DynamoDbNameService, S3Config as RawS3Config, S3Storage,
@@ -220,16 +220,6 @@ impl NameService for AwsNameService {
         }
     }
 
-    async fn alias(
-        &self,
-        ledger_address: &str,
-    ) -> std::result::Result<Option<String>, NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => ns.alias(ledger_address).await,
-            Self::Storage(ns) => ns.alias(ledger_address).await,
-        }
-    }
-
     async fn all_records(&self) -> std::result::Result<Vec<NsRecord>, NameServiceError> {
         match self {
             Self::DynamoDb(ns) => ns.all_records().await,
@@ -335,28 +325,28 @@ impl RefPublisher for AwsNameService {
 }
 
 #[async_trait]
-impl VirtualGraphPublisher for AwsNameService {
-    async fn publish_vg(
+impl GraphSourcePublisher for AwsNameService {
+    async fn publish_graph_source(
         &self,
         name: &str,
         branch: &str,
-        vg_type: VgType,
+        source_type: GraphSourceType,
         config: &str,
         dependencies: &[String],
     ) -> std::result::Result<(), NameServiceError> {
         match self {
             Self::DynamoDb(ns) => {
-                ns.publish_vg(name, branch, vg_type, config, dependencies)
+                ns.publish_graph_source(name, branch, source_type, config, dependencies)
                     .await
             }
             Self::Storage(ns) => {
-                ns.publish_vg(name, branch, vg_type, config, dependencies)
+                ns.publish_graph_source(name, branch, source_type, config, dependencies)
                     .await
             }
         }
     }
 
-    async fn publish_vg_index(
+    async fn publish_graph_source_index(
         &self,
         name: &str,
         branch: &str,
@@ -364,29 +354,35 @@ impl VirtualGraphPublisher for AwsNameService {
         index_t: i64,
     ) -> std::result::Result<(), NameServiceError> {
         match self {
-            Self::DynamoDb(ns) => ns.publish_vg_index(name, branch, index_addr, index_t).await,
-            Self::Storage(ns) => ns.publish_vg_index(name, branch, index_addr, index_t).await,
+            Self::DynamoDb(ns) => {
+                ns.publish_graph_source_index(name, branch, index_addr, index_t)
+                    .await
+            }
+            Self::Storage(ns) => {
+                ns.publish_graph_source_index(name, branch, index_addr, index_t)
+                    .await
+            }
         }
     }
 
-    async fn retract_vg(
+    async fn retract_graph_source(
         &self,
         name: &str,
         branch: &str,
     ) -> std::result::Result<(), NameServiceError> {
         match self {
-            Self::DynamoDb(ns) => ns.retract_vg(name, branch).await,
-            Self::Storage(ns) => ns.retract_vg(name, branch).await,
+            Self::DynamoDb(ns) => ns.retract_graph_source(name, branch).await,
+            Self::Storage(ns) => ns.retract_graph_source(name, branch).await,
         }
     }
 
-    async fn lookup_vg(
+    async fn lookup_graph_source(
         &self,
         alias: &str,
-    ) -> std::result::Result<Option<VgNsRecord>, NameServiceError> {
+    ) -> std::result::Result<Option<GraphSourceRecord>, NameServiceError> {
         match self {
-            Self::DynamoDb(ns) => ns.lookup_vg(alias).await,
-            Self::Storage(ns) => ns.lookup_vg(alias).await,
+            Self::DynamoDb(ns) => ns.lookup_graph_source(alias).await,
+            Self::Storage(ns) => ns.lookup_graph_source(alias).await,
         }
     }
 
@@ -400,10 +396,12 @@ impl VirtualGraphPublisher for AwsNameService {
         }
     }
 
-    async fn all_vg_records(&self) -> std::result::Result<Vec<VgNsRecord>, NameServiceError> {
+    async fn all_graph_source_records(
+        &self,
+    ) -> std::result::Result<Vec<GraphSourceRecord>, NameServiceError> {
         match self {
-            Self::DynamoDb(ns) => ns.all_vg_records().await,
-            Self::Storage(ns) => ns.all_vg_records().await,
+            Self::DynamoDb(ns) => ns.all_graph_source_records().await,
+            Self::Storage(ns) => ns.all_graph_source_records().await,
         }
     }
 }
