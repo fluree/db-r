@@ -9,10 +9,9 @@
 
 mod support;
 
-use fluree_db_api::{FlureeBuilder, LedgerManagerConfig, LedgerState, Novelty};
-use fluree_db_core::Db;
+use fluree_db_api::{FlureeBuilder, LedgerManagerConfig};
 use serde_json::json;
-use support::start_background_indexer_local;
+use support::{genesis_ledger, start_background_indexer_local, trigger_index_and_wait};
 
 // =============================================================================
 // JSON-LD txn-meta extraction tests
@@ -35,8 +34,7 @@ async fn test_jsonld_txn_meta_basic() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
-            let ledger = LedgerState::new(db0, Novelty::new(0));
+            let ledger = genesis_ledger(&fluree, alias);
 
             // Envelope-form with top-level metadata
             let tx = json!({
@@ -56,12 +54,7 @@ async fn test_jsonld_txn_meta_basic() {
             assert_eq!(result.receipt.t, 1);
 
             // Trigger indexing and wait
-            let completion = handle.trigger(alias, result.receipt.t).await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
-            }
+            trigger_index_and_wait(&handle, alias, result.receipt.t).await;
 
             // Query the txn-meta graph using query_connection which properly handles #txn-meta
             let query = json!({
@@ -125,8 +118,7 @@ async fn test_jsonld_single_object_no_meta() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
-            let ledger = LedgerState::new(db0, Novelty::new(0));
+            let ledger = genesis_ledger(&fluree, alias);
 
             // Single-object form - all properties are DATA, not metadata
             let tx = json!({
@@ -140,12 +132,7 @@ async fn test_jsonld_single_object_no_meta() {
             assert_eq!(result.receipt.t, 1);
 
             // Trigger indexing
-            let completion = handle.trigger(alias, result.receipt.t).await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
-            }
+            trigger_index_and_wait(&handle, alias, result.receipt.t).await;
 
             // Query the default graph - should have the data
             // Include @context to properly expand the prefixes
@@ -207,8 +194,7 @@ async fn test_jsonld_txn_meta_all_value_types() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
-            let ledger = LedgerState::new(db0, Novelty::new(0));
+            let ledger = genesis_ledger(&fluree, alias);
 
             let tx = json!({
                 "@context": {
@@ -235,12 +221,7 @@ async fn test_jsonld_txn_meta_all_value_types() {
             let result = fluree.insert(ledger, &tx).await.expect("insert");
 
             // Trigger indexing
-            let completion = handle.trigger(alias, result.receipt.t).await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
-            }
+            trigger_index_and_wait(&handle, alias, result.receipt.t).await;
 
             // Query txn-meta for each value type
             let query = json!({
@@ -329,8 +310,7 @@ async fn test_jsonld_txn_meta_reject_nested_object() {
         .build_memory();
     let alias = "it/txn-meta-nested:main";
 
-    let db0 = Db::genesis(fluree.storage().clone(), alias);
-    let ledger = LedgerState::new(db0, Novelty::new(0));
+    let ledger = genesis_ledger(&fluree, alias);
 
     let tx = json!({
         "@context": {"ex": "http://example.org/"},
@@ -359,8 +339,7 @@ async fn test_jsonld_txn_meta_reject_null() {
         .build_memory();
     let alias = "it/txn-meta-null:main";
 
-    let db0 = Db::genesis(fluree.storage().clone(), alias);
-    let ledger = LedgerState::new(db0, Novelty::new(0));
+    let ledger = genesis_ledger(&fluree, alias);
 
     let tx = json!({
         "@context": {"ex": "http://example.org/"},
@@ -398,8 +377,7 @@ async fn test_txn_meta_queryable_after_indexing() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
-            let ledger = LedgerState::new(db0, Novelty::new(0));
+            let ledger = genesis_ledger(&fluree, alias);
 
             // Use same pattern as working test
             let tx = json!({
@@ -417,12 +395,7 @@ async fn test_txn_meta_queryable_after_indexing() {
             let result = fluree.insert(ledger, &tx).await.expect("insert");
             assert_eq!(result.receipt.t, 1);
 
-            let completion = handle.trigger(alias, result.receipt.t).await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
-            }
+            trigger_index_and_wait(&handle, alias, result.receipt.t).await;
 
             // Query for all properties in txn-meta (same pattern as working test)
             let query = json!({
@@ -480,8 +453,7 @@ async fn test_trig_txn_meta_basic() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
-            let ledger = LedgerState::new(db0, Novelty::new(0));
+            let ledger = genesis_ledger(&fluree, alias);
 
             // TriG format with GRAPH block for txn-meta
             // Note: We use upsert_turtle via the builder because insert_turtle has
@@ -510,12 +482,7 @@ async fn test_trig_txn_meta_basic() {
             assert_eq!(result.receipt.t, 1);
 
             // Trigger indexing and wait
-            let completion = handle.trigger(alias, result.receipt.t).await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
-            }
+            trigger_index_and_wait(&handle, alias, result.receipt.t).await;
 
             // Query the txn-meta graph
             let query = json!({
@@ -574,8 +541,7 @@ async fn test_trig_no_graph_passthrough() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
-            let ledger = LedgerState::new(db0, Novelty::new(0));
+            let ledger = genesis_ledger(&fluree, alias);
 
             // Plain Turtle without GRAPH block
             let turtle = r#"
@@ -591,12 +557,7 @@ async fn test_trig_no_graph_passthrough() {
             assert_eq!(result.receipt.t, 1);
 
             // Trigger indexing
-            let completion = handle.trigger(alias, result.receipt.t).await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
-            }
+            trigger_index_and_wait(&handle, alias, result.receipt.t).await;
 
             // Query default graph - should have data
             let query = json!({
@@ -639,8 +600,7 @@ async fn test_txn_meta_multiple_commits() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
-            let ledger = LedgerState::new(db0, Novelty::new(0));
+            let ledger = genesis_ledger(&fluree, alias);
 
             // First commit: metadata with "batch-1"
             let tx1 = json!({
@@ -658,12 +618,7 @@ async fn test_txn_meta_multiple_commits() {
             assert_eq!(result1.receipt.t, 1);
 
             // Index first commit
-            let completion1 = handle.trigger(alias, result1.receipt.t).await;
-            match completion1.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing 1 failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing 1 cancelled"),
-            }
+            trigger_index_and_wait(&handle, alias, result1.receipt.t).await;
 
             // Second commit: metadata with "batch-2"
             let ledger2 = fluree.ledger(alias).await.expect("load ledger after t=1");
@@ -682,12 +637,7 @@ async fn test_txn_meta_multiple_commits() {
             assert_eq!(result2.receipt.t, 2);
 
             // Index second commit
-            let completion2 = handle.trigger(alias, result2.receipt.t).await;
-            match completion2.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing 2 failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing 2 cancelled"),
-            }
+            trigger_index_and_wait(&handle, alias, result2.receipt.t).await;
 
             // Query latest txn-meta: should have both batch-1 and batch-2
             let query = json!({
@@ -750,8 +700,7 @@ async fn test_txn_meta_time_travel_syntax() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
-            let ledger = LedgerState::new(db0, Novelty::new(0));
+            let ledger = genesis_ledger(&fluree, alias);
 
             // Commit with metadata
             let tx = json!({
@@ -769,12 +718,7 @@ async fn test_txn_meta_time_travel_syntax() {
             assert_eq!(result.receipt.t, 1);
 
             // Index the commit
-            let completion = handle.trigger(alias, result.receipt.t).await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
-            }
+            trigger_index_and_wait(&handle, alias, result.receipt.t).await;
 
             // Query using @t:1#txn-meta syntax - this should NOT error
             // (Previously failed with "Named graph queries require binary index store")
@@ -834,8 +778,7 @@ async fn test_sparql_graph_pattern_txn_meta() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
-            let ledger = LedgerState::new(db0, Novelty::new(0));
+            let ledger = genesis_ledger(&fluree, alias);
 
             // Commit with metadata
             let tx = json!({
@@ -854,12 +797,7 @@ async fn test_sparql_graph_pattern_txn_meta() {
             assert_eq!(result.receipt.t, 1);
 
             // Index the commit
-            let completion = handle.trigger(alias, result.receipt.t).await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
-            }
+            trigger_index_and_wait(&handle, alias, result.receipt.t).await;
 
             // Build dataset spec with txn-meta as a named graph
             let txn_meta_graph = format!("{}#txn-meta", alias);
@@ -931,8 +869,7 @@ async fn test_txn_meta_time_travel_filtering() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
-            let ledger = LedgerState::new(db0, Novelty::new(0));
+            let ledger = genesis_ledger(&fluree, alias);
 
             // First commit with batch-1
             let tx1 = json!({
@@ -950,12 +887,7 @@ async fn test_txn_meta_time_travel_filtering() {
             assert_eq!(result1.receipt.t, 1);
 
             // Index first commit
-            let completion1 = handle.trigger(alias, result1.receipt.t).await;
-            match completion1.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing 1 failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing 1 cancelled"),
-            }
+            trigger_index_and_wait(&handle, alias, result1.receipt.t).await;
 
             // Second commit with batch-2
             let ledger2 = fluree.ledger(alias).await.expect("load ledger after t=1");
@@ -974,12 +906,7 @@ async fn test_txn_meta_time_travel_filtering() {
             assert_eq!(result2.receipt.t, 2);
 
             // Index second commit
-            let completion2 = handle.trigger(alias, result2.receipt.t).await;
-            match completion2.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing 2 failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing 2 cancelled"),
-            }
+            trigger_index_and_wait(&handle, alias, result2.receipt.t).await;
 
             // Query at t=1: should only see batch-1
             let view_t1 = fluree

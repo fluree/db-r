@@ -554,8 +554,8 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
     // Also attach the type-erased store to the state so transaction staging
     // (which clones LedgerState under the write lock) can construct
     // graph-scoped BinaryRangeProviders (needed for named-graph upsert deletions).
-        let te_store: Arc<dyn std::any::Any + Send + Sync> = arc_store.clone();
-        state.binary_store = Some(TypeErasedStore(te_store));
+    let te_store: Arc<dyn std::any::Any + Send + Sync> = arc_store.clone();
+    state.binary_store = Some(TypeErasedStore(te_store));
     Ok(Some(arc_store))
 }
 

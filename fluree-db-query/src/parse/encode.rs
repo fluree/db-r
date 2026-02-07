@@ -6,6 +6,7 @@
 //! context-only encoders.
 
 use fluree_db_core::{Db, Sid, Storage};
+use fluree_vocab::{rdf, xsd};
 
 /// Trait for encoding IRIs to SIDs
 ///
@@ -64,8 +65,8 @@ impl MemoryEncoder {
         encoder
             .add_namespace("", 0)
             .add_namespace("@", 1)
-            .add_namespace("http://www.w3.org/2001/XMLSchema#", 2)
-            .add_namespace("http://www.w3.org/1999/02/22-rdf-syntax-ns#", 3);
+            .add_namespace(xsd::NS, 2)
+            .add_namespace(rdf::NS, 3);
         encoder
     }
 }
@@ -115,15 +116,11 @@ mod tests {
     fn test_memory_encoder_common_namespaces() {
         let encoder = MemoryEncoder::with_common_namespaces();
 
-        let xsd_string = encoder
-            .encode_iri("http://www.w3.org/2001/XMLSchema#string")
-            .unwrap();
+        let xsd_string = encoder.encode_iri(xsd::STRING).unwrap();
         assert_eq!(xsd_string.namespace_code, 2);
         assert_eq!(xsd_string.name.as_ref(), "string");
 
-        let rdf_type = encoder
-            .encode_iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
-            .unwrap();
+        let rdf_type = encoder.encode_iri(rdf::TYPE).unwrap();
         assert_eq!(rdf_type.namespace_code, 3);
         assert_eq!(rdf_type.name.as_ref(), "type");
     }

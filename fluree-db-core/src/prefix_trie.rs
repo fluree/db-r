@@ -1,11 +1,8 @@
 //! Byte-level prefix trie for O(len(iri)) longest-prefix matching.
 //!
-//! With ~26K DBLP namespace codes, a linear scan per `encode_iri` call
-//! is O(26K) — unacceptable when called per-row during Flake conversion.
-//! The trie makes it O(len(iri)).
-//!
-//! Reimplemented from the (private) PrefixTrie in `fluree-db-transact/src/namespace.rs`.
-//! Same algorithm: flat `Vec<TrieNode>` with sorted `Vec<(u8, u32)>` children per node.
+//! Used for fast IRI prefix resolution when namespace tables are large.
+//! This is a shared utility across crates (query/indexer/transact) to avoid
+//! duplicating trie implementations with subtly different behavior.
 
 use std::collections::HashMap;
 
@@ -40,6 +37,7 @@ impl Default for PrefixTrie {
 }
 
 impl PrefixTrie {
+    /// Create an empty trie.
     pub fn new() -> Self {
         Self {
             nodes: vec![TrieNode {
@@ -115,10 +113,6 @@ impl PrefixTrie {
         self.nodes.len()
     }
 }
-
-// ============================================================================
-// Tests
-// ============================================================================
 
 #[cfg(test)]
 mod tests {

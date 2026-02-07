@@ -15,7 +15,11 @@ fn get_test_db_path() -> Option<PathBuf> {
         .unwrap()
         .join("test-database");
 
-    if path.exists() { Some(path) } else { None }
+    if path.exists() {
+        Some(path)
+    } else {
+        None
+    }
 }
 
 /// End-to-end test using the fluree-db-api with a real file-backed database.
@@ -88,4 +92,3 @@ async fn file_backed_query_benchmark() {
     let _rows_per_iter = total_rows / iterations;
     let _queries_per_sec = iterations as f64 / elapsed.as_secs_f64();
 }
-

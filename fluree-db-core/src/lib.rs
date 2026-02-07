@@ -29,6 +29,7 @@ pub mod address_path;
 pub mod alias;
 pub mod coerce;
 pub mod comparator;
+pub mod datatypes;
 pub mod db;
 pub mod dict_novelty;
 pub mod error;
@@ -40,6 +41,7 @@ pub mod index_stats;
 pub mod namespaces;
 pub mod ns_vec_bi_dict;
 pub mod overlay;
+pub mod prefix_trie;
 pub mod query_bounds;
 pub mod range;
 pub mod range_provider;
@@ -63,6 +65,7 @@ pub use alias::{
 };
 pub use coerce::{coerce_json_value, coerce_value, CoercionError, CoercionResult};
 pub use comparator::IndexType;
+pub use datatypes::dt_compatible;
 pub use db::{Db, DbMetadata};
 pub use dict_novelty::DictNovelty;
 pub use error::{Error, Result};
@@ -80,6 +83,7 @@ pub use namespaces::{
     is_rdfs_subclass_of, is_rdfs_subproperty_of,
 };
 pub use overlay::{NoOverlay, OverlayProvider};
+pub use prefix_trie::PrefixTrie;
 pub use range::{
     range, range_bounded_with_overlay, range_with_overlay, ObjectBounds, RangeMatch, RangeOptions,
     RangeTest, BATCHED_JOIN_SIZE,

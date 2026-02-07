@@ -32,8 +32,8 @@ mod eval;
 mod functions;
 mod helpers;
 mod operator;
-mod vector_math;
 mod value;
+pub mod vector_math;
 
 // Re-export public API
 pub use eval::{

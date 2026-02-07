@@ -35,8 +35,8 @@ use fluree_db_core::value_id::ValueTypeTag;
 use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::ListIndex;
 use fluree_db_core::{
-    range_with_overlay, Db, Flake, FlakeValue, IndexType, ObjectBounds, OverlayProvider,
-    RangeMatch, RangeOptions, RangeTest, Sid, Storage,
+    dt_compatible, range_with_overlay, Db, Flake, FlakeValue, IndexType, ObjectBounds,
+    OverlayProvider, RangeMatch, RangeOptions, RangeTest, Sid, Storage,
 };
 use fluree_db_indexer::run_index::numfloat_dict::NumericShape;
 use fluree_db_indexer::run_index::run_record::RunSortOrder;
@@ -44,40 +44,8 @@ use fluree_db_indexer::run_index::{
     sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, OverlayOp,
 };
 use fluree_vocab::namespaces::FLUREE_LEDGER;
-use fluree_vocab::namespaces::XSD;
-use fluree_vocab::xsd_names;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-
-/// Datatype match semantics for WHERE value objects.
-///
-/// We normalize numeric datatype IRIs at parse time (e.g., xsd:int → xsd:integer),
-/// so matching must treat numeric "families" as compatible at execution time:
-/// - xsd:integer matches integer-family stored datatypes (xsd:int, xsd:long, ...)
-/// - xsd:double matches xsd:float
-#[inline]
-fn dt_compatible(expected: &Sid, actual: &Sid) -> bool {
-    if expected == actual {
-        return true;
-    }
-    if expected.namespace_code != XSD || actual.namespace_code != XSD {
-        return false;
-    }
-    match expected.name.as_ref() {
-        // Integer family: int/short/byte/long normalize to integer for matching.
-        xsd_names::INTEGER => matches!(
-            actual.name.as_ref(),
-            xsd_names::INTEGER
-                | xsd_names::INT
-                | xsd_names::SHORT
-                | xsd_names::BYTE
-                | xsd_names::LONG
-        ),
-        // Float normalizes to double for matching.
-        xsd_names::DOUBLE => matches!(actual.name.as_ref(), xsd_names::DOUBLE | xsd_names::FLOAT),
-        _ => false,
-    }
-}
 
 // ============================================================================
 // IndexType → RunSortOrder mapping
@@ -1253,10 +1221,10 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
                 // Policy enforcement currently operates on materialized flakes.
                 // When a non-root policy is present, fall back to the flake-based
                 // range path (`range_with_overlay`) so policy filtering is applied.
-                && !ctx
+                && ctx
                     .policy_enforcer
                     .as_ref()
-                    .is_some_and(|enf| !enf.is_root())
+                    .is_none_or(|enf| enf.is_root())
         });
 
         tracing::trace!(

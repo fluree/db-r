@@ -112,8 +112,14 @@ fn parse_insert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     // Expand the document
     let expanded = expand_with_context(json, &context)?;
 
-    let templates =
-        parse_expanded_triples(&expanded, &context, &mut vars, ns_registry, false, &mut graph_ids)?;
+    let templates = parse_expanded_triples(
+        &expanded,
+        &context,
+        &mut vars,
+        ns_registry,
+        false,
+        &mut graph_ids,
+    )?;
     if templates.is_empty() {
         return Err(TransactError::Parse(
             "Insert must contain at least one predicate or @type (an object with only @id is not a valid insert)"
@@ -147,8 +153,14 @@ fn parse_upsert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
 
     let expanded = expand_with_context(json, &context)?;
 
-    let templates =
-        parse_expanded_triples(&expanded, &context, &mut vars, ns_registry, false, &mut graph_ids)?;
+    let templates = parse_expanded_triples(
+        &expanded,
+        &context,
+        &mut vars,
+        ns_registry,
+        false,
+        &mut graph_ids,
+    )?;
     if templates.is_empty() {
         return Err(TransactError::Parse(
             "Upsert must contain at least one predicate or @type (an object with only @id is not a valid upsert)"
@@ -529,16 +541,14 @@ fn parse_expanded_triples(
             )?);
             Ok(templates)
         }),
-        Value::Object(_) => {
-            parse_expanded_object(
-                expanded,
-                context,
-                vars,
-                ns_registry,
-                object_var_parsing,
-                graph_ids,
-            )
-        }
+        Value::Object(_) => parse_expanded_object(
+            expanded,
+            context,
+            vars,
+            ns_registry,
+            object_var_parsing,
+            graph_ids,
+        ),
         _ => Err(TransactError::Parse(
             "Expected expanded object or array of objects".to_string(),
         )),
@@ -1525,8 +1535,16 @@ mod tests {
         }]);
 
         let mut vars = VarRegistry::new();
-        let templates =
-            parse_expanded_triples(&json, &ctx, &mut vars, &mut ns_registry, true).unwrap();
+        let mut graph_ids = GraphIdAssigner::new();
+        let templates = parse_expanded_triples(
+            &json,
+            &ctx,
+            &mut vars,
+            &mut ns_registry,
+            true,
+            &mut graph_ids,
+        )
+        .unwrap();
 
         // Should have 3 templates, one for each list item
         assert_eq!(templates.len(), 3);

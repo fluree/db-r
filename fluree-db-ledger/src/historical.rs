@@ -30,10 +30,10 @@ use fluree_db_core::storage::extract_hash_from_address;
 use fluree_db_core::{Db, Flake, FlakeMeta, FlakeValue, IndexType, OverlayProvider, Sid, Storage};
 use fluree_db_nameservice::NameService;
 use fluree_db_novelty::{generate_commit_flakes, trace_commits, Novelty};
-use futures::StreamExt;
-use std::sync::Arc;
 use fluree_vocab::namespaces::{FLUREE_COMMIT, FLUREE_LEDGER, JSON_LD, RDF, XSD};
 use fluree_vocab::{rdf_names, xsd_names};
+use futures::StreamExt;
+use std::sync::Arc;
 
 /// Reserved txn-meta named graph IRI local name (`https://ns.flur.ee/ledger#transactions`).
 const TXN_META_GRAPH_LOCAL_NAME: &str = "transactions";
@@ -152,7 +152,11 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
             None
         };
 
-        Ok(Self { db, overlay, to_t: target_t })
+        Ok(Self {
+            db,
+            overlay,
+            to_t: target_t,
+        })
     }
 
     /// Load novelty from commits within a specific range
@@ -205,8 +209,8 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
 
             // Derive a commit subject SID for txn-meta flakes.
             // Commit blobs are written without `commit.id`, so we derive from the CAS address.
-            let commit_subject = extract_hash_from_address(&commit.address)
-                .map(|hex| Sid::new(FLUREE_COMMIT, hex));
+            let commit_subject =
+                extract_hash_from_address(&commit.address).map(|hex| Sid::new(FLUREE_COMMIT, hex));
 
             // Derive user-provided txn-meta entries as flakes in the txn-meta named graph.
             // These are stored in the commit envelope (not in commit.flakes) and must be
@@ -216,7 +220,7 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
                 commit
                     .txn_meta
                     .iter()
-                    .filter_map(|entry| {
+                    .map(|entry| {
                         let p = Sid::new(entry.predicate_ns, &entry.predicate_name);
                         let (o, dt, m) = match &entry.value {
                             fluree_db_novelty::TxnMetaValue::String(s) => (
@@ -224,11 +228,9 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
                                 Sid::new(XSD, xsd_names::STRING),
                                 None,
                             ),
-                            fluree_db_novelty::TxnMetaValue::Long(n) => (
-                                FlakeValue::Long(*n),
-                                Sid::new(XSD, xsd_names::LONG),
-                                None,
-                            ),
+                            fluree_db_novelty::TxnMetaValue::Long(n) => {
+                                (FlakeValue::Long(*n), Sid::new(XSD, xsd_names::LONG), None)
+                            }
                             fluree_db_novelty::TxnMetaValue::Double(n) => (
                                 FlakeValue::Double(*n),
                                 Sid::new(XSD, xsd_names::DOUBLE),
@@ -249,14 +251,18 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
                                 Sid::new(RDF, rdf_names::LANG_STRING),
                                 Some(FlakeMeta::with_lang(lang.clone())),
                             ),
-                            fluree_db_novelty::TxnMetaValue::TypedLiteral { value, dt_ns, dt_name } => (
+                            fluree_db_novelty::TxnMetaValue::TypedLiteral {
+                                value,
+                                dt_ns,
+                                dt_name,
+                            } => (
                                 FlakeValue::String(value.clone()),
                                 Sid::new(*dt_ns, dt_name),
                                 None,
                             ),
                         };
 
-                        Some(Flake::new_in_graph(
+                        Flake::new_in_graph(
                             txn_meta_graph.clone(),
                             commit_sid.clone(),
                             p,
@@ -265,7 +271,7 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
                             commit.t,
                             true,
                             m,
-                        ))
+                        )
                     })
                     .collect::<Vec<Flake>>()
             });

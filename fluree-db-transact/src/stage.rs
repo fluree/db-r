@@ -14,8 +14,8 @@ use crate::generate::{apply_cancellation, infer_datatype, FlakeGenerator};
 use crate::ir::InlineValues;
 use crate::ir::{TemplateTerm, Txn, TxnType};
 use crate::namespace::NamespaceRegistry;
-use fluree_db_core::Tracker;
 use fluree_db_core::OverlayProvider;
+use fluree_db_core::Tracker;
 use fluree_db_core::{Flake, FlakeValue, Sid, Storage};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
@@ -24,8 +24,8 @@ use fluree_db_policy::{
 };
 use fluree_db_query::parse::{lower_unresolved_patterns, UnresolvedPattern};
 use fluree_db_query::{
-    execute_pattern_with_overlay_at, Batch, BinaryRangeProvider, Binding, Pattern, QueryPolicyExecutor, Term,
-    TriplePattern, VarId, VarRegistry,
+    execute_pattern_with_overlay_at, Batch, BinaryRangeProvider, Binding, Pattern,
+    QueryPolicyExecutor, Term, TriplePattern, VarId, VarRegistry,
 };
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -746,12 +746,7 @@ fn db_with_graph_range_provider<S: Storage + Clone + 'static>(
         .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok())?;
 
     let provider = BinaryRangeProvider::new(store, Arc::clone(&ledger.dict_novelty), g_id);
-    Some(
-        ledger
-            .db
-            .clone()
-            .with_range_provider(Arc::new(provider)),
-    )
+    Some(ledger.db.clone().with_range_provider(Arc::new(provider)))
 }
 
 /// Query novelty directly for a specific named graph

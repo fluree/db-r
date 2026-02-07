@@ -53,6 +53,18 @@ pub fn default_context() -> JsonValue {
 /// This is the Rust equivalent of `(fluree/create conn "ledger")` prior to the first commit:
 /// the nameservice has no record yet, and `commit()` will create one via `publish_commit()`.
 pub fn genesis_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
+    genesis_ledger_for_fluree(fluree, alias)
+}
+
+/// Generic version of `genesis_ledger` for any `Fluree` storage backend.
+pub fn genesis_ledger_for_fluree<S, N>(
+    fluree: &fluree_db_api::Fluree<S, N>,
+    alias: &str,
+) -> LedgerState<S>
+where
+    S: fluree_db_core::Storage + Clone,
+    N: fluree_db_api::NameService,
+{
     let db = Db::genesis(fluree.storage().clone(), alias);
     LedgerState::new(db, Novelty::new(0))
 }
@@ -88,6 +100,35 @@ pub async fn seed_user_with_ssn(
     });
 
     fluree.insert(ledger0, &txn).await.expect("seed").ledger
+}
+
+// =============================================================================
+// Indexing helpers (native tests)
+// =============================================================================
+
+/// Trigger background indexing for `alias` at `t` and wait for completion.
+#[cfg(feature = "native")]
+pub async fn trigger_index_and_wait(
+    handle: &fluree_db_indexer::IndexerHandle,
+    alias: &str,
+    t: i64,
+) {
+    let _ = trigger_index_and_wait_outcome(handle, alias, t).await;
+}
+
+/// Trigger background indexing for `alias` at `t` and return the completion outcome.
+#[cfg(feature = "native")]
+pub async fn trigger_index_and_wait_outcome(
+    handle: &fluree_db_indexer::IndexerHandle,
+    alias: &str,
+    t: i64,
+) -> fluree_db_api::IndexOutcome {
+    let completion = handle.trigger(alias, t).await;
+    match completion.wait().await {
+        ok @ fluree_db_api::IndexOutcome::Completed { .. } => ok,
+        fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
+        fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
+    }
 }
 
 // =============================================================================
@@ -276,6 +317,84 @@ pub fn people_data() -> JsonValue {
             "schema:birthDate": {"@value": "2011-09-26", "@type": "xsd:date"}
         }
     ])
+}
+
+/// Seed the "people" dataset used by JSON-LD filter/optional/union tests.
+pub async fn seed_people_filter_dataset(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, alias);
+    let ctx = context_ex_schema();
+
+    let insert = json!({
+        "@context": ctx,
+        "@graph": [
+            {
+                "@id": "ex:brian",
+                "@type": "ex:User",
+                "schema:name": "Brian",
+                "schema:email": "brian@example.org",
+                "schema:age": 50,
+                "ex:last": "Smith",
+                "ex:favNums": 7
+            },
+            {
+                "@id": "ex:alice",
+                "@type": "ex:User",
+                "schema:name": "Alice",
+                "schema:email": "alice@example.org",
+                "schema:age": 42,
+                "ex:last": "Smith",
+                "ex:favColor": "Green",
+                "ex:favNums": [42, 76, 9]
+            },
+            {
+                "@id": "ex:cam",
+                "@type": "ex:User",
+                "schema:name": "Cam",
+                "schema:email": "cam@example.org",
+                "schema:age": 34,
+                "ex:last": "Jones",
+                "ex:favColor": "Blue",
+                "ex:favNums": [5, 10],
+                "ex:friend": [{"@id": "ex:brian"}, {"@id": "ex:alice"}]
+            },
+            {
+                "@id": "ex:david",
+                "@type": "ex:User",
+                "schema:name": "David",
+                "schema:email": "david@example.org",
+                "schema:age": 46,
+                "ex:last": "Jones",
+                "ex:favNums": [15, 70],
+                "ex:friend": [{"@id": "ex:cam"}]
+            }
+        ]
+    });
+
+    fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("seed insert should succeed")
+        .ledger
+}
+
+/// Seed the "people" dataset used by JSON-LD compound query tests.
+pub async fn seed_people_compound_dataset(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, alias);
+    let insert = json!({
+        "@context": {
+            "id":"@id",
+            "type":"@type",
+            "schema":"http://schema.org/",
+            "ex":"http://example.org/ns/"
+        },
+        "@graph": [
+            {"@id":"ex:brian","@type":"ex:User","schema:name":"Brian","schema:email":"brian@example.org","schema:age":50,"ex:favNums":7},
+            {"@id":"ex:alice","@type":"ex:User","schema:name":"Alice","schema:email":"alice@example.org","schema:age":50,"ex:favNums":[42,76,9]},
+            {"@id":"ex:cam","@type":"ex:User","schema:name":"Cam","schema:email":"cam@example.org","schema:age":34,"ex:favNums":[5,10],"ex:friend":[{"@id":"ex:brian"},{"@id":"ex:alice"}]}
+        ]
+    });
+
+    fluree.insert(ledger0, &insert).await.expect("seed").ledger
 }
 
 /// Seed a small "people" dataset used by policy + query-connection tests.

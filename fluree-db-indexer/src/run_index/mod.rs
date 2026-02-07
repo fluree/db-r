@@ -32,7 +32,6 @@ pub mod merge;
 pub mod novelty_merge;
 pub mod numbig_dict;
 pub mod numfloat_dict;
-pub mod prefix_trie;
 pub mod query;
 pub mod replay;
 pub mod spot_cursor;
@@ -41,6 +40,7 @@ pub mod types;
 
 pub use binary_cursor::{BinaryCursor, BinaryFilter, DecodedBatch};
 pub use binary_index_store::BinaryIndexStore;
+pub use fluree_db_core::PrefixTrie;
 pub use global_dict::{GlobalDicts, LanguageTagDict, PredicateDict, StringValueDict, SubjectDict};
 pub use index_build::{
     build_all_indexes, build_index, build_spot_index, precompute_language_dict, IndexBuildConfig,
@@ -55,7 +55,6 @@ pub use lang_remap::build_lang_remap;
 pub use leaflet_cache::{CachedRegion1, CachedRegion2, LeafletCache, LeafletCacheKey};
 pub use merge::KWayMerge;
 pub use novelty_merge::{merge_novelty, MergeInput, MergeOutput};
-pub use prefix_trie::PrefixTrie;
 pub use query::SpotQuery;
 pub use replay::{replay_leaflet, ReplayedLeaflet};
 pub use resolver::{CommitResolver, ResolverError};

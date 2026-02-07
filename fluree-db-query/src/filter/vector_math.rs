@@ -7,26 +7,43 @@
 //! - **Portable**: scalar fallback on all platforms.
 //! - **Safe call sites**: SIMD functions are `unsafe` + guarded by feature detection.
 
+/// Below this length, scalar tends to win (dispatch/reduction overhead dominates).
+///
+/// This threshold is intentionally conservative; tune with real workloads.
+const SIMD_LEN_THRESHOLD: usize = 256;
+
 #[inline]
 pub fn dot_f64(a: &[f64], b: &[f64]) -> f64 {
     debug_assert_eq!(a.len(), b.len());
 
+    if a.len() < SIMD_LEN_THRESHOLD {
+        return dot_f64_scalar(a, b);
+    }
+
     #[cfg(target_arch = "x86_64")]
     {
-        // AVX (not AVX2) is sufficient for f64 mul/add.
-        if std::arch::is_x86_feature_detected!("avx") {
-            // SAFETY: guarded by runtime feature detection.
-            return unsafe { dot_f64_avx(a, b) };
-        }
+        use std::sync::OnceLock;
 
-        // SSE2 is baseline on x86_64.
-        return unsafe { dot_f64_sse2(a, b) };
+        // Cache dispatch once per process (no user flags).
+        static DOT_KERNEL: OnceLock<unsafe fn(&[f64], &[f64]) -> f64> = OnceLock::new();
+        let f = *DOT_KERNEL.get_or_init(|| {
+            // AVX (not AVX2) is sufficient for f64 mul/add.
+            if std::arch::is_x86_feature_detected!("avx") {
+                dot_f64_avx
+            } else {
+                // SSE2 is baseline on x86_64.
+                dot_f64_sse2
+            }
+        });
+        // SAFETY: DOT_KERNEL only stores functions whose target_feature
+        // requirements were checked at init time.
+        return unsafe { f(a, b) };
     }
 
     #[cfg(target_arch = "aarch64")]
     {
         // NEON/ASIMD is baseline on aarch64.
-        return unsafe { dot_f64_neon(a, b) };
+        unsafe { dot_f64_neon(a, b) }
     }
 
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -37,17 +54,28 @@ pub fn dot_f64(a: &[f64], b: &[f64]) -> f64 {
 pub fn l2_f64(a: &[f64], b: &[f64]) -> f64 {
     debug_assert_eq!(a.len(), b.len());
 
+    if a.len() < SIMD_LEN_THRESHOLD {
+        return l2_f64_scalar(a, b);
+    }
+
     #[cfg(target_arch = "x86_64")]
     {
-        if std::arch::is_x86_feature_detected!("avx") {
-            return unsafe { l2_f64_avx(a, b) };
-        }
-        return unsafe { l2_f64_sse2(a, b) };
+        use std::sync::OnceLock;
+
+        static L2_KERNEL: OnceLock<unsafe fn(&[f64], &[f64]) -> f64> = OnceLock::new();
+        let f = *L2_KERNEL.get_or_init(|| {
+            if std::arch::is_x86_feature_detected!("avx") {
+                l2_f64_avx
+            } else {
+                l2_f64_sse2
+            }
+        });
+        return unsafe { f(a, b) };
     }
 
     #[cfg(target_arch = "aarch64")]
     {
-        return unsafe { l2_f64_neon(a, b) };
+        unsafe { l2_f64_neon(a, b) }
     }
 
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -86,7 +114,6 @@ fn dot_mag2_f64(a: &[f64], b: &[f64]) -> (f64, f64, f64) {
     (dot, mag_a2, mag_b2)
 }
 
-#[cfg(any(test, not(any(target_arch = "x86_64", target_arch = "aarch64"))))]
 #[inline]
 fn dot_f64_scalar(a: &[f64], b: &[f64]) -> f64 {
     let mut acc = 0.0;
@@ -96,7 +123,6 @@ fn dot_f64_scalar(a: &[f64], b: &[f64]) -> f64 {
     acc
 }
 
-#[cfg(any(test, not(any(target_arch = "x86_64", target_arch = "aarch64"))))]
 #[inline]
 fn l2_f64_scalar(a: &[f64], b: &[f64]) -> f64 {
     let mut acc = 0.0;
@@ -299,7 +325,10 @@ mod tests {
         let b = vec![0.7, -0.25, 4.0, 1.5, 0.5];
         let expected = dot_f64_scalar(&a, &b);
         let got = dot_f64(&a, &b);
-        assert!((got - expected).abs() < 1e-12, "got {got}, expected {expected}");
+        assert!(
+            (got - expected).abs() < 1e-12,
+            "got {got}, expected {expected}"
+        );
     }
 
     #[test]
@@ -308,7 +337,10 @@ mod tests {
         let b = vec![0.7, -0.25, 4.0, 1.5, 0.5];
         let expected = l2_f64_scalar(&a, &b);
         let got = l2_f64(&a, &b);
-        assert!((got - expected).abs() < 1e-12, "got {got}, expected {expected}");
+        assert!(
+            (got - expected).abs() < 1e-12,
+            "got {got}, expected {expected}"
+        );
     }
 
     #[test]
@@ -318,4 +350,3 @@ mod tests {
         assert_eq!(cosine_f64(&a, &b), None);
     }
 }
-

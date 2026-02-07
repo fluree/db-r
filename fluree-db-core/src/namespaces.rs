@@ -109,15 +109,12 @@ pub fn default_namespace_codes() -> HashMap<u16, String> {
     let mut map = HashMap::new();
     map.insert(EMPTY, "".to_string());
     map.insert(JSON_LD, "@".to_string());
-    map.insert(XSD, "http://www.w3.org/2001/XMLSchema#".to_string());
-    map.insert(
-        RDF,
-        "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string(),
-    );
-    map.insert(RDFS, "http://www.w3.org/2000/01/rdf-schema#".to_string());
-    map.insert(SHACL, "http://www.w3.org/ns/shacl#".to_string());
-    map.insert(OWL, "http://www.w3.org/2002/07/owl#".to_string());
-    map.insert(FLUREE_LEDGER, "https://ns.flur.ee/ledger#".to_string());
+    map.insert(XSD, fluree_vocab::xsd::NS.to_string());
+    map.insert(RDF, fluree_vocab::rdf::NS.to_string());
+    map.insert(RDFS, fluree_vocab::rdfs::NS.to_string());
+    map.insert(SHACL, fluree_vocab::shacl::NS.to_string());
+    map.insert(OWL, fluree_vocab::owl::NS.to_string());
+    map.insert(FLUREE_LEDGER, fluree_vocab::fluree::LEDGER.to_string());
     map.insert(DID_KEY, "did:key:".to_string());
     map.insert(FLUREE_COMMIT, "fluree:commit:sha256:".to_string());
     map.insert(BLANK_NODE, "_:".to_string());

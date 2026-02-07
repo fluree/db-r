@@ -53,12 +53,7 @@ use thiserror::Error;
 
 use crate::ir::{TemplateTerm, TripleTemplate, Txn, TxnOpts, TxnType};
 use crate::namespace::NamespaceRegistry;
-
-/// XSD namespace constants for datatype resolution
-const XSD_INTEGER: &str = "http://www.w3.org/2001/XMLSchema#integer";
-const XSD_DOUBLE: &str = "http://www.w3.org/2001/XMLSchema#double";
-const XSD_DECIMAL: &str = "http://www.w3.org/2001/XMLSchema#decimal";
-const XSD_BOOLEAN: &str = "http://www.w3.org/2001/XMLSchema#boolean";
+use fluree_vocab::xsd;
 
 /// Result of converting a SPARQL term to an unresolved term with metadata.
 struct UnresolvedTermWithMeta {
@@ -511,12 +506,12 @@ fn literal_to_unresolved(
         }
         SparqlLiteralValue::Integer(i) => Ok(UnresolvedTermWithMeta {
             term: UnresolvedTerm::Literal(LiteralValue::Long(*i)),
-            datatype: Some(Arc::from(XSD_INTEGER)),
+            datatype: Some(Arc::from(xsd::INTEGER)),
             lang: None,
         }),
         SparqlLiteralValue::Double(d) => Ok(UnresolvedTermWithMeta {
             term: UnresolvedTerm::Literal(LiteralValue::Double(*d)),
-            datatype: Some(Arc::from(XSD_DOUBLE)),
+            datatype: Some(Arc::from(xsd::DOUBLE)),
             lang: None,
         }),
         SparqlLiteralValue::Decimal(s) => {
@@ -527,13 +522,13 @@ fn literal_to_unresolved(
             };
             Ok(UnresolvedTermWithMeta {
                 term,
-                datatype: Some(Arc::from(XSD_DECIMAL)),
+                datatype: Some(Arc::from(xsd::DECIMAL)),
                 lang: None,
             })
         }
         SparqlLiteralValue::Boolean(b) => Ok(UnresolvedTermWithMeta {
             term: UnresolvedTerm::Literal(LiteralValue::Boolean(*b)),
-            datatype: Some(Arc::from(XSD_BOOLEAN)),
+            datatype: Some(Arc::from(xsd::BOOLEAN)),
             lang: None,
         }),
     }
@@ -654,12 +649,12 @@ fn literal_to_template(
         }
         SparqlLiteralValue::Integer(i) => Ok(LiteralResult {
             term: TemplateTerm::Value(FlakeValue::Long(*i)),
-            datatype: Some(ns.sid_for_iri(XSD_INTEGER)),
+            datatype: Some(ns.sid_for_iri(xsd::INTEGER)),
             language: None,
         }),
         SparqlLiteralValue::Double(d) => Ok(LiteralResult {
             term: TemplateTerm::Value(FlakeValue::Double(*d)),
-            datatype: Some(ns.sid_for_iri(XSD_DOUBLE)),
+            datatype: Some(ns.sid_for_iri(xsd::DOUBLE)),
             language: None,
         }),
         SparqlLiteralValue::Decimal(s) => {
@@ -670,13 +665,13 @@ fn literal_to_template(
             };
             Ok(LiteralResult {
                 term,
-                datatype: Some(ns.sid_for_iri(XSD_DECIMAL)),
+                datatype: Some(ns.sid_for_iri(xsd::DECIMAL)),
                 language: None,
             })
         }
         SparqlLiteralValue::Boolean(b) => Ok(LiteralResult {
             term: TemplateTerm::Value(FlakeValue::Boolean(*b)),
-            datatype: Some(ns.sid_for_iri(XSD_BOOLEAN)),
+            datatype: Some(ns.sid_for_iri(xsd::BOOLEAN)),
             language: None,
         }),
     }
@@ -714,17 +709,17 @@ fn expand_iri(iri: &Iri, prologue: &Prologue) -> Result<String, LowerError> {
 fn coerce_typed_value(lexical: &str, datatype_iri: &str) -> UnresolvedTerm {
     // MVP: basic coercion for common types
     match datatype_iri {
-        XSD_INTEGER => {
+        xsd::INTEGER => {
             if let Ok(i) = lexical.parse::<i64>() {
                 return UnresolvedTerm::Literal(LiteralValue::Long(i));
             }
         }
-        XSD_DOUBLE | XSD_DECIMAL => {
+        xsd::DOUBLE | xsd::DECIMAL => {
             if let Ok(d) = lexical.parse::<f64>() {
                 return UnresolvedTerm::Literal(LiteralValue::Double(d));
             }
         }
-        XSD_BOOLEAN => {
+        xsd::BOOLEAN => {
             if lexical == "true" || lexical == "1" {
                 return UnresolvedTerm::Literal(LiteralValue::Boolean(true));
             } else if lexical == "false" || lexical == "0" {
@@ -741,17 +736,17 @@ fn coerce_typed_value(lexical: &str, datatype_iri: &str) -> UnresolvedTerm {
 fn coerce_typed_flake_value(lexical: &str, datatype_iri: &str) -> FlakeValue {
     // MVP: basic coercion for common types
     match datatype_iri {
-        XSD_INTEGER => {
+        xsd::INTEGER => {
             if let Ok(i) = lexical.parse::<i64>() {
                 return FlakeValue::Long(i);
             }
         }
-        XSD_DOUBLE | XSD_DECIMAL => {
+        xsd::DOUBLE | xsd::DECIMAL => {
             if let Ok(d) = lexical.parse::<f64>() {
                 return FlakeValue::Double(d);
             }
         }
-        XSD_BOOLEAN => {
+        xsd::BOOLEAN => {
             if lexical == "true" || lexical == "1" {
                 return FlakeValue::Boolean(true);
             } else if lexical == "false" || lexical == "0" {
@@ -845,7 +840,7 @@ mod tests {
 
     #[test]
     fn test_coerce_typed_integer() {
-        let result = coerce_typed_value("42", XSD_INTEGER);
+        let result = coerce_typed_value("42", xsd::INTEGER);
         assert!(matches!(
             result,
             UnresolvedTerm::Literal(LiteralValue::Long(42))
@@ -854,7 +849,7 @@ mod tests {
 
     #[test]
     fn test_coerce_typed_boolean() {
-        let result = coerce_typed_value("true", XSD_BOOLEAN);
+        let result = coerce_typed_value("true", xsd::BOOLEAN);
         assert!(matches!(
             result,
             UnresolvedTerm::Literal(LiteralValue::Boolean(true))

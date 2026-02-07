@@ -337,7 +337,7 @@ fn parse_node_pattern<S: Storage>(
         if key == "@id" || key == "@context" || key == "@type" {
             if key == "@type" {
                 // Handle @type as rdf:type
-                let type_pred = resolve_iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#type", db)?;
+                let type_pred = resolve_iri(fluree_vocab::rdf::TYPE, db)?;
                 let type_obj = parse_term(value, context, db)?;
                 patterns.push(RuleTriplePattern {
                     subject: subject.clone(),

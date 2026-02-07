@@ -156,13 +156,14 @@ fn build_reverse_terms(context: &ParsedContext) -> HashMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluree_vocab::{rdf, xsd};
     use serde_json::json;
 
     fn make_test_namespaces() -> HashMap<u16, String> {
         let mut map = HashMap::new();
         map.insert(0, "".to_string());
-        map.insert(2, "http://www.w3.org/2001/XMLSchema#".to_string());
-        map.insert(3, "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string());
+        map.insert(2, xsd::NS.to_string());
+        map.insert(3, rdf::NS.to_string());
         map.insert(17, "http://schema.org/".to_string());
         map.insert(100, "http://example.org/".to_string());
         map
@@ -172,8 +173,8 @@ mod tests {
         ParsedContext::parse(
             None,
             &json!({
-                "xsd": "http://www.w3.org/2001/XMLSchema#",
-                "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+                "xsd": xsd::NS,
+                "rdf": rdf::NS,
                 "schema": "http://schema.org/",
                 "ex": "http://example.org/"
             }),
@@ -210,15 +211,9 @@ mod tests {
         let compactor = IriCompactor::new(&make_test_namespaces(), &make_test_context());
 
         // Prefix matches via @context
-        assert_eq!(
-            compactor.compact_vocab_iri("http://www.w3.org/2001/XMLSchema#string"),
-            "xsd:string"
-        );
+        assert_eq!(compactor.compact_vocab_iri(xsd::STRING), "xsd:string");
 
-        assert_eq!(
-            compactor.compact_vocab_iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
-            "rdf:type"
-        );
+        assert_eq!(compactor.compact_vocab_iri(rdf::TYPE), "rdf:type");
 
         assert_eq!(
             compactor.compact_vocab_iri("http://schema.org/Person"),

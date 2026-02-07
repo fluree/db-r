@@ -91,18 +91,12 @@ impl OverlayProvider for GraphIriFilteredOverlay {
         to_t: i64,
         callback: &mut dyn FnMut(&Flake),
     ) {
-        self.inner.for_each_overlay_flake(
-            index,
-            first,
-            rhs,
-            leftmost,
-            to_t,
-            &mut |flake| {
+        self.inner
+            .for_each_overlay_flake(index, first, rhs, leftmost, to_t, &mut |flake| {
                 if self.flake_in_target_graph(flake) {
                     callback(flake);
                 }
-            },
-        )
+            })
     }
 }
 
@@ -190,7 +184,7 @@ where
                     // This enables `ledger#txn-meta` time travel even when we intentionally
                     // don't attach the binary store (overlay replay path).
                     let inner = Arc::clone(&view.overlay);
-                    let ns_codes = (*view.db).namespace_codes.clone();
+                    let ns_codes = view.db.namespace_codes.clone();
                     view.overlay = Arc::new(GraphIriFilteredOverlay::new(
                         inner,
                         ns_codes,
@@ -218,7 +212,7 @@ where
                     // This supports named graph time travel even when the binary index
                     // cannot answer historical queries (no Region 3 coverage).
                     let inner = Arc::clone(&view.overlay);
-                    let ns_codes = (*view.db).namespace_codes.clone();
+                    let ns_codes = view.db.namespace_codes.clone();
                     view.overlay =
                         Arc::new(GraphIriFilteredOverlay::new(inner, ns_codes, iri.clone()));
                     Ok(view)
@@ -315,10 +309,7 @@ where
                         ))
                     })?;
                     let root: BinaryIndexRootV2 = serde_json::from_slice(&bytes).map_err(|e| {
-                        ApiError::internal(format!(
-                            "failed to parse v2 root {}: {}",
-                            index_addr, e
-                        ))
+                        ApiError::internal(format!("failed to parse v2 root {}: {}", index_addr, e))
                     })?;
                     if root.version == BINARY_INDEX_ROOT_VERSION_V2 {
                         let cache_dir = std::env::temp_dir().join("fluree-cache");

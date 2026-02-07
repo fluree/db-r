@@ -17,7 +17,10 @@ use fluree_db_core::{Db, MemoryStorage};
 use fluree_db_nameservice::memory::MemoryNameService;
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::json;
-use support::{assert_index_defaults, start_background_indexer_local};
+use support::{
+    assert_index_defaults, genesis_ledger_for_fluree, start_background_indexer_local,
+    trigger_index_and_wait_outcome,
+};
 
 type MemoryFluree = fluree_db_api::Fluree<MemoryStorage, MemoryNameService>;
 type MemoryLedger = LedgerState<MemoryStorage>;
@@ -35,8 +38,7 @@ async fn seed_test_data(
     alias: &str,
     index_cfg: &IndexConfig,
 ) -> MemoryLedger {
-    let db0 = Db::genesis(fluree.storage().clone(), alias);
-    let mut ledger = LedgerState::new(db0, Novelty::new(0));
+    let mut ledger = genesis_ledger_for_fluree(fluree, alias);
 
     let txns = [
         json!({
@@ -194,12 +196,9 @@ async fn time_travel_index_current() {
             let ledger = seed_test_data(&fluree, alias, &index_cfg).await;
 
             // Trigger indexing to latest t and wait
-            let completion = handle.trigger(alias, ledger.t()).await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { index_t, .. } => {
-                    assert_eq!(index_t, 3, "should index to t=3");
-                }
-                other => panic!("indexing failed: {:?}", other),
+            let outcome = trigger_index_and_wait_outcome(&handle, alias, ledger.t()).await;
+            if let fluree_db_api::IndexOutcome::Completed { index_t, .. } = outcome {
+                assert_eq!(index_t, 3, "should index to t=3");
             }
 
             // Verify index is current
@@ -323,12 +322,9 @@ async fn time_travel_index_plus_novelty() {
             );
 
             // Index at t=2
-            let completion = handle.trigger(alias, 2).await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { index_t, .. } => {
-                    assert_eq!(index_t, 2, "should index to t=2");
-                }
-                other => panic!("indexing at t=2 failed: {:?}", other),
+            let outcome = trigger_index_and_wait_outcome(&handle, alias, 2).await;
+            if let fluree_db_api::IndexOutcome::Completed { index_t, .. } = outcome {
+                assert_eq!(index_t, 2, "should index to t=2");
             }
 
             // Now insert third transaction (this will be in novelty only)
@@ -453,11 +449,7 @@ async fn time_travel_updates_across_index_novelty_boundary() {
             ledger = result.ledger;
 
             // Index at t=1
-            let completion = handle.trigger(alias, 1).await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                other => panic!("indexing at t=1 failed: {:?}", other),
-            }
+            let _ = trigger_index_and_wait_outcome(&handle, alias, 1).await;
 
             // t=2: Update Alice's age to 31 (will be in novelty)
             // Use upsert to properly retract old age and assert new age
@@ -586,11 +578,7 @@ async fn time_travel_retraction_across_index_novelty_boundary() {
             ledger = result.ledger;
 
             // Index at t=1
-            let completion = handle.trigger(alias, 1).await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                other => panic!("indexing at t=1 failed: {:?}", other),
-            }
+            let _ = trigger_index_and_wait_outcome(&handle, alias, 1).await;
 
             // t=2: Delete Bob (will be in novelty)
             let tx2 = json!({
@@ -670,11 +658,7 @@ async fn time_travel_consistent_results_across_scenarios() {
             // Ledger B: Fully indexed
             let alias_b = "it/tt-compare-indexed:main";
             let ledger_b = seed_test_data(&fluree, alias_b, &index_cfg_low).await;
-            let completion = handle.trigger(alias_b, ledger_b.t()).await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                other => panic!("indexing B failed: {:?}", other),
-            }
+            let _ = trigger_index_and_wait_outcome(&handle, alias_b, ledger_b.t()).await;
 
             // Verify states
             let status_a = fluree.index_status(alias_a).await.expect("status A");
@@ -825,11 +809,7 @@ async fn time_travel_no_duplicate_overlay_emission() {
             ledger = result.ledger;
 
             // Index at t=1
-            let completion = handle.trigger(alias, 1).await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                other => panic!("indexing at t=1 failed: {:?}", other),
-            }
+            let _ = trigger_index_and_wait_outcome(&handle, alias, 1).await;
 
             // t=2: Update person0's age (will be in novelty)
             // Use upsert to create retraction + assertion

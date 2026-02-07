@@ -1217,17 +1217,14 @@ mod tests {
     fn test_datatype_dict_dynamic_assignment() {
         let mut d = new_datatype_dict();
         // Custom/unknown types get dynamic IDs starting at 14
-        let g_year_id = d.get_or_insert("http://www.w3.org/2001/XMLSchema#gYear");
+        let g_year_id = d.get_or_insert(fluree_vocab::xsd::G_YEAR);
         assert_eq!(g_year_id, DatatypeDictId::RESERVED_COUNT as u32); // 14
         let custom_id = d.get_or_insert("http://example.org/custom#myType");
         assert_eq!(custom_id, 15);
         assert_eq!(d.len(), 16);
 
         // Re-insert returns same ID
-        assert_eq!(
-            d.get_or_insert("http://www.w3.org/2001/XMLSchema#gYear"),
-            g_year_id
-        );
+        assert_eq!(d.get_or_insert(fluree_vocab::xsd::G_YEAR), g_year_id);
     }
 
     // ---- String reverse index tests ----

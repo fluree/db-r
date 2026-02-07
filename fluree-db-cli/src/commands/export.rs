@@ -1,5 +1,6 @@
 use crate::context;
 use crate::error::{CliError, CliResult};
+use fluree_vocab::xsd;
 use std::path::Path;
 
 pub async fn run(
@@ -95,7 +96,7 @@ fn extract_ntriples_term(binding: Option<&serde_json::Value>) -> String {
             if let Some(lang) = b.get("xml:lang").and_then(|v| v.as_str()) {
                 format!("\"{escaped}\"@{lang}")
             } else if let Some(dt) = b.get("datatype").and_then(|v| v.as_str()) {
-                if dt == "http://www.w3.org/2001/XMLSchema#string" {
+                if dt == xsd::STRING {
                     format!("\"{escaped}\"")
                 } else {
                     format!("\"{escaped}\"^^<{dt}>")

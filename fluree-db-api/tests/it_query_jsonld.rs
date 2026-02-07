@@ -8,64 +8,10 @@ mod support;
 
 use fluree_db_api::FlureeBuilder;
 use serde_json::json;
-use support::{context_ex_schema, genesis_ledger, normalize_rows, MemoryFluree, MemoryLedger};
-
-async fn seed_people_filter_dataset(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
-    let ctx = context_ex_schema();
-
-    let insert = json!({
-        "@context": ctx,
-        "@graph": [
-            {
-                "@id": "ex:brian",
-                "@type": "ex:User",
-                "schema:name": "Brian",
-                "schema:email": "brian@example.org",
-                "schema:age": 50,
-                "ex:last": "Smith",
-                "ex:favNums": 7
-            },
-            {
-                "@id": "ex:alice",
-                "@type": "ex:User",
-                "schema:name": "Alice",
-                "schema:email": "alice@example.org",
-                "schema:age": 42,
-                "ex:last": "Smith",
-                "ex:favColor": "Green",
-                "ex:favNums": [42, 76, 9]
-            },
-            {
-                "@id": "ex:cam",
-                "@type": "ex:User",
-                "schema:name": "Cam",
-                "schema:email": "cam@example.org",
-                "schema:age": 34,
-                "ex:last": "Jones",
-                "ex:favColor": "Blue",
-                "ex:favNums": [5, 10],
-                "ex:friend": [{"@id": "ex:brian"}, {"@id": "ex:alice"}]
-            },
-            {
-                "@id": "ex:david",
-                "@type": "ex:User",
-                "schema:name": "David",
-                "schema:email": "david@example.org",
-                "schema:age": 46,
-                "ex:last": "Jones",
-                "ex:favNums": [15, 70],
-                "ex:friend": [{"@id": "ex:cam"}]
-            }
-        ]
-    });
-
-    fluree
-        .insert(ledger0, &insert)
-        .await
-        .expect("seed insert should succeed")
-        .ledger
-}
+use support::{
+    context_ex_schema, genesis_ledger, normalize_rows, seed_people_filter_dataset, MemoryFluree,
+    MemoryLedger,
+};
 
 async fn assert_query_bind_error(
     fluree: &MemoryFluree,

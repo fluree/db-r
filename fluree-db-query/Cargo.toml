@@ -62,3 +62,8 @@ vector = ["dep:usearch"]
 
 [dev-dependencies]
 # tokio is now a regular dependency
+criterion = "0.5"
+
+[[bench]]
+name = "vector_math"
+harness = false

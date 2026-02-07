@@ -600,6 +600,7 @@ fn parse_context_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluree_vocab::owl;
     use serde_json::json;
 
     #[test]
@@ -614,16 +615,13 @@ mod tests {
         let ctx = ParsedContext::parse(
             None,
             &json!({
-                "owl": "http://www.w3.org/2002/07/owl#",
+                "owl": owl::NS,
                 "ex": "http://example.org/ns#"
             }),
         )
         .unwrap();
 
-        assert_eq!(
-            ctx.get("owl").unwrap().id,
-            Some("http://www.w3.org/2002/07/owl#".to_string())
-        );
+        assert_eq!(ctx.get("owl").unwrap().id, Some(owl::NS.to_string()));
         assert_eq!(
             ctx.get("ex").unwrap().id,
             Some("http://example.org/ns#".to_string())
@@ -677,7 +675,7 @@ mod tests {
             None,
             &json!([
                 {"schema": "http://schema.org/"},
-                {"owl": "http://www.w3.org/2002/07/owl#", "ex": "http://example.org/ns#"}
+                {"owl": owl::NS, "ex": "http://example.org/ns#"}
             ]),
         )
         .unwrap();
@@ -686,10 +684,7 @@ mod tests {
             ctx.get("schema").unwrap().id,
             Some("http://schema.org/".to_string())
         );
-        assert_eq!(
-            ctx.get("owl").unwrap().id,
-            Some("http://www.w3.org/2002/07/owl#".to_string())
-        );
+        assert_eq!(ctx.get("owl").unwrap().id, Some(owl::NS.to_string()));
     }
 
     #[test]

@@ -17,6 +17,9 @@ pub mod errors;
 
 /// RDF vocabulary constants
 pub mod rdf {
+    /// rdf namespace IRI (prefix)
+    pub const NS: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
+
     /// rdf:type IRI
     pub const TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 
@@ -38,6 +41,9 @@ pub mod rdf {
 
 /// RDFS vocabulary constants
 pub mod rdfs {
+    /// rdfs namespace IRI (prefix)
+    pub const NS: &str = "http://www.w3.org/2000/01/rdf-schema#";
+
     /// rdfs:subClassOf IRI
     pub const SUB_CLASS_OF: &str = "http://www.w3.org/2000/01/rdf-schema#subClassOf";
 
@@ -53,6 +59,9 @@ pub mod rdfs {
 
 /// XSD vocabulary constants
 pub mod xsd {
+    /// xsd namespace IRI (prefix)
+    pub const NS: &str = "http://www.w3.org/2001/XMLSchema#";
+
     /// xsd:string IRI
     pub const STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
 
@@ -586,6 +595,9 @@ pub mod rdf_names {
 
 /// OWL vocabulary constants
 pub mod owl {
+    /// owl namespace IRI (prefix)
+    pub const NS: &str = "http://www.w3.org/2002/07/owl#";
+
     /// owl:inverseOf IRI
     pub const INVERSE_OF: &str = "http://www.w3.org/2002/07/owl#inverseOf";
 

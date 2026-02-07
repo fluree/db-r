@@ -13,4 +13,5 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+fluree-vocab = { path = "../fluree-vocab" }
 pretty_assertions = "1.4"

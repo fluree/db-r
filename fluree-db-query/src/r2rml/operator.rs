@@ -159,7 +159,7 @@ impl<S: Storage + 'static> R2rmlScanOperator<S> {
                     ctx.db.encode_iri(dt_iri).unwrap_or_else(|| {
                         // Default to xsd:string if datatype not found
                         ctx.db
-                            .encode_iri("http://www.w3.org/2001/XMLSchema#string")
+                            .encode_iri(xsd::STRING)
                             .unwrap_or(xsd_string_fallback)
                     })
                 } else if language.is_some() {

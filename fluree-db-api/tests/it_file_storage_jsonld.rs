@@ -1,39 +1,35 @@
-//! Clojure-parity integration test: file-backed insert then JSON-LD query.
+//! File storage integration test: insert then JSON-LD query.
 //!
-//! Mirrors the minimal pattern from `db-clojure/test/fluree/db/transact/insert_test.clj`:
+//! Mirrors a minimal Clojure-parity pattern:
 //! - connect-file (here: `FlureeBuilder::file`)
 //! - create empty ledger (genesis)
 //! - insert JSON-LD data
 //! - query via JSON-LD query syntax
 //! - reload from file-backed nameservice + storage and re-run the query
 
-use fluree_db_api::{FlureeBuilder, IndexConfig, LedgerState, Novelty};
+mod support;
+
+use fluree_db_api::{FlureeBuilder, LedgerState, Novelty};
 use fluree_db_core::Db;
 use serde_json::json;
 
 #[tokio::test]
-async fn jsonld_insert_then_query_file_backed() {
-    // Use tmpdir-backed file storage (most stable for early integration tests)
+async fn file_storage_jsonld_insert_then_query_roundtrip() {
+    // Use tmpdir-backed file storage (stable + hermetic).
     let dir = tempfile::tempdir().expect("tempdir");
     let fluree = FlureeBuilder::file(dir.path().to_string_lossy().to_string())
         .build()
         .expect("build file-backed Fluree");
 
-    // Clojure parity defaults (see fluree/db `add-reindex-thresholds`)
-    let cfg = IndexConfig::default();
-    assert_eq!(cfg.reindex_min_bytes, 100_000);
-    assert_eq!(cfg.reindex_max_bytes, 1_000_000);
+    support::assert_index_defaults();
 
     let alias = "rust-port/jsonld-insert-query:main";
 
     // Create a brand-new ledger state (genesis).
-    //
-    // This is the Rust equivalent of `(fluree/create conn "ledger")` prior to the first commit:
-    // the nameservice has no record yet, and `commit()` will create one via publish_commit().
     let db = Db::genesis(fluree.storage().clone(), alias);
     let ledger0 = LedgerState::new(db, Novelty::new(0));
 
-    // Insert JSON-LD data (string-key syntax, no EDN).
+    // Insert JSON-LD data.
     let insert = json!({
         "@context": {
             "ex": "http://example.org/ns/",
@@ -68,9 +64,7 @@ async fn jsonld_insert_then_query_file_backed() {
             "schema": "http://schema.org/"
         },
         "select": ["?name"],
-        "where": {
-            "schema:name": "?name"
-        }
+        "where": { "schema:name": "?name" }
     });
 
     // Query against the returned ledger

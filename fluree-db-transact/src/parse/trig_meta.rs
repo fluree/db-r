@@ -748,9 +748,7 @@ impl<'a> TrigMetaParser<'a> {
             }
             TokenKind::KwA => {
                 self.advance();
-                Ok(TermValue::Iri(
-                    "http://www.w3.org/1999/02/22-rdf-syntax-ns#type".to_string(),
-                ))
+                Ok(TermValue::Iri(fluree_vocab::rdf::TYPE.to_string()))
             }
             _ => Err(TransactError::Parse(format!(
                 "expected predicate, found {:?}",

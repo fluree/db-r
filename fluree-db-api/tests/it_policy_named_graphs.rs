@@ -158,4 +158,3 @@ async fn policy_applies_to_named_graph_queries() {
         })
         .await;
 }
-

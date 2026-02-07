@@ -899,7 +899,7 @@ mod tests {
         // @id should be excluded; @type should be tracked as rdf:type
         assert!(!deps.contains("@id"));
         assert!(
-            deps.contains("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
+            deps.contains(fluree_vocab::rdf::TYPE),
             "should include rdf:type when query uses @type"
         );
 

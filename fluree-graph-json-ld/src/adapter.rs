@@ -427,6 +427,7 @@ fn process_literal<S: GraphSink>(
 mod tests {
     use super::*;
     use fluree_graph_ir::{GraphCollectorSink, Term};
+    use fluree_vocab::rdf;
     use serde_json::json;
 
     #[test]
@@ -523,9 +524,7 @@ mod tests {
         assert_eq!(graph.len(), 1);
 
         let triple = graph.iter().next().unwrap();
-        assert!(
-            matches!(&triple.p, Term::Iri(iri) if iri.as_ref() == "http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
-        );
+        assert!(matches!(&triple.p, Term::Iri(iri) if iri.as_ref() == rdf::TYPE));
         assert!(
             matches!(&triple.o, Term::Iri(iri) if iri.as_ref() == "http://xmlns.com/foaf/0.1/Person")
         );

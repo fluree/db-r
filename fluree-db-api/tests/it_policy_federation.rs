@@ -61,4 +61,3 @@ async fn policy_applies_in_multi_ledger_query_connection() {
     let jsonld = out.to_jsonld(&ledger1.db).expect("to_jsonld policy");
     assert_eq!(jsonld, json!([]), "policy should filter ssn across dataset");
 }
-

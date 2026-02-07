@@ -22,14 +22,13 @@ pub use crate::query_bounds::{ObjectBounds, RangeMatch, RangeOptions, RangeTest}
 
 use crate::comparator::IndexType;
 use crate::db::Db;
+use crate::dt_compatible;
 use crate::error::Result;
 use crate::flake::Flake;
 use crate::overlay::{NoOverlay, OverlayProvider};
 use crate::sid::Sid;
 use crate::storage::Storage;
 use crate::value::FlakeValue;
-use fluree_vocab::namespaces::XSD;
-use fluree_vocab::xsd_names;
 
 /// Batch size constant for batched subject joins.
 ///
@@ -219,34 +218,6 @@ fn apply_range_filter(flakes: &mut Vec<Flake>, test: RangeTest, match_val: &Rang
         }
         true
     });
-}
-
-/// Datatype matching used in the overlay-only (genesis Db) path.
-///
-/// Query parsing normalizes numeric datatype IRIs (e.g., xsd:int → xsd:integer).
-/// For Clojure parity and usability, range filtering treats numeric families as compatible:
-/// - xsd:integer matches xsd:int/long/short/byte/integer
-/// - xsd:double matches xsd:float/double
-#[inline]
-fn dt_compatible(expected: &Sid, actual: &Sid) -> bool {
-    if expected == actual {
-        return true;
-    }
-    if expected.namespace_code != XSD || actual.namespace_code != XSD {
-        return false;
-    }
-    match expected.name.as_ref() {
-        xsd_names::INTEGER => matches!(
-            actual.name.as_ref(),
-            xsd_names::INTEGER
-                | xsd_names::INT
-                | xsd_names::SHORT
-                | xsd_names::BYTE
-                | xsd_names::LONG
-        ),
-        xsd_names::DOUBLE => matches!(actual.name.as_ref(), xsd_names::DOUBLE | xsd_names::FLOAT),
-        _ => false,
-    }
 }
 
 /// Apply RangeOptions to the overlay-only (genesis Db) path.
