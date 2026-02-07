@@ -78,7 +78,7 @@ The `meta` item carries the record discriminator:
 - `kind`: `ledger` | `graph_source`
 - `source_type` (graph sources only): a type string (e.g., `fidx:BM25`, `fidx:Vector`, `fidx:Iceberg`, `fidx:R2RML`, `fidx:JDBC`)
 
-Avoid `vg:*` prefixes in `pk` or types — use `graph_source` naming consistently.
+Use `graph_source` naming consistently in `pk` values and type strings.
 
 ---
 

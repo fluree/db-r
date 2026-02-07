@@ -144,8 +144,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if !args.graph_sources.is_empty() {
-        // Wire format: "fluree.events.vgs" (kept for backward compatibility)
-        claims["fluree.events.vgs"] = json!(args.graph_sources);
+        claims["fluree.events.graph_sources"] = json!(args.graph_sources);
     }
 
     // Create JWS

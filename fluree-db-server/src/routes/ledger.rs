@@ -342,13 +342,22 @@ pub async fn info(
     let t = ledger_state.db.t;
 
     // Build comprehensive ledger info (at parity with Clojure)
-    let mut info = fluree_db_api::ledger_info::build_ledger_info(&ledger_state, None)
-        .await
-        .map_err(|e| {
-            set_span_error_code(&span, "error:InternalError");
-            tracing::error!(error = %e, "failed to build ledger info");
-            ServerError::internal(format!("Failed to build ledger info: {}", e))
-        })?;
+    //
+    // By default we return the optimized base payload. Callers can opt into
+    // heavier/real-time property details via query params.
+    let opts = fluree_db_api::ledger_info::LedgerInfoOptions {
+        realtime_property_details: query.realtime_property_details.unwrap_or(false),
+        include_property_datatypes: query.include_property_datatypes.unwrap_or(false)
+            || query.realtime_property_details.unwrap_or(false),
+    };
+    let mut info =
+        fluree_db_api::ledger_info::build_ledger_info_with_options(&ledger_state, None, opts)
+            .await
+            .map_err(|e| {
+                set_span_error_code(&span, "error:InternalError");
+                tracing::error!(error = %e, "failed to build ledger info");
+                ServerError::internal(format!("Failed to build ledger info: {}", e))
+            })?;
 
     // Add top-level ledger alias and t for backwards compatibility
     if let Some(obj) = info.as_object_mut() {
@@ -401,6 +410,10 @@ async fn info_simplified(state: &AppState, alias: &str, span: &tracing::Span) ->
 #[derive(Deserialize)]
 pub struct LedgerInfoQuery {
     pub ledger: Option<String>,
+    /// When true, merge novelty deltas into property “details” (real-time).
+    pub realtime_property_details: Option<bool>,
+    /// When true, include `datatypes` under `stats.properties[*]` (indexed view by default).
+    pub include_property_datatypes: Option<bool>,
 }
 
 /// Ledger exists response

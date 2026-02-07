@@ -677,15 +677,17 @@ async fn policy_onclass_and_onproperty_combined() {
 #[cfg(feature = "native")]
 #[tokio::test]
 async fn policy_onclass_applies_to_novelty_properties_without_type_restated() {
-    use fluree_db_api::{build_policy_context, CommitOpts, FlureeView, IndexConfig, TxnOpts};
     use fluree_db_api::dataset::QueryConnectionOptions;
+    use fluree_db_api::{build_policy_context, CommitOpts, FlureeView, IndexConfig, TxnOpts};
     use std::sync::Arc;
 
     assert_index_defaults();
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
 
-    let mut fluree = FlureeBuilder::file(path).build().expect("build file fluree");
+    let mut fluree = FlureeBuilder::file(path)
+        .build()
+        .expect("build file fluree");
 
     let (local, handle) = support::start_background_indexer_local(
         fluree.storage().clone(),

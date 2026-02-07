@@ -35,7 +35,7 @@ pub struct EventsPrincipal {
     pub allowed_all: bool,
     /// fluree.events.ledgers claim (HashSet for O(1) lookup)
     pub allowed_ledgers: HashSet<String>,
-    /// fluree.events.vgs claim — graph sources (HashSet for O(1) lookup)
+    /// fluree.events.graph_sources claim (HashSet for O(1) lookup)
     pub allowed_graph_sources: HashSet<String>,
 
     // Storage proxy permissions

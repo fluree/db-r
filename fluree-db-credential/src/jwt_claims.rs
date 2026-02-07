@@ -14,7 +14,7 @@
 //! # Fluree-specific Claims (Events)
 //! - `fluree.events.all` - Grant access to all events
 //! - `fluree.events.ledgers` - Grant access to specific ledgers
-//! - `fluree.events.vgs` - Grant access to specific graph sources
+//! - `fluree.events.graph_sources` - Grant access to specific graph sources
 //!
 //! # Fluree-specific Claims (Storage Proxy)
 //! - `fluree.storage.all` - Grant access to all ledgers via storage proxy
@@ -58,8 +58,7 @@ pub struct EventsTokenPayload {
     #[serde(rename = "fluree.events.ledgers")]
     pub events_ledgers: Option<Vec<String>>,
     /// Grant access to specific graph sources
-    /// Wire format: "fluree.events.vgs" (kept for backward compatibility)
-    #[serde(rename = "fluree.events.vgs")]
+    #[serde(rename = "fluree.events.graph_sources")]
     pub events_graph_sources: Option<Vec<String>>,
 
     // Fluree-specific claims (Storage Proxy)
@@ -514,7 +513,7 @@ mod tests {
             "exp": 9999999999,
             "fluree.events.all": true,
             "fluree.events.ledgers": ["books:main", "users:main"],
-            "fluree.events.vgs": ["search:main"],
+            "fluree.events.graph_sources": ["search:main"],
             "fluree.identity": "did:fluree:user123"
         }"#;
         let payload: EventsTokenPayload = serde_json::from_str(json).unwrap();

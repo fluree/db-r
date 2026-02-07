@@ -633,7 +633,7 @@ impl IdStatsHook {
                                 .or_insert(0) += delta;
                         }
                     }
-                } else if self.subject_classes.get(&rec.o_key).is_none() {
+                } else if !self.subject_classes.contains_key(&rec.o_key) {
                     // Object not yet typed: queue for attribution when/if the object becomes typed.
                     *self
                         .pending_refs_by_object
@@ -866,7 +866,13 @@ impl IdStatsHook {
         let class_ref_targets = self.class_ref_targets.clone();
 
         let graphs = self.finalize();
-        (graphs, properties, class_counts, class_properties, class_ref_targets)
+        (
+            graphs,
+            properties,
+            class_counts,
+            class_properties,
+            class_ref_targets,
+        )
     }
 }
 

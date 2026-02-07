@@ -13,6 +13,7 @@
 
 use crate::format::iri::IriCompactor;
 use fluree_db_core::alias as core_alias;
+use fluree_db_core::comparator::IndexType;
 use fluree_db_core::value_id::ValueTypeTag;
 use fluree_db_core::{
     ClassStatEntry, GraphPropertyStatEntry, GraphStatsEntry, IndexSchema, IndexStats,
@@ -21,10 +22,27 @@ use fluree_db_core::{
 use fluree_db_core::{Sid, Storage};
 use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{parse_alias, GraphSourceRecord, NsRecord};
-use fluree_db_novelty::load_commit;
+use fluree_db_novelty::{load_commit, Novelty};
 use fluree_graph_json_ld::ParsedContext;
 use serde_json::{json, Map, Value as JsonValue};
 use std::collections::HashMap;
+
+/// Options controlling `ledger-info` stats detail and freshness.
+///
+/// Defaults preserve the fast, small “base” payload; callers can opt into
+/// heavier/real-time details when needed.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LedgerInfoOptions {
+    /// When true, augment property “details” with novelty deltas so the result
+    /// is real-time (novelty-aware) rather than “as of last index”.
+    pub realtime_property_details: bool,
+
+    /// When true, include `datatypes` under `stats.properties[*]`.
+    ///
+    /// By default the API omits datatype breakdowns at the top-level property
+    /// map to keep payloads small.
+    pub include_property_datatypes: bool,
+}
 
 /// Schema index for fast SID → hierarchy lookup
 type SchemaIndex<'a> = HashMap<Sid, &'a SchemaPredicateInfo>;
@@ -87,6 +105,18 @@ pub async fn build_ledger_info<S>(
 where
     S: Storage + Clone + 'static,
 {
+    build_ledger_info_with_options(ledger, context, LedgerInfoOptions::default()).await
+}
+
+/// Build comprehensive ledger metadata, with optional extra/real-time stats.
+pub async fn build_ledger_info_with_options<S>(
+    ledger: &LedgerState<S>,
+    context: Option<&JsonValue>,
+    options: LedgerInfoOptions,
+) -> Result<JsonValue>
+where
+    S: Storage + Clone + 'static,
+{
     // Build the IRI compactor for stats decoding
     let parsed_context = context
         .map(|c| ParsedContext::parse(None, c).unwrap_or_default())
@@ -103,6 +133,14 @@ where
 
     // Get current stats (always returns IndexStats)
     let mut stats = ledger.current_stats();
+
+    // Optional: real-time property details (merge novelty datatype deltas).
+    //
+    // `current_stats()` updates property counts and preserves indexed datatype
+    // breakdowns, but does not adjust datatype counts for novelty by default.
+    if options.realtime_property_details && options.include_property_datatypes {
+        merge_property_datatypes_from_novelty(&mut stats, &ledger.novelty);
+    }
 
     // Pre-index fallback: if no graph stats from index, try loading the pre-index manifest
     if stats.graphs.is_none() {
@@ -152,7 +190,7 @@ where
     // 3. Stats section (with hierarchy fields)
     result.insert(
         "stats".to_string(),
-        build_stats(ledger, &stats, &compactor, &schema_index)?,
+        build_stats(ledger, &stats, &compactor, &schema_index, options)?,
     );
 
     // 5. Index section (if available) - include id from commit
@@ -171,6 +209,72 @@ where
     }
 
     Ok(JsonValue::Object(result))
+}
+
+/// Merge novelty deltas into top-level property datatype counts.
+///
+/// This is intentionally scoped to *property*-level datatype stats (not class-scoped),
+/// so it can be computed cheaply from novelty without additional index lookups.
+fn merge_property_datatypes_from_novelty(stats: &mut IndexStats, novelty: &Novelty) {
+    if novelty.is_empty() {
+        return;
+    }
+
+    let Some(props) = stats.properties.as_mut() else {
+        return;
+    };
+
+    // Property SID -> datatype tag -> delta count
+    let mut deltas: HashMap<(u16, String), HashMap<u8, i64>> = HashMap::new();
+    for flake_id in novelty.iter_index(IndexType::Post) {
+        let flake = novelty.get_flake(flake_id);
+        let delta = if flake.op { 1i64 } else { -1i64 };
+
+        let prop_sid = (flake.p.namespace_code, flake.p.name.to_string());
+        let tag = ValueTypeTag::from_ns_name(flake.dt.namespace_code, &flake.dt.name);
+        if tag == ValueTypeTag::UNKNOWN {
+            continue;
+        }
+
+        *deltas
+            .entry(prop_sid)
+            .or_default()
+            .entry(tag.as_u8())
+            .or_insert(0) += delta;
+    }
+
+    if deltas.is_empty() {
+        return;
+    }
+
+    // Index existing entries for in-place updates.
+    let mut by_sid: HashMap<(u16, String), usize> = HashMap::with_capacity(props.len());
+    for (idx, entry) in props.iter().enumerate() {
+        by_sid.insert(entry.sid.clone(), idx);
+    }
+
+    for (sid, delta_map) in deltas {
+        let Some(&idx) = by_sid.get(&sid) else {
+            continue;
+        };
+        let entry = &mut props[idx];
+
+        let mut merged: HashMap<u8, i64> = entry
+            .datatypes
+            .iter()
+            .map(|(tag, count)| (*tag, *count as i64))
+            .collect();
+        for (tag, delta) in delta_map {
+            *merged.entry(tag).or_insert(0) += delta;
+        }
+
+        let mut out: Vec<(u8, u64)> = merged
+            .into_iter()
+            .filter_map(|(tag, count)| (count > 0).then_some((tag, count as u64)))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        entry.datatypes = out;
+    }
 }
 
 /// Build commit JSON-LD in Clojure parity format.
@@ -375,6 +479,7 @@ fn build_stats<S>(
     stats: &IndexStats,
     compactor: &IriCompactor,
     schema_index: &SchemaIndex,
+    options: LedgerInfoOptions,
 ) -> Result<JsonValue>
 where
     S: Storage + Clone + 'static,
@@ -392,7 +497,7 @@ where
         "flakes": stats.flakes,
         "size": stats.size,
         "indexed": indexed_t,
-        "properties": decode_property_stats(&stats.properties, compactor, schema_index)?,
+        "properties": decode_property_stats(&stats.properties, compactor, schema_index, options)?,
         "classes": decode_class_stats(&stats.classes, compactor, schema_index)?,
     });
 
@@ -413,6 +518,7 @@ fn decode_property_stats(
     properties: &Option<Vec<PropertyStatEntry>>,
     compactor: &IriCompactor,
     schema_index: &SchemaIndex,
+    options: LedgerInfoOptions,
 ) -> Result<JsonValue> {
     let mut result = Map::new();
 
@@ -435,6 +541,16 @@ fn decode_property_stats(
         prop_obj.insert("ndv-values".to_string(), json!(entry.ndv_values));
         prop_obj.insert("ndv-subjects".to_string(), json!(entry.ndv_subjects));
         prop_obj.insert("last-modified-t".to_string(), json!(entry.last_modified_t));
+
+        // Optional datatype breakdown (normally omitted to keep payloads small).
+        if options.include_property_datatypes {
+            let mut dts = Map::new();
+            for (tag, count) in &entry.datatypes {
+                let label = ValueTypeTag::from_u8(*tag).to_string();
+                dts.insert(label, json!(*count));
+            }
+            prop_obj.insert("datatypes".to_string(), JsonValue::Object(dts));
+        }
 
         // Compute selectivity as integers
         prop_obj.insert(
@@ -542,14 +658,12 @@ fn decode_class_stats(
                 let mut refs_obj = Map::new();
                 let mut total: u64 = 0;
                 for rc in &usage.ref_classes {
-                    let class_iri = compactor
-                        .decode_sid(&rc.class_sid)
-                        .map_err(|e| match e {
-                            crate::format::FormatError::UnknownNamespace(code) => {
-                                LedgerInfoError::UnknownNamespace(code)
-                            }
-                            _ => LedgerInfoError::Storage(e.to_string()),
-                        })?;
+                    let class_iri = compactor.decode_sid(&rc.class_sid).map_err(|e| match e {
+                        crate::format::FormatError::UnknownNamespace(code) => {
+                            LedgerInfoError::UnknownNamespace(code)
+                        }
+                        _ => LedgerInfoError::Storage(e.to_string()),
+                    })?;
                     let class_compacted = compactor.compact_vocab_iri(&class_iri);
                     refs_obj.insert(class_compacted, json!(rc.count));
                     total = total.saturating_add(rc.count);
@@ -751,6 +865,7 @@ pub struct LedgerInfoBuilder<'a, S: Storage + 'static, N> {
     fluree: &'a Fluree<S, N>,
     alias: String,
     context: Option<&'a JsonValue>,
+    options: LedgerInfoOptions,
 }
 
 impl<'a, S, N> LedgerInfoBuilder<'a, S, N>
@@ -764,6 +879,7 @@ where
             fluree,
             alias,
             context: None,
+            options: LedgerInfoOptions::default(),
         }
     }
 
@@ -773,6 +889,23 @@ where
     /// prefixes from this context.
     pub fn with_context(mut self, context: &'a JsonValue) -> Self {
         self.context = Some(context);
+        self
+    }
+
+    /// Include datatype breakdowns under `stats.properties[*]` (indexed view by default).
+    pub fn with_property_datatypes(mut self, enabled: bool) -> Self {
+        self.options.include_property_datatypes = enabled;
+        self
+    }
+
+    /// When enabled, make property “details” real-time (novelty-aware).
+    ///
+    /// Currently this merges novelty datatype deltas into top-level property datatype
+    /// counts and includes `datatypes` under `stats.properties[*]`.
+    pub fn with_realtime_property_details(mut self, enabled: bool) -> Self {
+        self.options.realtime_property_details = enabled;
+        // If you want real-time property details, include the datatype payload.
+        self.options.include_property_datatypes = enabled;
         self
     }
 
@@ -786,7 +919,7 @@ where
         let ledger = self.fluree.ledger(&self.alias).await?;
 
         // Build and return the ledger info
-        build_ledger_info(&ledger, self.context)
+        build_ledger_info_with_options(&ledger, self.context, self.options)
             .await
             .map_err(|e| ApiError::internal(format!("ledger_info failed: {}", e)))
     }

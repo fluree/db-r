@@ -428,10 +428,9 @@ impl<'de> serde::Deserialize<'de> for RawClassPropertyUsage {
                                 if class_sid_arr.len() != 2 {
                                     continue;
                                 }
-                                let (Some(ns_u64), Some(name)) = (
-                                    class_sid_arr[0].as_u64(),
-                                    class_sid_arr[1].as_str(),
-                                ) else {
+                                let (Some(ns_u64), Some(name)) =
+                                    (class_sid_arr[0].as_u64(), class_sid_arr[1].as_str())
+                                else {
                                     continue;
                                 };
                                 let class_sid: (u16, String) = (ns_u64 as u16, name.to_string());

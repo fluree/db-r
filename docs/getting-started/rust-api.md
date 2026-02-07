@@ -1531,8 +1531,13 @@ async fn main() -> Result<()> {
         "ex": "http://example.org/ns/"
     });
 
-    let info = fluree.ledger_info("mydb:main")
+    let info = fluree
+        .ledger_info("mydb:main")
         .with_context(&context)
+        // Optional: include datatype breakdowns under stats.properties[*]
+        // .with_property_datatypes(true)
+        // Optional: make property datatype details novelty-aware (real-time)
+        // .with_realtime_property_details(true)
         .execute()
         .await?;
 
@@ -1566,12 +1571,14 @@ The `stats` section mixes **real-time** values (indexed + novelty deltas) with v
 - **Real-time (includes novelty)**:
   - `stats.flakes`, `stats.size`
   - `stats.properties[*].count` (but not NDV)
+  - `stats.properties[*].datatypes` is real-time **only when** `with_realtime_property_details(true)` is used
   - `stats.classes[*].count`
   - `stats.classes[*].property-list` and `stats.classes[*].properties` (property presence)
 
 - **As-of last index**:
   - `stats.indexed` (the index \(t\))
   - `stats.properties[*].ndv-values`, `stats.properties[*].ndv-subjects`
+  - `stats.properties[*].datatypes` (when included via `with_property_datatypes(true)`) is as-of last index unless `with_realtime_property_details(true)` is used
   - Any selectivity derived from NDV values
   - `stats.classes[*].properties[*].refs` (ref target class counts), which are computed during indexing
 

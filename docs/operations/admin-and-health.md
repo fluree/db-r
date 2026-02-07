@@ -78,6 +78,17 @@ Get detailed ledger metadata:
 curl "http://localhost:8090/fluree/ledger-info?ledger=mydb:main"
 ```
 
+**Optional query params:**
+
+- **`include_property_datatypes=true`**: include `stats.properties[*].datatypes` (datatype → count), **as-of last index**.
+- **`realtime_property_details=true`**: merge novelty deltas into property datatype counts (real-time). This also enables `include_property_datatypes`.
+
+Example:
+
+```bash
+curl "http://localhost:8090/fluree/ledger-info?ledger=mydb:main&realtime_property_details=true"
+```
+
 Or with header:
 ```bash
 curl http://localhost:8090/fluree/ledger-info \
@@ -135,10 +146,12 @@ curl http://localhost:8090/fluree/ledger-info \
   - `commit` and top-level `t` reflect the latest committed head.
   - `stats.flakes` and `stats.size` are derived from the current ledger stats view (indexed + novelty deltas).
   - `stats.classes[*].properties` / `property-list` will include properties introduced in novelty, even when the update does not restate `@type`.
+  - `stats.properties[*].datatypes` is real-time **only when** `realtime_property_details=true` is used.
 
 - **As-of last index**:
   - `stats.indexed` is the last index \(t\). If `commit.t > indexed`, the index is behind the head.
   - NDV-related fields in `stats.properties[*]` (`ndv-values`, `ndv-subjects`) and selectivity derived from them are only as current as the last index refresh.
+  - `stats.properties[*].datatypes` (when present via `include_property_datatypes=true`) is as-of last index unless `realtime_property_details=true` is used.
   - Class property ref-edge counts (`stats.classes[*].properties[*].refs`) are computed during indexing and represent the last indexed view (not novelty-adjusted).
 
 ### GET /fluree/exists

@@ -749,6 +749,118 @@ async fn ledger_info_before_commit_returns_null_commit() {
     assert!(info.get("stats").is_some(), "should have stats");
 }
 
+#[tokio::test]
+async fn ledger_info_property_datatypes_option_merges_novelty() {
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path = tmp.path().to_string_lossy().to_string();
+
+    let mut fluree = FlureeBuilder::file(path)
+        .build()
+        .expect("build file fluree");
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        fluree.nameservice().clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+    fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));
+
+    local
+        .run_until(async move {
+            let alias = "test/ledger-info-datatypes:main";
+            let ledger0 = genesis_ledger_for_fluree(&fluree, alias);
+
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            // 1) Seed and index a float-valued property.
+            let txn1 = json!({
+                "@context": { "ex": "http://example.org/" },
+                "@graph": [
+                    {"@id": "ex:prod1", "@type": "ex:Product", "ex:price": 1.25}
+                ]
+            });
+            let result1 = fluree
+                .insert_with_opts(
+                    ledger0,
+                    &txn1,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("insert txn1");
+            let _ = trigger_index_and_wait_outcome(&handle, result1.ledger.alias(), result1.receipt.t)
+                .await;
+
+            // 2) Add an integer-valued price in novelty (do NOT index).
+            let ledger1 = fluree.ledger(alias).await.expect("reload ledger after indexing");
+            let txn2 = json!({
+                "@context": { "ex": "http://example.org/" },
+                "@graph": [
+                    {"@id": "ex:prod2", "@type": "ex:Product", "ex:price": 3}
+                ]
+            });
+            let _result2 = fluree
+                .insert(ledger1, &txn2)
+                .await
+                .expect("insert txn2 (novelty)");
+
+            // 3) Indexed view: include datatypes but do not merge novelty deltas.
+            let indexed_info = fluree
+                .ledger_info(alias)
+                .with_property_datatypes(true)
+                .execute()
+                .await
+                .expect("ledger_info indexed view");
+            let indexed_dts = indexed_info["stats"]["properties"]["http://example.org/price"]["datatypes"]
+                .as_object()
+                .expect("datatypes should be an object map");
+            assert!(
+                indexed_dts.contains_key("xsd:double") || indexed_dts.contains_key("xsd:float"),
+                "expected indexed ex:price to have float datatypes; got keys: {:?}",
+                indexed_dts.keys().collect::<Vec<_>>()
+            );
+            assert!(
+                !(indexed_dts.contains_key("xsd:integer")
+                    || indexed_dts.contains_key("xsd:long")
+                    || indexed_dts.contains_key("xsd:int")
+                    || indexed_dts.contains_key("xsd:short")
+                    || indexed_dts.contains_key("xsd:byte")),
+                "expected indexed ex:price to NOT include integer-like datatypes before novelty merge; got keys: {:?}",
+                indexed_dts.keys().collect::<Vec<_>>()
+            );
+
+            // 4) Real-time view: merge novelty datatype deltas.
+            let realtime_info = fluree
+                .ledger_info(alias)
+                .with_realtime_property_details(true)
+                .execute()
+                .await
+                .expect("ledger_info realtime property details");
+            let realtime_dts = realtime_info["stats"]["properties"]["http://example.org/price"]["datatypes"]
+                .as_object()
+                .expect("datatypes should be an object map");
+            assert!(
+                realtime_dts.contains_key("xsd:double") || realtime_dts.contains_key("xsd:float"),
+                "expected realtime ex:price to keep float datatypes; got keys: {:?}",
+                realtime_dts.keys().collect::<Vec<_>>()
+            );
+            assert!(
+                realtime_dts.contains_key("xsd:integer")
+                    || realtime_dts.contains_key("xsd:long")
+                    || realtime_dts.contains_key("xsd:int")
+                    || realtime_dts.contains_key("xsd:short")
+                    || realtime_dts.contains_key("xsd:byte"),
+                "expected realtime ex:price to include integer-like datatype after novelty merge; got keys: {:?}",
+                realtime_dts.keys().collect::<Vec<_>>()
+            );
+        })
+        .await;
+}
+
 // ============================================================================
 // Additional statistics parity tests
 // ============================================================================

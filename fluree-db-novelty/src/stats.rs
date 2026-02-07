@@ -17,7 +17,9 @@
 use crate::Novelty;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::is_rdf_type;
-use fluree_db_core::{ClassPropertyUsage, ClassRefCount, ClassStatEntry, IndexStats, PropertyStatEntry};
+use fluree_db_core::{
+    ClassPropertyUsage, ClassRefCount, ClassStatEntry, IndexStats, PropertyStatEntry,
+};
 use fluree_db_core::{FlakeValue, Sid};
 use std::collections::{HashMap, HashSet};
 

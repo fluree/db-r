@@ -158,7 +158,7 @@ fn run_create(
     }
 
     if !permissions.graph_sources.is_empty() {
-        claims["fluree.events.vgs"] = json!(permissions.graph_sources);
+        claims["fluree.events.graph_sources"] = json!(permissions.graph_sources);
     }
 
     // Create JWS
@@ -648,7 +648,7 @@ fn print_pretty_inspect(
         println!("Events ledgers: {}", ledgers);
     }
 
-    if let Some(gs) = payload.get("fluree.events.vgs") {
+    if let Some(gs) = payload.get("fluree.events.graph_sources") {
         println!("Graph sources:  {}", gs);
     }
 
