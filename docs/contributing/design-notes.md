@@ -42,6 +42,11 @@ Design documents are located in the `/docs/design/` directory and various planni
 
 ### Testing and Quality
 
+**W3C SPARQL Compliance Test Suite:**
+- Design doc: `/dev-docs/sparql/00-sparql-compliance-plan.md`
+- Developer guide: `/docs/contributing/sparql-compliance.md`
+- Covers: Manifest-driven W3C compliance testing, phased implementation, failure analysis
+
 **Integration Tests Strategy:**
 - Location: `/INTEGRATION_TESTS_STRATEGY.md`
 - Covers: Test organization, coverage goals, CI/CD integration

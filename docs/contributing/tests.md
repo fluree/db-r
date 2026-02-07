@@ -532,6 +532,22 @@ pub fn assert_solution_contains(solutions: &[Solution], var: &str, value: &str) 
 }
 ```
 
+## W3C SPARQL Compliance Tests
+
+The `testsuite-sparql` crate runs official W3C SPARQL test cases against Fluree's parser and query engine. Tests are discovered automatically from W3C manifest files — zero hand-written test cases.
+
+```bash
+# Run all W3C SPARQL tests
+cargo test -p testsuite-sparql
+
+# Run with verbose output
+cargo test -p testsuite-sparql -- --nocapture 2>&1
+```
+
+The suite currently covers SPARQL 1.0 and 1.1 syntax tests (293 tests), with query evaluation tests (600+ additional tests) planned.
+
+For the full guide on interpreting results, debugging failures, and contributing fixes, see the [W3C SPARQL Compliance Suite](sparql-compliance.md) guide.
+
 ## Test Coverage
 
 ### Generate Coverage Report

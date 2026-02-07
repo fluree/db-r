@@ -129,6 +129,6 @@
 - [Contributing](contributing/README.md)
   - [Dev setup](contributing/dev-setup.md)
   - [Tests](contributing/tests.md)
+  - [W3C SPARQL compliance suite](contributing/sparql-compliance.md)
   - [Adding tracing spans](contributing/tracing-guide.md)
   - [Design notes (repo docs)](contributing/design-notes.md)
-
