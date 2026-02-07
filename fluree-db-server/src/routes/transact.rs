@@ -817,7 +817,13 @@ async fn execute_transaction(
     credential: &MaybeCredential,
 ) -> Result<Json<TransactResponse>> {
     // Create execution span
-    let span = tracing::info_span!("transact_execute", ledger_alias = alias, txn_type = ?txn_type);
+    let span = tracing::info_span!(
+        "transact_execute",
+        ledger_alias = alias,
+        txn_type = ?txn_type,
+        tracker_time = tracing::field::Empty,
+        tracker_fuel = tracing::field::Empty,
+    );
     let _guard = span.enter();
 
     // Compute tx-id from request body (before any modification)
@@ -931,7 +937,14 @@ async fn execute_turtle_transaction(
 
     // Create execution span
     let format = if is_trig { "trig" } else { "turtle" };
-    let span = tracing::info_span!("transact_execute", ledger_alias = alias, txn_type = ?txn_type, format = format);
+    let span = tracing::info_span!(
+        "transact_execute",
+        ledger_alias = alias,
+        txn_type = ?txn_type,
+        format = format,
+        tracker_time = tracing::field::Empty,
+        tracker_fuel = tracing::field::Empty,
+    );
     let _guard = span.enter();
 
     // TriG on /insert is not supported - named graphs require upsert path

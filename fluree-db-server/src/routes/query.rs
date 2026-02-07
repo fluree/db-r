@@ -329,7 +329,13 @@ async fn execute_query(
     query_json: &JsonValue,
 ) -> Result<(HeaderMap, Json<JsonValue>)> {
     // Create execution span
-    let span = tracing::info_span!("query_execute", ledger_alias = alias, query_kind = "fql");
+    let span = tracing::info_span!(
+        "query_execute",
+        ledger_alias = alias,
+        query_kind = "fql",
+        tracker_time = tracing::field::Empty,
+        tracker_fuel = tracing::field::Empty,
+    );
     let _guard = span.enter();
 
     // Check for history query: explicit "to" key indicates history mode
@@ -377,10 +383,19 @@ async fn execute_query(
         // Extract tracking info for headers
         let tally = TrackingTally {
             time: response.time.clone(),
+            time_ms: None,
             fuel: response.fuel,
             policy: response.policy.clone(),
         };
         let headers = tracking_headers(&tally);
+
+        // Record tracker values on the parent span for OTEL export
+        if let Some(ref time) = response.time {
+            span.record("tracker_time", time.as_str());
+        }
+        if let Some(fuel) = response.fuel {
+            span.record("tracker_fuel", fuel);
+        }
 
         // Serialize TrackedQueryResponse to JSON
         let json = match serde_json::to_value(&response) {
@@ -447,10 +462,19 @@ async fn execute_query_proxy(
         // Extract tracking info for headers
         let tally = TrackingTally {
             time: response.time.clone(),
+            time_ms: None,
             fuel: response.fuel,
             policy: response.policy.clone(),
         };
         let headers = tracking_headers(&tally);
+
+        // Record tracker values on the parent span for OTEL export
+        if let Some(ref time) = response.time {
+            span.record("tracker_time", time.as_str());
+        }
+        if let Some(fuel) = response.fuel {
+            span.record("tracker_fuel", fuel);
+        }
 
         // Serialize TrackedQueryResponse to JSON
         let json = match serde_json::to_value(&response) {
@@ -740,10 +764,19 @@ async fn execute_history_query(
 
         let tally = TrackingTally {
             time: response.time.clone(),
+            time_ms: None,
             fuel: response.fuel,
             policy: response.policy.clone(),
         };
         let headers = tracking_headers(&tally);
+
+        // Record tracker values on the parent span for OTEL export
+        if let Some(ref time) = response.time {
+            span.record("tracker_time", time.as_str());
+        }
+        if let Some(fuel) = response.fuel {
+            span.record("tracker_fuel", fuel);
+        }
 
         // Serialize TrackedQueryResponse to JSON
         let json = match serde_json::to_value(&response) {
@@ -834,10 +867,19 @@ async fn execute_dataset_query(
 
         let tally = TrackingTally {
             time: response.time.clone(),
+            time_ms: None,
             fuel: response.fuel,
             policy: response.policy.clone(),
         };
         let headers = tracking_headers(&tally);
+
+        // Record tracker values on the parent span for OTEL export
+        if let Some(ref time) = response.time {
+            span.record("tracker_time", time.as_str());
+        }
+        if let Some(fuel) = response.fuel {
+            span.record("tracker_fuel", fuel);
+        }
 
         // Serialize TrackedQueryResponse to JSON
         let json = match serde_json::to_value(&response) {

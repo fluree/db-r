@@ -160,6 +160,14 @@ pub async fn clean_garbage<S>(
 where
     S: Storage,
 {
+    let span = tracing::debug_span!(
+        "index_gc",
+        root_address = current_root_address,
+        indexes_cleaned = tracing::field::Empty,
+        nodes_deleted = tracing::field::Empty,
+    );
+    let _guard = span.enter();
+
     let max_old_indexes = config.max_old_indexes.unwrap_or(DEFAULT_MAX_OLD_INDEXES) as usize;
     let min_age_mins = config
         .min_time_garbage_mins
@@ -278,6 +286,9 @@ where
             indexes_cleaned += 1;
         }
     }
+
+    span.record("indexes_cleaned", indexes_cleaned as u64);
+    span.record("nodes_deleted", deleted_count as u64);
 
     if indexes_cleaned > 0 || deleted_count > 0 {
         tracing::info!(

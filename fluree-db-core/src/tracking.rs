@@ -216,8 +216,10 @@ impl Tracker {
     pub fn tally(&self) -> Option<TrackingTally> {
         let inner = self.0.as_ref()?;
 
+        let elapsed = inner.start_time.map(|t| t.elapsed());
         Some(TrackingTally {
-            time: inner.start_time.map(|t| format_time_ms(t.elapsed())),
+            time: elapsed.map(format_time_ms),
+            time_ms: elapsed.map(|d| d.as_secs_f64() * 1000.0),
             fuel: inner
                 .options
                 .track_fuel
@@ -237,6 +239,9 @@ pub struct TrackingTally {
     /// Formatted time string like `"12.34ms"`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time: Option<String>,
+    /// Numeric milliseconds for span recording (not serialized to HTTP responses)
+    #[serde(skip_serializing)]
+    pub time_ms: Option<f64>,
     /// Total fuel consumed (just the number)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fuel: Option<u64>,

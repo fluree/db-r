@@ -276,6 +276,14 @@ where
             let mut total_retracts = 0u64;
 
             for (i, addr) in addresses.iter().enumerate() {
+                let span = tracing::debug_span!(
+                    "resolve_commit",
+                    commit_index = i + 1,
+                    commit_t = tracing::field::Empty,
+                    commit_ops = tracing::field::Empty,
+                );
+                let _guard = span.enter();
+
                 let bytes = storage
                     .read_bytes(addr)
                     .await
@@ -284,6 +292,9 @@ where
                 let resolved = resolver
                     .resolve_blob(&bytes, addr, &mut dicts, &mut writer)
                     .map_err(|e| IndexerError::StorageRead(e.to_string()))?;
+
+                span.record("commit_t", resolved.t);
+                span.record("commit_ops", resolved.total_records as u64);
 
                 // Accumulate totals
                 total_commit_size += resolved.size;

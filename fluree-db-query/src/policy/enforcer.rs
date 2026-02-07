@@ -67,8 +67,16 @@ impl QueryPolicyEnforcer {
         tracker: &Tracker,
         flakes: Vec<Flake>,
     ) -> Result<Vec<Flake>> {
+        let span = tracing::debug_span!(
+            "policy_eval",
+            input_flakes = flakes.len(),
+            allowed_flakes = tracing::field::Empty,
+        );
+        let _guard = span.enter();
+
         // Root policy bypasses all checks
         if self.policy.wrapper().is_root() {
+            span.record("allowed_flakes", flakes.len());
             return Ok(flakes);
         }
 
@@ -109,6 +117,7 @@ impl QueryPolicyEnforcer {
             }
         }
 
+        span.record("allowed_flakes", result.len());
         Ok(result)
     }
 
