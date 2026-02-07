@@ -1,0 +1,14 @@
+[package]
+name = "testsuite-sparql"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+# Fluree crates (for testing)
+fluree-db-sparql = { path = "../fluree-db-sparql" }
+fluree-graph-turtle = { path = "../fluree-graph-turtle" }
+fluree-graph-ir = { path = "../fluree-graph-ir" }
+
+# Test infrastructure
+anyhow = "1"
