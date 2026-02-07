@@ -34,7 +34,7 @@ impl Debug for ProxyNameService {
 /// Must match `NsRecordResponse` from routes/storage_proxy.rs
 #[derive(Debug, Deserialize)]
 struct NsRecordResponse {
-    alias: String,
+    ledger_address: String,
     branch: String,
     commit_address: Option<String>,
     commit_t: i64,
@@ -49,7 +49,7 @@ impl NsRecordResponse {
         NsRecord {
             // address is the key used for lookup (may differ from name)
             address: lookup_key.to_string(),
-            name: self.alias,
+            name: self.ledger_address,
             branch: self.branch,
             commit_address: self.commit_address,
             commit_t: self.commit_t,
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn test_ns_record_conversion() {
         let response = NsRecordResponse {
-            alias: "books:main".to_string(),
+            ledger_address: "books:main".to_string(),
             branch: "main".to_string(),
             commit_address: Some("fluree:file://books:main/commit/abc.json".to_string()),
             commit_t: 42,

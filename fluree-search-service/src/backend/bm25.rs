@@ -203,7 +203,7 @@ impl<L: IndexLoader> Bm25Backend<L> {
                     .get_latest_index_t(graph_source_address)
                     .await?
                     .ok_or_else(|| ServiceError::IndexNotBuilt {
-                        alias: graph_source_address.to_string(),
+                        address: graph_source_address.to_string(),
                     })
             }
         }
@@ -329,7 +329,7 @@ mod tests {
                 .get(&(graph_source_address.to_string(), index_t))
                 .cloned()
                 .ok_or_else(|| ServiceError::IndexNotBuilt {
-                    alias: graph_source_address.to_string(),
+                    address: graph_source_address.to_string(),
                 })
         }
 

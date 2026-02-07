@@ -11,16 +11,16 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum ServiceError {
     /// Graph source not found in nameservice.
-    #[error("graph source not found: {alias}")]
-    GraphSourceNotFound { alias: String },
+    #[error("graph source not found: {address}")]
+    GraphSourceNotFound { address: String },
 
     /// No snapshot available for the requested as_of_t.
     #[error("no snapshot available for as_of_t={as_of_t}")]
     NoSnapshotForAsOfT { as_of_t: i64 },
 
     /// Index has never been built for this graph source.
-    #[error("index not built for graph source: {alias}")]
-    IndexNotBuilt { alias: String },
+    #[error("index not built for graph source: {address}")]
+    IndexNotBuilt { address: String },
 
     /// Sync timeout - index didn't reach expected head in time.
     #[error("sync timeout after {elapsed:?} waiting for t={target_t:?}")]

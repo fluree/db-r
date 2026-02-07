@@ -242,7 +242,7 @@ impl<L: VectorIndexLoader> VectorBackend<L> {
             .get_latest_index_t(graph_source_address)
             .await?
             .ok_or_else(|| ServiceError::IndexNotBuilt {
-                alias: graph_source_address.to_string(),
+                address: graph_source_address.to_string(),
             })
     }
 }
@@ -403,7 +403,7 @@ mod tests {
                 Ok(build_test_index())
             } else {
                 Err(ServiceError::IndexNotBuilt {
-                    alias: graph_source_address.to_string(),
+                    address: graph_source_address.to_string(),
                 })
             }
         }

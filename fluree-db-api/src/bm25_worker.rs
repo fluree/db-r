@@ -85,7 +85,7 @@ pub struct Bm25WorkerStats {
 pub struct Bm25WorkerState {
     /// Reverse dependency map: ledger_address -> set of graph source addresses.
     ledger_to_graph_sources: HashMap<String, HashSet<String>>,
-    /// Forward map: graph_source_alias -> set of ledger_addresses (for unregistration).
+    /// Forward map: graph_source_address -> set of ledger_addresses (for unregistration).
     gs_to_ledgers: HashMap<String, HashSet<String>>,
     /// Statistics.
     stats: Bm25WorkerStats,

@@ -269,15 +269,15 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
     ///
     /// # Errors
     ///
-    /// - `AliasMismatch` if the new index is for a different ledger
+    /// - `AddressMismatch` if the new index is for a different ledger
     /// - `StaleIndex` if the new index is older than the current index
     /// - `Core` errors from loading the index
     pub async fn apply_index(&mut self, index_address: &str) -> Result<()> {
         let new_db = Db::load(self.db.storage.clone(), index_address).await?;
 
-        // Verify alias matches
+        // Verify address matches
         if new_db.ledger_address != self.db.ledger_address {
-            return Err(LedgerError::alias_mismatch(
+            return Err(LedgerError::address_mismatch(
                 &new_db.ledger_address,
                 &self.db.ledger_address,
             ));
@@ -328,9 +328,9 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
     /// The caller is responsible for ensuring the Db has `range_provider` set
     /// if it's a binary-only (v2) Db.
     pub fn apply_loaded_db(&mut self, new_db: Db<S>, index_address: &str) -> Result<()> {
-        // Verify alias matches
+        // Verify address matches
         if new_db.ledger_address != self.db.ledger_address {
-            return Err(LedgerError::alias_mismatch(
+            return Err(LedgerError::address_mismatch(
                 &new_db.ledger_address,
                 &self.db.ledger_address,
             ));
@@ -575,7 +575,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_apply_index_alias_mismatch() {
+    async fn test_apply_index_address_mismatch() {
         let storage = MemoryStorage::new();
         let db = Db::genesis(storage.clone(), "test:main");
         let novelty = Novelty::new(0);
@@ -594,9 +594,9 @@ mod tests {
         let storage = state.db.storage.clone();
         storage.insert("bad-index", serde_json::to_vec(&root_json).unwrap());
 
-        // Should fail with alias mismatch
+        // Should fail with address mismatch
         let result = state.apply_index("bad-index").await;
-        assert!(matches!(result, Err(LedgerError::AliasMismatch { .. })));
+        assert!(matches!(result, Err(LedgerError::AddressMismatch { .. })));
     }
 
     #[tokio::test]

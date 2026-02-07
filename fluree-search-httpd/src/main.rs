@@ -262,7 +262,7 @@ impl VectorIndexLoader for FileVectorIndexLoader {
             })?;
 
         let record = record.ok_or_else(|| ServiceError::GraphSourceNotFound {
-            alias: graph_source_address.to_string(),
+            address: graph_source_address.to_string(),
         })?;
 
         let index_address = record.index_address.ok_or_else(|| ServiceError::Internal {
