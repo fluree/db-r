@@ -13,8 +13,9 @@ RDF_TESTS := rdf-tests
 W3C_PREFIX := https://w3c.github.io/rdf-tests/
 LOCAL_PREFIX := $(RDF_TESTS)/
 
-.PHONY: help test test-syntax11 test-syntax10 test-eval report failures \
-        failures-list count investigate show-query check clean update-submodule
+.PHONY: help test test-syntax11 test-syntax10 test-eval test-eval-cat \
+        report report-eval failures failures-list count count-eval \
+        investigate show-query check clean update-submodule
 
 help: ## Show this help
 	@echo "W3C SPARQL Compliance Test Suite"
@@ -25,10 +26,12 @@ help: ## Show this help
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  %-20s %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Examples:"
-	@echo "  make test                     Run all W3C tests"
-	@echo "  make failures                 Show only failing tests"
-	@echo "  make investigate TEST=...     Show context for a specific test"
-	@echo "  make show-query TEST=...      Print the .rq file for a test"
+	@echo "  make test                         Run syntax tests"
+	@echo "  make test-eval                    Run full eval suite (~5 min)"
+	@echo "  make test-eval-cat CAT=functions  Run one eval category"
+	@echo "  make count-eval                   Quick pass/fail counts for eval"
+	@echo "  make investigate TEST=...         Show context for a specific test"
+	@echo "  make show-query TEST=...          Print the .rq file for a test"
 
 # ---------------------------------------------------------------------------
 # Running tests
@@ -43,8 +46,19 @@ test-syntax11: ## Run SPARQL 1.1 syntax tests only
 test-syntax10: ## Run SPARQL 1.0 syntax tests only
 	$(CARGO) test -p $(CRATE) sparql10_syntax_tests -- --nocapture 2>&1
 
-test-eval: ## Run SPARQL 1.1 query evaluation tests (Phase 2)
+test-eval: ## Run full SPARQL 1.1 query evaluation suite (~5 min)
 	$(CARGO) test -p $(CRATE) sparql11_query_w3c_testsuite -- --nocapture --include-ignored 2>&1
+
+test-eval-cat: ## Run one eval category (CAT=aggregates|bind|functions|...)
+ifndef CAT
+	@echo "Usage: make test-eval-cat CAT=<category>"
+	@echo ""
+	@echo "Categories: aggregates, bind, bindings, cast, construct, exists,"
+	@echo "            functions, grouping, negation, project_expression,"
+	@echo "            property_path, subquery"
+	@exit 1
+endif
+	$(CARGO) test -p $(CRATE) sparql11_$(CAT) -- --nocapture --include-ignored 2>&1
 
 # ---------------------------------------------------------------------------
 # Reports and analysis
@@ -67,8 +81,17 @@ failures-list: report ## One-line-per-failure summary (test ID + error type)
 	@awk '/failing test\(s\):/{found=1; next} found && /^test .*\.\.\. FAILED/{found=0; next} found && /^http/{print}' $(REPORT) \
 		|| echo "(no failures)"
 
-count: ## Show pass/fail summary counts
+count: ## Show pass/fail summary counts (syntax tests)
 	@$(CARGO) test -p $(CRATE) -- --nocapture 2>&1 | grep -E "(Total|Passed|Ignored|Failed|=== Test Summary)" || true
+
+count-eval: ## Show pass/fail counts for eval tests
+	@$(CARGO) test -p $(CRATE) sparql11_query_w3c_testsuite -- --nocapture --include-ignored 2>&1 | grep -E "(Total|Passed|Ignored|Failed|=== Test Summary)" || true
+
+report-eval: ## Run eval tests and save full output to report-eval.txt
+	@echo "Running W3C SPARQL eval tests (output → report-eval.txt)..."
+	@$(CARGO) test -p $(CRATE) sparql11_query_w3c_testsuite -- --nocapture --include-ignored > report-eval.txt 2>&1; true
+	@grep -E "(=== Test Summary|Total:|Passed:|Ignored:|Failed:)" report-eval.txt || true
+	@echo "Full report saved to report-eval.txt"
 
 # ---------------------------------------------------------------------------
 # Investigating specific tests
@@ -115,4 +138,4 @@ check: ## Run cargo check on the testsuite crate
 	$(CARGO) check -p $(CRATE)
 
 clean: ## Remove generated report files
-	rm -f $(REPORT) $(FAILURES_REPORT)
+	rm -f $(REPORT) $(FAILURES_REPORT) report-eval.txt

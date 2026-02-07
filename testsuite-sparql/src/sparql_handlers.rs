@@ -8,6 +8,7 @@ use fluree_db_sparql::parse_sparql;
 use crate::evaluator::TestEvaluator;
 use crate::files::read_file_to_string;
 use crate::manifest::Test;
+use crate::query_handler::evaluate_query_evaluation_test;
 use crate::vocab::mf;
 
 /// Max time to wait for the SPARQL parser before declaring a timeout.
@@ -20,6 +21,9 @@ pub fn register_sparql_tests(evaluator: &mut TestEvaluator) {
     evaluator.register(mf::POSITIVE_SYNTAX_TEST_11, evaluate_positive_syntax_test);
     evaluator.register(mf::NEGATIVE_SYNTAX_TEST, evaluate_negative_syntax_test);
     evaluator.register(mf::NEGATIVE_SYNTAX_TEST_11, evaluate_negative_syntax_test);
+
+    // Query evaluation tests (Phase 2)
+    evaluator.register(mf::QUERY_EVALUATION_TEST, evaluate_query_evaluation_test);
 }
 
 /// Handler for PositiveSyntaxTest / PositiveSyntaxTest11.

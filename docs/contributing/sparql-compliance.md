@@ -20,7 +20,7 @@ The ratio is extraordinary: ~700 lines of Rust infrastructure drive 700+ W3C tes
 cargo test -p testsuite-sparql
 ```
 
-This runs all registered W3C test suites. Currently that includes SPARQL 1.0 and 1.1 syntax tests (293 tests). As more handlers are registered (query evaluation, update), the count will grow to 700+.
+This runs all non-ignored W3C test suites. Currently that includes SPARQL 1.0 and 1.1 syntax tests. Query evaluation tests (12 categories, 233 tests) are registered but `#[ignore]`'d — run them with `--include-ignored` or via the Makefile.
 
 ### Run a Specific Suite
 
@@ -31,8 +31,11 @@ cargo test -p testsuite-sparql sparql11_syntax_query_tests
 # SPARQL 1.0 syntax only
 cargo test -p testsuite-sparql sparql10_syntax_tests
 
-# Full query evaluation (when Phase 2 is implemented)
-cargo test -p testsuite-sparql sparql11_query_w3c_testsuite
+# Full query evaluation (~5 min, includes all 12 categories)
+cargo test -p testsuite-sparql sparql11_query_w3c_testsuite -- --include-ignored
+
+# Single evaluation category
+cargo test -p testsuite-sparql sparql11_functions -- --include-ignored
 ```
 
 ### Run With Verbose Output
@@ -50,13 +53,17 @@ The `testsuite-sparql/Makefile` provides convenience targets:
 ```bash
 cd testsuite-sparql
 
-make test              # Run all W3C SPARQL tests (live output)
+make test              # Run syntax tests (live output)
 make test-syntax11     # SPARQL 1.1 syntax tests only
 make test-syntax10     # SPARQL 1.0 syntax tests only
-make report            # Run tests quietly, save to report.txt, show summary
-make failures          # Run tests + show all failures with full details
-make failures-list     # Run tests + show one-line-per-failure summary
-make count             # Show pass/fail summary counts only
+make test-eval         # Full eval suite (~5 min, all 12 categories)
+make test-eval-cat CAT=functions
+                       # Run one eval category
+make count-eval        # Quick pass/fail counts for eval tests
+make report-eval       # Run eval tests, save to report-eval.txt
+make report            # Run syntax tests, save to report.txt
+make failures          # Show failing syntax tests with details
+make count             # Show syntax test pass/fail counts
 make show-query TEST=syntax-select-expr-04.rq
                        # Print the .rq file for a test
 make investigate TEST=test_34
@@ -282,6 +289,9 @@ When asking Claude Code for help, these files provide essential context:
 | Test harness architecture | `testsuite-sparql/src/lib.rs`, `src/evaluator.rs` |
 | How manifests are parsed | `testsuite-sparql/src/manifest.rs` |
 | Syntax test handlers | `testsuite-sparql/src/sparql_handlers.rs` |
+| Eval test handler (data load + query + compare) | `testsuite-sparql/src/query_handler.rs` |
+| Expected result parsing (.srx/.srj) | `testsuite-sparql/src/result_format.rs` |
+| Isomorphic result comparison | `testsuite-sparql/src/result_comparison.rs` |
 | SPARQL parser entry point | `fluree-db-sparql/src/lib.rs` (`parse_sparql()`) |
 | Parser grammar rules | `fluree-db-sparql/src/parser/` |
 | SPARQL AST types | `fluree-db-sparql/src/ast/` |
@@ -319,9 +329,12 @@ testsuite-sparql/
 │   ├── files.rs                    # URL → local file path mapping
 │   ├── manifest.rs                 # TestManifest: Iterator<Item=Test>
 │   ├── evaluator.rs                # TestEvaluator: type → handler dispatch
-│   └── sparql_handlers.rs          # Fluree-specific test handlers
+│   ├── sparql_handlers.rs          # Handler registration (syntax + eval)
+│   ├── query_handler.rs            # QueryEvaluationTest: load data, run query, compare
+│   ├── result_format.rs            # Parse .srx/.srj expected result files
+│   └── result_comparison.rs        # Isomorphic result comparison (blank node mapping)
 ├── tests/
-│   └── w3c_sparql.rs               # Test entry points (one fn per W3C suite)
+│   └── w3c_sparql.rs               # Test entry points (syntax + 12 eval categories)
 └── rdf-tests/                      # Git submodule → github.com/w3c/rdf-tests
 ```
 
@@ -331,7 +344,7 @@ testsuite-sparql/
 
 **2. Handler Dispatch** (`evaluator.rs`): `TestEvaluator` maps test type URIs (e.g., `mf:PositiveSyntaxTest11`) to handler functions. For each test, it finds the matching handler and invokes it.
 
-**3. SPARQL Handlers** (`sparql_handlers.rs`): The Fluree-specific logic. For syntax tests, this calls `fluree_db_sparql::parse_sparql()` with a 5-second timeout (to catch infinite loops) and checks whether parsing succeeded or failed. For evaluation tests (Phase 2), this will create in-memory ledgers, load data, execute queries, and compare results.
+**3. SPARQL Handlers** (`sparql_handlers.rs` + `query_handler.rs`): The Fluree-specific logic. For syntax tests, calls `fluree_db_sparql::parse_sparql()` with a 5-second timeout (to catch infinite loops) and checks whether parsing succeeded or failed. For evaluation tests, `query_handler.rs` creates an in-memory Fluree ledger, loads Turtle test data, executes the SPARQL query, and compares results against expected `.srx`/`.srj` files using isomorphic matching (handles blank node equivalence, unordered solution sets, and literal datatype normalization).
 
 **4. Test Entry Points** (`tests/w3c_sparql.rs`): Each test function is ~5 lines — just a manifest URL and a skip list. The harness does the rest.
 
@@ -344,14 +357,16 @@ testsuite-sparql/
 
 ## Test Categories
 
-### Currently Running (Phase 1)
+### Syntax Tests (Phase 1)
 
 | Suite | What It Tests | Manifest |
 |-------|-------------|----------|
 | SPARQL 1.1 syntax | Parser correctness for SPARQL 1.1 grammar | `syntax-query/manifest.ttl` |
 | SPARQL 1.0 syntax | Backward compatibility with SPARQL 1.0 | `manifest-syntax.ttl` |
 
-### Planned (Phase 2+)
+### Query Evaluation Tests (Phase 2)
+
+Each test creates an in-memory Fluree ledger, loads RDF data, executes a SPARQL query, and compares results against W3C expected outputs. Run with `make test-eval-cat CAT=<name>`.
 
 | Suite | What It Tests | Manifest |
 |-------|-------------|----------|

@@ -544,7 +544,7 @@ cargo test -p testsuite-sparql
 cargo test -p testsuite-sparql -- --nocapture 2>&1
 ```
 
-The suite currently covers SPARQL 1.0 and 1.1 syntax tests (293 tests), with query evaluation tests (600+ additional tests) planned.
+The suite covers SPARQL 1.0 and 1.1 syntax tests (293 tests) plus query evaluation tests across 12 categories (233 tests). Eval tests are `#[ignore]`'d by default — run with `--include-ignored` or via `make test-eval` in `testsuite-sparql/`.
 
 For the full guide on interpreting results, debugging failures, and contributing fixes, see the [W3C SPARQL Compliance Suite](sparql-compliance.md) guide.
 
