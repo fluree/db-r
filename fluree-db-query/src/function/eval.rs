@@ -391,7 +391,7 @@ pub fn eval_to_comparable_inner<S: Storage>(
             let l = eval_to_comparable_inner(left, row, ctx)?;
             let r = eval_to_comparable_inner(right, row, ctx)?;
             match (l, r) {
-                (Some(lv), Some(rv)) => Ok(op.apply(lv, rv)),
+                (Some(lv), Some(rv)) => Ok(Some(op.apply(lv, rv)?)),
                 _ => Ok(None),
             }
         }

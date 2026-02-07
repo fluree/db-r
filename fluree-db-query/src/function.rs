@@ -37,4 +37,4 @@ pub use eval::{
     evaluate_to_binding_with_context, evaluate_to_binding_with_context_strict,
     evaluate_with_context,
 };
-pub use value::ComparableValue;
+pub use value::{ArithmeticError, ComparableValue};
