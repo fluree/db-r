@@ -41,7 +41,6 @@ After all checks pass, suggest a commit message following this exact format:
 
 - **Line 1**: `category(scope): short description` (under 72 chars). Categories: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`. Scope is the primary crate or area affected.
 - **Lines 3-8**: 4-6 bullet points starting with `-`, each describing a specific change. Focus on *what* and *why*, not *how*.
-- **Final line**: `Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>`
 
 Example:
 ```

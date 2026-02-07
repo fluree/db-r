@@ -85,6 +85,20 @@ cargo nextest run --workspace --all-features --no-fail-fast  # full workspace (C
 - Ready to commit → `cargo fmt --all` + clippy/test on affected crates
 - Ready for PR → full workspace CI-parity commands above
 
+## Session Commands
+
+Custom slash commands are available in `.claude/commands/`. Suggest these proactively when the situation fits:
+
+| Command | When to suggest |
+|---------|----------------|
+| `/docs-context [topic]` | Before working in an unfamiliar area, or when the user asks about a subsystem. Loads relevant `docs/` content into the session context-efficiently. |
+| `/branch-context [topic]` | When resuming work on a branch, or when the user asks "where did we leave off?" Summarizes branch changes, trajectory, and loose ends. |
+| `/preflight` | At session start. Checks git state, dead code annotations, and compiler warnings. |
+| `/validate [crate]` | Before committing. Runs fmt, clippy, and tests scoped to changes. |
+| `/pr-ready` | Before creating a PR. Full CI-parity validation. |
+
+`/docs-context` and `/branch-context` can be chained — each offers to invoke the other after completing its briefing.
+
 ## Session Start: Dead Code Audit
 
 **At the start of every session**, scan for `#[allow(dead_code)]` and `#[expect(dead_code)]` annotations:
