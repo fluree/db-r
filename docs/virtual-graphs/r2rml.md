@@ -10,7 +10,7 @@ R2RML defines how to map:
 - Rows to RDF resources
 - Foreign keys to RDF relationships
 
-This enables querying legacy relational databases as if they were RDF graphs.
+This enables querying existing relational databases as if they were RDF graphs.
 
 ## Configuration
 
@@ -20,7 +20,7 @@ This enables querying legacy relational databases as if they were RDF graphs.
 curl -X POST http://localhost:8090/virtual-graph \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "legacy-customers",
+    "name": "sql-customers",
     "type": "r2rml",
     "database": "postgresql://user:pass@localhost/mydb",
     "mapping_file": "customer-mapping.ttl"
@@ -188,7 +188,7 @@ Use SQL views for complex mappings:
     "schema": "http://schema.org/",
     "ex": "http://example.org/ns/"
   },
-  "from": "legacy-customers:main",
+  "from": "sql-customers:main",
   "select": ["?name", "?email"],
   "where": [
     { "@id": "?customer", "@type": "schema:Person" },
@@ -214,7 +214,7 @@ PREFIX schema: <http://schema.org/>
 PREFIX ex: <http://example.org/ns/>
 
 SELECT ?name ?email
-FROM <legacy-customers:main>
+FROM <sql-customers:main>
 WHERE {
   ?customer a schema:Person .
   ?customer schema:name ?name .
@@ -226,7 +226,7 @@ WHERE {
 
 ```json
 {
-  "from": "legacy-customers:main",
+  "from": "sql-customers:main",
   "select": ["?name", "?email"],
   "where": [
     { "@id": "?customer", "schema:name": "?name" },
@@ -249,7 +249,7 @@ WHERE c.status = 'active'
 
 ```json
 {
-  "from": "legacy-db:main",
+  "from": "sql-db:main",
   "select": ["?customerName", "?orderTotal"],
   "where": [
     { "@id": "?customer", "schema:name": "?customerName" },
@@ -275,7 +275,7 @@ Join SQL database data with Fluree ledgers:
 
 ```json
 {
-  "from": ["products:main", "legacy-inventory:main"],
+  "from": ["products:main", "sql-inventory:main"],
   "select": ["?productName", "?stockLevel"],
   "where": [
     { "@id": "?product", "schema:name": "?productName" },
@@ -355,27 +355,27 @@ SQL queries execute at native database speed:
 
 ## Use Cases
 
-### Legacy System Integration
+### Existing System Integration
 
-Query old systems without migration:
+Query existing systems without moving data:
 
 ```json
 {
-  "from": ["new-system:main", "legacy-system:main"],
-  "select": ["?customerName", "?newData", "?legacyData"],
+  "from": ["new-system:main", "existing-system:main"],
+  "select": ["?customerName", "?newData", "?existingData"],
   "where": [...]
 }
 ```
 
-### Gradual Migration
+### Incremental Adoption
 
-Migrate gradually while keeping old system operational:
+Adopt new systems while keeping existing systems operational:
 
 ```text
 Phase 1: Both systems running, joined in queries
 Phase 2: Write to new system, read from both
-Phase 3: Migrate old data
-Phase 4: Retire old system
+Phase 3: Copy data (optional)
+Phase 4: Retire the existing system (optional)
 ```
 
 ### Unified Reporting

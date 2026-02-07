@@ -12,7 +12,7 @@ Unlike [background indexing](background-indexing.md) which incrementally updates
 
 1. **Index corruption** - Query errors or unexpected results suggest corrupted indexes
 2. **Configuration changes** - Changing index parameters (leaf size, branch size)
-3. **Migration** - Moving between storage backends or if new index strategies / types become available in future versions.
+3. **Storage backend changes** - If you move a deployment between storage backends or adopt a new index strategy/type.
 
 ### Before You Reindex
 

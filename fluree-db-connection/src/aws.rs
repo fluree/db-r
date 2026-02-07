@@ -67,7 +67,10 @@ use crate::error::{ConnectionError, Result};
 use async_trait::async_trait;
 use fluree_db_core::Db;
 use fluree_db_nameservice::{
-    NameService, NameServiceError, NsRecord, Publisher, StorageNameService,
+    AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue, NameService,
+    NameServiceError, NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher, RefValue,
+    StatusCasResult, StatusPublisher, StatusValue, StorageNameService, VgNsRecord, VgType,
+    VirtualGraphPublisher,
 };
 use fluree_db_storage_aws::{
     DynamoDbConfig as RawDynamoDbConfig, DynamoDbNameService, S3Config as RawS3Config, S3Storage,
@@ -279,6 +282,178 @@ impl Publisher for AwsNameService {
         match self {
             Self::DynamoDb(ns) => ns.publishing_address(alias),
             Self::Storage(ns) => ns.publishing_address(alias),
+        }
+    }
+}
+
+#[async_trait]
+impl AdminPublisher for AwsNameService {
+    async fn publish_index_allow_equal(
+        &self,
+        alias: &str,
+        index_addr: &str,
+        index_t: i64,
+    ) -> std::result::Result<(), NameServiceError> {
+        match self {
+            Self::DynamoDb(ns) => {
+                ns.publish_index_allow_equal(alias, index_addr, index_t)
+                    .await
+            }
+            Self::Storage(ns) => {
+                ns.publish_index_allow_equal(alias, index_addr, index_t)
+                    .await
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl RefPublisher for AwsNameService {
+    async fn get_ref(
+        &self,
+        alias: &str,
+        kind: RefKind,
+    ) -> std::result::Result<Option<RefValue>, NameServiceError> {
+        match self {
+            Self::DynamoDb(ns) => ns.get_ref(alias, kind).await,
+            Self::Storage(ns) => ns.get_ref(alias, kind).await,
+        }
+    }
+
+    async fn compare_and_set_ref(
+        &self,
+        alias: &str,
+        kind: RefKind,
+        expected: Option<&RefValue>,
+        new: &RefValue,
+    ) -> std::result::Result<CasResult, NameServiceError> {
+        match self {
+            Self::DynamoDb(ns) => ns.compare_and_set_ref(alias, kind, expected, new).await,
+            Self::Storage(ns) => ns.compare_and_set_ref(alias, kind, expected, new).await,
+        }
+    }
+}
+
+#[async_trait]
+impl VirtualGraphPublisher for AwsNameService {
+    async fn publish_vg(
+        &self,
+        name: &str,
+        branch: &str,
+        vg_type: VgType,
+        config: &str,
+        dependencies: &[String],
+    ) -> std::result::Result<(), NameServiceError> {
+        match self {
+            Self::DynamoDb(ns) => {
+                ns.publish_vg(name, branch, vg_type, config, dependencies)
+                    .await
+            }
+            Self::Storage(ns) => {
+                ns.publish_vg(name, branch, vg_type, config, dependencies)
+                    .await
+            }
+        }
+    }
+
+    async fn publish_vg_index(
+        &self,
+        name: &str,
+        branch: &str,
+        index_addr: &str,
+        index_t: i64,
+    ) -> std::result::Result<(), NameServiceError> {
+        match self {
+            Self::DynamoDb(ns) => ns.publish_vg_index(name, branch, index_addr, index_t).await,
+            Self::Storage(ns) => ns.publish_vg_index(name, branch, index_addr, index_t).await,
+        }
+    }
+
+    async fn retract_vg(
+        &self,
+        name: &str,
+        branch: &str,
+    ) -> std::result::Result<(), NameServiceError> {
+        match self {
+            Self::DynamoDb(ns) => ns.retract_vg(name, branch).await,
+            Self::Storage(ns) => ns.retract_vg(name, branch).await,
+        }
+    }
+
+    async fn lookup_vg(
+        &self,
+        alias: &str,
+    ) -> std::result::Result<Option<VgNsRecord>, NameServiceError> {
+        match self {
+            Self::DynamoDb(ns) => ns.lookup_vg(alias).await,
+            Self::Storage(ns) => ns.lookup_vg(alias).await,
+        }
+    }
+
+    async fn lookup_any(
+        &self,
+        alias: &str,
+    ) -> std::result::Result<NsLookupResult, NameServiceError> {
+        match self {
+            Self::DynamoDb(ns) => ns.lookup_any(alias).await,
+            Self::Storage(ns) => ns.lookup_any(alias).await,
+        }
+    }
+
+    async fn all_vg_records(&self) -> std::result::Result<Vec<VgNsRecord>, NameServiceError> {
+        match self {
+            Self::DynamoDb(ns) => ns.all_vg_records().await,
+            Self::Storage(ns) => ns.all_vg_records().await,
+        }
+    }
+}
+
+#[async_trait]
+impl StatusPublisher for AwsNameService {
+    async fn get_status(
+        &self,
+        alias: &str,
+    ) -> std::result::Result<Option<StatusValue>, NameServiceError> {
+        match self {
+            Self::DynamoDb(ns) => ns.get_status(alias).await,
+            Self::Storage(ns) => ns.get_status(alias).await,
+        }
+    }
+
+    async fn push_status(
+        &self,
+        alias: &str,
+        expected: Option<&StatusValue>,
+        new: &StatusValue,
+    ) -> std::result::Result<StatusCasResult, NameServiceError> {
+        match self {
+            Self::DynamoDb(ns) => ns.push_status(alias, expected, new).await,
+            Self::Storage(ns) => ns.push_status(alias, expected, new).await,
+        }
+    }
+}
+
+#[async_trait]
+impl ConfigPublisher for AwsNameService {
+    async fn get_config(
+        &self,
+        alias: &str,
+    ) -> std::result::Result<Option<ConfigValue>, NameServiceError> {
+        match self {
+            Self::DynamoDb(ns) => ns.get_config(alias).await,
+            Self::Storage(ns) => ns.get_config(alias).await,
+        }
+    }
+
+    async fn push_config(
+        &self,
+        alias: &str,
+        expected: Option<&ConfigValue>,
+        new: &ConfigValue,
+    ) -> std::result::Result<ConfigCasResult, NameServiceError> {
+        match self {
+            Self::DynamoDb(ns) => ns.push_config(alias, expected, new).await,
+            Self::Storage(ns) => ns.push_config(alias, expected, new).await,
         }
     }
 }

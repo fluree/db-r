@@ -104,7 +104,7 @@
 - [Reference](reference/README.md)
   - [Glossary](reference/glossary.md)
   - [JSON-LD connection configuration](reference/connection-config-jsonld.md)
-  - [Compatibility and feature flags](reference/compatibility.md)
+  - [Standards and feature flags](reference/compatibility.md)
   - [Crate map](reference/crate-map.md)
 
 - [Contributing](contributing/README.md)

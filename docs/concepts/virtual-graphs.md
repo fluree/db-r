@@ -9,14 +9,14 @@ A **graph source** is anything you can address by a graph name/IRI in Fluree que
 - **Index graph sources** (BM25 and vector/HNSW indexes)
 - **Mapped graph sources** (R2RML and Iceberg-backed mappings)
 
-Historically, Fluree used the term **virtual graph** for non-ledger graph sources. You will still see “virtual graph” in some docs and nameservice records, but new docs prefer **graph source** as the umbrella term.
+In code and some docs you will see the term **virtual graph** for non-ledger graph sources. In this documentation, we prefer **graph source** as the umbrella term.
 
 ### Key Characteristics
 
 - **Query integration**: Graph sources can be queried using the same SPARQL and JSON-LD Query interfaces
 - **Transparent access**: Applications don't need to know whether data comes from a ledger graph source or a non-ledger graph source
 - **Specialization**: Each graph source type is optimized for specific query patterns
-- **Time travel**: Many graph sources support historical queries with snapshot history
+- **Time travel (type-specific)**: Some graph sources support time-travel queries, but support is not uniform across all types. Time-travel is implemented by each graph source type (not by the nameservice).
 
 ## Graph Source Types
 
@@ -47,7 +47,7 @@ LIMIT 10
 - Relevance scoring (BM25 algorithm)
 - Configurable parameters (k1, b)
 - Language-aware search
-- Time-travel support with snapshot history
+- Optional time-travel support (BM25-owned manifest; see “Time Travel” below)
 
 See the [BM25 documentation](../indexing-and-search/bm25.md) for details.
 
@@ -66,7 +66,7 @@ See the [BM25 documentation](../indexing-and-search/bm25.md) for details.
 - Configurable distance metrics (cosine, euclidean, dot product)
 - Embedded indexes (no external service required) or remote mode via `fluree-search-httpd`
 - Support for high-dimensional vectors
-- Snapshot-based persistence with time-travel support
+- Snapshot-based persistence with watermarks (head-only in v1; time-travel not supported)
 
 See the [Vector Search documentation](../indexing-and-search/vector-search.md) for details.
 
@@ -106,9 +106,9 @@ See the [Iceberg documentation](../virtual-graphs/iceberg.md) for details.
 **Differentiator**: Map relational databases to RDF using R2RML (R2RML Mapping Language), enabling graph queries over SQL databases.
 
 **Use Cases:**
-- Migrate from SQL to graph gradually
+- Adopt graph queries alongside SQL data sources
 - Query SQL databases using SPARQL
-- Integrate legacy systems
+- Integrate existing systems
 - Unified query interface across data sources
 
 **Example:**
@@ -180,7 +180,7 @@ WHERE {
 
 ### Time Travel
 
-Many virtual graphs support historical queries using the `@t:` syntax in the ledger reference:
+Some graph sources support historical queries using the `@t:` syntax in the ledger reference, but the behavior is **graph-source-type specific**:
 
 ```json
 {
@@ -193,7 +193,17 @@ Many virtual graphs support historical queries using the `@t:` syntax in the led
 }
 ```
 
-BM25 virtual graphs maintain snapshot history, enabling time-travel queries over search indexes. Use the same `@t:`, `@iso:`, or `@sha:` syntax as with regular ledgers.
+#### BM25
+
+BM25 can support time travel by maintaining a **BM25-owned manifest** in storage that maps transaction watermarks (`t`) to index snapshot addresses. The nameservice stores only a **head pointer** (an opaque address to the latest BM25 manifest/root) and does not store snapshot history.
+
+#### Vector
+
+Vector search is **head-only** in v1. If a query requests an `@t:` (or otherwise requests an historical view), vector search rejects the request with a clear “time-travel not supported” error.
+
+#### Iceberg
+
+Iceberg time travel (when used) is handled by **Iceberg’s own snapshot/metadata model**, not by nameservice-managed snapshot history.
 
 ## Virtual Graph Architecture
 
@@ -204,6 +214,8 @@ Virtual graphs are tracked in the nameservice alongside ledgers:
 - **Discovery**: List all virtual graphs via nameservice
 - **Metadata**: Configuration and status stored in nameservice
 - **Coordination**: Index state tracked separately from source ledgers
+
+**Important**: for virtual graphs, the nameservice stores only **configuration** and a **head pointer** to the graph-source’s latest index root/manifest. Snapshot history (if any) lives in graph-source-owned manifests in storage.
 
 ### Query Execution
 
@@ -343,8 +355,8 @@ WHERE {
    - Storage usage
 
 2. **Backup**: Include virtual graphs in backup strategy
-   - BM25 indexes can be rebuilt
-   - Vector indexes stored as snapshots
+   - BM25 indexes can be rebuilt (or restored from stored snapshots/manifests, depending on configuration)
+   - Vector indexes are stored as head snapshots (time-travel not supported in v1)
    - Iceberg metadata in nameservice
 
 3. **Scaling**: Plan for virtual graph scaling

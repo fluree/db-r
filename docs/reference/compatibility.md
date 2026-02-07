@@ -1,6 +1,6 @@
-# Compatibility and Feature Flags
+# Standards and Feature Flags
 
-This document covers Fluree's compliance with standards, feature flags, and compatibility considerations.
+This document covers Fluree's compliance with standards and feature flags.
 
 ## Standards Compliance
 
@@ -209,7 +209,7 @@ reasoning = false
 geosparql = false
 ```
 
-## Compatibility Modes
+## Parsing Modes
 
 ### Strict Mode (Default)
 
@@ -233,34 +233,18 @@ More permissive parsing:
 ./fluree-db-server --strict-mode false
 ```
 
-Use lenient mode only during migration or with legacy data.
+Use lenient mode only when you fully control inputs and explicitly want permissive parsing behavior.
 
-## Version Compatibility
-
-### API Versioning
+## API Versioning
 
 Current API version: v1
-
-Future versions may introduce breaking changes with major version bump.
 
 **Version Header:**
 ```http
 X-Fluree-API-Version: 1
 ```
 
-### Backward Compatibility
-
-Within major versions:
-- New features added
-- Deprecated features marked
-- Breaking changes avoided
-
-Between major versions:
-- Breaking changes allowed
-- Migration guides provided
-- Overlap period for transition
-
-## Data Format Compatibility
+## Supported Data Formats
 
 ### JSON-LD
 
@@ -285,7 +269,7 @@ Supported SPARQL versions:
 | RDF/XML | Planned | No |
 | TriG | Planned | Planned |
 
-## Protocol Compatibility
+## Protocol Support
 
 ### HTTP Versions
 
@@ -300,7 +284,7 @@ Supported SPARQL versions:
 - SSL 3.0: Not supported (deprecated)
 - TLS 1.0/1.1: Not supported (deprecated)
 
-## Client Compatibility
+## Client Support
 
 Fluree works with:
 
@@ -344,12 +328,12 @@ Fluree works with:
 
 - Docker: Full support
 - Kubernetes: Full support
-- Podman: Compatible
+- Podman: Supported
 - Docker Compose: Full support
 
-## Database Compatibility
+## Database Support
 
-### Migration From
+### Import Sources
 
 Fluree can import from:
 
@@ -368,26 +352,13 @@ Fluree can import from:
 - Via R2RML mapping
 - Direct SQL query
 
-### Migration To
+### Export Formats
 
 Export Fluree data to:
 - Turtle files
 - JSON-LD documents
 - SPARQL CONSTRUCT results
 - Any RDF format
-
-## Deprecation Policy
-
-### Deprecation Process
-
-1. **Announce:** Feature marked deprecated in release notes
-2. **Warn:** Deprecation warnings in logs when used
-3. **Support:** Deprecated feature supported for 6-12 months
-4. **Remove:** Feature removed in next major version
-
-### Currently Deprecated
-
-None at this time (v1.0)
 
 ## Feature Roadmap
 
@@ -442,7 +413,7 @@ Response:
 }
 ```
 
-## Browser Compatibility
+## Browser Support
 
 For web applications using Fluree API:
 
@@ -456,7 +427,7 @@ For web applications using Fluree API:
 - CORS support
 - WebSocket support (for future streaming)
 
-## Tool Compatibility
+## Tool Support
 
 ### RDF Tools
 

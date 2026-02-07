@@ -326,14 +326,6 @@ Future versions may use URL-based versioning:
 https://api.example.com/v2/query
 ```
 
-### Backward Compatibility
-
-The API maintains backward compatibility within major versions:
-- New endpoints may be added
-- New optional parameters may be added
-- Response format remains compatible
-- Breaking changes trigger major version bump
-
 ## Common Patterns
 
 ### Idempotent Writes

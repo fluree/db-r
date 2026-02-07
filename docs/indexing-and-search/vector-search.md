@@ -391,7 +391,7 @@ Both embedded and remote modes use identical:
 - Score normalization (higher = better)
 - Snapshot serialization format
 
-This ensures queries return identical results regardless of deployment mode. You can switch between modes without any data migration.
+This ensures queries return identical results regardless of deployment mode. You can switch between modes without rebuilding the data.
 
 ## Performance Characteristics
 

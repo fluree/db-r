@@ -13,9 +13,9 @@ Definitions of key terms and concepts:
 - Query terminology
 - Index terminology
 
-### [Compatibility and Feature Flags](compatibility.md)
+### [Standards and Feature Flags](compatibility.md)
 
-Compatibility information:
+Standards and feature-flag reference:
 - SPARQL 1.1 compliance
 - JSON-LD specifications
 - W3C standards support

@@ -297,12 +297,19 @@ The nameservice can be backed by various storage systems, each suited for differ
 - **Format**: JSON files per ledger (`{ledger}/{branch}.json`)
 - **Characteristics**: Simple, local, no external dependencies
 
-#### AWS S3/DynamoDB (`StorageNameService`)
+#### AWS S3 (`StorageNameService`)
 
-- **Use Case**: Distributed deployments, cloud-native applications
-- **Storage**: S3 for object storage, DynamoDB for coordination
-- **Format**: Uses compare-and-swap (CAS) operations for consistency
+- **Use Case**: Distributed deployments using S3 for both data and metadata
+- **Storage**: S3 objects with ETag-based compare-and-swap (CAS)
 - **Characteristics**: Scalable, distributed, requires AWS credentials
+
+#### AWS DynamoDB (`DynamoDbNameService`)
+
+- **Use Case**: Distributed deployments needing low-latency metadata coordination
+- **Storage**: DynamoDB table with composite-key layout (one item per concern)
+- **Format**: Separate items for `meta`, `head`, `index`, `config`, `status` per ledger/graph source
+- **Characteristics**: Single-digit millisecond latency, per-concern write independence, conditional expressions for monotonic updates
+- See [DynamoDB Nameservice Guide](../operations/dynamodb-guide.md) for setup and schema details
 
 #### Memory (`MemoryNameService`)
 

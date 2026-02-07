@@ -264,7 +264,7 @@ WHERE {
 ### Type Consistency
 
 1. **Consistent Usage**: Use the same datatype for equivalent properties across your data
-2. **Migration Planning**: Plan for type changes in data evolution
+2. **Change Planning**: Plan for type changes as your data model evolves
 3. **Validation**: Validate data types at ingestion time
 
 ### Performance Considerations

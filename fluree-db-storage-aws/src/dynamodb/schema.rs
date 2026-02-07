@@ -1,4 +1,4 @@
-//! DynamoDB table schema constants
+//! DynamoDB table schema constants (composite-key layout v2)
 //!
 //! Defines the attribute names and values used in the fluree-nameservice table.
 //!
@@ -8,81 +8,99 @@
 //! Table: fluree-nameservice (configurable)
 //!
 //! Primary Key:
-//!   - ledger_alias (String, Partition Key): e.g., "mydb:main"
+//!   - pk (String, Partition Key): alias in `name:branch` form (e.g., "mydb:main")
+//!   - sk (String, Sort Key): concern discriminator ("meta", "head", "index", "config", "status")
 //!
-//! Attributes:
-//!   - ledger_alias: String (PK) - canonical key including branch
-//!   - ledger_name: String - ledger name without branch
-//!   - branch: String - branch name
-//!   - commit_address: String (optional) - latest commit storage address
-//!   - commit_t: Number - transaction time of latest commit
-//!   - index_address: String (optional) - latest index storage address
-//!   - index_t: Number - transaction time of latest index
-//!   - default_context_address: String (optional) - JSON-LD context address
-//!   - status: String ("ready" | "retracted")
-//!   - updated_at: Number (Unix epoch seconds)
+//! GSI1 (gsi1-kind):
+//!   - PK: kind (String) — "ledger" | "graph_source"
+//!   - SK: pk (String)
+//!   - Projection: INCLUDE (name, branch, source_type, dependencies, retracted)
 //!
-//! V2 Extension Attributes:
-//!   - status_v: Number - status watermark (monotonically increasing)
-//!   - status_meta: Map (optional) - extensible status metadata
-//!   - config_v: Number - config watermark (monotonically increasing)
-//!   - config_meta: Map (optional) - extensible config metadata
+//! Items per alias (ledger):
+//!   - (pk, "meta")   — kind, name, branch, retracted
+//!   - (pk, "head")   — commit_address, commit_t
+//!   - (pk, "index")  — index_address, index_t
+//!   - (pk, "config") — default_context_address, config_v, config_meta
+//!   - (pk, "status") — status, status_v, status_meta
+//!
+//! Items per alias (graph source):
+//!   - (pk, "meta")   — kind, source_type, name, branch, dependencies, retracted
+//!   - (pk, "config") — config_json, config_v
+//!   - (pk, "index")  — index_address, index_t
+//!   - (pk, "status") — status, status_v, status_meta
 //! ```
 
-/// Primary key attribute - ledger alias including branch (e.g., "mydb:main")
-pub const ATTR_LEDGER_ALIAS: &str = "ledger_alias";
+// ── Primary key ─────────────────────────────────────────────────────────────
+/// Partition key: alias in `name:branch` form (e.g., "mydb:main")
+pub const ATTR_PK: &str = "pk";
+/// Sort key: concern discriminator
+pub const ATTR_SK: &str = "sk";
 
-/// Ledger name without branch (e.g., "mydb")
-pub const ATTR_LEDGER_NAME: &str = "ledger_name";
+// ── Sort key values ─────────────────────────────────────────────────────────
+pub const SK_META: &str = "meta";
+pub const SK_HEAD: &str = "head";
+pub const SK_INDEX: &str = "index";
+pub const SK_CONFIG: &str = "config";
+pub const SK_STATUS: &str = "status";
 
-/// Branch name (e.g., "main")
+// ── Meta item attributes ────────────────────────────────────────────────────
+/// "ledger" | "graph_source"
+pub const ATTR_KIND: &str = "kind";
+/// Ledger/graph-source name (DynamoDB reserved word — use `#name`)
+pub const ATTR_NAME: &str = "name";
+/// Branch name
 pub const ATTR_BRANCH: &str = "branch";
+/// Whether this record has been retracted
+pub const ATTR_RETRACTED: &str = "retracted";
+/// Graph-source type string (e.g., "fidx:BM25")
+pub const ATTR_SOURCE_TYPE: &str = "source_type";
+/// Dependent ledger aliases (List<String>)
+pub const ATTR_DEPENDENCIES: &str = "dependencies";
 
-/// Latest commit storage address
+// ── Kind values ─────────────────────────────────────────────────────────────
+pub const KIND_LEDGER: &str = "ledger";
+pub const KIND_GRAPH_SOURCE: &str = "graph_source";
+
+// ── Head item attributes (ledger only) ──────────────────────────────────────
 pub const ATTR_COMMIT_ADDRESS: &str = "commit_address";
-
-/// Transaction time of latest commit
 pub const ATTR_COMMIT_T: &str = "commit_t";
 
-/// Latest index storage address
+// ── Index item attributes (ledger + graph source) ───────────────────────────
 pub const ATTR_INDEX_ADDRESS: &str = "index_address";
-
-/// Transaction time of latest index
 pub const ATTR_INDEX_T: &str = "index_t";
 
-/// Default JSON-LD context storage address
+// ── Config item attributes ──────────────────────────────────────────────────
+/// Default JSON-LD context address (ledger config)
 pub const ATTR_DEFAULT_CONTEXT_ADDRESS: &str = "default_context_address";
+/// Opaque JSON config string (graph source only)
+pub const ATTR_CONFIG_JSON: &str = "config_json";
+/// Config version watermark (monotonically increasing)
+pub const ATTR_CONFIG_V: &str = "config_v";
+/// Extensible config metadata map (ledger config)
+pub const ATTR_CONFIG_META: &str = "config_meta";
 
-/// Status attribute ("ready" or "retracted")
-/// Note: "status" is a DynamoDB reserved word, use ExpressionAttributeNames
+// ── Status item attributes ──────────────────────────────────────────────────
+/// Status state string (DynamoDB reserved word — use `#st`)
 pub const ATTR_STATUS: &str = "status";
-
-/// Last update timestamp (Unix epoch seconds)
-pub const ATTR_UPDATED_AT: &str = "updated_at";
-
-/// Status value: ledger is active
-pub const STATUS_READY: &str = "ready";
-
-/// Status value: ledger has been retracted
-pub const STATUS_RETRACTED: &str = "retracted";
-
-/// Default table name
-pub const DEFAULT_TABLE_NAME: &str = "fluree-nameservice";
-
-// ---------------------------------------------------------------------------
-// V2 Extension Attributes (Status and Config concerns)
-// ---------------------------------------------------------------------------
-
-/// Status watermark (v2) - monotonically increasing version counter
-/// Defaults to 1 if missing (for legacy records)
+/// Status version watermark (monotonically increasing)
 pub const ATTR_STATUS_V: &str = "status_v";
-
-/// Status metadata (v2) - extensible metadata map (queue_depth, locks, etc.)
+/// Extensible status metadata map
 pub const ATTR_STATUS_META: &str = "status_meta";
 
-/// Config watermark (v2) - monotonically increasing version counter
-/// Defaults to 0 (unborn) if missing, or 1 if default_context_address exists
-pub const ATTR_CONFIG_V: &str = "config_v";
+// ── Common attributes ───────────────────────────────────────────────────────
+/// Last update timestamp (epoch milliseconds)
+pub const ATTR_UPDATED_AT_MS: &str = "updated_at_ms";
+/// Schema version number
+pub const ATTR_SCHEMA: &str = "schema";
+/// Current schema version
+pub const SCHEMA_VERSION: i64 = 2;
 
-/// Config metadata (v2) - extensible config settings map
-pub const ATTR_CONFIG_META: &str = "config_meta";
+// ── Status values ───────────────────────────────────────────────────────────
+pub const STATUS_READY: &str = "ready";
+pub const STATUS_RETRACTED: &str = "retracted";
+
+// ── GSI1 ────────────────────────────────────────────────────────────────────
+pub const GSI1_NAME: &str = "gsi1-kind";
+
+// ── Table name ──────────────────────────────────────────────────────────────
+pub const DEFAULT_TABLE_NAME: &str = "fluree-nameservice";

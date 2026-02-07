@@ -24,9 +24,9 @@ Design documents are located in the `/docs/design/` directory and various planni
 - Location: `/BM25_INDEXING_IMPLEMENTATION_PLAN.md`
 - Covers: Full-text search implementation, BM25 algorithm, index structure
 
-**BM25 Snapshot History and Time Travel:**
-- Location: `/BM25_SNAPSHOT_HISTORY_AND_TIME_TRAVEL_DESIGN.md`
-- Covers: Time travel for BM25 indexes, snapshot management
+**Virtual Graph Index Manifests (VG-owned history):**
+- Location: `/docs/design/virtual-graph-index-manifests.md`
+- Covers: Nameservice pointers only, VG-owned manifests, BM25 time travel, vector head-only
 
 **Iceberg/Polaris R2RML:**
 - Location: `/ICEBERG_POLARIS_R2RML_IMPLEMENTATION_PLAN.md`
@@ -241,7 +241,6 @@ When reviewing design docs:
 - [ ] Performance implications discussed
 - [ ] Testing strategy defined
 - [ ] Breaking changes identified
-- [ ] Migration path provided (if breaking)
 - [ ] Documentation plan included
 
 ## Related Documentation

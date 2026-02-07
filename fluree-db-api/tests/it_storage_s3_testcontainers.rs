@@ -11,9 +11,6 @@
 mod support;
 
 use aws_config::meta::region::RegionProviderChain;
-use aws_sdk_dynamodb::types::{
-    AttributeDefinition, BillingMode, KeySchemaElement, KeyType, ScalarAttributeType,
-};
 use fluree_db_api::{tx, Fluree};
 use fluree_db_connection::{Connection, ConnectionConfig};
 use fluree_db_indexer::IndexerConfig;
@@ -72,52 +69,11 @@ async fn ensure_bucket(sdk_config: &aws_config::SdkConfig, bucket: &str) {
 }
 
 async fn ensure_dynamodb_table(sdk_config: &aws_config::SdkConfig, table_name: &str) {
-    let ddb = aws_sdk_dynamodb::Client::new(sdk_config);
-
-    if ddb
-        .describe_table()
-        .table_name(table_name)
-        .send()
+    let client = aws_sdk_dynamodb::Client::new(sdk_config);
+    let ns = DynamoDbNameService::from_client(client, table_name.to_string());
+    ns.ensure_table()
         .await
-        .is_ok()
-    {
-        return;
-    }
-
-    let _ = ddb
-        .create_table()
-        .table_name(table_name)
-        .attribute_definitions(
-            AttributeDefinition::builder()
-                .attribute_name("ledger_alias")
-                .attribute_type(ScalarAttributeType::S)
-                .build()
-                .expect("valid attribute definition"),
-        )
-        .key_schema(
-            KeySchemaElement::builder()
-                .attribute_name("ledger_alias")
-                .key_type(KeyType::Hash)
-                .build()
-                .expect("valid key schema element"),
-        )
-        .billing_mode(BillingMode::PayPerRequest)
-        .send()
-        .await;
-
-    for _ in 0..60 {
-        if ddb
-            .describe_table()
-            .table_name(table_name)
-            .send()
-            .await
-            .is_ok()
-        {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-    panic!("DynamoDB table was not available: {}", table_name);
+        .expect("DynamoDB table creation failed");
 }
 
 fn build_fluree(

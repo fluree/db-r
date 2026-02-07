@@ -1312,7 +1312,7 @@ let result = fluree.graph("mydb:main")
     .transact()
     .upsert(&data)
     .txn_opts(TxnOpts { author: Some("did:admin".into()), ..Default::default() })
-    .commit_opts(CommitOpts { message: Some("migration".into()), ..Default::default() })
+    .commit_opts(CommitOpts { message: Some("admin update".into()), ..Default::default() })
     .commit().await?;
 
 // Stage without committing (preview changes)
@@ -1474,7 +1474,7 @@ Both `stage(&handle)` and `stage_owned(ledger)` return a builder with identical 
 let result = fluree.stage(&handle)  // or stage_owned(ledger)
     .insert(&data)                   // or .upsert(&data), .update(&data)
     .txn_opts(TxnOpts::default().author("did:admin"))
-    .commit_opts(CommitOpts::with_message("migration"))
+    .commit_opts(CommitOpts::with_message("admin update"))
     .execute()
     .await?;
 ```

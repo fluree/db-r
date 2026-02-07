@@ -405,6 +405,6 @@ The result of tracking, containing time (formatted as "12.34ms"), fuel (total co
 
 ## Related Documentation
 
-- [Compatibility](compatibility.md) - Standards compliance
+- [Standards and feature flags](compatibility.md) - Standards compliance and feature flags
 - [Crate Map](crate-map.md) - Code architecture
 - [Concepts](../concepts/README.md) - Core concepts

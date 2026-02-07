@@ -178,7 +178,7 @@ Non-ledger graph sources (sometimes called “virtual graphs”) are registered 
 **Query:**
 ```json
 {
-  "from": "legacy-customers:main",
+  "from": "sql-customers:main",
   "select": ["?name", "?email"],
   "where": [
     { "@id": "?customer", "schema:name": "?name" },
@@ -403,7 +403,7 @@ Match virtual graph type to use case:
 - **Keyword search** → BM25
 - **Semantic search** → Vector
 - **Analytics** → Iceberg
-- **Legacy integration** → R2RML
+- **Existing system integration** → R2RML
 
 ### 2. Monitor Synchronization
 

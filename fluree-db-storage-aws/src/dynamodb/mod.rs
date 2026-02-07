@@ -1,24 +1,34 @@
-//! DynamoDB nameservice implementation
+//! DynamoDB nameservice implementation (composite-key layout v2)
 //!
-//! Provides `DynamoDbNameService` which implements the `NameService` and `Publisher`
-//! traits for storing ledger metadata in Amazon DynamoDB.
+//! Stores ledger and graph-source metadata using a composite primary key
+//! (`pk` + `sk`) with separate concern items and a GSI for listing by kind.
+//!
+//! For the schema specification, see:
+//! - `docs/operations/dynamodb-guide.md` (operator-focused)
+//! - `fluree-db-storage-aws/src/dynamodb/schema.rs` (authoritative attribute constants)
 
 pub mod schema;
 
-use crate::error::Result;
 use async_trait::async_trait;
-use aws_sdk_dynamodb::types::AttributeValue;
+use aws_sdk_dynamodb::types::{
+    AttributeDefinition, AttributeValue, BillingMode, GlobalSecondaryIndex, KeySchemaElement,
+    KeyType, KeysAndAttributes, Projection, ProjectionType, Put, ScalarAttributeType,
+    TransactWriteItem, Update,
+};
 use aws_sdk_dynamodb::Client;
 use aws_smithy_types::timeout::TimeoutConfig;
 use fluree_db_core::alias::{self as core_alias, DEFAULT_BRANCH};
 use fluree_db_nameservice::{
-    ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue, NameService, NameServiceError,
-    NsRecord, Publisher, StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
+    AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue,
+    NameService, NameServiceError, NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher,
+    RefValue, StatusCasResult, StatusPayload, StatusPublisher, StatusValue, VgNsRecord, VgType,
+    VirtualGraphPublisher,
 };
 use schema::*;
-use serde_json;
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+type Item = HashMap<String, AttributeValue>;
 
 /// DynamoDB nameservice configuration
 #[derive(Debug, Clone)]
@@ -33,10 +43,11 @@ pub struct DynamoDbConfig {
     pub timeout_ms: Option<u64>,
 }
 
-/// DynamoDB-based nameservice
+/// DynamoDB-based nameservice (composite-key layout v2)
 ///
-/// Stores ledger metadata in a DynamoDB table with conditional updates
-/// for monotonic commit/index publishing.
+/// Each alias maps to multiple DynamoDB items (one per concern: meta, head,
+/// index, config, status). Init operations materialize all concern items
+/// atomically; subsequent writes are plain UpdateItem.
 #[derive(Clone)]
 pub struct DynamoDbNameService {
     client: Client,
@@ -51,28 +62,22 @@ impl std::fmt::Debug for DynamoDbNameService {
     }
 }
 
+// ─── Constructors ───────────────────────────────────────────────────────────
+
 impl DynamoDbNameService {
-    /// Create a new DynamoDB nameservice
-    ///
-    /// Configuration:
-    /// - `region`: Override SDK region (uses SDK default if not specified)
-    /// - `timeout_ms`: Operation timeout in milliseconds
-    pub async fn new(sdk_config: &aws_config::SdkConfig, config: DynamoDbConfig) -> Result<Self> {
-        // Build DynamoDB config by inheriting from SdkConfig (preserves HTTP client,
-        // retry config, endpoints, sleep impl, etc.) then apply our overrides
+    /// Create a new DynamoDB nameservice from SDK config.
+    pub async fn new(
+        sdk_config: &aws_config::SdkConfig,
+        config: DynamoDbConfig,
+    ) -> crate::error::Result<Self> {
         let mut builder = aws_sdk_dynamodb::config::Builder::from(sdk_config);
 
-        // Apply region override if specified
         if let Some(region_str) = config.region {
             builder = builder.region(aws_sdk_dynamodb::config::Region::new(region_str));
         }
-
-        // Apply endpoint override if configured (e.g. LocalStack)
         if let Some(endpoint) = config.endpoint {
             builder = builder.endpoint_url(endpoint);
         }
-
-        // Apply timeout if configured
         if let Some(timeout_ms) = config.timeout_ms {
             let timeout_config = TimeoutConfig::builder()
                 .operation_timeout(Duration::from_millis(timeout_ms))
@@ -81,77 +86,290 @@ impl DynamoDbNameService {
         }
 
         let client = Client::from_conf(builder.build());
-
         Ok(Self {
             client,
             table_name: config.table_name,
         })
     }
 
-    /// Create from a pre-built client (for testing)
+    /// Create from a pre-built client (for testing).
     pub fn from_client(client: Client, table_name: String) -> Self {
         Self { client, table_name }
     }
+}
 
-    /// Convert DynamoDB item to NsRecord
-    fn item_to_record(item: &HashMap<String, AttributeValue>) -> Option<NsRecord> {
-        let ledger_alias = item.get(ATTR_LEDGER_ALIAS)?.as_s().ok()?;
-        let ledger_name = item
-            .get(ATTR_LEDGER_NAME)
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+impl DynamoDbNameService {
+    /// Normalize alias to canonical `name:branch` form.
+    fn normalize(alias: &str) -> String {
+        core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string())
+    }
+
+    /// Current epoch time in milliseconds.
+    fn now_epoch_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
+    /// Query all concern items for a given pk (consistent read).
+    async fn query_all_items(&self, pk: &str) -> std::result::Result<Vec<Item>, NameServiceError> {
+        let response = self
+            .client
+            .query()
+            .table_name(&self.table_name)
+            .key_condition_expression("#pk = :pk")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_values(":pk", AttributeValue::S(pk.to_string()))
+            .consistent_read(true)
+            .send()
+            .await
+            .map_err(|e| NameServiceError::storage(format!("DynamoDB Query failed: {e}")))?;
+
+        Ok(response.items().to_vec())
+    }
+
+    /// Find an item with a specific sort key value.
+    fn find_item_by_sk<'a>(items: &'a [Item], sk: &str) -> Option<&'a Item> {
+        items
+            .iter()
+            .find(|item| item.get(ATTR_SK).and_then(|v| v.as_s().ok()) == Some(&sk.to_string()))
+    }
+
+    /// Assemble an NsRecord from concern items (requires kind=ledger).
+    fn items_to_ns_record(pk: &str, items: &[Item]) -> Option<NsRecord> {
+        let meta = Self::find_item_by_sk(items, SK_META)?;
+        let kind = meta.get(ATTR_KIND)?.as_s().ok()?;
+        if kind != KIND_LEDGER {
+            return None;
+        }
+
+        let name = meta
+            .get(ATTR_NAME)
             .and_then(|v| v.as_s().ok())
             .cloned()
             .unwrap_or_default();
-        let branch = item
+        let branch = meta
             .get(ATTR_BRANCH)
             .and_then(|v| v.as_s().ok())
             .cloned()
             .unwrap_or_else(|| DEFAULT_BRANCH.to_string());
+        let retracted = meta
+            .get(ATTR_RETRACTED)
+            .and_then(|v| v.as_bool().ok())
+            .copied()
+            .unwrap_or(false);
 
-        let status = item
-            .get(ATTR_STATUS)
+        let head = Self::find_item_by_sk(items, SK_HEAD);
+        let commit_address = head
+            .and_then(|h| h.get(ATTR_COMMIT_ADDRESS))
             .and_then(|v| v.as_s().ok())
-            .map(|s| s.as_str())
-            .unwrap_or(STATUS_READY);
+            .cloned();
+        let commit_t: i64 = head
+            .and_then(|h| h.get(ATTR_COMMIT_T))
+            .and_then(|v| v.as_n().ok())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        let index = Self::find_item_by_sk(items, SK_INDEX);
+        let index_address = index
+            .and_then(|i| i.get(ATTR_INDEX_ADDRESS))
+            .and_then(|v| v.as_s().ok())
+            .cloned();
+        let index_t: i64 = index
+            .and_then(|i| i.get(ATTR_INDEX_T))
+            .and_then(|v| v.as_n().ok())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        let config = Self::find_item_by_sk(items, SK_CONFIG);
+        let default_context_address = config
+            .and_then(|c| c.get(ATTR_DEFAULT_CONTEXT_ADDRESS))
+            .and_then(|v| v.as_s().ok())
+            .cloned();
 
         Some(NsRecord {
-            address: ledger_alias.clone(),
-            alias: ledger_name,
+            address: pk.to_string(),
+            alias: name,
             branch,
-            commit_address: item
-                .get(ATTR_COMMIT_ADDRESS)
-                .and_then(|v| v.as_s().ok())
-                .cloned(),
-            commit_t: item
-                .get(ATTR_COMMIT_T)
-                .and_then(|v| v.as_n().ok())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0),
-            index_address: item
-                .get(ATTR_INDEX_ADDRESS)
-                .and_then(|v| v.as_s().ok())
-                .cloned(),
-            index_t: item
-                .get(ATTR_INDEX_T)
-                .and_then(|v| v.as_n().ok())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0),
-            default_context_address: item
-                .get(ATTR_DEFAULT_CONTEXT_ADDRESS)
-                .and_then(|v| v.as_s().ok())
-                .cloned(),
-            retracted: status == STATUS_RETRACTED,
+            commit_address,
+            commit_t,
+            index_address,
+            index_t,
+            default_context_address,
+            retracted,
         })
     }
 
-    /// Get current Unix epoch seconds
-    fn now_epoch() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
+    /// Assemble a VgNsRecord from concern items (requires kind=graph_source).
+    fn items_to_vg_record(pk: &str, items: &[Item]) -> Option<VgNsRecord> {
+        let meta = Self::find_item_by_sk(items, SK_META)?;
+        let kind = meta.get(ATTR_KIND)?.as_s().ok()?;
+        if kind != KIND_GRAPH_SOURCE {
+            return None;
+        }
+
+        Self::vg_record_from_meta(
+            pk,
+            meta,
+            Self::find_item_by_sk(items, SK_CONFIG),
+            Self::find_item_by_sk(items, SK_INDEX),
+        )
     }
 
-    /// Check if an UpdateItem error is a conditional check failure
+    /// Build a VgNsRecord from separate meta / config / index items.
+    fn vg_record_from_meta(
+        pk: &str,
+        meta: &Item,
+        config_item: Option<&Item>,
+        index_item: Option<&Item>,
+    ) -> Option<VgNsRecord> {
+        let name = meta.get(ATTR_NAME).and_then(|v| v.as_s().ok()).cloned()?;
+        let branch = meta.get(ATTR_BRANCH).and_then(|v| v.as_s().ok()).cloned()?;
+        let retracted = meta
+            .get(ATTR_RETRACTED)
+            .and_then(|v| v.as_bool().ok())
+            .copied()
+            .unwrap_or(false);
+        let source_type_str = meta
+            .get(ATTR_SOURCE_TYPE)
+            .and_then(|v| v.as_s().ok())
+            .cloned()
+            .unwrap_or_default();
+        let vg_type = VgType::from_type_string(&source_type_str);
+        let dependencies: Vec<String> = meta
+            .get(ATTR_DEPENDENCIES)
+            .and_then(|v| v.as_l().ok())
+            .map(|l| l.iter().filter_map(|v| v.as_s().ok().cloned()).collect())
+            .unwrap_or_default();
+
+        let config = config_item
+            .and_then(|c| c.get(ATTR_CONFIG_JSON))
+            .and_then(|v| v.as_s().ok())
+            .cloned()
+            .unwrap_or_else(|| "{}".to_string());
+
+        let index_address = index_item
+            .and_then(|i| i.get(ATTR_INDEX_ADDRESS))
+            .and_then(|v| v.as_s().ok())
+            .cloned();
+        let index_t: i64 = index_item
+            .and_then(|i| i.get(ATTR_INDEX_T))
+            .and_then(|v| v.as_n().ok())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        Some(VgNsRecord {
+            address: pk.to_string(),
+            name,
+            branch,
+            vg_type,
+            config,
+            dependencies,
+            index_address,
+            index_t,
+            retracted,
+        })
+    }
+
+    /// Check whether a meta item exists for the given pk.
+    async fn meta_exists(&self, pk: &str) -> std::result::Result<bool, NameServiceError> {
+        let response = self
+            .client
+            .get_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk.to_string()))
+            .key(ATTR_SK, AttributeValue::S(SK_META.to_string()))
+            .projection_expression("#pk")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .send()
+            .await
+            .map_err(|e| NameServiceError::storage(format!("DynamoDB GetItem failed: {e}")))?;
+
+        Ok(response.item().is_some())
+    }
+
+    /// Read the `kind` field from the meta item for the given pk.
+    ///
+    /// Returns `None` if no meta item exists.
+    async fn meta_kind(&self, pk: &str) -> std::result::Result<Option<String>, NameServiceError> {
+        let response = self
+            .client
+            .get_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk.to_string()))
+            .key(ATTR_SK, AttributeValue::S(SK_META.to_string()))
+            .projection_expression("#kind")
+            .expression_attribute_names("#kind", ATTR_KIND)
+            .consistent_read(true)
+            .send()
+            .await
+            .map_err(|e| NameServiceError::storage(format!("DynamoDB GetItem failed: {e}")))?;
+
+        Ok(response
+            .item()
+            .and_then(|item| item.get(ATTR_KIND))
+            .and_then(|v| v.as_s().ok())
+            .cloned())
+    }
+
+    /// Map RefKind → sort key value.
+    fn ref_kind_sk(kind: RefKind) -> &'static str {
+        match kind {
+            RefKind::CommitHead => SK_HEAD,
+            RefKind::IndexHead => SK_INDEX,
+        }
+    }
+
+    /// Map RefKind → (address_attr, t_attr).
+    fn ref_kind_attrs(kind: RefKind) -> (&'static str, &'static str) {
+        match kind {
+            RefKind::CommitHead => (ATTR_COMMIT_ADDRESS, ATTR_COMMIT_T),
+            RefKind::IndexHead => (ATTR_INDEX_ADDRESS, ATTR_INDEX_T),
+        }
+    }
+
+    /// Query GSI1 for all meta items of a given kind, with pagination.
+    async fn query_gsi_by_kind(
+        &self,
+        kind: &str,
+    ) -> std::result::Result<Vec<Item>, NameServiceError> {
+        let mut items = Vec::new();
+        let mut last_key = None;
+
+        loop {
+            let mut query = self
+                .client
+                .query()
+                .table_name(&self.table_name)
+                .index_name(GSI1_NAME)
+                .key_condition_expression("#kind = :kind")
+                .expression_attribute_names("#kind", ATTR_KIND)
+                .expression_attribute_values(":kind", AttributeValue::S(kind.to_string()));
+
+            if let Some(key) = last_key.take() {
+                query = query.set_exclusive_start_key(Some(key));
+            }
+
+            let response = query.send().await.map_err(|e| {
+                NameServiceError::storage(format!("DynamoDB GSI query failed: {e}"))
+            })?;
+
+            items.extend(response.items().iter().cloned());
+
+            match response.last_evaluated_key() {
+                Some(key) if !key.is_empty() => last_key = Some(key.clone()),
+                _ => break,
+            }
+        }
+
+        Ok(items)
+    }
+
+    // ── DynamoDB error classification ───────────────────────────────────
+
     fn is_conditional_check_failed(
         err: &aws_sdk_dynamodb::error::SdkError<
             aws_sdk_dynamodb::operation::update_item::UpdateItemError,
@@ -159,11 +377,10 @@ impl DynamoDbNameService {
     ) -> bool {
         use aws_sdk_dynamodb::error::SdkError;
         use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
-
         match err {
-            SdkError::ServiceError(service_err) => {
+            SdkError::ServiceError(se) => {
                 matches!(
-                    service_err.err(),
+                    se.err(),
                     UpdateItemError::ConditionalCheckFailedException(_)
                 )
             }
@@ -171,596 +388,38 @@ impl DynamoDbNameService {
         }
     }
 
-    /// Check if a PutItem error is a conditional check failure
-    fn is_put_conditional_check_failed(
+    fn is_transaction_canceled(
         err: &aws_sdk_dynamodb::error::SdkError<
-            aws_sdk_dynamodb::operation::put_item::PutItemError,
+            aws_sdk_dynamodb::operation::transact_write_items::TransactWriteItemsError,
         >,
     ) -> bool {
         use aws_sdk_dynamodb::error::SdkError;
-        use aws_sdk_dynamodb::operation::put_item::PutItemError;
-
+        use aws_sdk_dynamodb::operation::transact_write_items::TransactWriteItemsError;
         match err {
-            SdkError::ServiceError(service_err) => {
+            SdkError::ServiceError(se) => {
                 matches!(
-                    service_err.err(),
-                    PutItemError::ConditionalCheckFailedException(_)
+                    se.err(),
+                    TransactWriteItemsError::TransactionCanceledException(_)
                 )
             }
             _ => false,
         }
     }
-}
 
-#[async_trait]
-impl NameService for DynamoDbNameService {
-    async fn lookup(
-        &self,
-        ledger_address: &str,
-    ) -> std::result::Result<Option<NsRecord>, NameServiceError> {
-        let pk = core_alias::normalize_alias(ledger_address)
-            .unwrap_or_else(|_| ledger_address.to_string());
+    // ── JSON ↔ DynamoDB conversion helpers ──────────────────────────────
 
-        let response = self
-            .client
-            .get_item()
-            .table_name(&self.table_name)
-            .key(ATTR_LEDGER_ALIAS, AttributeValue::S(pk))
-            .consistent_read(true)
-            .send()
-            .await
-            .map_err(|e| NameServiceError::storage(format!("DynamoDB GetItem failed: {}", e)))?;
-
-        Ok(response.item().and_then(Self::item_to_record))
-    }
-
-    async fn alias(
-        &self,
-        ledger_address: &str,
-    ) -> std::result::Result<Option<String>, NameServiceError> {
-        Ok(self.lookup(ledger_address).await?.map(|r| r.alias))
-    }
-
-    async fn all_records(&self) -> std::result::Result<Vec<NsRecord>, NameServiceError> {
-        let mut records = Vec::new();
-        let mut last_evaluated_key = None;
-
-        loop {
-            let mut request = self.client.scan().table_name(&self.table_name);
-
-            if let Some(key) = last_evaluated_key.take() {
-                request = request.set_exclusive_start_key(Some(key));
-            }
-
-            let response = request
-                .send()
-                .await
-                .map_err(|e| NameServiceError::storage(format!("DynamoDB Scan failed: {}", e)))?;
-
-            for item in response.items() {
-                if let Some(record) = Self::item_to_record(item) {
-                    records.push(record);
-                }
-            }
-
-            match response.last_evaluated_key() {
-                Some(key) if !key.is_empty() => {
-                    last_evaluated_key = Some(key.clone());
-                }
-                _ => break,
-            }
-        }
-
-        Ok(records)
-    }
-}
-
-#[async_trait]
-impl Publisher for DynamoDbNameService {
-    async fn publish_ledger_init(&self, alias: &str) -> std::result::Result<(), NameServiceError> {
-        let pk = core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
-        let (ledger_name, branch) = core_alias::split_alias(alias)
-            .unwrap_or_else(|_| (alias.to_string(), DEFAULT_BRANCH.to_string()));
-        let now = Self::now_epoch();
-
-        // Use PutItem with condition_expression to atomically check-and-create.
-        // The condition ensures we only create if no record exists (including retracted).
-        let result = self
-            .client
-            .put_item()
-            .table_name(&self.table_name)
-            .item(ATTR_LEDGER_ALIAS, AttributeValue::S(pk.clone()))
-            .item(ATTR_LEDGER_NAME, AttributeValue::S(ledger_name))
-            .item(ATTR_BRANCH, AttributeValue::S(branch))
-            .item(ATTR_STATUS, AttributeValue::S(STATUS_READY.to_string()))
-            .item(ATTR_UPDATED_AT, AttributeValue::N(now.to_string()))
-            // commit_t=0 indicates no commits yet
-            .item(ATTR_COMMIT_T, AttributeValue::N("0".to_string()))
-            // index_t=0 indicates no index yet
-            .item(ATTR_INDEX_T, AttributeValue::N("0".to_string()))
-            .condition_expression("attribute_not_exists(#pk)")
-            .expression_attribute_names("#pk", ATTR_LEDGER_ALIAS)
-            .send()
-            .await;
-
-        match result {
-            Ok(_) => Ok(()),
-            Err(e) if Self::is_put_conditional_check_failed(&e) => {
-                // Record already exists (including retracted)
-                Err(NameServiceError::ledger_already_exists(&pk))
-            }
-            Err(e) => Err(NameServiceError::storage(format!(
-                "DynamoDB PutItem failed: {}",
-                e
-            ))),
-        }
-    }
-
-    async fn publish_commit(
-        &self,
-        alias: &str,
-        commit_addr: &str,
-        commit_t: i64,
-    ) -> std::result::Result<(), NameServiceError> {
-        let pk = core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
-        let (ledger_name, branch) = core_alias::split_alias(alias)
-            .unwrap_or_else(|_| (alias.to_string(), DEFAULT_BRANCH.to_string()));
-        let now = Self::now_epoch();
-
-        let result = self
-            .client
-            .update_item()
-            .table_name(&self.table_name)
-            .key(ATTR_LEDGER_ALIAS, AttributeValue::S(pk))
-            // Use ExpressionAttributeNames for reserved words (status)
-            .update_expression(
-                "SET #ca = :addr, #ct = :t, #ln = :ln, #br = :br, #st = :ready, #ua = :now",
-            )
-            .condition_expression("attribute_not_exists(#ct) OR #ct < :t")
-            .expression_attribute_names("#ca", ATTR_COMMIT_ADDRESS)
-            .expression_attribute_names("#ct", ATTR_COMMIT_T)
-            .expression_attribute_names("#ln", ATTR_LEDGER_NAME)
-            .expression_attribute_names("#br", ATTR_BRANCH)
-            .expression_attribute_names("#st", ATTR_STATUS)
-            .expression_attribute_names("#ua", ATTR_UPDATED_AT)
-            .expression_attribute_values(":addr", AttributeValue::S(commit_addr.to_string()))
-            .expression_attribute_values(":t", AttributeValue::N(commit_t.to_string()))
-            .expression_attribute_values(":ln", AttributeValue::S(ledger_name))
-            .expression_attribute_values(":br", AttributeValue::S(branch))
-            .expression_attribute_values(":ready", AttributeValue::S(STATUS_READY.to_string()))
-            .expression_attribute_values(":now", AttributeValue::N(now.to_string()))
-            .send()
-            .await;
-
-        match result {
-            Ok(_) => Ok(()),
-            Err(e) if Self::is_conditional_check_failed(&e) => {
-                // Existing value is newer - this is expected under contention
-                Ok(())
-            }
-            Err(e) => Err(NameServiceError::storage(format!(
-                "DynamoDB UpdateItem failed: {}",
-                e
-            ))),
-        }
-    }
-
-    async fn publish_index(
-        &self,
-        alias: &str,
-        index_addr: &str,
-        index_t: i64,
-    ) -> std::result::Result<(), NameServiceError> {
-        let pk = core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
-        let (ledger_name, branch) = core_alias::split_alias(alias)
-            .unwrap_or_else(|_| (alias.to_string(), DEFAULT_BRANCH.to_string()));
-        let now = Self::now_epoch();
-
-        let result = self
-            .client
-            .update_item()
-            .table_name(&self.table_name)
-            .key(ATTR_LEDGER_ALIAS, AttributeValue::S(pk))
-            .update_expression(
-                "SET #ia = :addr, #it = :t, #ln = :ln, #br = :br, #st = :ready, #ua = :now",
-            )
-            .condition_expression("attribute_not_exists(#it) OR #it < :t")
-            .expression_attribute_names("#ia", ATTR_INDEX_ADDRESS)
-            .expression_attribute_names("#it", ATTR_INDEX_T)
-            .expression_attribute_names("#ln", ATTR_LEDGER_NAME)
-            .expression_attribute_names("#br", ATTR_BRANCH)
-            .expression_attribute_names("#st", ATTR_STATUS)
-            .expression_attribute_names("#ua", ATTR_UPDATED_AT)
-            .expression_attribute_values(":addr", AttributeValue::S(index_addr.to_string()))
-            .expression_attribute_values(":t", AttributeValue::N(index_t.to_string()))
-            .expression_attribute_values(":ln", AttributeValue::S(ledger_name))
-            .expression_attribute_values(":br", AttributeValue::S(branch))
-            .expression_attribute_values(":ready", AttributeValue::S(STATUS_READY.to_string()))
-            .expression_attribute_values(":now", AttributeValue::N(now.to_string()))
-            .send()
-            .await;
-
-        match result {
-            Ok(_) => Ok(()),
-            Err(e) if Self::is_conditional_check_failed(&e) => {
-                // Existing value is newer - this is expected under contention
-                Ok(())
-            }
-            Err(e) => Err(NameServiceError::storage(format!(
-                "DynamoDB UpdateItem failed: {}",
-                e
-            ))),
-        }
-    }
-
-    async fn retract(&self, alias: &str) -> std::result::Result<(), NameServiceError> {
-        let pk = core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
-        let now = Self::now_epoch();
-
-        // Update status to retracted and increment status_v
-        // Uses ADD to increment status_v (or set to 2 if missing, since default is 1)
-        self.client
-            .update_item()
-            .table_name(&self.table_name)
-            .key(ATTR_LEDGER_ALIAS, AttributeValue::S(pk))
-            .update_expression("SET #st = :retracted, #ua = :now ADD #sv :one")
-            .expression_attribute_names("#st", ATTR_STATUS)
-            .expression_attribute_names("#ua", ATTR_UPDATED_AT)
-            .expression_attribute_names("#sv", ATTR_STATUS_V)
-            .expression_attribute_values(
-                ":retracted",
-                AttributeValue::S(STATUS_RETRACTED.to_string()),
-            )
-            .expression_attribute_values(":now", AttributeValue::N(now.to_string()))
-            .expression_attribute_values(":one", AttributeValue::N("1".to_string()))
-            .send()
-            .await
-            .map_err(|e| NameServiceError::storage(format!("DynamoDB UpdateItem failed: {}", e)))?;
-
-        Ok(())
-    }
-
-    fn publishing_address(&self, alias: &str) -> Option<String> {
-        Some(core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string()))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// V2 Extension: StatusPublisher and ConfigPublisher
-// ---------------------------------------------------------------------------
-
-#[async_trait]
-impl StatusPublisher for DynamoDbNameService {
-    async fn get_status(
-        &self,
-        alias: &str,
-    ) -> std::result::Result<Option<StatusValue>, NameServiceError> {
-        let pk = core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
-
-        let response = self
-            .client
-            .get_item()
-            .table_name(&self.table_name)
-            .key(ATTR_LEDGER_ALIAS, AttributeValue::S(pk))
-            .consistent_read(true)
-            .send()
-            .await
-            .map_err(|e| NameServiceError::storage(format!("DynamoDB GetItem failed: {}", e)))?;
-
-        let Some(item) = response.item() else {
-            return Ok(None);
-        };
-
-        // Extract status_v (defaults to 1 if missing for legacy records)
-        let v = item
-            .get(ATTR_STATUS_V)
-            .and_then(|v| v.as_n().ok())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1);
-
-        // Extract status state (defaults to "ready")
-        let state = item
-            .get(ATTR_STATUS)
-            .and_then(|v| v.as_s().ok())
-            .cloned()
-            .unwrap_or_else(|| STATUS_READY.to_string());
-
-        // Extract status_meta if present
-        let extra = item
-            .get(ATTR_STATUS_META)
-            .and_then(|v| v.as_m().ok())
-            .map(Self::dynamo_map_to_json_map)
-            .unwrap_or_default();
-
-        Ok(Some(StatusValue::new(
-            v,
-            StatusPayload::with_extra(state, extra),
-        )))
-    }
-
-    async fn push_status(
-        &self,
-        alias: &str,
-        expected: Option<&StatusValue>,
-        new: &StatusValue,
-    ) -> std::result::Result<StatusCasResult, NameServiceError> {
-        let pk = core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
-        let now = Self::now_epoch();
-
-        let Some(exp) = expected else {
-            // Cannot create status without expected (record must exist)
-            // Read current to return conflict
-            let current = self.get_status(alias).await?;
-            return Ok(StatusCasResult::Conflict { actual: current });
-        };
-
-        // Monotonic guard: new watermark must advance
-        if new.v <= exp.v {
-            let current = self.get_status(alias).await?;
-            return Ok(StatusCasResult::Conflict { actual: current });
-        }
-
-        // Build condition expression: status_v must match expected AND new.v > expected.v
-        // For legacy records without status_v, expected.v should be 1
-        // Also handle legacy records that may lack the status attribute
-        let condition = if exp.v == 1 {
-            // Could be legacy record (no status_v or status) or v=1
-            "(attribute_not_exists(#sv) OR #sv = :expected_v) AND (attribute_not_exists(#st) OR #st = :expected_state) AND :new_v > :expected_v"
-        } else {
-            "#sv = :expected_v AND #st = :expected_state AND :new_v > :expected_v"
-        };
-
-        // Build update expression
-        let mut update_expr = "SET #st = :new_state, #sv = :new_v, #ua = :now".to_string();
-        let mut request = self
-            .client
-            .update_item()
-            .table_name(&self.table_name)
-            .key(ATTR_LEDGER_ALIAS, AttributeValue::S(pk.clone()))
-            .condition_expression(condition)
-            .expression_attribute_names("#st", ATTR_STATUS)
-            .expression_attribute_names("#sv", ATTR_STATUS_V)
-            .expression_attribute_names("#ua", ATTR_UPDATED_AT)
-            .expression_attribute_values(":expected_v", AttributeValue::N(exp.v.to_string()))
-            .expression_attribute_values(
-                ":expected_state",
-                AttributeValue::S(exp.payload.state.clone()),
-            )
-            .expression_attribute_values(":new_state", AttributeValue::S(new.payload.state.clone()))
-            .expression_attribute_values(":new_v", AttributeValue::N(new.v.to_string()))
-            .expression_attribute_values(":now", AttributeValue::N(now.to_string()));
-
-        // Add status_meta if present
-        if !new.payload.extra.is_empty() {
-            update_expr.push_str(", #sm = :new_meta");
-            request = request
-                .expression_attribute_names("#sm", ATTR_STATUS_META)
-                .expression_attribute_values(
-                    ":new_meta",
-                    Self::json_map_to_dynamo_map(&new.payload.extra),
-                );
-        } else {
-            // Remove status_meta if empty
-            update_expr.push_str(" REMOVE #sm");
-            request = request.expression_attribute_names("#sm", ATTR_STATUS_META);
-        }
-
-        let result = request.update_expression(update_expr).send().await;
-
-        match result {
-            Ok(_) => Ok(StatusCasResult::Updated),
-            Err(e) if Self::is_conditional_check_failed(&e) => {
-                // Conflict - read current and return
-                let current = self.get_status(alias).await?;
-                Ok(StatusCasResult::Conflict { actual: current })
-            }
-            Err(e) => Err(NameServiceError::storage(format!(
-                "DynamoDB UpdateItem failed: {}",
-                e
-            ))),
-        }
-    }
-}
-
-#[async_trait]
-impl ConfigPublisher for DynamoDbNameService {
-    async fn get_config(
-        &self,
-        alias: &str,
-    ) -> std::result::Result<Option<ConfigValue>, NameServiceError> {
-        let pk = core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
-
-        let response = self
-            .client
-            .get_item()
-            .table_name(&self.table_name)
-            .key(ATTR_LEDGER_ALIAS, AttributeValue::S(pk))
-            .consistent_read(true)
-            .send()
-            .await
-            .map_err(|e| NameServiceError::storage(format!("DynamoDB GetItem failed: {}", e)))?;
-
-        let Some(item) = response.item() else {
-            return Ok(None);
-        };
-
-        // Extract default_context_address if present
-        let default_context = item
-            .get(ATTR_DEFAULT_CONTEXT_ADDRESS)
-            .and_then(|v| v.as_s().ok())
-            .cloned();
-
-        // Extract config_meta if present
-        let config_meta = item.get(ATTR_CONFIG_META).and_then(|v| v.as_m().ok());
-
-        // config_v defaults based on whether default_context exists:
-        // - If default_context exists but config_v is missing, treat as v=1 (legacy record)
-        // - If neither exists, treat as v=0 (unborn)
-        let v = item
-            .get(ATTR_CONFIG_V)
-            .and_then(|v| v.as_n().ok())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_else(|| {
-                if default_context.is_some() || config_meta.is_some() {
-                    1 // Legacy record with config data
-                } else {
-                    0 // Unborn
-                }
-            });
-
-        // Build ConfigPayload if we have any config data
-        let payload = if v == 0 && default_context.is_none() && config_meta.is_none() {
-            None
-        } else {
-            let extra = config_meta
-                .map(Self::dynamo_map_to_json_map)
-                .unwrap_or_default();
-            Some(ConfigPayload {
-                default_context,
-                extra,
-            })
-        };
-
-        Ok(Some(ConfigValue { v, payload }))
-    }
-
-    async fn push_config(
-        &self,
-        alias: &str,
-        expected: Option<&ConfigValue>,
-        new: &ConfigValue,
-    ) -> std::result::Result<ConfigCasResult, NameServiceError> {
-        let pk = core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
-        let now = Self::now_epoch();
-
-        let Some(exp) = expected else {
-            // Cannot create config without expected (record must exist)
-            let current = self.get_config(alias).await?;
-            return Ok(ConfigCasResult::Conflict { actual: current });
-        };
-
-        // Monotonic guard: new watermark must advance
-        if new.v <= exp.v {
-            let current = self.get_config(alias).await?;
-            return Ok(ConfigCasResult::Conflict { actual: current });
-        }
-
-        // Check if expected payload has any legacy config data (default_context or extra)
-        let has_legacy_config_data = exp
-            .payload
-            .as_ref()
-            .is_some_and(|p| p.default_context.is_some() || !p.extra.is_empty());
-
-        // Build condition based on expected state, with monotonic guard
-        let condition = if exp.v == 0 {
-            // Unborn: config_v must not exist or be 0, and no default_context
-            // Monotonic: new.v > 0 (always true if new.v > exp.v and exp.v == 0)
-            "(attribute_not_exists(#cv) OR #cv = :zero) AND attribute_not_exists(#dc)"
-        } else if exp.v == 1 && has_legacy_config_data {
-            // Legacy record: may not have config_v, but has default_context or config_meta
-            "(attribute_not_exists(#cv) OR #cv = :expected_v) AND :new_v > :expected_v"
-        } else {
-            "#cv = :expected_v AND :new_v > :expected_v"
-        };
-
-        // Build update expression
-        let mut update_parts = vec!["#cv = :new_v", "#ua = :now"];
-        let mut request = self
-            .client
-            .update_item()
-            .table_name(&self.table_name)
-            .key(ATTR_LEDGER_ALIAS, AttributeValue::S(pk.clone()))
-            .expression_attribute_names("#cv", ATTR_CONFIG_V)
-            .expression_attribute_names("#ua", ATTR_UPDATED_AT)
-            .expression_attribute_names("#dc", ATTR_DEFAULT_CONTEXT_ADDRESS)
-            .expression_attribute_values(":new_v", AttributeValue::N(new.v.to_string()))
-            .expression_attribute_values(":now", AttributeValue::N(now.to_string()));
-
-        if exp.v == 0 {
-            request =
-                request.expression_attribute_values(":zero", AttributeValue::N("0".to_string()));
-        } else {
-            request = request
-                .expression_attribute_values(":expected_v", AttributeValue::N(exp.v.to_string()));
-        }
-
-        let mut remove_parts: Vec<&str> = vec![];
-
-        // Handle default_context
-        if let Some(ref payload) = new.payload {
-            if let Some(ref ctx) = payload.default_context {
-                update_parts.push("#dc = :new_dc");
-                request =
-                    request.expression_attribute_values(":new_dc", AttributeValue::S(ctx.clone()));
-            } else {
-                remove_parts.push("#dc");
-            }
-
-            // Handle config_meta
-            if !payload.extra.is_empty() {
-                update_parts.push("#cm = :new_meta");
-                request = request
-                    .expression_attribute_names("#cm", ATTR_CONFIG_META)
-                    .expression_attribute_values(
-                        ":new_meta",
-                        Self::json_map_to_dynamo_map(&payload.extra),
-                    );
-            } else {
-                request = request.expression_attribute_names("#cm", ATTR_CONFIG_META);
-                remove_parts.push("#cm");
-            }
-        } else {
-            // No payload - remove default_context and config_meta
-            remove_parts.push("#dc");
-            request = request.expression_attribute_names("#cm", ATTR_CONFIG_META);
-            remove_parts.push("#cm");
-        }
-
-        let mut update_expr = format!("SET {}", update_parts.join(", "));
-        if !remove_parts.is_empty() {
-            update_expr.push_str(&format!(" REMOVE {}", remove_parts.join(", ")));
-        }
-
-        let result = request
-            .condition_expression(condition)
-            .update_expression(update_expr)
-            .send()
-            .await;
-
-        match result {
-            Ok(_) => Ok(ConfigCasResult::Updated),
-            Err(e) if Self::is_conditional_check_failed(&e) => {
-                // Conflict - read current and return
-                let current = self.get_config(alias).await?;
-                Ok(ConfigCasResult::Conflict { actual: current })
-            }
-            Err(e) => Err(NameServiceError::storage(format!(
-                "DynamoDB UpdateItem failed: {}",
-                e
-            ))),
-        }
-    }
-}
-
-impl DynamoDbNameService {
-    /// Convert DynamoDB Map to JSON HashMap
     fn dynamo_map_to_json_map(
         map: &HashMap<String, AttributeValue>,
-    ) -> std::collections::HashMap<String, serde_json::Value> {
+    ) -> HashMap<String, serde_json::Value> {
         map.iter()
-            .filter_map(|(k, v)| {
-                let json_val = Self::dynamo_attr_to_json(v)?;
-                Some((k.clone(), json_val))
-            })
+            .filter_map(|(k, v)| Self::dynamo_attr_to_json(v).map(|val| (k.clone(), val)))
             .collect()
     }
 
-    /// Convert a single DynamoDB AttributeValue to JSON Value
     fn dynamo_attr_to_json(attr: &AttributeValue) -> Option<serde_json::Value> {
         match attr {
             AttributeValue::S(s) => Some(serde_json::Value::String(s.clone())),
             AttributeValue::N(n) => {
-                // Try to parse as i64 first, then f64
                 if let Ok(i) = n.parse::<i64>() {
                     Some(serde_json::Value::Number(i.into()))
                 } else if let Ok(f) = n.parse::<f64>() {
@@ -782,14 +441,11 @@ impl DynamoDbNameService {
                     .collect();
                 Some(serde_json::Value::Object(obj))
             }
-            _ => None, // Skip binary and other types
+            _ => None,
         }
     }
 
-    /// Convert JSON HashMap to DynamoDB Map AttributeValue
-    fn json_map_to_dynamo_map(
-        map: &std::collections::HashMap<String, serde_json::Value>,
-    ) -> AttributeValue {
+    fn json_map_to_dynamo_map(map: &HashMap<String, serde_json::Value>) -> AttributeValue {
         let dynamo_map: HashMap<String, AttributeValue> = map
             .iter()
             .filter_map(|(k, v)| Self::json_to_dynamo_attr(v).map(|attr| (k.clone(), attr)))
@@ -797,7 +453,6 @@ impl DynamoDbNameService {
         AttributeValue::M(dynamo_map)
     }
 
-    /// Convert a single JSON Value to DynamoDB AttributeValue
     fn json_to_dynamo_attr(val: &serde_json::Value) -> Option<AttributeValue> {
         match val {
             serde_json::Value::Null => Some(AttributeValue::Null(true)),
@@ -811,10 +466,1592 @@ impl DynamoDbNameService {
             serde_json::Value::Object(obj) => {
                 let map: HashMap<String, AttributeValue> = obj
                     .iter()
-                    .filter_map(|(k, v)| Self::json_to_dynamo_attr(v).map(|attr| (k.clone(), attr)))
+                    .filter_map(|(k, v)| Self::json_to_dynamo_attr(v).map(|a| (k.clone(), a)))
                     .collect();
                 Some(AttributeValue::M(map))
             }
         }
+    }
+}
+
+// ─── NameService ────────────────────────────────────────────────────────────
+
+#[async_trait]
+impl NameService for DynamoDbNameService {
+    async fn lookup(
+        &self,
+        ledger_address: &str,
+    ) -> std::result::Result<Option<NsRecord>, NameServiceError> {
+        let pk = Self::normalize(ledger_address);
+        let items = self.query_all_items(&pk).await?;
+        Ok(Self::items_to_ns_record(&pk, &items))
+    }
+
+    async fn alias(
+        &self,
+        ledger_address: &str,
+    ) -> std::result::Result<Option<String>, NameServiceError> {
+        Ok(self.lookup(ledger_address).await?.map(|r| r.alias))
+    }
+
+    async fn all_records(&self) -> std::result::Result<Vec<NsRecord>, NameServiceError> {
+        // 1. Query GSI1 for all ledger meta items
+        let meta_items = self.query_gsi_by_kind(KIND_LEDGER).await?;
+
+        // 2. Collect PKs
+        let pks: Vec<String> = meta_items
+            .iter()
+            .filter_map(|item| item.get(ATTR_PK)?.as_s().ok().cloned())
+            .collect();
+
+        // 3. For each PK, query all concern items and assemble NsRecord
+        let mut records = Vec::with_capacity(pks.len());
+        for pk in &pks {
+            let items = self.query_all_items(pk).await?;
+            if let Some(record) = Self::items_to_ns_record(pk, &items) {
+                records.push(record);
+            }
+        }
+
+        Ok(records)
+    }
+}
+
+// ─── Publisher ──────────────────────────────────────────────────────────────
+
+#[async_trait]
+impl Publisher for DynamoDbNameService {
+    async fn publish_ledger_init(&self, alias: &str) -> std::result::Result<(), NameServiceError> {
+        let pk = Self::normalize(alias);
+        let (ledger_name, branch) = core_alias::split_alias(alias)
+            .unwrap_or_else(|_| (alias.to_string(), DEFAULT_BRANCH.to_string()));
+        let now = Self::now_epoch_ms().to_string();
+        let sv = SCHEMA_VERSION.to_string();
+
+        // Build a function for creating the common item fields
+        let base_item = |sk: &str| -> Item {
+            HashMap::from([
+                (ATTR_PK.to_string(), AttributeValue::S(pk.clone())),
+                (ATTR_SK.to_string(), AttributeValue::S(sk.to_string())),
+                (
+                    ATTR_UPDATED_AT_MS.to_string(),
+                    AttributeValue::N(now.clone()),
+                ),
+                (ATTR_SCHEMA.to_string(), AttributeValue::N(sv.clone())),
+            ])
+        };
+
+        // Condition: item must not exist
+        let cond = "attribute_not_exists(pk)";
+
+        // 1. Meta
+        let mut meta = base_item(SK_META);
+        meta.insert(
+            ATTR_KIND.to_string(),
+            AttributeValue::S(KIND_LEDGER.to_string()),
+        );
+        meta.insert(ATTR_NAME.to_string(), AttributeValue::S(ledger_name));
+        meta.insert(ATTR_BRANCH.to_string(), AttributeValue::S(branch));
+        meta.insert(ATTR_RETRACTED.to_string(), AttributeValue::Bool(false));
+
+        // 2. Head (unborn: commit_t=0, no address)
+        let mut head = base_item(SK_HEAD);
+        head.insert(
+            ATTR_COMMIT_T.to_string(),
+            AttributeValue::N("0".to_string()),
+        );
+
+        // 3. Index (unborn: index_t=0, no address)
+        let mut index = base_item(SK_INDEX);
+        index.insert(ATTR_INDEX_T.to_string(), AttributeValue::N("0".to_string()));
+
+        // 4. Status (initial: ready, v=1)
+        let mut status = base_item(SK_STATUS);
+        status.insert(
+            ATTR_STATUS.to_string(),
+            AttributeValue::S(STATUS_READY.to_string()),
+        );
+        status.insert(
+            ATTR_STATUS_V.to_string(),
+            AttributeValue::N("1".to_string()),
+        );
+
+        // 5. Config (unborn: config_v=0)
+        let mut config = base_item(SK_CONFIG);
+        config.insert(
+            ATTR_CONFIG_V.to_string(),
+            AttributeValue::N("0".to_string()),
+        );
+
+        let make_put = |item: Item| -> TransactWriteItem {
+            TransactWriteItem::builder()
+                .put(
+                    Put::builder()
+                        .table_name(&self.table_name)
+                        .set_item(Some(item))
+                        .condition_expression(cond)
+                        .build()
+                        .expect("valid Put"),
+                )
+                .build()
+        };
+
+        let result = self
+            .client
+            .transact_write_items()
+            .transact_items(make_put(meta))
+            .transact_items(make_put(head))
+            .transact_items(make_put(index))
+            .transact_items(make_put(status))
+            .transact_items(make_put(config))
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if Self::is_transaction_canceled(&e) => {
+                Err(NameServiceError::ledger_already_exists(&pk))
+            }
+            Err(e) => Err(NameServiceError::storage(format!(
+                "DynamoDB TransactWriteItems failed: {e}"
+            ))),
+        }
+    }
+
+    async fn publish_commit(
+        &self,
+        alias: &str,
+        commit_addr: &str,
+        commit_t: i64,
+    ) -> std::result::Result<(), NameServiceError> {
+        let pk = Self::normalize(alias);
+        let now = Self::now_epoch_ms().to_string();
+
+        let result = self
+            .client
+            .update_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk.clone()))
+            .key(ATTR_SK, AttributeValue::S(SK_HEAD.to_string()))
+            .update_expression("SET #ca = :addr, #ct = :t, #ua = :now")
+            .condition_expression("attribute_exists(#pk) AND #ct < :t")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_names("#ca", ATTR_COMMIT_ADDRESS)
+            .expression_attribute_names("#ct", ATTR_COMMIT_T)
+            .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
+            .expression_attribute_values(":addr", AttributeValue::S(commit_addr.to_string()))
+            .expression_attribute_values(":t", AttributeValue::N(commit_t.to_string()))
+            .expression_attribute_values(":now", AttributeValue::N(now))
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if Self::is_conditional_check_failed(&e) => {
+                // Distinguish stale (item exists, t >= new) from missing (not initialized).
+                if !self.meta_exists(&pk).await? {
+                    return Err(NameServiceError::not_found(format!(
+                        "Ledger not initialized: {pk}"
+                    )));
+                }
+                Ok(()) // Stale — silently ignored.
+            }
+            Err(e) => Err(NameServiceError::storage(format!(
+                "DynamoDB UpdateItem failed: {e}"
+            ))),
+        }
+    }
+
+    async fn publish_index(
+        &self,
+        alias: &str,
+        index_addr: &str,
+        index_t: i64,
+    ) -> std::result::Result<(), NameServiceError> {
+        self.update_index_item(alias, index_addr, index_t, "#it < :t")
+            .await
+    }
+
+    async fn retract(&self, alias: &str) -> std::result::Result<(), NameServiceError> {
+        let pk = Self::normalize(alias);
+        let now = Self::now_epoch_ms().to_string();
+
+        self.client
+            .update_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk))
+            .key(ATTR_SK, AttributeValue::S(SK_META.to_string()))
+            .update_expression("SET #ret = :true_val, #ua = :now")
+            .expression_attribute_names("#ret", ATTR_RETRACTED)
+            .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
+            .expression_attribute_values(":true_val", AttributeValue::Bool(true))
+            .expression_attribute_values(":now", AttributeValue::N(now))
+            .send()
+            .await
+            .map_err(|e| NameServiceError::storage(format!("DynamoDB UpdateItem failed: {e}")))?;
+
+        Ok(())
+    }
+
+    fn publishing_address(&self, alias: &str) -> Option<String> {
+        Some(Self::normalize(alias))
+    }
+}
+
+impl DynamoDbNameService {
+    /// Shared helper for publish_index and publish_index_allow_equal.
+    async fn update_index_item(
+        &self,
+        alias: &str,
+        index_addr: &str,
+        index_t: i64,
+        condition: &str,
+    ) -> std::result::Result<(), NameServiceError> {
+        let pk = Self::normalize(alias);
+        let now = Self::now_epoch_ms().to_string();
+
+        // Prepend attribute_exists to catch uninitialized aliases.
+        let full_condition = format!("attribute_exists(#pk) AND {condition}");
+
+        let result = self
+            .client
+            .update_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk.clone()))
+            .key(ATTR_SK, AttributeValue::S(SK_INDEX.to_string()))
+            .update_expression("SET #ia = :addr, #it = :t, #ua = :now")
+            .condition_expression(full_condition)
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_names("#ia", ATTR_INDEX_ADDRESS)
+            .expression_attribute_names("#it", ATTR_INDEX_T)
+            .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
+            .expression_attribute_values(":addr", AttributeValue::S(index_addr.to_string()))
+            .expression_attribute_values(":t", AttributeValue::N(index_t.to_string()))
+            .expression_attribute_values(":now", AttributeValue::N(now))
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if Self::is_conditional_check_failed(&e) => {
+                // Distinguish stale (item exists, t check failed) from missing.
+                if !self.meta_exists(&pk).await? {
+                    return Err(NameServiceError::not_found(format!(
+                        "Ledger not initialized: {pk}"
+                    )));
+                }
+                Ok(()) // Stale — silently ignored.
+            }
+            Err(e) => Err(NameServiceError::storage(format!(
+                "DynamoDB UpdateItem failed: {e}"
+            ))),
+        }
+    }
+
+    /// Create a new ledger via TransactWriteItems with one ref pre-set.
+    ///
+    /// Used by `compare_and_set_ref(expected=None)` to match StorageNameService
+    /// semantics where the "create" case bootstraps the full ledger record.
+    async fn create_ledger_with_ref(
+        &self,
+        pk: &str,
+        alias: &str,
+        kind: RefKind,
+        new: &RefValue,
+    ) -> std::result::Result<(), NameServiceError> {
+        // Reject setting a watermark without a pointer — avoids a weird
+        // "t is advanced but there's nothing to read" state.
+        if new.address.is_none() && new.t > 0 {
+            return Err(NameServiceError::invalid_alias(format!(
+                "Cannot create ref with t={} but no address for {pk}",
+                new.t
+            )));
+        }
+
+        let (ledger_name, branch) = core_alias::split_alias(alias)
+            .unwrap_or_else(|_| (alias.to_string(), DEFAULT_BRANCH.to_string()));
+        let now = Self::now_epoch_ms().to_string();
+        let sv = SCHEMA_VERSION.to_string();
+
+        let base_item = |sk: &str| -> Item {
+            HashMap::from([
+                (ATTR_PK.to_string(), AttributeValue::S(pk.to_string())),
+                (ATTR_SK.to_string(), AttributeValue::S(sk.to_string())),
+                (
+                    ATTR_UPDATED_AT_MS.to_string(),
+                    AttributeValue::N(now.clone()),
+                ),
+                (ATTR_SCHEMA.to_string(), AttributeValue::N(sv.clone())),
+            ])
+        };
+
+        let cond = "attribute_not_exists(pk)";
+
+        // Meta
+        let mut meta = base_item(SK_META);
+        meta.insert(
+            ATTR_KIND.to_string(),
+            AttributeValue::S(KIND_LEDGER.to_string()),
+        );
+        meta.insert(ATTR_NAME.to_string(), AttributeValue::S(ledger_name));
+        meta.insert(ATTR_BRANCH.to_string(), AttributeValue::S(branch));
+        meta.insert(ATTR_RETRACTED.to_string(), AttributeValue::Bool(false));
+
+        // Head — pre-set if CommitHead, else unborn
+        let mut head = base_item(SK_HEAD);
+        match kind {
+            RefKind::CommitHead => {
+                if let Some(ref addr) = new.address {
+                    head.insert(
+                        ATTR_COMMIT_ADDRESS.to_string(),
+                        AttributeValue::S(addr.clone()),
+                    );
+                }
+                head.insert(
+                    ATTR_COMMIT_T.to_string(),
+                    AttributeValue::N(new.t.to_string()),
+                );
+            }
+            RefKind::IndexHead => {
+                head.insert(
+                    ATTR_COMMIT_T.to_string(),
+                    AttributeValue::N("0".to_string()),
+                );
+            }
+        }
+
+        // Index — pre-set if IndexHead, else unborn
+        let mut index = base_item(SK_INDEX);
+        match kind {
+            RefKind::IndexHead => {
+                if let Some(ref addr) = new.address {
+                    index.insert(
+                        ATTR_INDEX_ADDRESS.to_string(),
+                        AttributeValue::S(addr.clone()),
+                    );
+                }
+                index.insert(
+                    ATTR_INDEX_T.to_string(),
+                    AttributeValue::N(new.t.to_string()),
+                );
+            }
+            RefKind::CommitHead => {
+                index.insert(ATTR_INDEX_T.to_string(), AttributeValue::N("0".to_string()));
+            }
+        }
+
+        // Status (initial: ready, v=1)
+        let mut status = base_item(SK_STATUS);
+        status.insert(
+            ATTR_STATUS.to_string(),
+            AttributeValue::S(STATUS_READY.to_string()),
+        );
+        status.insert(
+            ATTR_STATUS_V.to_string(),
+            AttributeValue::N("1".to_string()),
+        );
+
+        // Config (unborn: config_v=0)
+        let mut config = base_item(SK_CONFIG);
+        config.insert(
+            ATTR_CONFIG_V.to_string(),
+            AttributeValue::N("0".to_string()),
+        );
+
+        let make_put = |item: Item| -> TransactWriteItem {
+            TransactWriteItem::builder()
+                .put(
+                    Put::builder()
+                        .table_name(&self.table_name)
+                        .set_item(Some(item))
+                        .condition_expression(cond)
+                        .build()
+                        .expect("valid Put"),
+                )
+                .build()
+        };
+
+        let result = self
+            .client
+            .transact_write_items()
+            .transact_items(make_put(meta))
+            .transact_items(make_put(head))
+            .transact_items(make_put(index))
+            .transact_items(make_put(status))
+            .transact_items(make_put(config))
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if Self::is_transaction_canceled(&e) => {
+                // Race: someone else created the ledger between our get_ref and
+                // this transaction. Return a generic error; the caller's CAS
+                // retry loop will re-read and handle it.
+                Err(NameServiceError::ledger_already_exists(pk))
+            }
+            Err(e) => Err(NameServiceError::storage(format!(
+                "DynamoDB TransactWriteItems failed: {e}"
+            ))),
+        }
+    }
+}
+
+// ─── AdminPublisher ─────────────────────────────────────────────────────────
+
+#[async_trait]
+impl AdminPublisher for DynamoDbNameService {
+    async fn publish_index_allow_equal(
+        &self,
+        alias: &str,
+        index_addr: &str,
+        index_t: i64,
+    ) -> std::result::Result<(), NameServiceError> {
+        self.update_index_item(alias, index_addr, index_t, "#it <= :t")
+            .await
+    }
+}
+
+// ─── RefPublisher ───────────────────────────────────────────────────────────
+
+#[async_trait]
+impl RefPublisher for DynamoDbNameService {
+    async fn get_ref(
+        &self,
+        alias: &str,
+        kind: RefKind,
+    ) -> std::result::Result<Option<RefValue>, NameServiceError> {
+        let pk = Self::normalize(alias);
+        let sk = Self::ref_kind_sk(kind);
+        let (addr_attr, t_attr) = Self::ref_kind_attrs(kind);
+
+        let response = self
+            .client
+            .get_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk.clone()))
+            .key(ATTR_SK, AttributeValue::S(sk.to_string()))
+            .consistent_read(true)
+            .send()
+            .await
+            .map_err(|e| NameServiceError::storage(format!("DynamoDB GetItem failed: {e}")))?;
+
+        match response.item() {
+            Some(item) => {
+                let address = item.get(addr_attr).and_then(|v| v.as_s().ok()).cloned();
+                let t: i64 = item
+                    .get(t_attr)
+                    .and_then(|v| v.as_n().ok())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                Ok(Some(RefValue { address, t }))
+            }
+            None => {
+                // Item missing — check if meta exists (fallback)
+                if self.meta_exists(&pk).await? {
+                    Ok(Some(RefValue {
+                        address: None,
+                        t: 0,
+                    }))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
+
+    async fn compare_and_set_ref(
+        &self,
+        alias: &str,
+        kind: RefKind,
+        expected: Option<&RefValue>,
+        new: &RefValue,
+    ) -> std::result::Result<CasResult, NameServiceError> {
+        let pk = Self::normalize(alias);
+        let sk = Self::ref_kind_sk(kind);
+        let (addr_attr, t_attr) = Self::ref_kind_attrs(kind);
+
+        // ── Case 1: expected = None ─────────────────────────────────────
+        // Caller expects the ref doesn't exist. Matches StorageNameService
+        // semantics: if alias truly unknown, create the ledger with the ref set.
+        let Some(exp) = expected else {
+            let current = self.get_ref(alias, kind).await?;
+            if current.is_some() {
+                return Ok(CasResult::Conflict { actual: current });
+            }
+            // Alias is truly unknown — create via init with the ref pre-set.
+            self.create_ledger_with_ref(&pk, alias, kind, new).await?;
+            return Ok(CasResult::Updated);
+        };
+
+        // ── Client-side monotonic pre-check ─────────────────────────────
+        match kind {
+            RefKind::CommitHead => {
+                if new.t <= exp.t {
+                    let actual = self.get_ref(alias, kind).await?;
+                    return Ok(CasResult::Conflict { actual });
+                }
+            }
+            RefKind::IndexHead => {
+                if new.t < exp.t {
+                    let actual = self.get_ref(alias, kind).await?;
+                    return Ok(CasResult::Conflict { actual });
+                }
+            }
+        }
+
+        // ── Case 2: expected unborn (address=None, t=0) ─────────────────
+        if exp.address.is_none() && exp.t == 0 {
+            let result = self
+                .client
+                .update_item()
+                .table_name(&self.table_name)
+                .key(ATTR_PK, AttributeValue::S(pk.clone()))
+                .key(ATTR_SK, AttributeValue::S(sk.to_string()))
+                .update_expression("SET #addr = :new_addr, #t = :new_t, #ua = :now")
+                .condition_expression(
+                    "(attribute_not_exists(#addr) OR attribute_type(#addr, :null_type)) AND #t = :zero",
+                )
+                .expression_attribute_names("#addr", addr_attr)
+                .expression_attribute_names("#t", t_attr)
+                .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
+                .expression_attribute_values(
+                    ":new_addr",
+                    match &new.address {
+                        Some(a) => AttributeValue::S(a.clone()),
+                        None => AttributeValue::Null(true),
+                    },
+                )
+                .expression_attribute_values(":new_t", AttributeValue::N(new.t.to_string()))
+                .expression_attribute_values(":now", AttributeValue::N(Self::now_epoch_ms().to_string()))
+                .expression_attribute_values(":null_type", AttributeValue::S("NULL".to_string()))
+                .expression_attribute_values(":zero", AttributeValue::N("0".to_string()))
+                .send()
+                .await;
+
+            return match result {
+                Ok(_) => Ok(CasResult::Updated),
+                Err(e) if Self::is_conditional_check_failed(&e) => {
+                    let actual = self.get_ref(alias, kind).await?;
+                    Ok(CasResult::Conflict { actual })
+                }
+                Err(e) => Err(NameServiceError::storage(format!(
+                    "DynamoDB UpdateItem failed: {e}"
+                ))),
+            };
+        }
+
+        // ── Case 3: expected has address ────────────────────────────────
+        let exp_addr = exp
+            .address
+            .as_ref()
+            .expect("address must be Some in case 3");
+
+        let result = self
+            .client
+            .update_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk.clone()))
+            .key(ATTR_SK, AttributeValue::S(sk.to_string()))
+            .update_expression("SET #addr = :new_addr, #t = :new_t, #ua = :now")
+            .condition_expression("#addr = :exp_addr AND #t = :exp_t")
+            .expression_attribute_names("#addr", addr_attr)
+            .expression_attribute_names("#t", t_attr)
+            .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
+            .expression_attribute_values(
+                ":new_addr",
+                match &new.address {
+                    Some(a) => AttributeValue::S(a.clone()),
+                    None => AttributeValue::Null(true),
+                },
+            )
+            .expression_attribute_values(":new_t", AttributeValue::N(new.t.to_string()))
+            .expression_attribute_values(
+                ":now",
+                AttributeValue::N(Self::now_epoch_ms().to_string()),
+            )
+            .expression_attribute_values(":exp_addr", AttributeValue::S(exp_addr.clone()))
+            .expression_attribute_values(":exp_t", AttributeValue::N(exp.t.to_string()))
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(CasResult::Updated),
+            Err(e) if Self::is_conditional_check_failed(&e) => {
+                let actual = self.get_ref(alias, kind).await?;
+                Ok(CasResult::Conflict { actual })
+            }
+            Err(e) => Err(NameServiceError::storage(format!(
+                "DynamoDB UpdateItem failed: {e}"
+            ))),
+        }
+    }
+}
+
+// ─── VirtualGraphPublisher ──────────────────────────────────────────────────
+
+#[async_trait]
+impl VirtualGraphPublisher for DynamoDbNameService {
+    async fn publish_vg(
+        &self,
+        name: &str,
+        branch: &str,
+        vg_type: VgType,
+        config: &str,
+        dependencies: &[String],
+    ) -> std::result::Result<(), NameServiceError> {
+        let pk = core_alias::format_alias(name, branch);
+        let now = Self::now_epoch_ms().to_string();
+        let sv = SCHEMA_VERSION.to_string();
+
+        let deps_av = AttributeValue::L(
+            dependencies
+                .iter()
+                .map(|d| AttributeValue::S(d.clone()))
+                .collect(),
+        );
+
+        // 1. Meta (UpdateItem — preserves retracted via if_not_exists)
+        let meta_update = Update::builder()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk.clone()))
+            .key(ATTR_SK, AttributeValue::S(SK_META.to_string()))
+            .update_expression(
+                "SET #kind = :gs, #st = :src_type, #name = :name, #br = :branch, \
+                 #deps = :deps, #ret = if_not_exists(#ret, :false_val), \
+                 #ua = :now, #schema = :sv",
+            )
+            .expression_attribute_names("#kind", ATTR_KIND)
+            .expression_attribute_names("#st", ATTR_SOURCE_TYPE)
+            .expression_attribute_names("#name", ATTR_NAME)
+            .expression_attribute_names("#br", ATTR_BRANCH)
+            .expression_attribute_names("#deps", ATTR_DEPENDENCIES)
+            .expression_attribute_names("#ret", ATTR_RETRACTED)
+            .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
+            .expression_attribute_names("#schema", ATTR_SCHEMA)
+            .expression_attribute_values(":gs", AttributeValue::S(KIND_GRAPH_SOURCE.to_string()))
+            .expression_attribute_values(":src_type", AttributeValue::S(vg_type.to_type_string()))
+            .expression_attribute_values(":name", AttributeValue::S(name.to_string()))
+            .expression_attribute_values(":branch", AttributeValue::S(branch.to_string()))
+            .expression_attribute_values(":deps", deps_av)
+            .expression_attribute_values(":false_val", AttributeValue::Bool(false))
+            .expression_attribute_values(":now", AttributeValue::N(now.clone()))
+            .expression_attribute_values(":sv", AttributeValue::N(sv))
+            .build()
+            .expect("valid Update");
+
+        // 2. Config (UpdateItem — bumps config_v monotonically)
+        let config_update = Update::builder()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk.clone()))
+            .key(ATTR_SK, AttributeValue::S(SK_CONFIG.to_string()))
+            .update_expression("SET #cj = :cfg, #cv = if_not_exists(#cv, :zero) + :one, #ua = :now")
+            .expression_attribute_names("#cj", ATTR_CONFIG_JSON)
+            .expression_attribute_names("#cv", ATTR_CONFIG_V)
+            .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
+            .expression_attribute_values(":cfg", AttributeValue::S(config.to_string()))
+            .expression_attribute_values(":zero", AttributeValue::N("0".to_string()))
+            .expression_attribute_values(":one", AttributeValue::N("1".to_string()))
+            .expression_attribute_values(":now", AttributeValue::N(now.clone()))
+            .build()
+            .expect("valid Update");
+
+        // 3. Index (UpdateItem — create-if-absent, preserve-if-exists)
+        let index_update = Update::builder()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk.clone()))
+            .key(ATTR_SK, AttributeValue::S(SK_INDEX.to_string()))
+            .update_expression(
+                "SET #it = if_not_exists(#it, :zero), #ua = if_not_exists(#ua, :now)",
+            )
+            .expression_attribute_names("#it", ATTR_INDEX_T)
+            .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
+            .expression_attribute_values(":zero", AttributeValue::N("0".to_string()))
+            .expression_attribute_values(":now", AttributeValue::N(now.clone()))
+            .build()
+            .expect("valid Update");
+
+        // 4. Status (UpdateItem — create-if-absent, preserve-if-exists)
+        let status_update = Update::builder()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk.clone()))
+            .key(ATTR_SK, AttributeValue::S(SK_STATUS.to_string()))
+            .update_expression(
+                "SET #st = if_not_exists(#st, :ready), \
+                 #sv = if_not_exists(#sv, :one), \
+                 #ua = if_not_exists(#ua, :now)",
+            )
+            .expression_attribute_names("#st", ATTR_STATUS)
+            .expression_attribute_names("#sv", ATTR_STATUS_V)
+            .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
+            .expression_attribute_values(":ready", AttributeValue::S(STATUS_READY.to_string()))
+            .expression_attribute_values(":one", AttributeValue::N("1".to_string()))
+            .expression_attribute_values(":now", AttributeValue::N(now))
+            .build()
+            .expect("valid Update");
+
+        self.client
+            .transact_write_items()
+            .transact_items(TransactWriteItem::builder().update(meta_update).build())
+            .transact_items(TransactWriteItem::builder().update(config_update).build())
+            .transact_items(TransactWriteItem::builder().update(index_update).build())
+            .transact_items(TransactWriteItem::builder().update(status_update).build())
+            .send()
+            .await
+            .map_err(|e| {
+                NameServiceError::storage(format!("DynamoDB TransactWriteItems failed: {e}"))
+            })?;
+
+        Ok(())
+    }
+
+    async fn publish_vg_index(
+        &self,
+        name: &str,
+        branch: &str,
+        index_addr: &str,
+        index_t: i64,
+    ) -> std::result::Result<(), NameServiceError> {
+        let pk = core_alias::format_alias(name, branch);
+        let now = Self::now_epoch_ms().to_string();
+
+        let result = self
+            .client
+            .update_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk))
+            .key(ATTR_SK, AttributeValue::S(SK_INDEX.to_string()))
+            .update_expression("SET #ia = :addr, #it = :t, #ua = :now")
+            .condition_expression("#it < :t")
+            .expression_attribute_names("#ia", ATTR_INDEX_ADDRESS)
+            .expression_attribute_names("#it", ATTR_INDEX_T)
+            .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
+            .expression_attribute_values(":addr", AttributeValue::S(index_addr.to_string()))
+            .expression_attribute_values(":t", AttributeValue::N(index_t.to_string()))
+            .expression_attribute_values(":now", AttributeValue::N(now))
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if Self::is_conditional_check_failed(&e) => Ok(()),
+            Err(e) => Err(NameServiceError::storage(format!(
+                "DynamoDB UpdateItem failed: {e}"
+            ))),
+        }
+    }
+
+    async fn retract_vg(
+        &self,
+        name: &str,
+        branch: &str,
+    ) -> std::result::Result<(), NameServiceError> {
+        let pk = core_alias::format_alias(name, branch);
+        let now = Self::now_epoch_ms().to_string();
+
+        self.client
+            .update_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk))
+            .key(ATTR_SK, AttributeValue::S(SK_META.to_string()))
+            .update_expression("SET #ret = :true_val, #ua = :now")
+            .expression_attribute_names("#ret", ATTR_RETRACTED)
+            .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
+            .expression_attribute_values(":true_val", AttributeValue::Bool(true))
+            .expression_attribute_values(":now", AttributeValue::N(now))
+            .send()
+            .await
+            .map_err(|e| NameServiceError::storage(format!("DynamoDB UpdateItem failed: {e}")))?;
+
+        Ok(())
+    }
+
+    async fn lookup_vg(
+        &self,
+        alias: &str,
+    ) -> std::result::Result<Option<VgNsRecord>, NameServiceError> {
+        let pk = Self::normalize(alias);
+        let items = self.query_all_items(&pk).await?;
+        Ok(Self::items_to_vg_record(&pk, &items))
+    }
+
+    async fn lookup_any(
+        &self,
+        alias: &str,
+    ) -> std::result::Result<NsLookupResult, NameServiceError> {
+        let pk = Self::normalize(alias);
+        let items = self.query_all_items(&pk).await?;
+
+        // Discriminate by meta.kind
+        let meta = Self::find_item_by_sk(&items, SK_META);
+        let kind = meta
+            .and_then(|m| m.get(ATTR_KIND))
+            .and_then(|v| v.as_s().ok());
+
+        match kind {
+            Some(k) if k == KIND_LEDGER => {
+                if let Some(record) = Self::items_to_ns_record(&pk, &items) {
+                    return Ok(NsLookupResult::Ledger(record));
+                }
+            }
+            Some(k) if k == KIND_GRAPH_SOURCE => {
+                if let Some(record) = Self::items_to_vg_record(&pk, &items) {
+                    return Ok(NsLookupResult::VirtualGraph(record));
+                }
+            }
+            _ => {}
+        }
+
+        Ok(NsLookupResult::NotFound)
+    }
+
+    async fn all_vg_records(&self) -> std::result::Result<Vec<VgNsRecord>, NameServiceError> {
+        // 1. Query GSI1 for all graph_source meta items
+        let meta_items = self.query_gsi_by_kind(KIND_GRAPH_SOURCE).await?;
+        if meta_items.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // 2. Collect PKs
+        let pks: Vec<String> = meta_items
+            .iter()
+            .filter_map(|item| item.get(ATTR_PK)?.as_s().ok().cloned())
+            .collect();
+
+        // 3. BatchGetItem for config + index items (50 PKs × 2 = 100 keys per batch)
+        let mut fetched: HashMap<String, Vec<Item>> = HashMap::new();
+        for chunk in pks.chunks(50) {
+            let keys: Vec<Item> = chunk
+                .iter()
+                .flat_map(|pk| {
+                    vec![
+                        HashMap::from([
+                            (ATTR_PK.to_string(), AttributeValue::S(pk.clone())),
+                            (
+                                ATTR_SK.to_string(),
+                                AttributeValue::S(SK_CONFIG.to_string()),
+                            ),
+                        ]),
+                        HashMap::from([
+                            (ATTR_PK.to_string(), AttributeValue::S(pk.clone())),
+                            (ATTR_SK.to_string(), AttributeValue::S(SK_INDEX.to_string())),
+                        ]),
+                    ]
+                })
+                .collect();
+
+            let ka = KeysAndAttributes::builder()
+                .set_keys(Some(keys))
+                .build()
+                .map_err(|e| {
+                    NameServiceError::storage(format!("KeysAndAttributes build failed: {e}"))
+                })?;
+
+            // BatchGetItem with retry for UnprocessedKeys (throttling).
+            let mut pending = Some(ka);
+            let max_retries = 5;
+            for retry in 0..=max_retries {
+                let request_ka = pending.take().expect("pending keys");
+                let response = self
+                    .client
+                    .batch_get_item()
+                    .request_items(&self.table_name, request_ka)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        NameServiceError::storage(format!("DynamoDB BatchGetItem failed: {e}"))
+                    })?;
+
+                if let Some(table_items) =
+                    response.responses().and_then(|r| r.get(&self.table_name))
+                {
+                    for item in table_items {
+                        if let Some(pk_val) = item.get(ATTR_PK).and_then(|v| v.as_s().ok()) {
+                            fetched
+                                .entry(pk_val.clone())
+                                .or_default()
+                                .push(item.clone());
+                        }
+                    }
+                }
+
+                // Retry unprocessed keys with exponential backoff.
+                match response
+                    .unprocessed_keys()
+                    .and_then(|u| u.get(&self.table_name))
+                {
+                    Some(unprocessed) if !unprocessed.keys().is_empty() => {
+                        if retry == max_retries {
+                            return Err(NameServiceError::storage(
+                                "BatchGetItem: max retries exhausted for UnprocessedKeys"
+                                    .to_string(),
+                            ));
+                        }
+                        let backoff_ms = 50 * (1 << retry.min(4)); // 50, 100, 200, 400, 800ms
+                        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                        pending = Some(unprocessed.clone());
+                    }
+                    _ => break,
+                }
+            }
+        }
+
+        // 4. Assemble VgNsRecords from GSI meta items + BatchGet config/index
+        let mut records = Vec::with_capacity(meta_items.len());
+        for meta in &meta_items {
+            let Some(pk) = meta.get(ATTR_PK).and_then(|v| v.as_s().ok()) else {
+                continue;
+            };
+
+            let extras = fetched.get(pk.as_str());
+            let config_item = extras.and_then(|items| {
+                items.iter().find(|i| {
+                    i.get(ATTR_SK).and_then(|v| v.as_s().ok()) == Some(&SK_CONFIG.to_string())
+                })
+            });
+            let index_item = extras.and_then(|items| {
+                items.iter().find(|i| {
+                    i.get(ATTR_SK).and_then(|v| v.as_s().ok()) == Some(&SK_INDEX.to_string())
+                })
+            });
+
+            if let Some(record) = Self::vg_record_from_meta(pk, meta, config_item, index_item) {
+                records.push(record);
+            }
+        }
+
+        Ok(records)
+    }
+}
+
+// ─── StatusPublisher ────────────────────────────────────────────────────────
+
+#[async_trait]
+impl StatusPublisher for DynamoDbNameService {
+    async fn get_status(
+        &self,
+        alias: &str,
+    ) -> std::result::Result<Option<StatusValue>, NameServiceError> {
+        let pk = Self::normalize(alias);
+
+        let response = self
+            .client
+            .get_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk.clone()))
+            .key(ATTR_SK, AttributeValue::S(SK_STATUS.to_string()))
+            .consistent_read(true)
+            .send()
+            .await
+            .map_err(|e| NameServiceError::storage(format!("DynamoDB GetItem failed: {e}")))?;
+
+        match response.item() {
+            Some(item) => {
+                let v: i64 = item
+                    .get(ATTR_STATUS_V)
+                    .and_then(|v| v.as_n().ok())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(1);
+                let state = item
+                    .get(ATTR_STATUS)
+                    .and_then(|v| v.as_s().ok())
+                    .cloned()
+                    .unwrap_or_else(|| STATUS_READY.to_string());
+                let extra = item
+                    .get(ATTR_STATUS_META)
+                    .and_then(|v| v.as_m().ok())
+                    .map(Self::dynamo_map_to_json_map)
+                    .unwrap_or_default();
+
+                Ok(Some(StatusValue::new(
+                    v,
+                    StatusPayload::with_extra(state, extra),
+                )))
+            }
+            None => {
+                // Status item missing — check if meta exists (fallback)
+                if self.meta_exists(&pk).await? {
+                    Ok(Some(StatusValue::initial()))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
+
+    async fn push_status(
+        &self,
+        alias: &str,
+        expected: Option<&StatusValue>,
+        new: &StatusValue,
+    ) -> std::result::Result<StatusCasResult, NameServiceError> {
+        let pk = Self::normalize(alias);
+        let now = Self::now_epoch_ms().to_string();
+
+        let Some(exp) = expected else {
+            let current = self.get_status(alias).await?;
+            return Ok(StatusCasResult::Conflict { actual: current });
+        };
+
+        if new.v <= exp.v {
+            let current = self.get_status(alias).await?;
+            return Ok(StatusCasResult::Conflict { actual: current });
+        }
+
+        // Build update expression
+        let mut update_expr = "SET #st = :new_state, #sv = :new_v, #ua = :now".to_string();
+        let mut request = self
+            .client
+            .update_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk))
+            .key(ATTR_SK, AttributeValue::S(SK_STATUS.to_string()))
+            .condition_expression("#sv = :expected_v AND #st = :expected_state")
+            .expression_attribute_names("#st", ATTR_STATUS)
+            .expression_attribute_names("#sv", ATTR_STATUS_V)
+            .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
+            .expression_attribute_values(":expected_v", AttributeValue::N(exp.v.to_string()))
+            .expression_attribute_values(
+                ":expected_state",
+                AttributeValue::S(exp.payload.state.clone()),
+            )
+            .expression_attribute_values(":new_state", AttributeValue::S(new.payload.state.clone()))
+            .expression_attribute_values(":new_v", AttributeValue::N(new.v.to_string()))
+            .expression_attribute_values(":now", AttributeValue::N(now));
+
+        if !new.payload.extra.is_empty() {
+            update_expr.push_str(", #sm = :new_meta");
+            request = request
+                .expression_attribute_names("#sm", ATTR_STATUS_META)
+                .expression_attribute_values(
+                    ":new_meta",
+                    Self::json_map_to_dynamo_map(&new.payload.extra),
+                );
+        } else {
+            update_expr.push_str(" REMOVE #sm");
+            request = request.expression_attribute_names("#sm", ATTR_STATUS_META);
+        }
+
+        let result = request.update_expression(update_expr).send().await;
+
+        match result {
+            Ok(_) => Ok(StatusCasResult::Updated),
+            Err(e) if Self::is_conditional_check_failed(&e) => {
+                let current = self.get_status(alias).await?;
+                Ok(StatusCasResult::Conflict { actual: current })
+            }
+            Err(e) => Err(NameServiceError::storage(format!(
+                "DynamoDB UpdateItem failed: {e}"
+            ))),
+        }
+    }
+}
+
+// ─── ConfigPublisher (ledger configs only) ──────────────────────────────────
+//
+// ConfigPublisher handles ledger configs (ConfigPayload with default_context +
+// extra). Graph-source config lives under VirtualGraphPublisher as raw
+// config_json. Calling get_config/push_config on a graph-source alias returns
+// None / Conflict to prevent cross-contamination of the config_v watermark.
+
+#[async_trait]
+impl ConfigPublisher for DynamoDbNameService {
+    async fn get_config(
+        &self,
+        alias: &str,
+    ) -> std::result::Result<Option<ConfigValue>, NameServiceError> {
+        let pk = Self::normalize(alias);
+
+        // Gate: only ledger configs — graph sources use VirtualGraphPublisher.
+        match self.meta_kind(&pk).await? {
+            Some(ref k) if k == KIND_GRAPH_SOURCE => return Ok(None),
+            None => return Ok(None),
+            _ => {} // KIND_LEDGER — continue
+        }
+
+        let response = self
+            .client
+            .get_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk.clone()))
+            .key(ATTR_SK, AttributeValue::S(SK_CONFIG.to_string()))
+            .consistent_read(true)
+            .send()
+            .await
+            .map_err(|e| NameServiceError::storage(format!("DynamoDB GetItem failed: {e}")))?;
+
+        match response.item() {
+            Some(item) => {
+                let default_context = item
+                    .get(ATTR_DEFAULT_CONTEXT_ADDRESS)
+                    .and_then(|v| v.as_s().ok())
+                    .cloned();
+                let config_meta = item.get(ATTR_CONFIG_META).and_then(|v| v.as_m().ok());
+
+                let v: i64 = item
+                    .get(ATTR_CONFIG_V)
+                    .and_then(|v| v.as_n().ok())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+
+                let payload = if v == 0 && default_context.is_none() && config_meta.is_none() {
+                    None
+                } else {
+                    let extra = config_meta
+                        .map(Self::dynamo_map_to_json_map)
+                        .unwrap_or_default();
+                    Some(ConfigPayload {
+                        default_context,
+                        extra,
+                    })
+                };
+
+                Ok(Some(ConfigValue { v, payload }))
+            }
+            None => {
+                // Config item missing but meta exists (already checked above)
+                Ok(Some(ConfigValue::unborn()))
+            }
+        }
+    }
+
+    async fn push_config(
+        &self,
+        alias: &str,
+        expected: Option<&ConfigValue>,
+        new: &ConfigValue,
+    ) -> std::result::Result<ConfigCasResult, NameServiceError> {
+        let pk = Self::normalize(alias);
+        let now = Self::now_epoch_ms().to_string();
+
+        // Gate: only ledger configs.
+        match self.meta_kind(&pk).await? {
+            Some(ref k) if k == KIND_GRAPH_SOURCE => {
+                return Ok(ConfigCasResult::Conflict { actual: None })
+            }
+            None => return Ok(ConfigCasResult::Conflict { actual: None }),
+            _ => {}
+        }
+
+        let Some(exp) = expected else {
+            let current = self.get_config(alias).await?;
+            return Ok(ConfigCasResult::Conflict { actual: current });
+        };
+
+        if new.v <= exp.v {
+            let current = self.get_config(alias).await?;
+            return Ok(ConfigCasResult::Conflict { actual: current });
+        }
+
+        // Condition: config_v must match expected
+        let condition = if exp.v == 0 {
+            "(attribute_not_exists(#cv) OR #cv = :zero)"
+        } else {
+            "#cv = :expected_v"
+        };
+
+        let mut update_parts = vec!["#cv = :new_v", "#ua = :now"];
+        let mut request = self
+            .client
+            .update_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk))
+            .key(ATTR_SK, AttributeValue::S(SK_CONFIG.to_string()))
+            .expression_attribute_names("#cv", ATTR_CONFIG_V)
+            .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
+            .expression_attribute_names("#dc", ATTR_DEFAULT_CONTEXT_ADDRESS)
+            .expression_attribute_values(":new_v", AttributeValue::N(new.v.to_string()))
+            .expression_attribute_values(":now", AttributeValue::N(now));
+
+        if exp.v == 0 {
+            request =
+                request.expression_attribute_values(":zero", AttributeValue::N("0".to_string()));
+        } else {
+            request = request
+                .expression_attribute_values(":expected_v", AttributeValue::N(exp.v.to_string()));
+        }
+
+        let mut remove_parts: Vec<&str> = vec![];
+
+        if let Some(ref payload) = new.payload {
+            if let Some(ref ctx) = payload.default_context {
+                update_parts.push("#dc = :new_dc");
+                request =
+                    request.expression_attribute_values(":new_dc", AttributeValue::S(ctx.clone()));
+            } else {
+                remove_parts.push("#dc");
+            }
+
+            if !payload.extra.is_empty() {
+                update_parts.push("#cm = :new_meta");
+                request = request
+                    .expression_attribute_names("#cm", ATTR_CONFIG_META)
+                    .expression_attribute_values(
+                        ":new_meta",
+                        Self::json_map_to_dynamo_map(&payload.extra),
+                    );
+            } else {
+                request = request.expression_attribute_names("#cm", ATTR_CONFIG_META);
+                remove_parts.push("#cm");
+            }
+        } else {
+            remove_parts.push("#dc");
+            request = request.expression_attribute_names("#cm", ATTR_CONFIG_META);
+            remove_parts.push("#cm");
+        }
+
+        let mut update_expr = format!("SET {}", update_parts.join(", "));
+        if !remove_parts.is_empty() {
+            update_expr.push_str(&format!(" REMOVE {}", remove_parts.join(", ")));
+        }
+
+        let result = request
+            .condition_expression(condition)
+            .update_expression(update_expr)
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(ConfigCasResult::Updated),
+            Err(e) if Self::is_conditional_check_failed(&e) => {
+                let current = self.get_config(alias).await?;
+                Ok(ConfigCasResult::Conflict { actual: current })
+            }
+            Err(e) => Err(NameServiceError::storage(format!(
+                "DynamoDB UpdateItem failed: {e}"
+            ))),
+        }
+    }
+}
+
+// ─── Table provisioning ─────────────────────────────────────────────────────
+
+impl DynamoDbNameService {
+    /// Create the DynamoDB table with composite key + GSI1 if it does not exist.
+    ///
+    /// Waits for the table to become ACTIVE before returning.
+    pub async fn ensure_table(&self) -> crate::error::Result<()> {
+        let result = self
+            .client
+            .create_table()
+            .table_name(&self.table_name)
+            // Attribute definitions (only for key attributes)
+            .attribute_definitions(
+                AttributeDefinition::builder()
+                    .attribute_name(ATTR_PK)
+                    .attribute_type(ScalarAttributeType::S)
+                    .build()
+                    .expect("valid attr def"),
+            )
+            .attribute_definitions(
+                AttributeDefinition::builder()
+                    .attribute_name(ATTR_SK)
+                    .attribute_type(ScalarAttributeType::S)
+                    .build()
+                    .expect("valid attr def"),
+            )
+            .attribute_definitions(
+                AttributeDefinition::builder()
+                    .attribute_name(ATTR_KIND)
+                    .attribute_type(ScalarAttributeType::S)
+                    .build()
+                    .expect("valid attr def"),
+            )
+            // Table key schema
+            .key_schema(
+                KeySchemaElement::builder()
+                    .attribute_name(ATTR_PK)
+                    .key_type(KeyType::Hash)
+                    .build()
+                    .expect("valid key schema"),
+            )
+            .key_schema(
+                KeySchemaElement::builder()
+                    .attribute_name(ATTR_SK)
+                    .key_type(KeyType::Range)
+                    .build()
+                    .expect("valid key schema"),
+            )
+            // GSI1: list by kind
+            .global_secondary_indexes(
+                GlobalSecondaryIndex::builder()
+                    .index_name(GSI1_NAME)
+                    .key_schema(
+                        KeySchemaElement::builder()
+                            .attribute_name(ATTR_KIND)
+                            .key_type(KeyType::Hash)
+                            .build()
+                            .expect("valid key schema"),
+                    )
+                    .key_schema(
+                        KeySchemaElement::builder()
+                            .attribute_name(ATTR_PK)
+                            .key_type(KeyType::Range)
+                            .build()
+                            .expect("valid key schema"),
+                    )
+                    .projection(
+                        Projection::builder()
+                            .projection_type(ProjectionType::Include)
+                            .non_key_attributes(ATTR_NAME)
+                            .non_key_attributes(ATTR_BRANCH)
+                            .non_key_attributes(ATTR_SOURCE_TYPE)
+                            .non_key_attributes(ATTR_DEPENDENCIES)
+                            .non_key_attributes(ATTR_RETRACTED)
+                            .build(),
+                    )
+                    .build()
+                    .expect("valid GSI"),
+            )
+            .billing_mode(BillingMode::PayPerRequest)
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => {}
+            Err(ref e) => {
+                // Ignore ResourceInUseException (table already exists)
+                let is_exists = matches!(
+                    e,
+                    aws_sdk_dynamodb::error::SdkError::ServiceError(se)
+                    if matches!(
+                        se.err(),
+                        aws_sdk_dynamodb::operation::create_table::CreateTableError::ResourceInUseException(_)
+                    )
+                );
+                if !is_exists {
+                    return Err(crate::error::AwsStorageError::dynamodb(format!(
+                        "CreateTable failed: {e}"
+                    )));
+                }
+            }
+        }
+
+        // Wait for ACTIVE
+        for _ in 0..60 {
+            let desc = self
+                .client
+                .describe_table()
+                .table_name(&self.table_name)
+                .send()
+                .await
+                .map_err(|e| {
+                    crate::error::AwsStorageError::dynamodb(format!("DescribeTable failed: {e}"))
+                })?;
+
+            if let Some(table) = desc.table() {
+                if table.table_status() == Some(&aws_sdk_dynamodb::types::TableStatus::Active) {
+                    return Ok(());
+                }
+            }
+
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        Err(crate::error::AwsStorageError::dynamodb(
+            "Table did not become ACTIVE within 30s",
+        ))
+    }
+}
+
+// ─── Unit tests ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn av_s(s: &str) -> AttributeValue {
+        AttributeValue::S(s.to_string())
+    }
+    fn av_n(n: i64) -> AttributeValue {
+        AttributeValue::N(n.to_string())
+    }
+    fn av_bool(b: bool) -> AttributeValue {
+        AttributeValue::Bool(b)
+    }
+
+    fn make_meta_ledger(pk: &str, name: &str, branch: &str) -> Item {
+        HashMap::from([
+            (ATTR_PK.to_string(), av_s(pk)),
+            (ATTR_SK.to_string(), av_s(SK_META)),
+            (ATTR_KIND.to_string(), av_s(KIND_LEDGER)),
+            (ATTR_NAME.to_string(), av_s(name)),
+            (ATTR_BRANCH.to_string(), av_s(branch)),
+            (ATTR_RETRACTED.to_string(), av_bool(false)),
+        ])
+    }
+
+    fn make_head(pk: &str, addr: Option<&str>, t: i64) -> Item {
+        let mut item = HashMap::from([
+            (ATTR_PK.to_string(), av_s(pk)),
+            (ATTR_SK.to_string(), av_s(SK_HEAD)),
+            (ATTR_COMMIT_T.to_string(), av_n(t)),
+        ]);
+        if let Some(a) = addr {
+            item.insert(ATTR_COMMIT_ADDRESS.to_string(), av_s(a));
+        }
+        item
+    }
+
+    fn make_index(pk: &str, addr: Option<&str>, t: i64) -> Item {
+        let mut item = HashMap::from([
+            (ATTR_PK.to_string(), av_s(pk)),
+            (ATTR_SK.to_string(), av_s(SK_INDEX)),
+            (ATTR_INDEX_T.to_string(), av_n(t)),
+        ]);
+        if let Some(a) = addr {
+            item.insert(ATTR_INDEX_ADDRESS.to_string(), av_s(a));
+        }
+        item
+    }
+
+    fn make_config_ledger(pk: &str, default_ctx: Option<&str>) -> Item {
+        let mut item = HashMap::from([
+            (ATTR_PK.to_string(), av_s(pk)),
+            (ATTR_SK.to_string(), av_s(SK_CONFIG)),
+            (ATTR_CONFIG_V.to_string(), av_n(0)),
+        ]);
+        if let Some(ctx) = default_ctx {
+            item.insert(ATTR_DEFAULT_CONTEXT_ADDRESS.to_string(), av_s(ctx));
+        }
+        item
+    }
+
+    fn make_meta_gs(pk: &str, name: &str, branch: &str, source_type: &str) -> Item {
+        HashMap::from([
+            (ATTR_PK.to_string(), av_s(pk)),
+            (ATTR_SK.to_string(), av_s(SK_META)),
+            (ATTR_KIND.to_string(), av_s(KIND_GRAPH_SOURCE)),
+            (ATTR_NAME.to_string(), av_s(name)),
+            (ATTR_BRANCH.to_string(), av_s(branch)),
+            (ATTR_SOURCE_TYPE.to_string(), av_s(source_type)),
+            (ATTR_RETRACTED.to_string(), av_bool(false)),
+            (
+                ATTR_DEPENDENCIES.to_string(),
+                AttributeValue::L(vec![av_s("source:main")]),
+            ),
+        ])
+    }
+
+    fn make_config_gs(pk: &str, config_json: &str) -> Item {
+        HashMap::from([
+            (ATTR_PK.to_string(), av_s(pk)),
+            (ATTR_SK.to_string(), av_s(SK_CONFIG)),
+            (ATTR_CONFIG_JSON.to_string(), av_s(config_json)),
+            (ATTR_CONFIG_V.to_string(), av_n(1)),
+        ])
+    }
+
+    // ── items_to_ns_record tests ────────────────────────────────────────
+
+    #[test]
+    fn test_items_to_ns_record_full() {
+        let pk = "mydb:main";
+        let items = vec![
+            make_meta_ledger(pk, "mydb", "main"),
+            make_head(pk, Some("commit-abc"), 10),
+            make_index(pk, Some("index-xyz"), 5),
+            make_config_ledger(pk, Some("ctx-addr")),
+        ];
+
+        let record = DynamoDbNameService::items_to_ns_record(pk, &items).unwrap();
+        assert_eq!(record.address, "mydb:main");
+        assert_eq!(record.alias, "mydb");
+        assert_eq!(record.branch, "main");
+        assert_eq!(record.commit_address, Some("commit-abc".to_string()));
+        assert_eq!(record.commit_t, 10);
+        assert_eq!(record.index_address, Some("index-xyz".to_string()));
+        assert_eq!(record.index_t, 5);
+        assert_eq!(record.default_context_address, Some("ctx-addr".to_string()));
+        assert!(!record.retracted);
+    }
+
+    #[test]
+    fn test_items_to_ns_record_unborn_head() {
+        let pk = "mydb:main";
+        let items = vec![
+            make_meta_ledger(pk, "mydb", "main"),
+            make_head(pk, None, 0),
+            make_index(pk, None, 0),
+            make_config_ledger(pk, None),
+        ];
+
+        let record = DynamoDbNameService::items_to_ns_record(pk, &items).unwrap();
+        assert_eq!(record.commit_address, None);
+        assert_eq!(record.commit_t, 0);
+        assert_eq!(record.index_address, None);
+        assert_eq!(record.index_t, 0);
+        assert_eq!(record.default_context_address, None);
+    }
+
+    #[test]
+    fn test_items_to_ns_record_wrong_kind() {
+        let pk = "search:main";
+        let items = vec![make_meta_gs(pk, "search", "main", "fidx:BM25")];
+
+        assert!(DynamoDbNameService::items_to_ns_record(pk, &items).is_none());
+    }
+
+    #[test]
+    fn test_items_to_ns_record_no_meta() {
+        let pk = "mydb:main";
+        let items = vec![make_head(pk, Some("commit-1"), 5)];
+
+        assert!(DynamoDbNameService::items_to_ns_record(pk, &items).is_none());
+    }
+
+    // ── items_to_vg_record tests ────────────────────────────────────────
+
+    #[test]
+    fn test_items_to_vg_record_full() {
+        let pk = "search:main";
+        let items = vec![
+            make_meta_gs(pk, "search", "main", "fidx:BM25"),
+            make_config_gs(pk, r#"{"k1":1.2}"#),
+            make_index(pk, Some("snap-001"), 42),
+        ];
+
+        let record = DynamoDbNameService::items_to_vg_record(pk, &items).unwrap();
+        assert_eq!(record.address, "search:main");
+        assert_eq!(record.name, "search");
+        assert_eq!(record.branch, "main");
+        assert_eq!(record.vg_type, VgType::Bm25);
+        assert_eq!(record.config, r#"{"k1":1.2}"#);
+        assert_eq!(record.dependencies, vec!["source:main".to_string()]);
+        assert_eq!(record.index_address, Some("snap-001".to_string()));
+        assert_eq!(record.index_t, 42);
+        assert!(!record.retracted);
+    }
+
+    #[test]
+    fn test_items_to_vg_record_unborn_index() {
+        let pk = "search:main";
+        let items = vec![
+            make_meta_gs(pk, "search", "main", "fidx:BM25"),
+            make_config_gs(pk, "{}"),
+            make_index(pk, None, 0),
+        ];
+
+        let record = DynamoDbNameService::items_to_vg_record(pk, &items).unwrap();
+        assert_eq!(record.index_address, None);
+        assert_eq!(record.index_t, 0);
+    }
+
+    // ── now_epoch_ms test ───────────────────────────────────────────────
+
+    #[test]
+    fn test_now_epoch_ms() {
+        let now = DynamoDbNameService::now_epoch_ms();
+        // Must be after 2024-01-01 in milliseconds
+        assert!(now > 1_704_067_200_000);
+    }
+
+    // ── normalize test ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_normalize() {
+        assert_eq!(DynamoDbNameService::normalize("mydb"), "mydb:main");
+        assert_eq!(DynamoDbNameService::normalize("mydb:dev"), "mydb:dev");
+        assert_eq!(DynamoDbNameService::normalize("mydb:main"), "mydb:main");
     }
 }

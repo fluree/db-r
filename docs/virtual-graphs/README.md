@@ -53,7 +53,7 @@ mydb:main → RDF triple store → SPOT/POST/OPST/PSOT indexes
 products-search:main → BM25 index → Inverted text index
 products-vector:main → HNSW → Vector similarity index
 warehouse-data:main → Iceberg → Parquet files
-legacy-db:main → R2RML → PostgreSQL tables
+sql-db:main → R2RML → PostgreSQL tables
 ```
 
 ## Query Transparency
@@ -208,14 +208,14 @@ See [Iceberg / Parquet](iceberg.md).
 **Backend:** SQL databases (PostgreSQL, MySQL, etc.)
 
 **Use Cases:**
-- Legacy database integration
-- Gradual migration to graph
+- Existing database integration
+- Incremental adoption of graph queries
 - Unified queries across systems
 
 **Example:**
 ```json
 {
-  "from": "legacy-customers:main",
+  "from": "sql-customers:main",
   "select": ["?name", "?email"],
   "where": [
     { "@id": "?customer", "schema:name": "?name" },
