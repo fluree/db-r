@@ -51,39 +51,40 @@ pub use stats::{IndexStatsHook, NoOpStatsHook, StatsArtifacts, StatsSummary};
 use fluree_db_core::Storage;
 use fluree_db_nameservice::{NameService, Publisher};
 
-/// Normalize an alias for comparison purposes
+/// Normalize a ledger address for comparison purposes
 ///
 /// Handles both canonical `name:branch` format and storage-path style `name/branch`.
-/// This is necessary because Db.alias may be stored in either format depending
+/// This is necessary because the address may be stored in either format depending
 /// on the code path that created it.
 ///
 /// # Algorithm
 ///
-/// 1. If the alias contains `:`, use canonical parsing via `core_alias::normalize_alias`
-///    - If parsing fails, return the original string unchanged (don't manufacture aliases)
-/// 2. If the alias has exactly one `/` (storage-path style), convert to `name:branch`
+/// 1. If the address contains `:`, use canonical parsing via `core_alias::normalize_alias`
+///    - If parsing fails, return the original string unchanged (don't manufacture addresses)
+/// 2. If the address has exactly one `/` (storage-path style), convert to `name:branch`
 /// 3. Falls back to treating the whole string as the name with default branch
 ///
 /// This ONLY treats a single `/` as a branch separator when there's no `:`.
 /// For ledger names that legitimately contain `/` (e.g., "org/project:main"),
 /// the canonical format with `:` must be used.
 #[cfg(test)]
-fn normalize_alias_for_comparison(alias: &str) -> String {
+fn normalize_address_for_comparison(ledger_address: &str) -> String {
     use fluree_db_core::alias as core_alias;
 
     // If it has a colon, use canonical parsing
-    if alias.contains(':') {
-        // If canonical parse succeeds, use it. If it fails (malformed alias),
-        // return the original string unchanged rather than manufacturing a new alias.
-        return core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
+    if ledger_address.contains(':') {
+        // If canonical parse succeeds, use it. If it fails (malformed address),
+        // return the original string unchanged rather than manufacturing a new address.
+        return core_alias::normalize_alias(ledger_address)
+            .unwrap_or_else(|_| ledger_address.to_string());
     }
 
     // Check for storage-path style "name/branch" (exactly one slash, no colon)
-    let slash_count = alias.chars().filter(|c| *c == '/').count();
+    let slash_count = ledger_address.chars().filter(|c| *c == '/').count();
     if slash_count == 1 {
-        if let Some(slash_idx) = alias.rfind('/') {
-            let name = &alias[..slash_idx];
-            let branch = &alias[slash_idx + 1..];
+        if let Some(slash_idx) = ledger_address.rfind('/') {
+            let name = &ledger_address[..slash_idx];
+            let branch = &ledger_address[slash_idx + 1..];
             if !name.is_empty() && !branch.is_empty() {
                 return core_alias::format_alias(name, branch);
             }
@@ -91,7 +92,7 @@ fn normalize_alias_for_comparison(alias: &str) -> String {
     }
 
     // Last resort: treat entire string as name with default branch
-    core_alias::format_alias(alias, core_alias::DEFAULT_BRANCH)
+    core_alias::format_alias(ledger_address, core_alias::DEFAULT_BRANCH)
 }
 
 /// Result of building an index
@@ -101,8 +102,8 @@ pub struct IndexResult {
     pub root_address: String,
     /// Transaction time the index is current through
     pub index_t: i64,
-    /// Ledger alias
-    pub alias: String,
+    /// Ledger address (name:branch format)
+    pub ledger_address: String,
     /// Index build statistics
     pub stats: IndexStats,
 }
@@ -135,22 +136,22 @@ pub const CURRENT_INDEX_VERSION: i32 = 2;
 pub async fn build_index_for_ledger<S, N>(
     storage: &S,
     nameservice: &N,
-    alias: &str,
+    ledger_address: &str,
     config: IndexerConfig,
 ) -> Result<IndexResult>
 where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService,
 {
-    let span = tracing::info_span!("index_build", ledger_alias = alias);
+    let span = tracing::info_span!("index_build", ledger_address = ledger_address);
     let _guard = span.enter();
 
     // Look up the ledger record
     let record = nameservice
-        .lookup(alias)
+        .lookup(ledger_address)
         .await
         .map_err(|e| IndexerError::NameService(e.to_string()))?
-        .ok_or_else(|| IndexerError::LedgerNotFound(alias.to_string()))?;
+        .ok_or_else(|| IndexerError::LedgerNotFound(ledger_address.to_string()))?;
 
     // If index is already current, return it
     if let Some(ref index_addr) = record.index_address {
@@ -158,13 +159,13 @@ where
             return Ok(IndexResult {
                 root_address: index_addr.clone(),
                 index_t: record.index_t,
-                alias: alias.to_string(),
+                ledger_address: ledger_address.to_string(),
                 stats: IndexStats::default(),
             });
         }
     }
 
-    build_binary_index(storage, alias, &record, config).await
+    build_binary_index(storage, ledger_address, &record, config).await
 }
 
 /// Build a binary index from an existing nameservice record.
@@ -185,7 +186,7 @@ where
 /// 4. Write `BinaryIndexRootV2` descriptor to storage
 pub async fn build_binary_index<S>(
     storage: &S,
-    alias: &str,
+    ledger_address: &str,
     record: &fluree_db_nameservice::NsRecord,
     config: IndexerConfig,
 ) -> Result<IndexResult>
@@ -203,14 +204,14 @@ where
     let data_dir = config
         .data_dir
         .unwrap_or_else(|| std::env::temp_dir().join("fluree-index"));
-    let alias_path = fluree_db_core::address_path::alias_to_path_prefix(alias)
-        .unwrap_or_else(|_| alias.replace(':', "/"));
+    let ledger_address_path = fluree_db_core::address_path::alias_to_path_prefix(ledger_address)
+        .unwrap_or_else(|_| ledger_address.replace(':', "/"));
     let session_id = uuid::Uuid::new_v4().to_string();
     let run_dir = data_dir
-        .join(&alias_path)
+        .join(&ledger_address_path)
         .join("tmp_import")
         .join(&session_id);
-    let index_dir = data_dir.join(&alias_path).join("index");
+    let index_dir = data_dir.join(&ledger_address_path).join("index");
 
     tracing::info!(
         %head_commit_addr,
@@ -221,7 +222,7 @@ where
 
     // Capture values for the blocking task
     let storage = storage.clone();
-    let alias = alias.to_string();
+    let ledger_address = ledger_address.to_string();
     let prev_root_address = record.index_address.clone();
     let handle = tokio::runtime::Handle::current();
 
@@ -356,7 +357,7 @@ where
             let numbig_p_ids: Vec<u32> = dicts.numbigs.keys().copied().collect();
             let dict_addresses = upload_dicts_to_cas(
                 &storage,
-                &alias,
+                &ledger_address,
                 &run_dir,
                 &dicts,
                 &numbig_p_ids,
@@ -365,7 +366,8 @@ where
             .await?;
 
             // D.3: Upload index artifacts (branches + leaves) to CAS
-            let graph_addresses = upload_indexes_to_cas(&storage, &alias, &build_results).await?;
+            let graph_addresses =
+                upload_indexes_to_cas(&storage, &ledger_address, &build_results).await?;
 
             // D.4: Build stats JSON for the planner (RawDbRootStats shape).
             //
@@ -537,7 +539,7 @@ where
 
             let mut root =
                 run_index::BinaryIndexRootV2::from_cas_artifacts(run_index::CasArtifactsConfig {
-                    ledger_alias: &alias,
+                    ledger_address: &ledger_address,
                     index_t: store.max_t(),
                     base_t: store.base_t(),
                     predicate_sids,
@@ -583,7 +585,7 @@ where
                     let garbage_count = garbage_addrs.len();
 
                     root.garbage =
-                        gc::write_garbage_record(&storage, &alias, store.max_t(), garbage_addrs)
+                        gc::write_garbage_record(&storage, &ledger_address, store.max_t(), garbage_addrs)
                             .await
                             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?
                             .map(|r| run_index::BinaryGarbageRef { address: r.address });
@@ -613,7 +615,7 @@ where
                 .to_json_bytes()
                 .map_err(|e| IndexerError::Serialization(e.to_string()))?;
             let write_result = storage
-                .content_write_bytes(fluree_db_core::ContentKind::IndexRoot, &alias, &root_bytes)
+                .content_write_bytes(fluree_db_core::ContentKind::IndexRoot, &ledger_address, &root_bytes)
                 .await
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
@@ -632,7 +634,7 @@ where
             Ok(IndexResult {
                 root_address: write_result.address,
                 index_t: root.index_t,
-                alias: alias.to_string(),
+                ledger_address: ledger_address.to_string(),
                 stats: IndexStats {
                     flake_count: total_records as usize,
                     leaf_count: total_leaves,
@@ -653,7 +655,7 @@ where
 /// (branch + leaves) for O(log n) lookup at query time.
 async fn upload_dicts_to_cas<S: Storage>(
     storage: &S,
-    alias: &str,
+    ledger_address: &str,
     run_dir: &std::path::Path,
     dicts: &run_index::GlobalDicts,
     numbig_p_ids: &[u32],
@@ -669,14 +671,14 @@ async fn upload_dicts_to_cas<S: Storage>(
     /// Read a file and upload to CAS, returning the address.
     async fn upload_flat<S: Storage>(
         storage: &S,
-        alias: &str,
+        ledger_address: &str,
         path: &std::path::Path,
         dict: DictKind,
     ) -> Result<String> {
         let bytes = std::fs::read(path)
             .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", path.display(), e)))?;
         let result = storage
-            .content_write_bytes(ContentKind::DictBlob { dict }, alias, &bytes)
+            .content_write_bytes(ContentKind::DictBlob { dict }, ledger_address, &bytes)
             .await
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
         tracing::debug!(
@@ -691,7 +693,7 @@ async fn upload_dicts_to_cas<S: Storage>(
     /// Upload a tree build result (branch + leaves) to CAS.
     async fn upload_tree<S: Storage>(
         storage: &S,
-        alias: &str,
+        ledger_address: &str,
         result: TreeBuildResult,
         dict: DictKind,
     ) -> Result<run_index::DictTreeAddresses> {
@@ -700,7 +702,7 @@ async fn upload_dicts_to_cas<S: Storage>(
 
         for leaf in &result.leaves {
             let cas_result = storage
-                .content_write_bytes(ContentKind::DictBlob { dict }, alias, &leaf.bytes)
+                .content_write_bytes(ContentKind::DictBlob { dict }, ledger_address, &leaf.bytes)
                 .await
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
             leaf_addresses.push(cas_result.address.clone());
@@ -711,7 +713,11 @@ async fn upload_dicts_to_cas<S: Storage>(
         let (_, branch_bytes, _) = builder::finalize_branch(result.branch, &hash_to_address)
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
         let branch_result = storage
-            .content_write_bytes(ContentKind::DictBlob { dict }, alias, &branch_bytes)
+            .content_write_bytes(
+                ContentKind::DictBlob { dict },
+                ledger_address,
+                &branch_bytes,
+            )
             .await
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
@@ -724,21 +730,21 @@ async fn upload_dicts_to_cas<S: Storage>(
     // Small flat dicts
     let graphs = upload_flat(
         storage,
-        alias,
+        ledger_address,
         &run_dir.join("graphs.dict"),
         DictKind::Graphs,
     )
     .await?;
     let datatypes = upload_flat(
         storage,
-        alias,
+        ledger_address,
         &run_dir.join("datatypes.dict"),
         DictKind::Datatypes,
     )
     .await?;
     let languages = upload_flat(
         storage,
-        alias,
+        ledger_address,
         &run_dir.join("languages.dict"),
         DictKind::Languages,
     )
@@ -795,8 +801,10 @@ async fn upload_dicts_to_cas<S: Storage>(
     let sr_tree = builder::build_reverse_tree(subj_rev, builder::DEFAULT_TARGET_LEAF_BYTES)
         .map_err(|e| IndexerError::StorageWrite(format!("build subject rev tree: {}", e)))?;
 
-    let subject_forward = upload_tree(storage, alias, sf_tree, DictKind::SubjectForward).await?;
-    let subject_reverse = upload_tree(storage, alias, sr_tree, DictKind::SubjectReverse).await?;
+    let subject_forward =
+        upload_tree(storage, ledger_address, sf_tree, DictKind::SubjectForward).await?;
+    let subject_reverse =
+        upload_tree(storage, ledger_address, sr_tree, DictKind::SubjectReverse).await?;
 
     // String trees (read from file-backed forward file)
     let string_pairs = dicts
@@ -824,8 +832,10 @@ async fn upload_dicts_to_cas<S: Storage>(
     let str_tree = builder::build_reverse_tree(str_rev, builder::DEFAULT_TARGET_LEAF_BYTES)
         .map_err(|e| IndexerError::StorageWrite(format!("build string rev tree: {}", e)))?;
 
-    let string_forward = upload_tree(storage, alias, stf_tree, DictKind::StringForward).await?;
-    let string_reverse = upload_tree(storage, alias, str_tree, DictKind::StringReverse).await?;
+    let string_forward =
+        upload_tree(storage, ledger_address, stf_tree, DictKind::StringForward).await?;
+    let string_reverse =
+        upload_tree(storage, ledger_address, str_tree, DictKind::StringReverse).await?;
 
     // Per-predicate numbig arenas
     let mut numbig = BTreeMap::new();
@@ -833,7 +843,8 @@ async fn upload_dicts_to_cas<S: Storage>(
     for &p_id in numbig_p_ids {
         let path = nb_dir.join(format!("p_{}.nba", p_id));
         if path.exists() {
-            let addr = upload_flat(storage, alias, &path, DictKind::NumBig { p_id }).await?;
+            let addr =
+                upload_flat(storage, ledger_address, &path, DictKind::NumBig { p_id }).await?;
             numbig.insert(p_id.to_string(), addr);
         }
     }
@@ -864,7 +875,7 @@ async fn upload_dicts_to_cas<S: Storage>(
 /// the build), and returns per-graph CAS addresses.
 pub async fn upload_indexes_to_cas<S: Storage>(
     storage: &S,
-    alias: &str,
+    ledger_address: &str,
     build_results: &[(run_index::RunSortOrder, run_index::IndexBuildResult)],
 ) -> Result<Vec<run_index::GraphAddresses>> {
     use fluree_db_core::ContentKind;
@@ -898,7 +909,7 @@ pub async fn upload_indexes_to_cas<S: Storage>(
             let branch_write = storage
                 .content_write_bytes_with_hash(
                     ContentKind::IndexBranch,
-                    alias,
+                    ledger_address,
                     &graph_result.branch_hash,
                     &branch_bytes,
                 )
@@ -929,7 +940,7 @@ pub async fn upload_indexes_to_cas<S: Storage>(
                 let leaf_write = storage
                     .content_write_bytes_with_hash(
                         ContentKind::IndexLeaf,
-                        alias,
+                        ledger_address,
                         &leaf_entry.content_hash,
                         &leaf_bytes,
                     )
@@ -1016,7 +1027,7 @@ pub struct UploadedDicts {
 ///   - `string_watermark` = string entry count − 1 (IDs are 0..=N contiguous)
 pub async fn upload_dicts_from_disk<S: Storage>(
     storage: &S,
-    alias: &str,
+    ledger_address: &str,
     run_dir: &std::path::Path,
     namespace_codes: &std::collections::HashMap<u16, String>,
 ) -> Result<UploadedDicts> {
@@ -1031,14 +1042,14 @@ pub async fn upload_dicts_from_disk<S: Storage>(
 
     async fn upload_flat<S: Storage>(
         storage: &S,
-        alias: &str,
+        ledger_address: &str,
         path: &std::path::Path,
         dict: DictKind,
     ) -> Result<String> {
         let bytes = std::fs::read(path)
             .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", path.display(), e)))?;
         let result = storage
-            .content_write_bytes(ContentKind::DictBlob { dict }, alias, &bytes)
+            .content_write_bytes(ContentKind::DictBlob { dict }, ledger_address, &bytes)
             .await
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
         tracing::debug!(
@@ -1052,7 +1063,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
 
     async fn upload_tree<S: Storage>(
         storage: &S,
-        alias: &str,
+        ledger_address: &str,
         result: TreeBuildResult,
         dict: DictKind,
     ) -> Result<run_index::DictTreeAddresses> {
@@ -1061,7 +1072,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
 
         for leaf in &result.leaves {
             let cas_result = storage
-                .content_write_bytes(ContentKind::DictBlob { dict }, alias, &leaf.bytes)
+                .content_write_bytes(ContentKind::DictBlob { dict }, ledger_address, &leaf.bytes)
                 .await
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
             leaf_addresses.push(cas_result.address.clone());
@@ -1071,7 +1082,11 @@ pub async fn upload_dicts_from_disk<S: Storage>(
         let (_, branch_bytes, _) = builder::finalize_branch(result.branch, &hash_to_address)
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
         let branch_result = storage
-            .content_write_bytes(ContentKind::DictBlob { dict }, alias, &branch_bytes)
+            .content_write_bytes(
+                ContentKind::DictBlob { dict },
+                ledger_address,
+                &branch_bytes,
+            )
             .await
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
@@ -1085,21 +1100,21 @@ pub async fn upload_dicts_from_disk<S: Storage>(
     tracing::info!("uploading flat dictionary artifacts (graphs, datatypes, languages)");
     let graphs = upload_flat(
         storage,
-        alias,
+        ledger_address,
         &run_dir.join("graphs.dict"),
         DictKind::Graphs,
     )
     .await?;
     let datatypes = upload_flat(
         storage,
-        alias,
+        ledger_address,
         &run_dir.join("datatypes.dict"),
         DictKind::Datatypes,
     )
     .await?;
     let languages = upload_flat(
         storage,
-        alias,
+        ledger_address,
         &run_dir.join("languages.dict"),
         DictKind::Languages,
     )
@@ -1169,7 +1184,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             "uploading subject forward tree to CAS"
         );
         let subject_forward =
-            upload_tree(storage, alias, sf_tree, DictKind::SubjectForward).await?;
+            upload_tree(storage, ledger_address, sf_tree, DictKind::SubjectForward).await?;
 
         // Pass 2: reverse tree (entries sorted by key)
         tracing::info!("building subject reverse tree");
@@ -1191,7 +1206,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             "uploading subject reverse tree to CAS"
         );
         let subject_reverse =
-            upload_tree(storage, alias, sr_tree, DictKind::SubjectReverse).await?;
+            upload_tree(storage, ledger_address, sr_tree, DictKind::SubjectReverse).await?;
 
         tracing::info!("subject CoW trees uploaded");
         (subject_forward, subject_reverse)
@@ -1238,7 +1253,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             leaves = stf_tree.leaves.len(),
             "uploading string forward tree to CAS"
         );
-        let sf = upload_tree(storage, alias, stf_tree, DictKind::StringForward).await?;
+        let sf = upload_tree(storage, ledger_address, stf_tree, DictKind::StringForward).await?;
 
         // Pass 2: reverse tree
         tracing::info!("building string reverse tree");
@@ -1260,7 +1275,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             leaves = str_tree.leaves.len(),
             "uploading string reverse tree to CAS"
         );
-        let sr = upload_tree(storage, alias, str_tree, DictKind::StringReverse).await?;
+        let sr = upload_tree(storage, ledger_address, str_tree, DictKind::StringReverse).await?;
 
         tracing::info!("string CoW trees uploaded");
         (count, sf, sr)
@@ -1274,8 +1289,8 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             .map_err(|e| {
                 IndexerError::StorageWrite(format!("build empty string rev tree: {}", e))
             })?;
-        let sf = upload_tree(storage, alias, empty_fwd, DictKind::StringForward).await?;
-        let sr = upload_tree(storage, alias, empty_rev, DictKind::StringReverse).await?;
+        let sf = upload_tree(storage, ledger_address, empty_fwd, DictKind::StringForward).await?;
+        let sr = upload_tree(storage, ledger_address, empty_rev, DictKind::StringReverse).await?;
         (0, sf, sr)
     };
 
@@ -1293,9 +1308,13 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             if let Some(rest) = name_str.strip_prefix("p_") {
                 if let Some(id_str) = rest.strip_suffix(".nba") {
                     if let Ok(p_id) = id_str.parse::<u32>() {
-                        let addr =
-                            upload_flat(storage, alias, &entry.path(), DictKind::NumBig { p_id })
-                                .await?;
+                        let addr = upload_flat(
+                            storage,
+                            ledger_address,
+                            &entry.path(),
+                            DictKind::NumBig { p_id },
+                        )
+                        .await?;
                         numbig.insert(p_id.to_string(), addr);
                     }
                 }
@@ -1387,7 +1406,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
 /// Publish index result to nameservice
 pub async fn publish_index_result<P: Publisher>(publisher: &P, result: &IndexResult) -> Result<()> {
     publisher
-        .publish_index(&result.alias, &result.root_address, result.index_t)
+        .publish_index(&result.ledger_address, &result.root_address, result.index_t)
         .await
         .map_err(|e| IndexerError::NameService(e.to_string()))
 }
@@ -1406,39 +1425,39 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_alias_for_comparison() {
+    fn test_normalize_address_for_comparison() {
         // Canonical format passes through
-        assert_eq!(normalize_alias_for_comparison("test:main"), "test:main");
+        assert_eq!(normalize_address_for_comparison("test:main"), "test:main");
         assert_eq!(
-            normalize_alias_for_comparison("my-ledger:dev"),
+            normalize_address_for_comparison("my-ledger:dev"),
             "my-ledger:dev"
         );
 
         // Storage-path format with single slash converts to canonical
-        assert_eq!(normalize_alias_for_comparison("test/main"), "test:main");
+        assert_eq!(normalize_address_for_comparison("test/main"), "test:main");
         assert_eq!(
-            normalize_alias_for_comparison("my-ledger/dev"),
+            normalize_address_for_comparison("my-ledger/dev"),
             "my-ledger:dev"
         );
 
         // Both formats normalize to the same canonical form
         assert_eq!(
-            normalize_alias_for_comparison("test/main"),
-            normalize_alias_for_comparison("test:main")
+            normalize_address_for_comparison("test/main"),
+            normalize_address_for_comparison("test:main")
         );
 
         // Name without branch gets default branch
-        assert_eq!(normalize_alias_for_comparison("test"), "test:main");
+        assert_eq!(normalize_address_for_comparison("test"), "test:main");
 
         // Canonical format with explicit branch takes precedence over slashes in name
         // "org/project:main" - the colon is the branch separator, not the slash
         assert_eq!(
-            normalize_alias_for_comparison("org/project:main"),
+            normalize_address_for_comparison("org/project:main"),
             "org/project:main"
         );
 
         // Multiple slashes without colon - treated as name with default branch
         // (we don't know which slash is the "branch separator")
-        assert_eq!(normalize_alias_for_comparison("a/b/c"), "a/b/c:main");
+        assert_eq!(normalize_address_for_comparison("a/b/c"), "a/b/c:main");
     }
 }

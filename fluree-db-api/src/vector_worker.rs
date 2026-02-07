@@ -91,9 +91,9 @@ pub struct VectorWorkerStats {
 /// Uses `RefCell` for interior mutability to work in single-threaded contexts.
 #[cfg(feature = "vector")]
 pub struct VectorWorkerState {
-    /// Reverse dependency map: ledger_alias -> set of graph source aliases.
+    /// Reverse dependency map: ledger_address -> set of graph source addresses.
     ledger_to_graph_sources: HashMap<String, HashSet<String>>,
-    /// Forward map: graph_source_address -> set of ledger_aliases (for unregistration).
+    /// Forward map: graph_source_address -> set of ledger_addresses (for unregistration).
     gs_to_ledgers: HashMap<String, HashSet<String>>,
     /// Statistics.
     stats: VectorWorkerStats,
@@ -155,9 +155,9 @@ impl VectorWorkerState {
     }
 
     /// Get graph sources that depend on a ledger.
-    pub fn graph_sources_for_ledger(&self, ledger_alias: &str) -> Vec<String> {
+    pub fn graph_sources_for_ledger(&self, ledger_address: &str) -> Vec<String> {
         self.ledger_to_graph_sources
-            .get(ledger_alias)
+            .get(ledger_address)
             .map(|s| s.iter().cloned().collect())
             .unwrap_or_default()
     }
@@ -326,12 +326,14 @@ where
 
         match event {
             NameServiceEvent::LedgerCommitPublished {
-                alias, commit_t, ..
+                ledger_address,
+                commit_t,
+                ..
             } => {
-                let graph_sources = self.state.borrow().graph_sources_for_ledger(alias);
+                let graph_sources = self.state.borrow().graph_sources_for_ledger(ledger_address);
                 if !graph_sources.is_empty() {
                     info!(
-                        ledger = %alias,
+                        ledger = %ledger_address,
                         commit_t,
                         gs_count = graph_sources.len(),
                         "Ledger commit triggers vector graph source sync"
@@ -339,13 +341,17 @@ where
                 }
                 graph_sources
             }
-            NameServiceEvent::LedgerIndexPublished { alias, index_t, .. } => {
+            NameServiceEvent::LedgerIndexPublished {
+                ledger_address,
+                index_t,
+                ..
+            } => {
                 // Index updates don't require graph source sync (commit already triggered it)
-                debug!(ledger = %alias, index_t, "Ledger index published (no vector graph source sync needed)");
+                debug!(ledger = %ledger_address, index_t, "Ledger index published (no vector graph source sync needed)");
                 vec![]
             }
             NameServiceEvent::GraphSourceConfigPublished {
-                alias,
+                address,
                 source_type,
                 dependencies,
                 ..
@@ -356,15 +362,15 @@ where
                 {
                     self.state
                         .borrow_mut()
-                        .register_graph_source(alias, dependencies);
-                    info!(graph_source = %alias, "Auto-registered vector graph source for maintenance");
+                        .register_graph_source(address, dependencies);
+                    info!(graph_source = %address, "Auto-registered vector graph source for maintenance");
                 }
                 vec![]
             }
-            NameServiceEvent::GraphSourceRetracted { alias } => {
+            NameServiceEvent::GraphSourceRetracted { address } => {
                 // Unregister retracted graph source
-                self.state.borrow_mut().unregister_graph_source(alias);
-                info!(graph_source = %alias, "Unregistered retracted vector graph source");
+                self.state.borrow_mut().unregister_graph_source(address);
+                info!(graph_source = %address, "Unregistered retracted vector graph source");
                 vec![]
             }
             _ => vec![], // Other events don't trigger sync

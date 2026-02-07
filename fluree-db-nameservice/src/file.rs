@@ -26,7 +26,7 @@
 //! Note: this file-locking approach provides mutual exclusion, not a distributed CAS.
 
 use crate::{
-    parse_alias, AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher,
+    parse_address, AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher,
     ConfigValue, GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService,
     NameServiceError, NameServiceEvent, NsLookupResult, NsRecord, Publication, Publisher, RefKind,
     RefPublisher, RefValue, Result, StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
@@ -154,7 +154,7 @@ struct IndexRef {
 /// Graph source records use the same ns@v2 path pattern but have different fields:
 /// - `@type` includes "f:GraphSource" and a source-specific type (fidx:BM25, etc.)
 /// - `fidx:config` contains the graph source configuration as a JSON string
-/// - `fidx:dependencies` lists dependent ledger aliases
+/// - `fidx:dependencies` lists dependent ledger addresses
 #[derive(Debug, Serialize, Deserialize)]
 struct GraphSourceNsFileV2 {
     /// Context includes both f: (ledger) and fidx: (index) namespaces
@@ -180,7 +180,7 @@ struct GraphSourceNsFileV2 {
     #[serde(rename = "fidx:config")]
     config: ConfigRef,
 
-    /// Dependent ledger aliases
+    /// Dependent ledger addresses
     #[serde(rename = "fidx:dependencies")]
     dependencies: Vec<String>,
 
@@ -597,7 +597,7 @@ impl FileNameService {
 #[async_trait]
 impl NameService for FileNameService {
     async fn lookup(&self, ledger_address: &str) -> Result<Option<NsRecord>> {
-        let (ledger_name, branch) = parse_alias(ledger_address)?;
+        let (ledger_name, branch) = parse_address(ledger_address)?;
         self.load_record(&ledger_name, &branch).await
     }
 
@@ -677,17 +677,17 @@ impl NameService for FileNameService {
 
 #[async_trait]
 impl Publisher for FileNameService {
-    async fn publish_ledger_init(&self, alias: &str) -> Result<()> {
-        let (ledger_name, branch) = parse_alias(alias)?;
+    async fn publish_ledger_init(&self, ledger_address: &str) -> Result<()> {
+        let (ledger_name, branch) = parse_address(ledger_address)?;
         let main_path = self.ns_path(&ledger_name, &branch);
-        let normalized_alias = core_alias::format_alias(&ledger_name, &branch);
+        let normalized_address = core_alias::format_alias(&ledger_name, &branch);
 
         #[cfg(all(feature = "native", unix))]
         {
             let path = main_path.clone();
             let ledger_name_for_file = ledger_name.clone();
             let branch_for_file = branch.clone();
-            let normalized_alias_for_error = normalized_alias.clone();
+            let normalized_address_for_error = normalized_address.clone();
 
             // Use swap_json_locked to atomically check-and-create
             return self
@@ -695,7 +695,7 @@ impl Publisher for FileNameService {
                     if existing.is_some() {
                         // Record already exists (including retracted) - return error
                         return Err(NameServiceError::ledger_already_exists(
-                            normalized_alias_for_error,
+                            normalized_address_for_error,
                         ));
                     }
 
@@ -731,12 +731,12 @@ impl Publisher for FileNameService {
         {
             // Non-locking fallback: check if file exists, then create
             if main_path.exists() {
-                return Err(NameServiceError::ledger_already_exists(normalized_alias));
+                return Err(NameServiceError::ledger_already_exists(normalized_address));
             }
 
             let file = NsFileV2 {
                 context: ns_context(),
-                id: normalized_alias.clone(),
+                id: normalized_address.clone(),
                 record_type: vec!["f:Database".to_string(), "f:PhysicalDatabase".to_string()],
                 ledger: LedgerRef {
                     id: ledger_name.clone(),
@@ -758,8 +758,13 @@ impl Publisher for FileNameService {
         }
     }
 
-    async fn publish_commit(&self, alias: &str, commit_addr: &str, commit_t: i64) -> Result<()> {
-        let (ledger_name, branch) = parse_alias(alias)?;
+    async fn publish_commit(
+        &self,
+        ledger_address: &str,
+        commit_addr: &str,
+        commit_t: i64,
+    ) -> Result<()> {
+        let (ledger_name, branch) = parse_address(ledger_address)?;
         let main_path = self.ns_path(&ledger_name, &branch);
 
         #[cfg(all(feature = "native", unix))]
@@ -769,7 +774,7 @@ impl Publisher for FileNameService {
             let commit_addr_for_event = commit_addr.clone();
             let ledger_name_for_file = ledger_name.clone();
             let branch_for_file = branch.clone();
-            let alias_for_event = core_alias::format_alias(&ledger_name, &branch);
+            let address_for_event = core_alias::format_alias(&ledger_name, &branch);
 
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
@@ -824,7 +829,7 @@ impl Publisher for FileNameService {
 
             if res.is_ok() && did_update.load(Ordering::SeqCst) {
                 let _ = self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                    alias: alias_for_event,
+                    ledger_address: address_for_event,
                     commit_address: commit_addr_for_event,
                     commit_t,
                 });
@@ -868,7 +873,7 @@ impl Publisher for FileNameService {
             self.write_json_atomic(&main_path, &file).await?;
             if did_update {
                 let _ = self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                    alias: core_alias::format_alias(&ledger_name, &branch),
+                    ledger_address: core_alias::format_alias(&ledger_name, &branch),
                     commit_address: commit_addr.to_string(),
                     commit_t,
                 });
@@ -877,8 +882,13 @@ impl Publisher for FileNameService {
         }
     }
 
-    async fn publish_index(&self, alias: &str, index_addr: &str, index_t: i64) -> Result<()> {
-        let (ledger_name, branch) = parse_alias(alias)?;
+    async fn publish_index(
+        &self,
+        ledger_address: &str,
+        index_addr: &str,
+        index_t: i64,
+    ) -> Result<()> {
+        let (ledger_name, branch) = parse_address(ledger_address)?;
         let index_path = self.index_path(&ledger_name, &branch);
 
         #[cfg(all(feature = "native", unix))]
@@ -886,7 +896,7 @@ impl Publisher for FileNameService {
             let path = index_path.clone();
             let index_addr = index_addr.to_string();
             let index_addr_for_event = index_addr.clone();
-            let alias_for_event = core_alias::format_alias(&ledger_name, &branch);
+            let address_for_event = core_alias::format_alias(&ledger_name, &branch);
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
 
@@ -912,7 +922,7 @@ impl Publisher for FileNameService {
 
             if res.is_ok() && did_update.load(Ordering::SeqCst) {
                 let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                    alias: alias_for_event,
+                    ledger_address: address_for_event,
                     index_address: index_addr_for_event,
                     index_t,
                 });
@@ -939,7 +949,7 @@ impl Publisher for FileNameService {
             };
             self.write_json_atomic(&index_path, &file).await?;
             let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                alias: core_alias::format_alias(&ledger_name, &branch),
+                ledger_address: core_alias::format_alias(&ledger_name, &branch),
                 index_address: index_addr.to_string(),
                 index_t,
             });
@@ -947,14 +957,14 @@ impl Publisher for FileNameService {
         }
     }
 
-    async fn retract(&self, alias: &str) -> Result<()> {
-        let (ledger_name, branch) = parse_alias(alias)?;
+    async fn retract(&self, ledger_address: &str) -> Result<()> {
+        let (ledger_name, branch) = parse_address(ledger_address)?;
         let main_path = self.ns_path(&ledger_name, &branch);
 
         #[cfg(all(feature = "native", unix))]
         {
             let path = main_path.clone();
-            let alias_for_event = core_alias::format_alias(&ledger_name, &branch);
+            let address_for_event = core_alias::format_alias(&ledger_name, &branch);
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
 
@@ -978,7 +988,7 @@ impl Publisher for FileNameService {
 
             if res.is_ok() && did_update.load(Ordering::SeqCst) {
                 let _ = self.event_tx.send(NameServiceEvent::LedgerRetracted {
-                    alias: alias_for_event,
+                    ledger_address: address_for_event,
                 });
             }
 
@@ -996,7 +1006,7 @@ impl Publisher for FileNameService {
                     file.status_v = Some(current_v + 1);
                     self.write_json_atomic(&main_path, &file).await?;
                     let _ = self.event_tx.send(NameServiceEvent::LedgerRetracted {
-                        alias: core_alias::format_alias(&ledger_name, &branch),
+                        ledger_address: core_alias::format_alias(&ledger_name, &branch),
                     });
                 }
             }
@@ -1004,9 +1014,12 @@ impl Publisher for FileNameService {
         }
     }
 
-    fn publishing_address(&self, alias: &str) -> Option<String> {
-        // File nameservice returns the alias as the publishing address
-        Some(core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string()))
+    fn publishing_address(&self, ledger_address: &str) -> Option<String> {
+        // File nameservice returns the ledger address as the publishing address
+        Some(
+            core_alias::normalize_alias(ledger_address)
+                .unwrap_or_else(|_| ledger_address.to_string()),
+        )
     }
 }
 
@@ -1014,13 +1027,13 @@ impl Publisher for FileNameService {
 impl AdminPublisher for FileNameService {
     async fn publish_index_allow_equal(
         &self,
-        alias: &str,
+        ledger_address: &str,
         index_addr: &str,
         index_t: i64,
     ) -> Result<()> {
-        let (ledger_name, branch) = parse_alias(alias)?;
+        let (ledger_name, branch) = parse_address(ledger_address)?;
         let index_path = self.index_path(&ledger_name, &branch);
-        let alias_for_event = core_alias::format_alias(&ledger_name, &branch);
+        let address_for_event = core_alias::format_alias(&ledger_name, &branch);
 
         #[cfg(all(feature = "native", unix))]
         {
@@ -1055,7 +1068,7 @@ impl AdminPublisher for FileNameService {
             // Only emit event if update actually happened
             if res.is_ok() && did_update.load(Ordering::SeqCst) {
                 let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                    alias: alias_for_event,
+                    ledger_address: address_for_event,
                     index_address: index_addr_for_event,
                     index_t,
                 });
@@ -1084,7 +1097,7 @@ impl AdminPublisher for FileNameService {
                 self.write_json_atomic(&index_path, &file).await?;
 
                 let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                    alias: alias_for_event,
+                    ledger_address: address_for_event,
                     index_address: index_addr.to_string(),
                     index_t,
                 });
@@ -1119,7 +1132,7 @@ impl GraphSourcePublisher for FileNameService {
             let source_type_str = source_type.to_type_string();
             let name_for_file = name.clone();
             let branch_for_file = branch.clone();
-            let alias_for_event = core_alias::format_alias(&name, &branch);
+            let address_for_event = core_alias::format_alias(&name, &branch);
 
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
@@ -1153,7 +1166,7 @@ impl GraphSourcePublisher for FileNameService {
                 let _ = self
                     .event_tx
                     .send(NameServiceEvent::GraphSourceConfigPublished {
-                        alias: alias_for_event,
+                        address: address_for_event,
                         source_type: source_type_for_event,
                         dependencies: dependencies_for_event,
                     });
@@ -1180,7 +1193,7 @@ impl GraphSourcePublisher for FileNameService {
             let _ = self
                 .event_tx
                 .send(NameServiceEvent::GraphSourceConfigPublished {
-                    alias: core_alias::format_alias(&name, &branch),
+                    address: core_alias::format_alias(&name, &branch),
                     source_type,
                     dependencies: dependencies.to_vec(),
                 });
@@ -1204,7 +1217,7 @@ impl GraphSourcePublisher for FileNameService {
             let name = name.to_string();
             let branch = branch.to_string();
             let index_addr_for_event = index_addr.clone();
-            let alias_for_event = core_alias::format_alias(&name, &branch);
+            let address_for_event = core_alias::format_alias(&name, &branch);
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
 
@@ -1235,7 +1248,7 @@ impl GraphSourcePublisher for FileNameService {
                 let _ = self
                     .event_tx
                     .send(NameServiceEvent::GraphSourceIndexPublished {
-                        alias: alias_for_event,
+                        address: address_for_event,
                         index_address: index_addr_for_event,
                         index_t,
                     });
@@ -1266,7 +1279,7 @@ impl GraphSourcePublisher for FileNameService {
             let _ = self
                 .event_tx
                 .send(NameServiceEvent::GraphSourceIndexPublished {
-                    alias: core_alias::format_alias(&name, &branch),
+                    address: core_alias::format_alias(&name, &branch),
                     index_address: index_addr.to_string(),
                     index_t,
                 });
@@ -1280,7 +1293,7 @@ impl GraphSourcePublisher for FileNameService {
         #[cfg(all(feature = "native", unix))]
         {
             let path = main_path.clone();
-            let alias_for_event = core_alias::format_alias(name, branch);
+            let address_for_event = core_alias::format_alias(name, branch);
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
 
@@ -1301,7 +1314,7 @@ impl GraphSourcePublisher for FileNameService {
 
             if res.is_ok() && did_update.load(Ordering::SeqCst) {
                 let _ = self.event_tx.send(NameServiceEvent::GraphSourceRetracted {
-                    alias: alias_for_event,
+                    address: address_for_event,
                 });
             }
 
@@ -1315,15 +1328,15 @@ impl GraphSourcePublisher for FileNameService {
                 file.status = "retracted".to_string();
                 self.write_json_atomic(&main_path, &file).await?;
                 let _ = self.event_tx.send(NameServiceEvent::GraphSourceRetracted {
-                    alias: core_alias::format_alias(&name, &branch),
+                    address: core_alias::format_alias(&name, &branch),
                 });
             }
             Ok(())
         }
     }
 
-    async fn lookup_graph_source(&self, alias: &str) -> Result<Option<GraphSourceRecord>> {
-        let (name, branch) = parse_alias(alias)?;
+    async fn lookup_graph_source(&self, address: &str) -> Result<Option<GraphSourceRecord>> {
+        let (name, branch) = parse_address(address)?;
 
         // First check if it's a graph source record
         if !self.is_graph_source_record(&name, &branch).await? {
@@ -1333,8 +1346,8 @@ impl GraphSourcePublisher for FileNameService {
         self.load_graph_source_record(&name, &branch).await
     }
 
-    async fn lookup_any(&self, alias: &str) -> Result<NsLookupResult> {
-        let (name, branch) = parse_alias(alias)?;
+    async fn lookup_any(&self, address: &str) -> Result<NsLookupResult> {
+        let (name, branch) = parse_address(address)?;
         let main_path = self.ns_path(&name, &branch);
 
         if !main_path.exists() {
@@ -1425,8 +1438,8 @@ impl GraphSourcePublisher for FileNameService {
 
 #[async_trait]
 impl RefPublisher for FileNameService {
-    async fn get_ref(&self, alias: &str, kind: RefKind) -> Result<Option<RefValue>> {
-        let (ledger_name, branch) = parse_alias(alias)?;
+    async fn get_ref(&self, ledger_address: &str, kind: RefKind) -> Result<Option<RefValue>> {
+        let (ledger_name, branch) = parse_address(ledger_address)?;
         match kind {
             RefKind::CommitHead => {
                 let main_path = self.ns_path(&ledger_name, &branch);
@@ -1467,23 +1480,23 @@ impl RefPublisher for FileNameService {
 
     async fn compare_and_set_ref(
         &self,
-        alias: &str,
+        ledger_address: &str,
         kind: RefKind,
         expected: Option<&RefValue>,
         new: &RefValue,
     ) -> Result<CasResult> {
-        let (ledger_name, branch) = parse_alias(alias)?;
+        let (ledger_name, branch) = parse_address(ledger_address)?;
         let expected_clone = expected.cloned();
         let new_clone = new.clone();
         let event_tx = self.event_tx.clone();
-        let normalized_alias = core_alias::format_alias(&ledger_name, &branch);
+        let normalized_address = core_alias::format_alias(&ledger_name, &branch);
 
         match kind {
             RefKind::CommitHead => {
                 let path = self.ns_path(&ledger_name, &branch);
                 let ledger_name_c = ledger_name.clone();
                 let branch_c = branch.clone();
-                let alias_c = normalized_alias.clone();
+                let address_c = normalized_address.clone();
 
                 // Use a shared cell to communicate the CAS result out of the closure.
                 let result_cell = Arc::new(std::sync::Mutex::new(CasResult::Updated));
@@ -1532,7 +1545,7 @@ impl RefPublisher for FileNameService {
                     let mut file = existing.unwrap_or_else(|| {
                         NsFileV2 {
                             context: ns_context(),
-                            id: alias_c.clone(),
+                            id: address_c.clone(),
                             record_type: vec![
                                 "f:Database".to_string(),
                                 "f:PhysicalDatabase".to_string(),
@@ -1568,7 +1581,7 @@ impl RefPublisher for FileNameService {
                 if result == CasResult::Updated {
                     if let Some(addr) = &new.address {
                         let _ = event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                            alias: core_alias::format_alias(&ledger_name, &branch),
+                            ledger_address: core_alias::format_alias(&ledger_name, &branch),
                             commit_address: addr.clone(),
                             commit_t: new.t,
                         });
@@ -1642,7 +1655,7 @@ impl RefPublisher for FileNameService {
                 if result == CasResult::Updated {
                     if let Some(addr) = &new.address {
                         let _ = event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                            alias: core_alias::format_alias(&ledger_name, &branch),
+                            ledger_address: core_alias::format_alias(&ledger_name, &branch),
                             index_address: addr.clone(),
                             index_t: new.t,
                         });
@@ -1667,8 +1680,8 @@ impl Publication for FileNameService {
         Ok(())
     }
 
-    async fn known_addresses(&self, alias: &str) -> Result<Vec<String>> {
-        let (name, branch) = parse_alias(alias)?;
+    async fn known_addresses(&self, ledger_address: &str) -> Result<Vec<String>> {
+        let (name, branch) = parse_address(ledger_address)?;
         match self.load_record(&name, &branch).await? {
             Some(record) => {
                 let mut addresses = Vec::new();
@@ -1692,8 +1705,8 @@ impl Publication for FileNameService {
 #[cfg(all(feature = "native", unix))]
 #[async_trait]
 impl StatusPublisher for FileNameService {
-    async fn get_status(&self, alias: &str) -> Result<Option<StatusValue>> {
-        let (ledger_name, branch) = parse_alias(alias)?;
+    async fn get_status(&self, ledger_address: &str) -> Result<Option<StatusValue>> {
+        let (ledger_name, branch) = parse_address(ledger_address)?;
         let main_path = self.ns_path(&ledger_name, &branch);
 
         let main_file: Option<NsFileV2> = self.read_json(&main_path).await?;
@@ -1718,11 +1731,11 @@ impl StatusPublisher for FileNameService {
 
     async fn push_status(
         &self,
-        alias: &str,
+        ledger_address: &str,
         expected: Option<&StatusValue>,
         new: &StatusValue,
     ) -> Result<StatusCasResult> {
-        let (ledger_name, branch) = parse_alias(alias)?;
+        let (ledger_name, branch) = parse_address(ledger_address)?;
         let path = self.ns_path(&ledger_name, &branch);
 
         // Clone values for the closure
@@ -1801,8 +1814,8 @@ impl StatusPublisher for FileNameService {
 #[cfg(all(feature = "native", unix))]
 #[async_trait]
 impl ConfigPublisher for FileNameService {
-    async fn get_config(&self, alias: &str) -> Result<Option<ConfigValue>> {
-        let (ledger_name, branch) = parse_alias(alias)?;
+    async fn get_config(&self, ledger_address: &str) -> Result<Option<ConfigValue>> {
+        let (ledger_name, branch) = parse_address(ledger_address)?;
         let main_path = self.ns_path(&ledger_name, &branch);
 
         let main_file: Option<NsFileV2> = self.read_json(&main_path).await?;
@@ -1839,11 +1852,11 @@ impl ConfigPublisher for FileNameService {
 
     async fn push_config(
         &self,
-        alias: &str,
+        ledger_address: &str,
         expected: Option<&ConfigValue>,
         new: &ConfigValue,
     ) -> Result<ConfigCasResult> {
-        let (ledger_name, branch) = parse_alias(alias)?;
+        let (ledger_name, branch) = parse_address(ledger_address)?;
         let path = self.ns_path(&ledger_name, &branch);
 
         // Clone values for the closure
@@ -1946,8 +1959,8 @@ impl ConfigPublisher for FileNameService {
 #[cfg(not(all(feature = "native", unix)))]
 #[async_trait]
 impl StatusPublisher for FileNameService {
-    async fn get_status(&self, alias: &str) -> Result<Option<StatusValue>> {
-        let (ledger_name, branch) = parse_alias(alias)?;
+    async fn get_status(&self, ledger_address: &str) -> Result<Option<StatusValue>> {
+        let (ledger_name, branch) = parse_address(ledger_address)?;
         let main_path = self.ns_path(&ledger_name, &branch);
 
         let main_file: Option<NsFileV2> = self.read_json(&main_path).await?;
@@ -1968,7 +1981,7 @@ impl StatusPublisher for FileNameService {
 
     async fn push_status(
         &self,
-        _alias: &str,
+        _ledger_address: &str,
         _expected: Option<&StatusValue>,
         _new: &StatusValue,
     ) -> Result<StatusCasResult> {
@@ -1982,8 +1995,8 @@ impl StatusPublisher for FileNameService {
 #[cfg(not(all(feature = "native", unix)))]
 #[async_trait]
 impl ConfigPublisher for FileNameService {
-    async fn get_config(&self, alias: &str) -> Result<Option<ConfigValue>> {
-        let (ledger_name, branch) = parse_alias(alias)?;
+    async fn get_config(&self, ledger_address: &str) -> Result<Option<ConfigValue>> {
+        let (ledger_name, branch) = parse_address(ledger_address)?;
         let main_path = self.ns_path(&ledger_name, &branch);
 
         let main_file: Option<NsFileV2> = self.read_json(&main_path).await?;
@@ -2017,7 +2030,7 @@ impl ConfigPublisher for FileNameService {
 
     async fn push_config(
         &self,
-        _alias: &str,
+        _ledger_address: &str,
         _expected: Option<&ConfigValue>,
         _new: &ConfigValue,
     ) -> Result<ConfigCasResult> {
@@ -2044,7 +2057,7 @@ mod tests {
     async fn test_file_ns_emits_events_on_publish_commit_monotonic() {
         let (_temp, ns) = setup().await;
         let mut sub = ns
-            .subscribe(crate::SubscriptionScope::alias("mydb:main"))
+            .subscribe(crate::SubscriptionScope::address("mydb:main"))
             .await
             .unwrap();
 
@@ -2053,7 +2066,7 @@ mod tests {
         assert_eq!(
             evt,
             NameServiceEvent::LedgerCommitPublished {
-                alias: "mydb:main".to_string(),
+                ledger_address: "mydb:main".to_string(),
                 commit_address: "commit-1".to_string(),
                 commit_t: 1
             }

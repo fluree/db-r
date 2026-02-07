@@ -30,9 +30,9 @@ impl std::fmt::Display for RemoteName {
     }
 }
 
-/// A single tracking record for one alias on one remote.
+/// A single tracking record for one ledger address on one remote.
 ///
-/// Contains both commit and index refs (one file per alias on disk).
+/// Contains both commit and index refs (one file per ledger address on disk).
 /// Versioned so the on-disk format can evolve without breaking existing state.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TrackingRecord {
@@ -42,8 +42,8 @@ pub struct TrackingRecord {
     /// The remote this record belongs to.
     pub remote: RemoteName,
 
-    /// The ledger alias (e.g., "mydb:main").
-    pub alias: String,
+    /// The ledger address (e.g., "mydb:main").
+    pub ledger_address: String,
 
     /// The remote's commit head (if known).
     pub commit_ref: Option<RefValue>,
@@ -60,11 +60,11 @@ pub struct TrackingRecord {
 
 impl TrackingRecord {
     /// Create a new tracking record with sensible defaults.
-    pub fn new(remote: RemoteName, alias: impl Into<String>) -> Self {
+    pub fn new(remote: RemoteName, ledger_address: impl Into<String>) -> Self {
         Self {
             schema_version: 1,
             remote,
-            alias: alias.into(),
+            ledger_address: ledger_address.into(),
             commit_ref: None,
             index_ref: None,
             retracted: false,
@@ -75,17 +75,17 @@ impl TrackingRecord {
 
 /// Store for remote tracking state.
 ///
-/// Each implementation stores tracking records keyed by `(remote, alias)`.
-/// File-based stores use `{base}/ns-sync/remotes/{remote}/{alias_encoded}.json`.
+/// Each implementation stores tracking records keyed by `(remote, ledger_address)`.
+/// File-based stores use `{base}/ns-sync/remotes/{remote}/{address_encoded}.json`.
 #[async_trait]
 pub trait RemoteTrackingStore: Debug + Send + Sync {
-    /// Get the tracking record for a specific remote + alias.
+    /// Get the tracking record for a specific remote + ledger address.
     ///
     /// Returns `None` if no tracking record exists.
     async fn get_tracking(
         &self,
         remote: &RemoteName,
-        alias: &str,
+        ledger_address: &str,
     ) -> Result<Option<TrackingRecord>>;
 
     /// Store (create or update) a tracking record.
@@ -95,7 +95,7 @@ pub trait RemoteTrackingStore: Debug + Send + Sync {
     async fn list_tracking(&self, remote: &RemoteName) -> Result<Vec<TrackingRecord>>;
 
     /// Remove a tracking record.
-    async fn remove_tracking(&self, remote: &RemoteName, alias: &str) -> Result<()>;
+    async fn remove_tracking(&self, remote: &RemoteName, ledger_address: &str) -> Result<()>;
 }
 
 /// In-memory implementation of [`RemoteTrackingStore`] for testing.
@@ -117,8 +117,8 @@ impl MemoryTrackingStore {
         }
     }
 
-    fn make_key(remote: &RemoteName, alias: &str) -> (String, String) {
-        (remote.0.clone(), alias.to_string())
+    fn make_key(remote: &RemoteName, ledger_address: &str) -> (String, String) {
+        (remote.0.clone(), ledger_address.to_string())
     }
 }
 
@@ -127,14 +127,14 @@ impl RemoteTrackingStore for MemoryTrackingStore {
     async fn get_tracking(
         &self,
         remote: &RemoteName,
-        alias: &str,
+        ledger_address: &str,
     ) -> Result<Option<TrackingRecord>> {
-        let key = Self::make_key(remote, alias);
+        let key = Self::make_key(remote, ledger_address);
         Ok(self.records.read().get(&key).cloned())
     }
 
     async fn set_tracking(&self, record: &TrackingRecord) -> Result<()> {
-        let key = Self::make_key(&record.remote, &record.alias);
+        let key = Self::make_key(&record.remote, &record.ledger_address);
         self.records.write().insert(key, record.clone());
         Ok(())
     }
@@ -148,8 +148,8 @@ impl RemoteTrackingStore for MemoryTrackingStore {
             .collect())
     }
 
-    async fn remove_tracking(&self, remote: &RemoteName, alias: &str) -> Result<()> {
-        let key = Self::make_key(remote, alias);
+    async fn remove_tracking(&self, remote: &RemoteName, ledger_address: &str) -> Result<()> {
+        let key = Self::make_key(remote, ledger_address);
         self.records.write().remove(&key);
         Ok(())
     }
@@ -192,7 +192,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(fetched.alias, "mydb:main");
+        assert_eq!(fetched.ledger_address, "mydb:main");
         assert_eq!(fetched.schema_version, 1);
         assert_eq!(fetched.commit_ref.as_ref().unwrap().t, 5);
         assert_eq!(
@@ -249,7 +249,7 @@ mod tests {
 
         let upstream_records = store.list_tracking(&upstream()).await.unwrap();
         assert_eq!(upstream_records.len(), 1);
-        assert_eq!(upstream_records[0].alias, "db3:main");
+        assert_eq!(upstream_records[0].ledger_address, "db3:main");
     }
 
     #[tokio::test]
@@ -303,7 +303,7 @@ mod tests {
 
         assert_eq!(deserialized.schema_version, 1);
         assert_eq!(deserialized.remote, origin());
-        assert_eq!(deserialized.alias, "mydb:main");
+        assert_eq!(deserialized.ledger_address, "mydb:main");
         assert_eq!(deserialized.commit_ref.as_ref().unwrap().t, 5);
         assert_eq!(deserialized.index_ref.as_ref().unwrap().t, 3);
         assert!(!deserialized.retracted);

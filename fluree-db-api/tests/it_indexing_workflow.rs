@@ -1131,3 +1131,91 @@ async fn graph_crawl_select_works_after_indexing() {
         })
         .await;
 }
+
+/// CONSTRUCT queries must work against an indexed ledger.
+///
+/// When the binary index is active, scan operators may produce `EncodedSid` bindings.
+/// The CONSTRUCT formatter must materialize these for subject/predicate positions,
+/// otherwise it can silently omit triples.
+#[tokio::test]
+async fn construct_works_after_indexing() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let alias = "it/construct-indexed:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let db0 = Db::genesis(fluree.storage().clone(), alias);
+            let mut ledger = LedgerState::new(db0, Novelty::new(0));
+
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            for i in 0..3 {
+                let tx = json!({
+                    "@context": { "ex":"http://example.org/" },
+                    "@id": format!("ex:person{i}"),
+                    "@type": "ex:Person",
+                    "ex:name": format!("Person {i}")
+                });
+                let r = fluree
+                    .insert_with_opts(
+                        ledger,
+                        &tx,
+                        TxnOpts::default(),
+                        CommitOpts::default(),
+                        &index_cfg,
+                    )
+                    .await
+                    .expect("insert_with_opts");
+                ledger = r.ledger;
+            }
+
+            let record = fluree
+                .nameservice()
+                .lookup(alias)
+                .await
+                .expect("ns lookup")
+                .expect("ns record");
+            let completion = handle.trigger(alias, record.commit_t).await;
+            match completion.wait().await {
+                fluree_db_api::IndexOutcome::Completed { .. } => {}
+                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
+                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
+            }
+
+            let loaded = fluree.ledger(alias).await.expect("load ledger");
+            assert!(
+                loaded.binary_store.is_some(),
+                "loaded ledger should have binary index store"
+            );
+
+            let query = json!({
+                "@context": { "ex":"http://example.org/" },
+                "where": { "@id": "?s", "@type": "ex:Person", "ex:name": "?name" },
+                "construct": [{ "@id": "?s", "ex:name": "?name" }]
+            });
+
+            let result = fluree.query(&loaded, &query).await.expect("query");
+            let constructed = result.to_construct(&loaded.db).expect("to_construct");
+
+            let graph = constructed
+                .get("@graph")
+                .and_then(|v| v.as_array())
+                .expect("@graph array");
+            assert_eq!(
+                graph.len(),
+                3,
+                "expected 3 constructed nodes, got: {constructed}"
+            );
+        })
+        .await;
+}

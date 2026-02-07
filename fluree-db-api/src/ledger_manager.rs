@@ -201,8 +201,8 @@ impl<S> Clone for LedgerHandle<S> {
 struct LedgerHandleInner<S> {
     /// Single mutex for all access (queries clone snapshot, txns hold for duration)
     state: Mutex<LedgerState<S>>,
-    /// Ledger alias
-    alias: String,
+    /// Ledger address (e.g., "mydb:main")
+    ledger_address: String,
     /// Last access time (monotonic secs since process start)
     last_access: AtomicU64,
     /// Binary columnar index store (v2 only).
@@ -215,14 +215,14 @@ struct LedgerHandleInner<S> {
 impl<S: Storage + Clone + 'static> LedgerHandle<S> {
     /// Create a new handle wrapping ledger state
     pub fn new(
-        alias: String,
+        ledger_address: String,
         state: LedgerState<S>,
         binary_store: Option<Arc<BinaryIndexStore>>,
     ) -> Self {
         Self {
             inner: Arc::new(LedgerHandleInner {
                 state: Mutex::new(state),
-                alias,
+                ledger_address,
                 last_access: AtomicU64::new(monotonic_secs()),
                 binary_store: Mutex::new(binary_store),
             }),
@@ -233,8 +233,8 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
     ///
     /// This is functionally identical to `new()`, but the naming clarifies
     /// that this handle is NOT cached and each call creates a fresh load.
-    pub fn ephemeral(alias: String, state: LedgerState<S>) -> Self {
-        Self::new(alias, state, None)
+    pub fn ephemeral(ledger_address: String, state: LedgerState<S>) -> Self {
+        Self::new(ledger_address, state, None)
     }
 
     /// Get read-only snapshot for queries (brief lock, clone, release)
@@ -275,9 +275,9 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
         self.inner.last_access.load(Ordering::Relaxed)
     }
 
-    /// Get ledger alias
-    pub fn alias(&self) -> &str {
-        &self.inner.alias
+    /// Get ledger address
+    pub fn ledger_address(&self) -> &str {
+        &self.inner.ledger_address
     }
 
     /// Check if currently locked (for eviction - skip if in use)
@@ -376,7 +376,7 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
             .and_then(|s| serde_json::from_value::<RawDbRootSchema>(s.clone()).ok())
             .map(|raw| raw_schema_to_index_schema(&raw));
         let meta = DbMetadata {
-            alias: root.ledger_alias,
+            ledger_address: root.ledger_address,
             t: root.index_t,
             namespace_codes: ns_codes,
             stats,
@@ -425,8 +425,8 @@ pub struct RemoteWatermark {
 ///
 /// Server's PeerState implements this; library doesn't depend on server types.
 pub trait FreshnessSource: Send + Sync {
-    /// Get remote watermark for a ledger alias
-    fn watermark(&self, alias: &str) -> Option<RemoteWatermark>;
+    /// Get remote watermark for a ledger address
+    fn watermark(&self, ledger_address: &str) -> Option<RemoteWatermark>;
 }
 
 /// Result of checking if cached state is fresh
@@ -604,16 +604,16 @@ where
 
     /// Get cached handle or load from nameservice
     ///
-    /// Uses single-flight pattern: concurrent requests for same alias
+    /// Uses single-flight pattern: concurrent requests for same ledger address
     /// will share one load operation, not stampede.
     ///
-    /// The alias is normalized to canonical form (e.g., "mydb" -> "mydb:main")
+    /// The address is normalized to canonical form (e.g., "mydb" -> "mydb:main")
     /// before caching to ensure consistent cache keys regardless of input form.
-    pub async fn get_or_load(&self, alias: &str) -> Result<LedgerHandle<S>> {
-        // Normalize alias to canonical form for consistent cache keys
+    pub async fn get_or_load(&self, ledger_address: &str) -> Result<LedgerHandle<S>> {
+        // Normalize address to canonical form for consistent cache keys
         // This ensures "mydb" and "mydb:main" use the same cache entry
-        let canonical_alias =
-            core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
+        let canonical_alias = core_alias::normalize_alias(ledger_address)
+            .unwrap_or_else(|_| ledger_address.to_string());
 
         // Fast path: already loaded
         {
@@ -673,9 +673,9 @@ where
         }
 
         // We're the loader - do the I/O without holding manager lock
-        // Note: We pass the original alias to nameservice (it handles resolution),
-        // but cache under the canonical alias for consistent lookup
-        let result = LedgerState::load(&self.nameservice, alias, self.storage.clone())
+        // Note: We pass the original address to nameservice (it handles resolution),
+        // but cache under the canonical address for consistent lookup
+        let result = LedgerState::load(&self.nameservice, ledger_address, self.storage.clone())
             .await
             .map_err(ApiError::from); // Convert LedgerError to ApiError
 
@@ -698,7 +698,7 @@ where
                     Ok(store) => store,
                     Err(e) => {
                         tracing::warn!(
-                            alias = %alias,
+                            ledger_address = %ledger_address,
                             error = %e,
                             "Failed to load binary store, continuing without"
                         );
@@ -744,10 +744,10 @@ where
     ///
     /// Note: If loading/reloading is in progress, waiters will receive
     /// cancellation errors. This is acceptable - disconnect is a "force evict."
-    pub async fn disconnect(&self, alias: &str) {
-        // Normalize alias to match cache key format
-        let canonical_alias =
-            core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
+    pub async fn disconnect(&self, ledger_address: &str) {
+        // Normalize address to match cache key format
+        let canonical_alias = core_alias::normalize_alias(ledger_address)
+            .unwrap_or_else(|_| ledger_address.to_string());
 
         let mut entries = self.entries.write().await;
         // Removal will drop any pending oneshot senders, causing waiters to get RecvError
@@ -783,10 +783,10 @@ where
     /// - Reloading{h, waiters} → add waiter, await completion
     /// - Loading(waiters) → wait for initial load, then return Ok(())
     /// - None → Ok(()) (not loaded, nothing to reload)
-    pub async fn reload(&self, alias: &str) -> Result<()> {
-        // Normalize alias to match cache key format
-        let canonical_alias =
-            core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
+    pub async fn reload(&self, ledger_address: &str) -> Result<()> {
+        // Normalize address to match cache key format
+        let canonical_alias = core_alias::normalize_alias(ledger_address)
+            .unwrap_or_else(|_| ledger_address.to_string());
 
         enum ReloadAction<S> {
             BecomeLeader(LedgerHandle<S>),
@@ -865,9 +865,10 @@ where
                 // We're the reload leader - do I/O without manager lock
                 let mut write_guard = handle.lock_for_write().await;
 
-                let result = LedgerState::load(&self.nameservice, alias, self.storage.clone())
-                    .await
-                    .map_err(ApiError::from); // Convert LedgerError to ApiError
+                let result =
+                    LedgerState::load(&self.nameservice, ledger_address, self.storage.clone())
+                        .await
+                        .map_err(ApiError::from); // Convert LedgerError to ApiError
 
                 // Publish result under lock
                 let mut entries = self.entries.write().await;
@@ -887,7 +888,7 @@ where
                             Ok(store) => store,
                             Err(e) => {
                                 tracing::warn!(
-                                    alias = %alias,
+                                    ledger_address = %ledger_address,
                                     error = %e,
                                     "Failed to load binary store during reload, continuing without"
                                 );
@@ -1129,10 +1130,10 @@ impl UpdatePlan {
     }
 }
 
-/// Input for notify: alias + optional fresh NsRecord
+/// Input for notify: ledger address + optional fresh NsRecord
 pub struct NsNotify {
-    /// Ledger alias
-    pub alias: String,
+    /// Ledger address
+    pub ledger_address: String,
     /// Fresh nameservice record (if already fetched)
     pub record: Option<NsRecord>,
 }
@@ -1168,7 +1169,7 @@ where
         // Check if ledger is cached
         let handle = {
             let entries = self.entries.read().await;
-            match entries.get(&input.alias) {
+            match entries.get(&input.ledger_address) {
                 Some(LoadState::Ready(h)) => h.clone(),
                 Some(LoadState::Reloading { handle, .. }) => handle.clone(),
                 _ => return Ok(NotifyResult::NotLoaded),
@@ -1178,7 +1179,7 @@ where
         // Get fresh record from nameservice if not provided
         let ns_record = match input.record {
             Some(r) => r,
-            None => match self.nameservice.lookup(&input.alias).await? {
+            None => match self.nameservice.lookup(&input.ledger_address).await? {
                 Some(r) => r,
                 None => return Ok(NotifyResult::Current), // Ledger doesn't exist
             },
@@ -1196,7 +1197,7 @@ where
         );
 
         tracing::debug!(
-            alias = %input.alias,
+            alias = %input.ledger_address,
             local_t = local_t,
             local_index_t = local_index_t,
             ns_commit_t = ns_record.commit_t,
@@ -1215,12 +1216,12 @@ where
                 // v1: Fall back to full reload
                 // Future: reload index root at index_address, rebuild novelty for commits > index_t
                 tracing::debug!(
-                    alias = %input.alias,
+                    alias = %input.ledger_address,
                     index_address = %index_address,
                     index_t = index_t,
                     "notify: IndexOnly plan - falling back to reload in v1"
                 );
-                self.reload(&input.alias).await?;
+                self.reload(&input.ledger_address).await?;
                 Ok(NotifyResult::IndexUpdated)
             }
 
@@ -1231,17 +1232,17 @@ where
                 // v1: Fall back to full reload
                 // Future: load single commit at commit_address, apply to novelty
                 tracing::debug!(
-                    alias = %input.alias,
+                    alias = %input.ledger_address,
                     commit_address = %commit_address,
                     commit_t = commit_t,
                     "notify: CommitNext plan - falling back to reload in v1"
                 );
-                self.reload(&input.alias).await?;
+                self.reload(&input.ledger_address).await?;
                 Ok(NotifyResult::CommitApplied)
             }
 
             UpdatePlan::Reload => {
-                self.reload(&input.alias).await?;
+                self.reload(&input.ledger_address).await?;
                 Ok(NotifyResult::Reloaded)
             }
         }

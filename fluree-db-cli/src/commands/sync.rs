@@ -84,9 +84,9 @@ fn print_fetch_result(result: &FetchResult) {
 
     if !result.updated.is_empty() {
         println!("{}", "Updated:".green().bold());
-        for (alias, tracking) in &result.updated {
+        for (ledger_address, tracking) in &result.updated {
             let t = tracking.commit_ref.as_ref().map(|r| r.t).unwrap_or(0);
-            println!("  {} -> t={}", alias, t);
+            println!("  {} -> t={}", ledger_address, t);
         }
     }
 
@@ -101,23 +101,23 @@ fn print_fetch_result(result: &FetchResult) {
 
 /// Pull (fetch + fast-forward) a ledger from its upstream
 pub async fn run_pull(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> {
-    let alias = context::resolve_ledger(ledger, fluree_dir)?;
-    let alias = context::to_ledger_address(&alias);
+    let ledger_address = context::resolve_ledger(ledger, fluree_dir)?;
+    let ledger_address = context::to_ledger_address(&ledger_address);
 
     let (driver, config_store) = build_sync_driver(fluree_dir).await?;
 
     // Get upstream config to know which remote to fetch from
     let upstream = config_store
-        .get_upstream(&alias)
+        .get_upstream(&ledger_address)
         .await
         .map_err(|e| CliError::Config(e.to_string()))?;
 
     let Some(upstream) = upstream else {
         return Err(CliError::Config(format!(
             "no upstream configured for '{}'\n  {} fluree upstream set {} <remote>",
-            alias,
+            ledger_address,
             "hint:".cyan().bold(),
-            alias
+            ledger_address
         )));
     };
 
@@ -129,9 +129,9 @@ pub async fn run_pull(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
         .map_err(|e| CliError::Config(format!("fetch failed: {e}")))?;
 
     // Then pull
-    println!("Pulling '{}'...", alias.cyan());
+    println!("Pulling '{}'...", ledger_address.cyan());
     let result = driver
-        .pull_tracked(&alias)
+        .pull_tracked(&ledger_address)
         .await
         .map_err(|e| CliError::Config(format!("pull failed: {e}")))?;
 
@@ -147,27 +147,31 @@ pub async fn run_pull(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
 
 fn print_pull_result(result: &PullResult) {
     match result {
-        PullResult::FastForwarded { alias, from, to } => {
+        PullResult::FastForwarded {
+            ledger_address,
+            from,
+            to,
+        } => {
             println!(
                 "{} '{}' fast-forwarded: t={} -> t={}",
                 "✓".green(),
-                alias,
+                ledger_address,
                 from.t,
                 to.t
             );
         }
-        PullResult::Current { alias } => {
-            println!("{} '{}' is already up to date", "✓".green(), alias);
+        PullResult::Current { ledger_address } => {
+            println!("{} '{}' is already up to date", "✓".green(), ledger_address);
         }
         PullResult::Diverged {
-            alias,
+            ledger_address,
             local,
             remote,
         } => {
             println!(
                 "{} '{}' has diverged: local t={}, remote t={}",
                 "✗".red(),
-                alias,
+                ledger_address,
                 local.t,
                 remote.t
             );
@@ -176,14 +180,18 @@ fn print_pull_result(result: &PullResult) {
                 "hint:".cyan().bold()
             );
         }
-        PullResult::NoUpstream { alias } => {
-            println!("{} '{}' has no upstream configured", "✗".red(), alias);
+        PullResult::NoUpstream { ledger_address } => {
+            println!(
+                "{} '{}' has no upstream configured",
+                "✗".red(),
+                ledger_address
+            );
         }
-        PullResult::NoTracking { alias } => {
+        PullResult::NoTracking { ledger_address } => {
             println!(
                 "{} '{}' has no tracking data; run 'fluree fetch' first",
                 "✗".red(),
-                alias
+                ledger_address
             );
         }
     }
@@ -191,34 +199,34 @@ fn print_pull_result(result: &PullResult) {
 
 /// Push a ledger to its upstream remote
 pub async fn run_push(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> {
-    let alias = context::resolve_ledger(ledger, fluree_dir)?;
-    let alias = context::to_ledger_address(&alias);
+    let ledger_address = context::resolve_ledger(ledger, fluree_dir)?;
+    let ledger_address = context::to_ledger_address(&ledger_address);
 
     let (driver, config_store) = build_sync_driver(fluree_dir).await?;
 
     // Get upstream config
     let upstream = config_store
-        .get_upstream(&alias)
+        .get_upstream(&ledger_address)
         .await
         .map_err(|e| CliError::Config(e.to_string()))?;
 
     let Some(upstream) = upstream else {
         return Err(CliError::Config(format!(
             "no upstream configured for '{}'\n  {} fluree upstream set {} <remote>",
-            alias,
+            ledger_address,
             "hint:".cyan().bold(),
-            alias
+            ledger_address
         )));
     };
 
     println!(
         "Pushing '{}' to '{}'...",
-        alias.cyan(),
+        ledger_address.cyan(),
         upstream.remote.as_str()
     );
 
     let result = driver
-        .push_tracked(&alias)
+        .push_tracked(&ledger_address)
         .await
         .map_err(|e| CliError::Config(format!("push failed: {e}")))?;
 
@@ -234,23 +242,26 @@ pub async fn run_push(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
 
 fn print_push_result(result: &PushResult) {
     match result {
-        PushResult::Pushed { alias, value } => {
+        PushResult::Pushed {
+            ledger_address,
+            value,
+        } => {
             println!(
                 "{} '{}' pushed successfully (t={})",
                 "✓".green(),
-                alias,
+                ledger_address,
                 value.t
             );
         }
         PushResult::Rejected {
-            alias,
+            ledger_address,
             local,
             remote,
         } => {
             println!(
                 "{} '{}' rejected: local t={}, remote t={}",
                 "✗".red(),
-                alias,
+                ledger_address,
                 local.t,
                 remote.t
             );
@@ -259,8 +270,12 @@ fn print_push_result(result: &PushResult) {
                 "hint:".cyan().bold()
             );
         }
-        PushResult::NoUpstream { alias } => {
-            println!("{} '{}' has no upstream configured", "✗".red(), alias);
+        PushResult::NoUpstream { ledger_address } => {
+            println!(
+                "{} '{}' has no upstream configured",
+                "✗".red(),
+                ledger_address
+            );
         }
     }
 }

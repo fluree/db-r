@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 /// This is what the transaction server has, not what the peer has locally.
 #[derive(Debug, Clone)]
 pub struct RemoteLedgerWatermark {
-    pub alias: String,
+    pub ledger_address: String,
     pub commit_t: i64,
     pub index_t: i64,
     pub commit_address: Option<String>,
@@ -22,7 +22,7 @@ pub struct RemoteLedgerWatermark {
 /// Remote watermark state for a graph source (from SSE)
 #[derive(Debug, Clone)]
 pub struct RemoteGraphSourceWatermark {
-    pub alias: String,
+    pub graph_source_address: String,
     pub index_t: i64,
     pub config_hash: String,
     pub index_address: Option<String>,
@@ -60,8 +60,12 @@ impl PeerState {
     /// IMPORTANT: `NeedsRefresh::Unknown` means the peer hasn't received SSE state
     /// for this ledger yet. The caller should decide policy: either proceed with
     /// local state (if available) or reject the query.
-    pub async fn check_ledger_freshness(&self, alias: &str, local_index_t: i64) -> NeedsRefresh {
-        match self.ledgers.read().await.get(alias) {
+    pub async fn check_ledger_freshness(
+        &self,
+        ledger_address: &str,
+        local_index_t: i64,
+    ) -> NeedsRefresh {
+        match self.ledgers.read().await.get(ledger_address) {
             Some(remote) => {
                 if remote.index_t > local_index_t {
                     NeedsRefresh::Yes {
@@ -80,11 +84,11 @@ impl PeerState {
     /// Check if a graph source needs refresh based on local vs remote state.
     pub async fn check_graph_source_freshness(
         &self,
-        alias: &str,
+        graph_source_address: &str,
         local_index_t: i64,
         local_config_hash: &str,
     ) -> GraphSourceNeedsRefresh {
-        match self.graph_sources.read().await.get(alias) {
+        match self.graph_sources.read().await.get(graph_source_address) {
             Some(remote) => {
                 if remote.index_t > local_index_t {
                     GraphSourceNeedsRefresh::IndexAdvanced {
@@ -103,14 +107,14 @@ impl PeerState {
     }
 
     /// Get remote watermark for a ledger (if known from SSE)
-    pub async fn get_remote_ledger(&self, alias: &str) -> Option<RemoteLedgerWatermark> {
-        self.ledgers.read().await.get(alias).cloned()
+    pub async fn get_remote_ledger(&self, ledger_address: &str) -> Option<RemoteLedgerWatermark> {
+        self.ledgers.read().await.get(ledger_address).cloned()
     }
 
     /// Update ledger watermark from SSE event (returns true if changed)
     pub async fn update_ledger(
         &self,
-        alias: &str,
+        ledger_address: &str,
         commit_t: i64,
         index_t: i64,
         commit_address: Option<String>,
@@ -118,16 +122,16 @@ impl PeerState {
     ) -> bool {
         let mut ledgers = self.ledgers.write().await;
 
-        let changed = match ledgers.get(alias) {
+        let changed = match ledgers.get(ledger_address) {
             Some(existing) => commit_t > existing.commit_t || index_t > existing.index_t,
             None => true,
         };
 
         if changed {
             ledgers.insert(
-                alias.to_string(),
+                ledger_address.to_string(),
                 RemoteLedgerWatermark {
-                    alias: alias.to_string(),
+                    ledger_address: ledger_address.to_string(),
                     commit_t,
                     index_t,
                     commit_address,
@@ -141,30 +145,30 @@ impl PeerState {
     }
 
     /// Remove ledger (on retraction)
-    pub async fn remove_ledger(&self, alias: &str) {
-        self.ledgers.write().await.remove(alias);
+    pub async fn remove_ledger(&self, ledger_address: &str) {
+        self.ledgers.write().await.remove(ledger_address);
     }
 
     /// Update graph source watermark from SSE event (returns true if changed)
     pub async fn update_graph_source(
         &self,
-        alias: &str,
+        graph_source_address: &str,
         index_t: i64,
         config_hash: String,
         index_address: Option<String>,
     ) -> bool {
         let mut graph_sources = self.graph_sources.write().await;
 
-        let changed = match graph_sources.get(alias) {
+        let changed = match graph_sources.get(graph_source_address) {
             Some(existing) => index_t > existing.index_t || config_hash != existing.config_hash,
             None => true,
         };
 
         if changed {
             graph_sources.insert(
-                alias.to_string(),
+                graph_source_address.to_string(),
                 RemoteGraphSourceWatermark {
-                    alias: alias.to_string(),
+                    graph_source_address: graph_source_address.to_string(),
                     index_t,
                     config_hash,
                     index_address,
@@ -177,8 +181,11 @@ impl PeerState {
     }
 
     /// Remove graph source (on retraction)
-    pub async fn remove_graph_source(&self, alias: &str) {
-        self.graph_sources.write().await.remove(alias);
+    pub async fn remove_graph_source(&self, graph_source_address: &str) {
+        self.graph_sources
+            .write()
+            .await
+            .remove(graph_source_address);
     }
 
     /// Clear all state (on reconnect, before new snapshot)
@@ -261,10 +268,10 @@ impl fluree_db_api::FreshnessSource for PeerState {
     /// - The ledger hasn't been seen in SSE yet
     ///
     /// When None is returned, the caller uses lenient policy (treat as current).
-    fn watermark(&self, alias: &str) -> Option<fluree_db_api::RemoteWatermark> {
+    fn watermark(&self, ledger_address: &str) -> Option<fluree_db_api::RemoteWatermark> {
         // Try to read without blocking
         let ledgers = self.ledgers.try_read().ok()?;
-        let w = ledgers.get(alias)?;
+        let w = ledgers.get(ledger_address)?;
         Some(fluree_db_api::RemoteWatermark {
             commit_t: w.commit_t,
             index_t: w.index_t,

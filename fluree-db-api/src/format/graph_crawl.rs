@@ -20,14 +20,12 @@
 use super::config::FormatterConfig;
 use super::datatype::is_inferable_datatype;
 use super::iri::IriCompactor;
-use super::jsonld::format_binding;
 use super::{FormatError, Result};
 use crate::QueryResult;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::value::FlakeValue;
 use fluree_db_core::{Db, Flake, NoOverlay, OverlayProvider, Sid, Storage, Tracker};
-use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_policy::{is_schema_flake, PolicyContext};
 use fluree_db_query::binding::Binding;
 use fluree_db_query::ir::{GraphSelectSpec, NestedSelectSpec, Root, SelectionSpec};
@@ -229,26 +227,30 @@ pub async fn format_async<S: Storage>(
             // Variable root - iterate through result batches
             let select_vars = &result.select;
             let mixed_select = select_vars.len() > 1 || select_vars.first() != Some(var_id);
-            let binary_store = result.binary_store.as_deref();
 
             for batch in &result.batches {
                 for row_idx in 0..batch.len() {
                     let root_binding = batch.get(row_idx, *var_id);
 
-                    let root_sid = match root_binding {
+                    let root_sid: Option<Sid> = match root_binding {
+                        Some(binding) if binding.is_encoded() => {
+                            let materialized =
+                                super::materialize::materialize_binding(result, binding)?;
+                            match materialized {
+                                Binding::Sid(sid) => Some(sid),
+                                Binding::IriMatch { primary_sid, .. } => Some(primary_sid),
+                                _ => None,
+                            }
+                        }
                         Some(Binding::Sid(sid)) => Some(sid.clone()),
                         Some(Binding::IriMatch { primary_sid, .. }) => Some(primary_sid.clone()),
                         Some(Binding::Unbound) | Some(Binding::Poisoned) | None => None,
                         Some(Binding::Lit { .. })
                         | Some(Binding::Grouped(_))
-                        | Some(Binding::Iri(_)) => None,
-                        Some(Binding::EncodedLit { .. }) => None,
-                        Some(Binding::EncodedSid { s_id }) => {
-                            materialize_encoded_sid(*s_id, binary_store)
-                        }
-                        Some(Binding::EncodedPid { p_id }) => {
-                            materialize_encoded_pid(*p_id, binary_store)
-                        }
+                        | Some(Binding::Iri(_))
+                        | Some(Binding::EncodedLit { .. })
+                        | Some(Binding::EncodedSid { .. })
+                        | Some(Binding::EncodedPid { .. }) => None,
                     };
 
                     let Some(root_sid) = root_sid else {
@@ -273,7 +275,9 @@ pub async fn format_async<S: Storage>(
                                 row.push(obj.clone());
                             } else {
                                 let value = match batch.get(row_idx, *var) {
-                                    Some(binding) => format_binding(binding, compactor)?,
+                                    Some(binding) => super::jsonld::format_binding_with_result(
+                                        result, binding, compactor,
+                                    )?,
                                     None => JsonValue::Null,
                                 };
                                 row.push(value);
@@ -289,23 +293,6 @@ pub async fn format_async<S: Storage>(
     }
 
     Ok(JsonValue::Array(rows))
-}
-
-/// Materialize an `EncodedSid` to a `Sid` using the binary index store.
-///
-/// Binary scan operators produce `EncodedSid` bindings for late materialization.
-/// Graph crawl needs the resolved `Sid` to look up subject properties.
-fn materialize_encoded_sid(s_id: u64, store: Option<&BinaryIndexStore>) -> Option<Sid> {
-    let store = store?;
-    let iri = store.resolve_subject_iri(s_id).ok()?;
-    Some(store.encode_iri(&iri))
-}
-
-/// Materialize an `EncodedPid` to a `Sid` using the binary index store.
-fn materialize_encoded_pid(p_id: u32, store: Option<&BinaryIndexStore>) -> Option<Sid> {
-    let store = store?;
-    let iri = store.resolve_predicate_iri(p_id)?;
-    Some(store.encode_iri(iri))
 }
 
 /// Graph crawl formatter with async DB access

@@ -324,7 +324,7 @@ impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
                             };
 
                             // Execute if R2RML graph source or if graph name matches db's alias (Clojure parity)
-                            if is_r2rml_gs || iri.as_ref() == ctx.db.alias {
+                            if is_r2rml_gs || iri.as_ref() == ctx.db.ledger_address {
                                 self.execute_in_graph(
                                     ctx,
                                     &parent_batch,
@@ -363,7 +363,7 @@ impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
                                     };
 
                                     // Execute if R2RML graph source or alias match (Clojure parity)
-                                    if is_r2rml_gs || bound_iri.as_ref() == ctx.db.alias {
+                                    if is_r2rml_gs || bound_iri.as_ref() == ctx.db.ledger_address {
                                         self.execute_in_graph(
                                             ctx,
                                             &parent_batch,
@@ -393,7 +393,7 @@ impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
                             } else {
                                 // No dataset - single-db mode (Clojure parity):
                                 // Bind ?g to db's alias and execute
-                                let alias_iri: Arc<str> = Arc::from(ctx.db.alias.as_str());
+                                let alias_iri: Arc<str> = Arc::from(ctx.db.ledger_address.as_str());
                                 self.execute_in_graph(
                                     ctx,
                                     &parent_batch,

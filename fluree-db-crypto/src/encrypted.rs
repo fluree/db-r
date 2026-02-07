@@ -266,7 +266,7 @@ where
     async fn content_write_bytes_with_hash(
         &self,
         kind: ContentKind,
-        ledger_alias: &str,
+        ledger_address: &str,
         content_hash_hex: &str,
         bytes: &[u8],
     ) -> fluree_db_core::error::Result<ContentWriteResult> {
@@ -282,7 +282,7 @@ where
         // (file, s3, memory, etc.) while we store encrypted bytes
         let mut result = self
             .inner
-            .content_write_bytes_with_hash(kind, ledger_alias, content_hash_hex, &encrypted)
+            .content_write_bytes_with_hash(kind, ledger_address, content_hash_hex, &encrypted)
             .await?;
 
         // Restore plaintext size (inner storage reports encrypted size)
@@ -294,11 +294,11 @@ where
     async fn content_write_bytes(
         &self,
         kind: ContentKind,
-        ledger_alias: &str,
+        ledger_address: &str,
         bytes: &[u8],
     ) -> fluree_db_core::error::Result<ContentWriteResult> {
         let hash_hex = sha256_hex(bytes);
-        self.content_write_bytes_with_hash(kind, ledger_alias, &hash_hex, bytes)
+        self.content_write_bytes_with_hash(kind, ledger_address, &hash_hex, bytes)
             .await
     }
 }

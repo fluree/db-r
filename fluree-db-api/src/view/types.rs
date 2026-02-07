@@ -79,8 +79,8 @@ pub struct FlureeView<S: Storage + 'static> {
     /// Queries will only see flakes with `t <= to_t`.
     pub to_t: i64,
 
-    /// Ledger alias (e.g., "mydb:main").
-    pub ledger_alias: Arc<str>,
+    /// Ledger address (e.g., "mydb:main").
+    pub ledger_address: Arc<str>,
 
     /// Graph ID within the ledger (0 = default graph).
     ///
@@ -139,7 +139,7 @@ pub struct FlureeView<S: Storage + 'static> {
 impl<S: Storage + 'static> std::fmt::Debug for FlureeView<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FlureeView")
-            .field("ledger_alias", &self.ledger_alias)
+            .field("ledger_address", &self.ledger_address)
             .field("graph_id", &self.graph_id)
             .field("to_t", &self.to_t)
             .field("db_t", &self.db.t)
@@ -167,20 +167,20 @@ impl<S: Storage + Clone + 'static> FlureeView<S> {
     /// * `overlay` - Overlay provider for uncommitted flakes
     /// * `novelty` - Optional concrete novelty (for policy stats)
     /// * `to_t` - Time bound for queries
-    /// * `ledger_alias` - Ledger alias (e.g., "mydb:main")
+    /// * `ledger_address` - Ledger address (e.g., "mydb:main")
     pub fn new(
         db: Arc<Db<S>>,
         overlay: Arc<dyn OverlayProvider>,
         novelty: Option<Arc<Novelty>>,
         to_t: i64,
-        ledger_alias: impl Into<Arc<str>>,
+        ledger_address: impl Into<Arc<str>>,
     ) -> Self {
         Self {
             db,
             overlay,
             novelty,
             to_t,
-            ledger_alias: ledger_alias.into(),
+            ledger_address: ledger_address.into(),
             graph_id: 0,
             policy: None,
             policy_enforcer: None,
@@ -208,7 +208,7 @@ impl<S: Storage + Clone + 'static> FlureeView<S> {
             novelty.clone() as Arc<dyn OverlayProvider>,
             Some(novelty),
             ledger.t(),
-            ledger.alias(),
+            ledger.ledger_address(),
         );
         view.dict_novelty = Some(ledger.dict_novelty.clone());
         // Extract binary_store from LedgerState's TypeErasedStore
@@ -247,7 +247,7 @@ impl<S: Storage + Clone + 'static> FlureeView<S> {
             overlay,
             novelty,
             view.to_t(),
-            view.db.alias.as_str(),
+            view.db.ledger_address.as_str(),
         )
     }
 }
@@ -293,7 +293,7 @@ impl<S: Storage + Clone + 'static> FlureeView<S> {
             combined.clone() as Arc<dyn OverlayProvider>,
             Some(combined),
             staged_t,
-            base.alias(),
+            base.ledger_address(),
         );
         view.dict_novelty = Some(base.dict_novelty.clone());
         Ok(view)
@@ -320,7 +320,7 @@ impl<S: Storage + Clone + 'static> FlureeView<S> {
             novelty.clone() as Arc<dyn OverlayProvider>,
             Some(novelty),
             base.t(),
-            base.alias(),
+            base.ledger_address(),
         )
     }
 }
@@ -620,7 +620,7 @@ mod tests {
         let view = FlureeView::new(Arc::new(db), overlay, Some(novelty), 5, "test:main");
 
         assert_eq!(view.to_t, 5);
-        assert_eq!(&*view.ledger_alias, "test:main");
+        assert_eq!(&*view.ledger_address, "test:main");
         assert!(view.novelty().is_some());
         assert!(!view.has_policy());
         assert!(view.reasoning().is_none());
@@ -748,7 +748,7 @@ mod tests {
         let view2 = view1.clone();
 
         assert_eq!(view1.to_t, view2.to_t);
-        assert_eq!(&*view1.ledger_alias, &*view2.ledger_alias);
+        assert_eq!(&*view1.ledger_address, &*view2.ledger_address);
         assert!(view2.reasoning().is_some());
     }
 }

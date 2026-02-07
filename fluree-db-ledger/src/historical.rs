@@ -168,7 +168,7 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
         head_address: &str,
         index_t: i64,
         target_t: i64,
-        ledger_alias: &str,
+        ledger_address: &str,
     ) -> Result<(Novelty, std::collections::HashMap<u16, String>)> {
         use std::collections::HashMap;
 
@@ -276,7 +276,7 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
                     .collect::<Vec<Flake>>()
             });
 
-            let meta_flakes = generate_commit_flakes(&commit, ledger_alias, commit.t);
+            let meta_flakes = generate_commit_flakes(&commit, ledger_address, commit.t);
             let meta_len = meta_flakes.len();
             let mut all_flakes = commit.flakes;
             all_flakes.extend(meta_flakes);
@@ -321,9 +321,9 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
         self.db.t
     }
 
-    /// Get the ledger alias
-    pub fn alias(&self) -> &str {
-        &self.db.alias
+    /// Get the ledger address
+    pub fn ledger_address(&self) -> &str {
+        &self.db.ledger_address
     }
 
     /// Get the overlay if present
@@ -394,7 +394,7 @@ mod tests {
 
         let view = HistoricalLedgerView::new(db, None, 10);
 
-        assert_eq!(view.alias(), "test:main");
+        assert_eq!(view.ledger_address(), "test:main");
         assert_eq!(view.to_t(), 10);
         assert_eq!(view.index_t(), 0);
         assert!(view.overlay().is_none());
@@ -493,7 +493,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(view.alias(), "test:main");
+        assert_eq!(view.ledger_address(), "test:main");
         assert_eq!(view.to_t(), 5);
         assert_eq!(view.index_t(), 0); // Genesis
         assert!(view.overlay().is_some()); // Should have novelty from commit

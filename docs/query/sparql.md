@@ -569,7 +569,7 @@ Where:
 - `<branch>` is the branch name (e.g., `main`, `dev`)
 - The full dataset alias is always `<name>:<branch>` (e.g., `orders:main`, `acme/people:dev`)
 
-The endpoint is resolved by matching against the full `ledger_alias` in the dataset.
+The endpoint is resolved by matching against the full `ledger_address` in the dataset.
 
 **Examples:**
 

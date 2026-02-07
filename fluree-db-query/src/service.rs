@@ -149,7 +149,7 @@ impl<S: Storage + 'static> ServiceOperator<S> {
     /// Execute inner patterns against a specific ledger
     ///
     /// The `full_ledger_ref` should be the complete ledger reference string
-    /// that matches how datasets store ledger_alias (e.g., "orders:main").
+    /// that matches how datasets store ledger_address (e.g., "orders:main").
     async fn execute_against_ledger(
         &mut self,
         ctx: &ExecutionContext<'_, S>,
@@ -161,10 +161,10 @@ impl<S: Storage + 'static> ServiceOperator<S> {
     ) -> Result<()> {
         // Look up the ledger in the dataset
         let graph_ref = if let Some(ds) = &ctx.dataset {
-            ds.find_by_ledger_alias(full_ledger_ref)
+            ds.find_by_ledger_address(full_ledger_ref)
         } else {
             // No dataset - check if alias matches the current db
-            if ctx.db.alias != full_ledger_ref {
+            if ctx.db.ledger_address != full_ledger_ref {
                 if self.service.silent {
                     // SILENT: return empty result for unknown ledgers
                     return Ok(());
@@ -429,19 +429,19 @@ impl<S: Storage + 'static> Operator<S> for ServiceOperator<S> {
                             // Variable unbound - iterate all ledgers in dataset
                             if let Some(ds) = &ctx.dataset {
                                 // Iterate all ledgers in dataset
-                                let ledger_aliases: Vec<Arc<str>> = ds
+                                let ledger_addresses: Vec<Arc<str>> = ds
                                     .named_graphs_iter()
-                                    .map(|(_, g)| g.ledger_alias.clone())
+                                    .map(|(_, g)| g.ledger_address.clone())
                                     .collect();
 
-                                for ledger_alias in ledger_aliases {
+                                for ledger_address in ledger_addresses {
                                     let endpoint_iri =
-                                        format!("{}{}", FLUREE_LEDGER_PREFIX, ledger_alias);
+                                        format!("{}{}", FLUREE_LEDGER_PREFIX, ledger_address);
                                     self.execute_against_ledger(
                                         ctx,
                                         &parent_batch,
                                         row_idx,
-                                        &ledger_alias,
+                                        &ledger_address,
                                         Some(*var), // Bind the variable
                                         &endpoint_iri,
                                     )
@@ -450,14 +450,14 @@ impl<S: Storage + 'static> Operator<S> for ServiceOperator<S> {
 
                                 // Also try default graphs
                                 for gref in ds.default_graphs() {
-                                    let ledger_alias = &gref.ledger_alias;
+                                    let ledger_address = &gref.ledger_address;
                                     let endpoint_iri =
-                                        format!("{}{}", FLUREE_LEDGER_PREFIX, ledger_alias);
+                                        format!("{}{}", FLUREE_LEDGER_PREFIX, ledger_address);
                                     self.execute_against_ledger(
                                         ctx,
                                         &parent_batch,
                                         row_idx,
-                                        ledger_alias,
+                                        ledger_address,
                                         Some(*var),
                                         &endpoint_iri,
                                     )
@@ -465,14 +465,14 @@ impl<S: Storage + 'static> Operator<S> for ServiceOperator<S> {
                                 }
                             } else {
                                 // No dataset - use current db as only service
-                                let ledger_alias = &ctx.db.alias;
+                                let ledger_address = &ctx.db.ledger_address;
                                 let endpoint_iri =
-                                    format!("{}{}", FLUREE_LEDGER_PREFIX, ledger_alias);
+                                    format!("{}{}", FLUREE_LEDGER_PREFIX, ledger_address);
                                 self.execute_against_ledger(
                                     ctx,
                                     &parent_batch,
                                     row_idx,
-                                    ledger_alias,
+                                    ledger_address,
                                     Some(*var),
                                     &endpoint_iri,
                                 )

@@ -121,7 +121,7 @@ impl ReasoningOptions {
 ///
 /// # Cache Behavior
 ///
-/// Results are cached by (ledger_alias, db_epoch, to_t, overlay_epoch, ontology_epoch, config).
+/// Results are cached by (ledger_address, db_epoch, to_t, overlay_epoch, ontology_epoch, config).
 /// Cache hits return immediately without recomputation.
 pub async fn reason_owl2rl<S: Storage>(
     db: &Db<S>,
@@ -135,7 +135,7 @@ pub async fn reason_owl2rl<S: Storage>(
 
     // Build cache key with real values from db and execution context
     let key = ReasoningCacheKey {
-        ledger_alias: db.alias.as_str().into(),
+        ledger_address: db.ledger_address.as_str().into(),
         db_epoch: db.t as u64,
         to_t,
         overlay_epoch: overlay.epoch(),

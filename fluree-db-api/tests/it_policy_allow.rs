@@ -732,7 +732,7 @@ async fn policy_onclass_applies_to_novelty_properties_without_type_restated() {
 
             // Force index refresh so rdf:type is in the indexed snapshot (not novelty).
             let outcome =
-                support::trigger_index_and_wait_outcome(&handle, r1.ledger.alias(), r1.receipt.t)
+                support::trigger_index_and_wait_outcome(&handle, r1.ledger.ledger_address(), r1.receipt.t)
                     .await;
             let fluree_db_api::IndexOutcome::Completed { root_address, .. } = outcome else {
                 unreachable!("helper only returns Completed")

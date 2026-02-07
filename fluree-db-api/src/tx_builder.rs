@@ -758,7 +758,7 @@ where
     // Trigger background indexing if needed
     if let IndexingMode::Background(h) = &fluree.indexing_mode {
         if indexing_status.needed {
-            h.trigger(new_state.alias(), receipt.t).await;
+            h.trigger(new_state.ledger_address(), receipt.t).await;
         }
     }
 

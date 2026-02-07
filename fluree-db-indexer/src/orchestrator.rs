@@ -938,13 +938,13 @@ where
     }
 
     let storage = ledger.db.storage.clone();
-    let alias = ledger.alias().to_string();
+    let ledger_addr = ledger.ledger_address().to_string();
 
-    match crate::build_index_for_ledger(&storage, nameservice, &alias, indexer_config).await {
+    match crate::build_index_for_ledger(&storage, nameservice, &ledger_addr, indexer_config).await {
         Ok(result) => {
             // Track publish result but continue regardless
             let publish_result = nameservice
-                .publish_index(&alias, &result.root_address, result.index_t)
+                .publish_index(&ledger_addr, &result.root_address, result.index_t)
                 .await;
             let published = publish_result.is_ok();
             let publish_error = publish_result.err().map(|e| e.to_string());
@@ -1007,13 +1007,13 @@ where
     N: fluree_db_nameservice::NameService + Publisher,
 {
     let storage = ledger.db.storage.clone();
-    let alias = ledger.alias().to_string();
+    let ledger_addr = ledger.ledger_address().to_string();
 
     let result =
-        crate::build_index_for_ledger(&storage, nameservice, &alias, indexer_config).await?;
+        crate::build_index_for_ledger(&storage, nameservice, &ledger_addr, indexer_config).await?;
 
     nameservice
-        .publish_index(&alias, &result.root_address, result.index_t)
+        .publish_index(&ledger_addr, &result.root_address, result.index_t)
         .await
         .map_err(|e| IndexerError::NameService(e.to_string()))?;
 
@@ -1328,7 +1328,7 @@ mod tests {
 
         let result = orchestrator.index_ledger("test:main").await.unwrap();
         assert_eq!(result.index_t, 1);
-        assert_eq!(result.alias, "test:main");
+        assert_eq!(result.ledger_address, "test:main");
     }
 
     #[tokio::test]

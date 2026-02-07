@@ -581,7 +581,7 @@ GET /ledgers
 {
   "ledgers": [
     {
-      "alias": "mydb:main",
+      "ledger_address": "mydb:main",
       "branch": "main",
       "commit_t": 5,
       "index_t": 5,
@@ -589,7 +589,7 @@ GET /ledgers
       "last_updated": "2024-01-22T10:30:00.000Z"
     },
     {
-      "alias": "mydb:dev",
+      "ledger_address": "mydb:dev",
       "branch": "dev",
       "commit_t": 3,
       "index_t": 2,
@@ -606,23 +606,23 @@ GET /ledgers
 curl http://localhost:8090/ledgers
 ```
 
-### GET /ledgers/:alias
+### GET /ledgers/:address
 
 Get metadata for a specific ledger.
 
 **URL:**
 ```
-GET /ledgers/{ledger-alias}
+GET /ledgers/{ledger-address}
 ```
 
 **Path Parameters:**
-- `ledger-alias`: Ledger identifier (format: `name:branch`)
+- `ledger-address`: Ledger identifier (format: `name:branch`)
 
 **Response:**
 
 ```json
 {
-  "alias": "mydb:main",
+  "ledger_address": "mydb:main",
   "branch": "main",
   "commit_t": 5,
   "index_t": 5,
@@ -653,7 +653,7 @@ POST /ledgers
 
 ```json
 {
-  "alias": "mydb:main",
+  "ledger_address": "mydb:main",
   "config": {
     "default_context": "http://example.org/context.jsonld"
   }
@@ -664,7 +664,7 @@ POST /ledgers
 
 ```json
 {
-  "alias": "mydb:main",
+  "ledger_address": "mydb:main",
   "branch": "main",
   "commit_t": 0,
   "index_t": 0,
@@ -677,7 +677,7 @@ POST /ledgers
 ```bash
 curl -X POST http://localhost:8090/ledgers \
   -H "Content-Type: application/json" \
-  -d '{"alias": "mydb:main"}'
+  -d '{"ledger_address": "mydb:main"}'
 ```
 
 ### POST /fluree/create
@@ -701,7 +701,7 @@ POST /fluree/create
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `ledger` | string | Yes | Ledger alias (e.g., "mydb" or "mydb:main") |
+| `ledger` | string | Yes | Ledger address (e.g., "mydb" or "mydb:main") |
 
 **Response:**
 
@@ -719,7 +719,7 @@ POST /fluree/create
 
 | Field | Description |
 |-------|-------------|
-| `ledger` | Normalized ledger alias |
+| `ledger` | Normalized ledger address |
 | `t` | Transaction time (0 for new ledger) |
 | `tx-id` | Transaction ID (SHA-256 hash of request) |
 | `commit` | Commit information |
@@ -745,7 +745,7 @@ curl -X POST http://localhost:8090/fluree/create \
   -H "Authorization: Bearer eyJ..." \
   -d '{"ledger": "mydb:main"}'
 
-# Create with short alias (auto-resolves to :main)
+# Create with short address (auto-resolves to :main)
 curl -X POST http://localhost:8090/fluree/create \
   -H "Content-Type: application/json" \
   -d '{"ledger": "mydb"}'
@@ -773,7 +773,7 @@ POST /fluree/drop
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `ledger` | string | Yes | Ledger alias (e.g., "mydb" or "mydb:main") |
+| `ledger` | string | Yes | Ledger address (e.g., "mydb" or "mydb:main") |
 | `hard` | boolean | No | If `true`, permanently delete all storage files. Default: `false` (soft drop) |
 
 **Drop Modes:**
@@ -796,7 +796,7 @@ POST /fluree/drop
 
 | Field | Description |
 |-------|-------------|
-| `ledger` | Normalized ledger alias |
+| `ledger` | Normalized ledger address |
 | `status` | One of: `"dropped"`, `"already_retracted"`, `"not_found"` |
 | `files_deleted` | File counts (only populated for hard drop) |
 
@@ -808,7 +808,7 @@ POST /fluree/drop
 
 **Drop Sequence:**
 
-1. Normalizes the alias (ensures branch suffix like `:main`)
+1. Normalizes the address (ensures branch suffix like `:main`)
 2. Cancels any pending background indexing
 3. Waits for in-progress indexing to complete
 4. In hard mode: deletes all storage artifacts (commits + indexes)
@@ -840,7 +840,7 @@ curl -X POST http://localhost:8090/fluree/drop \
   -H "Authorization: Bearer eyJ..." \
   -d '{"ledger": "mydb:main", "hard": true}'
 
-# Drop with short alias (auto-resolves to :main)
+# Drop with short address (auto-resolves to :main)
 curl -X POST http://localhost:8090/fluree/drop \
   -H "Content-Type: application/json" \
   -d '{"ledger": "mydb"}'
@@ -856,7 +856,7 @@ GET /fluree/exists?ledger={ledger-alias}
 ```
 
 **Query Parameters:**
-- `ledger`: Ledger alias (e.g., "mydb" or "mydb:main")
+- `ledger`: Ledger address (e.g., "mydb" or "mydb:main")
 
 **Alternative:** Use the `fluree-ledger` header instead of query parameter.
 
@@ -871,7 +871,7 @@ GET /fluree/exists?ledger={ledger-alias}
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `ledger` | string | Ledger alias (echoed back) |
+| `ledger` | string | Ledger address (echoed back) |
 | `exists` | boolean | Whether the ledger is registered in the nameservice |
 
 **Status Codes:**
@@ -885,7 +885,7 @@ This is a lightweight check that only queries the nameservice without loading th
 
 - Check if a ledger exists before attempting to load it
 - Implement conditional create-or-load logic
-- Validate ledger aliases in application code
+- Validate ledger addresses in application code
 
 **Examples:**
 

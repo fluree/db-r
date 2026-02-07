@@ -21,7 +21,7 @@ use fluree_db_core::{
 };
 use fluree_db_core::{Sid, Storage};
 use fluree_db_ledger::LedgerState;
-use fluree_db_nameservice::{parse_alias, GraphSourceRecord, NsRecord};
+use fluree_db_nameservice::{parse_address, GraphSourceRecord, NsRecord};
 use fluree_db_novelty::{load_commit, Novelty};
 use fluree_graph_json_ld::ParsedContext;
 use serde_json::{json, Map, Value as JsonValue};
@@ -144,8 +144,9 @@ where
 
     // Pre-index fallback: if no graph stats from index, try loading the pre-index manifest
     if stats.graphs.is_none() {
-        let alias_prefix = fluree_db_core::address_path::alias_to_path_prefix(&ledger.db.alias)
-            .unwrap_or_else(|_| ledger.db.alias.replace(':', "/"));
+        let alias_prefix =
+            fluree_db_core::address_path::alias_to_path_prefix(&ledger.db.ledger_address)
+                .unwrap_or_else(|_| ledger.db.ledger_address.replace(':', "/"));
         let manifest_addr_primary =
             format!("fluree:file://{}/stats/pre-index-stats.json", alias_prefix);
         if let Ok(bytes) = ledger.db.storage.read_bytes(&manifest_addr_primary).await {
@@ -167,7 +168,8 @@ where
     // 1. Commit section (ALWAYS include, even if None - for Clojure parity)
     let mut index_id_from_commit: Option<String> = None;
     if let Some(commit_addr) = &ledger.head_commit {
-        match build_commit_jsonld(&ledger.db.storage, commit_addr, &ledger.db.alias).await {
+        match build_commit_jsonld(&ledger.db.storage, commit_addr, &ledger.db.ledger_address).await
+        {
             Ok((commit_json, idx_id)) => {
                 result.insert("commit".to_string(), commit_json);
                 index_id_from_commit = idx_id;
@@ -295,7 +297,7 @@ async fn build_commit_jsonld<S: Storage>(
         "type": ["Commit"],
         "v": commit.v,
         "address": commit_address,
-        "alias": alias,
+        "ledger_address": alias,
     });
 
     // Add content-address IRI if available
@@ -395,7 +397,7 @@ async fn build_commit_jsonld<S: Storage>(
 /// `query-nameservice` temporary ledger population.
 pub fn ns_record_to_jsonld(record: &NsRecord) -> JsonValue {
     // Use parse_alias for ledger name extraction (avoids edge cases)
-    let ledger_name = parse_alias(&record.name)
+    let ledger_name = parse_address(&record.name)
         .map(|(ledger, _branch)| ledger)
         .unwrap_or_else(|_| record.name.clone());
 
@@ -863,7 +865,7 @@ use fluree_db_nameservice::NameService;
 /// ```
 pub struct LedgerInfoBuilder<'a, S: Storage + 'static, N> {
     fluree: &'a Fluree<S, N>,
-    alias: String,
+    ledger_address: String,
     context: Option<&'a JsonValue>,
     options: LedgerInfoOptions,
 }
@@ -874,10 +876,10 @@ where
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Create a new builder (called by `Fluree::ledger_info()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, alias: String) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<S, N>, ledger_address: String) -> Self {
         Self {
             fluree,
-            alias,
+            ledger_address,
             context: None,
             options: LedgerInfoOptions::default(),
         }
@@ -916,7 +918,7 @@ where
     /// and index information.
     pub async fn execute(self) -> crate::Result<JsonValue> {
         // Load the ledger (uses cache if caching is enabled)
-        let ledger = self.fluree.ledger(&self.alias).await?;
+        let ledger = self.fluree.ledger(&self.ledger_address).await?;
 
         // Build and return the ledger info
         build_ledger_info_with_options(&ledger, self.context, self.options)

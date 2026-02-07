@@ -60,7 +60,7 @@ fn commit_iri_hex_local_part(commit_id: &str) -> Option<&str> {
 /// ## Important
 /// This must be safe to call during ledger load/replay. If a commit is missing
 /// an ID (older commit files), this function returns an empty vector rather than panicking.
-pub fn generate_commit_flakes(commit: &Commit, ledger_alias: &str, t: i64) -> Vec<Flake> {
+pub fn generate_commit_flakes(commit: &Commit, ledger_address: &str, t: i64) -> Vec<Flake> {
     let Some(commit_id) = commit.id.as_deref() else {
         return Vec::new();
     };
@@ -97,7 +97,7 @@ pub fn generate_commit_flakes(commit: &Commit, ledger_alias: &str, t: i64) -> Ve
     flakes.push(Flake::new(
         commit_sid.clone(),
         Sid::new(FLUREE_LEDGER, ledger::ALIAS),
-        FlakeValue::String(ledger_alias.to_string()),
+        FlakeValue::String(ledger_address.to_string()),
         string_dt.clone(),
         t,
         true,

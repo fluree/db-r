@@ -48,13 +48,14 @@ struct NsRecordEnvelope {
 #[derive(Debug, serde::Deserialize)]
 struct NsRetractedEnvelope {
     kind: String,
-    alias: String,
+    address: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
 struct LedgerSseRecord {
-    /// Canonical alias, e.g. "books:main"
-    alias: String,
+    /// Canonical address, e.g. "books:main"
+    #[serde(rename = "ledger_address")]
+    address: String,
     branch: String,
     commit_address: Option<String>,
     commit_t: i64,
@@ -65,8 +66,9 @@ struct LedgerSseRecord {
 
 #[derive(Debug, serde::Deserialize)]
 struct GraphSourceSseRecord {
-    /// Canonical alias, e.g. "search:main"
-    alias: String,
+    /// Canonical address, e.g. "search:main"
+    #[serde(rename = "graph_source_address")]
+    address: String,
     name: String,
     branch: String,
     /// String form of graph source type, e.g. "fidx:BM25"
@@ -104,19 +106,19 @@ fn parse_ns_retracted(data: &str) -> Result<Option<RemoteEvent>, ServerSseParseE
 
     match payload.kind.as_str() {
         SSE_KIND_LEDGER => Ok(Some(RemoteEvent::LedgerRetracted {
-            alias: payload.alias,
+            address: payload.address,
         })),
         SSE_KIND_GRAPH_SOURCE => Ok(Some(RemoteEvent::GraphSourceRetracted {
-            alias: payload.alias,
+            address: payload.address,
         })),
         _ => Ok(None),
     }
 }
 
 fn ledger_sse_to_ns_record(record: LedgerSseRecord) -> NsRecord {
-    let (ledger_name, branch) = split_alias_or_fallback(&record.alias, &record.branch);
+    let (ledger_name, branch) = split_address_or_fallback(&record.address, &record.branch);
     NsRecord {
-        address: record.alias.clone(),
+        address: record.address.clone(),
         name: ledger_name,
         branch,
         commit_address: record.commit_address,
@@ -130,7 +132,7 @@ fn ledger_sse_to_ns_record(record: LedgerSseRecord) -> NsRecord {
 
 fn gs_sse_to_graph_source_record(record: GraphSourceSseRecord) -> GraphSourceRecord {
     GraphSourceRecord {
-        address: record.alias,
+        address: record.address,
         name: record.name,
         branch: record.branch,
         source_type: GraphSourceType::from_type_string(&record.source_type),
@@ -142,15 +144,15 @@ fn gs_sse_to_graph_source_record(record: GraphSourceSseRecord) -> GraphSourceRec
     }
 }
 
-/// Split canonical alias into (name, branch) using the last ':' as delimiter.
+/// Split canonical address into (name, branch) using the last ':' as delimiter.
 ///
 /// Supports ledger names with '/' and other characters; branch delimiter is ':'.
-fn split_alias_or_fallback(alias: &str, fallback_branch: &str) -> (String, String) {
-    match alias.rsplit_once(':') {
+fn split_address_or_fallback(address: &str, fallback_branch: &str) -> (String, String) {
+    match address.rsplit_once(':') {
         Some((name, branch)) if !name.is_empty() && !branch.is_empty() => {
             (name.to_string(), branch.to_string())
         }
-        _ => (alias.to_string(), fallback_branch.to_string()),
+        _ => (address.to_string(), fallback_branch.to_string()),
     }
 }
 
@@ -166,9 +168,9 @@ mod tests {
             data: r#"{
                 "action": "ns-record",
                 "kind": "ledger",
-                "alias": "mydb:main",
+                "address": "mydb:main",
                 "record": {
-                    "alias": "mydb:main",
+                    "ledger_address": "mydb:main",
                     "branch": "main",
                     "commit_address": "fluree:file://commit/abc",
                     "commit_t": 5,
@@ -200,7 +202,7 @@ mod tests {
             data: r#"{
                 "action": "ns-retracted",
                 "kind": "ledger",
-                "alias": "mydb:main",
+                "address": "mydb:main",
                 "emitted_at": "2025-01-01T00:00:00Z"
             }"#
             .to_string(),
@@ -208,7 +210,7 @@ mod tests {
         };
 
         match parse_server_sse_event(&event).unwrap() {
-            Some(RemoteEvent::LedgerRetracted { alias }) => assert_eq!(alias, "mydb:main"),
+            Some(RemoteEvent::LedgerRetracted { address }) => assert_eq!(address, "mydb:main"),
             other => panic!("expected LedgerRetracted, got {:?}", other),
         }
     }
@@ -220,9 +222,9 @@ mod tests {
             data: r#"{
                 "action": "ns-record",
                 "kind": "graph-source",
-                "alias": "search:main",
+                "address": "search:main",
                 "record": {
-                    "alias": "search:main",
+                    "graph_source_address": "search:main",
                     "name": "search",
                     "branch": "main",
                     "source_type": "fidx:BM25",

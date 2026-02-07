@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 /// Handle representing a loaded ledger's tracking state
 #[derive(Debug)]
 pub struct LoadedLedgerHandle {
-    /// The ledger alias (e.g., "mydb:main")
-    pub alias: String,
+    /// The ledger address (e.g., "mydb:main")
+    pub ledger_address: String,
 
     /// Last time this ledger was accessed
     pub last_access: RwLock<Instant>,
@@ -34,9 +34,9 @@ pub struct LoadedLedgerHandle {
 
 impl LoadedLedgerHandle {
     /// Create a new handle for a ledger
-    pub fn new(alias: impl Into<String>) -> Self {
+    pub fn new(ledger_address: impl Into<String>) -> Self {
         Self {
-            alias: alias.into(),
+            ledger_address: ledger_address.into(),
             last_access: RwLock::new(Instant::now()),
             last_commit_t: RwLock::new(0),
             last_index_t: RwLock::new(0),
@@ -191,25 +191,31 @@ impl LedgerRegistry {
     pub fn on_ns_event(&self, event: &NameServiceEvent) {
         match event {
             NameServiceEvent::LedgerCommitPublished {
-                alias, commit_t, ..
+                ledger_address,
+                commit_t,
+                ..
             } => {
                 if let Ok(entries) = self.entries.read() {
-                    if let Some(handle) = entries.get(alias) {
+                    if let Some(handle) = entries.get(ledger_address) {
                         handle.update_commit_t(*commit_t);
                     }
                 }
             }
-            NameServiceEvent::LedgerIndexPublished { alias, index_t, .. } => {
+            NameServiceEvent::LedgerIndexPublished {
+                ledger_address,
+                index_t,
+                ..
+            } => {
                 if let Ok(entries) = self.entries.read() {
-                    if let Some(handle) = entries.get(alias) {
+                    if let Some(handle) = entries.get(ledger_address) {
                         handle.update_index_t(*index_t);
                     }
                 }
             }
-            NameServiceEvent::LedgerRetracted { alias } => {
+            NameServiceEvent::LedgerRetracted { ledger_address } => {
                 // Remove retracted ledgers from tracking
                 if let Ok(mut entries) = self.entries.write() {
-                    entries.remove(alias);
+                    entries.remove(ledger_address);
                 }
             }
             // Graph source events are not tracked in the ledger registry
@@ -307,7 +313,7 @@ mod tests {
     #[test]
     fn test_loaded_ledger_handle_new() {
         let handle = LoadedLedgerHandle::new("test:main");
-        assert_eq!(handle.alias, "test:main");
+        assert_eq!(handle.ledger_address, "test:main");
         assert_eq!(handle.commit_t(), 0);
         assert_eq!(handle.index_t(), 0);
     }
@@ -370,7 +376,7 @@ mod tests {
 
         // Process commit event
         registry.on_ns_event(&NameServiceEvent::LedgerCommitPublished {
-            alias: "test:main".to_string(),
+            ledger_address: "test:main".to_string(),
             commit_address: "addr".to_string(),
             commit_t: 42,
         });
@@ -378,7 +384,7 @@ mod tests {
 
         // Process index event
         registry.on_ns_event(&NameServiceEvent::LedgerIndexPublished {
-            alias: "test:main".to_string(),
+            ledger_address: "test:main".to_string(),
             index_address: "idx-addr".to_string(),
             index_t: 40,
         });
@@ -386,7 +392,7 @@ mod tests {
 
         // Untracked ledger should be ignored
         registry.on_ns_event(&NameServiceEvent::LedgerCommitPublished {
-            alias: "other:main".to_string(),
+            ledger_address: "other:main".to_string(),
             commit_address: "addr".to_string(),
             commit_t: 100,
         });
@@ -401,7 +407,7 @@ mod tests {
         assert!(registry.is_tracked("test:main"));
 
         registry.on_ns_event(&NameServiceEvent::LedgerRetracted {
-            alias: "test:main".to_string(),
+            ledger_address: "test:main".to_string(),
         });
         assert!(!registry.is_tracked("test:main"));
     }

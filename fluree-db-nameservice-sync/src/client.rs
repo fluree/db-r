@@ -44,7 +44,7 @@ struct InitResponse {
 #[async_trait]
 pub trait RemoteNameserviceClient: Debug + Send + Sync {
     /// Look up a single ledger record on the remote
-    async fn lookup(&self, alias: &str) -> Result<Option<NsRecord>>;
+    async fn lookup(&self, address: &str) -> Result<Option<NsRecord>>;
 
     /// Get a full snapshot of all remote records (ledgers + graph sources)
     async fn snapshot(&self) -> Result<RemoteSnapshot>;
@@ -52,7 +52,7 @@ pub trait RemoteNameserviceClient: Debug + Send + Sync {
     /// CAS push for a ref on the remote
     async fn push_ref(
         &self,
-        alias: &str,
+        address: &str,
         kind: RefKind,
         expected: Option<&RefValue>,
         new: &RefValue,
@@ -61,7 +61,7 @@ pub trait RemoteNameserviceClient: Debug + Send + Sync {
     /// Initialize a ledger on the remote (create-if-absent)
     ///
     /// Returns `true` if created, `false` if already existed.
-    async fn init_ledger(&self, alias: &str) -> Result<bool>;
+    async fn init_ledger(&self, address: &str) -> Result<bool>;
 }
 
 /// HTTP-based remote client
@@ -99,8 +99,8 @@ impl HttpRemoteClient {
 
 #[async_trait]
 impl RemoteNameserviceClient for HttpRemoteClient {
-    async fn lookup(&self, alias: &str) -> Result<Option<NsRecord>> {
-        let url = format!("{}/fluree/storage/ns/{}", self.base_url, alias);
+    async fn lookup(&self, address: &str) -> Result<Option<NsRecord>> {
+        let url = format!("{}/fluree/storage/ns/{}", self.base_url, address);
         let resp = self.add_auth(self.http.get(&url)).send().await?;
 
         match resp.status().as_u16() {
@@ -133,7 +133,7 @@ impl RemoteNameserviceClient for HttpRemoteClient {
 
     async fn push_ref(
         &self,
-        alias: &str,
+        address: &str,
         kind: RefKind,
         expected: Option<&RefValue>,
         new: &RefValue,
@@ -141,7 +141,7 @@ impl RemoteNameserviceClient for HttpRemoteClient {
         let kind_path = Self::kind_path(kind);
         let url = format!(
             "{}/fluree/nameservice/refs/{}/{}",
-            self.base_url, alias, kind_path
+            self.base_url, address, kind_path
         );
 
         let body = PushRefRequest { expected, new };
@@ -161,13 +161,13 @@ impl RemoteNameserviceClient for HttpRemoteClient {
             }
             status => Err(SyncError::Remote(format!(
                 "Push failed with status {} for {}/{}",
-                status, alias, kind_path
+                status, address, kind_path
             ))),
         }
     }
 
-    async fn init_ledger(&self, alias: &str) -> Result<bool> {
-        let url = format!("{}/fluree/nameservice/refs/{}/init", self.base_url, alias);
+    async fn init_ledger(&self, address: &str) -> Result<bool> {
+        let url = format!("{}/fluree/nameservice/refs/{}/init", self.base_url, address);
 
         let resp = self.add_auth(self.http.post(&url)).send().await?;
 

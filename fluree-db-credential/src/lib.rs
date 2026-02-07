@@ -49,22 +49,22 @@ const COMMIT_DOMAIN_SEPARATOR: &[u8] = b"fluree/commit/v1";
 /// Compute the domain-separated digest for commit signing/verification.
 ///
 /// ```text
-/// to_sign = SHA-256("fluree/commit/v1" || varint(ledger_alias.len()) || ledger_alias || commit_hash)
+/// to_sign = SHA-256("fluree/commit/v1" || varint(ledger_address.len()) || ledger_address || commit_hash)
 /// ```
 ///
-/// The domain separator prevents cross-protocol replay. The ledger alias
+/// The domain separator prevents cross-protocol replay. The ledger address
 /// prevents cross-ledger replay. The commit hash binds the signature to
 /// the specific commit content.
-fn compute_commit_digest(commit_hash: &[u8; 32], ledger_alias: &str) -> [u8; 32] {
-    let alias_bytes = ledger_alias.as_bytes();
+fn compute_commit_digest(commit_hash: &[u8; 32], ledger_address: &str) -> [u8; 32] {
+    let address_bytes = ledger_address.as_bytes();
     let mut hasher = Sha256::new();
     hasher.update(COMMIT_DOMAIN_SEPARATOR);
-    // Length-prefix the alias (varint-style: single byte for len < 128)
-    let alias_len = alias_bytes.len();
+    // Length-prefix the address (varint-style: single byte for len < 128)
+    let address_len = address_bytes.len();
     let mut len_buf = [0u8; 10];
-    let len_bytes = encode_varint_to_buf(alias_len as u64, &mut len_buf);
+    let len_bytes = encode_varint_to_buf(address_len as u64, &mut len_buf);
     hasher.update(len_bytes);
-    hasher.update(alias_bytes);
+    hasher.update(address_bytes);
     hasher.update(commit_hash);
     hasher.finalize().into()
 }
@@ -93,20 +93,20 @@ fn encode_varint_to_buf(mut value: u64, buf: &mut [u8; 10]) -> &[u8] {
 /// # Arguments
 /// * `signing_key` - Ed25519 signing key
 /// * `commit_hash` - 32-byte SHA-256 hash of the commit blob content
-/// * `ledger_alias` - Canonical ledger alias (must be immutable for verification)
+/// * `ledger_address` - Canonical ledger address (must be immutable for verification)
 ///
 /// # Returns
 /// 64-byte Ed25519 signature
 pub fn sign_commit_digest(
     signing_key: &SigningKey,
     commit_hash: &[u8; 32],
-    ledger_alias: &str,
+    ledger_address: &str,
 ) -> [u8; 64] {
-    let digest = compute_commit_digest(commit_hash, ledger_alias);
+    let digest = compute_commit_digest(commit_hash, ledger_address);
     sign_ed25519(signing_key, &digest)
 }
 
-/// Verify a commit signature against a commit hash and ledger alias.
+/// Verify a commit signature against a commit hash and ledger address.
 ///
 /// Recomputes the domain-separated digest and verifies the Ed25519 signature.
 ///
@@ -114,7 +114,7 @@ pub fn sign_commit_digest(
 /// * `signer_did` - Signer's did:key identifier (used to derive public key)
 /// * `signature` - 64-byte Ed25519 signature
 /// * `commit_hash` - 32-byte SHA-256 hash of the commit blob content
-/// * `ledger_alias` - Canonical ledger alias
+/// * `ledger_address` - Canonical ledger address
 ///
 /// # Errors
 /// - `InvalidDid` if the DID format is invalid
@@ -124,10 +124,10 @@ pub fn verify_commit_digest(
     signer_did: &str,
     signature: &[u8; 64],
     commit_hash: &[u8; 32],
-    ledger_alias: &str,
+    ledger_address: &str,
 ) -> Result<()> {
     let pubkey = pubkey_from_did(signer_did)?;
-    let digest = compute_commit_digest(commit_hash, ledger_alias);
+    let digest = compute_commit_digest(commit_hash, ledger_address);
     ed25519::verify_ed25519(&pubkey, &digest, signature)
 }
 

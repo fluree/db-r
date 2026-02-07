@@ -369,7 +369,7 @@ mod tests {
         let view = LedgerView::stage(state, staged_flakes);
 
         let (base, flakes) = view.into_parts();
-        assert_eq!(base.alias(), "test:main");
+        assert_eq!(base.ledger_address(), "test:main");
         assert_eq!(flakes.len(), 1);
     }
 }

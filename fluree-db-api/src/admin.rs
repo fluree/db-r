@@ -49,7 +49,7 @@ pub enum DropStatus {
     Dropped,
     /// Record was already marked as retracted
     AlreadyRetracted,
-    /// No record found for this alias
+    /// No record found for this address
     #[default]
     NotFound,
 }
@@ -61,8 +61,8 @@ pub enum DropStatus {
 /// Report of what was deleted/retracted for a ledger
 #[derive(Debug, Clone, Default)]
 pub struct DropReport {
-    /// The normalized alias that was dropped
-    pub alias: String,
+    /// The normalized ledger address that was dropped
+    pub ledger_address: String,
     /// Status based on nameservice state at lookup time
     pub status: DropStatus,
     /// Number of index files deleted (Hard mode only)
@@ -131,8 +131,8 @@ impl ReindexOptions {
 /// Result of trigger_index operation
 #[derive(Debug, Clone)]
 pub struct TriggerIndexResult {
-    /// Ledger alias
-    pub alias: String,
+    /// Ledger address
+    pub ledger_address: String,
     /// Transaction time the index was built to
     pub index_t: i64,
     /// Storage address of the index root
@@ -142,8 +142,8 @@ pub struct TriggerIndexResult {
 /// Result of reindex operation
 #[derive(Debug, Clone)]
 pub struct ReindexResult {
-    /// Ledger alias
-    pub alias: String,
+    /// Ledger address
+    pub ledger_address: String,
     /// Transaction time the index was built to
     pub index_t: i64,
     /// Storage address of the new index root
@@ -155,8 +155,8 @@ pub struct ReindexResult {
 /// Result of index_status query
 #[derive(Debug, Clone)]
 pub struct IndexStatusResult {
-    /// Ledger alias
-    pub alias: String,
+    /// Ledger address
+    pub ledger_address: String,
     /// Current index transaction time (from nameservice)
     pub index_t: i64,
     /// Current commit transaction time (from nameservice)
@@ -175,12 +175,12 @@ pub struct IndexStatusResult {
 // Helper Functions
 // =============================================================================
 
-/// Normalize alias to canonical form with branch
+/// Normalize ledger address to canonical form with branch
 ///
-/// If the alias already contains a colon (indicating a branch), it's returned as-is.
+/// If the address already contains a colon (indicating a branch), it's returned as-is.
 /// Otherwise, `:main` is appended as the default branch.
-fn normalize_alias(alias: &str) -> String {
-    core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string())
+fn normalize_address(ledger_address: &str) -> String {
+    core_alias::normalize_alias(ledger_address).unwrap_or_else(|_| ledger_address.to_string())
 }
 
 // =============================================================================
@@ -196,7 +196,7 @@ where
     /// Drop a ledger
     ///
     /// This operation:
-    /// 1. Normalizes the alias (ensures branch suffix like `:main`)
+    /// 1. Normalizes the ledger address (ensures branch suffix like `:main`)
     /// 2. Cancels any pending background indexing
     /// 3. Waits for in-progress indexing to complete
     /// 4. In Hard mode: deletes all storage artifacts (commits + indexes)
@@ -205,7 +205,7 @@ where
     ///
     /// # Arguments
     ///
-    /// * `alias` - Ledger alias (e.g., "mydb" or "mydb:main")
+    /// * `ledger_address` - Ledger address (e.g., "mydb" or "mydb:main")
     /// * `mode` - `Soft` (retract only) or `Hard` (retract + delete files)
     ///
     /// # Safety
@@ -225,18 +225,18 @@ where
     /// This only stops the in-process background worker. External indexers
     /// (Lambda, etc.) **MUST** check `NsRecord.retracted` before indexing
     /// and before publishing to prevent recreating files after drop.
-    pub async fn drop_ledger(&self, alias: &str, mode: DropMode) -> Result<DropReport> {
-        // 1. Normalize alias (ensure branch suffix)
-        let alias = normalize_alias(alias);
-        info!(alias = %alias, mode = ?mode, "Dropping ledger");
+    pub async fn drop_ledger(&self, ledger_address: &str, mode: DropMode) -> Result<DropReport> {
+        // 1. Normalize address (ensure branch suffix)
+        let ledger_address = normalize_address(ledger_address);
+        info!(ledger_address = %ledger_address, mode = ?mode, "Dropping ledger");
 
         let mut report = DropReport {
-            alias: alias.clone(),
+            ledger_address: ledger_address.clone(),
             ..Default::default()
         };
 
         // 2. Lookup current state (for status reporting)
-        let record = self.nameservice.lookup(&alias).await?;
+        let record = self.nameservice.lookup(&ledger_address).await?;
         let status = match &record {
             None => DropStatus::NotFound,
             Some(r) if r.retracted => DropStatus::AlreadyRetracted,
@@ -248,10 +248,10 @@ where
         // NOTE: This only stops the in-process worker. External indexers must
         // check NsRecord.retracted and refuse to index/publish if true.
         if let IndexingMode::Background(handle) = &self.indexing_mode {
-            info!(alias = %alias, "Cancelling pending indexing");
-            handle.cancel(&alias).await;
-            handle.wait_for_idle(&alias).await;
-            info!(alias = %alias, "Indexing cancelled and idle");
+            info!(ledger_address = %ledger_address, "Cancelling pending indexing");
+            handle.cancel(&ledger_address).await;
+            handle.wait_for_idle(&ledger_address).await;
+            info!(ledger_address = %ledger_address, "Indexing cancelled and idle");
         }
 
         // 4. Delete artifacts (Hard mode)
@@ -259,8 +259,12 @@ where
         if matches!(mode, DropMode::Hard) {
             // Canonical storage layout: `ledger/branch/...` (no ':') for portability.
             // Note: this applies to commits, txns, and indexes.
-            let prefix = alias_to_path_prefix(&alias)
-                .map_err(|e| ApiError::config(format!("Invalid alias '{}': {}", alias, e)))?;
+            let prefix = alias_to_path_prefix(&ledger_address).map_err(|e| {
+                ApiError::config(format!(
+                    "Invalid ledger address '{}': {}",
+                    ledger_address, e
+                ))
+            })?;
 
             let commit_prefix = format!("fluree:file://{}/commit/", prefix);
             let index_prefix = format!("fluree:file://{}/index/", prefix);
@@ -285,12 +289,12 @@ where
         }
 
         // 5. Retract from nameservice
-        // Always attempt retract on normalized alias - safe to call even if already
+        // Always attempt retract on normalized address - safe to call even if already
         // retracted (idempotent) or NotFound (no-op). This handles cases where
-        // lookup used non-canonical alias but retract needs the normalized form.
-        if let Err(e) = self.nameservice.retract(&alias).await {
+        // lookup used non-canonical address but retract needs the normalized form.
+        if let Err(e) = self.nameservice.retract(&ledger_address).await {
             // Log but don't fail - retract may fail if truly not found
-            warn!(alias = %alias, error = %e, "Nameservice retract warning");
+            warn!(ledger_address = %ledger_address, error = %e, "Nameservice retract warning");
             report.warnings.push(format!("Nameservice retract: {}", e));
         }
 
@@ -298,11 +302,11 @@ where
         // This evicts the ledger from the LedgerManager so stale state isn't served.
         // Equivalent to Clojure's `release-ledger` at the end of drop-ledger.
         if let Some(mgr) = &self.ledger_manager {
-            info!(alias = %alias, "Disconnecting ledger from cache");
-            mgr.disconnect(&alias).await;
+            info!(ledger_address = %ledger_address, "Disconnecting ledger from cache");
+            mgr.disconnect(&ledger_address).await;
         }
 
-        info!(alias = %alias, status = ?report.status, "Ledger dropped");
+        info!(ledger_address = %ledger_address, status = ?report.status, "Ledger dropped");
         Ok(report)
     }
 
@@ -372,7 +376,7 @@ where
         mode: DropMode,
     ) -> Result<GraphSourceDropReport> {
         let branch = branch.unwrap_or("main");
-        let alias = format!("{}:{}", name, branch);
+        let address = format!("{}:{}", name, branch);
         info!(name = %name, branch = %branch, mode = ?mode, "Dropping graph source");
 
         let mut report = GraphSourceDropReport {
@@ -382,7 +386,7 @@ where
         };
 
         // 1. Lookup graph source record (for status)
-        let record = self.nameservice.lookup_graph_source(&alias).await?;
+        let record = self.nameservice.lookup_graph_source(&address).await?;
         let status = match &record {
             None => DropStatus::NotFound,
             Some(r) if r.retracted => DropStatus::AlreadyRetracted,
@@ -426,22 +430,22 @@ where
     ///
     /// Returns status from both nameservice (index_t, commit_t) and
     /// the background indexer (phase, pending work).
-    pub async fn index_status(&self, alias: &str) -> Result<IndexStatusResult> {
+    pub async fn index_status(&self, ledger_address: &str) -> Result<IndexStatusResult> {
         use fluree_db_indexer::IndexPhase;
 
-        let alias = normalize_alias(alias);
+        let ledger_address = normalize_address(ledger_address);
 
         // Get nameservice record
         let record = self
             .nameservice
-            .lookup(&alias)
+            .lookup(&ledger_address)
             .await?
-            .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {}", alias)))?;
+            .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {}", ledger_address)))?;
 
         // Get indexer status if available
         let (indexing_enabled, phase, pending_min_t, last_error) = match &self.indexing_mode {
             IndexingMode::Background(handle) => {
-                if let Some(status) = handle.status(&alias).await {
+                if let Some(status) = handle.status(&ledger_address).await {
                     (true, status.phase, status.pending_min_t, status.last_error)
                 } else {
                     (true, IndexPhase::Idle, None, None)
@@ -451,7 +455,7 @@ where
         };
 
         Ok(IndexStatusResult {
-            alias,
+            ledger_address,
             index_t: record.index_t,
             commit_t: record.commit_t,
             indexing_enabled,
@@ -478,13 +482,13 @@ where
     /// - `NotFound` if ledger doesn't exist
     pub async fn trigger_index(
         &self,
-        alias: &str,
+        ledger_address: &str,
         opts: TriggerIndexOptions,
     ) -> Result<TriggerIndexResult> {
         use fluree_db_indexer::IndexOutcome;
 
-        let alias = normalize_alias(alias);
-        info!(alias = %alias, "Triggering index");
+        let ledger_address = normalize_address(ledger_address);
+        info!(ledger_address = %ledger_address, "Triggering index");
 
         // Check indexing mode
         let handle = match &self.indexing_mode {
@@ -495,22 +499,22 @@ where
         // Look up current state
         let record = self
             .nameservice
-            .lookup(&alias)
+            .lookup(&ledger_address)
             .await?
-            .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {}", alias)))?;
+            .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {}", ledger_address)))?;
 
         if record.retracted {
             return Err(ApiError::NotFound(format!(
                 "Ledger is retracted: {}",
-                alias
+                ledger_address
             )));
         }
 
         // Handle no-commit ledgers (nothing to index)
         if record.commit_address.is_none() {
-            info!(alias = %alias, "No commits to index");
+            info!(ledger_address = %ledger_address, "No commits to index");
             return Ok(TriggerIndexResult {
-                alias,
+                ledger_address,
                 index_t: 0,
                 root_address: String::new(),
             });
@@ -518,7 +522,7 @@ where
 
         // Trigger with min_t = commit_t
         let min_t = record.commit_t;
-        let completion = handle.trigger(alias.clone(), min_t).await;
+        let completion = handle.trigger(ledger_address.clone(), min_t).await;
 
         // Wait with timeout
         let timeout_ms = opts
@@ -532,9 +536,9 @@ where
                 index_t,
                 root_address,
             }) => {
-                info!(alias = %alias, index_t = index_t, "Indexing completed");
+                info!(ledger_address = %ledger_address, index_t = index_t, "Indexing completed");
                 Ok(TriggerIndexResult {
-                    alias,
+                    ledger_address,
                     index_t,
                     root_address,
                 })
@@ -544,7 +548,7 @@ where
             }
             Ok(IndexOutcome::Cancelled) => Err(ApiError::internal("Indexing was cancelled")),
             Err(_) => {
-                warn!(alias = %alias, timeout_ms = timeout_ms, "Index trigger timed out");
+                warn!(ledger_address = %ledger_address, timeout_ms = timeout_ms, "Index trigger timed out");
                 Err(ApiError::IndexTimeout(timeout_ms))
             }
         }
@@ -571,21 +575,25 @@ where
     /// # Errors
     /// - `NotFound` if ledger doesn't exist or has no commits
     /// - `ReindexConflict` (409) if ledger advanced during rebuild
-    pub async fn reindex(&self, alias: &str, opts: ReindexOptions) -> Result<ReindexResult> {
-        let alias = normalize_alias(alias);
-        info!(alias = %alias, "Starting reindex");
+    pub async fn reindex(
+        &self,
+        ledger_address: &str,
+        opts: ReindexOptions,
+    ) -> Result<ReindexResult> {
+        let ledger_address = normalize_address(ledger_address);
+        info!(ledger_address = %ledger_address, "Starting reindex");
 
         // 1. Look up current state and capture commit_t for conflict detection
         let record = self
             .nameservice
-            .lookup(&alias)
+            .lookup(&ledger_address)
             .await?
-            .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {}", alias)))?;
+            .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {}", ledger_address)))?;
 
         if record.retracted {
             return Err(ApiError::NotFound(format!(
                 "Ledger is retracted: {}",
-                alias
+                ledger_address
             )));
         }
 
@@ -596,9 +604,9 @@ where
 
         // 2. Cancel background indexing if active
         if let IndexingMode::Background(handle) = &self.indexing_mode {
-            info!(alias = %alias, "Cancelling background indexing for reindex");
-            handle.cancel(&alias).await;
-            handle.wait_for_idle(&alias).await;
+            info!(ledger_address = %ledger_address, "Cancelling background indexing for reindex");
+            handle.cancel(&ledger_address).await;
+            handle.wait_for_idle(&ledger_address).await;
         }
 
         // 3. Build binary index from commit chain
@@ -607,18 +615,25 @@ where
         let gc_min_time_mins = indexer_config.gc_min_time_mins;
 
         let index_result =
-            build_binary_index(self.storage(), &alias, &record, indexer_config).await?;
+            build_binary_index(self.storage(), &ledger_address, &record, indexer_config).await?;
 
         info!(
-            alias = %alias,
+            ledger_address = %ledger_address,
             index_t = index_result.index_t,
             "Binary index build complete"
         );
 
         // 4. Conflict detection: check if ledger advanced during rebuild
-        let final_record = self.nameservice.lookup(&alias).await?.ok_or_else(|| {
-            ApiError::NotFound(format!("Ledger disappeared during reindex: {}", alias))
-        })?;
+        let final_record = self
+            .nameservice
+            .lookup(&ledger_address)
+            .await?
+            .ok_or_else(|| {
+                ApiError::NotFound(format!(
+                    "Ledger disappeared during reindex: {}",
+                    ledger_address
+                ))
+            })?;
 
         if final_record.commit_t != initial_commit_t {
             return Err(ApiError::ReindexConflict {
@@ -629,11 +644,15 @@ where
 
         // 5. Publish new index (allows same t for reindex via AdminPublisher)
         self.nameservice
-            .publish_index_allow_equal(&alias, &index_result.root_address, index_result.index_t)
+            .publish_index_allow_equal(
+                &ledger_address,
+                &index_result.root_address,
+                index_result.index_t,
+            )
             .await?;
 
         info!(
-            alias = %alias,
+            ledger_address = %ledger_address,
             index_t = index_result.index_t,
             root_address = %index_result.root_address,
             "Reindex completed"
@@ -659,7 +678,7 @@ where
         });
 
         Ok(ReindexResult {
-            alias,
+            ledger_address,
             index_t: index_result.index_t,
             root_address: index_result.root_address,
             stats: index_result.stats,
@@ -672,15 +691,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_normalize_alias_with_branch() {
-        assert_eq!(normalize_alias("test:main"), "test:main");
-        assert_eq!(normalize_alias("mydb:feature"), "mydb:feature");
+    fn test_normalize_address_with_branch() {
+        assert_eq!(normalize_address("test:main"), "test:main");
+        assert_eq!(normalize_address("mydb:feature"), "mydb:feature");
     }
 
     #[test]
-    fn test_normalize_alias_without_branch() {
-        assert_eq!(normalize_alias("test"), "test:main");
-        assert_eq!(normalize_alias("mydb"), "mydb:main");
+    fn test_normalize_address_without_branch() {
+        assert_eq!(normalize_address("test"), "test:main");
+        assert_eq!(normalize_address("mydb"), "mydb:main");
     }
 
     #[test]

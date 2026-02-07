@@ -554,8 +554,8 @@ async fn test_connect_async_s3() {
 ///   docker run -d -p 4566:4566 localstack/localstack
 ///   AWS_ENDPOINT_URL=http://localhost:4566 aws dynamodb create-table \
 ///     --table-name test-fluree-ns \
-///     --attribute-definitions AttributeName=ledger_alias,AttributeType=S \
-///     --key-schema AttributeName=ledger_alias,KeyType=HASH \
+///     --attribute-definitions AttributeName=ledger_address,AttributeType=S \
+///     --key-schema AttributeName=ledger_address,KeyType=HASH \
 ///     --billing-mode PAY_PER_REQUEST
 ///
 /// Run with:

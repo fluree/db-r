@@ -5,7 +5,7 @@
 //! peers don't have direct storage credentials.
 //!
 //! # Endpoints
-//! - `GET /fluree/storage/ns/{alias}` - Fetch nameservice record for a ledger
+//! - `GET /fluree/storage/ns/{ledger_address}` - Fetch nameservice record for a ledger
 //! - `POST /fluree/storage/block` - Fetch a block by address
 //!
 //! # Authorization
@@ -50,13 +50,13 @@ use fluree_db_core::serde::flakes_transport::{encode_flakes, TransportFlake};
 /// Context inferred from a storage address.
 ///
 /// Addresses encode their context in the path structure:
-/// - Commits: `fluree:file://{alias}/commit/...`
+/// - Commits: `fluree:file://{ledger_address}/commit/...`
 /// - Indexes: `fluree:file://{ledger}/{branch}/index/...`
 /// - Graph source artifacts: `fluree:file://graph-sources/{name}/{branch}/...`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AddressContext {
-    /// Ledger commit: `fluree:file://{alias}/commit/...`
-    LedgerCommit { alias: String },
+    /// Ledger commit: `fluree:file://{ledger_address}/commit/...`
+    LedgerCommit { ledger_address: String },
     /// Ledger index: `fluree:file://{ledger}/{branch}/index/...`
     LedgerIndex { ledger: String, branch: String },
     /// Graph source artifact: `fluree:file://graph-sources/{name}/{branch}/...`
@@ -66,10 +66,10 @@ pub enum AddressContext {
 }
 
 impl AddressContext {
-    /// Get the ledger alias if this is a ledger address
-    pub fn ledger_alias(&self) -> Option<String> {
+    /// Get the ledger address if this is a ledger address context
+    pub fn ledger_address(&self) -> Option<String> {
         match self {
-            AddressContext::LedgerCommit { alias } => Some(alias.clone()),
+            AddressContext::LedgerCommit { ledger_address } => Some(ledger_address.clone()),
             AddressContext::LedgerIndex { ledger, branch } => {
                 Some(format!("{}:{}", ledger, branch))
             }
@@ -118,22 +118,22 @@ pub fn parse_address_context(address: &str) -> AddressContext {
         return AddressContext::Unknown;
     }
 
-    // Commit format: {alias}/commit/... (alias may contain :)
+    // Commit format: {ledger_address}/commit/... (address may contain :)
     if path.contains("/commit/") {
-        if let Some(alias) = path.split("/commit/").next() {
-            if !alias.is_empty() {
+        if let Some(addr) = path.split("/commit/").next() {
+            if !addr.is_empty() {
                 // New canonical layout uses `ledger/branch/commit/...` (no ':').
                 // Convert to `ledger:branch` for authorization + ledger_cached lookup.
-                if !alias.contains(':') && alias.contains('/') {
-                    let parts: Vec<&str> = alias.splitn(2, '/').collect();
+                if !addr.contains(':') && addr.contains('/') {
+                    let parts: Vec<&str> = addr.splitn(2, '/').collect();
                     if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
                         return AddressContext::LedgerCommit {
-                            alias: format!("{}:{}", parts[0], parts[1]),
+                            ledger_address: format!("{}:{}", parts[0], parts[1]),
                         };
                     }
                 }
                 return AddressContext::LedgerCommit {
-                    alias: alias.to_string(),
+                    ledger_address: addr.to_string(),
                 };
             }
         }
@@ -165,10 +165,12 @@ pub fn parse_address_context(address: &str) -> AddressContext {
 /// - `false` if unauthorized (should return 404, not 403)
 fn authorize_address(principal: &StorageProxyPrincipal, context: &AddressContext) -> bool {
     match context {
-        AddressContext::LedgerCommit { alias } => principal.is_authorized_for_ledger(alias),
+        AddressContext::LedgerCommit { ledger_address } => {
+            principal.is_authorized_for_ledger(ledger_address)
+        }
         AddressContext::LedgerIndex { ledger, branch } => {
-            let alias = format!("{}:{}", ledger, branch);
-            principal.is_authorized_for_ledger(&alias)
+            let addr = format!("{}:{}", ledger, branch);
+            principal.is_authorized_for_ledger(&addr)
         }
         AddressContext::GraphSourceArtifact { .. } => {
             // Graph source artifacts not authorized in v1 (ledger-only scope)
@@ -217,7 +219,7 @@ fn try_parse_as_leaf(
     }
 
     // Only ledger addresses (commit or index) are candidates for filtering
-    if address_context.ledger_alias().is_none() {
+    if address_context.ledger_address().is_none() {
         return FilterableBlock::NotFilterable;
     }
 
@@ -443,7 +445,7 @@ fn build_json_flakes_response(
 /// Response for nameservice record endpoint
 #[derive(Debug, Clone, Serialize)]
 pub struct NsRecordResponse {
-    pub alias: String,
+    pub ledger_address: String,
     pub branch: String,
     pub commit_address: Option<String>,
     pub commit_t: i64,
@@ -465,7 +467,7 @@ pub struct BlockRequest {
 /// GET /fluree/storage/ns/{alias}
 ///
 /// Returns the nameservice record for a ledger.
-/// Requires Bearer token with access to the requested alias.
+/// Requires Bearer token with access to the requested ledger address.
 ///
 /// Note: The `StorageProxyBearer` extractor handles:
 /// - Checking if storage proxy is enabled (returns 404 if not)
@@ -474,11 +476,11 @@ pub struct BlockRequest {
 /// - Checking that token has storage permissions
 pub async fn get_ns_record(
     State(state): State<Arc<AppState>>,
-    Path(alias): Path<String>,
+    Path(ledger_address): Path<String>,
     StorageProxyBearer(principal): StorageProxyBearer,
 ) -> Result<Json<NsRecordResponse>, ServerError> {
     // Check authorization for this specific ledger
-    if !principal.is_authorized_for_ledger(&alias) {
+    if !principal.is_authorized_for_ledger(&ledger_address) {
         // Return 404 for unauthorized (no existence leak)
         return Err(ServerError::not_found("Ledger not found"));
     }
@@ -489,13 +491,13 @@ pub async fn get_ns_record(
         .fluree
         .as_file()
         .nameservice()
-        .lookup(&alias)
+        .lookup(&ledger_address)
         .await
         .map_err(|e| ServerError::internal(format!("Nameservice lookup failed: {}", e)))?
         .ok_or_else(|| ServerError::not_found("Ledger not found"))?;
 
     Ok(Json(NsRecordResponse {
-        alias: ns_record.name.clone(),
+        ledger_address: ns_record.name.clone(),
         branch: ns_record.branch.clone(),
         commit_address: ns_record.commit_address.clone(),
         commit_t: ns_record.commit_t,
@@ -561,8 +563,8 @@ pub async fn get_block(
     }
 
     // For flakes formats, we need to parse the leaf block
-    // Get ledger alias for loading the interner
-    let alias = context.ledger_alias().ok_or_else(|| {
+    // Get ledger address for loading the interner
+    let ledger_addr = context.ledger_address().ok_or_else(|| {
         // Non-ledger address (graph source or unknown) with flakes format = 406
         ServerError::not_acceptable("Flakes format only available for ledger blocks")
     })?;
@@ -570,7 +572,7 @@ pub async fn get_block(
     // Get cached ledger state
     let fluree = state.fluree.as_file();
     let handle = fluree
-        .ledger_cached(&alias)
+        .ledger_cached(&ledger_addr)
         .await
         .map_err(|e| ServerError::internal(format!("Ledger load failed: {}", e)))?;
 
@@ -704,10 +706,10 @@ mod tests {
         assert_eq!(
             ctx,
             AddressContext::LedgerCommit {
-                alias: "books:main".to_string()
+                ledger_address: "books:main".to_string()
             }
         );
-        assert_eq!(ctx.ledger_alias(), Some("books:main".to_string()));
+        assert_eq!(ctx.ledger_address(), Some("books:main".to_string()));
     }
 
     #[test]
@@ -721,7 +723,7 @@ mod tests {
                 branch: "main".to_string()
             }
         );
-        assert_eq!(ctx.ledger_alias(), Some("books:main".to_string()));
+        assert_eq!(ctx.ledger_address(), Some("books:main".to_string()));
     }
 
     #[test]
@@ -736,7 +738,7 @@ mod tests {
             }
         );
         assert!(ctx.is_graph_source());
-        assert_eq!(ctx.ledger_alias(), None);
+        assert_eq!(ctx.ledger_address(), None);
     }
 
     #[test]
@@ -771,7 +773,7 @@ mod tests {
     fn test_authorize_commit_allowed() {
         let principal = make_principal(false, vec!["books:main"]);
         let ctx = AddressContext::LedgerCommit {
-            alias: "books:main".to_string(),
+            ledger_address: "books:main".to_string(),
         };
         assert!(authorize_address(&principal, &ctx));
     }
@@ -780,7 +782,7 @@ mod tests {
     fn test_authorize_commit_denied() {
         let principal = make_principal(false, vec!["other:main"]);
         let ctx = AddressContext::LedgerCommit {
-            alias: "books:main".to_string(),
+            ledger_address: "books:main".to_string(),
         };
         assert!(!authorize_address(&principal, &ctx));
     }
@@ -799,7 +801,7 @@ mod tests {
     fn test_authorize_storage_all() {
         let principal = make_principal(true, vec![]);
         let ctx = AddressContext::LedgerCommit {
-            alias: "any:ledger".to_string(),
+            ledger_address: "any:ledger".to_string(),
         };
         assert!(authorize_address(&principal, &ctx));
     }

@@ -81,16 +81,16 @@ impl PeerSyncTask {
                 RemoteEvent::LedgerUpdated(record) => {
                     self.handle_ledger_updated(&record).await;
                 }
-                RemoteEvent::LedgerRetracted { alias } => {
-                    self.handle_ledger_retracted(&alias).await;
+                RemoteEvent::LedgerRetracted { address } => {
+                    self.handle_ledger_retracted(&address).await;
                 }
                 RemoteEvent::GraphSourceUpdated(record) => {
-                    let alias = record.address.clone();
+                    let graph_source_address = record.address.clone();
                     let config_hash = graph_source_config_hash(&record.config);
                     let changed = self
                         .peer_state
                         .update_graph_source(
-                            &alias,
+                            &graph_source_address,
                             record.index_t,
                             config_hash,
                             record.index_address.clone(),
@@ -99,15 +99,15 @@ impl PeerSyncTask {
 
                     if changed {
                         tracing::info!(
-                            alias = %alias,
+                            graph_source_address = %graph_source_address,
                             index_t = record.index_t,
                             "Remote graph source watermark updated"
                         );
                     }
                 }
-                RemoteEvent::GraphSourceRetracted { alias } => {
-                    self.peer_state.remove_graph_source(&alias).await;
-                    tracing::info!(alias = %alias, "Graph source retracted from remote");
+                RemoteEvent::GraphSourceRetracted { address } => {
+                    self.peer_state.remove_graph_source(&address).await;
+                    tracing::info!(graph_source_address = %address, "Graph source retracted from remote");
                 }
             }
         }
@@ -280,24 +280,24 @@ impl PeerSyncTask {
     }
 
     /// Retract ledger locally and evict from cache.
-    async fn handle_ledger_retracted(&self, alias: &str) {
+    async fn handle_ledger_retracted(&self, ledger_address: &str) {
         // 1. Retract via Publisher::retract()
         let ns = self.fluree.nameservice();
-        if let Err(e) = ns.retract(alias).await {
+        if let Err(e) = ns.retract(ledger_address).await {
             tracing::warn!(
-                alias = %alias,
+                ledger_address = %ledger_address,
                 error = %e,
                 "Failed to retract ledger locally"
             );
         }
 
         // 2. Clear in-memory watermarks
-        self.peer_state.remove_ledger(alias).await;
+        self.peer_state.remove_ledger(ledger_address).await;
 
         // 3. Evict from cache
-        self.fluree.disconnect_ledger(alias).await;
+        self.fluree.disconnect_ledger(ledger_address).await;
 
-        tracing::info!(alias = %alias, "Ledger retracted from remote");
+        tracing::info!(ledger_address = %ledger_address, "Ledger retracted from remote");
     }
 
     /// Notify LedgerManager to refresh a cached ledger from the NS update.
@@ -308,7 +308,7 @@ impl PeerSyncTask {
 
         match mgr
             .notify(NsNotify {
-                alias: record.address.clone(),
+                ledger_address: record.address.clone(),
                 record: Some(record.clone()),
             })
             .await
@@ -347,14 +347,14 @@ impl PeerSyncTask {
             return;
         }
 
-        for alias in &sub.ledgers {
-            match self.fluree.ledger_cached(alias).await {
+        for ledger_address in &sub.ledgers {
+            match self.fluree.ledger_cached(ledger_address).await {
                 Ok(_) => {
-                    tracing::info!(alias = %alias, "Preloaded ledger into peer cache");
+                    tracing::info!(ledger_address = %ledger_address, "Preloaded ledger into peer cache");
                 }
                 Err(e) => {
                     tracing::warn!(
-                        alias = %alias,
+                        ledger_address = %ledger_address,
                         error = %e,
                         "Failed to preload ledger"
                     );

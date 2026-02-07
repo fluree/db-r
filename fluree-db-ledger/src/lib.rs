@@ -161,7 +161,7 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
         storage: S,
         head_address: &str,
         index_t: i64,
-        ledger_alias: &str,
+        ledger_address: &str,
     ) -> Result<(Novelty, std::collections::HashMap<u16, String>)> {
         use std::collections::HashMap;
 
@@ -173,7 +173,7 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
 
         while let Some(result) = stream.next().await {
             let commit = result?;
-            let meta_flakes = generate_commit_flakes(&commit, ledger_alias, commit.t);
+            let meta_flakes = generate_commit_flakes(&commit, ledger_address, commit.t);
             let mut all_flakes = commit.flakes;
             all_flakes.extend(meta_flakes);
             novelty.apply_commit(all_flakes, commit.t)?;
@@ -214,9 +214,9 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
         self.db.t
     }
 
-    /// Get the ledger alias
-    pub fn alias(&self) -> &str {
-        &self.db.alias
+    /// Get the ledger address
+    pub fn ledger_address(&self) -> &str {
+        &self.db.ledger_address
     }
 
     /// Check if novelty is at max capacity (should block new commits)
@@ -276,8 +276,11 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
         let new_db = Db::load(self.db.storage.clone(), index_address).await?;
 
         // Verify alias matches
-        if new_db.alias != self.db.alias {
-            return Err(LedgerError::alias_mismatch(&new_db.alias, &self.db.alias));
+        if new_db.ledger_address != self.db.ledger_address {
+            return Err(LedgerError::alias_mismatch(
+                &new_db.ledger_address,
+                &self.db.ledger_address,
+            ));
         }
 
         // Verify forward progress on index
@@ -326,8 +329,11 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
     /// if it's a binary-only (v2) Db.
     pub fn apply_loaded_db(&mut self, new_db: Db<S>, index_address: &str) -> Result<()> {
         // Verify alias matches
-        if new_db.alias != self.db.alias {
-            return Err(LedgerError::alias_mismatch(&new_db.alias, &self.db.alias));
+        if new_db.ledger_address != self.db.ledger_address {
+            return Err(LedgerError::alias_mismatch(
+                &new_db.ledger_address,
+                &self.db.ledger_address,
+            ));
         }
 
         // Verify forward progress on index
@@ -374,14 +380,14 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
     /// - Other errors from `apply_index`
     pub async fn maybe_apply_newer_index<N: NameService>(&mut self, ns: &N) -> Result<bool> {
         let record = ns
-            .lookup(&self.db.alias)
+            .lookup(&self.db.ledger_address)
             .await?
-            .ok_or_else(|| LedgerError::not_found(&self.db.alias))?;
+            .ok_or_else(|| LedgerError::not_found(&self.db.ledger_address))?;
 
         // Only apply if there's a newer index AND it has an address
         if record.index_t > self.db.t {
             let index_address = record.index_address.as_ref().ok_or_else(|| {
-                LedgerError::missing_index_address(&self.db.alias, record.index_t)
+                LedgerError::missing_index_address(&self.db.ledger_address, record.index_t)
             })?;
             self.apply_index(index_address).await?;
             return Ok(true);
@@ -410,7 +416,7 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
     /// check `at_max_novelty()` instead and wait for indexing to complete.
     pub fn maybe_trigger_index(&self, config: &IndexConfig) -> Option<&str> {
         if self.should_reindex(config) {
-            Some(self.alias())
+            Some(self.ledger_address())
         } else {
             None
         }
@@ -433,7 +439,7 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
     /// ```
     pub fn require_index(&self, config: &IndexConfig) -> Option<&str> {
         if self.at_max_novelty(config) {
-            Some(self.alias())
+            Some(self.ledger_address())
         } else {
             None
         }
@@ -470,7 +476,7 @@ mod tests {
 
         let state = LedgerState::new(db, novelty);
 
-        assert_eq!(state.alias(), "test:main");
+        assert_eq!(state.ledger_address(), "test:main");
         assert_eq!(state.index_t(), 0);
         assert_eq!(state.t(), 1);
         assert_eq!(state.epoch(), 1);
@@ -519,7 +525,7 @@ mod tests {
         // Load ledger - should use genesis since no index exists
         let state = LedgerState::load(&ns, "test:main", storage).await.unwrap();
 
-        assert_eq!(state.alias(), "test:main");
+        assert_eq!(state.ledger_address(), "test:main");
         assert_eq!(state.index_t(), 0); // Genesis
         assert_eq!(state.t(), 1); // From commit
         assert_eq!(state.novelty.len(), 1);
@@ -549,7 +555,7 @@ mod tests {
         // Create a v2 index root at t=1
         let root_json = serde_json::json!({
             "version": 2,
-            "ledger_alias": "test:main",
+            "ledger_address": "test:main",
             "index_t": 1,
             "namespace_codes": { "0": "", "1": "@" },
             "dicts": {},
@@ -579,7 +585,7 @@ mod tests {
         // Create a v2 index root for a different ledger
         let root_json = serde_json::json!({
             "version": 2,
-            "ledger_alias": "other:ledger",
+            "ledger_address": "other:ledger",
             "index_t": 1,
             "namespace_codes": { "0": "" },
             "dicts": {},
@@ -600,7 +606,7 @@ mod tests {
         // Create a v2 index root at t=2
         let root_json_t2 = serde_json::json!({
             "version": 2,
-            "ledger_alias": "test:main",
+            "ledger_address": "test:main",
             "index_t": 2,
             "namespace_codes": { "0": "" },
             "dicts": {},
@@ -616,7 +622,7 @@ mod tests {
         // Create an older v2 index root at t=1
         let root_json_t1 = serde_json::json!({
             "version": 2,
-            "ledger_alias": "test:main",
+            "ledger_address": "test:main",
             "index_t": 1,
             "namespace_codes": { "0": "" },
             "dicts": {},
@@ -636,7 +642,7 @@ mod tests {
         // Create a v2 index root at t=1
         let root_json = serde_json::json!({
             "version": 2,
-            "ledger_alias": "test:main",
+            "ledger_address": "test:main",
             "index_t": 1,
             "namespace_codes": { "0": "" },
             "dicts": {},
@@ -651,7 +657,7 @@ mod tests {
         // Create another v2 index root at same t
         let root_json_same = serde_json::json!({
             "version": 2,
-            "ledger_alias": "test:main",
+            "ledger_address": "test:main",
             "index_t": 1,
             "namespace_codes": { "0": "" },
             "dicts": {},

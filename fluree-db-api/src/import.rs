@@ -5,7 +5,7 @@
 //!
 //! ## Pipeline overview
 //!
-//! 1. **Create ledger** — `nameservice.publish_ledger_init(alias)`
+//! 1. **Create ledger** — `nameservice.publish_ledger_init(ledger_address)`
 //! 2. **Import TTL → commits + runs** — parallel chunk parsing, serial commit
 //!    finalization, streaming run generation via background resolver thread
 //! 3. **Build indexes** — `build_all_indexes()` from completed run files
@@ -81,8 +81,8 @@ impl Default for ImportConfig {
 /// Result of a successful bulk import.
 #[derive(Debug)]
 pub struct ImportResult {
-    /// Ledger alias.
-    pub alias: String,
+    /// Ledger address.
+    pub ledger_address: String,
     /// Final commit t (= number of imported chunks).
     pub t: i64,
     /// Total flake count across all commits.
@@ -161,7 +161,7 @@ impl From<fluree_db_core::Error> for ImportError {
 
 /// Builder for a bulk import operation.
 ///
-/// Created via `fluree.create("alias").import("/path/to/chunks")`.
+/// Created via `fluree.create("mydb").import("/path/to/chunks")`.
 ///
 /// # Example
 ///
@@ -175,7 +175,7 @@ impl From<fluree_db_core::Error> for ImportError {
 /// ```
 pub struct ImportBuilder<'a, S: Storage + 'static, N> {
     fluree: &'a super::Fluree<S, N>,
-    alias: String,
+    ledger_address: String,
     import_path: PathBuf,
     config: ImportConfig,
 }
@@ -187,12 +187,12 @@ where
 {
     pub(crate) fn new(
         fluree: &'a super::Fluree<S, N>,
-        alias: String,
+        ledger_address: String,
         import_path: PathBuf,
     ) -> Self {
         Self {
             fluree,
-            alias,
+            ledger_address,
             import_path,
             config: ImportConfig::default(),
         }
@@ -245,7 +245,7 @@ where
         run_import_pipeline(
             self.fluree.storage(),
             self.fluree.nameservice(),
-            &self.alias,
+            &self.ledger_address,
             &self.import_path,
             &self.config,
         )
@@ -257,12 +257,12 @@ where
 // Create builder (intermediate)
 // ============================================================================
 
-/// Intermediate builder returned by `fluree.create("alias")`.
+/// Intermediate builder returned by `fluree.create("mydb")`.
 ///
 /// Supports `.import(path)` for bulk import, or `.execute()` for empty ledger creation.
 pub struct CreateBuilder<'a, S: Storage + 'static, N> {
     fluree: &'a super::Fluree<S, N>,
-    alias: String,
+    ledger_address: String,
 }
 
 impl<'a, S, N> CreateBuilder<'a, S, N>
@@ -270,8 +270,11 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
 {
-    pub(crate) fn new(fluree: &'a super::Fluree<S, N>, alias: String) -> Self {
-        Self { fluree, alias }
+    pub(crate) fn new(fluree: &'a super::Fluree<S, N>, ledger_address: String) -> Self {
+        Self {
+            fluree,
+            ledger_address,
+        }
     }
 }
 
@@ -284,7 +287,11 @@ where
     ///
     /// `path` can be a directory containing `chunk_*.ttl` files, or a single TTL file.
     pub fn import(self, path: impl AsRef<Path>) -> ImportBuilder<'a, S, N> {
-        ImportBuilder::new(self.fluree, self.alias, path.as_ref().to_path_buf())
+        ImportBuilder::new(
+            self.fluree,
+            self.ledger_address,
+            path.as_ref().to_path_buf(),
+        )
     }
 }
 
@@ -553,7 +560,7 @@ where
     }
 
     Ok(ImportResult {
-        alias: alias.to_string(),
+        ledger_address: alias.to_string(),
         t: import_result.final_t,
         flake_count: import_result.cumulative_flakes,
         commit_head_address: import_result.commit_head_address,
@@ -1278,7 +1285,7 @@ where
 
     // ---- Phase 5: Build V2 root ----
     let mut root = BinaryIndexRootV2::from_cas_artifacts(CasArtifactsConfig {
-        ledger_alias: alias,
+        ledger_address: alias,
         index_t: input.final_t,
         base_t: 0, // fresh import
         predicate_sids,

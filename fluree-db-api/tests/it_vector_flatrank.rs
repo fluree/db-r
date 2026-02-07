@@ -14,8 +14,8 @@ use serde_json::json;
 #[tokio::test]
 async fn vector_search_test() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger_alias = "test/vector-score:main";
-    let ledger0 = fluree.create_ledger(ledger_alias).await.unwrap();
+    let ledger_address = "test/vector-score:main";
+    let ledger0 = fluree.create_ledger(ledger_address).await.unwrap();
 
     let ctx = json!([
         support::default_context(),
@@ -93,8 +93,8 @@ async fn vector_search_test() {
 #[tokio::test]
 async fn vector_search_with_filter() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger_alias = "test/vector-score-filter:main";
-    let ledger0 = fluree.create_ledger(ledger_alias).await.unwrap();
+    let ledger_address = "test/vector-score-filter:main";
+    let ledger0 = fluree.create_ledger(ledger_address).await.unwrap();
 
     let ctx = json!([
         support::default_context(),
@@ -149,8 +149,8 @@ async fn vector_search_with_filter() {
 #[tokio::test]
 async fn vector_search_score_filter() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger_alias = "test/vector-score-threshold:main";
-    let ledger0 = fluree.create_ledger(ledger_alias).await.unwrap();
+    let ledger_address = "test/vector-score-threshold:main";
+    let ledger0 = fluree.create_ledger(ledger_address).await.unwrap();
 
     let ctx = json!([
         support::default_context(),
@@ -204,8 +204,8 @@ async fn vector_search_score_filter() {
 #[tokio::test]
 async fn vector_search_multi_cardinality() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger_alias = "test/vector-score-multi:main";
-    let ledger0 = fluree.create_ledger(ledger_alias).await.unwrap();
+    let ledger_address = "test/vector-score-multi:main";
+    let ledger0 = fluree.create_ledger(ledger_address).await.unwrap();
 
     let ctx = json!([
         support::default_context(),
@@ -272,8 +272,8 @@ async fn vector_search_multi_cardinality() {
 #[tokio::test]
 async fn vector_search_cosine_similarity() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger_alias = "test/vector-cosine:main";
-    let ledger0 = fluree.create_ledger(ledger_alias).await.unwrap();
+    let ledger_address = "test/vector-cosine:main";
+    let ledger0 = fluree.create_ledger(ledger_address).await.unwrap();
 
     let ctx = json!([
         support::default_context(),
@@ -327,8 +327,8 @@ async fn vector_search_cosine_similarity() {
 #[tokio::test]
 async fn vector_search_euclidean_distance() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger_alias = "test/vector-euclidean:main";
-    let ledger0 = fluree.create_ledger(ledger_alias).await.unwrap();
+    let ledger_address = "test/vector-euclidean:main";
+    let ledger0 = fluree.create_ledger(ledger_address).await.unwrap();
 
     let ctx = json!([
         support::default_context(),
@@ -382,8 +382,8 @@ async fn vector_search_euclidean_distance() {
 #[tokio::test]
 async fn vector_search_mixed_datatypes() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger_alias = "test/vector-mixed:main";
-    let ledger0 = fluree.create_ledger(ledger_alias).await.unwrap();
+    let ledger_address = "test/vector-mixed:main";
+    let ledger0 = fluree.create_ledger(ledger_address).await.unwrap();
 
     let ctx = json!([
         support::default_context(),

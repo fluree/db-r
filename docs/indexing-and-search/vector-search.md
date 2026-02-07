@@ -360,7 +360,7 @@ The remote search service uses a JSON-based protocol. Vector queries use the `"v
 ```json
 {
   "protocol_version": "1.0",
-  "graph_source_alias": "doc-embeddings:main",
+  "graph_source_address": "doc-embeddings:main",
   "query": {
     "kind": "vector",
     "vector": [0.1, 0.2, 0.3, ...],
@@ -378,7 +378,7 @@ The remote search service uses a JSON-based protocol. Vector queries use the `"v
   "protocol_version": "1.0",
   "index_t": 150,
   "hits": [
-    { "iri": "ex:doc-456", "ledger_alias": "mydb:main", "score": 0.95 }
+    { "iri": "ex:doc-456", "ledger_address": "mydb:main", "score": 0.95 }
   ],
   "took_ms": 8
 }

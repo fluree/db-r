@@ -21,7 +21,7 @@ async fn create_ledger_name_validation() {
 
     // Explicit branch form (name:branch) is allowed
     let ledger = fluree.create_ledger("explicit:branch").await.unwrap();
-    assert_eq!(ledger.alias(), "explicit:branch");
+    assert_eq!(ledger.ledger_address(), "explicit:branch");
 
     // Reject multiple colons (invalid alias format)
     let result = fluree.create_ledger("test:feature:v2").await;
@@ -33,20 +33,20 @@ async fn create_ledger_name_validation() {
 
     // Test accepting valid ledger names
     let ledger = fluree.create_ledger("valid-name").await.unwrap();
-    assert_eq!(ledger.alias(), "valid-name:main");
+    assert_eq!(ledger.ledger_address(), "valid-name:main");
 
     let ledger = fluree.create_ledger("valid_name").await.unwrap();
-    assert_eq!(ledger.alias(), "valid_name:main");
+    assert_eq!(ledger.ledger_address(), "valid_name:main");
 
     let ledger = fluree.create_ledger("tenant/database").await.unwrap();
-    assert_eq!(ledger.alias(), "tenant/database:main");
+    assert_eq!(ledger.ledger_address(), "tenant/database:main");
 
     let ledger = fluree.create_ledger("my-ledger-2024").await.unwrap();
-    assert_eq!(ledger.alias(), "my-ledger-2024:main");
+    assert_eq!(ledger.ledger_address(), "my-ledger-2024:main");
 
     // Test automatically appending ':main' branch to valid names
     let ledger = fluree.create_ledger("auto-branch-test").await.unwrap();
-    assert_eq!(ledger.alias(), "auto-branch-test:main");
+    assert_eq!(ledger.ledger_address(), "auto-branch-test:main");
 }
 
 /// Test edge cases for ledger name validation
@@ -78,22 +78,22 @@ async fn edge_case_validation() {
 
     // Test special characters that ARE allowed
     let ledger = fluree.create_ledger("ledger.with.dots").await.unwrap();
-    assert_eq!(ledger.alias(), "ledger.with.dots:main");
+    assert_eq!(ledger.ledger_address(), "ledger.with.dots:main");
 
     let ledger = fluree.create_ledger("ledger-with-dashes").await.unwrap();
-    assert_eq!(ledger.alias(), "ledger-with-dashes:main");
+    assert_eq!(ledger.ledger_address(), "ledger-with-dashes:main");
 
     let ledger = fluree
         .create_ledger("ledger_with_underscores")
         .await
         .unwrap();
-    assert_eq!(ledger.alias(), "ledger_with_underscores:main");
+    assert_eq!(ledger.ledger_address(), "ledger_with_underscores:main");
 
     let ledger = fluree
         .create_ledger("org/department/project")
         .await
         .unwrap();
-    assert_eq!(ledger.alias(), "org/department/project:main");
+    assert_eq!(ledger.ledger_address(), "org/department/project:main");
 }
 
 /// Test that duplicate ledger creation is prevented
@@ -126,17 +126,17 @@ async fn duplicate_ledger_creation() {
 async fn exists_test() {
     let fluree = FlureeBuilder::memory().build_memory();
 
-    let ledger_alias = "testledger";
+    let ledger_address = "testledger";
 
     // Test: returns false before creation
-    let result = fluree.ledger(ledger_alias).await;
+    let result = fluree.ledger(ledger_address).await;
     assert!(result.is_err(), "Ledger should not exist before creation");
 
     // Create the ledger
-    let _ledger = fluree.create_ledger(ledger_alias).await.unwrap();
+    let _ledger = fluree.create_ledger(ledger_address).await.unwrap();
 
     // Test: returns true after creation
-    let result = fluree.ledger(ledger_alias).await;
+    let result = fluree.ledger(ledger_address).await;
     assert!(result.is_ok(), "Ledger should exist after creation");
 
     // Test: still returns true after committing data
@@ -151,7 +151,7 @@ async fn exists_test() {
     });
     let _updated_ledger = fluree.insert(ledger, &txn).await.unwrap();
 
-    let result = fluree.ledger(ledger_alias).await;
+    let result = fluree.ledger(ledger_address).await;
     assert!(
         result.is_ok(),
         "Ledger should still exist after committing data"
@@ -168,10 +168,10 @@ async fn query_integration_test() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Load people data (matches Clojure test-utils/load-people)
-    let ledger_alias = support::load_people(&fluree).await.unwrap();
+    let ledger_address = support::load_people(&fluree).await.unwrap();
 
     // Get the ledger
-    let ledger = fluree.ledger(&ledger_alias).await.unwrap();
+    let ledger = fluree.ledger(&ledger_address).await.unwrap();
 
     // Query for all users with their names (matches Clojure query-test)
     let query = json!({
@@ -220,8 +220,8 @@ async fn fuel_integration_test() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Load people data first
-    let ledger_alias = support::load_people(&fluree).await.unwrap();
-    let ledger = fluree.ledger(&ledger_alias).await.unwrap();
+    let ledger_address = support::load_people(&fluree).await.unwrap();
+    let ledger = fluree.ledger(&ledger_address).await.unwrap();
 
     // =========================================================================
     // Test queries with fuel tracking

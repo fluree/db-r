@@ -115,7 +115,7 @@ verify_commit_digest(
     &signer_did,       // "did:key:z6Mk..."
     &signature_bytes,  // [u8; 64]
     &commit_hash,      // [u8; 32]
-    ledger_alias,      // "mydb:main"
+    ledger_address,      // "mydb:main"
 )?;
 ```
 

@@ -109,7 +109,7 @@ Response:
 {
   "ledgers": [
     {
-      "alias": "mydb:main",
+      "ledger_address": "mydb:main",
       "branch": "main",
       "commit_t": 1,
       "index_t": 0,
@@ -248,7 +248,7 @@ Response:
 
 ```json
 {
-  "alias": "mydb:main",
+  "ledger_address": "mydb:main",
   "branch": "main",
   "commit_t": 1,
   "index_t": 1,

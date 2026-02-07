@@ -23,7 +23,7 @@ async fn index_and_load_db(
     ledger: LedgerState<fluree_db_core::MemoryStorage>,
     t: i64,
 ) -> LedgerState<fluree_db_core::MemoryStorage> {
-    let completion = handle.trigger(ledger.alias(), t).await;
+    let completion = handle.trigger(ledger.ledger_address(), t).await;
     let root = match completion.wait().await {
         fluree_db_api::IndexOutcome::Completed { root_address, .. } => root_address,
         fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),

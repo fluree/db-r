@@ -57,7 +57,7 @@ impl crate::watch::RemoteWatch for PollRemoteWatch {
                             let key = record.address.clone();
                             if record.retracted {
                                 if prev_ledgers.contains_key(&key) {
-                                    yield RemoteEvent::LedgerRetracted { alias: key.clone() };
+                                    yield RemoteEvent::LedgerRetracted { address: key.clone() };
                                 }
                             } else if let Some(prev) = prev_ledgers.get(&key) {
                                 if prev.commit_t != record.commit_t
@@ -77,7 +77,7 @@ impl crate::watch::RemoteWatch for PollRemoteWatch {
                         // Check for removed ledgers (present in prev but not in current)
                         for key in prev_ledgers.keys() {
                             if !current_ledgers.contains_key(key) {
-                                yield RemoteEvent::LedgerRetracted { alias: key.clone() };
+                                yield RemoteEvent::LedgerRetracted { address: key.clone() };
                             }
                         }
 
@@ -89,7 +89,7 @@ impl crate::watch::RemoteWatch for PollRemoteWatch {
                             let key = record.address.clone();
                             if record.retracted {
                                 if prev_graph_sources.contains_key(&key) {
-                                    yield RemoteEvent::GraphSourceRetracted { alias: key.clone() };
+                                    yield RemoteEvent::GraphSourceRetracted { address: key.clone() };
                                 }
                             } else if let Some(prev) = prev_graph_sources.get(&key) {
                                 if prev.index_t != record.index_t
@@ -105,7 +105,7 @@ impl crate::watch::RemoteWatch for PollRemoteWatch {
 
                         for key in prev_graph_sources.keys() {
                             if !current_graph_sources.contains_key(key) {
-                                yield RemoteEvent::GraphSourceRetracted { alias: key.clone() };
+                                yield RemoteEvent::GraphSourceRetracted { address: key.clone() };
                             }
                         }
 
@@ -161,7 +161,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RemoteNameserviceClient for MockClient {
-        async fn lookup(&self, _alias: &str) -> error::Result<Option<NsRecord>> {
+        async fn lookup(&self, _address: &str) -> error::Result<Option<NsRecord>> {
             Ok(None)
         }
 
@@ -181,7 +181,7 @@ mod tests {
 
         async fn push_ref(
             &self,
-            _alias: &str,
+            _address: &str,
             _kind: RefKind,
             _expected: Option<&RefValue>,
             _new: &RefValue,
@@ -189,7 +189,7 @@ mod tests {
             Ok(CasResult::Updated)
         }
 
-        async fn init_ledger(&self, _alias: &str) -> error::Result<bool> {
+        async fn init_ledger(&self, _address: &str) -> error::Result<bool> {
             Ok(true)
         }
     }

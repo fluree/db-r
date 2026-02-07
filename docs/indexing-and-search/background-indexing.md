@@ -193,7 +193,7 @@ curl http://localhost:8090/ledgers/mydb:main
 Response:
 ```json
 {
-  "alias": "mydb:main",
+  "ledger_address": "mydb:main",
   "commit_t": 150,
   "index_t": 145,
   "novelty_count": 5,

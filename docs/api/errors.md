@@ -56,7 +56,7 @@ A new resource was created.
 **Example:**
 ```json
 {
-  "alias": "mydb:main",
+  "ledger_address": "mydb:main",
   "created": "2024-01-22T10:00:00.000Z"
 }
 ```

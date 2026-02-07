@@ -95,20 +95,20 @@ mod inner {
     /// * `state` — mutable import state (carried across chunks)
     /// * `ttl` — Turtle input text
     /// * `storage` — storage backend for writing commit blobs
-    /// * `ledger_alias` — ledger name for storage path construction
+    /// * `ledger_address` — ledger name for storage path construction
     /// * `compress` — whether to zstd-compress the ops stream
     pub async fn import_commit<S>(
         state: &mut ImportState,
         ttl: &str,
         storage: &S,
-        ledger_alias: &str,
+        ledger_address: &str,
         compress: bool,
     ) -> Result<ImportCommitResult>
     where
         S: ContentAddressedWrite,
     {
         let new_t = state.t + 1;
-        let txn_id = format!("{}-{}", ledger_alias, new_t);
+        let txn_id = format!("{}-{}", ledger_address, new_t);
 
         // 1. Create ImportSink + parse TTL
         let ns_codes_before = state.ns_registry.code_count();
@@ -176,7 +176,7 @@ mod inner {
             storage
                 .content_write_bytes_with_hash(
                     ContentKind::Commit,
-                    ledger_alias,
+                    ledger_address,
                     &result.content_hash_hex,
                     &result.bytes,
                 )
@@ -223,27 +223,27 @@ mod inner {
     /// * `state` — mutable import state (carried across chunks)
     /// * `trig` — TriG input text (Turtle-compatible if no GRAPH blocks)
     /// * `storage` — storage backend for writing commit blobs
-    /// * `ledger_alias` — ledger name for storage path construction
+    /// * `ledger_address` — ledger name for storage path construction
     /// * `compress` — whether to zstd-compress the ops stream
     pub async fn import_trig_commit<S>(
         state: &mut ImportState,
         trig: &str,
         storage: &S,
-        ledger_alias: &str,
+        ledger_address: &str,
         compress: bool,
     ) -> Result<ImportCommitResult>
     where
         S: ContentAddressedWrite,
     {
         let new_t = state.t + 1;
-        let txn_id = format!("{}-{}", ledger_alias, new_t);
+        let txn_id = format!("{}-{}", ledger_address, new_t);
 
         // 1. Parse TriG to extract GRAPH blocks
         let phase1 = parse_trig_phase1(trig)?;
 
         // If no named graphs and no txn-meta, use the faster pure-Turtle path
         if phase1.named_graphs.is_empty() && phase1.raw_meta.is_none() {
-            return import_commit(state, trig, storage, ledger_alias, compress).await;
+            return import_commit(state, trig, storage, ledger_address, compress).await;
         }
 
         let _parse_span = tracing::info_span!(
@@ -374,7 +374,7 @@ mod inner {
             storage
                 .content_write_bytes_with_hash(
                     ContentKind::Commit,
-                    ledger_alias,
+                    ledger_address,
                     &result.content_hash_hex,
                     &result.bytes,
                 )
@@ -516,10 +516,10 @@ mod inner {
         ttl: &str,
         mut ns_registry: NamespaceRegistry,
         t: i64,
-        ledger_alias: &str,
+        ledger_address: &str,
         compress: bool,
     ) -> Result<ParsedChunk> {
-        let txn_id = format!("{}-{}", ledger_alias, t);
+        let txn_id = format!("{}-{}", ledger_address, t);
 
         let _parse_span = tracing::info_span!("parse_chunk", t, ttl_bytes = ttl.len(),).entered();
 
@@ -550,7 +550,7 @@ mod inner {
         state: &mut ImportState,
         parsed: ParsedChunk,
         storage: &S,
-        ledger_alias: &str,
+        ledger_address: &str,
     ) -> Result<ImportCommitResult>
     where
         S: ContentAddressedWrite,
@@ -592,7 +592,7 @@ mod inner {
         let write_res = storage
             .content_write_bytes_with_hash(
                 ContentKind::Commit,
-                ledger_alias,
+                ledger_address,
                 &result.content_hash_hex,
                 &result.bytes,
             )

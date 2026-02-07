@@ -280,22 +280,24 @@ impl ContentAddressedWrite for AnyStorage {
     async fn content_write_bytes_with_hash(
         &self,
         kind: ContentKind,
-        ledger_alias: &str,
+        ledger_address: &str,
         content_hash_hex: &str,
         bytes: &[u8],
     ) -> std::result::Result<ContentWriteResult, fluree_db_core::Error> {
         self.0
-            .content_write_bytes_with_hash(kind, ledger_alias, content_hash_hex, bytes)
+            .content_write_bytes_with_hash(kind, ledger_address, content_hash_hex, bytes)
             .await
     }
 
     async fn content_write_bytes(
         &self,
         kind: ContentKind,
-        ledger_alias: &str,
+        ledger_address: &str,
         bytes: &[u8],
     ) -> std::result::Result<ContentWriteResult, fluree_db_core::Error> {
-        self.0.content_write_bytes(kind, ledger_alias, bytes).await
+        self.0
+            .content_write_bytes(kind, ledger_address, bytes)
+            .await
     }
 }
 
@@ -623,7 +625,7 @@ where
     async fn content_write_bytes_with_hash(
         &self,
         kind: ContentKind,
-        ledger_alias: &str,
+        ledger_address: &str,
         content_hash_hex: &str,
         bytes: &[u8],
     ) -> std::result::Result<ContentWriteResult, fluree_db_core::Error> {
@@ -631,12 +633,12 @@ where
         match kind {
             ContentKind::Commit | ContentKind::Txn => {
                 self.commit
-                    .content_write_bytes_with_hash(kind, ledger_alias, content_hash_hex, bytes)
+                    .content_write_bytes_with_hash(kind, ledger_address, content_hash_hex, bytes)
                     .await
             }
             _ => {
                 self.index
-                    .content_write_bytes_with_hash(kind, ledger_alias, content_hash_hex, bytes)
+                    .content_write_bytes_with_hash(kind, ledger_address, content_hash_hex, bytes)
                     .await
             }
         }
@@ -645,19 +647,19 @@ where
     async fn content_write_bytes(
         &self,
         kind: ContentKind,
-        ledger_alias: &str,
+        ledger_address: &str,
         bytes: &[u8],
     ) -> std::result::Result<ContentWriteResult, fluree_db_core::Error> {
         // Clojure parity: commit blobs + txn blobs go to commit storage.
         match kind {
             ContentKind::Commit | ContentKind::Txn => {
                 self.commit
-                    .content_write_bytes(kind, ledger_alias, bytes)
+                    .content_write_bytes(kind, ledger_address, bytes)
                     .await
             }
             _ => {
                 self.index
-                    .content_write_bytes(kind, ledger_alias, bytes)
+                    .content_write_bytes(kind, ledger_address, bytes)
                     .await
             }
         }
@@ -781,23 +783,23 @@ impl ContentAddressedWrite for AddressIdentifierResolverStorage {
     async fn content_write_bytes_with_hash(
         &self,
         kind: ContentKind,
-        ledger_alias: &str,
+        ledger_address: &str,
         content_hash_hex: &str,
         bytes: &[u8],
     ) -> std::result::Result<ContentWriteResult, fluree_db_core::Error> {
         self.default
-            .content_write_bytes_with_hash(kind, ledger_alias, content_hash_hex, bytes)
+            .content_write_bytes_with_hash(kind, ledger_address, content_hash_hex, bytes)
             .await
     }
 
     async fn content_write_bytes(
         &self,
         kind: ContentKind,
-        ledger_alias: &str,
+        ledger_address: &str,
         bytes: &[u8],
     ) -> std::result::Result<ContentWriteResult, fluree_db_core::Error> {
         self.default
-            .content_write_bytes(kind, ledger_alias, bytes)
+            .content_write_bytes(kind, ledger_address, bytes)
             .await
     }
 }
@@ -2101,8 +2103,8 @@ where
     /// let view = fluree.view("mydb").await?;
     /// let qr = fluree.query_view(&view, "SELECT * WHERE { ?s ?p ?o } LIMIT 10").await?;
     /// ```
-    pub fn create(&self, alias: &str) -> import::CreateBuilder<'_, S, N> {
-        import::CreateBuilder::new(self, alias.to_string())
+    pub fn create(&self, ledger_address: &str) -> import::CreateBuilder<'_, S, N> {
+        import::CreateBuilder::new(self, ledger_address.to_string())
     }
 
     /// Create a lazy graph handle for a ledger at the latest head.
@@ -2132,8 +2134,8 @@ where
     /// // Materialize for reuse
     /// let db = fluree.graph("mydb:main").load().await?;
     /// ```
-    pub fn graph(&self, alias: &str) -> Graph<'_, S, N> {
-        Graph::new(self, alias.to_string(), TimeSpec::Latest)
+    pub fn graph(&self, ledger_address: &str) -> Graph<'_, S, N> {
+        Graph::new(self, ledger_address.to_string(), TimeSpec::Latest)
     }
 
     /// Create a lazy graph handle at a specific time.
@@ -2151,8 +2153,8 @@ where
     ///     .execute()
     ///     .await?;
     /// ```
-    pub fn graph_at(&self, alias: &str, spec: TimeSpec) -> Graph<'_, S, N> {
-        Graph::new(self, alias.to_string(), spec)
+    pub fn graph_at(&self, ledger_address: &str, spec: TimeSpec) -> Graph<'_, S, N> {
+        Graph::new(self, ledger_address.to_string(), spec)
     }
 }
 
@@ -2238,18 +2240,18 @@ where
     ///     .execute()
     ///     .await?;
     /// ```
-    pub fn ledger_info(&self, alias: &str) -> ledger_info::LedgerInfoBuilder<'_, S, N> {
-        ledger_info::LedgerInfoBuilder::new(self, alias.to_string())
+    pub fn ledger_info(&self, ledger_address: &str) -> ledger_info::LedgerInfoBuilder<'_, S, N> {
+        ledger_info::LedgerInfoBuilder::new(self, ledger_address.to_string())
     }
 
-    /// Check if a ledger exists by alias or address.
+    /// Check if a ledger exists by address.
     ///
     /// Returns `true` if the ledger is registered in the nameservice,
     /// `false` otherwise. This is a lightweight check that only queries
     /// the nameservice without loading the ledger data.
     ///
     /// # Arguments
-    /// * `alias` - Ledger alias (e.g., "my/ledger") or full address
+    /// * `ledger_address` - Ledger address (e.g., "my/ledger") or full address
     ///
     /// # Example
     ///
@@ -2260,8 +2262,8 @@ where
     ///     let ledger = fluree.create_ledger(&config).await?;
     /// }
     /// ```
-    pub async fn ledger_exists(&self, alias: &str) -> Result<bool> {
-        Ok(self.nameservice.lookup(alias).await?.is_some())
+    pub async fn ledger_exists(&self, ledger_address: &str) -> Result<bool> {
+        Ok(self.nameservice.lookup(ledger_address).await?.is_some())
     }
 
     /// Enable connection-level ledger caching on an already-constructed Fluree instance.
@@ -2296,14 +2298,14 @@ where
     /// If caching is disabled (no `with_ledger_caching()` on builder),
     /// returns an ephemeral handle that wraps a fresh load.
     /// Server code should assert caching is enabled if it expects reuse.
-    pub async fn ledger_cached(&self, alias: &str) -> Result<LedgerHandle<S>> {
+    pub async fn ledger_cached(&self, ledger_address: &str) -> Result<LedgerHandle<S>> {
         match &self.ledger_manager {
-            Some(mgr) => mgr.get_or_load(alias).await,
+            Some(mgr) => mgr.get_or_load(ledger_address).await,
             None => {
                 // Caching disabled: load fresh, wrap in ephemeral handle
                 // Note: This handle is NOT cached; each call loads fresh.
-                let state = self.ledger(alias).await?;
-                Ok(LedgerHandle::ephemeral(alias.to_string(), state))
+                let state = self.ledger(ledger_address).await?;
+                Ok(LedgerHandle::ephemeral(ledger_address.to_string(), state))
             }
         }
     }
@@ -2324,7 +2326,7 @@ where
     ///
     /// # Arguments
     ///
-    /// * `alias` - The ledger alias to disconnect
+    /// * `ledger_address` - The ledger address to disconnect
     ///
     /// # Example
     ///
@@ -2335,9 +2337,9 @@ where
     /// // Next query will load fresh state
     /// let handle = fluree.ledger_cached("my/ledger").await?;
     /// ```
-    pub async fn disconnect_ledger(&self, alias: &str) {
+    pub async fn disconnect_ledger(&self, ledger_address: &str) {
         if let Some(mgr) = &self.ledger_manager {
-            mgr.disconnect(alias).await;
+            mgr.disconnect(ledger_address).await;
         }
         // If caching is disabled, this is a no-op
     }
@@ -2434,7 +2436,7 @@ where
         };
 
         // Step B: Lookup nameservice record
-        // The nameservice handles alias resolution (mydb -> mydb:main, addresses, etc.)
+        // The nameservice handles address resolution (mydb -> mydb:main, etc.)
         let ns_record = match self.nameservice.lookup(ledger_id).await? {
             Some(record) => record,
             None => return Ok(None), // Ledger doesn't exist in nameservice
@@ -2448,7 +2450,7 @@ where
         // Step D: Delegate to notify with the fresh record
         let result = mgr
             .notify(NsNotify {
-                alias: canonical_alias.clone(),
+                ledger_address: canonical_alias.clone(),
                 record: Some(ns_record),
             })
             .await?;

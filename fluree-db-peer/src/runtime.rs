@@ -28,13 +28,18 @@ pub trait PeerCallbacks: Send + Sync {
     async fn on_snapshot_complete(&self, _hash: &str) {}
 
     /// Called when a ledger is created or updated
-    async fn on_ledger_updated(&self, _alias: &str, _state: &LedgerState) {}
+    async fn on_ledger_updated(&self, _ledger_address: &str, _state: &LedgerState) {}
 
     /// Called when a graph source is created or updated
-    async fn on_graph_source_updated(&self, _alias: &str, _state: &GraphSourceState) {}
+    async fn on_graph_source_updated(
+        &self,
+        _graph_source_address: &str,
+        _state: &GraphSourceState,
+    ) {
+    }
 
     /// Called when a resource is retracted
-    async fn on_retracted(&self, _kind: &str, _alias: &str) {}
+    async fn on_retracted(&self, _kind: &str, _address: &str) {}
 }
 
 /// Default logging-only callbacks
@@ -54,26 +59,26 @@ impl PeerCallbacks for LoggingCallbacks {
         tracing::info!(hash, "Snapshot complete");
     }
 
-    async fn on_ledger_updated(&self, alias: &str, state: &LedgerState) {
+    async fn on_ledger_updated(&self, ledger_address: &str, state: &LedgerState) {
         tracing::info!(
-            alias,
+            ledger_address,
             commit_t = state.commit_t,
             index_t = state.index_t,
             "Ledger updated"
         );
     }
 
-    async fn on_graph_source_updated(&self, alias: &str, state: &GraphSourceState) {
+    async fn on_graph_source_updated(&self, graph_source_address: &str, state: &GraphSourceState) {
         tracing::info!(
-            alias,
+            graph_source_address,
             index_t = state.index_t,
             config_hash = %state.config_hash,
             "Graph source updated"
         );
     }
 
-    async fn on_retracted(&self, kind: &str, alias: &str) {
-        tracing::info!(kind, alias, "Resource retracted");
+    async fn on_retracted(&self, kind: &str, address: &str) {
+        tracing::info!(kind, address, "Resource retracted");
     }
 }
 
@@ -139,9 +144,9 @@ impl<C: PeerCallbacks + 'static> PeerRuntime<C> {
             SseClientEvent::LedgerRecord(record) => {
                 let changed = self.state.handle_ledger_record(&record).await;
                 if changed {
-                    if let Some(state) = self.state.get_ledger(&record.alias).await {
+                    if let Some(state) = self.state.get_ledger(&record.ledger_address).await {
                         self.callbacks
-                            .on_ledger_updated(&record.alias, &state)
+                            .on_ledger_updated(&record.ledger_address, &state)
                             .await;
                     }
                 }
@@ -150,17 +155,21 @@ impl<C: PeerCallbacks + 'static> PeerRuntime<C> {
             SseClientEvent::GraphSourceRecord(record) => {
                 let changed = self.state.handle_graph_source_record(&record).await;
                 if changed {
-                    if let Some(state) = self.state.get_graph_source(&record.alias).await {
+                    if let Some(state) = self
+                        .state
+                        .get_graph_source(&record.graph_source_address)
+                        .await
+                    {
                         self.callbacks
-                            .on_graph_source_updated(&record.alias, &state)
+                            .on_graph_source_updated(&record.graph_source_address, &state)
                             .await;
                     }
                 }
             }
 
-            SseClientEvent::Retracted { kind, alias } => {
-                self.state.handle_retracted(&kind, &alias).await;
-                self.callbacks.on_retracted(&kind, &alias).await;
+            SseClientEvent::Retracted { kind, address } => {
+                self.state.handle_retracted(&kind, &address).await;
+                self.callbacks.on_retracted(&kind, &address).await;
             }
 
             SseClientEvent::Disconnected { reason } => {
@@ -203,15 +212,19 @@ mod tests {
             self.connected.fetch_add(1, Ordering::SeqCst);
         }
 
-        async fn on_ledger_updated(&self, _alias: &str, _state: &LedgerState) {
+        async fn on_ledger_updated(&self, _ledger_address: &str, _state: &LedgerState) {
             self.ledger_updates.fetch_add(1, Ordering::SeqCst);
         }
 
-        async fn on_graph_source_updated(&self, _alias: &str, _state: &GraphSourceState) {
+        async fn on_graph_source_updated(
+            &self,
+            _graph_source_address: &str,
+            _state: &GraphSourceState,
+        ) {
             self.graph_source_updates.fetch_add(1, Ordering::SeqCst);
         }
 
-        async fn on_retracted(&self, _kind: &str, _alias: &str) {
+        async fn on_retracted(&self, _kind: &str, _address: &str) {
             self.retractions.fetch_add(1, Ordering::SeqCst);
         }
     }
@@ -236,7 +249,7 @@ mod tests {
 
         use crate::sse::LedgerRecord;
         let record = LedgerRecord {
-            alias: "books:main".to_string(),
+            ledger_address: "books:main".to_string(),
             branch: Some("main".to_string()),
             commit_address: Some("commit:1".to_string()),
             commit_t: 5,
@@ -263,7 +276,7 @@ mod tests {
         // First add a ledger
         use crate::sse::LedgerRecord;
         let record = LedgerRecord {
-            alias: "books:main".to_string(),
+            ledger_address: "books:main".to_string(),
             branch: Some("main".to_string()),
             commit_address: Some("commit:1".to_string()),
             commit_t: 5,
@@ -280,7 +293,7 @@ mod tests {
         runtime
             .handle_event(SseClientEvent::Retracted {
                 kind: "ledger".to_string(),
-                alias: "books:main".to_string(),
+                address: "books:main".to_string(),
             })
             .await;
 
@@ -297,7 +310,7 @@ mod tests {
         // Add a ledger
         use crate::sse::LedgerRecord;
         let record = LedgerRecord {
-            alias: "books:main".to_string(),
+            ledger_address: "books:main".to_string(),
             branch: Some("main".to_string()),
             commit_address: Some("commit:1".to_string()),
             commit_t: 5,

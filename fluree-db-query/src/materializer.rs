@@ -264,8 +264,8 @@ pub struct Materializer {
     pid_cache: HashMap<u32, Sid>,
     /// Join key mode
     mode: JoinKeyMode,
-    /// Ledger alias (for IriMatch construction in multi-ledger mode)
-    ledger_alias: Option<Arc<str>>,
+    /// Ledger address (for IriMatch construction in multi-ledger mode)
+    ledger_address: Option<Arc<str>>,
 }
 
 impl Materializer {
@@ -281,13 +281,13 @@ impl Materializer {
             iri_cache: HashMap::new(),
             pid_cache: HashMap::new(),
             mode,
-            ledger_alias: None,
+            ledger_address: None,
         }
     }
 
-    /// Set ledger alias for IriMatch construction in multi-ledger mode.
-    pub fn with_ledger_alias(mut self, alias: impl Into<Arc<str>>) -> Self {
-        self.ledger_alias = Some(alias.into());
+    /// Set ledger address for IriMatch construction in multi-ledger mode.
+    pub fn with_ledger_address(mut self, address: impl Into<Arc<str>>) -> Self {
+        self.ledger_address = Some(address.into());
         self
     }
 

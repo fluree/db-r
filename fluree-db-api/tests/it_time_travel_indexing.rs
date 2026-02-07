@@ -98,7 +98,7 @@ async fn query_names_at(fluree: &MemoryFluree, from_spec: &str) -> Vec<String> {
         .expect("query_connection");
 
     // Load the ledger to get Db for formatting (strip any @t: suffix and #fragment)
-    let ledger_alias = from_spec
+    let ledger_address = from_spec
         .split('@')
         .next()
         .unwrap_or(from_spec)
@@ -106,7 +106,7 @@ async fn query_names_at(fluree: &MemoryFluree, from_spec: &str) -> Vec<String> {
         .next()
         .unwrap_or(from_spec);
     let ledger = fluree
-        .ledger(ledger_alias)
+        .ledger(ledger_address)
         .await
         .expect("ledger for formatting");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
@@ -707,8 +707,8 @@ async fn query_all_person_ages(fluree: &MemoryFluree, from_spec: &str) -> Vec<(S
         .await
         .expect("query_connection");
 
-    let ledger_alias = from_spec.split('@').next().unwrap_or(from_spec);
-    let ledger = fluree.ledger(ledger_alias).await.expect("ledger");
+    let ledger_address = from_spec.split('@').next().unwrap_or(from_spec);
+    let ledger = fluree.ledger(ledger_address).await.expect("ledger");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
 
     jsonld
@@ -738,8 +738,8 @@ async fn query_person_age(fluree: &MemoryFluree, from_spec: &str, person_id: &st
         .await
         .expect("query_connection");
 
-    let ledger_alias = from_spec.split('@').next().unwrap_or(from_spec);
-    let ledger = fluree.ledger(ledger_alias).await.expect("ledger");
+    let ledger_address = from_spec.split('@').next().unwrap_or(from_spec);
+    let ledger = fluree.ledger(ledger_address).await.expect("ledger");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
 
     jsonld

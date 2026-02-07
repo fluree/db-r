@@ -7,7 +7,7 @@ use serde::Deserialize;
 /// Ledger record from SSE ns-record event
 #[derive(Debug, Clone, Deserialize)]
 pub struct LedgerRecord {
-    pub alias: String,
+    pub ledger_address: String,
     #[serde(default)]
     pub branch: Option<String>,
     pub commit_address: Option<String>,
@@ -21,7 +21,7 @@ pub struct LedgerRecord {
 /// Graph source record from SSE ns-record event
 #[derive(Debug, Clone, Deserialize)]
 pub struct GraphSourceRecord {
-    pub alias: String,
+    pub graph_source_address: String,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -43,7 +43,7 @@ pub struct GraphSourceRecord {
 pub struct NsRecordEvent {
     pub action: String,
     pub kind: String,
-    pub alias: String,
+    pub address: String,
     pub record: serde_json::Value,
     pub emitted_at: String,
 }
@@ -53,7 +53,7 @@ pub struct NsRecordEvent {
 pub struct NsRetractedEvent {
     pub action: String,
     pub kind: String,
-    pub alias: String,
+    pub address: String,
     pub emitted_at: String,
 }
 
@@ -82,7 +82,7 @@ pub enum SseClientEvent {
     /// Graph source record received
     GraphSourceRecord(GraphSourceRecord),
     /// Resource retracted
-    Retracted { kind: String, alias: String },
+    Retracted { kind: String, address: String },
     /// Connection lost (will reconnect)
     Disconnected { reason: String },
     /// Fatal error (will not reconnect)
@@ -119,7 +119,7 @@ mod tests {
     #[test]
     fn test_parse_ledger_record() {
         let json = r#"{
-            "alias": "books:main",
+            "ledger_address": "books:main",
             "branch": "main",
             "commit_address": "fluree:file://commit/abc123",
             "commit_t": 5,
@@ -129,7 +129,7 @@ mod tests {
         }"#;
 
         let record: LedgerRecord = serde_json::from_str(json).unwrap();
-        assert_eq!(record.alias, "books:main");
+        assert_eq!(record.ledger_address, "books:main");
         assert_eq!(record.commit_t, 5);
         assert_eq!(record.index_t, 3);
     }
@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn test_parse_graph_source_record() {
         let json = r#"{
-            "alias": "search:main",
+            "graph_source_address": "search:main",
             "name": "search",
             "branch": "main",
             "source_type": "fulltext",
@@ -149,7 +149,7 @@ mod tests {
         }"#;
 
         let record: GraphSourceRecord = serde_json::from_str(json).unwrap();
-        assert_eq!(record.alias, "search:main");
+        assert_eq!(record.graph_source_address, "search:main");
         assert_eq!(record.index_t, 2);
         assert_eq!(record.dependencies, vec!["books:main"]);
     }
@@ -159,8 +159,8 @@ mod tests {
         let json = r#"{
             "action": "ns-record",
             "kind": "ledger",
-            "alias": "books:main",
-            "record": {"alias": "books:main", "commit_t": 1, "index_t": 1},
+            "address": "books:main",
+            "record": {"ledger_address": "books:main", "commit_t": 1, "index_t": 1},
             "emitted_at": "2024-01-01T00:00:00Z"
         }"#;
 
@@ -174,13 +174,13 @@ mod tests {
         let json = r#"{
             "action": "ns-retracted",
             "kind": "ledger",
-            "alias": "books:main",
+            "address": "books:main",
             "emitted_at": "2024-01-01T00:00:00Z"
         }"#;
 
         let event: NsRetractedEvent = serde_json::from_str(json).unwrap();
         assert_eq!(event.action, "ns-retracted");
-        assert_eq!(event.alias, "books:main");
+        assert_eq!(event.address, "books:main");
     }
 
     #[test]
@@ -188,7 +188,7 @@ mod tests {
         // Test that config_hash produces SHA-256 truncated to 8 hex chars
         // This should match the server's sha256_short function
         let record = GraphSourceRecord {
-            alias: "test:main".to_string(),
+            graph_source_address: "test:main".to_string(),
             name: None,
             branch: None,
             source_type: None,
@@ -210,7 +210,7 @@ mod tests {
     fn test_graph_source_config_hash_empty() {
         // Empty config should still produce valid hash
         let record = GraphSourceRecord {
-            alias: "test:main".to_string(),
+            graph_source_address: "test:main".to_string(),
             name: None,
             branch: None,
             source_type: None,

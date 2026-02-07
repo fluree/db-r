@@ -78,8 +78,8 @@ pub struct ResolvedGraphView<'a, S: Storage> {
     pub to_t: i64,
     /// Optional policy enforcer (attached by WithPolicy) - reference, no clone
     pub policy_enforcer: Option<&'a QueryPolicyEnforcer>,
-    /// Ledger alias for provenance tracking - reference to Arc, no clone
-    pub ledger_alias: &'a Arc<str>,
+    /// Ledger address for provenance tracking - reference to Arc, no clone
+    pub ledger_address: &'a Arc<str>,
 }
 
 impl<'a, S: Storage> ResolvedGraphView<'a, S> {
@@ -88,14 +88,14 @@ impl<'a, S: Storage> ResolvedGraphView<'a, S> {
         db: &'a Db<S>,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
-        ledger_alias: &'a Arc<str>,
+        ledger_address: &'a Arc<str>,
     ) -> Self {
         Self {
             db,
             overlay,
             to_t,
             policy_enforcer: None,
-            ledger_alias,
+            ledger_address,
         }
     }
 
@@ -104,7 +104,7 @@ impl<'a, S: Storage> ResolvedGraphView<'a, S> {
         db: &'a Db<S>,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
-        ledger_alias: &'a Arc<str>,
+        ledger_address: &'a Arc<str>,
         policy_enforcer: &'a QueryPolicyEnforcer,
     ) -> Self {
         Self {
@@ -112,7 +112,7 @@ impl<'a, S: Storage> ResolvedGraphView<'a, S> {
             overlay,
             to_t,
             policy_enforcer: Some(policy_enforcer),
-            ledger_alias,
+            ledger_address,
         }
     }
 
@@ -129,7 +129,7 @@ impl<'a, S: Storage> std::fmt::Debug for ResolvedGraphView<'a, S> {
             .field("overlay", &"<dyn OverlayProvider>")
             .field("to_t", &self.to_t)
             .field("has_policy", &self.policy_enforcer.is_some())
-            .field("ledger_alias", self.ledger_alias)
+            .field("ledger_address", self.ledger_address)
             .finish()
     }
 }
@@ -160,8 +160,8 @@ pub trait GraphView<S: Storage> {
     /// The returned view borrows from `self` and contains no owned data.
     fn resolve(&self) -> ResolvedGraphView<'_, S>;
 
-    /// Get the ledger alias for this view (for provenance tracking).
-    fn ledger_alias(&self) -> &Arc<str>;
+    /// Get the ledger address for this view (for provenance tracking).
+    fn ledger_address(&self) -> &Arc<str>;
 }
 
 // ============================================================================
@@ -185,8 +185,8 @@ pub struct BaseView<'a, S: Storage> {
     pub overlay: &'a dyn OverlayProvider,
     /// Target transaction time - must include novelty commits if present
     pub to_t: i64,
-    /// Ledger alias for provenance tracking
-    pub ledger_alias: Arc<str>,
+    /// Ledger address for provenance tracking
+    pub ledger_address: Arc<str>,
 }
 
 impl<'a, S: Storage> BaseView<'a, S> {
@@ -199,29 +199,29 @@ impl<'a, S: Storage> BaseView<'a, S> {
     /// * `to_t` - Target transaction time. **Important**: If using a novelty
     ///   overlay, this should be `ledger.t()` (not `db.t`) to include
     ///   unindexed commits.
-    /// * `ledger_alias` - Ledger alias for provenance tracking
+    /// * `ledger_address` - Ledger address for provenance tracking
     pub fn new(
         db: &'a Db<S>,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
-        ledger_alias: impl Into<Arc<str>>,
+        ledger_address: impl Into<Arc<str>>,
     ) -> Self {
         Self {
             db,
             overlay,
             to_t,
-            ledger_alias: ledger_alias.into(),
+            ledger_address: ledger_address.into(),
         }
     }
 }
 
 impl<'a, S: Storage> GraphView<S> for BaseView<'a, S> {
     fn resolve(&self) -> ResolvedGraphView<'_, S> {
-        ResolvedGraphView::new(self.db, self.overlay, self.to_t, &self.ledger_alias)
+        ResolvedGraphView::new(self.db, self.overlay, self.to_t, &self.ledger_address)
     }
 
-    fn ledger_alias(&self) -> &Arc<str> {
-        &self.ledger_alias
+    fn ledger_address(&self) -> &Arc<str> {
+        &self.ledger_address
     }
 }
 
@@ -266,8 +266,8 @@ impl<S: Storage, V: GraphView<S>> GraphView<S> for AsOf<V> {
         resolved
     }
 
-    fn ledger_alias(&self) -> &Arc<str> {
-        self.inner.ledger_alias()
+    fn ledger_address(&self) -> &Arc<str> {
+        self.inner.ledger_address()
     }
 }
 
@@ -316,8 +316,8 @@ impl<'a, S: Storage, V: GraphView<S>> GraphView<S> for WithPolicy<'a, V> {
         resolved
     }
 
-    fn ledger_alias(&self) -> &Arc<str> {
-        self.inner.ledger_alias()
+    fn ledger_address(&self) -> &Arc<str> {
+        self.inner.ledger_address()
     }
 }
 
@@ -358,8 +358,8 @@ impl<'a, S: Storage, V: GraphView<S>> GraphView<S> for WithReasoning<'a, V> {
         resolved
     }
 
-    fn ledger_alias(&self) -> &Arc<str> {
-        self.inner.ledger_alias()
+    fn ledger_address(&self) -> &Arc<str> {
+        self.inner.ledger_address()
     }
 }
 
@@ -383,7 +383,7 @@ mod tests {
         // Object-safety check (doesn't run, just compiles)
         fn _check_dyn<S: Storage + 'static>(v: &dyn GraphView<S>) {
             let _resolved = v.resolve();
-            let _alias = v.ledger_alias();
+            let _address = v.ledger_address();
         }
     }
 }

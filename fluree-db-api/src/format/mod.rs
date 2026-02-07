@@ -30,6 +30,7 @@ pub mod datatype;
 mod graph_crawl;
 pub mod iri;
 mod jsonld;
+mod materialize;
 mod sparql;
 mod typed;
 

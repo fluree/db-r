@@ -113,7 +113,7 @@ async fn test_connection_parity() {
 
     println!(
         "Database loaded: alias={}, t={}, version={}",
-        db.alias, db.t, db.version
+        db.ledger_address, db.t, db.version
     );
 
     // 4. Execute query via execute_pattern (bypasses JSON query parser)

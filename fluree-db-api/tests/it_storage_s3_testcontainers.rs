@@ -307,7 +307,7 @@ async fn s3_testcontainers_indexing_test() {
 
             // Trigger indexing and wait
             let completion = handle
-                .trigger(result.ledger.alias(), result.receipt.t)
+                .trigger(result.ledger.ledger_address(), result.receipt.t)
                 .await;
             match completion.wait().await {
                 fluree_db_api::IndexOutcome::Completed {
@@ -324,7 +324,7 @@ async fn s3_testcontainers_indexing_test() {
             // Verify index address got published to nameservice
             let rec = fluree
                 .nameservice()
-                .lookup(result.ledger.alias())
+                .lookup(result.ledger.ledger_address())
                 .await
                 .expect("nameservice lookup")
                 .expect("record exists");

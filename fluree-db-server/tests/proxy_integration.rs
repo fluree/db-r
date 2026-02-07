@@ -347,8 +347,11 @@ async fn test_storage_proxy_ns_record_for_existing_ledger() {
 
     let (status, json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
-    // The alias "ns:test" is split into namespace "ns" and branch "test"
-    assert_eq!(json.get("alias").and_then(|v| v.as_str()), Some("ns"));
+    // The address "ns:test" is split into namespace "ns" and branch "test"
+    assert_eq!(
+        json.get("ledger_address").and_then(|v| v.as_str()),
+        Some("ns")
+    );
     assert_eq!(json.get("branch").and_then(|v| v.as_str()), Some("test"));
     assert_eq!(json.get("retracted").and_then(|v| v.as_bool()), Some(false));
 }
