@@ -36,10 +36,11 @@ DynamoDB-specific setup and configuration:
 Monitoring and observability:
 - Logging configuration
 - Metrics collection
-- Tracing
+- OpenTelemetry distributed tracing (OTEL)
+- Deep span hierarchy (query, transaction, indexing waterfalls)
 - Health monitoring
 - Performance metrics
-- Integration with monitoring systems
+- Integration with monitoring systems (Jaeger, Tempo, X-Ray)
 
 ### [Admin, Health, and Stats](admin-and-health.md)
 

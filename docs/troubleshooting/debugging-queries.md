@@ -737,9 +737,21 @@ function findPersonByName(name) {
 }
 ```
 
+## Distributed Tracing for Deep Performance Analysis
+
+When explain plans and query tracing aren't enough -- for example, when you need to see exactly where wall-clock time is spent across parse, plan, scan, join, sort, and format phases -- use Fluree's OpenTelemetry distributed tracing with Jaeger.
+
+See [Performance Investigation with Distributed Tracing](performance-tracing.md) for the full guide, including:
+
+- Local setup with the `otel/` Makefile harness
+- Writing custom scenario scripts
+- Reading Jaeger waterfalls to identify bottlenecks
+- AWS production tracing (ECS, Lambda, X-Ray, Tempo)
+
 ## Related Documentation
 
 - [Common Errors](common-errors.md) - Error reference
+- [Performance Tracing](performance-tracing.md) - Deep performance investigation with OTEL/Jaeger
 - [Explain Plans](../query/explain.md) - Query optimization
 - [JSON-LD Query](../query/jsonld-query.md) - Query syntax
 - [SPARQL](../query/sparql.md) - SPARQL syntax

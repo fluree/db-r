@@ -24,6 +24,15 @@ Tools and techniques for query debugging:
 - Identifying slow queries
 - Optimizing query patterns
 
+### [Performance Investigation with Distributed Tracing](performance-tracing.md)
+
+Deep performance analysis using OpenTelemetry and Jaeger:
+- Using the `otel/` validation harness for local investigation
+- Writing custom scenario scripts for specific performance issues
+- Reading Jaeger span waterfalls (query, transaction, indexing)
+- Common bottleneck patterns and what spans reveal them
+- AWS production tracing (ECS, Lambda, Tempo, X-Ray)
+
 ## Quick Diagnostics
 
 ### Health Check
@@ -313,5 +322,7 @@ Retain logs for historical analysis:
 
 - [Common Errors](common-errors.md) - Error reference
 - [Debugging Queries](debugging-queries.md) - Query debugging
+- [Performance Tracing](performance-tracing.md) - Distributed tracing for performance analysis
 - [API Errors](../api/errors.md) - HTTP error codes
 - [Operations](../operations/README.md) - Operational guides
+- [Telemetry](../operations/telemetry.md) - Logging, metrics, and OTEL configuration

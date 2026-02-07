@@ -78,6 +78,15 @@ Design documents are located in the `/docs/design/` directory and various planni
 - Location: `/LOGGING_TRACING_PLAN.md`
 - Covers: Tracing integration, distributed tracing, observability
 
+**Deep Performance Tracing Playbook:**
+- Location: `/dev-docs/deep-tracing-playbook.md`
+- Covers: Complete implementation reference for deep tracing instrumentation, span catalog, OTEL SDK patterns, async span gotchas, test infrastructure, and re-implementation checklist
+- Companion: `/dev-docs/deep-tracing-span-catalog.md` -- span hierarchy, field definitions, acceptance criteria
+
+**OTEL Validation Infrastructure:**
+- Location: `/otel/README.md`
+- Covers: Makefile-driven test harness for visual OTEL validation with Jaeger, scenario scripts, data generation
+
 ### Feature Parity
 
 **Numeric/Temporal Parity:**

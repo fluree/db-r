@@ -19,6 +19,9 @@ The `docs/` directory is the canonical source of truth. **Before inventing an ap
 | PR workflow & code style           | `docs/contributing/README.md`               |
 | HTTP API endpoints                 | `docs/api/endpoints.md`                     |
 | Configuration & env vars           | `docs/operations/configuration.md`          |
+| OTEL tracing & telemetry           | `docs/operations/telemetry.md`              |
+| Adding tracing spans to new code   | `docs/contributing/tracing-guide.md`        |
+| Debugging perf with Jaeger/OTEL    | `docs/troubleshooting/performance-tracing.md` |
 | Full table of contents             | `docs/SUMMARY.md`                           |
 
 **Docs maintenance mandate:** If your work changes or extends behavior covered by `docs/`, you MUST update the relevant doc files in the same changeset. Conversely, if you produce significant new documentation, update `docs/SUMMARY.md` and add a pointer here if it represents a new top-level concern.

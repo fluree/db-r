@@ -71,7 +71,7 @@ server: ## Start fluree-server in background with OTEL export
 	$(SERVER_BIN) \
 		--storage-path $(STORAGE) \
 		--listen-addr 0.0.0.0:$(PORT) \
-		--indexing-enabled $(INDEXING) \
+		$(if $(filter true,$(INDEXING)),--indexing-enabled) \
 		> $(LOG_FILE) 2>&1 & \
 	echo $$! > $(PID_FILE) && \
 	echo "Server starting (PID $$(cat $(PID_FILE))), logs: $(LOG_FILE)" && \

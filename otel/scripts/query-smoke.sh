@@ -22,9 +22,17 @@ run_query() {
     local body
     body=$(echo "$resp" | sed '$d')
     if [ "$code" = "200" ]; then
-        # Estimate row count from JSON array
+        # Estimate row count — handles both object arrays [{"@id":...}] and tuple arrays [[...]]
         local rows
-        rows=$(echo "$body" | grep -o '"@id"' | wc -l | tr -d ' ')
+        # Heuristic row count for various response formats:
+        #   Object array: [{"@id":...}]  — count "@id"
+        #   Tuple array:  [[...],[...]]   — count ],
+        #   SPARQL JSON:  {"results":{"bindings":[{"var":{"value":...}}]}} — count "value"
+        rows=$({ echo "$body" | grep -o '"@id"\|"value"' || true; } | wc -l | tr -d ' ')
+        if [ "$rows" = "0" ]; then
+            rows=$({ echo "$body" | grep -o '\],' || true; } | wc -l | tr -d ' ')
+            [ "$rows" -gt 0 ] && rows=$((rows + 1))
+        fi
         echo "  [PASS] ${label} (HTTP ${code}, ~${rows} results)"
     else
         echo "  [FAIL] ${label} (HTTP ${code})"
@@ -69,7 +77,7 @@ run_query "FQL sort" \
   "@context": {"ex": "http://example.org/ns/"},
   "select": ["?name", "?price"],
   "where": [{"@id": "?product", "@type": "ex:Product", "ex:name": "?name", "ex:price": "?price"}],
-  "orderBy": [{"desc": "?price"}],
+  "orderBy": [{"var": "?price", "order": "desc"}],
   "limit": 10
 }'
 

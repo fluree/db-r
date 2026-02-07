@@ -35,7 +35,7 @@ echo "1. JSON-LD insert..."
 run_tx "JSON-LD insert" \
     -X POST "${BASE_URL}/${LEDGER}/insert" \
     -H "Content-Type: application/json" \
-    -d '{
+    --data-raw '{
   "@context": {"ex": "http://example.org/ns/"},
   "@id": "ex:smoke-item-1",
   "@type": "ex:SmokeTest",
@@ -48,7 +48,7 @@ echo "2. JSON-LD upsert..."
 run_tx "JSON-LD upsert" \
     -X POST "${BASE_URL}/${LEDGER}/upsert" \
     -H "Content-Type: application/json" \
-    -d '{
+    --data-raw '{
   "@context": {"ex": "http://example.org/ns/"},
   "@id": "ex:smoke-item-1",
   "@type": "ex:SmokeTest",
@@ -61,7 +61,7 @@ echo "3. JSON-LD update (WHERE/DELETE/INSERT)..."
 run_tx "JSON-LD update" \
     -X POST "${BASE_URL}/${LEDGER}/transact" \
     -H "Content-Type: application/json" \
-    -d '{
+    --data-raw '{
   "@context": {"ex": "http://example.org/ns/"},
   "where": [{"@id": "ex:smoke-item-1", "ex:value": "?oldVal"}],
   "delete": [{"@id": "ex:smoke-item-1", "ex:value": "?oldVal"}],
@@ -73,7 +73,7 @@ echo "4. Turtle insert..."
 run_tx "Turtle insert" \
     -X POST "${BASE_URL}/${LEDGER}/insert" \
     -H "Content-Type: text/turtle" \
-    -d '@prefix ex: <http://example.org/ns/> .
+    --data-raw '@prefix ex: <http://example.org/ns/> .
 ex:smoke-item-2 a ex:SmokeTest ;
     ex:label "Turtle insert test" ;
     ex:value 77 .
@@ -84,7 +84,7 @@ echo "5. SPARQL UPDATE..."
 run_tx "SPARQL UPDATE" \
     -X POST "${BASE_URL}/${LEDGER}/transact" \
     -H "Content-Type: application/sparql-update" \
-    -d 'PREFIX ex: <http://example.org/ns/>
+    --data-raw 'PREFIX ex: <http://example.org/ns/>
 INSERT DATA {
     ex:smoke-item-3 a ex:SmokeTest ;
         ex:label "SPARQL insert test" ;
