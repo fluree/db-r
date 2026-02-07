@@ -244,6 +244,97 @@ docker run -d -p 4317:4317 -p 16686:16686 jaegertracing/all-in-one
 
 View traces: http://localhost:16686
 
+### Span Hierarchy
+
+Fluree instruments queries, transactions, and indexing with structured tracing spans at three levels. All debug/trace spans are opt-in via `RUST_LOG` — at default `info` level, only the top-level operation spans appear.
+
+#### Investigation Tiers
+
+**Tier 1: Default (INFO)** — Always visible. Shows top-level operations and timing.
+
+```bash
+RUST_LOG=info  # default
+```
+
+Spans: `query_run`, `txn_stage`, `stage_flakes`, `txn_commit`, `index_build`, `sort_blocking`, `groupby_blocking`, `join_flush_*`
+
+**Tier 2: Debug** — Phase-level decomposition of queries and transactions. Use when you need to identify which phase is the bottleneck.
+
+```bash
+RUST_LOG=info,fluree_db_query=debug,fluree_db_transact=debug
+```
+
+Additional spans:
+- **Query path:** `query_prepare` > [`reasoning_prep`, `pattern_rewrite`, `plan`], `parse`, `format`, `policy_eval`
+- **Transaction path:** `txn_stage` > [`where_exec`, `delete_gen`, `insert_gen`, `cancellation`, `policy_enforce`]
+- **Indexer:** `resolve_commit`, `index_gc`
+
+**Tier 3: Trace** — Per-operator detail. Use for deep performance analysis.
+
+```bash
+RUST_LOG=info,fluree_db_query=trace
+```
+
+Additional spans: `scan`, `join`, `property_join`, `sort`, `group_by`, `aggregate`, `group_aggregate`, `distinct`, `limit`, `offset`, `project`, `filter`, `union`, `optional`, `subquery`, `having`
+
+#### Span Tree (Query)
+
+```
+query_prepare (debug)
+├── reasoning_prep (debug)
+├── pattern_rewrite (debug)
+└── plan (debug)
+query_run (info)
+├── scan (trace)
+├── join (trace)
+├── project (trace)
+├── sort_blocking (info)
+└── ...
+```
+
+#### Span Tree (Transaction)
+
+```
+txn_stage (info)
+├── where_exec (debug)
+├── delete_gen (debug)
+├── insert_gen (debug)
+├── cancellation (debug)
+└── policy_enforce (debug)
+txn_commit (info)
+├── commit_nameservice_lookup (info)
+├── commit_verify_sequencing (info)
+├── commit_write_raw_txn (info)
+├── commit_build_record (info)
+├── commit_write_commit_blob (info)
+└── commit_publish_nameservice (info)
+```
+
+#### Span Tree (Indexing)
+
+```
+index_build (info)
+├── build_all_indexes (info)
+│   └── build_index (info, per order)
+├── generate_runs (info)
+├── walk_commit_chain (info)
+│   └── resolve_commit (debug)
+└── index_gc (debug)
+```
+
+### OTEL Configuration
+
+The OTEL exporter layer uses a separate `Targets` filter from the console fmt layer. This prevents third-party crate spans (hyper, tonic, h2, tower-http) from flooding the OTEL exporter when `RUST_LOG` is set broadly.
+
+- **OTEL layer:** Exports only `fluree_*` crate targets at DEBUG level
+- **Console layer:** Respects `RUST_LOG` environment variable as-is
+
+This means `RUST_LOG=debug` will produce verbose console output from all crates, but the OTEL exporter only receives Fluree spans.
+
+### Tracker-to-Span Bridge
+
+When tracked queries or transactions are executed (via the `/query` or `/transact` HTTP endpoints with tracking enabled), the `tracker_time` and `tracker_fuel` fields are recorded on the `query_execute` and `transact_execute` spans. These values appear as span attributes in OTEL backends (Jaeger, Tempo, etc.), enabling correlation between the tracker's fuel accounting and the span waterfall.
+
 ## Monitoring Integration
 
 ### Grafana Dashboards

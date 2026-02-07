@@ -22,6 +22,7 @@ use fluree_db_transact::{
     Txn, TxnOpts, TxnType,
 };
 use serde_json::Value as JsonValue;
+use tracing::Instrument;
 
 fn ledger_alias_from_txn(txn_json: &JsonValue) -> Result<&str> {
     let obj = txn_json
@@ -1147,36 +1148,40 @@ where
             new_t = ledger.t() + 1,
             turtle_bytes = turtle.len()
         );
-        let _guard = span.enter();
 
-        let mut ns_registry = NamespaceRegistry::from_db(&ledger.db);
-        let new_t = ledger.t() + 1;
-        let txn_id = generate_txn_id();
+        async {
+            let mut ns_registry = NamespaceRegistry::from_db(&ledger.db);
+            let new_t = ledger.t() + 1;
+            let txn_id = generate_txn_id();
 
-        // Parse Turtle directly to flakes
-        let parse_span = tracing::info_span!("turtle_parse_to_flakes", turtle_bytes = turtle.len());
-        let flakes = {
-            let _g = parse_span.enter();
-            let mut sink = FlakeSink::new(&mut ns_registry, new_t, txn_id);
-            fluree_graph_turtle::parse(turtle, &mut sink)?;
-            sink.finish()
-        };
-        tracing::info!(flake_count = flakes.len(), "turtle parsed to flakes");
+            // Parse Turtle directly to flakes
+            let parse_span =
+                tracing::info_span!("turtle_parse_to_flakes", turtle_bytes = turtle.len());
+            let flakes = {
+                let _g = parse_span.enter();
+                let mut sink = FlakeSink::new(&mut ns_registry, new_t, txn_id);
+                fluree_graph_turtle::parse(turtle, &mut sink)?;
+                sink.finish()
+            };
+            tracing::info!(flake_count = flakes.len(), "turtle parsed to flakes");
 
-        // Stage the flakes (backpressure + optional policy)
-        let options = match index_config {
-            Some(cfg) => StageOptions::new().with_index_config(cfg),
-            None => StageOptions::default(),
-        };
-        let view = stage_flakes(ledger, flakes, options).await?;
+            // Stage the flakes (backpressure + optional policy)
+            let options = match index_config {
+                Some(cfg) => StageOptions::new().with_index_config(cfg),
+                None => StageOptions::default(),
+            };
+            let view = stage_flakes(ledger, flakes, options).await?;
 
-        // Plain Turtle doesn't support named graphs or txn-meta extraction (TriG support handles these)
-        Ok(StageResult {
-            view,
-            ns_registry,
-            txn_meta: Vec::new(),
-            graph_delta: rustc_hash::FxHashMap::default(),
-        })
+            // Plain Turtle doesn't support named graphs or txn-meta extraction (TriG support handles these)
+            Ok(StageResult {
+                view,
+                ns_registry,
+                txn_meta: Vec::new(),
+                graph_delta: rustc_hash::FxHashMap::default(),
+            })
+        }
+        .instrument(span)
+        .await
     }
 
     /// Insert new data with options
