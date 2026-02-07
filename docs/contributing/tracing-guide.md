@@ -50,7 +50,9 @@ span.record("patterns_after", rewritten.len() as u64);
 
 ### Async phases (contains `.await`)
 
-**Never** hold a `span.enter()` guard across an `.await` point. The `Entered` guard is `!Send`, so if the async runtime suspends the task, the span context is lost and child spans become orphaned root traces in Jaeger.
+**Never** hold a `span.enter()` guard across an `.await` point. In tokio's multi-threaded runtime, `span.enter()` enters the span on the current thread. When the task yields at `.await`, the span remains "entered" on that thread. Other tasks polled on the same thread will then inherit this span as their parent, causing **cross-request trace contamination** — completely unrelated operations become nested under each other in Jaeger. This was the root cause of a critical trace corruption bug in the HTTP route handlers.
+
+**Symptoms in Jaeger**: If you see sequential, independent requests nested as children of an earlier request (especially where child spans outlive their parents), the cause is almost certainly `span.enter()` held across `.await`.
 
 Instead, use `.instrument(span)`:
 
@@ -79,6 +81,33 @@ async {
     Ok(result)
 }.instrument(span).await
 ```
+
+### HTTP route handlers (axum)
+
+Route handlers are async and **must** use `.instrument()`. The standard pattern wraps the entire handler body in an `async move` block instrumented with the request span, then uses `Span::current()` inside:
+
+```rust
+pub async fn query(
+    State(state): State<Arc<AppState>>,
+    headers: FlureeHeaders,
+) -> Result<impl IntoResponse> {
+    let span = create_request_span("query", request_id.as_deref(), ...);
+
+    async move {
+        let span = tracing::Span::current(); // Same span, safe to .record() on
+        tracing::info!(status = "start", "query request received");
+
+        let alias = get_ledger_alias(...)?;
+        span.record("ledger_alias", alias.as_str());
+
+        execute_query(&state, &alias, &query_json).await
+    }
+    .instrument(span)
+    .await
+}
+```
+
+**Why `async move` + `Span::current()` instead of just `.instrument()`**: Route handlers need to record deferred fields (like `ledger_alias`, `error_code`) on the span after creation. By obtaining `Span::current()` inside the instrumented block, you get a handle to the same span that `.instrument()` entered, letting you call `.record()` and pass it to `set_span_error_code()`.
 
 ### spawn_blocking
 
@@ -264,11 +293,12 @@ Without this, spans from the new crate will appear in console logs but not in Ja
 
 ## Common Gotchas
 
-1. **`Entered` is `!Send`** -- cannot cross `.await`. Use `.instrument()` for async.
+1. **`span.enter()` across `.await` causes cross-request contamination** -- This is the most dangerous tracing bug. In tokio's multi-threaded runtime, `span.enter()` sets the span on the current thread. When the task suspends at `.await`, the span stays "entered" on that thread. Other tasks polled on the same thread inherit it as their parent. **Result**: unrelated requests cascade into each other's traces in Jaeger, with child spans that outlive their parents. Always use `.instrument(span)` in async code. This was a real bug in the HTTP route handlers and took Jaeger analysis to identify.
 2. **`Span::current().record()` targets the innermost span** -- not necessarily the one you intend. Hold a reference to the span you want to record on.
 3. **OTEL exporter floods** -- if you set `RUST_LOG=debug` globally, third-party crates (hyper, tonic, h2) emit debug spans that overwhelm the OTEL batch processor. The `Targets` filter on the OTEL layer prevents this.
 4. **Tower-HTTP duplicate `request` span** -- tower-http's `TraceLayer` creates its own `request` span at DEBUG level. We've configured it to use TRACE level to avoid collision with Fluree's `request` info_span.
 5. **`set_global_default` in tests** -- can only be called once per process. Use `set_default()` which returns a guard scoped to the test.
+6. **Compiler won't catch `span.enter()` across `.await`** -- Unlike what the tracing docs suggest, `Entered` may actually be `Send` (since `&Span` is `Send` when `Span: Sync`). The code compiles fine but produces incorrect traces at runtime. The only way to detect this is visual inspection in Jaeger. Grep for `span.enter()` in async functions as part of code review.
 
 ## Related Documentation
 
