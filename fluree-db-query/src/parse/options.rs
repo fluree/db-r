@@ -24,7 +24,7 @@
 //! ```
 
 use super::ast::{
-    UnresolvedAggregateFn, UnresolvedAggregateSpec, UnresolvedFilterExpr, UnresolvedFilterValue,
+    UnresolvedAggregateFn, UnresolvedAggregateSpec, UnresolvedExpression, UnresolvedFilterValue,
     UnresolvedOptions, UnresolvedSortDirection, UnresolvedSortSpec,
 };
 use super::error::{ParseError, Result};
@@ -306,8 +306,8 @@ pub fn parse_group_by(obj: &serde_json::Map<String, JsonValue>) -> Result<Vec<Ar
 /// It returns `None` if no "having" key is present.
 pub fn parse_having(
     obj: &serde_json::Map<String, JsonValue>,
-    parse_filter_expr: impl Fn(&JsonValue) -> Result<UnresolvedFilterExpr>,
-) -> Result<Option<UnresolvedFilterExpr>> {
+    parse_filter_expr: impl Fn(&JsonValue) -> Result<UnresolvedExpression>,
+) -> Result<Option<UnresolvedExpression>> {
     obj.get("having").map(parse_filter_expr).transpose()
 }
 
@@ -319,8 +319,8 @@ pub fn parse_having(
 ///   and the HAVING expression is rewritten to reference the aggregate output var.
 fn parse_having_with_aggregates(
     obj: &serde_json::Map<String, JsonValue>,
-    parse_filter_expr: impl Fn(&JsonValue) -> Result<UnresolvedFilterExpr>,
-) -> Result<(Option<UnresolvedFilterExpr>, Vec<UnresolvedAggregateSpec>)> {
+    parse_filter_expr: impl Fn(&JsonValue) -> Result<UnresolvedExpression>,
+) -> Result<(Option<UnresolvedExpression>, Vec<UnresolvedAggregateSpec>)> {
     let Some(having_val) = obj.get("having") else {
         return Ok((None, Vec::new()));
     };
@@ -339,16 +339,16 @@ fn parse_having_with_aggregates(
 }
 
 fn rewrite_having_aggregates(
-    expr: UnresolvedFilterExpr,
+    expr: UnresolvedExpression,
     aggregates: &mut Vec<UnresolvedAggregateSpec>,
     counter: &mut usize,
-) -> Result<UnresolvedFilterExpr> {
-    use super::ast::UnresolvedFilterExpr as E;
+) -> Result<UnresolvedExpression> {
+    use super::ast::UnresolvedExpression as E;
 
-    let rewrite_child = |e: UnresolvedFilterExpr,
+    let rewrite_child = |e: UnresolvedExpression,
                          aggregates: &mut Vec<UnresolvedAggregateSpec>,
                          counter: &mut usize|
-     -> Result<UnresolvedFilterExpr> {
+     -> Result<UnresolvedExpression> {
         rewrite_having_aggregates(e, aggregates, counter)
     };
 
@@ -522,7 +522,7 @@ pub fn parse_reasoning(
 /// ```
 pub fn parse_options(
     obj: &serde_json::Map<String, JsonValue>,
-    parse_filter_expr: impl Fn(&JsonValue) -> Result<UnresolvedFilterExpr>,
+    parse_filter_expr: impl Fn(&JsonValue) -> Result<UnresolvedExpression>,
 ) -> Result<UnresolvedOptions> {
     let (having, having_aggs) = parse_having_with_aggregates(obj, &parse_filter_expr)?;
     Ok(UnresolvedOptions {
@@ -686,8 +686,8 @@ mod tests {
     fn test_parse_having() {
         let json_val = json!({"having": [">", "?count", 5]});
         let obj = json_val.as_object().unwrap();
-        let dummy_filter = |_: &JsonValue| -> Result<UnresolvedFilterExpr> {
-            Ok(UnresolvedFilterExpr::boolean(true))
+        let dummy_filter = |_: &JsonValue| -> Result<UnresolvedExpression> {
+            Ok(UnresolvedExpression::boolean(true))
         };
         let result = parse_having(obj, dummy_filter).unwrap();
         assert!(result.is_some());

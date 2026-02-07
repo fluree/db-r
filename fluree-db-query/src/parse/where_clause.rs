@@ -43,7 +43,7 @@ use serde_json::Value as JsonValue;
 use std::sync::Arc;
 
 /// Import filter value parsing from parent module
-fn parse_filter_value(value: &JsonValue) -> Result<super::ast::UnresolvedFilterExpr> {
+fn parse_filter_value(value: &JsonValue) -> Result<super::ast::UnresolvedExpression> {
     super::parse_filter_value(value)
 }
 

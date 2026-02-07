@@ -4,7 +4,7 @@
 
 use crate::binding::{Binding, RowView};
 use crate::error::Result;
-use crate::ir::{FilterExpr, FunctionName};
+use crate::ir::{Expression, FunctionName};
 use std::sync::Arc;
 
 use super::helpers::check_arity;
@@ -13,13 +13,13 @@ use super::value::ComparableValue;
 /// Evaluate a Fluree-specific function
 pub fn eval_fluree_function(
     name: &FunctionName,
-    args: &[FilterExpr],
+    args: &[Expression],
     row: &RowView,
 ) -> Result<Option<ComparableValue>> {
     match name {
         FunctionName::T => {
             check_arity(args, 1, "T")?;
-            if let FilterExpr::Var(var_id) = &args[0] {
+            if let Expression::Var(var_id) = &args[0] {
                 if let Some(binding) = row.get(*var_id) {
                     match binding {
                         Binding::Lit { t: Some(t), .. } => {
@@ -38,7 +38,7 @@ pub fn eval_fluree_function(
 
         FunctionName::Op => {
             check_arity(args, 1, "OP")?;
-            if let FilterExpr::Var(var_id) = &args[0] {
+            if let Expression::Var(var_id) = &args[0] {
                 if let Some(Binding::Lit { op: Some(op), .. }) = row.get(*var_id) {
                     let op_str = if *op { "assert" } else { "retract" };
                     return Ok(Some(ComparableValue::String(Arc::from(op_str))));

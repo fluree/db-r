@@ -5,7 +5,7 @@
 use crate::binding::RowView;
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::ir::{FilterExpr, FunctionName};
+use crate::ir::{Expression, FunctionName};
 use fluree_db_core::{geo, FlakeValue, Storage};
 
 use super::eval::eval_to_comparable_inner;
@@ -15,7 +15,7 @@ use super::value::ComparableValue;
 /// Evaluate a geospatial function
 pub fn eval_geo_function<S: Storage>(
     name: &FunctionName,
-    args: &[FilterExpr],
+    args: &[Expression],
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
@@ -90,7 +90,7 @@ mod tests {
 
         let result = eval_geo_function::<fluree_db_core::MemoryStorage>(
             &FunctionName::GeofDistance,
-            &[FilterExpr::Var(VarId(0)), FilterExpr::Var(VarId(1))],
+            &[Expression::Var(VarId(0)), Expression::Var(VarId(1))],
             &row,
             None,
         )
@@ -124,7 +124,7 @@ mod tests {
 
         let result = eval_geo_function::<fluree_db_core::MemoryStorage>(
             &FunctionName::GeofDistance,
-            &[FilterExpr::Var(VarId(0)), FilterExpr::Var(VarId(1))],
+            &[Expression::Var(VarId(0)), Expression::Var(VarId(1))],
             &row,
             None,
         )
@@ -158,7 +158,7 @@ mod tests {
 
         let result = eval_geo_function::<fluree_db_core::MemoryStorage>(
             &FunctionName::GeofDistance,
-            &[FilterExpr::Var(VarId(0)), FilterExpr::Var(VarId(1))],
+            &[Expression::Var(VarId(0)), Expression::Var(VarId(1))],
             &row,
             None,
         )

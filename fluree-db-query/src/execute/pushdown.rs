@@ -3,7 +3,7 @@
 //! Extracts range constraints from FILTER expressions for pushdown
 //! to scan/join operators, enabling index-level filtering.
 
-use crate::ir::{FilterExpr, Pattern};
+use crate::ir::{Expression, Pattern};
 use crate::pattern::TriplePattern;
 use crate::planner::extract_object_bounds_for_var;
 use crate::sort::compare_flake_values;
@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 /// Returns both the bounds map and the indices of filters that were fully consumed by pushdown.
 pub fn extract_bounds_from_filters(
     triples: &[TriplePattern],
-    filters: &[FilterExpr],
+    filters: &[Expression],
 ) -> (HashMap<VarId, ObjectBounds>, Vec<usize>) {
     let mut bounds: HashMap<VarId, ObjectBounds> = HashMap::new();
     let mut consumed_indices: Vec<usize> = Vec::new();
@@ -123,8 +123,8 @@ pub fn extract_lookahead_bounds_with_consumption(
 }
 
 /// Count unique variables referenced in a filter expression
-pub fn count_filter_vars(expr: &FilterExpr) -> usize {
-    // Use the existing variables() method on FilterExpr
+pub fn count_filter_vars(expr: &Expression) -> usize {
+    // Use the existing variables() method on Expression
     let vars: HashSet<VarId> = expr.variables().into_iter().collect();
     vars.len()
 }
@@ -207,16 +207,16 @@ mod tests {
         // Triple pattern: ?s :age ?age
         // Filter: ?age > 18 && ?age < 65
         let triples = vec![make_pattern(VarId(0), "age", VarId(1))];
-        let remaining = vec![Pattern::Filter(FilterExpr::And(vec![
-            FilterExpr::Compare {
+        let remaining = vec![Pattern::Filter(Expression::And(vec![
+            Expression::Compare {
                 op: CompareOp::Gt,
-                left: Box::new(FilterExpr::Var(VarId(1))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(18))),
+                left: Box::new(Expression::Var(VarId(1))),
+                right: Box::new(Expression::Const(FilterValue::Long(18))),
             },
-            FilterExpr::Compare {
+            Expression::Compare {
                 op: CompareOp::Lt,
-                left: Box::new(FilterExpr::Var(VarId(1))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(65))),
+                left: Box::new(Expression::Var(VarId(1))),
+                right: Box::new(Expression::Const(FilterValue::Long(65))),
             },
         ]))];
 

@@ -14,7 +14,7 @@ use crate::bm25::Bm25SearchOperator;
 use crate::error::{QueryError, Result};
 use crate::exists::ExistsOperator;
 use crate::filter::FilterOperator;
-use crate::ir::{FilterExpr, Pattern};
+use crate::ir::{Expression, Pattern};
 use crate::join::NestedLoopJoinOperator;
 use crate::minus::MinusOperator;
 use crate::operator::BoxedOperator;
@@ -49,9 +49,9 @@ pub struct InnerJoinBlock {
     /// Triple patterns
     pub triples: Vec<TriplePattern>,
     /// BIND patterns (var and expression)
-    pub binds: Vec<(VarId, FilterExpr)>,
+    pub binds: Vec<(VarId, Expression)>,
     /// FILTER expressions
-    pub filters: Vec<FilterExpr>,
+    pub filters: Vec<Expression>,
 }
 
 // ============================================================================
@@ -104,7 +104,7 @@ struct PendingBind {
     /// The variable being bound by this expression
     target_var: VarId,
     /// The expression to evaluate
-    expr: FilterExpr,
+    expr: Expression,
 }
 
 /// Pending FILTER expression waiting to be applied once its required variables are bound.
@@ -118,7 +118,7 @@ struct PendingFilter {
     /// Variables that must be bound before this filter can execute
     required_vars: HashSet<VarId>,
     /// The filter expression to evaluate
-    expr: FilterExpr,
+    expr: Expression,
 }
 
 /// Apply pending BINDs and FILTERs that are ready (all required vars are bound).
@@ -229,8 +229,8 @@ pub fn collect_inner_join_block(patterns: &[Pattern], start: usize) -> InnerJoin
     let mut i = start;
     let mut values: Vec<(Vec<VarId>, Vec<Vec<crate::binding::Binding>>)> = Vec::new();
     let mut triples: Vec<TriplePattern> = Vec::new();
-    let mut binds: Vec<(VarId, FilterExpr)> = Vec::new();
-    let mut filters: Vec<FilterExpr> = Vec::new();
+    let mut binds: Vec<(VarId, Expression)> = Vec::new();
+    let mut filters: Vec<Expression> = Vec::new();
     let mut bound_vars: HashSet<VarId> = HashSet::new();
 
     while i < patterns.len() {
@@ -429,7 +429,7 @@ pub fn build_where_operators_seeded<S: Storage + 'static>(
                 let reordered = reorder_patterns_seeded(triples, stats.as_deref(), &bound);
 
                 // Push down range-safe filters into object bounds (when possible)
-                let filters_for_pushdown: Vec<FilterExpr> =
+                let filters_for_pushdown: Vec<Expression> =
                     pending_filters.iter().map(|f| f.expr.clone()).collect();
                 let (object_bounds, filter_idxs_consumed) =
                     extract_bounds_from_filters(&reordered, &filters_for_pushdown);
@@ -761,7 +761,7 @@ pub fn build_triple_operators<S: Storage + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{CompareOp, FilterExpr, FilterValue, Pattern};
+    use crate::ir::{CompareOp, Expression, FilterValue, Pattern};
     use crate::pattern::Term;
     use fluree_db_core::{FlakeValue, MemoryStorage, PropertyStatData, Sid, StatsView};
 
@@ -788,10 +788,10 @@ mod tests {
     fn test_build_where_operators_with_filter() {
         let patterns = vec![
             Pattern::Triple(make_pattern(VarId(0), "age", VarId(1))),
-            Pattern::Filter(FilterExpr::Compare {
+            Pattern::Filter(Expression::Compare {
                 op: CompareOp::Gt,
-                left: Box::new(FilterExpr::Var(VarId(1))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(18))),
+                left: Box::new(Expression::Var(VarId(1))),
+                right: Box::new(Expression::Const(FilterValue::Long(18))),
             }),
         ];
 
@@ -815,10 +815,10 @@ mod tests {
 
         let patterns = vec![
             Pattern::Triple(make_pattern(score, "hasScore", score_v)),
-            Pattern::Filter(FilterExpr::Compare {
+            Pattern::Filter(Expression::Compare {
                 op: CompareOp::Gt,
-                left: Box::new(FilterExpr::Var(score_v)),
-                right: Box::new(FilterExpr::Const(FilterValue::Double(0.4))),
+                left: Box::new(Expression::Var(score_v)),
+                right: Box::new(Expression::Const(FilterValue::Double(0.4))),
             }),
             Pattern::Triple(TriplePattern::new(
                 Term::Var(score),
@@ -888,10 +888,10 @@ mod tests {
                 vars: vec![VarId(0)],
                 rows: vec![vec![Binding::lit(FlakeValue::Long(1), Sid::new(2, "long"))]],
             },
-            Pattern::Filter(FilterExpr::Compare {
+            Pattern::Filter(Expression::Compare {
                 op: CompareOp::Eq,
-                left: Box::new(FilterExpr::Var(VarId(0))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(1))),
+                left: Box::new(Expression::Var(VarId(0))),
+                right: Box::new(Expression::Const(FilterValue::Long(1))),
             }),
             Pattern::Triple(TriplePattern::new(
                 Term::Var(VarId(1)),
@@ -921,16 +921,16 @@ mod tests {
             Pattern::Triple(make_pattern(VarId(0), "age", VarId(1))),
             Pattern::Bind {
                 var: VarId(2),
-                expr: FilterExpr::Arithmetic {
+                expr: Expression::Arithmetic {
                     op: crate::ir::ArithmeticOp::Add,
-                    left: Box::new(FilterExpr::Var(VarId(1))),
-                    right: Box::new(FilterExpr::Const(FilterValue::Long(1))),
+                    left: Box::new(Expression::Var(VarId(1))),
+                    right: Box::new(Expression::Const(FilterValue::Long(1))),
                 },
             },
-            Pattern::Filter(FilterExpr::Compare {
+            Pattern::Filter(Expression::Compare {
                 op: CompareOp::Gt,
-                left: Box::new(FilterExpr::Var(VarId(2))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(0))),
+                left: Box::new(Expression::Var(VarId(2))),
+                right: Box::new(Expression::Const(FilterValue::Long(0))),
             }),
         ];
 
@@ -950,10 +950,10 @@ mod tests {
     fn test_build_where_operators_filter_before_triple_allowed() {
         // FILTER at position 0 is now allowed with empty seed support
         let patterns = vec![
-            Pattern::Filter(FilterExpr::Compare {
+            Pattern::Filter(Expression::Compare {
                 op: CompareOp::Eq,
-                left: Box::new(FilterExpr::Const(FilterValue::Long(1))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(1))),
+                left: Box::new(Expression::Const(FilterValue::Long(1))),
+                right: Box::new(Expression::Const(FilterValue::Long(1))),
             }),
             Pattern::Triple(make_pattern(VarId(0), "name", VarId(1))),
         ];
@@ -989,7 +989,7 @@ mod tests {
         // BIND at position 0 should work
         let patterns = vec![Pattern::Bind {
             var: VarId(0),
-            expr: FilterExpr::Const(FilterValue::Long(42)),
+            expr: Expression::Const(FilterValue::Long(42)),
         }];
         let result = build_where_operators::<MemoryStorage>(&patterns, None);
         assert!(result.is_ok());

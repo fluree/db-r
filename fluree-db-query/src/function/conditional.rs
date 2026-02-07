@@ -5,7 +5,7 @@
 use crate::binding::RowView;
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::ir::{FilterExpr, FunctionName};
+use crate::ir::{Expression, FunctionName};
 use fluree_db_core::Storage;
 
 use super::eval::{eval_to_comparable_inner, evaluate_inner};
@@ -15,7 +15,7 @@ use super::value::ComparableValue;
 /// Evaluate a conditional function
 pub fn eval_conditional_function<S: Storage>(
     name: &FunctionName,
-    args: &[FilterExpr],
+    args: &[Expression],
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {

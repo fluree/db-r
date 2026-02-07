@@ -7,7 +7,7 @@
 use crate::binding::{Binding, RowView};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::ir::{FilterExpr, FunctionName};
+use crate::ir::{Expression, FunctionName};
 use fluree_db_core::{FlakeValue, Storage};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use std::sync::Arc;
@@ -19,7 +19,7 @@ use super::value::ComparableValue;
 /// Evaluate a string function
 pub fn eval_string_function<S: Storage>(
     name: &FunctionName,
-    args: &[FilterExpr],
+    args: &[Expression],
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
@@ -33,7 +33,7 @@ pub fn eval_string_function<S: Storage>(
         FunctionName::Lang => {
             check_arity(args, 1, "LANG")?;
             let tag = match &args[0] {
-                FilterExpr::Var(var_id) => match row.get(*var_id) {
+                Expression::Var(var_id) => match row.get(*var_id) {
                     Some(Binding::Lit { lang, .. }) => {
                         lang.as_ref().map(|l| l.to_string()).unwrap_or_default()
                     }
@@ -329,7 +329,7 @@ mod tests {
         let row = batch.row_view(0).unwrap();
         let result = eval_string_function::<fluree_db_core::MemoryStorage>(
             &FunctionName::Strlen,
-            &[FilterExpr::Var(VarId(0))],
+            &[Expression::Var(VarId(0))],
             &row,
             None,
         )
@@ -343,7 +343,7 @@ mod tests {
         let row = batch.row_view(0).unwrap();
         let result = eval_string_function::<fluree_db_core::MemoryStorage>(
             &FunctionName::Ucase,
-            &[FilterExpr::Var(VarId(0))],
+            &[Expression::Var(VarId(0))],
             &row,
             None,
         )
@@ -361,8 +361,8 @@ mod tests {
         let result = eval_string_function::<fluree_db_core::MemoryStorage>(
             &FunctionName::Contains,
             &[
-                FilterExpr::Var(VarId(0)),
-                FilterExpr::Const(crate::ir::FilterValue::String("World".to_string())),
+                Expression::Var(VarId(0)),
+                Expression::Const(crate::ir::FilterValue::String("World".to_string())),
             ],
             &row,
             None,

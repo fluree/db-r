@@ -1725,7 +1725,7 @@ mod tests {
     #[tokio::test]
     async fn test_join_right_scan_with_object_bounds_uses_binary_path() {
         use crate::execute::{build_operator_tree, run_operator, ExecutableQuery};
-        use crate::ir::{CompareOp, FilterExpr, FilterValue, Pattern};
+        use crate::ir::{CompareOp, Expression, FilterValue, Pattern};
         use crate::parse::ParsedQuery;
         use crate::pattern::Term;
         use crate::var_registry::VarRegistry;
@@ -1989,10 +1989,10 @@ mod tests {
             Term::Sid(Sid::new(0, p_has_score)),
             Term::Var(v_score_v),
         );
-        let filter = FilterExpr::Compare {
+        let filter = Expression::Compare {
             op: CompareOp::Gt,
-            left: Box::new(FilterExpr::Var(v_score_v)),
-            right: Box::new(FilterExpr::Const(FilterValue::Double(0.4))),
+            left: Box::new(Expression::Var(v_score_v)),
+            right: Box::new(Expression::Const(FilterValue::Double(0.4))),
         };
 
         let mut pq = ParsedQuery::new(ParsedContext::default());

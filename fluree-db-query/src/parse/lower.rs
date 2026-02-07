@@ -5,7 +5,7 @@
 
 use super::ast::{
     LiteralValue, UnresolvedAggregateFn, UnresolvedAggregateSpec, UnresolvedConstructTemplate,
-    UnresolvedFilterExpr, UnresolvedGraphSelectSpec, UnresolvedNestedSelectSpec, UnresolvedOptions,
+    UnresolvedExpression, UnresolvedGraphSelectSpec, UnresolvedNestedSelectSpec, UnresolvedOptions,
     UnresolvedPathExpr, UnresolvedPattern, UnresolvedQuery, UnresolvedRoot,
     UnresolvedSelectionSpec, UnresolvedSortDirection, UnresolvedSortSpec, UnresolvedTerm,
     UnresolvedTriplePattern, UnresolvedValue,
@@ -16,7 +16,7 @@ use crate::aggregate::{AggregateFn, AggregateSpec};
 use crate::binding::Binding;
 use crate::context::WellKnownDatatypes;
 use crate::ir::{
-    FilterExpr, FunctionName, IndexSearchPattern, IndexSearchTarget, PathModifier, Pattern,
+    Expression, FunctionName, IndexSearchPattern, IndexSearchTarget, PathModifier, Pattern,
     PropertyPathPattern, SubqueryPattern, VectorSearchPattern, VectorSearchTarget,
 };
 use crate::vector::DistanceMetric;
@@ -1224,69 +1224,69 @@ fn lower_nested_select_spec<E: IriEncoder>(
     )))
 }
 
-/// Lower an unresolved filter expression to a resolved FilterExpr
+/// Lower an unresolved filter expression to a resolved Expression
 pub(crate) fn lower_filter_expr(
-    expr: &UnresolvedFilterExpr,
+    expr: &UnresolvedExpression,
     vars: &mut VarRegistry,
-) -> Result<FilterExpr> {
+) -> Result<Expression> {
     match expr {
-        UnresolvedFilterExpr::Var(name) => {
+        UnresolvedExpression::Var(name) => {
             let var_id = vars.get_or_insert(name);
-            Ok(FilterExpr::Var(var_id))
+            Ok(Expression::Var(var_id))
         }
-        UnresolvedFilterExpr::Const(val) => Ok(FilterExpr::Const(val.into())),
-        UnresolvedFilterExpr::Compare { op, left, right } => {
+        UnresolvedExpression::Const(val) => Ok(Expression::Const(val.into())),
+        UnresolvedExpression::Compare { op, left, right } => {
             let lowered_left = lower_filter_expr(left, vars)?;
             let lowered_right = lower_filter_expr(right, vars)?;
-            Ok(FilterExpr::Compare {
+            Ok(Expression::Compare {
                 op: (*op).into(),
                 left: Box::new(lowered_left),
                 right: Box::new(lowered_right),
             })
         }
-        UnresolvedFilterExpr::Arithmetic { op, left, right } => {
+        UnresolvedExpression::Arithmetic { op, left, right } => {
             let lowered_left = lower_filter_expr(left, vars)?;
             let lowered_right = lower_filter_expr(right, vars)?;
-            Ok(FilterExpr::Arithmetic {
+            Ok(Expression::Arithmetic {
                 op: (*op).into(),
                 left: Box::new(lowered_left),
                 right: Box::new(lowered_right),
             })
         }
-        UnresolvedFilterExpr::Negate(inner) => {
+        UnresolvedExpression::Negate(inner) => {
             let lowered = lower_filter_expr(inner, vars)?;
-            Ok(FilterExpr::Negate(Box::new(lowered)))
+            Ok(Expression::Negate(Box::new(lowered)))
         }
-        UnresolvedFilterExpr::And(exprs) => {
-            let lowered: Result<Vec<FilterExpr>> =
+        UnresolvedExpression::And(exprs) => {
+            let lowered: Result<Vec<Expression>> =
                 exprs.iter().map(|e| lower_filter_expr(e, vars)).collect();
-            Ok(FilterExpr::And(lowered?))
+            Ok(Expression::And(lowered?))
         }
-        UnresolvedFilterExpr::Or(exprs) => {
-            let lowered: Result<Vec<FilterExpr>> =
+        UnresolvedExpression::Or(exprs) => {
+            let lowered: Result<Vec<Expression>> =
                 exprs.iter().map(|e| lower_filter_expr(e, vars)).collect();
-            Ok(FilterExpr::Or(lowered?))
+            Ok(Expression::Or(lowered?))
         }
-        UnresolvedFilterExpr::Not(inner) => {
+        UnresolvedExpression::Not(inner) => {
             let lowered = lower_filter_expr(inner, vars)?;
-            Ok(FilterExpr::Not(Box::new(lowered)))
+            Ok(Expression::Not(Box::new(lowered)))
         }
-        UnresolvedFilterExpr::In {
+        UnresolvedExpression::In {
             expr,
             values,
             negated,
         } => {
             let lowered_expr = lower_filter_expr(expr, vars)?;
-            let lowered_values: Result<Vec<FilterExpr>> =
+            let lowered_values: Result<Vec<Expression>> =
                 values.iter().map(|v| lower_filter_expr(v, vars)).collect();
-            Ok(FilterExpr::In {
+            Ok(Expression::In {
                 expr: Box::new(lowered_expr),
                 values: lowered_values?,
                 negated: *negated,
             })
         }
-        UnresolvedFilterExpr::Function { name, args } => {
-            let lowered_args: Result<Vec<FilterExpr>> =
+        UnresolvedExpression::Function { name, args } => {
+            let lowered_args: Result<Vec<Expression>> =
                 args.iter().map(|a| lower_filter_expr(a, vars)).collect();
             let func_name = lower_function_name(name);
             if let FunctionName::Custom(unknown) = &func_name {
@@ -1295,7 +1295,7 @@ pub(crate) fn lower_filter_expr(
                     unknown
                 )));
             }
-            Ok(FilterExpr::Function {
+            Ok(Expression::Function {
                 name: func_name,
                 args: lowered_args?,
             })

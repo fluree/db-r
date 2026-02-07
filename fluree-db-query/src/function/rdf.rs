@@ -5,7 +5,7 @@
 use crate::binding::{Binding, RowView};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::ir::{FilterExpr, FunctionName};
+use crate::ir::{Expression, FunctionName};
 use fluree_db_core::Storage;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -17,14 +17,14 @@ use super::value::ComparableValue;
 /// Evaluate an RDF term function
 pub fn eval_rdf_function<S: Storage>(
     name: &FunctionName,
-    args: &[FilterExpr],
+    args: &[Expression],
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     match name {
         FunctionName::Datatype => {
             check_arity(args, 1, "DATATYPE")?;
-            if let FilterExpr::Var(var_id) = &args[0] {
+            if let Expression::Var(var_id) = &args[0] {
                 if let Some(binding) = row.get(*var_id) {
                     return Ok(match binding {
                         Binding::Lit { dt, .. } => Some(format_datatype_sid(dt)),

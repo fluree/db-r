@@ -356,7 +356,7 @@ pub struct SubqueryPattern {
     /// Aggregate specifications
     pub aggregates: Vec<crate::aggregate::AggregateSpec>,
     /// HAVING filter (post-aggregate)
-    pub having: Option<FilterExpr>,
+    pub having: Option<Expression>,
 }
 
 impl SubqueryPattern {
@@ -926,7 +926,7 @@ pub enum Pattern {
 
     /// A filter expression to evaluate against each solution
     /// Positioned in where clause order for inline attachment
-    Filter(FilterExpr),
+    Filter(Expression),
 
     /// Optional clause - left join semantics
     /// Contains ordered patterns that may or may not match
@@ -936,7 +936,7 @@ pub enum Pattern {
     Union(Vec<Vec<Pattern>>),
 
     /// Bind a computed value to a variable
-    Bind { var: VarId, expr: FilterExpr },
+    Bind { var: VarId, expr: Expression },
 
     /// Inline values - constant rows to join with
     Values {
@@ -1069,7 +1069,7 @@ impl Pattern {
 /// Represents expressions that can be evaluated against solution bindings.
 /// This is a placeholder that will be expanded in Phase 3 (Filter Implementation).
 #[derive(Debug, Clone, PartialEq)]
-pub enum FilterExpr {
+pub enum Expression {
     /// Variable reference
     Var(VarId),
     /// Constant value
@@ -1077,59 +1077,59 @@ pub enum FilterExpr {
     /// Comparison operation
     Compare {
         op: CompareOp,
-        left: Box<FilterExpr>,
-        right: Box<FilterExpr>,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     /// Arithmetic operation (+, -, *, /)
     Arithmetic {
         op: ArithmeticOp,
-        left: Box<FilterExpr>,
-        right: Box<FilterExpr>,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     /// Unary negation (-)
-    Negate(Box<FilterExpr>),
+    Negate(Box<Expression>),
     /// Logical AND
-    And(Vec<FilterExpr>),
+    And(Vec<Expression>),
     /// Logical OR
-    Or(Vec<FilterExpr>),
+    Or(Vec<Expression>),
     /// Logical NOT
-    Not(Box<FilterExpr>),
+    Not(Box<Expression>),
     /// Conditional expression (IF(cond, then, else))
     If {
-        condition: Box<FilterExpr>,
-        then_expr: Box<FilterExpr>,
-        else_expr: Box<FilterExpr>,
+        condition: Box<Expression>,
+        then_expr: Box<Expression>,
+        else_expr: Box<Expression>,
     },
     /// IN expression (?x IN (1, 2, 3))
     In {
-        expr: Box<FilterExpr>,
-        values: Vec<FilterExpr>,
+        expr: Box<Expression>,
+        values: Vec<Expression>,
         negated: bool,
     },
     /// Function call
     Function {
         name: FunctionName,
-        args: Vec<FilterExpr>,
+        args: Vec<Expression>,
     },
 }
 
-impl FilterExpr {
+impl Expression {
     /// Get all variables referenced by this expression
     pub fn variables(&self) -> Vec<VarId> {
         match self {
-            FilterExpr::Var(v) => vec![*v],
-            FilterExpr::Const(_) => vec![],
-            FilterExpr::Compare { left, right, .. }
-            | FilterExpr::Arithmetic { left, right, .. } => {
+            Expression::Var(v) => vec![*v],
+            Expression::Const(_) => vec![],
+            Expression::Compare { left, right, .. }
+            | Expression::Arithmetic { left, right, .. } => {
                 let mut vars = left.variables();
                 vars.extend(right.variables());
                 vars
             }
-            FilterExpr::Negate(expr) | FilterExpr::Not(expr) => expr.variables(),
-            FilterExpr::And(exprs) | FilterExpr::Or(exprs) => {
+            Expression::Negate(expr) | Expression::Not(expr) => expr.variables(),
+            Expression::And(exprs) | Expression::Or(exprs) => {
                 exprs.iter().flat_map(|e| e.variables()).collect()
             }
-            FilterExpr::If {
+            Expression::If {
                 condition,
                 then_expr,
                 else_expr,
@@ -1139,12 +1139,12 @@ impl FilterExpr {
                 vars.extend(else_expr.variables());
                 vars
             }
-            FilterExpr::In { expr, values, .. } => {
+            Expression::In { expr, values, .. } => {
                 let mut vars = expr.variables();
                 vars.extend(values.iter().flat_map(|v| v.variables()));
                 vars
             }
-            FilterExpr::Function { args, .. } => args.iter().flat_map(|a| a.variables()).collect(),
+            Expression::Function { args, .. } => args.iter().flat_map(|a| a.variables()).collect(),
         }
     }
 
@@ -1197,7 +1197,7 @@ impl FilterExpr {
     /// ```
     pub fn is_range_safe(&self) -> bool {
         match self {
-            FilterExpr::Compare { op, left, right } => {
+            Expression::Compare { op, left, right } => {
                 // Not-equal cannot be represented as a single contiguous range.
                 if matches!(op, CompareOp::Ne) {
                     return false;
@@ -1205,21 +1205,21 @@ impl FilterExpr {
                 // Only var vs const comparisons are range-safe
                 matches!(
                     (left.as_ref(), right.as_ref()),
-                    (FilterExpr::Var(_), FilterExpr::Const(_))
-                        | (FilterExpr::Const(_), FilterExpr::Var(_))
+                    (Expression::Var(_), Expression::Const(_))
+                        | (Expression::Const(_), Expression::Var(_))
                 )
             }
-            FilterExpr::And(exprs) => exprs.iter().all(|e| e.is_range_safe()),
+            Expression::And(exprs) => exprs.iter().all(|e| e.is_range_safe()),
             // Arithmetic, Or, Not, If, In, functions are NOT range-safe
-            FilterExpr::Arithmetic { .. }
-            | FilterExpr::Negate(_)
-            | FilterExpr::Or(_)
-            | FilterExpr::Not(_)
-            | FilterExpr::If { .. }
-            | FilterExpr::In { .. }
-            | FilterExpr::Function { .. }
-            | FilterExpr::Var(_)
-            | FilterExpr::Const(_) => false,
+            Expression::Arithmetic { .. }
+            | Expression::Negate(_)
+            | Expression::Or(_)
+            | Expression::Not(_)
+            | Expression::If { .. }
+            | Expression::In { .. }
+            | Expression::Function { .. }
+            | Expression::Var(_)
+            | Expression::Const(_) => false,
         }
     }
 }
@@ -1438,18 +1438,18 @@ mod tests {
     #[test]
     fn test_filter_expr_single_var() {
         // Single var: ?x > 10
-        let expr = FilterExpr::Compare {
+        let expr = Expression::Compare {
             op: CompareOp::Gt,
-            left: Box::new(FilterExpr::Var(VarId(0))),
-            right: Box::new(FilterExpr::Const(FilterValue::Long(10))),
+            left: Box::new(Expression::Var(VarId(0))),
+            right: Box::new(Expression::Const(FilterValue::Long(10))),
         };
         assert_eq!(expr.single_var(), Some(VarId(0)));
 
         // Two vars: ?x > ?y
-        let expr2 = FilterExpr::Compare {
+        let expr2 = Expression::Compare {
             op: CompareOp::Gt,
-            left: Box::new(FilterExpr::Var(VarId(0))),
-            right: Box::new(FilterExpr::Var(VarId(1))),
+            left: Box::new(Expression::Var(VarId(0))),
+            right: Box::new(Expression::Var(VarId(1))),
         };
         assert_eq!(expr2.single_var(), None);
     }
@@ -1457,33 +1457,33 @@ mod tests {
     #[test]
     fn test_filter_expr_is_range_safe() {
         // Range-safe: ?x > 10
-        let expr = FilterExpr::Compare {
+        let expr = Expression::Compare {
             op: CompareOp::Gt,
-            left: Box::new(FilterExpr::Var(VarId(0))),
-            right: Box::new(FilterExpr::Const(FilterValue::Long(10))),
+            left: Box::new(Expression::Var(VarId(0))),
+            right: Box::new(Expression::Const(FilterValue::Long(10))),
         };
         assert!(expr.is_range_safe());
 
         // Range-safe: AND of range-safe
-        let and_expr = FilterExpr::And(vec![
-            FilterExpr::Compare {
+        let and_expr = Expression::And(vec![
+            Expression::Compare {
                 op: CompareOp::Ge,
-                left: Box::new(FilterExpr::Var(VarId(0))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(18))),
+                left: Box::new(Expression::Var(VarId(0))),
+                right: Box::new(Expression::Const(FilterValue::Long(18))),
             },
-            FilterExpr::Compare {
+            Expression::Compare {
                 op: CompareOp::Lt,
-                left: Box::new(FilterExpr::Var(VarId(0))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(65))),
+                left: Box::new(Expression::Var(VarId(0))),
+                right: Box::new(Expression::Const(FilterValue::Long(65))),
             },
         ]);
         assert!(and_expr.is_range_safe());
 
         // Not range-safe: OR
-        let or_expr = FilterExpr::Or(vec![FilterExpr::Compare {
+        let or_expr = Expression::Or(vec![Expression::Compare {
             op: CompareOp::Eq,
-            left: Box::new(FilterExpr::Var(VarId(0))),
-            right: Box::new(FilterExpr::Const(FilterValue::Long(1))),
+            left: Box::new(Expression::Var(VarId(0))),
+            right: Box::new(Expression::Const(FilterValue::Long(1))),
         }]);
         assert!(!or_expr.is_range_safe());
     }

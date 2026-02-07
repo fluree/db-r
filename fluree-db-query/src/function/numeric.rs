@@ -5,7 +5,7 @@
 use crate::binding::RowView;
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::ir::{FilterExpr, FunctionName};
+use crate::ir::{Expression, FunctionName};
 use fluree_db_core::Storage;
 use rand::random;
 
@@ -16,7 +16,7 @@ use super::value::ComparableValue;
 /// Evaluate a numeric function
 pub fn eval_numeric_function<S: Storage>(
     name: &FunctionName,
-    args: &[FilterExpr],
+    args: &[Expression],
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {

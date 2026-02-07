@@ -4,7 +4,7 @@
 
 use crate::binding::RowView;
 use crate::error::Result;
-use crate::ir::{FilterExpr, FunctionName};
+use crate::ir::{Expression, FunctionName};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -13,7 +13,7 @@ use super::value::ComparableValue;
 /// Evaluate a UUID function
 pub fn eval_uuid_function(
     name: &FunctionName,
-    _args: &[FilterExpr],
+    _args: &[Expression],
     _row: &RowView,
 ) -> Result<Option<ComparableValue>> {
     match name {

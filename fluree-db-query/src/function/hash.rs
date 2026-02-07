@@ -5,7 +5,7 @@
 use crate::binding::RowView;
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::ir::{FilterExpr, FunctionName};
+use crate::ir::{Expression, FunctionName};
 use fluree_db_core::Storage;
 use md5::{Digest as Md5Digest, Md5};
 use sha1::Sha1;
@@ -19,7 +19,7 @@ use super::value::ComparableValue;
 /// Evaluate a hash function
 pub fn eval_hash_function<S: Storage>(
     name: &FunctionName,
-    args: &[FilterExpr],
+    args: &[Expression],
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
@@ -60,7 +60,7 @@ pub fn eval_hash_function<S: Storage>(
 
 /// Evaluate a hash function with the given hasher
 fn eval_hash<S: Storage, F>(
-    args: &[FilterExpr],
+    args: &[Expression],
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
     fn_name: &str,

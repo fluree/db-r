@@ -90,7 +90,7 @@ fn add_metadata_bind_pattern(
     pattern_added: &mut bool,
     error_context: &str,
 ) -> Result<()> {
-    use crate::parse::ast::UnresolvedFilterExpr;
+    use crate::parse::ast::UnresolvedExpression;
 
     if !object.is_var() {
         return Err(ParseError::InvalidWhere(format!(
@@ -99,9 +99,9 @@ fn add_metadata_bind_pattern(
         )));
     }
 
-    let func_expr = UnresolvedFilterExpr::Function {
+    let func_expr = UnresolvedExpression::Function {
         name: Arc::from(func_name),
-        args: vec![UnresolvedFilterExpr::var(object.as_var().unwrap())],
+        args: vec![UnresolvedExpression::var(object.as_var().unwrap())],
     };
     let bind_pattern = UnresolvedPattern::Bind {
         var: bind_var,
@@ -129,7 +129,7 @@ fn add_metadata_filter_pattern(
     pattern_added: &mut bool,
     error_context: &str,
 ) -> Result<()> {
-    use crate::parse::ast::{UnresolvedCompareOp, UnresolvedFilterExpr};
+    use crate::parse::ast::{UnresolvedCompareOp, UnresolvedExpression};
 
     if !object.is_var() {
         return Err(ParseError::InvalidWhere(format!(
@@ -138,14 +138,14 @@ fn add_metadata_filter_pattern(
         )));
     }
 
-    let func_expr = UnresolvedFilterExpr::Function {
+    let func_expr = UnresolvedExpression::Function {
         name: Arc::from(func_name),
-        args: vec![UnresolvedFilterExpr::var(object.as_var().unwrap())],
+        args: vec![UnresolvedExpression::var(object.as_var().unwrap())],
     };
-    let filter_expr = UnresolvedFilterExpr::Compare {
+    let filter_expr = UnresolvedExpression::Compare {
         op: UnresolvedCompareOp::Eq,
         left: Box::new(func_expr),
-        right: Box::new(UnresolvedFilterExpr::string(constant_value)),
+        right: Box::new(UnresolvedExpression::string(constant_value)),
     };
     let filter_pattern = UnresolvedPattern::Filter(filter_expr);
 

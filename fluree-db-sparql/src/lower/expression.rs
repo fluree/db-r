@@ -1,51 +1,51 @@
 //! Expression lowering.
 //!
 //! Converts SPARQL expressions (comparisons, arithmetic, function calls, etc.)
-//! to the query engine's `FilterExpr` representation.
+//! to the query engine's `Expression` representation.
 
-use crate::ast::expr::{BinaryOp, Expression, FunctionName, UnaryOp};
+use crate::ast::expr::{BinaryOp, Expression as AstExpression, FunctionName, UnaryOp};
 use crate::ast::term::{Literal, LiteralValue};
 use crate::span::SourceSpan;
 
 use fluree_db_core::FlakeValue;
 use fluree_db_query::ir::{
-    ArithmeticOp, CompareOp, FilterExpr, FilterValue, FunctionName as IrFunctionName,
+    ArithmeticOp, CompareOp, Expression, FilterValue, FunctionName as IrFunctionName,
 };
 use fluree_db_query::parse::encode::IriEncoder;
 
 use super::{LowerError, LoweringContext, Result};
 
 impl<'a, E: IriEncoder> LoweringContext<'a, E> {
-    pub(super) fn lower_expression(&mut self, expr: &Expression) -> Result<FilterExpr> {
+    pub(super) fn lower_expression(&mut self, expr: &AstExpression) -> Result<Expression> {
         match expr {
-            Expression::Var(v) => {
+            AstExpression::Var(v) => {
                 let var_id = self.register_var(v);
-                Ok(FilterExpr::Var(var_id))
+                Ok(Expression::Var(var_id))
             }
 
-            Expression::Literal(lit) => {
+            AstExpression::Literal(lit) => {
                 let value = self.lower_filter_value(lit)?;
-                Ok(FilterExpr::Const(value))
+                Ok(Expression::Const(value))
             }
 
-            Expression::Iri(iri) => {
+            AstExpression::Iri(iri) => {
                 // IRIs in expressions become string constants for now
                 let full_iri = self.expand_iri(iri)?;
-                Ok(FilterExpr::Const(FilterValue::String(full_iri)))
+                Ok(Expression::Const(FilterValue::String(full_iri)))
             }
 
-            Expression::Binary {
+            AstExpression::Binary {
                 op, left, right, ..
             } => match op {
                 BinaryOp::And => {
                     let l = self.lower_expression(left)?;
                     let r = self.lower_expression(right)?;
-                    Ok(FilterExpr::And(vec![l, r]))
+                    Ok(Expression::And(vec![l, r]))
                 }
                 BinaryOp::Or => {
                     let l = self.lower_expression(left)?;
                     let r = self.lower_expression(right)?;
-                    Ok(FilterExpr::Or(vec![l, r]))
+                    Ok(Expression::Or(vec![l, r]))
                 }
                 BinaryOp::Eq => self.lower_comparison(CompareOp::Eq, left, right),
                 BinaryOp::Ne => self.lower_comparison(CompareOp::Ne, left, right),
@@ -59,23 +59,23 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 BinaryOp::Div => self.lower_arithmetic(ArithmeticOp::Div, left, right),
             },
 
-            Expression::Unary { op, operand, .. } => match op {
+            AstExpression::Unary { op, operand, .. } => match op {
                 UnaryOp::Not => {
                     let inner = self.lower_expression(operand)?;
-                    Ok(FilterExpr::Not(Box::new(inner)))
+                    Ok(Expression::Not(Box::new(inner)))
                 }
                 UnaryOp::Pos => self.lower_expression(operand),
                 UnaryOp::Neg => {
                     let inner = self.lower_expression(operand)?;
-                    Ok(FilterExpr::Negate(Box::new(inner)))
+                    Ok(Expression::Negate(Box::new(inner)))
                 }
             },
 
-            Expression::FunctionCall { name, args, .. } => {
+            AstExpression::FunctionCall { name, args, .. } => {
                 self.lower_function_call(name, args, expr.span())
             }
 
-            Expression::Aggregate {
+            AstExpression::Aggregate {
                 function,
                 expr: agg_expr,
                 distinct,
@@ -86,7 +86,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                     let key =
                         self.aggregate_key(function, agg_expr, *distinct, separator, *span)?;
                     if let Some(var_id) = aliases.get(&key) {
-                        return Ok(FilterExpr::Var(*var_id));
+                        return Ok(Expression::Var(*var_id));
                     }
                 }
                 Err(LowerError::not_implemented(
@@ -95,7 +95,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 ))
             }
 
-            Expression::Exists { span, .. } | Expression::NotExists { span, .. } => {
+            AstExpression::Exists { span, .. } | AstExpression::NotExists { span, .. } => {
                 // EXISTS/NOT EXISTS as part of compound expressions (e.g., EXISTS && ?x > 5)
                 // is not supported. Use standalone FILTER EXISTS { ... } instead.
                 Err(LowerError::not_implemented(
@@ -104,25 +104,25 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 ))
             }
 
-            Expression::In {
+            AstExpression::In {
                 expr,
                 list,
                 negated,
                 ..
             } => {
                 let lowered_expr = self.lower_expression(expr)?;
-                let lowered_values: Vec<FilterExpr> = list
+                let lowered_values: Vec<Expression> = list
                     .iter()
                     .map(|v| self.lower_expression(v))
                     .collect::<Result<Vec<_>>>()?;
-                Ok(FilterExpr::In {
+                Ok(Expression::In {
                     expr: Box::new(lowered_expr),
                     values: lowered_values,
                     negated: *negated,
                 })
             }
 
-            Expression::If {
+            AstExpression::If {
                 condition,
                 then_expr,
                 else_expr,
@@ -131,25 +131,25 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 let cond = self.lower_expression(condition)?;
                 let then_e = self.lower_expression(then_expr)?;
                 let else_e = self.lower_expression(else_expr)?;
-                Ok(FilterExpr::If {
+                Ok(Expression::If {
                     condition: Box::new(cond),
                     then_expr: Box::new(then_e),
                     else_expr: Box::new(else_e),
                 })
             }
 
-            Expression::Coalesce { args, .. } => {
-                let lowered_args: Vec<FilterExpr> = args
+            AstExpression::Coalesce { args, .. } => {
+                let lowered_args: Vec<Expression> = args
                     .iter()
                     .map(|a| self.lower_expression(a))
                     .collect::<Result<Vec<_>>>()?;
-                Ok(FilterExpr::Function {
+                Ok(Expression::Function {
                     name: IrFunctionName::Coalesce,
                     args: lowered_args,
                 })
             }
 
-            Expression::Bracketed { inner, .. } => {
+            AstExpression::Bracketed { inner, .. } => {
                 // Bracketed expressions just unwrap to their inner expression
                 self.lower_expression(inner)
             }
@@ -159,12 +159,12 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
     fn lower_comparison(
         &mut self,
         op: CompareOp,
-        left: &Expression,
-        right: &Expression,
-    ) -> Result<FilterExpr> {
+        left: &AstExpression,
+        right: &AstExpression,
+    ) -> Result<Expression> {
         let l = self.lower_expression(left)?;
         let r = self.lower_expression(right)?;
-        Ok(FilterExpr::Compare {
+        Ok(Expression::Compare {
             op,
             left: Box::new(l),
             right: Box::new(r),
@@ -174,12 +174,12 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
     fn lower_arithmetic(
         &mut self,
         op: ArithmeticOp,
-        left: &Expression,
-        right: &Expression,
-    ) -> Result<FilterExpr> {
+        left: &AstExpression,
+        right: &AstExpression,
+    ) -> Result<Expression> {
         let l = self.lower_expression(left)?;
         let r = self.lower_expression(right)?;
-        Ok(FilterExpr::Arithmetic {
+        Ok(Expression::Arithmetic {
             op,
             left: Box::new(l),
             right: Box::new(r),
@@ -216,9 +216,9 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
     fn lower_function_call(
         &mut self,
         name: &FunctionName,
-        args: &[Expression],
+        args: &[AstExpression],
         span: SourceSpan,
-    ) -> Result<FilterExpr> {
+    ) -> Result<Expression> {
         let ir_name = match name {
             // Type checking functions
             FunctionName::Bound => IrFunctionName::Bound,
@@ -299,12 +299,12 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             }
         };
 
-        let lowered_args: Vec<FilterExpr> = args
+        let lowered_args: Vec<Expression> = args
             .iter()
             .map(|a| self.lower_expression(a))
             .collect::<Result<Vec<_>>>()?;
 
-        Ok(FilterExpr::Function {
+        Ok(Expression::Function {
             name: ir_name,
             args: lowered_args,
         })

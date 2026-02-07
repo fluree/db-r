@@ -6,7 +6,7 @@
 //!
 //! Provides generic helpers to reduce duplication between parsing formats.
 
-use super::ast::{UnresolvedArithmeticOp, UnresolvedCompareOp, UnresolvedFilterExpr};
+use super::ast::{UnresolvedArithmeticOp, UnresolvedCompareOp, UnresolvedExpression};
 use super::error::{ParseError, Result};
 
 /// Validate argument count and return error if it doesn't match expected count
@@ -49,25 +49,25 @@ pub fn validate_min_arg_count<T>(args: &[T], min: usize, context: &str) -> Resul
 /// Build a binary comparison expression from left and right operands
 ///
 /// Generic over the input type `T` so it works with both:
-/// - `&UnresolvedFilterExpr` (already parsed, for S-expressions)
+/// - `&UnresolvedExpression` (already parsed, for S-expressions)
 /// - `&JsonValue` (needs parsing, for data expressions)
 ///
-/// The `parser` function converts `T` to `UnresolvedFilterExpr`.
+/// The `parser` function converts `T` to `UnresolvedExpression`.
 pub fn build_binary_compare<T, F>(
     args: &[T],
     op: UnresolvedCompareOp,
     parser: F,
     context: &str,
-) -> Result<UnresolvedFilterExpr>
+) -> Result<UnresolvedExpression>
 where
-    F: Fn(&T) -> Result<UnresolvedFilterExpr>,
+    F: Fn(&T) -> Result<UnresolvedExpression>,
 {
     validate_arg_count(args, 2, context)?;
 
     let left = parser(&args[0])?;
     let right = parser(&args[1])?;
 
-    Ok(UnresolvedFilterExpr::Compare {
+    Ok(UnresolvedExpression::Compare {
         op,
         left: Box::new(left),
         right: Box::new(right),
@@ -77,25 +77,25 @@ where
 /// Build a binary arithmetic expression from left and right operands
 ///
 /// Generic over the input type `T` so it works with both:
-/// - `&UnresolvedFilterExpr` (already parsed, for S-expressions)
+/// - `&UnresolvedExpression` (already parsed, for S-expressions)
 /// - `&JsonValue` (needs parsing, for data expressions)
 ///
-/// The `parser` function converts `T` to `UnresolvedFilterExpr`.
+/// The `parser` function converts `T` to `UnresolvedExpression`.
 pub fn build_binary_arithmetic<T, F>(
     args: &[T],
     op: UnresolvedArithmeticOp,
     parser: F,
     context: &str,
-) -> Result<UnresolvedFilterExpr>
+) -> Result<UnresolvedExpression>
 where
-    F: Fn(&T) -> Result<UnresolvedFilterExpr>,
+    F: Fn(&T) -> Result<UnresolvedExpression>,
 {
     validate_arg_count(args, 2, context)?;
 
     let left = parser(&args[0])?;
     let right = parser(&args[1])?;
 
-    Ok(UnresolvedFilterExpr::Arithmetic {
+    Ok(UnresolvedExpression::Arithmetic {
         op,
         left: Box::new(left),
         right: Box::new(right),
@@ -103,47 +103,47 @@ where
 }
 
 /// Build a logical AND expression from a list of sub-expressions
-pub fn build_and<T, F>(args: &[T], parser: F) -> Result<UnresolvedFilterExpr>
+pub fn build_and<T, F>(args: &[T], parser: F) -> Result<UnresolvedExpression>
 where
-    F: Fn(&T) -> Result<UnresolvedFilterExpr>,
+    F: Fn(&T) -> Result<UnresolvedExpression>,
 {
     validate_min_arg_count(args, 1, "'and'")?;
 
     let exprs: Result<Vec<_>> = args.iter().map(parser).collect();
-    Ok(UnresolvedFilterExpr::And(exprs?))
+    Ok(UnresolvedExpression::And(exprs?))
 }
 
 /// Build a logical OR expression from a list of sub-expressions
-pub fn build_or<T, F>(args: &[T], parser: F) -> Result<UnresolvedFilterExpr>
+pub fn build_or<T, F>(args: &[T], parser: F) -> Result<UnresolvedExpression>
 where
-    F: Fn(&T) -> Result<UnresolvedFilterExpr>,
+    F: Fn(&T) -> Result<UnresolvedExpression>,
 {
     validate_min_arg_count(args, 1, "'or'")?;
 
     let exprs: Result<Vec<_>> = args.iter().map(parser).collect();
-    Ok(UnresolvedFilterExpr::Or(exprs?))
+    Ok(UnresolvedExpression::Or(exprs?))
 }
 
 /// Build a logical NOT expression from a single sub-expression
-pub fn build_not<T, F>(args: &[T], parser: F) -> Result<UnresolvedFilterExpr>
+pub fn build_not<T, F>(args: &[T], parser: F) -> Result<UnresolvedExpression>
 where
-    F: Fn(&T) -> Result<UnresolvedFilterExpr>,
+    F: Fn(&T) -> Result<UnresolvedExpression>,
 {
     validate_arg_count(args, 1, "'not'")?;
 
     let expr = parser(&args[0])?;
-    Ok(UnresolvedFilterExpr::Not(Box::new(expr)))
+    Ok(UnresolvedExpression::Not(Box::new(expr)))
 }
 
 /// Build a unary negation expression (arithmetic negation: -x)
-pub fn build_negate<T, F>(args: &[T], parser: F) -> Result<UnresolvedFilterExpr>
+pub fn build_negate<T, F>(args: &[T], parser: F) -> Result<UnresolvedExpression>
 where
-    F: Fn(&T) -> Result<UnresolvedFilterExpr>,
+    F: Fn(&T) -> Result<UnresolvedExpression>,
 {
     validate_arg_count(args, 1, "unary negation")?;
 
     let expr = parser(&args[0])?;
-    Ok(UnresolvedFilterExpr::Negate(Box::new(expr)))
+    Ok(UnresolvedExpression::Negate(Box::new(expr)))
 }
 
 /// Map operator name string to comparison operator enum
@@ -267,16 +267,16 @@ mod tests {
         // Test with a simple identity parser
         let args = vec![1, 2];
         let parser =
-            |x: &i32| -> Result<UnresolvedFilterExpr> { Ok(UnresolvedFilterExpr::long(*x as i64)) };
+            |x: &i32| -> Result<UnresolvedExpression> { Ok(UnresolvedExpression::long(*x as i64)) };
 
         let expr = build_binary_compare(&args, UnresolvedCompareOp::Eq, parser, "test comparison")
             .unwrap();
 
         match expr {
-            UnresolvedFilterExpr::Compare { op, left, right } => {
+            UnresolvedExpression::Compare { op, left, right } => {
                 assert_eq!(op, UnresolvedCompareOp::Eq);
-                assert!(matches!(*left, UnresolvedFilterExpr::Const(_)));
-                assert!(matches!(*right, UnresolvedFilterExpr::Const(_)));
+                assert!(matches!(*left, UnresolvedExpression::Const(_)));
+                assert!(matches!(*right, UnresolvedExpression::Const(_)));
             }
             _ => panic!("Expected Compare expression"),
         }
@@ -286,12 +286,12 @@ mod tests {
     fn test_build_and() {
         let args = vec![true, false];
         let parser =
-            |x: &bool| -> Result<UnresolvedFilterExpr> { Ok(UnresolvedFilterExpr::boolean(*x)) };
+            |x: &bool| -> Result<UnresolvedExpression> { Ok(UnresolvedExpression::boolean(*x)) };
 
         let expr = build_and(&args, parser).unwrap();
 
         match expr {
-            UnresolvedFilterExpr::And(exprs) => {
+            UnresolvedExpression::And(exprs) => {
                 assert_eq!(exprs.len(), 2);
             }
             _ => panic!("Expected And expression"),
@@ -302,13 +302,13 @@ mod tests {
     fn test_build_not() {
         let args = vec![true];
         let parser =
-            |x: &bool| -> Result<UnresolvedFilterExpr> { Ok(UnresolvedFilterExpr::boolean(*x)) };
+            |x: &bool| -> Result<UnresolvedExpression> { Ok(UnresolvedExpression::boolean(*x)) };
 
         let expr = build_not(&args, parser).unwrap();
 
         match expr {
-            UnresolvedFilterExpr::Not(inner) => {
-                assert!(matches!(*inner, UnresolvedFilterExpr::Const(_)));
+            UnresolvedExpression::Not(inner) => {
+                assert!(matches!(*inner, UnresolvedExpression::Const(_)));
             }
             _ => panic!("Expected Not expression"),
         }

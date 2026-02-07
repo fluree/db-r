@@ -5,7 +5,7 @@
 use crate::binding::RowView;
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::ir::{FilterExpr, FunctionName};
+use crate::ir::{Expression, FunctionName};
 use fluree_db_core::Storage;
 
 use super::eval::eval_to_comparable_inner;
@@ -15,7 +15,7 @@ use super::value::ComparableValue;
 /// Evaluate a vector function
 pub fn eval_vector_function<S: Storage>(
     name: &FunctionName,
-    args: &[FilterExpr],
+    args: &[Expression],
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
@@ -57,7 +57,7 @@ pub fn eval_vector_function<S: Storage>(
 
 /// Evaluate a binary vector function
 fn eval_binary_vector_fn<S: Storage, F>(
-    args: &[FilterExpr],
+    args: &[Expression],
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
     fn_name: &str,

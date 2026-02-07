@@ -8,7 +8,7 @@
 use crate::binding::{Binding, RowView};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::ir::{FilterExpr, FilterValue, FunctionName};
+use crate::ir::{Expression, FilterValue, FunctionName};
 use fluree_db_core::{FlakeValue, Storage};
 use std::sync::Arc;
 
@@ -26,13 +26,13 @@ use super::value::ComparableValue;
 /// This is used by BIND operator to compute values for binding to variables.
 /// Returns `Binding::Unbound` on evaluation errors (type mismatches, unbound vars, etc.)
 /// rather than `Binding::Poisoned` - Poisoned is reserved for OPTIONAL semantics.
-pub fn evaluate_to_binding(expr: &FilterExpr, row: &RowView) -> Binding {
+pub fn evaluate_to_binding(expr: &Expression, row: &RowView) -> Binding {
     evaluate_to_binding_with_context::<fluree_db_core::MemoryStorage>(expr, row, None)
 }
 
 /// Evaluate to binding with execution context (for EncodedLit support)
 pub fn evaluate_to_binding_with_context<S: Storage>(
-    expr: &FilterExpr,
+    expr: &Expression,
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Binding {
@@ -44,7 +44,7 @@ pub fn evaluate_to_binding_with_context<S: Storage>(
 
 /// Evaluate to binding with strict error handling
 pub fn evaluate_to_binding_with_context_strict<S: Storage>(
-    expr: &FilterExpr,
+    expr: &Expression,
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Binding> {
@@ -61,7 +61,7 @@ pub fn evaluate_to_binding_with_context_strict<S: Storage>(
             // of hard errors.
             if matches!(
                 expr,
-                FilterExpr::Function { name, .. } if matches!(
+                Expression::Function { name, .. } if matches!(
                     name,
                     FunctionName::DotProduct
                     | FunctionName::CosineSimilarity
@@ -174,7 +174,7 @@ pub fn evaluate_to_binding_with_context_strict<S: Storage>(
 ///
 /// Returns `true` if the row passes the filter, `false` otherwise.
 /// Type mismatches and unbound variables result in `false`.
-pub fn evaluate(expr: &FilterExpr, row: &RowView) -> Result<bool> {
+pub fn evaluate(expr: &Expression, row: &RowView) -> Result<bool> {
     evaluate_inner::<fluree_db_core::MemoryStorage>(expr, row, None)
 }
 
@@ -184,7 +184,7 @@ pub fn evaluate(expr: &FilterExpr, row: &RowView) -> Result<bool> {
 /// `Binding::EncodedLit` (late materialization), e.g. for `REGEX`, `STR`,
 /// and comparisons.
 pub fn evaluate_with_context<S: Storage>(
-    expr: &FilterExpr,
+    expr: &Expression,
     row: &RowView,
     ctx: &ExecutionContext<'_, S>,
 ) -> Result<bool> {
@@ -193,12 +193,12 @@ pub fn evaluate_with_context<S: Storage>(
 
 /// Core boolean evaluation (internal)
 pub(crate) fn evaluate_inner<S: Storage>(
-    expr: &FilterExpr,
+    expr: &Expression,
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<bool> {
     match expr {
-        FilterExpr::Var(var) => {
+        Expression::Var(var) => {
             // Var as boolean: check if bound and truthy
             match row.get(*var) {
                 Some(Binding::Lit { val, .. }) => match val {
@@ -219,7 +219,7 @@ pub(crate) fn evaluate_inner<S: Storage>(
             }
         }
 
-        FilterExpr::Const(val) => {
+        Expression::Const(val) => {
             // Constant as boolean
             match val {
                 FilterValue::Bool(b) => Ok(*b),
@@ -227,7 +227,7 @@ pub(crate) fn evaluate_inner<S: Storage>(
             }
         }
 
-        FilterExpr::Compare { op, left, right } => {
+        Expression::Compare { op, left, right } => {
             let left_val = eval_to_comparable_inner(left, row, ctx)?;
             let right_val = eval_to_comparable_inner(right, row, ctx)?;
 
@@ -238,7 +238,7 @@ pub(crate) fn evaluate_inner<S: Storage>(
             }
         }
 
-        FilterExpr::And(exprs) => {
+        Expression::And(exprs) => {
             for e in exprs {
                 if !evaluate_inner(e, row, ctx)? {
                     return Ok(false);
@@ -247,7 +247,7 @@ pub(crate) fn evaluate_inner<S: Storage>(
             Ok(true)
         }
 
-        FilterExpr::Or(exprs) => {
+        Expression::Or(exprs) => {
             for e in exprs {
                 if evaluate_inner(e, row, ctx)? {
                     return Ok(true);
@@ -256,9 +256,9 @@ pub(crate) fn evaluate_inner<S: Storage>(
             Ok(false)
         }
 
-        FilterExpr::Not(inner) => Ok(!evaluate_inner(inner, row, ctx)?),
+        Expression::Not(inner) => Ok(!evaluate_inner(inner, row, ctx)?),
 
-        FilterExpr::Arithmetic { .. } => {
+        Expression::Arithmetic { .. } => {
             // Arithmetic as boolean: check if result is truthy (non-zero)
             match eval_to_comparable_inner(expr, row, ctx)? {
                 Some(ComparableValue::Long(n)) => Ok(n != 0),
@@ -268,7 +268,7 @@ pub(crate) fn evaluate_inner<S: Storage>(
             }
         }
 
-        FilterExpr::Negate(_) => {
+        Expression::Negate(_) => {
             // Negation as boolean: check if result is truthy (non-zero)
             match eval_to_comparable_inner(expr, row, ctx)? {
                 Some(ComparableValue::Long(n)) => Ok(n != 0),
@@ -277,7 +277,7 @@ pub(crate) fn evaluate_inner<S: Storage>(
             }
         }
 
-        FilterExpr::If {
+        Expression::If {
             condition,
             then_expr,
             else_expr,
@@ -290,7 +290,7 @@ pub(crate) fn evaluate_inner<S: Storage>(
             }
         }
 
-        FilterExpr::In {
+        Expression::In {
             expr: test_expr,
             values,
             negated,
@@ -311,7 +311,7 @@ pub(crate) fn evaluate_inner<S: Storage>(
             }
         }
 
-        FilterExpr::Function { name, args } => eval_function_to_bool(name, args, row, ctx),
+        Expression::Function { name, args } => eval_function_to_bool(name, args, row, ctx),
     }
 }
 
@@ -322,18 +322,18 @@ pub(crate) fn evaluate_inner<S: Storage>(
 /// Evaluate expression to a comparable value (contextless).
 ///
 /// Prefer [`eval_to_comparable_inner`] when `Binding::EncodedLit` may appear.
-pub fn eval_to_comparable(expr: &FilterExpr, row: &RowView) -> Result<Option<ComparableValue>> {
+pub fn eval_to_comparable(expr: &Expression, row: &RowView) -> Result<Option<ComparableValue>> {
     eval_to_comparable_inner::<fluree_db_core::MemoryStorage>(expr, row, None)
 }
 
 /// Evaluate expression to a comparable value with context (for EncodedLit support)
 pub fn eval_to_comparable_inner<S: Storage>(
-    expr: &FilterExpr,
+    expr: &Expression,
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     match expr {
-        FilterExpr::Var(var) => match row.get(*var) {
+        Expression::Var(var) => match row.get(*var) {
             Some(Binding::Lit { val, .. }) => Ok(ComparableValue::from_flake_value(val)),
             Some(Binding::EncodedLit {
                 o_kind,
@@ -380,14 +380,14 @@ pub fn eval_to_comparable_inner<S: Storage>(
             }
         },
 
-        FilterExpr::Const(val) => Ok(Some(val.into())),
+        Expression::Const(val) => Ok(Some(val.into())),
 
-        FilterExpr::Compare { .. } => {
+        Expression::Compare { .. } => {
             // Comparison result is boolean
             Ok(Some(ComparableValue::Bool(evaluate_inner(expr, row, ctx)?)))
         }
 
-        FilterExpr::Arithmetic { op, left, right } => {
+        Expression::Arithmetic { op, left, right } => {
             let l = eval_to_comparable_inner(left, row, ctx)?;
             let r = eval_to_comparable_inner(right, row, ctx)?;
             match (l, r) {
@@ -396,7 +396,7 @@ pub fn eval_to_comparable_inner<S: Storage>(
             }
         }
 
-        FilterExpr::Negate(inner) => match eval_to_comparable_inner(inner, row, ctx)? {
+        Expression::Negate(inner) => match eval_to_comparable_inner(inner, row, ctx)? {
             Some(ComparableValue::Long(n)) => Ok(Some(ComparableValue::Long(-n))),
             Some(ComparableValue::Double(d)) => Ok(Some(ComparableValue::Double(-d))),
             Some(ComparableValue::BigInt(n)) => Ok(Some(ComparableValue::BigInt(Box::new(-(*n))))),
@@ -406,11 +406,11 @@ pub fn eval_to_comparable_inner<S: Storage>(
             _ => Ok(None),
         },
 
-        FilterExpr::And(_) | FilterExpr::Or(_) | FilterExpr::Not(_) => {
+        Expression::And(_) | Expression::Or(_) | Expression::Not(_) => {
             Ok(Some(ComparableValue::Bool(evaluate_inner(expr, row, ctx)?)))
         }
 
-        FilterExpr::If {
+        Expression::If {
             condition,
             then_expr,
             else_expr,
@@ -423,12 +423,12 @@ pub fn eval_to_comparable_inner<S: Storage>(
             }
         }
 
-        FilterExpr::In { .. } => {
+        Expression::In { .. } => {
             // IN expression evaluates to boolean
             Ok(Some(ComparableValue::Bool(evaluate_inner(expr, row, ctx)?)))
         }
 
-        FilterExpr::Function { name, args } => eval_function(name, args, row, ctx),
+        Expression::Function { name, args } => eval_function(name, args, row, ctx),
     }
 }
 
@@ -475,10 +475,10 @@ mod tests {
         let batch = make_test_batch();
 
         // ?age > 20
-        let expr = FilterExpr::Compare {
+        let expr = Expression::Compare {
             op: CompareOp::Gt,
-            left: Box::new(FilterExpr::Var(VarId(0))),
-            right: Box::new(FilterExpr::Const(FilterValue::Long(20))),
+            left: Box::new(Expression::Var(VarId(0))),
+            right: Box::new(Expression::Const(FilterValue::Long(20))),
         };
 
         // Row 0: age=25 > 20 → true
@@ -499,16 +499,16 @@ mod tests {
         let batch = make_test_batch();
 
         // ?age > 20 AND ?age < 28
-        let expr = FilterExpr::And(vec![
-            FilterExpr::Compare {
+        let expr = Expression::And(vec![
+            Expression::Compare {
                 op: CompareOp::Gt,
-                left: Box::new(FilterExpr::Var(VarId(0))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(20))),
+                left: Box::new(Expression::Var(VarId(0))),
+                right: Box::new(Expression::Const(FilterValue::Long(20))),
             },
-            FilterExpr::Compare {
+            Expression::Compare {
                 op: CompareOp::Lt,
-                left: Box::new(FilterExpr::Var(VarId(0))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(28))),
+                left: Box::new(Expression::Var(VarId(0))),
+                right: Box::new(Expression::Const(FilterValue::Long(28))),
             },
         ]);
 
@@ -526,16 +526,16 @@ mod tests {
         let batch = make_test_batch();
 
         // ?age < 20 OR ?age > 28
-        let expr = FilterExpr::Or(vec![
-            FilterExpr::Compare {
+        let expr = Expression::Or(vec![
+            Expression::Compare {
                 op: CompareOp::Lt,
-                left: Box::new(FilterExpr::Var(VarId(0))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(20))),
+                left: Box::new(Expression::Var(VarId(0))),
+                right: Box::new(Expression::Const(FilterValue::Long(20))),
             },
-            FilterExpr::Compare {
+            Expression::Compare {
                 op: CompareOp::Gt,
-                left: Box::new(FilterExpr::Var(VarId(0))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(28))),
+                left: Box::new(Expression::Var(VarId(0))),
+                right: Box::new(Expression::Const(FilterValue::Long(28))),
             },
         ]);
 
@@ -557,10 +557,10 @@ mod tests {
         let batch = make_test_batch();
 
         // NOT(?age > 25)
-        let expr = FilterExpr::Not(Box::new(FilterExpr::Compare {
+        let expr = Expression::Not(Box::new(Expression::Compare {
             op: CompareOp::Gt,
-            left: Box::new(FilterExpr::Var(VarId(0))),
-            right: Box::new(FilterExpr::Const(FilterValue::Long(25))),
+            left: Box::new(Expression::Var(VarId(0))),
+            right: Box::new(Expression::Const(FilterValue::Long(25))),
         }));
 
         // Row 0: age=25 → NOT(25 > 25) = NOT(false) = true

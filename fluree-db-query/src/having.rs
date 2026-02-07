@@ -20,7 +20,7 @@ use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::function::evaluate_with_context;
-use crate::ir::FilterExpr;
+use crate::ir::Expression;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
@@ -35,7 +35,7 @@ pub struct HavingOperator<S: Storage + 'static> {
     /// Child operator (typically AggregateOperator or GroupByOperator)
     child: BoxedOperator<S>,
     /// Filter expression to evaluate
-    expr: FilterExpr,
+    expr: Expression,
     /// Output schema (same as child)
     schema: Arc<[VarId]>,
     /// Operator state
@@ -49,7 +49,7 @@ impl<S: Storage + 'static> HavingOperator<S> {
     ///
     /// * `child` - Child operator (typically GroupByOperator or AggregateOperator)
     /// * `expr` - Filter expression to evaluate
-    pub fn new(child: BoxedOperator<S>, expr: FilterExpr) -> Self {
+    pub fn new(child: BoxedOperator<S>, expr: Expression) -> Self {
         let schema = Arc::from(child.schema().to_vec().into_boxed_slice());
         Self {
             child,
@@ -200,10 +200,10 @@ mod tests {
         });
 
         // HAVING ?count > 10
-        let expr = FilterExpr::Compare {
+        let expr = Expression::Compare {
             op: CompareOp::Gt,
-            left: Box::new(FilterExpr::Var(VarId(1))), // ?count
-            right: Box::new(FilterExpr::Const(FilterValue::Long(10))),
+            left: Box::new(Expression::Var(VarId(1))), // ?count
+            right: Box::new(Expression::Const(FilterValue::Long(10))),
         };
 
         let mut op = HavingOperator::new(child, expr);
@@ -281,10 +281,10 @@ mod tests {
         });
 
         // HAVING ?count > 100 (no rows match)
-        let expr = FilterExpr::Compare {
+        let expr = Expression::Compare {
             op: CompareOp::Gt,
-            left: Box::new(FilterExpr::Var(VarId(1))),
-            right: Box::new(FilterExpr::Const(FilterValue::Long(100))),
+            left: Box::new(Expression::Var(VarId(1))),
+            right: Box::new(Expression::Const(FilterValue::Long(100))),
         };
 
         let mut op = HavingOperator::new(child, expr);
@@ -317,7 +317,7 @@ mod tests {
         let seed: BoxedOperator<MemoryStorage> = Box::new(SeedOperator::from_batch_row(&batch, 0));
 
         // Any expression that passes
-        let expr = FilterExpr::Const(FilterValue::Bool(true));
+        let expr = Expression::Const(FilterValue::Bool(true));
 
         let mut op = HavingOperator::new(seed, expr);
         op.open(&ctx).await.unwrap();

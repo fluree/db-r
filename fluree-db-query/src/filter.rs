@@ -20,7 +20,7 @@
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::ir::FilterExpr;
+use crate::ir::Expression;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
@@ -37,7 +37,7 @@ pub struct FilterOperator<S: Storage + 'static> {
     /// Child operator providing input rows
     child: BoxedOperator<S>,
     /// Filter expression to evaluate
-    expr: FilterExpr,
+    expr: Expression,
     /// Output schema (same as child)
     schema: Arc<[VarId]>,
     /// Operator state
@@ -46,7 +46,7 @@ pub struct FilterOperator<S: Storage + 'static> {
 
 impl<S: Storage + 'static> FilterOperator<S> {
     /// Create a new filter operator
-    pub fn new(child: BoxedOperator<S>, expr: FilterExpr) -> Self {
+    pub fn new(child: BoxedOperator<S>, expr: Expression) -> Self {
         let schema = Arc::from(child.schema().to_vec().into_boxed_slice());
         Self {
             child,
@@ -57,7 +57,7 @@ impl<S: Storage + 'static> FilterOperator<S> {
     }
 
     /// Get the filter expression
-    pub fn expr(&self) -> &FilterExpr {
+    pub fn expr(&self) -> &Expression {
         &self.expr
     }
 }

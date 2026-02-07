@@ -16,7 +16,7 @@ use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::function::{evaluate_to_binding_with_context, evaluate_to_binding_with_context_strict};
-use crate::ir::FilterExpr;
+use crate::ir::Expression;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
@@ -35,7 +35,7 @@ pub struct BindOperator<S: Storage + 'static> {
     /// Variable to bind the result to
     var: VarId,
     /// Expression to evaluate
-    expr: FilterExpr,
+    expr: Expression,
     /// Output schema (child schema with var added if new)
     schema: Arc<[VarId]>,
     /// Position of var in output schema
@@ -54,7 +54,7 @@ impl<S: Storage + 'static> BindOperator<S> {
     /// * `child` - Child operator providing input solutions
     /// * `var` - Variable to bind the computed value to
     /// * `expr` - Expression to evaluate
-    pub fn new(child: BoxedOperator<S>, var: VarId, expr: FilterExpr) -> Self {
+    pub fn new(child: BoxedOperator<S>, var: VarId, expr: Expression) -> Self {
         let child_schema = child.schema();
 
         // Check if var already exists in child schema
@@ -223,7 +223,7 @@ mod tests {
             schema: child_schema,
         });
 
-        let expr = FilterExpr::Const(FilterValue::Long(42));
+        let expr = Expression::Const(FilterValue::Long(42));
         let op = BindOperator::<MemoryStorage>::new(child, VarId(1), expr);
 
         // Output schema should be [?a, ?b]
@@ -241,7 +241,7 @@ mod tests {
             schema: child_schema,
         });
 
-        let expr = FilterExpr::Const(FilterValue::Long(42));
+        let expr = Expression::Const(FilterValue::Long(42));
         let op = BindOperator::<MemoryStorage>::new(child, VarId(0), expr);
 
         // Schema should stay [?a, ?b]

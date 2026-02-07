@@ -7,7 +7,7 @@
 use crate::binding::RowView;
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::ir::{FilterExpr, FunctionName};
+use crate::ir::{Expression, FunctionName};
 use fluree_db_core::Storage;
 
 use super::value::ComparableValue;
@@ -19,7 +19,7 @@ use super::{conditional, datetime, fluree, geo, hash, numeric, rdf, string, type
 /// For boolean context, use `eval_function_to_bool` which calls this and applies EBV.
 pub fn eval_function<S: Storage>(
     name: &FunctionName,
-    args: &[FilterExpr],
+    args: &[Expression],
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
@@ -113,7 +113,7 @@ pub fn eval_function<S: Storage>(
 /// This calls `eval_function` and applies Effective Boolean Value (EBV) rules.
 pub fn eval_function_to_bool<S: Storage>(
     name: &FunctionName,
-    args: &[FilterExpr],
+    args: &[Expression],
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<bool> {

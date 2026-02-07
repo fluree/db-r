@@ -467,7 +467,7 @@ impl UnresolvedFilterValue {
 ///
 /// Uses string variable names instead of VarIds.
 #[derive(Debug, Clone, PartialEq)]
-pub enum UnresolvedFilterExpr {
+pub enum UnresolvedExpression {
     /// Variable reference (e.g., "?age")
     Var(Arc<str>),
     /// Constant value
@@ -475,60 +475,60 @@ pub enum UnresolvedFilterExpr {
     /// Comparison operation
     Compare {
         op: UnresolvedCompareOp,
-        left: Box<UnresolvedFilterExpr>,
-        right: Box<UnresolvedFilterExpr>,
+        left: Box<UnresolvedExpression>,
+        right: Box<UnresolvedExpression>,
     },
     /// Arithmetic operation
     Arithmetic {
         op: UnresolvedArithmeticOp,
-        left: Box<UnresolvedFilterExpr>,
-        right: Box<UnresolvedFilterExpr>,
+        left: Box<UnresolvedExpression>,
+        right: Box<UnresolvedExpression>,
     },
     /// Unary negation
-    Negate(Box<UnresolvedFilterExpr>),
+    Negate(Box<UnresolvedExpression>),
     /// Logical AND
-    And(Vec<UnresolvedFilterExpr>),
+    And(Vec<UnresolvedExpression>),
     /// Logical OR
-    Or(Vec<UnresolvedFilterExpr>),
+    Or(Vec<UnresolvedExpression>),
     /// Logical NOT
-    Not(Box<UnresolvedFilterExpr>),
+    Not(Box<UnresolvedExpression>),
     /// IN expression (?x IN (1, 2, 3))
     In {
-        expr: Box<UnresolvedFilterExpr>,
-        values: Vec<UnresolvedFilterExpr>,
+        expr: Box<UnresolvedExpression>,
+        values: Vec<UnresolvedExpression>,
         negated: bool,
     },
     /// Function call
     Function {
         name: Arc<str>,
-        args: Vec<UnresolvedFilterExpr>,
+        args: Vec<UnresolvedExpression>,
     },
 }
 
-impl UnresolvedFilterExpr {
+impl UnresolvedExpression {
     /// Create a variable reference
     pub fn var(name: impl AsRef<str>) -> Self {
-        UnresolvedFilterExpr::Var(Arc::from(name.as_ref()))
+        UnresolvedExpression::Var(Arc::from(name.as_ref()))
     }
 
     /// Create a long constant
     pub fn long(v: i64) -> Self {
-        UnresolvedFilterExpr::Const(UnresolvedFilterValue::Long(v))
+        UnresolvedExpression::Const(UnresolvedFilterValue::Long(v))
     }
 
     /// Create a double constant
     pub fn double(v: f64) -> Self {
-        UnresolvedFilterExpr::Const(UnresolvedFilterValue::Double(v))
+        UnresolvedExpression::Const(UnresolvedFilterValue::Double(v))
     }
 
     /// Create a boolean constant
     pub fn boolean(v: bool) -> Self {
-        UnresolvedFilterExpr::Const(UnresolvedFilterValue::Bool(v))
+        UnresolvedExpression::Const(UnresolvedFilterValue::Bool(v))
     }
 
     /// Create a string constant
     pub fn string(s: impl AsRef<str>) -> Self {
-        UnresolvedFilterExpr::Const(UnresolvedFilterValue::string(s))
+        UnresolvedExpression::Const(UnresolvedFilterValue::string(s))
     }
 }
 
@@ -633,7 +633,7 @@ pub struct UnresolvedOptions {
     /// Aggregate specifications
     pub aggregates: Vec<UnresolvedAggregateSpec>,
     /// HAVING filter expression
-    pub having: Option<UnresolvedFilterExpr>,
+    pub having: Option<UnresolvedExpression>,
     /// Reasoning modes (RDFS, OWL2-QL, etc.)
     ///
     /// Parsed from `"reasoning"` key in query JSON. None means use defaults
@@ -831,7 +831,7 @@ pub enum UnresolvedPattern {
     /// Basic triple pattern
     Triple(UnresolvedTriplePattern),
     /// Filter expression (positioned in where clause order)
-    Filter(UnresolvedFilterExpr),
+    Filter(UnresolvedExpression),
     /// Optional clause - left join semantics
     Optional(Vec<UnresolvedPattern>),
     /// Union of pattern branches - any branch may match
@@ -842,7 +842,7 @@ pub enum UnresolvedPattern {
     /// Bind a computed value to a variable
     Bind {
         var: Arc<str>,
-        expr: UnresolvedFilterExpr,
+        expr: UnresolvedExpression,
     },
     /// Inline VALUES block - constant rows to join with the current solution stream
     Values {
@@ -923,7 +923,7 @@ impl UnresolvedPattern {
     }
 
     /// Create a filter pattern
-    pub fn filter(expr: UnresolvedFilterExpr) -> Self {
+    pub fn filter(expr: UnresolvedExpression) -> Self {
         UnresolvedPattern::Filter(expr)
     }
 
@@ -1014,7 +1014,7 @@ impl UnresolvedQuery {
     }
 
     /// Add a filter expression
-    pub fn add_filter(&mut self, expr: UnresolvedFilterExpr) {
+    pub fn add_filter(&mut self, expr: UnresolvedExpression) {
         self.patterns.push(UnresolvedPattern::Filter(expr));
     }
 

@@ -5,7 +5,7 @@
 use crate::binding::{Binding, RowView};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::ir::{FilterExpr, FunctionName};
+use crate::ir::{Expression, FunctionName};
 use fluree_db_core::Storage;
 
 use super::eval::eval_to_comparable_inner;
@@ -15,7 +15,7 @@ use super::value::ComparableValue;
 /// Evaluate a type-checking function
 pub fn eval_type_function<S: Storage>(
     name: &FunctionName,
-    args: &[FilterExpr],
+    args: &[Expression],
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
@@ -23,7 +23,7 @@ pub fn eval_type_function<S: Storage>(
         FunctionName::Bound => {
             check_arity(args, 1, "BOUND")?;
             match &args[0] {
-                FilterExpr::Var(var) => Ok(Some(ComparableValue::Bool(!matches!(
+                Expression::Var(var) => Ok(Some(ComparableValue::Bool(!matches!(
                     row.get(*var),
                     Some(Binding::Unbound) | Some(Binding::Poisoned) | None
                 )))),
@@ -92,7 +92,7 @@ mod tests {
         let row = batch.row_view(0).unwrap();
         let result = eval_type_function::<fluree_db_core::MemoryStorage>(
             &FunctionName::Bound,
-            &[FilterExpr::Var(VarId(0))],
+            &[Expression::Var(VarId(0))],
             &row,
             None,
         )

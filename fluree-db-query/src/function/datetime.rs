@@ -5,7 +5,7 @@
 use crate::binding::RowView;
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::ir::{FilterExpr, FunctionName};
+use crate::ir::{Expression, FunctionName};
 use chrono::{DateTime, Datelike, FixedOffset, SecondsFormat, Timelike, Utc};
 use fluree_db_core::temporal::DateTime as FlureeDateTime;
 use fluree_db_core::Storage;
@@ -17,7 +17,7 @@ use super::value::ComparableValue;
 /// Evaluate a datetime function
 pub fn eval_datetime_function<S: Storage>(
     name: &FunctionName,
-    args: &[FilterExpr],
+    args: &[Expression],
     row: &RowView,
     _ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
@@ -43,7 +43,7 @@ pub fn eval_datetime_function<S: Storage>(
 
         FunctionName::Tz => {
             check_arity(args, 1, "TZ")?;
-            if let FilterExpr::Var(var_id) = &args[0] {
+            if let Expression::Var(var_id) = &args[0] {
                 if let Some(binding) = row.get(*var_id) {
                     if let Some(dt) = parse_datetime_from_binding(binding) {
                         let offset = dt.offset();
@@ -68,7 +68,7 @@ pub fn eval_datetime_function<S: Storage>(
 
 /// Extract a datetime component from a binding
 fn eval_datetime_component<F>(
-    args: &[FilterExpr],
+    args: &[Expression],
     row: &RowView,
     fn_name: &str,
     extract: F,
@@ -77,7 +77,7 @@ where
     F: Fn(&DateTime<FixedOffset>) -> i64,
 {
     check_arity(args, 1, fn_name)?;
-    if let FilterExpr::Var(var) = &args[0] {
+    if let Expression::Var(var) = &args[0] {
         if let Some(binding) = row.get(*var) {
             if let Some(dt) = parse_datetime_from_binding(binding) {
                 return Ok(Some(ComparableValue::Long(extract(&dt))));

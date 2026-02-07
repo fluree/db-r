@@ -521,7 +521,7 @@ pub async fn execute_with_dataset_and_policy_and_providers<'a, 'b, S: Storage + 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{CompareOp, FilterExpr, FilterValue, Pattern};
+    use crate::ir::{CompareOp, Expression, FilterValue, Pattern};
     use crate::options::QueryOptions;
     use crate::parse::SelectMode;
     use crate::pattern::{Term, TriplePattern};
@@ -649,10 +649,10 @@ mod tests {
     fn test_build_where_operators_with_filter() {
         let patterns = vec![
             Pattern::Triple(make_pattern(VarId(0), "age", VarId(1))),
-            Pattern::Filter(FilterExpr::Compare {
+            Pattern::Filter(Expression::Compare {
                 op: CompareOp::Gt,
-                left: Box::new(FilterExpr::Var(VarId(1))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(18))),
+                left: Box::new(Expression::Var(VarId(1))),
+                right: Box::new(Expression::Const(FilterValue::Long(18))),
             }),
         ];
 
@@ -668,10 +668,10 @@ mod tests {
 
         let patterns = vec![
             Pattern::Triple(make_pattern(score, "hasScore", score_v)),
-            Pattern::Filter(FilterExpr::Compare {
+            Pattern::Filter(Expression::Compare {
                 op: CompareOp::Gt,
-                left: Box::new(FilterExpr::Var(score_v)),
-                right: Box::new(FilterExpr::Const(FilterValue::Double(0.4))),
+                left: Box::new(Expression::Var(score_v)),
+                right: Box::new(Expression::Const(FilterValue::Double(0.4))),
             }),
             Pattern::Triple(TriplePattern::new(
                 Term::Var(score),
@@ -733,16 +733,16 @@ mod tests {
     #[test]
     fn test_extract_lookahead_bounds_simple_range() {
         let triples = vec![make_pattern(VarId(0), "age", VarId(1))];
-        let remaining = vec![Pattern::Filter(FilterExpr::And(vec![
-            FilterExpr::Compare {
+        let remaining = vec![Pattern::Filter(Expression::And(vec![
+            Expression::Compare {
                 op: CompareOp::Gt,
-                left: Box::new(FilterExpr::Var(VarId(1))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(18))),
+                left: Box::new(Expression::Var(VarId(1))),
+                right: Box::new(Expression::Const(FilterValue::Long(18))),
             },
-            FilterExpr::Compare {
+            Expression::Compare {
                 op: CompareOp::Lt,
-                left: Box::new(FilterExpr::Var(VarId(1))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(65))),
+                left: Box::new(Expression::Var(VarId(1))),
+                right: Box::new(Expression::Const(FilterValue::Long(65))),
             },
         ]))];
 
