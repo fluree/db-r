@@ -8,6 +8,8 @@ use std::env;
 #[cfg(feature = "otel")]
 use tracing_subscriber::Layer;
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter};
+#[cfg(feature = "otel")]
+use tracing_subscriber::filter::Targets;
 
 /// Telemetry configuration
 #[derive(Debug, Clone)]
@@ -154,14 +156,28 @@ pub fn init_logging(config: &TelemetryConfig) {
         EnvFilter::new(&config.log_filter)
     };
 
-    // When OTEL is enabled, attach the OTEL layer *first* so its type is `Layer<Registry>`.
+    // When OTEL is enabled, use per-layer filtering:
+    // - OTEL layer: only fluree_* spans at DEBUG level (avoids hyper/tonic/tokio noise)
+    // - fmt layer: full RUST_LOG EnvFilter (user controls console output)
     #[cfg(feature = "otel")]
     {
         if config.is_otel_enabled() {
+            let otel_targets = Targets::new()
+                .with_target("fluree_db_server", tracing::Level::DEBUG)
+                .with_target("fluree_db_api", tracing::Level::DEBUG)
+                .with_target("fluree_db_query", tracing::Level::DEBUG)
+                .with_target("fluree_db_transact", tracing::Level::DEBUG)
+                .with_target("fluree_db_indexer", tracing::Level::DEBUG)
+                .with_target("fluree_db_core", tracing::Level::DEBUG)
+                .with_target("fluree_db_ledger", tracing::Level::DEBUG)
+                .with_target("fluree_db_novelty", tracing::Level::DEBUG)
+                .with_target("fluree_db_connection", tracing::Level::DEBUG)
+                .with_target("fluree_db_nameservice", tracing::Level::DEBUG)
+                .with_target("fluree_db_ingest", tracing::Level::DEBUG);
+
             let subscriber = tracing_subscriber::registry()
-                .with(init_otel_layer(config))
-                .with(filter.clone())
-                .with(tracing_subscriber::fmt::layer().compact());
+                .with(init_otel_layer(config).with_filter(otel_targets))
+                .with(tracing_subscriber::fmt::layer().compact().with_filter(filter));
 
             let _ = tracing::dispatcher::set_global_default(tracing::Dispatch::new(subscriber));
             return;

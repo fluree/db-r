@@ -18,7 +18,7 @@ use axum::{
 };
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 
 /// Build the main application router
 pub fn build_router(state: Arc<AppState>) -> Router {
@@ -103,8 +103,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     // Add state
     let mut router = router.with_state(state.clone());
 
-    // Add middleware
-    router = router.layer(TraceLayer::new_for_http());
+    // Add middleware — tower-http span at TRACE level to avoid duplicating
+    // Fluree's own info-level request spans from route handlers
+    router = router.layer(
+        TraceLayer::new_for_http()
+            .make_span_with(DefaultMakeSpan::new().level(tracing::Level::TRACE)),
+    );
 
     // Add CORS if enabled
     if state.config.cors_enabled {
