@@ -8,7 +8,6 @@ use crate::error::Result;
 use crate::ir::{Expression, FunctionName};
 use fluree_db_core::{geo, FlakeValue, Storage};
 
-use super::eval::eval_to_comparable;
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
@@ -22,8 +21,8 @@ pub fn eval_geo_function<S: Storage>(
     match name {
         FunctionName::GeofDistance => {
             check_arity(args, 2, "geof:distance")?;
-            let v1 = eval_to_comparable(&args[0], row, ctx)?;
-            let v2 = eval_to_comparable(&args[1], row, ctx)?;
+            let v1 = args[0].eval_to_comparable(row, ctx)?;
+            let v2 = args[1].eval_to_comparable(row, ctx)?;
 
             // Extract lat/lng from each argument
             let coords1 = extract_geo_coords(&v1);

@@ -8,7 +8,7 @@ use crate::error::Result;
 use crate::ir::{Expression, FunctionName};
 use fluree_db_core::Storage;
 
-use super::eval::{eval_to_comparable, evaluate};
+use super::eval::evaluate;
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
@@ -24,15 +24,15 @@ pub fn eval_conditional_function<S: Storage>(
             check_arity(args, 3, "IF")?;
             let cond = evaluate(&args[0], row, ctx)?;
             if cond {
-                eval_to_comparable(&args[1], row, ctx)
+                args[1].eval_to_comparable(row, ctx)
             } else {
-                eval_to_comparable(&args[2], row, ctx)
+                args[2].eval_to_comparable(row, ctx)
             }
         }
 
         FunctionName::Coalesce => {
             for arg in args {
-                let val = eval_to_comparable(arg, row, ctx)?;
+                let val = arg.eval_to_comparable(row, ctx)?;
                 if val.is_some() {
                     return Ok(val);
                 }

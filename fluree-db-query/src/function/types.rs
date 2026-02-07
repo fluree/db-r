@@ -8,7 +8,6 @@ use crate::error::{QueryError, Result};
 use crate::ir::{Expression, FunctionName};
 use fluree_db_core::Storage;
 
-use super::eval::eval_to_comparable;
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
@@ -35,7 +34,7 @@ pub fn eval_type_function<S: Storage>(
 
         FunctionName::IsIri => {
             check_arity(args, 1, "isIRI")?;
-            let val = eval_to_comparable(&args[0], row, ctx)?;
+            let val = args[0].eval_to_comparable(row, ctx)?;
             Ok(Some(ComparableValue::Bool(val.is_some_and(|v| {
                 matches!(v, ComparableValue::Sid(_) | ComparableValue::Iri(_))
             }))))
@@ -43,7 +42,7 @@ pub fn eval_type_function<S: Storage>(
 
         FunctionName::IsLiteral => {
             check_arity(args, 1, "isLiteral")?;
-            let val = eval_to_comparable(&args[0], row, ctx)?;
+            let val = args[0].eval_to_comparable(row, ctx)?;
             Ok(Some(ComparableValue::Bool(val.is_some_and(|v| {
                 matches!(
                     v,
@@ -57,7 +56,7 @@ pub fn eval_type_function<S: Storage>(
 
         FunctionName::IsNumeric => {
             check_arity(args, 1, "isNumeric")?;
-            let val = eval_to_comparable(&args[0], row, ctx)?;
+            let val = args[0].eval_to_comparable(row, ctx)?;
             Ok(Some(ComparableValue::Bool(val.is_some_and(|v| {
                 matches!(v, ComparableValue::Long(_) | ComparableValue::Double(_))
             }))))

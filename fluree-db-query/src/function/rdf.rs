@@ -10,7 +10,6 @@ use fluree_db_core::Storage;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use super::eval::eval_to_comparable;
 use super::helpers::{check_arity, format_datatype_sid};
 use super::value::ComparableValue;
 
@@ -40,8 +39,8 @@ pub fn eval_rdf_function<S: Storage>(
 
         FunctionName::LangMatches => {
             check_arity(args, 2, "LANGMATCHES")?;
-            let tag = eval_to_comparable(&args[0], row, ctx)?;
-            let range = eval_to_comparable(&args[1], row, ctx)?;
+            let tag = args[0].eval_to_comparable(row, ctx)?;
+            let range = args[1].eval_to_comparable(row, ctx)?;
             let result = match (tag, range) {
                 (Some(ComparableValue::String(t)), Some(ComparableValue::String(r))) => {
                     if r.as_ref() == "*" {
@@ -61,15 +60,15 @@ pub fn eval_rdf_function<S: Storage>(
 
         FunctionName::SameTerm => {
             check_arity(args, 2, "SAMETERM")?;
-            let v1 = eval_to_comparable(&args[0], row, ctx)?;
-            let v2 = eval_to_comparable(&args[1], row, ctx)?;
+            let v1 = args[0].eval_to_comparable(row, ctx)?;
+            let v2 = args[1].eval_to_comparable(row, ctx)?;
             let same = matches!((v1, v2), (Some(a), Some(b)) if a == b);
             Ok(Some(ComparableValue::Bool(same)))
         }
 
         FunctionName::Iri => {
             check_arity(args, 1, "IRI")?;
-            match eval_to_comparable(&args[0], row, ctx)? {
+            match args[0].eval_to_comparable(row, ctx)? {
                 Some(ComparableValue::String(s)) => Ok(Some(ComparableValue::Iri(s))),
                 Some(ComparableValue::Sid(sid)) => Ok(Some(ComparableValue::Sid(sid))),
                 Some(_) => Err(QueryError::InvalidFilter(

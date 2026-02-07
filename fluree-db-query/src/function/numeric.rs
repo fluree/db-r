@@ -9,7 +9,6 @@ use crate::ir::{Expression, FunctionName};
 use fluree_db_core::Storage;
 use rand::random;
 
-use super::eval::eval_to_comparable;
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
@@ -23,7 +22,7 @@ pub fn eval_numeric_function<S: Storage>(
     match name {
         FunctionName::Abs => {
             check_arity(args, 1, "ABS")?;
-            let val = eval_to_comparable(&args[0], row, ctx)?;
+            let val = args[0].eval_to_comparable(row, ctx)?;
             Ok(match val {
                 Some(ComparableValue::Long(n)) => Some(ComparableValue::Long(n.abs())),
                 Some(ComparableValue::Double(d)) => Some(ComparableValue::Double(d.abs())),
@@ -33,7 +32,7 @@ pub fn eval_numeric_function<S: Storage>(
 
         FunctionName::Round => {
             check_arity(args, 1, "ROUND")?;
-            let val = eval_to_comparable(&args[0], row, ctx)?;
+            let val = args[0].eval_to_comparable(row, ctx)?;
             Ok(match val {
                 Some(ComparableValue::Long(n)) => Some(ComparableValue::Long(n)),
                 Some(ComparableValue::Double(d)) => Some(ComparableValue::Double(d.round())),
@@ -43,7 +42,7 @@ pub fn eval_numeric_function<S: Storage>(
 
         FunctionName::Ceil => {
             check_arity(args, 1, "CEIL")?;
-            let val = eval_to_comparable(&args[0], row, ctx)?;
+            let val = args[0].eval_to_comparable(row, ctx)?;
             Ok(match val {
                 Some(ComparableValue::Long(n)) => Some(ComparableValue::Long(n)),
                 Some(ComparableValue::Double(d)) => Some(ComparableValue::Double(d.ceil())),
@@ -53,7 +52,7 @@ pub fn eval_numeric_function<S: Storage>(
 
         FunctionName::Floor => {
             check_arity(args, 1, "FLOOR")?;
-            let val = eval_to_comparable(&args[0], row, ctx)?;
+            let val = args[0].eval_to_comparable(row, ctx)?;
             Ok(match val {
                 Some(ComparableValue::Long(n)) => Some(ComparableValue::Long(n)),
                 Some(ComparableValue::Double(d)) => Some(ComparableValue::Double(d.floor())),

@@ -50,7 +50,7 @@ pub fn evaluate_to_binding_strict<S: Storage>(
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Binding> {
     // Evaluate to comparable value
-    let comparable = match eval_to_comparable(expr, row, ctx) {
+    let comparable = match expr.eval_to_comparable(row, ctx) {
         Ok(Some(val)) => val,
         Ok(None) => {
             if has_unbound_vars(expr, row) {
@@ -215,8 +215,8 @@ pub fn evaluate<S: Storage>(
         }
 
         Expression::Compare { op, left, right } => {
-            let left_val = eval_to_comparable(left, row, ctx)?;
-            let right_val = eval_to_comparable(right, row, ctx)?;
+            let left_val = left.eval_to_comparable(row, ctx)?;
+            let right_val = right.eval_to_comparable(row, ctx)?;
 
             match (left_val, right_val) {
                 (Some(l), Some(r)) => Ok(compare_values(&l, &r, *op)),
@@ -247,7 +247,7 @@ pub fn evaluate<S: Storage>(
 
         Expression::Arithmetic { .. } => {
             // Arithmetic as boolean: check if result is truthy (non-zero)
-            match eval_to_comparable(expr, row, ctx)? {
+            match expr.eval_to_comparable(row, ctx)? {
                 Some(ComparableValue::Long(n)) => Ok(n != 0),
                 Some(ComparableValue::Double(d)) => Ok(d != 0.0),
                 Some(ComparableValue::Bool(b)) => Ok(b),
@@ -257,7 +257,7 @@ pub fn evaluate<S: Storage>(
 
         Expression::Negate(_) => {
             // Negation as boolean: check if result is truthy (non-zero)
-            match eval_to_comparable(expr, row, ctx)? {
+            match expr.eval_to_comparable(row, ctx)? {
                 Some(ComparableValue::Long(n)) => Ok(n != 0),
                 Some(ComparableValue::Double(d)) => Ok(d != 0.0),
                 _ => Ok(false),
@@ -282,11 +282,11 @@ pub fn evaluate<S: Storage>(
             values,
             negated,
         } => {
-            let test_val = eval_to_comparable(test_expr, row, ctx)?;
+            let test_val = test_expr.eval_to_comparable(row, ctx)?;
             match test_val {
                 Some(tv) => {
                     let found = values.iter().any(|v| {
-                        eval_to_comparable(v, row, ctx)
+                        v.eval_to_comparable(row, ctx)
                             .ok()
                             .flatten()
                             .map(|cv| cv == tv)
@@ -303,116 +303,122 @@ pub fn evaluate<S: Storage>(
 }
 
 // =============================================================================
-// Value Evaluation: eval_to_comparable
+// Value Evaluation: Expression::eval_to_comparable
 // =============================================================================
 
-/// Evaluate expression to a comparable value.
-///
-/// The `ctx` parameter provides access to the execution context for resolving
-/// `Binding::EncodedLit` values (late materialization). Pass `None` if no
-/// context is available.
-pub fn eval_to_comparable<S: Storage>(
-    expr: &Expression,
-    row: &RowView,
-    ctx: Option<&ExecutionContext<'_, S>>,
-) -> Result<Option<ComparableValue>> {
-    match expr {
-        Expression::Var(var) => match row.get(*var) {
-            Some(Binding::Lit { val, .. }) => Ok(ComparableValue::try_from(val).ok()),
-            Some(Binding::EncodedLit {
-                o_kind,
-                o_key,
-                p_id,
-                ..
-            }) => {
-                let Some(store) = ctx.and_then(|c| c.binary_store.as_deref()) else {
-                    return Ok(None);
-                };
-                let val = store
-                    .decode_value(*o_kind, *o_key, *p_id)
-                    .map_err(|e| QueryError::Internal(format!("decode_value: {}", e)))?;
-                Ok(ComparableValue::try_from(&val).ok())
+impl Expression {
+    /// Evaluate expression to a comparable value.
+    ///
+    /// The `ctx` parameter provides access to the execution context for resolving
+    /// `Binding::EncodedLit` values (late materialization). Pass `None` if no
+    /// context is available.
+    pub fn eval_to_comparable<S: Storage>(
+        &self,
+        row: &RowView,
+        ctx: Option<&ExecutionContext<'_, S>>,
+    ) -> Result<Option<ComparableValue>> {
+        match self {
+            Expression::Var(var) => match row.get(*var) {
+                Some(Binding::Lit { val, .. }) => Ok(ComparableValue::try_from(val).ok()),
+                Some(Binding::EncodedLit {
+                    o_kind,
+                    o_key,
+                    p_id,
+                    ..
+                }) => {
+                    let Some(store) = ctx.and_then(|c| c.binary_store.as_deref()) else {
+                        return Ok(None);
+                    };
+                    let val = store
+                        .decode_value(*o_kind, *o_key, *p_id)
+                        .map_err(|e| QueryError::Internal(format!("decode_value: {}", e)))?;
+                    Ok(ComparableValue::try_from(&val).ok())
+                }
+                Some(Binding::Sid(sid)) => Ok(Some(ComparableValue::Sid(sid.clone()))),
+                Some(Binding::IriMatch { iri, .. }) => {
+                    Ok(Some(ComparableValue::Iri(Arc::clone(iri))))
+                }
+                Some(Binding::Iri(iri)) => Ok(Some(ComparableValue::Iri(Arc::clone(iri)))),
+                Some(Binding::EncodedSid { s_id }) => {
+                    let Some(store) = ctx.and_then(|c| c.binary_store.as_deref()) else {
+                        return Ok(None);
+                    };
+                    match store.resolve_subject_iri(*s_id) {
+                        Ok(iri) => Ok(Some(ComparableValue::Iri(Arc::from(iri)))),
+                        Err(e) => Err(QueryError::Internal(format!("resolve_subject_iri: {}", e))),
+                    }
+                }
+                Some(Binding::EncodedPid { p_id }) => {
+                    let Some(store) = ctx.and_then(|c| c.binary_store.as_deref()) else {
+                        return Ok(None);
+                    };
+                    match store.resolve_predicate_iri(*p_id) {
+                        Some(iri) => Ok(Some(ComparableValue::Iri(Arc::from(iri)))),
+                        None => Err(QueryError::Internal(format!(
+                            "resolve_predicate_iri: unknown p_id {}",
+                            p_id
+                        ))),
+                    }
+                }
+                Some(Binding::Unbound) | Some(Binding::Poisoned) | None => Ok(None),
+                Some(Binding::Grouped(_)) => {
+                    debug_assert!(false, "Grouped binding in filter evaluation");
+                    Ok(None)
+                }
+            },
+
+            Expression::Const(val) => Ok(Some(val.into())),
+
+            Expression::Compare { .. } => {
+                // Comparison result is boolean
+                Ok(Some(ComparableValue::Bool(evaluate(self, row, ctx)?)))
             }
-            Some(Binding::Sid(sid)) => Ok(Some(ComparableValue::Sid(sid.clone()))),
-            Some(Binding::IriMatch { iri, .. }) => Ok(Some(ComparableValue::Iri(Arc::clone(iri)))),
-            Some(Binding::Iri(iri)) => Ok(Some(ComparableValue::Iri(Arc::clone(iri)))),
-            Some(Binding::EncodedSid { s_id }) => {
-                let Some(store) = ctx.and_then(|c| c.binary_store.as_deref()) else {
-                    return Ok(None);
-                };
-                match store.resolve_subject_iri(*s_id) {
-                    Ok(iri) => Ok(Some(ComparableValue::Iri(Arc::from(iri)))),
-                    Err(e) => Err(QueryError::Internal(format!("resolve_subject_iri: {}", e))),
+
+            Expression::Arithmetic { op, left, right } => {
+                let l = left.eval_to_comparable(row, ctx)?;
+                let r = right.eval_to_comparable(row, ctx)?;
+                match (l, r) {
+                    (Some(lv), Some(rv)) => Ok(Some(op.apply(lv, rv)?)),
+                    _ => Ok(None),
                 }
             }
-            Some(Binding::EncodedPid { p_id }) => {
-                let Some(store) = ctx.and_then(|c| c.binary_store.as_deref()) else {
-                    return Ok(None);
-                };
-                match store.resolve_predicate_iri(*p_id) {
-                    Some(iri) => Ok(Some(ComparableValue::Iri(Arc::from(iri)))),
-                    None => Err(QueryError::Internal(format!(
-                        "resolve_predicate_iri: unknown p_id {}",
-                        p_id
-                    ))),
+
+            Expression::Negate(inner) => match inner.eval_to_comparable(row, ctx)? {
+                Some(ComparableValue::Long(n)) => Ok(Some(ComparableValue::Long(-n))),
+                Some(ComparableValue::Double(d)) => Ok(Some(ComparableValue::Double(-d))),
+                Some(ComparableValue::BigInt(n)) => {
+                    Ok(Some(ComparableValue::BigInt(Box::new(-(*n)))))
                 }
-            }
-            Some(Binding::Unbound) | Some(Binding::Poisoned) | None => Ok(None),
-            Some(Binding::Grouped(_)) => {
-                debug_assert!(false, "Grouped binding in filter evaluation");
-                Ok(None)
-            }
-        },
-
-        Expression::Const(val) => Ok(Some(val.into())),
-
-        Expression::Compare { .. } => {
-            // Comparison result is boolean
-            Ok(Some(ComparableValue::Bool(evaluate(expr, row, ctx)?)))
-        }
-
-        Expression::Arithmetic { op, left, right } => {
-            let l = eval_to_comparable(left, row, ctx)?;
-            let r = eval_to_comparable(right, row, ctx)?;
-            match (l, r) {
-                (Some(lv), Some(rv)) => Ok(Some(op.apply(lv, rv)?)),
+                Some(ComparableValue::Decimal(d)) => {
+                    Ok(Some(ComparableValue::Decimal(Box::new(-(*d)))))
+                }
                 _ => Ok(None),
+            },
+
+            Expression::And(_) | Expression::Or(_) | Expression::Not(_) => {
+                Ok(Some(ComparableValue::Bool(evaluate(self, row, ctx)?)))
             }
-        }
 
-        Expression::Negate(inner) => match eval_to_comparable(inner, row, ctx)? {
-            Some(ComparableValue::Long(n)) => Ok(Some(ComparableValue::Long(-n))),
-            Some(ComparableValue::Double(d)) => Ok(Some(ComparableValue::Double(-d))),
-            Some(ComparableValue::BigInt(n)) => Ok(Some(ComparableValue::BigInt(Box::new(-(*n))))),
-            Some(ComparableValue::Decimal(d)) => {
-                Ok(Some(ComparableValue::Decimal(Box::new(-(*d)))))
+            Expression::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                let cond = evaluate(condition, row, ctx)?;
+                if cond {
+                    then_expr.eval_to_comparable(row, ctx)
+                } else {
+                    else_expr.eval_to_comparable(row, ctx)
+                }
             }
-            _ => Ok(None),
-        },
 
-        Expression::And(_) | Expression::Or(_) | Expression::Not(_) => {
-            Ok(Some(ComparableValue::Bool(evaluate(expr, row, ctx)?)))
-        }
-
-        Expression::If {
-            condition,
-            then_expr,
-            else_expr,
-        } => {
-            let cond = evaluate(condition, row, ctx)?;
-            if cond {
-                eval_to_comparable(then_expr, row, ctx)
-            } else {
-                eval_to_comparable(else_expr, row, ctx)
+            Expression::In { .. } => {
+                // IN expression evaluates to boolean
+                Ok(Some(ComparableValue::Bool(evaluate(self, row, ctx)?)))
             }
-        }
 
-        Expression::In { .. } => {
-            // IN expression evaluates to boolean
-            Ok(Some(ComparableValue::Bool(evaluate(expr, row, ctx)?)))
+            Expression::Function { name, args } => eval_function(name, args, row, ctx),
         }
-
-        Expression::Function { name, args } => eval_function(name, args, row, ctx),
     }
 }
 

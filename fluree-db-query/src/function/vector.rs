@@ -8,7 +8,6 @@ use crate::error::Result;
 use crate::ir::{Expression, FunctionName};
 use fluree_db_core::Storage;
 
-use super::eval::eval_to_comparable;
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
@@ -67,8 +66,8 @@ where
     F: Fn(&[f64], &[f64]) -> Option<f64>,
 {
     check_arity(args, 2, fn_name)?;
-    let v1 = eval_to_comparable(&args[0], row, ctx)?;
-    let v2 = eval_to_comparable(&args[1], row, ctx)?;
+    let v1 = args[0].eval_to_comparable(row, ctx)?;
+    let v2 = args[1].eval_to_comparable(row, ctx)?;
     match (v1, v2) {
         (Some(ComparableValue::Vector(a)), Some(ComparableValue::Vector(b))) => {
             if a.len() != b.len() {
