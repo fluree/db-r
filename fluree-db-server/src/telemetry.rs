@@ -360,15 +360,25 @@ pub fn extract_trace_id(headers: &axum::http::HeaderMap) -> Option<String> {
 ///
 /// This is the main entry point for creating spans at request boundaries.
 /// Includes all correlation fields for CloudWatch filtering.
+///
+/// The `otel.name` field overrides the OTEL export span name so that traces
+/// in Jaeger/Tempo show descriptive names like `query:sparql` or `insert:turtle`
+/// instead of the generic `request` tracing span name.
 pub fn create_request_span(
     operation: &str,
     request_id: Option<&str>,
     trace_id: Option<&str>,
     ledger_alias: Option<&str>,
     tenant_id: Option<&str>,
+    input_format: Option<&str>,
 ) -> tracing::Span {
+    let otel_name = match input_format {
+        Some(fmt) => format!("{operation}:{fmt}"),
+        None => operation.to_string(),
+    };
     tracing::info_span!(
         "request",
+        otel.name = %otel_name,
         operation = operation,
         request_id = request_id,
         trace_id = trace_id,

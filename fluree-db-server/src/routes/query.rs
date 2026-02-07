@@ -120,6 +120,10 @@ pub async fn query(
     headers: FlureeHeaders,
     credential: MaybeCredential,
 ) -> Result<impl IntoResponse> {
+    // Detect input format BEFORE creating span so otel.name is set immediately
+    let is_sparql = headers.is_sparql_query() || credential.is_sparql;
+    let input_format = if is_sparql { "sparql" } else { "fql" };
+
     // Create request span with correlation context
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
     let trace_id = extract_trace_id(&credential.headers);
@@ -130,6 +134,7 @@ pub async fn query(
         trace_id.as_deref(),
         None, // ledger alias determined later
         None, // tenant_id not yet supported
+        Some(input_format),
     );
 
     async move {
@@ -228,16 +233,21 @@ pub async fn query_ledger(
     headers: FlureeHeaders,
     credential: MaybeCredential,
 ) -> Result<impl IntoResponse> {
+    // Detect input format BEFORE creating span so otel.name is set immediately
+    let is_sparql = headers.is_sparql_query() || credential.is_sparql;
+    let input_format = if is_sparql { "sparql" } else { "fql" };
+
     // Create request span with correlation context
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
     let trace_id = extract_trace_id(&credential.headers);
 
     let span = create_request_span(
-        "query_ledger",
+        "query",
         request_id.as_deref(),
         trace_id.as_deref(),
         Some(&ledger),
         None, // tenant_id not yet supported
+        Some(input_format),
     );
 
     async move {
@@ -584,11 +594,12 @@ pub async fn explain(
     let trace_id = extract_trace_id(&credential.headers);
 
     let span = create_request_span(
-        "explain",
+        "query:explain",
         request_id.as_deref(),
         trace_id.as_deref(),
         None, // ledger alias determined later
         None, // tenant_id not yet supported
+        None, // explain is a query sub-type, not a format
     );
 
     async move {

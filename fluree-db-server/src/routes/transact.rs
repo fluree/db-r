@@ -182,6 +182,17 @@ async fn transact_local(state: Arc<AppState>, request: Request) -> Result<Json<T
     // Extract credential (consumes the request body)
     let credential = MaybeCredential::extract(request).await?;
 
+    // Detect input format BEFORE creating span so otel.name is set immediately
+    let input_format = if credential.is_sparql_update() {
+        "sparql-update"
+    } else if credential.is_trig() {
+        "trig"
+    } else if credential.is_turtle_or_trig() {
+        "turtle"
+    } else {
+        "fql"
+    };
+
     // Create request span with correlation context
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
     let trace_id = extract_trace_id(&credential.headers);
@@ -192,6 +203,7 @@ async fn transact_local(state: Arc<AppState>, request: Request) -> Result<Json<T
         trace_id.as_deref(),
         None, // ledger alias determined later
         None, // tenant_id not yet supported
+        Some(input_format),
     );
 
     async move {
@@ -327,15 +339,27 @@ async fn transact_ledger_local(
     };
     let credential = MaybeCredential::extract(request).await?;
 
+    // Detect input format BEFORE creating span so otel.name is set immediately
+    let input_format = if credential.is_sparql_update() {
+        "sparql-update"
+    } else if credential.is_trig() {
+        "trig"
+    } else if credential.is_turtle_or_trig() {
+        "turtle"
+    } else {
+        "fql"
+    };
+
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
     let trace_id = extract_trace_id(&credential.headers);
 
     let span = create_request_span(
-        "transact_ledger",
+        "transact",
         request_id.as_deref(),
         trace_id.as_deref(),
         Some(&ledger),
         None,
+        Some(input_format),
     );
 
     async move {
@@ -449,6 +473,15 @@ async fn insert_local(state: Arc<AppState>, request: Request) -> Result<Json<Tra
     };
     let credential = MaybeCredential::extract(request).await?;
 
+    // Detect input format BEFORE creating span so otel.name is set immediately
+    let input_format = if credential.is_trig() {
+        "trig"
+    } else if credential.is_turtle_or_trig() {
+        "turtle"
+    } else {
+        "fql"
+    };
+
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
     let trace_id = extract_trace_id(&credential.headers);
 
@@ -458,6 +491,7 @@ async fn insert_local(state: Arc<AppState>, request: Request) -> Result<Json<Tra
         trace_id.as_deref(),
         None,
         None,
+        Some(input_format),
     );
 
     async move {
@@ -565,6 +599,15 @@ async fn upsert_local(state: Arc<AppState>, request: Request) -> Result<Json<Tra
     };
     let credential = MaybeCredential::extract(request).await?;
 
+    // Detect input format BEFORE creating span so otel.name is set immediately
+    let input_format = if credential.is_trig() {
+        "trig"
+    } else if credential.is_turtle_or_trig() {
+        "turtle"
+    } else {
+        "fql"
+    };
+
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
     let trace_id = extract_trace_id(&credential.headers);
 
@@ -574,6 +617,7 @@ async fn upsert_local(state: Arc<AppState>, request: Request) -> Result<Json<Tra
         trace_id.as_deref(),
         None,
         None,
+        Some(input_format),
     );
 
     async move {
@@ -689,15 +733,25 @@ async fn insert_ledger_local(
     };
     let credential = MaybeCredential::extract(request).await?;
 
+    // Detect input format BEFORE creating span so otel.name is set immediately
+    let input_format = if credential.is_trig() {
+        "trig"
+    } else if credential.is_turtle_or_trig() {
+        "turtle"
+    } else {
+        "fql"
+    };
+
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
     let trace_id = extract_trace_id(&credential.headers);
 
     let span = create_request_span(
-        "insert_ledger",
+        "insert",
         request_id.as_deref(),
         trace_id.as_deref(),
         Some(&ledger),
         None,
+        Some(input_format),
     );
 
     async move {
@@ -800,15 +854,25 @@ async fn upsert_ledger_local(
     };
     let credential = MaybeCredential::extract(request).await?;
 
+    // Detect input format BEFORE creating span so otel.name is set immediately
+    let input_format = if credential.is_trig() {
+        "trig"
+    } else if credential.is_turtle_or_trig() {
+        "turtle"
+    } else {
+        "fql"
+    };
+
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
     let trace_id = extract_trace_id(&credential.headers);
 
     let span = create_request_span(
-        "upsert_ledger",
+        "upsert",
         request_id.as_deref(),
         trace_id.as_deref(),
         Some(&ledger),
         None,
+        Some(input_format),
     );
 
     async move {

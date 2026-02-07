@@ -89,11 +89,12 @@ async fn create_local(state: Arc<AppState>, request: Request) -> Result<impl Int
     let trace_id = extract_trace_id(&headers.raw);
 
     let span = create_request_span(
-        "create_ledger",
+        "ledger:create",
         request_id.as_deref(),
         trace_id.as_deref(),
         None, // ledger alias determined later
         None,
+        None, // no input format for ledger management
     );
     async move {
         let span = tracing::Span::current();
@@ -234,11 +235,12 @@ async fn drop_local(state: Arc<AppState>, request: Request) -> Result<Json<DropR
     let trace_id = extract_trace_id(&headers.raw);
 
     let span = create_request_span(
-        "drop_ledger",
+        "ledger:drop",
         request_id.as_deref(),
         trace_id.as_deref(),
         Some(&req.ledger),
         None,
+        None, // no input format for ledger management
     );
     async move {
         let span = tracing::Span::current();
@@ -308,11 +310,12 @@ pub async fn info(
     let trace_id = extract_trace_id(&headers.raw);
 
     let span = create_request_span(
-        "ledger_info",
+        "ledger:info",
         request_id.as_deref(),
         trace_id.as_deref(),
         None, // ledger alias determined later
         None,
+        None, // no input format for ledger management
     );
     async move {
         let span = tracing::Span::current();
@@ -440,11 +443,12 @@ pub async fn exists(
     let trace_id = extract_trace_id(&headers.raw);
 
     let span = create_request_span(
-        "ledger_exists",
+        "ledger:exists",
         request_id.as_deref(),
         trace_id.as_deref(),
         None,
         None,
+        None, // no input format for ledger management
     );
     async move {
         let span = tracing::Span::current();
