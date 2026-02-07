@@ -76,6 +76,18 @@ CODE=$(echo "$RESP" | tail -n1)
 BODY=$(echo "$RESP" | sed '$d')
 echo "  Product count query (HTTP ${CODE}): ${BODY}"
 
+# Verify that index files were actually written
+echo ""
+STORAGE_DIR="${3:-_data/storage}"
+INDEX_DIRS=$(find "$STORAGE_DIR" -type d -name "index" 2>/dev/null)
+if [ -n "$INDEX_DIRS" ]; then
+    INDEX_FILES=$(find $INDEX_DIRS -type f 2>/dev/null | wc -l | tr -d ' ')
+    echo "Index verification: PASS (${INDEX_FILES} index files found)"
+else
+    echo "Index verification: WARN (no index directories found — indexing may not have triggered)"
+    echo "  Check that --indexing-enabled is set and enough data was inserted."
+fi
+
 echo ""
 echo "Index smoke test complete."
 echo "Check Jaeger for index_build > build_all_indexes > build_index spans."

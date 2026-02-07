@@ -264,6 +264,20 @@ This means `RUST_LOG=debug` produces verbose console output, but the OTEL export
 
 On server shutdown, the OTEL `SdkTracerProvider` is flushed and shut down to ensure all pending spans are exported. This is handled automatically by the server's shutdown hook.
 
+### Dynamic Span Naming (otel.name)
+
+Each HTTP request span is named dynamically via the `otel.name` field so that traces in Jaeger/Tempo show descriptive names instead of a generic `request`:
+
+| Operation | otel.name examples |
+|-----------|-------------------|
+| Query | `query:fql`, `query:sparql`, `query:explain` |
+| Transact | `transact:fql`, `transact:sparql-update`, `transact:turtle` |
+| Insert | `insert:fql`, `insert:turtle` |
+| Upsert | `upsert:fql`, `upsert:turtle`, `upsert:trig` |
+| Ledger mgmt | `ledger:create`, `ledger:drop`, `ledger:info`, `ledger:exists` |
+
+The `operation` span attribute retains the handler-specific name (e.g. `query` vs `query_ledger`) for precise filtering when needed.
+
 ### Span Hierarchy
 
 Fluree instruments queries, transactions, and indexing with structured tracing spans at three tiers. All debug/trace spans are opt-in via `RUST_LOG` -- at default `info` level, only top-level operation spans appear.

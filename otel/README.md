@@ -119,36 +119,52 @@ otel/
 
 After running `make smoke`, open Jaeger at `http://localhost:16686` and search for service `fluree-server`.
 
+### Root span names (otel.name)
+
+Traces are named via `otel.name` for easy identification in Jaeger's trace list:
+
+| Operation | Span name examples |
+|-----------|-------------------|
+| Query | `query:fql`, `query:sparql`, `query:explain` |
+| Transact | `transact:fql`, `transact:sparql-update`, `transact:turtle` |
+| Insert | `insert:fql`, `insert:turtle` |
+| Upsert | `upsert:fql`, `upsert:turtle` |
+| Ledger mgmt | `ledger:create`, `ledger:drop`, `ledger:info`, `ledger:exists` |
+
+The `operation` tag on each span retains the handler-specific name (e.g. `query` vs `query_ledger`) for filtering.
+
 ### Transaction traces
 
 ```
-transact_execute
-  └─ txn_stage
-       ├─ where_exec          (for updates with WHERE clause)
-       ├─ insert_gen          (generate insert flakes)
-       ├─ delete_gen          (generate delete flakes)
-       └─ cancellation_check  (policy evaluation)
-  └─ txn_commit
-       ├─ build_novelty
-       ├─ resolve_commit
-       └─ write_commit
+transact:fql (root, otel.name)
+  └─ transact_execute
+       └─ txn_stage
+            ├─ where_exec          (for updates with WHERE clause)
+            ├─ insert_gen          (generate insert flakes)
+            ├─ delete_gen          (generate delete flakes)
+            └─ cancellation_check  (policy evaluation)
+       └─ txn_commit
+            ├─ build_novelty
+            ├─ resolve_commit
+            └─ write_commit
 ```
 
 ### Query traces
 
 ```
-query_execute
-  └─ query_prepare
-       ├─ reasoning_prep
-       ├─ pattern_rewrite
-       └─ plan
-  └─ query_run
-       ├─ scan              (per-scan operator)
-       ├─ join              (hash/nested-loop)
-       ├─ filter
-       ├─ sort
-       ├─ aggregate
-       └─ project
+query:sparql (root, otel.name)
+  └─ query_execute / sparql_execute
+       └─ query_prepare
+            ├─ reasoning_prep
+            ├─ pattern_rewrite
+            └─ plan
+       └─ query_run
+            ├─ scan              (per-scan operator)
+            ├─ join              (hash/nested-loop)
+            ├─ filter
+            ├─ sort
+            ├─ aggregate
+            └─ project
 ```
 
 ### Index traces
