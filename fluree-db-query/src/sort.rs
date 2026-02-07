@@ -14,6 +14,7 @@ use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::cmp::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
+use tracing::Instrument;
 
 /// Materialize an encoded binding to its decoded form for sort comparison.
 ///
@@ -351,18 +352,25 @@ impl<S: Storage + 'static> Operator<S> for SortOperator<S> {
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(crate::error::QueryError::OperatorClosed);
+        async {
+            if !self.state.can_open() {
+                if self.state.is_closed() {
+                    return Err(crate::error::QueryError::OperatorClosed);
+                }
+                return Err(crate::error::QueryError::OperatorAlreadyOpened);
             }
-            return Err(crate::error::QueryError::OperatorAlreadyOpened);
-        }
 
-        self.child.open(ctx).await?;
-        self.buffer = None;
-        self.emit_idx = 0;
-        self.state = OperatorState::Open;
-        Ok(())
+            self.child.open(ctx).await?;
+            self.buffer = None;
+            self.emit_idx = 0;
+            self.state = OperatorState::Open;
+            Ok(())
+        }
+        .instrument(tracing::trace_span!(
+            "sort",
+            sort_keys = self.sort_specs.len()
+        ))
+        .await
     }
 
     async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {

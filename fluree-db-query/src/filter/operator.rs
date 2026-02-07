@@ -11,6 +11,7 @@ use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::Storage;
 use std::sync::Arc;
+use tracing::Instrument;
 
 use super::eval::evaluate_with_context;
 
@@ -54,9 +55,13 @@ impl<S: Storage + 'static> Operator<S> for FilterOperator<S> {
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
-        self.child.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
+        async {
+            self.child.open(ctx).await?;
+            self.state = OperatorState::Open;
+            Ok(())
+        }
+        .instrument(tracing::trace_span!("filter"))
+        .await
     }
 
     async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {

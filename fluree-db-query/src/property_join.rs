@@ -33,6 +33,7 @@ use async_trait::async_trait;
 use fluree_db_core::{ObjectBounds, Sid, Storage};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::Instrument;
 
 use crate::binary_scan::ScanOperator;
 
@@ -230,84 +231,89 @@ impl<S: Storage + 'static> Operator<S> for PropertyJoinOperator {
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
-        self.state = OperatorState::Open;
-        self.subject_values.clear();
-        self.pending_subjects.clear();
-        self.subject_idx = 0;
+        let span = tracing::trace_span!("property_join");
+        async {
+            self.state = OperatorState::Open;
+            self.subject_values.clear();
+            self.pending_subjects.clear();
+            self.subject_idx = 0;
 
-        // For each predicate, scan and collect (subject -> values) mappings
-        // Key by canonical IRI for cross-ledger correctness.
-        // Value: (subject_binding, vec of value-vectors per predicate)
-        let mut all_subject_values: HashMap<Arc<str>, (Binding, Vec<Vec<Binding>>)> =
-            HashMap::new();
+            // For each predicate, scan and collect (subject -> values) mappings
+            // Key by canonical IRI for cross-ledger correctness.
+            // Value: (subject_binding, vec of value-vectors per predicate)
+            let mut all_subject_values: HashMap<Arc<str>, (Binding, Vec<Vec<Binding>>)> =
+                HashMap::new();
 
-        for (pred_idx, (pred_term, obj_var, dt)) in self.predicates.iter().enumerate() {
-            // Create pattern: ?s :pred ?o (temp var for object, accessed by index)
-            // pred_term is already a Term (Sid or Iri) so use it directly
-            let pattern = if let Some(dt) = dt {
-                TriplePattern::with_dt(
-                    Term::Var(self.subject_var),
-                    pred_term.clone(),
-                    Term::Var(TEMP_OBJECT_VAR),
-                    dt.clone(),
-                )
-            } else {
-                TriplePattern::new(
-                    Term::Var(self.subject_var),
-                    pred_term.clone(),
-                    Term::Var(TEMP_OBJECT_VAR),
-                )
-            };
+            for (pred_idx, (pred_term, obj_var, dt)) in self.predicates.iter().enumerate() {
+                // Create pattern: ?s :pred ?o (temp var for object, accessed by index)
+                // pred_term is already a Term (Sid or Iri) so use it directly
+                let pattern = if let Some(dt) = dt {
+                    TriplePattern::with_dt(
+                        Term::Var(self.subject_var),
+                        pred_term.clone(),
+                        Term::Var(TEMP_OBJECT_VAR),
+                        dt.clone(),
+                    )
+                } else {
+                    TriplePattern::new(
+                        Term::Var(self.subject_var),
+                        pred_term.clone(),
+                        Term::Var(TEMP_OBJECT_VAR),
+                    )
+                };
 
-            // Create scan with optional bounds pushdown for this object variable.
-            //
-            // `ScanOperator` selects between binary cursor and range fallback
-            // at open() time based on the execution context.
-            let bounds = self.object_bounds.get(obj_var).cloned();
-            let mut scan: BoxedOperator<S> = make_property_join_scan::<S>(pattern, bounds);
-            scan.open(ctx).await?;
+                // Create scan with optional bounds pushdown for this object variable.
+                //
+                // `ScanOperator` selects between binary cursor and range fallback
+                // at open() time based on the execution context.
+                let bounds = self.object_bounds.get(obj_var).cloned();
+                let mut scan: BoxedOperator<S> = make_property_join_scan::<S>(pattern, bounds);
+                scan.open(ctx).await?;
 
-            while let Some(batch) = scan.next_batch(ctx).await? {
-                // Schema for this scan is [subject_var, temp_obj_var]
-                let subject_col = batch.column_by_idx(0);
-                let object_col = batch.column_by_idx(1);
+                while let Some(batch) = scan.next_batch(ctx).await? {
+                    // Schema for this scan is [subject_var, temp_obj_var]
+                    let subject_col = batch.column_by_idx(0);
+                    let object_col = batch.column_by_idx(1);
 
-                if let (Some(subjects), Some(objects)) = (subject_col, object_col) {
-                    for (subject, object) in subjects.iter().zip(objects.iter()) {
-                        // Extract canonical IRI for keying, preserving original binding for output
-                        let iri_key: Option<Arc<str>> = match subject {
-                            Binding::IriMatch { iri, .. } => Some(iri.clone()),
-                            Binding::Sid(sid) => {
-                                // Single-ledger mode: decode SID to IRI for keying
-                                ctx.decode_sid(sid).map(Arc::from)
+                    if let (Some(subjects), Some(objects)) = (subject_col, object_col) {
+                        for (subject, object) in subjects.iter().zip(objects.iter()) {
+                            // Extract canonical IRI for keying, preserving original binding for output
+                            let iri_key: Option<Arc<str>> = match subject {
+                                Binding::IriMatch { iri, .. } => Some(iri.clone()),
+                                Binding::Sid(sid) => {
+                                    // Single-ledger mode: decode SID to IRI for keying
+                                    ctx.decode_sid(sid).map(Arc::from)
+                                }
+                                _ => None,
+                            };
+
+                            if let Some(iri) = iri_key {
+                                let entry = all_subject_values.entry(iri).or_insert_with(|| {
+                                    // Initialize with the subject binding and empty vecs for each predicate
+                                    (subject.clone(), vec![Vec::new(); self.predicates.len()])
+                                });
+                                entry.1[pred_idx].push(object.clone());
                             }
-                            _ => None,
-                        };
-
-                        if let Some(iri) = iri_key {
-                            let entry = all_subject_values.entry(iri).or_insert_with(|| {
-                                // Initialize with the subject binding and empty vecs for each predicate
-                                (subject.clone(), vec![Vec::new(); self.predicates.len()])
-                            });
-                            entry.1[pred_idx].push(object.clone());
                         }
                     }
                 }
+
+                scan.close();
             }
 
-            scan.close();
+            // Filter to only subjects that have values for ALL predicates
+            self.subject_values = all_subject_values
+                .into_iter()
+                .filter(|(_, (_, values))| values.iter().all(|v| !v.is_empty()))
+                .collect();
+
+            // Collect subject IRIs for iteration
+            self.pending_subjects = self.subject_values.keys().cloned().collect();
+
+            Ok(())
         }
-
-        // Filter to only subjects that have values for ALL predicates
-        self.subject_values = all_subject_values
-            .into_iter()
-            .filter(|(_, (_, values))| values.iter().all(|v| !v.is_empty()))
-            .collect();
-
-        // Collect subject IRIs for iteration
-        self.pending_subjects = self.subject_values.keys().cloned().collect();
-
-        Ok(())
+        .instrument(span)
+        .await
     }
 
     async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {

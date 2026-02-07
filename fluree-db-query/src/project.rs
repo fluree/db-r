@@ -10,6 +10,7 @@ use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::Storage;
+use tracing::Instrument;
 
 /// Project operator - selects and reorders columns from child
 pub struct ProjectOperator<S: Storage + 'static> {
@@ -39,16 +40,20 @@ impl<S: Storage + 'static> Operator<S> for ProjectOperator<S> {
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
+        async {
+            if !self.state.can_open() {
+                if self.state.is_closed() {
+                    return Err(QueryError::OperatorClosed);
+                }
+                return Err(QueryError::OperatorAlreadyOpened);
             }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
 
-        self.child.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
+            self.child.open(ctx).await?;
+            self.state = OperatorState::Open;
+            Ok(())
+        }
+        .instrument(tracing::trace_span!("project"))
+        .await
     }
 
     async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {

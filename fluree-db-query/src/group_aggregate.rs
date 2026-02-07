@@ -50,6 +50,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Instant;
+use tracing::Instrument;
 
 /// Specification for a streaming aggregate
 #[derive(Debug, Clone)]
@@ -560,16 +561,20 @@ impl<S: Storage + 'static> Operator<S> for GroupAggregateOperator<S> {
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
-        self.child.open(ctx).await?;
-        self.state = OperatorState::Open;
-        self.groups.clear();
-        self.emit_iter = None;
-        // If the execution context has a binary store, use it to materialize
-        // encoded bindings for correct MIN/MAX comparison semantics.
-        if self.binary_store.is_none() {
-            self.binary_store = ctx.binary_store.clone();
+        async {
+            self.child.open(ctx).await?;
+            self.state = OperatorState::Open;
+            self.groups.clear();
+            self.emit_iter = None;
+            // If the execution context has a binary store, use it to materialize
+            // encoded bindings for correct MIN/MAX comparison semantics.
+            if self.binary_store.is_none() {
+                self.binary_store = ctx.binary_store.clone();
+            }
+            Ok(())
         }
-        Ok(())
+        .instrument(tracing::trace_span!("group_aggregate"))
+        .await
     }
 
     async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {

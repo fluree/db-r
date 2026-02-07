@@ -11,6 +11,7 @@ use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::Storage;
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// Offset operator - skips the first N rows
 ///
@@ -64,17 +65,21 @@ impl<S: Storage + 'static> Operator<S> for OffsetOperator<S> {
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(crate::error::QueryError::OperatorClosed);
+        async {
+            if !self.state.can_open() {
+                if self.state.is_closed() {
+                    return Err(crate::error::QueryError::OperatorClosed);
+                }
+                return Err(crate::error::QueryError::OperatorAlreadyOpened);
             }
-            return Err(crate::error::QueryError::OperatorAlreadyOpened);
-        }
 
-        self.child.open(ctx).await?;
-        self.skipped = 0;
-        self.state = OperatorState::Open;
-        Ok(())
+            self.child.open(ctx).await?;
+            self.skipped = 0;
+            self.state = OperatorState::Open;
+            Ok(())
+        }
+        .instrument(tracing::trace_span!("offset"))
+        .await
     }
 
     async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {

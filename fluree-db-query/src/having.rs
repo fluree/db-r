@@ -26,6 +26,7 @@ use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::Storage;
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// HAVING operator - filters rows after GROUP BY/aggregation
 ///
@@ -67,9 +68,13 @@ impl<S: Storage + 'static> Operator<S> for HavingOperator<S> {
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
-        self.child.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
+        async {
+            self.child.open(ctx).await?;
+            self.state = OperatorState::Open;
+            Ok(())
+        }
+        .instrument(tracing::trace_span!("having"))
+        .await
     }
 
     async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {

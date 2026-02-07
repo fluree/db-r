@@ -32,6 +32,7 @@ use fluree_db_core::Storage;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
+use tracing::Instrument;
 
 /// Type alias for a group entry: (group_key, rows_in_group)
 type GroupEntry = (Vec<Binding>, Vec<Vec<Binding>>);
@@ -148,11 +149,15 @@ impl<S: Storage + 'static> Operator<S> for GroupByOperator<S> {
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
-        self.child.open(ctx).await?;
-        self.state = OperatorState::Open;
-        self.groups.clear();
-        self.emit_iter = None;
-        Ok(())
+        async {
+            self.child.open(ctx).await?;
+            self.state = OperatorState::Open;
+            self.groups.clear();
+            self.emit_iter = None;
+            Ok(())
+        }
+        .instrument(tracing::trace_span!("group_by"))
+        .await
     }
 
     async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {

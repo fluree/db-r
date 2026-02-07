@@ -37,6 +37,7 @@ use async_trait::async_trait;
 use fluree_db_core::{StatsView, Storage};
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// Builder for correlated optional operators
 ///
@@ -654,18 +655,22 @@ impl<S: Storage + 'static> Operator<S> for OptionalOperator<S> {
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
+        async {
+            if !self.state.can_open() {
+                if self.state.is_closed() {
+                    return Err(QueryError::OperatorClosed);
+                }
+                return Err(QueryError::OperatorAlreadyOpened);
             }
-            return Err(QueryError::OperatorAlreadyOpened);
+
+            // Open required operator
+            self.required.open(ctx).await?;
+
+            self.state = OperatorState::Open;
+            Ok(())
         }
-
-        // Open required operator
-        self.required.open(ctx).await?;
-
-        self.state = OperatorState::Open;
-        Ok(())
+        .instrument(tracing::trace_span!("optional"))
+        .await
     }
 
     async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {

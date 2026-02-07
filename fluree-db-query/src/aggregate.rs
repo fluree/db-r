@@ -25,6 +25,7 @@ use fluree_db_core::{FlakeValue, Sid, Storage};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
+use tracing::Instrument;
 
 /// Aggregate function types
 #[derive(Debug, Clone, PartialEq)]
@@ -175,9 +176,13 @@ impl<S: Storage + 'static> Operator<S> for AggregateOperator<S> {
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
-        self.child.open(ctx).await?;
-        self.state = OperatorState::Open;
-        Ok(())
+        async {
+            self.child.open(ctx).await?;
+            self.state = OperatorState::Open;
+            Ok(())
+        }
+        .instrument(tracing::trace_span!("aggregate"))
+        .await
     }
 
     async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {

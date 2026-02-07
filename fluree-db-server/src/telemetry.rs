@@ -6,10 +6,10 @@
 use crate::config::ServerConfig;
 use std::env;
 #[cfg(feature = "otel")]
+use tracing_subscriber::filter::Targets;
+#[cfg(feature = "otel")]
 use tracing_subscriber::Layer;
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter};
-#[cfg(feature = "otel")]
-use tracing_subscriber::filter::Targets;
 
 /// Telemetry configuration
 #[derive(Debug, Clone)]
@@ -177,7 +177,11 @@ pub fn init_logging(config: &TelemetryConfig) {
 
             let subscriber = tracing_subscriber::registry()
                 .with(init_otel_layer(config).with_filter(otel_targets))
-                .with(tracing_subscriber::fmt::layer().compact().with_filter(filter));
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .compact()
+                        .with_filter(filter),
+                );
 
             let _ = tracing::dispatcher::set_global_default(tracing::Dispatch::new(subscriber));
             return;

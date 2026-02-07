@@ -21,6 +21,7 @@ use fluree_db_core::Storage;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// UNION operator - executes branches for each input row (correlated).
 pub struct UnionOperator<S: Storage + 'static> {
@@ -103,12 +104,16 @@ impl<S: Storage + 'static> Operator<S> for UnionOperator<S> {
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
-        self.child.open(ctx).await?;
-        self.state = OperatorState::Open;
-        self.output_buffer.clear();
-        self.current_input_batch = None;
-        self.current_input_row = 0;
-        Ok(())
+        async {
+            self.child.open(ctx).await?;
+            self.state = OperatorState::Open;
+            self.output_buffer.clear();
+            self.current_input_batch = None;
+            self.current_input_row = 0;
+            Ok(())
+        }
+        .instrument(tracing::trace_span!("union"))
+        .await
     }
 
     async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {

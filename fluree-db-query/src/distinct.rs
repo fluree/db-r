@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use fluree_db_core::Storage;
 use std::collections::HashSet;
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// Row signature type for deduplication
 /// `Binding` implements `Hash` and `Eq`, so `Vec<Binding>` can be used as a hash key.
@@ -71,17 +72,21 @@ impl<S: Storage + 'static> Operator<S> for DistinctOperator<S> {
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(crate::error::QueryError::OperatorClosed);
+        async {
+            if !self.state.can_open() {
+                if self.state.is_closed() {
+                    return Err(crate::error::QueryError::OperatorClosed);
+                }
+                return Err(crate::error::QueryError::OperatorAlreadyOpened);
             }
-            return Err(crate::error::QueryError::OperatorAlreadyOpened);
-        }
 
-        self.child.open(ctx).await?;
-        self.seen.clear();
-        self.state = OperatorState::Open;
-        Ok(())
+            self.child.open(ctx).await?;
+            self.seen.clear();
+            self.state = OperatorState::Open;
+            Ok(())
+        }
+        .instrument(tracing::trace_span!("distinct"))
+        .await
     }
 
     async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {

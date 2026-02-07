@@ -48,6 +48,7 @@ use fluree_vocab::namespaces::XSD;
 use fluree_vocab::xsd_names;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// Datatype match semantics for WHERE value objects.
 ///
@@ -1232,101 +1233,110 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
+        let span = tracing::trace_span!("scan");
+        async {
+            if !self.state.can_open() {
+                if self.state.is_closed() {
+                    return Err(QueryError::OperatorClosed);
+                }
+                return Err(QueryError::OperatorAlreadyOpened);
             }
-            return Err(QueryError::OperatorAlreadyOpened);
-        }
 
-        // Determine whether the binary cursor path can handle this query.
-        // Binary cursors require: store present, single-ledger, time within
-        // coverage, no history mode, no time-range queries.  Everything else
-        // falls back to range_with_overlay() which works for multi-ledger,
-        // pre-index, history, and time-travel-before-base_t via the
-        // RangeProvider trait.
-        let use_binary = ctx.binary_store.as_ref().is_some_and(|s| {
-            !ctx.is_multi_ledger()
-                && ctx.to_t >= s.base_t()
-                && !ctx.history_mode
-                && ctx.from_t.is_none()
-        });
-
-        tracing::trace!(
-            pattern = ?self.pattern,
-            use_binary,
-            has_overlay = ctx.overlay.is_some(),
-            to_t = ctx.to_t,
-            "ScanOperator::open"
-        );
-        if let Some(s) = ctx.binary_store.as_ref() {
-            tracing::trace!(
-                base_t = s.base_t(),
-                "ScanOperator::open: binary_store present"
-            );
-        }
-
-        // When the binary path is selected, create a DictOverlay for ephemeral
-        // ID resolution during both overlay translation and result decoding.
-        // If overlay exists, translate flakes to integer-ID space (infallible —
-        // ephemeral IDs are allocated for entities not in persisted dictionaries).
-        let (overlay_data, dict_overlay) = if use_binary && ctx.overlay.is_some() {
-            let store = ctx.binary_store.as_ref().unwrap().clone();
-            let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
-                Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
+            // Determine whether the binary cursor path can handle this query.
+            // Binary cursors require: store present, single-ledger, time within
+            // coverage, no history mode, no time-range queries.  Everything else
+            // falls back to range_with_overlay() which works for multi-ledger,
+            // pre-index, history, and time-travel-before-base_t via the
+            // RangeProvider trait.
+            let use_binary = ctx.binary_store.as_ref().is_some_and(|s| {
+                !ctx.is_multi_ledger()
+                    && ctx.to_t >= s.base_t()
+                    && !ctx.history_mode
+                    && ctx.from_t.is_none()
             });
-            let mut dict_ov = crate::dict_overlay::DictOverlay::new(store, dn);
-            let ops =
-                translate_overlay_flakes(ctx.overlay(), &mut dict_ov, ctx.to_t, ctx.binary_g_id);
+
             tracing::trace!(
-                overlay_ops = ops.len(),
-                g_id = ctx.binary_g_id,
-                "ScanOperator::open: translated overlay ops"
+                pattern = ?self.pattern,
+                use_binary,
+                has_overlay = ctx.overlay.is_some(),
+                to_t = ctx.to_t,
+                "ScanOperator::open"
             );
-            let epoch = ctx.overlay().epoch();
-            if ops.is_empty() {
-                (None, Some(dict_ov))
+            if let Some(s) = ctx.binary_store.as_ref() {
+                tracing::trace!(
+                    base_t = s.base_t(),
+                    "ScanOperator::open: binary_store present"
+                );
+            }
+
+            // When the binary path is selected, create a DictOverlay for ephemeral
+            // ID resolution during both overlay translation and result decoding.
+            // If overlay exists, translate flakes to integer-ID space (infallible —
+            // ephemeral IDs are allocated for entities not in persisted dictionaries).
+            let (overlay_data, dict_overlay) = if use_binary && ctx.overlay.is_some() {
+                let store = ctx.binary_store.as_ref().unwrap().clone();
+                let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
+                    Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
+                });
+                let mut dict_ov = crate::dict_overlay::DictOverlay::new(store, dn);
+                let ops = translate_overlay_flakes(
+                    ctx.overlay(),
+                    &mut dict_ov,
+                    ctx.to_t,
+                    ctx.binary_g_id,
+                );
+                tracing::trace!(
+                    overlay_ops = ops.len(),
+                    g_id = ctx.binary_g_id,
+                    "ScanOperator::open: translated overlay ops"
+                );
+                let epoch = ctx.overlay().epoch();
+                if ops.is_empty() {
+                    (None, Some(dict_ov))
+                } else {
+                    (Some((ops, epoch)), Some(dict_ov))
+                }
+            } else if use_binary {
+                let store = ctx.binary_store.as_ref().unwrap().clone();
+                let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
+                    Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
+                });
+                (None, Some(crate::dict_overlay::DictOverlay::new(store, dn)))
             } else {
-                (Some((ops, epoch)), Some(dict_ov))
-            }
-        } else if use_binary {
-            let store = ctx.binary_store.as_ref().unwrap().clone();
-            let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
-                Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
-            });
-            (None, Some(crate::dict_overlay::DictOverlay::new(store, dn)))
-        } else {
-            (None, None)
-        };
+                (None, None)
+            };
 
-        let mut inner: BoxedOperator<S> = if use_binary {
-            let store = ctx.binary_store.as_ref().unwrap().clone();
-            let mut op = BinaryScanOperator::new(
-                self.pattern.clone(),
-                store,
-                ctx.binary_g_id,
-                self.object_bounds.clone(),
-            );
-            if let Some((ops, epoch)) = overlay_data {
-                op.set_overlay(ops, epoch);
-            }
-            if let Some(dict_ov) = dict_overlay {
-                op.set_dict_overlay(dict_ov);
-            }
-            Box::new(op)
-        } else {
-            // Fallback: range_with_overlay() for pre-index, history, or
-            // time-travel-before-base_t queries.
-            Box::new(RangeScanOperator::<S>::new(
-                self.pattern.clone(),
-                self.object_bounds.clone(),
-            ))
-        };
+            let mut inner: BoxedOperator<S> = if use_binary {
+                let store = ctx.binary_store.as_ref().unwrap().clone();
+                let mut op = BinaryScanOperator::new(
+                    self.pattern.clone(),
+                    store,
+                    ctx.binary_g_id,
+                    self.object_bounds.clone(),
+                );
+                if let Some((ops, epoch)) = overlay_data {
+                    op.set_overlay(ops, epoch);
+                }
+                if let Some(dict_ov) = dict_overlay {
+                    op.set_dict_overlay(dict_ov);
+                }
+                Box::new(op)
+            } else {
+                // Fallback: range_with_overlay() for pre-index, history, or
+                // time-travel-before-base_t queries.
+                Box::new(RangeScanOperator::<S>::new(
+                    self.pattern.clone(),
+                    self.object_bounds.clone(),
+                ))
+            };
 
-        inner.open(ctx).await?;
-        self.inner = Some(inner);
-        self.state = OperatorState::Open;
-        Ok(())
+            inner.open(ctx).await?;
+            self.inner = Some(inner);
+            self.state = OperatorState::Open;
+            Ok(())
+        }
+        .instrument(span)
+        .await
     }
 
     async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {

@@ -19,6 +19,7 @@ use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
+use tracing::Instrument;
 
 /// Create a right-side scan operator for a join.
 ///
@@ -550,24 +551,31 @@ impl<S: Storage + 'static> Operator<S> for NestedLoopJoinOperator<S> {
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
-        if !self.state.can_open() {
-            if self.state.is_closed() {
-                return Err(QueryError::OperatorClosed);
+        async {
+            if !self.state.can_open() {
+                if self.state.is_closed() {
+                    return Err(QueryError::OperatorClosed);
+                }
+                return Err(QueryError::OperatorAlreadyOpened);
             }
-            return Err(QueryError::OperatorAlreadyOpened);
+
+            // Open left operator
+            self.left.open(ctx).await?;
+
+            // Reset state for fresh execution
+            self.pending_output.clear();
+            self.pending_right_row = 0;
+            self.current_left_batch = None;
+            self.current_left_row = 0;
+
+            self.state = OperatorState::Open;
+            Ok(())
         }
-
-        // Open left operator
-        self.left.open(ctx).await?;
-
-        // Reset state for fresh execution
-        self.pending_output.clear();
-        self.pending_right_row = 0;
-        self.current_left_batch = None;
-        self.current_left_row = 0;
-
-        self.state = OperatorState::Open;
-        Ok(())
+        .instrument(tracing::trace_span!(
+            "join",
+            batched = self.batched_eligible
+        ))
+        .await
     }
 
     async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
