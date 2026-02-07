@@ -14,6 +14,7 @@ use crate::{
     Tracker, TrackingOptions,
 };
 use fluree_db_query::execute::{execute_prepared, prepare_execution, ContextConfig};
+use tracing::Instrument;
 
 // ============================================================================
 // Query Execution
@@ -58,13 +59,21 @@ where
         let input = q.into();
 
         // 1. Parse to common IR
+        let input_format = match &input {
+            QueryInput::JsonLd(_) => "fql",
+            QueryInput::Sparql(_) => "sparql",
+        };
+        let parse_span = tracing::debug_span!("parse", input_format);
         let parse_start = std::time::Instant::now();
-        let (vars, parsed) = match &input {
-            QueryInput::JsonLd(json) => parse_jsonld_query(json, &view.db)?,
-            QueryInput::Sparql(sparql) => {
-                // Validate no dataset clauses
-                self.validate_sparql_for_view(sparql)?;
-                parse_sparql_to_ir(sparql, &view.db)?
+        let (vars, parsed) = {
+            let _guard = parse_span.enter();
+            match &input {
+                QueryInput::JsonLd(json) => parse_jsonld_query(json, &view.db)?,
+                QueryInput::Sparql(sparql) => {
+                    // Validate no dataset clauses
+                    self.validate_sparql_for_view(sparql)?;
+                    parse_sparql_to_ir(sparql, &view.db)?
+                }
             }
         };
         let parse_ms = parse_start.elapsed().as_secs_f64() * 1000.0;
@@ -174,28 +183,32 @@ where
         );
 
         // Format with tracking
-        let result_json = match view.policy() {
-            Some(policy) => query_result
-                .to_jsonld_async_with_policy_tracked(&view.db, policy, &tracker)
-                .await
-                .map_err(|e| {
-                    crate::query::TrackedErrorResponse::from_error(
-                        500,
-                        e.to_string(),
-                        tracker.tally(),
-                    )
-                })?,
-            None => query_result
-                .to_jsonld_async_tracked(&view.db, &tracker)
-                .await
-                .map_err(|e| {
-                    crate::query::TrackedErrorResponse::from_error(
-                        500,
-                        e.to_string(),
-                        tracker.tally(),
-                    )
-                })?,
-        };
+        let result_json = async {
+            match view.policy() {
+                Some(policy) => query_result
+                    .to_jsonld_async_with_policy_tracked(&view.db, policy, &tracker)
+                    .await
+                    .map_err(|e| {
+                        crate::query::TrackedErrorResponse::from_error(
+                            500,
+                            e.to_string(),
+                            tracker.tally(),
+                        )
+                    }),
+                None => query_result
+                    .to_jsonld_async_tracked(&view.db, &tracker)
+                    .await
+                    .map_err(|e| {
+                        crate::query::TrackedErrorResponse::from_error(
+                            500,
+                            e.to_string(),
+                            tracker.tally(),
+                        )
+                    }),
+            }
+        }
+        .instrument(tracing::debug_span!("format"))
+        .await?;
 
         Ok(crate::query::TrackedQueryResponse::success(
             result_json,
