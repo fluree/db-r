@@ -19,7 +19,10 @@ use crate::config::{ServerConfig, ServerRole};
 use crate::peer::{ForwardingClient, PeerState, ProxyNameService, ProxyStorage};
 use crate::registry::LedgerRegistry;
 use crate::telemetry::TelemetryConfig;
-use fluree_db_api::{Fluree, FlureeBuilder, IndexConfig, QueryConnectionOptions};
+use fluree_db_api::{
+    BackgroundIndexerWorker, Fluree, FlureeBuilder, IndexConfig, IndexerConfig, IndexingMode,
+    QueryConnectionOptions,
+};
 use fluree_db_connection::{Connection, ConnectionConfig};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -464,12 +467,18 @@ impl AppState {
             (None, None)
         };
 
+        let index_config = if config.indexing_enabled {
+            Some(IndexConfig::default())
+        } else {
+            None
+        };
+
         Ok(Self {
             fluree,
             config,
             telemetry_config,
             start_time: Instant::now(),
-            index_config: None,
+            index_config,
             registry,
             peer_state,
             forwarding_client,
@@ -478,6 +487,9 @@ impl AppState {
     }
 
     /// Create a file-backed Fluree instance
+    ///
+    /// When `config.indexing_enabled` is true, spawns a `BackgroundIndexerWorker`
+    /// and sets the indexing mode before wrapping in `Arc`.
     fn create_file_fluree(
         config: &ServerConfig,
     ) -> Result<FlureeInstance, fluree_db_api::ApiError> {
@@ -493,7 +505,21 @@ impl AppState {
             .cache_max_entries(config.cache_max_entries)
             .with_ledger_caching(); // Enable connection-level ledger caching
 
-        let fluree = builder.build()?;
+        let mut fluree = builder.build()?;
+
+        // Wire up background indexing (follows the pattern from fluree-db-ingest)
+        if config.indexing_enabled {
+            let indexer_config = IndexerConfig::default();
+            let (worker, handle) = BackgroundIndexerWorker::new(
+                fluree.storage().clone(),
+                Arc::new(fluree.nameservice().clone()),
+                indexer_config,
+            );
+            tokio::spawn(worker.run());
+            fluree.set_indexing_mode(IndexingMode::Background(handle));
+            tracing::info!("Background indexing enabled");
+        }
+
         Ok(FlureeInstance::File(Arc::new(fluree)))
     }
 
