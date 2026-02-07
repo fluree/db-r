@@ -334,7 +334,7 @@ pub fn eval_to_comparable_inner<S: Storage>(
 ) -> Result<Option<ComparableValue>> {
     match expr {
         Expression::Var(var) => match row.get(*var) {
-            Some(Binding::Lit { val, .. }) => Ok(ComparableValue::from_flake_value(val)),
+            Some(Binding::Lit { val, .. }) => Ok(ComparableValue::try_from(val).ok()),
             Some(Binding::EncodedLit {
                 o_kind,
                 o_key,
@@ -347,7 +347,7 @@ pub fn eval_to_comparable_inner<S: Storage>(
                 let val = store
                     .decode_value(*o_kind, *o_key, *p_id)
                     .map_err(|e| QueryError::Internal(format!("decode_value: {}", e)))?;
-                Ok(ComparableValue::from_flake_value(&val))
+                Ok(ComparableValue::try_from(&val).ok())
             }
             Some(Binding::Sid(sid)) => Ok(Some(ComparableValue::Sid(sid.clone()))),
             Some(Binding::IriMatch { iri, .. }) => Ok(Some(ComparableValue::Iri(Arc::clone(iri)))),

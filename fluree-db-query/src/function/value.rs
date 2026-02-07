@@ -30,6 +30,11 @@ pub enum ArithmeticError {
     TypeMismatch,
 }
 
+/// Error when converting a FlakeValue that has no ComparableValue equivalent
+#[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]
+#[error("cannot convert null value")]
+pub struct NullValueError;
+
 impl ArithmeticOp {
     /// Apply this arithmetic operation to two ComparableValue operands.
     ///
@@ -273,37 +278,64 @@ impl ComparableValue {
         }
     }
 
-    /// Convert a FlakeValue to a ComparableValue.
-    ///
-    /// Returns `None` for `FlakeValue::Null`.
-    pub fn from_flake_value(val: &FlakeValue) -> Option<ComparableValue> {
+}
+
+// =============================================================================
+// From implementations for primitive types
+// =============================================================================
+
+impl From<i64> for ComparableValue {
+    fn from(n: i64) -> Self {
+        ComparableValue::Long(n)
+    }
+}
+
+impl From<f64> for ComparableValue {
+    fn from(d: f64) -> Self {
+        ComparableValue::Double(d)
+    }
+}
+
+impl From<bool> for ComparableValue {
+    fn from(b: bool) -> Self {
+        ComparableValue::Bool(b)
+    }
+}
+
+impl From<String> for ComparableValue {
+    fn from(s: String) -> Self {
+        ComparableValue::String(Arc::from(s))
+    }
+}
+
+impl From<&str> for ComparableValue {
+    fn from(s: &str) -> Self {
+        ComparableValue::String(Arc::from(s))
+    }
+}
+
+impl From<Arc<str>> for ComparableValue {
+    fn from(s: Arc<str>) -> Self {
+        ComparableValue::String(s)
+    }
+}
+
+// =============================================================================
+// Conversions from FilterValue
+// =============================================================================
+
+impl From<FilterValue> for ComparableValue {
+    fn from(val: FilterValue) -> Self {
         match val {
-            FlakeValue::Long(n) => Some(ComparableValue::Long(*n)),
-            FlakeValue::Double(d) => Some(ComparableValue::Double(*d)),
-            FlakeValue::String(s) => Some(ComparableValue::String(Arc::from(s.as_str()))),
-            FlakeValue::Json(s) => Some(ComparableValue::String(Arc::from(s.as_str()))),
-            FlakeValue::Boolean(b) => Some(ComparableValue::Bool(*b)),
-            FlakeValue::Ref(sid) => Some(ComparableValue::Sid(sid.clone())),
-            FlakeValue::Null => None,
-            FlakeValue::Vector(v) => Some(ComparableValue::Vector(Arc::from(v.as_slice()))),
-            FlakeValue::BigInt(n) => Some(ComparableValue::BigInt(n.clone())),
-            FlakeValue::Decimal(d) => Some(ComparableValue::Decimal(d.clone())),
-            FlakeValue::DateTime(dt) => Some(ComparableValue::DateTime(dt.as_ref().clone())),
-            FlakeValue::Date(d) => Some(ComparableValue::Date(d.as_ref().clone())),
-            FlakeValue::Time(t) => Some(ComparableValue::Time(t.as_ref().clone())),
-            FlakeValue::GeoPoint(bits) => Some(ComparableValue::GeoPoint(*bits)),
-            FlakeValue::GYear(_)
-            | FlakeValue::GYearMonth(_)
-            | FlakeValue::GMonth(_)
-            | FlakeValue::GDay(_)
-            | FlakeValue::GMonthDay(_)
-            | FlakeValue::YearMonthDuration(_)
-            | FlakeValue::DayTimeDuration(_)
-            | FlakeValue::Duration(_) => Some(ComparableValue::TypedLiteral {
-                val: val.clone(),
+            FilterValue::Long(n) => ComparableValue::Long(n),
+            FilterValue::Double(d) => ComparableValue::Double(d),
+            FilterValue::String(s) => ComparableValue::String(Arc::from(s)),
+            FilterValue::Bool(b) => ComparableValue::Bool(b),
+            FilterValue::Temporal(fv) => ComparableValue::TypedLiteral {
+                val: fv,
                 dt_iri: None,
                 lang: None,
-            }),
+            },
         }
     }
 }
@@ -320,6 +352,105 @@ impl From<&FilterValue> for ComparableValue {
                 dt_iri: None,
                 lang: None,
             },
+        }
+    }
+}
+
+// =============================================================================
+// Conversions from FlakeValue
+// =============================================================================
+
+impl TryFrom<&FlakeValue> for ComparableValue {
+    type Error = NullValueError;
+
+    fn try_from(val: &FlakeValue) -> Result<Self, Self::Error> {
+        match val {
+            FlakeValue::Long(n) => Ok(ComparableValue::Long(*n)),
+            FlakeValue::Double(d) => Ok(ComparableValue::Double(*d)),
+            FlakeValue::String(s) => Ok(ComparableValue::String(Arc::from(s.as_str()))),
+            FlakeValue::Json(s) => Ok(ComparableValue::String(Arc::from(s.as_str()))),
+            FlakeValue::Boolean(b) => Ok(ComparableValue::Bool(*b)),
+            FlakeValue::Ref(sid) => Ok(ComparableValue::Sid(sid.clone())),
+            FlakeValue::Null => Err(NullValueError),
+            FlakeValue::Vector(v) => Ok(ComparableValue::Vector(Arc::from(v.as_slice()))),
+            FlakeValue::BigInt(n) => Ok(ComparableValue::BigInt(n.clone())),
+            FlakeValue::Decimal(d) => Ok(ComparableValue::Decimal(d.clone())),
+            FlakeValue::DateTime(dt) => Ok(ComparableValue::DateTime(dt.as_ref().clone())),
+            FlakeValue::Date(d) => Ok(ComparableValue::Date(d.as_ref().clone())),
+            FlakeValue::Time(t) => Ok(ComparableValue::Time(t.as_ref().clone())),
+            FlakeValue::GeoPoint(bits) => Ok(ComparableValue::GeoPoint(*bits)),
+            FlakeValue::GYear(_)
+            | FlakeValue::GYearMonth(_)
+            | FlakeValue::GMonth(_)
+            | FlakeValue::GDay(_)
+            | FlakeValue::GMonthDay(_)
+            | FlakeValue::YearMonthDuration(_)
+            | FlakeValue::DayTimeDuration(_)
+            | FlakeValue::Duration(_) => Ok(ComparableValue::TypedLiteral {
+                val: val.clone(),
+                dt_iri: None,
+                lang: None,
+            }),
+        }
+    }
+}
+
+impl TryFrom<FlakeValue> for ComparableValue {
+    type Error = NullValueError;
+
+    fn try_from(val: FlakeValue) -> Result<Self, Self::Error> {
+        match val {
+            FlakeValue::Long(n) => Ok(ComparableValue::Long(n)),
+            FlakeValue::Double(d) => Ok(ComparableValue::Double(d)),
+            FlakeValue::String(s) => Ok(ComparableValue::String(Arc::from(s))),
+            FlakeValue::Json(s) => Ok(ComparableValue::String(Arc::from(s))),
+            FlakeValue::Boolean(b) => Ok(ComparableValue::Bool(b)),
+            FlakeValue::Ref(sid) => Ok(ComparableValue::Sid(sid)),
+            FlakeValue::Null => Err(NullValueError),
+            FlakeValue::Vector(v) => Ok(ComparableValue::Vector(Arc::from(v))),
+            FlakeValue::BigInt(n) => Ok(ComparableValue::BigInt(n)),
+            FlakeValue::Decimal(d) => Ok(ComparableValue::Decimal(d)),
+            FlakeValue::DateTime(dt) => Ok(ComparableValue::DateTime(*dt)),
+            FlakeValue::Date(d) => Ok(ComparableValue::Date(*d)),
+            FlakeValue::Time(t) => Ok(ComparableValue::Time(*t)),
+            FlakeValue::GeoPoint(bits) => Ok(ComparableValue::GeoPoint(bits)),
+            val @ (FlakeValue::GYear(_)
+            | FlakeValue::GYearMonth(_)
+            | FlakeValue::GMonth(_)
+            | FlakeValue::GDay(_)
+            | FlakeValue::GMonthDay(_)
+            | FlakeValue::YearMonthDuration(_)
+            | FlakeValue::DayTimeDuration(_)
+            | FlakeValue::Duration(_)) => Ok(ComparableValue::TypedLiteral {
+                val,
+                dt_iri: None,
+                lang: None,
+            }),
+        }
+    }
+}
+
+// =============================================================================
+// Conversions to FlakeValue
+// =============================================================================
+
+impl From<ComparableValue> for FlakeValue {
+    fn from(val: ComparableValue) -> Self {
+        match val {
+            ComparableValue::Long(n) => FlakeValue::Long(n),
+            ComparableValue::Double(d) => FlakeValue::Double(d),
+            ComparableValue::String(s) => FlakeValue::String(s.to_string()),
+            ComparableValue::Bool(b) => FlakeValue::Boolean(b),
+            ComparableValue::Sid(sid) => FlakeValue::Ref(sid),
+            ComparableValue::Vector(v) => FlakeValue::Vector(v.to_vec()),
+            ComparableValue::BigInt(n) => FlakeValue::BigInt(n),
+            ComparableValue::Decimal(d) => FlakeValue::Decimal(d),
+            ComparableValue::DateTime(dt) => FlakeValue::DateTime(Box::new(dt)),
+            ComparableValue::Date(d) => FlakeValue::Date(Box::new(d)),
+            ComparableValue::Time(t) => FlakeValue::Time(Box::new(t)),
+            ComparableValue::GeoPoint(bits) => FlakeValue::GeoPoint(bits),
+            ComparableValue::Iri(s) => FlakeValue::String(s.to_string()),
+            ComparableValue::TypedLiteral { val, .. } => val,
         }
     }
 }
@@ -401,28 +532,75 @@ mod tests {
     }
 
     #[test]
-    fn test_from_flake_value() {
+    fn test_try_from_flake_value() {
+        // Reference conversion
         let fv = FlakeValue::Long(42);
-        let cv = ComparableValue::from_flake_value(&fv);
-        assert_eq!(cv, Some(ComparableValue::Long(42)));
+        let cv = ComparableValue::try_from(&fv);
+        assert_eq!(cv, Ok(ComparableValue::Long(42)));
 
+        // Owned conversion
+        let fv_owned = FlakeValue::Long(42);
+        let cv_owned = ComparableValue::try_from(fv_owned);
+        assert_eq!(cv_owned, Ok(ComparableValue::Long(42)));
+
+        // Null returns error
         let fv_null = FlakeValue::Null;
-        let cv_null = ComparableValue::from_flake_value(&fv_null);
-        assert_eq!(cv_null, None);
+        let cv_null = ComparableValue::try_from(&fv_null);
+        assert_eq!(cv_null, Err(NullValueError));
     }
 
     #[test]
     fn test_from_filter_value() {
+        // Reference conversion
         let fv = FilterValue::String("hello".to_string());
         let cv: ComparableValue = (&fv).into();
         assert_eq!(cv, ComparableValue::String(Arc::from("hello")));
+
+        // Owned conversion
+        let fv_owned = FilterValue::String("world".to_string());
+        let cv_owned: ComparableValue = fv_owned.into();
+        assert_eq!(cv_owned, ComparableValue::String(Arc::from("world")));
     }
 
     #[test]
     fn test_into_flake_value() {
+        // Reference conversion
         let cv = ComparableValue::Long(42);
         let fv: FlakeValue = (&cv).into();
         assert_eq!(fv, FlakeValue::Long(42));
+
+        // Owned conversion
+        let cv_owned = ComparableValue::Long(99);
+        let fv_owned: FlakeValue = cv_owned.into();
+        assert_eq!(fv_owned, FlakeValue::Long(99));
+    }
+
+    #[test]
+    fn test_from_primitives() {
+        // i64
+        let cv: ComparableValue = 42i64.into();
+        assert_eq!(cv, ComparableValue::Long(42));
+
+        // f64
+        let cv: ComparableValue = 2.5f64.into();
+        assert_eq!(cv, ComparableValue::Double(2.5));
+
+        // bool
+        let cv: ComparableValue = true.into();
+        assert_eq!(cv, ComparableValue::Bool(true));
+
+        // &str
+        let cv: ComparableValue = "hello".into();
+        assert_eq!(cv, ComparableValue::String(Arc::from("hello")));
+
+        // String
+        let cv: ComparableValue = String::from("world").into();
+        assert_eq!(cv, ComparableValue::String(Arc::from("world")));
+
+        // Arc<str>
+        let arc: Arc<str> = Arc::from("arc");
+        let cv: ComparableValue = arc.into();
+        assert_eq!(cv, ComparableValue::String(Arc::from("arc")));
     }
 
     #[test]
