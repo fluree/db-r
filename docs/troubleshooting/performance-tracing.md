@@ -461,6 +461,48 @@ make fresh
 | Full end-to-end | `make smoke` | All of the above |
 | Multi-cycle stress | `make cycle` | 3 full cycles, multiple `index_build` traces |
 
+## Analyzing Exported Traces
+
+Jaeger allows exporting traces as JSON files (click the download icon on any trace or search result). These exports are useful for offline analysis, sharing with teammates, and archiving evidence of performance issues.
+
+### Exporting from Jaeger
+
+1. Open Jaeger UI (`http://localhost:16686` or your deployment)
+2. Search for traces (by service, operation, duration, tags)
+3. Click the download/export icon to save as JSON
+
+### What's in the export
+
+The JSON file contains `data[].spans[]` with full span details: operation names, tags (key-value attributes), parent-child references, durations (in microseconds), and timestamps. Files range from ~100KB for a few traces to 50MB+ for large search exports.
+
+### Analyzing with Claude Code
+
+The repository includes a Claude Code slash command for trace analysis:
+
+```
+/jaeger-debug /path/to/traces.json "All traces show as 'request' — can't tell queries from transactions"
+```
+
+This command analyzes the export file using targeted Python scripts (to avoid loading the full JSON into context) and cross-references the results against the codebase instrumentation to produce a diagnosis with concrete code-level fix recommendations.
+
+### Manual analysis with Python
+
+For quick one-off checks without Claude Code, the Jaeger JSON structure is straightforward:
+
+```python
+import json
+
+with open("traces.json") as f:
+    data = json.load(f)
+
+for trace in data["data"]:
+    for span in trace["spans"]:
+        tags = {t["key"]: t["value"] for t in span.get("tags", [])}
+        print(f"{span['operationName']}  dur={span['duration']/1000:.1f}ms  {tags}")
+```
+
+Key fields: `operationName` (span name), `duration` (microseconds), `tags` (span attributes), `references` (parent-child links with `refType: "CHILD_OF"`).
+
 ## Related Documentation
 
 - [Telemetry and Logging](../operations/telemetry.md) -- OTEL configuration reference

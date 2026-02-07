@@ -96,6 +96,7 @@ Custom slash commands are available in `.claude/commands/`. Suggest these proact
 | `/preflight` | At session start. Checks git state, dead code annotations, and compiler warnings. |
 | `/validate [crate]` | Before committing. Runs fmt, clippy, and tests scoped to changes. |
 | `/pr-ready` | Before creating a PR. Full CI-parity validation. |
+| `/jaeger-debug <file> "problem"` | When analyzing a Jaeger trace export. Diagnoses tracing issues by analyzing the JSON file *and* the code that produced those traces. Uses Explore agents for code search to protect context. |
 
 `/docs-context` and `/branch-context` can be chained — each offers to invoke the other after completing its briefing.
 
