@@ -47,11 +47,31 @@ fn init_logging() {
         if std::env::var("OTEL_SERVICE_NAME").is_ok()
             && std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").is_ok()
         {
-            // IMPORTANT: attach OTEL layer first so its type is `Layer<Registry>`.
+            use tracing_subscriber::filter::Targets;
+            use tracing_subscriber::Layer;
+
+            // Per-layer filtering: OTEL layer only receives fluree_* spans,
+            // preventing hyper/tonic/tokio noise from overwhelming the exporter.
+            // Matches the server's pattern in telemetry.rs.
+            let otel_targets = Targets::new()
+                .with_target("fluree_ingest", tracing::Level::DEBUG)
+                .with_target("fluree_db_api", tracing::Level::DEBUG)
+                .with_target("fluree_db_query", tracing::Level::TRACE)
+                .with_target("fluree_db_transact", tracing::Level::DEBUG)
+                .with_target("fluree_db_indexer", tracing::Level::DEBUG)
+                .with_target("fluree_db_core", tracing::Level::DEBUG)
+                .with_target("fluree_db_ledger", tracing::Level::DEBUG)
+                .with_target("fluree_db_novelty", tracing::Level::DEBUG)
+                .with_target("fluree_db_connection", tracing::Level::DEBUG)
+                .with_target("fluree_db_nameservice", tracing::Level::DEBUG);
+
             let subscriber = tracing_subscriber::registry()
-                .with(init_otel_layer())
-                .with(filter)
-                .with(tracing_subscriber::fmt::layer().compact());
+                .with(init_otel_layer().with_filter(otel_targets))
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .compact()
+                        .with_filter(filter),
+                );
 
             let _ = tracing::dispatcher::set_global_default(tracing::Dispatch::new(subscriber));
             return;

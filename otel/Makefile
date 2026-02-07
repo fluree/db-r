@@ -26,6 +26,9 @@ PARSE_THREADS ?= 4
 STRESS_PRODUCTS ?= 50000
 STRESS_BATCH    ?= 500
 
+INGEST_ENTITIES ?= 10000
+INGEST_LEDGER   ?= ingest-test:main
+
 RUST_LOG   ?= info,fluree_db_query=debug,fluree_db_transact=debug,fluree_db_indexer=debug
 
 # ── Infrastructure lifecycle ─────────────────────────────────────────────────
@@ -103,7 +106,7 @@ server-logs: ## Tail server stdout/stderr
 
 # ── Scenarios ────────────────────────────────────────────────────────────────
 
-.PHONY: transact query index firehose smoke cycle stress
+.PHONY: transact query index firehose ingest smoke cycle stress
 
 transact: ## Minimal transaction scenarios (insert, upsert, update, turtle, SPARQL UPDATE)
 	./scripts/transact-smoke.sh $(BASE_URL) $(LEDGER)
@@ -117,6 +120,10 @@ index: ## Insert enough data to trigger indexing, then query indexed data
 firehose: generate ## Generate large dataset, bulk import via fluree-ingest
 	@if [ ! -x $(INGEST_BIN) ]; then echo "Binary not found: $(INGEST_BIN)"; echo "Run 'make build' first."; exit 1; fi
 	./scripts/firehose.sh $(INGEST_BIN) $(GEN_DIR) $(DATA_DIR)/storage-firehose $(ENTITIES) $(PARSE_THREADS)
+
+ingest: generate ## Bulk-import via fluree-ingest with OTEL tracing (no server needed)
+	@if [ ! -x $(INGEST_BIN) ]; then echo "Binary not found: $(INGEST_BIN)"; echo "Run 'make build' first."; exit 1; fi
+	./scripts/ingest-smoke.sh $(INGEST_BIN) $(GEN_DIR) $(DATA_DIR)/storage-ingest $(INGEST_ENTITIES) $(PARSE_THREADS) $(INGEST_LEDGER)
 
 smoke: ## Full cycle: seed, transact, query, index — end-to-end span waterfall
 	./scripts/seed-ledger.sh $(BASE_URL) $(LEDGER)
@@ -179,7 +186,9 @@ help: ## Show this help
 	@echo "  LEDGER=$(LEDGER)    Ledger alias"
 	@echo "  ENTITIES=$(ENTITIES)       Entity count for data generation"
 	@echo "  INDEXING=$(INDEXING)         Enable background indexing"
-	@echo "  PARSE_THREADS=$(PARSE_THREADS)      Parallel parse threads for firehose"
+	@echo "  PARSE_THREADS=$(PARSE_THREADS)      Parallel parse threads for firehose/ingest"
+	@echo "  INGEST_ENTITIES=$(INGEST_ENTITIES)    Entity count for ingest smoke test"
+	@echo "  INGEST_LEDGER=$(INGEST_LEDGER)  Ledger alias for ingest smoke test"
 	@echo "  RUST_LOG=...            Log filter (see README.md)"
 	@echo ""
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \

@@ -371,6 +371,26 @@ index_build (info)
     └── gc_delete_entries (debug)
 ```
 
+#### Span Tree (Bulk Import / fluree-ingest)
+
+Bulk import runs as a **standalone top-level trace** under the `fluree-ingest` service (no HTTP server involved). The import pipeline instruments all major phases:
+
+```
+bulk_import (info, alias)
+├── import_chunks (info, total_chunks, parse_threads)
+│   ├── [resolver thread: inherits parent context]
+│   ├── [ttl-parser-N threads: inherit parent context]
+│   └── commit + run generation log events
+├── import_index_build (info)
+│   ├── build_all_indexes (info)
+│   │   └── build_index (info, per order: SPOT, PSOT, POST, OPST)
+│   ├── import_cas_upload (debug)
+│   └── import_publish (debug)
+└── cleanup log events
+```
+
+The `import_chunks` span covers the parse+commit loop. Spawned threads (resolver, parse workers) and async tasks (dict upload, index build) inherit the parent span context so their work appears nested in the trace waterfall.
+
 ### Tracker-to-Span Bridge
 
 When tracked queries or transactions are executed (via the `/query` or `/transact` endpoints with tracking enabled), the `tracker_time` and `tracker_fuel` fields are recorded as deferred attributes on the `query_execute` and `transact_execute` spans. These values appear as span attributes in OTEL backends (Jaeger, Tempo, etc.), enabling correlation between the Tracker's fuel accounting and the span waterfall.

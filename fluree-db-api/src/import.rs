@@ -32,6 +32,7 @@ use fluree_db_nameservice::{NameService, Publisher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+use tracing::Instrument;
 
 // ============================================================================
 // Configuration
@@ -347,123 +348,128 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Publisher,
 {
-    let pipeline_start = Instant::now();
-    let _span = tracing::info_span!("bulk_import", alias = %alias).entered();
+    let span = tracing::info_span!("bulk_import", alias = %alias);
 
-    // ---- Discover chunks ----
-    let chunks = discover_chunks(import_path)?;
-    let total = chunks.len();
-    tracing::info!(chunks = total, path = %import_path.display(), "discovered import chunks");
+    async {
+        let pipeline_start = Instant::now();
 
-    // ---- Phase 1: Create ledger (init nameservice) ----
-    let normalized_alias =
-        fluree_db_core::alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
+        // ---- Discover chunks ----
+        let chunks = discover_chunks(import_path)?;
+        let total = chunks.len();
+        tracing::info!(chunks = total, path = %import_path.display(), "discovered import chunks");
 
-    // Check if ledger already exists
-    let ns_record = nameservice
-        .lookup(&normalized_alias)
-        .await
-        .map_err(|e| ImportError::Storage(e.to_string()))?;
+        // ---- Phase 1: Create ledger (init nameservice) ----
+        let normalized_alias =
+            fluree_db_core::alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
 
-    if let Some(ref record) = ns_record {
-        if record.commit_t > 0 || record.commit_address.is_some() {
-            return Err(ImportError::Transact(format!(
-                "import requires a fresh ledger, but '{}' already has commits (t={})",
-                normalized_alias, record.commit_t
-            )));
-        }
-    }
-
-    if ns_record.is_none() {
-        nameservice
-            .publish_ledger_init(&normalized_alias)
+        // Check if ledger already exists
+        let ns_record = nameservice
+            .lookup(&normalized_alias)
             .await
             .map_err(|e| ImportError::Storage(e.to_string()))?;
-        tracing::info!(alias = %normalized_alias, "initialized new ledger in nameservice");
-    }
 
-    // ---- Set up session directory for runs/indexes ----
-    let alias_prefix = fluree_db_core::address_path::alias_to_path_prefix(&normalized_alias)
-        .unwrap_or_else(|_| normalized_alias.replace(':', "/"));
+        if let Some(ref record) = ns_record {
+            if record.commit_t > 0 || record.commit_address.is_some() {
+                return Err(ImportError::Transact(format!(
+                    "import requires a fresh ledger, but '{}' already has commits (t={})",
+                    normalized_alias, record.commit_t
+                )));
+            }
+        }
 
-    // Derive session dir from storage's data directory.
-    // For file storage: {data_dir}/{alias_path}/tmp_import/{session_id}/
-    let sid = session_id();
-    let session_dir = derive_session_dir(storage, &alias_prefix, &sid);
-    let run_dir = session_dir.join("runs");
-    let index_dir = session_dir.join("index");
-    std::fs::create_dir_all(&run_dir)?;
+        if ns_record.is_none() {
+            nameservice
+                .publish_ledger_init(&normalized_alias)
+                .await
+                .map_err(|e| ImportError::Storage(e.to_string()))?;
+            tracing::info!(alias = %normalized_alias, "initialized new ledger in nameservice");
+        }
 
-    tracing::info!(
-        session_dir = %session_dir.display(),
-        run_dir = %run_dir.display(),
-        "import session directory created"
-    );
+        // ---- Set up session directory for runs/indexes ----
+        let alias_prefix = fluree_db_core::address_path::alias_to_path_prefix(&normalized_alias)
+            .unwrap_or_else(|_| normalized_alias.replace(':', "/"));
 
-    // ---- Phases 2-6: Import, build, upload, publish ----
-    // Wrapped in a helper to ensure cleanup semantics:
-    // - On success + cleanup_local_files=true → delete session dir
-    // - On any failure → keep session dir for debugging
-    // - If cleanup itself fails → log warning, do not fail import
-    let paths = PipelinePaths {
-        run_dir: &run_dir,
-        index_dir: &index_dir,
-    };
-    let pipeline_result = run_pipeline_phases(
-        storage,
-        nameservice,
-        &normalized_alias,
-        &chunks,
-        paths,
-        config,
-        pipeline_start,
-    )
-    .await;
+        // Derive session dir from storage's data directory.
+        // For file storage: {data_dir}/{alias_path}/tmp_import/{session_id}/
+        let sid = session_id();
+        let session_dir = derive_session_dir(storage, &alias_prefix, &sid);
+        let run_dir = session_dir.join("runs");
+        let index_dir = session_dir.join("index");
+        std::fs::create_dir_all(&run_dir)?;
 
-    match pipeline_result {
-        Ok(result) => {
-            // ---- Cleanup: only on full success ----
-            if config.cleanup_local_files {
-                if let Err(e) = std::fs::remove_dir_all(&session_dir) {
-                    tracing::warn!(
-                        session_dir = %session_dir.display(),
-                        error = %e,
-                        "failed to clean up import session directory (import succeeded)"
-                    );
+        tracing::info!(
+            session_dir = %session_dir.display(),
+            run_dir = %run_dir.display(),
+            "import session directory created"
+        );
+
+        // ---- Phases 2-6: Import, build, upload, publish ----
+        // Wrapped in a helper to ensure cleanup semantics:
+        // - On success + cleanup_local_files=true → delete session dir
+        // - On any failure → keep session dir for debugging
+        // - If cleanup itself fails → log warning, do not fail import
+        let paths = PipelinePaths {
+            run_dir: &run_dir,
+            index_dir: &index_dir,
+        };
+        let pipeline_result = run_pipeline_phases(
+            storage,
+            nameservice,
+            &normalized_alias,
+            &chunks,
+            paths,
+            config,
+            pipeline_start,
+        )
+        .await;
+
+        match pipeline_result {
+            Ok(result) => {
+                // ---- Cleanup: only on full success ----
+                if config.cleanup_local_files {
+                    if let Err(e) = std::fs::remove_dir_all(&session_dir) {
+                        tracing::warn!(
+                            session_dir = %session_dir.display(),
+                            error = %e,
+                            "failed to clean up import session directory (import succeeded)"
+                        );
+                    } else {
+                        tracing::info!(
+                            session_dir = %session_dir.display(),
+                            "import session directory cleaned up"
+                        );
+                    }
                 } else {
                     tracing::info!(
                         session_dir = %session_dir.display(),
-                        "import session directory cleaned up"
+                        "cleanup disabled; import artifacts retained"
                     );
                 }
-            } else {
+
+                let total_elapsed = pipeline_start.elapsed();
                 tracing::info!(
-                    session_dir = %session_dir.display(),
-                    "cleanup disabled; import artifacts retained"
+                    alias = %normalized_alias,
+                    t = result.t,
+                    flakes = result.flake_count,
+                    root_address = ?result.root_address,
+                    elapsed = ?total_elapsed,
+                    "bulk import pipeline complete"
                 );
+
+                Ok(result)
             }
-
-            let total_elapsed = pipeline_start.elapsed();
-            tracing::info!(
-                alias = %normalized_alias,
-                t = result.t,
-                flakes = result.flake_count,
-                root_address = ?result.root_address,
-                elapsed = ?total_elapsed,
-                "bulk import pipeline complete"
-            );
-
-            Ok(result)
-        }
-        Err(e) => {
-            tracing::warn!(
-                session_dir = %session_dir.display(),
-                error = %e,
-                "import failed; keeping session directory for debugging"
-            );
-            Err(e)
+            Err(e) => {
+                tracing::warn!(
+                    session_dir = %session_dir.display(),
+                    error = %e,
+                    "import failed; keeping session directory for debugging"
+                );
+                Err(e)
+            }
         }
     }
+    .instrument(span)
+    .await
 }
 
 // ============================================================================
@@ -510,8 +516,16 @@ where
     N: NameService + Publisher,
 {
     // ---- Phase 2: Import TTL → commits + streaming runs ----
-    let import_result =
-        run_import_chunks(storage, nameservice, alias, chunks, paths.run_dir, config).await?;
+    let total_chunks = chunks.len();
+    let import_result = async {
+        run_import_chunks(storage, nameservice, alias, chunks, paths.run_dir, config).await
+    }
+    .instrument(tracing::info_span!(
+        "import_chunks",
+        total_chunks,
+        parse_threads = config.parse_threads,
+    ))
+    .await?;
 
     tracing::info!(
         t = import_result.final_t,
@@ -533,16 +547,20 @@ where
             namespace_codes: &import_result.namespace_codes,
             stats_hook: import_result.stats_hook,
         };
-        let index_result = build_and_upload(
-            storage,
-            nameservice,
-            alias,
-            build_input,
-            config,
-            import_result.total_commit_size,
-            import_result.total_asserts,
-            import_result.total_retracts,
-        )
+        let index_result = async {
+            build_and_upload(
+                storage,
+                nameservice,
+                alias,
+                build_input,
+                config,
+                import_result.total_commit_size,
+                import_result.total_asserts,
+                import_result.total_retracts,
+            )
+            .await
+        }
+        .instrument(tracing::info_span!("import_index_build"))
         .await?;
 
         root_address = Some(index_result.root_address);
@@ -625,10 +643,12 @@ where
     let (run_tx, rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, String)>(2);
 
     let run_dir_clone = run_dir.to_path_buf();
+    let resolver_parent_span = tracing::Span::current();
     let resolver_handle: std::thread::JoinHandle<std::result::Result<RunGenerationResult, String>> =
         std::thread::Builder::new()
             .name("run-resolver".into())
             .spawn(move || {
+                let _guard = resolver_parent_span.enter();
                 // Singleton 1: GlobalDicts (file-backed subjects + strings in run_dir)
                 let mut dicts =
                     GlobalDicts::new(&run_dir_clone).map_err(|e| format!("init dicts: {}", e))?;
@@ -779,6 +799,7 @@ where
         >(num_threads * 2);
 
         // Spawn parse worker threads
+        let parse_parent_span = tracing::Span::current();
         let mut parse_handles = Vec::with_capacity(num_threads);
         for thread_idx in 0..num_threads {
             let next_chunk = Arc::clone(&next_chunk);
@@ -786,35 +807,39 @@ where
             let base_registry = base_registry.clone();
             let ledger = ledger.clone();
             let chunks: Vec<PathBuf> = chunks.to_vec();
+            let thread_span = parse_parent_span.clone();
 
             let handle = std::thread::Builder::new()
                 .name(format!("ttl-parser-{}", thread_idx))
-                .spawn(move || loop {
-                    let idx = next_chunk.fetch_add(1, Ordering::Relaxed);
-                    if idx >= chunks.len() {
-                        break;
-                    }
-
-                    let ttl = match std::fs::read_to_string(&chunks[idx]) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            let _ =
-                                result_tx.send(Err(format!("failed to read chunk {}: {}", idx, e)));
+                .spawn(move || {
+                    let _guard = thread_span.enter();
+                    loop {
+                        let idx = next_chunk.fetch_add(1, Ordering::Relaxed);
+                        if idx >= chunks.len() {
                             break;
                         }
-                    };
 
-                    let t = (idx + 1) as i64;
-                    match parse_chunk(&ttl, base_registry.clone(), t, &ledger, compress) {
-                        Ok(parsed) => {
-                            if result_tx.send(Ok((idx, parsed))).is_err() {
+                        let ttl = match std::fs::read_to_string(&chunks[idx]) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                let _ = result_tx
+                                    .send(Err(format!("failed to read chunk {}: {}", idx, e)));
                                 break;
                             }
-                        }
-                        Err(e) => {
-                            let _ =
-                                result_tx.send(Err(format!("parse chunk {} failed: {}", idx, e)));
-                            break;
+                        };
+
+                        let t = (idx + 1) as i64;
+                        match parse_chunk(&ttl, base_registry.clone(), t, &ledger, compress) {
+                            Ok(parsed) => {
+                                if result_tx.send(Ok((idx, parsed))).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                let _ = result_tx
+                                    .send(Err(format!("parse chunk {} failed: {}", idx, e)));
+                                break;
+                            }
                         }
                     }
                 })
@@ -1063,15 +1088,21 @@ where
         let alias = alias.to_string();
         let run_dir = input.run_dir.to_path_buf();
         let namespace_codes = input.namespace_codes.clone();
-        tokio::spawn(async move {
-            upload_dicts_from_disk(&storage, &alias, &run_dir, &namespace_codes).await
-        })
+        let dict_span = tracing::Span::current();
+        tokio::spawn(
+            async move {
+                upload_dicts_from_disk(&storage, &alias, &run_dir, &namespace_codes).await
+            }
+            .instrument(dict_span),
+        )
     };
 
     // Start index build (k-way merge + leaf/branch file writes).
     let run_dir_owned = input.run_dir.to_path_buf();
     let index_dir_owned = input.index_dir.to_path_buf();
+    let build_span = tracing::Span::current();
     let build_results = tokio::task::spawn_blocking(move || {
+        let _guard = build_span.enter();
         build_all_indexes(
             &run_dir_owned,
             &index_dir_owned,
@@ -1102,7 +1133,8 @@ where
 
     // Upload index segments to CAS (needs build_results).
     // Dict upload may still be running — we overlap with it.
-    let graph_addresses = upload_indexes_to_cas(storage, alias, &build_results)
+    let graph_addresses = async { upload_indexes_to_cas(storage, alias, &build_results).await }
+        .instrument(tracing::debug_span!("import_cas_upload"))
         .await
         .map_err(|e| ImportError::Upload(e.to_string()))?;
 
@@ -1316,15 +1348,20 @@ where
 
     // ---- Phase 6: Publish ----
     if config.publish {
-        nameservice
-            .publish_index(alias, &write_result.address, input.final_t)
-            .await
-            .map_err(|e| ImportError::Storage(format!("publish index: {}", e)))?;
-        tracing::info!(
-            index_t = input.final_t,
-            root_address = %write_result.address,
-            "index published to nameservice"
-        );
+        async {
+            nameservice
+                .publish_index(alias, &write_result.address, input.final_t)
+                .await
+                .map_err(|e| ImportError::Storage(format!("publish index: {}", e)))?;
+            tracing::info!(
+                index_t = input.final_t,
+                root_address = %write_result.address,
+                "index published to nameservice"
+            );
+            Ok::<(), ImportError>(())
+        }
+        .instrument(tracing::debug_span!("import_publish"))
+        .await?;
     }
 
     Ok(IndexUploadResult {

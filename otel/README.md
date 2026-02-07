@@ -49,6 +49,7 @@ make ui
 | `make query` | FQL select/filter/sort, SPARQL basic/OPTIONAL/GROUP BY | `query_execute` > `query_prepare` > `query_run` > operators |
 | `make index` | 500-entity burst to trigger background indexing | `index_build` > `build_all_indexes` > `build_index` |
 | `make firehose` | Bulk import 100K+ entities via fluree-ingest | Ingest spans, commit spans, indexing spans |
+| `make ingest` | Standalone import with OTEL tracing (no server) | `bulk_import` > `import_chunks` > `import_index_build` |
 | `make smoke` | Full cycle: seed + transact + query + index | End-to-end span waterfall |
 | `make stress` | 50K inserts with backpressure + expensive query battery | Operator bottlenecks, `index_gc` with child spans, backpressure retries |
 | `make cycle` | 3x full cycle — triggers multiple index rebuilds | Sustained trace patterns |
@@ -81,6 +82,8 @@ make server INDEXING=false         # Disable background indexing
 make firehose PARSE_THREADS=8     # More parallel parse threads
 make server RUST_LOG=info,fluree_db_query=trace  # Custom log level
 make stress STRESS_PRODUCTS=10000 STRESS_BATCH=200  # Smaller stress test
+make ingest INGEST_ENTITIES=50000                  # More data for ingest smoke test
+make ingest INGEST_LEDGER=mytest:main              # Custom ledger name
 ```
 
 ## RUST_LOG Patterns
@@ -110,6 +113,7 @@ otel/
 │   ├── query-smoke.sh      # Query scenario
 │   ├── index-smoke.sh      # Indexing scenario
 │   ├── firehose.sh         # High-volume ingest
+│   ├── ingest-smoke.sh     # Standalone OTEL ingest (no server)
 │   ├── stress-test.sh      # 50K inserts + backpressure + query battery
 │   └── full-cycle.sh       # Combined scenario
 └── _data/                  # gitignored; created at runtime
