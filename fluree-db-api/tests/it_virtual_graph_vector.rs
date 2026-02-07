@@ -232,14 +232,14 @@ async fn vector_sync_indexes_new_documents() {
     assert_eq!(idx.len(), 3, "loaded index should have 3 vectors");
 }
 
-/// Test vector index snapshot history for time-travel
+/// Test vector index sync updates head snapshot (head-only, no time-travel)
 #[tokio::test]
-async fn vector_snapshot_history_enables_time_travel() {
+async fn vector_sync_updates_head_snapshot() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Create ledger with initial doc
     // NOTE: Embeddings must use @type: f:vector to avoid RDF deduplication
-    let alias = "vector/timetravel:main";
+    let alias = "vector/headonly:main";
     let ledger0 = support::genesis_ledger(&fluree, alias);
     let tx1 = json!({
         "@context": {
@@ -264,10 +264,14 @@ async fn vector_snapshot_history_enables_time_travel() {
         "select": { "?x": ["@id", "ex:embedding"] }
     });
 
-    let cfg = VectorCreateConfig::new("timetravel-test", alias, query, "ex:embedding", 3);
+    let cfg = VectorCreateConfig::new("headonly-test", alias, query, "ex:embedding", 3);
     let created = fluree.create_vector_index(cfg).await.unwrap();
     assert_eq!(created.vector_count, 1);
     assert_eq!(created.index_t, t1);
+
+    // Load head — should have 1 vector
+    let idx = fluree.load_vector_index(&created.vg_alias).await.unwrap();
+    assert_eq!(idx.len(), 1, "head index should have 1 vector after create");
 
     // Add more documents
     let tx2 = json!({
@@ -286,25 +290,13 @@ async fn vector_snapshot_history_enables_time_travel() {
     let ledger2 = fluree.insert(ledger1, &tx2).await.unwrap().ledger;
     let t2 = ledger2.t();
 
-    // Sync to create snapshot at t2
+    // Sync to update head
     let synced = fluree.sync_vector_index(&created.vg_alias).await.unwrap();
     assert_eq!(synced.new_watermark, t2);
 
-    // Load at t1 (should have 1 vector)
-    let (idx_t1, loaded_t1) = fluree
-        .load_vector_index_at(&created.vg_alias, t1)
-        .await
-        .unwrap();
-    assert_eq!(loaded_t1, t1);
-    assert_eq!(idx_t1.len(), 1, "index at t1 should have 1 vector");
-
-    // Load at t2 (should have 2 vectors)
-    let (idx_t2, loaded_t2) = fluree
-        .load_vector_index_at(&created.vg_alias, t2)
-        .await
-        .unwrap();
-    assert_eq!(loaded_t2, t2);
-    assert_eq!(idx_t2.len(), 2, "index at t2 should have 2 vectors");
+    // Load head again — should now have 2 vectors
+    let idx = fluree.load_vector_index(&created.vg_alias).await.unwrap();
+    assert_eq!(idx.len(), 2, "head index should have 2 vectors after sync");
 }
 
 /// Test drop_vector_index marks VG as retracted
@@ -488,8 +480,7 @@ async fn vector_provider_integration() {
             }
         ]
     });
-    let ledger = fluree.insert(ledger0, &tx).await.unwrap().ledger;
-    let t = ledger.t();
+    let _ledger = fluree.insert(ledger0, &tx).await.unwrap().ledger;
 
     // Create vector index
     let query = json!({
@@ -505,8 +496,8 @@ async fn vector_provider_integration() {
     let provider = FlureeIndexProvider::new(&fluree);
     let query_vector = [0.85, 0.15, 0.0];
 
-    let params =
-        VectorSearchParams::new(&query_vector, DistanceMetric::Cosine, 10).with_as_of_t(Some(t));
+    // Vector indexes are head-only (no time-travel), so as_of_t must be None
+    let params = VectorSearchParams::new(&query_vector, DistanceMetric::Cosine, 10);
 
     let results = provider.search(&created.vg_alias, params).await.unwrap();
 

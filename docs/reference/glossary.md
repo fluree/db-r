@@ -197,11 +197,9 @@ Graph sources include:
 
 ### Virtual Graph
 
-A legacy/compatibility term for non-ledger graph sources.
+In code and some docs, “virtual graph” refers to a non-ledger graph source: a queryable data source that appears in graph queries but is backed by specialized storage (BM25 index, vector index, Iceberg table, SQL database).
 
-Historically, Fluree used “virtual graph” to mean: “a queryable data source that appears in graph queries but is backed by specialized storage (BM25 index, vector index, Iceberg table, SQL database).”
-
-New docs prefer the umbrella term **Graph Source** and use “virtual graph” only when referring to existing nameservice records/APIs that still use VG naming.
+This documentation prefers the umbrella term **Graph Source**.
 
 Example: `products-search:main`, `products-vector:main`
 

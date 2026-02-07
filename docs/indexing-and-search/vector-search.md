@@ -14,9 +14,10 @@ Vector search is implemented using embedded [usearch](https://github.com/unum-cl
 - Embedded in-process HNSW indexes (no external service required)
 - Remote mode via dedicated search service (`fluree-search-httpd`)
 - Snapshot-based persistence with watermarks
-- Time-travel query support via `as_of_t`
 - Incremental sync for efficient updates
 - Feature-gated via `vector` feature flag
+
+**v1 limitation**: Vector search is **head-only**. Time-travel queries (e.g. requests with `as_of_t` / `@t:`) are not supported and should return an explicit error.
 
 ## Important: Embedding Storage Format
 
@@ -232,13 +233,13 @@ if check.is_stale {
 fluree.drop_vector_index("doc-embeddings:main").await?;
 ```
 
-## Time-Travel Queries
+## Time Travel (not supported in v1)
 
-Vector search supports time-travel via snapshot history:
+Vector search is head-only in v1 and does not maintain a snapshot history manifest.
 
 ```rust
-// Load index at specific point in time
-let (index, index_t) = fluree.load_vector_index_at("embeddings:main", target_t).await?;
+// v1: time-travel is not supported for vector indexes
+// Any "as of t" request should return an explicit error.
 
 // Use idx:sync in queries to ensure index is up-to-date
 {
@@ -366,7 +367,6 @@ The remote search service uses a JSON-based protocol. Vector queries use the `"v
     "metric": "cosine"
   },
   "limit": 10,
-  "as_of_t": 150,
   "sync": false,
   "timeout_ms": 5000
 }
@@ -389,7 +389,6 @@ The remote search service uses a JSON-based protocol. Vector queries use the `"v
 Both embedded and remote modes use identical:
 - Distance metric computation
 - Score normalization (higher = better)
-- Time-travel and sync semantics
 - Snapshot serialization format
 
 This ensures queries return identical results regardless of deployment mode. You can switch between modes without any data migration.

@@ -34,10 +34,12 @@ pub struct SearchRequest {
     #[serde(default = "default_limit")]
     pub limit: usize,
 
-    /// Target transaction time for time-travel queries.
+    /// Target transaction time for time-travel queries (BM25 only).
     ///
     /// - `Some(t)`: Search snapshot with watermark <= t
     /// - `None`: Search latest available snapshot
+    ///
+    /// **Note:** Vector indexes are head-only and reject `as_of_t`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub as_of_t: Option<i64>,
 

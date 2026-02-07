@@ -28,10 +28,17 @@
 
 - [Concepts](concepts/README.md)
   - [Ledgers and the nameservice](concepts/ledgers-and-nameservice.md)
+  - [Graph sources (virtual graphs)](concepts/virtual-graphs.md)
   - [IRIs, namespaces, and JSON-LD @context](concepts/iri-and-context.md)
   - [Datatypes and typed values](concepts/datatypes.md)
   - [Datasets and named graphs](concepts/datasets-and-named-graphs.md)
   - [Time travel](concepts/time-travel.md)
+
+- [Design](design/README.md)
+  - [Nameservice schema v2](design/nameservice-schema-v2.md)
+  - [Virtual graph index manifests](design/virtual-graph-index-manifests.md)
+  - [Index format](design/index-format.md)
+  - [Storage traits](design/storage-traits.md)
 
 - [HTTP API (fluree-db-server)](api/README.md)
   - [Overview](api/overview.md)

@@ -104,13 +104,12 @@ where
     ) -> QueryResult<Arc<Bm25Index>> {
         use fluree_db_query::bm25::deserialize;
 
-        // Look up snapshot history
-        let history = self
+        // Load BM25 manifest from CAS
+        let manifest = self
             .fluree
-            .nameservice()
-            .lookup_vg_snapshots(vg_alias)
+            .load_or_create_bm25_manifest(vg_alias)
             .await
-            .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?;
+            .map_err(|e| QueryError::Internal(format!("Manifest load error: {}", e)))?;
 
         // Try to select best snapshot for as_of_t.
         //
@@ -120,14 +119,14 @@ where
         let as_of_label = as_of_t
             .map(|t| t.to_string())
             .unwrap_or_else(|| "latest".to_string());
-        let selection = history.select_snapshot(effective_as_of_t);
+        let selection = manifest.select_snapshot(effective_as_of_t);
 
         // If we have a suitable snapshot, load and return it
         if let Some(entry) = selection {
             let bytes = self
                 .fluree
                 .storage()
-                .read_bytes(&entry.index_address)
+                .read_bytes(&entry.snapshot_address)
                 .await
                 .map_err(|e| QueryError::Internal(format!("Storage error: {}", e)))?;
 
@@ -148,27 +147,26 @@ where
         if sync {
             let _ = timeout_ms; // reserved for future commit-delta based sync with timeout
 
-            // Sync to head (which will create a new snapshot in history)
+            // Sync to head (which will create a new snapshot in the manifest)
             self.fluree
                 .sync_bm25_index(vg_alias)
                 .await
                 .map_err(|e| QueryError::Internal(format!("Sync error: {}", e)))?;
 
-            // Re-lookup snapshot history after sync
-            let history = self
+            // Re-load manifest after sync
+            let manifest = self
                 .fluree
-                .nameservice()
-                .lookup_vg_snapshots(vg_alias)
+                .load_or_create_bm25_manifest(vg_alias)
                 .await
-                .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?;
+                .map_err(|e| QueryError::Internal(format!("Manifest load error: {}", e)))?;
 
-            let selection = history.select_snapshot(effective_as_of_t);
+            let selection = manifest.select_snapshot(effective_as_of_t);
 
             if let Some(entry) = selection {
                 let bytes = self
                     .fluree
                     .storage()
-                    .read_bytes(&entry.index_address)
+                    .read_bytes(&entry.snapshot_address)
                     .await
                     .map_err(|e| QueryError::Internal(format!("Storage error: {}", e)))?;
 
@@ -185,7 +183,6 @@ where
                 return Ok(Arc::new(index));
             }
 
-            // Still no snapshot - the target_t might be earlier than any snapshot
             return Err(QueryError::InvalidQuery(format!(
                 "No BM25 snapshot available for {} at t={}. The earliest snapshot may be later than requested.",
                 vg_alias, as_of_label
@@ -193,11 +190,10 @@ where
         }
 
         // No sync requested and no suitable snapshot
-        // Provide a helpful error message based on the history
-        let available = if let Some(head) = history.head() {
+        let available = if let Some(head) = manifest.head() {
             format!(
                 " Available snapshots: earliest t={}, latest t={}.",
-                history.snapshots.first().map(|s| s.index_t).unwrap_or(0),
+                manifest.snapshots.first().map(|s| s.index_t).unwrap_or(0),
                 head.index_t
             )
         } else {
@@ -419,10 +415,10 @@ where
     S: Storage + StorageWrite + Clone + Send + Sync + 'static,
     N: NameService + Publisher + VirtualGraphPublisher + Send + Sync,
 {
-    /// Embedded vector search implementation.
+    /// Embedded vector search implementation (head-only).
     ///
-    /// Loads the vector index snapshot from storage and performs similarity
-    /// search in-process using the embedded vector index.
+    /// Vector indexes do not support time-travel. Loads the head snapshot
+    /// from nameservice and performs similarity search in-process.
     async fn search_vector_embedded(
         &self,
         vg_alias: &str,
@@ -432,138 +428,96 @@ where
 
         let _ = params.timeout_ms; // Reserved for future use
 
-        // Look up snapshot history
-        let history = self
-            .fluree
-            .nameservice()
-            .lookup_vg_snapshots(vg_alias)
-            .await
-            .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?;
-
-        // Try to select best snapshot for as_of_t (or latest if None)
-        let selection = match params.as_of_t {
-            Some(t) => history.select_snapshot(t),
-            None => history.head(),
-        };
-
-        // If we have a suitable snapshot, load and search
-        if let Some(entry) = selection {
-            let bytes = self
-                .fluree
-                .storage()
-                .read_bytes(&entry.index_address)
-                .await
-                .map_err(|e| QueryError::Internal(format!("Storage error: {}", e)))?;
-
-            let index = deserialize(&bytes)
-                .map_err(|e| QueryError::Internal(format!("Deserialize error: {}", e)))?;
-
-            // Check metric compatibility
-            if index.metadata.metric != params.metric {
-                return Err(QueryError::InvalidQuery(format!(
-                    "Vector index '{}' uses {:?} metric, but query requested {:?}",
-                    vg_alias, index.metadata.metric, params.metric
-                )));
-            }
-
-            debug!(
-                vg_alias = %vg_alias,
-                as_of_t = ?params.as_of_t,
-                snapshot_t = entry.index_t,
-                limit = params.limit,
-                "Executing vector search"
-            );
-
-            let results = index
-                .search(params.query_vector, params.limit)
-                .map_err(|e| QueryError::Internal(format!("Vector search error: {}", e)))?;
-
-            return Ok(results
-                .into_iter()
-                .map(|r| VectorSearchHit::new(r.iri, r.ledger_alias, r.score))
-                .collect());
-        }
-
-        // No suitable snapshot found. Try to sync if requested.
-        if params.sync {
-            // Sync to head (which will create a new snapshot in history)
-            self.fluree
-                .sync_vector_index(vg_alias)
-                .await
-                .map_err(|e| QueryError::Internal(format!("Sync error: {}", e)))?;
-
-            // Re-lookup snapshot history after sync
-            let history = self
-                .fluree
-                .nameservice()
-                .lookup_vg_snapshots(vg_alias)
-                .await
-                .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?;
-
-            let selection = match params.as_of_t {
-                Some(t) => history.select_snapshot(t),
-                None => history.head(),
-            };
-
-            if let Some(entry) = selection {
-                let bytes = self
-                    .fluree
-                    .storage()
-                    .read_bytes(&entry.index_address)
-                    .await
-                    .map_err(|e| QueryError::Internal(format!("Storage error: {}", e)))?;
-
-                let index = deserialize(&bytes)
-                    .map_err(|e| QueryError::Internal(format!("Deserialize error: {}", e)))?;
-
-                // Check metric compatibility
-                if index.metadata.metric != params.metric {
-                    return Err(QueryError::InvalidQuery(format!(
-                        "Vector index '{}' uses {:?} metric, but query requested {:?}",
-                        vg_alias, index.metadata.metric, params.metric
-                    )));
-                }
-
-                info!(
-                    vg_alias = %vg_alias,
-                    as_of_t = ?params.as_of_t,
-                    snapshot_t = entry.index_t,
-                    limit = params.limit,
-                    "Executing vector search after sync"
-                );
-
-                let results = index
-                    .search(params.query_vector, params.limit)
-                    .map_err(|e| QueryError::Internal(format!("Vector search error: {}", e)))?;
-
-                return Ok(results
-                    .into_iter()
-                    .map(|r| VectorSearchHit::new(r.iri, r.ledger_alias, r.score))
-                    .collect());
-            }
-
-            // Still no snapshot - the target_t might be earlier than any snapshot
+        // Vector indexes are head-only — reject as_of_t requests
+        if params.as_of_t.is_some() {
             return Err(QueryError::InvalidQuery(format!(
-                "No vector snapshot available for {} at t={:?}. The earliest snapshot may be later than requested.",
-                vg_alias, params.as_of_t
+                "Vector index '{}' does not support time-travel queries (as_of_t). \
+                 Only the latest snapshot is available.",
+                vg_alias
             )));
         }
 
-        // No sync requested and no suitable snapshot
-        // Provide a helpful error message based on the history
-        let available = if let Some(head) = history.head() {
-            format!(
-                " Available snapshots: earliest t={}, latest t={}.",
-                history.snapshots.first().map(|s| s.index_t).unwrap_or(0),
-                head.index_t
-            )
-        } else {
-            " No snapshots available.".to_string()
+        // Load head snapshot via nameservice head pointer
+        let record = self
+            .fluree
+            .nameservice()
+            .lookup_vg(vg_alias)
+            .await
+            .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?;
+
+        let record = record.ok_or_else(|| {
+            QueryError::InvalidQuery(format!("Virtual graph not found: {}", vg_alias))
+        })?;
+
+        let index_address = match &record.index_address {
+            Some(addr) => addr.clone(),
+            None => {
+                // No index yet — try to sync if requested
+                if params.sync {
+                    self.fluree
+                        .sync_vector_index(vg_alias)
+                        .await
+                        .map_err(|e| QueryError::Internal(format!("Sync error: {}", e)))?;
+
+                    // Re-lookup after sync
+                    let record = self
+                        .fluree
+                        .nameservice()
+                        .lookup_vg(vg_alias)
+                        .await
+                        .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?
+                        .ok_or_else(|| {
+                            QueryError::Internal(format!("VG disappeared after sync: {}", vg_alias))
+                        })?;
+
+                    record.index_address.ok_or_else(|| {
+                        QueryError::InvalidQuery(format!(
+                            "No vector index available for {} after sync",
+                            vg_alias
+                        ))
+                    })?
+                } else {
+                    return Err(QueryError::InvalidQuery(format!(
+                        "No vector index available for {}. Try syncing first.",
+                        vg_alias
+                    )));
+                }
+            }
         };
 
-        Err(QueryError::InvalidQuery(format!(
-            "No vector snapshot available for {} at t={:?}.{}",
-            vg_alias, params.as_of_t, available
-        )))
+        // Load and deserialize
+        let bytes = self
+            .fluree
+            .storage()
+            .read_bytes(&index_address)
+            .await
+            .map_err(|e| QueryError::Internal(format!("Storage error: {}", e)))?;
+
+        let index = deserialize(&bytes)
+            .map_err(|e| QueryError::Internal(format!("Deserialize error: {}", e)))?;
+
+        // Check metric compatibility
+        if index.metadata.metric != params.metric {
+            return Err(QueryError::InvalidQuery(format!(
+                "Vector index '{}' uses {:?} metric, but query requested {:?}",
+                vg_alias, index.metadata.metric, params.metric
+            )));
+        }
+
+        debug!(
+            vg_alias = %vg_alias,
+            index_t = record.index_t,
+            limit = params.limit,
+            "Executing vector search (head-only)"
+        );
+
+        let results = index
+            .search(params.query_vector, params.limit)
+            .map_err(|e| QueryError::Internal(format!("Vector search error: {}", e)))?;
+
+        Ok(results
+            .into_iter()
+            .map(|r| VectorSearchHit::new(r.iri, r.ledger_alias, r.score))
+            .collect())
     }
 }

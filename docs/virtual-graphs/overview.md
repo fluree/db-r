@@ -11,7 +11,7 @@ A **graph source** is anything you can address by a graph name/IRI and query as 
 - Indexed with SPOT, POST, OPST, PSOT
 - Optimized for graph traversal
 
-**Non-ledger Graph Source (legacy term: “virtual graph”):**
+**Non-ledger Graph Source (“virtual graph” in some code/docs):**
 - Stored in specialized format
 - Custom indexing for specific queries
 - Optimized for particular use cases
@@ -44,7 +44,7 @@ Both are queried using the same SPARQL or JSON-LD Query syntax.
 
 ### Graph Source Registry (Nameservice)
 
-Non-ledger graph sources (historically “virtual graphs”) are registered in nameservice:
+Non-ledger graph sources (sometimes called “virtual graphs”) are registered in nameservice:
 
 ```json
 {

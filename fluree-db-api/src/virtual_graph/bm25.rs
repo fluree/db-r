@@ -12,7 +12,7 @@ use crate::{QueryResult as ApiQueryResult, Result};
 use fluree_db_core::{alias as core_alias, OverlayProvider, Storage, StorageWrite};
 use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{NameService, Publisher, VgType, VirtualGraphPublisher};
-use fluree_db_query::bm25::{Bm25IndexBuilder, PropertyDeps};
+use fluree_db_query::bm25::{Bm25IndexBuilder, Bm25Manifest, Bm25SnapshotEntry, PropertyDeps};
 use fluree_db_query::parse::parse_query;
 use fluree_db_query::{execute_with_overlay, DataSource, ExecutableQuery, SelectMode, VarRegistry};
 use serde_json::Value as JsonValue;
@@ -123,18 +123,22 @@ where
             "Built BM25 index"
         );
 
-        // 4. Persist index snapshot (versioned for time-travel support)
-        let index_address = self
-            .persist_bm25_index_versioned(&vg_alias, &index, source_t)
+        // 4. Persist index snapshot blob to CAS
+        let snapshot_address = self
+            .write_bm25_snapshot_blob(&vg_alias, &index, source_t)
             .await?;
 
         info!(
-            index_address = %index_address,
+            snapshot_address = %snapshot_address,
             index_t = source_t,
             "Persisted versioned index snapshot"
         );
 
-        // 5. Publish VG record to nameservice
+        // 5. Build manifest with initial snapshot entry
+        let mut manifest = Bm25Manifest::new(&vg_alias);
+        manifest.append(Bm25SnapshotEntry::new(source_t, &snapshot_address));
+
+        // 6. Publish VG config record to nameservice
         let config_json = serde_json::to_string(&serde_json::json!({
             "k1": config.k1.unwrap_or(1.2),
             "b": config.b.unwrap_or(0.75),
@@ -151,14 +155,9 @@ where
             )
             .await?;
 
-        // Publish index location and watermark
-        self.nameservice
-            .publish_vg_index(
-                &config.name,
-                config.effective_branch(),
-                &index_address,
-                source_t,
-            )
+        // 7. Publish manifest to CAS and head pointer to nameservice
+        let index_address = self
+            .publish_bm25_manifest(&vg_alias, &manifest, source_t)
             .await?;
 
         info!(
@@ -277,11 +276,11 @@ where
         }
     }
 
-    /// Persist a BM25 index snapshot to storage with versioned path.
+    /// Write a BM25 index snapshot blob to storage with versioned path.
     ///
-    /// Creates a snapshot at `virtual-graphs/{name}/{branch}/bm25/t{index_t}/snapshot.bin`
-    /// and publishes the snapshot to the history file for time-travel support.
-    pub(crate) async fn persist_bm25_index_versioned(
+    /// Creates a snapshot at `virtual-graphs/{name}/{branch}/bm25/t{index_t}/snapshot.bin`.
+    /// Does NOT update nameservice or the manifest — callers handle that.
+    pub(crate) async fn write_bm25_snapshot_blob(
         &self,
         vg_alias: &str,
         index: &fluree_db_query::bm25::Bm25Index,
@@ -289,10 +288,8 @@ where
     ) -> Result<String> {
         use fluree_db_query::bm25::serialize;
 
-        // Serialize the index
         let bytes = serialize(index)?;
 
-        // Build versioned storage address
         let (name, branch) = core_alias::split_alias(vg_alias).map_err(|e| {
             crate::ApiError::config(format!("Invalid virtual graph alias '{}': {}", vg_alias, e))
         })?;
@@ -301,15 +298,89 @@ where
             name, branch, index_t
         );
 
-        // Write to storage
         self.storage().write_bytes(&address, &bytes).await?;
+        Ok(address)
+    }
 
-        // Publish snapshot to history (for time-travel selection)
+    /// Write a BM25 manifest to CAS and publish the manifest address as
+    /// the VG head pointer in nameservice.
+    ///
+    /// The manifest is content-addressed (keyed by `index_t`), so each
+    /// publish creates a new immutable object in storage.
+    pub(crate) async fn publish_bm25_manifest(
+        &self,
+        vg_alias: &str,
+        manifest: &Bm25Manifest,
+        index_t: i64,
+    ) -> Result<String> {
+        let (name, branch) = core_alias::split_alias(vg_alias).map_err(|e| {
+            crate::ApiError::config(format!("Invalid VG alias '{}': {}", vg_alias, e))
+        })?;
+
+        let manifest_addr = Self::bm25_manifest_address(&name, &branch, index_t);
+        let bytes = serde_json::to_vec(manifest)?;
+        self.storage().write_bytes(&manifest_addr, &bytes).await?;
+
         self.nameservice
-            .publish_vg_snapshot(&name, &branch, &address, index_t)
+            .publish_vg_index(&name, &branch, &manifest_addr, index_t)
             .await?;
 
-        Ok(address)
+        Ok(manifest_addr)
+    }
+}
+
+// =============================================================================
+// BM25 Manifest Loading (read-only helpers)
+// =============================================================================
+
+impl<S, N> crate::Fluree<S, N>
+where
+    S: Storage + Clone + 'static,
+    N: NameService + VirtualGraphPublisher,
+{
+    /// Build the content-addressed CAS address for a BM25 manifest.
+    fn bm25_manifest_address(name: &str, branch: &str, index_t: i64) -> String {
+        format!(
+            "fluree:file://virtual-graphs/{}/{}/bm25/manifest-t{}.json",
+            name, branch, index_t
+        )
+    }
+
+    /// Load the current BM25 manifest from CAS, or create a new empty one.
+    ///
+    /// Reads the manifest address from the nameservice head pointer,
+    /// then loads the manifest JSON from CAS. Returns an empty manifest
+    /// if the VG has no index_address yet (e.g., during initial create).
+    pub(crate) async fn load_or_create_bm25_manifest(
+        &self,
+        vg_alias: &str,
+    ) -> Result<Bm25Manifest> {
+        match self.nameservice.lookup_vg(vg_alias).await? {
+            Some(record) if record.index_address.is_some() => {
+                let manifest_addr = record.index_address.as_ref().unwrap();
+                let bytes = self.storage().read_bytes(manifest_addr).await?;
+                let manifest: Bm25Manifest = serde_json::from_slice(&bytes)?;
+                Ok(manifest)
+            }
+            _ => Ok(Bm25Manifest::new(vg_alias)),
+        }
+    }
+
+    /// Load the current BM25 manifest from CAS.
+    ///
+    /// Returns an error if the VG is not found or has no index_address.
+    pub(crate) async fn load_bm25_manifest(&self, vg_alias: &str) -> Result<Bm25Manifest> {
+        let record = self.nameservice.lookup_vg(vg_alias).await?.ok_or_else(|| {
+            crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias))
+        })?;
+
+        let manifest_addr = record.index_address.ok_or_else(|| {
+            crate::ApiError::NotFound(format!("No index for virtual graph: {}", vg_alias))
+        })?;
+
+        let bytes = self.storage().read_bytes(&manifest_addr).await?;
+        let manifest: Bm25Manifest = serde_json::from_slice(&bytes)?;
+        Ok(manifest)
     }
 }
 
@@ -324,22 +395,20 @@ where
 {
     /// Select the best BM25 snapshot for a given `as_of_t`.
     ///
-    /// This queries the snapshot history to find the snapshot with the
+    /// Loads the BM25 manifest from CAS and selects the snapshot with the
     /// largest `index_t` that is <= `as_of_t`.
     pub async fn select_bm25_snapshot(
         &self,
         vg_alias: &str,
         as_of_t: i64,
     ) -> Result<Option<SnapshotSelection>> {
-        // Look up snapshot history
-        let history = self.nameservice.lookup_vg_snapshots(vg_alias).await?;
+        let manifest = self.load_bm25_manifest(vg_alias).await?;
 
-        // Select best snapshot for as_of_t
-        match history.select_snapshot(as_of_t) {
+        match manifest.select_snapshot(as_of_t) {
             Some(entry) => Ok(Some(SnapshotSelection {
                 vg_alias: vg_alias.to_string(),
                 snapshot_t: entry.index_t,
-                snapshot_address: entry.index_address.clone(),
+                snapshot_address: entry.snapshot_address.clone(),
             })),
             None => Ok(None),
         }
@@ -355,7 +424,6 @@ where
     ) -> Result<(Arc<fluree_db_query::bm25::Bm25Index>, i64)> {
         use fluree_db_query::bm25::deserialize;
 
-        // Select appropriate snapshot
         let selection = self
             .select_bm25_snapshot(vg_alias, as_of_t)
             .await?
@@ -366,20 +434,18 @@ where
                 ))
             })?;
 
-        // Load from storage
         let bytes = self
             .storage()
             .read_bytes(&selection.snapshot_address)
             .await?;
 
-        // Deserialize
         let index = deserialize(&bytes)?;
-
         Ok((Arc::new(index), selection.snapshot_t))
     }
 
     /// Load a BM25 index from storage (head snapshot).
     ///
+    /// Loads the manifest, resolves the head snapshot, and deserializes.
     /// For time-travel queries, use `load_bm25_index_at` instead.
     pub async fn load_bm25_index(
         &self,
@@ -387,22 +453,13 @@ where
     ) -> Result<Arc<fluree_db_query::bm25::Bm25Index>> {
         use fluree_db_query::bm25::deserialize;
 
-        // Look up VG record
-        let record = self.nameservice.lookup_vg(vg_alias).await?.ok_or_else(|| {
-            crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias))
+        let manifest = self.load_bm25_manifest(vg_alias).await?;
+        let head = manifest.head().ok_or_else(|| {
+            crate::ApiError::NotFound(format!("No snapshots in manifest for: {}", vg_alias))
         })?;
 
-        // Get index address
-        let index_address = record.index_address.ok_or_else(|| {
-            crate::ApiError::NotFound(format!("No index for virtual graph: {}", vg_alias))
-        })?;
-
-        // Load from storage
-        let bytes = self.storage().read_bytes(&index_address).await?;
-
-        // Deserialize
+        let bytes = self.storage().read_bytes(&head.snapshot_address).await?;
         let index = deserialize(&bytes)?;
-
         Ok(Arc::new(index))
     }
 
@@ -465,9 +522,7 @@ where
     /// falling back to full resync if needed.
     pub async fn sync_bm25_index(&self, vg_alias: &str) -> Result<Bm25SyncResult> {
         use fluree_db_novelty::trace_commits;
-        use fluree_db_query::bm25::{
-            deserialize, serialize, CompiledPropertyDeps, IncrementalUpdater,
-        };
+        use fluree_db_query::bm25::{deserialize, CompiledPropertyDeps, IncrementalUpdater};
         use futures::StreamExt;
 
         info!(vg_alias = %vg_alias, "Starting BM25 index sync");
@@ -485,13 +540,10 @@ where
             )));
         }
 
-        let index_address = match &record.index_address {
-            Some(addr) => addr.clone(),
-            None => {
-                // No index yet - need full resync
-                return self.resync_bm25_index(vg_alias).await;
-            }
-        };
+        if record.index_address.is_none() {
+            // No index yet - need full resync
+            return self.resync_bm25_index(vg_alias).await;
+        }
 
         // Parse config to get query
         let config: JsonValue = serde_json::from_str(&record.config)?;
@@ -511,8 +563,12 @@ where
         let ledger = self.ledger(&source_ledger_alias).await?;
         let ledger_t = ledger.t();
 
-        // 3. Load existing index
-        let bytes = self.storage().read_bytes(&index_address).await?;
+        // 3. Load existing index via manifest head
+        let manifest = self.load_bm25_manifest(vg_alias).await?;
+        let head = manifest.head().ok_or_else(|| {
+            crate::ApiError::NotFound(format!("No snapshots in manifest for: {}", vg_alias))
+        })?;
+        let bytes = self.storage().read_bytes(&head.snapshot_address).await?;
         let mut index = deserialize(&bytes)?;
         let old_watermark = index.watermark.get(&source_ledger_alias).unwrap_or(0);
 
@@ -612,25 +668,15 @@ where
             "Applied incremental update"
         );
 
-        // 10. Persist updated index
-        let (name, branch) = core_alias::split_alias(vg_alias).map_err(|e| {
-            crate::ApiError::config(format!("Invalid virtual graph alias '{}': {}", vg_alias, e))
-        })?;
-        let new_address = format!(
-            "fluree:file://virtual-graphs/{}/{}/bm25/t{}/snapshot.bin",
-            name, branch, ledger_t
-        );
-        let bytes = serialize(&index)?;
-        self.storage().write_bytes(&new_address, &bytes).await?;
-
-        // 11. Publish snapshot to history
-        self.nameservice
-            .publish_vg_snapshot(&name, &branch, &new_address, ledger_t)
+        // 10. Persist updated index blob
+        let new_address = self
+            .write_bm25_snapshot_blob(vg_alias, &index, ledger_t)
             .await?;
 
-        // 12. Update VG index record (head pointer)
-        self.nameservice
-            .publish_vg_index(&name, &branch, &new_address, ledger_t)
+        // 11. Update manifest and publish
+        let mut manifest = manifest;
+        manifest.append(Bm25SnapshotEntry::new(ledger_t, &new_address));
+        self.publish_bm25_manifest(vg_alias, &manifest, ledger_t)
             .await?;
 
         info!(
@@ -656,7 +702,7 @@ where
     /// Unlike `sync_bm25_index`, this re-runs the entire indexing query
     /// and rebuilds the index from scratch.
     pub async fn resync_bm25_index(&self, vg_alias: &str) -> Result<Bm25SyncResult> {
-        use fluree_db_query::bm25::{deserialize, serialize, IncrementalUpdater};
+        use fluree_db_query::bm25::{deserialize, IncrementalUpdater};
 
         info!(vg_alias = %vg_alias, "Starting BM25 full resync");
 
@@ -672,9 +718,12 @@ where
             )));
         }
 
-        let index_address = record.index_address.ok_or_else(|| {
-            crate::ApiError::NotFound(format!("No index for virtual graph: {}", vg_alias))
-        })?;
+        if record.index_address.is_none() {
+            return Err(crate::ApiError::NotFound(format!(
+                "No index for virtual graph: {}",
+                vg_alias
+            )));
+        }
 
         let config: JsonValue = serde_json::from_str(&record.config)?;
         let query = config
@@ -688,8 +737,12 @@ where
             .ok_or_else(|| crate::ApiError::Config("VG has no source ledger".to_string()))?
             .clone();
 
-        // 2. Load existing index (to preserve config and property deps)
-        let bytes = self.storage().read_bytes(&index_address).await?;
+        // 2. Load existing index via manifest head (to preserve config and property deps)
+        let manifest = self.load_bm25_manifest(vg_alias).await?;
+        let head = manifest.head().ok_or_else(|| {
+            crate::ApiError::NotFound(format!("No snapshots in manifest for: {}", vg_alias))
+        })?;
+        let bytes = self.storage().read_bytes(&head.snapshot_address).await?;
         let mut index = deserialize(&bytes)?;
         let old_watermark = index.watermark.get(&source_ledger).unwrap_or(0);
 
@@ -711,25 +764,15 @@ where
         let mut updater = IncrementalUpdater::new(source_ledger.as_str(), &mut index);
         let update_result = updater.apply_full_sync(&results, ledger_t);
 
-        // 6. Persist updated index
-        let (name, branch) = core_alias::split_alias(vg_alias).map_err(|e| {
-            crate::ApiError::config(format!("Invalid virtual graph alias '{}': {}", vg_alias, e))
-        })?;
-        let new_address = format!(
-            "fluree:file://virtual-graphs/{}/{}/bm25/t{}/snapshot.bin",
-            name, branch, ledger_t
-        );
-        let bytes = serialize(&index)?;
-        self.storage().write_bytes(&new_address, &bytes).await?;
-
-        // 7. Publish snapshot to history
-        self.nameservice
-            .publish_vg_snapshot(&name, &branch, &new_address, ledger_t)
+        // 6. Persist updated index blob
+        let new_address = self
+            .write_bm25_snapshot_blob(vg_alias, &index, ledger_t)
             .await?;
 
-        // 8. Update VG index record
-        self.nameservice
-            .publish_vg_index(&name, &branch, &new_address, ledger_t)
+        // 7. Update manifest and publish
+        let mut manifest = manifest;
+        manifest.append(Bm25SnapshotEntry::new(ledger_t, &new_address));
+        self.publish_bm25_manifest(vg_alias, &manifest, ledger_t)
             .await?;
 
         info!(
@@ -801,16 +844,13 @@ where
             None
         };
 
-        // Load the (possibly updated) index
-        let record = self.nameservice.lookup_vg(vg_alias).await?.ok_or_else(|| {
-            crate::ApiError::NotFound(format!("Virtual graph not found: {}", vg_alias))
+        // Load the (possibly updated) index via manifest head
+        let manifest = self.load_bm25_manifest(vg_alias).await?;
+        let head = manifest.head().ok_or_else(|| {
+            crate::ApiError::NotFound(format!("No snapshots in manifest for: {}", vg_alias))
         })?;
 
-        let index_address = record.index_address.ok_or_else(|| {
-            crate::ApiError::NotFound(format!("No index for virtual graph: {}", vg_alias))
-        })?;
-
-        let bytes = self.storage().read_bytes(&index_address).await?;
+        let bytes = self.storage().read_bytes(&head.snapshot_address).await?;
         let index = deserialize(&bytes)?;
 
         Ok((Arc::new(index), sync_result))
@@ -826,9 +866,7 @@ where
         target_t: i64,
         timeout_ms: Option<u64>,
     ) -> Result<Bm25SyncResult> {
-        use fluree_db_query::bm25::{
-            serialize, Bm25IndexBuilder, IncrementalUpdater, PropertyDeps,
-        };
+        use fluree_db_query::bm25::{Bm25IndexBuilder, IncrementalUpdater, PropertyDeps};
 
         info!(
             vg_alias = %vg_alias,
@@ -859,8 +897,8 @@ where
             .clone();
 
         // 2. Check if we already have a snapshot at target_t
-        let history = self.nameservice.lookup_vg_snapshots(vg_alias).await?;
-        if history.has_snapshot_at(target_t) {
+        let manifest = self.load_or_create_bm25_manifest(vg_alias).await?;
+        if manifest.has_snapshot_at(target_t) {
             info!(vg_alias = %vg_alias, target_t = target_t, "Snapshot already exists");
             return Ok(Bm25SyncResult {
                 vg_alias: vg_alias.to_string(),
@@ -902,35 +940,17 @@ where
         let mut updater = IncrementalUpdater::new(source_ledger.as_str(), &mut index);
         let update_result = updater.apply_full_sync(&results, target_t);
 
-        // 6. Persist versioned snapshot
-        let (name, branch) = core_alias::split_alias(vg_alias).map_err(|e| {
-            crate::ApiError::config(format!("Invalid virtual graph alias '{}': {}", vg_alias, e))
-        })?;
-        let address = format!(
-            "fluree:file://virtual-graphs/{}/{}/bm25/t{}/snapshot.bin",
-            name, branch, target_t
-        );
-
-        let bytes = serialize(&index)?;
-        self.storage().write_bytes(&address, &bytes).await?;
-
-        // 7. Publish snapshot to history
-        self.nameservice
-            .publish_vg_snapshot(&name, &branch, &address, target_t)
+        // 6. Persist versioned snapshot blob
+        let address = self
+            .write_bm25_snapshot_blob(vg_alias, &index, target_t)
             .await?;
 
-        // 8. Update head if this is newer
-        if let Some(head) = history.head() {
-            if target_t > head.index_t {
-                self.nameservice
-                    .publish_vg_index(&name, &branch, &address, target_t)
-                    .await?;
-            }
-        } else {
-            self.nameservice
-                .publish_vg_index(&name, &branch, &address, target_t)
-                .await?;
-        }
+        // 7. Update manifest and publish (only advances head if target_t is newest)
+        let mut manifest = manifest;
+        manifest.append(Bm25SnapshotEntry::new(target_t, &address));
+        let effective_t = manifest.head().map(|h| h.index_t).unwrap_or(target_t);
+        self.publish_bm25_manifest(vg_alias, &manifest, effective_t)
+            .await?;
 
         info!(
             vg_alias = %vg_alias,
@@ -1005,8 +1025,8 @@ where
             });
         }
 
-        // 2. Get snapshot history for cleanup
-        let history = self.nameservice.lookup_vg_snapshots(vg_alias).await?;
+        // 2. Load manifest for cleanup (get all snapshot addresses)
+        let manifest = self.load_or_create_bm25_manifest(vg_alias).await?;
 
         // 3. Retract VG in nameservice
         self.nameservice
@@ -1015,19 +1035,20 @@ where
 
         info!(
             vg_alias = %vg_alias,
-            snapshot_count = history.snapshots.len(),
+            snapshot_count = manifest.snapshots.len(),
             "VG retracted, cleaning up storage"
         );
 
-        // 4. Collect all addresses to delete
-        let mut addresses_to_delete: HashSet<String> = history
-            .snapshots
-            .iter()
-            .map(|s| s.index_address.clone())
+        // 4. Collect all addresses to delete (snapshot blobs + manifest itself)
+        let mut addresses_to_delete: HashSet<String> = manifest
+            .all_snapshot_addresses()
+            .into_iter()
+            .map(|s| s.to_string())
             .collect();
 
-        if let Some(index_addr) = &record.index_address {
-            addresses_to_delete.insert(index_addr.clone());
+        // Also delete the manifest address
+        if let Some(manifest_addr) = &record.index_address {
+            addresses_to_delete.insert(manifest_addr.clone());
         }
 
         // 5. Delete all snapshot files

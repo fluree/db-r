@@ -22,7 +22,7 @@ use crate::{
     parse_alias, AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher,
     ConfigValue, NameService, NameServiceError, NsLookupResult, NsRecord, Publisher, RefKind,
     RefPublisher, RefValue, Result, StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
-    VgNsRecord, VgSnapshotEntry, VgSnapshotHistory, VgType, VirtualGraphPublisher,
+    VgNsRecord, VgType, VirtualGraphPublisher,
 };
 use async_trait::async_trait;
 use fluree_db_core::alias as core_alias;
@@ -198,29 +198,6 @@ struct VgIndexRef {
     address: String,
 }
 
-/// JSON entry for a single snapshot
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct VgSnapshotEntryV2 {
-    #[serde(rename = "fidx:indexT")]
-    index_t: i64,
-
-    #[serde(rename = "fidx:indexAddress")]
-    index_address: String,
-}
-
-/// JSON structure for VG snapshot history file
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct VgSnapshotsFileV2 {
-    #[serde(rename = "@context")]
-    context: serde_json::Value,
-
-    #[serde(rename = "@id")]
-    id: String,
-
-    #[serde(rename = "fidx:snapshots")]
-    snapshots: Vec<VgSnapshotEntryV2>,
-}
-
 /// Create the standard ns@v2 context as JSON value
 fn ns_context() -> serde_json::Value {
     serde_json::json!({"f": NS_CONTEXT_IRI})
@@ -307,18 +284,6 @@ where
             format!(
                 "{}/{}/{}/{}.index.json",
                 self.prefix, NS_VERSION, ledger_name, branch
-            )
-        }
-    }
-
-    /// Get the storage key for VG snapshots file
-    fn snapshots_key(&self, name: &str, branch: &str) -> String {
-        if self.prefix.is_empty() {
-            format!("{}/{}/{}.snapshots.json", NS_VERSION, name, branch)
-        } else {
-            format!(
-                "{}/{}/{}/{}.snapshots.json",
-                self.prefix, NS_VERSION, name, branch
             )
         }
     }
@@ -1181,71 +1146,6 @@ where
             })
         })
         .await
-    }
-
-    async fn publish_vg_snapshot(
-        &self,
-        name: &str,
-        branch: &str,
-        index_addr: &str,
-        index_t: i64,
-    ) -> Result<()> {
-        let key = self.snapshots_key(name, branch);
-
-        let name = name.to_string();
-        let branch = branch.to_string();
-        let index_addr = index_addr.to_string();
-
-        self.cas_update::<VgSnapshotsFileV2, _>(&key, move |existing| {
-            // Clone captured values so closure is Fn (can be called multiple times for retry)
-            let name = name.clone();
-            let branch = branch.clone();
-            let index_addr = index_addr.clone();
-
-            let mut file = existing.unwrap_or_else(|| VgSnapshotsFileV2 {
-                context: vg_context(),
-                id: core_alias::format_alias(&name, &branch),
-                snapshots: Vec::new(),
-            });
-
-            // Strictly monotonic: only append if new_t > max existing t
-            if let Some(last) = file.snapshots.last() {
-                if index_t <= last.index_t {
-                    return None; // Reject: not strictly increasing
-                }
-            }
-
-            file.snapshots.push(VgSnapshotEntryV2 {
-                index_t,
-                index_address: index_addr,
-            });
-            Some(file)
-        })
-        .await
-    }
-
-    async fn lookup_vg_snapshots(&self, alias: &str) -> Result<VgSnapshotHistory> {
-        let (name, branch) = parse_alias(alias)?;
-        let key = self.snapshots_key(&name, &branch);
-
-        let file: Option<VgSnapshotsFileV2> = self.read_json(&key).await?;
-
-        match file {
-            Some(f) => {
-                let snapshots = f
-                    .snapshots
-                    .into_iter()
-                    .map(|e| VgSnapshotEntry::new(e.index_t, e.index_address))
-                    .collect();
-                Ok(VgSnapshotHistory {
-                    alias: core_alias::format_alias(&name, &branch),
-                    snapshots,
-                })
-            }
-            None => Ok(VgSnapshotHistory::new(core_alias::format_alias(
-                &name, &branch,
-            ))),
-        }
     }
 
     async fn retract_vg(&self, name: &str, branch: &str) -> Result<()> {

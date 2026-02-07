@@ -13,7 +13,7 @@
 //! The search service protocol provides:
 //!
 //! - **Unified request/response envelope** for BM25 and vector search
-//! - **Time-travel semantics** via `as_of_t` parameter
+//! - **Time-travel semantics** via `as_of_t` parameter (BM25 only; vector is head-only)
 //! - **Sync semantics** via `sync` parameter
 //! - **Watermark tracking** via `index_t` in responses
 //!

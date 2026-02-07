@@ -266,7 +266,6 @@ fn event_alias(event: &NameServiceEvent) -> &str {
         NameServiceEvent::LedgerRetracted { alias } => alias,
         NameServiceEvent::VgConfigPublished { alias, .. } => alias,
         NameServiceEvent::VgIndexPublished { alias, .. } => alias,
-        NameServiceEvent::VgSnapshotPublished { alias, .. } => alias,
         NameServiceEvent::VgRetracted { alias } => alias,
     }
 }
@@ -279,7 +278,6 @@ fn event_kind(event: &NameServiceEvent) -> &'static str {
         | NameServiceEvent::LedgerRetracted { .. } => "ledger",
         NameServiceEvent::VgConfigPublished { .. }
         | NameServiceEvent::VgIndexPublished { .. }
-        | NameServiceEvent::VgSnapshotPublished { .. }
         | NameServiceEvent::VgRetracted { .. } => "virtual-graph",
     }
 }
@@ -298,9 +296,7 @@ where
             Some(ledger_to_sse_event(&record))
         }
         NameServiceEvent::LedgerRetracted { alias } => Some(retracted_sse_event("ledger", &alias)),
-        NameServiceEvent::VgConfigPublished { .. }
-        | NameServiceEvent::VgIndexPublished { .. }
-        | NameServiceEvent::VgSnapshotPublished { .. } => {
+        NameServiceEvent::VgConfigPublished { .. } | NameServiceEvent::VgIndexPublished { .. } => {
             let record = ns.lookup_vg(&alias).await.ok()??;
             Some(vg_to_sse_event(&record))
         }

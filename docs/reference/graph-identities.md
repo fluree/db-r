@@ -13,7 +13,7 @@ The goal is to make these simultaneously true:
   - and non-ledger sources (BM25, vector, Iceberg/R2RML, etc.).
 
 ## Summary: the model in one paragraph
-In Fluree, you query **graphs** and often load a **graph snapshot** (an immutable point-in-time view you can query repeatedly). In SPARQL, graph scoping uses `GRAPH <iri> { … }`, where `<iri>` is a **graph identifier** (a graph IRI). Fluree supports multiple kinds of **graph sources** (ledger graphs and non-ledger sources like BM25/vector indexes and tabular mappings). Users may refer to graphs with short, friendly **aliases** that Fluree resolves against a configured base into canonical **graph IRIs**.
+In Fluree, you query **graphs** and often load a **graph snapshot** (an immutable point-in-time view you can query repeatedly). In SPARQL, graph scoping uses `GRAPH <iri> { … }`, where `<iri>` is a **graph identifier** (a graph IRI). Fluree supports multiple kinds of **graph sources** (ledger graphs and non-ledger sources like BM25/vector indexes and tabular mappings). Users may refer to graphs with short, friendly **aliases** that Fluree resolves against a configured base into canonical **graph IRIs**. Not all graph sources support the same time-travel semantics — time pinning and “as-of” behavior is a **graph-source capability**, not a universal guarantee.
 
 Under the hood, this “graph snapshot” corresponds to the same semantic idea many temporal systems describe as **“database as a value”**: immutable, time-travelable, and safe to pass around.
 
@@ -57,6 +57,12 @@ Note: you may see an `=` form in older design notes (`@t=100`, etc.). That form 
 
 From a user perspective:
 - The `@…` portion selects **which Db value** you mean for that ledger graph.
+
+Important nuance:
+- For **ledger graph sources**, `@…` selects a pinned point-in-time view.
+- For **non-ledger graph sources**, `@…` support is **capability-specific**:
+  - Some sources may support time pinning by selecting an appropriate snapshot/root.
+  - Some sources are **head-only** and should reject time-pinned requests with a clear error.
 
 ### Named graphs within a ledger
 We support multiple named graphs inside a single ledger (shared commit chain, distinct graph identities/indexes).
@@ -115,15 +121,16 @@ We use **Graph Source** as the umbrella term for anything you can name in `FROM`
 Graph sources differ in capabilities:
 - Some behave like RDF triple stores (ledger graphs, some mappings).
 - Some provide specialized operators/patterns (BM25 and vector search).
+- Some support time pinning / time travel; others are head-only.
 
 ### Categories
 - **Ledger Graph Sources**: RDF graphs stored in a ledger (default graph or named graph).
 - **Index Graph Sources**: persisted indexes queried through graph-integrated patterns (BM25, Vector/HNSW).
 - **Mapped Graph Sources**: non-ledger data mapped into an RDF-shaped graph (R2RML, Iceberg).
 
-### Legacy term: “Virtual Graph”
-Older docs and some internal APIs use **Virtual Graph (VG)** for “non-ledger graph sources”.
-As we align naming, prefer “graph source” in user-facing docs and examples.
+### Term: “Virtual Graph”
+Some internal APIs use **Virtual Graph (VG)** for “non-ledger graph sources”.
+Prefer “graph source” in user-facing docs and examples.
 
 ---
 
@@ -160,6 +167,8 @@ It does **not** “implement the cache”; it **holds** a cache handle (`Arc<C> 
 As of the current design, `Db` may be backed by either:
 - **B-tree index roots** (traditional range traversal), or
 - an optional **range provider** (e.g., a binary columnar index provider) that can serve range queries without b-tree roots.
+
+Related: for non-ledger graph sources (e.g., BM25/vector/spatial), nameservice often stores an **opaque head pointer** (an address + watermark). That address may point to a **manifest/root** object that must be loaded and interpreted by the specific graph source implementation before any index bytes are deserialized.
 
 Concretely it contains:
 - **Identity & time**
@@ -252,7 +261,7 @@ To avoid threading many optional providers through execution context:
 This centralizes:
 - “does this graph exist?”
 - “what capabilities does it support?” (triple patterns vs search patterns vs mapped scans)
-- time pinning rules (`@t`, `@iso`, `@sha`) per source type
+- time pinning rules (`@t`, `@iso`, `@sha`) per source type (including “not supported” cases)
 
 ---
 

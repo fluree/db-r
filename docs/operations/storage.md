@@ -216,9 +216,13 @@ See [Storage Encryption](../security/encryption.md) for full documentation.
 ├── index/                    # Index snapshots
 │   ├── mydb-main-t100.idx
 │   └── mydb-main-t150.idx
-└── vg/                      # Virtual graphs
+└── virtual-graphs/           # Virtual graphs (graph sources)
     └── products-search/
-        └── index.bm25
+        └── main/
+            └── bm25/
+                ├── manifest.json
+                └── t150/
+                    └── snapshot.bin
 ```
 
 ### File Formats
@@ -268,8 +272,13 @@ s3://fluree-prod-data/
 ├── index/
 │   ├── mydb-main-t100.idx
 │   └── mydb-main-t150.idx
-└── vg/
-    └── products-search.bm25
+└── virtual-graphs/
+    └── products-search/
+        └── main/
+            └── bm25/
+                ├── manifest.json
+                └── t150/
+                    └── snapshot.bin
 ```
 
 ### DynamoDB Schema

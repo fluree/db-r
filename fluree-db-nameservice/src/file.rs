@@ -29,8 +29,8 @@ use crate::{
     parse_alias, AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher,
     ConfigValue, NameService, NameServiceError, NameServiceEvent, NsLookupResult, NsRecord,
     Publication, Publisher, RefKind, RefPublisher, RefValue, Result, StatusCasResult,
-    StatusPayload, StatusPublisher, StatusValue, Subscription, VgNsRecord, VgSnapshotEntry,
-    VgSnapshotHistory, VgType, VirtualGraphPublisher,
+    StatusPayload, StatusPublisher, StatusValue, Subscription, VgNsRecord, VgType,
+    VirtualGraphPublisher,
 };
 use async_trait::async_trait;
 use fluree_db_core::alias as core_alias;
@@ -226,32 +226,6 @@ struct VgIndexFileV2WithT {
     index_t: i64,
 }
 
-/// JSON entry for a single snapshot in the history
-#[derive(Debug, Serialize, Deserialize)]
-struct VgSnapshotEntryV2 {
-    #[serde(rename = "fidx:indexT")]
-    index_t: i64,
-
-    #[serde(rename = "fidx:indexAddress")]
-    index_address: String,
-}
-
-/// JSON structure for VG snapshot history file
-///
-/// Stored at `ns@v2/{vg-name}/{branch}.snapshots.json` for time-travel support.
-/// Contains an ordered list of snapshots (monotonically increasing by index_t).
-#[derive(Debug, Serialize, Deserialize)]
-struct VgSnapshotsFileV2 {
-    #[serde(rename = "@context")]
-    context: serde_json::Value,
-
-    #[serde(rename = "@id")]
-    id: String,
-
-    #[serde(rename = "fidx:snapshots")]
-    snapshots: Vec<VgSnapshotEntryV2>,
-}
-
 const NS_CONTEXT_IRI: &str = "https://ns.flur.ee/ledger#";
 const FIDX_CONTEXT_IRI: &str = "https://ns.flur.ee/index#";
 const NS_VERSION: &str = "ns@v2";
@@ -339,14 +313,6 @@ impl FileNameService {
             .join(NS_VERSION)
             .join(ledger_name)
             .join(format!("{}.index.json", branch))
-    }
-
-    /// Get the path for the VG snapshots history file
-    fn snapshots_path(&self, name: &str, branch: &str) -> PathBuf {
-        self.base_path
-            .join(NS_VERSION)
-            .join(name)
-            .join(format!("{}.snapshots.json", branch))
     }
 
     /// Read and parse a JSON file
@@ -1305,115 +1271,6 @@ impl VirtualGraphPublisher for FileNameService {
                 index_t,
             });
             Ok(())
-        }
-    }
-
-    async fn publish_vg_snapshot(
-        &self,
-        name: &str,
-        branch: &str,
-        index_addr: &str,
-        index_t: i64,
-    ) -> Result<()> {
-        let snapshots_path = self.snapshots_path(name, branch);
-
-        #[cfg(all(feature = "native", unix))]
-        {
-            let path = snapshots_path.clone();
-            let index_addr = index_addr.to_string();
-            let name = name.to_string();
-            let branch = branch.to_string();
-            let index_addr_for_event = index_addr.clone();
-            let alias_for_event = core_alias::format_alias(&name, &branch);
-            let did_update = Arc::new(AtomicBool::new(false));
-            let did_update2 = did_update.clone();
-
-            let res = self
-                .swap_json_locked::<VgSnapshotsFileV2, _>(path, move |existing| {
-                    let mut file = existing.unwrap_or_else(|| VgSnapshotsFileV2 {
-                        context: vg_context(),
-                        id: core_alias::format_alias(&name, &branch),
-                        snapshots: Vec::new(),
-                    });
-
-                    // Strictly monotonic: only append if new_t > max existing t
-                    if let Some(last) = file.snapshots.last() {
-                        if index_t <= last.index_t {
-                            return Ok(None); // Reject: not strictly increasing
-                        }
-                    }
-
-                    file.snapshots.push(VgSnapshotEntryV2 {
-                        index_t,
-                        index_address: index_addr,
-                    });
-                    did_update2.store(true, Ordering::SeqCst);
-                    Ok(Some(file))
-                })
-                .await;
-
-            if res.is_ok() && did_update.load(Ordering::SeqCst) {
-                let _ = self.event_tx.send(NameServiceEvent::VgSnapshotPublished {
-                    alias: alias_for_event,
-                    index_address: index_addr_for_event,
-                    index_t,
-                });
-            }
-
-            return res;
-        }
-
-        #[cfg(not(all(feature = "native", unix)))]
-        {
-            let existing: Option<VgSnapshotsFileV2> = self.read_json(&snapshots_path).await?;
-            let mut file = existing.unwrap_or_else(|| VgSnapshotsFileV2 {
-                context: vg_context(),
-                id: core_alias::format_alias(&name, &branch),
-                snapshots: Vec::new(),
-            });
-
-            // Strictly monotonic: only append if new_t > max existing t
-            if let Some(last) = file.snapshots.last() {
-                if index_t <= last.index_t {
-                    return Ok(()); // Reject: not strictly increasing
-                }
-            }
-
-            file.snapshots.push(VgSnapshotEntryV2 {
-                index_t,
-                index_address: index_addr.to_string(),
-            });
-            self.write_json_atomic(&snapshots_path, &file).await?;
-            let _ = self.event_tx.send(NameServiceEvent::VgSnapshotPublished {
-                alias: core_alias::format_alias(&name, &branch),
-                index_address: index_addr.to_string(),
-                index_t,
-            });
-            Ok(())
-        }
-    }
-
-    async fn lookup_vg_snapshots(&self, alias: &str) -> Result<VgSnapshotHistory> {
-        let (name, branch) = parse_alias(alias)?;
-        let snapshots_path = self.snapshots_path(&name, &branch);
-
-        let file: Option<VgSnapshotsFileV2> = self.read_json(&snapshots_path).await?;
-
-        match file {
-            Some(f) => {
-                let snapshots = f
-                    .snapshots
-                    .into_iter()
-                    .map(|e| VgSnapshotEntry::new(e.index_t, e.index_address))
-                    .collect();
-                Ok(VgSnapshotHistory {
-                    alias: core_alias::format_alias(&name, &branch),
-                    snapshots,
-                })
-            }
-            None => Ok(VgSnapshotHistory::new(core_alias::format_alias(
-                &name, &branch,
-            ))),
         }
     }
 
@@ -2542,142 +2399,6 @@ mod tests {
                 .unwrap()
                 .vg_type,
             VgType::Unknown("fidx:CustomType".to_string())
-        );
-    }
-
-    // ========== VG Snapshot History Tests ==========
-
-    #[tokio::test]
-    async fn test_file_vg_snapshot_publish_and_lookup() {
-        let (_temp, ns) = setup().await;
-
-        ns.publish_vg("vg", "main", VgType::Bm25, "{}", &[])
-            .await
-            .unwrap();
-
-        // Publish snapshots
-        ns.publish_vg_snapshot("vg", "main", "addr-t5", 5)
-            .await
-            .unwrap();
-        ns.publish_vg_snapshot("vg", "main", "addr-t10", 10)
-            .await
-            .unwrap();
-        ns.publish_vg_snapshot("vg", "main", "addr-t20", 20)
-            .await
-            .unwrap();
-
-        // Lookup and verify
-        let history = ns.lookup_vg_snapshots("vg:main").await.unwrap();
-        assert_eq!(history.alias, "vg:main");
-        assert_eq!(history.snapshots.len(), 3);
-        assert_eq!(history.snapshots[0].index_t, 5);
-        assert_eq!(history.snapshots[1].index_t, 10);
-        assert_eq!(history.snapshots[2].index_t, 20);
-    }
-
-    #[tokio::test]
-    async fn test_file_vg_snapshot_monotonic() {
-        let (_temp, ns) = setup().await;
-
-        ns.publish_vg("vg", "main", VgType::Bm25, "{}", &[])
-            .await
-            .unwrap();
-
-        ns.publish_vg_snapshot("vg", "main", "addr-t10", 10)
-            .await
-            .unwrap();
-        ns.publish_vg_snapshot("vg", "main", "addr-t20", 20)
-            .await
-            .unwrap();
-
-        // Lower t should be ignored
-        ns.publish_vg_snapshot("vg", "main", "addr-t15", 15)
-            .await
-            .unwrap();
-
-        // Equal t should be ignored
-        ns.publish_vg_snapshot("vg", "main", "addr-t20-dup", 20)
-            .await
-            .unwrap();
-
-        let history = ns.lookup_vg_snapshots("vg:main").await.unwrap();
-        assert_eq!(history.snapshots.len(), 2);
-        assert_eq!(history.snapshots[0].index_t, 10);
-        assert_eq!(history.snapshots[1].index_t, 20);
-        assert_eq!(history.snapshots[1].index_address, "addr-t20");
-    }
-
-    #[tokio::test]
-    async fn test_file_vg_snapshot_lookup_empty() {
-        let (_temp, ns) = setup().await;
-
-        // Lookup nonexistent VG snapshots returns empty history
-        let history = ns.lookup_vg_snapshots("nonexistent:main").await.unwrap();
-        assert_eq!(history.alias, "nonexistent:main");
-        assert!(history.snapshots.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_file_vg_snapshot_selection() {
-        let (_temp, ns) = setup().await;
-
-        ns.publish_vg("vg", "main", VgType::Bm25, "{}", &[])
-            .await
-            .unwrap();
-
-        ns.publish_vg_snapshot("vg", "main", "addr-t5", 5)
-            .await
-            .unwrap();
-        ns.publish_vg_snapshot("vg", "main", "addr-t10", 10)
-            .await
-            .unwrap();
-        ns.publish_vg_snapshot("vg", "main", "addr-t20", 20)
-            .await
-            .unwrap();
-
-        let history = ns.lookup_vg_snapshots("vg:main").await.unwrap();
-
-        // Select best snapshot for as_of_t=12 should be t=10
-        let snap = history.select_snapshot(12).unwrap();
-        assert_eq!(snap.index_t, 10);
-
-        // Select best snapshot for as_of_t=25 should be t=20
-        let snap = history.select_snapshot(25).unwrap();
-        assert_eq!(snap.index_t, 20);
-
-        // Select best snapshot for as_of_t=3 should be None
-        assert!(history.select_snapshot(3).is_none());
-    }
-
-    #[tokio::test]
-    async fn test_file_vg_snapshot_file_format() {
-        let (temp, ns) = setup().await;
-
-        ns.publish_vg("vg", "main", VgType::Bm25, "{}", &[])
-            .await
-            .unwrap();
-
-        ns.publish_vg_snapshot("vg", "main", "fluree:file://vg/t10.bin", 10)
-            .await
-            .unwrap();
-
-        // Verify the file was created
-        let snapshots_path = temp.path().join("ns@v2/vg/main.snapshots.json");
-        assert!(snapshots_path.exists());
-
-        // Read and verify JSON structure
-        let content = tokio::fs::read_to_string(&snapshots_path).await.unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-
-        assert!(parsed.get("@context").is_some());
-        assert_eq!(parsed.get("@id").unwrap(), "vg:main");
-
-        let snapshots = parsed.get("fidx:snapshots").unwrap().as_array().unwrap();
-        assert_eq!(snapshots.len(), 1);
-        assert_eq!(snapshots[0].get("fidx:indexT").unwrap(), 10);
-        assert_eq!(
-            snapshots[0].get("fidx:indexAddress").unwrap(),
-            "fluree:file://vg/t10.bin"
         );
     }
 

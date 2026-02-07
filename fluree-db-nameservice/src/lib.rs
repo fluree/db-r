@@ -249,85 +249,6 @@ impl VgNsRecord {
     }
 }
 
-/// A single snapshot entry in VG snapshot history
-///
-/// Represents a versioned BM25 (or other VG type) index snapshot at a specific `t`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VgSnapshotEntry {
-    /// Transaction time (watermark) for this snapshot
-    pub index_t: i64,
-
-    /// Storage address of the snapshot
-    pub index_address: String,
-}
-
-impl VgSnapshotEntry {
-    /// Create a new snapshot entry
-    pub fn new(index_t: i64, index_address: impl Into<String>) -> Self {
-        Self {
-            index_t,
-            index_address: index_address.into(),
-        }
-    }
-}
-
-/// VG snapshot history for time-travel queries
-///
-/// Contains an ordered list of snapshot entries (monotonically increasing by `index_t`).
-/// Used to select the appropriate snapshot for historical queries.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct VgSnapshotHistory {
-    /// VG alias (e.g., "my-search:main")
-    pub alias: String,
-
-    /// Ordered list of snapshots (sorted by index_t ascending)
-    pub snapshots: Vec<VgSnapshotEntry>,
-}
-
-impl VgSnapshotHistory {
-    /// Create a new empty snapshot history
-    pub fn new(alias: impl Into<String>) -> Self {
-        Self {
-            alias: alias.into(),
-            snapshots: Vec::new(),
-        }
-    }
-
-    /// Select the best snapshot for a given `as_of_t`
-    ///
-    /// Returns the snapshot with `index_t = max { t | t <= as_of_t }`,
-    /// or `None` if no suitable snapshot exists.
-    pub fn select_snapshot(&self, as_of_t: i64) -> Option<&VgSnapshotEntry> {
-        // Find the largest index_t <= as_of_t
-        // Since snapshots are sorted ascending, we can iterate in reverse
-        self.snapshots.iter().rev().find(|s| s.index_t <= as_of_t)
-    }
-
-    /// Get the most recent snapshot (head)
-    pub fn head(&self) -> Option<&VgSnapshotEntry> {
-        self.snapshots.last()
-    }
-
-    /// Check if a snapshot exists at exactly the given `t`
-    pub fn has_snapshot_at(&self, t: i64) -> bool {
-        self.snapshots.iter().any(|s| s.index_t == t)
-    }
-
-    /// Append a snapshot entry (must be monotonically increasing)
-    ///
-    /// Returns `true` if the snapshot was added, `false` if it was rejected
-    /// (duplicate or lower `t` than existing).
-    pub fn append(&mut self, entry: VgSnapshotEntry) -> bool {
-        if let Some(last) = self.snapshots.last() {
-            if entry.index_t <= last.index_t {
-                return false; // Reject: not strictly increasing
-            }
-        }
-        self.snapshots.push(entry);
-        true
-    }
-}
-
 /// Result of looking up a nameservice record
 ///
 /// Can be either a ledger record or a virtual graph record.
@@ -359,12 +280,6 @@ pub type GraphSourceType = VgType;
 ///
 /// Note: This currently represents *non-ledger* graph sources only.
 pub type GraphSourceRecord = VgNsRecord;
-
-/// Graph source snapshot entry (legacy: `VgSnapshotEntry`).
-pub type GraphSourceSnapshotEntry = VgSnapshotEntry;
-
-/// Graph source snapshot history (legacy: `VgSnapshotHistory`).
-pub type GraphSourceSnapshotHistory = VgSnapshotHistory;
 
 /// Graph source publisher (legacy: `VirtualGraphPublisher`).
 ///
@@ -498,8 +413,6 @@ pub trait VirtualGraphPublisher: Debug + Send + Sync {
     /// Config updates must NOT reset index watermark.
     /// Index updates must NOT rewrite config.
     ///
-    /// NOTE: This updates the "head" pointer only. For time-travel support,
-    /// also call `publish_vg_snapshot` to record the snapshot in history.
     async fn publish_vg_index(
         &self,
         name: &str,
@@ -507,30 +420,6 @@ pub trait VirtualGraphPublisher: Debug + Send + Sync {
         index_addr: &str,
         index_t: i64,
     ) -> Result<()>;
-
-    /// Publish a snapshot to the VG snapshot history
-    ///
-    /// Appends a snapshot entry to the history file. Only succeeds if
-    /// `index_t > max(existing snapshot t)` (strictly monotonic).
-    ///
-    /// The snapshot history is stored at `ns@v2/{vg-name}/{branch}.snapshots.json`.
-    ///
-    /// This is separate from `publish_vg_index` to allow:
-    /// 1. Building historical snapshots without moving head
-    /// 2. Recording all snapshots for time-travel queries
-    async fn publish_vg_snapshot(
-        &self,
-        name: &str,
-        branch: &str,
-        index_addr: &str,
-        index_t: i64,
-    ) -> Result<()>;
-
-    /// Look up the snapshot history for a virtual graph
-    ///
-    /// Returns the full snapshot history for time-travel snapshot selection.
-    /// Returns an empty history if no snapshots have been published.
-    async fn lookup_vg_snapshots(&self, alias: &str) -> Result<VgSnapshotHistory>;
 
     /// Retract a virtual graph
     ///
@@ -617,12 +506,6 @@ pub enum NameServiceEvent {
     },
     /// A virtual graph head index pointer was advanced.
     VgIndexPublished {
-        alias: String,
-        index_address: String,
-        index_t: i64,
-    },
-    /// A virtual graph snapshot was appended to history.
-    VgSnapshotPublished {
         alias: String,
         index_address: String,
         index_t: i64,
@@ -1210,100 +1093,6 @@ mod tests {
         record.index_address = Some("fluree:file://vg/search/snapshot.bin".to_string());
         record.index_t = 42;
         assert!(record.has_index());
-    }
-
-    // ========== VgSnapshotHistory Tests ==========
-
-    #[test]
-    fn test_vg_snapshot_history_new() {
-        let history = VgSnapshotHistory::new("my-search:main");
-        assert_eq!(history.alias, "my-search:main");
-        assert!(history.snapshots.is_empty());
-        assert!(history.head().is_none());
-    }
-
-    #[test]
-    fn test_vg_snapshot_history_append_monotonic() {
-        let mut history = VgSnapshotHistory::new("vg:main");
-
-        // First append should succeed
-        assert!(history.append(VgSnapshotEntry::new(5, "addr-5")));
-        assert_eq!(history.snapshots.len(), 1);
-
-        // Strictly increasing should succeed
-        assert!(history.append(VgSnapshotEntry::new(10, "addr-10")));
-        assert_eq!(history.snapshots.len(), 2);
-
-        // Equal t should be rejected
-        assert!(!history.append(VgSnapshotEntry::new(10, "addr-10-dup")));
-        assert_eq!(history.snapshots.len(), 2);
-
-        // Lower t should be rejected
-        assert!(!history.append(VgSnapshotEntry::new(7, "addr-7")));
-        assert_eq!(history.snapshots.len(), 2);
-
-        // Higher t should succeed
-        assert!(history.append(VgSnapshotEntry::new(20, "addr-20")));
-        assert_eq!(history.snapshots.len(), 3);
-    }
-
-    #[test]
-    fn test_vg_snapshot_history_select_snapshot() {
-        let mut history = VgSnapshotHistory::new("vg:main");
-        history.append(VgSnapshotEntry::new(5, "addr-5"));
-        history.append(VgSnapshotEntry::new(10, "addr-10"));
-        history.append(VgSnapshotEntry::new(20, "addr-20"));
-
-        // Exact match
-        let snap = history.select_snapshot(10).unwrap();
-        assert_eq!(snap.index_t, 10);
-        assert_eq!(snap.index_address, "addr-10");
-
-        // Should select best <= as_of_t
-        let snap = history.select_snapshot(15).unwrap();
-        assert_eq!(snap.index_t, 10); // Largest t <= 15
-
-        // at as_of_t = 5, select t=5
-        let snap = history.select_snapshot(5).unwrap();
-        assert_eq!(snap.index_t, 5);
-
-        // at as_of_t = 25, select t=20 (highest)
-        let snap = history.select_snapshot(25).unwrap();
-        assert_eq!(snap.index_t, 20);
-
-        // at as_of_t = 3, no suitable snapshot
-        assert!(history.select_snapshot(3).is_none());
-    }
-
-    #[test]
-    fn test_vg_snapshot_history_head() {
-        let mut history = VgSnapshotHistory::new("vg:main");
-        assert!(history.head().is_none());
-
-        history.append(VgSnapshotEntry::new(10, "addr-10"));
-        assert_eq!(history.head().unwrap().index_t, 10);
-
-        history.append(VgSnapshotEntry::new(20, "addr-20"));
-        assert_eq!(history.head().unwrap().index_t, 20);
-    }
-
-    #[test]
-    fn test_vg_snapshot_history_has_snapshot_at() {
-        let mut history = VgSnapshotHistory::new("vg:main");
-        history.append(VgSnapshotEntry::new(10, "addr-10"));
-        history.append(VgSnapshotEntry::new(20, "addr-20"));
-
-        assert!(history.has_snapshot_at(10));
-        assert!(history.has_snapshot_at(20));
-        assert!(!history.has_snapshot_at(15));
-        assert!(!history.has_snapshot_at(5));
-    }
-
-    #[test]
-    fn test_vg_snapshot_entry_new() {
-        let entry = VgSnapshotEntry::new(42, "fluree:file://vg/snapshot.bin");
-        assert_eq!(entry.index_t, 42);
-        assert_eq!(entry.index_address, "fluree:file://vg/snapshot.bin");
     }
 
     // ========== V2 Concern Type Tests ==========

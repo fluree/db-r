@@ -8,7 +8,7 @@ use crate::{
     parse_alias, AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue,
     NameService, NameServiceEvent, NsLookupResult, NsRecord, Publication, Publisher, RefKind,
     RefPublisher, RefValue, Result, StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
-    Subscription, VgNsRecord, VgSnapshotEntry, VgSnapshotHistory, VgType, VirtualGraphPublisher,
+    Subscription, VgNsRecord, VgType, VirtualGraphPublisher,
 };
 use async_trait::async_trait;
 use fluree_db_core::alias as core_alias;
@@ -28,8 +28,6 @@ pub struct MemoryNameService {
     records: Arc<RwLock<HashMap<String, NsRecord>>>,
     /// Virtual graph records keyed by canonical alias (e.g., "my-search:main")
     vg_records: Arc<RwLock<HashMap<String, VgNsRecord>>>,
-    /// Virtual graph snapshot histories keyed by canonical alias
-    vg_snapshots: Arc<RwLock<HashMap<String, VgSnapshotHistory>>>,
     /// Status values keyed by canonical alias (v2 extension)
     status_values: Arc<RwLock<HashMap<String, StatusValue>>>,
     /// Config values keyed by canonical alias (v2 extension)
@@ -45,7 +43,6 @@ impl Default for MemoryNameService {
         Self {
             records: Arc::new(RwLock::new(HashMap::new())),
             vg_records: Arc::new(RwLock::new(HashMap::new())),
-            vg_snapshots: Arc::new(RwLock::new(HashMap::new())),
             status_values: Arc::new(RwLock::new(HashMap::new())),
             config_values: Arc::new(RwLock::new(HashMap::new())),
             event_tx,
@@ -57,13 +54,11 @@ impl Debug for MemoryNameService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let records = self.records.read();
         let vg_records = self.vg_records.read();
-        let vg_snapshots = self.vg_snapshots.read();
         let status_values = self.status_values.read();
         let config_values = self.config_values.read();
         f.debug_struct("MemoryNameService")
             .field("record_count", &records.len())
             .field("vg_record_count", &vg_records.len())
-            .field("vg_snapshot_count", &vg_snapshots.len())
             .field("status_count", &status_values.len())
             .field("config_count", &config_values.len())
             .finish()
@@ -528,43 +523,6 @@ impl VirtualGraphPublisher for MemoryNameService {
         Ok(())
     }
 
-    async fn publish_vg_snapshot(
-        &self,
-        name: &str,
-        branch: &str,
-        index_addr: &str,
-        index_t: i64,
-    ) -> Result<()> {
-        let key = core_alias::format_alias(name, branch);
-        let mut vg_snapshots = self.vg_snapshots.write();
-
-        let history = vg_snapshots
-            .entry(key.clone())
-            .or_insert_with(|| VgSnapshotHistory::new(&key));
-
-        // Append is monotonic - returns false if entry is rejected
-        let did_append = history.append(VgSnapshotEntry::new(index_t, index_addr));
-        if did_append {
-            let _ = self.event_tx.send(NameServiceEvent::VgSnapshotPublished {
-                alias: key,
-                index_address: index_addr.to_string(),
-                index_t,
-            });
-        }
-
-        Ok(())
-    }
-
-    async fn lookup_vg_snapshots(&self, alias: &str) -> Result<VgSnapshotHistory> {
-        let key = self.normalize_alias(alias);
-        let vg_snapshots = self.vg_snapshots.read();
-
-        Ok(vg_snapshots
-            .get(&key)
-            .cloned()
-            .unwrap_or_else(|| VgSnapshotHistory::new(&key)))
-    }
-
     async fn retract_vg(&self, name: &str, branch: &str) -> Result<()> {
         let key = core_alias::format_alias(name, branch);
         let mut vg_records = self.vg_records.write();
@@ -1007,110 +965,6 @@ mod tests {
             NsLookupResult::NotFound => {}
             other => panic!("Expected NotFound, got {:?}", other),
         }
-    }
-
-    // ========== VG Snapshot History Tests ==========
-
-    #[tokio::test]
-    async fn test_memory_vg_snapshot_publish_and_lookup() {
-        let ns = MemoryNameService::new();
-
-        ns.publish_vg("vg", "main", VgType::Bm25, "{}", &[])
-            .await
-            .unwrap();
-
-        // Publish snapshots
-        ns.publish_vg_snapshot("vg", "main", "addr-t5", 5)
-            .await
-            .unwrap();
-        ns.publish_vg_snapshot("vg", "main", "addr-t10", 10)
-            .await
-            .unwrap();
-        ns.publish_vg_snapshot("vg", "main", "addr-t20", 20)
-            .await
-            .unwrap();
-
-        // Lookup and verify
-        let history = ns.lookup_vg_snapshots("vg:main").await.unwrap();
-        assert_eq!(history.alias, "vg:main");
-        assert_eq!(history.snapshots.len(), 3);
-        assert_eq!(history.snapshots[0].index_t, 5);
-        assert_eq!(history.snapshots[1].index_t, 10);
-        assert_eq!(history.snapshots[2].index_t, 20);
-    }
-
-    #[tokio::test]
-    async fn test_memory_vg_snapshot_monotonic() {
-        let ns = MemoryNameService::new();
-
-        ns.publish_vg("vg", "main", VgType::Bm25, "{}", &[])
-            .await
-            .unwrap();
-
-        ns.publish_vg_snapshot("vg", "main", "addr-t10", 10)
-            .await
-            .unwrap();
-        ns.publish_vg_snapshot("vg", "main", "addr-t20", 20)
-            .await
-            .unwrap();
-
-        // Lower t should be ignored
-        ns.publish_vg_snapshot("vg", "main", "addr-t15", 15)
-            .await
-            .unwrap();
-
-        // Equal t should be ignored
-        ns.publish_vg_snapshot("vg", "main", "addr-t20-dup", 20)
-            .await
-            .unwrap();
-
-        let history = ns.lookup_vg_snapshots("vg:main").await.unwrap();
-        assert_eq!(history.snapshots.len(), 2);
-        assert_eq!(history.snapshots[0].index_t, 10);
-        assert_eq!(history.snapshots[1].index_t, 20);
-        assert_eq!(history.snapshots[1].index_address, "addr-t20");
-    }
-
-    #[tokio::test]
-    async fn test_memory_vg_snapshot_lookup_empty() {
-        let ns = MemoryNameService::new();
-
-        // Lookup nonexistent VG snapshots returns empty history
-        let history = ns.lookup_vg_snapshots("nonexistent:main").await.unwrap();
-        assert_eq!(history.alias, "nonexistent:main");
-        assert!(history.snapshots.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_memory_vg_snapshot_selection() {
-        let ns = MemoryNameService::new();
-
-        ns.publish_vg("vg", "main", VgType::Bm25, "{}", &[])
-            .await
-            .unwrap();
-
-        ns.publish_vg_snapshot("vg", "main", "addr-t5", 5)
-            .await
-            .unwrap();
-        ns.publish_vg_snapshot("vg", "main", "addr-t10", 10)
-            .await
-            .unwrap();
-        ns.publish_vg_snapshot("vg", "main", "addr-t20", 20)
-            .await
-            .unwrap();
-
-        let history = ns.lookup_vg_snapshots("vg:main").await.unwrap();
-
-        // Select best snapshot for as_of_t=12 should be t=10
-        let snap = history.select_snapshot(12).unwrap();
-        assert_eq!(snap.index_t, 10);
-
-        // Select best snapshot for as_of_t=25 should be t=20
-        let snap = history.select_snapshot(25).unwrap();
-        assert_eq!(snap.index_t, 20);
-
-        // Select best snapshot for as_of_t=3 should be None
-        assert!(history.select_snapshot(3).is_none());
     }
 
     // =========================================================================

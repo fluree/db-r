@@ -36,7 +36,7 @@ use clap::Parser;
 use fluree_db_core::{FileStorage, StorageRead};
 use fluree_db_nameservice::file::FileNameService;
 use fluree_db_nameservice::VirtualGraphPublisher;
-use fluree_db_query::bm25::{deserialize, Bm25Index};
+use fluree_db_query::bm25::{deserialize, Bm25Index, Bm25Manifest};
 #[cfg(feature = "vector")]
 use fluree_db_query::vector::usearch::{deserialize as vector_deserialize, VectorIndex};
 use fluree_search_protocol::{Capabilities, SearchError, SearchRequest, SearchResponse};
@@ -124,22 +124,53 @@ impl FileIndexLoader {
             nameservice: FileNameService::new(nameservice_path),
         }
     }
+
+    /// Load the BM25 manifest from CAS via the nameservice head pointer.
+    ///
+    /// Returns an empty manifest if the VG has no index_address yet.
+    async fn load_manifest(&self, vg_alias: &str) -> ServiceResult<Bm25Manifest> {
+        let record =
+            self.nameservice
+                .lookup_vg(vg_alias)
+                .await
+                .map_err(|e| ServiceError::Internal {
+                    message: format!("Nameservice error: {}", e),
+                })?;
+
+        let record = match record {
+            Some(r) => r,
+            None => return Ok(Bm25Manifest::new(vg_alias)),
+        };
+
+        let manifest_address = match &record.index_address {
+            Some(addr) => addr.clone(),
+            None => return Ok(Bm25Manifest::new(vg_alias)),
+        };
+
+        let bytes = self
+            .storage
+            .read_bytes(&manifest_address)
+            .await
+            .map_err(|e| ServiceError::Internal {
+                message: format!("Storage error loading manifest: {}", e),
+            })?;
+
+        let manifest: Bm25Manifest =
+            serde_json::from_slice(&bytes).map_err(|e| ServiceError::Internal {
+                message: format!("Manifest deserialize error: {}", e),
+            })?;
+
+        Ok(manifest)
+    }
 }
 
 #[async_trait]
 impl IndexLoader for FileIndexLoader {
     async fn load_index(&self, vg_alias: &str, index_t: i64) -> ServiceResult<Bm25Index> {
-        // Look up the snapshot for this index_t
-        let history = self
-            .nameservice
-            .lookup_vg_snapshots(vg_alias)
-            .await
-            .map_err(|e| ServiceError::Internal {
-                message: format!("Nameservice error: {}", e),
-            })?;
+        // Load the manifest and find the snapshot for this index_t
+        let manifest = self.load_manifest(vg_alias).await?;
 
-        // Find the snapshot with exactly this index_t
-        let entry = history
+        let entry = manifest
             .snapshots
             .iter()
             .find(|e| e.index_t == index_t)
@@ -150,7 +181,7 @@ impl IndexLoader for FileIndexLoader {
         // Load index bytes from storage
         let bytes = self
             .storage
-            .read_bytes(&entry.index_address)
+            .read_bytes(&entry.snapshot_address)
             .await
             .map_err(|e| ServiceError::Internal {
                 message: format!("Storage error: {}", e),
@@ -165,15 +196,8 @@ impl IndexLoader for FileIndexLoader {
     }
 
     async fn get_latest_index_t(&self, vg_alias: &str) -> ServiceResult<Option<i64>> {
-        let history = self
-            .nameservice
-            .lookup_vg_snapshots(vg_alias)
-            .await
-            .map_err(|e| ServiceError::Internal {
-                message: format!("Nameservice error: {}", e),
-            })?;
-
-        Ok(history.head().map(|e| e.index_t))
+        let manifest = self.load_manifest(vg_alias).await?;
+        Ok(manifest.head().map(|e| e.index_t))
     }
 
     async fn find_snapshot_for_t(
@@ -181,22 +205,12 @@ impl IndexLoader for FileIndexLoader {
         vg_alias: &str,
         target_t: i64,
     ) -> ServiceResult<Option<i64>> {
-        let history = self
-            .nameservice
-            .lookup_vg_snapshots(vg_alias)
-            .await
-            .map_err(|e| ServiceError::Internal {
-                message: format!("Nameservice error: {}", e),
-            })?;
-
+        let manifest = self.load_manifest(vg_alias).await?;
         // select_snapshot returns the newest snapshot <= target_t
-        Ok(history.select_snapshot(target_t).map(|e| e.index_t))
+        Ok(manifest.select_snapshot(target_t).map(|e| e.index_t))
     }
 
     async fn get_index_head(&self, vg_alias: &str) -> ServiceResult<Option<i64>> {
-        // For sync purposes, the "head" is the latest available snapshot.
-        // In a production implementation, this would check the nameservice
-        // for the latest committed transaction that should be indexed.
         self.get_latest_index_t(vg_alias).await
     }
 }
@@ -226,30 +240,31 @@ impl FileVectorIndexLoader {
 #[cfg(feature = "vector")]
 #[async_trait]
 impl VectorIndexLoader for FileVectorIndexLoader {
-    async fn load_index(&self, vg_alias: &str, index_t: i64) -> ServiceResult<VectorIndex> {
-        let history = self
-            .nameservice
-            .lookup_vg_snapshots(vg_alias)
-            .await
-            .map_err(|e| ServiceError::Internal {
-                message: format!("Nameservice error: {}", e),
-            })?;
+    async fn load_index(&self, vg_alias: &str, _index_t: i64) -> ServiceResult<VectorIndex> {
+        // Vector is head-only: always load from the nameservice head pointer
+        let record =
+            self.nameservice
+                .lookup_vg(vg_alias)
+                .await
+                .map_err(|e| ServiceError::Internal {
+                    message: format!("Nameservice error: {}", e),
+                })?;
 
-        let entry = history
-            .snapshots
-            .iter()
-            .find(|e| e.index_t == index_t)
-            .ok_or_else(|| ServiceError::Internal {
-                message: format!("No snapshot found for {} at t={}", vg_alias, index_t),
-            })?;
+        let record = record.ok_or_else(|| ServiceError::VgNotFound {
+            alias: vg_alias.to_string(),
+        })?;
 
-        let bytes = self
-            .storage
-            .read_bytes(&entry.index_address)
-            .await
-            .map_err(|e| ServiceError::Internal {
-                message: format!("Storage error: {}", e),
-            })?;
+        let index_address = record.index_address.ok_or_else(|| ServiceError::Internal {
+            message: format!("No index address for vector VG: {}", vg_alias),
+        })?;
+
+        let bytes =
+            self.storage
+                .read_bytes(&index_address)
+                .await
+                .map_err(|e| ServiceError::Internal {
+                    message: format!("Storage error: {}", e),
+                })?;
 
         let index = vector_deserialize(&bytes).map_err(|e| ServiceError::Internal {
             message: format!("Vector index deserialize error: {}", e),
@@ -259,31 +274,21 @@ impl VectorIndexLoader for FileVectorIndexLoader {
     }
 
     async fn get_latest_index_t(&self, vg_alias: &str) -> ServiceResult<Option<i64>> {
-        let history = self
-            .nameservice
-            .lookup_vg_snapshots(vg_alias)
-            .await
-            .map_err(|e| ServiceError::Internal {
-                message: format!("Nameservice error: {}", e),
-            })?;
+        let record =
+            self.nameservice
+                .lookup_vg(vg_alias)
+                .await
+                .map_err(|e| ServiceError::Internal {
+                    message: format!("Nameservice error: {}", e),
+                })?;
 
-        Ok(history.head().map(|e| e.index_t))
-    }
-
-    async fn find_snapshot_for_t(
-        &self,
-        vg_alias: &str,
-        target_t: i64,
-    ) -> ServiceResult<Option<i64>> {
-        let history = self
-            .nameservice
-            .lookup_vg_snapshots(vg_alias)
-            .await
-            .map_err(|e| ServiceError::Internal {
-                message: format!("Nameservice error: {}", e),
-            })?;
-
-        Ok(history.select_snapshot(target_t).map(|e| e.index_t))
+        Ok(record.and_then(|r| {
+            if r.index_address.is_some() {
+                Some(r.index_t)
+            } else {
+                None
+            }
+        }))
     }
 
     async fn get_index_head(&self, vg_alias: &str) -> ServiceResult<Option<i64>> {

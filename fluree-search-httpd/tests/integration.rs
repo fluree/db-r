@@ -46,7 +46,7 @@ mod http_tests {
     use axum::{Json, Router};
     use fluree_db_core::StorageRead;
     use fluree_db_nameservice::VirtualGraphPublisher;
-    use fluree_db_query::bm25::{deserialize, Bm25Index};
+    use fluree_db_query::bm25::{deserialize, Bm25Index, Bm25Manifest};
     use fluree_search_service::backend::{
         Bm25Backend, Bm25BackendConfig, IndexLoader, SearchBackend,
     };
@@ -104,20 +104,50 @@ mod http_tests {
                 nameservice: FileNameService::new(ns_path),
             }
         }
+
+        /// Load the BM25 manifest from CAS via the nameservice head pointer.
+        async fn load_manifest(&self, vg_alias: &str) -> ServiceResult<Bm25Manifest> {
+            let record =
+                self.nameservice
+                    .lookup_vg(vg_alias)
+                    .await
+                    .map_err(|e| ServiceError::Internal {
+                        message: format!("Nameservice error: {}", e),
+                    })?;
+
+            let record = match record {
+                Some(r) => r,
+                None => return Ok(Bm25Manifest::new(vg_alias)),
+            };
+
+            let manifest_address = match &record.index_address {
+                Some(addr) => addr.clone(),
+                None => return Ok(Bm25Manifest::new(vg_alias)),
+            };
+
+            let bytes = self
+                .storage
+                .read_bytes(&manifest_address)
+                .await
+                .map_err(|e| ServiceError::Internal {
+                    message: format!("Storage error loading manifest: {}", e),
+                })?;
+
+            let manifest: Bm25Manifest =
+                serde_json::from_slice(&bytes).map_err(|e| ServiceError::Internal {
+                    message: format!("Manifest deserialize error: {}", e),
+                })?;
+
+            Ok(manifest)
+        }
     }
 
     #[async_trait]
     impl IndexLoader for TestIndexLoader {
         async fn load_index(&self, vg_alias: &str, index_t: i64) -> ServiceResult<Bm25Index> {
-            let history = self
-                .nameservice
-                .lookup_vg_snapshots(vg_alias)
-                .await
-                .map_err(|e| ServiceError::Internal {
-                    message: format!("Nameservice error: {}", e),
-                })?;
+            let manifest = self.load_manifest(vg_alias).await?;
 
-            let entry = history
+            let entry = manifest
                 .snapshots
                 .iter()
                 .find(|e| e.index_t == index_t)
@@ -127,7 +157,7 @@ mod http_tests {
 
             let bytes = self
                 .storage
-                .read_bytes(&entry.index_address)
+                .read_bytes(&entry.snapshot_address)
                 .await
                 .map_err(|e| ServiceError::Internal {
                     message: format!("Storage error: {}", e),
@@ -141,15 +171,8 @@ mod http_tests {
         }
 
         async fn get_latest_index_t(&self, vg_alias: &str) -> ServiceResult<Option<i64>> {
-            let history = self
-                .nameservice
-                .lookup_vg_snapshots(vg_alias)
-                .await
-                .map_err(|e| ServiceError::Internal {
-                    message: format!("Nameservice error: {}", e),
-                })?;
-
-            Ok(history.head().map(|e| e.index_t))
+            let manifest = self.load_manifest(vg_alias).await?;
+            Ok(manifest.head().map(|e| e.index_t))
         }
 
         async fn find_snapshot_for_t(
@@ -157,15 +180,8 @@ mod http_tests {
             vg_alias: &str,
             target_t: i64,
         ) -> ServiceResult<Option<i64>> {
-            let history = self
-                .nameservice
-                .lookup_vg_snapshots(vg_alias)
-                .await
-                .map_err(|e| ServiceError::Internal {
-                    message: format!("Nameservice error: {}", e),
-                })?;
-
-            Ok(history.select_snapshot(target_t).map(|e| e.index_t))
+            let manifest = self.load_manifest(vg_alias).await?;
+            Ok(manifest.select_snapshot(target_t).map(|e| e.index_t))
         }
 
         async fn get_index_head(&self, vg_alias: &str) -> ServiceResult<Option<i64>> {

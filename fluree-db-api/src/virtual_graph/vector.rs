@@ -170,9 +170,9 @@ where
             "Built vector index"
         );
 
-        // 4. Persist index snapshot (versioned for time-travel support)
+        // 4. Persist index snapshot
         let index_address = self
-            .persist_vector_index_versioned(&vg_alias, &index, source_t)
+            .write_vector_snapshot_blob(&vg_alias, &index, source_t)
             .await?;
 
         info!(
@@ -279,11 +279,12 @@ where
         }
     }
 
-    /// Persist a vector index snapshot to storage with versioned path.
+    /// Write a vector index snapshot blob to storage.
     ///
-    /// Creates a snapshot at `virtual-graphs/{name}/{branch}/vector/t{index_t}/snapshot.bin`
-    /// and publishes the snapshot to the history file for time-travel support.
-    pub(crate) async fn persist_vector_index_versioned(
+    /// Creates a snapshot at `virtual-graphs/{name}/{branch}/vector/t{index_t}/snapshot.bin`.
+    /// Returns the storage address. Caller is responsible for publishing
+    /// the head pointer via nameservice.
+    pub(crate) async fn write_vector_snapshot_blob(
         &self,
         vg_alias: &str,
         index: &VectorIndex,
@@ -306,11 +307,6 @@ where
         // Write to storage
         self.storage().write_bytes(&address, &bytes).await?;
 
-        // Publish snapshot to history (for time-travel selection)
-        self.nameservice
-            .publish_vg_snapshot(&name, &branch, &address, index_t)
-            .await?;
-
         Ok(address)
     }
 }
@@ -325,39 +321,9 @@ where
     S: Storage + Clone + 'static,
     N: NameService + VirtualGraphPublisher,
 {
-    /// Load a vector index for a specific `as_of_t` using snapshot selection.
-    ///
-    /// This is the time-travel aware version of `load_vector_index`.
-    pub async fn load_vector_index_at(
-        &self,
-        vg_alias: &str,
-        as_of_t: i64,
-    ) -> Result<(Arc<VectorIndex>, i64)> {
-        use fluree_db_query::vector::usearch::deserialize;
-
-        // Look up snapshot history
-        let history = self.nameservice.lookup_vg_snapshots(vg_alias).await?;
-
-        // Select appropriate snapshot
-        let selection = history.select_snapshot(as_of_t).ok_or_else(|| {
-            crate::ApiError::NotFound(format!(
-                "No vector snapshot available for {} at t={}",
-                vg_alias, as_of_t
-            ))
-        })?;
-
-        // Load from storage
-        let bytes = self.storage().read_bytes(&selection.index_address).await?;
-
-        // Deserialize
-        let index = deserialize(&bytes)?;
-
-        Ok((Arc::new(index), selection.index_t))
-    }
-
     /// Load a vector index from storage (head snapshot).
     ///
-    /// For time-travel queries, use `load_vector_index_at` instead.
+    /// Vector indexes are head-only and do not support time-travel queries.
     pub async fn load_vector_index(&self, vg_alias: &str) -> Result<Arc<VectorIndex>> {
         use fluree_db_query::vector::usearch::deserialize;
 
@@ -441,7 +407,7 @@ where
     pub async fn sync_vector_index(&self, vg_alias: &str) -> Result<VectorSyncResult> {
         use fluree_db_novelty::trace_commits;
         use fluree_db_query::bm25::CompiledPropertyDeps;
-        use fluree_db_query::vector::usearch::{deserialize, serialize};
+        use fluree_db_query::vector::usearch::deserialize;
         use futures::StreamExt;
 
         info!(vg_alias = %vg_alias, "Starting vector index sync");
@@ -591,23 +557,16 @@ where
             "Applied incremental update"
         );
 
-        // 10. Persist updated index
+        // 10. Persist updated index and update head pointer
+        let new_address = self
+            .write_vector_snapshot_blob(vg_alias, &index, ledger_t)
+            .await?;
+
         let (name, branch) = core_alias::split_alias(vg_alias).map_err(|e| {
             crate::ApiError::config(format!("Invalid virtual graph alias '{}': {}", vg_alias, e))
         })?;
-        let new_address = format!(
-            "fluree:file://virtual-graphs/{}/{}/vector/t{}/snapshot.bin",
-            name, branch, ledger_t
-        );
-        let bytes = serialize(&index)?;
-        self.storage().write_bytes(&new_address, &bytes).await?;
 
-        // 11. Publish snapshot to history
-        self.nameservice
-            .publish_vg_snapshot(&name, &branch, &new_address, ledger_t)
-            .await?;
-
-        // 12. Update VG index record (head pointer)
+        // 11. Update VG index record (head pointer)
         self.nameservice
             .publish_vg_index(&name, &branch, &new_address, ledger_t)
             .await?;
@@ -634,7 +593,7 @@ where
     ///
     /// Rebuilds the entire index from scratch by re-running the indexing query.
     pub async fn resync_vector_index(&self, vg_alias: &str) -> Result<VectorSyncResult> {
-        use fluree_db_query::vector::usearch::{deserialize, serialize};
+        use fluree_db_query::vector::usearch::deserialize;
 
         info!(vg_alias = %vg_alias, "Starting full vector index resync");
 
@@ -743,23 +702,16 @@ where
             "Built new vector index"
         );
 
-        // 6. Persist new index
+        // 6. Persist new index and update head pointer
+        let new_address = self
+            .write_vector_snapshot_blob(vg_alias, &index, ledger_t)
+            .await?;
+
         let (name, branch) = core_alias::split_alias(vg_alias).map_err(|e| {
             crate::ApiError::config(format!("Invalid virtual graph alias '{}': {}", vg_alias, e))
         })?;
-        let new_address = format!(
-            "fluree:file://virtual-graphs/{}/{}/vector/t{}/snapshot.bin",
-            name, branch, ledger_t
-        );
-        let bytes = serialize(&index)?;
-        self.storage().write_bytes(&new_address, &bytes).await?;
 
-        // 7. Publish snapshot to history
-        self.nameservice
-            .publish_vg_snapshot(&name, &branch, &new_address, ledger_t)
-            .await?;
-
-        // 8. Update VG index record
+        // 7. Update VG index record (head pointer)
         self.nameservice
             .publish_vg_index(&name, &branch, &new_address, ledger_t)
             .await?;

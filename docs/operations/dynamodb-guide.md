@@ -4,7 +4,7 @@
 
 Fluree supports Amazon DynamoDB as a nameservice backend for storing ledger metadata. The DynamoDB nameservice provides:
 
-- **Atomic conditional updates**: No contention between transactors and indexers
+- **Atomic conditional updates**: Reduced logical contention between transactors and indexers
 - **Strong consistency reads**: Always see the latest data
 - **High availability**: DynamoDB's built-in redundancy and durability
 - **Scalability**: Handles high throughput without coordination
@@ -17,7 +17,21 @@ DynamoDB solves this because:
 
 1. **Separate attributes**: Commit data and index data are stored as separate DynamoDB attributes
 2. **Conditional updates**: Each update only proceeds if the new t-value is greater than the existing one
-3. **No read-modify-write cycles**: Updates are atomic, eliminating race conditions
+3. **No read-modify-write cycles (for the write itself)**: Updates are atomic and safe under concurrency; callers should still expect occasional conditional-update conflicts under contention and retry where appropriate
+
+## Virtual Graphs (VGs) and “index_address”
+
+Virtual graphs are also stored in the nameservice table. Under the **VG-owned manifest** design, the nameservice does **not** store snapshot history for virtual graphs.
+
+- For ledgers, `index_address` points to a ledger index root.
+- For VGs, `index_address` points to a **VG-owned root/manifest** in storage (opaque to nameservice).
+- Snapshot history (if any) is stored in storage and managed by the VG implementation (e.g., BM25). Vector search is head-only in v1.
+
+This keeps DynamoDB schema stable: **no unbounded “snapshot history” list is stored in the DynamoDB item**.
+
+## Important note on contention
+
+Even when commit and index updates touch different attributes, DynamoDB still serializes writes per item. This reduces *logical* conflicts (watermark/CAS failures) but does not eliminate *physical* contention at the item level under very high write rates.
 
 ## Table Setup
 
