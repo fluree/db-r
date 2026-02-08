@@ -13,7 +13,6 @@ use fluree_db_core::{FlakeValue, Storage};
 use std::sync::Arc;
 
 use super::compare::compare_values;
-use super::dispatch::{eval_function, eval_function_to_bool};
 use super::helpers::{has_unbound_vars, WELL_KNOWN_DATATYPES};
 use super::value::ComparableValue;
 
@@ -298,7 +297,7 @@ pub fn evaluate<S: Storage>(
             }
         }
 
-        Expression::Call { func, args } => eval_function_to_bool(func, args, row, ctx),
+        Expression::Call { func, args } => func.eval_to_bool(args, row, ctx),
     }
 }
 
@@ -417,7 +416,7 @@ impl Expression {
                 Ok(Some(ComparableValue::Bool(evaluate(self, row, ctx)?)))
             }
 
-            Expression::Call { func, args } => eval_function(func, args, row, ctx),
+            Expression::Call { func, args } => func.eval(args, row, ctx),
         }
     }
 }
