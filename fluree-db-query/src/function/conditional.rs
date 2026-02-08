@@ -8,7 +8,6 @@ use crate::error::Result;
 use crate::ir::{Expression, Function};
 use fluree_db_core::Storage;
 
-use super::eval::evaluate;
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
@@ -20,7 +19,7 @@ impl Function {
         ctx: Option<&ExecutionContext<'_, S>>,
     ) -> Result<Option<ComparableValue>> {
         check_arity(args, 3, "IF")?;
-        let cond = evaluate(&args[0], row, ctx)?;
+        let cond = args[0].eval_to_bool(row, ctx)?;
         if cond {
             args[1].eval_to_comparable(row, ctx)
         } else {

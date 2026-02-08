@@ -32,5 +32,4 @@ mod value;
 mod vector;
 
 // Re-export public API
-pub use eval::evaluate;
 pub use value::{ArithmeticError, ComparableValue, NullValueError};

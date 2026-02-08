@@ -89,7 +89,6 @@ pub use explain::{
     SelectivityInputs,
 };
 pub use filter::FilterOperator;
-pub use function::evaluate as evaluate_filter;
 pub use graph::GraphOperator;
 pub use graph_view::{AsOf, BaseView, GraphView, ResolvedGraphView, WithPolicy, WithReasoning};
 pub use group_aggregate::{GroupAggregateOperator, StreamingAggSpec};

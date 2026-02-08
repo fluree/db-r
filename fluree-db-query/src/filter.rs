@@ -27,8 +27,6 @@ use async_trait::async_trait;
 use fluree_db_core::Storage;
 use std::sync::Arc;
 
-use crate::function::evaluate;
-
 /// Filter operator - applies a predicate to each row from child
 ///
 /// Rows where the filter evaluates to `false` or encounters an error
@@ -96,7 +94,8 @@ impl<S: Storage + 'static> Operator<S> for FilterOperator<S> {
             let keep_indices: Vec<usize> = (0..batch.len())
                 .filter_map(|row_idx| {
                     let row = batch.row_view(row_idx)?;
-                    evaluate(&self.expr, &row, Some(ctx))
+                    self.expr
+                        .eval_to_bool(&row, Some(ctx))
                         .ok()
                         .filter(|&pass| pass)
                         .map(|_| row_idx)
