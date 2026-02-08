@@ -210,25 +210,27 @@ pub enum ComparableValue {
     },
 }
 
-impl ComparableValue {
-    /// Compute the Effective Boolean Value (EBV) of this value.
-    ///
-    /// EBV is used in SPARQL FILTER and conditional expressions.
-    /// See: <https://www.w3.org/TR/sparql11-query/#ebv>
-    pub fn ebv(&self) -> bool {
-        match self {
-            ComparableValue::Bool(b) => *b,
+/// Compute the Effective Boolean Value (EBV) of a ComparableValue.
+///
+/// EBV is used in SPARQL FILTER and conditional expressions.
+/// See: <https://www.w3.org/TR/sparql11-query/#ebv>
+impl From<ComparableValue> for bool {
+    fn from(value: ComparableValue) -> bool {
+        match value {
+            ComparableValue::Bool(b) => b,
             ComparableValue::String(s) => !s.is_empty(),
             ComparableValue::Iri(s) => !s.is_empty(),
-            ComparableValue::Long(n) => *n != 0,
-            ComparableValue::Double(d) => !d.is_nan() && *d != 0.0,
+            ComparableValue::Long(n) => n != 0,
+            ComparableValue::Double(d) => !d.is_nan() && d != 0.0,
             ComparableValue::BigInt(n) => !n.is_zero(),
             ComparableValue::Decimal(d) => !d.is_zero(),
             // Other types: Sid, Vector, DateTime, etc. are truthy if present
             _ => true,
         }
     }
+}
 
+impl ComparableValue {
     /// Get a string slice if this value is a String, Iri, or TypedLiteral containing a string.
     pub fn as_str(&self) -> Option<&str> {
         match self {
@@ -483,23 +485,23 @@ mod tests {
 
     #[test]
     fn test_ebv_bool() {
-        assert!(ComparableValue::Bool(true).ebv());
-        assert!(!ComparableValue::Bool(false).ebv());
+        assert!(bool::from(ComparableValue::Bool(true)));
+        assert!(!bool::from(ComparableValue::Bool(false)));
     }
 
     #[test]
     fn test_ebv_numeric() {
-        assert!(ComparableValue::Long(1).ebv());
-        assert!(!ComparableValue::Long(0).ebv());
-        assert!(ComparableValue::Double(0.1).ebv());
-        assert!(!ComparableValue::Double(0.0).ebv());
-        assert!(!ComparableValue::Double(f64::NAN).ebv());
+        assert!(bool::from(ComparableValue::Long(1)));
+        assert!(!bool::from(ComparableValue::Long(0)));
+        assert!(bool::from(ComparableValue::Double(0.1)));
+        assert!(!bool::from(ComparableValue::Double(0.0)));
+        assert!(!bool::from(ComparableValue::Double(f64::NAN)));
     }
 
     #[test]
     fn test_ebv_string() {
-        assert!(ComparableValue::String(Arc::from("hello")).ebv());
-        assert!(!ComparableValue::String(Arc::from("")).ebv());
+        assert!(bool::from(ComparableValue::String(Arc::from("hello"))));
+        assert!(!bool::from(ComparableValue::String(Arc::from(""))));
     }
 
     #[test]

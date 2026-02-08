@@ -117,6 +117,6 @@ impl Function {
         ctx: Option<&ExecutionContext<'_, S>>,
     ) -> Result<bool> {
         let value = self.eval(args, row, ctx)?;
-        Ok(value.map(|v| v.ebv()).unwrap_or(false))
+        Ok(value.is_some_and(Into::into))
     }
 }
