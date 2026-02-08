@@ -255,7 +255,7 @@ impl Expression {
         row: &RowView,
         ctx: Option<&ExecutionContext<'_, S>>,
     ) -> Binding {
-        match self.eval_to_binding_strict(row, ctx) {
+        match self.try_eval_to_binding(row, ctx) {
             Ok(binding) => binding,
             Err(_) => Binding::Unbound,
         }
@@ -265,7 +265,7 @@ impl Expression {
     ///
     /// Unlike [`eval_to_binding`], this returns errors rather than converting
     /// them to `Binding::Unbound`.
-    pub fn eval_to_binding_strict<S: Storage>(
+    pub fn try_eval_to_binding<S: Storage>(
         &self,
         row: &RowView,
         ctx: Option<&ExecutionContext<'_, S>>,

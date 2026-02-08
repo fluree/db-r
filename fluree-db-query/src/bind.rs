@@ -134,7 +134,7 @@ impl<S: Storage + 'static> Operator<S> for BindOperator<S> {
 
                 // Evaluate expression (errors become Unbound)
                 let computed = if ctx.strict_bind_errors {
-                    self.expr.eval_to_binding_strict(&row_view, Some(ctx))?
+                    self.expr.try_eval_to_binding(&row_view, Some(ctx))?
                 } else {
                     self.expr.eval_to_binding(&row_view, Some(ctx))
                 };
