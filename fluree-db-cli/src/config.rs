@@ -235,6 +235,18 @@ use fluree_db_nameservice_sync::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Configuration for a tracked (remote-only) ledger.
+///
+/// Tracked ledgers have no local data — all operations are proxied to the
+/// remote server via HTTP. This is distinct from upstreams, which track
+/// a local ledger's relationship to a remote for ref-level sync.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrackedLedgerConfig {
+    pub local_alias: String,
+    pub remote: String,
+    pub remote_alias: String,
+}
+
 /// TOML structure for sync configuration in config.toml
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SyncToml {
@@ -242,6 +254,8 @@ struct SyncToml {
     remotes: Vec<RemoteConfigToml>,
     #[serde(default)]
     upstreams: Vec<UpstreamConfig>,
+    #[serde(default)]
+    tracked_ledgers: Vec<TrackedLedgerConfig>,
 }
 
 /// TOML-friendly remote config (converts RemoteName to String)
@@ -364,7 +378,23 @@ impl TomlSyncConfigStore {
             upstreams_aot.push(table);
         }
 
-        // Update only the remotes and upstreams keys, preserving everything else
+        // Build tracked_ledgers array of tables ([[tracked_ledgers]])
+        let mut tracked_aot = ArrayOfTables::new();
+        for tracked in &config.tracked_ledgers {
+            let mut table = Table::new();
+            table.insert(
+                "local_alias",
+                Value::from(tracked.local_alias.as_str()).into(),
+            );
+            table.insert("remote", Value::from(tracked.remote.as_str()).into());
+            table.insert(
+                "remote_alias",
+                Value::from(tracked.remote_alias.as_str()).into(),
+            );
+            tracked_aot.push(table);
+        }
+
+        // Update only sync-related keys, preserving everything else
         if config.remotes.is_empty() {
             doc.remove("remotes");
         } else {
@@ -375,6 +405,12 @@ impl TomlSyncConfigStore {
             doc.remove("upstreams");
         } else {
             doc["upstreams"] = Item::ArrayOfTables(upstreams_aot);
+        }
+
+        if config.tracked_ledgers.is_empty() {
+            doc.remove("tracked_ledgers");
+        } else {
+            doc["tracked_ledgers"] = Item::ArrayOfTables(tracked_aot);
         }
 
         fs::write(&path, doc.to_string())
@@ -469,5 +505,53 @@ impl SyncConfigStore for TomlSyncConfigStore {
     async fn list_upstreams(&self) -> fluree_db_nameservice_sync::Result<Vec<UpstreamConfig>> {
         let config = self.read_sync_config();
         Ok(config.upstreams)
+    }
+}
+
+// --- Tracked Ledger Operations (CLI-only, not part of SyncConfigStore trait) ---
+
+impl TomlSyncConfigStore {
+    /// List all tracked ledgers.
+    pub fn tracked_ledgers(&self) -> Vec<TrackedLedgerConfig> {
+        self.read_sync_config().tracked_ledgers
+    }
+
+    /// Get a tracked ledger by local alias.
+    pub fn get_tracked(&self, local_alias: &str) -> Option<TrackedLedgerConfig> {
+        self.read_sync_config()
+            .tracked_ledgers
+            .into_iter()
+            .find(|t| t.local_alias == local_alias)
+    }
+
+    /// Add a tracked ledger. Replaces if the alias already exists.
+    pub fn add_tracked(&self, tracked: TrackedLedgerConfig) -> CliResult<()> {
+        let mut config = self.read_sync_config();
+
+        if let Some(pos) = config
+            .tracked_ledgers
+            .iter()
+            .position(|t| t.local_alias == tracked.local_alias)
+        {
+            config.tracked_ledgers[pos] = tracked;
+        } else {
+            config.tracked_ledgers.push(tracked);
+        }
+
+        self.write_sync_config(&config)
+    }
+
+    /// Remove a tracked ledger by local alias. Returns true if it existed.
+    pub fn remove_tracked(&self, local_alias: &str) -> CliResult<bool> {
+        let mut config = self.read_sync_config();
+        let before = config.tracked_ledgers.len();
+        config
+            .tracked_ledgers
+            .retain(|t| t.local_alias != local_alias);
+        let removed = config.tracked_ledgers.len() < before;
+        if removed {
+            self.write_sync_config(&config)?;
+        }
+        Ok(removed)
     }
 }

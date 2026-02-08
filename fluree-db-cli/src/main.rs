@@ -6,6 +6,7 @@ mod detect;
 mod error;
 mod input;
 mod output;
+mod remote_client;
 
 use clap::Parser;
 use cli::{Cli, Commands};
@@ -49,9 +50,9 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             commands::list::run(&fluree_dir).await
         }
 
-        Commands::Info { ledger } => {
+        Commands::Info { ledger, remote } => {
             let fluree_dir = config::require_fluree_dir_or_global(config_path)?;
-            commands::info::run(ledger.as_deref(), &fluree_dir).await
+            commands::info::run(ledger.as_deref(), &fluree_dir, remote.as_deref()).await
         }
 
         Commands::Drop { name, force } => {
@@ -64,6 +65,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             expr,
             message,
             format,
+            remote,
         } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             commands::insert::run(
@@ -72,6 +74,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
                 message.as_deref(),
                 format.as_deref(),
                 &fluree_dir,
+                remote.as_deref(),
             )
             .await
         }
@@ -81,6 +84,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             expr,
             message,
             format,
+            remote,
         } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             commands::upsert::run(
@@ -89,6 +93,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
                 message.as_deref(),
                 format.as_deref(),
                 &fluree_dir,
+                remote.as_deref(),
             )
             .await
         }
@@ -100,6 +105,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             sparql,
             fql,
             at,
+            remote,
         } => {
             let fluree_dir = config::require_fluree_dir_or_global(config_path)?;
             commands::query::run(
@@ -110,6 +116,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
                 fql,
                 at.as_deref(),
                 &fluree_dir,
+                remote.as_deref(),
             )
             .await
         }
@@ -189,6 +196,11 @@ async fn run(cli: Cli) -> error::CliResult<()> {
         Commands::Push { ledger } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             commands::sync::run_push(ledger.as_deref(), &fluree_dir).await
+        }
+
+        Commands::Track { action } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::track::run(action, &fluree_dir).await
         }
     }
 }

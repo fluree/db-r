@@ -42,6 +42,15 @@ impl StorageProxyPrincipal {
     pub fn is_authorized_for_ledger(&self, alias: &str) -> bool {
         self.storage_all || self.storage_ledgers.contains(alias)
     }
+
+    /// Convert to a transport-agnostic [`BlockAccessScope`] for use with
+    /// the `block_fetch` API.
+    pub fn to_block_access_scope(&self) -> fluree_db_api::BlockAccessScope {
+        fluree_db_api::BlockAccessScope {
+            all_ledgers: self.storage_all,
+            authorized_ledgers: self.storage_ledgers.clone(),
+        }
+    }
 }
 
 /// Storage proxy Bearer token extractor.

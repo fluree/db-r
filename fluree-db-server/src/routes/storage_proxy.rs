@@ -24,317 +24,50 @@ use axum::{
     response::Response,
     Json,
 };
-use fluree_db_api::{policy_builder, NameService, QueryConnectionOptions, StorageRead};
+use fluree_db_api::block_fetch::{self, BlockContent, EnforcementMode, LedgerBlockContext};
+use fluree_db_api::NameService;
 use fluree_db_core::flake::Flake;
-use fluree_db_core::{NoOverlay, OverlayProvider, Tracker};
-use fluree_db_indexer::run_index::leaf::read_leaf_header;
-use fluree_db_indexer::run_index::leaflet::{
-    decode_leaflet, decode_leaflet_region1, LeafletHeader,
-};
-use fluree_db_indexer::run_index::types::DecodedRow;
-use fluree_db_indexer::run_index::{BinaryIndexStore, RunSortOrder};
-use fluree_db_nameservice::STORAGE_SEGMENT_GRAPH_SOURCES;
-use fluree_db_query::QueryPolicyEnforcer;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::error::ServerError;
-use crate::extract::{StorageProxyBearer, StorageProxyPrincipal};
+use crate::extract::StorageProxyBearer;
 use crate::state::AppState;
 use fluree_db_core::serde::flakes_transport::{encode_flakes, TransportFlake};
 
 // ============================================================================
-// Address Context Parsing
+// Block Fetch Error Mapping
 // ============================================================================
 
-/// Context inferred from a storage address.
-///
-/// Addresses encode their context in the path structure:
-/// - Commits: `fluree:file://{ledger_address}/commit/...`
-/// - Indexes: `fluree:file://{ledger}/{branch}/index/...`
-/// - Graph source artifacts: `fluree:file://graph-sources/{name}/{branch}/...`
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AddressContext {
-    /// Ledger commit: `fluree:file://{ledger_address}/commit/...`
-    LedgerCommit { ledger_address: String },
-    /// Ledger index: `fluree:file://{ledger}/{branch}/index/...`
-    LedgerIndex { ledger: String, branch: String },
-    /// Graph source artifact: `fluree:file://graph-sources/{name}/{branch}/...`
-    GraphSourceArtifact { name: String, branch: String },
-    /// Unknown format
-    Unknown,
-}
-
-impl AddressContext {
-    /// Get the ledger address if this is a ledger address context
-    pub fn ledger_address(&self) -> Option<String> {
-        match self {
-            AddressContext::LedgerCommit { ledger_address } => Some(ledger_address.clone()),
-            AddressContext::LedgerIndex { ledger, branch } => {
-                Some(format!("{}:{}", ledger, branch))
-            }
-            _ => None,
-        }
-    }
-
-    /// Check if this is a graph source artifact address
-    #[cfg(test)]
-    pub fn is_graph_source(&self) -> bool {
-        matches!(self, AddressContext::GraphSourceArtifact { .. })
-    }
-}
-
-/// Parse address to determine context and authorization scope.
-///
-/// This function is security-critical: it determines what ledger/graph source
-/// an address belongs to for authorization decisions.
-///
-/// # Examples
-/// ```ignore
-/// parse_address_context("fluree:file://books:main/commit/abc.json")
-///     // => LedgerCommit { alias: "books:main" }
-///
-/// parse_address_context("fluree:file://books/main/index/abc.json")
-///     // => LedgerIndex { ledger: "books", branch: "main" }
-///
-/// parse_address_context("fluree:file://graph-sources/search/main/snapshot.bin")
-///     // => GraphSourceArtifact { name: "search", branch: "main" }
-/// ```
-pub fn parse_address_context(address: &str) -> AddressContext {
-    let Some(path) = address.strip_prefix("fluree:file://") else {
-        return AddressContext::Unknown;
-    };
-
-    // Graph source format: graph-sources/{name}/{branch}/...
-    let gs_prefix = format!("{STORAGE_SEGMENT_GRAPH_SOURCES}/");
-    if let Some(gs_path) = path.strip_prefix(gs_prefix.as_str()) {
-        let parts: Vec<&str> = gs_path.splitn(3, '/').collect();
-        if parts.len() >= 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-            return AddressContext::GraphSourceArtifact {
-                name: parts[0].to_string(),
-                branch: parts[1].to_string(),
-            };
-        }
-        return AddressContext::Unknown;
-    }
-
-    // Commit format: {ledger_address}/commit/... (address may contain :)
-    if path.contains("/commit/") {
-        if let Some(addr) = path.split("/commit/").next() {
-            if !addr.is_empty() {
-                // New canonical layout uses `ledger/branch/commit/...` (no ':').
-                // Convert to `ledger:branch` for authorization + ledger_cached lookup.
-                if !addr.contains(':') && addr.contains('/') {
-                    let parts: Vec<&str> = addr.splitn(2, '/').collect();
-                    if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-                        return AddressContext::LedgerCommit {
-                            ledger_address: format!("{}:{}", parts[0], parts[1]),
-                        };
-                    }
-                }
-                return AddressContext::LedgerCommit {
-                    ledger_address: addr.to_string(),
-                };
+/// Map `BlockFetchError` to `ServerError` for HTTP responses.
+fn map_block_fetch_error(e: block_fetch::BlockFetchError) -> ServerError {
+    use block_fetch::BlockFetchError::*;
+    match e {
+        NotFound(msg) => ServerError::not_found(msg),
+        StorageRead(e) => {
+            if matches!(e, fluree_db_core::Error::NotFound(_)) {
+                ServerError::not_found("Block not found")
+            } else {
+                ServerError::internal(format!("Storage: {e}"))
             }
         }
-        return AddressContext::Unknown;
-    }
-
-    // Index format: {ledger}/{branch}/index/... (colon normalized to /)
-    if path.contains("/index/") {
-        if let Some(prefix) = path.split("/index/").next() {
-            let parts: Vec<&str> = prefix.splitn(2, '/').collect();
-            if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-                return AddressContext::LedgerIndex {
-                    ledger: parts[0].to_string(),
-                    branch: parts[1].to_string(),
-                };
-            }
+        UnknownAddress(_) | GraphSourceNotAuthorized | LedgerMismatch { .. } => {
+            // No existence leak — unauthorized/unknown → 404
+            ServerError::not_found("Block not found")
         }
-        return AddressContext::Unknown;
-    }
-
-    // Address doesn't match any known format
-    AddressContext::Unknown
-}
-
-/// Check if principal is authorized for this address.
-///
-/// # Returns
-/// - `true` if the principal can access this address
-/// - `false` if unauthorized (should return 404, not 403)
-fn authorize_address(principal: &StorageProxyPrincipal, context: &AddressContext) -> bool {
-    match context {
-        AddressContext::LedgerCommit { ledger_address } => {
-            principal.is_authorized_for_ledger(ledger_address)
+        MissingBinaryStore => {
+            ServerError::not_acceptable("Leaf decoding unavailable for this ledger")
         }
-        AddressContext::LedgerIndex { ledger, branch } => {
-            let addr = format!("{}:{}", ledger, branch);
-            principal.is_authorized_for_ledger(&addr)
+        MissingDbContext => ServerError::internal("Missing database context for policy filtering"),
+        LeafRawForbidden => {
+            // Should be unreachable — server always goes through fetch_and_decode_block
+            // which handles enforcement internally. Map to not_acceptable as safe fallback.
+            ServerError::not_acceptable("Raw leaf bytes not available under policy enforcement")
         }
-        AddressContext::GraphSourceArtifact { .. } => {
-            // Graph source artifacts not authorized in v1 (ledger-only scope)
-            // Add fluree.storage.graph_sources claim in v2 if needed
-            false
-        }
-        AddressContext::Unknown => {
-            // Unknown address formats are never authorized (security)
-            false
-        }
+        LeafDecode(e) => ServerError::internal(format!("Leaf decode: {e}")),
+        PolicyBuild(msg) => ServerError::internal(format!("Policy: {msg}")),
+        PolicyFilter(msg) => ServerError::internal(format!("Policy filter: {msg}")),
     }
-}
-
-// ============================================================================
-// Filterability Detection
-// ============================================================================
-
-/// Result of attempting to parse block as filterable leaf
-#[derive(Debug)]
-pub enum FilterableBlock {
-    /// Successfully parsed as leaf - contains the flakes
-    Leaf(Vec<Flake>),
-    /// Graph source artifact (detected from address context)
-    GraphSourceArtifact,
-    /// Not a filterable leaf (branch, unknown, or parse failed)
-    NotFilterable,
-}
-
-/// Attempt to parse block as a filterable leaf
-///
-/// Uses the existing leaf parser from fluree-db-core. If parsing succeeds,
-/// the block is filterable. This avoids having to guess JSON structure.
-///
-/// # Fast paths
-/// - Graph source addresses return immediately (no parse attempt)
-/// - if the ledger snapshot has no binary store (v2), skip
-/// - octet-stream requests skip this entirely (called from handler)
-fn try_parse_as_leaf(
-    bytes: Vec<u8>,
-    address_context: &AddressContext,
-    binary_store: Option<&BinaryIndexStore>,
-) -> FilterableBlock {
-    // Fast path: graph source artifacts detected from address pattern
-    if matches!(address_context, AddressContext::GraphSourceArtifact { .. }) {
-        return FilterableBlock::GraphSourceArtifact;
-    }
-
-    // Only ledger addresses (commit or index) are candidates for filtering
-    if address_context.ledger_address().is_none() {
-        return FilterableBlock::NotFilterable;
-    }
-
-    let Some(store) = binary_store else {
-        // v1 / not indexed: can't decode binary leaflets into flakes
-        return FilterableBlock::NotFilterable;
-    };
-
-    // Attempt to parse as a binary leaf (FLI1).
-    //
-    // Note: Leaf blocks are binary (`FLI1`) and contain multiple compressed leaflets.
-    // If this isn't a leaf, decoding will fail and we treat it as NotFilterable.
-    match decode_fli1_leaf_to_flakes(bytes.as_slice(), store) {
-        Ok(flakes) => FilterableBlock::Leaf(flakes),
-        Err(_) => FilterableBlock::NotFilterable,
-    }
-}
-
-// ============================================================================
-// Binary leaf decoding (FLI1 → Vec<Flake>)
-// ============================================================================
-
-fn decode_fli1_leaf_to_flakes(
-    leaf_bytes: &[u8],
-    store: &BinaryIndexStore,
-) -> std::io::Result<Vec<Flake>> {
-    // Read leaf header (validates magic/version).
-    let header = read_leaf_header(leaf_bytes)?;
-    if header.leaflet_dir.is_empty() {
-        return Ok(vec![]);
-    }
-
-    // Auto-detect sort order by decoding Region 1 of the first leaflet and
-    // validating it against the leaflet header's recorded first row values.
-    let order = detect_leaf_sort_order(leaf_bytes, &header)?;
-
-    let mut out = Vec::with_capacity(header.total_rows as usize);
-
-    for dir_entry in &header.leaflet_dir {
-        let start = dir_entry.offset as usize;
-        let end = start + dir_entry.compressed_len as usize;
-        if end > leaf_bytes.len() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "leaf file: leaflet extends past end",
-            ));
-        }
-
-        let leaflet_bytes = &leaf_bytes[start..end];
-        let decoded = decode_leaflet(leaflet_bytes, header.p_width, header.dt_width, order)?;
-
-        for idx in 0..decoded.row_count {
-            let row = DecodedRow {
-                s_id: decoded.s_ids[idx],
-                p_id: decoded.p_ids[idx],
-                o_kind: decoded.o_kinds[idx],
-                o_key: decoded.o_keys[idx],
-                dt: decoded.dt_values[idx],
-                t: decoded.t_values[idx],
-                lang_id: decoded.lang_ids[idx],
-                i: decoded.i_values[idx],
-            };
-            out.push(store.row_to_flake(&row)?);
-        }
-    }
-
-    Ok(out)
-}
-
-fn detect_leaf_sort_order(
-    leaf_bytes: &[u8],
-    header: &fluree_db_indexer::run_index::leaf::LeafFileHeader,
-) -> std::io::Result<RunSortOrder> {
-    let first = header.leaflet_dir.first().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, "leaf has no leaflets")
-    })?;
-
-    let start = first.offset as usize;
-    let end = start + first.compressed_len as usize;
-    if end > leaf_bytes.len() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "leaf file: first leaflet extends past end",
-        ));
-    }
-    let leaflet_bytes = &leaf_bytes[start..end];
-
-    let lh = LeafletHeader::read_from(leaflet_bytes)?;
-
-    // Try all orders; accept the first that round-trips the first row markers.
-    // The Region 1 byte layout is order-dependent, so "wrong order" decoding
-    // should almost always fail this check.
-    for order in [
-        RunSortOrder::Spot,
-        RunSortOrder::Psot,
-        RunSortOrder::Post,
-        RunSortOrder::Opst,
-    ] {
-        if let Ok((_hdr, s_ids, p_ids, o_kinds, o_keys)) =
-            decode_leaflet_region1(leaflet_bytes, header.p_width, order)
-        {
-            if s_ids.first().copied() == Some(lh.first_s_id)
-                && p_ids.first().copied() == Some(lh.first_p_id)
-                && o_kinds.first().copied() == Some(lh.first_o_kind)
-                && o_keys.first().copied() == Some(lh.first_o_key)
-            {
-                return Ok(order);
-            }
-        }
-    }
-
-    Err(std::io::Error::new(
-        std::io::ErrorKind::InvalidData,
-        "leaf file: could not detect sort order for leaflet decoding",
-    ))
 }
 
 // ============================================================================
@@ -509,12 +242,18 @@ pub async fn get_ns_record(
 
 /// POST /fluree/storage/block
 ///
-/// Fetches a block (branch or leaf) from storage.
+/// Fetches a block (branch or leaf) from storage with policy enforcement.
 /// Ledger context is inferred from the address.
 ///
+/// # Security
+/// All blocks are fetched through `block_fetch::fetch_and_decode_block` with
+/// `PolicyEnforced` mode. This ensures leaf blocks are always decoded and
+/// policy-filtered — they can never be returned as raw bytes to end users.
+///
 /// # Content Negotiation
-/// - `application/octet-stream`: raw bytes (default, unchanged)
-/// - `application/x-fluree-flakes`: binary CBOR flakes format (policy-filtered)
+/// The Accept header selects **representation**, not enforcement:
+/// - `application/octet-stream`: raw bytes for non-leaf blocks; encoded flakes for leaves
+/// - `application/x-fluree-flakes`: binary CBOR flakes format
 /// - `application/x-fluree-flakes+json`: JSON flakes format (debug only)
 ///
 /// Note: The `StorageProxyBearer` extractor handles:
@@ -528,68 +267,10 @@ pub async fn get_block(
     headers: HeaderMap,
     Json(body): Json<BlockRequest>,
 ) -> Result<Response, ServerError> {
-    // Parse address context
-    let context = parse_address_context(&body.address);
-
-    // Authorize based on inferred context
-    if !authorize_address(&principal, &context) {
-        // Return 404 for unauthorized (no existence leak)
-        return Err(ServerError::not_found("Block not found"));
-    }
-
-    // Read raw bytes from storage
-    // Storage proxy is only enabled on transaction servers (validated in config)
-    let bytes = state
-        .fluree
-        .as_file()
-        .storage()
-        .read_bytes(&body.address)
-        .await
-        .map_err(|e| {
-            // Check if it's a NotFound error
-            if matches!(e, fluree_db_core::Error::NotFound(_)) {
-                ServerError::not_found("Block not found")
-            } else {
-                ServerError::internal(format!("Storage read failed: {}", e))
-            }
-        })?;
-
-    // Parse Accept header
-    let accept = parse_accept_header(&headers);
-
-    // For octet-stream, return raw bytes immediately (fast path)
-    if matches!(accept, AcceptFormat::OctetStream) {
-        return build_raw_response(bytes);
-    }
-
-    // For flakes formats, we need to parse the leaf block
-    // Get ledger address for loading the interner
-    let ledger_addr = context.ledger_address().ok_or_else(|| {
-        // Non-ledger address (graph source or unknown) with flakes format = 406
-        ServerError::not_acceptable("Flakes format only available for ledger blocks")
-    })?;
-
-    // Get cached ledger state
-    let fluree = state.fluree.as_file();
-    let handle = fluree
-        .ledger_cached(&ledger_addr)
-        .await
-        .map_err(|e| ServerError::internal(format!("Ledger load failed: {}", e)))?;
-
-    // Get snapshot (brief lock, then released)
-    let snapshot = handle.snapshot().await;
-
-    // Attempt to parse as leaf using actual core parser
-    let parsed = try_parse_as_leaf(bytes, &context, snapshot.binary_store.as_deref());
-
-    let flakes = match parsed {
-        FilterableBlock::Leaf(flakes) => flakes,
-        FilterableBlock::GraphSourceArtifact | FilterableBlock::NotFilterable => {
-            return Err(ServerError::not_acceptable(
-                "Flakes format only available for ledger leaf blocks",
-            ));
-        }
-    };
+    // Parse address context and authorize
+    let context = block_fetch::parse_address_context(&body.address);
+    block_fetch::authorize_address(&principal.to_block_access_scope(), &context)
+        .map_err(|_| ServerError::not_found("Block not found"))?;
 
     // Get storage proxy config for defaults and debug headers
     let proxy_config = state.config.storage_proxy();
@@ -603,224 +284,69 @@ pub async fn get_block(
     // Compute effective policy class: config default (token claim not yet supported)
     let effective_policy_class = proxy_config.default_policy_class.clone();
 
-    // Apply policy filtering if we have identity or policy class
-    let (filtered, policy_applied) = if effective_identity.is_some()
-        || effective_policy_class.is_some()
-    {
-        // Build policy context from effective identity and policy class
-        let opts = QueryConnectionOptions {
-            identity: effective_identity.clone(),
-            policy_class: effective_policy_class.clone().map(|c| vec![c]),
-            ..Default::default()
-        };
-
-        // Build policy context using the ledger's db
-        let overlay: &dyn OverlayProvider = &NoOverlay;
-        let to_t = snapshot.db.t;
-
-        let policy_ctx = policy_builder::build_policy_context_from_opts(
-            &snapshot.db,
-            overlay,
-            None, // No novelty needed for filtering existing flakes
-            to_t,
-            &opts,
-        )
-        .await
-        .map_err(|e| ServerError::internal(format!("Policy context build failed: {}", e)))?;
-
-        // Check if this is a root policy (no restrictions)
-        if policy_ctx.wrapper().is_root() {
-            tracing::debug!(
-                address = %body.address,
-                identity = ?effective_identity,
-                policy_class = ?effective_policy_class,
-                "Root policy - returning all flakes unfiltered"
-            );
-            (flakes, false) // No filtering occurred
-        } else {
-            // Create enforcer and filter flakes
-            let enforcer = QueryPolicyEnforcer::new(Arc::new(policy_ctx));
-            let tracker = Tracker::disabled();
-
-            let original_count = flakes.len();
-            let filtered = enforcer
-                .filter_flakes_for_graph(&snapshot.db, overlay, to_t, &tracker, flakes)
-                .await
-                .map_err(|e| ServerError::internal(format!("Policy filtering failed: {}", e)))?;
-
-            tracing::debug!(
-                address = %body.address,
-                identity = ?effective_identity,
-                policy_class = ?effective_policy_class,
-                original_count = original_count,
-                filtered_count = filtered.len(),
-                "Applied policy filtering"
-            );
-            (filtered, true) // Filtering was applied
-        }
-    } else {
-        // No identity and no policy class - return all flakes (equivalent to root policy)
-        tracing::debug!(
-            address = %body.address,
-            flake_count = flakes.len(),
-            "No identity or policy class - returning all flakes unfiltered"
-        );
-        (flakes, false) // No filtering occurred
+    // Build enforcement mode — always PolicyEnforced for end-user requests
+    let mode = EnforcementMode::PolicyEnforced {
+        identity: effective_identity,
+        policy_class: effective_policy_class,
     };
 
-    // Encode response with appropriate headers
+    // Load ledger context if this is a ledger address
+    let fluree = state.fluree.as_file();
+    let ledger_ctx_data;
+    let ledger_ctx = if let Some(ledger_addr) = context.ledger_address() {
+        let handle = fluree
+            .ledger_cached(&ledger_addr)
+            .await
+            .map_err(|e| ServerError::internal(format!("Ledger load failed: {}", e)))?;
+        let snapshot = handle.snapshot().await;
+        let to_t = snapshot.db.t;
+        ledger_ctx_data = Some((snapshot, to_t));
+        ledger_ctx_data
+            .as_ref()
+            .map(|(snap, to_t)| LedgerBlockContext {
+                db: &snap.db,
+                to_t: *to_t,
+                binary_store: snap.binary_store.as_deref(),
+            })
+    } else {
+        None
+    };
+
+    // Fetch and decode with enforcement
+    let fetched = block_fetch::fetch_and_decode_block(
+        fluree.storage(),
+        &body.address,
+        &context,
+        ledger_ctx.as_ref(),
+        &mode,
+    )
+    .await
+    .map_err(map_block_fetch_error)?;
+
+    // Parse Accept header (selects representation, not enforcement)
+    let accept = parse_accept_header(&headers);
     let emit_debug_headers = proxy_config.emit_debug_headers;
-    match accept {
-        AcceptFormat::FlakesBinary => {
-            build_binary_flakes_response(&filtered, policy_applied, emit_debug_headers)
+
+    // Build response based on content and Accept header
+    match fetched.content {
+        BlockContent::RawBytes(bytes) => {
+            // Non-leaf block — return raw bytes regardless of Accept
+            build_raw_response(bytes)
         }
-        AcceptFormat::FlakesJson => {
-            build_json_flakes_response(&filtered, policy_applied, emit_debug_headers)
+        BlockContent::DecodedFlakes {
+            flakes,
+            policy_applied,
+        } => {
+            // Leaf block — encode in requested format
+            match accept {
+                AcceptFormat::FlakesBinary | AcceptFormat::OctetStream => {
+                    // For octet-stream, use binary flakes as the closest safe representation
+                    build_binary_flakes_response(&flakes, policy_applied, emit_debug_headers)
+                }
+                AcceptFormat::FlakesJson => {
+                    build_json_flakes_response(&flakes, policy_applied, emit_debug_headers)
+                }
+            }
         }
-        AcceptFormat::OctetStream => unreachable!(), // handled above
-    }
-}
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_principal(storage_all: bool, storage_ledgers: Vec<&str>) -> StorageProxyPrincipal {
-        StorageProxyPrincipal {
-            issuer: "did:key:z6Mk...".to_string(),
-            subject: None,
-            identity: None,
-            storage_all,
-            storage_ledgers: storage_ledgers.into_iter().map(String::from).collect(),
-        }
-    }
-
-    #[test]
-    fn test_parse_commit_address() {
-        let addr = "fluree:file://books:main/commit/abc123.json";
-        let ctx = parse_address_context(addr);
-        assert_eq!(
-            ctx,
-            AddressContext::LedgerCommit {
-                ledger_address: "books:main".to_string()
-            }
-        );
-        assert_eq!(ctx.ledger_address(), Some("books:main".to_string()));
-    }
-
-    #[test]
-    fn test_parse_index_address() {
-        let addr = "fluree:file://books/main/index/def456.json";
-        let ctx = parse_address_context(addr);
-        assert_eq!(
-            ctx,
-            AddressContext::LedgerIndex {
-                ledger: "books".to_string(),
-                branch: "main".to_string()
-            }
-        );
-        assert_eq!(ctx.ledger_address(), Some("books:main".to_string()));
-    }
-
-    #[test]
-    fn test_parse_graph_source_address() {
-        let addr = "fluree:file://graph-sources/search/main/snapshot.bin";
-        let ctx = parse_address_context(addr);
-        assert_eq!(
-            ctx,
-            AddressContext::GraphSourceArtifact {
-                name: "search".to_string(),
-                branch: "main".to_string()
-            }
-        );
-        assert!(ctx.is_graph_source());
-        assert_eq!(ctx.ledger_address(), None);
-    }
-
-    #[test]
-    fn test_parse_unknown_address() {
-        let addr = "fluree:file://something/else";
-        let ctx = parse_address_context(addr);
-        assert_eq!(ctx, AddressContext::Unknown);
-    }
-
-    #[test]
-    fn test_parse_non_fluree_address() {
-        let addr = "s3://bucket/key";
-        let ctx = parse_address_context(addr);
-        assert_eq!(ctx, AddressContext::Unknown);
-    }
-
-    #[test]
-    fn test_parse_empty_alias() {
-        let addr = "fluree:file:///commit/abc.json";
-        let ctx = parse_address_context(addr);
-        assert_eq!(ctx, AddressContext::Unknown);
-    }
-
-    #[test]
-    fn test_parse_empty_ledger() {
-        let addr = "fluree:file:///main/index/abc.json";
-        let ctx = parse_address_context(addr);
-        assert_eq!(ctx, AddressContext::Unknown);
-    }
-
-    #[test]
-    fn test_authorize_commit_allowed() {
-        let principal = make_principal(false, vec!["books:main"]);
-        let ctx = AddressContext::LedgerCommit {
-            ledger_address: "books:main".to_string(),
-        };
-        assert!(authorize_address(&principal, &ctx));
-    }
-
-    #[test]
-    fn test_authorize_commit_denied() {
-        let principal = make_principal(false, vec!["other:main"]);
-        let ctx = AddressContext::LedgerCommit {
-            ledger_address: "books:main".to_string(),
-        };
-        assert!(!authorize_address(&principal, &ctx));
-    }
-
-    #[test]
-    fn test_authorize_index_allowed() {
-        let principal = make_principal(false, vec!["books:main"]);
-        let ctx = AddressContext::LedgerIndex {
-            ledger: "books".to_string(),
-            branch: "main".to_string(),
-        };
-        assert!(authorize_address(&principal, &ctx));
-    }
-
-    #[test]
-    fn test_authorize_storage_all() {
-        let principal = make_principal(true, vec![]);
-        let ctx = AddressContext::LedgerCommit {
-            ledger_address: "any:ledger".to_string(),
-        };
-        assert!(authorize_address(&principal, &ctx));
-    }
-
-    #[test]
-    fn test_authorize_graph_source_denied_v1() {
-        // Graph source artifacts are not authorized in v1, even with storage_all
-        let principal = make_principal(true, vec![]);
-        let ctx = AddressContext::GraphSourceArtifact {
-            name: "search".to_string(),
-            branch: "main".to_string(),
-        };
-        assert!(!authorize_address(&principal, &ctx));
-    }
-
-    #[test]
-    fn test_authorize_unknown_denied() {
-        let principal = make_principal(true, vec![]);
-        let ctx = AddressContext::Unknown;
-        assert!(!authorize_address(&principal, &ctx));
     }
 }

@@ -157,6 +157,35 @@ fluree-server \
   --events-auth-trusted-issuer did:key:z6Mk...
 ```
 
+### Data API Authentication
+
+Protect query/write endpoints (including `/:ledger/query`, `/:ledger/insert`, `/:ledger/upsert`,
+`/:ledger/transact`, `/fluree/ledger-info`, and `/fluree/exists`):
+
+| Flag | Env Var | Default |
+|------|---------|---------|
+| `--data-auth-mode` | `FLUREE_DATA_AUTH_MODE` | `none` |
+| `--data-auth-audience` | `FLUREE_DATA_AUTH_AUDIENCE` | None |
+| `--data-auth-trusted-issuer` | `FLUREE_DATA_AUTH_TRUSTED_ISSUERS` | None |
+| `--data-auth-default-policy-class` | `FLUREE_DATA_AUTH_DEFAULT_POLICY_CLASS` | None |
+
+Modes:
+- `none`: No authentication (default / backwards compatible)
+- `optional`: Accept tokens but don't require them (development only)
+- `required`: Require either a valid Bearer token **or** a signed request (JWS/VC)
+
+Bearer token scopes:
+- **Read**: `fluree.ledger.read.all=true` or `fluree.ledger.read.ledgers=[...]`
+- **Write**: `fluree.ledger.write.all=true` or `fluree.ledger.write.ledgers=[...]`
+
+Back-compat: `fluree.storage.*` claims imply **read** scope for data endpoints.
+
+```bash
+fluree-server \
+  --data-auth-mode required \
+  --data-auth-trusted-issuer did:key:z6Mk...
+```
+
 ### Admin Endpoint Authentication
 
 Protect `/fluree/create` and `/fluree/drop` endpoints:
@@ -350,6 +379,10 @@ fluree-server \
 | `FLUREE_TX_SERVER_URL` | Transaction server URL | None |
 | `FLUREE_EVENTS_AUTH_MODE` | Events auth mode | `none` |
 | `FLUREE_EVENTS_AUTH_TRUSTED_ISSUERS` | Events trusted issuers | None |
+| `FLUREE_DATA_AUTH_MODE` | Data API auth mode | `none` |
+| `FLUREE_DATA_AUTH_AUDIENCE` | Data API expected audience | None |
+| `FLUREE_DATA_AUTH_TRUSTED_ISSUERS` | Data API trusted issuers | None |
+| `FLUREE_DATA_AUTH_DEFAULT_POLICY_CLASS` | Data API default policy class | None |
 | `FLUREE_ADMIN_AUTH_MODE` | Admin auth mode | `none` |
 | `FLUREE_ADMIN_AUTH_TRUSTED_ISSUERS` | Admin trusted issuers | None |
 | `FLUREE_MCP_ENABLED` | Enable MCP endpoint | `false` |

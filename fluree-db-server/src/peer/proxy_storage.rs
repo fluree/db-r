@@ -4,15 +4,24 @@
 //! instead of direct storage access. This allows peers to operate without storage
 //! credentials (no S3 access, no filesystem mount).
 //!
-//! ## Content Negotiation
+//! ## Policy-Safe Reads
 //!
-//! ProxyStorage supports content negotiation for leaf nodes via `read_bytes_hint()`:
-//! - `ReadHint::AnyBytes` - Always requests `application/octet-stream` (raw bytes)
-//! - `ReadHint::PreferLeafFlakes` - First tries `application/x-fluree-flakes`, falls back
-//!   to octet-stream on 406 Not Acceptable
+//! Under `PolicyEnforced` mode (the only mode currently available via the storage
+//! proxy), the server **always** returns decoded, policy-filtered flakes (FLKB format)
+//! for leaf blocks — even if the client requests `application/octet-stream`. Raw FLI1
+//! leaf bytes are never returned to end users.
 //!
-//! This allows policy-filtered flakes to be returned for leaf nodes while avoiding
-//! double HTTP requests for branch nodes.
+//! Both `read_bytes()` and `read_bytes_hint()` use flakes-first content negotiation:
+//! they request `application/x-fluree-flakes` first, falling back to
+//! `application/octet-stream` on 406 (for non-leaf blocks like commits and branches).
+//!
+//! This means callers always receive:
+//! - **Leaf blocks**: FLKB-encoded policy-filtered flakes
+//! - **Non-leaf blocks**: raw bytes (commits, branches, manifests, etc.)
+//!
+//! The `ReadHint` distinction is preserved for forward-compatibility: if a
+//! `TrustedInternal` enforcement mode is added later, `AnyBytes` could return
+//! raw FLI1 leaves while `PreferLeafFlakes` would still prefer FLKB.
 
 use async_trait::async_trait;
 use fluree_db_core::error::{Error as CoreError, Result};
@@ -199,28 +208,21 @@ impl ProxyStorage {
 #[async_trait]
 impl StorageRead for ProxyStorage {
     async fn read_bytes(&self, address: &str) -> Result<Vec<u8>> {
-        // Always request raw bytes (no content negotiation)
-        match self
-            .fetch_with_accept(address, "application/octet-stream")
-            .await
-        {
-            FetchOutcome::Success(bytes) => Ok(bytes),
-            FetchOutcome::NotAcceptable => {
-                // Should not happen for octet-stream
-                Err(CoreError::storage(format!(
-                    "Storage proxy: octet-stream rejected for {}",
-                    address
-                )))
-            }
-            FetchOutcome::Error(e) => Err(e),
-        }
+        // Under PolicyEnforced, leaf blocks always return FLKB (not raw FLI1).
+        // Use flakes-first negotiation for deterministic behavior across block types:
+        // - Leaves → FLKB (policy-filtered flakes)
+        // - Non-leaves → raw bytes (via 406 fallback to octet-stream)
+        self.fetch_prefer_flakes(address).await
     }
 
     async fn read_bytes_hint(&self, address: &str, hint: ReadHint) -> Result<Vec<u8>> {
+        // Under PolicyEnforced, both AnyBytes and PreferLeafFlakes produce the same
+        // result (flakes-first negotiation). The distinction is preserved for
+        // forward-compatibility with TrustedInternal mode.
         match hint {
             ReadHint::AnyBytes => self.read_bytes(address).await,
             ReadHint::PreferLeafFlakes => self.fetch_prefer_flakes(address).await,
-            // Future ReadHint variants fall back to raw bytes
+            // Future ReadHint variants fall back to default
             _ => self.read_bytes(address).await,
         }
     }

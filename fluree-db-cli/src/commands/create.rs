@@ -10,6 +10,16 @@ pub async fn run(
     fluree_dir: &Path,
     verbose: bool,
 ) -> CliResult<()> {
+    // Refuse if this alias is already tracked (mutual exclusion)
+    let store = config::TomlSyncConfigStore::new(fluree_dir.to_path_buf());
+    if store.get_tracked(ledger).is_some() {
+        return Err(CliError::Usage(format!(
+            "alias '{}' is already used by a tracked ledger.\n  \
+             Run `fluree track remove {}` first, or choose a different name.",
+            ledger, ledger
+        )));
+    }
+
     let fluree = context::build_fluree(fluree_dir)?;
 
     match from {

@@ -32,6 +32,7 @@
 //! ```
 
 pub mod admin;
+pub mod block_fetch;
 pub mod bm25_worker;
 #[cfg(feature = "credential")]
 pub mod credential;
@@ -76,6 +77,10 @@ pub use admin::{
     ReindexResult,
     TriggerIndexOptions,
     TriggerIndexResult,
+};
+pub use block_fetch::{
+    AddressContext, BlockAccessScope, BlockContent, BlockFetchError, EnforcementMode, FetchedBlock,
+    LedgerBlockContext,
 };
 pub use dataset::{DatasetParseError, DatasetSpec, GraphSource, QueryConnectionOptions, TimeSpec};
 pub use error::{ApiError, BuilderError, BuilderErrors, Result};

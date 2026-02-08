@@ -38,6 +38,9 @@ shellexpand = "3"
 hex.workspace = true
 rand.workspace = true
 
+# Remote ledger client (track mode)
+reqwest = { workspace = true }
+
 # Sync command dependencies
 fluree-db-nameservice-sync = { path = "../fluree-db-nameservice-sync" }
 async-trait.workspace = true

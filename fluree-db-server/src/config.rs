@@ -47,6 +47,18 @@ pub enum EventsAuthMode {
     Required,
 }
 
+/// Authentication mode for the data API endpoints (query/transact/info/exists).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum DataAuthMode {
+    /// No authentication required (default; backwards compatible)
+    #[default]
+    None,
+    /// Accept tokens but don't require them (DEV ONLY - not a security boundary)
+    Optional,
+    /// Require valid auth (Bearer token or signed request) (PRODUCTION)
+    Required,
+}
+
 /// Configuration for events endpoint authentication
 #[derive(Debug, Clone, Default)]
 pub struct EventsAuthConfig {
@@ -59,6 +71,51 @@ pub struct EventsAuthConfig {
     /// DANGEROUS: Accept any valid signature regardless of issuer.
     /// Only for development/testing.
     pub insecure_accept_any_issuer: bool,
+}
+
+/// Configuration for data API endpoint authentication.
+#[derive(Debug, Clone, Default)]
+pub struct DataAuthConfig {
+    /// Authentication mode
+    pub mode: DataAuthMode,
+    /// Expected audience claim (optional)
+    pub audience: Option<String>,
+    /// Trusted issuer did:key identifiers for Bearer tokens
+    pub trusted_issuers: Vec<String>,
+    /// Default policy class IRI (optional). Applied when request does not specify one.
+    pub default_policy_class: Option<String>,
+    /// DANGEROUS: Accept any valid signature regardless of issuer.
+    /// Only for development/testing.
+    pub insecure_accept_any_issuer: bool,
+}
+
+impl DataAuthConfig {
+    /// Validate configuration at startup
+    pub fn validate(&self) -> Result<(), String> {
+        if self.mode == DataAuthMode::Required
+            && self.trusted_issuers.is_empty()
+            && !self.insecure_accept_any_issuer
+        {
+            return Err(
+                "data_auth.mode=required requires --data-auth-trusted-issuer or \
+                 --data-auth-insecure-accept-any-issuer flag"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Check if an issuer is trusted.
+    /// When a token is presented, issuer MUST be trusted (unless insecure flag).
+    pub fn is_issuer_trusted(&self, issuer: &str) -> bool {
+        if self.insecure_accept_any_issuer {
+            return true;
+        }
+        if self.trusted_issuers.is_empty() {
+            return false;
+        }
+        self.trusted_issuers.iter().any(|i| i == issuer)
+    }
 }
 
 impl EventsAuthConfig {
@@ -355,6 +412,35 @@ pub struct ServerConfig {
     #[arg(long, env = "FLUREE_EVENTS_AUTH_INSECURE", hide = true)]
     pub events_auth_insecure_accept_any_issuer: bool,
 
+    // === Data API authentication options (query/transact/info/exists) ===
+    /// Authentication mode for data API endpoints (query/transact/info/exists)
+    #[arg(
+        long,
+        env = "FLUREE_DATA_AUTH_MODE",
+        default_value = "none",
+        value_enum
+    )]
+    pub data_auth_mode: DataAuthMode,
+
+    /// Expected audience claim for data API Bearer tokens (optional)
+    #[arg(long, env = "FLUREE_DATA_AUTH_AUDIENCE")]
+    pub data_auth_audience: Option<String>,
+
+    /// Trusted issuer did:key for data API Bearer tokens (can be specified multiple times)
+    #[arg(
+        long = "data-auth-trusted-issuer",
+        env = "FLUREE_DATA_AUTH_TRUSTED_ISSUERS"
+    )]
+    pub data_auth_trusted_issuers: Vec<String>,
+
+    /// Default policy class IRI for data API requests (optional)
+    #[arg(long, env = "FLUREE_DATA_AUTH_DEFAULT_POLICY_CLASS")]
+    pub data_auth_default_policy_class: Option<String>,
+
+    /// DANGEROUS: Accept any valid signature regardless of issuer (dev only)
+    #[arg(long, env = "FLUREE_DATA_AUTH_INSECURE", hide = true)]
+    pub data_auth_insecure_accept_any_issuer: bool,
+
     // === Server role (peer mode) ===
     /// Server operating mode: transaction (write-enabled) or peer (read-only with forwarding)
     #[arg(
@@ -504,6 +590,12 @@ impl Default for ServerConfig {
             events_auth_audience: None,
             events_auth_trusted_issuers: Vec::new(),
             events_auth_insecure_accept_any_issuer: false,
+            // Data auth defaults
+            data_auth_mode: DataAuthMode::None,
+            data_auth_audience: None,
+            data_auth_trusted_issuers: Vec::new(),
+            data_auth_default_policy_class: None,
+            data_auth_insecure_accept_any_issuer: false,
             // Peer mode defaults
             server_role: ServerRole::Transaction,
             tx_server_url: None,
@@ -568,6 +660,17 @@ impl ServerConfig {
         }
     }
 
+    /// Get the data API authentication configuration
+    pub fn data_auth(&self) -> DataAuthConfig {
+        DataAuthConfig {
+            mode: self.data_auth_mode,
+            audience: self.data_auth_audience.clone(),
+            trusted_issuers: self.data_auth_trusted_issuers.clone(),
+            default_policy_class: self.data_auth_default_policy_class.clone(),
+            insecure_accept_any_issuer: self.data_auth_insecure_accept_any_issuer,
+        }
+    }
+
     /// Get the storage proxy configuration
     pub fn storage_proxy(&self) -> StorageProxyConfig {
         StorageProxyConfig {
@@ -606,6 +709,9 @@ impl ServerConfig {
         // Validate events auth
         let events_auth = self.events_auth();
         events_auth.validate()?;
+
+        // Validate data auth
+        self.data_auth().validate()?;
 
         // Validate storage proxy
         self.storage_proxy().validate(&events_auth)?;

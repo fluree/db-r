@@ -56,6 +56,10 @@ pub enum Commands {
     Info {
         /// Ledger name (defaults to active ledger)
         ledger: Option<String>,
+
+        /// Query a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
     },
 
     /// Drop (delete) a ledger
@@ -88,6 +92,10 @@ pub enum Commands {
         /// Data format (turtle or jsonld); auto-detected if omitted
         #[arg(long)]
         format: Option<String>,
+
+        /// Execute against a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
     },
 
     /// Upsert data into a ledger (insert or update existing)
@@ -108,6 +116,10 @@ pub enum Commands {
         /// Data format (turtle or jsonld); auto-detected if omitted
         #[arg(long)]
         format: Option<String>,
+
+        /// Execute against a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
     },
 
     /// Query a ledger
@@ -136,6 +148,10 @@ pub enum Commands {
         /// Query at a specific point in time (transaction number, commit hash, or ISO-8601 timestamp)
         #[arg(long)]
         at: Option<String>,
+
+        /// Execute against a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
     },
 
     /// Show change history for an entity
@@ -245,6 +261,44 @@ pub enum Commands {
         /// Ledger name (defaults to active ledger)
         ledger: Option<String>,
     },
+
+    /// Track a remote ledger (remote-only, no local data)
+    Track {
+        #[command(subcommand)]
+        action: TrackAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum TrackAction {
+    /// Start tracking a remote ledger
+    Add {
+        /// Ledger alias (local name for this tracked ledger)
+        ledger: String,
+
+        /// Remote name (e.g., "origin"); defaults to the only configured remote
+        #[arg(long)]
+        remote: Option<String>,
+
+        /// Alias on the remote (defaults to local alias)
+        #[arg(long)]
+        remote_alias: Option<String>,
+    },
+
+    /// Stop tracking a remote ledger
+    Remove {
+        /// Ledger alias to stop tracking
+        ledger: String,
+    },
+
+    /// List all tracked ledgers
+    List,
+
+    /// Show status of tracked ledger(s) from remote
+    Status {
+        /// Ledger alias (shows all if omitted)
+        ledger: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -324,6 +378,22 @@ pub enum TokenAction {
         /// Grant storage access to specific ledger (repeatable)
         #[arg(long = "storage-ledger")]
         storage_ledgers: Vec<String>,
+
+        /// Grant data API read access to all ledgers (fluree.ledger.read.all=true)
+        #[arg(long)]
+        read_all: bool,
+
+        /// Grant data API read access to a specific ledger (repeatable)
+        #[arg(long = "read-ledger")]
+        read_ledgers: Vec<String>,
+
+        /// Grant data API write access to all ledgers (fluree.ledger.write.all=true)
+        #[arg(long)]
+        write_all: bool,
+
+        /// Grant data API write access to a specific ledger (repeatable)
+        #[arg(long = "write-ledger")]
+        write_ledgers: Vec<String>,
 
         /// Grant access to specific graph source (repeatable)
         #[arg(long = "graph-source")]

@@ -28,6 +28,8 @@ pub enum CliError {
     Import(String),
     /// Credential/token errors.
     Credential(fluree_db_credential::CredentialError),
+    /// Remote ledger operation error (track mode).
+    Remote(String),
 }
 
 impl fmt::Display for CliError {
@@ -52,6 +54,7 @@ impl fmt::Display for CliError {
             CliError::Usage(msg) => write!(f, "{} {msg}", "error:".red().bold()),
             CliError::Import(msg) => write!(f, "{} {msg}", "error:".red().bold()),
             CliError::Credential(e) => write!(f, "{} {e}", "error:".red().bold()),
+            CliError::Remote(msg) => write!(f, "{} {msg}", "error:".red().bold()),
         }
     }
 }
@@ -107,6 +110,12 @@ impl From<fluree_db_novelty::NoveltyError> for CliError {
 impl From<fluree_db_credential::CredentialError> for CliError {
     fn from(e: fluree_db_credential::CredentialError) -> Self {
         CliError::Credential(e)
+    }
+}
+
+impl From<crate::remote_client::RemoteLedgerError> for CliError {
+    fn from(e: crate::remote_client::RemoteLedgerError) -> Self {
+        CliError::Remote(e.to_string())
     }
 }
 

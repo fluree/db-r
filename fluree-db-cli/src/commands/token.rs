@@ -30,6 +30,14 @@ struct TokenPermissions<'a> {
     events_ledgers: &'a [String],
     /// Ledgers for storage access.
     storage_ledgers: &'a [String],
+    /// Data API read-all.
+    read_all: bool,
+    /// Ledgers for data API read access.
+    read_ledgers: &'a [String],
+    /// Data API write-all.
+    write_all: bool,
+    /// Ledgers for data API write access.
+    write_ledgers: &'a [String],
     /// Graph sources for access.
     graph_sources: &'a [String],
 }
@@ -45,6 +53,10 @@ pub fn run(action: TokenAction) -> CliResult<()> {
             all,
             events_ledgers,
             storage_ledgers,
+            read_all,
+            read_ledgers,
+            write_all,
+            write_ledgers,
             graph_sources,
             output,
             print_claims,
@@ -58,6 +70,10 @@ pub fn run(action: TokenAction) -> CliResult<()> {
                 all,
                 events_ledgers: &events_ledgers,
                 storage_ledgers: &storage_ledgers,
+                read_all,
+                read_ledgers: &read_ledgers,
+                write_all,
+                write_ledgers: &write_ledgers,
                 graph_sources: &graph_sources,
             };
             run_create(
@@ -90,10 +106,14 @@ fn run_create(
     if !permissions.all
         && permissions.events_ledgers.is_empty()
         && permissions.storage_ledgers.is_empty()
+        && !permissions.read_all
+        && permissions.read_ledgers.is_empty()
+        && !permissions.write_all
+        && permissions.write_ledgers.is_empty()
         && permissions.graph_sources.is_empty()
     {
         return Err(CliError::Usage(
-            "no permissions granted; use --all, --events-ledger, --storage-ledger, or --graph-source".into(),
+            "no permissions granted; use --all, --events-ledger, --storage-ledger, --read-ledger/--read-all, --write-ledger/--write-all, or --graph-source".into(),
         ));
     }
 
@@ -147,6 +167,8 @@ fn run_create(
     if permissions.all {
         claims["fluree.events.all"] = json!(true);
         claims["fluree.storage.all"] = json!(true);
+        claims["fluree.ledger.read.all"] = json!(true);
+        claims["fluree.ledger.write.all"] = json!(true);
     }
 
     if !permissions.events_ledgers.is_empty() {
@@ -155,6 +177,20 @@ fn run_create(
 
     if !permissions.storage_ledgers.is_empty() {
         claims["fluree.storage.ledgers"] = json!(permissions.storage_ledgers);
+    }
+
+    // Data API permissions
+    if permissions.read_all {
+        claims["fluree.ledger.read.all"] = json!(true);
+    }
+    if !permissions.read_ledgers.is_empty() {
+        claims["fluree.ledger.read.ledgers"] = json!(permissions.read_ledgers);
+    }
+    if permissions.write_all {
+        claims["fluree.ledger.write.all"] = json!(true);
+    }
+    if !permissions.write_ledgers.is_empty() {
+        claims["fluree.ledger.write.ledgers"] = json!(permissions.write_ledgers);
     }
 
     if !permissions.graph_sources.is_empty() {

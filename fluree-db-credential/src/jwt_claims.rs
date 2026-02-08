@@ -20,6 +20,12 @@
 //! - `fluree.storage.all` - Grant access to all ledgers via storage proxy
 //! - `fluree.storage.ledgers` - Grant access to specific ledgers via storage proxy
 //!
+//! # Fluree-specific Claims (Data API)
+//! - `fluree.ledger.read.all` - Grant read/query access to all ledgers
+//! - `fluree.ledger.read.ledgers` - Grant read/query access to specific ledgers
+//! - `fluree.ledger.write.all` - Grant write/transact access to all ledgers
+//! - `fluree.ledger.write.ledgers` - Grant write/transact access to specific ledgers
+//!
 //! # Shared Claims
 //! - `fluree.identity` - Identity for policy resolution
 
@@ -68,6 +74,20 @@ pub struct EventsTokenPayload {
     /// Grant access to specific ledgers via storage proxy
     #[serde(rename = "fluree.storage.ledgers")]
     pub storage_ledgers: Option<Vec<String>>,
+
+    // Fluree-specific claims (Data API)
+    /// Grant read/query access to all ledgers
+    #[serde(rename = "fluree.ledger.read.all")]
+    pub ledger_read_all: Option<bool>,
+    /// Grant read/query access to specific ledgers
+    #[serde(rename = "fluree.ledger.read.ledgers")]
+    pub ledger_read_ledgers: Option<Vec<String>>,
+    /// Grant write/transact access to all ledgers
+    #[serde(rename = "fluree.ledger.write.all")]
+    pub ledger_write_all: Option<bool>,
+    /// Grant write/transact access to specific ledgers
+    #[serde(rename = "fluree.ledger.write.ledgers")]
+    pub ledger_write_ledgers: Option<Vec<String>>,
 
     // Shared claims
     /// Identity for policy resolution
@@ -205,6 +225,59 @@ impl EventsTokenPayload {
     pub fn has_storage_permissions(&self) -> bool {
         self.storage_all.unwrap_or(false)
             || self.storage_ledgers.as_ref().is_some_and(|l| !l.is_empty())
+    }
+
+    /// Check if token grants data API read permissions.
+    ///
+    /// Back-compat: `fluree.storage.*` claims imply read permissions if
+    /// `fluree.ledger.read.*` claims are absent.
+    pub fn has_ledger_read_permissions(&self) -> bool {
+        self.ledger_read_all.unwrap_or(false)
+            || self
+                .ledger_read_ledgers
+                .as_ref()
+                .is_some_and(|l| !l.is_empty())
+            || self.has_storage_permissions()
+    }
+
+    /// Check if token grants data API write permissions.
+    pub fn has_ledger_write_permissions(&self) -> bool {
+        self.ledger_write_all.unwrap_or(false)
+            || self
+                .ledger_write_ledgers
+                .as_ref()
+                .is_some_and(|l| !l.is_empty())
+    }
+
+    /// Check if token authorizes read/query access to a specific ledger address.
+    ///
+    /// Back-compat: `fluree.storage.*` implies read access when ledger.read.* absent.
+    pub fn is_ledger_read_authorized_for(&self, ledger_address: &str) -> bool {
+        if self.ledger_read_all.unwrap_or(false) {
+            return true;
+        }
+        if self
+            .ledger_read_ledgers
+            .as_ref()
+            .is_some_and(|l| l.iter().any(|x| x == ledger_address))
+        {
+            return true;
+        }
+        // Back-compat: treat storage proxy scope as read scope
+        self.storage_all.unwrap_or(false)
+            || self
+                .storage_ledgers
+                .as_ref()
+                .is_some_and(|l| l.iter().any(|x| x == ledger_address))
+    }
+
+    /// Check if token authorizes write/transact access to a specific ledger address.
+    pub fn is_ledger_write_authorized_for(&self, ledger_address: &str) -> bool {
+        self.ledger_write_all.unwrap_or(false)
+            || self
+                .ledger_write_ledgers
+                .as_ref()
+                .is_some_and(|l| l.iter().any(|x| x == ledger_address))
     }
 
     /// Resolve identity: fluree.identity takes precedence, then sub.

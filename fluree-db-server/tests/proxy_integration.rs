@@ -772,12 +772,14 @@ async fn bytes_body(resp: http::Response<Body>) -> (StatusCode, Vec<u8>) {
     (status, bytes)
 }
 
-/// Test that non-leaf blocks return 406 when flakes format is requested
+/// Test that non-leaf blocks return raw bytes even when flakes format is requested
 ///
-/// Commit files are JSON, not leaf nodes, so they should return 406 when
-/// the client requests application/x-fluree-flakes format.
+/// Commit blocks are structural data (not leaf nodes). The server returns them
+/// as raw bytes regardless of Accept header — the content negotiation only
+/// affects leaf block representation. Non-leaf blocks always return 200 with
+/// application/octet-stream.
 #[tokio::test]
-async fn test_block_content_negotiation_406_for_non_leaf() {
+async fn test_block_content_negotiation_non_leaf_returns_raw_bytes() {
     let (_tmp, state) = tx_server_state();
     let app = build_router(state.clone());
 
@@ -847,7 +849,7 @@ async fn test_block_content_negotiation_406_for_non_leaf() {
         .and_then(|v| v.as_str())
         .expect("commit_address should exist after transaction");
 
-    // Request the commit with flakes format - should get 406
+    // Request the commit with flakes format — server returns raw bytes anyway
     let block_body = serde_json::json!({ "address": commit_address });
     let resp = app
         .clone()
@@ -864,11 +866,24 @@ async fn test_block_content_negotiation_406_for_non_leaf() {
         .await
         .unwrap();
 
-    // Commit blocks are not leaf nodes, so flakes format is not available
+    // Non-leaf blocks always return raw bytes with 200, regardless of Accept header.
+    // Content negotiation only affects leaf block representation.
     assert_eq!(
         resp.status(),
-        StatusCode::NOT_ACCEPTABLE,
-        "Non-leaf block with flakes format should return 406"
+        StatusCode::OK,
+        "Non-leaf block should return 200 with raw bytes regardless of Accept"
+    );
+
+    // Verify response is application/octet-stream (raw bytes)
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        content_type.contains("application/octet-stream"),
+        "Non-leaf response should be octet-stream, got: {}",
+        content_type
     );
 }
 
@@ -1077,9 +1092,11 @@ async fn test_block_content_negotiation_default_accept() {
     );
 }
 
-/// Test JSON flakes debug format for non-leaf returns 406
+/// Test that non-leaf blocks return raw bytes even when JSON flakes format is requested
+///
+/// Same as the binary flakes test: non-leaf blocks ignore Accept and return raw bytes.
 #[tokio::test]
-async fn test_block_content_negotiation_json_flakes_406() {
+async fn test_block_content_negotiation_non_leaf_json_flakes_returns_raw() {
     let (_tmp, state) = tx_server_state();
     let app = build_router(state.clone());
 
@@ -1149,7 +1166,7 @@ async fn test_block_content_negotiation_json_flakes_406() {
         .and_then(|v| v.as_str())
         .expect("commit_address should exist after transaction");
 
-    // Request with JSON flakes debug format - should also get 406 for non-leaf
+    // Request with JSON flakes debug format — server returns raw bytes anyway
     let block_body = serde_json::json!({ "address": commit_address });
     let resp = app
         .oneshot(
@@ -1165,10 +1182,23 @@ async fn test_block_content_negotiation_json_flakes_406() {
         .await
         .unwrap();
 
+    // Non-leaf blocks always return raw bytes with 200, regardless of Accept header.
     assert_eq!(
         resp.status(),
-        StatusCode::NOT_ACCEPTABLE,
-        "JSON flakes format for non-leaf should also return 406"
+        StatusCode::OK,
+        "Non-leaf block should return 200 with raw bytes regardless of Accept"
+    );
+
+    // Verify response is application/octet-stream (raw bytes)
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        content_type.contains("application/octet-stream"),
+        "Non-leaf response should be octet-stream, got: {}",
+        content_type
     );
 }
 
@@ -1507,12 +1537,17 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
     server_handle.abort();
 }
 
-/// Test that ProxyStorage.read_bytes (no hint) returns raw bytes, not FLKB
+/// Test that ProxyStorage.read_bytes returns FLKB for leaf blocks under PolicyEnforced
 ///
-/// This verifies that the default read_bytes() path doesn't trigger FLKB encoding,
-/// only read_bytes_hint with PreferLeafFlakes does.
+/// Under PolicyEnforced mode (the only mode currently available via storage proxy),
+/// leaf blocks are always decoded and policy-filtered. ProxyStorage.read_bytes() uses
+/// flakes-first content negotiation, so leaves come back as FLKB (not raw FLI1).
+///
+/// Raw FLI1 leaf bytes would only be available under TrustedInternal enforcement mode,
+/// which is not yet implemented. When it is, a separate ProxyStorage variant (or mode)
+/// would be needed to opt into raw bytes.
 #[tokio::test]
-async fn test_proxy_storage_read_bytes_returns_raw_not_flkb() {
+async fn test_proxy_storage_read_bytes_leaf_returns_flkb_under_policy() {
     use fluree_db_api::ReindexOptions;
     use fluree_db_server::peer::ProxyStorage;
     use tokio::net::TcpListener;
@@ -1611,22 +1646,23 @@ async fn test_proxy_storage_read_bytes_returns_raw_not_flkb() {
     // Create ProxyStorage pointing to our test server
     let proxy_storage = ProxyStorage::new(server_url.clone(), token);
 
-    // Call read_bytes (NOT read_bytes_hint)
+    // Call read_bytes (no hint) — under PolicyEnforced, this uses flakes-first
+    // negotiation and returns FLKB for leaf blocks.
     let result = proxy_storage.read_bytes(&leaf_address).await;
+    let bytes = result.expect("read_bytes should succeed for leaf");
 
-    // Should succeed
-    let bytes = result.expect("read_bytes should succeed");
-
-    // Should NOT be FLKB format (should be raw JSON)
+    // Under PolicyEnforced, leaf blocks are returned as FLKB (policy-filtered flakes),
+    // not raw FLI1. This is the same behavior as read_bytes_hint(PreferLeafFlakes).
     assert!(
-        bytes.len() < 4 || &bytes[0..4] != FLKB_MAGIC,
-        "read_bytes (without hint) should return raw bytes, not FLKB"
+        bytes.len() >= 4 && &bytes[0..4] == FLKB_MAGIC,
+        "read_bytes for leaf should return FLKB under PolicyEnforced, got magic: {:?}",
+        &bytes[..std::cmp::min(4, bytes.len())]
     );
 
-    // Verify it's a binary leaf (FLI1 magic)
+    // Should NOT be raw FLI1 (that would require TrustedInternal mode)
     assert!(
-        bytes.len() >= 4 && &bytes[0..4] == b"FLI1",
-        "Expected raw leaf bytes to start with FLI1 magic"
+        bytes.len() < 4 || &bytes[0..4] != b"FLI1",
+        "read_bytes should NOT return raw FLI1 under PolicyEnforced"
     );
 
     // Cleanup: abort server

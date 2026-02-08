@@ -8,7 +8,7 @@
 
 use crate::config::ServerRole;
 use crate::error::{Result, ServerError};
-use crate::extract::{tracking_headers, FlureeHeaders, MaybeCredential};
+use crate::extract::{tracking_headers, FlureeHeaders, MaybeCredential, MaybeDataBearer};
 // Note: NeedsRefresh is no longer used - replaced by FreshnessSource trait
 use crate::state::AppState;
 use crate::telemetry::{
@@ -23,6 +23,49 @@ use fluree_db_api::{FlureeView, FreshnessCheck, FreshnessSource, LedgerState, Tr
 use serde_json::Value as JsonValue;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+
+// ============================================================================
+// Data API Auth Helpers
+// ============================================================================
+
+/// Resolve the effective request identity for policy enforcement.
+///
+/// Precedence:
+/// 1) Signed request DID (credential)
+/// 2) Bearer token identity (fluree.identity ?? sub)
+fn effective_identity(credential: &MaybeCredential, bearer: &MaybeDataBearer) -> Option<String> {
+    credential
+        .did()
+        .map(|d| d.to_string())
+        .or_else(|| bearer.0.as_ref().and_then(|p| p.identity.clone()))
+}
+
+/// Force auth identity/policy-class into FQL query opts, overriding client-provided values.
+fn force_query_auth_opts(
+    query: &mut JsonValue,
+    identity: Option<&str>,
+    policy_class: Option<&str>,
+) {
+    let Some(obj) = query.as_object_mut() else {
+        return;
+    };
+    let opts = obj
+        .entry("opts")
+        .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
+    let Some(opts_obj) = opts.as_object_mut() else {
+        return;
+    };
+
+    if let Some(id) = identity {
+        opts_obj.insert("identity".to_string(), JsonValue::String(id.to_string()));
+    }
+    if let Some(pc) = policy_class {
+        opts_obj.insert(
+            "policy-class".to_string(),
+            JsonValue::String(pc.to_string()),
+        );
+    }
+}
 
 /// Check if tracking is requested in query opts
 fn has_tracking_opts(query_json: &JsonValue) -> bool {
@@ -89,21 +132,6 @@ fn inject_headers_into_query(query: &mut JsonValue, headers: &FlureeHeaders) {
     }
 }
 
-/// Inject credential DID as identity (takes precedence over header identity)
-fn inject_credential_did(query: &mut JsonValue, did: &str) {
-    if let Some(obj) = query.as_object_mut() {
-        // Get or create opts object
-        let opts = obj
-            .entry("opts")
-            .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
-
-        if let Some(opts_obj) = opts.as_object_mut() {
-            // Credential DID overrides header identity
-            opts_obj.insert("identity".to_string(), JsonValue::String(did.to_string()));
-        }
-    }
-}
-
 /// Execute a query
 ///
 /// POST /fluree/query
@@ -117,6 +145,7 @@ fn inject_credential_did(query: &mut JsonValue, did: &str) {
 pub async fn query(
     State(state): State<Arc<AppState>>,
     headers: FlureeHeaders,
+    bearer: MaybeDataBearer,
     credential: MaybeCredential,
 ) -> Result<impl IntoResponse> {
     // Create request span with correlation context
@@ -133,6 +162,17 @@ pub async fn query(
     let _guard = span.enter();
 
     tracing::info!(status = "start", "query request received");
+
+    // Enforce data auth if configured (Bearer token OR signed request)
+    let data_auth = state.config.data_auth();
+    if data_auth.mode == crate::config::DataAuthMode::Required
+        && !credential.is_signed()
+        && bearer.0.is_none()
+    {
+        return Err(ServerError::unauthorized(
+            "Authentication required (signed request or Bearer token)",
+        ));
+    }
     // SPARQL UPDATE should use the transact endpoint, not query
     if headers.is_sparql_update() || credential.is_sparql_update {
         let error = ServerError::bad_request(
@@ -197,10 +237,18 @@ pub async fn query(
         // Inject header values into query opts
         inject_headers_into_query(&mut query_json, &headers);
 
-        // If request was signed, credential DID takes precedence as identity
-        if let Some(did) = credential.did() {
-            inject_credential_did(&mut query_json, did);
+        // Enforce bearer ledger scope for unsigned requests
+        if let Some(p) = bearer.0.as_ref() {
+            if !credential.is_signed() && !p.can_read(&alias) {
+                // Avoid existence leak
+                return Err(ServerError::not_found("Ledger not found"));
+            }
         }
+
+        // Force auth-derived identity and policy-class into opts (non-spoofable)
+        let identity = effective_identity(&credential, &bearer);
+        let policy_class = data_auth.default_policy_class.as_deref();
+        force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
 
         execute_query(&state, &alias, &query_json).await
     }
@@ -220,6 +268,7 @@ pub async fn query_ledger(
     State(state): State<Arc<AppState>>,
     Path(ledger): Path<String>,
     headers: FlureeHeaders,
+    bearer: MaybeDataBearer,
     credential: MaybeCredential,
 ) -> Result<impl IntoResponse> {
     // Create request span with correlation context
@@ -236,6 +285,17 @@ pub async fn query_ledger(
     let _guard = span.enter();
 
     tracing::info!(status = "start", "ledger query request received");
+
+    // Enforce data auth if configured (Bearer token OR signed request)
+    let data_auth = state.config.data_auth();
+    if data_auth.mode == crate::config::DataAuthMode::Required
+        && !credential.is_signed()
+        && bearer.0.is_none()
+    {
+        return Err(ServerError::unauthorized(
+            "Authentication required (signed request or Bearer token)",
+        ));
+    }
 
     // SPARQL UPDATE should use the transact endpoint, not query
     if headers.is_sparql_update() || credential.is_sparql_update {
@@ -254,7 +314,15 @@ pub async fn query_ledger(
         // Log query text according to configuration
         log_query_text(&sparql, &state.telemetry_config, &span);
 
-        return execute_sparql_ledger(&state, &ledger, &sparql).await;
+        // Enforce bearer ledger scope for unsigned requests
+        if let Some(p) = bearer.0.as_ref() {
+            if !credential.is_signed() && !p.can_read(&ledger) {
+                return Err(ServerError::not_found("Ledger not found"));
+            }
+        }
+
+        let identity = effective_identity(&credential, &bearer);
+        return execute_sparql_ledger(&state, &ledger, &sparql, identity.as_deref()).await;
     }
 
     // Handle FQL query (JSON body)
@@ -283,10 +351,17 @@ pub async fn query_ledger(
     // Inject header values into query opts
     inject_headers_into_query(&mut query_json, &headers);
 
-    // If request was signed, credential DID takes precedence as identity
-    if let Some(did) = credential.did() {
-        inject_credential_did(&mut query_json, did);
+    // Enforce bearer ledger scope for unsigned requests
+    if let Some(p) = bearer.0.as_ref() {
+        if !credential.is_signed() && !p.can_read(&ledger) {
+            return Err(ServerError::not_found("Ledger not found"));
+        }
     }
+
+    // Force auth-derived identity and policy-class into opts (non-spoofable)
+    let identity = effective_identity(&credential, &bearer);
+    let policy_class = data_auth.default_policy_class.as_deref();
+    force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
 
     execute_query(&state, &alias, &query_json).await
 }
@@ -493,6 +568,7 @@ async fn execute_sparql_ledger(
     state: &AppState,
     alias: &str,
     sparql: &str,
+    identity: Option<&str>,
 ) -> Result<(HeaderMap, Json<JsonValue>)> {
     // Create span for peer mode loading
     let span = tracing::info_span!("sparql_execute", ledger_address = alias);
@@ -500,10 +576,20 @@ async fn execute_sparql_ledger(
 
     // In proxy mode, use the unified FlureeInstance method
     if state.config.is_proxy_storage_mode() {
-        let result = state
-            .fluree
-            .query_ledger_sparql_jsonld(alias, sparql)
-            .await?;
+        let result = match identity {
+            Some(id) => {
+                state
+                    .fluree
+                    .query_ledger_sparql_with_identity(alias, sparql, Some(id))
+                    .await?
+            }
+            None => {
+                state
+                    .fluree
+                    .query_ledger_sparql_jsonld(alias, sparql)
+                    .await?
+            }
+        };
         return Ok((HeaderMap::new(), Json(result)));
     }
 
@@ -514,11 +600,21 @@ async fn execute_sparql_ledger(
 
     // Execute SPARQL query via builder
     // Note: SPARQL tracking not yet implemented - returns empty headers
-    let result = graph
-        .query(fluree.as_ref())
-        .sparql(sparql)
-        .execute_formatted()
-        .await?;
+    let result = match identity {
+        Some(id) => {
+            state
+                .fluree
+                .query_ledger_sparql_with_identity(alias, sparql, Some(id))
+                .await?
+        }
+        None => {
+            graph
+                .query(fluree.as_ref())
+                .sparql(sparql)
+                .execute_formatted()
+                .await?
+        }
+    };
     Ok((HeaderMap::new(), Json(result)))
 }
 
@@ -532,6 +628,7 @@ async fn execute_sparql_ledger(
 pub async fn explain(
     State(state): State<Arc<AppState>>,
     headers: FlureeHeaders,
+    bearer: MaybeDataBearer,
     credential: MaybeCredential,
 ) -> Result<Json<JsonValue>> {
     // Create request span with correlation context
@@ -548,6 +645,17 @@ pub async fn explain(
     let _guard = span.enter();
 
     tracing::info!(status = "start", "explain request received");
+
+    // Enforce data auth if configured (Bearer token OR signed request)
+    let data_auth = state.config.data_auth();
+    if data_auth.mode == crate::config::DataAuthMode::Required
+        && !credential.is_signed()
+        && bearer.0.is_none()
+    {
+        return Err(ServerError::unauthorized(
+            "Authentication required (signed request or Bearer token)",
+        ));
+    }
 
     // Parse body as JSON
     let mut query_json = match credential.body_json() {
@@ -582,10 +690,17 @@ pub async fn explain(
     // Inject header values into query opts
     inject_headers_into_query(&mut query_json, &headers);
 
-    // If request was signed, credential DID takes precedence as identity
-    if let Some(did) = credential.did() {
-        inject_credential_did(&mut query_json, did);
+    // Enforce bearer ledger scope for unsigned requests
+    if let Some(p) = bearer.0.as_ref() {
+        if !credential.is_signed() && !p.can_read(&alias) {
+            return Err(ServerError::not_found("Ledger not found"));
+        }
     }
+
+    // Force auth-derived identity and policy-class into opts (non-spoofable)
+    let identity = effective_identity(&credential, &bearer);
+    let policy_class = data_auth.default_policy_class.as_deref();
+    force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
 
     // Execute explain
     let result = if state.config.is_proxy_storage_mode() {

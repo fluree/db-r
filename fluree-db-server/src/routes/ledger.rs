@@ -2,7 +2,7 @@
 
 use crate::config::ServerRole;
 use crate::error::{Result, ServerError};
-use crate::extract::FlureeHeaders;
+use crate::extract::{FlureeHeaders, MaybeDataBearer};
 use crate::state::AppState;
 use crate::telemetry::{
     create_request_span, extract_request_id, extract_trace_id, set_span_error_code,
@@ -294,6 +294,7 @@ pub struct LedgerInfoResponse {
 pub async fn info(
     State(state): State<Arc<AppState>>,
     headers: FlureeHeaders,
+    bearer: MaybeDataBearer,
     query: axum::extract::Query<LedgerInfoQuery>,
 ) -> Result<Response> {
     // Create request span
@@ -328,6 +329,18 @@ pub async fn info(
             return Err(e);
         }
     };
+
+    // Enforce data auth (ledger-info is a read operation; Bearer token only)
+    let data_auth = state.config.data_auth();
+    if data_auth.mode == crate::config::DataAuthMode::Required && bearer.0.is_none() {
+        return Err(ServerError::unauthorized("Bearer token required"));
+    }
+    if let Some(p) = bearer.0.as_ref() {
+        if !p.can_read(alias) {
+            // Avoid existence leak
+            return Err(ServerError::not_found("Ledger not found"));
+        }
+    }
 
     // In proxy storage mode, return simplified nameservice-only response
     // (peer doesn't have local ledger state to compute full stats)
@@ -437,6 +450,7 @@ pub struct ExistsResponse {
 pub async fn exists(
     State(state): State<Arc<AppState>>,
     headers: FlureeHeaders,
+    bearer: MaybeDataBearer,
     query: axum::extract::Query<LedgerInfoQuery>,
 ) -> Result<Json<ExistsResponse>> {
     // Create request span
@@ -471,6 +485,18 @@ pub async fn exists(
             return Err(e);
         }
     };
+
+    // Enforce data auth (exists is a read operation; Bearer token only)
+    let data_auth = state.config.data_auth();
+    if data_auth.mode == crate::config::DataAuthMode::Required && bearer.0.is_none() {
+        return Err(ServerError::unauthorized("Bearer token required"));
+    }
+    if let Some(p) = bearer.0.as_ref() {
+        if !p.can_read(&alias) {
+            // Avoid existence leak
+            return Err(ServerError::not_found("Ledger not found"));
+        }
+    }
 
     // Check if ledger exists via nameservice lookup
     let exists = match state.fluree.ledger_exists(&alias).await {
