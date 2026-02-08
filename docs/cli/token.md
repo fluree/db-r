@@ -31,9 +31,13 @@ fluree token create --private-key <KEY> [OPTIONS]
 | `--subject <SUB>` | Subject claim (`sub`) - identity of the token holder |
 | `--audience <AUD>` | Audience claim (`aud`) - repeatable for multiple audiences |
 | `--identity <ID>` | Fluree identity claim (`fluree.identity`) - takes precedence over `sub` for policy |
-| `--all` | Grant access to all ledgers (`fluree.events.all=true`, `fluree.storage.all=true`) |
+| `--all` | Grant full access to all ledgers (events, storage, read, and write) |
 | `--events-ledger <ALIAS>` | Grant events access to specific ledger (repeatable) |
 | `--storage-ledger <ALIAS>` | Grant storage access to specific ledger (repeatable) |
+| `--read-all` | Grant data API read access to all ledgers (`fluree.ledger.read.all=true`) |
+| `--read-ledger <ALIAS>` | Grant data API read access to specific ledger (repeatable) |
+| `--write-all` | Grant data API write access to all ledgers (`fluree.ledger.write.all=true`) |
+| `--write-ledger <ALIAS>` | Grant data API write access to specific ledger (repeatable) |
 | `--graph-source <ALIAS>` | Grant access to specific graph source (repeatable) |
 | `--output <FMT>` | Output format: `token`, `json`, or `curl` (default: `token`) |
 | `--print-claims` | Print decoded claims to stderr |
@@ -53,9 +57,13 @@ fluree token create --private-key <KEY> [OPTIONS]
 # Create a token with full access
 fluree token create --private-key 0x1234...abcd --all
 
-# Create a token for specific ledgers
+# Create a token for specific ledgers (events/storage)
 fluree token create --private-key @~/.fluree/key \
   --events-ledger mydb --storage-ledger mydb
+
+# Create a token with data API read+write for specific ledgers
+fluree token create --private-key @~/.fluree/key \
+  --read-ledger mydb:main --write-ledger mydb:main
 
 # Create a token with identity and audience
 fluree token create --private-key @- \
@@ -188,8 +196,28 @@ Permissions:
 Signature: ✓ Valid
 ```
 
+## Token Scopes
+
+Tokens can carry different permission scopes that control access to different server features:
+
+| Scope | Claim | Controls |
+|-------|-------|----------|
+| Events (all) | `fluree.events.all` | SSE event stream for all ledgers |
+| Events (specific) | `fluree.events.ledgers` | SSE event stream for listed ledgers |
+| Storage (all) | `fluree.storage.all` | Storage proxy read access (all); also implies data API read |
+| Storage (specific) | `fluree.storage.ledgers` | Storage proxy read access (listed); also implies data API read |
+| Read (all) | `fluree.ledger.read.all` | Data API query access to all ledgers |
+| Read (specific) | `fluree.ledger.read.ledgers` | Data API query access to listed ledgers |
+| Write (all) | `fluree.ledger.write.all` | Data API write access to all ledgers |
+| Write (specific) | `fluree.ledger.write.ledgers` | Data API write access to listed ledgers |
+
+The `--all` flag sets events, storage, read, and write access for all ledgers.
+
+**Back-compat:** `fluree.storage.*` claims also grant data API read access for the same ledgers.
+
 ## See Also
 
+- [auth](auth.md) - Store/manage tokens on remotes
 - [remote](remote.md) - Configure remote servers
 - [fetch](fetch.md) - Fetch from remotes (requires auth token)
 - [push](push.md) - Push to remotes (requires auth token)

@@ -349,70 +349,74 @@ pub enum PrefixAction {
     List,
 }
 
+/// Arguments for `fluree token create` (extracted to reduce enum size).
+#[derive(Debug, Clone, clap::Args)]
+pub struct TokenCreateArgs {
+    /// Ed25519 private key (hex with 0x prefix, base58btc, @filepath, or @- for stdin)
+    #[arg(long, required = true)]
+    pub private_key: String,
+
+    /// Token lifetime (e.g., "1h", "30m", "7d", "1w") [default: 1h]
+    #[arg(long, default_value = "1h")]
+    pub expires_in: String,
+
+    /// Subject claim (sub) - identity of the token holder
+    #[arg(long)]
+    pub subject: Option<String>,
+
+    /// Audience claim (aud) - repeatable for multiple audiences
+    #[arg(long = "audience")]
+    pub audiences: Vec<String>,
+
+    /// Fluree identity claim (fluree.identity) - takes precedence over sub for policy
+    #[arg(long)]
+    pub identity: Option<String>,
+
+    /// Grant access to all ledgers (fluree.events.all=true, fluree.storage.all=true)
+    #[arg(long)]
+    pub all: bool,
+
+    /// Grant events access to specific ledger (repeatable)
+    #[arg(long = "events-ledger")]
+    pub events_ledgers: Vec<String>,
+
+    /// Grant storage access to specific ledger (repeatable)
+    #[arg(long = "storage-ledger")]
+    pub storage_ledgers: Vec<String>,
+
+    /// Grant data API read access to all ledgers (fluree.ledger.read.all=true)
+    #[arg(long)]
+    pub read_all: bool,
+
+    /// Grant data API read access to a specific ledger (repeatable)
+    #[arg(long = "read-ledger")]
+    pub read_ledgers: Vec<String>,
+
+    /// Grant data API write access to all ledgers (fluree.ledger.write.all=true)
+    #[arg(long)]
+    pub write_all: bool,
+
+    /// Grant data API write access to a specific ledger (repeatable)
+    #[arg(long = "write-ledger")]
+    pub write_ledgers: Vec<String>,
+
+    /// Grant access to specific graph source (repeatable)
+    #[arg(long = "graph-source")]
+    pub graph_sources: Vec<String>,
+
+    /// Output format
+    #[arg(long, default_value = "token", value_enum)]
+    pub output: TokenOutputFormat,
+
+    /// Print decoded claims to stderr (for verification)
+    #[arg(long)]
+    pub print_claims: bool,
+}
+
 #[derive(Subcommand)]
 pub enum TokenAction {
     /// Create a new JWS token for authentication
-    Create {
-        /// Ed25519 private key (hex with 0x prefix, base58btc, @filepath, or @- for stdin)
-        #[arg(long, required = true)]
-        private_key: String,
-
-        /// Token lifetime (e.g., "1h", "30m", "7d", "1w") [default: 1h]
-        #[arg(long, default_value = "1h")]
-        expires_in: String,
-
-        /// Subject claim (sub) - identity of the token holder
-        #[arg(long)]
-        subject: Option<String>,
-
-        /// Audience claim (aud) - repeatable for multiple audiences
-        #[arg(long = "audience")]
-        audiences: Vec<String>,
-
-        /// Fluree identity claim (fluree.identity) - takes precedence over sub for policy
-        #[arg(long)]
-        identity: Option<String>,
-
-        /// Grant access to all ledgers (fluree.events.all=true, fluree.storage.all=true)
-        #[arg(long)]
-        all: bool,
-
-        /// Grant events access to specific ledger (repeatable)
-        #[arg(long = "events-ledger")]
-        events_ledgers: Vec<String>,
-
-        /// Grant storage access to specific ledger (repeatable)
-        #[arg(long = "storage-ledger")]
-        storage_ledgers: Vec<String>,
-
-        /// Grant data API read access to all ledgers (fluree.ledger.read.all=true)
-        #[arg(long)]
-        read_all: bool,
-
-        /// Grant data API read access to a specific ledger (repeatable)
-        #[arg(long = "read-ledger")]
-        read_ledgers: Vec<String>,
-
-        /// Grant data API write access to all ledgers (fluree.ledger.write.all=true)
-        #[arg(long)]
-        write_all: bool,
-
-        /// Grant data API write access to a specific ledger (repeatable)
-        #[arg(long = "write-ledger")]
-        write_ledgers: Vec<String>,
-
-        /// Grant access to specific graph source (repeatable)
-        #[arg(long = "graph-source")]
-        graph_sources: Vec<String>,
-
-        /// Output format
-        #[arg(long, default_value = "token", value_enum)]
-        output: TokenOutputFormat,
-
-        /// Print decoded claims to stderr (for verification)
-        #[arg(long)]
-        print_claims: bool,
-    },
+    Create(Box<TokenCreateArgs>),
 
     /// Generate a new Ed25519 keypair
     Keygen {

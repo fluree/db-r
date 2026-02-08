@@ -101,21 +101,20 @@ The server will choose the best match based on quality values and support.
 
 ### Authorization
 
-Authentication credentials.
+Authentication credentials. Only required when the server has authentication enabled for the relevant endpoint group (see [Configuration](../operations/configuration.md)).
 
-**API Key:**
+**Bearer Token (Ed25519 JWS or OIDC):**
 ```http
-X-API-Key: your-api-key-here
+Authorization: Bearer eyJhbGciOiJFZERTQSIsImp3ayI6eyJrdHkiOiJPS1AiLCJjcnYiOiJFZDI1NTE5IiwieCI6Ii4uLiJ9fQ...
 ```
 
-**Bearer Token:**
-```http
-Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-```
+The server automatically dispatches to the correct verification path based on the token header:
+- Tokens with an embedded `jwk` field use the Ed25519 verification path
+- Tokens with a `kid` field use the OIDC/JWKS verification path (requires `oidc` feature)
 
 **Signed Requests:**
 
-For JWS/VC signed requests, set Content-Type to `application/jose`:
+For JWS/VC signed request bodies, set Content-Type to `application/jose`:
 ```http
 Content-Type: application/jose
 ```
@@ -523,7 +522,7 @@ Access-Control-Request-Headers: Content-Type
 ```http
 Access-Control-Allow-Origin: https://example.com
 Access-Control-Allow-Methods: GET, POST, OPTIONS
-Access-Control-Allow-Headers: Content-Type, Authorization, X-API-Key
+Access-Control-Allow-Headers: Content-Type, Authorization
 Access-Control-Max-Age: 86400
 ```
 

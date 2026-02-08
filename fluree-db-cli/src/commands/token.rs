@@ -44,45 +44,29 @@ struct TokenPermissions<'a> {
 
 pub fn run(action: TokenAction) -> CliResult<()> {
     match action {
-        TokenAction::Create {
-            private_key,
-            expires_in,
-            subject,
-            audiences,
-            identity,
-            all,
-            events_ledgers,
-            storage_ledgers,
-            read_all,
-            read_ledgers,
-            write_all,
-            write_ledgers,
-            graph_sources,
-            output,
-            print_claims,
-        } => {
+        TokenAction::Create(args) => {
             let claims = TokenClaims {
-                subject: subject.as_deref(),
-                audiences: &audiences,
-                identity: identity.as_deref(),
+                subject: args.subject.as_deref(),
+                audiences: &args.audiences,
+                identity: args.identity.as_deref(),
             };
             let permissions = TokenPermissions {
-                all,
-                events_ledgers: &events_ledgers,
-                storage_ledgers: &storage_ledgers,
-                read_all,
-                read_ledgers: &read_ledgers,
-                write_all,
-                write_ledgers: &write_ledgers,
-                graph_sources: &graph_sources,
+                all: args.all,
+                events_ledgers: &args.events_ledgers,
+                storage_ledgers: &args.storage_ledgers,
+                read_all: args.read_all,
+                read_ledgers: &args.read_ledgers,
+                write_all: args.write_all,
+                write_ledgers: &args.write_ledgers,
+                graph_sources: &args.graph_sources,
             };
             run_create(
-                &private_key,
-                &expires_in,
+                &args.private_key,
+                &args.expires_in,
                 claims,
                 permissions,
-                output,
-                print_claims,
+                args.output,
+                args.print_claims,
             )
         }
         TokenAction::Keygen { format, output } => run_keygen(format, output),

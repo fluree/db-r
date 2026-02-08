@@ -238,50 +238,66 @@ See [Errors and Status Codes](errors.md) for complete error reference.
 
 ## Authentication
 
+Fluree supports multiple authentication mechanisms, configured per endpoint group (data, events, admin, storage proxy). Each can be set to `none`, `optional`, or `required`. See [Configuration](../operations/configuration.md) for full details.
+
 ### Development Mode
 
-No authentication required (default for local development):
+No authentication required (default):
 
 ```bash
-curl http://localhost:8090/query -d '{...}'
+curl http://localhost:8090/mydb:main/query \
+  -H "Content-Type: application/json" \
+  -d '{"select": ["?s"], "where": [{"@id": "?s"}]}'
 ```
 
-### Production Modes
+### Bearer Token Authentication
 
-#### API Key Authentication
+Bearer tokens in the `Authorization` header. Fluree supports two token types with automatic dual-path dispatch:
 
-Simple token-based authentication:
+**Ed25519 JWS (did:key)** - Locally minted tokens with an embedded JWK. Created with `fluree token create`:
 
 ```bash
-curl http://api.example.com/query \
-  -H "X-API-Key: your-api-key" \
-  -d '{...}'
+TOKEN=$(fluree token create --private-key @~/.fluree/key --read-all --write-all)
+
+curl http://localhost:8090/mydb:main/query \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"select": ["?s"], "where": [{"@id": "?s"}]}'
 ```
 
-#### Bearer Token Authentication
-
-JWT-based authentication:
+**OIDC/JWKS (RS256)** - Tokens from external identity providers, verified against the provider's JWKS endpoint. Requires the `oidc` feature and `--jwks-issuer` server configuration:
 
 ```bash
-curl http://api.example.com/query \
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
-  -d '{...}'
+curl http://localhost:8090/mydb:main/query \
+  -H "Authorization: Bearer <oidc-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"select": ["?s"], "where": [{"@id": "?s"}]}'
 ```
 
-#### Signed Requests (JWS/VC)
+The server inspects the token header to determine the verification path:
+- **Embedded JWK** (Ed25519): Verifies against the embedded public key; issuer is a `did:key`
+- **kid header** (RS256): Verifies against the issuer's JWKS endpoint
 
-Cryptographically signed requests using JSON Web Signatures or Verifiable Credentials:
+#### Token Scopes
+
+Bearer tokens carry permission scopes that control access:
+
+- **Read**: `fluree.ledger.read.all=true` or `fluree.ledger.read.ledgers=[...]`
+- **Write**: `fluree.ledger.write.all=true` or `fluree.ledger.write.ledgers=[...]`
+- **Back-compat**: `fluree.storage.*` claims also imply read access for data endpoints
+
+#### Connection-Scoped SPARQL
+
+When a bearer token is present for connection-scoped SPARQL queries (`/fluree/query` with `Content-Type: application/sparql-query`), FROM/FROM NAMED clauses are checked against the token's read scope (`fluree.ledger.read.all` or `fluree.ledger.read.ledgers`). Out-of-scope ledgers return 404 (no existence leak).
+
+### Signed Requests (JWS/VC)
+
+Cryptographically signed request bodies using Ed25519 JWS or Verifiable Credentials. The signed payload carries the request itself plus the signer's identity for policy evaluation.
 
 ```bash
-curl http://api.example.com/query \
+curl http://localhost:8090/mydb:main/query \
   -H "Content-Type: application/jose" \
-  -d '{
-    "payload": "[base64-encoded-request]",
-    "signatures": [{
-      "protected": "[base64-encoded-header]",
-      "signature": "[base64-encoded-signature]"
-    }]
-  }'
+  -d '<compact-jws-string>'
 ```
 
 See [Signed Requests](signed-requests.md) for detailed documentation.

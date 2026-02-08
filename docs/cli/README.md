@@ -68,12 +68,14 @@ fluree query --sparql -e 'SELECT ?name WHERE { ?s <http://example.org/name> ?nam
 | [`fetch`](fetch.md) | Fetch refs from a remote |
 | [`pull`](pull.md) | Pull (fetch + fast-forward) from upstream |
 | [`push`](push.md) | Push to upstream remote |
+| [`track`](track.md) | Track remote-only ledgers (no local data) |
 
 ### Authentication
 
 | Command | Description |
 |---------|-------------|
-| [`token`](token.md) | Manage JWS tokens for authentication |
+| [`token`](token.md) | Create, inspect, and manage JWS tokens |
+| [`auth`](auth.md) | Manage bearer tokens stored on remotes (login/logout/status) |
 
 ### Configuration
 
