@@ -4,7 +4,7 @@
 
 use crate::binding::RowView;
 use crate::context::ExecutionContext;
-use crate::error::Result;
+use crate::error::{QueryError, Result};
 use crate::ir::{Expression, Function};
 use fluree_db_core::{geo, FlakeValue, Storage};
 
@@ -22,16 +22,22 @@ impl Function {
         let v1 = args[0].eval_to_comparable(row, ctx)?;
         let v2 = args[1].eval_to_comparable(row, ctx)?;
 
-        // Extract lat/lng from each argument
-        let coords1 = extract_geo_coords(&v1);
-        let coords2 = extract_geo_coords(&v2);
+        match (&v1, &v2) {
+            (None, _) | (_, None) => Ok(None), // unbound variable
+            _ => {
+                let coords1 = extract_geo_coords(&v1);
+                let coords2 = extract_geo_coords(&v2);
 
-        match (coords1, coords2) {
-            (Some((lat1, lng1)), Some((lat2, lng2))) => {
-                let distance = geo::haversine_distance(lat1, lng1, lat2, lng2);
-                Ok(Some(ComparableValue::Double(distance)))
+                match (coords1, coords2) {
+                    (Some((lat1, lng1)), Some((lat2, lng2))) => {
+                        let distance = geo::haversine_distance(lat1, lng1, lat2, lng2);
+                        Ok(Some(ComparableValue::Double(distance)))
+                    }
+                    _ => Err(QueryError::InvalidFilter(
+                        "geof:distance requires point arguments".to_string(),
+                    )),
+                }
             }
-            _ => Ok(None), // Return None if either argument is not a valid point
         }
     }
 }
@@ -137,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn test_geof_distance_with_non_point_returns_none() {
+    fn test_geof_distance_with_non_point_returns_error() {
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
         let col0 = vec![Binding::lit(
             FlakeValue::String("LINESTRING(0 0, 1 1, 2 2)".to_string()),
@@ -150,14 +156,12 @@ mod tests {
         let batch = Batch::new(schema, vec![col0, col1]).unwrap();
         let row = batch.row_view(0).unwrap();
 
-        let result = Function::GeofDistance
-            .eval_geof_distance::<fluree_db_core::MemoryStorage>(
-                &[Expression::Var(VarId(0)), Expression::Var(VarId(1))],
-                &row,
-                None,
-            )
-            .unwrap();
+        let result = Function::GeofDistance.eval_geof_distance::<fluree_db_core::MemoryStorage>(
+            &[Expression::Var(VarId(0)), Expression::Var(VarId(1))],
+            &row,
+            None,
+        );
 
-        assert_eq!(result, None);
+        assert!(result.is_err());
     }
 }

@@ -4,7 +4,7 @@
 
 use crate::binding::RowView;
 use crate::context::ExecutionContext;
-use crate::error::Result;
+use crate::error::{QueryError, Result};
 use crate::ir::{Expression, Function};
 use fluree_db_core::Storage;
 
@@ -34,7 +34,7 @@ impl Function {
             let mag_a: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
             let mag_b: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt();
             if mag_a == 0.0 || mag_b == 0.0 {
-                None
+                None // mathematically undefined, not a type error
             } else {
                 Some(dot / (mag_a * mag_b))
             }
@@ -78,11 +78,20 @@ where
     match (v1, v2) {
         (Some(ComparableValue::Vector(a)), Some(ComparableValue::Vector(b))) => {
             if a.len() != b.len() {
-                Ok(None)
+                Err(QueryError::InvalidFilter(format!(
+                    "{} requires vectors of equal length (got {} and {})",
+                    fn_name,
+                    a.len(),
+                    b.len()
+                )))
             } else {
                 Ok(compute(&a, &b).map(ComparableValue::Double))
             }
         }
-        _ => Ok(None),
+        (None, _) | (_, None) => Ok(None),
+        _ => Err(QueryError::InvalidFilter(format!(
+            "{} requires vector arguments",
+            fn_name
+        ))),
     }
 }

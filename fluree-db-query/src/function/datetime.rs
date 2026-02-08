@@ -77,19 +77,28 @@ impl Function {
     ) -> Result<Option<ComparableValue>> {
         check_arity(args, 1, "TZ")?;
         if let Expression::Var(var_id) = &args[0] {
-            if let Some(binding) = row.get(*var_id) {
-                if let Some(dt) = parse_datetime_from_binding(binding) {
-                    let offset = dt.offset();
-                    let total_secs = offset.local_minus_utc();
-                    let hours = total_secs / 3600;
-                    let mins = (total_secs.abs() % 3600) / 60;
-                    let sign = if total_secs >= 0 { '+' } else { '-' };
-                    let tz_str = format!("{}{:02}:{:02}", sign, hours.abs(), mins);
-                    return Ok(Some(ComparableValue::String(Arc::from(tz_str))));
-                }
+            match row.get(*var_id) {
+                Some(binding) => match parse_datetime_from_binding(binding) {
+                    Some(dt) => {
+                        let offset = dt.offset();
+                        let total_secs = offset.local_minus_utc();
+                        let hours = total_secs / 3600;
+                        let mins = (total_secs.abs() % 3600) / 60;
+                        let sign = if total_secs >= 0 { '+' } else { '-' };
+                        let tz_str = format!("{}{:02}:{:02}", sign, hours.abs(), mins);
+                        Ok(Some(ComparableValue::String(Arc::from(tz_str))))
+                    }
+                    None => Err(QueryError::InvalidFilter(
+                        "TZ requires a datetime argument".to_string(),
+                    )),
+                },
+                None => Ok(None), // unbound variable
             }
+        } else {
+            Err(QueryError::InvalidFilter(
+                "TZ requires a variable argument".to_string(),
+            ))
         }
-        Ok(None)
     }
 }
 
@@ -105,11 +114,20 @@ where
 {
     check_arity(args, 1, fn_name)?;
     if let Expression::Var(var) = &args[0] {
-        if let Some(binding) = row.get(*var) {
-            if let Some(dt) = parse_datetime_from_binding(binding) {
-                return Ok(Some(ComparableValue::Long(extract(&dt))));
-            }
+        match row.get(*var) {
+            Some(binding) => match parse_datetime_from_binding(binding) {
+                Some(dt) => Ok(Some(ComparableValue::Long(extract(&dt)))),
+                None => Err(QueryError::InvalidFilter(format!(
+                    "{} requires a datetime argument",
+                    fn_name
+                ))),
+            },
+            None => Ok(None), // unbound variable
         }
+    } else {
+        Err(QueryError::InvalidFilter(format!(
+            "{} requires a variable argument",
+            fn_name
+        )))
     }
-    Ok(None)
 }

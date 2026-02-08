@@ -21,17 +21,23 @@ impl Function {
     ) -> Result<Option<ComparableValue>> {
         check_arity(args, 1, "DATATYPE")?;
         if let Expression::Var(var_id) = &args[0] {
-            if let Some(binding) = row.get(*var_id) {
-                return Ok(match binding {
-                    Binding::Lit { dt, .. } => Some(format_datatype_sid(dt)),
+            match row.get(*var_id) {
+                Some(binding) => match binding {
+                    Binding::Lit { dt, .. } => Ok(Some(format_datatype_sid(dt))),
                     Binding::Sid(_) | Binding::IriMatch { .. } | Binding::Iri(_) => {
-                        Some(ComparableValue::String(Arc::from("@id")))
+                        Ok(Some(ComparableValue::String(Arc::from("@id"))))
                     }
-                    _ => None,
-                });
+                    _ => Err(QueryError::InvalidFilter(
+                        "DATATYPE requires a literal or IRI argument".to_string(),
+                    )),
+                },
+                None => Ok(None), // unbound variable
             }
+        } else {
+            Err(QueryError::InvalidFilter(
+                "DATATYPE requires a variable argument".to_string(),
+            ))
         }
-        Ok(None)
     }
 
     pub(super) fn eval_lang_matches<S: Storage>(
@@ -43,9 +49,9 @@ impl Function {
         check_arity(args, 2, "LANGMATCHES")?;
         let tag = args[0].eval_to_comparable(row, ctx)?;
         let range = args[1].eval_to_comparable(row, ctx)?;
-        let result = match (tag, range) {
+        match (tag, range) {
             (Some(ComparableValue::String(t)), Some(ComparableValue::String(r))) => {
-                if r.as_ref() == "*" {
+                let result = if r.as_ref() == "*" {
                     !t.is_empty()
                 } else {
                     let t_lower = t.to_lowercase();
@@ -53,11 +59,14 @@ impl Function {
                     t_lower == r_lower
                         || (t_lower.starts_with(&r_lower)
                             && t_lower.chars().nth(r_lower.len()) == Some('-'))
-                }
+                };
+                Ok(Some(ComparableValue::Bool(result)))
             }
-            _ => false,
-        };
-        Ok(Some(ComparableValue::Bool(result)))
+            (None, _) | (_, None) => Ok(None),
+            _ => Err(QueryError::InvalidFilter(
+                "LANGMATCHES requires string arguments".to_string(),
+            )),
+        }
     }
 
     pub(super) fn eval_same_term<S: Storage>(

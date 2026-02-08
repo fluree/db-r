@@ -4,7 +4,7 @@
 
 use crate::binding::RowView;
 use crate::context::ExecutionContext;
-use crate::error::Result;
+use crate::error::{QueryError, Result};
 use crate::ir::{Expression, Function};
 use fluree_db_core::Storage;
 use md5::{Digest as Md5Digest, Md5};
@@ -94,9 +94,14 @@ where
     F: Fn(&str) -> String,
 {
     check_arity(args, 1, fn_name)?;
-    let val = args[0].eval_to_comparable(row, ctx)?;
-    Ok(val.and_then(|v| {
-        v.as_str()
-            .map(|s| ComparableValue::String(Arc::from(hash_fn(s))))
-    }))
+    match args[0].eval_to_comparable(row, ctx)? {
+        Some(v) => match v.as_str() {
+            Some(s) => Ok(Some(ComparableValue::String(Arc::from(hash_fn(s))))),
+            None => Err(QueryError::InvalidFilter(format!(
+                "{} requires a string argument",
+                fn_name
+            ))),
+        },
+        None => Ok(None),
+    }
 }

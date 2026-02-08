@@ -63,11 +63,15 @@ impl Function {
         ctx: Option<&ExecutionContext<'_, S>>,
     ) -> Result<Option<ComparableValue>> {
         check_arity(args, 1, "LCASE")?;
-        let val = args[0].eval_to_comparable(row, ctx)?;
-        Ok(val.and_then(|v| {
-            v.as_str()
-                .map(|s| ComparableValue::String(Arc::from(s.to_lowercase())))
-        }))
+        match args[0].eval_to_comparable(row, ctx)? {
+            Some(v) => match v.as_str() {
+                Some(s) => Ok(Some(ComparableValue::String(Arc::from(s.to_lowercase())))),
+                None => Err(QueryError::InvalidFilter(
+                    "LCASE requires a string argument".to_string(),
+                )),
+            },
+            None => Ok(None),
+        }
     }
 
     pub(super) fn eval_ucase<S: Storage>(
@@ -77,11 +81,15 @@ impl Function {
         ctx: Option<&ExecutionContext<'_, S>>,
     ) -> Result<Option<ComparableValue>> {
         check_arity(args, 1, "UCASE")?;
-        let val = args[0].eval_to_comparable(row, ctx)?;
-        Ok(val.and_then(|v| {
-            v.as_str()
-                .map(|s| ComparableValue::String(Arc::from(s.to_uppercase())))
-        }))
+        match args[0].eval_to_comparable(row, ctx)? {
+            Some(v) => match v.as_str() {
+                Some(s) => Ok(Some(ComparableValue::String(Arc::from(s.to_uppercase())))),
+                None => Err(QueryError::InvalidFilter(
+                    "UCASE requires a string argument".to_string(),
+                )),
+            },
+            None => Ok(None),
+        }
     }
 
     pub(super) fn eval_strlen<S: Storage>(
@@ -91,8 +99,15 @@ impl Function {
         ctx: Option<&ExecutionContext<'_, S>>,
     ) -> Result<Option<ComparableValue>> {
         check_arity(args, 1, "STRLEN")?;
-        let val = args[0].eval_to_comparable(row, ctx)?;
-        Ok(val.and_then(|v| v.as_str().map(|s| ComparableValue::Long(s.len() as i64))))
+        match args[0].eval_to_comparable(row, ctx)? {
+            Some(v) => match v.as_str() {
+                Some(s) => Ok(Some(ComparableValue::Long(s.len() as i64))),
+                None => Err(QueryError::InvalidFilter(
+                    "STRLEN requires a string argument".to_string(),
+                )),
+            },
+            None => Ok(None),
+        }
     }
 
     pub(super) fn eval_contains<S: Storage>(
@@ -104,12 +119,15 @@ impl Function {
         check_arity(args, 2, "CONTAINS")?;
         let haystack = args[0].eval_to_comparable(row, ctx)?;
         let needle = args[1].eval_to_comparable(row, ctx)?;
-        Ok(Some(ComparableValue::Bool(match (haystack, needle) {
+        match (haystack, needle) {
             (Some(ComparableValue::String(h)), Some(ComparableValue::String(n))) => {
-                h.contains(n.as_ref())
+                Ok(Some(ComparableValue::Bool(h.contains(n.as_ref()))))
             }
-            _ => false,
-        })))
+            (None, _) | (_, None) => Ok(None),
+            _ => Err(QueryError::InvalidFilter(
+                "CONTAINS requires string arguments".to_string(),
+            )),
+        }
     }
 
     pub(super) fn eval_str_starts<S: Storage>(
@@ -121,12 +139,15 @@ impl Function {
         check_arity(args, 2, "STRSTARTS")?;
         let haystack = args[0].eval_to_comparable(row, ctx)?;
         let prefix = args[1].eval_to_comparable(row, ctx)?;
-        Ok(Some(ComparableValue::Bool(match (haystack, prefix) {
+        match (haystack, prefix) {
             (Some(ComparableValue::String(h)), Some(ComparableValue::String(p))) => {
-                h.starts_with(p.as_ref())
+                Ok(Some(ComparableValue::Bool(h.starts_with(p.as_ref()))))
             }
-            _ => false,
-        })))
+            (None, _) | (_, None) => Ok(None),
+            _ => Err(QueryError::InvalidFilter(
+                "STRSTARTS requires string arguments".to_string(),
+            )),
+        }
     }
 
     pub(super) fn eval_str_ends<S: Storage>(
@@ -138,12 +159,15 @@ impl Function {
         check_arity(args, 2, "STRENDS")?;
         let haystack = args[0].eval_to_comparable(row, ctx)?;
         let suffix = args[1].eval_to_comparable(row, ctx)?;
-        Ok(Some(ComparableValue::Bool(match (haystack, suffix) {
+        match (haystack, suffix) {
             (Some(ComparableValue::String(h)), Some(ComparableValue::String(s))) => {
-                h.ends_with(s.as_ref())
+                Ok(Some(ComparableValue::Bool(h.ends_with(s.as_ref()))))
             }
-            _ => false,
-        })))
+            (None, _) | (_, None) => Ok(None),
+            _ => Err(QueryError::InvalidFilter(
+                "STRENDS requires string arguments".to_string(),
+            )),
+        }
     }
 
     pub(super) fn eval_regex<S: Storage>(
@@ -160,10 +184,15 @@ impl Function {
         let text = args[0].eval_to_comparable(row, ctx)?;
         let pattern = args[1].eval_to_comparable(row, ctx)?;
         let flags = if args.len() > 2 {
-            args[2]
-                .eval_to_comparable(row, ctx)?
-                .and_then(|v| v.as_str().map(|s| s.to_string()))
-                .unwrap_or_default()
+            match args[2].eval_to_comparable(row, ctx)? {
+                Some(v) => v
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| QueryError::InvalidFilter(
+                        "REGEX flags must be a string".to_string(),
+                    ))?,
+                None => return Ok(None),
+            }
         } else {
             String::new()
         };
@@ -173,7 +202,10 @@ impl Function {
                 let re = build_regex_with_flags(&p, &flags)?;
                 Ok(Some(ComparableValue::Bool(re.is_match(&t))))
             }
-            _ => Ok(Some(ComparableValue::Bool(false))),
+            (None, _) | (_, None) => Ok(None),
+            _ => Err(QueryError::InvalidFilter(
+                "REGEX requires string arguments".to_string(),
+            )),
         }
     }
 
@@ -203,13 +235,16 @@ impl Function {
         check_arity(args, 2, "STRBEFORE")?;
         let arg1 = args[0].eval_to_comparable(row, ctx)?;
         let arg2 = args[1].eval_to_comparable(row, ctx)?;
-        Ok(match (arg1, arg2) {
+        match (arg1, arg2) {
             (Some(ComparableValue::String(s)), Some(ComparableValue::String(d))) => {
                 let result = s.find(d.as_ref()).map(|pos| &s[..pos]).unwrap_or("");
-                Some(ComparableValue::String(Arc::from(result)))
+                Ok(Some(ComparableValue::String(Arc::from(result))))
             }
-            _ => None,
-        })
+            (None, _) | (_, None) => Ok(None),
+            _ => Err(QueryError::InvalidFilter(
+                "STRBEFORE requires string arguments".to_string(),
+            )),
+        }
     }
 
     pub(super) fn eval_str_after<S: Storage>(
@@ -221,16 +256,19 @@ impl Function {
         check_arity(args, 2, "STRAFTER")?;
         let arg1 = args[0].eval_to_comparable(row, ctx)?;
         let arg2 = args[1].eval_to_comparable(row, ctx)?;
-        Ok(match (arg1, arg2) {
+        match (arg1, arg2) {
             (Some(ComparableValue::String(s)), Some(ComparableValue::String(d))) => {
                 let result = s
                     .find(d.as_ref())
                     .map(|pos| &s[pos + d.len()..])
                     .unwrap_or("");
-                Some(ComparableValue::String(Arc::from(result)))
+                Ok(Some(ComparableValue::String(Arc::from(result))))
             }
-            _ => None,
-        })
+            (None, _) | (_, None) => Ok(None),
+            _ => Err(QueryError::InvalidFilter(
+                "STRAFTER requires string arguments".to_string(),
+            )),
+        }
     }
 
     pub(super) fn eval_replace<S: Storage>(
@@ -248,10 +286,15 @@ impl Function {
         let pattern = args[1].eval_to_comparable(row, ctx)?;
         let replacement = args[2].eval_to_comparable(row, ctx)?;
         let flags = if args.len() > 3 {
-            args[3]
-                .eval_to_comparable(row, ctx)?
-                .and_then(|v| v.as_str().map(|s| s.to_string()))
-                .unwrap_or_default()
+            match args[3].eval_to_comparable(row, ctx)? {
+                Some(v) => v
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| QueryError::InvalidFilter(
+                        "REPLACE flags must be a string".to_string(),
+                    ))?,
+                None => return Ok(None),
+            }
         } else {
             String::new()
         };
@@ -267,7 +310,10 @@ impl Function {
                     re.replace_all(&s, r.as_ref()).into_owned(),
                 ))))
             }
-            _ => Ok(None),
+            (None, _, _) | (_, None, _) | (_, _, None) => Ok(None),
+            _ => Err(QueryError::InvalidFilter(
+                "REPLACE requires string arguments".to_string(),
+            )),
         }
     }
 
@@ -290,29 +336,50 @@ impl Function {
             None
         };
 
-        match (input, start) {
-            (Some(ComparableValue::String(s)), Some(ComparableValue::Long(start_1))) => {
-                let start_0 = if start_1 < 1 {
-                    0
-                } else {
-                    (start_1 - 1) as usize
-                };
-                if start_0 >= s.len() {
-                    return Ok(Some(ComparableValue::String(Arc::from(""))));
-                }
-                let result = match length {
-                    Some(ComparableValue::Long(len)) if len > 0 => {
-                        let end = (start_0 + (len as usize)).min(s.len());
-                        &s[start_0..end]
-                    }
-                    Some(ComparableValue::Long(_)) => "",
-                    None => &s[start_0..],
-                    _ => return Ok(None),
-                };
-                Ok(Some(ComparableValue::String(Arc::from(result))))
+        let s = match input {
+            Some(ComparableValue::String(s)) => s,
+            None => return Ok(None),
+            _ => {
+                return Err(QueryError::InvalidFilter(
+                    "SUBSTR requires a string as first argument".to_string(),
+                ))
             }
-            _ => Ok(None),
+        };
+
+        let start_1 = match start {
+            Some(ComparableValue::Long(n)) => n,
+            None => return Ok(None),
+            _ => {
+                return Err(QueryError::InvalidFilter(
+                    "SUBSTR requires an integer as second argument".to_string(),
+                ))
+            }
+        };
+
+        let start_0 = if start_1 < 1 {
+            0
+        } else {
+            (start_1 - 1) as usize
+        };
+
+        if start_0 >= s.len() {
+            return Ok(Some(ComparableValue::String(Arc::from(""))));
         }
+
+        let result = match length {
+            Some(ComparableValue::Long(len)) if len > 0 => {
+                let end = (start_0 + (len as usize)).min(s.len());
+                &s[start_0..end]
+            }
+            Some(ComparableValue::Long(_)) => "",
+            None => &s[start_0..],
+            Some(_) => {
+                return Err(QueryError::InvalidFilter(
+                    "SUBSTR requires an integer as third argument".to_string(),
+                ))
+            }
+        };
+        Ok(Some(ComparableValue::String(Arc::from(result))))
     }
 
     pub(super) fn eval_encode_for_uri<S: Storage>(
@@ -322,14 +389,17 @@ impl Function {
         ctx: Option<&ExecutionContext<'_, S>>,
     ) -> Result<Option<ComparableValue>> {
         check_arity(args, 1, "ENCODE_FOR_URI")?;
-        let val = args[0].eval_to_comparable(row, ctx)?;
-        Ok(val.and_then(|v| {
-            v.as_str().map(|s| {
-                ComparableValue::String(Arc::from(
+        match args[0].eval_to_comparable(row, ctx)? {
+            Some(v) => match v.as_str() {
+                Some(s) => Ok(Some(ComparableValue::String(Arc::from(
                     utf8_percent_encode(s, NON_ALPHANUMERIC).to_string(),
-                ))
-            })
-        }))
+                )))),
+                None => Err(QueryError::InvalidFilter(
+                    "ENCODE_FOR_URI requires a string argument".to_string(),
+                )),
+            },
+            None => Ok(None),
+        }
     }
 
     pub(super) fn eval_str_dt<S: Storage>(

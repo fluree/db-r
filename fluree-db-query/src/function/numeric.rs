@@ -4,7 +4,7 @@
 
 use crate::binding::RowView;
 use crate::context::ExecutionContext;
-use crate::error::Result;
+use crate::error::{QueryError, Result};
 use crate::ir::{Expression, Function};
 use fluree_db_core::Storage;
 use rand::random;
@@ -20,12 +20,14 @@ impl Function {
         ctx: Option<&ExecutionContext<'_, S>>,
     ) -> Result<Option<ComparableValue>> {
         check_arity(args, 1, "ABS")?;
-        let val = args[0].eval_to_comparable(row, ctx)?;
-        Ok(match val {
-            Some(ComparableValue::Long(n)) => Some(ComparableValue::Long(n.abs())),
-            Some(ComparableValue::Double(d)) => Some(ComparableValue::Double(d.abs())),
-            _ => None,
-        })
+        match args[0].eval_to_comparable(row, ctx)? {
+            Some(ComparableValue::Long(n)) => Ok(Some(ComparableValue::Long(n.abs()))),
+            Some(ComparableValue::Double(d)) => Ok(Some(ComparableValue::Double(d.abs()))),
+            None => Ok(None),
+            Some(_) => Err(QueryError::InvalidFilter(
+                "ABS requires a numeric argument".to_string(),
+            )),
+        }
     }
 
     pub(super) fn eval_round<S: Storage>(
@@ -35,12 +37,14 @@ impl Function {
         ctx: Option<&ExecutionContext<'_, S>>,
     ) -> Result<Option<ComparableValue>> {
         check_arity(args, 1, "ROUND")?;
-        let val = args[0].eval_to_comparable(row, ctx)?;
-        Ok(match val {
-            Some(ComparableValue::Long(n)) => Some(ComparableValue::Long(n)),
-            Some(ComparableValue::Double(d)) => Some(ComparableValue::Double(d.round())),
-            _ => None,
-        })
+        match args[0].eval_to_comparable(row, ctx)? {
+            Some(ComparableValue::Long(n)) => Ok(Some(ComparableValue::Long(n))),
+            Some(ComparableValue::Double(d)) => Ok(Some(ComparableValue::Double(d.round()))),
+            None => Ok(None),
+            Some(_) => Err(QueryError::InvalidFilter(
+                "ROUND requires a numeric argument".to_string(),
+            )),
+        }
     }
 
     pub(super) fn eval_ceil<S: Storage>(
@@ -50,12 +54,14 @@ impl Function {
         ctx: Option<&ExecutionContext<'_, S>>,
     ) -> Result<Option<ComparableValue>> {
         check_arity(args, 1, "CEIL")?;
-        let val = args[0].eval_to_comparable(row, ctx)?;
-        Ok(match val {
-            Some(ComparableValue::Long(n)) => Some(ComparableValue::Long(n)),
-            Some(ComparableValue::Double(d)) => Some(ComparableValue::Double(d.ceil())),
-            _ => None,
-        })
+        match args[0].eval_to_comparable(row, ctx)? {
+            Some(ComparableValue::Long(n)) => Ok(Some(ComparableValue::Long(n))),
+            Some(ComparableValue::Double(d)) => Ok(Some(ComparableValue::Double(d.ceil()))),
+            None => Ok(None),
+            Some(_) => Err(QueryError::InvalidFilter(
+                "CEIL requires a numeric argument".to_string(),
+            )),
+        }
     }
 
     pub(super) fn eval_floor<S: Storage>(
@@ -65,12 +71,14 @@ impl Function {
         ctx: Option<&ExecutionContext<'_, S>>,
     ) -> Result<Option<ComparableValue>> {
         check_arity(args, 1, "FLOOR")?;
-        let val = args[0].eval_to_comparable(row, ctx)?;
-        Ok(match val {
-            Some(ComparableValue::Long(n)) => Some(ComparableValue::Long(n)),
-            Some(ComparableValue::Double(d)) => Some(ComparableValue::Double(d.floor())),
-            _ => None,
-        })
+        match args[0].eval_to_comparable(row, ctx)? {
+            Some(ComparableValue::Long(n)) => Ok(Some(ComparableValue::Long(n))),
+            Some(ComparableValue::Double(d)) => Ok(Some(ComparableValue::Double(d.floor()))),
+            None => Ok(None),
+            Some(_) => Err(QueryError::InvalidFilter(
+                "FLOOR requires a numeric argument".to_string(),
+            )),
+        }
     }
 
     pub(super) fn eval_rand(

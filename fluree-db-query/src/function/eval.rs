@@ -54,18 +54,11 @@ pub fn evaluate_to_binding_strict<S: Storage>(
             if has_unbound_vars(expr, row) {
                 return Ok(Binding::Unbound);
             }
-            // Vector similarity functions legitimately return None for type
-            // mismatches (e.g. dotProduct on a non-vector value). Treat as
-            // Unbound so mixed-datatype queries produce null scores instead
-            // of hard errors.
+            // cosineSimilarity returns None for zero-magnitude vectors
+            // (mathematically undefined). Treat as Unbound.
             if matches!(
                 expr,
-                Expression::Call { func, .. } if matches!(
-                    func,
-                    Function::DotProduct
-                    | Function::CosineSimilarity
-                    | Function::EuclideanDistance
-                )
+                Expression::Call { func: Function::CosineSimilarity, .. }
             ) {
                 return Ok(Binding::Unbound);
             }
