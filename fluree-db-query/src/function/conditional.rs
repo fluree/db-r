@@ -12,37 +12,34 @@ use super::eval::evaluate;
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
-/// Evaluate a conditional function
-pub fn eval_conditional_function<S: Storage>(
-    name: &Function,
-    args: &[Expression],
-    row: &RowView,
-    ctx: Option<&ExecutionContext<'_, S>>,
-) -> Result<Option<ComparableValue>> {
-    match name {
-        Function::If => {
-            check_arity(args, 3, "IF")?;
-            let cond = evaluate(&args[0], row, ctx)?;
-            if cond {
-                args[1].eval_to_comparable(row, ctx)
-            } else {
-                args[2].eval_to_comparable(row, ctx)
+impl Function {
+    pub(super) fn eval_if<S: Storage>(
+        &self,
+        args: &[Expression],
+        row: &RowView,
+        ctx: Option<&ExecutionContext<'_, S>>,
+    ) -> Result<Option<ComparableValue>> {
+        check_arity(args, 3, "IF")?;
+        let cond = evaluate(&args[0], row, ctx)?;
+        if cond {
+            args[1].eval_to_comparable(row, ctx)
+        } else {
+            args[2].eval_to_comparable(row, ctx)
+        }
+    }
+
+    pub(super) fn eval_coalesce<S: Storage>(
+        &self,
+        args: &[Expression],
+        row: &RowView,
+        ctx: Option<&ExecutionContext<'_, S>>,
+    ) -> Result<Option<ComparableValue>> {
+        for arg in args {
+            let val = arg.eval_to_comparable(row, ctx)?;
+            if val.is_some() {
+                return Ok(val);
             }
         }
-
-        Function::Coalesce => {
-            for arg in args {
-                let val = arg.eval_to_comparable(row, ctx)?;
-                if val.is_some() {
-                    return Ok(val);
-                }
-            }
-            Ok(None)
-        }
-
-        _ => unreachable!(
-            "Non-conditional function routed to conditional module: {:?}",
-            name
-        ),
+        Ok(None)
     }
 }

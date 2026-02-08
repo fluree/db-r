@@ -15,45 +15,70 @@ use std::sync::Arc;
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
-/// Evaluate a hash function
-pub fn eval_hash_function<S: Storage>(
-    name: &Function,
-    args: &[Expression],
-    row: &RowView,
-    ctx: Option<&ExecutionContext<'_, S>>,
-) -> Result<Option<ComparableValue>> {
-    match name {
-        Function::Md5 => eval_hash(args, row, ctx, "MD5", |s| {
+impl Function {
+    pub(super) fn eval_md5<S: Storage>(
+        &self,
+        args: &[Expression],
+        row: &RowView,
+        ctx: Option<&ExecutionContext<'_, S>>,
+    ) -> Result<Option<ComparableValue>> {
+        eval_hash(args, row, ctx, "MD5", |s| {
             let mut hasher = Md5::new();
             hasher.update(s.as_bytes());
             format!("{:x}", hasher.finalize())
-        }),
+        })
+    }
 
-        Function::Sha1 => eval_hash(args, row, ctx, "SHA1", |s| {
+    pub(super) fn eval_sha1<S: Storage>(
+        &self,
+        args: &[Expression],
+        row: &RowView,
+        ctx: Option<&ExecutionContext<'_, S>>,
+    ) -> Result<Option<ComparableValue>> {
+        eval_hash(args, row, ctx, "SHA1", |s| {
             let mut hasher = Sha1::new();
             hasher.update(s.as_bytes());
             format!("{:x}", hasher.finalize())
-        }),
+        })
+    }
 
-        Function::Sha256 => eval_hash(args, row, ctx, "SHA256", |s| {
+    pub(super) fn eval_sha256<S: Storage>(
+        &self,
+        args: &[Expression],
+        row: &RowView,
+        ctx: Option<&ExecutionContext<'_, S>>,
+    ) -> Result<Option<ComparableValue>> {
+        eval_hash(args, row, ctx, "SHA256", |s| {
             let mut hasher = Sha256::new();
             hasher.update(s.as_bytes());
             format!("{:x}", hasher.finalize())
-        }),
+        })
+    }
 
-        Function::Sha384 => eval_hash(args, row, ctx, "SHA384", |s| {
+    pub(super) fn eval_sha384<S: Storage>(
+        &self,
+        args: &[Expression],
+        row: &RowView,
+        ctx: Option<&ExecutionContext<'_, S>>,
+    ) -> Result<Option<ComparableValue>> {
+        eval_hash(args, row, ctx, "SHA384", |s| {
             let mut hasher = Sha384::new();
             hasher.update(s.as_bytes());
             format!("{:x}", hasher.finalize())
-        }),
+        })
+    }
 
-        Function::Sha512 => eval_hash(args, row, ctx, "SHA512", |s| {
+    pub(super) fn eval_sha512<S: Storage>(
+        &self,
+        args: &[Expression],
+        row: &RowView,
+        ctx: Option<&ExecutionContext<'_, S>>,
+    ) -> Result<Option<ComparableValue>> {
+        eval_hash(args, row, ctx, "SHA512", |s| {
             let mut hasher = Sha512::new();
             hasher.update(s.as_bytes());
             format!("{:x}", hasher.finalize())
-        }),
-
-        _ => unreachable!("Non-hash function routed to hash module: {:?}", name),
+        })
     }
 }
 

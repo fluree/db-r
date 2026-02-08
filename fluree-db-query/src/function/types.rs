@@ -11,60 +11,71 @@ use fluree_db_core::Storage;
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
-/// Evaluate a type-checking function
-pub fn eval_type_function<S: Storage>(
-    name: &Function,
-    args: &[Expression],
-    row: &RowView,
-    ctx: Option<&ExecutionContext<'_, S>>,
-) -> Result<Option<ComparableValue>> {
-    match name {
-        Function::Bound => {
-            check_arity(args, 1, "BOUND")?;
-            match &args[0] {
-                Expression::Var(var) => Ok(Some(ComparableValue::Bool(!matches!(
-                    row.get(*var),
-                    Some(Binding::Unbound) | Some(Binding::Poisoned) | None
-                )))),
-                _ => Err(QueryError::InvalidFilter(
-                    "BOUND argument must be a variable".to_string(),
-                )),
-            }
+impl Function {
+    pub(super) fn eval_bound(
+        &self,
+        args: &[Expression],
+        row: &RowView,
+    ) -> Result<Option<ComparableValue>> {
+        check_arity(args, 1, "BOUND")?;
+        match &args[0] {
+            Expression::Var(var) => Ok(Some(ComparableValue::Bool(!matches!(
+                row.get(*var),
+                Some(Binding::Unbound) | Some(Binding::Poisoned) | None
+            )))),
+            _ => Err(QueryError::InvalidFilter(
+                "BOUND argument must be a variable".to_string(),
+            )),
         }
+    }
 
-        Function::IsIri => {
-            check_arity(args, 1, "isIRI")?;
-            let val = args[0].eval_to_comparable(row, ctx)?;
-            Ok(Some(ComparableValue::Bool(val.is_some_and(|v| {
-                matches!(v, ComparableValue::Sid(_) | ComparableValue::Iri(_))
-            }))))
-        }
+    pub(super) fn eval_is_iri<S: Storage>(
+        &self,
+        args: &[Expression],
+        row: &RowView,
+        ctx: Option<&ExecutionContext<'_, S>>,
+    ) -> Result<Option<ComparableValue>> {
+        check_arity(args, 1, "isIRI")?;
+        let val = args[0].eval_to_comparable(row, ctx)?;
+        Ok(Some(ComparableValue::Bool(val.is_some_and(|v| {
+            matches!(v, ComparableValue::Sid(_) | ComparableValue::Iri(_))
+        }))))
+    }
 
-        Function::IsLiteral => {
-            check_arity(args, 1, "isLiteral")?;
-            let val = args[0].eval_to_comparable(row, ctx)?;
-            Ok(Some(ComparableValue::Bool(val.is_some_and(|v| {
-                matches!(
-                    v,
-                    ComparableValue::Long(_)
-                        | ComparableValue::Double(_)
-                        | ComparableValue::String(_)
-                        | ComparableValue::Bool(_)
-                )
-            }))))
-        }
+    pub(super) fn eval_is_literal<S: Storage>(
+        &self,
+        args: &[Expression],
+        row: &RowView,
+        ctx: Option<&ExecutionContext<'_, S>>,
+    ) -> Result<Option<ComparableValue>> {
+        check_arity(args, 1, "isLiteral")?;
+        let val = args[0].eval_to_comparable(row, ctx)?;
+        Ok(Some(ComparableValue::Bool(val.is_some_and(|v| {
+            matches!(
+                v,
+                ComparableValue::Long(_)
+                    | ComparableValue::Double(_)
+                    | ComparableValue::String(_)
+                    | ComparableValue::Bool(_)
+            )
+        }))))
+    }
 
-        Function::IsNumeric => {
-            check_arity(args, 1, "isNumeric")?;
-            let val = args[0].eval_to_comparable(row, ctx)?;
-            Ok(Some(ComparableValue::Bool(val.is_some_and(|v| {
-                matches!(v, ComparableValue::Long(_) | ComparableValue::Double(_))
-            }))))
-        }
+    pub(super) fn eval_is_numeric<S: Storage>(
+        &self,
+        args: &[Expression],
+        row: &RowView,
+        ctx: Option<&ExecutionContext<'_, S>>,
+    ) -> Result<Option<ComparableValue>> {
+        check_arity(args, 1, "isNumeric")?;
+        let val = args[0].eval_to_comparable(row, ctx)?;
+        Ok(Some(ComparableValue::Bool(val.is_some_and(|v| {
+            matches!(v, ComparableValue::Long(_) | ComparableValue::Double(_))
+        }))))
+    }
 
-        Function::IsBlank => Ok(Some(ComparableValue::Bool(false))),
-
-        _ => unreachable!("Non-type function routed to types module: {:?}", name),
+    pub(super) fn eval_is_blank(&self) -> Result<Option<ComparableValue>> {
+        Ok(Some(ComparableValue::Bool(false)))
     }
 }
 
@@ -89,13 +100,9 @@ mod tests {
     fn test_bound() {
         let batch = make_string_batch();
         let row = batch.row_view(0).unwrap();
-        let result = eval_type_function::<fluree_db_core::MemoryStorage>(
-            &Function::Bound,
-            &[Expression::Var(VarId(0))],
-            &row,
-            None,
-        )
-        .unwrap();
+        let result = Function::Bound
+            .eval_bound(&[Expression::Var(VarId(0))], &row)
+            .unwrap();
         assert_eq!(result, Some(ComparableValue::Bool(true)));
     }
 }
