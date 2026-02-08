@@ -5,60 +5,55 @@
 use crate::binding::RowView;
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::ir::{Expression, Function};
+use crate::ir::Expression;
 use fluree_db_core::Storage;
 
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
-impl Function {
-    pub(super) fn eval_dot_product<S: Storage>(
-        &self,
-        args: &[Expression],
-        row: &RowView,
-        ctx: Option<&ExecutionContext<'_, S>>,
-    ) -> Result<Option<ComparableValue>> {
-        eval_binary_vector_fn(args, row, ctx, "dotProduct", |a, b| {
-            Some(a.iter().zip(b.iter()).map(|(x, y)| x * y).sum())
-        })
-    }
+pub fn eval_dot_product<S: Storage>(
+    args: &[Expression],
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_, S>>,
+) -> Result<Option<ComparableValue>> {
+    eval_binary_vector_fn(args, row, ctx, "dotProduct", |a, b| {
+        Some(a.iter().zip(b.iter()).map(|(x, y)| x * y).sum())
+    })
+}
 
-    pub(super) fn eval_cosine_similarity<S: Storage>(
-        &self,
-        args: &[Expression],
-        row: &RowView,
-        ctx: Option<&ExecutionContext<'_, S>>,
-    ) -> Result<Option<ComparableValue>> {
-        eval_binary_vector_fn(args, row, ctx, "cosineSimilarity", |a, b| {
-            let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-            let mag_a: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
-            let mag_b: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt();
-            if mag_a == 0.0 || mag_b == 0.0 {
-                None // mathematically undefined, not a type error
-            } else {
-                Some(dot / (mag_a * mag_b))
-            }
-        })
-    }
+pub fn eval_cosine_similarity<S: Storage>(
+    args: &[Expression],
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_, S>>,
+) -> Result<Option<ComparableValue>> {
+    eval_binary_vector_fn(args, row, ctx, "cosineSimilarity", |a, b| {
+        let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+        let mag_a: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let mag_b: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if mag_a == 0.0 || mag_b == 0.0 {
+            None // mathematically undefined, not a type error
+        } else {
+            Some(dot / (mag_a * mag_b))
+        }
+    })
+}
 
-    pub(super) fn eval_euclidean_distance<S: Storage>(
-        &self,
-        args: &[Expression],
-        row: &RowView,
-        ctx: Option<&ExecutionContext<'_, S>>,
-    ) -> Result<Option<ComparableValue>> {
-        eval_binary_vector_fn(args, row, ctx, "euclideanDistance", |a, b| {
-            let sum_sq: f64 = a
-                .iter()
-                .zip(b.iter())
-                .map(|(x, y)| {
-                    let diff = x - y;
-                    diff * diff
-                })
-                .sum();
-            Some(sum_sq.sqrt())
-        })
-    }
+pub fn eval_euclidean_distance<S: Storage>(
+    args: &[Expression],
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_, S>>,
+) -> Result<Option<ComparableValue>> {
+    eval_binary_vector_fn(args, row, ctx, "euclideanDistance", |a, b| {
+        let sum_sq: f64 = a
+            .iter()
+            .zip(b.iter())
+            .map(|(x, y)| {
+                let diff = x - y;
+                diff * diff
+            })
+            .sum();
+        Some(sum_sq.sqrt())
+    })
 }
 
 /// Evaluate a binary vector function

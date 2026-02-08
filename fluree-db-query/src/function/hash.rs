@@ -5,7 +5,7 @@
 use crate::binding::RowView;
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::ir::{Expression, Function};
+use crate::ir::Expression;
 use fluree_db_core::Storage;
 use md5::{Digest as Md5Digest, Md5};
 use sha1::Sha1;
@@ -15,71 +15,64 @@ use std::sync::Arc;
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
-impl Function {
-    pub(super) fn eval_md5<S: Storage>(
-        &self,
-        args: &[Expression],
-        row: &RowView,
-        ctx: Option<&ExecutionContext<'_, S>>,
-    ) -> Result<Option<ComparableValue>> {
-        eval_hash(args, row, ctx, "MD5", |s| {
-            let mut hasher = Md5::new();
-            hasher.update(s.as_bytes());
-            format!("{:x}", hasher.finalize())
-        })
-    }
+pub fn eval_md5<S: Storage>(
+    args: &[Expression],
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_, S>>,
+) -> Result<Option<ComparableValue>> {
+    eval_hash(args, row, ctx, "MD5", |s| {
+        let mut hasher = Md5::new();
+        hasher.update(s.as_bytes());
+        format!("{:x}", hasher.finalize())
+    })
+}
 
-    pub(super) fn eval_sha1<S: Storage>(
-        &self,
-        args: &[Expression],
-        row: &RowView,
-        ctx: Option<&ExecutionContext<'_, S>>,
-    ) -> Result<Option<ComparableValue>> {
-        eval_hash(args, row, ctx, "SHA1", |s| {
-            let mut hasher = Sha1::new();
-            hasher.update(s.as_bytes());
-            format!("{:x}", hasher.finalize())
-        })
-    }
+pub fn eval_sha1<S: Storage>(
+    args: &[Expression],
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_, S>>,
+) -> Result<Option<ComparableValue>> {
+    eval_hash(args, row, ctx, "SHA1", |s| {
+        let mut hasher = Sha1::new();
+        hasher.update(s.as_bytes());
+        format!("{:x}", hasher.finalize())
+    })
+}
 
-    pub(super) fn eval_sha256<S: Storage>(
-        &self,
-        args: &[Expression],
-        row: &RowView,
-        ctx: Option<&ExecutionContext<'_, S>>,
-    ) -> Result<Option<ComparableValue>> {
-        eval_hash(args, row, ctx, "SHA256", |s| {
-            let mut hasher = Sha256::new();
-            hasher.update(s.as_bytes());
-            format!("{:x}", hasher.finalize())
-        })
-    }
+pub fn eval_sha256<S: Storage>(
+    args: &[Expression],
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_, S>>,
+) -> Result<Option<ComparableValue>> {
+    eval_hash(args, row, ctx, "SHA256", |s| {
+        let mut hasher = Sha256::new();
+        hasher.update(s.as_bytes());
+        format!("{:x}", hasher.finalize())
+    })
+}
 
-    pub(super) fn eval_sha384<S: Storage>(
-        &self,
-        args: &[Expression],
-        row: &RowView,
-        ctx: Option<&ExecutionContext<'_, S>>,
-    ) -> Result<Option<ComparableValue>> {
-        eval_hash(args, row, ctx, "SHA384", |s| {
-            let mut hasher = Sha384::new();
-            hasher.update(s.as_bytes());
-            format!("{:x}", hasher.finalize())
-        })
-    }
+pub fn eval_sha384<S: Storage>(
+    args: &[Expression],
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_, S>>,
+) -> Result<Option<ComparableValue>> {
+    eval_hash(args, row, ctx, "SHA384", |s| {
+        let mut hasher = Sha384::new();
+        hasher.update(s.as_bytes());
+        format!("{:x}", hasher.finalize())
+    })
+}
 
-    pub(super) fn eval_sha512<S: Storage>(
-        &self,
-        args: &[Expression],
-        row: &RowView,
-        ctx: Option<&ExecutionContext<'_, S>>,
-    ) -> Result<Option<ComparableValue>> {
-        eval_hash(args, row, ctx, "SHA512", |s| {
-            let mut hasher = Sha512::new();
-            hasher.update(s.as_bytes());
-            format!("{:x}", hasher.finalize())
-        })
-    }
+pub fn eval_sha512<S: Storage>(
+    args: &[Expression],
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_, S>>,
+) -> Result<Option<ComparableValue>> {
+    eval_hash(args, row, ctx, "SHA512", |s| {
+        let mut hasher = Sha512::new();
+        hasher.update(s.as_bytes());
+        format!("{:x}", hasher.finalize())
+    })
 }
 
 /// Evaluate a hash function with the given hasher

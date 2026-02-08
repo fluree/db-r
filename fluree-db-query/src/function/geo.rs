@@ -5,38 +5,35 @@
 use crate::binding::RowView;
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::ir::{Expression, Function};
+use crate::ir::Expression;
 use fluree_db_core::{geo, FlakeValue, Storage};
 
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
-impl Function {
-    pub(super) fn eval_geof_distance<S: Storage>(
-        &self,
-        args: &[Expression],
-        row: &RowView,
-        ctx: Option<&ExecutionContext<'_, S>>,
-    ) -> Result<Option<ComparableValue>> {
-        check_arity(args, 2, "geof:distance")?;
-        let v1 = args[0].eval_to_comparable(row, ctx)?;
-        let v2 = args[1].eval_to_comparable(row, ctx)?;
+pub fn eval_geof_distance<S: Storage>(
+    args: &[Expression],
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_, S>>,
+) -> Result<Option<ComparableValue>> {
+    check_arity(args, 2, "geof:distance")?;
+    let v1 = args[0].eval_to_comparable(row, ctx)?;
+    let v2 = args[1].eval_to_comparable(row, ctx)?;
 
-        match (&v1, &v2) {
-            (None, _) | (_, None) => Ok(None), // unbound variable
-            _ => {
-                let coords1 = extract_geo_coords(&v1);
-                let coords2 = extract_geo_coords(&v2);
+    match (&v1, &v2) {
+        (None, _) | (_, None) => Ok(None), // unbound variable
+        _ => {
+            let coords1 = extract_geo_coords(&v1);
+            let coords2 = extract_geo_coords(&v2);
 
-                match (coords1, coords2) {
-                    (Some((lat1, lng1)), Some((lat2, lng2))) => {
-                        let distance = geo::haversine_distance(lat1, lng1, lat2, lng2);
-                        Ok(Some(ComparableValue::Double(distance)))
-                    }
-                    _ => Err(QueryError::InvalidFilter(
-                        "geof:distance requires point arguments".to_string(),
-                    )),
+            match (coords1, coords2) {
+                (Some((lat1, lng1)), Some((lat2, lng2))) => {
+                    let distance = geo::haversine_distance(lat1, lng1, lat2, lng2);
+                    Ok(Some(ComparableValue::Double(distance)))
                 }
+                _ => Err(QueryError::InvalidFilter(
+                    "geof:distance requires point arguments".to_string(),
+                )),
             }
         }
     }
@@ -88,13 +85,12 @@ mod tests {
         let batch = Batch::new(schema, vec![col0, col1]).unwrap();
         let row = batch.row_view(0).unwrap();
 
-        let result = Function::GeofDistance
-            .eval_geof_distance::<fluree_db_core::MemoryStorage>(
-                &[Expression::Var(VarId(0)), Expression::Var(VarId(1))],
-                &row,
-                None,
-            )
-            .unwrap();
+        let result = eval_geof_distance::<fluree_db_core::MemoryStorage>(
+            &[Expression::Var(VarId(0)), Expression::Var(VarId(1))],
+            &row,
+            None,
+        )
+        .unwrap();
 
         // Distance should be approximately 343 km
         if let Some(ComparableValue::Double(d)) = result {
@@ -122,13 +118,12 @@ mod tests {
         let batch = Batch::new(schema, vec![col0, col1]).unwrap();
         let row = batch.row_view(0).unwrap();
 
-        let result = Function::GeofDistance
-            .eval_geof_distance::<fluree_db_core::MemoryStorage>(
-                &[Expression::Var(VarId(0)), Expression::Var(VarId(1))],
-                &row,
-                None,
-            )
-            .unwrap();
+        let result = eval_geof_distance::<fluree_db_core::MemoryStorage>(
+            &[Expression::Var(VarId(0)), Expression::Var(VarId(1))],
+            &row,
+            None,
+        )
+        .unwrap();
 
         // Distance should be approximately 343 km
         if let Some(ComparableValue::Double(d)) = result {
@@ -156,7 +151,7 @@ mod tests {
         let batch = Batch::new(schema, vec![col0, col1]).unwrap();
         let row = batch.row_view(0).unwrap();
 
-        let result = Function::GeofDistance.eval_geof_distance::<fluree_db_core::MemoryStorage>(
+        let result = eval_geof_distance::<fluree_db_core::MemoryStorage>(
             &[Expression::Var(VarId(0)), Expression::Var(VarId(1))],
             &row,
             None,

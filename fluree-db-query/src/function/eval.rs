@@ -280,7 +280,10 @@ impl Expression {
                 // (mathematically undefined). Treat as Unbound.
                 if matches!(
                     self,
-                    Expression::Call { func: Function::CosineSimilarity, .. }
+                    Expression::Call {
+                        func: Function::CosineSimilarity,
+                        ..
+                    }
                 ) {
                     return Ok(Binding::Unbound);
                 }
