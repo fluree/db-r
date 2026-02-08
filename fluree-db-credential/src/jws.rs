@@ -27,8 +27,12 @@ struct JwsHeader {
     alg: String,
     /// Optional embedded JWK (OKP/Ed25519)
     jwk: Option<JwkOkp>,
-    /// Optional key ID (base58 account ID)
-    #[allow(dead_code)]
+    /// Optional key ID (base58 account ID).
+    // Kept for: OIDC/JWKS verification path where kid identifies the signing key.
+    // The embedded-JWK path (this module) does not use kid; the OIDC path
+    // (oidc_jwt.rs) uses jsonwebtoken's own header decoder which has its own kid field.
+    // This field exists for forward-compatibility if we ever unify the header parsing.
+    #[expect(dead_code)]
     kid: Option<String>,
 }
 

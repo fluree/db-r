@@ -54,9 +54,9 @@ impl fmt::Display for RemoteLedgerError {
             RemoteLedgerError::Network(msg) => write!(f, "network error: {msg}"),
             RemoteLedgerError::Unauthorized => write!(
                 f,
-                "authentication failed (401). Token may be expired.\n  \
-                 Use `fluree token create` to generate a new one, then \
-                 `fluree remote add <name> <url> --token <new-token>` to update."
+                "authentication failed (401). Token may be expired or revoked.\n  \
+                 Run `fluree auth login` to store a new token, or \
+                 `fluree auth status` to check expiry."
             ),
             RemoteLedgerError::Forbidden => write!(f, "access denied (403)"),
             RemoteLedgerError::NotFound(msg) => write!(f, "not found: {msg}"),
@@ -427,7 +427,7 @@ mod tests {
         let err = RemoteLedgerError::Unauthorized;
         let msg = format!("{err}");
         assert!(msg.contains("authentication failed"));
-        assert!(msg.contains("fluree token create"));
+        assert!(msg.contains("fluree auth login"));
 
         let err = RemoteLedgerError::BadRequest("invalid query syntax".to_string());
         assert_eq!(format!("{err}"), "bad request: invalid query syntax");

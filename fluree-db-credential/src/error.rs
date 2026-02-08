@@ -52,6 +52,14 @@ pub enum CredentialError {
     /// VC verification not enabled (requires "vc" feature)
     #[error("VerifiableCredential verification not enabled (requires 'vc' feature)")]
     VcNotEnabled,
+
+    /// OIDC JWT verification error (JWKS path)
+    #[error("JWT error: {0}")]
+    JwtError(String),
+
+    /// Key not found in JWKS for the given kid
+    #[error("Key not found in JWKS: kid={0}")]
+    KeyNotFound(String),
 }
 
 impl CredentialError {

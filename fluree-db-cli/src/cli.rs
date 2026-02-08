@@ -238,6 +238,12 @@ pub enum Commands {
         action: RemoteAction,
     },
 
+    /// Manage authentication tokens for remotes
+    Auth {
+        #[command(subcommand)]
+        action: AuthAction,
+    },
+
     /// Manage upstream tracking configuration
     Upstream {
         #[command(subcommand)]
@@ -492,6 +498,34 @@ pub enum RemoteAction {
     Show {
         /// Remote name
         name: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AuthAction {
+    /// Show authentication status for a remote
+    Status {
+        /// Remote name (defaults to only configured remote)
+        #[arg(long)]
+        remote: Option<String>,
+    },
+
+    /// Store a bearer token for a remote
+    Login {
+        /// Remote name (defaults to only configured remote)
+        #[arg(long)]
+        remote: Option<String>,
+
+        /// Token value, @filepath to read from file, or @- for stdin
+        #[arg(long)]
+        token: Option<String>,
+    },
+
+    /// Clear the stored token for a remote
+    Logout {
+        /// Remote name (defaults to only configured remote)
+        #[arg(long)]
+        remote: Option<String>,
     },
 }
 

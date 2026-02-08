@@ -82,7 +82,10 @@ pub use block_fetch::{
     AddressContext, BlockAccessScope, BlockContent, BlockFetchError, EnforcementMode, FetchedBlock,
     LedgerBlockContext,
 };
-pub use dataset::{DatasetParseError, DatasetSpec, GraphSource, QueryConnectionOptions, TimeSpec};
+pub use dataset::{
+    sparql_dataset_aliases, DatasetParseError, DatasetSpec, GraphSource, QueryConnectionOptions,
+    TimeSpec,
+};
 pub use error::{ApiError, BuilderError, BuilderErrors, Result};
 pub use format::{FormatError, FormatterConfig, JsonLdRowShape, OutputFormat, SelectMode};
 pub use graph::Graph;

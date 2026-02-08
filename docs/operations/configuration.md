@@ -186,6 +186,59 @@ fluree-server \
   --data-auth-trusted-issuer did:key:z6Mk...
 ```
 
+### OIDC / JWKS Token Verification
+
+When the `oidc` feature is enabled, the server can verify JWT tokens signed by external identity
+providers (e.g., Fluree Cloud Service) using JWKS (JSON Web Key Set) endpoints. This is in addition to the
+existing embedded-JWK (Ed25519 `did:key`) verification path.
+
+**Dual-path dispatch**: The server inspects each Bearer token's header:
+- **Embedded JWK** (Ed25519): Uses the existing `verify_jws()` path — no JWKS needed.
+- **kid header** (RS256): Uses OIDC/JWKS path — fetches the signing key from the issuer's JWKS endpoint.
+
+Both paths coexist; no configuration change is needed for existing Ed25519 tokens.
+
+| Flag | Env Var | Default | Description |
+|------|---------|---------|-------------|
+| `--jwks-issuer` | `FLUREE_JWKS_ISSUERS` | None | OIDC issuer to trust (repeatable) |
+| `--jwks-cache-ttl` | `FLUREE_JWKS_CACHE_TTL` | `300` | JWKS cache TTL in seconds |
+
+The `--jwks-issuer` flag takes the format `<issuer_url>=<jwks_url>`:
+
+```bash
+fluree-server \
+  --data-auth-mode required \
+  --jwks-issuer "https://solo.example.com=https://solo.example.com/.well-known/jwks.json"
+```
+
+For multiple issuers, repeat the flag or use comma separation in the env var:
+
+```bash
+# CLI flags (repeatable)
+fluree-server \
+  --jwks-issuer "https://issuer1.example.com=https://issuer1.example.com/.well-known/jwks.json" \
+  --jwks-issuer "https://issuer2.example.com=https://issuer2.example.com/.well-known/jwks.json"
+
+# Environment variable (comma-separated)
+export FLUREE_JWKS_ISSUERS="https://issuer1.example.com=https://issuer1.example.com/.well-known/jwks.json,https://issuer2.example.com=https://issuer2.example.com/.well-known/jwks.json"
+```
+
+**Behavior details:**
+- JWKS endpoints are fetched at startup (`warm()`) but the server starts even if they're unreachable.
+- Keys are cached and refreshed when a `kid` miss occurs (rate-limited to one refresh per issuer every 10 seconds).
+- The token's `iss` claim must exactly match a configured issuer URL — unconfigured issuers are rejected immediately with a clear error.
+- Only data API endpoints (`/:ledger/query`, `/:ledger/insert`, etc.) support JWKS verification in this release. Events and storage proxy auth continue to use the existing Ed25519 path only.
+
+#### Connection-Scoped SPARQL Scope Enforcement
+
+When a Bearer token is present for connection-scoped SPARQL queries (`/fluree/query` with
+`Content-Type: application/sparql-query`), the server enforces ledger scope:
+
+- FROM / FROM NAMED clauses are parsed to extract ledger aliases.
+- Each alias is checked against the token's read scope (`fluree.ledger.read.all` or `fluree.ledger.read.ledgers`).
+- Out-of-scope ledgers return 404 (no existence leak).
+- If no FROM clause is present, the query proceeds normally (the engine handles missing dataset errors).
+
 ### Admin Endpoint Authentication
 
 Protect `/fluree/create` and `/fluree/drop` endpoints:

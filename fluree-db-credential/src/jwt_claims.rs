@@ -207,6 +207,78 @@ impl EventsTokenPayload {
         Ok(())
     }
 
+    /// Validate claims for OIDC/JWKS-verified tokens.
+    ///
+    /// Unlike [`validate()`], this does NOT require `iss` to be a `did:key` or match
+    /// a signing key's DID. The `iss` claim is validated against the `expected_issuer`
+    /// parameter, which should be the configured JWKS issuer URL.
+    ///
+    /// # Arguments
+    /// * `expected_aud` - Expected audience claim. If `Some` and the token has no `aud`
+    ///   claim, validation fails.
+    /// * `expected_issuer` - The configured issuer URL. Token `iss` must exactly match.
+    /// * `require_identity` - Whether identity (`sub` or `fluree.identity`) is required.
+    ///
+    /// # Errors
+    /// Returns `ClaimsError` if any validation fails.
+    pub fn validate_oidc(
+        &self,
+        expected_aud: Option<&str>,
+        expected_issuer: &str,
+        require_identity: bool,
+    ) -> Result<(), ClaimsError> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before epoch")
+            .as_secs();
+
+        // exp must be in future (with skew)
+        if self.exp + CLOCK_SKEW_SECS < now {
+            return Err(ClaimsError::Expired);
+        }
+
+        // nbf must be in past (with skew)
+        if let Some(nbf) = self.nbf {
+            if nbf > now + CLOCK_SKEW_SECS {
+                return Err(ClaimsError::NotYetValid);
+            }
+        }
+
+        // iat must not be in future (with skew)
+        if let Some(iat) = self.iat {
+            if iat > now + CLOCK_SKEW_SECS {
+                return Err(ClaimsError::IssuedInFuture);
+            }
+        }
+
+        // aud must match if server expects one; fail if expected but absent
+        if let Some(expected) = expected_aud {
+            match &self.aud {
+                Some(audiences) if audiences.iter().any(|a| a == expected) => {}
+                _ => {
+                    return Err(ClaimsError::AudienceMismatch {
+                        expected: expected.to_string(),
+                    })
+                }
+            }
+        }
+
+        // iss must exactly match the configured issuer
+        if self.iss != expected_issuer {
+            return Err(ClaimsError::IssuerMismatch {
+                token_iss: self.iss.clone(),
+                signing_did: expected_issuer.to_string(),
+            });
+        }
+
+        // identity required in Required mode
+        if require_identity && self.resolve_identity().is_none() {
+            return Err(ClaimsError::IdentityRequired);
+        }
+
+        Ok(())
+    }
+
     /// Check if token grants any events permissions.
     ///
     /// Note: If events_all is true, ledgers/graph_sources lists are irrelevant.
@@ -337,6 +409,10 @@ mod tests {
             events_graph_sources: None,
             storage_all: None,
             storage_ledgers: None,
+            ledger_read_all: None,
+            ledger_read_ledgers: None,
+            ledger_write_all: None,
+            ledger_write_ledgers: None,
             fluree_identity: None,
         }
     }
@@ -691,5 +767,104 @@ mod tests {
             payload.storage_ledgers,
             Some(vec!["users:main".to_string()])
         );
+    }
+
+    // === validate_oidc tests ===
+
+    fn oidc_payload(issuer: &str) -> EventsTokenPayload {
+        EventsTokenPayload {
+            iss: issuer.to_string(),
+            sub: Some("user@example.com".to_string()),
+            aud: None,
+            exp: now_secs() + 3600,
+            iat: Some(now_secs()),
+            nbf: None,
+            events_all: None,
+            events_ledgers: None,
+            events_graph_sources: None,
+            storage_all: None,
+            storage_ledgers: None,
+            ledger_read_all: Some(true),
+            ledger_read_ledgers: None,
+            ledger_write_all: None,
+            ledger_write_ledgers: None,
+            fluree_identity: Some("did:key:z6MkTest".to_string()),
+        }
+    }
+
+    #[test]
+    fn test_validate_oidc_valid() {
+        let payload = oidc_payload("https://solo.example.com");
+        assert!(payload
+            .validate_oidc(None, "https://solo.example.com", false)
+            .is_ok());
+    }
+
+    #[test]
+    fn test_validate_oidc_issuer_mismatch() {
+        let payload = oidc_payload("https://evil.example.com");
+        let result = payload.validate_oidc(None, "https://solo.example.com", false);
+        assert!(matches!(result, Err(ClaimsError::IssuerMismatch { .. })));
+    }
+
+    #[test]
+    fn test_validate_oidc_expired() {
+        let mut payload = oidc_payload("https://solo.example.com");
+        payload.exp = now_secs() - 120; // 2 minutes ago
+
+        let result = payload.validate_oidc(None, "https://solo.example.com", false);
+        assert!(matches!(result, Err(ClaimsError::Expired)));
+    }
+
+    #[test]
+    fn test_validate_oidc_audience_match() {
+        let mut payload = oidc_payload("https://solo.example.com");
+        payload.aud = Some(vec!["fluree-server".to_string()]);
+
+        assert!(payload
+            .validate_oidc(
+                Some("fluree-server"),
+                "https://solo.example.com",
+                false
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn test_validate_oidc_audience_missing_when_expected() {
+        let payload = oidc_payload("https://solo.example.com");
+        // payload.aud is None but we expect "fluree-server"
+        let result = payload.validate_oidc(
+            Some("fluree-server"),
+            "https://solo.example.com",
+            false,
+        );
+        assert!(matches!(
+            result,
+            Err(ClaimsError::AudienceMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn test_validate_oidc_identity_required_missing() {
+        let mut payload = oidc_payload("https://solo.example.com");
+        payload.sub = None;
+        payload.fluree_identity = None;
+
+        let result = payload.validate_oidc(None, "https://solo.example.com", true);
+        assert!(matches!(result, Err(ClaimsError::IdentityRequired)));
+    }
+
+    #[test]
+    fn test_validate_oidc_url_issuer_accepted() {
+        // validate_oidc should accept URL issuers (not just did:key)
+        let payload = oidc_payload("https://cognito-idp.us-east-1.amazonaws.com/us-east-1_abc123");
+        assert!(payload
+            .validate_oidc(
+                None,
+                "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_abc123",
+                false,
+            )
+            .is_ok());
     }
 }

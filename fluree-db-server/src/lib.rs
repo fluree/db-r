@@ -28,6 +28,8 @@
 pub mod config;
 pub mod error;
 pub mod extract;
+#[cfg(feature = "oidc")]
+pub mod jwks;
 pub mod mcp;
 pub mod peer;
 pub mod registry;
@@ -35,6 +37,8 @@ pub mod routes;
 pub mod serde;
 pub mod state;
 pub mod telemetry;
+#[cfg(feature = "oidc")]
+pub mod token_verify;
 
 pub use config::{ServerConfig, ServerRole};
 pub use error::{Result, ServerError};
@@ -60,6 +64,29 @@ impl FlureeServer {
     pub async fn new(config: ServerConfig) -> std::result::Result<Self, fluree_db_api::ApiError> {
         let telemetry_config = TelemetryConfig::with_server_config(&config);
         let state = Arc::new(AppState::new(config, telemetry_config)?);
+
+        // Warm JWKS cache (async — fetch keys from configured endpoints)
+        #[cfg(feature = "oidc")]
+        if let Some(jwks_cache) = &state.jwks_cache {
+            let warmed = jwks_cache.warm().await;
+            let total = jwks_cache.configured_issuer_count();
+            if warmed == 0 && total > 0 {
+                if state.config.data_auth_mode == crate::config::DataAuthMode::Required {
+                    tracing::error!(
+                        total_issuers = total,
+                        "No JWKS endpoints reachable at startup — \
+                         OIDC token verification will FAIL until endpoints become available"
+                    );
+                } else {
+                    tracing::warn!(
+                        total_issuers = total,
+                        "No JWKS endpoints reachable at startup — \
+                         OIDC tokens will be rejected until endpoints become available"
+                    );
+                }
+            }
+        }
+
         let router = routes::build_router(state.clone());
 
         Ok(Self { state, router })

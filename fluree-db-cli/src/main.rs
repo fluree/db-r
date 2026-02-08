@@ -178,6 +178,11 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             commands::remote::run(action, &fluree_dir).await
         }
 
+        Commands::Auth { action } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::auth::run(action, &fluree_dir).await
+        }
+
         Commands::Upstream { action } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             commands::upstream::run(action, &fluree_dir).await

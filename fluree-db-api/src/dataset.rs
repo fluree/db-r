@@ -1127,6 +1127,58 @@ fn validate_alias_uniqueness(spec: &DatasetSpec) -> Result<(), DatasetParseError
     Ok(())
 }
 
+/// Extract unique ledger identifiers from a SPARQL query's FROM / FROM NAMED clauses.
+///
+/// Parses the SPARQL, extracts the dataset clause, strips time-travel suffixes,
+/// and returns the de-duplicated base ledger aliases.
+///
+/// Returns `Ok(vec![])` if the query has no FROM/FROM NAMED clauses.
+/// Returns `Err` only for SPARQL parse failures that prevent dataset extraction.
+pub fn sparql_dataset_aliases(sparql: &str) -> Result<Vec<String>, DatasetParseError> {
+    let parsed = fluree_db_sparql::parse_sparql(sparql);
+    let ast = parsed.ast.ok_or_else(|| {
+        let msg = parsed
+            .diagnostics
+            .first()
+            .map(|d| d.message.clone())
+            .unwrap_or_else(|| "unknown parse error".to_string());
+        DatasetParseError::InvalidFrom(format!("SPARQL parse error: {}", msg))
+    })?;
+
+    let dataset_clause = match &ast.body {
+        fluree_db_sparql::ast::QueryBody::Select(q) => q.dataset.as_ref(),
+        fluree_db_sparql::ast::QueryBody::Construct(q) => q.dataset.as_ref(),
+        fluree_db_sparql::ast::QueryBody::Ask(q) => q.dataset.as_ref(),
+        fluree_db_sparql::ast::QueryBody::Describe(q) => q.dataset.as_ref(),
+        fluree_db_sparql::ast::QueryBody::Update(_) => None,
+    };
+
+    let Some(clause) = dataset_clause else {
+        return Ok(vec![]);
+    };
+
+    let spec = DatasetSpec::from_sparql_clause(clause)?;
+
+    // Collect unique identifiers (base aliases, time-travel already stripped)
+    let mut seen = std::collections::HashSet::new();
+    let mut aliases = Vec::new();
+    for source in spec.default_graphs.iter().chain(spec.named_graphs.iter()) {
+        // Strip #txn-meta or other fragments — the scope check is on the base ledger
+        let base = source.identifier.split('#').next().unwrap_or(&source.identifier);
+        if seen.insert(base.to_string()) {
+            aliases.push(base.to_string());
+        }
+    }
+    // Also include the history range ledger if present
+    if let Some(range) = &spec.history_range {
+        if seen.insert(range.identifier.clone()) {
+            aliases.push(range.identifier.clone());
+        }
+    }
+
+    Ok(aliases)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2228,5 +2280,65 @@ mod tests {
         assert!(spec.default_graphs[0].source_alias.is_none());
         assert!(spec.default_graphs[0].graph_selector.is_none());
         assert!(spec.default_graphs[0].policy_override.is_none());
+    }
+
+    // =============================================================================
+    // sparql_dataset_aliases tests
+    // =============================================================================
+
+    #[test]
+    fn test_sparql_dataset_aliases_single_from() {
+        let sparql = "SELECT ?s FROM <ledger:main> WHERE { ?s ?p ?o }";
+        let aliases = sparql_dataset_aliases(sparql).unwrap();
+        assert_eq!(aliases, vec!["ledger:main"]);
+    }
+
+    #[test]
+    fn test_sparql_dataset_aliases_multiple_from() {
+        let sparql =
+            "SELECT ?s FROM <ledger:one> FROM <ledger:two> WHERE { ?s ?p ?o }";
+        let aliases = sparql_dataset_aliases(sparql).unwrap();
+        assert_eq!(aliases, vec!["ledger:one", "ledger:two"]);
+    }
+
+    #[test]
+    fn test_sparql_dataset_aliases_from_named() {
+        let sparql = "SELECT ?s FROM <ledger:main> FROM NAMED <ledger:named1> WHERE { ?s ?p ?o }";
+        let aliases = sparql_dataset_aliases(sparql).unwrap();
+        assert_eq!(aliases, vec!["ledger:main", "ledger:named1"]);
+    }
+
+    #[test]
+    fn test_sparql_dataset_aliases_deduplicates() {
+        let sparql = "SELECT ?s FROM <ledger:main> FROM NAMED <ledger:main> WHERE { ?s ?p ?o }";
+        let aliases = sparql_dataset_aliases(sparql).unwrap();
+        assert_eq!(aliases, vec!["ledger:main"]);
+    }
+
+    #[test]
+    fn test_sparql_dataset_aliases_strips_time_travel() {
+        let sparql = "SELECT ?s FROM <ledger:main@t:42> WHERE { ?s ?p ?o }";
+        let aliases = sparql_dataset_aliases(sparql).unwrap();
+        assert_eq!(aliases, vec!["ledger:main"]);
+    }
+
+    #[test]
+    fn test_sparql_dataset_aliases_strips_fragment() {
+        let sparql = "SELECT ?s FROM <ledger:main#txn-meta> WHERE { ?s ?p ?o }";
+        let aliases = sparql_dataset_aliases(sparql).unwrap();
+        assert_eq!(aliases, vec!["ledger:main"]);
+    }
+
+    #[test]
+    fn test_sparql_dataset_aliases_no_from() {
+        let sparql = "SELECT ?s WHERE { ?s ?p ?o }";
+        let aliases = sparql_dataset_aliases(sparql).unwrap();
+        assert!(aliases.is_empty());
+    }
+
+    #[test]
+    fn test_sparql_dataset_aliases_parse_error() {
+        let result = sparql_dataset_aliases("NOT VALID SPARQL }{}{");
+        assert!(result.is_err());
     }
 }

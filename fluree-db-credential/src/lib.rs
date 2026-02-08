@@ -34,11 +34,17 @@ pub mod error;
 mod jws;
 pub mod jwt_claims;
 
+#[cfg(feature = "oidc")]
+pub mod oidc_jwt;
+
 pub use did::{did_from_pubkey, pubkey_from_did};
 pub use ed25519::{sign_ed25519, SigningKey};
 pub use error::{CredentialError, Result};
 pub use jws::{verify_jws, JwsVerified};
 pub use jwt_claims::{ClaimsError, EventsTokenPayload};
+
+#[cfg(feature = "oidc")]
+pub use oidc_jwt::{decode_unverified_issuer, peek_jwt_header, verify_jwt, JwtVerified};
 
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};

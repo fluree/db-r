@@ -194,6 +194,22 @@ pub async fn query(
         //
         // NOTE: We intentionally do NOT fall back to the fluree-ledger header here.
         // Ledger-scoped SPARQL without FROM is supported via the /:ledger/query route.
+
+        // Enforce bearer ledger scope for unsigned SPARQL requests
+        if let Some(p) = bearer.0.as_ref() {
+            if !credential.is_signed() {
+                // Extract ledger aliases from FROM/FROM NAMED clauses.
+                // Parse failure → fall through (let the engine produce a proper error).
+                if let Ok(aliases) = fluree_db_api::sparql_dataset_aliases(&sparql) {
+                    for alias in &aliases {
+                        if !p.can_read(alias) {
+                            return Err(ServerError::not_found("Ledger not found"));
+                        }
+                    }
+                }
+            }
+        }
+
         match state.fluree.query_connection_sparql_jsonld(&sparql).await {
             Ok(result) => {
                 tracing::info!(

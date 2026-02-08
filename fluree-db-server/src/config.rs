@@ -87,6 +87,8 @@ pub struct DataAuthConfig {
     /// DANGEROUS: Accept any valid signature regardless of issuer.
     /// Only for development/testing.
     pub insecure_accept_any_issuer: bool,
+    /// Whether JWKS issuers are configured (for validation check)
+    pub has_jwks_issuers: bool,
 }
 
 impl DataAuthConfig {
@@ -94,11 +96,12 @@ impl DataAuthConfig {
     pub fn validate(&self) -> Result<(), String> {
         if self.mode == DataAuthMode::Required
             && self.trusted_issuers.is_empty()
+            && !self.has_jwks_issuers
             && !self.insecure_accept_any_issuer
         {
             return Err(
-                "data_auth.mode=required requires --data-auth-trusted-issuer or \
-                 --data-auth-insecure-accept-any-issuer flag"
+                "data_auth.mode=required requires --data-auth-trusted-issuer, \
+                 --jwks-issuer, or --data-auth-insecure-accept-any-issuer flag"
                     .to_string(),
             );
         }
@@ -441,6 +444,23 @@ pub struct ServerConfig {
     #[arg(long, env = "FLUREE_DATA_AUTH_INSECURE", hide = true)]
     pub data_auth_insecure_accept_any_issuer: bool,
 
+    // === OIDC / JWKS options (data auth) ===
+    /// JWKS issuer mapping: issuer_url=jwks_url (repeatable).
+    /// Both the issuer URL and JWKS endpoint URL are required.
+    /// Example: --jwks-issuer "https://solo.example.com=https://solo.example.com/.well-known/jwks.json"
+    #[cfg(feature = "oidc")]
+    #[arg(
+        long = "jwks-issuer",
+        env = "FLUREE_JWKS_ISSUERS",
+        value_delimiter = ','
+    )]
+    pub jwks_issuers: Vec<String>,
+
+    /// JWKS cache TTL in seconds (default 300 = 5 minutes)
+    #[cfg(feature = "oidc")]
+    #[arg(long, env = "FLUREE_JWKS_CACHE_TTL", default_value = "300")]
+    pub jwks_cache_ttl: u64,
+
     // === Server role (peer mode) ===
     /// Server operating mode: transaction (write-enabled) or peer (read-only with forwarding)
     #[arg(
@@ -596,6 +616,11 @@ impl Default for ServerConfig {
             data_auth_trusted_issuers: Vec::new(),
             data_auth_default_policy_class: None,
             data_auth_insecure_accept_any_issuer: false,
+            // JWKS defaults
+            #[cfg(feature = "oidc")]
+            jwks_issuers: Vec::new(),
+            #[cfg(feature = "oidc")]
+            jwks_cache_ttl: 300,
             // Peer mode defaults
             server_role: ServerRole::Transaction,
             tx_server_url: None,
@@ -668,7 +693,48 @@ impl ServerConfig {
             trusted_issuers: self.data_auth_trusted_issuers.clone(),
             default_policy_class: self.data_auth_default_policy_class.clone(),
             insecure_accept_any_issuer: self.data_auth_insecure_accept_any_issuer,
+            has_jwks_issuers: self.has_jwks_issuers(),
         }
+    }
+
+    /// Check whether any JWKS issuers are configured.
+    pub fn has_jwks_issuers(&self) -> bool {
+        #[cfg(feature = "oidc")]
+        {
+            !self.jwks_issuers.is_empty()
+        }
+        #[cfg(not(feature = "oidc"))]
+        {
+            false
+        }
+    }
+
+    /// Parse JWKS issuer configurations from CLI args.
+    ///
+    /// Each entry is formatted as `issuer_url=jwks_url`.
+    /// Returns parsed configs, or an error if any entry is malformed.
+    #[cfg(feature = "oidc")]
+    pub fn jwks_issuer_configs(&self) -> Result<Vec<crate::jwks::JwksIssuerConfig>, String> {
+        let mut configs = Vec::new();
+        for entry in &self.jwks_issuers {
+            let (issuer, jwks_url) = entry.split_once('=').ok_or_else(|| {
+                format!(
+                    "Invalid --jwks-issuer format: '{}'. Expected 'issuer_url=jwks_url'",
+                    entry
+                )
+            })?;
+            if issuer.is_empty() || jwks_url.is_empty() {
+                return Err(format!(
+                    "Invalid --jwks-issuer format: '{}'. Both issuer_url and jwks_url must be non-empty",
+                    entry
+                ));
+            }
+            configs.push(crate::jwks::JwksIssuerConfig {
+                issuer: issuer.to_string(),
+                jwks_url: jwks_url.to_string(),
+            });
+        }
+        Ok(configs)
     }
 
     /// Get the storage proxy configuration
@@ -706,6 +772,12 @@ impl ServerConfig {
 
     /// Validate all configuration at startup
     pub fn validate(&self) -> Result<(), String> {
+        // Validate JWKS issuer configs (parse early to catch format errors)
+        #[cfg(feature = "oidc")]
+        {
+            self.jwks_issuer_configs()?;
+        }
+
         // Validate events auth
         let events_auth = self.events_auth();
         events_auth.validate()?;

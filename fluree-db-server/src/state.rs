@@ -410,6 +410,11 @@ pub struct AppState {
     /// Ledger registry for tracking loaded ledgers and their watermarks
     pub registry: Arc<LedgerRegistry>,
 
+    // === OIDC / JWKS state ===
+    /// JWKS cache for OIDC token verification (None if no JWKS issuers configured)
+    #[cfg(feature = "oidc")]
+    pub jwks_cache: Option<Arc<crate::jwks::JwksCache>>,
+
     // === Peer mode state ===
     /// Peer state tracking remote watermarks (peer mode only)
     pub peer_state: Option<Arc<PeerState>>,
@@ -464,6 +469,24 @@ impl AppState {
             (None, None)
         };
 
+        // Create JWKS cache (sync — no fetching yet)
+        #[cfg(feature = "oidc")]
+        let jwks_cache = {
+            match config.jwks_issuer_configs() {
+                Ok(configs) if !configs.is_empty() => {
+                    let ttl = Some(Duration::from_secs(config.jwks_cache_ttl));
+                    Some(Arc::new(crate::jwks::JwksCache::new(configs, ttl)))
+                }
+                Ok(_) => None,
+                Err(e) => {
+                    return Err(fluree_db_api::ApiError::internal(format!(
+                        "Invalid JWKS configuration: {}",
+                        e
+                    )));
+                }
+            }
+        };
+
         Ok(Self {
             fluree,
             config,
@@ -471,6 +494,8 @@ impl AppState {
             start_time: Instant::now(),
             index_config: None,
             registry,
+            #[cfg(feature = "oidc")]
+            jwks_cache,
             peer_state,
             forwarding_client,
             refresh_counter: AtomicU64::new(0),

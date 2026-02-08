@@ -3,6 +3,10 @@
 //! This extractor verifies JWT/JWS Bearer tokens and yields a `DataPrincipal`
 //! containing ledger read/write scopes and policy identity.
 //!
+//! When the `oidc` feature is enabled, tokens are dispatched through
+//! [`verify_bearer_token`](crate::token_verify::verify_bearer_token) which
+//! supports both embedded-JWK (Ed25519) and OIDC/JWKS (RS256) paths.
+//!
 //! Signed requests (JWS/VC in request body) are handled separately by
 //! [`MaybeCredential`](crate::extract::MaybeCredential). Data endpoints can accept
 //! either mechanism depending on `data_auth.mode`.
@@ -13,15 +17,15 @@ use axum::http::request::Parts;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::config::{DataAuthMode, ServerConfig};
+use crate::config::DataAuthMode;
 use crate::error::ServerError;
 use crate::state::AppState;
-use fluree_db_credential::{verify_jws, EventsTokenPayload};
+use fluree_db_credential::jwt_claims::EventsTokenPayload;
 
 /// Verified principal from a data API Bearer token
 #[derive(Debug, Clone)]
 pub struct DataPrincipal {
-    /// Issuer did:key (from iss claim, verified against signing key)
+    /// Issuer (did:key for embedded JWK, URL for OIDC)
     pub issuer: String,
     /// Subject (from sub claim)
     pub subject: Option<String>,
@@ -79,49 +83,85 @@ impl FromRequestParts<Arc<AppState>> for MaybeDataBearer {
             }
         };
 
-        verify_data_token(&token, &state.config).await
+        verify_data_token(&token, state).await
     }
 }
 
 /// Verify token and build `DataPrincipal`.
+///
+/// When `oidc` feature is enabled, uses dual-path dispatch (embedded JWK or JWKS).
+/// When `oidc` feature is disabled, only the embedded JWK path is available.
 async fn verify_data_token(
     token: &str,
-    server_config: &ServerConfig,
+    state: &AppState,
 ) -> Result<MaybeDataBearer, ServerError> {
-    let config = server_config.data_auth();
+    let config = state.config.data_auth();
 
-    // 1) Verify JWS (embedded JWK mode)
-    let verified = verify_jws(token)
-        .map_err(|e| ServerError::unauthorized(format!("Invalid token: {}", e)))?;
+    // Verify the token and extract claims
+    #[cfg(feature = "oidc")]
+    let (payload, issuer, is_oidc) = {
+        let jwks_cache = state.jwks_cache.as_deref();
+        let verified = crate::token_verify::verify_bearer_token(token, jwks_cache).await?;
+        (verified.payload, verified.issuer, verified.is_oidc)
+    };
 
-    // 2) Parse combined payload (re-uses EventsTokenPayload for shared claim parsing)
-    let payload: EventsTokenPayload = serde_json::from_str(&verified.payload)
-        .map_err(|e| ServerError::unauthorized(format!("Invalid claims: {}", e)))?;
+    #[cfg(not(feature = "oidc"))]
+    let (payload, issuer, is_oidc) = {
+        let verified = fluree_db_credential::verify_jws(token)
+            .map_err(|e| ServerError::unauthorized(format!("Invalid token: {}", e)))?;
+        let payload: EventsTokenPayload = serde_json::from_str(&verified.payload)
+            .map_err(|e| ServerError::unauthorized(format!("Invalid claims: {}", e)))?;
+        // Use verified.did (did:key derived from the embedded signing key), NOT
+        // payload.iss, so that validate() confirms iss matches the actual signer.
+        (payload, verified.did, false)
+    };
 
-    // 3) Validate standard claims (aud, exp, iss match)
-    payload
-        .validate(
-            config.audience.as_deref(),
-            &verified.did,
-            false, // identity not strictly required; policy can be root/no-identity
-        )
-        .map_err(|e| ServerError::unauthorized(e.to_string()))?;
+    // Validate claims (path-specific)
+    if is_oidc {
+        // OIDC: validate iss == expected_issuer, exp/nbf/aud
+        payload
+            .validate_oidc(
+                config.audience.as_deref(),
+                &issuer,
+                false, // identity not strictly required
+            )
+            .map_err(|e| ServerError::unauthorized(e.to_string()))?;
+        // For OIDC tokens, issuer trust is already verified by the JWKS path:
+        // only configured issuers' keys can verify the signature.
+    } else {
+        // Embedded JWK: validate iss == did:key, exp/nbf/aud
+        payload
+            .validate(
+                config.audience.as_deref(),
+                &issuer, // did:key derived from signing key
+                false,
+            )
+            .map_err(|e| ServerError::unauthorized(e.to_string()))?;
 
-    // 4) Check issuer trust (unless insecure flag)
-    if !config.is_issuer_trusted(&payload.iss) {
-        return Err(ServerError::unauthorized("Untrusted issuer"));
+        // Check issuer trust for did:key tokens.
+        // At this point validate() confirmed payload.iss == issuer (verified.did),
+        // so either can be used for the trust check.
+        if !config.is_issuer_trusted(&issuer) {
+            return Err(ServerError::unauthorized("Untrusted issuer"));
+        }
     }
 
-    // 5) Require some data permissions
+    // Require some data permissions
     if !payload.has_ledger_read_permissions() && !payload.has_ledger_write_permissions() {
         return Err(ServerError::unauthorized("token authorizes no resources"));
     }
 
-    let principal = DataPrincipal {
+    let principal = build_principal(&payload);
+    Ok(MaybeDataBearer(Some(principal)))
+}
+
+/// Build a `DataPrincipal` from verified claims.
+fn build_principal(payload: &EventsTokenPayload) -> DataPrincipal {
+    DataPrincipal {
         issuer: payload.iss.clone(),
         subject: payload.sub.clone(),
         identity: payload.resolve_identity(),
-        // Read: use explicit ledger.read.* if present, else fall back to storage.* (handled in helper)
+        // Read: use explicit ledger.read.* if present, else fall back to storage.*
         read_all: payload.ledger_read_all.unwrap_or(false) || payload.storage_all.unwrap_or(false),
         read_ledgers: payload
             .ledger_read_ledgers
@@ -133,10 +173,9 @@ async fn verify_data_token(
         write_all: payload.ledger_write_all.unwrap_or(false),
         write_ledgers: payload
             .ledger_write_ledgers
+            .clone()
             .unwrap_or_default()
             .into_iter()
             .collect(),
-    };
-
-    Ok(MaybeDataBearer(Some(principal)))
+    }
 }
