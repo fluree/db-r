@@ -7,7 +7,7 @@
 use crate::binding::{Binding, RowView};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::ir::{Expression, FunctionName};
+use crate::ir::{Expression, Function};
 use fluree_db_core::{FlakeValue, Storage};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use std::sync::Arc;
@@ -17,19 +17,19 @@ use super::value::ComparableValue;
 
 /// Evaluate a string function
 pub fn eval_string_function<S: Storage>(
-    name: &FunctionName,
+    name: &Function,
     args: &[Expression],
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     match name {
-        FunctionName::Str => {
+        Function::Str => {
             check_arity(args, 1, "STR")?;
             let val = args[0].eval_to_comparable(row, ctx)?;
             Ok(val.and_then(|v| v.into_string_value()))
         }
 
-        FunctionName::Lang => {
+        Function::Lang => {
             check_arity(args, 1, "LANG")?;
             let tag = match &args[0] {
                 Expression::Var(var_id) => match row.get(*var_id) {
@@ -53,7 +53,7 @@ pub fn eval_string_function<S: Storage>(
             Ok(Some(ComparableValue::String(Arc::from(tag))))
         }
 
-        FunctionName::Lcase => {
+        Function::Lcase => {
             check_arity(args, 1, "LCASE")?;
             let val = args[0].eval_to_comparable(row, ctx)?;
             Ok(val.and_then(|v| {
@@ -62,7 +62,7 @@ pub fn eval_string_function<S: Storage>(
             }))
         }
 
-        FunctionName::Ucase => {
+        Function::Ucase => {
             check_arity(args, 1, "UCASE")?;
             let val = args[0].eval_to_comparable(row, ctx)?;
             Ok(val.and_then(|v| {
@@ -71,13 +71,13 @@ pub fn eval_string_function<S: Storage>(
             }))
         }
 
-        FunctionName::Strlen => {
+        Function::Strlen => {
             check_arity(args, 1, "STRLEN")?;
             let val = args[0].eval_to_comparable(row, ctx)?;
             Ok(val.and_then(|v| v.as_str().map(|s| ComparableValue::Long(s.len() as i64))))
         }
 
-        FunctionName::Contains => {
+        Function::Contains => {
             check_arity(args, 2, "CONTAINS")?;
             let haystack = args[0].eval_to_comparable(row, ctx)?;
             let needle = args[1].eval_to_comparable(row, ctx)?;
@@ -89,7 +89,7 @@ pub fn eval_string_function<S: Storage>(
             })))
         }
 
-        FunctionName::StrStarts => {
+        Function::StrStarts => {
             check_arity(args, 2, "STRSTARTS")?;
             let haystack = args[0].eval_to_comparable(row, ctx)?;
             let prefix = args[1].eval_to_comparable(row, ctx)?;
@@ -101,7 +101,7 @@ pub fn eval_string_function<S: Storage>(
             })))
         }
 
-        FunctionName::StrEnds => {
+        Function::StrEnds => {
             check_arity(args, 2, "STRENDS")?;
             let haystack = args[0].eval_to_comparable(row, ctx)?;
             let suffix = args[1].eval_to_comparable(row, ctx)?;
@@ -113,7 +113,7 @@ pub fn eval_string_function<S: Storage>(
             })))
         }
 
-        FunctionName::Regex => {
+        Function::Regex => {
             if args.len() < 2 {
                 return Err(QueryError::InvalidFilter(
                     "REGEX requires 2-3 arguments".to_string(),
@@ -139,7 +139,7 @@ pub fn eval_string_function<S: Storage>(
             }
         }
 
-        FunctionName::Concat => {
+        Function::Concat => {
             let mut result = String::new();
             for arg in args {
                 if let Some(val) = arg.eval_to_comparable(row, ctx)? {
@@ -151,7 +151,7 @@ pub fn eval_string_function<S: Storage>(
             Ok(Some(ComparableValue::String(Arc::from(result))))
         }
 
-        FunctionName::StrBefore => {
+        Function::StrBefore => {
             check_arity(args, 2, "STRBEFORE")?;
             let arg1 = args[0].eval_to_comparable(row, ctx)?;
             let arg2 = args[1].eval_to_comparable(row, ctx)?;
@@ -164,7 +164,7 @@ pub fn eval_string_function<S: Storage>(
             })
         }
 
-        FunctionName::StrAfter => {
+        Function::StrAfter => {
             check_arity(args, 2, "STRAFTER")?;
             let arg1 = args[0].eval_to_comparable(row, ctx)?;
             let arg2 = args[1].eval_to_comparable(row, ctx)?;
@@ -180,7 +180,7 @@ pub fn eval_string_function<S: Storage>(
             })
         }
 
-        FunctionName::Replace => {
+        Function::Replace => {
             if args.len() < 3 {
                 return Err(QueryError::InvalidFilter(
                     "REPLACE requires 3-4 arguments".to_string(),
@@ -213,7 +213,7 @@ pub fn eval_string_function<S: Storage>(
             }
         }
 
-        FunctionName::Substr => {
+        Function::Substr => {
             if args.len() < 2 || args.len() > 3 {
                 return Err(QueryError::InvalidFilter(
                     "SUBSTR requires 2-3 arguments".to_string(),
@@ -252,7 +252,7 @@ pub fn eval_string_function<S: Storage>(
             }
         }
 
-        FunctionName::EncodeForUri => {
+        Function::EncodeForUri => {
             check_arity(args, 1, "ENCODE_FOR_URI")?;
             let val = args[0].eval_to_comparable(row, ctx)?;
             Ok(val.and_then(|v| {
@@ -264,7 +264,7 @@ pub fn eval_string_function<S: Storage>(
             }))
         }
 
-        FunctionName::StrDt => {
+        Function::StrDt => {
             check_arity(args, 2, "STRDT")?;
             let val = args[0].eval_to_comparable(row, ctx)?;
             let dt = args[1].eval_to_comparable(row, ctx)?;
@@ -283,7 +283,7 @@ pub fn eval_string_function<S: Storage>(
             }
         }
 
-        FunctionName::StrLang => {
+        Function::StrLang => {
             check_arity(args, 2, "STRLANG")?;
             let val = args[0].eval_to_comparable(row, ctx)?;
             let lang = args[1].eval_to_comparable(row, ctx)?;
@@ -327,7 +327,7 @@ mod tests {
         let batch = make_string_batch();
         let row = batch.row_view(0).unwrap();
         let result = eval_string_function::<fluree_db_core::MemoryStorage>(
-            &FunctionName::Strlen,
+            &Function::Strlen,
             &[Expression::Var(VarId(0))],
             &row,
             None,
@@ -341,7 +341,7 @@ mod tests {
         let batch = make_string_batch();
         let row = batch.row_view(0).unwrap();
         let result = eval_string_function::<fluree_db_core::MemoryStorage>(
-            &FunctionName::Ucase,
+            &Function::Ucase,
             &[Expression::Var(VarId(0))],
             &row,
             None,
@@ -358,7 +358,7 @@ mod tests {
         let batch = make_string_batch();
         let row = batch.row_view(0).unwrap();
         let result = eval_string_function::<fluree_db_core::MemoryStorage>(
-            &FunctionName::Contains,
+            &Function::Contains,
             &[
                 Expression::Var(VarId(0)),
                 Expression::Const(crate::ir::FilterValue::String("World".to_string())),

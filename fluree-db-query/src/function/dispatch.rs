@@ -1,4 +1,4 @@
-//! Function dispatch - routes FunctionName to specialized implementations
+//! Function dispatch - routes Function to specialized implementations
 //!
 //! This module provides the main entry points for function evaluation:
 //! - `eval_function()` - evaluate function to ComparableValue
@@ -7,7 +7,7 @@
 use crate::binding::RowView;
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::ir::{Expression, FunctionName};
+use crate::ir::{Expression, Function};
 use fluree_db_core::Storage;
 
 use super::value::ComparableValue;
@@ -18,90 +18,86 @@ use super::{conditional, datetime, fluree, geo, hash, numeric, rdf, string, type
 /// This is THE entry point for function evaluation. All functions go through here.
 /// For boolean context, use `eval_function_to_bool` which calls this and applies EBV.
 pub fn eval_function<S: Storage>(
-    name: &FunctionName,
+    name: &Function,
     args: &[Expression],
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     match name {
         // String functions
-        FunctionName::Str
-        | FunctionName::Lang
-        | FunctionName::Lcase
-        | FunctionName::Ucase
-        | FunctionName::Strlen
-        | FunctionName::Contains
-        | FunctionName::StrStarts
-        | FunctionName::StrEnds
-        | FunctionName::Regex
-        | FunctionName::Concat
-        | FunctionName::StrBefore
-        | FunctionName::StrAfter
-        | FunctionName::Replace
-        | FunctionName::Substr
-        | FunctionName::EncodeForUri
-        | FunctionName::StrDt
-        | FunctionName::StrLang => string::eval_string_function(name, args, row, ctx),
+        Function::Str
+        | Function::Lang
+        | Function::Lcase
+        | Function::Ucase
+        | Function::Strlen
+        | Function::Contains
+        | Function::StrStarts
+        | Function::StrEnds
+        | Function::Regex
+        | Function::Concat
+        | Function::StrBefore
+        | Function::StrAfter
+        | Function::Replace
+        | Function::Substr
+        | Function::EncodeForUri
+        | Function::StrDt
+        | Function::StrLang => string::eval_string_function(name, args, row, ctx),
 
         // Numeric functions
-        FunctionName::Abs
-        | FunctionName::Round
-        | FunctionName::Ceil
-        | FunctionName::Floor
-        | FunctionName::Rand => numeric::eval_numeric_function(name, args, row, ctx),
+        Function::Abs | Function::Round | Function::Ceil | Function::Floor | Function::Rand => {
+            numeric::eval_numeric_function(name, args, row, ctx)
+        }
 
         // DateTime functions
-        FunctionName::Now
-        | FunctionName::Year
-        | FunctionName::Month
-        | FunctionName::Day
-        | FunctionName::Hours
-        | FunctionName::Minutes
-        | FunctionName::Seconds
-        | FunctionName::Tz => datetime::eval_datetime_function(name, args, row, ctx),
+        Function::Now
+        | Function::Year
+        | Function::Month
+        | Function::Day
+        | Function::Hours
+        | Function::Minutes
+        | Function::Seconds
+        | Function::Tz => datetime::eval_datetime_function(name, args, row, ctx),
 
         // Type-checking functions
-        FunctionName::Bound
-        | FunctionName::IsIri
-        | FunctionName::IsLiteral
-        | FunctionName::IsNumeric
-        | FunctionName::IsBlank => types::eval_type_function(name, args, row, ctx),
+        Function::Bound
+        | Function::IsIri
+        | Function::IsLiteral
+        | Function::IsNumeric
+        | Function::IsBlank => types::eval_type_function(name, args, row, ctx),
 
         // RDF term functions
-        FunctionName::Datatype
-        | FunctionName::LangMatches
-        | FunctionName::SameTerm
-        | FunctionName::Iri
-        | FunctionName::Bnode => rdf::eval_rdf_function(name, args, row, ctx),
+        Function::Datatype
+        | Function::LangMatches
+        | Function::SameTerm
+        | Function::Iri
+        | Function::Bnode => rdf::eval_rdf_function(name, args, row, ctx),
 
         // Conditional functions
-        FunctionName::If | FunctionName::Coalesce => {
+        Function::If | Function::Coalesce => {
             conditional::eval_conditional_function(name, args, row, ctx)
         }
 
         // Hash functions
-        FunctionName::Md5
-        | FunctionName::Sha1
-        | FunctionName::Sha256
-        | FunctionName::Sha384
-        | FunctionName::Sha512 => hash::eval_hash_function(name, args, row, ctx),
+        Function::Md5 | Function::Sha1 | Function::Sha256 | Function::Sha384 | Function::Sha512 => {
+            hash::eval_hash_function(name, args, row, ctx)
+        }
 
         // UUID functions
-        FunctionName::Uuid | FunctionName::StrUuid => uuid::eval_uuid_function(name, args, row),
+        Function::Uuid | Function::StrUuid => uuid::eval_uuid_function(name, args, row),
 
         // Vector functions
-        FunctionName::DotProduct
-        | FunctionName::CosineSimilarity
-        | FunctionName::EuclideanDistance => vector::eval_vector_function(name, args, row, ctx),
+        Function::DotProduct | Function::CosineSimilarity | Function::EuclideanDistance => {
+            vector::eval_vector_function(name, args, row, ctx)
+        }
 
         // Geospatial functions
-        FunctionName::GeofDistance => geo::eval_geo_function(name, args, row, ctx),
+        Function::GeofDistance => geo::eval_geo_function(name, args, row, ctx),
 
         // Fluree-specific functions
-        FunctionName::T | FunctionName::Op => fluree::eval_fluree_function(name, args, row),
+        Function::T | Function::Op => fluree::eval_fluree_function(name, args, row),
 
         // Unknown function
-        FunctionName::Custom(name) => Err(QueryError::InvalidFilter(format!(
+        Function::Custom(name) => Err(QueryError::InvalidFilter(format!(
             "Unknown function: {}",
             name
         ))),
@@ -112,7 +108,7 @@ pub fn eval_function<S: Storage>(
 ///
 /// This calls `eval_function` and applies Effective Boolean Value (EBV) rules.
 pub fn eval_function_to_bool<S: Storage>(
-    name: &FunctionName,
+    name: &Function,
     args: &[Expression],
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,

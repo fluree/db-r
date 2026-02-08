@@ -163,8 +163,8 @@ pub fn parse_filter_array(arr: &[JsonValue]) -> Result<UnresolvedExpression> {
         // Everything else is a function call
         _ => {
             let fn_args: Result<Vec<_>> = args.iter().map(parse_filter_expr).collect();
-            Ok(UnresolvedExpression::Function {
-                name: Arc::from(op_name),
+            Ok(UnresolvedExpression::Call {
+                func: Arc::from(op_name),
                 args: fn_args?,
             })
         }
@@ -312,8 +312,8 @@ mod tests {
         let json_val = json!(["strlen", "?name"]);
         let expr = parse_filter_expr(&json_val).unwrap();
         match expr {
-            UnresolvedExpression::Function { name, args } => {
-                assert_eq!(name.as_ref(), "strlen");
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), "strlen");
                 assert_eq!(args.len(), 1);
             }
             _ => panic!("Expected function call"),

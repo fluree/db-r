@@ -402,8 +402,8 @@ fn rewrite_having_aggregates(
             negated,
         }),
 
-        E::Function { name, args } => {
-            let name_lc = name.as_ref().to_ascii_lowercase();
+        E::Call { func, args } => {
+            let name_lc = func.as_ref().to_ascii_lowercase();
             let agg_fn = match name_lc.as_str() {
                 "count" => Some(UnresolvedAggregateFn::Count),
                 "avg" => Some(UnresolvedAggregateFn::Avg),
@@ -417,7 +417,7 @@ fn rewrite_having_aggregates(
                 if args.len() != 1 {
                     return Err(ParseError::InvalidFilter(format!(
                         "HAVING aggregate {} requires exactly 1 argument",
-                        name
+                        func
                     )));
                 }
 
@@ -456,8 +456,8 @@ fn rewrite_having_aggregates(
                     .into_iter()
                     .map(|e| rewrite_child(e, aggregates, counter))
                     .collect::<Result<Vec<_>>>()?;
-                Ok(E::Function {
-                    name,
+                Ok(E::Call {
+                    func,
                     args: rewritten_args,
                 })
             }

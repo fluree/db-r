@@ -1107,8 +1107,8 @@ pub enum Expression {
         negated: bool,
     },
     /// Function call
-    Function {
-        name: FunctionName,
+    Call {
+        func: Function,
         args: Vec<Expression>,
     },
 }
@@ -1144,7 +1144,7 @@ impl Expression {
                 vars.extend(values.iter().flat_map(|v| v.variables()));
                 vars
             }
-            Expression::Function { args, .. } => args.iter().flat_map(|a| a.variables()).collect(),
+            Expression::Call { args, .. } => args.iter().flat_map(|a| a.variables()).collect(),
         }
     }
 
@@ -1217,7 +1217,7 @@ impl Expression {
             | Expression::Not(_)
             | Expression::If { .. }
             | Expression::In { .. }
-            | Expression::Function { .. }
+            | Expression::Call { .. }
             | Expression::Var(_)
             | Expression::Const(_) => false,
         }
@@ -1297,9 +1297,9 @@ impl From<&crate::parse::ast::UnresolvedFilterValue> for FilterValue {
     }
 }
 
-/// Built-in function names
+/// Built-in functions
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FunctionName {
+pub enum Function {
     /// String functions
     Strlen,
     Substr,

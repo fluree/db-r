@@ -5,7 +5,7 @@
 use crate::binding::RowView;
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::ir::{Expression, FunctionName};
+use crate::ir::{Expression, Function};
 use chrono::{DateTime, Datelike, FixedOffset, SecondsFormat, Timelike, Utc};
 use fluree_db_core::temporal::DateTime as FlureeDateTime;
 use fluree_db_core::Storage;
@@ -16,13 +16,13 @@ use super::value::ComparableValue;
 
 /// Evaluate a datetime function
 pub fn eval_datetime_function<S: Storage>(
-    name: &FunctionName,
+    name: &Function,
     args: &[Expression],
     row: &RowView,
     _ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     match name {
-        FunctionName::Now => {
+        Function::Now => {
             let now = Utc::now();
             let formatted = now.to_rfc3339_opts(SecondsFormat::Millis, true);
             let parsed = FlureeDateTime::parse(&formatted)
@@ -30,18 +30,14 @@ pub fn eval_datetime_function<S: Storage>(
             Ok(Some(ComparableValue::DateTime(parsed)))
         }
 
-        FunctionName::Year => eval_datetime_component(args, row, "YEAR", |dt| dt.year() as i64),
-        FunctionName::Month => eval_datetime_component(args, row, "MONTH", |dt| dt.month() as i64),
-        FunctionName::Day => eval_datetime_component(args, row, "DAY", |dt| dt.day() as i64),
-        FunctionName::Hours => eval_datetime_component(args, row, "HOURS", |dt| dt.hour() as i64),
-        FunctionName::Minutes => {
-            eval_datetime_component(args, row, "MINUTES", |dt| dt.minute() as i64)
-        }
-        FunctionName::Seconds => {
-            eval_datetime_component(args, row, "SECONDS", |dt| dt.second() as i64)
-        }
+        Function::Year => eval_datetime_component(args, row, "YEAR", |dt| dt.year() as i64),
+        Function::Month => eval_datetime_component(args, row, "MONTH", |dt| dt.month() as i64),
+        Function::Day => eval_datetime_component(args, row, "DAY", |dt| dt.day() as i64),
+        Function::Hours => eval_datetime_component(args, row, "HOURS", |dt| dt.hour() as i64),
+        Function::Minutes => eval_datetime_component(args, row, "MINUTES", |dt| dt.minute() as i64),
+        Function::Seconds => eval_datetime_component(args, row, "SECONDS", |dt| dt.second() as i64),
 
-        FunctionName::Tz => {
+        Function::Tz => {
             check_arity(args, 1, "TZ")?;
             if let Expression::Var(var_id) = &args[0] {
                 if let Some(binding) = row.get(*var_id) {

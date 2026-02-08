@@ -2412,8 +2412,8 @@ mod tests {
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedExpression::Function { name, args } => {
-                assert_eq!(name.as_ref(), "contains");
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), "contains");
                 assert_eq!(args.len(), 2);
                 assert!(matches!(&args[0], UnresolvedExpression::Var(v) if v.as_ref() == "?name"));
                 assert!(

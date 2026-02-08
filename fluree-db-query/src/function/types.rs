@@ -5,7 +5,7 @@
 use crate::binding::{Binding, RowView};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::ir::{Expression, FunctionName};
+use crate::ir::{Expression, Function};
 use fluree_db_core::Storage;
 
 use super::helpers::check_arity;
@@ -13,13 +13,13 @@ use super::value::ComparableValue;
 
 /// Evaluate a type-checking function
 pub fn eval_type_function<S: Storage>(
-    name: &FunctionName,
+    name: &Function,
     args: &[Expression],
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     match name {
-        FunctionName::Bound => {
+        Function::Bound => {
             check_arity(args, 1, "BOUND")?;
             match &args[0] {
                 Expression::Var(var) => Ok(Some(ComparableValue::Bool(!matches!(
@@ -32,7 +32,7 @@ pub fn eval_type_function<S: Storage>(
             }
         }
 
-        FunctionName::IsIri => {
+        Function::IsIri => {
             check_arity(args, 1, "isIRI")?;
             let val = args[0].eval_to_comparable(row, ctx)?;
             Ok(Some(ComparableValue::Bool(val.is_some_and(|v| {
@@ -40,7 +40,7 @@ pub fn eval_type_function<S: Storage>(
             }))))
         }
 
-        FunctionName::IsLiteral => {
+        Function::IsLiteral => {
             check_arity(args, 1, "isLiteral")?;
             let val = args[0].eval_to_comparable(row, ctx)?;
             Ok(Some(ComparableValue::Bool(val.is_some_and(|v| {
@@ -54,7 +54,7 @@ pub fn eval_type_function<S: Storage>(
             }))))
         }
 
-        FunctionName::IsNumeric => {
+        Function::IsNumeric => {
             check_arity(args, 1, "isNumeric")?;
             let val = args[0].eval_to_comparable(row, ctx)?;
             Ok(Some(ComparableValue::Bool(val.is_some_and(|v| {
@@ -62,7 +62,7 @@ pub fn eval_type_function<S: Storage>(
             }))))
         }
 
-        FunctionName::IsBlank => Ok(Some(ComparableValue::Bool(false))),
+        Function::IsBlank => Ok(Some(ComparableValue::Bool(false))),
 
         _ => unreachable!("Non-type function routed to types module: {:?}", name),
     }
@@ -90,7 +90,7 @@ mod tests {
         let batch = make_string_batch();
         let row = batch.row_view(0).unwrap();
         let result = eval_type_function::<fluree_db_core::MemoryStorage>(
-            &FunctionName::Bound,
+            &Function::Bound,
             &[Expression::Var(VarId(0))],
             &row,
             None,

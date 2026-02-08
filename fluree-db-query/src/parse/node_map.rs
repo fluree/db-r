@@ -99,8 +99,8 @@ fn add_metadata_bind_pattern(
         )));
     }
 
-    let func_expr = UnresolvedExpression::Function {
-        name: Arc::from(func_name),
+    let func_expr = UnresolvedExpression::Call {
+        func: Arc::from(func_name),
         args: vec![UnresolvedExpression::var(object.as_var().unwrap())],
     };
     let bind_pattern = UnresolvedPattern::Bind {
@@ -138,8 +138,8 @@ fn add_metadata_filter_pattern(
         )));
     }
 
-    let func_expr = UnresolvedExpression::Function {
-        name: Arc::from(func_name),
+    let func_expr = UnresolvedExpression::Call {
+        func: Arc::from(func_name),
         args: vec![UnresolvedExpression::var(object.as_var().unwrap())],
     };
     let filter_expr = UnresolvedExpression::Compare {

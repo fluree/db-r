@@ -131,8 +131,8 @@ pub fn parse_s_expression(s: &str) -> Result<UnresolvedExpression> {
             op,
         ),
         // Function call
-        _ => Ok(UnresolvedExpression::Function {
-            name: Arc::from(op),
+        _ => Ok(UnresolvedExpression::Call {
+            func: Arc::from(op),
             args,
         }),
     }
@@ -225,7 +225,7 @@ fn parse_s_expression_in_args(
     let list_expr = &remaining[..=end];
     let values_expr = parse_s_expression_list(list_expr)?;
     let values = match values_expr {
-        UnresolvedExpression::Function { args, .. } => args,
+        UnresolvedExpression::Call { args, .. } => args,
         other => vec![other],
     };
 
@@ -268,8 +268,8 @@ fn parse_s_expression_list(s: &str) -> Result<UnresolvedExpression> {
     }
     let inner = &s[1..s.len() - 1];
     let args = parse_s_expression_args(inner)?;
-    Ok(UnresolvedExpression::Function {
-        name: Arc::from("list"),
+    Ok(UnresolvedExpression::Call {
+        func: Arc::from("list"),
         args,
     })
 }
@@ -347,8 +347,8 @@ mod tests {
     fn test_parse_function_call() {
         let expr = parse_s_expression("(strlen ?name)").unwrap();
         match expr {
-            UnresolvedExpression::Function { name, args } => {
-                assert_eq!(name.as_ref(), "strlen");
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), "strlen");
                 assert_eq!(args.len(), 1);
             }
             _ => panic!("Expected function call"),

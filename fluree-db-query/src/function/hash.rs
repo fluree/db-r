@@ -5,7 +5,7 @@
 use crate::binding::RowView;
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::ir::{Expression, FunctionName};
+use crate::ir::{Expression, Function};
 use fluree_db_core::Storage;
 use md5::{Digest as Md5Digest, Md5};
 use sha1::Sha1;
@@ -17,37 +17,37 @@ use super::value::ComparableValue;
 
 /// Evaluate a hash function
 pub fn eval_hash_function<S: Storage>(
-    name: &FunctionName,
+    name: &Function,
     args: &[Expression],
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     match name {
-        FunctionName::Md5 => eval_hash(args, row, ctx, "MD5", |s| {
+        Function::Md5 => eval_hash(args, row, ctx, "MD5", |s| {
             let mut hasher = Md5::new();
             hasher.update(s.as_bytes());
             format!("{:x}", hasher.finalize())
         }),
 
-        FunctionName::Sha1 => eval_hash(args, row, ctx, "SHA1", |s| {
+        Function::Sha1 => eval_hash(args, row, ctx, "SHA1", |s| {
             let mut hasher = Sha1::new();
             hasher.update(s.as_bytes());
             format!("{:x}", hasher.finalize())
         }),
 
-        FunctionName::Sha256 => eval_hash(args, row, ctx, "SHA256", |s| {
+        Function::Sha256 => eval_hash(args, row, ctx, "SHA256", |s| {
             let mut hasher = Sha256::new();
             hasher.update(s.as_bytes());
             format!("{:x}", hasher.finalize())
         }),
 
-        FunctionName::Sha384 => eval_hash(args, row, ctx, "SHA384", |s| {
+        Function::Sha384 => eval_hash(args, row, ctx, "SHA384", |s| {
             let mut hasher = Sha384::new();
             hasher.update(s.as_bytes());
             format!("{:x}", hasher.finalize())
         }),
 
-        FunctionName::Sha512 => eval_hash(args, row, ctx, "SHA512", |s| {
+        Function::Sha512 => eval_hash(args, row, ctx, "SHA512", |s| {
             let mut hasher = Sha512::new();
             hasher.update(s.as_bytes());
             format!("{:x}", hasher.finalize())

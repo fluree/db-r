@@ -96,7 +96,7 @@ pub use group_aggregate::{GroupAggregateOperator, StreamingAggSpec};
 pub use groupby::GroupByOperator;
 pub use having::HavingOperator;
 pub use ir::{
-    CompareOp, Expression, FilterValue, FunctionName, PathModifier, Pattern, PropertyPathPattern,
+    CompareOp, Expression, FilterValue, Function, PathModifier, Pattern, PropertyPathPattern,
     Query, R2rmlPattern, ServiceEndpoint, ServicePattern, SubqueryPattern,
 };
 pub use join::{BindInstruction, NestedLoopJoinOperator, PatternPosition, UnifyInstruction};

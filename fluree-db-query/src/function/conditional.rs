@@ -5,7 +5,7 @@
 use crate::binding::RowView;
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::ir::{Expression, FunctionName};
+use crate::ir::{Expression, Function};
 use fluree_db_core::Storage;
 
 use super::eval::evaluate;
@@ -14,13 +14,13 @@ use super::value::ComparableValue;
 
 /// Evaluate a conditional function
 pub fn eval_conditional_function<S: Storage>(
-    name: &FunctionName,
+    name: &Function,
     args: &[Expression],
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     match name {
-        FunctionName::If => {
+        Function::If => {
             check_arity(args, 3, "IF")?;
             let cond = evaluate(&args[0], row, ctx)?;
             if cond {
@@ -30,7 +30,7 @@ pub fn eval_conditional_function<S: Storage>(
             }
         }
 
-        FunctionName::Coalesce => {
+        Function::Coalesce => {
             for arg in args {
                 let val = arg.eval_to_comparable(row, ctx)?;
                 if val.is_some() {

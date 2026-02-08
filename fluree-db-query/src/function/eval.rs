@@ -8,7 +8,7 @@
 use crate::binding::{Binding, RowView};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::ir::{Expression, FilterValue, FunctionName};
+use crate::ir::{Expression, FilterValue, Function};
 use fluree_db_core::{FlakeValue, Storage};
 use std::sync::Arc;
 
@@ -62,11 +62,11 @@ pub fn evaluate_to_binding_strict<S: Storage>(
             // of hard errors.
             if matches!(
                 expr,
-                Expression::Function { name, .. } if matches!(
-                    name,
-                    FunctionName::DotProduct
-                    | FunctionName::CosineSimilarity
-                    | FunctionName::EuclideanDistance
+                Expression::Call { func, .. } if matches!(
+                    func,
+                    Function::DotProduct
+                    | Function::CosineSimilarity
+                    | Function::EuclideanDistance
                 )
             ) {
                 return Ok(Binding::Unbound);
@@ -298,7 +298,7 @@ pub fn evaluate<S: Storage>(
             }
         }
 
-        Expression::Function { name, args } => eval_function_to_bool(name, args, row, ctx),
+        Expression::Call { func, args } => eval_function_to_bool(func, args, row, ctx),
     }
 }
 
@@ -417,7 +417,7 @@ impl Expression {
                 Ok(Some(ComparableValue::Bool(evaluate(self, row, ctx)?)))
             }
 
-            Expression::Function { name, args } => eval_function(name, args, row, ctx),
+            Expression::Call { func, args } => eval_function(func, args, row, ctx),
         }
     }
 }

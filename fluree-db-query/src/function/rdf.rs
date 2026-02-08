@@ -5,7 +5,7 @@
 use crate::binding::{Binding, RowView};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::ir::{Expression, FunctionName};
+use crate::ir::{Expression, Function};
 use fluree_db_core::Storage;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -15,13 +15,13 @@ use super::value::ComparableValue;
 
 /// Evaluate an RDF term function
 pub fn eval_rdf_function<S: Storage>(
-    name: &FunctionName,
+    name: &Function,
     args: &[Expression],
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     match name {
-        FunctionName::Datatype => {
+        Function::Datatype => {
             check_arity(args, 1, "DATATYPE")?;
             if let Expression::Var(var_id) = &args[0] {
                 if let Some(binding) = row.get(*var_id) {
@@ -37,7 +37,7 @@ pub fn eval_rdf_function<S: Storage>(
             Ok(None)
         }
 
-        FunctionName::LangMatches => {
+        Function::LangMatches => {
             check_arity(args, 2, "LANGMATCHES")?;
             let tag = args[0].eval_to_comparable(row, ctx)?;
             let range = args[1].eval_to_comparable(row, ctx)?;
@@ -58,7 +58,7 @@ pub fn eval_rdf_function<S: Storage>(
             Ok(Some(ComparableValue::Bool(result)))
         }
 
-        FunctionName::SameTerm => {
+        Function::SameTerm => {
             check_arity(args, 2, "SAMETERM")?;
             let v1 = args[0].eval_to_comparable(row, ctx)?;
             let v2 = args[1].eval_to_comparable(row, ctx)?;
@@ -66,7 +66,7 @@ pub fn eval_rdf_function<S: Storage>(
             Ok(Some(ComparableValue::Bool(same)))
         }
 
-        FunctionName::Iri => {
+        Function::Iri => {
             check_arity(args, 1, "IRI")?;
             match args[0].eval_to_comparable(row, ctx)? {
                 Some(ComparableValue::String(s)) => Ok(Some(ComparableValue::Iri(s))),
@@ -78,7 +78,7 @@ pub fn eval_rdf_function<S: Storage>(
             }
         }
 
-        FunctionName::Bnode => {
+        Function::Bnode => {
             if !args.is_empty() {
                 return Err(QueryError::InvalidFilter(
                     "BNODE requires no arguments".to_string(),

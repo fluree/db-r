@@ -5,7 +5,7 @@
 use crate::binding::RowView;
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::ir::{Expression, FunctionName};
+use crate::ir::{Expression, Function};
 use fluree_db_core::Storage;
 use rand::random;
 
@@ -14,13 +14,13 @@ use super::value::ComparableValue;
 
 /// Evaluate a numeric function
 pub fn eval_numeric_function<S: Storage>(
-    name: &FunctionName,
+    name: &Function,
     args: &[Expression],
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     match name {
-        FunctionName::Abs => {
+        Function::Abs => {
             check_arity(args, 1, "ABS")?;
             let val = args[0].eval_to_comparable(row, ctx)?;
             Ok(match val {
@@ -30,7 +30,7 @@ pub fn eval_numeric_function<S: Storage>(
             })
         }
 
-        FunctionName::Round => {
+        Function::Round => {
             check_arity(args, 1, "ROUND")?;
             let val = args[0].eval_to_comparable(row, ctx)?;
             Ok(match val {
@@ -40,7 +40,7 @@ pub fn eval_numeric_function<S: Storage>(
             })
         }
 
-        FunctionName::Ceil => {
+        Function::Ceil => {
             check_arity(args, 1, "CEIL")?;
             let val = args[0].eval_to_comparable(row, ctx)?;
             Ok(match val {
@@ -50,7 +50,7 @@ pub fn eval_numeric_function<S: Storage>(
             })
         }
 
-        FunctionName::Floor => {
+        Function::Floor => {
             check_arity(args, 1, "FLOOR")?;
             let val = args[0].eval_to_comparable(row, ctx)?;
             Ok(match val {
@@ -60,7 +60,7 @@ pub fn eval_numeric_function<S: Storage>(
             })
         }
 
-        FunctionName::Rand => {
+        Function::Rand => {
             check_arity(args, 0, "RAND")?;
             Ok(Some(ComparableValue::Double(random::<f64>())))
         }

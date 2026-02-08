@@ -499,8 +499,8 @@ pub enum UnresolvedExpression {
         negated: bool,
     },
     /// Function call
-    Function {
-        name: Arc<str>,
+    Call {
+        func: Arc<str>,
         args: Vec<UnresolvedExpression>,
     },
 }

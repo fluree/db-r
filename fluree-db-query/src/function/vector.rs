@@ -5,7 +5,7 @@
 use crate::binding::RowView;
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::ir::{Expression, FunctionName};
+use crate::ir::{Expression, Function};
 use fluree_db_core::Storage;
 
 use super::helpers::check_arity;
@@ -13,17 +13,17 @@ use super::value::ComparableValue;
 
 /// Evaluate a vector function
 pub fn eval_vector_function<S: Storage>(
-    name: &FunctionName,
+    name: &Function,
     args: &[Expression],
     row: &RowView,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     match name {
-        FunctionName::DotProduct => eval_binary_vector_fn(args, row, ctx, "dotProduct", |a, b| {
+        Function::DotProduct => eval_binary_vector_fn(args, row, ctx, "dotProduct", |a, b| {
             Some(a.iter().zip(b.iter()).map(|(x, y)| x * y).sum())
         }),
 
-        FunctionName::CosineSimilarity => {
+        Function::CosineSimilarity => {
             eval_binary_vector_fn(args, row, ctx, "cosineSimilarity", |a, b| {
                 let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
                 let mag_a: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
@@ -36,7 +36,7 @@ pub fn eval_vector_function<S: Storage>(
             })
         }
 
-        FunctionName::EuclideanDistance => {
+        Function::EuclideanDistance => {
             eval_binary_vector_fn(args, row, ctx, "euclideanDistance", |a, b| {
                 let sum_sq: f64 = a
                     .iter()
