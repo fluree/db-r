@@ -441,8 +441,8 @@ async fn ledger_info_api_returns_expected_structure() {
                 "commit should have address"
             );
             assert!(
-                json_path_exists(commit, &["alias"]),
-                "commit should have alias"
+                json_path_exists(commit, &["ledger_address"]),
+                "commit should have ledger_address"
             );
             assert!(
                 json_path_exists(commit, &["data"]),
@@ -714,8 +714,8 @@ async fn ledger_info_api_with_context_compacts_stats_iris() {
             // (they use full IRIs regardless of context)
             // ================================================================
             let commit = &info["commit"];
-            // commit.alias should still be full "test/ledger-info-ctx:main" not compacted
-            assert_eq!(commit["alias"], "test/ledger-info-ctx:main");
+            // commit.ledger_address should still be full "test/ledger-info-ctx:main" not compacted
+            assert_eq!(commit["ledger_address"], "test/ledger-info-ctx:main");
 
             // nameservice @id should still be full
             let ns = &info["nameservice"];
