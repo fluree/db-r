@@ -3,16 +3,21 @@
 //! This module contains the intermediate value type used during filter evaluation,
 //! along with conversions to/from FlakeValue and FilterValue.
 
+use crate::binding::Binding;
+use crate::context::ExecutionContext;
+use crate::error::QueryError;
 use crate::ir::{ArithmeticOp, FilterValue};
 use bigdecimal::BigDecimal;
 use fluree_db_core::temporal::{
     Date as FlureeDate, DateTime as FlureeDateTime, Time as FlureeTime,
 };
-use fluree_db_core::{FlakeValue, GeoPointBits};
+use fluree_db_core::{FlakeValue, GeoPointBits, Storage};
 use num_bigint::BigInt;
 use num_traits::Zero;
 use std::sync::Arc;
 use thiserror::Error;
+
+use super::helpers::WELL_KNOWN_DATATYPES;
 
 /// Errors that can occur during arithmetic operations
 #[derive(Error, Debug, Clone, PartialEq)]
@@ -279,6 +284,93 @@ impl ComparableValue {
                 FlakeValue::Boolean(b) => Some(ComparableValue::String(Arc::from(b.to_string()))),
                 _ => None,
             },
+        }
+    }
+
+    /// Convert this value to a Binding.
+    ///
+    /// The `ctx` parameter is required for `Iri` and `TypedLiteral` variants
+    /// which need database access to resolve IRIs to Sids.
+    pub fn to_binding<S: Storage>(
+        self,
+        ctx: Option<&ExecutionContext<'_, S>>,
+    ) -> crate::error::Result<Binding> {
+        let datatypes = &*WELL_KNOWN_DATATYPES;
+        match self {
+            ComparableValue::Long(n) => Ok(Binding::lit(
+                FlakeValue::Long(n),
+                datatypes.xsd_long.clone(),
+            )),
+            ComparableValue::Double(d) => Ok(Binding::lit(
+                FlakeValue::Double(d),
+                datatypes.xsd_double.clone(),
+            )),
+            ComparableValue::String(s) => Ok(Binding::lit(
+                FlakeValue::String(s.to_string()),
+                datatypes.xsd_string.clone(),
+            )),
+            ComparableValue::Bool(b) => Ok(Binding::lit(
+                FlakeValue::Boolean(b),
+                datatypes.xsd_boolean.clone(),
+            )),
+            ComparableValue::Sid(sid) => Ok(Binding::Sid(sid)),
+            ComparableValue::Vector(v) => Ok(Binding::lit(
+                FlakeValue::Vector(v.to_vec()),
+                datatypes.fluree_vector.clone(),
+            )),
+            ComparableValue::BigInt(n) => Ok(Binding::lit(
+                FlakeValue::BigInt(n),
+                datatypes.xsd_integer.clone(),
+            )),
+            ComparableValue::Decimal(d) => Ok(Binding::lit(
+                FlakeValue::Decimal(d),
+                datatypes.xsd_decimal.clone(),
+            )),
+            ComparableValue::DateTime(dt) => Ok(Binding::lit(
+                FlakeValue::DateTime(Box::new(dt)),
+                datatypes.xsd_datetime.clone(),
+            )),
+            ComparableValue::Date(d) => Ok(Binding::lit(
+                FlakeValue::Date(Box::new(d)),
+                datatypes.xsd_date.clone(),
+            )),
+            ComparableValue::Time(t) => Ok(Binding::lit(
+                FlakeValue::Time(Box::new(t)),
+                datatypes.xsd_time.clone(),
+            )),
+            ComparableValue::GeoPoint(bits) => Ok(Binding::lit(
+                FlakeValue::GeoPoint(bits),
+                datatypes.geo_wkt_literal.clone(),
+            )),
+            ComparableValue::Iri(iri) => {
+                let ctx = ctx.ok_or_else(|| {
+                    QueryError::InvalidFilter(
+                        "bind evaluation requires database context for iri()".to_string(),
+                    )
+                })?;
+                ctx.db.encode_iri(&iri).map(Binding::Sid).ok_or_else(|| {
+                    QueryError::InvalidFilter(format!("Unknown IRI or namespace: {}", iri))
+                })
+            }
+            ComparableValue::TypedLiteral { val, dt_iri, lang } => {
+                if let Some(lang) = lang {
+                    let dt = fluree_db_core::Sid::new(3, "langString");
+                    Ok(Binding::lit_lang(val, dt, lang))
+                } else if let Some(dt_iri) = dt_iri {
+                    let ctx = ctx.ok_or_else(|| {
+                        QueryError::InvalidFilter(
+                            "bind evaluation requires database context for str-dt/str-lang"
+                                .to_string(),
+                        )
+                    })?;
+                    let dt = ctx.db.encode_iri(&dt_iri).ok_or_else(|| {
+                        QueryError::InvalidFilter(format!("Unknown datatype IRI: {}", dt_iri))
+                    })?;
+                    Ok(Binding::lit(val, dt))
+                } else {
+                    Ok(Binding::lit(val, datatypes.xsd_string.clone()))
+                }
+            }
         }
     }
 }
