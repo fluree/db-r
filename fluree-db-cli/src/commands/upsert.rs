@@ -35,6 +35,7 @@ pub async fn run(
         LedgerMode::Tracked {
             client,
             remote_alias,
+            remote_name,
             ..
         } => {
             let result = match data_format {
@@ -44,6 +45,8 @@ pub async fn run(
                     client.upsert_jsonld(&remote_alias, &json).await?
                 }
             };
+
+            context::persist_refreshed_tokens(&client, &remote_name, fluree_dir).await;
 
             print_txn_result(&result);
         }

@@ -70,6 +70,36 @@ curl http://localhost:8090/fluree/stats
 | `cached_ledgers` | Number of ledgers currently cached |
 | `version` | Server version |
 
+## Diagnostic endpoints
+
+### GET /fluree/whoami
+
+Diagnostic endpoint for debugging Bearer tokens.
+
+- If no token is present, returns `token_present=false`.
+- If a token is present, attempts to **cryptographically verify** it using the same verification logic as authenticated endpoints (embedded-JWK Ed25519 and JWKS/OIDC when enabled/configured).
+- On verification failure, returns `verified=false` and includes an `error` string. Some unverified decoded fields may be included for debugging.
+
+```bash
+curl http://localhost:8090/fluree/whoami \
+  -H "Authorization: Bearer eyJ..."
+```
+
+## CLI discovery
+
+### GET /.well-known/fluree.json
+
+Discovery document used by the CLI when adding a remote (`fluree remote add`) or when running `fluree auth login` with no configured auth type.
+
+Standalone `fluree-server` returns:
+
+- `{"version":1}` when no auth is enabled
+- `{"version":1,"auth":{"type":"token"}}` when any server auth mode is enabled (data/events/admin)
+
+OIDC-capable implementations can return `auth.type="oidc_device"` plus `issuer`, `client_id`, and `exchange_url`.
+
+See [Auth contract (CLI ↔ Server)](../design/auth-contract.md) for the full schema and behavior.
+
 ### GET /fluree/ledger-info
 
 Get detailed ledger metadata:

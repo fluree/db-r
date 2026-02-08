@@ -30,8 +30,8 @@ pub mod watch_sse;
 
 pub use client::{HttpRemoteClient, RemoteNameserviceClient, RemoteSnapshot};
 pub use config::{
-    MemorySyncConfigStore, RemoteAuth, RemoteConfig, RemoteEndpoint, SyncConfigStore,
-    UpstreamConfig,
+    MemorySyncConfigStore, RemoteAuth, RemoteAuthType, RemoteConfig, RemoteEndpoint,
+    SyncConfigStore, UpstreamConfig,
 };
 pub use driver::{FetchResult, PullResult, PushResult, SyncDriver};
 pub use error::{Result, SyncError};

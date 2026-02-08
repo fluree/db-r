@@ -35,8 +35,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     let mut router = Router::new()
         // Health check
         .route("/health", get(admin::health))
-        // Admin endpoints (stats is read-only, no auth required)
+        // Auth discovery (CLI auto-configuration)
+        .route("/.well-known/fluree.json", get(admin::discovery))
+        // Admin endpoints (stats and whoami are read-only, no auth required)
         .route("/fluree/stats", get(admin::stats))
+        .route("/fluree/whoami", get(admin::whoami))
         // Ledger management (read-only)
         .route("/fluree/ledger-info", get(ledger::info))
         .route("/fluree/exists", get(ledger::exists))

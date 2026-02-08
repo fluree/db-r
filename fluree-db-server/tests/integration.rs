@@ -1,4 +1,5 @@
 use axum::body::Body;
+use fluree_db_server::config::{AdminAuthMode, DataAuthMode, EventsAuthMode};
 use fluree_db_server::{routes::build_router, AppState, ServerConfig, TelemetryConfig};
 use http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -872,4 +873,100 @@ async fn query_with_max_fuel_returns_fuel_header() {
         "Response should have fuel field in body"
     );
     assert!(json_contains_string(&json, "Bob"));
+}
+
+// ============================================================================
+// Discovery endpoint: /.well-known/fluree.json
+// ============================================================================
+
+fn test_state_with_auth(
+    events: EventsAuthMode,
+    data: DataAuthMode,
+    admin: AdminAuthMode,
+) -> (TempDir, Arc<AppState>) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cfg = ServerConfig {
+        cors_enabled: false,
+        indexing_enabled: false,
+        storage_path: Some(tmp.path().to_path_buf()),
+        events_auth_mode: events,
+        data_auth_mode: data,
+        admin_auth_mode: admin,
+        // When auth is required, we need at least one trust source to pass validation.
+        // Use insecure flags so tests don't need real keys.
+        events_auth_insecure_accept_any_issuer: events != EventsAuthMode::None,
+        data_auth_insecure_accept_any_issuer: data != DataAuthMode::None,
+        admin_auth_insecure_accept_any_issuer: admin != AdminAuthMode::None,
+        ..Default::default()
+    };
+    let telemetry = TelemetryConfig::with_server_config(&cfg);
+    let state = Arc::new(AppState::new(cfg, telemetry).expect("AppState::new"));
+    (tmp, state)
+}
+
+async fn get_discovery(state: Arc<AppState>) -> (StatusCode, JsonValue) {
+    let app = build_router(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/.well-known/fluree.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    json_body(resp).await
+}
+
+#[tokio::test]
+async fn discovery_no_auth_omits_auth_block() {
+    let (_tmp, state) = test_state(); // all auth modes None
+    let (status, json) = get_discovery(state).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["version"], 1);
+    assert!(json.get("auth").is_none(), "no auth block when all modes are None");
+}
+
+#[tokio::test]
+async fn discovery_data_auth_required_returns_token_type() {
+    let (_tmp, state) = test_state_with_auth(
+        EventsAuthMode::None,
+        DataAuthMode::Required,
+        AdminAuthMode::None,
+    );
+    let (status, json) = get_discovery(state).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["version"], 1);
+    assert_eq!(json["auth"]["type"], "token");
+}
+
+#[tokio::test]
+async fn discovery_events_auth_optional_returns_token_type() {
+    let (_tmp, state) = test_state_with_auth(
+        EventsAuthMode::Optional,
+        DataAuthMode::None,
+        AdminAuthMode::None,
+    );
+    let (status, json) = get_discovery(state).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["version"], 1);
+    assert_eq!(json["auth"]["type"], "token");
+}
+
+#[tokio::test]
+async fn discovery_admin_auth_required_returns_token_type() {
+    let (_tmp, state) = test_state_with_auth(
+        EventsAuthMode::None,
+        DataAuthMode::None,
+        AdminAuthMode::Required,
+    );
+    let (status, json) = get_discovery(state).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["version"], 1);
+    assert_eq!(json["auth"]["type"], "token");
 }

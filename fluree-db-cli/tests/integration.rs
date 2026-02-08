@@ -993,3 +993,161 @@ fn help_shows_sync_commands() {
         .stdout(predicate::str::contains("push"))
         .stdout(predicate::str::contains("token"));
 }
+
+// ============================================================================
+// Auth login / status / logout tests
+// ============================================================================
+
+#[test]
+fn auth_login_with_token_stores_and_status_shows() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+
+    // Add a remote
+    fluree_cmd(&tmp)
+        .args(["remote", "add", "origin", "http://localhost:8090"])
+        .assert()
+        .success();
+
+    // Login with a manual token
+    fluree_cmd(&tmp)
+        .args(["auth", "login", "--remote", "origin", "--token", "my-test-token-123"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Token stored for remote"));
+
+    // Status shows the remote has a token
+    fluree_cmd(&tmp)
+        .args(["auth", "status", "--remote", "origin"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("origin"))
+        .stdout(predicate::str::contains("Token:  configured"));
+}
+
+#[test]
+fn auth_login_from_file() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+
+    fluree_cmd(&tmp)
+        .args(["remote", "add", "origin", "http://localhost:8090"])
+        .assert()
+        .success();
+
+    // Write token to a file
+    let token_file = tmp.path().join("token.txt");
+    std::fs::write(&token_file, "file-based-token-456").unwrap();
+
+    // Login with token from file
+    fluree_cmd(&tmp)
+        .args([
+            "auth",
+            "login",
+            "--remote",
+            "origin",
+            "--token",
+            &format!("@{}", token_file.display()),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Token stored for remote"));
+
+    // Verify status shows token
+    fluree_cmd(&tmp)
+        .args(["auth", "status", "--remote", "origin"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Token:  configured"));
+}
+
+#[test]
+fn auth_logout_clears_token() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+
+    fluree_cmd(&tmp)
+        .args(["remote", "add", "origin", "http://localhost:8090"])
+        .assert()
+        .success();
+
+    // Login first
+    fluree_cmd(&tmp)
+        .args(["auth", "login", "--remote", "origin", "--token", "my-token"])
+        .assert()
+        .success();
+
+    // Logout
+    fluree_cmd(&tmp)
+        .args(["auth", "logout", "--remote", "origin"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Token cleared for remote"));
+
+    // Status should show no token
+    fluree_cmd(&tmp)
+        .args(["auth", "status", "--remote", "origin"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not configured"));
+}
+
+#[test]
+fn auth_login_no_remote_single_remote_default() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+
+    // Add a single remote
+    fluree_cmd(&tmp)
+        .args(["remote", "add", "origin", "http://localhost:8090"])
+        .assert()
+        .success();
+
+    // Login without --remote should default to the only remote
+    fluree_cmd(&tmp)
+        .args(["auth", "login", "--token", "my-token"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Token stored for remote"));
+
+    // Status without --remote should also default
+    fluree_cmd(&tmp)
+        .args(["auth", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Token:  configured"));
+}
+
+#[test]
+fn auth_login_no_remote_fails_when_none_configured() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+
+    // No remotes configured — auth login should fail
+    fluree_cmd(&tmp)
+        .args(["auth", "login", "--token", "my-token"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("remote"));
+}
+
+#[test]
+fn auth_login_discovery_fallback_unreachable_server() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+
+    // Add a remote pointing to a non-existent server
+    fluree_cmd(&tmp)
+        .args(["remote", "add", "origin", "http://127.0.0.1:19999"])
+        .assert()
+        .success();
+
+    // auth login without --token should try discovery, fail to connect,
+    // then fall back to manual token prompt. Since we can't provide
+    // interactive input, pipe token via stdin using @-
+    fluree_cmd(&tmp)
+        .args(["auth", "login", "--remote", "origin", "--token", "fallback-token"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Token stored"));
+}

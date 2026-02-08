@@ -21,8 +21,11 @@ pub async fn run(
             client,
             remote_alias,
             local_alias,
+            remote_name,
         } => {
             let info = client.ledger_info(&remote_alias).await?;
+
+            context::persist_refreshed_tokens(&client, &remote_name, fluree_dir).await;
 
             println!(
                 "Ledger:         {} (tracked)",

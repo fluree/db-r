@@ -20,11 +20,34 @@ pub enum RemoteEndpoint {
     Storage { prefix: String },
 }
 
+/// Auth type discriminator for remote authentication.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteAuthType {
+    /// Manual bearer token (no automated login flow)
+    Token,
+    /// OIDC Device Authorization Grant + token exchange
+    OidcDevice,
+}
+
 /// Authentication for a remote
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RemoteAuth {
-    /// Bearer token for HTTP requests
+    /// Auth type discriminator. If absent, inferred as `Token` when a token is
+    /// present, or unauthenticated when absent.
+    #[serde(rename = "type")]
+    pub auth_type: Option<RemoteAuthType>,
+    /// Bearer token for HTTP requests (cached Fluree token for OIDC, or
+    /// manually provided for token auth)
     pub token: Option<String>,
+    /// OIDC issuer URL (for openid-configuration discovery)
+    pub issuer: Option<String>,
+    /// OAuth client ID registered for the CLI (device flow)
+    pub client_id: Option<String>,
+    /// Fluree token exchange endpoint URL
+    pub exchange_url: Option<String>,
+    /// Refresh token for silent token renewal (OIDC)
+    pub refresh_token: Option<String>,
 }
 
 /// Configuration for a named remote
@@ -186,6 +209,7 @@ mod tests {
             },
             auth: RemoteAuth {
                 token: Some("secret".to_string()),
+                ..Default::default()
             },
             fetch_interval_secs: Some(60),
         };

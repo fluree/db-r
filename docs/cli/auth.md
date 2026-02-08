@@ -170,7 +170,7 @@ fluree token create --private-key @~/.fluree/key --all | fluree auth login --tok
 
 ### OIDC/JWKS Tokens (RS256)
 
-Issued by external identity providers (e.g., Fluree Solo). These contain a `kid` (Key ID) in the token header and are verified by the server against the provider's JWKS (JSON Web Key Set) endpoint. The issuer is the provider's URL.
+Issued by external identity providers (OIDC). These contain a `kid` (Key ID) in the token header and are verified by the server against the provider's JWKS (JSON Web Key Set) endpoint. The issuer is the provider's URL.
 
 The server must be configured with `--jwks-issuer` to trust these tokens. See [Configuration](../operations/configuration.md#oidc--jwks-token-verification).
 
@@ -187,8 +187,24 @@ When `--remote` is omitted:
 - The `status` command never displays the raw token value.
 - On 401 errors from remote operations, the CLI checks token expiry and suggests `fluree auth login` if the token appears expired.
 
+## OIDC login flow
+
+When a remote is configured with `auth.type = "oidc_device"` (auto-discovered from the server's `/.well-known/fluree.json`), `fluree auth login` runs the OAuth 2.0 Device Authorization Grant:
+
+1. Discovers OIDC endpoints from the configured issuer
+2. Requests a device code and user code
+3. Prints a URL and code for the user to complete in a browser
+4. Polls for completion, then exchanges the IdP token for a Fluree-scoped Bearer token
+5. Stores the token and refresh token in the remote config
+
+On subsequent 401 errors, the CLI automatically attempts a silent refresh using the stored refresh token before prompting for re-login.
+
+See [Auth contract (CLI ↔ Server)](../design/auth-contract.md) for the full protocol specification.
+
 ## See Also
 
 - [token](token.md) - Create and inspect JWS tokens
 - [remote](remote.md) - Manage remote servers
+- [Authentication](../security/authentication.md) - Auth model, modes, and token claims
+- [Auth contract (CLI ↔ Server)](../design/auth-contract.md) - Discovery, exchange, and refresh protocol
 - [Configuration](../operations/configuration.md) - Server authentication configuration

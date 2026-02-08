@@ -7,6 +7,10 @@
 //! - `None`: Token ignored entirely (no parsing, no logging)
 //! - `Optional`: Accept tokens but don't require (invalid token = 401)
 //! - `Required`: Must have valid token (missing token = 401)
+//!
+//! When the `oidc` feature is enabled, tokens are dispatched through
+//! [`verify_bearer_token`](crate::token_verify::verify_bearer_token) which
+//! supports both embedded-JWK (Ed25519) and OIDC/JWKS (RS256) paths.
 
 use axum::async_trait;
 use axum::extract::FromRequestParts;
@@ -18,6 +22,7 @@ use std::sync::Arc;
 use crate::config::{EventsAuthConfig, EventsAuthMode};
 use crate::error::ServerError;
 use crate::state::AppState;
+#[cfg(not(feature = "oidc"))]
 use fluree_db_credential::{verify_jws, EventsTokenPayload};
 
 /// Verified principal from Bearer token
@@ -98,7 +103,15 @@ impl FromRequestParts<Arc<AppState>> for MaybeBearer {
 
         // From here on, we have a token and must validate it
         // (even in Optional mode, invalid token = 401)
-        verify_token(&token, &config)
+        #[cfg(feature = "oidc")]
+        {
+            let jwks_cache = state.jwks_cache.as_deref();
+            verify_token(&token, &config, jwks_cache).await
+        }
+        #[cfg(not(feature = "oidc"))]
+        {
+            verify_token(&token, &config)
+        }
     }
 }
 
@@ -117,7 +130,8 @@ pub(crate) fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
     }
 }
 
-/// Verify token and build principal
+/// Verify token and build principal (embedded JWK only — non-oidc builds)
+#[cfg(not(feature = "oidc"))]
 fn verify_token(token: &str, config: &EventsAuthConfig) -> Result<MaybeBearer, ServerError> {
     // 1. Verify JWS (embedded JWK mode)
     let verified = verify_jws(token)
@@ -137,7 +151,8 @@ fn verify_token(token: &str, config: &EventsAuthConfig) -> Result<MaybeBearer, S
         .map_err(|e| ServerError::unauthorized(e.to_string()))?;
 
     // 4. Check issuer trust (always required when token presented)
-    if !config.is_issuer_trusted(&payload.iss) {
+    // Use verified.did (not payload.iss) — validate() confirmed they match
+    if !config.is_issuer_trusted(&verified.did) {
         return Err(ServerError::unauthorized("Untrusted issuer"));
     }
 
@@ -147,19 +162,83 @@ fn verify_token(token: &str, config: &EventsAuthConfig) -> Result<MaybeBearer, S
     }
 
     // 6. Build principal with HashSet for efficient filtering
-    let principal = EventsPrincipal {
-        issuer: payload.iss.clone(),
+    let principal = build_principal(&payload, verified.did);
+
+    Ok(MaybeBearer(Some(principal)))
+}
+
+/// Verify token with dual-path dispatch (oidc builds)
+///
+/// Supports both embedded-JWK (Ed25519) and OIDC/JWKS (RS256) tokens,
+/// mirroring the same dual-path dispatch used by data and admin endpoints.
+#[cfg(feature = "oidc")]
+async fn verify_token(
+    token: &str,
+    config: &EventsAuthConfig,
+    jwks_cache: Option<&crate::jwks::JwksCache>,
+) -> Result<MaybeBearer, ServerError> {
+    // 1. Dual-path dispatch (reuse shared verify_bearer_token)
+    let verified = crate::token_verify::verify_bearer_token(token, jwks_cache).await?;
+
+    // 2. Path-specific claims validation
+    if verified.is_oidc {
+        // OIDC: validate iss == expected_issuer, exp/nbf
+        verified
+            .payload
+            .validate_oidc(
+                config.audience.as_deref(),
+                &verified.issuer,
+                config.requires_identity(),
+            )
+            .map_err(|e| ServerError::unauthorized(e.to_string()))?;
+        // OIDC trust already verified by JWKS path (only configured issuers' keys work)
+    } else {
+        // Embedded JWK: validate iss == did:key, exp/nbf
+        verified
+            .payload
+            .validate(
+                config.audience.as_deref(),
+                &verified.issuer,
+                config.requires_identity(),
+            )
+            .map_err(|e| ServerError::unauthorized(e.to_string()))?;
+        // Check did:key trust — use verified.issuer for consistency
+        if !config.is_issuer_trusted(&verified.issuer) {
+            return Err(ServerError::unauthorized("Untrusted issuer"));
+        }
+    }
+
+    // 3. Check token grants some permissions
+    if !verified.payload.has_permissions() {
+        return Err(ServerError::unauthorized("token authorizes no resources"));
+    }
+
+    // 4. Build principal — use verified.issuer as the authoritative identity
+    let principal = build_principal(&verified.payload, verified.issuer);
+
+    Ok(MaybeBearer(Some(principal)))
+}
+
+/// Build an `EventsPrincipal` from verified claims.
+fn build_principal(
+    payload: &fluree_db_credential::jwt_claims::EventsTokenPayload,
+    issuer: String,
+) -> EventsPrincipal {
+    EventsPrincipal {
+        issuer,
         subject: payload.sub.clone(),
         identity: payload.resolve_identity(),
         // Events permissions
         allowed_all: payload.events_all.unwrap_or(false),
         allowed_ledgers: payload
             .events_ledgers
+            .clone()
             .unwrap_or_default()
             .into_iter()
             .collect(),
         allowed_graph_sources: payload
             .events_graph_sources
+            .clone()
             .unwrap_or_default()
             .into_iter()
             .collect(),
@@ -167,25 +246,28 @@ fn verify_token(token: &str, config: &EventsAuthConfig) -> Result<MaybeBearer, S
         storage_all: payload.storage_all.unwrap_or(false),
         storage_ledgers: payload
             .storage_ledgers
+            .clone()
             .unwrap_or_default()
             .into_iter()
             .collect(),
-    };
-
-    Ok(MaybeBearer(Some(principal)))
+    }
 }
 
+/// Shared test helpers for events auth tests (both oidc and non-oidc paths)
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::http::HeaderValue;
+mod test_helpers {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use ed25519_dalek::{Signer, SigningKey};
-    use fluree_db_credential::did_from_pubkey;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    /// Create a test JWS token with the given claims
-    fn create_test_token(claims: &serde_json::Value, signing_key: &SigningKey) -> String {
+    pub fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    pub fn create_test_token(claims: &serde_json::Value, signing_key: &SigningKey) -> String {
         let pubkey = signing_key.verifying_key().to_bytes();
         let pubkey_b64 = URL_SAFE_NO_PAD.encode(pubkey);
 
@@ -207,13 +289,13 @@ mod tests {
 
         format!("{}.{}.{}", header_b64, payload_b64, sig_b64)
     }
+}
 
-    fn now_secs() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-    }
+// Tests that don't depend on verify_token — always compiled
+#[cfg(test)]
+mod tests_common {
+    use super::*;
+    use axum::http::HeaderValue;
 
     #[test]
     fn test_extract_bearer_token_standard() {
@@ -342,6 +424,16 @@ mod tests {
         assert!(principal.is_storage_authorized_for_ledger("any:ledger"));
         assert!(principal.is_storage_authorized_for_ledger("books:main"));
     }
+}
+
+/// Tests for non-oidc build path (sync verify_token with 2 params)
+#[cfg(test)]
+#[cfg(not(feature = "oidc"))]
+mod tests {
+    use super::test_helpers::*;
+    use super::*;
+    use ed25519_dalek::SigningKey;
+    use fluree_db_credential::did_from_pubkey;
 
     #[test]
     fn test_verify_token_valid_with_trusted_issuer() {
@@ -364,6 +456,7 @@ mod tests {
             audience: None,
             trusted_issuers: vec![did.clone()],
             insecure_accept_any_issuer: false,
+            has_jwks_issuers: false,
         };
 
         let result = verify_token(&token, &config).unwrap();
@@ -396,6 +489,7 @@ mod tests {
             audience: None,
             trusted_issuers: vec!["did:key:z6MkOTHER".to_string()],
             insecure_accept_any_issuer: false,
+            has_jwks_issuers: false,
         };
 
         let result = verify_token(&token, &config);
@@ -426,6 +520,7 @@ mod tests {
             audience: None,
             trusted_issuers: vec![],
             insecure_accept_any_issuer: true,
+            has_jwks_issuers: false,
         };
 
         let result = verify_token(&token, &config);
@@ -453,6 +548,7 @@ mod tests {
             audience: None,
             trusted_issuers: vec![did.clone()],
             insecure_accept_any_issuer: false,
+            has_jwks_issuers: false,
         };
 
         let result = verify_token(&token, &config);
@@ -482,6 +578,7 @@ mod tests {
             audience: None,
             trusted_issuers: vec![did.clone()],
             insecure_accept_any_issuer: false,
+            has_jwks_issuers: false,
         };
 
         let result = verify_token(&token, &config);
@@ -511,6 +608,7 @@ mod tests {
             audience: None,
             trusted_issuers: vec![did.clone()],
             insecure_accept_any_issuer: false,
+            has_jwks_issuers: false,
         };
 
         let result = verify_token(&token, &config).unwrap();
@@ -545,6 +643,7 @@ mod tests {
             audience: None,
             trusted_issuers: vec![did.clone()],
             insecure_accept_any_issuer: false,
+            has_jwks_issuers: false,
         };
 
         let result = verify_token(&token, &config).unwrap();
@@ -561,11 +660,299 @@ mod tests {
             audience: None,
             trusted_issuers: vec![],
             insecure_accept_any_issuer: true,
+            has_jwks_issuers: false,
         };
 
         let result = verify_token("not.a.valid.jws", &config);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Invalid token"));
+    }
+}
+
+/// Tests for oidc build path (async verify_token with 3 params)
+///
+/// Exercises both the embedded-JWK path (jwks_cache=None) through the async
+/// code path, and OIDC-specific error handling.
+#[cfg(test)]
+#[cfg(feature = "oidc")]
+mod tests_oidc {
+    use super::test_helpers::*;
+    use super::*;
+    use ed25519_dalek::SigningKey;
+    use fluree_db_credential::did_from_pubkey;
+
+    #[tokio::test]
+    async fn test_verify_token_valid_with_trusted_issuer() {
+        let secret = [0u8; 32];
+        let signing_key = SigningKey::from_bytes(&secret);
+        let pubkey = signing_key.verifying_key().to_bytes();
+        let did = did_from_pubkey(&pubkey);
+
+        let claims = serde_json::json!({
+            "iss": did,
+            "sub": "user@example.com",
+            "exp": now_secs() + 3600,
+            "fluree.events.all": true
+        });
+
+        let token = create_test_token(&claims, &signing_key);
+
+        let config = EventsAuthConfig {
+            mode: EventsAuthMode::Required,
+            audience: None,
+            trusted_issuers: vec![did.clone()],
+            insecure_accept_any_issuer: false,
+            has_jwks_issuers: false,
+        };
+
+        let result = verify_token(&token, &config, None).await.unwrap();
+        let principal = result.0.unwrap();
+
+        assert_eq!(principal.issuer, did);
+        assert_eq!(principal.subject, Some("user@example.com".to_string()));
+        assert!(principal.allowed_all);
+    }
+
+    #[tokio::test]
+    async fn test_verify_token_untrusted_issuer() {
+        let secret = [0u8; 32];
+        let signing_key = SigningKey::from_bytes(&secret);
+        let pubkey = signing_key.verifying_key().to_bytes();
+        let did = did_from_pubkey(&pubkey);
+
+        let claims = serde_json::json!({
+            "iss": did,
+            "sub": "user@example.com",
+            "exp": now_secs() + 3600,
+            "fluree.events.all": true
+        });
+
+        let token = create_test_token(&claims, &signing_key);
+
+        let config = EventsAuthConfig {
+            mode: EventsAuthMode::Required,
+            audience: None,
+            trusted_issuers: vec!["did:key:z6MkOTHER".to_string()],
+            insecure_accept_any_issuer: false,
+            has_jwks_issuers: false,
+        };
+
+        let result = verify_token(&token, &config, None).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Untrusted issuer"));
+    }
+
+    #[tokio::test]
+    async fn test_verify_token_insecure_accept_any_issuer() {
+        let secret = [0u8; 32];
+        let signing_key = SigningKey::from_bytes(&secret);
+        let pubkey = signing_key.verifying_key().to_bytes();
+        let did = did_from_pubkey(&pubkey);
+
+        let claims = serde_json::json!({
+            "iss": did,
+            "sub": "user@example.com",
+            "exp": now_secs() + 3600,
+            "fluree.events.all": true
+        });
+
+        let token = create_test_token(&claims, &signing_key);
+
+        let config = EventsAuthConfig {
+            mode: EventsAuthMode::Required,
+            audience: None,
+            trusted_issuers: vec![],
+            insecure_accept_any_issuer: true,
+            has_jwks_issuers: false,
+        };
+
+        let result = verify_token(&token, &config, None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_verify_token_no_permissions() {
+        let secret = [0u8; 32];
+        let signing_key = SigningKey::from_bytes(&secret);
+        let pubkey = signing_key.verifying_key().to_bytes();
+        let did = did_from_pubkey(&pubkey);
+
+        let claims = serde_json::json!({
+            "iss": did,
+            "sub": "user@example.com",
+            "exp": now_secs() + 3600
+            // No fluree.events.* claims
+        });
+
+        let token = create_test_token(&claims, &signing_key);
+
+        let config = EventsAuthConfig {
+            mode: EventsAuthMode::Required,
+            audience: None,
+            trusted_issuers: vec![did.clone()],
+            insecure_accept_any_issuer: false,
+            has_jwks_issuers: false,
+        };
+
+        let result = verify_token(&token, &config, None).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("token authorizes no resources"));
+    }
+
+    #[tokio::test]
+    async fn test_verify_token_expired() {
+        let secret = [0u8; 32];
+        let signing_key = SigningKey::from_bytes(&secret);
+        let pubkey = signing_key.verifying_key().to_bytes();
+        let did = did_from_pubkey(&pubkey);
+
+        let claims = serde_json::json!({
+            "iss": did,
+            "sub": "user@example.com",
+            "exp": now_secs() - 120,  // Expired 2 minutes ago (beyond skew)
+            "fluree.events.all": true
+        });
+
+        let token = create_test_token(&claims, &signing_key);
+
+        let config = EventsAuthConfig {
+            mode: EventsAuthMode::Required,
+            audience: None,
+            trusted_issuers: vec![did.clone()],
+            insecure_accept_any_issuer: false,
+            has_jwks_issuers: false,
+        };
+
+        let result = verify_token(&token, &config, None).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("expired"));
+    }
+
+    #[tokio::test]
+    async fn test_verify_token_with_ledgers() {
+        let secret = [0u8; 32];
+        let signing_key = SigningKey::from_bytes(&secret);
+        let pubkey = signing_key.verifying_key().to_bytes();
+        let did = did_from_pubkey(&pubkey);
+
+        let claims = serde_json::json!({
+            "iss": did,
+            "sub": "user@example.com",
+            "exp": now_secs() + 3600,
+            "fluree.events.ledgers": ["books:main", "users:prod"]
+        });
+
+        let token = create_test_token(&claims, &signing_key);
+
+        let config = EventsAuthConfig {
+            mode: EventsAuthMode::Required,
+            audience: None,
+            trusted_issuers: vec![did.clone()],
+            insecure_accept_any_issuer: false,
+            has_jwks_issuers: false,
+        };
+
+        let result = verify_token(&token, &config, None).await.unwrap();
+        let principal = result.0.unwrap();
+
+        assert!(!principal.allowed_all);
+        assert!(principal.allowed_ledgers.contains("books:main"));
+        assert!(principal.allowed_ledgers.contains("users:prod"));
+        assert_eq!(principal.allowed_ledgers.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_verify_token_identity_resolution() {
+        let secret = [0u8; 32];
+        let signing_key = SigningKey::from_bytes(&secret);
+        let pubkey = signing_key.verifying_key().to_bytes();
+        let did = did_from_pubkey(&pubkey);
+
+        // fluree.identity takes precedence over sub
+        let claims = serde_json::json!({
+            "iss": did,
+            "sub": "user@example.com",
+            "exp": now_secs() + 3600,
+            "fluree.identity": "custom-identity",
+            "fluree.events.all": true
+        });
+
+        let token = create_test_token(&claims, &signing_key);
+
+        let config = EventsAuthConfig {
+            mode: EventsAuthMode::Required,
+            audience: None,
+            trusted_issuers: vec![did.clone()],
+            insecure_accept_any_issuer: false,
+            has_jwks_issuers: false,
+        };
+
+        let result = verify_token(&token, &config, None).await.unwrap();
+        let principal = result.0.unwrap();
+
+        assert_eq!(principal.subject, Some("user@example.com".to_string()));
+        assert_eq!(principal.identity, Some("custom-identity".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_verify_token_invalid_jws() {
+        let config = EventsAuthConfig {
+            mode: EventsAuthMode::Required,
+            audience: None,
+            trusted_issuers: vec![],
+            insecure_accept_any_issuer: true,
+            has_jwks_issuers: false,
+        };
+
+        let result = verify_token("not.a.valid.jws", &config, None).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Invalid token"));
+    }
+
+    /// Test that a token with a kid header (OIDC-style) but no JWKS cache
+    /// returns a clear error about OIDC not being configured.
+    #[tokio::test]
+    async fn test_verify_token_oidc_no_jwks_cache() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+        // Create a token with kid header (OIDC-style) instead of embedded JWK
+        let header = serde_json::json!({
+            "alg": "RS256",
+            "kid": "test-key-1",
+            "typ": "JWT"
+        });
+        let claims = serde_json::json!({
+            "iss": "https://auth.example.com",
+            "sub": "user@example.com",
+            "exp": now_secs() + 3600
+        });
+
+        let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string().as_bytes());
+        let payload_b64 = URL_SAFE_NO_PAD.encode(claims.to_string().as_bytes());
+        // Fake signature — won't get to verification since no JWKS cache
+        let sig_b64 = URL_SAFE_NO_PAD.encode(b"fake-signature");
+        let token = format!("{}.{}.{}", header_b64, payload_b64, sig_b64);
+
+        let config = EventsAuthConfig {
+            mode: EventsAuthMode::Required,
+            audience: None,
+            trusted_issuers: vec![],
+            insecure_accept_any_issuer: false,
+            has_jwks_issuers: false,
+        };
+
+        let result = verify_token(&token, &config, None).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("OIDC issuer not configured"),
+            "Expected OIDC-specific error, got: {}",
+            err_msg
+        );
     }
 }

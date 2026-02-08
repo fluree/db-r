@@ -14,7 +14,7 @@ use tower::ServiceExt;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use fluree_db_server::config::{AdminAuthMode, DataAuthMode};
+use fluree_db_server::config::{AdminAuthMode, DataAuthMode, EventsAuthMode};
 use fluree_db_server::routes::build_router;
 use fluree_db_server::{AppState, ServerConfig, TelemetryConfig};
 
@@ -729,5 +729,365 @@ async fn oidc_admin_rejects_without_token() {
         resp.status(),
         StatusCode::UNAUTHORIZED,
         "Admin endpoint should require token when admin_auth.mode=required"
+    );
+}
+
+// === Events endpoint OIDC tests ===
+
+/// Helper to create AppState with events auth enabled + OIDC configured.
+async fn oidc_events_state(
+    jwks_url: &str,
+    issuer: &str,
+) -> (tempfile::TempDir, std::sync::Arc<AppState>) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cfg = ServerConfig {
+        cors_enabled: false,
+        indexing_enabled: false,
+        storage_path: Some(tmp.path().to_path_buf()),
+        // Events auth: required, trust comes from JWKS (no did:key issuers)
+        events_auth_mode: EventsAuthMode::Required,
+        events_auth_trusted_issuers: Vec::new(),
+        events_auth_insecure_accept_any_issuer: false,
+        // JWKS config
+        jwks_issuers: vec![format!("{}={}", issuer, jwks_url)],
+        jwks_cache_ttl: 300,
+        ..Default::default()
+    };
+    let telemetry = TelemetryConfig::with_server_config(&cfg);
+    let state = std::sync::Arc::new(AppState::new(cfg, telemetry).expect("AppState::new"));
+
+    if let Some(cache) = &state.jwks_cache {
+        cache.warm().await;
+    }
+
+    (tmp, state)
+}
+
+#[tokio::test]
+async fn oidc_events_rejects_without_token() {
+    let mock_server = MockServer::start().await;
+    let issuer = "https://solo.example.com";
+    let kid = "test-kid-1";
+
+    Mock::given(method("GET"))
+        .and(path("/.well-known/jwks.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(test_jwks_json(kid)))
+        .mount(&mock_server)
+        .await;
+
+    let jwks_url = format!("{}/.well-known/jwks.json", mock_server.uri());
+    let (_tmp, state) = oidc_events_state(&jwks_url, issuer).await;
+    let app = build_router(state);
+
+    // GET /fluree/events WITHOUT Bearer token should be rejected
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/fluree/events?all=true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "Events endpoint should require token when events_auth.mode=required"
+    );
+}
+
+#[tokio::test]
+async fn oidc_rs256_events_auth_accepted() {
+    let mock_server = MockServer::start().await;
+    let issuer = "https://solo.example.com";
+    let kid = "test-kid-1";
+
+    Mock::given(method("GET"))
+        .and(path("/.well-known/jwks.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(test_jwks_json(kid)))
+        .expect(1..)
+        .mount(&mock_server)
+        .await;
+
+    let jwks_url = format!("{}/.well-known/jwks.json", mock_server.uri());
+    let (_tmp, state) = oidc_events_state(&jwks_url, issuer).await;
+    let app = build_router(state);
+
+    // Create OIDC token with events.all scope
+    let claims = json!({
+        "iss": issuer,
+        "sub": "user@example.com",
+        "exp": now_secs() + 3600,
+        "iat": now_secs(),
+        "fluree.identity": "ex:OidcUser",
+        "fluree.events.all": true
+    });
+    let token = create_rs256_jwt(&claims, kid);
+
+    // GET /fluree/events?all=true with RS256 Bearer token should pass auth.
+    // The response should NOT be 401 (auth succeeded). It will be 200 (SSE stream).
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/fluree/events?all=true")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "RS256 events token should pass auth"
+    );
+    // SSE endpoint returns 200 with text/event-stream content type
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "Events endpoint should return 200 for valid OIDC token with events.all scope"
+    );
+}
+
+// === Storage proxy endpoint OIDC tests ===
+
+/// Helper to create AppState with storage proxy enabled + OIDC configured.
+async fn oidc_storage_proxy_state(
+    jwks_url: &str,
+    issuer: &str,
+) -> (tempfile::TempDir, std::sync::Arc<AppState>) {
+    use fluree_db_server::config::ServerRole;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cfg = ServerConfig {
+        cors_enabled: false,
+        indexing_enabled: false,
+        storage_path: Some(tmp.path().to_path_buf()),
+        server_role: ServerRole::Transaction,
+        // Storage proxy: enabled, trust comes from JWKS (no did:key issuers)
+        storage_proxy_enabled: true,
+        storage_proxy_insecure_accept_any_issuer: false,
+        // JWKS config
+        jwks_issuers: vec![format!("{}={}", issuer, jwks_url)],
+        jwks_cache_ttl: 300,
+        ..Default::default()
+    };
+    let telemetry = TelemetryConfig::with_server_config(&cfg);
+    let state = std::sync::Arc::new(AppState::new(cfg, telemetry).expect("AppState::new"));
+
+    if let Some(cache) = &state.jwks_cache {
+        cache.warm().await;
+    }
+
+    (tmp, state)
+}
+
+#[tokio::test]
+async fn oidc_storage_proxy_rejects_without_token() {
+    let mock_server = MockServer::start().await;
+    let issuer = "https://solo.example.com";
+    let kid = "test-kid-1";
+
+    Mock::given(method("GET"))
+        .and(path("/.well-known/jwks.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(test_jwks_json(kid)))
+        .mount(&mock_server)
+        .await;
+
+    let jwks_url = format!("{}/.well-known/jwks.json", mock_server.uri());
+    let (_tmp, state) = oidc_storage_proxy_state(&jwks_url, issuer).await;
+    let app = build_router(state);
+
+    // POST /fluree/storage/block WITHOUT Bearer token → 401
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/fluree/storage/block")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"address":"abc123"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "Storage proxy should require token"
+    );
+}
+
+#[tokio::test]
+async fn oidc_rs256_storage_proxy_ns_lookup() {
+    let mock_server = MockServer::start().await;
+    let issuer = "https://solo.example.com";
+    let kid = "test-kid-1";
+
+    Mock::given(method("GET"))
+        .and(path("/.well-known/jwks.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(test_jwks_json(kid)))
+        .expect(1..)
+        .mount(&mock_server)
+        .await;
+
+    let jwks_url = format!("{}/.well-known/jwks.json", mock_server.uri());
+    let (_tmp, state) = oidc_storage_proxy_state(&jwks_url, issuer).await;
+    let app = build_router(state);
+
+    // Create a ledger so we have something to look up
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"ledger":"proxy-oidc:test"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Create OIDC token with storage.all scope
+    let claims = json!({
+        "iss": issuer,
+        "sub": "peer@example.com",
+        "exp": now_secs() + 3600,
+        "iat": now_secs(),
+        "fluree.identity": "ex:OidcPeer",
+        "fluree.storage.all": true
+    });
+    let token = create_rs256_jwt(&claims, kid);
+
+    // GET /fluree/storage/ns/proxy-oidc:test with RS256 Bearer → should pass auth
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/fluree/storage/ns/proxy-oidc:test")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Auth should succeed (not 401). The actual response depends on nameservice state.
+    assert_ne!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "RS256 storage proxy token should pass auth"
+    );
+    // NS lookup for a just-created ledger should return 200
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "NS lookup for existing ledger should return 200"
+    );
+}
+
+#[tokio::test]
+async fn oidc_rs256_storage_proxy_block_fetch() {
+    let mock_server = MockServer::start().await;
+    let issuer = "https://solo.example.com";
+    let kid = "test-kid-1";
+
+    Mock::given(method("GET"))
+        .and(path("/.well-known/jwks.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(test_jwks_json(kid)))
+        .expect(1..)
+        .mount(&mock_server)
+        .await;
+
+    let jwks_url = format!("{}/.well-known/jwks.json", mock_server.uri());
+    let (_tmp, state) = oidc_storage_proxy_state(&jwks_url, issuer).await;
+    let app = build_router(state);
+
+    // Create OIDC token with storage.all scope
+    let claims = json!({
+        "iss": issuer,
+        "sub": "peer@example.com",
+        "exp": now_secs() + 3600,
+        "iat": now_secs(),
+        "fluree.storage.all": true
+    });
+    let token = create_rs256_jwt(&claims, kid);
+
+    // POST /fluree/storage/block with a bogus address — auth should pass, but 404 on content
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/fluree/storage/block")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::from(r#"{"address":"nonexistent-address"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Auth should succeed (not 401)
+    assert_ne!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "RS256 storage proxy token should pass auth"
+    );
+    // Block not found → 404 (not 401)
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "Non-existent block should return 404 (auth passed, content not found)"
+    );
+}
+
+#[tokio::test]
+async fn oidc_storage_proxy_no_storage_scope_rejected() {
+    let mock_server = MockServer::start().await;
+    let issuer = "https://solo.example.com";
+    let kid = "test-kid-1";
+
+    Mock::given(method("GET"))
+        .and(path("/.well-known/jwks.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(test_jwks_json(kid)))
+        .expect(1..)
+        .mount(&mock_server)
+        .await;
+
+    let jwks_url = format!("{}/.well-known/jwks.json", mock_server.uri());
+    let (_tmp, state) = oidc_storage_proxy_state(&jwks_url, issuer).await;
+    let app = build_router(state);
+
+    // Create OIDC token with ONLY read scope (no storage permissions)
+    let claims = json!({
+        "iss": issuer,
+        "sub": "user@example.com",
+        "exp": now_secs() + 3600,
+        "iat": now_secs(),
+        "fluree.ledger.read.all": true
+    });
+    let token = create_rs256_jwt(&claims, kid);
+
+    // POST /fluree/storage/block → 401 (no storage permissions)
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/fluree/storage/block")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::from(r#"{"address":"any"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "Token without storage permissions should be rejected"
     );
 }

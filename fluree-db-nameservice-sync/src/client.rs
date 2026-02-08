@@ -89,6 +89,22 @@ impl HttpRemoteClient {
         }
     }
 
+    async fn remote_error_with_body(
+        context: &str,
+        url: &str,
+        resp: reqwest::Response,
+    ) -> SyncError {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        if body.trim().is_empty() {
+            SyncError::Remote(format!("{context} failed with status {status} for {url}"))
+        } else {
+            SyncError::Remote(format!(
+                "{context} failed with status {status} for {url}: {body}"
+            ))
+        }
+    }
+
     fn kind_path(kind: RefKind) -> &'static str {
         match kind {
             RefKind::CommitHead => "commit",
@@ -109,10 +125,7 @@ impl RemoteNameserviceClient for HttpRemoteClient {
                 Ok(Some(record))
             }
             404 => Ok(None),
-            status => Err(SyncError::Remote(format!(
-                "Unexpected status {} from {}",
-                status, url
-            ))),
+            _ => Err(Self::remote_error_with_body("Lookup", &url, resp).await),
         }
     }
 
@@ -121,10 +134,7 @@ impl RemoteNameserviceClient for HttpRemoteClient {
         let resp = self.add_auth(self.http.get(&url)).send().await?;
 
         if !resp.status().is_success() {
-            return Err(SyncError::Remote(format!(
-                "Snapshot failed with status {}",
-                resp.status()
-            )));
+            return Err(Self::remote_error_with_body("Snapshot", &url, resp).await);
         }
 
         let snapshot: RemoteSnapshot = resp.json().await?;
@@ -159,10 +169,7 @@ impl RemoteNameserviceClient for HttpRemoteClient {
                     actual: push_resp.actual,
                 })
             }
-            status => Err(SyncError::Remote(format!(
-                "Push failed with status {} for {}/{}",
-                status, address, kind_path
-            ))),
+            _ => Err(Self::remote_error_with_body("Push", &url, resp).await),
         }
     }
 
@@ -172,10 +179,7 @@ impl RemoteNameserviceClient for HttpRemoteClient {
         let resp = self.add_auth(self.http.post(&url)).send().await?;
 
         if !resp.status().is_success() {
-            return Err(SyncError::Remote(format!(
-                "Init failed with status {}",
-                resp.status()
-            )));
+            return Err(Self::remote_error_with_body("Init", &url, resp).await);
         }
 
         let init_resp: InitResponse = resp.json().await?;

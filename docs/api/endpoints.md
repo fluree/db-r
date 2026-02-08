@@ -2,6 +2,32 @@
 
 Complete reference for all Fluree HTTP API endpoints.
 
+## Discovery and diagnostics
+
+### GET /.well-known/fluree.json
+
+CLI auth discovery endpoint. Used by `fluree remote add` and `fluree auth login` to auto-configure authentication for a remote.
+
+See [Auth contract (CLI ↔ Server)](../design/auth-contract.md) for the full schema.
+
+Standalone `fluree-server` returns:
+
+- `{"version":1}` when no server auth is enabled
+- `{"version":1,"auth":{"type":"token"}}` when any server auth mode is enabled (data/events/admin)
+
+OIDC-capable implementations should return `auth.type="oidc_device"` plus `issuer`, `client_id`, and `exchange_url`.
+
+### GET /fluree/whoami
+
+Diagnostic endpoint for Bearer tokens. Returns a summary of the principal:
+
+- `token_present`: whether a Bearer token was present
+- `verified`: whether cryptographic verification succeeded
+- `auth_method`: `"embedded_jwk"` (Ed25519) or `"oidc"` (JWKS/RS256)
+- identity + scope summary (when verified)
+
+This endpoint is intended for debugging and operator support. See also [Admin, health, and stats](../operations/admin-and-health.md).
+
 ## Transaction Endpoints
 
 ### POST /transact

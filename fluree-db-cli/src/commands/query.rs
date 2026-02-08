@@ -69,6 +69,7 @@ pub async fn run(
         LedgerMode::Tracked {
             client,
             remote_alias,
+            remote_name,
             ..
         } => {
             if at.is_some() {
@@ -85,6 +86,8 @@ pub async fn run(
                     client.query_fql(&remote_alias, &json_query).await?
                 }
             };
+
+            context::persist_refreshed_tokens(&client, &remote_name, fluree_dir).await;
 
             // Remote queries return pre-formatted JSON from the server.
             let output_str = output::format_result(&result, output_format, query_format)?;

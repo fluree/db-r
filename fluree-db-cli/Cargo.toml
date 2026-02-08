@@ -38,8 +38,9 @@ shellexpand = "3"
 hex.workspace = true
 rand.workspace = true
 
-# Remote ledger client (track mode)
+# Remote ledger client (track mode) + OIDC discovery/exchange
 reqwest = { workspace = true }
+open = "5"
 
 # Sync command dependencies
 fluree-db-nameservice-sync = { path = "../fluree-db-nameservice-sync" }

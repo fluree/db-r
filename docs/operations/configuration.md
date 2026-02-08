@@ -136,6 +136,15 @@ fluree-server \
 
 ## Authentication Configuration
 
+### Replication vs Query Access
+
+Fluree enforces a hard boundary between **replication-scoped** and **query-scoped** access:
+
+- **Replication** (`fluree.storage.*`): Raw commit and index block transfer for peer sync and CLI `fetch`/`pull`/`push`. These operations bypass dataset policy (data must be bit-identical). Replication tokens are operator/service-account credentials — never issue them to end users.
+- **Query** (`fluree.ledger.read/write.*`): Application-level data access through the query engine with full dataset policy enforcement. Query tokens are appropriate for end users and application service accounts.
+
+A user holding only query-scoped tokens **cannot** clone or pull a ledger. They can `fluree track` a remote ledger (forwarding queries/transactions to the server) but cannot replicate its storage locally.
+
 ### Events Endpoint Authentication
 
 Protect the `/fluree/events` SSE endpoint:
@@ -151,9 +160,18 @@ Modes:
 - `optional`: Accept tokens but don't require them
 - `required`: Require valid Bearer token
 
+Supports both Ed25519 (embedded JWK) and OIDC/JWKS (RS256) tokens when the `oidc` feature is enabled and `--jwks-issuer` is configured. For OIDC tokens, issuer trust is implicit — only tokens signed by keys from configured JWKS endpoints will verify. For Ed25519 tokens, the issuer must appear in `--events-auth-trusted-issuer`.
+
 ```bash
+# Ed25519 tokens only
 fluree-server \
   --events-auth-mode required \
+  --events-auth-trusted-issuer did:key:z6Mk...
+
+# OIDC + Ed25519 (both work simultaneously)
+fluree-server \
+  --events-auth-mode required \
+  --jwks-issuer "https://auth.example.com=https://auth.example.com/.well-known/jwks.json" \
   --events-auth-trusted-issuer did:key:z6Mk...
 ```
 
@@ -227,7 +245,7 @@ export FLUREE_JWKS_ISSUERS="https://issuer1.example.com=https://issuer1.example.
 - JWKS endpoints are fetched at startup (`warm()`) but the server starts even if they're unreachable.
 - Keys are cached and refreshed when a `kid` miss occurs (rate-limited to one refresh per issuer every 10 seconds).
 - The token's `iss` claim must exactly match a configured issuer URL — unconfigured issuers are rejected immediately with a clear error.
-- Only data API endpoints (`/:ledger/query`, `/:ledger/insert`, etc.) support JWKS verification in this release. Events and storage proxy auth continue to use the existing Ed25519 path only.
+- Data API, events, admin, and storage proxy endpoints all support JWKS verification. A single `--jwks-issuer` flag enables OIDC tokens across all endpoint groups. MCP auth continues to use the existing Ed25519 path only.
 
 #### Connection-Scoped SPARQL Scope Enforcement
 
@@ -252,10 +270,18 @@ Modes:
 - `none`: No authentication (development)
 - `required`: Require valid Bearer token (production)
 
+Supports both Ed25519 (embedded JWK) and OIDC/JWKS (RS256) tokens when the `oidc` feature is enabled and `--jwks-issuer` is configured. For OIDC tokens, issuer trust is implicit — only tokens signed by keys from configured JWKS endpoints will verify. For Ed25519 tokens, the issuer must appear in `--admin-auth-trusted-issuer` or the fallback `--events-auth-trusted-issuer`.
+
 ```bash
+# Ed25519 tokens only
 fluree-server \
   --admin-auth-mode required \
   --admin-auth-trusted-issuer did:key:z6Mk...
+
+# OIDC (trust comes from --jwks-issuer, no did:key issuers needed)
+fluree-server \
+  --admin-auth-mode required \
+  --jwks-issuer "https://auth.example.com=https://auth.example.com/.well-known/jwks.json"
 ```
 
 If no admin-specific issuers are configured, falls back to `--events-auth-trusted-issuer`.
@@ -338,6 +364,8 @@ For proxy mode:
 
 ## Storage Proxy Configuration (Transaction Server)
 
+Storage proxy provides **replication-scoped** access to raw storage for peer servers and CLI replication commands (`fetch`/`pull`/`push`). Tokens must carry `fluree.storage.*` claims — query-scoped tokens (`fluree.ledger.read/write.*`) are not sufficient. See [Replication vs Query Access](#replication-vs-query-access) above.
+
 Enable storage proxy endpoints for peers without direct storage access:
 
 | Flag | Env Var | Default |
@@ -349,10 +377,18 @@ Enable storage proxy endpoints for peers without direct storage access:
 | `--storage-proxy-debug-headers` | `FLUREE_STORAGE_PROXY_DEBUG_HEADERS` | `false` |
 
 ```bash
+# Ed25519 trust (did:key):
 fluree-server \
   --storage-proxy-enabled \
   --storage-proxy-trusted-issuer did:key:z6Mk...
+
+# OIDC/JWKS trust (same --jwks-issuer flag used by other endpoints):
+fluree-server \
+  --storage-proxy-enabled \
+  --jwks-issuer "https://solo.example.com=https://solo.example.com/.well-known/jwks.json"
 ```
+
+> **JWKS support**: When `--jwks-issuer` is configured, storage proxy endpoints accept RS256 OIDC tokens in addition to Ed25519 JWS tokens. The `--jwks-issuer` flag is shared with data, admin, and events endpoints — a single flag enables OIDC across all endpoint groups.
 
 ## Complete Configuration Examples
 
@@ -392,6 +428,19 @@ fluree-server \
   --events-auth-trusted-issuer did:key:z6Mk... \
   --storage-proxy-enabled \
   --admin-auth-mode required
+```
+
+### Production with OIDC (All Endpoints)
+
+```bash
+fluree-server \
+  --storage-path /var/lib/fluree \
+  --indexing-enabled \
+  --jwks-issuer "https://auth.example.com=https://auth.example.com/.well-known/jwks.json" \
+  --data-auth-mode required \
+  --events-auth-mode required \
+  --admin-auth-mode required \
+  --storage-proxy-enabled
 ```
 
 ### Query Peer (Shared Storage)

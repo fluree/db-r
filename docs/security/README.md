@@ -1,6 +1,17 @@
 # Security and Policy
 
-Fluree provides comprehensive security features including fine-grained access control through policies and transparent encryption of data at rest.
+Fluree provides comprehensive security features including authentication, fine-grained access control through policies, and transparent encryption of data at rest.
+
+## Authentication
+
+### [Authentication](authentication.md)
+
+Fluree's authentication model, covering:
+- Identity vs transport (DIDs, signed requests, Bearer tokens)
+- Three auth modes: decentralized did:key, standalone server tokens, OIDC/OAuth2
+- Bearer token claim set and scope definitions
+- Replication vs query access boundary
+- Token verification paths (Ed25519 + OIDC/JWKS)
 
 ## Data Encryption
 

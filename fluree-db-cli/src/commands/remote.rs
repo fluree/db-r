@@ -6,7 +6,9 @@ use crate::error::{CliError, CliResult};
 use colored::Colorize;
 use comfy_table::{Cell, Table};
 use fluree_db_nameservice::RemoteName;
-use fluree_db_nameservice_sync::{RemoteAuth, RemoteConfig, RemoteEndpoint, SyncConfigStore};
+use fluree_db_nameservice_sync::{
+    RemoteAuth, RemoteAuthType, RemoteConfig, RemoteEndpoint, SyncConfigStore,
+};
 use std::fs;
 use std::path::Path;
 
@@ -27,7 +29,6 @@ async fn run_add(
     url: &str,
     token: Option<String>,
 ) -> CliResult<()> {
-    // Parse URL to ensure it's valid
     let base_url = url.trim_end_matches('/').to_string();
 
     // Load token from file if @filepath
@@ -46,10 +47,46 @@ async fn run_add(
         None => None,
     };
 
+    // Build initial auth config
+    let mut auth = RemoteAuth {
+        token: auth_token,
+        ..Default::default()
+    };
+
+    // Attempt auth discovery from /.well-known/fluree.json (non-fatal)
+    if auth.token.is_none() {
+        match discover_auth(&base_url).await {
+            Ok(Some(discovered)) => {
+                auth = discovered;
+                eprintln!(
+                    "  {} auto-discovered OIDC auth from server",
+                    "info:".cyan().bold()
+                );
+                if let Some(ref issuer) = auth.issuer {
+                    eprintln!("  Issuer: {}", issuer);
+                }
+                eprintln!(
+                    "  Run `fluree auth login --remote {}` to authenticate",
+                    name
+                );
+            }
+            Ok(None) => {
+                // No discovery endpoint or unsupported type — that's fine
+            }
+            Err(msg) => {
+                eprintln!(
+                    "  {} auth discovery failed: {}",
+                    "warn:".yellow().bold(),
+                    msg
+                );
+            }
+        }
+    }
+
     let config = RemoteConfig {
         name: RemoteName::new(name),
         endpoint: RemoteEndpoint::Http { base_url },
-        auth: RemoteAuth { token: auth_token },
+        auth,
         fetch_interval_secs: None,
     };
 
@@ -62,10 +99,83 @@ async fn run_add(
     Ok(())
 }
 
+/// Attempt to fetch `/.well-known/fluree.json` from the remote and parse
+/// OIDC auth configuration. Returns `Ok(None)` if the endpoint doesn't
+/// exist or the auth type is not supported.
+pub(crate) async fn discover_auth(base_url: &str) -> Result<Option<RemoteAuth>, String> {
+    let discovery_url = format!("{}/.well-known/fluree.json", base_url);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = match client.get(&discovery_url).send().await {
+        Ok(r) => r,
+        Err(e) if e.is_connect() || e.is_timeout() => {
+            // Server not reachable yet — perfectly normal during setup
+            return Ok(None);
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+
+    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+
+    // Parse the discovery payload
+    let auth_obj = match body.get("auth") {
+        Some(a) if a.is_object() => a,
+        _ => return Ok(None),
+    };
+
+    let auth_type_str = auth_obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+    match auth_type_str {
+        "oidc_device" => {
+            let issuer = auth_obj
+                .get("issuer")
+                .and_then(|v| v.as_str())
+                .ok_or("oidc_device discovery missing 'issuer' field")?
+                .to_string();
+
+            let client_id = auth_obj
+                .get("client_id")
+                .and_then(|v| v.as_str())
+                .ok_or("oidc_device discovery missing 'client_id' field")?
+                .to_string();
+
+            let exchange_url = auth_obj
+                .get("exchange_url")
+                .and_then(|v| v.as_str())
+                .ok_or("oidc_device discovery missing 'exchange_url' field")?
+                .to_string();
+
+            Ok(Some(RemoteAuth {
+                auth_type: Some(RemoteAuthType::OidcDevice),
+                issuer: Some(issuer),
+                client_id: Some(client_id),
+                exchange_url: Some(exchange_url),
+                ..Default::default()
+            }))
+        }
+        "token" | "" => Ok(None), // manual token mode — nothing to auto-configure
+        other => {
+            eprintln!(
+                "  {} unknown auth type '{}' in discovery — ignoring",
+                "warn:".yellow().bold(),
+                other
+            );
+            Ok(None)
+        }
+    }
+}
+
 async fn run_remove(store: &TomlSyncConfigStore, name: &str) -> CliResult<()> {
     let remote_name = RemoteName::new(name);
 
-    // Check if exists
     let existing = store
         .get_remote(&remote_name)
         .await
@@ -105,11 +215,7 @@ async fn run_list(store: &TomlSyncConfigStore) -> CliResult<()> {
             RemoteEndpoint::Sse { events_url } => format!("(sse) {}", events_url),
             RemoteEndpoint::Storage { prefix } => format!("(storage) {}", prefix),
         };
-        let auth = if remote.auth.token.is_some() {
-            "token"
-        } else {
-            "none"
-        };
+        let auth = auth_display_short(&remote.auth);
         table.add_row(vec![
             Cell::new(remote.name.as_str()),
             Cell::new(url),
@@ -147,18 +253,55 @@ async fn run_show(store: &TomlSyncConfigStore, name: &str) -> CliResult<()> {
         }
     }
 
-    println!(
-        "  Auth: {}",
-        if remote.auth.token.is_some() {
-            "token configured"
-        } else {
-            "none"
+    // Auth details
+    let auth = &remote.auth;
+    match auth.auth_type.as_ref() {
+        Some(RemoteAuthType::OidcDevice) => {
+            println!("  Auth: {}", "oidc_device".cyan());
+            if let Some(ref issuer) = auth.issuer {
+                println!("  Issuer: {}", issuer);
+            }
+            if let Some(ref client_id) = auth.client_id {
+                println!("  Client ID: {}", client_id);
+            }
+            if auth.token.is_some() {
+                println!("  Token: {}", "cached".green());
+            } else {
+                println!("  Token: {}", "not logged in".yellow());
+            }
         }
-    );
+        Some(RemoteAuthType::Token) | None => {
+            if auth.token.is_some() {
+                println!("  Auth: token configured");
+            } else {
+                println!("  Auth: none");
+            }
+        }
+    }
 
     if let Some(interval) = remote.fetch_interval_secs {
         println!("  Fetch interval: {}s", interval);
     }
 
     Ok(())
+}
+
+/// Short auth description for the list table.
+fn auth_display_short(auth: &RemoteAuth) -> &'static str {
+    match auth.auth_type.as_ref() {
+        Some(RemoteAuthType::OidcDevice) => {
+            if auth.token.is_some() {
+                "oidc (logged in)"
+            } else {
+                "oidc (not logged in)"
+            }
+        }
+        Some(RemoteAuthType::Token) | None => {
+            if auth.token.is_some() {
+                "token"
+            } else {
+                "none"
+            }
+        }
+    }
 }

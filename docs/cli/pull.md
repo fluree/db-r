@@ -21,6 +21,8 @@ Pulls changes from the configured upstream remote:
 1. Fetches the latest refs from the upstream remote
 2. Fast-forwards the local ledger to match the remote
 
+This is a **replication** operation. It requires a Bearer token with **root / storage-proxy** permissions (`fluree.storage.*`). If you only have permissioned/query access to a ledger, you should use `fluree track` (or `--remote`) and run queries/transactions against the remote instead.
+
 The ledger must have an upstream configured (see `fluree upstream set`).
 
 ## Examples

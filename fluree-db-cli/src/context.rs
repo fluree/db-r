@@ -1,10 +1,12 @@
 use crate::config::{self, TomlSyncConfigStore, TrackedLedgerConfig};
 use crate::error::{CliError, CliResult};
-use crate::remote_client::RemoteLedgerClient;
+use crate::remote_client::{RefreshConfig, RemoteLedgerClient};
 use fluree_db_api::{FileStorage, Fluree, FlureeBuilder};
 use fluree_db_nameservice::file::FileNameService;
 use fluree_db_nameservice::RemoteName;
-use fluree_db_nameservice_sync::{RemoteEndpoint, SyncConfigStore};
+use fluree_db_nameservice_sync::{
+    RemoteAuth, RemoteAuthType, RemoteConfig, RemoteEndpoint, SyncConfigStore,
+};
 use std::path::Path;
 
 /// Resolved ledger mode: either local or tracked (remote-only).
@@ -21,6 +23,8 @@ pub enum LedgerMode {
         remote_alias: String,
         /// The local alias the user used.
         local_alias: String,
+        /// The remote config name (for persisting refreshed tokens).
+        remote_name: String,
     },
 }
 
@@ -96,11 +100,12 @@ async fn build_tracked_mode(
         }
     };
 
-    let client = RemoteLedgerClient::new(&base_url, remote.auth.token.clone());
+    let client = build_client_from_auth(&base_url, &remote.auth);
     Ok(LedgerMode::Tracked {
         client,
         remote_alias: tracked.remote_alias.clone(),
         local_alias: local_alias.to_string(),
+        remote_name: tracked.remote.clone(),
     })
 }
 
@@ -128,12 +133,31 @@ pub async fn build_remote_mode(
         }
     };
 
-    let client = RemoteLedgerClient::new(&base_url, remote.auth.token.clone());
+    let client = build_client_from_auth(&base_url, &remote.auth);
     Ok(LedgerMode::Tracked {
         client,
         remote_alias: ledger_alias.to_string(),
         local_alias: ledger_alias.to_string(),
+        remote_name: remote_name_str.to_string(),
     })
+}
+
+/// Build a `RemoteLedgerClient` from auth config, wiring up refresh if available.
+fn build_client_from_auth(base_url: &str, auth: &RemoteAuth) -> RemoteLedgerClient {
+    let client = RemoteLedgerClient::new(base_url, auth.token.clone());
+
+    // Attach refresh config for OIDC remotes that have a refresh_token + exchange_url
+    if auth.auth_type.as_ref() == Some(&RemoteAuthType::OidcDevice) {
+        if let (Some(exchange_url), Some(refresh_token)) = (&auth.exchange_url, &auth.refresh_token)
+        {
+            return client.with_refresh(RefreshConfig {
+                exchange_url: exchange_url.clone(),
+                refresh_token: refresh_token.clone(),
+            });
+        }
+    }
+
+    client
 }
 
 /// Resolve which ledger to operate on.
@@ -164,5 +188,45 @@ pub fn to_ledger_address(alias: &str) -> String {
         alias.to_string()
     } else {
         format!("{alias}:main")
+    }
+}
+
+/// Persist any refreshed tokens back to config.toml after a remote operation.
+///
+/// If the client performed a silent token refresh during a 401 retry, this
+/// writes the new access_token (and optionally rotated refresh_token) back
+/// to the remote's auth section in config.toml so subsequent commands use
+/// the refreshed credentials.
+pub async fn persist_refreshed_tokens(
+    client: &RemoteLedgerClient,
+    remote_name: &str,
+    fluree_dir: &Path,
+) {
+    let refreshed = match client.take_refreshed_tokens() {
+        Some(t) => t,
+        None => return,
+    };
+
+    let store = TomlSyncConfigStore::new(fluree_dir.to_path_buf());
+    let name = RemoteName::new(remote_name);
+
+    let remote = match store.get_remote(&name).await {
+        Ok(Some(r)) => r,
+        _ => return, // Can't persist if remote config disappeared
+    };
+
+    let mut updated_auth = remote.auth.clone();
+    updated_auth.token = Some(refreshed.access_token);
+    if let Some(new_rt) = refreshed.refresh_token {
+        updated_auth.refresh_token = Some(new_rt);
+    }
+
+    let updated = RemoteConfig {
+        auth: updated_auth,
+        ..remote
+    };
+
+    if store.set_remote(&updated).await.is_err() {
+        eprintln!("  warning: failed to persist refreshed token to config");
     }
 }

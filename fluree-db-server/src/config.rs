@@ -71,6 +71,8 @@ pub struct EventsAuthConfig {
     /// DANGEROUS: Accept any valid signature regardless of issuer.
     /// Only for development/testing.
     pub insecure_accept_any_issuer: bool,
+    /// Whether JWKS issuers are configured (for validation check)
+    pub has_jwks_issuers: bool,
 }
 
 /// Configuration for data API endpoint authentication.
@@ -126,11 +128,12 @@ impl EventsAuthConfig {
     pub fn validate(&self) -> Result<(), String> {
         if self.mode == EventsAuthMode::Required
             && self.trusted_issuers.is_empty()
+            && !self.has_jwks_issuers
             && !self.insecure_accept_any_issuer
         {
             return Err(
-                "events_auth.mode=required requires --events-auth-trusted-issuer or \
-                 --events-auth-insecure-accept-any-issuer flag"
+                "events_auth.mode=required requires --events-auth-trusted-issuer, \
+                 --jwks-issuer, or --events-auth-insecure-accept-any-issuer flag"
                     .to_string(),
             );
         }
@@ -182,21 +185,26 @@ pub struct StorageProxyConfig {
     /// DANGEROUS: Accept any valid signature regardless of issuer.
     /// Only for development/testing.
     pub insecure_accept_any_issuer: bool,
+
+    /// Whether any JWKS issuers are configured (enables OIDC trust path).
+    pub has_jwks_issuers: bool,
 }
 
 impl StorageProxyConfig {
     /// Validate configuration at startup
     pub fn validate(&self, events_auth: &EventsAuthConfig) -> Result<(), String> {
         if self.enabled {
-            // Must have some trusted issuers (own or from events_auth)
+            // Must have some trusted issuers (own, from events_auth, JWKS, or insecure)
             let has_trusted = self.trusted_issuers.as_ref().is_some_and(|v| !v.is_empty())
                 || !events_auth.trusted_issuers.is_empty()
+                || self.has_jwks_issuers
                 || self.insecure_accept_any_issuer;
 
             if !has_trusted {
                 return Err(
                     "storage_proxy.enabled requires --storage-proxy-trusted-issuer, \
-                     --events-auth-trusted-issuer, or --storage-proxy-insecure-accept-any-issuer"
+                     --events-auth-trusted-issuer, --jwks-issuer, \
+                     or --storage-proxy-insecure-accept-any-issuer"
                         .to_string(),
                 );
             }
@@ -685,6 +693,7 @@ impl ServerConfig {
             audience: self.events_auth_audience.clone(),
             trusted_issuers: self.events_auth_trusted_issuers.clone(),
             insecure_accept_any_issuer: self.events_auth_insecure_accept_any_issuer,
+            has_jwks_issuers: self.has_jwks_issuers(),
         }
     }
 
@@ -753,6 +762,7 @@ impl ServerConfig {
             default_policy_class: self.storage_proxy_default_policy_class.clone(),
             emit_debug_headers: self.storage_proxy_debug_headers,
             insecure_accept_any_issuer: self.storage_proxy_insecure_accept_any_issuer,
+            has_jwks_issuers: self.has_jwks_issuers(),
         }
     }
 

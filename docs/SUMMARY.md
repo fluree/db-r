@@ -43,6 +43,7 @@
   - [Time travel](concepts/time-travel.md)
 
 - [Design](design/README.md)
+  - [Auth contract (CLI ↔ Server)](design/auth-contract.md)
   - [Nameservice schema v2](design/nameservice-schema-v2.md)
   - [Graph source index manifests](design/graph-source-index-manifests.md)
   - [Index format](design/index-format.md)
@@ -77,6 +78,7 @@
   - [Indexing side-effects](transactions/indexing-side-effects.md)
 
 - [Security and policy](security/README.md)
+  - [Authentication](security/authentication.md)
   - [Storage encryption](security/encryption.md)
   - [Commit signing and attestation](security/commit-signing.md)
   - [Policy model and inputs](security/policy-model.md)

@@ -4,27 +4,54 @@
 //! Fluree server instead of executing them locally. This is distinct from
 //! `fluree-db-nameservice-sync`'s `HttpRemoteClient`, which handles only
 //! nameservice ref-level operations (lookup, push, snapshot).
+//!
+//! When a `RefreshConfig` is provided, the client automatically attempts
+//! token refresh on 401 responses and retries the request once. Callers
+//! should check `take_refreshed_tokens()` after operations to persist any
+//! updated tokens.
 
+use parking_lot::Mutex;
 use reqwest::{Client, StatusCode};
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
+
+/// Configuration for automatic token refresh on 401.
+#[derive(Clone, Debug)]
+pub struct RefreshConfig {
+    /// Exchange endpoint URL for token refresh.
+    pub exchange_url: String,
+    /// Refresh token for silent renewal.
+    pub refresh_token: String,
+}
+
+/// New token values after a successful refresh. Callers should persist these.
+#[derive(Clone, Debug)]
+pub struct RefreshedTokens {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+}
 
 /// HTTP client for ledger data operations against a remote Fluree server.
 ///
 /// Supports query (FQL/SPARQL), insert, upsert, transact, ledger-info, and
-/// existence checks via the server's REST API.
+/// existence checks via the server's REST API. Optionally performs automatic
+/// token refresh on 401 when a `RefreshConfig` is provided.
 #[derive(Clone)]
 pub struct RemoteLedgerClient {
     client: Client,
     base_url: String,
-    auth_token: Option<String>,
+    token: Arc<Mutex<Option<String>>>,
+    refresh_config: Option<Arc<Mutex<RefreshConfig>>>,
+    refreshed: Arc<Mutex<Option<RefreshedTokens>>>,
 }
 
 impl fmt::Debug for RemoteLedgerClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RemoteLedgerClient")
             .field("base_url", &self.base_url)
-            .field("has_token", &self.auth_token.is_some())
+            .field("has_token", &self.token.lock().is_some())
+            .field("has_refresh", &self.refresh_config.is_some())
             .finish()
     }
 }
@@ -81,21 +108,34 @@ impl RemoteLedgerClient {
         Self {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
-            auth_token,
+            token: Arc::new(Mutex::new(auth_token)),
+            refresh_config: None,
+            refreshed: Arc::new(Mutex::new(None)),
         }
     }
 
+    /// Attach refresh configuration for automatic 401 retry.
+    pub fn with_refresh(mut self, config: RefreshConfig) -> Self {
+        self.refresh_config = Some(Arc::new(Mutex::new(config)));
+        self
+    }
+
+    /// Take any refreshed tokens (consuming them). Callers should persist
+    /// these back to config.toml after the operation completes.
+    pub fn take_refreshed_tokens(&self) -> Option<RefreshedTokens> {
+        self.refreshed.lock().take()
+    }
+
     fn add_auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        if let Some(ref token) = self.auth_token {
-            req.bearer_auth(token)
+        let token = self.token.lock();
+        if let Some(ref t) = *token {
+            req.bearer_auth(t)
         } else {
             req
         }
     }
 
     /// Map a non-2xx response to a `RemoteLedgerError`.
-    ///
-    /// Reads the response body as text to include in error messages.
     async fn map_error(resp: reqwest::Response) -> RemoteLedgerError {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
@@ -133,63 +173,162 @@ impl RemoteLedgerClient {
         }
     }
 
+    /// Attempt to refresh the access token using the stored refresh_token.
+    /// Returns true if refresh succeeded and the token was updated.
+    async fn try_refresh(&self) -> bool {
+        let refresh_cfg = match &self.refresh_config {
+            Some(cfg) => cfg.clone(),
+            None => return false,
+        };
+
+        let (exchange_url, refresh_token) = {
+            let cfg = refresh_cfg.lock();
+            (cfg.exchange_url.clone(), cfg.refresh_token.clone())
+        };
+
+        let body = serde_json::json!({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token
+        });
+
+        let resp = match self.client.post(&exchange_url).json(&body).send().await {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
+
+        if !resp.status().is_success() {
+            return false;
+        }
+
+        let resp_body: serde_json::Value = match resp.json().await {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+
+        let new_access = match resp_body.get("access_token").and_then(|v| v.as_str()) {
+            Some(t) => t.to_string(),
+            None => return false,
+        };
+
+        let new_refresh = resp_body
+            .get("refresh_token")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        // Update the token
+        *self.token.lock() = Some(new_access.clone());
+
+        // Update refresh_token if a new one was provided
+        if let Some(ref new_rt) = new_refresh {
+            refresh_cfg.lock().refresh_token = new_rt.clone();
+        }
+
+        // Store refreshed tokens for caller to persist
+        *self.refreshed.lock() = Some(RefreshedTokens {
+            access_token: new_access,
+            refresh_token: new_refresh,
+        });
+
+        eprintln!("  (token refreshed automatically)");
+        true
+    }
+
+    // =========================================================================
+    // Generic request execution with 401 retry
+    // =========================================================================
+
+    /// Execute a request. On 401, attempt token refresh and retry once.
+    async fn send_json(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        content_type: &str,
+        body: Option<RequestBody<'_>>,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        // First attempt
+        let resp = self
+            .build_request(method.clone(), url, content_type, &body)
+            .send()
+            .await
+            .map_err(Self::map_network_error)?;
+
+        if resp.status().is_success() {
+            return resp
+                .json()
+                .await
+                .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()));
+        }
+
+        if resp.status() == StatusCode::UNAUTHORIZED && self.try_refresh().await {
+            // Retry with refreshed token
+            let resp2 = self
+                .build_request(method, url, content_type, &body)
+                .send()
+                .await
+                .map_err(Self::map_network_error)?;
+
+            if resp2.status().is_success() {
+                return resp2
+                    .json()
+                    .await
+                    .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()));
+            }
+            return Err(Self::map_error(resp2).await);
+        }
+
+        Err(Self::map_error(resp).await)
+    }
+
+    fn build_request(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        content_type: &str,
+        body: &Option<RequestBody<'_>>,
+    ) -> reqwest::RequestBuilder {
+        let mut req = self.add_auth(self.client.request(method, url));
+        req = req.header("Content-Type", content_type);
+        match body {
+            Some(RequestBody::Json(v)) => req.json(*v),
+            Some(RequestBody::Text(s)) => req.body(s.to_string()),
+            None => req,
+        }
+    }
+
     // =========================================================================
     // Query
     // =========================================================================
 
     /// Execute an FQL (JSON-LD) query against a ledger.
-    ///
-    /// `body` is the FQL query JSON (the `"from"` field is optional since
-    /// we use the ledger-scoped endpoint).
     pub async fn query_fql(
         &self,
         ledger: &str,
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
         let url = format!("{}/{}/query", self.base_url, ledger);
-        let resp = self
-            .add_auth(self.client.post(&url))
-            .header("Content-Type", "application/json")
-            .json(body)
-            .send()
-            .await
-            .map_err(Self::map_network_error)?;
-
-        if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()))
-        } else {
-            Err(Self::map_error(resp).await)
-        }
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/json",
+            Some(RequestBody::Json(body)),
+        )
+        .await
     }
 
     /// Execute a SPARQL query against a ledger.
-    ///
-    /// The response is already-formatted JSON from the server (SPARQL results
-    /// format or construct output). CLI formatters should treat it as
-    /// pre-formatted rather than re-processing through `to_sparql_json()`.
     pub async fn query_sparql(
         &self,
         ledger: &str,
         sparql: &str,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
         let url = format!("{}/{}/query", self.base_url, ledger);
-        let resp = self
-            .add_auth(self.client.post(&url))
-            .header("Content-Type", "application/sparql-query")
-            .body(sparql.to_string())
-            .send()
-            .await
-            .map_err(Self::map_network_error)?;
-
-        if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()))
-        } else {
-            Err(Self::map_error(resp).await)
-        }
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/sparql-query",
+            Some(RequestBody::Text(sparql)),
+        )
+        .await
     }
 
     // =========================================================================
@@ -203,21 +342,13 @@ impl RemoteLedgerClient {
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
         let url = format!("{}/{}/insert", self.base_url, ledger);
-        let resp = self
-            .add_auth(self.client.post(&url))
-            .header("Content-Type", "application/json")
-            .json(body)
-            .send()
-            .await
-            .map_err(Self::map_network_error)?;
-
-        if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()))
-        } else {
-            Err(Self::map_error(resp).await)
-        }
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/json",
+            Some(RequestBody::Json(body)),
+        )
+        .await
     }
 
     /// Insert Turtle data into a ledger.
@@ -227,21 +358,13 @@ impl RemoteLedgerClient {
         turtle: &str,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
         let url = format!("{}/{}/insert", self.base_url, ledger);
-        let resp = self
-            .add_auth(self.client.post(&url))
-            .header("Content-Type", "text/turtle")
-            .body(turtle.to_string())
-            .send()
-            .await
-            .map_err(Self::map_network_error)?;
-
-        if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()))
-        } else {
-            Err(Self::map_error(resp).await)
-        }
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "text/turtle",
+            Some(RequestBody::Text(turtle)),
+        )
+        .await
     }
 
     // =========================================================================
@@ -255,21 +378,13 @@ impl RemoteLedgerClient {
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
         let url = format!("{}/{}/upsert", self.base_url, ledger);
-        let resp = self
-            .add_auth(self.client.post(&url))
-            .header("Content-Type", "application/json")
-            .json(body)
-            .send()
-            .await
-            .map_err(Self::map_network_error)?;
-
-        if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()))
-        } else {
-            Err(Self::map_error(resp).await)
-        }
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/json",
+            Some(RequestBody::Json(body)),
+        )
+        .await
     }
 
     /// Upsert Turtle data into a ledger.
@@ -279,21 +394,13 @@ impl RemoteLedgerClient {
         turtle: &str,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
         let url = format!("{}/{}/upsert", self.base_url, ledger);
-        let resp = self
-            .add_auth(self.client.post(&url))
-            .header("Content-Type", "text/turtle")
-            .body(turtle.to_string())
-            .send()
-            .await
-            .map_err(Self::map_network_error)?;
-
-        if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()))
-        } else {
-            Err(Self::map_error(resp).await)
-        }
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "text/turtle",
+            Some(RequestBody::Text(turtle)),
+        )
+        .await
     }
 
     // =========================================================================
@@ -310,21 +417,13 @@ impl RemoteLedgerClient {
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
         let url = format!("{}/{}/transact", self.base_url, ledger);
-        let resp = self
-            .add_auth(self.client.post(&url))
-            .header("Content-Type", "application/json")
-            .json(body)
-            .send()
-            .await
-            .map_err(Self::map_network_error)?;
-
-        if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()))
-        } else {
-            Err(Self::map_error(resp).await)
-        }
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/json",
+            Some(RequestBody::Json(body)),
+        )
+        .await
     }
 
     // Kept for: `fluree transact` CLI command (SPARQL UPDATE support).
@@ -337,21 +436,13 @@ impl RemoteLedgerClient {
         sparql: &str,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
         let url = format!("{}/{}/transact", self.base_url, ledger);
-        let resp = self
-            .add_auth(self.client.post(&url))
-            .header("Content-Type", "application/sparql-update")
-            .body(sparql.to_string())
-            .send()
-            .await
-            .map_err(Self::map_network_error)?;
-
-        if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()))
-        } else {
-            Err(Self::map_error(resp).await)
-        }
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/sparql-update",
+            Some(RequestBody::Text(sparql)),
+        )
+        .await
     }
 
     // =========================================================================
@@ -361,26 +452,16 @@ impl RemoteLedgerClient {
     /// Get ledger info from the remote server.
     pub async fn ledger_info(&self, ledger: &str) -> Result<serde_json::Value, RemoteLedgerError> {
         let url = format!("{}/fluree/ledger-info?ledger={}", self.base_url, ledger);
-        let resp = self
-            .add_auth(self.client.get(&url))
-            .send()
+        self.send_json(reqwest::Method::GET, &url, "application/json", None)
             .await
-            .map_err(Self::map_network_error)?;
-
-        if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()))
-        } else {
-            Err(Self::map_error(resp).await)
-        }
     }
 
     /// Check if a ledger exists on the remote server.
     pub async fn ledger_exists(&self, ledger: &str) -> Result<bool, RemoteLedgerError> {
         let url = format!("{}/fluree/exists?ledger={}", self.base_url, ledger);
+
         let resp = self
-            .add_auth(self.client.get(&url))
+            .build_request(reqwest::Method::GET, &url, "application/json", &None)
             .send()
             .await
             .map_err(Self::map_network_error)?;
@@ -395,12 +476,39 @@ impl RemoteLedgerClient {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false))
         } else if resp.status() == StatusCode::NOT_FOUND {
-            // 404 could mean "ledger doesn't exist" or "unauthorized" (no existence leak)
             Ok(false)
+        } else if resp.status() == StatusCode::UNAUTHORIZED && self.try_refresh().await {
+            // Retry after refresh
+            let resp2 = self
+                .build_request(reqwest::Method::GET, &url, "application/json", &None)
+                .send()
+                .await
+                .map_err(Self::map_network_error)?;
+
+            if resp2.status().is_success() {
+                let body: serde_json::Value = resp2
+                    .json()
+                    .await
+                    .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()))?;
+                Ok(body
+                    .get("exists")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false))
+            } else if resp2.status() == StatusCode::NOT_FOUND {
+                Ok(false)
+            } else {
+                Err(Self::map_error(resp2).await)
+            }
         } else {
             Err(Self::map_error(resp).await)
         }
     }
+}
+
+/// Request body variants for the generic send method.
+enum RequestBody<'a> {
+    Json(&'a serde_json::Value),
+    Text(&'a str),
 }
 
 #[cfg(test)]
@@ -431,5 +539,16 @@ mod tests {
 
         let err = RemoteLedgerError::BadRequest("invalid query syntax".to_string());
         assert_eq!(format!("{err}"), "bad request: invalid query syntax");
+    }
+
+    #[test]
+    fn test_with_refresh_config() {
+        let client = RemoteLedgerClient::new("http://localhost:8090", Some("token".to_string()))
+            .with_refresh(RefreshConfig {
+                exchange_url: "http://localhost:8090/auth/exchange".to_string(),
+                refresh_token: "rt_123".to_string(),
+            });
+        let debug = format!("{:?}", client);
+        assert!(debug.contains("has_refresh: true"));
     }
 }

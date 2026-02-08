@@ -219,5 +219,6 @@ The `--all` flag sets events, storage, read, and write access for all ledgers.
 
 - [auth](auth.md) - Store/manage tokens on remotes
 - [remote](remote.md) - Configure remote servers
+- [Authentication](../security/authentication.md) - Auth model, modes, and token claims
 - [fetch](fetch.md) - Fetch from remotes (requires auth token)
 - [push](push.md) - Push to remotes (requires auth token)

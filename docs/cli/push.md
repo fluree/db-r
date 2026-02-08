@@ -20,6 +20,8 @@ Pushes local commits to the configured upstream remote. The ledger must have an 
 
 The push uses compare-and-set (CAS) semantics - it will be rejected if the remote has commits that you don't have locally. In that case, you need to `pull` first.
 
+This is a **replication** operation. It requires a Bearer token with **root / storage-proxy** permissions (`fluree.storage.*`). If you only have permissioned/query access to a ledger, you should use `fluree track` (or `--remote`) and run queries/transactions against the remote instead.
+
 ## Examples
 
 ```bash

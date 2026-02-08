@@ -348,10 +348,44 @@ impl TomlSyncConfigStore {
                 }
             }
 
-            if let Some(token) = &remote.auth.token {
-                let mut auth = Table::new();
-                auth.insert("token", Value::from(token.as_str()).into());
-                table.insert("auth", Item::Table(auth));
+            // Build [remotes.auth] sub-table with all populated fields
+            {
+                use fluree_db_nameservice_sync::RemoteAuthType;
+
+                let auth = &remote.auth;
+                let has_any = auth.auth_type.is_some()
+                    || auth.token.is_some()
+                    || auth.issuer.is_some()
+                    || auth.client_id.is_some()
+                    || auth.exchange_url.is_some()
+                    || auth.refresh_token.is_some();
+
+                if has_any {
+                    let mut auth_table = Table::new();
+                    if let Some(ref at) = auth.auth_type {
+                        let type_str = match at {
+                            RemoteAuthType::Token => "token",
+                            RemoteAuthType::OidcDevice => "oidc_device",
+                        };
+                        auth_table.insert("type", Value::from(type_str).into());
+                    }
+                    if let Some(ref v) = auth.token {
+                        auth_table.insert("token", Value::from(v.as_str()).into());
+                    }
+                    if let Some(ref v) = auth.issuer {
+                        auth_table.insert("issuer", Value::from(v.as_str()).into());
+                    }
+                    if let Some(ref v) = auth.client_id {
+                        auth_table.insert("client_id", Value::from(v.as_str()).into());
+                    }
+                    if let Some(ref v) = auth.exchange_url {
+                        auth_table.insert("exchange_url", Value::from(v.as_str()).into());
+                    }
+                    if let Some(ref v) = auth.refresh_token {
+                        auth_table.insert("refresh_token", Value::from(v.as_str()).into());
+                    }
+                    table.insert("auth", Item::Table(auth_table));
+                }
             }
 
             if let Some(interval) = remote.fetch_interval_secs {
