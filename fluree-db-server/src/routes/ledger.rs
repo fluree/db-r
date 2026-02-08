@@ -345,10 +345,11 @@ pub async fn info(
     //
     // By default we return the optimized base payload. Callers can opt into
     // heavier/real-time property details via query params.
+    let realtime_details = query.realtime_property_details.unwrap_or(false);
     let opts = fluree_db_api::ledger_info::LedgerInfoOptions {
-        realtime_property_details: query.realtime_property_details.unwrap_or(false),
+        realtime_property_details: realtime_details,
         include_property_datatypes: query.include_property_datatypes.unwrap_or(false)
-            || query.realtime_property_details.unwrap_or(false),
+            || realtime_details,
     };
     let mut info =
         fluree_db_api::ledger_info::build_ledger_info_with_options(&ledger_state, None, opts)

@@ -1574,13 +1574,14 @@ The `stats` section mixes **real-time** values (indexed + novelty deltas) with v
   - `stats.properties[*].datatypes` is real-time **only when** `with_realtime_property_details(true)` is used
   - `stats.classes[*].count`
   - `stats.classes[*].property-list` and `stats.classes[*].properties` (property presence)
+  - `stats.classes[*].properties[*].refs` is real-time **only when** `with_realtime_property_details(true)` is used
 
 - **As-of last index**:
   - `stats.indexed` (the index \(t\))
   - `stats.properties[*].ndv-values`, `stats.properties[*].ndv-subjects`
   - `stats.properties[*].datatypes` (when included via `with_property_datatypes(true)`) is as-of last index unless `with_realtime_property_details(true)` is used
   - Any selectivity derived from NDV values
-  - `stats.classes[*].properties[*].refs` (ref target class counts), which are computed during indexing
+  - `stats.classes[*].properties[*].refs` (ref target class counts), which are computed during indexing unless `with_realtime_property_details(true)` is used
 
 ## Nameservice Query API
 

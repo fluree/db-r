@@ -16,16 +16,18 @@ use fluree_db_core::alias as core_alias;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::value_id::ValueTypeTag;
 use fluree_db_core::{
+    is_rdf_type, ClassPropertyUsage, ClassRefCount, Db, FlakeValue, OverlayProvider, Sid, Storage,
+};
+use fluree_db_core::{
     ClassStatEntry, GraphPropertyStatEntry, GraphStatsEntry, IndexSchema, IndexStats,
     PropertyStatEntry, SchemaPredicateInfo,
 };
-use fluree_db_core::{Sid, Storage};
 use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{parse_address, GraphSourceRecord, NsRecord};
 use fluree_db_novelty::{load_commit, Novelty};
 use fluree_graph_json_ld::ParsedContext;
 use serde_json::{json, Map, Value as JsonValue};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Options controlling `ledger-info` stats detail and freshness.
 ///
@@ -71,6 +73,9 @@ pub enum LedgerInfoError {
 
     #[error("Unknown namespace code: {0}")]
     UnknownNamespace(u16),
+
+    #[error("Class lookup failed: {0}")]
+    ClassLookup(String),
 }
 
 /// Result type for ledger info operations
@@ -140,6 +145,17 @@ where
     // breakdowns, but does not adjust datatype counts for novelty by default.
     if options.realtime_property_details && options.include_property_datatypes {
         merge_property_datatypes_from_novelty(&mut stats, &ledger.novelty);
+    }
+
+    // Optional: real-time “details” (merge novelty ref-edge deltas).
+    if options.realtime_property_details {
+        merge_class_ref_edges_from_novelty(
+            &ledger.db,
+            ledger.novelty.as_ref(),
+            ledger.t(),
+            &mut stats,
+        )
+        .await?;
     }
 
     // Pre-index fallback: if no graph stats from index, try loading the pre-index manifest
@@ -277,6 +293,172 @@ fn merge_property_datatypes_from_novelty(stats: &mut IndexStats, novelty: &Novel
         out.sort_by(|a, b| a.0.cmp(&b.0));
         entry.datatypes = out;
     }
+}
+
+/// Merge novelty deltas into class-scoped ref-edge counts.
+///
+/// Updates `IndexStats.classes[*].properties[*].ref_classes` by applying deltas from
+/// ref-valued novelty flakes, attributed using the *current* (novelty-aware) rdf:type
+/// of both the subject and the referenced object.
+///
+/// Notes:
+/// - This is intentionally *on-demand*; it can be more expensive than the base payload.
+/// - This currently accounts for **ref assertions/retractions in novelty**. It does not
+///   attempt to reattribute *indexed* ref edges when only rdf:type changes in novelty.
+async fn merge_class_ref_edges_from_novelty<S: Storage>(
+    db: &Db<S>,
+    novelty: &Novelty,
+    to_t: i64,
+    stats: &mut IndexStats,
+) -> Result<()> {
+    if novelty.is_empty() {
+        return Ok(());
+    }
+
+    // Collect ref flakes from novelty (subject, predicate, object, delta) and the set of
+    // subjects/objects we need rdf:type for.
+    let mut subj_set: HashSet<Sid> = HashSet::new();
+    let mut obj_set: HashSet<Sid> = HashSet::new();
+    let mut events: Vec<(Sid, Sid, Sid, i64)> = Vec::new();
+
+    for flake_id in novelty.iter_index(IndexType::Post) {
+        let flake = novelty.get_flake(flake_id);
+
+        // Skip rdf:type itself (not an “edge property”).
+        if is_rdf_type(&flake.p) {
+            continue;
+        }
+
+        let FlakeValue::Ref(obj_sid) = &flake.o else {
+            continue;
+        };
+
+        let delta = if flake.op { 1i64 } else { -1i64 };
+        events.push((flake.s.clone(), flake.p.clone(), obj_sid.clone(), delta));
+        subj_set.insert(flake.s.clone());
+        obj_set.insert(obj_sid.clone());
+    }
+
+    if events.is_empty() {
+        return Ok(());
+    }
+
+    let overlay: &dyn OverlayProvider = novelty;
+
+    // Look up current classes for all involved subjects/objects (novelty-aware).
+    let mut subjects: Vec<Sid> = subj_set.into_iter().collect();
+    subjects.sort();
+    let mut objects: Vec<Sid> = obj_set.into_iter().collect();
+    objects.sort();
+
+    let subj_classes = fluree_db_policy::lookup_subject_classes(&subjects, db, overlay, to_t)
+        .await
+        .map_err(|e| LedgerInfoError::ClassLookup(e.to_string()))?;
+
+    let obj_classes = fluree_db_policy::lookup_subject_classes(&objects, db, overlay, to_t)
+        .await
+        .map_err(|e| LedgerInfoError::ClassLookup(e.to_string()))?;
+
+    // Aggregate deltas: subject_class -> predicate -> object_class -> delta
+    let mut deltas: HashMap<Sid, HashMap<Sid, HashMap<Sid, i64>>> = HashMap::new();
+    for (s, p, o, delta) in events {
+        let Some(s_classes) = subj_classes.get(&s) else {
+            continue;
+        };
+        let Some(o_classes) = obj_classes.get(&o) else {
+            continue;
+        };
+
+        for sc in s_classes {
+            for oc in o_classes {
+                *deltas
+                    .entry(sc.clone())
+                    .or_default()
+                    .entry(p.clone())
+                    .or_default()
+                    .entry(oc.clone())
+                    .or_insert(0) += delta;
+            }
+        }
+    }
+
+    if deltas.is_empty() {
+        return Ok(());
+    }
+
+    let classes = stats.classes.get_or_insert_with(Vec::new);
+
+    // Index class entries by SID for quick upsert.
+    let mut class_idx: HashMap<Sid, usize> = HashMap::with_capacity(classes.len());
+    for (i, c) in classes.iter().enumerate() {
+        class_idx.insert(c.class_sid.clone(), i);
+    }
+
+    for (class_sid, prop_map) in deltas {
+        let idx = match class_idx.get(&class_sid).copied() {
+            Some(i) => i,
+            None => {
+                classes.push(ClassStatEntry {
+                    class_sid: class_sid.clone(),
+                    count: 0,
+                    properties: Vec::new(),
+                });
+                let i = classes.len() - 1;
+                class_idx.insert(class_sid.clone(), i);
+                i
+            }
+        };
+
+        let class_entry = &mut classes[idx];
+
+        for (prop_sid, target_map) in prop_map {
+            // Find or insert property usage.
+            let pidx = class_entry
+                .properties
+                .iter()
+                .position(|u| u.property_sid == prop_sid)
+                .unwrap_or_else(|| {
+                    class_entry.properties.push(ClassPropertyUsage {
+                        property_sid: prop_sid.clone(),
+                        ref_classes: Vec::new(),
+                    });
+                    class_entry.properties.len() - 1
+                });
+
+            let usage = &mut class_entry.properties[pidx];
+
+            // Merge deltas into existing ref_classes.
+            let mut merged: HashMap<Sid, i64> = usage
+                .ref_classes
+                .iter()
+                .map(|rc| (rc.class_sid.clone(), rc.count as i64))
+                .collect();
+
+            for (target_class, delta) in target_map {
+                *merged.entry(target_class).or_insert(0) += delta;
+            }
+
+            let mut out: Vec<ClassRefCount> = merged
+                .into_iter()
+                .filter_map(|(sid, count)| {
+                    (count > 0).then_some(ClassRefCount {
+                        class_sid: sid,
+                        count: count as u64,
+                    })
+                })
+                .collect();
+            out.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
+            usage.ref_classes = out;
+        }
+
+        // Keep deterministic ordering.
+        class_entry
+            .properties
+            .sort_by(|a, b| a.property_sid.cmp(&b.property_sid));
+    }
+
+    classes.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
+    Ok(())
 }
 
 /// Build commit JSON-LD in Clojure parity format.
@@ -902,8 +1084,9 @@ where
 
     /// When enabled, make property “details” real-time (novelty-aware).
     ///
-    /// Currently this merges novelty datatype deltas into top-level property datatype
-    /// counts and includes `datatypes` under `stats.properties[*]`.
+    /// This enables the heavier, novelty-aware details used by UIs/optimizers:
+    /// - merges novelty datatype deltas into `stats.properties[*].datatypes`
+    /// - merges novelty ref-edge deltas into `stats.classes[*].properties[*].refs`
     pub fn with_realtime_property_details(mut self, enabled: bool) -> Self {
         self.options.realtime_property_details = enabled;
         // If you want real-time property details, include the datatype payload.

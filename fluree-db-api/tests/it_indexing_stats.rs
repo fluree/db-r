@@ -865,6 +865,111 @@ async fn ledger_info_property_datatypes_option_merges_novelty() {
         .await;
 }
 
+#[tokio::test]
+async fn ledger_info_realtime_edges_merge_novelty_ref_counts() {
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path = tmp.path().to_string_lossy().to_string();
+
+    let mut fluree = FlureeBuilder::file(path)
+        .build()
+        .expect("build file fluree");
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        fluree.nameservice().clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+    fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));
+
+    local
+        .run_until(async move {
+            let alias = "test/ledger-info-edges:main";
+            let ledger0 = genesis_ledger_for_fluree(&fluree, alias);
+
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            // 1) Seed and index a single Person -> Organization edge.
+            let txn1 = json!({
+                "@context": { "ex": "http://example.org/" },
+                "@graph": [
+                    {"@id":"ex:acme","@type":"ex:Organization","ex:name":"Acme"},
+                    {"@id":"ex:alice","@type":"ex:Person","ex:worksFor":{"@id":"ex:acme"}}
+                ]
+            });
+            let result1 = fluree
+                .insert_with_opts(
+                    ledger0,
+                    &txn1,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("insert txn1");
+            let _ = trigger_index_and_wait_outcome(
+                &handle,
+                result1.ledger.ledger_address(),
+                result1.receipt.t,
+            )
+            .await;
+
+            // 2) Add a second edge in novelty (do NOT index).
+            let ledger1 = fluree
+                .ledger(alias)
+                .await
+                .expect("reload ledger after indexing");
+            let txn2 = json!({
+                "@context": { "ex": "http://example.org/" },
+                "@graph": [
+                    {"@id":"ex:bob","@type":"ex:Person","ex:worksFor":{"@id":"ex:acme"}}
+                ]
+            });
+            let _result2 = fluree
+                .insert(ledger1, &txn2)
+                .await
+                .expect("insert txn2 (novelty)");
+
+            // 3) Base payload: edges are as-of last index (should still be 1).
+            let base_info = fluree
+                .ledger_info(alias)
+                .execute()
+                .await
+                .expect("ledger_info base");
+
+            let base_refs = base_info["stats"]["classes"]["http://example.org/Person"]
+                ["properties"]["http://example.org/worksFor"]["refs"]
+                .as_object()
+                .expect("expected refs map in base payload");
+            assert_eq!(
+                base_refs.get("http://example.org/Organization"),
+                Some(&json!(1)),
+                "base payload should report indexed edge count only"
+            );
+
+            // 4) Real-time edges: merge novelty ref deltas (should be 2).
+            let rt_info = fluree
+                .ledger_info(alias)
+                .with_realtime_property_details(true)
+                .execute()
+                .await
+                .expect("ledger_info realtime edges");
+
+            let rt_refs = rt_info["stats"]["classes"]["http://example.org/Person"]["properties"]
+                ["http://example.org/worksFor"]["refs"]
+                .as_object()
+                .expect("expected refs map in realtime payload");
+            assert_eq!(
+                rt_refs.get("http://example.org/Organization"),
+                Some(&json!(2)),
+                "realtime payload should include novelty edge count"
+            );
+        })
+        .await;
+}
+
 // ============================================================================
 // Additional statistics parity tests
 // ============================================================================
