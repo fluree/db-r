@@ -1011,7 +1011,14 @@ fn auth_login_with_token_stores_and_status_shows() {
 
     // Login with a manual token
     fluree_cmd(&tmp)
-        .args(["auth", "login", "--remote", "origin", "--token", "my-test-token-123"])
+        .args([
+            "auth",
+            "login",
+            "--remote",
+            "origin",
+            "--token",
+            "my-test-token-123",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("Token stored for remote"));
@@ -1146,7 +1153,14 @@ fn auth_login_discovery_fallback_unreachable_server() {
     // then fall back to manual token prompt. Since we can't provide
     // interactive input, pipe token via stdin using @-
     fluree_cmd(&tmp)
-        .args(["auth", "login", "--remote", "origin", "--token", "fallback-token"])
+        .args([
+            "auth",
+            "login",
+            "--remote",
+            "origin",
+            "--token",
+            "fallback-token",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("Token stored"));

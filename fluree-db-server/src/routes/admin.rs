@@ -149,9 +149,9 @@ fn verify_embedded_jwk_for_whoami(
     let jws_verified = fluree_db_credential::verify_jws(token)
         .map_err(|e| crate::error::ServerError::unauthorized(format!("Invalid token: {e}")))?;
 
-    let payload: EventsTokenPayload = serde_json::from_str(&jws_verified.payload).map_err(
-        |e| crate::error::ServerError::unauthorized(format!("Invalid token claims: {e}")),
-    )?;
+    let payload: EventsTokenPayload = serde_json::from_str(&jws_verified.payload).map_err(|e| {
+        crate::error::ServerError::unauthorized(format!("Invalid token claims: {e}"))
+    })?;
 
     Ok(WhoAmIVerified {
         payload,

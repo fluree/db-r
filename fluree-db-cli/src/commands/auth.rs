@@ -263,11 +263,7 @@ async fn try_discover_and_login(
             Ok(false)
         }
         Err(msg) => {
-            eprintln!(
-                "  {} discovery failed: {}",
-                "warn:".yellow().bold(),
-                msg
-            );
+            eprintln!("  {} discovery failed: {}", "warn:".yellow().bold(), msg);
             Ok(false)
         }
     }

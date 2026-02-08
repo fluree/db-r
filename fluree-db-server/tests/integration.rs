@@ -926,7 +926,10 @@ async fn discovery_no_auth_omits_auth_block() {
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["version"], 1);
-    assert!(json.get("auth").is_none(), "no auth block when all modes are None");
+    assert!(
+        json.get("auth").is_none(),
+        "no auth block when all modes are None"
+    );
 }
 
 #[tokio::test]
