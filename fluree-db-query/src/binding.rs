@@ -534,6 +534,35 @@ impl Binding {
     }
 }
 
+/// Compute the Effective Boolean Value (EBV) of a Binding.
+///
+/// EBV is used in SPARQL FILTER and conditional expressions.
+/// See: <https://www.w3.org/TR/sparql11-query/#ebv>
+///
+/// - Bound values (Sid, IriMatch, Iri, Lit, Encoded*) are truthy
+/// - Lit with Boolean(false) is falsy
+/// - Unbound and Poisoned are falsy
+/// - Grouped is falsy (should not appear in filter evaluation)
+impl From<&Binding> for bool {
+    fn from(binding: &Binding) -> bool {
+        match binding {
+            Binding::Lit {
+                val: FlakeValue::Boolean(b),
+                ..
+            } => *b,
+            Binding::Lit { .. } => true,
+            Binding::EncodedLit { .. } => true,
+            Binding::Sid(_) => true,
+            Binding::IriMatch { .. } => true,
+            Binding::Iri(_) => true,
+            Binding::EncodedSid { .. } => true,
+            Binding::EncodedPid { .. } => true,
+            Binding::Unbound | Binding::Poisoned => false,
+            Binding::Grouped(_) => false,
+        }
+    }
+}
+
 impl PartialEq for Binding {
     /// Equality for bindings - used for joins, DISTINCT, GROUP BY, etc.
     ///

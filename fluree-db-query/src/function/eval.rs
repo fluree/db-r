@@ -1,76 +1,20 @@
 //! Core filter expression evaluation
 //!
 //! This module provides the main evaluation functions:
-//! - `evaluate()` / `evaluate_with_context()` - evaluate to boolean
-//! - `evaluate_to_binding*()` - evaluate to Binding for BIND operator
-//! - `eval_to_comparable*()` - evaluate to ComparableValue
+//! - `evaluate()` - evaluate to boolean
+//! - `Expression::eval_to_binding*()` - evaluate to Binding for BIND operator
+//! - `Expression::eval_to_comparable()` - evaluate to ComparableValue
 
 use crate::binding::{Binding, RowView};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::{Expression, FilterValue, Function};
-use fluree_db_core::{FlakeValue, Storage};
+use fluree_db_core::Storage;
 use std::sync::Arc;
 
 use super::compare::compare_values;
 use super::helpers::has_unbound_vars;
 use super::value::ComparableValue;
-
-// =============================================================================
-// Public API: evaluate_to_binding
-// =============================================================================
-
-/// Evaluate a filter expression and return a Binding value.
-///
-/// This is used by BIND operator to compute values for binding to variables.
-/// Returns `Binding::Unbound` on evaluation errors (type mismatches, unbound vars, etc.)
-/// rather than `Binding::Poisoned` - Poisoned is reserved for OPTIONAL semantics.
-///
-/// The `ctx` parameter provides access to the execution context for resolving
-/// `Binding::EncodedLit` values (late materialization).
-pub fn evaluate_to_binding<S: Storage>(
-    expr: &Expression,
-    row: &RowView,
-    ctx: Option<&ExecutionContext<'_, S>>,
-) -> Binding {
-    match evaluate_to_binding_strict(expr, row, ctx) {
-        Ok(binding) => binding,
-        Err(_) => Binding::Unbound,
-    }
-}
-
-/// Evaluate to binding with strict error handling.
-///
-/// Unlike [`evaluate_to_binding`], this returns errors rather than converting
-/// them to `Binding::Unbound`.
-pub fn evaluate_to_binding_strict<S: Storage>(
-    expr: &Expression,
-    row: &RowView,
-    ctx: Option<&ExecutionContext<'_, S>>,
-) -> Result<Binding> {
-    let comparable = match expr.eval_to_comparable(row, ctx) {
-        Ok(Some(val)) => val,
-        Ok(None) => {
-            if has_unbound_vars(expr, row) {
-                return Ok(Binding::Unbound);
-            }
-            // cosineSimilarity returns None for zero-magnitude vectors
-            // (mathematically undefined). Treat as Unbound.
-            if matches!(
-                expr,
-                Expression::Call { func: Function::CosineSimilarity, .. }
-            ) {
-                return Ok(Binding::Unbound);
-            }
-            return Err(QueryError::InvalidFilter(format!(
-                "bind evaluation failed for expression: {:?}",
-                expr
-            )));
-        }
-        Err(err) => return Err(err),
-    };
-    comparable.to_binding(ctx)
-}
 
 // =============================================================================
 // Public API: evaluate (boolean)
@@ -90,26 +34,7 @@ pub fn evaluate<S: Storage>(
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<bool> {
     match expr {
-        Expression::Var(var) => {
-            // Var as boolean: check if bound and truthy
-            match row.get(*var) {
-                Some(Binding::Lit { val, .. }) => match val {
-                    FlakeValue::Boolean(b) => Ok(*b),
-                    _ => Ok(true), // Non-bool literal is truthy
-                },
-                Some(Binding::EncodedLit { .. }) => Ok(true), // Encoded literal is truthy
-                Some(Binding::Sid(_)) => Ok(true),
-                Some(Binding::IriMatch { .. }) => Ok(true),
-                Some(Binding::Iri(_)) => Ok(true),
-                Some(Binding::EncodedSid { .. }) => Ok(true),
-                Some(Binding::EncodedPid { .. }) => Ok(true),
-                Some(Binding::Unbound) | Some(Binding::Poisoned) | None => Ok(false),
-                Some(Binding::Grouped(_)) => {
-                    debug_assert!(false, "Grouped binding in filter evaluation");
-                    Ok(false)
-                }
-            }
-        }
+        Expression::Var(var) => Ok(row.get(*var).is_some_and(Into::into)),
 
         Expression::Const(val) => {
             // Constant as boolean
@@ -325,6 +250,58 @@ impl Expression {
             Expression::Call { func, args } => func.eval(args, row, ctx),
         }
     }
+
+    /// Evaluate expression and return a Binding value.
+    ///
+    /// This is used by BIND operator to compute values for binding to variables.
+    /// Returns `Binding::Unbound` on evaluation errors (type mismatches, unbound vars, etc.)
+    /// rather than `Binding::Poisoned` - Poisoned is reserved for OPTIONAL semantics.
+    ///
+    /// The `ctx` parameter provides access to the execution context for resolving
+    /// `Binding::EncodedLit` values (late materialization).
+    pub fn eval_to_binding<S: Storage>(
+        &self,
+        row: &RowView,
+        ctx: Option<&ExecutionContext<'_, S>>,
+    ) -> Binding {
+        match self.eval_to_binding_strict(row, ctx) {
+            Ok(binding) => binding,
+            Err(_) => Binding::Unbound,
+        }
+    }
+
+    /// Evaluate to binding with strict error handling.
+    ///
+    /// Unlike [`eval_to_binding`], this returns errors rather than converting
+    /// them to `Binding::Unbound`.
+    pub fn eval_to_binding_strict<S: Storage>(
+        &self,
+        row: &RowView,
+        ctx: Option<&ExecutionContext<'_, S>>,
+    ) -> Result<Binding> {
+        let comparable = match self.eval_to_comparable(row, ctx) {
+            Ok(Some(val)) => val,
+            Ok(None) => {
+                if has_unbound_vars(self, row) {
+                    return Ok(Binding::Unbound);
+                }
+                // cosineSimilarity returns None for zero-magnitude vectors
+                // (mathematically undefined). Treat as Unbound.
+                if matches!(
+                    self,
+                    Expression::Call { func: Function::CosineSimilarity, .. }
+                ) {
+                    return Ok(Binding::Unbound);
+                }
+                return Err(QueryError::InvalidFilter(format!(
+                    "bind evaluation failed for expression: {:?}",
+                    self
+                )));
+            }
+            Err(err) => return Err(err),
+        };
+        comparable.to_binding(ctx)
+    }
 }
 
 #[cfg(test)]
@@ -333,7 +310,7 @@ mod tests {
     use crate::binding::Batch;
     use crate::ir::CompareOp;
     use crate::var_registry::VarId;
-    use fluree_db_core::{MemoryStorage, Sid};
+    use fluree_db_core::{FlakeValue, MemoryStorage, Sid};
 
     fn make_test_batch() -> Batch {
         let schema: Arc<[crate::var_registry::VarId]> =

@@ -32,5 +32,5 @@ mod value;
 mod vector;
 
 // Re-export public API
-pub use eval::{evaluate, evaluate_to_binding, evaluate_to_binding_strict};
+pub use eval::evaluate;
 pub use value::{ArithmeticError, ComparableValue, NullValueError};
