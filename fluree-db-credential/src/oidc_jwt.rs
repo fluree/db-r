@@ -92,8 +92,8 @@ pub fn verify_jwt(
         .map_err(|e| CredentialError::InvalidJwsHeader(e.to_string()))?;
 
     // Decode and verify signature
-    let token_data: TokenData<serde_json::Value> = decode(token, key, &validation).map_err(
-        |e| match e.kind() {
+    let token_data: TokenData<serde_json::Value> =
+        decode(token, key, &validation).map_err(|e| match e.kind() {
             jsonwebtoken::errors::ErrorKind::InvalidSignature => {
                 CredentialError::InvalidSignature("JWT signature verification failed".to_string())
             }
@@ -107,8 +107,7 @@ pub fn verify_jwt(
                 ))
             }
             _ => CredentialError::JwtError(e.to_string()),
-        },
-    )?;
+        })?;
 
     // Extract issuer from verified claims
     let issuer = token_data
@@ -254,10 +253,7 @@ mod tests {
             &[Algorithm::RS256],
             "https://solo.example.com",
         );
-        assert!(
-            result.is_err(),
-            "should reject token with wrong issuer"
-        );
+        assert!(result.is_err(), "should reject token with wrong issuer");
         let err = result.unwrap_err();
         assert!(
             matches!(err, CredentialError::InvalidJwsHeader(_)),

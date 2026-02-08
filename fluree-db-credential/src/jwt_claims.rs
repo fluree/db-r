@@ -822,11 +822,7 @@ mod tests {
         payload.aud = Some(vec!["fluree-server".to_string()]);
 
         assert!(payload
-            .validate_oidc(
-                Some("fluree-server"),
-                "https://solo.example.com",
-                false
-            )
+            .validate_oidc(Some("fluree-server"), "https://solo.example.com", false)
             .is_ok());
     }
 
@@ -834,15 +830,9 @@ mod tests {
     fn test_validate_oidc_audience_missing_when_expected() {
         let payload = oidc_payload("https://solo.example.com");
         // payload.aud is None but we expect "fluree-server"
-        let result = payload.validate_oidc(
-            Some("fluree-server"),
-            "https://solo.example.com",
-            false,
-        );
-        assert!(matches!(
-            result,
-            Err(ClaimsError::AudienceMismatch { .. })
-        ));
+        let result =
+            payload.validate_oidc(Some("fluree-server"), "https://solo.example.com", false);
+        assert!(matches!(result, Err(ClaimsError::AudienceMismatch { .. })));
     }
 
     #[test]

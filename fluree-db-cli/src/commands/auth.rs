@@ -85,10 +85,7 @@ async fn run_status(store: &TomlSyncConfigStore, remote: Option<&str>) -> CliRes
                     }
                 }
                 Err(_) => {
-                    println!(
-                        "  {}",
-                        "(could not decode token claims)".yellow()
-                    );
+                    println!("  {}", "(could not decode token claims)".yellow());
                 }
             }
         }
@@ -229,7 +226,9 @@ fn decode_token_summary(token: &str) -> Result<TokenSummary, ()> {
             .unwrap_or_default()
             .as_secs();
         if exp < now {
-            format!("{} (expired)", format_timestamp(exp)).red().to_string()
+            format!("{} (expired)", format_timestamp(exp))
+                .red()
+                .to_string()
         } else {
             format_timestamp(exp)
         }
@@ -274,7 +273,20 @@ fn format_timestamp(ts: u64) -> String {
         y += 1;
     }
     let mut m = 1u32;
-    let days_in_month = [31, 28 + i64::from(is_leap_year(y)), 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let days_in_month = [
+        31,
+        28 + i64::from(is_leap_year(y)),
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     for &dim in &days_in_month {
         if remaining < dim {
             break;

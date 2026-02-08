@@ -1164,7 +1164,11 @@ pub fn sparql_dataset_aliases(sparql: &str) -> Result<Vec<String>, DatasetParseE
     let mut aliases = Vec::new();
     for source in spec.default_graphs.iter().chain(spec.named_graphs.iter()) {
         // Strip #txn-meta or other fragments — the scope check is on the base ledger
-        let base = source.identifier.split('#').next().unwrap_or(&source.identifier);
+        let base = source
+            .identifier
+            .split('#')
+            .next()
+            .unwrap_or(&source.identifier);
         if seen.insert(base.to_string()) {
             aliases.push(base.to_string());
         }
@@ -2295,8 +2299,7 @@ mod tests {
 
     #[test]
     fn test_sparql_dataset_aliases_multiple_from() {
-        let sparql =
-            "SELECT ?s FROM <ledger:one> FROM <ledger:two> WHERE { ?s ?p ?o }";
+        let sparql = "SELECT ?s FROM <ledger:one> FROM <ledger:two> WHERE { ?s ?p ?o }";
         let aliases = sparql_dataset_aliases(sparql).unwrap();
         assert_eq!(aliases, vec!["ledger:one", "ledger:two"]);
     }

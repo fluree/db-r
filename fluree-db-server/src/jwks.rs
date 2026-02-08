@@ -151,11 +151,7 @@ impl JwksCache {
     /// 1. No cached entry for this issuer
     /// 2. Cached entry is stale (TTL expired)
     /// 3. `kid` not found in cached entry (key rotation)
-    pub async fn get_key(
-        &self,
-        issuer: &str,
-        kid: &str,
-    ) -> Result<DecodingKey, JwksCacheError> {
+    pub async fn get_key(&self, issuer: &str, kid: &str) -> Result<DecodingKey, JwksCacheError> {
         let config = self
             .issuers
             .get(issuer)
@@ -242,15 +238,15 @@ impl JwksCache {
 
     /// Fetch JWKS from a URL.
     async fn fetch_jwks(&self, url: &str) -> Result<JwkSet, JwksCacheError> {
-        let response = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| JwksCacheError::FetchFailed {
-                url: url.to_string(),
-                error: e.to_string(),
-            })?;
+        let response =
+            self.client
+                .get(url)
+                .send()
+                .await
+                .map_err(|e| JwksCacheError::FetchFailed {
+                    url: url.to_string(),
+                    error: e.to_string(),
+                })?;
 
         if !response.status().is_success() {
             return Err(JwksCacheError::FetchFailed {
@@ -259,14 +255,13 @@ impl JwksCache {
             });
         }
 
-        let jwk_set: JwkSet =
-            response
-                .json()
-                .await
-                .map_err(|e| JwksCacheError::ParseFailed {
-                    url: url.to_string(),
-                    error: e.to_string(),
-                })?;
+        let jwk_set: JwkSet = response
+            .json()
+            .await
+            .map_err(|e| JwksCacheError::ParseFailed {
+                url: url.to_string(),
+                error: e.to_string(),
+            })?;
 
         Ok(jwk_set)
     }
@@ -387,7 +382,11 @@ mod tests {
         let jwk_set: JwkSet = serde_json::from_str(jwks_json).unwrap();
         let entry = JwksCache::build_cache_entry(&jwk_set);
 
-        assert_eq!(entry.keys_by_kid.len(), 0, "keys without kid should be skipped");
+        assert_eq!(
+            entry.keys_by_kid.len(),
+            0,
+            "keys without kid should be skipped"
+        );
     }
 
     #[test]
@@ -415,7 +414,11 @@ mod tests {
         );
 
         assert_eq!(cache.issuers.len(), 1);
-        assert_eq!(cache.cache.read().len(), 0, "cache should be empty before warm()");
+        assert_eq!(
+            cache.cache.read().len(),
+            0,
+            "cache should be empty before warm()"
+        );
         assert_eq!(cache.ttl, Duration::from_secs(60));
     }
 }

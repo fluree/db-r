@@ -35,10 +35,8 @@ pub async fn verify_bearer_token(
     token: &str,
     jwks_cache: Option<&JwksCache>,
 ) -> Result<VerifiedToken, ServerError> {
-    let (kid, _alg, has_embedded_jwk) =
-        fluree_db_credential::peek_jwt_header(token).map_err(|e| {
-            ServerError::unauthorized(format!("Invalid token header: {}", e))
-        })?;
+    let (kid, _alg, has_embedded_jwk) = fluree_db_credential::peek_jwt_header(token)
+        .map_err(|e| ServerError::unauthorized(format!("Invalid token header: {}", e)))?;
 
     if has_embedded_jwk {
         // Existing path: embedded JWK (Ed25519)
@@ -111,13 +109,8 @@ async fn verify_via_jwks(
         .map_err(|e| ServerError::unauthorized(format!("JWKS key lookup failed: {}", e)))?;
 
     // Verify the token with the looked-up key (RS256 constrained)
-    let jwt_verified = fluree_db_credential::verify_jwt(
-        token,
-        &key,
-        &[Algorithm::RS256],
-        &issuer,
-    )
-    .map_err(|e| ServerError::unauthorized(format!("Token verification failed: {}", e)))?;
+    let jwt_verified = fluree_db_credential::verify_jwt(token, &key, &[Algorithm::RS256], &issuer)
+        .map_err(|e| ServerError::unauthorized(format!("Token verification failed: {}", e)))?;
 
     // Parse claims into EventsTokenPayload
     let payload: EventsTokenPayload = serde_json::from_str(&jwt_verified.payload_json)

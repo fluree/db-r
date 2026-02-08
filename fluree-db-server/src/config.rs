@@ -305,6 +305,8 @@ pub struct AdminAuthConfig {
     /// DANGEROUS: Accept any valid signature regardless of issuer.
     /// Only for development/testing.
     pub insecure_accept_any_issuer: bool,
+    /// Whether JWKS issuers are configured (for validation check)
+    pub has_jwks_issuers: bool,
 }
 
 impl AdminAuthConfig {
@@ -314,12 +316,13 @@ impl AdminAuthConfig {
             // Must have some trusted issuers (own or from events_auth)
             let has_trusted = !self.trusted_issuers.is_empty()
                 || !events_auth.trusted_issuers.is_empty()
+                || self.has_jwks_issuers
                 || self.insecure_accept_any_issuer;
 
             if !has_trusted {
                 return Err(
                     "admin_auth.mode=required requires --admin-auth-trusted-issuer, \
-                     --events-auth-trusted-issuer, or --admin-auth-insecure flag"
+                     --events-auth-trusted-issuer, --jwks-issuer, or --admin-auth-insecure flag"
                         .to_string(),
                 );
             }
@@ -767,6 +770,7 @@ impl ServerConfig {
             mode: self.admin_auth_mode,
             trusted_issuers: self.admin_auth_trusted_issuers.clone(),
             insecure_accept_any_issuer: self.admin_auth_insecure_accept_any_issuer,
+            has_jwks_issuers: self.has_jwks_issuers(),
         }
     }
 

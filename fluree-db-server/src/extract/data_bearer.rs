@@ -91,10 +91,7 @@ impl FromRequestParts<Arc<AppState>> for MaybeDataBearer {
 ///
 /// When `oidc` feature is enabled, uses dual-path dispatch (embedded JWK or JWKS).
 /// When `oidc` feature is disabled, only the embedded JWK path is available.
-async fn verify_data_token(
-    token: &str,
-    state: &AppState,
-) -> Result<MaybeDataBearer, ServerError> {
+async fn verify_data_token(token: &str, state: &AppState) -> Result<MaybeDataBearer, ServerError> {
     let config = state.config.data_auth();
 
     // Verify the token and extract claims

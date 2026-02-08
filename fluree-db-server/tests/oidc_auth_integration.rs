@@ -14,7 +14,7 @@ use tower::ServiceExt;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use fluree_db_server::config::DataAuthMode;
+use fluree_db_server::config::{AdminAuthMode, DataAuthMode};
 use fluree_db_server::routes::build_router;
 use fluree_db_server::{AppState, ServerConfig, TelemetryConfig};
 
@@ -34,9 +34,8 @@ fn test_jwks_json(kid: &str) -> JsonValue {
 }
 
 fn test_encoding_key() -> EncodingKey {
-    let rsa_private = include_str!(
-        "../../fluree-db-credential/tests/fixtures/test_rsa_private.pem"
-    );
+    let rsa_private =
+        include_str!("../../fluree-db-credential/tests/fixtures/test_rsa_private.pem");
     EncodingKey::from_rsa_pem(rsa_private.as_bytes()).unwrap()
 }
 
@@ -69,10 +68,7 @@ async fn json_body(resp: http::Response<Body>) -> (StatusCode, JsonValue) {
 }
 
 /// Create AppState with OIDC configured, pointing JWKS to the given mock URL.
-async fn oidc_state(
-    jwks_url: &str,
-    issuer: &str,
-) -> (tempfile::TempDir, std::sync::Arc<AppState>) {
+async fn oidc_state(jwks_url: &str, issuer: &str) -> (tempfile::TempDir, std::sync::Arc<AppState>) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let cfg = ServerConfig {
         cors_enabled: false,
@@ -620,4 +616,118 @@ fn create_ed25519_jws(claims: &JsonValue, signing_key: &ed25519_dalek::SigningKe
     let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
 
     format!("{}.{}.{}", header_b64, payload_b64, sig_b64)
+}
+
+// === Admin endpoint OIDC tests ===
+
+/// Helper to create AppState with admin auth enabled + OIDC configured.
+async fn oidc_admin_state(
+    jwks_url: &str,
+    issuer: &str,
+) -> (tempfile::TempDir, std::sync::Arc<AppState>) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cfg = ServerConfig {
+        cors_enabled: false,
+        indexing_enabled: false,
+        storage_path: Some(tmp.path().to_path_buf()),
+        // Admin auth: required, trust comes from JWKS (no did:key issuers)
+        admin_auth_mode: AdminAuthMode::Required,
+        admin_auth_trusted_issuers: Vec::new(),
+        admin_auth_insecure_accept_any_issuer: false,
+        // JWKS config
+        jwks_issuers: vec![format!("{}={}", issuer, jwks_url)],
+        jwks_cache_ttl: 300,
+        ..Default::default()
+    };
+    let telemetry = TelemetryConfig::with_server_config(&cfg);
+    let state = std::sync::Arc::new(AppState::new(cfg, telemetry).expect("AppState::new"));
+
+    if let Some(cache) = &state.jwks_cache {
+        cache.warm().await;
+    }
+
+    (tmp, state)
+}
+
+#[tokio::test]
+async fn oidc_rs256_admin_create_ledger() {
+    let mock_server = MockServer::start().await;
+    let issuer = "https://solo.example.com";
+    let kid = "test-kid-1";
+
+    Mock::given(method("GET"))
+        .and(path("/.well-known/jwks.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(test_jwks_json(kid)))
+        .expect(1..)
+        .mount(&mock_server)
+        .await;
+
+    let jwks_url = format!("{}/.well-known/jwks.json", mock_server.uri());
+    let (_tmp, state) = oidc_admin_state(&jwks_url, issuer).await;
+    let app = build_router(state);
+
+    // Create OIDC token (admin endpoints don't require specific scopes,
+    // just a valid token from a trusted issuer)
+    let claims = json!({
+        "iss": issuer,
+        "sub": "admin@example.com",
+        "exp": now_secs() + 3600,
+        "iat": now_secs()
+    });
+    let token = create_rs256_jwt(&claims, kid);
+
+    // POST /fluree/create with RS256 Bearer token should succeed
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/fluree/create")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::from(r#"{"ledger":"admin-oidc:test"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "RS256 admin token should allow /fluree/create"
+    );
+}
+
+#[tokio::test]
+async fn oidc_admin_rejects_without_token() {
+    let mock_server = MockServer::start().await;
+    let issuer = "https://solo.example.com";
+    let kid = "test-kid-1";
+
+    Mock::given(method("GET"))
+        .and(path("/.well-known/jwks.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(test_jwks_json(kid)))
+        .mount(&mock_server)
+        .await;
+
+    let jwks_url = format!("{}/.well-known/jwks.json", mock_server.uri());
+    let (_tmp, state) = oidc_admin_state(&jwks_url, issuer).await;
+    let app = build_router(state);
+
+    // POST /fluree/create WITHOUT Bearer token should be rejected
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"ledger":"admin-oidc2:test"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "Admin endpoint should require token when admin_auth.mode=required"
+    );
 }
