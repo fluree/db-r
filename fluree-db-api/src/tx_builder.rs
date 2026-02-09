@@ -634,72 +634,55 @@ where
     let index_config = core.index_config.unwrap_or_default();
     let store_raw_txn = core.txn_opts.store_raw_txn.unwrap_or(false);
 
-    // Acquire write lock
-    let mut write_guard = handle.lock_for_write().await;
-    let ledger_state = write_guard.clone_state();
+    // Fast path retains legacy behavior for complex cases that cannot be retried
+    // without cloning inputs (e.g., pre-built Txn IR), or when using tracked+policy staging.
+    if core.pre_built_txn.is_some() || core.policy.is_some() {
+        // Acquire write lock
+        let mut write_guard = handle.lock_for_write().await;
+        let ledger_state = write_guard.clone_state();
 
-    // Handle pre-built Txn (SPARQL UPDATE) vs operation-based transaction
-    let (stage_result, txn_type, commit_opts) = if let Some(txn) = core.pre_built_txn {
-        let txn_type = txn.txn_type;
-        // For pre-built Txn, don't attach raw_txn (we don't have the original format)
-        let stage_result = fluree
-            .stage_transaction_from_txn(ledger_state, txn, Some(&index_config))
-            .await?;
-        (stage_result, txn_type, core.commit_opts)
-    } else {
-        let op = core.operation.unwrap(); // safe: validate checks
-
-        // Direct flake path for InsertTurtle (bypass JSON-LD / IR)
-        if let TransactOperation::InsertTurtle(turtle) = op {
+        // Handle pre-built Txn (SPARQL UPDATE) vs operation-based transaction
+        let (stage_result, txn_type, commit_opts) = if let Some(txn) = core.pre_built_txn {
+            let txn_type = txn.txn_type;
+            // For pre-built Txn, don't attach raw_txn (we don't have the original format)
             let stage_result = fluree
-                .stage_turtle_insert(ledger_state, turtle, Some(&index_config))
+                .stage_transaction_from_txn(ledger_state, txn, Some(&index_config))
                 .await?;
-            // Store raw Turtle text when explicitly opted-in
-            let commit_opts = if core.commit_opts.raw_txn.is_none() && store_raw_txn {
-                core.commit_opts
-                    .with_raw_txn(serde_json::Value::String(turtle.to_string()))
-            } else {
-                core.commit_opts
-            };
-            (stage_result, TxnType::Insert, commit_opts)
+            (stage_result, txn_type, core.commit_opts)
         } else {
-            let txn_type = op.txn_type();
-            // Parse transaction, extracting TriG metadata and named graphs for Turtle inputs
-            let parsed = op.to_json_with_trig_meta()?;
-            let txn_json = parsed.json;
-            let trig_meta = parsed.trig_meta;
-            let named_graphs = parsed.named_graphs;
+            let op = core.operation.unwrap(); // safe: validate checks
 
-            // Store raw transaction JSON ONLY when explicitly opted-in, or when already provided
-            // (e.g., signed credential envelope for provenance).
-            let commit_opts = if core.commit_opts.raw_txn.is_none() && store_raw_txn {
-                core.commit_opts.with_raw_txn(txn_json.clone())
+            // Direct flake path for InsertTurtle (bypass JSON-LD / IR)
+            if let TransactOperation::InsertTurtle(turtle) = op {
+                let stage_result = fluree
+                    .stage_turtle_insert(ledger_state, turtle, Some(&index_config))
+                    .await?;
+                // Store raw Turtle text when explicitly opted-in
+                let commit_opts = if core.commit_opts.raw_txn.is_none() && store_raw_txn {
+                    core.commit_opts
+                        .with_raw_txn(serde_json::Value::String(turtle.to_string()))
+                } else {
+                    core.commit_opts
+                };
+                (stage_result, TxnType::Insert, commit_opts)
             } else {
-                core.commit_opts
-            };
+                let txn_type = op.txn_type();
+                // Parse transaction, extracting TriG metadata and named graphs for Turtle inputs
+                let parsed = op.to_json_with_trig_meta()?;
+                let txn_json = parsed.json;
+                let trig_meta = parsed.trig_meta;
+                let named_graphs = parsed.named_graphs;
 
-            // Stage
-            // TODO: Add named_graphs support to tracked+policy path
-            let stage_result = if let Some(policy) = &core.policy {
-                let tracker = Tracker::new(core.tracking.unwrap_or(TrackingOptions {
-                    track_time: true,
-                    track_fuel: true,
-                    track_policy: true,
-                    max_fuel: None,
-                }));
-                let input =
-                    TrackedTransactionInput::new(txn_type, &txn_json, core.txn_opts, policy);
-                fluree
-                    .stage_transaction_tracked_with_policy(
-                        ledger_state,
-                        input,
-                        Some(&index_config),
-                        &tracker,
-                    )
-                    .await
-                    .map_err(|e: TrackedErrorResponse| ApiError::http(e.status, e.error))?
-            } else {
-                fluree
+                // Store raw transaction JSON ONLY when explicitly opted-in, or when already provided
+                // (e.g., signed credential envelope for provenance).
+                let commit_opts = if core.commit_opts.raw_txn.is_none() && store_raw_txn {
+                    core.commit_opts.with_raw_txn(txn_json.clone())
+                } else {
+                    core.commit_opts
+                };
+
+                // Stage (tracked+policy is guaranteed None in this branch)
+                let stage_result = fluree
                     .stage_transaction_with_named_graphs(
                         ledger_state,
                         txn_type,
@@ -709,66 +692,223 @@ where
                         trig_meta.as_ref(),
                         &named_graphs,
                     )
+                    .await?;
+                (stage_result, txn_type, commit_opts)
+            }
+        };
+
+        let StageResult {
+            view,
+            ns_registry,
+            txn_meta,
+            graph_delta,
+        } = stage_result;
+
+        // Add extracted transaction metadata and graph delta to commit opts
+        let commit_opts = commit_opts
+            .with_txn_meta(txn_meta)
+            .with_graph_delta(graph_delta.into_iter().collect());
+
+        // Handle no-op
+        let (receipt, new_state) =
+            if !view.has_staged() && matches!(txn_type, TxnType::Update | TxnType::Upsert) {
+                let (base, _) = view.into_parts();
+                (
+                    fluree_db_transact::CommitReceipt {
+                        address: String::new(),
+                        commit_id: String::new(),
+                        t: base.t(),
+                        flake_count: 0,
+                    },
+                    base,
+                )
+            } else {
+                fluree
+                    .commit_staged(view, ns_registry, &index_config, commit_opts)
                     .await?
             };
-            (stage_result, txn_type, commit_opts)
+
+        // Compute indexing status
+        let indexing_status = IndexingStatus {
+            enabled: fluree.indexing_mode.is_enabled(),
+            needed: new_state.should_reindex(&index_config),
+            novelty_size: new_state.novelty_size(),
+            index_t: new_state.index_t(),
+            commit_t: receipt.t,
+        };
+
+        // Update cache
+        write_guard.replace(new_state);
+
+        // Trigger background indexing if needed (outside cache update is fine here)
+        if let IndexingMode::Background(h) = &fluree.indexing_mode {
+            if indexing_status.needed {
+                h.trigger(handle.ledger_id(), receipt.t).await;
+            }
+        }
+
+        return Ok(TransactResultRef {
+            receipt,
+            indexing: indexing_status,
+        });
+    }
+
+    // Optimistic staging path: stage outside the write lock to allow parallel parsing/staging
+    // in bulk import scenarios. Commit is still serialized by the write lock for safety.
+    let op = core.operation.unwrap(); // safe: validate checks
+    let txn_opts = core.txn_opts.clone();
+    let commit_opts_base = core.commit_opts.clone();
+
+    // Pre-parse JSON/TriG once when possible (independent of ledger state).
+    enum OpPlan<'a> {
+        InsertTurtle(&'a str),
+        JsonLike {
+            txn_type: TxnType,
+            txn_json: JsonValue,
+            trig_meta: Option<RawTrigMeta>,
+            named_graphs: Vec<NamedGraphBlock>,
+        },
+    }
+
+    let op_plan = match op {
+        TransactOperation::InsertTurtle(turtle) => OpPlan::InsertTurtle(turtle),
+        _ => {
+            let txn_type = op.txn_type();
+            let parsed = op.to_json_with_trig_meta()?;
+            OpPlan::JsonLike {
+                txn_type,
+                txn_json: parsed.json,
+                trig_meta: parsed.trig_meta,
+                named_graphs: parsed.named_graphs,
+            }
         }
     };
 
-    let StageResult {
-        view,
-        ns_registry,
-        txn_meta,
-        graph_delta,
-    } = stage_result;
+    const MAX_RETRIES: usize = 16;
+    for _attempt in 0..MAX_RETRIES {
+        // Snapshot current cached state (brief lock), then stage without holding the write lock.
+        let snap = handle.snapshot().await;
+        let base_t = snap.t;
+        let base_head = snap.head_commit.clone();
+        let ledger_state = snap.to_ledger_state();
 
-    // Add extracted transaction metadata and graph delta to commit opts
-    let commit_opts = commit_opts
-        .with_txn_meta(txn_meta)
-        .with_graph_delta(graph_delta.into_iter().collect());
+        let (stage_result, txn_type, commit_opts) = match &op_plan {
+            OpPlan::InsertTurtle(turtle) => {
+                let stage_result = fluree
+                    .stage_turtle_insert(ledger_state, turtle, Some(&index_config))
+                    .await?;
+                let commit_opts = if commit_opts_base.raw_txn.is_none() && store_raw_txn {
+                    commit_opts_base
+                        .clone()
+                        .with_raw_txn(serde_json::Value::String((*turtle).to_string()))
+                } else {
+                    commit_opts_base.clone()
+                };
+                (stage_result, TxnType::Insert, commit_opts)
+            }
+            OpPlan::JsonLike {
+                txn_type,
+                txn_json,
+                trig_meta,
+                named_graphs,
+            } => {
+                // Store raw transaction JSON ONLY when explicitly opted-in, or when already provided.
+                let commit_opts = if commit_opts_base.raw_txn.is_none() && store_raw_txn {
+                    commit_opts_base.clone().with_raw_txn(txn_json.clone())
+                } else {
+                    commit_opts_base.clone()
+                };
 
-    // Handle no-op
-    let (receipt, new_state) =
+                let stage_result = fluree
+                    .stage_transaction_with_named_graphs(
+                        ledger_state,
+                        *txn_type,
+                        txn_json,
+                        txn_opts.clone(),
+                        Some(&index_config),
+                        trig_meta.as_ref(),
+                        named_graphs,
+                    )
+                    .await?;
+                (stage_result, *txn_type, commit_opts)
+            }
+        };
+
+        let StageResult {
+            view,
+            ns_registry,
+            txn_meta,
+            graph_delta,
+        } = stage_result;
+
+        // Acquire write lock only for the commit + cache update section.
+        let mut write_guard = handle.lock_for_write().await;
+        let current_t = write_guard.state().t();
+        let current_head = write_guard.state().head_commit.as_deref();
+
+        // If state changed since snapshot, retry staging against the latest state.
+        if current_t != base_t || current_head != base_head.as_deref() {
+            continue;
+        }
+
+        // Add extracted transaction metadata and graph delta to commit opts
+        let commit_opts = commit_opts
+            .with_txn_meta(txn_meta)
+            .with_graph_delta(graph_delta.into_iter().collect());
+
+        // Handle no-op updates: return success without committing (Clojure parity).
         if !view.has_staged() && matches!(txn_type, TxnType::Update | TxnType::Upsert) {
             let (base, _) = view.into_parts();
-            (
-                fluree_db_transact::CommitReceipt {
+            return Ok(TransactResultRef {
+                receipt: fluree_db_transact::CommitReceipt {
                     address: String::new(),
                     commit_id: String::new(),
                     t: base.t(),
                     flake_count: 0,
                 },
-                base,
-            )
-        } else {
-            fluree
-                .commit_staged(view, ns_registry, &index_config, commit_opts)
-                .await?
+                indexing: IndexingStatus {
+                    enabled: fluree.indexing_mode.is_enabled(),
+                    needed: false,
+                    novelty_size: base.novelty_size(),
+                    index_t: base.index_t(),
+                    commit_t: base.t(),
+                },
+            });
+        }
+
+        let (receipt, new_state) = fluree
+            .commit_staged(view, ns_registry, &index_config, commit_opts)
+            .await?;
+
+        let indexing_status = IndexingStatus {
+            enabled: fluree.indexing_mode.is_enabled(),
+            needed: new_state.should_reindex(&index_config),
+            novelty_size: new_state.novelty_size(),
+            index_t: new_state.index_t(),
+            commit_t: receipt.t,
         };
 
-    // Compute indexing status
-    let indexing_status = IndexingStatus {
-        enabled: fluree.indexing_mode.is_enabled(),
-        needed: new_state.should_reindex(&index_config),
-        novelty_size: new_state.novelty_size(),
-        index_t: new_state.index_t(),
-        commit_t: receipt.t,
-    };
+        // Update cache
+        write_guard.replace(new_state);
+        drop(write_guard);
 
-    // Trigger background indexing if needed
-    if let IndexingMode::Background(h) = &fluree.indexing_mode {
-        if indexing_status.needed {
-            h.trigger(new_state.ledger_id(), receipt.t).await;
+        // Trigger background indexing if needed (after cache update; no need to hold lock)
+        if let IndexingMode::Background(h) = &fluree.indexing_mode {
+            if indexing_status.needed {
+                h.trigger(handle.ledger_id(), receipt.t).await;
+            }
         }
+
+        return Ok(TransactResultRef {
+            receipt,
+            indexing: indexing_status,
+        });
     }
 
-    // Update cache
-    write_guard.replace(new_state);
-
-    Ok(TransactResultRef {
-        receipt,
-        indexing: indexing_status,
-    })
+    Err(ApiError::internal(format!(
+        "transaction commit retry limit exceeded ({} attempts)",
+        MAX_RETRIES
+    )))
 }
 
 #[cfg(test)]

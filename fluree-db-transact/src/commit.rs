@@ -156,6 +156,18 @@ where
     // 1. Extract flakes from view
     let (mut base, flakes) = view.into_parts();
 
+    // Move commit options into locals so we can pass ownership where useful
+    // (e.g., txn_meta) without forcing clones, while still using other fields later.
+    let CommitOpts {
+        message: _message,
+        author: _author,
+        raw_txn,
+        signing_key,
+        txn_signature,
+        txn_meta,
+        graph_delta,
+    } = opts;
+
     let commit_span = tracing::info_span!(
         "txn_commit",
         alias = base.ledger_id(),
@@ -164,7 +176,7 @@ where
         delta_bytes = tracing::field::Empty,
         current_novelty_bytes = tracing::field::Empty,
         max_novelty_bytes = index_config.reindex_max_bytes,
-        has_raw_txn = opts.raw_txn.is_some(),
+        has_raw_txn = raw_txn.is_some(),
     );
     let _commit_guard = commit_span.enter();
 
@@ -232,7 +244,7 @@ where
     let timestamp = Utc::now().to_rfc3339();
 
     // Store original transaction JSON if provided (Clojure parity)
-    let txn_address = if let Some(txn_json) = &opts.raw_txn {
+    let txn_address = if let Some(txn_json) = &raw_txn {
         let (txn_bytes, res) = {
             let span = tracing::info_span!("commit_write_raw_txn");
             let _g = span.enter();
@@ -251,7 +263,7 @@ where
     let mut commit_record = {
         let span = tracing::info_span!("commit_build_record");
         let _g = span.enter();
-        Commit::new("", new_t, flakes.clone())
+        Commit::new("", new_t, flakes)
             .with_namespace_delta(ns_delta)
             .with_time(timestamp)
     };
@@ -262,18 +274,18 @@ where
     }
 
     // Add txn signature if provided (audit metadata)
-    if let Some(txn_sig) = opts.txn_signature {
+    if let Some(txn_sig) = txn_signature {
         commit_record = commit_record.with_txn_signature(txn_sig);
     }
 
     // Add user-provided transaction metadata
-    if !opts.txn_meta.is_empty() {
-        commit_record = commit_record.with_txn_meta(opts.txn_meta.clone());
+    if !txn_meta.is_empty() {
+        commit_record = commit_record.with_txn_meta(txn_meta);
     }
 
     // Add named graph delta (g_id -> IRI mappings)
-    if !opts.graph_delta.is_empty() {
-        commit_record.graph_delta = opts.graph_delta.clone();
+    if !graph_delta.is_empty() {
+        commit_record.graph_delta = graph_delta;
     }
 
     // Build previous commit reference with id and address
@@ -322,10 +334,7 @@ where
     let (commit_id, commit_hash_hex, bytes) = {
         let span = tracing::info_span!("commit_write_commit_blob");
         let _g = span.enter();
-        let signing = opts
-            .signing_key
-            .as_ref()
-            .map(|key| (key.as_ref(), base.ledger_id()));
+        let signing = signing_key.as_ref().map(|key| (key.as_ref(), base.ledger_id()));
         let result = crate::commit_v2::write_commit(&commit_record, true, signing)?;
         let commit_id = format!("sha256:{}", &result.content_hash_hex);
         (commit_id, result.content_hash_hex, result.bytes)
@@ -369,7 +378,7 @@ where
     );
 
     // 10. Build new state - merge commit_metadata_flakes with transaction flakes
-    let mut all_flakes = flakes;
+    let mut all_flakes = std::mem::take(&mut commit_record.flakes);
     all_flakes.extend(commit_metadata_flakes);
 
     // 10.1 Populate DictNovelty with subjects/strings from this commit
@@ -380,16 +389,16 @@ where
         populate_dict_novelty(Arc::make_mut(&mut dict_novelty), &all_flakes);
     }
 
-    let mut new_novelty = (*base.novelty).clone();
+    let mut new_novelty = Arc::clone(&base.novelty);
     {
         let span = tracing::info_span!("commit_apply_to_novelty");
         let _g = span.enter();
-        new_novelty.apply_commit(all_flakes, new_t)?;
+        Arc::make_mut(&mut new_novelty).apply_commit(all_flakes, new_t)?;
     }
 
     let new_state = LedgerState {
         db: base.db,
-        novelty: Arc::new(new_novelty),
+        novelty: new_novelty,
         dict_novelty,
         head_commit: Some(address.clone()),
         ns_record: base.ns_record,

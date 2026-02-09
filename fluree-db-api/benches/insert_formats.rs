@@ -13,7 +13,7 @@
 // ## Matrix
 //
 //   formats:   jsonld, turtle
-//   txn counts: 10, 100, 1000
+//   txn counts: 10, 100
 //   nodes/txn:  10, 100, 1000
 //
 // ## Running
@@ -55,7 +55,7 @@ fn init_tracing_for_bench() {
 // ---------------------------------------------------------------------------
 
 /// Transaction counts to benchmark.
-const TXN_COUNTS: &[usize] = &[10, 100, 1_000];
+const TXN_COUNTS: &[usize] = &[10, 100];
 
 /// Nodes per transaction to benchmark.
 const NODES_PER_TXN: &[usize] = &[10, 100, 1_000];
@@ -100,6 +100,8 @@ struct TxnData {
 struct PregenData {
     jsonld_txns: Vec<JsonValue>,
     turtle_txns: Vec<String>,
+    /// Total flakes produced by inserting all transactions (calibrated once).
+    total_flakes: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +243,16 @@ fn txn_data_to_turtle(data: &TxnData) -> String {
     buf
 }
 
-fn pregen(txn_count: usize, nodes_per_txn: usize) -> PregenData {
+/// Pre-generate all transaction data and do one calibration insert pass to
+/// count total flakes. The flake count is deterministic (same data every run)
+/// and identical for both formats, so one pass suffices.
+fn pregen(
+    rt: &Runtime,
+    fluree: &BenchFluree,
+    index_config: &IndexConfig,
+    txn_count: usize,
+    nodes_per_txn: usize,
+) -> PregenData {
     let mut jsonld_txns = Vec::with_capacity(txn_count);
     let mut turtle_txns = Vec::with_capacity(txn_count);
 
@@ -251,9 +262,33 @@ fn pregen(txn_count: usize, nodes_per_txn: usize) -> PregenData {
         turtle_txns.push(txn_data_to_turtle(&data));
     }
 
+    // Calibration: insert all txns once via Turtle (cheapest path) to count flakes.
+    let total_flakes = rt.block_on(async {
+        let id = LEDGER_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let alias = format!("bench/cal-{id}:main");
+        let mut ledger = fluree.create_ledger(&alias).await.unwrap();
+        let mut flakes = 0u64;
+        for txn in &turtle_txns {
+            let result = fluree
+                .insert_turtle_with_opts(
+                    ledger,
+                    txn,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    index_config,
+                )
+                .await
+                .unwrap();
+            flakes += result.receipt.flake_count as u64;
+            ledger = result.ledger;
+        }
+        flakes
+    });
+
     PregenData {
         jsonld_txns,
         turtle_txns,
+        total_flakes,
     }
 }
 
@@ -308,8 +343,97 @@ async fn run_turtle_inserts(
 }
 
 // ---------------------------------------------------------------------------
+// Summary
+// ---------------------------------------------------------------------------
+
+struct ScenarioResult {
+    txn_count: usize,
+    nodes_per_txn: usize,
+    total_flakes: u64,
+    jsonld_ms: f64,
+    turtle_ms: f64,
+}
+
+fn format_flakes_per_sec(flakes: u64, ms: f64) -> String {
+    let per_sec = flakes as f64 / (ms / 1000.0);
+    if per_sec >= 1_000_000.0 {
+        format!("{:.2}M", per_sec / 1_000_000.0)
+    } else if per_sec >= 1_000.0 {
+        format!("{:.1}K", per_sec / 1_000.0)
+    } else {
+        format!("{:.0}", per_sec)
+    }
+}
+
+fn print_summary(results: &[ScenarioResult]) {
+    eprintln!();
+    eprintln!("==========================================================================");
+    eprintln!("  INSERT BENCHMARK SUMMARY");
+    eprintln!("==========================================================================");
+    eprintln!(
+        "  {:>6} x {:>5}  {:>8}  {:>10} {:>10}  {:>12} {:>12}  {:>6}",
+        "txns", "nodes", "flakes", "jsonld", "turtle", "jsonld fl/s", "turtle fl/s", "ratio"
+    );
+    eprintln!("  {}", "-".repeat(82));
+
+    for r in results {
+        let jld_fps = format_flakes_per_sec(r.total_flakes, r.jsonld_ms);
+        let ttl_fps = format_flakes_per_sec(r.total_flakes, r.turtle_ms);
+        let ratio = r.jsonld_ms / r.turtle_ms;
+        eprintln!(
+            "  {:>6} x {:>5}  {:>8}  {:>8.1}ms {:>8.1}ms  {:>12} {:>12}  {:>5.2}x",
+            r.txn_count,
+            r.nodes_per_txn,
+            r.total_flakes,
+            r.jsonld_ms,
+            r.turtle_ms,
+            jld_fps,
+            ttl_fps,
+            ratio,
+        );
+    }
+
+    eprintln!("  {}", "-".repeat(82));
+    eprintln!("  ratio = jsonld_time / turtle_time (>1 means turtle is faster)");
+    eprintln!();
+}
+
+// ---------------------------------------------------------------------------
 // Benchmark
 // ---------------------------------------------------------------------------
+
+/// Time a single run of all inserts, returning elapsed milliseconds.
+fn time_jsonld_run(
+    rt: &Runtime,
+    fluree: &BenchFluree,
+    txns: &[JsonValue],
+    index_config: &IndexConfig,
+) -> f64 {
+    rt.block_on(async {
+        let id = LEDGER_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let alias = format!("bench/sum-jld-{id}:main");
+        let ledger = fluree.create_ledger(&alias).await.unwrap();
+        let start = std::time::Instant::now();
+        let _ = run_jsonld_inserts(fluree, ledger, txns, index_config).await;
+        start.elapsed().as_secs_f64() * 1000.0
+    })
+}
+
+fn time_turtle_run(
+    rt: &Runtime,
+    fluree: &BenchFluree,
+    txns: &[String],
+    index_config: &IndexConfig,
+) -> f64 {
+    rt.block_on(async {
+        let id = LEDGER_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let alias = format!("bench/sum-ttl-{id}:main");
+        let ledger = fluree.create_ledger(&alias).await.unwrap();
+        let start = std::time::Instant::now();
+        let _ = run_turtle_inserts(fluree, ledger, txns, index_config).await;
+        start.elapsed().as_secs_f64() * 1000.0
+    })
+}
 
 fn bench_insert_formats(c: &mut Criterion) {
     init_tracing_for_bench();
@@ -325,6 +449,8 @@ fn bench_insert_formats(c: &mut Criterion) {
     let mut group = c.benchmark_group("insert_formats");
     group.sample_size(10);
 
+    let mut summary: Vec<ScenarioResult> = Vec::new();
+
     for &txn_count in TXN_COUNTS {
         for &nodes_per_txn in NODES_PER_TXN {
             let total_nodes = txn_count * nodes_per_txn;
@@ -333,9 +459,16 @@ fn bench_insert_formats(c: &mut Criterion) {
                 "  [pregen] {} txns x {} nodes/txn = {} total nodes ...",
                 txn_count, nodes_per_txn, total_nodes
             );
-            let data = pregen(txn_count, nodes_per_txn);
+            let data = pregen(&rt, &fluree, &index_config, txn_count, nodes_per_txn);
 
-            group.throughput(Throughput::Elements(total_nodes as u64));
+            eprintln!(
+                "  [calibrated] {} total flakes ({:.1} flakes/node)",
+                data.total_flakes,
+                data.total_flakes as f64 / total_nodes as f64
+            );
+
+            // Throughput in flakes so Criterion reports flakes/second.
+            group.throughput(Throughput::Elements(data.total_flakes));
 
             let param_label = format!("{txn_count}txn_{nodes_per_txn}nodes");
 
@@ -386,10 +519,23 @@ fn bench_insert_formats(c: &mut Criterion) {
                     })
                 },
             );
+
+            // Collect a single timed run for the summary table.
+            let jsonld_ms = time_jsonld_run(&rt, &fluree, &data.jsonld_txns, &index_config);
+            let turtle_ms = time_turtle_run(&rt, &fluree, &data.turtle_txns, &index_config);
+            summary.push(ScenarioResult {
+                txn_count,
+                nodes_per_txn,
+                total_flakes: data.total_flakes,
+                jsonld_ms,
+                turtle_ms,
+            });
         }
     }
 
     group.finish();
+
+    print_summary(&summary);
 }
 
 criterion_group!(benches, bench_insert_formats);
